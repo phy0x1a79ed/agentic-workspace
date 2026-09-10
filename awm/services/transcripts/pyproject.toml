@@ -16,6 +16,12 @@ dependencies = [
 [project.optional-dependencies]
 test = ["pytest", "pytest-asyncio"]
 
+# The daily sweep. Not a CLI verb: a CLI verb reaches the service over the hub,
+# so a timer using one stops silently whenever the gateway is down. See
+# awm/transcripts/nightly.py.
+[project.scripts]
+awm-transcripts-sweep = "awm.transcripts.nightly:main"
+
 # PEP 420 namespace package: no top-level awm/__init__.py; the namespace dir is awm/transcripts/.
 [tool.setuptools.packages.find]
 include = ["awm.transcripts*"]

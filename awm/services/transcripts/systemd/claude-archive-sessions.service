@@ -3,9 +3,9 @@ Description=Archive Claude Code session transcripts older than 7 days
 
 [Service]
 Type=oneshot
-# The service verb, not the loose script it replaces. The unit's PATH is the
-# system default, so the CLI is named by absolute path — the same trap that hid
-# a broken cx timer.
-ExecStart=/home/tony/lib/miniforge3/envs/awm/bin/awm transcripts sweep
+# The console script, not the CLI verb: a CLI verb reaches the service over the
+# hub, so this would stop silently whenever the gateway is down. Named by
+# absolute path because a unit's PATH is the system default.
+ExecStart=/home/tony/lib/miniforge3/envs/awm/bin/awm-transcripts-sweep
 Nice=19
 IOSchedulingClass=idle
