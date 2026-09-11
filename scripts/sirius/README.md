@@ -1,3 +1,11 @@
+> **FROZEN — this tree has moved.** sirius is provisioned from the `cloud`
+> repository now, at `VMs/digital_ocean/sirius/` in
+> `https://github.com/phy0x1a79ed/cloud`. Make every edit there. This copy is
+> kept only until `feat/svc-tether` lands, so that deleting it does not collide
+> with the three files that branch is editing. It ships nothing: the box reads
+> its provisioning tree from `/opt/awm-host`, which `push-host.sh` in the cloud
+> repository puts there.
+
 # Operating sirius
 
 ## Purpose & Contents
