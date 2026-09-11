@@ -16,9 +16,14 @@
 #   4. `awm deploy` in the root checkout (install/build/restart as needed;
 #      a changed drawio client patch also re-runs that service's install.sh,
 #      which `awm deploy` does not notice)
-#   5. pages built in the root checkout, `scripts/sirius/deploy.sh release`
+#   5. pages built in the root checkout, then the sirius deploy script from
+#      the cloud repository (the host's provisioning tree left awm)
 # It ends by printing the sha at every hop and refuses to finish unless they
 # agree. capella and mira are not part of this path.
+#
+# The default target is `release`, which is the fleet. sirius is one host among
+# what this repository installs on, and reaching it needs a checkout of a second
+# repository, so it is asked for rather than assumed.
 #
 # The workspace-root checkout is a deploy target: nothing here commits in it.
 # CAUTION: the whole body is wrapped in `main` and called on the last line, and
@@ -35,7 +40,7 @@ main() {
     set -euo pipefail
 
     FEAT=${1:?usage: $0 <feat-branch> [--to dev|release|sirius]}
-    TO=sirius
+    TO=release
     [ "${2:-}" = "--to" ] && TO=${3:?--to dev|release|sirius}
     case "$TO" in dev|release|sirius) ;; *) echo "bad --to $TO" >&2; exit 1;; esac
 
@@ -117,8 +122,20 @@ main() {
     [ "$TO" = release ] && { echo; echo "stopped after altair @ $(sha "$WSROOT")"; exit 0; }
 
     step "5. sirius"
+    # sirius is provisioned from its own repository now. This one installs on
+    # several machines and carries no host's build recipe, so the deploy script
+    # is over there and altair keeps a pull-only checkout of it.
+    CLOUD=${AWM_CLOUD_REPO:-$WSROOT/projects/cloud/dev}
+    SIRIUS_DEPLOY=$CLOUD/VMs/digital_ocean/sirius/deploy.sh
+    [ -x "$SIRIUS_DEPLOY" ] || {
+        echo "no cloud checkout at $CLOUD, so sirius cannot be reached from here." >&2
+        echo "  awm project create cloud --clone-url https://github.com/phy0x1a79ed/cloud.git" >&2
+        echo "  then: git -C $WSROOT/projects/cloud/.bare worktree add ../dev dev" >&2
+        echo "Set AWM_CLOUD_REPO to point elsewhere." >&2
+        exit 1
+    }
     (cd "$WSROOT/awm" && npm run build >/dev/null)
-    (cd "$WSROOT" && bash scripts/sirius/deploy.sh release)
+    (cd "$WSROOT" && bash "$SIRIUS_DEPLOY" release)
 
     step "verify"
     r_bare=$(git -C "$BARE" rev-parse release)
