@@ -12,10 +12,18 @@ and never changes afterwards. The **state record**
 (`~/.claude/jobs/<short>/state.json`) is the session's own, and it is the only
 thing that follows a rename.
 
-Identity therefore comes only from the state record. On this box a session
-whose roster entry still reads `<spare zorilla>` had been renamed to "remote
-shell" and talked to for 27k tokens; reading the name from the roster would
-have handed that conversation to the next terminal that ran `cx`.
+They answer different questions and both are asked. *Who does this session
+belong to now* is the state record's, because only it follows a rename: on this
+box a session whose roster entry still read `<spare zorilla>` had been renamed
+to "remote shell" and talked to for 27k tokens, and reading the name from the
+roster would have handed that conversation to the next terminal that ran `cx`.
+*Did the pool make this session* is the roster's, because the pool renames a
+session itself the moment it hands one out, and a predicate reading the current
+name would lose sight of everything it ever gave away.
+
+So `is_ours` reads the state record and decides who may be handed a session,
+and `was_ours` reads the roster and decides what the pool may collect. Confusing
+the two is how a claimed session either gets handed out twice or leaks forever.
 """
 
 from __future__ import annotations
@@ -98,10 +106,17 @@ def is_untouched(s: Session) -> bool:
     """Has nobody prompted this session or taken it anywhere?
 
     Five witnesses, of which two are load-bearing. `tokens` and `origin_cwd`
-    survive a stop, a retire and a respawn. `needs`, `intent` and
-    `first_terminal_at` are cleared or stamped by a stop, so on a session that
-    has been renamed and used they can read exactly as pristine — they join the
-    test as an AND, they do not carry it.
+    survive a stop, a retire and a respawn. `needs` and `intent` are cleared or
+    rewritten by a stop, so on a session that has been renamed and used they can
+    read exactly as pristine — they join the test as an AND, they do not carry
+    it.
+
+    CAUTION: `first_terminal_at` is not a witness of a terminal. It is stamped
+    when the job first reaches a *terminal state*, done or failed, and it stays
+    null for the whole life of a session nobody ever prompts. It is here because
+    a stamped one proves the session ran something, not because an unstamped one
+    proves nobody is looking at it. Attachment has its own answer in
+    `attached_shorts`, and it is not in this file's gift.
 
     `origin_cwd` appears the first time a session is moved. A session that has
     been moved already carries the CLAUDE.md of the directory it was taken to,

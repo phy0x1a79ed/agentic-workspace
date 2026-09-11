@@ -6,6 +6,10 @@ Claude Code reloads project settings, project MCP servers, project skills and
 the destination's CLAUDE.md on that move, so a moved session is equivalent to
 one launched there.
 
+The claim then renames the session to `claimed <noun>`, which is what stops it
+advertising itself as a spare. That name is a placeholder: a hook clears it on
+the first real prompt and Claude Code titles the session itself.
+
 CAUTION: CLAUDE.md accumulates across moves. The destination's file is added and
 the origin's is not removed, which is why a session is seeded where there is no
 CLAUDE.md and moved exactly once, on its way to its user. A session that already
