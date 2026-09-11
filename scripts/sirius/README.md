@@ -69,6 +69,7 @@ the box afterwards to install it.
 | a first boot | `provision.sh` on the box, as root |
 | a change under `etc/` | `deploy.sh`, then `provision.sh` on the box |
 | the Trilium fork bundle | `awm/services/trilium/ship-bundle.sh` |
+| the tether relay, launcher or client binaries | `awm/services/tether/ship-binaries.sh` |
 | a new paper in Zotero | nothing. altair pulls and ships it, and the timer here applies it |
 | a new person | `scripts/sirius/add-user.sh <name>` |
 
@@ -113,11 +114,15 @@ selects the fork and deleting that one file selects the tarball again.
 
 ## The bibliography on sirius
 
-sirius runs the `zotero` service with `ZOTERO_ROLE=apply`. It cannot reach the
-Zotero desktop, which sits behind the private overlay this box is not on. altair
-reads the library, and ships `library.json` into this box's own vault scope. The
-timer here writes it into the note carrying `#zoteroLibrary`. Read
-`awm/services/zotero/INSTALL.md` for the roles and the label.
+sirius runs the `zotero` service with `ZOTERO_SYNC_ENABLED=1`, so its timer
+runs. It cannot reach the Zotero desktop, which sits behind the private overlay
+this box is not on. altair reads the library, and ships `library.json` into
+this box's own vault scope. The timer here writes it into the note carrying
+`#zoteroLibrary`. Read `awm/services/zotero/INSTALL.md` for the label.
+
+The service has no role setting any more. A node used to declare whether it
+read a library or wrote a vault. The library now comes from Zotero's own
+service, which every node can reach, so there is nothing left to choose.
 
 **CAUTION** `ZOTERO_MAY_CREATE_ROOT=0` in `/etc/awm/env`. With no note carrying
 the label, apply refuses rather than building a bibliography at the top of a
