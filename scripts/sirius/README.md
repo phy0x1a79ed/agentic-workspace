@@ -124,6 +124,34 @@ the label, apply refuses rather than building a bibliography at the top of a
 vault other people use. An empty `#zoteroLibrary` search is the ordinary reason
 the mirror stops updating.
 
+## The tether relay on sirius
+
+sirius runs the `tether` service with `AWM_TETHER_ROLE=relay`, so the child it
+supervises is the relay rather than the operator daemon. The edge mounts it at
+`/tether` when `AWM_EDGE_TETHER=1`, and that mount is the only one on this box
+reachable with **no session at all** — the person redeeming an invite is being
+helped with their own machine and has no account here. Read
+`awm/services/tether/INSTALL.md` for what the relay does and does not hold, and
+`awm/services/httpsfront/awm/httpsfront/tether.py` for exactly which paths the
+door opens.
+
+The box has no Rust toolchain and is not getting one. It receives built
+binaries, which is why `AWM_TETHER_BIN` and `AWM_TETHER_ASSETS` point into
+`/var/lib/awm/state/services/tether/` rather than into the checkout: a deploy
+cleans untracked files and a built artifact in the tree would not survive one.
+
+**CAUTION** The bearer is the whole of "only an operator may open a session".
+`provision.sh` mints `AWM_TETHER_ISSUE_TOKEN` into `/etc/awm/env` on first run,
+and the operator's node needs **the same value** in its own workspace env file
+or `awm tether invite` has nothing to authenticate with. Nothing copies it for
+you — read it off the box once, by hand, and put it where the operator's
+gateway will load it. Changing it on one side only leaves a relay that refuses
+every request from a daemon that reports a bearer it has.
+
+**CAUTION** The relay refuses to start with no bearer set, and says so in
+`awm tether logs`. That is the intended direction: a relay that came up without
+one would accept sessions from anybody.
+
 ## Verifying a deploy
 
     ssh sirius 'systemctl is-active awm'
