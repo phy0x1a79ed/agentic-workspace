@@ -8,8 +8,9 @@ already-started renderer instead of booting one.
 
 This file holds what installing and operating the service needs, and the
 reasoning that reading the code does not give: why a session is moved exactly
-once, why identity comes from one file and not another, why the service refuses
-to seed on a node with no daemon, and what the pool deliberately does not do.
+once, which of two files answers which question about a session, how a session
+comes by its name, why the service refuses to seed on a node with no daemon,
+and what the pool deliberately does not do.
 
 ## Install
 
@@ -17,9 +18,17 @@ Both halves go on a node together. A node with the service and no command gains
 nothing. A node with the command and no service launches cold, correctly and
 silently.
 
+    scripts/deploy-hook.sh                   # the naming hook, on every node
     bash install.sh                          # the service, into the awm env
     ln -sf "$PWD/bin/cx" ~/.local/bin/cx     # the command, on PATH
     awm services enable cx                   # this service is profile-gated off
+
+**CAUTION:** the hook goes first, and it goes to every node, not just this one.
+A node running the service without it names every session it hands out
+`claimed <noun>` and never takes that name off, which reads as deliberate and is
+worse than the name it replaced. A node with the hook and no service has nothing
+named `claimed ` to act on. `scripts/deploy-hook.sh --check` reports drift and
+writes nothing; a second run is a no-op.
 
 `install.sh` editable-installs the `gatewayclient` and `claudedaemon` components
 and this service into the `awm` env. Override the env with `AWM_ENV=<name>`.
@@ -45,6 +54,10 @@ loop alone. `AWM_CX_ROTATE_AGE_S` sets the age at which a session is replaced.
 `AWM_CX_PREFIX`, `AWM_CX_SEED_DIR`, `AWM_CX_MODEL`, `AWM_CX_EFFORT` and
 `AWM_CX_CLAUDE` shape what is seeded. See `awm/cx/config.py`.
 
+`AWM_CX_CLAIMED_PREFIX` is the one knob the hook reads too, from its own copy of
+the default. Change it on the service and the hook stops recognising the
+sessions the service renames. A test asserts the two agree.
+
 ## Why the shape is what it is
 
 ### A session is moved exactly once
@@ -62,23 +75,63 @@ CLAUDE.md, and a session is moved once and only once, on its way to its user.
 `precondition()` refuses to seed beside a CLAUDE.md and the claim refuses a
 session that already carries an origin directory.
 
-### Identity comes from the state record, never the roster
+### Two files describe a session and they answer different questions
 
-Two files describe a session and they disagree. The daemon roster carries
-liveness, the PTY lane, the CLI version and the start time. Its recorded name is
-what the session was called when it was created, and it never changes. The
-session's own record at `~/.claude/jobs/<short>/state.json` is the one that
-follows a rename.
+The daemon roster carries liveness, the PTY lane, the CLI version and the start
+time. Its recorded name is what the session was called when it was created, and
+it never changes. The session's own record at `~/.claude/jobs/<short>/state.json`
+is the one that follows a rename.
 
-On the box this was built against, a session whose roster entry still read
-`<warm zorilla>` had been renamed to "remote shell" and talked to for 27k
-tokens. Reading the name from the roster would have handed that conversation to
-the next terminal that ran `cx`.
+*Who does this session belong to now* is the record's question. On the box this
+was built against, a session whose roster entry still read `<warm zorilla>` had
+been renamed to "remote shell" and talked to for 27k tokens. Reading the name
+from the roster would have handed that conversation to the next terminal that
+ran `cx`.
+
+*Did the pool make this session* is the roster's question, and the pool has to
+ask it because it renames a session itself the moment a terminal takes one. A
+predicate reading the current name would lose sight of every session the pool
+ever gave away, and each of them would idle until the daemon retired it.
+
+So `is_ours` reads the record and gates handing a session out. `was_ours` reads
+the roster and gates collecting one. Everything that protects a session
+somebody is using sits between them, on the widened side.
 
 Usedness is read from the same record and never from the presence of a
 transcript. The session id the roster records drifts on respawn, `/cd` creates a
 transcript on arrival, and the archival job deletes transcripts after a week.
 Any of the three would hand a live conversation to a second terminal.
+
+### A session names itself once somebody uses it
+
+Three names, in order. The pool seeds a spare as `<warm serval>`, so it reads as
+furniture in `claude agents` and nobody deletes it thinking it is abandoned work.
+The claim renames it to `claimed serval` by typing `/rename`, which is what stops
+it advertising itself as a spare — that one rename is the whole fix for a picker
+that showed two spares where the pool held one. Then the first real prompt takes
+the name away entirely and Claude Code titles the session from the request.
+
+Claude Code has done that last part all along. A side query turns the user's
+request into a two-to-four word label and writes it with `nameSource: "auto"`.
+It runs when the job's record has **no name** and **an intent**, and a pool
+session fails both: the pool names it at launch, and the intent is captured once
+at dispatch, from a prompt that a session launched empty never receives. So the
+`UserPromptSubmit` hook supplies both — it drops the name and writes the prompt
+in as the intent — and the classifier titles the session at the end of that turn.
+
+**CAUTION:** the intent has to be non-empty, not merely present. Every later
+write merges that field forward with `??`, so an empty string survives the whole
+session and the namer never fires. This is why clearing the name alone does
+nothing, which is worth knowing before anyone simplifies the hook.
+
+A slash command is not a first prompt, and nothing here had to be taught that.
+Claude Code's own intent capture skips meta messages and slash-command wrappers,
+which is why the `/cd` the claim types has never titled anything. The hook skips
+them too, so the two agree if that ever changes.
+
+**CAUTION:** `/rename` rewrites the session's respawn flags and the automatic
+title does not. A session that respawns comes back under whatever `/rename` last
+put there, which is `claimed <noun>`. The next prompt fixes it.
 
 ### Seeding refuses when no daemon is running
 
@@ -110,18 +163,29 @@ inherited from any trusted ancestor. An untrusted target is refused in
 milliseconds and the caller launches cold, where the user answers the trust
 prompt themselves.
 
-### Nothing is collected once somebody has it
+### Almost nothing is collected once somebody has it
 
-A session that has been renamed, prompted, or claimed and is still alive is
-never taken and never deleted. Removal collects only what the pool made and
-nobody took: a corpse, or a session that has never been moved and is stale by
-version or by age.
+A session that has been prompted, or that a terminal is attached to, is never
+taken and never deleted. Removal collects a corpse, a session that has never
+been moved and is stale by version or by age, and one other case.
 
-**CAUTION:** a session claimed and then abandoned without being prompted stays
-alive indefinitely. The daemon's idle retirement does not collect it — one such
-session was observed alive after sixteen hours. Nothing here collects it either,
-by design: once a session has been handed to a terminal it belongs to whoever
-took it. Delete one by hand with `claude rm <short>` when you know it is yours.
+That case is the leak. A session claimed and then abandoned without ever being
+prompted used to stay alive indefinitely — one was observed alive after sixteen
+hours — because the rule protecting a live conversation refused every live
+session that had been moved, and a session nobody spoke to has no conversation
+to protect. It is now collected once it outlives `rotate_age_s`.
+
+**CAUTION:** that is the one arm here that can delete a session a person is
+looking at, and attachment is the only thing standing in front of it. Nothing
+records attachment. The daemon multiplexes every attach over its single control
+socket, so a session's own PTY and rendezvous sockets carry exactly the same two
+connections whether a terminal is on them or not, and the state record says
+nothing either. What is left is the attaching process: `cx` reaches a session by
+running `claude attach <short>`, so the short id sits in an argv for as long as
+that terminal is open. A terminal that arrived some other way is invisible, and
+an unreadable `/proc` makes every session look unattached — which is why this is
+the last guard before a deletion and never the only one. Age, zero tokens and an
+empty intent all have to agree first.
 
 ### The command leaves nothing behind
 

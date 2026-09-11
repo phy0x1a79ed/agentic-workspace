@@ -25,18 +25,27 @@ REMOVE_TIMEOUT_S = 20.0
 
 
 def plan(now: float | None = None) -> list[dict[str, Any]]:
-    """Every session that may be deleted, with the reason it may be."""
+    """Every session that may be deleted, with the reason it may be.
+
+    The process table is read once for the whole plan rather than once per
+    session. It is the same answer either way, and re-reading it per session
+    lets the set change underneath a single plan.
+    """
     version = sessions.binary_version()
+    attached = sessions.attached_shorts()
     return [
         {"session": s.short, "name": s.name, "why": _why(s, version, now)}
         for s in sessions.load()
-        if sessions.removable(s, version=version, now=now)
+        if sessions.removable(s, version=version, now=now, attached=attached)
     ]
 
 
 def _why(s: sessions.Session, version: str | None, now: float | None) -> str:
     if not sessions.is_alive(s):
         return "the process is gone"
+    if s.origin_cwd is not None:
+        return (f"claimed {sessions.age_s(s, now) / 60:.0f} minutes ago and "
+                "never prompted")
     if version is not None and s.cli_version != version:
         return f"seeded by {s.cli_version}, the binary is now {version}"
     return f"aged out at {sessions.age_s(s, now) / 60:.0f} minutes"

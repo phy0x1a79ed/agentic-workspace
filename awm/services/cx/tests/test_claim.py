@@ -46,7 +46,7 @@ async def test_an_untrusted_directory_is_refused_without_touching_a_session(
     from awm.cx import claim
 
     typed = []
-    monkeypatch.setattr(claim, "_type_cd", lambda s, w: typed.append(w))
+    monkeypatch.setattr(claim, "_type_command", lambda s, t: typed.append(t))
     monkeypatch.setenv("AWM_CX_ROTATE_AGE_S", "999999")
     out = await claim.claim("/tmp")
     assert out["session"] is None
@@ -82,7 +82,7 @@ async def test_a_session_that_would_not_move_is_left_idle(
 
     monkeypatch.setenv("AWM_CX_ROTATE_AGE_S", "999999")
     monkeypatch.setattr(claim, "MOVE_TIMEOUT_S", 0.05)
-    monkeypatch.setattr(claim, "_type_cd", lambda s, w: None)
+    monkeypatch.setattr(claim, "_type_command", lambda s, t: None)
     cleared = []
     monkeypatch.setattr(claim, "_abandon", lambda s: cleared.append(s.short))
     out = await claim.claim(TRUSTED)
@@ -91,12 +91,74 @@ async def test_a_session_that_would_not_move_is_left_idle(
 
 
 def _moves(monkeypatch, box, claim):
-    """Make `_type_cd` do what a successful `/cd` does: move the record."""
-    def move(s, want):
+    """Make `_type_command` do what `/cd` and `/rename` do, and record both."""
+    typed = []
+
+    def run(s, text):
+        typed.append(text)
         rec = box / "jobs" / s.short / "state.json"
         data = json.loads(rec.read_text())
-        data["cwd"] = want
-        data["originCwd"] = want
+        if text.startswith("/cd "):
+            data["cwd"] = data["originCwd"] = text[len("/cd "):]
+        elif text.startswith("/rename "):
+            data["name"] = text[len("/rename "):]
         rec.write_text(json.dumps(data))
 
-    monkeypatch.setattr(claim, "_type_cd", move)
+    monkeypatch.setattr(claim, "_type_command", run)
+    return typed
+
+
+async def test_a_claim_renames_the_session_out_of_the_pool(
+        box, trust_file, monkeypatch):
+    """The whole point: the session stops advertising itself as a spare."""
+    from awm.cx import claim, sessions
+
+    monkeypatch.setenv("AWM_CX_ROTATE_AGE_S", "999999")
+    typed = _moves(monkeypatch, box, claim)
+    out = await claim.claim(TRUSTED)
+    assert out["session"] == "warmfresh"
+    assert typed == [f"/cd {TRUSTED}", "/rename claimed dunlin"]
+    s = {x.short: x for x in sessions.load()}["warmfresh"]
+    assert s.name == "claimed dunlin"
+    assert not sessions.is_ours(s)
+    assert sessions.was_ours(s)
+
+
+async def test_the_rename_comes_after_the_move_has_landed(
+        box, trust_file, monkeypatch):
+    """The recheck between them asks whether the name still carries the pool's
+    prefix, and the rename is what takes it away."""
+    from awm.cx import claim
+
+    monkeypatch.setenv("AWM_CX_ROTATE_AGE_S", "999999")
+    typed = _moves(monkeypatch, box, claim)
+    await claim.claim(TRUSTED)
+    assert typed.index(f"/cd {TRUSTED}") < typed.index("/rename claimed dunlin")
+
+
+async def test_a_rename_that_will_not_type_still_hands_the_session_over(
+        box, trust_file, monkeypatch):
+    """A session under the wrong name beats no session at all."""
+    from awm import claudedaemon
+
+    from awm.cx import claim
+
+    monkeypatch.setenv("AWM_CX_ROTATE_AGE_S", "999999")
+    _moves(monkeypatch, box, claim)
+    real = claim._type_command
+
+    def refuse_rename(s, text):
+        if text.startswith("/rename "):
+            raise claudedaemon.DaemonError("no reachable PTY")
+        real(s, text)
+
+    monkeypatch.setattr(claim, "_type_command", refuse_rename)
+    out = await claim.claim(TRUSTED)
+    assert out == {"session": "warmfresh", "cwd": TRUSTED}
+
+
+def test_the_claimed_name_keeps_the_pool_noun():
+    from awm.cx import claim
+
+    assert claim.claimed_name("<warm dunlin>", "abc123") == "claimed dunlin"
+    assert claim.claimed_name("<warm >", "abc123") == "claimed abc123"
