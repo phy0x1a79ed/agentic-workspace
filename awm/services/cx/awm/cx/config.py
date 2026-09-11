@@ -41,6 +41,15 @@ def name_prefix() -> str:
     return os.environ.get("AWM_CX_PREFIX") or "<warm "
 
 
+#: What a session is renamed to the moment a terminal takes it. The angle
+#: brackets go with the name: a spare is furniture and reads as furniture, a
+#: claimed session belongs to somebody and reads as a plain name. The rename is
+#: also what lets the built-in namer replace it later, because Claude Code only
+#: titles a session whose state record carries no name at all.
+def claimed_prefix() -> str:
+    return os.environ.get("AWM_CX_CLAIMED_PREFIX") or "claimed "
+
+
 #: Where a session is seeded. It must hold no CLAUDE.md: the destination's file
 #: is added on a move and the origin's is not removed, so seeding beside one
 #: would carry it into every project the pool serves.

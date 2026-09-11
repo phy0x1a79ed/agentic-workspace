@@ -62,6 +62,21 @@
      "name": "<warm saiga>"
     }
    }
+  },
+  "claimedfresh": {
+   "cliVersion": "2.1.268",
+   "startedAt": 1789074827271,
+   "ptySock": "/tmp/cc-daemon/fixture/warmfresh.pty.sock",
+   "ptyAuth": "00000000000000000000000000000000",
+   "sessionId": "claimedfresh-0000-0000-0000-00000000",
+   "replPid": "__ALIVE_PID__",
+   "replProcStart": "__ALIVE_START__",
+   "dispatch": {
+    "source": "shell",
+    "seed": {
+     "name": "<warm vole>"
+    }
+   }
   }
  }
 }

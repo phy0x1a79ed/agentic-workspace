@@ -21,6 +21,7 @@ have handed that conversation to the next terminal that ran `cx`.
 from __future__ import annotations
 
 import json
+import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -81,6 +82,18 @@ def is_ours(s: Session) -> bool:
     return s.name.startswith(config.name_prefix())
 
 
+def was_ours(s: Session) -> bool:
+    """Did the pool create this session, whatever it is called now?
+
+    The roster stamps `dispatch.seed.name` at launch and never changes it, so
+    it still answers after a rename — including the rename the pool performs on
+    itself when it hands a session out. `is_ours` is the narrower question and
+    stays the claimability test: a session carrying any other name must never
+    be handed to a second terminal.
+    """
+    return (s.seed_name or "").startswith(config.name_prefix())
+
+
 def is_untouched(s: Session) -> bool:
     """Has nobody prompted this session or taken it anywhere?
 
@@ -120,31 +133,77 @@ def claimable(s: Session, *, version: str | None, now: float | None = None) -> b
     )
 
 
-def removable(s: Session, *, version: str | None, now: float | None = None) -> bool:
+def removable(s: Session, *, version: str | None, now: float | None = None,
+              attached: frozenset[str] | None = None) -> bool:
     """May this session be deleted?
 
     Deliberately not the negation of `claimable`. "Delete whatever cannot be
     claimed" would delete the session somebody is attached to and typing into.
 
-    Removable means the pool made it (`is_ours`), nobody spoke to it (no
-    tokens), and either the process is gone, or it has never been moved and is
-    stale by version or by age. A *live* session that has been moved belongs to
-    whoever took it: leave it to the daemon's own retirement and collect the
-    corpse afterwards.
+    Keyed on `was_ours`, not `is_ours`: the pool renames a session itself when
+    it hands one out, and a predicate that reads the current name would lose
+    sight of everything it ever gave away. Nothing else widens with it. A
+    session carrying tokens, an intent, or a terminal is refused here whoever
+    named it.
+
+    Three ways to qualify. The process is gone and the record is a corpse. The
+    session was never moved and is stale by version or by age, which is
+    ordinary rotation. Or it was claimed, never spoken to, and has outlived the
+    rotate age — the terminal that took it has gone and left it to idle until
+    the daemon retires it an hour later.
 
     Fails open on an unresolvable version, in the sense that the version clause
     is simply dropped. Failing closed on it the other way would make every
     session look stale the moment the binary's symlink changed shape, and the
     pool would delete itself on a loop.
     """
-    if not is_ours(s) or s.tokens != 0 or (s.intent or "") != "":
+    if not was_ours(s) or s.tokens != 0 or (s.intent or "") != "":
         return False
     if not is_alive(s):
         return True
-    if s.origin_cwd is not None:
+    if s.short in (attached_shorts() if attached is None else attached):
         return False
+    if age_s(s, now) >= config.rotate_age_s():
+        return True
     stale_version = version is not None and s.cli_version != version
-    return stale_version or age_s(s, now) >= config.rotate_age_s()
+    return s.origin_cwd is None and stale_version
+
+
+def attached_shorts() -> frozenset[str]:
+    """The sessions a terminal is looking at, read off the process table.
+
+    No file records this. The daemon multiplexes every attach over its one
+    control socket, so a session's own PTY and rendezvous sockets carry exactly
+    the same two connections whether a terminal is on them or not, and nothing
+    is written to the state record either. What is left is the attaching
+    process: `cx` reaches a session by running `claude attach <short>`, so the
+    short id sits in an argv for as long as that terminal is open.
+
+    CAUTION: a terminal that arrived some other way is invisible here, and an
+    unreadable /proc makes every session look unattached. This is the last
+    guard before a deletion and never the only one — age, tokens and intent all
+    have to agree first.
+    """
+    out: set[str] = set()
+    try:
+        pids = os.listdir("/proc")
+    except OSError:
+        return frozenset()
+    for pid in pids:
+        if not pid.isdigit():
+            continue
+        try:
+            with open(f"/proc/{pid}/cmdline", "rb") as fh:
+                argv = fh.read().split(b"\0")
+        except OSError:
+            continue
+        try:
+            short = argv[argv.index(b"attach") + 1]
+        except (ValueError, IndexError):
+            continue
+        if short:
+            out.add(short.decode(errors="replace"))
+    return frozenset(out)
 
 
 def age_s(s: Session, now: float | None = None) -> float:
