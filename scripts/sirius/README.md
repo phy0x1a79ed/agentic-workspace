@@ -69,7 +69,8 @@ the box afterwards to install it.
 | a first boot | `provision.sh` on the box, as root |
 | a change under `etc/` | `deploy.sh`, then `provision.sh` on the box |
 | the Trilium fork bundle | `awm/services/trilium/ship-bundle.sh` |
-| the tether relay, launcher or client binaries | `awm/services/tether/ship-binaries.sh` |
+| the tether relay, launcher or Linux client | `awm/services/tether/ship-binaries.sh` |
+| the tether macOS client | `awm/services/tether/build-macos.sh`, run on the Mac |
 | a new paper in Zotero | nothing. altair pulls and ships it, and the timer here applies it |
 | a new person | `scripts/sirius/add-user.sh <name>` |
 
