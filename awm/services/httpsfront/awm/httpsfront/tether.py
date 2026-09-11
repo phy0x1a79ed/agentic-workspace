@@ -16,7 +16,7 @@ here is a door onto sessions that already exist and are already addressed by a
 number the relay itself issued.
 
 **The mount is an allow-list of exact shapes, not a prefix.** The relay's whole
-public surface is six routes and every one of them has a fixed grammar, so the
+public surface is seven routes and every one of them has a fixed grammar, so the
 edge can refuse everything else before it has consulted anything at all — which
 is the plan's requirement that a slot the relay never issued be turned away
 before any pairing happens. The shapes have to agree exactly with what the relay
@@ -63,6 +63,7 @@ _ASSET = r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}"
 #: Every path this mount claims. Anything else under the mount is refused.
 SHAPES = (
     re.compile(rf"^{PREFIX}$"),                            # the launcher script
+    re.compile(rf"^{PREFIX}/win$"),                        # the same, for Windows
     re.compile(rf"^{PREFIX}/bin/{_ASSET}$"),               # a client download
     re.compile(rf"^{PREFIX}/claim/{_SLOT}$"),              # the owner's ticket
     re.compile(rf"^{PREFIX}/join/{_SLOT}/{_TOKEN}$"),      # the session socket

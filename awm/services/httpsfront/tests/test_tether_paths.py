@@ -29,7 +29,9 @@ TICKET = "0123456789abcdef0123456789abcdef"
 
 @pytest.mark.parametrize("path", [
     "/tether",                                  # the launcher, piped into a shell
+    "/tether/win",                              # the same launcher, for Windows
     "/tether/bin/tether",                       # a client download
+    "/tether/bin/tether-windows-x86_64.exe",
     "/tether/bin/tether-macos-arm64",
     "/tether/claim/1",                          # the owner's ticket
     "/tether/claim/999",
@@ -59,6 +61,8 @@ def test_the_mount_claims_the_relays_whole_public_surface(path):
     ("/tether/join/7", "a join names a slot and a ticket"),
     ("/tether/bin/../../etc/passwd", "a download names one file"),
     ("/tether/bin/", "a download names a file"),
+    ("/tether/win/", "a trailing slash is not a route the relay has"),
+    ("/tether/windows", "the Windows launcher is at /win and only there"),
     ("/tether/invoke", "nothing else on the relay is a route at all"),
 ])
 def test_a_near_miss_inside_the_mount_is_refused_rather_than_forwarded(path, why):
@@ -89,6 +93,7 @@ def test_a_name_that_merely_starts_the_same_is_not_this_mounts(path):
     (f"/tether/join/7/{TICKET}", f"/join/7/{TICKET}"),
     ("/tether/issue", "/issue"),
     ("/tether/bin/tether", "/bin/tether"),
+    ("/tether/win", "/win"),
 ])
 def test_the_mount_comes_off_the_same_way_in_text_and_in_bytes(path, inner):
     assert tether.upstream_path(path) == inner
