@@ -441,8 +441,8 @@ imported source.
         │                 │                  │
    ┌────▼─────┐     ┌──────▼──────┐    ┌──────▼──────┐
    │ scopes   │     │ agents      │    │ artifacts / │   …each an out-of-proc
-   │ service  │     │ service     │    │ skills /    │    feature service with
-   │ (+own DB)│     │ (+own DB)   │    │ discord     │    its own DB + run.sh
+   │ service  │     │ service     │    │ notes /     │    feature service with
+   │ (+own DB)│     │ (+own DB)   │    │ tether      │    its own DB + run.sh
    └──────────┘     └─────────────┘    └─────────────┘
 ```
 
@@ -460,7 +460,7 @@ awm/                          # nested tree of pip dists (PEP 420 namespace layo
   service_components/         # shared Python imported source (no install.sh)
     config/  persistence/  gatewayclient/  agentcore/
   services/                   # one folder per feature service (discovered)
-    scopes/  agents/  artifacts/  skills/  discord/
+    scopes/  agents/  artifacts/  dev/  tether/
       run.sh                  # the only entry the gateway runs (bash run.sh)
       INSTALL.md  install.sh
   ui_components/<name>/       # shared Svelte libraries, imported as @awm/<name>

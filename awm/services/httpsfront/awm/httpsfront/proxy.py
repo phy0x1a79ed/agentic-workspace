@@ -66,7 +66,7 @@ from starlette.responses import (
 from starlette.routing import Route, WebSocketRoute
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
-from awm.httpsfront import pages, penpot, policy, slices, store, vault
+from awm.httpsfront import pages, penpot, policy, slices, store, tether, vault
 from awm.httpsfront.auth import AS_COOKIE_NAME, COOKIE_NAME, PEER_SUB, AuthGate, bearer_of
 
 log = logging.getLogger("awm.httpsfront.proxy")
@@ -560,6 +560,10 @@ def _penpot_up(app) -> str | None:
     return getattr(app.state, "penpot_http_up", None)
 
 
+def _tether_up(app) -> str | None:
+    return getattr(app.state, "tether_http_up", None)
+
+
 async def _vault_bare(request: Request) -> Response:
     """``/trilium`` → ``/trilium/``, permanently.
 
@@ -693,6 +697,25 @@ async def _http_proxy(request: Request) -> Response:
         return _not_found()
     if vault_up and slices.owns(path):
         return await _slice_proxy(request, path, raw, vault_up)
+    # The tether mount, answered before authentication for the same structural
+    # reason as the slice above and a different human one: the caller is the
+    # person being helped, on their own machine, and an awm account is exactly
+    # what they do not have.
+    #
+    # The name is claimed on every node and wired on few, and both branches run
+    # unconditionally. The policy door classifies this mount without consulting
+    # any upstream, so a path it declares reachable with no session must never
+    # then be asked for one — a 401 there would contradict the verdict and tell
+    # an anonymous caller the path is special. Whether a relay is configured
+    # decides 404-versus-proxy, never who owns the name, and nothing else in
+    # awm answers under /tether. Here rather than only in the policy door
+    # because a mesh node's edge runs no profile at all.
+    tether_up = _tether_up(app)
+    if tether.refused(path):
+        return _not_found()
+    if tether.owns(path):
+        return (await _tether_proxy(request, raw, tether_up)
+                if tether_up else _not_found())
     ok, refreshed, sub = await _authenticate_sub(request)
     if not ok:
         return _deny(request)
@@ -759,6 +782,55 @@ async def _http_proxy(request: Request) -> Response:
     if bridge and sub:
         await _bridge_penpot_session(request, out, bridge, sub,
                                      resp.status_code)
+    return out
+
+
+async def _tether_proxy(request: Request, raw: bytes, up: str) -> Response:
+    """Forward one request to the tether relay. No session, and no opinion.
+
+    Everything this mount decides, it decides in :mod:`awm.httpsfront.tether`
+    by the shape of the path. What is left here is transport — and the two
+    headers that matter on the way through:
+
+    ``authorization`` rides untouched, because the relay's own bearer is the
+    gate on ``/issue`` and ``/status``. The edge deliberately does not try to
+    read it: it is a credential for the upstream, not for awm, and an edge that
+    checked it would be a second place to get that check wrong.
+
+    ``X-Awm-As`` is removed rather than defaulted. Every other leg stamps a
+    verified identity there; this one has none, and sending ``user:operator``
+    for an anonymous caller would be the edge asserting something it did not
+    check. The client's address still arrives in the forwarded headers, which
+    is what the relay's per-address budget is counted on — and why the owner's
+    client claims a ticket on this plain leg before it opens a socket, where no
+    such header survives.
+    """
+    inner = tether.upstream_raw_path(raw)
+    if inner is None:
+        # The mount is in the decoded path but not in the bytes.
+        return _not_found()
+    headers = _req_headers(request)
+    headers.pop("X-Awm-As", None)
+
+    client: httpx.AsyncClient = request.app.state.client
+    url = _upstream_url(up, inner, request.scope.get("query_string") or b"")
+    upstream_req = client.build_request(
+        request.method, url, headers=headers, content=await request.body(),
+    )
+    try:
+        resp = await client.send(upstream_req, stream=True)
+    except httpx.ConnectError:
+        # The same answer the relay gives for everything it declines, so a
+        # relay that is down and a slot that never existed are one reply.
+        return _not_found()
+    out = StreamingResponse(
+        resp.aiter_raw(),
+        status_code=resp.status_code,
+        background=BackgroundTask(resp.aclose),
+    )
+    out.raw_headers = [
+        (k.encode("latin-1"), v.encode("latin-1")) for k, v in _resp_headers(resp)
+    ]
     return out
 
 
@@ -1028,6 +1100,17 @@ async def _ws_proxy(ws: WebSocket) -> None:
     # its socket URI from ``location.pathname``, so a shell served under a
     # slice opens its socket there and nowhere else.
     is_slice = bool(vault_ws) and slices.owns(path)
+    # The session socket. This is the leg the whole mount exists for, and the
+    # one the edge strips every header from: only cookie, authorization and
+    # origin are forwarded below, and no client address at all — which is why
+    # the owner's client claims its ticket on the plain leg first.
+    tether_ws = getattr(app.state, "tether_ws_up", None)
+    is_tether = tether.owns(path)
+    # Claimed whether or not a relay is wired — see the HTTP leg for why the
+    # name is owned unconditionally.
+    if tether.refused(path) or (is_tether and not tether_ws):
+        await ws.close(code=1008)
+        return
     if is_vault:
         # The client derives its socket URL from the page's own pathname, so a
         # shell served at /trilium/ opens its socket there. Same rewrite as the
@@ -1043,6 +1126,12 @@ async def _ws_proxy(ws: WebSocket) -> None:
             await ws.close(code=1008)
             return
         up, raw = vault_ws, inner
+    elif is_tether:
+        inner = tether.upstream_raw_path(raw)
+        if inner is None:
+            await ws.close(code=1008)
+            return
+        up, raw = tether_ws, inner
     elif is_penpot:
         # Penpot's collab socket (/ws/notifications) is what keeps a shared
         # board's live edits in sync — the same "silent wrong upstream" hazard
@@ -1079,6 +1168,11 @@ async def _ws_proxy(ws: WebSocket) -> None:
         if slice_info is None:
             await ws.close(code=1008)
             return
+    elif is_tether:
+        # No session, and nothing to resolve. The path's grammar was the check
+        # — the slot and the ticket in it are the relay's to recognise, and it
+        # refuses a pair it did not issue before this socket becomes one.
+        pass
     else:
         ok, _, sub = _unpack(await gate.authenticate(
             cookie=ws.cookies.get(COOKIE_NAME),
@@ -1112,6 +1206,11 @@ async def _ws_proxy(ws: WebSocket) -> None:
         fwd[slices.HEADER_WRITE] = "1" if slice_info.get("write") else "0"
         if isinstance(visitor, str) and visitor:
             fwd[slices.HEADER_USER] = visitor
+    elif is_tether:
+        # No identity to forward, and the default would be the edge asserting
+        # one it never checked. The relay wants none: what admits this socket
+        # is a slot and a ticket it issued itself.
+        pass
     else:
         fwd["X-Awm-As"] = _as_header(sub)
     override = _origin_override(app)
@@ -1223,7 +1322,8 @@ def build_app(upstream: str, ca_path: str, *, landing: bool = True,
               rewrite_origin: bool = False,
               profile: str | None = None,
               vault_upstream: str | None = None,
-              penpot_upstream: str | None = None) -> Starlette:
+              penpot_upstream: str | None = None,
+              tether_upstream: str | None = None) -> Starlette:
     """Assemble the front. ``landing=False`` drops the awm index page at ``/``.
 
     ``profile="public"`` builds the internet-facing door: no CA download, no
@@ -1265,6 +1365,15 @@ def build_app(upstream: str, ca_path: str, *, landing: bool = True,
     carry this same mount — the edge cannot enforce that from here, and a
     disagreement renders Penpot's not-found page on every route. See
     ``penpot.py``'s module docstring.
+
+    ``tether_upstream`` adds the remote-assistance relay, mounted at
+    :data:`tether.PREFIX` — and unlike the other two, its paths are reachable
+    with **no session**, because the person redeeming an invite is a friend
+    being helped with their own machine and has no awm account. The relay does
+    its own gating; see :mod:`awm.httpsfront.tether` for what that rests on.
+    Off by default, and left off wherever no relay is running: this is the one
+    mount whose whole surface is public, so it should be present only where
+    somebody meant it to be.
 
     ``rewrite_origin=True`` replaces a present ``Origin`` with the upstream's
     own scheme+authority on both the HTTP and the WebSocket path. Two wrapped
@@ -1361,6 +1470,13 @@ def build_app(upstream: str, ca_path: str, *, landing: bool = True,
     else:
         app.state.penpot_http_up = None
         app.state.penpot_ws_up = None
+    if tether_upstream:
+        t = tether_upstream.rstrip("/")
+        app.state.tether_http_up = t
+        app.state.tether_ws_up = "ws" + t[len("http"):]
+    else:
+        app.state.tether_http_up = None
+        app.state.tether_ws_up = None
     return app
 
 
@@ -1371,7 +1487,8 @@ def serve(*, port: int, cert: str, key: str, ca: str, upstream: str,
           profile: str | None = None,
           tls: bool = True,
           vault_upstream: str | None = None,
-          penpot_upstream: str | None = None) -> None:
+          penpot_upstream: str | None = None,
+          tether_upstream: str | None = None) -> None:
     """Bind ``0.0.0.0:port`` with TLS and reverse-proxy to ``upstream`` forever
     (blocks). Designed to run in a daemon thread from the hub adapter.
 
@@ -1388,7 +1505,8 @@ def serve(*, port: int, cert: str, key: str, ca: str, upstream: str,
     app = build_app(upstream, ca, landing=landing, extra_routes=extra_routes,
                     rewrite_origin=rewrite_origin, profile=profile,
                     vault_upstream=vault_upstream,
-                    penpot_upstream=penpot_upstream)
+                    penpot_upstream=penpot_upstream,
+                    tether_upstream=tether_upstream)
     bind: dict = (
         {"host": "0.0.0.0", "ssl_certfile": cert, "ssl_keyfile": key}
         if tls else

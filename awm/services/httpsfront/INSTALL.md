@@ -89,8 +89,15 @@ explicitly and merged in:
 | `REMOTE_AUDIO_CA_DIR` | `~/.config/remote-audio/ca` | shared root-CA location |
 | `AWM_EDGE_PROFILE` | — | `public`: only the paths in `policy.py` exist, no CA/link/landing routes, `SameSite=Strict` |
 | `AWM_EDGE_TLS` | `1` | `0`: plain HTTP on `127.0.0.1:$AWM_HTTPS_PORT` behind a TLS-terminating nginx |
+| `AWM_EDGE_TETHER` | `0` | `1`: mount the tether relay at `/tether`, reachable with **no session** |
 
-On every profile the edge overwrites `X-Awm-As` with the session's verified subject (`user:<name>`, or `peer` for a bearer), so a downstream service may trust that header. `/__auth/login` takes `{username, password}`; a blank username is the shared password. The readable `awm_as` cookie is the username for the pages' user chip and carries no authority.
+`AWM_EDGE_TETHER` is the one flag here that widens the door rather than
+narrowing it, so it is off unless a host means it. The person redeeming a
+tether invite is being helped with their own machine and has no account here;
+what keeps the mount narrow is the relay's own gating and an allow-list of
+exact path shapes, both described in `awm/httpsfront/tether.py`.
+
+On every profile the edge overwrites `X-Awm-As` with the session's verified subject (`user:<name>`, or `peer` for a bearer), so a downstream service may trust that header — except on the tether mount, which has no verified subject and where the header is stripped rather than defaulted. `/__auth/login` takes `{username, password}`; a blank username is the shared password. The readable `awm_as` cookie is the username for the pages' user chip and carries no authority.
 
 `AWM_HTTPS_PORT` is a clean one-line port knob: set it in the workspace's
 gitignored `$AWM_WORKSPACE/.awm/env` (merged into the gateway env at startup,

@@ -77,6 +77,8 @@ the box afterwards to install it.
 | a first boot | `provision.sh` on the box, as root |
 | a change under `etc/` | `deploy.sh`, then `provision.sh` on the box |
 | the Trilium fork bundle | `awm/services/trilium/ship-bundle.sh` |
+| the tether relay, launcher or Linux client | `awm/services/tether/ship-binaries.sh` |
+| the tether macOS client | `awm/services/tether/build-macos.sh`, run on the Mac |
 | a new paper in Zotero | nothing. altair pulls and ships it, and the timer here applies it |
 | a new person | `scripts/sirius/add-user.sh <name>` |
 
@@ -121,16 +123,48 @@ selects the fork and deleting that one file selects the tarball again.
 
 ## The bibliography on sirius
 
-sirius runs the `zotero` service with `ZOTERO_ROLE=apply`. It cannot reach the
-Zotero desktop, which sits behind the private overlay this box is not on. altair
-reads the library, and ships `library.json` into this box's own vault scope. The
-timer here writes it into the note carrying `#zoteroLibrary`. Read
-`awm/services/zotero/INSTALL.md` for the roles and the label.
+sirius runs the `zotero` service with `ZOTERO_SYNC_ENABLED=1`, so its timer
+runs. It cannot reach the Zotero desktop, which sits behind the private overlay
+this box is not on. altair reads the library, and ships `library.json` into
+this box's own vault scope. The timer here writes it into the note carrying
+`#zoteroLibrary`. Read `awm/services/zotero/INSTALL.md` for the label.
+
+The service has no role setting any more. A node used to declare whether it
+read a library or wrote a vault. The library now comes from Zotero's own
+service, which every node can reach, so there is nothing left to choose.
 
 **CAUTION** `ZOTERO_MAY_CREATE_ROOT=0` in `/etc/awm/env`. With no note carrying
 the label, apply refuses rather than building a bibliography at the top of a
 vault other people use. An empty `#zoteroLibrary` search is the ordinary reason
 the mirror stops updating.
+
+## The tether relay on sirius
+
+sirius runs the `tether` service with `AWM_TETHER_ROLE=relay`, so the child it
+supervises is the relay rather than the operator daemon. The edge mounts it at
+`/tether` when `AWM_EDGE_TETHER=1`, and that mount is the only one on this box
+reachable with **no session at all** — the person redeeming an invite is being
+helped with their own machine and has no account here. Read
+`awm/services/tether/INSTALL.md` for what the relay does and does not hold, and
+`awm/services/httpsfront/awm/httpsfront/tether.py` for exactly which paths the
+door opens.
+
+The box has no Rust toolchain and is not getting one. It receives built
+binaries, which is why `AWM_TETHER_BIN` and `AWM_TETHER_ASSETS` point into
+`/var/lib/awm/state/services/tether/` rather than into the checkout: a deploy
+cleans untracked files and a built artifact in the tree would not survive one.
+
+**CAUTION** The bearer is the whole of "only an operator may open a session".
+`provision.sh` mints `AWM_TETHER_ISSUE_TOKEN` into `/etc/awm/env` on first run,
+and the operator's node needs **the same value** in its own workspace env file
+or `awm tether invite` has nothing to authenticate with. Nothing copies it for
+you — read it off the box once, by hand, and put it where the operator's
+gateway will load it. Changing it on one side only leaves a relay that refuses
+every request from a daemon that reports a bearer it has.
+
+**CAUTION** The relay refuses to start with no bearer set, and says so in
+`awm tether logs`. That is the intended direction: a relay that came up without
+one would accept sessions from anybody.
 
 ## Verifying a deploy
 
