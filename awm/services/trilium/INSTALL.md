@@ -311,30 +311,46 @@ instead, the way the Zotero mirror keys on `#zoteroKey`.
 ## A public slice of the vault
 
 A slice is a link that opens **one note and everything under it** to somebody
-with no awm account, optionally letting them edit note bodies, with each edit
-recorded against a name. It is the third state between "anyone with an account
-sees the whole vault" and "anyone without one sees none of it".
+with no awm account, optionally letting them do the work of a small vault inside
+it, with each edit recorded against a name. It is the third state between "anyone
+with an account sees the whole vault" and "anyone without one sees none of it".
+
+A writable link creates, renames, moves, annotates, attaches to and deletes notes
+anywhere inside the shared subtree, and gets a launcher bar of its own for new
+note, search, jump-to, graph view and recent changes. Each of the five acts on the
+slice root, so a search returns the slice's notes and the graph draws the slice. A
+read-only link gets the same bar without new note and without search: a Trilium
+search is a saved note, and a read-only link creates nothing, so jump-to is what
+gives it a scoped search.
 
 **The affordance is in the note tree.** Right-click a note and choose "Share as
 slice…". The dialog takes a visitor name, a write toggle and an expiry. It mints
 the link, copies it, lists the note's live slices, and revokes one. The entry
 appears only where `AWM_HUB_URL` and `AWM_EDGE_URL` both reach the Trilium
 process, so an ordinary Trilium never shows it. It never appears inside a slice,
-because the mask refuses the three routes the dialog calls.
+because the mask refuses the four routes behind it.
 
-Those routes are `GET /api/slices/:noteId`, `POST /api/slices` and `DELETE
-/api/slices/:token`, in `apps/server/src/routes/api/slices.ts`. Each one calls
-the gateway verb of the same name. They are server-only rather than shared with
-`trilium-core`, because the standalone WASM build has no transport to a loopback
-gateway.
+**Every link the vault has handed out is on one screen**, behind the "Shared
+Slices" launcher. It groups the links by the note each opens, revoked and expired
+ones behind a switch, and revokes one in place. The launcher is created by the
+hidden-subtree check like any other, which appends it to a vault that already has
+a launcher bar — drag it where you want it. A slice's own launcher bar is a fixed
+list that does not contain it.
+
+The four routes are `GET /api/slices`, `GET /api/slices/:noteId`, `POST
+/api/slices` and `DELETE /api/slices/:token`, in
+`apps/server/src/routes/api/slices.ts`. Each one calls the gateway verb of the
+same name. They are server-only rather than shared with `trilium-core`, because
+the standalone WASM build has no transport to a loopback gateway.
 
 The same three acts from a terminal:
 
 ```
 awm trilium slice-expose --note-id <id> --user steven   # bound to one visitor
 awm trilium slice-expose --note-id <id>                 # open; each visitor names themselves
+awm trilium slice-expose --note-id <id> --write         # full write inside the subtree
 awm trilium slice-list
-awm trilium slice-revoke <token>
+awm trilium slice-revoke --token <token>
 ```
 
 The URL is `https://<host>/slice/<token>/?user=steven#root/<noteId>`. The token
@@ -351,7 +367,7 @@ link that resolves only on the mesh. Put the value in `/etc/awm/env` — on siri
 `https://nexus.tony-xy-liu.com`. The Trilium process inherits it from the gateway
 through the service, so one declaration serves the CLI and the dialog alike.
 
-**Six gates, and each is meant to be the one that holds.**
+**Seven gates, and each is meant to be the one that holds.**
 
 - The **edge** classifies `/slice/` as a verdict of its own (`policy.Verdict.SLICE`)
   and admits it with no subject. It resolves the token by calling
@@ -368,29 +384,57 @@ through the service, so one declaration serves the CLI and the dialog alike.
   everything else, so a route an upstream merge adds fails closed. Each named
   route resolves to a note, which must be the slice's root or a descendant —
   computed live, so a note moved into the slice is in it without re-issuing the
-  link. Exactly one route may write, `PUT /api/notes/:noteId/data`, only when the
-  link permits it. Descent from the shared note is the whole of membership, so
-  that route accepts a note of any type.
+  link. Descent from the shared note is the whole of membership, so every route
+  accepts a note of any type. The routes that write are named separately and
+  admitted only when the link permits it; a route naming two notes checks both
+  ends, which is what stops a move carrying a note out of the slice or dropping
+  one in from outside. Four refusals are deliberate and stay: deleting every clone
+  of a note, erasing, the delete preview, and protecting. Their reasoning is in the
+  module's own closing comment, which is the place to read before widening the
+  list.
+- An **attribute that makes a note run code** is refused whatever the link
+  permits, because the code would run in the owner's browser under the owner's
+  session. The list is `isAttributeDangerous` in
+  `packages/commons/src/lib/builtin_attributes.ts`, shared with the backend so
+  neither side carries a second copy. Marking an attribute dangerous there is
+  enough: the mask, and the search options the client offers, both ask that one
+  question.
 - The **tree route** (`packages/trilium-core/src/routes/api/tree.ts`) takes the
   slice root and walks parents and children only inside it. Left unscoped, the
   route recursed up to the vault root and returned every ancestor's title along
-  with the whole hidden subtree, whatever the mask allowed.
+  with the whole hidden subtree, whatever the mask allowed. Search, quick search,
+  autocomplete and the link map draw their own boundary the same way: the path names
+  no note for the mask to check, so each handler reads the same edge headers and
+  clamps what it computes to the slice root. A hoisted note arrives from the client
+  and proves nothing, which is why the headers and not the request decide.
 - The **options route** answers a slice from `SLICE_READABLE_OPTIONS`, a named
   list rather than the Options dialog's write allow-list. `openNoteContexts` and
-  `hoistedNoteId` name notes from all over the vault.
+  `hoistedNoteId` name notes from all over the vault. No route writes an option
+  for a slice, and the client keeps a visitor's own in memory for the visit: an
+  option is synced and belongs to the vault's owner, so a pane the visitor opens is
+  theirs to close and nobody else's to inherit.
 - The **WebSocket** is tagged with its slice at the upgrade and its fan-out is
   filtered by the same predicate, because a broadcast otherwise carries every note
   id and title in the vault to a connection that may see one subtree. A branch
-  change is judged by both of its ends, or moving the shared note re-attaches its
-  real parent to the visitor's tree.
+  change is judged by its parent alone: a note held by a parent inside the slice is
+  inside it too, and a branch just deleted has left becca along with its note, so
+  checking both ends drops the one message that tells the visitor's tree to lose
+  the row.
 
 The client is trimmed to match, and only to match. An action a slice cannot
 perform is left out of the interface rather than disabled, because a greyed
-control still asks to be tried. Every trimming point tests `slice.isSlice()` in
+control still asks to be tried. Every trimming point asks `slice.isSlice()`,
+`slice.canWrite()` or `slice.isReadOnly()` in
 `apps/client/src/services/slice.ts`, which is the way to find them all. A refused
 request is logged to the console rather than toasted, so a gap the trimming
 missed reads as silence. None of that is a boundary — the mask is, and it holds
 with the trimming reverted.
+
+What proves the trimming matches is one assertion in `apps/server/e2e/slice.spec.ts`:
+a slice draws no 403 at all while the spec drives every affordance it offers. Run
+it before widening either side. It runs twice, because the vault runs the **new
+layout**, where the ribbon is a right pane and the floating buttons a status bar,
+and those are different components from the ones the old layout mounts.
 
 **What a visitor's writing leaves behind.** A slice write to a text note is
 sanitised with the vault's own allow-list before it is stored. Sanitising is
@@ -402,6 +446,10 @@ still runs, so a note's first slice edit leaves two revisions: the state before
 anybody outside touched it, and that visitor's version. A named revision is spared
 by `eraseExcessRevisionSnapshots` only while `revisionIgnoreNamedSnapshots` is on,
 which is where to look if an audit trail goes missing.
+
+CAUTION: a writable link attaches files, so a visitor's bytes land in the owner's
+vault and in every backup and snapshot of it. The size limits are the vault's own
+and this changes none of them.
 
 CAUTION: a link is a credential, and anyone it is forwarded to has it. Expiry and
 `slice-revoke` exist for that reason; nothing can make a link identify a person. A
