@@ -198,6 +198,13 @@ VAULT_URL = f"http://{HOST}:{VAULT_PORT}"
 PENPOT_PORT = int(os.environ.get("AWM_PENPOT_PORT", "9001"))
 PENPOT_URL = f"http://{HOST}:{PENPOT_PORT}"
 
+# The tether relay's loopback port, on the public host. Named here for the same
+# reason again: the relay binds it and the edge proxies to it, and neither owns
+# it. The relay reads the same variable itself, so this constant and that binary
+# agree by reading one name rather than by two defaults that happen to match.
+TETHER_PORT = int(os.environ.get("AWM_TETHER_PORT", "12520"))
+TETHER_URL = f"http://{HOST}:{TETHER_PORT}"
+
 IDLE_SHUTDOWN_SECONDS = int(os.environ.get("AWM_IDLE_SHUTDOWN", "1800"))  # 30 min
 
 ACCESS_LOG = AWM_DIR / "access.log"

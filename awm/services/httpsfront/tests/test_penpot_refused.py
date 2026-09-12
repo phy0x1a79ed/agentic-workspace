@@ -165,35 +165,17 @@ def test_the_commands_the_app_needs_still_reach_penpot():
                       json={}).status_code == 200
     assert reached == [PENPOT + "/api/rpc/command/get-profile"]
 
-
 # -- the other half of the same refusal ---------------------------------------
-
-COMPOSE = (__import__("pathlib").Path(__file__).resolve().parents[4]
-           / "scripts" / "sirius" / "etc" / "penpot"
-           / "docker-compose.sirius.yml")
-
-
-def _sirius_flags() -> set[str]:
-    for line in COMPOSE.read_text().splitlines():
-        if line.strip().startswith("PENPOT_FLAGS:"):
-            return set(line.split(":", 1)[1].strip().strip('"').split())
-    raise AssertionError(f"no PENPOT_FLAGS in {COMPOSE}")
-
-
-def test_the_public_stack_also_refuses_registration_at_the_backend():
-    """The edge list and this flag are two independent closures of one hole. A
-    reader who removes either should have to remove the other on purpose."""
-    assert "disable-registration" in _sirius_flags()
-
-
-def test_the_public_stack_does_not_disable_password_login():
-    """It would be the obvious flag to reach for and it is the wrong one: the
-    exporter authenticates by cookie only and takes no access token, so turning
-    password login off inside Penpot blanks every diagram."""
-    assert "disable-login-with-password" not in _sirius_flags()
-
-
-@pytest.mark.parametrize("flag", ["enable-demo-users",
-                                  "disable-secure-session-cookies"])
-def test_the_local_only_flags_never_reach_the_public_stack(flag):
-    assert flag not in _sirius_flags()
+#
+# The public stack also closes registration at the Penpot backend, with
+# PENPOT_FLAGS in its compose overlay. Four flags matter there:
+# `disable-registration` must be present, and `disable-login-with-password`,
+# `enable-demo-users` and `disable-secure-session-cookies` must not be. The
+# edge list above and those flags are two independent closures of one hole, so
+# a reader who removes either should have to remove the other on purpose.
+#
+# That check is no longer here. The overlay left this repository with the rest
+# of the host's provisioning tree, and it now runs as checks/penpot-flags.sh in
+# the host's own repository, called by its provisioning script before the
+# overlay is installed. A wrong flag therefore cannot reach the box at all,
+# which a test on a dev box could never say.

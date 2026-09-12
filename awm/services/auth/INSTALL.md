@@ -63,7 +63,7 @@ service also holds one Penpot credential per person. Nobody is ever shown it.
     awm auth penpot-rotate [--username tony]       # force a replacement
     awm auth penpot-list                           # no secrets
 
-`scripts/sirius/add-user.sh` calls `penpot-record` once, right after it creates
+The public host's `add-user.sh` calls `penpot-record` once, right after it creates
 the Penpot profile with the same password. A background loop replaces every
 stored password at `penpot_rotation_hour` local time, and catches up on start
 when the box was off at that hour. This loop runs on the `public` profile too:

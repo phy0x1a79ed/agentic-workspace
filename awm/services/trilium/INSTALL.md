@@ -32,7 +32,7 @@ Trilium.
 ## The contract
 
 **One vault, and an account is the whole of joining it.** There is no per-person
-scope, port, subdomain or DNS record — `scripts/sirius/add-user.sh <name>` makes
+scope, port, subdomain or DNS record — the public host's `add-user.sh <name>` makes
 an auth account and stops, and that account reaches the vault immediately. This
 is the property to protect when changing anything here: the moment adding a
 person needs a second act somewhere else, the design has regressed to what it
@@ -677,7 +677,9 @@ written at install time has to be on the install side of that line.
 
 ```
 ./deploy.sh                       # this node's gateway
-scripts/sirius/deploy.sh release  # sirius
+
+# sirius is provisioned from its own repository, not this one
+VMs/digital_ocean/sirius/deploy.sh release
 ```
 
 `deploy.sh` does three things `awm deploy` does not: it promotes the commits into
@@ -710,7 +712,7 @@ host serves it by the same route and the same code as a mesh node. There is no
 
 One shape it does not share is the vault's. sirius holds no fork, so the path
 the service resolves is a directory there rather than a checkout — see *Where
-the vault's content lives*. `scripts/sirius/install-awm.sh` creates it with two
+the vault's content lives*. The public host's `install-awm.sh` creates it with two
 mkdirs.
 
 The other is that it is the sync hub, and that is an absence rather than a
@@ -718,8 +720,8 @@ setting: it has no `TRILIUM_SYNC_HUB` because it has no workspace env file at
 all. Every other node names it and opens a forward to it. Nothing on sirius is
 configured for this, and nothing should be — see *One document, three machines*.
 
-Two things are host-shaped. `client_max_body_size` in
-`scripts/sirius/etc/nginx/awm-proxy.conf` is 512m, because the vault is behind
+Two things are host-shaped. `client_max_body_size` in the nginx snippet the
+host's provisioning repository installs is 512m, because the vault is behind
 that one location and Trilium uploads whole PDFs and imports whole vaults in a
 single request. nginx generates the 413 itself, so the application never sees it
 and the editor simply appears to break. And `AWM_EDGE_URL` in `/etc/awm/env`

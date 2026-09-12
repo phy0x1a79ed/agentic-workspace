@@ -40,7 +40,7 @@ drift pointing the other way. ``update-profile`` and not
 nobody has; ``manage.py`` writes the row directly over the backend's PREPL, sets
 only the keys it was given, and does not end anyone's live sessions.
 
-``scripts/sirius/add-user.sh`` runs exactly these two steps by itself when it
+The public host's ``add-user.sh`` runs exactly these two steps by itself when it
 finds a Penpot profile that awm holds no credential for, so re-running it for a
 person is the supported repair and this is what it does.
 """

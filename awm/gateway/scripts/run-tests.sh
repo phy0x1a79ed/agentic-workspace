@@ -72,10 +72,12 @@ declare -A DISTS=(
   [penpot-view]="$WS/awm/services/penpot-view::$WS/awm/services/penpot-view/tests"
   [penpot-plugins]="$WS/awm/services/penpot-plugins::$WS/awm/services/penpot-plugins/tests"
   [cx]="$WS/awm/services/cx::$WS/awm/services/cx/tests"
+  [dev]="$WS/awm/services/dev::$WS/awm/services/dev/tests"
+  [tether]="$WS/awm/services/tether::$WS/awm/services/tether/tests"
 )
 
 # Stable run order.
-ORDER=(gateway agentcore gatewayclient config telemetry claudedaemon scopes workspace agents artifacts writing events precedence social 2fa ssh auth httpsfront rlm-browser orchestrator graphify stt tts fileviewer drawio notes virtmic mic vpn compute reflection dvc claude-science dsh hermes trilium zotero penpot penpot-view penpot-plugins cx)
+ORDER=(gateway agentcore gatewayclient config telemetry claudedaemon scopes workspace agents artifacts writing events precedence social 2fa ssh auth httpsfront rlm-browser orchestrator graphify stt tts fileviewer drawio notes virtmic mic vpn compute reflection dvc claude-science dsh hermes trilium zotero penpot penpot-view penpot-plugins cx dev tether)
 
 # Allow selecting a subset on the command line.
 if [ "$#" -gt 0 ]; then

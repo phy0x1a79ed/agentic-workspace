@@ -173,17 +173,20 @@ PENPOT_PUBLIC_URI=https://nexus.tony-xy-liu.com/penpot
 PENPOT_INTERNAL_URI=http://penpot-frontend-internal:8080
 AWM_EDGE_PENPOT=1
 AWM_PENPOT_ROTATION_HOUR=4
-ZOTERO_ROLE=apply
 ZOTERO_MAY_CREATE_ROOT=0
 ZOTERO_SYNC_ENABLED=1
+AWM_TETHER_ROLE=relay
+AWM_TETHER_PORT=12520
+AWM_TETHER_BIN=/var/lib/awm/state/services/tether/bin
+AWM_TETHER_ASSETS=/var/lib/awm/state/services/tether/assets
+AWM_EDGE_TETHER=1
 ENV
 # The zotero keys are what a public box is. It cannot reach the Zotero desktop
 # -- that machine is on the private overlay and this one is not -- so it only
-# ever writes the vault from a bundle another node ships in, and a role of
-# `apply` says so instead of leaving an unreachable host in the log every
-# twenty minutes. Creation is off because the mirror goes under whichever note
-# carries #zoteroLibrary: on a vault somebody uses, refusing to find that note
-# is better than building a library at the top of their tree.
+# ever writes the vault from a bundle another node ships in. Creation is off
+# because the mirror goes under whichever note carries #zoteroLibrary: on a
+# vault somebody uses, refusing to find that note is better than building a
+# library at the top of their tree.
 # PENPOT_INTERNAL_URI is not a second spelling of PENPOT_PUBLIC_URI and the
 # two must not be collapsed. The public one is what the backend and the
 # frontend stamp on browser-bound URLs, and penpot-view strips its /penpot
@@ -207,6 +210,31 @@ ENV
 #
 #     printf 'KEY=value\n' | sudo tee -a /etc/awm/penpot.env
 #     sudo systemctl restart penpot-stack
+
+# AWM_TETHER_PORT is in that block even though both sides already default to
+# it, because the two sides are two languages: awm.config carries one default
+# and the Rust relay carries another, and two defaults that happen to agree are
+# a pair that can stop agreeing. Naming it is what makes the relay bind the
+# port the edge proxies to, rather than what makes it 12520.
+#
+# The relay's bearer is not in that block, because the block is in git. It is
+# the whole of "only an operator may open a session", so the relay refuses to
+# start without one -- which is why it is minted here rather than left for
+# somebody to remember. The operator's node needs the SAME value in its own
+# workspace env file, and moving it there is a deliberate manual step: nothing
+# here copies a secret off this box. See scripts/sirius/README.md.
+if ! grep -q '^AWM_TETHER_ISSUE_TOKEN=' /etc/awm/env; then
+    printf 'AWM_TETHER_ISSUE_TOKEN=%s\n' "$(openssl rand -hex 32)" >> /etc/awm/env
+    note "/etc/awm/env: AWM_TETHER_ISSUE_TOKEN (generated — the operator's node needs the same value)"
+fi
+# Where the relay binary and the downloads it serves live. Under the service's
+# own state rather than inside the checkout: a deploy cleans untracked files,
+# and a built artifact in the tree would not survive one.
+install -d -m 750 -o "$APP_USER" -g "$APP_USER" \
+    "$STATE_ROOT/state/services/tether" \
+    "$STATE_ROOT/state/services/tether/bin" \
+    "$STATE_ROOT/state/services/tether/assets" \
+    "$STATE_ROOT/state/services/tether/assets/bin"
 
 # ------------------------------------------------------------------ 6. docker
 # Docker CE from Docker's own apt repo, not Ubuntu's docker.io: the compose
