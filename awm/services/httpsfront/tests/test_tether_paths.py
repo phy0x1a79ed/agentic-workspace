@@ -36,6 +36,7 @@ TICKET = "0123456789abcdef0123456789abcdef"
     "/tether/claim/1",                          # the owner's ticket
     "/tether/claim/999",
     f"/tether/join/7/{TICKET}",                 # the session socket
+    f"/tether/release/7/{TICKET}",              # the operator ending its own slot
     "/tether/issue",                            # the operator's, gated at the relay
     "/tether/status",
 ])
@@ -59,6 +60,9 @@ def test_the_mount_claims_the_relays_whole_public_surface(path):
     (f"/tether/join/7/{TICKET[:31]}", "a ticket is thirty-two hex"),
     (f"/tether/join/7/{TICKET.upper()}", "the relay parses lowercase hex"),
     ("/tether/join/7", "a join names a slot and a ticket"),
+    (f"/tether/release/7/{TICKET[:31]}", "a seat token is thirty-two hex"),
+    ("/tether/release/7", "a release names a slot and its seat token"),
+    (f"/tether/release/0/{TICKET}", "slot 0 is not a slot"),
     ("/tether/bin/../../etc/passwd", "a download names one file"),
     ("/tether/bin/", "a download names a file"),
     ("/tether/win/", "a trailing slash is not a route the relay has"),

@@ -16,7 +16,7 @@ here is a door onto sessions that already exist and are already addressed by a
 number the relay itself issued.
 
 **The mount is an allow-list of exact shapes, not a prefix.** The relay's whole
-public surface is seven routes and every one of them has a fixed grammar, so the
+public surface is eight routes and every one of them has a fixed grammar, so the
 edge can refuse everything else before it has consulted anything at all — which
 is the plan's requirement that a slot the relay never issued be turned away
 before any pairing happens. The shapes have to agree exactly with what the relay
@@ -38,6 +38,13 @@ access log on the path, and that is by design: it authenticates nobody. The
 phrase — the actual credential — never leaves the two machines that hold it, and
 the ticket in a join URL is one attempt at one chair on a session already named
 by the slot beside it.
+
+The one qualification is the token on ``/release``, which is the operator's seat
+token rather than a one-shot ticket: it is reusable for the life of its slot, and
+anyone holding it could already take that chair. It is minted by the relay, it
+never identifies a person, and it dies with the slot — which that request is
+asking for. Worth knowing when reading an access log, not worth a second
+channel.
 """
 
 from __future__ import annotations
@@ -67,6 +74,7 @@ SHAPES = (
     re.compile(rf"^{PREFIX}/bin/{_ASSET}$"),               # a client download
     re.compile(rf"^{PREFIX}/claim/{_SLOT}$"),              # the owner's ticket
     re.compile(rf"^{PREFIX}/join/{_SLOT}/{_TOKEN}$"),      # the session socket
+    re.compile(rf"^{PREFIX}/release/{_SLOT}/{_TOKEN}$"),   # the operator ending its own slot
     re.compile(rf"^{PREFIX}/issue$"),                      # operator only, at the relay
     re.compile(rf"^{PREFIX}/status$"),                     # operator only, at the relay
 )
