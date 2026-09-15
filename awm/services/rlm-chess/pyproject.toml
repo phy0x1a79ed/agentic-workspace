@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "awm-rlm-chess"
+version = "0.1.0"
+requires-python = ">=3.11"
+description = "AWM rlm-chess realm service: chess arena sessions (play, watch, save, replay) over the realm-family contract."
+# The chess arena itself is installed by install.sh from CHESS_ARENA_ROOT.
+dependencies = [
+    "awm-config",
+    "awm-persistence",
+    "awm-gatewayclient",
+]
+
+# PEP 420 namespace package: no top-level awm/__init__.py; the namespace dir is awm/rlm_chess/.
+[tool.setuptools.packages.find]
+include = ["awm.rlm_chess*"]
+namespaces = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+markers = [
+    "slow: spawns subprocesses, real git, or network simulation; excluded from smoke",
+]

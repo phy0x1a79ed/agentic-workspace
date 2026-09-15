@@ -11,8 +11,9 @@
     "test": "node --test 'ui_components/**/*.test.ts'"
   },
   "dependencies": {
-    "@xterm/xterm": "^5.5.0",
     "@xterm/addon-fit": "^0.10.0",
+    "@xterm/xterm": "^5.5.0",
+    "cm-chessboard": "^8.14.0",
     "diff-match-patch": "^1.0.5",
     "dompurify": "^3.2.0",
     "highlight.js": "^11.10.0",
