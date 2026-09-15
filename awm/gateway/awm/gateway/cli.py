@@ -338,7 +338,9 @@ def deploy(
 
     expected_services = sorted(s.name for s in discovery.discover_services()
                                if s.enabled)
-    expected_pages = sorted(plan.page_sigs)  # buildable → servable after build
+    # buildable → servable after build, unless the page is switched off
+    expected_pages = sorted(p for p in plan.page_sigs
+                            if discovery.is_page_enabled(p))
 
     # --- print the plan ---
     typer.echo(f"deploy target: {root}")
