@@ -65,7 +65,7 @@ never has to re-authenticate across a rotation. On startup it mints if none is
 valid or the newest is older than the cadence (no dependency on `events`).
 
 Each mint: a **loud** log line, a best-effort push of the *login password* to
-Discord `#notifications`, and a rewrite of the `$AWM_PEER_CRED` file.
+the operator's Discord DM, and a rewrite of the `$AWM_PEER_CRED` file.
 
 - **Human login:** `POST /__auth/login` at the edge → `auth.verify` → a
   signed session cookie. The cookie is **slid** (re-issued) on each authenticated
@@ -267,7 +267,7 @@ itself.
 
 ### Node identity — who a shared message came from
 
-Several nodes write into **one** shared Discord channel, so the same env file
+Several nodes write into **one** operator DM on Discord, so the same env file
 carries the node's own name and address:
 
 - `AWM_NODE_NAME=<name>` — the fleet name this node signs its password pushes and

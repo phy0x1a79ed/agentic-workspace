@@ -108,6 +108,12 @@ source of truth, and every read queries them live. (Live receive still only
 - **`social_open_dm account= user=`** resolves a platform user — by id, or by
   name where the platform supports a directory lookup (Slack `users.list`) — to a
   DM channel and opens it, returning the channel id for use with `fetch`/`send`.
+  Discord takes a user id only.
+
+On Discord, `channel` also accepts `dm:<user_id>`: `send` and `fetch` open that
+user's DM with the bot on first use. Fleet notifications (ssh lock alerts, the
+auth password push) target the operator this way, so they need no stored DM
+channel id. The bot reaches a user only while they share a guild.
 
 **The retrieval contract, when the call is borrowed.** `path` and `dir` are
 absolute on the node that ran the download — which for a borrowed `social` is not

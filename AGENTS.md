@@ -36,7 +36,7 @@ Each prefix maps to a stack of records (a base + at most one live overlay). Over
 
 ### Feature services — the `awm/services/<name>/` contract
 
-The first-class way to add a backend is a folder under `awm/services/<name>/` with a self-contained executable `run.sh`. The gateway **discovers** it by filesystem scan (`awm/gateway/awm/gateway/hub/discovery.py`), **bootstraps** it on first boot, respawns it durably, and injects **exactly three** env vars (`AWM_HUB_URL`, `AWM_SERVICE_NAME`, `AWM_SERVICE_ID`) — no auth, ever. Enable/disable state lives in `.awm/services/enabled.json` (a service absent from the file is enabled); the operator surface is `awm services list|start|stop|restart|enable|disable|reap [name|--all]`. The full human-facing authoring contract is **README § *Authoring a service***.
+The first-class way to add a backend is a folder under `awm/services/<name>/` with a self-contained executable `run.sh`. The gateway **discovers** it by filesystem scan (`awm/gateway/awm/gateway/hub/discovery.py`), **bootstraps** it on first boot, respawns it durably, and injects **exactly three** env vars (`AWM_HUB_URL`, `AWM_SERVICE_NAME`, `AWM_SERVICE_ID`) — no auth, ever. Enable/disable state lives in `.awm/services/enabled.json` (a service absent from the file is enabled). The same file gates pages: `awm/pages/<name>` follows its own entry, else its same-named service, so disabling a service also takes its `/ui/<name>` page down. The operator surface is `awm services list|start|stop|restart|enable|disable|reap [name|--all]`. The full human-facing authoring contract is **README § *Authoring a service***.
 
 Foundation facts for anyone touching this:
 
