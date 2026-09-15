@@ -28,6 +28,8 @@ A player name that starts with `@` is an external seat. A person or an agent pla
 - **Restarts:** daemons are detached and outlive the service. On start the service re-watches every live session labelled `owner: rlm-chess`.
 - **Lifetime:** a waiting session with no caller and no watcher saves itself as `autosave-<sid>` and exits after `AWM_CHESS_IDLE_TIMEOUT_S` (default 1800). A finished session exits after `AWM_CHESS_FINISHED_LINGER_S` (default 900).
 
+**CAUTION:** The service keeps one arena watch open per session, and the arena counts a watcher as activity. While the service runs, neither timeout fires. A session ends only when its series finishes and someone calls `release`, or when the service is down long enough.
+
 `CHESS_ARENA_DATA` and `CHESS_ARENA_RUNTIME` override the data and socket directories. Every client of a session must agree on both, including an arena CLI used for debugging.
 
 ## Test
