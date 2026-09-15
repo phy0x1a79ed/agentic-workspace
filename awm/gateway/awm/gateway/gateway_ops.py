@@ -255,20 +255,48 @@ async def _op_services_restart(name: str) -> dict[str, Any]:
     return await _op_services_start(name)
 
 
-async def _op_services_enable(name: str) -> dict[str, Any]:
-    """Enable a service (persists across restart) and start it now."""
+def _service_and_page(name: str) -> tuple[Any, Any]:
+    """The service folder and page bundle a name covers; raise if neither."""
     from awm.gateway.hub import discovery
 
+    service = discovery.discover_service(name)
+    page = discovery.discover_page(name, include_disabled=True)
+    if service is None and page is None:
+        raise FileNotFoundError(f"no service (run.sh) or built page named {name!r}")
+    return service, page
+
+
+async def _op_services_enable(name: str) -> dict[str, Any]:
+    """Enable a service and its same-named page (persists across restart) and
+    bring both up now."""
+    from awm.gateway.hub import discovery
+    from awm.gateway.hub.registry import get_registry
+
+    service, page = _service_and_page(name)
     discovery.set_enabled(name, True)
-    return {"name": name, "enabled": True, "start": await _op_services_start(name)}
+    out: dict[str, Any] = {"name": name, "enabled": True}
+    if service is not None:
+        out["start"] = await _op_services_start(name)
+    if page is not None:
+        await get_registry().register_page(page.name, page.prefix, page.dist_dir)
+        out["page"] = page.prefix
+    return out
 
 
 async def _op_services_disable(name: str) -> dict[str, Any]:
-    """Disable a service (stays down across restart) and stop it now."""
+    """Disable a service and its same-named page (stays down across restart)
+    and take both down now."""
     from awm.gateway.hub import discovery
+    from awm.gateway.hub.registry import get_registry
 
+    service, _page = _service_and_page(name)
     discovery.set_enabled(name, False)
-    return {"name": name, "enabled": False, "stop": await _op_services_stop(name)}
+    out: dict[str, Any] = {"name": name, "enabled": False}
+    if service is not None:
+        out["stop"] = await _op_services_stop(name)
+    evicted = await get_registry().evict_by_name(name, kind="page")
+    out["page"] = evicted.prefix if evicted is not None else None
+    return out
 
 
 # --- reap: kill orphaned hub_adapter processes -----------------------------

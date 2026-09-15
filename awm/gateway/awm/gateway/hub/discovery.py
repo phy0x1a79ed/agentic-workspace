@@ -288,25 +288,42 @@ class PageSpec:
     dist_dir: str
 
 
-def discover_pages() -> list[PageSpec]:
+def is_page_enabled(name: str, enabled_map: dict[str, bool] | None = None) -> bool:
+    """A page follows an explicit ``enabled.json`` entry under its own name,
+    else its same-named service's verdict, else it is enabled."""
+    if enabled_map is None:
+        enabled_map = load_enabled()
+    if name in enabled_map:
+        return enabled_map[name]
+    folder = services_root() / name
+    if (folder / RUN_SCRIPT).is_file():
+        return _resolve_enabled(name, folder, enabled_map)
+    return True
+
+
+def discover_pages(*, include_disabled: bool = False) -> list[PageSpec]:
     """Scan the pages root for bundles with a built ``dist/``.
 
     A page is *servable* iff its ``dist/`` exists — source-only pages (no
     ``dist/`` yet, or a page still mid-build) are skipped. This mirrors how
     ``build.sh`` keys on ``index.html`` for *buildable*: a page can be
-    buildable-but-not-yet-servable, which is the correct skip here. Returned
-    sorted by name.
+    buildable-but-not-yet-servable, which is the correct skip here. Disabled
+    pages (see ``is_page_enabled``) are skipped unless ``include_disabled``.
+    Returned sorted by name.
     """
     root = pages_root()
     if not root.is_dir():
         log.warning("pages root %s does not exist", root)
         return []
+    enabled_map = load_enabled()
     specs: list[PageSpec] = []
     for entry in sorted(root.iterdir()):
         if not entry.is_dir() or entry.name.startswith((".", "_")):
             continue
         dist = entry / "dist"
         if not dist.is_dir():
+            continue
+        if not include_disabled and not is_page_enabled(entry.name, enabled_map):
             continue
         specs.append(PageSpec(
             name=entry.name,
@@ -316,10 +333,10 @@ def discover_pages() -> list[PageSpec]:
     return specs
 
 
-def discover_page(name: str) -> PageSpec | None:
+def discover_page(name: str, *, include_disabled: bool = False) -> PageSpec | None:
     """Return the spec for one page bundle, or ``None`` if it has no built
-    ``dist/``."""
-    for spec in discover_pages():
+    ``dist/`` (or is disabled, unless ``include_disabled``)."""
+    for spec in discover_pages(include_disabled=include_disabled):
         if spec.name == name:
             return spec
     return None

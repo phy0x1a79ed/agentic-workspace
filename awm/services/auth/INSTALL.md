@@ -14,8 +14,8 @@ What it does:
   a restart never leaves a stale-only state (no dependency on `events`).
 - Signs **sliding session tokens** (HMAC-SHA256 with a long-lived secret); the
   edge verifies + refreshes cookies offline using material from `edge_material`.
-- Pushes the day's **login password** (never the peer credential) to Discord
-  `#notifications` on each mint, best-effort.
+- Pushes the day's **login password** (never the peer credential) to the
+  operator's Discord DM on each mint, best-effort.
 - Mirrors the current peer credential to a file (`$AWM_DIR/services/auth/
   peer_cred.current`) that `$AWM_PEER_CRED` points to, for the SSH peer-auth
   channel (`ssh <peer> 'cat "$AWM_PEER_CRED"'`).
@@ -88,7 +88,7 @@ password and records the new one, which is the only repair.
 | `lockout_minutes` | `15` | how long the lock holds |
 | `push_enabled` | `true` | push the login password to Discord on each mint |
 | `discord_account` | `discord-bot` | social account id for the push |
-| `discord_channel` | `1522674357762261112` | Discord `#notifications` channel id |
+| `discord_channel` | `dm:188743359983124480` | Discord target: a channel id, or `dm:<user_id>` for the operator's DM with the bot |
 
 ## Python dependencies
 

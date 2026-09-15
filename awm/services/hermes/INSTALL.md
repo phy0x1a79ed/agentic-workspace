@@ -186,6 +186,18 @@ gateway does), so deploy's verification set is computed without the profile and
 silently omits this service: it reports success without ever having checked the
 dashboard came back.
 
+### Turn it off
+
+Disabling the service also takes down the `/ui/hermes` landing page. The
+dashboard is adopted, so it outlives both unless you stop it first.
+
+1. Run `awm hermes stop`.
+2. Run `awm services disable hermes`.
+3. Remove `hermes` from `AWM_PROFILES` in `.awm/env`.
+
+To turn it back on, run `awm services enable hermes`, then `awm hermes start`.
+`~/.hermes` is untouched throughout.
+
 ## Environment
 
 | Var | Default | Effect |
