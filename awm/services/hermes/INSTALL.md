@@ -189,11 +189,15 @@ dashboard came back.
 ### Turn it off
 
 Disabling the service also takes down the `/ui/hermes` landing page. The
-dashboard is adopted, so it outlives both unless you stop it first.
+dashboard is adopted, so it outlives both.
 
-1. Run `awm hermes stop`.
-2. Run `awm services disable hermes`.
+1. Run `awm services disable hermes`.
+2. Run `systemctl --user stop hermes-dashboard`.
 3. Remove `hermes` from `AWM_PROFILES` in `.awm/env`.
+
+**CAUTION** Disable before you stop the dashboard. An enabled service relaunches
+a stopped dashboard within seconds, so `awm hermes stop` followed by the disable
+leaves a dashboard running with no service to stop it.
 
 To turn it back on, run `awm services enable hermes`, then `awm hermes start`.
 `~/.hermes` is untouched throughout.
