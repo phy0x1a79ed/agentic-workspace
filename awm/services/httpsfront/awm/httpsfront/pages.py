@@ -246,7 +246,7 @@ def login_page(public: bool = False, name: str = "awm") -> str:
     else:
         extras = """<p class="note">Leave the username blank to use the current day's
 shared password. Get it on the daemon host with <code>awm auth password</code>;
-it is also posted to Discord <code>#notifications</code> when minted.</p>
+it is also sent to the operator's Discord DM with the bot when minted.</p>
 <p class="note">A new device has to trust this node's CA once, or the browser
 blocks pages and sockets alike: <a href="/ca.crt">install the certificate</a>.
 (Served unauthenticated on purpose &mdash; a device that doesn't trust us yet
