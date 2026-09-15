@@ -13,7 +13,7 @@ On startup, mint a pair if none is valid or the newest is older than the cadence
 Then a background loop mints every cadence. Each mint:
 
 * a **loud** log line (so an operator/agent watching a dev session sees it),
-* a best-effort push of the *login* password to Discord ``#notifications``
+* a best-effort push of the *login* password to the operator's Discord DM
   (never the peer credential, and never blocking the mint on social being up
   — it runs detached, and retries a transient failure with backoff before
   giving up; see ``h_status``'s ``push_last_*`` fields),
@@ -191,7 +191,7 @@ def _autologin_link(login_password: str) -> str | None:
 
 
 async def _push_password_to_discord_attempt(login_password: str) -> None:
-    """One attempt to send the day's login password to Discord #notifications.
+    """One attempt to send the day's login password to the operator's Discord DM.
 
     Raises on failure — the caller (`_push_password_to_discord`) owns retry
     and never-raise semantics. Every lookup that could fail (node name, edge

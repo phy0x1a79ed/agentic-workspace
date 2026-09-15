@@ -60,9 +60,9 @@ _RECONCILE_WAIT_TIMEOUT = 60.0
 # nobody in the fleet calls mira.
 _NODE_NAME = config.node_name()
 
-# Discord notifications target for lockout alerts: unimatrix0#notifications.
+# Discord target for lockout alerts: the operator's DM with the bot.
 _ALERT_ACCOUNT = "discord-bot"
-_ALERT_CHANNEL = "1522674357762261112"
+_ALERT_CHANNEL = "dm:188743359983124480"
 
 # Singleton re-homing selectors (federation). When 2fa / social run as canonical
 # singletons on a peer node, this node borrows them by exporting these to the
@@ -1656,7 +1656,7 @@ class SSHService:
             self._lock_alert_text(cfg, reason, requester=_NODE_NAME))
 
     async def _send_social(self, text: str) -> Any:
-        """Post ``text`` to Discord unimatrix0#notifications and RETURN the social
+        """Post ``text`` to the operator's Discord DM and RETURN the social
         send result. Touches no lockfile. The one federated notify wire, shared by
         the swallowing lock alert (:meth:`_alert`) and the result-surfacing
         self-test (:meth:`notify_test`) so both exercise the identical path."""
@@ -1669,7 +1669,7 @@ class SSHService:
             })
 
     async def _alert(self, text: str) -> None:
-        """Post to Discord unimatrix0#notifications. Never raises into connect."""
+        """Post to the operator's Discord DM. Never raises into connect."""
         try:
             await self._send_social(text)
         except Exception as e:
