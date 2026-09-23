@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "awm-1111"
+version = "0.1.0"
+requires-python = ">=3.11"
+description = "AWM 1111 service: lifecycle control for a webui process owned by a separate, isolated OS account."
+dependencies = [
+    "awm-gatewayclient",
+]
+
+# PEP 420 namespace package: no top-level awm/__init__.py; the namespace dir is awm/svc1111/.
+[tool.setuptools.packages.find]
+include = ["awm.svc1111*"]
+namespaces = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
