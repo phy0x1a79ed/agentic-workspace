@@ -18,7 +18,8 @@ A rail-world-style Nauvis map with **massive, very rich** resource patches.
   `pollution_factor 9e-07 → 1.8e-07`)). Seed `1234567`, starting area `2` (big).
 - Baked on the **2.1.8** appliance image **with the `game-bot-control` mod loaded
   at map-gen**, so the agent player-body works the instant you load it (no
-  `world_new` needed first).
+  `world_new` needed first). The engine migrates it forward, so it still loads on
+  the current 2.1.x image; regenerate it only if a save-format break ever refuses.
 - Measured within 256 tiles of spawn: ~29.5M iron, ~36.9M coal, ~9.0M copper,
   ~2.3M stone (≈12k ore/tile vs. a vanilla patch's few hundred).
 
@@ -50,7 +51,7 @@ mutates `railworld.zip`; reload it any time to reset to the pristine seed.
 ```bash
 docker run --rm -v "$PWD/seeds:/gen" \
   --entrypoint /opt/factorio/bin/x64/factorio \
-  rlm-factorio/appliance:2.1.8 \
+  rlm-factorio/appliance:2.1.20 \
   --create /gen/railworld-rich.zip \
   --map-gen-settings /gen/railworld-rich.map-gen-settings.json \
   --map-settings    /gen/railworld-rich.map-settings.json \
