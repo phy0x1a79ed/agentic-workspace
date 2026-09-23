@@ -22,7 +22,7 @@ log = logging.getLogger("view")
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 STATIC = os.path.join(HERE, "static")
-THUMB_PX = 320
+THUMB_BOX = (640, 400)
 RESCAN_S = 60
 
 
@@ -35,6 +35,9 @@ def create_app(outputs_dir=None, data_dir=None, rescan_s=RESCAN_S):
         "VIEW_OUTPUTS", os.path.expanduser("~/stable-diffusion-webui/outputs"))
     data_dir = data_dir or os.environ.get("VIEW_DATA", os.path.expanduser("~/view-data"))
     thumbs_dir = os.path.join(data_dir, "thumbs")
+
+    def thumb_path(image_id):
+        return os.path.join(thumbs_dir, f"{image_id}-{THUMB_BOX[1]}.webp")
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
     app.mount("/static", StaticFiles(directory=STATIC), name="static")
     state = {"store": None, "task": None, "last_scan": None, "scanning": False}
@@ -117,7 +120,7 @@ def create_app(outputs_dir=None, data_dir=None, rescan_s=RESCAN_S):
     @app.get("/thumb/{image_id}")
     def thumb(image_id: int):
         src = store().file_path(image_id)
-        dest = os.path.join(thumbs_dir, f"{image_id}.webp")
+        dest = thumb_path(image_id)
         try:
             fresh = os.path.getmtime(dest) >= os.path.getmtime(src)
         except OSError:
@@ -125,7 +128,7 @@ def create_app(outputs_dir=None, data_dir=None, rescan_s=RESCAN_S):
         if not fresh:
             try:
                 with Image.open(src) as im:
-                    im.thumbnail((THUMB_PX, THUMB_PX))
+                    im.thumbnail(THUMB_BOX)
                     tmp = dest + ".tmp"
                     im.convert("RGB").save(tmp, "WEBP", quality=80)
                     os.replace(tmp, dest)
@@ -182,7 +185,7 @@ def create_app(outputs_dir=None, data_dir=None, rescan_s=RESCAN_S):
         purged = store().purge(ids)
         for image_id in targets:
             try:
-                os.remove(os.path.join(thumbs_dir, f"{image_id}.webp"))
+                os.remove(thumb_path(image_id))
             except OSError:
                 pass
         return {"purged": purged}

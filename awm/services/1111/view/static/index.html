@@ -42,7 +42,13 @@
 
 <div id="viewer" hidden>
   <div id="stage">
-    <img id="full" alt="">
+    <img id="full" alt="" draggable="false">
+    <div id="zoom-bar">
+      <button id="zoom-in" title="Zoom in (+)">+</button>
+      <input type="range" id="zoom-range" min="0" max="100" value="0" aria-label="Zoom">
+      <button id="zoom-out" title="Zoom out (-)">−</button>
+      <button id="zoom-level" title="Toggle fit / actual pixels (0)"></button>
+    </div>
     <button class="nav" id="prev" title="Previous (←)">‹</button>
     <button class="nav" id="next" title="Next (→)">›</button>
     <button id="close" title="Close (Esc)">×</button>
