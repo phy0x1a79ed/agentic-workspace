@@ -19,16 +19,23 @@ services:
     build:
       context: .
       args:
-        FACTORIO_VERSION: "2.1.17"
+        FACTORIO_VERSION: "2.1.20"
         FACTORIO_VARIANT: "expansion"
       # The full build needs factorio.com credentials; they enter as a BuildKit
       # secret and never reach a layer. Build via ./build.sh, which points this
       # at the credentials file and fails with an explanation when it is absent.
       secrets:
         - factorio_creds
-    image: rlm-factorio/appliance:2.1.17
+    image: rlm-factorio/appliance:2.1.20
     container_name: ${FACTORIO_CONTAINER:-rlm-factorio-appliance}
-    restart: unless-stopped
+    # No restart policy on purpose. The world exists because a client asked for
+    # it: `acquire` is the only thing that brings this container up, and the
+    # session row it mints is what the realm reconciles against. A policy that
+    # survives the daemon (`always` / `unless-stopped`, and `on-failure` after
+    # the exit-255 a daemon shutdown deals every running container) would boot a
+    # world on every Docker restart with no session behind it, burning four
+    # cores until somebody noticed.
+    restart: "no"
     # The engine is not shy: map generation and the tick loop will both take
     # every core they are offered, and this box runs the prod gateway and live
     # agent sessions alongside. Capped generously -- a server that cannot keep

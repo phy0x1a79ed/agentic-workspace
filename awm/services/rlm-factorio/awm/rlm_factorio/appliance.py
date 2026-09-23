@@ -52,7 +52,7 @@ SAVES_VOL = "rlm-factorio-saves"    # named volume = the sacred-saves store
 _SERVICE_ROOT = Path(__file__).resolve().parents[2]
 COMPOSE_FILE = _SERVICE_ROOT / "appliance" / "docker-compose.yml"
 BUILD_SCRIPT = _SERVICE_ROOT / "appliance" / "build.sh"
-IMAGE = "rlm-factorio/appliance:2.1.17"   # must match docker-compose.yml
+IMAGE = "rlm-factorio/appliance:2.1.20"   # must match docker-compose.yml
 
 # Bring-up budget: the engine needs to load (and possibly generate) a world
 # before it reports (InGame). The first-run image build is budgeted separately

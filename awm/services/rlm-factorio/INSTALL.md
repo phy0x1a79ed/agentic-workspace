@@ -180,7 +180,7 @@ and `FACTORIO_MEMORY`.
 visibility on and unlimited players. The only barriers are version and mods, and
 **all three of these must match the server or the join is refused**:
 
-1. **The exact engine version.** The image is pinned to 2.1.17 on the
+1. **The exact engine version.** The image is pinned to 2.1.20 on the
    *experimental* branch. In Steam, opt into the matching version under
    *Factorio → Properties → Betas*.
 2. **The Space Age expansion.** The server enables `space-age`, `quality`,

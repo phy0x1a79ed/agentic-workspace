@@ -51,7 +51,7 @@ mutates `railworld.zip`; reload it any time to reset to the pristine seed.
 ```bash
 docker run --rm -v "$PWD/seeds:/gen" \
   --entrypoint /opt/factorio/bin/x64/factorio \
-  rlm-factorio/appliance:2.1.17 \
+  rlm-factorio/appliance:2.1.20 \
   --create /gen/railworld-rich.zip \
   --map-gen-settings /gen/railworld-rich.map-gen-settings.json \
   --map-settings    /gen/railworld-rich.map-settings.json \

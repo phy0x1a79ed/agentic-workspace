@@ -16,7 +16,7 @@ FROM debian:bookworm-slim
 
 # Pin to a specific release so the server matches every client that joins it,
 # ours and the user's Steam copy alike. Bump in lockstep.
-ARG FACTORIO_VERSION=2.1.17
+ARG FACTORIO_VERSION=2.1.20
 # `alpha` is the base game only: its data/ carries just base + core. The Space
 # Age mods a server bundles (space-age, quality, elevated-rails, recycler) are
 # absent, so an `alpha` client's mod set can never match this world's and the
