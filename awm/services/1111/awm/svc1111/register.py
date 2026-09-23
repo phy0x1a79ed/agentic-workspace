@@ -1,5 +1,5 @@
-"""Hold the gateway's `kind=url` registration for the webui, for this
-process's whole lifetime.
+"""Hold the gateway's `kind=url` registrations for the webui and the gallery
+viewer, for this process's whole lifetime.
 
 `awm gateway register --url ... --prefix ...` (see `awm/gateway/awm/gateway/cli.py`)
 is a foreground command: it POSTs `/hub/register` once and then holds a
@@ -12,7 +12,7 @@ automatically whenever this service (re)starts — no cron, no manual
 `gateway register` left running in a terminal somewhere.
 
 Deliberately no `kind=page` registration anywhere in this module — that's
-what keeps `/1111` out of `/ui/*`, `/tools`, and any page listing. Only `awm
+what keeps `/1111` and `/1111-view` out of `/ui/*`, `/tools`, and any page listing. Only `awm
 gateway list` shows it.
 """
 
@@ -24,32 +24,26 @@ import os
 import httpx
 import websockets
 
-from awm.svc1111.control import WEBUI_PORT
-
 log = logging.getLogger("awm.svc1111.register")
-
-SERVICE_NAME = "1111"
-PREFIX = "/1111"
 
 
 def _ws_base(hub_url: str) -> str:
     return hub_url.replace("https://", "wss://").replace("http://", "ws://")
 
 
-async def hold_registration() -> None:
+async def hold_registration(name: str, prefix: str, port: int) -> None:
     """One register-then-hold cycle. Raises/returns on disconnect so
     `spawn_supervised` re-enters and re-registers from scratch."""
     hub_url = os.environ.get("AWM_HUB_URL", "").rstrip("/")
     if not hub_url:
-        raise RuntimeError("AWM_HUB_URL not set; cannot register the URL prefix")
+        raise RuntimeError(f"AWM_HUB_URL not set; cannot register {prefix}")
 
     payload = {
-        "name": SERVICE_NAME,
-        "prefix": PREFIX,
-        "url": f"http://127.0.0.1:{WEBUI_PORT}",
-        # Gradio serves at its own root, not under /1111 — without this the
-        # gateway forwards the full "/1111/..." path upstream and every
-        # request 404s against Gradio's own routes.
+        "name": name,
+        "prefix": prefix,
+        "url": f"http://127.0.0.1:{port}",
+        # Both upstreams serve at their own root — without this the gateway
+        # forwards the full "/<prefix>/..." path and every request 404s.
         "strip_prefix": True,
     }
     async with httpx.AsyncClient(timeout=10) as client:
@@ -58,7 +52,7 @@ async def hold_registration() -> None:
         # A 409 here almost always means a previous lease from this same
         # process is still draining after a fast restart — let the caller's
         # respawn backoff ride it out rather than raising a scary traceback.
-        log.warning("register %s failed (%s): %s", PREFIX, resp.status_code, resp.text)
+        log.warning("register %s failed (%s): %s", prefix, resp.status_code, resp.text)
         raise RuntimeError(f"register failed: {resp.status_code} {resp.text}")
 
     body = resp.json()
@@ -67,7 +61,7 @@ async def hold_registration() -> None:
 
     async with websockets.connect(ws_url, max_size=None, open_timeout=10) as ws:
         first = await ws.recv()
-        log.info("1111: url registration held at %s (%s)", PREFIX, first)
+        log.info("url registration held at %s (%s)", prefix, first)
         async for _ in ws:
             pass
-    log.warning("1111: url registration lease closed; will re-register")
+    log.warning("url registration lease for %s closed; will re-register", prefix)
