@@ -1,5 +1,9 @@
 # Factorio appliance. Long-lived; the supervisor owns the engine inside.
 #
+# One image serves both roles (see Dockerfile). This file defines the HOST
+# container only: seats are transient, allocated per agent, and are run
+# directly by the realm service rather than declared here.
+#
 # Networking note: under Docker Desktop on WSL2, `network_mode: host` binds to
 # the Desktop VM namespace rather than the WSL distro's eth0, so we publish
 # ports explicitly instead. Control is bound to loopback (the realm service runs
@@ -15,10 +19,31 @@ services:
     build:
       context: .
       args:
-        FACTORIO_VERSION: "2.1.8"
-    image: rlm-factorio/appliance:2.1.8
+        FACTORIO_VERSION: "2.1.20"
+        FACTORIO_VARIANT: "expansion"
+      # The full build needs factorio.com credentials; they enter as a BuildKit
+      # secret and never reach a layer. Build via ./build.sh, which points this
+      # at the credentials file and fails with an explanation when it is absent.
+      secrets:
+        - factorio_creds
+    image: rlm-factorio/appliance:2.1.20
     container_name: ${FACTORIO_CONTAINER:-rlm-factorio-appliance}
-    restart: unless-stopped
+    # No restart policy on purpose. The world exists because a client asked for
+    # it: `acquire` is the only thing that brings this container up, and the
+    # session row it mints is what the realm reconciles against. A policy that
+    # survives the daemon (`always` / `unless-stopped`, and `on-failure` after
+    # the exit-255 a daemon shutdown deals every running container) would boot a
+    # world on every Docker restart with no session behind it, burning four
+    # cores until somebody noticed.
+    restart: "no"
+    # The engine is not shy: map generation and the tick loop will both take
+    # every core they are offered, and this box runs the prod gateway and live
+    # agent sessions alongside. Capped generously -- a server that cannot keep
+    # its tick rate drops its clients, so this is a ceiling, not a diet.
+    cpus: "${FACTORIO_CPUS:-4.0}"
+    mem_limit: "${FACTORIO_MEMORY:-6g}"
+    environment:
+      FACTORIO_ROLE: host
     ports:
       - "${FACTORIO_GAME_PORT:-12140}:12140/udp"        # game traffic (Steam-join)
       # Control surface. Published plainly (not 127.0.0.1-bound): Docker Desktop
@@ -27,6 +52,15 @@ services:
 
     volumes:
       - factorio-saves:/factorio/saves
+      # The engine writes exported blueprints here (helpers.write_file lands in
+      # script-output). Bind-mounted rather than a volume so the realm service
+      # reads the file straight off disk instead of hauling a multi-kilobyte
+      # string back over RCON, which fragments past ~4 KB.
+      - ${FACTORIO_OUTPUT_DIR:-./output}:/opt/factorio/script-output
 
 volumes:
   factorio-saves:
+
+secrets:
+  factorio_creds:
+    file: ${FACTORIO_CREDS:-./secrets/factorio_creds}

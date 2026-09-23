@@ -1,9 +1,11 @@
 {
   "name": "game-bot-control",
-  "version": "0.2.0",
+  "version": "0.4.0",
   "title": "Game Bot Control",
   "author": "awm",
-  "description": "Script-controlled character body for agent play over RCON: spawn, pathfinded move, observe, mine/craft/build/insert/take, cheat-flagged research, and a drainable events buffer. State lives in `storage` so the body survives save/load.",
+  "description": "Per-seat control of real multiplayer players over RCON: a seat registry keyed by player index, pathfinded movement, real (engine-driven) mining, the real crafting queue, build/insert/take, cheat-flagged research, and a drainable events buffer. State lives in `storage` so seats survive save/load.",
   "factorio_version": "2.1",
-  "dependencies": ["base"]
+  "dependencies": [
+    "base"
+  ]
 }
