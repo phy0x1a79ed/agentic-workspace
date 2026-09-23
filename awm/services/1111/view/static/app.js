@@ -315,10 +315,11 @@ function sentinelVisible() {
 }
 
 function cell(it, index) {
-  const img = el("img", { src: `thumb/${it.id}`, loading: "lazy", alt: "", draggable: "false" });
+  const img = el("img", { src: `thumb/${it.id}?b=400`, loading: "lazy", alt: "", draggable: "false" });
   img.addEventListener("error", () => c.classList.add("broken"));
   const check = el("span", { class: "check", title: "Select" });
   const c = el("div", { class: "cell", "data-id": it.id, draggable: "true", title: it.relpath }, img, check);
+  c.style.setProperty("--r", it.width && it.height ? it.width / it.height : 1);
   if (it.broken) c.classList.add("broken");
   if (state.selected.has(it.id)) c.classList.add("selected");
   check.addEventListener("click", (e) => { e.stopPropagation(); toggle(it.id, indexOf(it.id)); });
@@ -530,6 +531,7 @@ async function step(delta) {
 function showCurrent() {
   const it = state.items[state.viewerIndex];
   if (!it) return closeViewer();
+  resetZoom();
   $("#full").src = `file/${it.id}`;
   $("#counter").textContent = `${state.viewerIndex + 1} / ${state.total}`;
   for (const d of [1, -1]) {
@@ -615,19 +617,111 @@ function wireViewer() {
   $("#next").onclick = () => step(1);
   $("#close").onclick = closeViewer;
   $("#toggle-info").onclick = toggleInfo;
-  $("#stage").addEventListener("click", (e) => { if (e.target.id === "stage") closeViewer(); });
+  $("#stage").addEventListener("click", (e) => {
+    if (e.target.id === "stage" && !zoom.panned) closeViewer();
+  });
+  wireZoom();
 }
 
 function toggleInfo() {
   state.infoOpen = !state.infoOpen;
   $("#viewer").classList.toggle("no-info", !state.infoOpen);
+  applyZoom();
+}
+
+// ---- zoom & pan ---------------------------------------------------------
+
+// Scale is relative to the fitted image. The slider is logarithmic so each
+// notch feels like the same step at every magnification.
+const ZOOM_MAX = 8;
+const zoom = { s: 1, x: 0, y: 0, drag: null, panned: false };
+
+function applyZoom() {
+  const img = $("#full");
+  const stage = $("#stage");
+  const w = img.offsetWidth;
+  const h = img.offsetHeight;
+  const mx = Math.max(0, (w * zoom.s - stage.clientWidth) / 2);
+  const my = Math.max(0, (h * zoom.s - stage.clientHeight) / 2);
+  zoom.x = Math.min(mx, Math.max(-mx, zoom.x));
+  zoom.y = Math.min(my, Math.max(-my, zoom.y));
+  img.style.transform = `translate(${zoom.x}px, ${zoom.y}px) scale(${zoom.s})`;
+  $("#zoom-range").value = Math.round((Math.log(zoom.s) / Math.log(ZOOM_MAX)) * 100);
+  $("#zoom-level").textContent = img.naturalWidth && w ? `${Math.round((w * zoom.s * 100) / img.naturalWidth)}%` : "";
+  stage.classList.toggle("zoomed", zoom.s > 1.001);
+}
+
+// Zoom to scale s, keeping the image point under (clientX, clientY) fixed.
+function setZoom(s, clientX, clientY) {
+  const r = $("#stage").getBoundingClientRect();
+  const cx = r.left + r.width / 2;
+  const cy = r.top + r.height / 2;
+  const qx = (clientX ?? cx) - cx;
+  const qy = (clientY ?? cy) - cy;
+  s = Math.min(ZOOM_MAX, Math.max(1, s));
+  zoom.x = qx - ((qx - zoom.x) * s) / zoom.s;
+  zoom.y = qy - ((qy - zoom.y) * s) / zoom.s;
+  zoom.s = s;
+  applyZoom();
+}
+
+function resetZoom() {
+  zoom.s = 1;
+  zoom.x = zoom.y = 0;
+  applyZoom();
+}
+
+function toggleActualPixels() {
+  const img = $("#full");
+  if (zoom.s > 1.001 || !img.offsetWidth) return resetZoom();
+  setZoom(Math.max(2, img.naturalWidth / img.offsetWidth));
+}
+
+function wireZoom() {
+  const img = $("#full");
+  const range = $("#zoom-range");
+  range.addEventListener("input", () => setZoom(ZOOM_MAX ** (range.value / 100)));
+  range.addEventListener("change", () => range.blur());
+  $("#zoom-in").onclick = () => setZoom(zoom.s * 1.25);
+  $("#zoom-out").onclick = () => setZoom(zoom.s / 1.25);
+  $("#zoom-level").onclick = toggleActualPixels;
+  img.addEventListener("load", applyZoom);
+  window.addEventListener("resize", applyZoom);
+  $("#stage").addEventListener("wheel", (e) => {
+    e.preventDefault();
+    setZoom(zoom.s * Math.exp(-e.deltaY * 0.002), e.clientX, e.clientY);
+  }, { passive: false });
+  img.addEventListener("pointerdown", (e) => {
+    zoom.panned = false;
+    if (zoom.s <= 1.001 || e.button !== 0) return;
+    e.preventDefault();
+    img.setPointerCapture(e.pointerId);
+    img.classList.add("panning");
+    zoom.drag = { px: e.clientX, py: e.clientY, x: zoom.x, y: zoom.y };
+  });
+  img.addEventListener("pointermove", (e) => {
+    if (!zoom.drag) return;
+    const dx = e.clientX - zoom.drag.px;
+    const dy = e.clientY - zoom.drag.py;
+    if (Math.abs(dx) + Math.abs(dy) > 3) zoom.panned = true;
+    zoom.x = zoom.drag.x + dx;
+    zoom.y = zoom.drag.y + dy;
+    applyZoom();
+  });
+  const endPan = () => {
+    zoom.drag = null;
+    img.classList.remove("panning");
+  };
+  img.addEventListener("pointerup", endPan);
+  img.addEventListener("pointercancel", endPan);
 }
 
 // ---- keyboard -----------------------------------------------------------
 
 function typing(e) {
   const t = e.target;
-  return t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable) || $("#picker").open;
+  const text = t && ((t.tagName === "INPUT" && t.type !== "range") || t.tagName === "TEXTAREA" || t.isContentEditable);
+  return text || $("#picker").open;
 }
 
 document.addEventListener("keydown", async (e) => {
@@ -639,6 +733,9 @@ document.addEventListener("keydown", async (e) => {
     else if (e.key === "ArrowRight") { e.preventDefault(); step(1); }
     else if (e.key === "Escape") closeViewer();
     else if (e.key === "i") toggleInfo();
+    else if (e.key === "+" || e.key === "=") setZoom(zoom.s * 1.25);
+    else if (e.key === "-") setZoom(zoom.s / 1.25);
+    else if (e.key === "0") resetZoom();
     else if (e.key === "Delete" && !state.source.startsWith("trash")) {
       const it = state.items[state.viewerIndex];
       await guarded(() => trashSelected([it.id]));
