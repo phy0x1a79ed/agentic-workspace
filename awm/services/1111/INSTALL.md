@@ -45,6 +45,39 @@ Deliberately **no** `kind=page` registration anywhere — so `/1111` never
 appears at `/ui/*`, in `/tools`, or in `awm services list`'s page column. Only
 `awm gateway list` shows the registration exists.
 
+## Provisioning the isolated account (one-time, by hand, as root)
+
+This service assumes the `u1111` account, its home directory, and
+`/home/u1111/bin/1111ctl.sh` already exist — it never creates them. On a new
+box:
+
+1. `useradd -m -s /bin/bash u1111`; `chmod 700 /home/u1111`.
+2. Put the app checkout at `/home/u1111/stable-diffusion-webui` (owned
+   `u1111:u1111`), with no git remote.
+3. `install -o u1111 -g u1111 -m 700 awm/services/1111/deploy/1111ctl.sh
+   /home/u1111/bin/1111ctl.sh` — the canonical control script lives at
+   `deploy/1111ctl.sh` in this dist so its fixes (see below) survive a
+   rebuild; it is not generated or templated by anything, just copied in.
+4. `printf 'setuptools<70\n' > /home/u1111/run/pip-constraints.txt` (as
+   `u1111`, after `mkdir -p ~/run`) — see the script's own comments for why.
+5. One `/etc/sudoers.d/awm-1111` rule: `tony ALL=(u1111) NOPASSWD:
+   /home/u1111/bin/1111ctl.sh start`, and the same for `stop`/`status`/
+   `restart` — four exact lines, no wildcard.
+
+`deploy/1111ctl.sh` also carries three fixes discovered getting this
+particular checkout running, worth knowing if the upstream app changes out
+from under them: its shell scripts had CRLF line endings from originating on
+a Windows checkout (worked around by invoking `bash ./webui.sh` rather than
+relying on its own shebang); a legacy `setup.py`-only dependency
+(`openai/CLIP`) breaks under a fresh `setuptools` pulled into pip's isolated
+build environment (worked around with a `PIP_CONSTRAINT`/
+`PIP_BUILD_CONSTRAINT` pin); and the app's own `--subpath` flag (which the
+script always passes, matching `register.py`'s `PREFIX`) is required for
+Gradio's generated asset links to resolve correctly behind the gateway's
+`/1111` prefix — without it the page loads but every JS/CSS asset 404s in
+the browser, since Gradio emits them relative to a root the proxy doesn't
+actually serve from.
+
 ## Install
 
 Same shape as every other feature service:
