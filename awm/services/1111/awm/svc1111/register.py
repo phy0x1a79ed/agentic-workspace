@@ -47,7 +47,10 @@ async def hold_registration() -> None:
         "name": SERVICE_NAME,
         "prefix": PREFIX,
         "url": f"http://127.0.0.1:{WEBUI_PORT}",
-        "strip_prefix": False,
+        # Gradio serves at its own root, not under /1111 — without this the
+        # gateway forwards the full "/1111/..." path upstream and every
+        # request 404s against Gradio's own routes.
+        "strip_prefix": True,
     }
     async with httpx.AsyncClient(timeout=10) as client:
         resp = await client.post(f"{hub_url}/hub/register", json=payload)

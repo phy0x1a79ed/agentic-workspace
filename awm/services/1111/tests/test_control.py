@@ -97,7 +97,7 @@ def test_register_posts_url_only_payload_no_page_fields(monkeypatch):
         "name": "1111",
         "prefix": "/1111",
         "url": f"http://127.0.0.1:{register.WEBUI_PORT}",
-        "strip_prefix": False,
+        "strip_prefix": True,
     }
     assert "static" not in posted["json"]
     assert "dir" not in posted["json"]
