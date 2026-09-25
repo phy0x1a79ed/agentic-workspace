@@ -200,7 +200,10 @@ STAMP_DIR="$FORK_DIR/.awm"          # already excluded by the bare repo
 STAMP="$STAMP_DIR/trilium-build-stamp"
 HEAD_SHA="$(git -C "$FORK_DIR" rev-parse HEAD)"
 DIRTY=0
-[ -z "$(git -C "$FORK_DIR" status --porcelain)" ] || DIRTY=1
+# Not `data` and not `live`: the vault shares this worktree, and a pending pin
+# or a running database is not a source change. `instances.NOT_SOURCE` spells
+# the same two, and the stamp is compared against what it reports.
+[ -z "$(git -C "$FORK_DIR" status --porcelain -- ':!data' ':!live')" ] || DIRTY=1
 LOCK_SHA="$(sha256sum "$FORK_DIR/pnpm-lock.yaml" | cut -d' ' -f1)"
 WANT="head=$HEAD_SHA dirty=$DIRTY lock=$LOCK_SHA"
 

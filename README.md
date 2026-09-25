@@ -21,9 +21,10 @@ checkout the service account can read, and make the checkout's `.awm/`
 (gitignored) a symlink into a state dir the service account owns. Install
 with `AWM_SERVICES` set to the services the host needs. `setup.sh` refuses
 to run when `AWM_WORKSPACE` names a different checkout, so a second install
-cannot land in a home directory by accident. `scripts/sirius/` is the worked
-example — see [`scripts/sirius/README.md`](scripts/sirius/README.md) for how that
-host is provisioned, deployed to, verified and rolled back.
+cannot land in a home directory by accident. sirius, the public host behind
+`nexus.tony-xy-liu.com`, is the worked example. Its provisioning lives in its
+own repository, `phy0x1a79ed/cloud`, under `VMs/digital_ocean/sirius/`, because
+none of it is portable and awm installs on many machines.
 
 ## Manual Install
 
@@ -440,8 +441,8 @@ imported source.
         │                 │                  │
    ┌────▼─────┐     ┌──────▼──────┐    ┌──────▼──────┐
    │ scopes   │     │ agents      │    │ artifacts / │   …each an out-of-proc
-   │ service  │     │ service     │    │ skills /    │    feature service with
-   │ (+own DB)│     │ (+own DB)   │    │ discord     │    its own DB + run.sh
+   │ service  │     │ service     │    │ notes /     │    feature service with
+   │ (+own DB)│     │ (+own DB)   │    │ tether      │    its own DB + run.sh
    └──────────┘     └─────────────┘    └─────────────┘
 ```
 
@@ -459,7 +460,7 @@ awm/                          # nested tree of pip dists (PEP 420 namespace layo
   service_components/         # shared Python imported source (no install.sh)
     config/  persistence/  gatewayclient/  agentcore/
   services/                   # one folder per feature service (discovered)
-    scopes/  agents/  artifacts/  skills/  discord/
+    scopes/  agents/  artifacts/  dev/  tether/
       run.sh                  # the only entry the gateway runs (bash run.sh)
       INSTALL.md  install.sh
   ui_components/<name>/       # shared Svelte libraries, imported as @awm/<name>

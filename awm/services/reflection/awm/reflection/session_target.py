@@ -32,6 +32,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
+from awm.claudedaemon import DaemonLane
+
 log = logging.getLogger("awm.reflection.session_target")
 
 # Overridable for tests; both are user-private (mode 0600) in practice.
@@ -62,18 +64,10 @@ class TmuxLane:
     hosting: str = "tmux"
 
 
-@dataclass(frozen=True)
-class DaemonLane:
-    """A background session whose PTY is hosted by the Claude Code daemon."""
-    sock: str
-    auth: str
-    session_id: str
-    repl_pid: int
-    name: Optional[str] = None
-    cli_version: Optional[str] = None
-    dec_modes: tuple[int, ...] = ()
-    kind: str = "daemon"
-    hosting: str = "background"
+# DaemonLane is imported above rather than declared here. It moved to
+# `awm.claudedaemon` with the protocol that consumes it, because two services
+# now speak that protocol and only this one resolves callers. It stays in this
+# module's namespace so `session_target.DaemonLane` keeps meaning what it did.
 
 
 def _proc_start(pid: int) -> Optional[str]:

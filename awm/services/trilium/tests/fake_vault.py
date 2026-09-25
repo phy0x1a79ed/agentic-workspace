@@ -16,6 +16,28 @@ from __future__ import annotations
 import httpx
 
 
+#: What Trilium reports as an attachment's length.
+#:
+#: Text is decoded and stored in a SQLite TEXT column, and the length reported
+#: back is `LENGTH()` over that, which counts characters. Modelling it as bytes
+#: made this fake unable to reproduce a real defect: every text attachment
+#: holding one non-ASCII character was re-uploaded on every pass, and the suite
+#: stayed green throughout.
+_STRING_MIMES = frozenset({
+    "application/javascript", "application/x-javascript", "application/json",
+    "application/x-sql", "image/svg+xml", "application/inkml+xml",
+})
+
+
+def _content_length(blob: bytes, mime: str) -> int:
+    if not (mime.startswith("text/") or mime in _STRING_MIMES):
+        return len(blob)
+    try:
+        return len(blob.decode("utf-8"))
+    except UnicodeDecodeError:
+        return len(blob)
+
+
 class FakeVault:
     """Just enough ETAPI to hold a note tree, its labels and its files."""
 
@@ -29,6 +51,9 @@ class FakeVault:
         #: attachment id -> {"ownerId", "title", "mime", "role", "blob"}
         self.attachments: dict[str, dict] = {}
         self.calls: list[tuple[str, str]] = []
+        #: The query parameters of every search, so a test can assert what the
+        #: adapter asked ETAPI for rather than only what came back.
+        self.searches: list[dict] = []
         self.next_id = 0
 
     # -- helpers a test may use directly -------------------------------------
@@ -128,6 +153,7 @@ class FakeVault:
         """Only the one query shape this service builds: `#name`, optionally
         restricted to a subtree. Anything else is a test writing a query the
         code does not."""
+        self.searches.append(dict(params))
         query = str(params.get("search", "")).strip()
         if not query.startswith("#") or " " in query:
             raise AssertionError(f"fake vault cannot answer {query!r}")
@@ -171,7 +197,7 @@ class FakeVault:
         a = self.attachments[attachment_id]
         return {"attachmentId": attachment_id, "ownerId": a["ownerId"],
                 "title": a["title"], "mime": a["mime"], "role": a["role"],
-                "contentLength": len(a["blob"])}
+                "contentLength": _content_length(a["blob"], a["mime"])}
 
     def _attachments(self, method: str, tail: str, kw: dict, req) -> httpx.Response:
         if method == "POST":

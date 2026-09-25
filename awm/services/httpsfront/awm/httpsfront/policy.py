@@ -7,7 +7,7 @@ is not listed here is a 404 whether or not it carries a session, so nothing
 else in awm — the hub control plane, ``/invoke``, other services, the
 fileviewer root — is even discoverable from outside.
 
-Six answers per path:
+Seven answers per path:
 
 * ``DENY``  — not part of the public surface. 404.
 * ``OPEN``  — allowed for any authenticated session.
@@ -30,6 +30,17 @@ Six answers per path:
   slice refuses as OPEN and forward them to the *gateway* — the collision
   ``penpot.refused`` exists to answer. A branch where that list is the only gate
   needs this verdict as well, not the prefix on its own.
+* ``TETHER`` — the remote-assistance relay. The **second** verdict allowed with
+  no session at all, and the reason is the tool's whole point: the person on the
+  other end is a friend being helped with their own machine, and one who needed
+  an awm account first is one this could not help. What keeps it narrow is not
+  trust in that person but the relay's own shape — it refuses the two operator
+  routes without its own bearer, answers every refusal with an identical 404 so
+  its surface cannot be mapped by the shape of a decline, and issues a session
+  only to an authenticated operator, so nothing reachable here can be brought
+  into existence from outside. The mount is an allow-list of exact path grammars
+  rather than a prefix, so a slot the relay never issued is turned away here
+  before it costs a socket. See :mod:`awm.httpsfront.tether`.
 * ``PENPOT`` — Penpot's own root-level frontend paths, gated the same way as
   ``VAULT`` and for the same reason: a person's design files, not a machine's.
   Penpot's credential commands are the exception: they answer ``DENY``, because
@@ -45,7 +56,7 @@ from __future__ import annotations
 import re
 from enum import Enum
 
-from awm.httpsfront import penpot, slices, vault
+from awm.httpsfront import penpot, slices, tether, vault
 from awm.httpsfront.auth import PEER_SUB
 
 
@@ -55,6 +66,7 @@ class Verdict(str, Enum):
     USER = "user"
     VAULT = "vault"
     SLICE = "slice"
+    TETHER = "tether"
     PENPOT = "penpot"
 
 
@@ -121,6 +133,14 @@ def classify(path: str) -> Verdict:
     # appears in any list below.
     if slices.owns(path):
         return Verdict.SLICE
+    # Same position, same reasoning: a separate upstream whose paths must not
+    # be shadowed by anything below. Both branches are needed and neither is
+    # redundant — `owns` is an allow-list of exact shapes, so `refused` is what
+    # keeps a *near*-miss inside the mount from falling through to the gateway.
+    if tether.owns(path):
+        return Verdict.TETHER
+    if tether.refused(path):
+        return Verdict.DENY
     # Same reasoning, same position, for Penpot. The two mounts are disjoint
     # by construction now that each has a prefix of its own, so the order
     # between them decides nothing.
@@ -161,6 +181,12 @@ def allows(path: str, sub: str | None) -> bool:
         # No subject, by design: a slice is reached by holding the link. The
         # token is the credential, and it is checked where credentials are
         # kept rather than here.
+        return True
+    if verdict is Verdict.TETHER:
+        # No subject either, and for a sharper reason: the caller is the person
+        # being helped, on their own machine, and requiring an awm account of
+        # them would defeat the tool. The relay does its own gating — see the
+        # module docstring and :mod:`awm.httpsfront.tether`.
         return True
     if verdict is Verdict.DENY or not sub:
         return False

@@ -89,7 +89,7 @@ hosted:
 | `kind` | Backend | Reached via |
 |---|---|---|
 | `interactive` | `tmux_inject` | the pane whose process subtree contains the pid |
-| `bg` | `daemon_inject` | the PTY socket in `~/.claude/daemon/roster.json` |
+| `bg` | `awm.claudedaemon` | the PTY socket in `~/.claude/daemon/roster.json` |
 
 Both are exact lookups. Anything that does not resolve — no session record, a
 recycled pid whose `procStart` disagrees with `/proc`, an interactive session not

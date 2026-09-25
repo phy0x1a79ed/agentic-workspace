@@ -45,7 +45,8 @@ def status() -> dict:
         "penpot_exporter_url": EC.DEFAULT_EXPORTER_URL,
         # Two strings that live in two files and have to agree: this one, and
         # the exporter container's own PENPOT_PUBLIC_URI in
-        # scripts/sirius/etc/penpot/docker-compose.sirius.yml. Nothing else
+        # docker-compose.sirius.yml, which the host's provisioning
+        # repository owns and installs at /etc/awm/penpot/. Nothing else
         # compares them, and a mismatch is not an error -- it serves a render
         # with the images and fonts stripped out of it. Reported here so the
         # comparison is one command instead of two file reads.
@@ -113,10 +114,11 @@ def seed_demo(*, token: str | None = None, team: str | None = None) -> dict:
 
     ``token`` is a Penpot session belonging to a real person, which is how
     this authors as one. The render account is a read-only member of the
-    shared team on purpose -- see ``scripts/sirius/penpot-team.sh`` -- so
+    shared team on purpose -- see ``penpot-team.sh`` in the host's
+    provisioning repository -- so
     without a token the seed can read the demo but not create it. ``awm auth
     penpot-session --username <name>`` is where the token comes from, and
-    ``scripts/sirius/demo-chain.sh`` is what fetches it.
+    ``demo-chain.sh`` there is what fetches it.
     """
     with EC.ExporterClient(token=token) as client:
         return D.seed(client, team=team)

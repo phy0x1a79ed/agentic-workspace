@@ -1,21 +1,21 @@
 """The mirrored library on disk: what `pull` writes and `apply` reads.
 
-Two jobs sit either side of this module, and putting a file between them is
-what makes the mirror portable. `pull` needs the machine the Zotero desktop is
-on; `apply` needs the machine the vault is on; today those are two different
-machines, and on sirius they can never be the same one. A bundle is the thing
-that travels — versioned by the commit that versions it, pinned by DVC like any
-other data in this workspace, and carried to another node by merging a branch
-rather than by a courier written for the purpose.
+**A full picture of every library, always — and that is what lets the read be
+partial.** `apply` retires a paper because the bundle no longer names it, so
+absence here is load-bearing. `fold` is the seam that keeps both true: a window
+read is merged into the library this file already describes, and nothing on the
+far side of that merge knows a read can be partial.
 
-It also makes the sync auditable. Zotero's own state is not diffable and the
-vault's is a SQLite file; the bundle in between is JSON, so `git log -p` says
-what changed in the library and when.
+The file also carries the cursor. `versions` holds one per library, so a node
+that loses its service state has not lost its place, and `whole_read` holds when
+each library was last read whole — outside the three keys `digest` covers,
+because a timestamp inside them would make every node re-apply the whole mirror
+to prove nothing had changed.
 
 **Shape.**
 
 ```
-data/zotero/
+data/vault/zotero/
   library.json          the normalized items and collections, plus the version
   files/<key>/<name>    the stored attachments, exactly as Zotero filed them
 ```
@@ -36,7 +36,9 @@ would silently make one paper overwrite another.
 
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 import shutil
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -45,8 +47,9 @@ from typing import Any, Iterable
 
 #: The chunk, relative to the vault scope. `data/` is what DVC pins in this
 #: workspace, and the whole point is that the bytes live in the shared cache
-#: rather than in git.
-CHUNK = "data/zotero"
+#: rather than in git. `data/vault/` is the vault's corner of the Trilium
+#: project, beside the snapshots the trilium service pins.
+CHUNK = "data/vault/zotero"
 
 LIBRARY_JSON = "library.json"
 FILES_DIR = "files"
@@ -118,8 +121,17 @@ class Item:
     collections: list[str] = field(default_factory=list)
     #: attachment key -> filename, for the ones whose bytes are on disk.
     files: dict[str, str] = field(default_factory=dict)
-    #: Zotero's own child notes, as HTML.
-    notes: list[str] = field(default_factory=list)
+    #: Zotero's own child notes: the note's own key -> its HTML.
+    #:
+    #: **Keyed rather than listed, and that is what makes a partial read safe.**
+    #: A child note is its own item with its own version, so adding one to a
+    #: paper does not move that paper. A window read therefore carries the note
+    #: without its parent, and a read that carries the parent may carry none of
+    #: its notes. Against a bare list neither case can be merged: there is no
+    #: way to say which entry a note replaces, so the only options were to lose
+    #: the notes that did not arrive or to fetch the parent's children back over
+    #: the network. Against keys both are a dictionary update.
+    notes: dict[str, str] = field(default_factory=dict)
 
     @property
     def ref(self) -> str:
@@ -150,6 +162,11 @@ def normalize(items: Iterable[dict], collections: Iterable[dict],
     """
     refs: dict[str, Item] = {}
     children: list[dict] = []
+    #: parent key -> {note key: HTML}, for notes whose parent is not in this
+    #: batch. Empty for a whole read and ordinary for a window: a child note
+    #: carries its own version, so adding one to a paper does not move that
+    #: paper and the paper does not come with it.
+    orphans: dict[str, dict[str, str]] = {}
 
     for raw in items:
         data = raw.get("data") or {}
@@ -170,19 +187,33 @@ def normalize(items: Iterable[dict], collections: Iterable[dict],
                          or data.get("bookTitle")
                          or data.get("proceedingsTitle") or "").strip(),
             abstract=(data.get("abstractNote") or "").strip(),
-            tags=[t["tag"] for t in data.get("tags") or [] if t.get("tag")],
-            collections=list(data.get("collections") or []))
+            # Sorted, because both sit inside the fingerprint that decides
+            # whether a note is rewritten, and neither is read in order by
+            # anything downstream. Left in the service's order, the same
+            # library state read twice produces two different records: 44 of
+            # 823 papers moved that way between two reads at one version.
+            tags=sorted({t["tag"] for t in data.get("tags") or []
+                         if t.get("tag")}),
+            collections=sorted(set(data.get("collections") or [])))
 
     for data in children:
-        parent = refs.get(data.get("parentItem") or "")
+        parent_key = data.get("parentItem") or ""
+        parent = refs.get(parent_key)
         if parent is None:
+            # Kept rather than dropped, so a caller merging a window can put it
+            # on the paper the bundle already holds. A whole read never reaches
+            # here for a note whose parent it can see, and one whose parent it
+            # cannot see belongs to another library or to the trash.
+            if (parent_key and data.get("itemType") == "note"
+                    and data.get("note")):
+                orphans.setdefault(parent_key, {})[data["key"]] = data["note"]
             continue
         if data.get("itemType") == "attachment":
             name = stored.get(data["key"])
             if name:
                 parent.files[data["key"]] = name
         elif data.get("itemType") == "note" and data.get("note"):
-            parent.notes.append(data["note"])
+            parent.notes[data["key"]] = data["note"]
 
     tree = [{"key": c["data"]["key"],
              "ref": f"{library}/{c['data']['key']}",
@@ -193,16 +224,142 @@ def normalize(items: Iterable[dict], collections: Iterable[dict],
             for c in collections if (c.get("data") or {}).get("key")]
 
     for item in refs.values():
-        item.collections = [f"{library}/{k}" for k in item.collections]
+        item.collections = sorted(f"{library}/{k}" for k in item.collections)
 
-    return {"collections": tree, "items": [i.as_json() for i in refs.values()]}
+    return {"collections": tree, "items": [i.as_json() for i in refs.values()],
+            "orphan_notes": orphans}
 
 
-def merge(parts: list[dict[str, Any]], versions: dict[str, int]) -> dict[str, Any]:
-    """One library payload per library, folded into the bundle's shape."""
-    return {"pulled": _stamp(), "versions": dict(versions),
-            "collections": [c for p in parts for c in p["collections"]],
-            "items": [i for p in parts for i in p["items"]]}
+def notes_of(record: dict[str, Any]) -> dict[str, str]:
+    """A record's child notes as a mapping, whatever shape it was written in.
+
+    A bundle written before notes carried their keys holds a bare list. Such a
+    record cannot be merged — nothing says which entry an arriving note replaces
+    — so it is treated as holding none, and the whole read that a bundle with no
+    whole-read stamp is due rebuilds it from the library. That read is not a
+    hope: `_stale` returns true for a library with no stamp, which is every
+    library in a bundle written by the older code.
+
+    Here rather than at the point of reading the file, because a silent upgrade
+    on load would hide the one pass where the vault's notes come back.
+    """
+    notes = record.get("notes")
+    return dict(notes) if isinstance(notes, dict) else {}
+
+
+def settle(record: dict[str, Any]) -> dict[str, Any]:
+    """A record with its empty fields dropped, the way `Item.as_json` drops them.
+
+    A merged record and a freshly read one must agree on which fields are absent
+    as well as on their values, because the fingerprint that decides whether a
+    note is rewritten is taken over the whole record. A record carrying an empty
+    mapping where a whole read would have omitted the key is a different record.
+    """
+    return {k: v for k, v in record.items() if v not in ("", [], {})}
+
+
+def fold(previous: dict[str, Any], window: dict[str, Any],
+         gone_items: Iterable[str], gone_collections: Iterable[str], *,
+         library: str) -> dict[str, Any]:
+    """One library's records, brought up to date by a window read.
+
+    **The bundle stays a full picture of the library. Only the read is
+    partial.** Everything downstream of here — and in particular the pass that
+    retires a paper because the bundle no longer names it — goes on seeing a
+    whole library, so none of it has to learn that a read can be partial.
+
+    Four rules, and the second is the one that is easy to get wrong:
+
+    - a paper in the window replaces the record held for it;
+    - its notes do not. They are the notes already held, updated by whichever
+      notes arrived, because a window carrying a paper carries only the notes
+      that changed with it. Taking them wholesale drops the rest, and the
+      fingerprint then says the shortened note is current;
+    - a note whose paper did not change lands on the paper already held, which
+      is what makes adding a note to an existing paper cost no request;
+    - a key that left is dropped, both as a paper and as a note on whichever
+      paper holds it.
+
+    `previous` is the whole bundle as last written, not this library's share of
+    it. Records belonging to other libraries are ignored here and carried by
+    `_kept`, so a caller cannot accidentally fold one library's window onto
+    another library's papers.
+    """
+    mine = {r["ref"]: r for r in previous.get("items") or []
+            if r.get("library") == library}
+    folders = {c["ref"]: c for c in previous.get("collections") or []
+               if c.get("library") == library}
+
+    for record in window.get("items") or []:
+        held = mine.get(record["ref"]) or {}
+        notes = {**notes_of(held), **notes_of(record)}
+        mine[record["ref"]] = settle({**record, "notes": notes})
+
+    for parent_key, arrived in (window.get("orphan_notes") or {}).items():
+        held = mine.get(f"{library}/{parent_key}")
+        if held is None:
+            # The paper is not in this bundle: another library's, or trashed.
+            continue
+        mine[held["ref"]] = settle({**held, "notes": {**notes_of(held),
+                                                       **arrived}})
+
+    for collection in window.get("collections") or []:
+        folders[collection["ref"]] = collection
+
+    for key in gone_items:
+        ref = f"{library}/{key}"
+        mine.pop(ref, None)
+        # The same key may name a child note rather than a paper, and nothing
+        # in the answer says which. Removing it from wherever it is held costs
+        # a walk and gets both cases right.
+        for record in list(mine.values()):
+            notes = notes_of(record)
+            if key in notes:
+                notes.pop(key)
+                mine[record["ref"]] = settle({**record, "notes": notes})
+
+    for key in gone_collections:
+        folders.pop(f"{library}/{key}", None)
+
+    return {"collections": list(folders.values()),
+            "items": list(mine.values())}
+
+
+def merge(parts: list[dict[str, Any]], versions: dict[str, int],
+          whole_read: dict[str, str] | None = None) -> dict[str, Any]:
+    """One library payload per library, folded into the bundle's shape.
+
+    Ordered by `ref`, because Zotero does not answer in a stable order and two
+    reads of an unchanged library came back as two different files. Sorting
+    keys alone does not fix that — these are lists. What depends on it: the
+    bundle's digest, which is how a node that only applies decides it has
+    nothing to do. An order-sensitive digest makes every pull look like a
+    changed library and re-walks the whole mirror to prove it was not.
+    """
+    out = {"pulled": _stamp(), "versions": dict(versions),
+           "collections": _by_ref(c for p in parts for c in p["collections"]),
+           "items": _by_ref(i for p in parts for i in p["items"])}
+    # Outside the three keys `digest` covers, deliberately. A timestamp inside
+    # them would make every node re-apply the whole mirror to prove that nothing
+    # had changed, every time a library was read whole.
+    if whole_read:
+        out["whole_read"] = dict(whole_read)
+    return out
+
+
+def _by_ref(records: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Sorted by `ref`, and one record per `ref`.
+
+    The deduplication is not tidiness. Sorting is stable, so a later part
+    carrying a record another part already had leaves *both* in the list rather
+    than one replacing the other. Nothing downstream would raise: the apply
+    would visit the paper twice, stamp it from whichever copy came second, and
+    over-count the library — which silently disarms the check that watches for
+    a keyed subtree stranded elsewhere in the vault, because that check compares
+    a whole-vault count against this one.
+    """
+    latest = {r["ref"]: r for r in records}
+    return [latest[ref] for ref in sorted(latest)]
 
 
 class Bundle:
@@ -229,13 +386,42 @@ class Bundle:
         starts."""
         return {k: int(v) for k, v in (self.read().get("versions") or {}).items()}
 
+    @property
+    def digest(self) -> str:
+        """A fingerprint of the library this bundle holds.
+
+        Over the library's content and not over the file, because `pulled` is a
+        timestamp that moves whenever somebody looks at Zotero. Digesting the
+        file would make a node re-apply the whole mirror — thousands of round
+        trips — to prove that nothing had changed.
+        """
+        library = self.read()
+        blob = json.dumps({k: library.get(k)
+                           for k in ("versions", "collections", "items")},
+                          sort_keys=True, ensure_ascii=False).encode("utf-8")
+        return hashlib.sha256(blob).hexdigest()[:16]
+
     def write(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Replace `library.json`, never write into it.
+
+        Once a pull has been pinned, this file is a read-only hardlink into the
+        shared DVC cache. Writing in place fails outright with `Permission
+        denied` — and if the mode ever allowed it, the bytes would land inside
+        the cache object itself and corrupt it for every other scope and every
+        commit that pins it. Renaming a new file over the link breaks the link
+        and leaves the cached object alone.
+
+        It is also what makes the file safe to `rsync` while a pass is running:
+        a reader sees the whole old bundle or the whole new one.
+        """
         self.root.mkdir(parents=True, exist_ok=True)
         # Sorted and indented so the diff is the diff in the library, not in
         # whatever order the API happened to answer in.
-        self.library_json.write_text(
-            json.dumps(payload, indent=2, sort_keys=True,
-                       ensure_ascii=False) + "\n", "utf-8")
+        blob = json.dumps(payload, indent=2, sort_keys=True,
+                          ensure_ascii=False) + "\n"
+        staged = self.library_json.with_name(self.library_json.name + ".new")
+        staged.write_text(blob, "utf-8")
+        os.replace(staged, self.library_json)
         return payload
 
     def file_for(self, ref: str, name: str) -> Path:

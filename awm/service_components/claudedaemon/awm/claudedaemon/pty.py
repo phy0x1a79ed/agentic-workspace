@@ -39,10 +39,11 @@ this module's business — it lives in the session's own status record, which
 :mod:`awm.reflection.inject` reads after the commit and which says the same thing
 whichever pty the session is hosted on.
 
-This module knows the protocol and nothing else. Which session to reach is
-:mod:`awm.reflection.session_target`'s job, retrying is
-:mod:`awm.reflection.inject`'s, and waiting for completion is
-:mod:`awm.reflection.watcher`'s.
+This module knows the protocol and nothing else. Deciding which session a
+caller may reach belongs to the service that calls it — for ``reflection`` that
+is :mod:`awm.reflection.session_target`, and refusing a caller it cannot
+identify is that service's whole purpose. Retrying and waiting for completion
+are likewise the caller's.
 """
 from __future__ import annotations
 
@@ -54,9 +55,9 @@ import time
 from contextlib import contextmanager
 from typing import Callable, Iterator, Optional
 
-from awm.reflection import session_target
+from awm.claudedaemon.lane import DaemonLane
 
-log = logging.getLogger("awm.reflection.daemon_inject")
+log = logging.getLogger("awm.claudedaemon.pty")
 
 # Frame types.
 _RAW = 0x00
@@ -124,7 +125,7 @@ class _SocketLike:  # pragma: no cover - typing shim only
     def close(self) -> None: ...
 
 
-def _open_unix(path: str) -> _SocketLike:
+def open_unix(path: str) -> _SocketLike:
     s = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
     s.settimeout(5.0)
     try:
@@ -169,8 +170,8 @@ class Connection:
     Pings that do arrive while we are connected are answered anyway.
     """
 
-    def __init__(self, target: session_target.DaemonLane, *,
-                 opener: Opener = _open_unix,
+    def __init__(self, target: DaemonLane, *,
+                 opener: Opener = open_unix,
                  sleep: Callable[[float], None] = time.sleep,
                  clock: Callable[[], float] = time.monotonic) -> None:
         self._target = target
@@ -381,8 +382,14 @@ class Connection:
         self.check_not_rejected()
 
 
-def _connect(target: session_target.DaemonLane, *, opener: Opener,
-             sleep: Callable[[float], None] = time.sleep) -> Connection:
+def connect(target: DaemonLane, *, opener: Opener = open_unix,
+            sleep: Callable[[float], None] = time.sleep) -> Connection:
+    """Open and authenticate one connection, and hand it back still open.
+
+    `open_lane` is the shape to reach for. This is for a caller that has to hold
+    the connection across several reads and presses, which is what reading a TUI
+    footer takes.
+    """
     conn = Connection(target, opener=opener, sleep=sleep)
     try:
         conn.handshake()
@@ -394,7 +401,7 @@ def _connect(target: session_target.DaemonLane, *, opener: Opener,
 
 
 @contextmanager
-def open_lane(lane: session_target.DaemonLane, *, opener: Opener = _open_unix,
+def open_lane(lane: DaemonLane, *, opener: Opener = open_unix,
               sleep: Callable[[float], None] = time.sleep
               ) -> Iterator[Connection]:
     """Open ``lane`` for writing, on a connection that identifies its far end.
@@ -409,7 +416,7 @@ def open_lane(lane: session_target.DaemonLane, *, opener: Opener = _open_unix,
     per attempt, rather than reusing one connection across retries, is what keeps
     a retry from being a second chance to type into a stranger.
     """
-    conn = _connect(lane, opener=opener, sleep=sleep)
+    conn = connect(lane, opener=opener, sleep=sleep)
     try:
         yield conn
     finally:

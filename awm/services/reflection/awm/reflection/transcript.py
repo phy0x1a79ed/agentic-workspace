@@ -50,6 +50,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -68,6 +69,20 @@ PROJECTS_DIR = Path(os.path.expanduser("~/.claude/projects"))
 MAX_CATCHUP_BYTES = 1024 * 1024
 
 _QUEUE_CONSUMES = ("remove", "popAll")
+
+# Claude Code (seen on 2.1.281) records a long pasted prompt inside this envelope,
+# in the queue entry and the user entry alike. Matched literally, a resume never
+# looked delivered, and every verify miss typed the same resume in again.
+_PASTE_ENVELOPE = re.compile(
+    r'\A<pasted_content id="([^"]*)">\n(.*)\n</pasted_content id="\1">\Z',
+    re.DOTALL)
+
+
+def _unwrapped(text: str) -> str:
+    """``text`` stripped, with any paste envelope removed."""
+    text = (text or "").strip()
+    match = _PASTE_ENVELOPE.match(text)
+    return match.group(2).strip() if match else text
 
 
 def session_id_for(repl_pid: int) -> Optional[str]:
@@ -257,7 +272,7 @@ class Tail:
             for block in content if isinstance(content, list) else []:
                 if isinstance(block, dict) and block.get("type") == "tool_result":
                     self._open_tools.discard(str(block.get("tool_use_id")))
-            text = _text_of(entry).strip()
+            text = _unwrapped(_text_of(entry))
             if text and text in self._watched:
                 # The turn running this line has begun. Written by the CLI as the
                 # prompt is taken up, which for a slash command is the moment the
@@ -274,7 +289,7 @@ class Tail:
 
         if kind == "queue-operation":
             op = entry.get("operation")
-            text = (entry.get("content") or "").strip()
+            text = _unwrapped(entry.get("content"))
             if op == "enqueue":
                 if text in self._watched:
                     self._queued.add(text)
@@ -294,7 +309,7 @@ class Tail:
             if not isinstance(attachment, dict):
                 return
             if attachment.get("type") == "queued_command":
-                text = (attachment.get("prompt") or "").strip()
+                text = _unwrapped(attachment.get("prompt"))
                 if text in self._watched:
                     self._consumed.add(text)
                     self._queued.discard(text)

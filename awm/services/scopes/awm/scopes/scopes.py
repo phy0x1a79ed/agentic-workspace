@@ -344,6 +344,14 @@ def _neutralise_title(text: str) -> str:
     return (text[:80] + "…") if len(text) > 80 else text
 
 
+# How many of a scope's OWN journal entries always survive into history.md, and
+# how many project-wide entries share the rest of the file. The floor is what
+# stops a busy project from crowding a scope out of its own history.
+_OWN_JOURNAL_FLOOR = 10
+_PROJECT_JOURNAL_WINDOW = 50
+_PER_SKILL_CAP = 10
+
+
 def _generate_history_md(project: str, scope: str) -> str:
     from awm.scopes.channel import _coerce_meta
 
@@ -356,20 +364,46 @@ def _generate_history_md(project: str, scope: str) -> str:
     )
 
     dao = ScopesDAO()
+    # 'allocated' is how every scope is born and nothing promotes it to
+    # 'active', so filtering on 'active' alone named ~1 sibling in 23. Every
+    # other live-scope predicate in this service uses the pair; this was the
+    # sole outlier.
     siblings = dao.query_all(
         "SELECT a.scope FROM agents a "
         "JOIN projects p ON p.id = a.project_id "
-        "WHERE p.name=? AND a.scope!=? AND a.status='active'",
+        "WHERE p.name=? AND a.scope!=? AND a.status IN ('allocated','active')",
         (project, scope),
     )
     # Journal entries are scope_posts with kind='journal' (a scope IS the
     # channel; the debrief is a self-post). Structured fields live in meta.
-    journals = dao.query_all(
+    #
+    # TWO queries, not one. A single project-wide SELECT ... LIMIT ranks a
+    # scope's own history against every sibling's, so in a busy project a scope
+    # opens the file the startup ritual sent it to and finds none of its own
+    # work — it then re-derives what a past session already proved. Measured on
+    # awm/svc-scopes: its four entries ranked 62nd, 67th, 68th and 88th of 95.
+    own = dao.query_all(
         "SELECT id, owner_scope, body, meta, ts FROM scope_posts "
-        "WHERE owner_project=? AND kind='journal' "
-        "ORDER BY ts DESC LIMIT 50",
-        (project,),
+        "WHERE owner_project=? AND owner_scope=? AND kind='journal' "
+        "ORDER BY ts DESC LIMIT ?",
+        (project, scope, _OWN_JOURNAL_FLOOR),
     )
+    own_total = dao.query_all(
+        "SELECT COUNT(*) AS n FROM scope_posts "
+        "WHERE owner_project=? AND owner_scope=? AND kind='journal'",
+        (project, scope),
+    )[0]["n"]
+    others = dao.query_all(
+        "SELECT id, owner_scope, body, meta, ts FROM scope_posts "
+        "WHERE owner_project=? AND owner_scope!=? AND kind='journal' "
+        "ORDER BY ts DESC LIMIT ?",
+        (project, scope, _PROJECT_JOURNAL_WINDOW),
+    )
+    others_total = dao.query_all(
+        "SELECT COUNT(*) AS n FROM scope_posts "
+        "WHERE owner_project=? AND owner_scope!=? AND kind='journal'",
+        (project, scope),
+    )[0]["n"]
 
     def _parse(row):
         meta = _coerce_meta(row["meta"])
@@ -377,35 +411,62 @@ def _generate_history_md(project: str, scope: str) -> str:
         title = _neutralise_title(meta.get("title") or body)
         return meta, title
 
+    def _entry(row, *, tag_scope: bool) -> list[str]:
+        meta, title = _parse(row)
+        outcome = f" [{meta['outcome']}]" if meta.get("outcome") else ""
+        tag = f" ({row['owner_scope']})" if tag_scope else ""
+        out = [f"**[{row['id']}] {title}**{outcome}{tag}"]
+        if meta.get("deviations"):
+            out.append(f"- Deviations: {meta['deviations']}")
+        if meta.get("suggestions"):
+            out.append(f"- Suggestions: {meta['suggestions']}")
+        out.append("")
+        return out
+
+    def _omitted(shown: int, total: int) -> str | None:
+        """The line that stops a truncated file from looking complete."""
+        n = total - shown
+        if n <= 0:
+            return None
+        return (f"*+{n} older not shown — `scope_fetch project={project} "
+                f"kind=journal` to read them.*\n")
+
     sections = []
     if siblings:
         lines = ["## Active Sibling Scopes\n"]
-        for s in siblings:
-            lines.append(f"- **{s['scope']}**")
+        for s_row in siblings:
+            lines.append(f"- **{s_row['scope']}**")
+        lines.append("")
         sections.append("\n".join(lines))
 
-    if journals:
+    if own:
+        lines = [f"## This Scope's Journal ({scope})\n"]
+        for row in own:
+            lines.extend(_entry(row, tag_scope=False))
+        tail = _omitted(len(own), own_total)
+        if tail:
+            lines.append(tail)
+        sections.append("\n".join(lines))
+
+    if others:
         by_skill: dict[str, list] = {}
-        for row in journals:
+        for row in others:
             meta, _ = _parse(row)
             key = meta.get("skill_path") or "(freeform)"
             by_skill.setdefault(key, []).append(row)
-        lines = ["## Journal\n"]
+        shown = 0
+        lines = ["## Sibling Scopes' Journal\n"]
         for skill_key, entries in by_skill.items():
             lines.append(f"### Skill: {skill_key}\n")
-            for row in entries[:10]:
-                meta, title = _parse(row)
-                outcome = f" [{meta['outcome']}]" if meta.get("outcome") else ""
-                scope_tag = f" ({row['owner_scope']})" if row["owner_scope"] != scope else ""
-                lines.append(f"**[{row['id']}] {title}**{outcome}{scope_tag}")
-                if meta.get("deviations"):
-                    lines.append(f"- Deviations: {meta['deviations']}")
-                if meta.get("suggestions"):
-                    lines.append(f"- Suggestions: {meta['suggestions']}")
-                lines.append("")
+            for row in entries[:_PER_SKILL_CAP]:
+                shown += 1
+                lines.extend(_entry(row, tag_scope=True))
+        tail = _omitted(shown, others_total)
+        if tail:
+            lines.append(tail)
         sections.append("\n".join(lines))
 
-    if not sections:
+    if not own and not others:
         sections.append(
             "*No journal entries yet. They appear here after agents post them "
             "via `scope_post kind=journal`.*\n"

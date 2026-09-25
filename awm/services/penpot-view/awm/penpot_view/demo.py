@@ -127,7 +127,8 @@ def _team(client: ExporterClient, name: str) -> Mapping:
                                 if isinstance(t, Mapping)))
         raise ExporterError(
             f"no penpot team named {name!r} for this profile (has: {have}). "
-            "Run scripts/sirius/penpot-team.sh, which is what creates the "
+            "Run penpot-team.sh in the host's provisioning repository, which "
+            "creates the "
             "shared team and puts everyone in it.")
     if len(found) > 1:
         raise ExporterError(

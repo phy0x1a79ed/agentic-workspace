@@ -313,6 +313,26 @@ def cache_dir() -> Path:
     return _config.DATA_DIR / CACHE_DIRNAME
 
 
+def resolved_cache(repo_dir: Path) -> Path | None:
+    """The cache DVC *actually* resolves for this worktree, or None if it cannot say.
+
+    Not the same question as :func:`cache_dir`, which reports the cache awm
+    intends every worktree to share. A worktree awm never provisioned has no
+    ``.dvc/config.local``, and DVC then walks *up* to the first enclosing repo
+    rather than failing — so it answers with some other cache and says nothing.
+    Ask DVC rather than reading config, because only DVC knows where that walk
+    ended.
+
+    This is the difference between collecting the shared cache and collecting a
+    private one while reporting the shared path (see :func:`collect_garbage`).
+    """
+    out = _dvc(repo_dir, "cache", "dir", timeout=30)
+    if out.returncode != 0:
+        return None
+    line = (out.stdout or "").strip()
+    return Path(line) if line else None
+
+
 def legacy_data_dir(project: str) -> Path:
     """``<workspace>/data/<project>`` — the pre-DVC shared directory.
 
@@ -801,7 +821,17 @@ def collect_garbage(repos: list[Path], *, dry_run: bool = True,
 
     * The cache is shared by **every** project, so a collection that does not
       name all of them treats the others' content as garbage. Hence ``repos`` is
-      required and plural, and DVC is told about each with ``-p``.
+      required and plural. That guard was defeated for months by passing one
+      ``-p`` per repo: the option is ``nargs="*"``, so the flags overwrote and
+      DVC kept exactly the last one. One flag, every path.
+    * **The working directory decides which cache is collected**, and it is
+      chosen here rather than taken from the head of the list. DVC deletes from
+      the cache the cwd repo resolves to; a worktree awm never provisioned
+      resolves to a private one, so the run collects nothing and reports
+      success. Hence :func:`resolved_cache` and the refusal below.
+    * The cwd repo is then **removed** from ``-p``. DVC locks the working
+      directory and every listed repo, so naming it twice deadlocks against
+      itself — and it is in the keep set regardless.
     * The safe revision set is ``--all-commits``, **not** ``--all-branches``.
       The latter keeps only branch *tips*, which would delete content referenced
       by historical commits — silently breaking the consistent-snapshot property
@@ -829,22 +859,63 @@ def collect_garbage(repos: list[Path], *, dry_run: bool = True,
                 f"'all-branches' keeps branch tips ONLY and 'workspace' keeps "
                 f"just what is checked out right now."}
 
-    args = ["gc", f"--{keep}", "-f"]
+    # Which cache gets collected is decided by the working directory, not by
+    # anything we pass, so choose it rather than inheriting repos[0] — that is a
+    # sorting accident, and a worktree awm never provisioned resolves to its own
+    # private cache while this reply names the shared one.
+    shared = cache_dir()
+    cwd_repo: Path | None = None
+    elsewhere: list[dict] = []
     for r in repos:
-        args += ["-p", str(r)]
+        got = resolved_cache(r)
+        if got is not None and got.resolve() == shared.resolve():
+            if cwd_repo is None:
+                cwd_repo = r
+        else:
+            elsewhere.append({"repo": str(r), "cache": str(got) if got else None})
+    if cwd_repo is None:
+        return {"result": "refused", "detail":
+                f"none of the {len(repos)} named worktrees resolves to the shared "
+                f"cache at {shared} — collecting from here would report on a cache "
+                f"it never looked at",
+                "shared_cache": str(shared), "resolved_elsewhere": elsewhere}
+
+    # DVC locks the working-directory repo AND every repo named in --projects, so
+    # naming the working directory in its own list takes one lock twice and aborts
+    # with "Unable to acquire lock". It is in the keep set either way: DVC collects
+    # against `[*projects, cwd]`.
+    others = [r for r in repos if r != cwd_repo]
+
+    # ONE --projects flag. It is declared `nargs="*"`, so a repeated flag
+    # overwrites and every worktree but the last silently leaves the keep set —
+    # i.e. becomes garbage. The plural argument is this function's whole guard.
+    args = ["gc", f"--{keep}", "-f"]
+    if others:
+        args += ["-p", *(str(r) for r in others)]
     if dry_run:
         args.append("--dry")
-    out = _dvc(repos[0], *args, timeout=None)
-    return {
+    out = _dvc(cwd_repo, *args, timeout=None)
+    report = {
         "result": "ok" if out.returncode == 0 else "error",
         # Stated explicitly because DVC's own output does NOT distinguish these.
         "dry_run": dry_run,
         "deleted_anything": (not dry_run) and out.returncode == 0,
         "keep": keep,
         "repos": [str(r) for r in repos],
-        "cache": str(cache_dir()),
+        # The cache actually collected, read back from the worktree we ran in —
+        # not the configured path, which is what made a private-cache run look
+        # like a clean bill of health for the shared one.
+        "cache": str(resolved_cache(cwd_repo) or shared),
+        "cwd": str(cwd_repo),
         "output": _out(out)[-2000:],
     }
+    if elsewhere:
+        # Not a refusal: DVC unions used-object hashes across every named repo
+        # before deleting from the working directory's cache, so these still
+        # protect their own content. Surfaced because a worktree that resolves
+        # somewhere else is usually one awm never provisioned.
+        report["resolved_elsewhere"] = elsewhere
+    return report
 
 
 def data_status(project: str, scope: str, worktree: Path) -> dict:

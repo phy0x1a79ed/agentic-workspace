@@ -16,8 +16,8 @@ bindings it assumes matter for safety, and what this service does and does
 not manage. Penpot's own architecture belongs to `projects/penpot` and to
 upstream's docs. The compose files themselves — image tags, memory caps,
 `PENPOT_FLAGS` — live beside the deployment they describe:
-`projects/penpot/dev/docker/images/` on a dev box, `scripts/sirius/etc/penpot/`
-for the public host. This file covers only the boundary between awm and the
+`projects/penpot/dev/docker/images/` on a dev box, and the host's own
+provisioning repository for the public host. This file covers only the boundary between awm and the
 stack.
 
 ## A person gets a Penpot account, and awm holds the credential
@@ -27,7 +27,7 @@ Penpot keeps its own accounts, teams and Postgres database, and it has no
 does not open a design file. Rather than give each person a second password,
 awm holds one on their behalf and nobody is ever shown it.
 
-1. `scripts/sirius/add-user.sh <name>` creates the Penpot profile over the
+1. The public host's `add-user.sh <name>` creates the Penpot profile over the
    backend's PREPL, then hands the password to the `auth` service.
 2. `auth` exchanges that credential for a Penpot session on demand and
    replaces it every night. Read `awm/auth/penpot.py` for the mechanics, and

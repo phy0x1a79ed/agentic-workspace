@@ -50,7 +50,7 @@ import urllib.request
 from typing import Any
 
 from awm import config
-from awm.gateway import mcp_caller
+from awm.gateway import mcp_caller, mcp_http
 
 SERVER_NAME = "awm"
 SERVER_VERSION = "0.1.0"
@@ -105,17 +105,33 @@ def _request_with_retry(
     method: str,
     path: str,
     json_body: dict | None = None,
-    max_wait: float = 10.0,
+    max_wait: float = mcp_http.RECONNECT_WINDOW,
     headers: dict[str, str] | None = None,
     params: dict[str, str] | None = None,
+    read_timeout: float | None = None,
 ) -> dict:
     """Request the local awm core, reconnecting across restarts.
 
-    On a transport error the first attempt nudges systemd to start the core,
-    then retries until ``max_wait`` so the caller's request transparently
-    survives a ``systemctl restart``. A non-2xx response is *not* retried —
-    the core answered, and that answer is the result.
+    Two failure phases, and they are not the same event:
+
+    * **Connect/send** — ``urllib`` wraps these in :class:`~urllib.error.URLError`
+      (a connect *timeout* included). Nothing was delivered, so replay is safe:
+      the first attempt nudges systemd to start the core, then we retry until
+      ``max_wait`` so the request survives a ``systemctl restart``.
+    * **Response** — waiting on ``getresponse()``/``read()`` raises a *bare*
+      :class:`TimeoutError`, outside ``URLError``. The core accepted the request
+      and is running it. Retrying would re-issue a non-idempotent ``/invoke``,
+      and ``max_wait`` is meaningless here, so raise :class:`CoreNoReply` at once.
+
+    The old catch-all caught both — ``TimeoutError`` is an ``OSError`` — which
+    is exactly how a delivered ``scope create`` came back as "daemon unreachable
+    after 10.0s" having actually waited 60.
+
+    A non-2xx response is not retried either: the core answered, and that answer
+    is the result.
     """
+    if read_timeout is None:
+        read_timeout = mcp_http.read_timeout()
     url = config.BASE_URL.rstrip("/") + path
     if params:
         url += "?" + urllib.parse.urlencode(params)
@@ -125,23 +141,30 @@ def _request_with_retry(
         body = json.dumps(json_body).encode("utf-8")
         hdrs["Content-Type"] = "application/json"
 
-    deadline = time.monotonic() + max_wait
+    started = time.monotonic()
+    deadline = started + max_wait
     last_err: Exception | None = None
     first_attempt = True
     while time.monotonic() < deadline:
         req = urllib.request.Request(url, data=body, headers=hdrs, method=method)
         try:
-            with urllib.request.urlopen(req, timeout=60.0) as r:
+            with urllib.request.urlopen(req, timeout=read_timeout) as r:
                 return json.loads(r.read().decode("utf-8"))
         except urllib.error.HTTPError as e:
             raise _HTTPStatusError(e.code, e.read().decode("utf-8", "replace")) from e
+        except TimeoutError as e:
+            # Response phase: delivered, unanswered. Never retried, and no
+            # start attempt — the core is demonstrably up, it took the request.
+            raise mcp_http.CoreNoReply(
+                time.monotonic() - started, path) from e
         except (urllib.error.URLError, ConnectionError, OSError) as e:
             last_err = e
             if first_attempt:
                 _ensure_core_running()
                 first_attempt = False
             time.sleep(0.3)
-    raise RuntimeError(f"awm daemon unreachable after {max_wait}s: {last_err}")
+    raise mcp_http.CoreUnreachable(
+        f"awm daemon unreachable after {max_wait}s: {last_err}")
 
 
 # ---------------------------------------------------------------------------
@@ -171,7 +194,10 @@ def _peer_invoke(peer_name: str, base_name: str, arguments: dict,
         headers = {"Authorization": f"Bearer {bearer}"}
         if as_:
             headers["X-Awm-As"] = as_
-        with httpx.Client(timeout=60.0, verify=ca) as cli:
+        # Same ladder as the loopback path: a peer edge is a remote verb with
+        # the same server-side budget, so only the connect leg stays short.
+        tmo = httpx.Timeout(mcp_http.read_timeout(), connect=10.0)
+        with httpx.Client(timeout=tmo, verify=ca) as cli:
             resp = cli.post(f"{edge}/invoke",
                             json={"name": base_name, "args": arguments},
                             headers=headers)
@@ -228,7 +254,8 @@ def _handle_tools_list() -> dict:
     (one loopback GET, not an ssh per peer).
     """
     data = _request_with_retry(
-        "GET", "/tools", params={"view": "domains", "peers": "1"})
+        "GET", "/tools", params={"view": "domains", "peers": "1"},
+        read_timeout=mcp_http.catalog_read_timeout())
     # The core emits the optional Tool fields it has nothing to say about as
     # explicit nulls (``annotations``, ``icons``, ``_meta``, …). The SDK proxy
     # dropped them as a side effect of round-tripping through pydantic with
@@ -297,6 +324,12 @@ def _handle_tools_call(params: dict) -> dict:
             detail = e.body or str(e)
         text = json.dumps(detail) if isinstance(detail, dict) else json.dumps({"error": detail})
         return {"content": [{"type": "text", "text": text}], "isError": False}
+    except mcp_http.CoreNoReply as e:
+        # Delivered but unanswered. Composed here because this is where the tool
+        # and verb are known; the helper only knows it waited.
+        env = mcp_http.no_reply_envelope(name, arguments.get("verb"), e.waited_s)
+        return {"content": [{"type": "text", "text": json.dumps(env)}],
+                "isError": False}
     except Exception as e:
         return {"content": [{"type": "text", "text": json.dumps({"error": str(e)})}],
                 "isError": False}
@@ -438,6 +471,19 @@ def main() -> None:
         # and serving them in the read loop would serialise every fan-out
         # behind the slowest call.
         threading.Thread(target=_dispatch, args=(msg,), daemon=True).start()
+
+    # stdin EOF: the client is gone. Leave without running interpreter
+    # finalization — a dispatch thread may still be blocked waiting on a reply,
+    # and finalizing while it holds the stdout buffer lock kills the process
+    # with `_enter_buffered_busy: could not acquire lock` and a core dump
+    # instead of an exit. Always possible; now likelier, because a call may
+    # legitimately be in flight for the whole read ceiling rather than 60s.
+    # Nothing here owns state worth unwinding — the core does.
+    try:
+        sys.stdout.flush()
+    except Exception:  # noqa: BLE001 — we are leaving either way
+        pass
+    os._exit(0)
 
 
 if __name__ == "__main__":

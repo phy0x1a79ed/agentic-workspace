@@ -1,0 +1,11 @@
+{
+ "name": "remote shell",
+ "tokens": 27170,
+ "intent": "",
+ "originCwd": "/home/tony/agentic_workspace/projects/awm/dev",
+ "cwd": "/home/tony/agentic_workspace/projects/awm/dev",
+ "firstTerminalAt": "2026-09-10T21:30:16.693Z",
+ "createdAt": "2026-09-10T19:45:04.573Z",
+ "state": "done",
+ "nameSource": "user"
+}

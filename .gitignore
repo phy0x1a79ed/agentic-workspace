@@ -41,7 +41,12 @@ frontend/node_modules/
 # npm workspace artifacts
 # package-lock.json (root + frontend/) is tracked authoritatively so a stale
 # untracked copy can't block dev's next FF — see session #334.
-node_modules/
+# No trailing slash. A *symlink* named node_modules — which every scope
+# worktree on a node that ran one npm install has — is a file to git, and a
+# trailing slash matches directories only. That left those worktrees
+# permanently dirty and refusing scope cleanup, which has no force flag
+# through the MCP surface.
+node_modules
 packages/**/dist/
 # Post-collapse layout: pages build to awm/pages/<name>/dist/ (registered with
 # the hub via `awm packages sync`, not committed).

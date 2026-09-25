@@ -354,7 +354,7 @@ class Etapi:
                           blob: bytes, role: str = "file") -> dict:
         """Attach these bytes to this note under this title, replacing what
         was there. Matched on title, because an attachment has no other stable
-        name — and re-uploaded only when the size differs, so a periodic sync
+        name — and re-uploaded only when the length differs, so a periodic sync
         does not rewrite a 20 MB PDF every pass."""
         existing = [a for a in self.attachments(owner_id)
                     if a.get("title") == title]
@@ -362,7 +362,7 @@ class Etapi:
             self.delete_attachment(extra["attachmentId"])
         if existing:
             att = existing[0]
-            if att.get("contentLength") == len(blob):
+            if att.get("contentLength") == stored_length(blob, mime):
                 return {"attachment_id": att["attachmentId"], "created": False,
                         "changed": False}
             self.set_attachment_content(att["attachmentId"], blob)
@@ -392,6 +392,39 @@ class Etapi:
     def search(self, query: str, **params: Any) -> dict:
         return self._request("GET", "/etapi/notes",
                              params={"search": query, **params}).json()
+
+
+#: Mime types Trilium stores as text even though they do not begin with
+#: `text/`. Copied from its own `STRING_MIME_TYPES`, because the rule below is
+#: only right for as long as the two agree.
+STRING_MIMES = frozenset({
+    "application/javascript", "application/x-javascript", "application/json",
+    "application/x-sql", "image/svg+xml", "application/inkml+xml",
+})
+
+
+def stored_length(blob: bytes, mime: str) -> int:
+    """How long Trilium will say this content is, once it holds it.
+
+    Not `len(blob)`. Trilium decides by mime whether content is text, and text
+    is decoded to a string before it is stored, so it lands in a SQLite TEXT
+    column. `LENGTH()` over TEXT counts characters, and the length reported back
+    on an attachment is that query. Comparing it to a byte count therefore
+    reports every text attachment holding one non-ASCII character as changed,
+    on every pass, for ever — twelve files and about thirteen megabytes per pass
+    in this vault, with nothing anywhere saying why.
+
+    **This may only ever be wrong in one direction.** Content this cannot decode
+    answers with a length nothing equals, so the caller uploads. A wrong guess
+    about an encoding costs a needless upload, which is what happened before
+    this existed. It can never make a real change look unchanged.
+    """
+    if not (mime.startswith("text/") or mime in STRING_MIMES):
+        return len(blob)
+    try:
+        return len(blob.decode("utf-8"))
+    except UnicodeDecodeError:
+        return -1
 
 
 def client() -> Etapi:
