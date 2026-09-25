@@ -142,6 +142,38 @@ def test_remove_is_the_delivery_path_not_a_drop(sessions):
     assert tail.queued("resume please") is False
 
 
+def pasted(text, paste_id="c72d"):
+    """How the CLI records a long pasted prompt, copied from a live transcript."""
+    return (f'<pasted_content id="{paste_id}">\n{text}\n'
+            f'</pasted_content id="{paste_id}">')
+
+
+def test_a_pasted_resume_is_recognised_through_its_envelope(sessions):
+    # Matched literally, the envelope made every delivered resume look lost, and
+    # each verify miss typed the same resume into the session again.
+    resume = "continue with T7 of the plan.\nState: all three heads done."
+    tail = transcript.Tail(4242)
+    tail.watch(resume)
+    append(sessions, queue("enqueue", pasted(resume)))
+    tail.poll()
+    assert tail.landed(resume) is True
+    append(sessions, queue("remove", pasted(resume)),
+           queued_command(pasted(resume)), prompt_taken_up(pasted(resume)))
+    tail.poll()
+    assert tail.consumed(resume) is True
+    assert tail.started(resume, since_ms=1_000_000) is True
+
+
+def test_an_envelope_around_other_text_is_not_a_match(sessions):
+    tail = transcript.Tail(4242)
+    tail.watch("resume please")
+    append(sessions, queue("enqueue", pasted("resume please, and more")),
+           queue("enqueue", '<pasted_content id="a">\nresume please\n'
+                            '</pasted_content id="b">'))
+    tail.poll()
+    assert tail.landed("resume please") is False
+
+
 def test_dequeue_drains_everything_outstanding(sessions):
     # A dequeue carries no content: it is the whole queue going into the turn
     # that is starting, which is how a followup queued behind /compact arrives.
