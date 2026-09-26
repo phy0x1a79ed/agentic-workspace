@@ -51,11 +51,13 @@ class TestChannelOps:
         assert journals[0].meta["outcome"] == "success"
 
     def test_search(self, scopes_workspace):
-        from awm.scopes import channel
+        from awm.scopes import channel, search_index
         channel.post("awm", "dev", author="user:alice", body="the quick brown fox", kind="message")
         channel.post("awm", "dev", author="user:alice", body="unrelated", kind="message")
+        search_index.flush()
         hits = channel.fetch(project="awm", scope="dev", query="brown")
-        assert any("brown" in p.body for p in hits)
+        assert hits[0].body == "the quick brown fox"
+        assert hits[0].to_dict()["match"]["snippet"] == "the quick brown fox"
 
     def test_get_post(self, scopes_workspace):
         from awm.scopes import channel

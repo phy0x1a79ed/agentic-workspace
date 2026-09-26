@@ -31,6 +31,7 @@ import json
 import uuid as _uuid
 from dataclasses import dataclass
 
+from awm.scopes import search_index
 from awm.scopes.dao import ScopesDAO
 from awm.scopes.identity import SYSTEM_REF, ms_to_iso, now_ms, iso_to_ms
 
@@ -57,13 +58,17 @@ class ScopePost:
     body: str
     meta: dict
     ts: str              # ISO TEXT
+    match: dict | None = None  # search hits only: {score, snippet}
 
     def to_dict(self) -> dict:
-        return {
+        d = {
             "id": self.id, "project": self.project, "scope": self.scope,
             "author": self.author, "kind": self.kind, "body": self.body,
             "meta": self.meta, "ts": self.ts,
         }
+        if self.match is not None:
+            d["match"] = self.match
+        return d
 
 
 @dataclass
@@ -253,24 +258,6 @@ def set_emitter(fn) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Embeddings (degrade gracefully)
-# ---------------------------------------------------------------------------
-
-def _index_post(post_id: str, text: str) -> None:
-    """Upsert a post embedding (source_type='post'). Silent no-op on failure."""
-    try:
-        from awm.persistence.embeddings import upsert_embedding
-        from awm.persistence.databases import get_connection
-        conn = get_connection("scopes")
-        try:
-            upsert_embedding(conn, "post", post_id, text[:500])
-        finally:
-            conn.close()
-    except Exception:
-        pass
-
-
-# ---------------------------------------------------------------------------
 # Post
 # ---------------------------------------------------------------------------
 
@@ -309,11 +296,10 @@ def post(project: str, scope: str, *, author: str, body: str,
             _delivery_sink(project, scope, post_obj)
         except Exception:
             pass
-    # Index journals + messages + goals for hybrid search (cheap; bodies are
-    # short). A goal left out here would be findable by keyword but not by
-    # meaning, which is the half that matters for retrieving one.
-    if kind in ("journal", "message", "goal") and body:
-        _index_post(pid, f"{post_obj.author} {body}")
+    if kind in search_index.INDEXED_KINDS and body:
+        search_index.index_post(pid)
+    if kind == "goal":
+        search_index.index_scope(project, scope)
     return post_obj
 
 
@@ -328,26 +314,8 @@ def get_post(post_id: str) -> ScopePost | None:
     return _row_to_post(row) if row else None
 
 
-def fetch(*, project: str | None = None, scope: str | None = None,
-          kind: str | None = None, query: str | None = None,
-          author: str | None = None, limit: int = 50, offset: int = 0,
-          before_ts: str | None = None, order: str | None = None) -> list[ScopePost]:
-    """Pull / search posts.
-
-    - ``scope`` given, no ``query`` → that channel's recent posts.
-    - ``query`` given → hybrid keyword + semantic search (within the scope if
-      given, else cross-scope).
-    - ``kind`` narrows by post kind (e.g. ``'journal'`` for debrief entries).
-    - ``author`` narrows by stored/display author ref.
-    - ``order`` ∈ ``'asc'`` | ``'desc'`` forces oldest- or newest-first. With no
-      ``order`` the default is oldest→newest for a single channel and
-      newest-first for cross-scope/search. Use ``order='desc'`` with ``limit`` to
-      pull the *last N* posts of a channel (e.g. the 5 most recent journal
-      entries / session logs).
-    """
-    dao = ScopesDAO()
-    sql = "SELECT * FROM scope_posts WHERE 1=1"
-    params: list = []
+def _post_filter(project, scope, kind, author, before_ts) -> tuple[str, list]:
+    sql, params = "", []
     if project is not None:
         sql += " AND owner_project = ?"
         params.append(project)
@@ -360,55 +328,84 @@ def fetch(*, project: str | None = None, scope: str | None = None,
     if author:
         sql += " AND author = ?"
         params.append(_author_to_stored(author))
-    if query:
-        sql += " AND body LIKE ?"
-        params.append(f"%{query}%")
     if before_ts is not None:
         bms = iso_to_ms(before_ts)
         if bms is not None:
             sql += " AND ts < ?"
             params.append(bms)
-    single_channel = scope is not None and not query
+    return sql, params
+
+
+def fetch(*, project: str | None = None, scope: str | None = None,
+          kind: str | None = None, query: str | None = None,
+          author: str | None = None, limit: int = 50, offset: int = 0,
+          before_ts: str | None = None, order: str | None = None) -> list[ScopePost]:
+    """Pull / search posts.
+
+    - ``scope`` given, no ``query`` → that channel's recent posts.
+    - ``query`` given → :func:`search`, ranked by relevance (within the scope
+      if given, else cross-scope).
+    - ``kind`` narrows by post kind (e.g. ``'journal'`` for debrief entries).
+    - ``author`` narrows by stored/display author ref.
+    - ``order`` ∈ ``'asc'`` | ``'desc'`` forces oldest- or newest-first. With no
+      ``order`` the default is oldest→newest for a single channel and
+      newest-first cross-scope. Use ``order='desc'`` with ``limit`` to
+      pull the *last N* posts of a channel (e.g. the 5 most recent journal
+      entries / session logs).
+    """
+    if query:
+        return search(project=project, scope=scope, kind=kind, query=query, author=author,
+                      limit=limit, offset=offset, before_ts=before_ts, order=order)[0]
+    where, params = _post_filter(project, scope, kind, author, before_ts)
     if order in ("asc", "desc"):
         direction = order.upper()
     else:
-        direction = "ASC" if single_channel else "DESC"
-    sql += " ORDER BY ts {} LIMIT ? OFFSET ?".format(direction)
-    params.extend([limit, offset])
-    rows = dao.query_all(sql, params)
-    posts = [_row_to_post(r) for r in rows]
+        direction = "ASC" if scope is not None else "DESC"
+    rows = ScopesDAO().query_all(
+        f"SELECT * FROM scope_posts WHERE 1=1{where} ORDER BY ts {direction} LIMIT ? OFFSET ?",
+        [*params, limit, offset])
+    return [_row_to_post(r) for r in rows]
 
-    if not query:
-        return posts
 
-    keyword_keys = {p.id for p in posts}
+def search(*, query: str, project: str | None = None, scope: str | None = None,
+           kind: str | None = None, author: str | None = None, limit: int = 50,
+           offset: int = 0, before_ts: str | None = None,
+           order: str | None = None) -> tuple[list[ScopePost], dict | None]:
+    """Posts matching ``query`` by meaning and keyword, best first, and a ``degraded`` block.
 
-    def _materialize(post_id: str):
-        r = ScopesDAO().query_one("SELECT * FROM scope_posts WHERE id=?", (post_id,))
-        if r is None:
-            return None
-        if project is not None and r["owner_project"] != project:
-            return None
-        if scope is not None and r["owner_scope"] != scope:
-            return None
-        if kind and r["kind"] != kind:
-            return None
-        return _row_to_post(r)
-
-    try:
-        from awm.persistence.embeddings import hybrid_augment
-        from awm.persistence.databases import get_connection
-        conn = get_connection("scopes")
+    The filters narrow the candidates before ranking. ``order`` re-sorts the
+    selected posts by time. A kind the index does not hold (``system``) falls
+    back to a substring match.
+    """
+    where, params = _post_filter(project, scope, kind, author, before_ts)
+    degraded = None
+    if kind and kind not in search_index.INDEXED_KINDS:
+        ids = None
+    else:
         try:
-            return hybrid_augment(
-                conn, query, source_type="post",
-                keyword_hits=posts, keyword_keys=keyword_keys,
-                materialize=_materialize,
-            )
-        finally:
-            conn.close()
-    except Exception:
-        return posts
+            res = search_index.search("post", query, allowed=f"SELECT id FROM scope_posts WHERE 1=1{where}",
+                                      params=params, limit=offset + limit)
+            ids, degraded = [h["source_id"] for h in res.hits][offset:], res.degraded
+            matches = {h["source_id"]: h for h in res.hits}
+        except Exception as exc:  # noqa: BLE001 — reported, then answered by keyword
+            ids = None
+            degraded = {"semantic": "error", "error": repr(exc)[:300], "fallback": "keyword"}
+    if ids is None:
+        rows = ScopesDAO().query_all(
+            f"SELECT * FROM scope_posts WHERE 1=1{where} AND body LIKE ?"
+            " ORDER BY ts DESC LIMIT ? OFFSET ?", [*params, f"%{query}%", limit, offset])
+        posts = [_row_to_post(r) for r in rows]
+    else:
+        marks = ",".join("?" * len(ids))
+        by_id = {r["id"]: r for r in ScopesDAO().query_all(
+            f"SELECT * FROM scope_posts WHERE id IN ({marks})", ids)} if ids else {}
+        posts = [_row_to_post(by_id[i]) for i in ids if i in by_id]
+        for p in posts:
+            h = matches[p.id]
+            p.match = {"score": h["score"], "snippet": h["snippet"]}
+    if order in ("asc", "desc"):
+        posts.sort(key=lambda p: p.ts, reverse=order == "desc")
+    return posts, degraded
 
 
 # ---------------------------------------------------------------------------
