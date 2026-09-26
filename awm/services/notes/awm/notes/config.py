@@ -21,6 +21,9 @@ from awm.config import userroot
 # Embedding namespace inside the per-service ``embeddings`` table.
 SOURCE_TYPE = "note"
 
+# How often the background backfill re-embeds notes the index is missing.
+BACKFILL_EVERY_S = 6 * 3600
+
 # How long a trashed note lingers before ``purge_expired`` hard-deletes it.
 TRASH_TTL_DAYS = 30
 

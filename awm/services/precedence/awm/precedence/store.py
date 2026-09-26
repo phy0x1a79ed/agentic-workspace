@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import logging
 import random
+import re
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
@@ -150,10 +151,13 @@ def _filtered_ids(
 
 
 def _keyword_ids(conn: sqlite3.Connection, query: str) -> list[str]:
-    rows = conn.execute(
-        "SELECT decision_id FROM decisions_fts WHERE decisions_fts MATCH ? ORDER BY rank",
-        (query,),
-    ).fetchall()
+    """FTS5 hits for ``query``; text that is not valid FTS5 syntax matches as plain words."""
+    sql = "SELECT decision_id FROM decisions_fts WHERE decisions_fts MATCH ? ORDER BY rank"
+    try:
+        rows = conn.execute(sql, (query,)).fetchall()
+    except sqlite3.OperationalError:
+        words = " ".join(f'"{t}"' for t in re.findall(r"\w+", query.lower()))
+        rows = conn.execute(sql, (words,)).fetchall() if words else []
     return [r["decision_id"] for r in rows]
 
 
@@ -198,7 +202,8 @@ def _relevance_map(
         per_field: dict[str, dict[str, float]] = {}
         try:
             for field, q in provided.items():
-                hits = index.search_field(conn, field, q, limit=config.SEMANTIC_LIMIT)
+                hits = index.search_field(conn, field, q, limit=config.SEMANTIC_LIMIT,
+                                          allowed=allowed)
                 per_field[field] = {h["source_id"]: h["score"] for h in hits}
         except index.EmbeddingsUnavailable:
             # Treat the semantic fields as not provided; the keyword leg below
@@ -614,7 +619,7 @@ def merge(conn: sqlite3.Connection, keeper: str, dups: list[str]) -> dict[str, A
 
 
 def embed(conn: sqlite3.Connection, *, force: bool = False) -> dict[str, Any]:
-    """Embed new/changed decisions (or all, with ``force``). Loads the model once.
+    """Embed new, changed or other-model decisions (or all, with ``force``).
 
     Raises :class:`index.EmbeddingsUnavailable` when the stack is missing rather
     than reporting ``{"embedded": 0}`` — a backfill that silently does nothing is
@@ -627,7 +632,9 @@ def embed(conn: sqlite3.Connection, *, force: bool = False) -> dict[str, Any]:
             "run awm/services/precedence/install.sh on this node"
         )
     rows = db.all_decisions(conn)
-    todo = [r for r in rows if force or r["embedded_hash"] != r["content_hash"]]
+    outdated = index.not_current(conn)
+    todo = [r for r in rows
+            if force or r["embedded_hash"] != r["content_hash"] or r["id"] in outdated]
     for r in todo:
         index.embed_decision(conn, r["id"], r["context"], r["question"], r["decision"])
         conn.execute(

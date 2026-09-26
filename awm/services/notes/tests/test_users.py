@@ -34,9 +34,6 @@ def ws(tmp_path, monkeypatch):
     monkeypatch.delenv(userroot.STRICT_ENV, raising=False)
     for name in ("tony", "steven"):
         _repo(tmp_path / "projects" / "userdata" / name)
-    monkeypatch.setattr(index, "embed_note", lambda *a, **k: None)
-    monkeypatch.setattr(index, "drop_embedding", lambda *a, **k: None)
-    monkeypatch.setattr(index, "search_semantic", lambda *a, **k: [])
     monkeypatch.setattr(index, "probe", lambda: {"available": True, "missing": []})
     rooms._ROOMS.clear()
     yield tmp_path

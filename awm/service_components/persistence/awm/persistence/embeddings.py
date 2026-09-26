@@ -31,7 +31,6 @@ import importlib.util
 import os
 import re
 import sqlite3
-import struct
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -643,58 +642,16 @@ def search(conn: sqlite3.Connection, query: str, *, source_type: str,
     return SearchResult(hits, degraded)
 
 
-def status(conn: sqlite3.Connection, source_type: str) -> dict[str, int]:
-    """Index coverage for one source type: documents, chunks, and how many are embedded now."""
-    ensure_schema(conn)
-    emb = _try_embedder()
-    want = emb.name if emb else MODEL_NAME
-    docs, chunks, current = conn.execute(
-        "SELECT COUNT(DISTINCT source_id), COUNT(*),"
-        " COUNT(DISTINCT CASE WHEN model = ? AND content_hash IS NOT NULL THEN source_id END)"
-        " FROM embeddings WHERE source_type = ?", (want, source_type)).fetchone()
-    return {"documents": docs, "chunks": chunks, "current_model": current}
-
-
-# ---------------------------------------------------------------------------
-# Earlier API, kept until its last callers move to index_document / search
-# ---------------------------------------------------------------------------
-
-
-def load_vec_extension(conn: sqlite3.Connection) -> None:
-    """Load the sqlite-vec extension onto ``conn`` so ``vec_*`` SQL works."""
-    try:
-        import sqlite_vec
-    except ImportError as exc:
-        raise EmbeddingsUnavailable(f"sqlite-vec: {_INSTALL_HINT}") from exc
-    conn.enable_load_extension(True)
-    sqlite_vec.load(conn)
-
-
-def _blob_to_vec(blob: bytes) -> list[float]:
-    return list(struct.unpack(f"{len(blob) // 4}f", blob))
-
-
-def embed_text(text: str) -> list[float]:
-    """Embed ``text`` as a document."""
-    return get_embedder().encode([text], query=False)[0].tolist()
-
-
-def upsert_embedding(conn: sqlite3.Connection, source_type: str, source_id: str,
-                     text: str) -> None:
-    """Index ``text`` as an untitled document; raises :class:`EmbeddingsUnavailable` without the stack."""
-    get_embedder()
-    index_document(conn, source_type, Document(source_id, text))
-
-
-def delete_embedding(conn: sqlite3.Connection, source_type: str, source_id: str) -> None:
-    delete_document(conn, source_type, source_id)
-
-
 def semantic_search(conn: sqlite3.Connection, query: str, source_type: str,
-                    limit: int = 10) -> list[dict[str, Any]]:
-    """Dense-only MaxP search: ``source_type``, ``source_id``, ``chunk_text``, cosine ``score``."""
+                    limit: int = 10, *, allowed: str | None = None,
+                    params: Iterable[Any] = ()) -> list[dict[str, Any]]:
+    """Dense-only MaxP search: ``source_type``, ``source_id``, ``chunk_text``, cosine ``score``.
+
+    For a caller that blends raw cosine into its own score; ``allowed`` and
+    ``params`` filter first, as in :func:`search`.
+    """
     ensure_schema(conn)
-    dense = _dense(conn, query, source_type, None, (), get_embedder())
+    dense = _dense(conn, query, source_type, allowed, tuple(params), get_embedder())
     out = []
     for sid in sorted(dense, key=lambda d: -dense[d][0])[:limit]:
         score, ch = dense[sid]
@@ -703,27 +660,4 @@ def semantic_search(conn: sqlite3.Connection, query: str, source_type: str,
             (source_type, sid, ch)).fetchone()
         out.append({"source_type": source_type, "source_id": sid,
                     "chunk_text": (row[0] if row else "")[:200], "score": round(score, 4)})
-    return out
-
-
-def hybrid_augment(conn: sqlite3.Connection, query: str, *, source_type: str,
-                   keyword_hits: list, keyword_keys: set[str], materialize,
-                   semantic_limit: int = 10, semantic_threshold: float = 0.3) -> list:
-    """``keyword_hits``, then semantic hits above ``semantic_threshold`` that ``materialize`` keeps."""
-    if not query:
-        return list(keyword_hits)
-    out = list(keyword_hits)
-    try:
-        hits = semantic_search(conn, query, source_type=source_type, limit=semantic_limit)
-    except Exception:
-        return out
-    for h in hits:
-        if h["source_id"] in keyword_keys or h["score"] <= semantic_threshold:
-            continue
-        try:
-            row = materialize(h["source_id"])
-        except Exception:
-            row = None
-        if row is not None:
-            out.append(row)
     return out

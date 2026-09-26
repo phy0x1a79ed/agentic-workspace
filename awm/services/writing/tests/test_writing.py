@@ -1,9 +1,7 @@
 """Tests for awm.writing — corpus search + curation on an isolated service DB.
 
-The embedding-backed paths (add/embed/semantic) require the workspace embedding
-stack (sentence-transformers + sqlite-vec); those tests skip if it's absent.
-Keyword/metadata paths, the manifest surface split, and tag validation run
-without any model.
+The embedding-backed paths (add/embed/semantic) run through the shared engine
+with the stub model from ``conftest.py``; they need only numpy.
 """
 
 from __future__ import annotations
@@ -14,10 +12,7 @@ import pytest
 
 pytestmark = [pytest.mark.writing]
 
-_HAS_EMBED = (
-    importlib.util.find_spec("sentence_transformers") is not None
-    and importlib.util.find_spec("sqlite_vec") is not None
-)
+_HAS_EMBED = importlib.util.find_spec("numpy") is not None
 needs_embed = pytest.mark.skipif(not _HAS_EMBED, reason="embedding stack not installed")
 
 
@@ -232,3 +227,23 @@ def test_embed_refuses_rather_than_reporting_zero(conn, monkeypatch):
                         lambda: {"available": False, "missing": ["sqlite_vec"]})
     with pytest.raises(index.EmbeddingsUnavailable):
         corpus.embed(conn)
+
+
+def test_dedup_finds_near_duplicates_from_stored_vectors(conn):
+    from awm.writing import corpus, index
+
+    body = "An essay on tidal energy and the ecology of estuaries. " * 20
+    a = corpus.add(conn, text=body, name="tidal-v1", type="academic")
+    b = corpus.add(conn, text=body + "One more closing line.", name="tidal-v2", type="academic")
+    corpus.add(conn, text="A recipe for bread with rye flour and caraway.", name="bread")
+    pairs = index.pairwise_cosine(conn)
+    assert {pairs[0][0], pairs[0][1]} == {a["id"], b["id"]}
+    assert pairs[0][2] > 0.95
+    assert pairs[0][2] >= pairs[-1][2]
+
+
+def test_keyword_search_tolerates_punctuation(conn):
+    from awm.writing import corpus
+
+    corpus.add(conn, text="Notes on a-b testing and the c statistic.", name="ab")
+    assert corpus.search(conn, query='a-b "c')["count"] == 1

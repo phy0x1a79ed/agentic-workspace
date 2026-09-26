@@ -1,10 +1,8 @@
 """Notes service unit tests.
 
 Exercise the CRUD + trash lifecycle + keyword/fuzzy search against a temp DB and
-a temp file store. The embedding model (sentence-transformers) is heavy and not
-needed to test this logic, so ``index``'s embed/semantic helpers are stubbed —
-semantic ranking is the shared ``awm.persistence.embeddings`` stack the writing
-service already covers.
+a temp file store. Embedding runs through the shared engine with the stub model
+from ``conftest.py``.
 """
 
 from __future__ import annotations
@@ -34,12 +32,8 @@ def conn(tmp_path, monkeypatch):
     files.mkdir()
     monkeypatch.setattr(config, "files_dir", lambda: files)
 
-    # Stub the embedding side so tests never load the model. ``probe`` goes with
-    # them: the stubs stand in for a *working* stack, and the tests that care
-    # about a missing one say so explicitly.
-    monkeypatch.setattr(index, "embed_note", lambda *a, **k: None)
-    monkeypatch.setattr(index, "drop_embedding", lambda *a, **k: None)
-    monkeypatch.setattr(index, "search_semantic", lambda *a, **k: [])
+    # The stub embedder stands in for a *working* stack; tests that care about
+    # a missing one say so explicitly.
     monkeypatch.setattr(index, "probe", lambda: {"available": True, "missing": []})
 
     c = sqlite3.connect(tmp_path / "notes.db")
@@ -321,3 +315,21 @@ def test_vocab_crud(conn):
     assert set(notes.vocab_list(conn)["terms"]) == {"scadc", "avarice"}
     notes.vocab_remove(conn, "scadc")
     assert notes.vocab_list(conn)["terms"] == ["avarice"]
+
+
+def test_semantic_search_ranks_a_detail_deep_in_a_note(conn):
+    filler = "\n\n".join(f"Line {i} about the garden and its hedges." for i in range(40))
+    target = notes.create(conn, path="house/log", content=filler + "\n\nThe boiler pilot light failed.")
+    notes.create(conn, path="house/other", content="Garden hedges trimmed.")
+    res = notes.search(conn, semantic="boiler pilot light")
+    assert res["results"][0]["id"] == target["id"]
+
+
+def test_reindex_catches_a_model_change(conn):
+    from awm.persistence import embeddings
+    from awm.persistence.search_testing import StubEmbedder
+    notes.create(conn, path="p", content="body")
+    assert notes.reindex(conn)["embedded"] == 0
+    embeddings.use_embedder(StubEmbedder("stub-b"))
+    assert notes.reindex(conn)["embedded"] == 1
+    assert notes.reindex(conn)["embedded"] == 0

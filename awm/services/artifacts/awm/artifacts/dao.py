@@ -243,14 +243,6 @@ class ArtifactsDAO(BaseDAO):
             conn=conn,
         )
 
-    def get_current_ids(
-        self, *, conn: sqlite3.Connection | None = None
-    ) -> set[str]:
-        rows = self.query_all(
-            "SELECT id FROM artifacts WHERE status='current'", conn=conn
-        )
-        return {str(r["id"]) for r in rows}
-
     def get_fingerprint(
         self, *, conn: sqlite3.Connection | None = None
     ) -> str:
@@ -259,37 +251,6 @@ class ArtifactsDAO(BaseDAO):
             conn=conn,
         )
         return f"{row['mx']}|{row['cnt']}" if row else "0|0"
-
-    # -----------------------------------------------------------------------
-    # Embeddings helpers (operate on this service's own embeddings table)
-    # -----------------------------------------------------------------------
-
-    def get_embedding_source_ids(
-        self, *, conn: sqlite3.Connection | None = None
-    ) -> list[str]:
-        rows = self.query_all(
-            "SELECT source_id FROM embeddings WHERE source_type='artifact'",
-            conn=conn,
-        )
-        return [r["source_id"] for r in rows]
-
-    def delete_embedding_by_source_id(
-        self, source_id: str, *, conn: sqlite3.Connection | None = None
-    ) -> None:
-        self.execute(
-            "DELETE FROM embeddings WHERE source_type='artifact' AND source_id=?",
-            (source_id,),
-            conn=conn,
-        )
-
-    def delete_stale_embeddings(
-        self, stale_source_ids: list[str], *, conn: sqlite3.Connection | None = None
-    ) -> None:
-        self.executemany(
-            "DELETE FROM embeddings WHERE source_type='artifact' AND source_id=?",
-            [(sid,) for sid in stale_source_ids],
-            conn=conn,
-        )
 
     # -----------------------------------------------------------------------
     # Seed helper: bulk insert for legacy migration

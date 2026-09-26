@@ -338,13 +338,44 @@ HANDLERS = {
 }
 
 
+_BACKFILL_EVERY_S = 6 * 3600
+
+
+def _backfill_once() -> None:
+    conn = dao.connect()
+    try:
+        res = corpus.embed(conn)
+        if res["embedded"]:
+            log.info("writing backfill: %s", res)
+    except index.EmbeddingsUnavailable as exc:
+        log.warning("writing backfill skipped: %s", exc)
+    finally:
+        conn.close()
+
+
+async def _backfill_loop() -> None:
+    while True:
+        await asyncio.to_thread(_backfill_once)
+        await asyncio.sleep(_BACKFILL_EVERY_S)
+
+
+async def _on_start() -> None:
+    dao.init()
+    conn = dao.connect()
+    try:
+        index.engine.ensure_schema(conn)
+    finally:
+        conn.close()
+    spawn_supervised("writing:search-backfill", _backfill_loop)
+
+
 async def main() -> None:
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
     await ServiceAdapter(
-        "writing", API_MANIFEST, HANDLERS, on_start=dao.init,
+        "writing", API_MANIFEST, HANDLERS, on_start=_on_start,
     ).run()
 
 

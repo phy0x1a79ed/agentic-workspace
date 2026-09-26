@@ -68,9 +68,6 @@ def conn(tmp_path, monkeypatch):
     # One registry per test, rooted in the test's own tmp dir.
     monkeypatch.setattr(checkout, "_REGISTRY", checkout.Checkouts(tmp_path / "checkouts"))
 
-    monkeypatch.setattr(index, "embed_note", lambda *a, **k: None)
-    monkeypatch.setattr(index, "drop_embedding", lambda *a, **k: None)
-    monkeypatch.setattr(index, "search_semantic", lambda *a, **k: [])
     monkeypatch.setattr(index, "probe", lambda: {"available": True, "missing": []})
 
     c = sqlite3.connect(tmp_path / "notes.db")
