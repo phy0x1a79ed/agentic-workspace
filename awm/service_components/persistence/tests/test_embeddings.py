@@ -56,6 +56,13 @@ def test_oversized_sentence_splits_at_words():
     assert " ".join(t for _, t in chunks).split() == body.split()
 
 
+def test_blank_body_never_counts_an_empty_batch():
+    def strict(texts):
+        assert texts, "tokenizers reject an empty batch"
+        return E._approx_tokens(texts)
+    assert E.chunk("  \n\n \t", 40, strict) == []
+
+
 def test_header_joins_present_parts():
     doc = E.Document("1", "b", title="Deploy notes", context="awm/dev", date="2026-09-26")
     assert E.header(doc, "Issues") == "Deploy notes — awm/dev · 2026-09-26 — Issues"
