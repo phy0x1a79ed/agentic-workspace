@@ -29,9 +29,9 @@ import logging
 from typing import Any
 
 from awm.config import autocommit, userroot
-from awm.gatewayclient import ServiceAdapter
+from awm.gatewayclient import ServiceAdapter, spawn_supervised
 
-from awm.notes import config, dao, notes, rooms
+from awm.notes import config, dao, index, notes, rooms
 
 log = logging.getLogger("awm.notes.hub_adapter")
 
@@ -579,6 +579,37 @@ def _startup() -> None:
     for user in [None, *userroot.users()]:
         with userroot.bind(user):
             _purge_expired()
+            conn = dao.connect()
+            try:
+                index.engine.ensure_schema(conn)
+            finally:
+                conn.close()
+
+
+def _backfill_once() -> None:
+    """Re-embed every user's missing, changed or other-model notes."""
+    for user in [None, *userroot.users()]:
+        with userroot.bind(user):
+            conn = dao.connect()
+            try:
+                res = notes.reindex(conn, flush=False)
+                if res["embedded"] or res["failed"]:
+                    log.info("notes backfill (%s): %s", user or "legacy", res)
+            except index.EmbeddingsUnavailable as exc:
+                log.warning("notes backfill skipped: %s", exc)
+            finally:
+                conn.close()
+
+
+async def _backfill_loop() -> None:
+    while True:
+        await asyncio.to_thread(_backfill_once)
+        await asyncio.sleep(config.BACKFILL_EVERY_S)
+
+
+async def _on_start() -> None:
+    _startup()
+    spawn_supervised("notes:search-backfill", _backfill_loop)
 
 
 def _commit_user_store(user: str) -> None:
@@ -626,7 +657,7 @@ async def main() -> None:
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
     global ADAPTER
-    ADAPTER = ServiceAdapter("notes", API_MANIFEST, HANDLERS, on_start=_startup)
+    ADAPTER = ServiceAdapter("notes", API_MANIFEST, HANDLERS, on_start=_on_start)
     flush_task = asyncio.create_task(_flush_loop())
     try:
         await ADAPTER.run()

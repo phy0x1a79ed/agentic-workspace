@@ -14,7 +14,7 @@ run "$WS/awm/service_components/config" --no-deps
 run "$WS/awm/service_components/persistence" --no-deps
 run "$WS/awm/service_components/gatewayclient" --no-deps
 # This service embeds + queries vectors, so it also needs persistence's
-# `search` extra (sentence-transformers + sqlite-vec, on the CPU torch wheel).
+# `search` extra (sentence-transformers, on the CPU torch wheel).
 # Opt-in on purpose — see that script for why it is not a declared dependency.
 # AWM_SEARCH=0 skips it (a small public host): FTS keeps working, semantic
 # search reports the typed "search extra not installed" error.

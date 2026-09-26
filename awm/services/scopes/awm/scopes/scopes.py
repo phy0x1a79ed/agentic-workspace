@@ -35,7 +35,7 @@ from awm.config import (
     VAGRANT_PROJECT,
 )
 from awm.scopes.git_utils import run_git, detect_default_branch
-from awm.scopes import data_dvc
+from awm.scopes import data_dvc, search_index
 from awm.scopes.dao import ScopesDAO
 from awm.scopes.identity import (
     agent_id_for_scope,
@@ -929,18 +929,7 @@ def _scaffold_awm_dir(
             conn=conn,
         )
 
-    # Embeddings index
-    try:
-        from awm.persistence.embeddings import upsert_embedding
-        from awm.persistence.databases import get_connection
-        text = f"{project}/{scope} {context_content[:500]}"
-        conn = get_connection("scopes")
-        try:
-            upsert_embedding(conn, "scope", f"{project}/{scope}", text[:500])
-        finally:
-            conn.close()
-    except Exception:
-        pass
+    search_index.index_scope(project, scope)
 
     return context_content
 
@@ -1063,17 +1052,7 @@ def repair_scope(project: str, scope: str) -> ScopeActionResponse:
             conn=conn,
         )
 
-    try:
-        from awm.persistence.embeddings import upsert_embedding
-        from awm.persistence.databases import get_connection
-        text = f"{project}/{scope}"
-        conn = get_connection("scopes")
-        try:
-            upsert_embedding(conn, "scope", f"{project}/{scope}", text)
-        finally:
-            conn.close()
-    except Exception:
-        pass
+    search_index.index_scope(project, scope)
 
     return ScopeActionResponse(
         project=project,
@@ -1472,16 +1451,7 @@ def delete_scope(project: str, scope: str, force: bool = False) -> ScopeActionRe
             (now_ms(), aid_row["id"]),
         )
 
-    try:
-        from awm.persistence.embeddings import delete_embedding
-        from awm.persistence.databases import get_connection
-        conn = get_connection("scopes")
-        try:
-            delete_embedding(conn, "scope", f"{project}/{scope}")
-        finally:
-            conn.close()
-    except Exception:
-        pass
+    search_index.index_scope(project, scope)
 
     return ScopeActionResponse(
         project=project, scope=scope, status="deleted",
@@ -1501,6 +1471,18 @@ def _v37_render_scope(r, session: int = 1) -> ScopeInfo:
     )
 
 
+_SCOPE_ROW_SQL = (
+    "SELECT a.id, a.scope, a.status, a.branch, a.worktree, "
+    "       a.created_at, p.name AS project_name, "
+    "       (SELECT COUNT(*) FROM agents a2 "
+    "        JOIN projects p2 ON p2.id = a2.project_id "
+    "        WHERE p2.name = p.name AND a2.scope = a.scope "
+    "        AND a2.created_at <= a.created_at) AS session "
+    "FROM agents a JOIN projects p ON p.id = a.project_id "
+    "WHERE 1=1"
+)
+
+
 def search_scopes(
     query: str | None = None,
     status: str = "active",
@@ -1508,90 +1490,56 @@ def search_scopes(
     limit: int = 50,
     offset: int = 0,
 ) -> ScopeListResponse:
-    """Search scopes. Defaults to status='active'."""
-    dao = ScopesDAO()
-    sql = (
-        "SELECT a.id, a.scope, a.status, a.branch, a.worktree, "
-        "       a.created_at, p.name AS project_name, "
-        "       (SELECT COUNT(*) FROM agents a2 "
-        "        JOIN projects p2 ON p2.id = a2.project_id "
-        "        WHERE p2.name = p.name AND a2.scope = a.scope "
-        "        AND a2.created_at <= a.created_at) AS session "
-        "FROM agents a JOIN projects p ON p.id = a.project_id "
-        "WHERE 1=1"
-    )
-    params: list = []
+    """Search scopes. Defaults to status='active'.
+
+    With a ``query``, scopes whose name contains it come first, then the rest
+    ranked by relevance of their goals and ``context.md``.
+    """
+    where, params = "", []
     if status and status != "all":
         if status == "active":
-            sql += " AND a.status IN ('allocated','active')"
+            where += " AND a.status IN ('allocated','active')"
         elif status == "completed":
-            sql += " AND a.status='retired'"
+            where += " AND a.status='retired'"
         elif status == "deleted":
             return ScopeListResponse(scopes=[], total=0)
         else:
-            sql += " AND a.status = ?"
+            where += " AND a.status = ?"
             params.append(status)
     if project:
-        sql += " AND p.name = ?"
+        where += " AND p.name = ?"
         params.append(project)
+
+    dao = ScopesDAO()
+    name_sql, name_params = where, list(params)
     if query:
-        sql += " AND a.scope LIKE ?"
-        params.append(f"%{query}%")
-    sql += " ORDER BY p.name, a.scope LIMIT ? OFFSET ?"
-    params.extend([limit, offset])
-    rows = dao.query_all(sql, params)
-
-    keyword_hits = [_v37_render_scope(r, session=r["session"] or 1) for r in rows]
-
+        name_sql += " AND a.scope LIKE ?"
+        name_params.append(f"%{query}%")
+    rows = dao.query_all(_SCOPE_ROW_SQL + name_sql + " ORDER BY p.name, a.scope LIMIT ? OFFSET ?",
+                         [*name_params, limit, offset])
+    merged = [_v37_render_scope(r, session=r["session"] or 1) for r in rows]
     if not query:
-        return ScopeListResponse(scopes=keyword_hits, total=len(keyword_hits))
+        return ScopeListResponse(scopes=merged, total=len(merged))
 
-    keyword_keys = {f"{s.project}/{s.scope}" for s in keyword_hits}
-
-    def _materialize(source_id: str):
-        if "/" not in source_id:
-            return None
-        proj, scp = source_id.split("/", 1)
-        if project and proj != project:
-            return None
-        d = ScopesDAO()
-        extra_sql = (
-            "SELECT a.id, a.scope, a.status, a.branch, a.worktree, "
-            "       a.created_at, p.name AS project_name, "
-            "       (SELECT COUNT(*) FROM agents a2 "
-            "        JOIN projects p2 ON p2.id = a2.project_id "
-            "        WHERE p2.name = p.name AND a2.scope = a.scope "
-            "        AND a2.created_at <= a.created_at) AS session "
-            "FROM agents a JOIN projects p ON p.id = a.project_id "
-            "WHERE p.name=? AND a.scope=?"
-        )
-        extra_params: list = [proj, scp]
-        if status and status != "all":
-            if status == "active":
-                extra_sql += " AND a.status IN ('allocated','active')"
-            elif status == "completed":
-                extra_sql += " AND a.status='retired'"
-            elif status == "deleted":
-                return None
-            else:
-                extra_sql += " AND a.status = ?"
-                extra_params.append(status)
-        row = d.query_one(extra_sql, extra_params)
-        return _v37_render_scope(row, session=row["session"] or 1) if row else None
-
+    seen = {f"{s.project}/{s.scope}" for s in merged}
+    degraded = None
     try:
-        from awm.persistence.embeddings import hybrid_augment
-        from awm.persistence.databases import get_connection
-        conn = get_connection("scopes")
-        try:
-            merged = hybrid_augment(
-                conn, query,
-                source_type="scope",
-                keyword_hits=keyword_hits, keyword_keys=keyword_keys,
-                materialize=_materialize,
-            )
-        finally:
-            conn.close()
-    except Exception:
-        merged = keyword_hits
-    return ScopeListResponse(scopes=merged, total=len(merged))
+        res = search_index.search(
+            "scope", query, params=params, limit=offset + limit,
+            allowed="SELECT p.name || '/' || a.scope FROM agents a"
+                    " JOIN projects p ON p.id = a.project_id WHERE 1=1" + where)
+        degraded = res.degraded
+        for h in res.hits[offset:]:
+            if len(merged) >= limit:
+                break
+            if h["source_id"] in seen:
+                continue
+            proj, scp = h["source_id"].split("/", 1)
+            row = dao.query_one(
+                _SCOPE_ROW_SQL + " AND p.name = ? AND a.scope = ?" + where
+                + " ORDER BY a.created_at DESC", [proj, scp, *params])
+            if row is not None:
+                merged.append(_v37_render_scope(row, session=row["session"] or 1))
+    except Exception as exc:  # noqa: BLE001 — reported, then answered by name match
+        degraded = {"semantic": "error", "error": repr(exc)[:300], "fallback": "keyword"}
+    return ScopeListResponse(scopes=merged, total=len(merged), degraded=degraded)

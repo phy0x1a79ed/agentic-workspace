@@ -18,11 +18,34 @@ projects/{project}/
       context.md                 # scope instructions (auto-loaded)
       history.md                 # auto-generated: open/resolved session history
       data -> ../data            # compat symlink; the real data/ is repo content
-      skills -> <workspace>/awm/skills/  # absolute symlink to skill catalog
+      skills -> <workspace>/skills/      # absolute symlink to skill catalog (SKILLS_DIR)
     [code files...]              # the actual repo content, including data/
 ```
 
 Both symlinks are depth-independent, which is what lets `{scope}` nest: `data` is relative to its own worktree and `skills` is absolute.
+
+### Retiring a project
+
+**Archive it; never delete it.** A retired project is renamed
+`<name>-ARCHIVED-<YYYYMMDD>`, gets an `ARCHIVED.md` at its top naming where the content
+went and where its bundle is, and is then `chmod -R a-w`. Retire each of its scopes
+(`scope complete`, no cleanup) so the worktrees stay on disk as read-only record.
+
+Three things about that are not obvious:
+
+- **Bundle first, and verify.** `git bundle create <f> --all` then `git bundle verify`,
+  and check every live ref tip is an object in the bundle. A local branch that exists on
+  no remote — the usual reason a project is being retired rather than abandoned — has no
+  other backup, and the bundle belongs somewhere DVC-pinned so the append-only archive
+  job carries it off-site.
+- **The listing shows it twice, and that is not a bug.** `project search` unions the
+  scope database with the on-disk `<name>/.bare` directories, so an archived project
+  appears under its database name with zero active scopes *and* under its new directory
+  name with none at all. Neither is active; `active_only` drops both.
+- **The shared cache does not know it is archived.** `data_gc` keeps only what the
+  projects you *name* pin, so once a project is retired, objects reachable only from its
+  pins are collectable by any gc that omits it. Migrate the chunks that matter before
+  archiving, and treat the rest as gone.
 
 ## Startup Ritual
 
@@ -54,12 +77,47 @@ Three domains change how you work rather than what you can do:
 
 The **CLI and HTTP surfaces stay expanded** — `awm <domain> <verb>`, `POST /invoke {name:"<domain>_<verb>"}` — so only the MCP projection collapses.
 
+## Consuming another project's code
+
+**Co-locate it in one repository; do not submodule it.** A consumer and the library
+it moves in lockstep with belong in one project, as directories — which is what
+`projects/metasmith/` is: the engine, the standard transform library, fabfos and
+ASPIRE, one history, no pins. A scope layer names the product (see *Nested names*).
+
+The workspace ran the other protocol for a year: each consumer scope carried its own
+library branch and worktree, and promoting one worker meant merging both sides and
+bumping a gitlink. It worked. What retired it is that every one of those steps was a
+place for the pin and the branch to disagree, and a stale gitlink is silent — nothing
+downstream reports that a consumer is building against a library commit nobody has
+worked on for a month. Co-location makes the whole class unrepresentable.
+
+Nothing here consumes a submodule now. If one ever must, two facts cost a day each
+and are not discoverable from a failure message: `git submodule update --remote`
+follows `.gitmodules` `branch=` on the **default** remote, so a local-only sync has to
+be an explicit `fetch`/`push` against the sibling bare; and `git worktree move`
+**refuses on a worktree containing submodules**, so the move is by hand, followed by
+`git worktree repair`, renaming the `.bare/worktrees/<name>` admin dir, and fixing
+each submodule's `.git` gitdir pointer and `core.worktree`.
+
 ## Git Model
 
 Each project uses a **bare repo** at `projects/{project}/.bare/` with worktrees per scope.
 
 - Branch naming: `feat/{scope}` by default, but a legacy or nested scope carries its own name. The DB row records which — nothing recomputes it from the scope name, so ask `scope(verb="search")` rather than guessing.
-- PRs go from feature branches into `main` / `release` as appropriate.
+- PRs created from feature branches into `release`. There is no `main` — it was
+  retired 2026-08-15 as a strict ancestor of `release` that had drifted 875
+  commits behind while still being GitHub's default branch, which is exactly how
+  a stale branch gets mistaken for a baseline.
+
+**A peer's bare has most of its branches checked out, so pushes to it are
+refused.** Every scope worktree on a node holds its branch, and `release` is the
+node's live workspace — so `git push <peer> <branch>` fails with *branch is
+currently checked out* for nearly every branch worth pushing, which reads like a
+permissions or connectivity fault and is not one. Push to a temp ref, then
+fast-forward it into place *inside the target worktree* (`git -C <wt> merge
+--ff-only <tempref>`), and delete the temp ref. Prefer `merge --ff-only` over
+`reset --hard`: it refuses rather than discards when that worktree has
+uncommitted edits, which it often does. Stash first if you need it to pass.
 
 **Never commit in the workspace root checkout.** On a node that deploys rather than authors awm, `<workspace>/` is a deploy *target*: it is fetched and `reset --hard` onto upstream `release`, so a commit made there is silently discarded by the next deploy, and an untracked file survives only until someone runs `git clean`. Nothing warns you. All work belongs in a scope worktree under `projects/`, pushed to a branch. `git -C <workspace> reflog` shows the tell: a `reset: moving to …` entry.
 

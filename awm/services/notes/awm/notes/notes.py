@@ -393,14 +393,17 @@ def _embed(conn: sqlite3.Connection, note_id: str, text: str, chash: str) -> Non
     index.reembed(conn, note_id, text, chash)
 
 
-def reindex(conn: sqlite3.Connection, *, force: bool = False) -> dict[str, Any]:
-    """Re-embed notes whose content changed since their last embed.
+def reindex(conn: sqlite3.Connection, *, force: bool = False,
+            flush: bool = True) -> dict[str, Any]:
+    """Re-embed notes whose content or embedding model changed since their last embed.
 
     The counterpart to :func:`_embed`'s best-effort failure: writes made while
     the embedding stack was unavailable (or interrupted mid-flush) leave
     ``embedded_hash`` stale, and nothing retries them until the note is next
     edited — so those notes stay invisible to semantic search indefinitely.
-    ``force`` re-embeds every note, for a model change or a corrupted table.
+    ``force`` re-embeds every note. ``flush=False`` skips flushing open rooms,
+    for the background backfill: it embeds each file against its own stamped
+    hash, and the room's next flush re-embeds the newer content.
 
     Probes up front rather than discovering the same failure once per note, so
     a stackless node gets one actionable error instead of N swallowed ones.
@@ -414,10 +417,12 @@ def reindex(conn: sqlite3.Connection, *, force: bool = False) -> dict[str, Any]:
     # An open note's authoritative content is its in-memory room, not the file,
     # so flush first — otherwise a reindex would embed a body the user has
     # already edited past, and stamp it as current.
-    rooms.flush_all(conn)
+    if flush:
+        rooms.flush_all(conn)
     embedded, failed = 0, 0
+    outdated = index.not_current(conn)
     for r in db.list_notes(conn, include_trashed=False):
-        if not force and r["embedded_hash"] == r["content_hash"]:
+        if not force and r["embedded_hash"] == r["content_hash"] and r["id"] not in outdated:
             continue
         nid = r["id"]
         if index.reembed(conn, nid, store.read(nid), r["content_hash"]):
@@ -536,7 +541,8 @@ def search(
     degraded: dict[str, Any] | None = None
     if semantic:
         try:
-            hits = index.search_semantic(conn, semantic, limit=200)
+            hits = index.search_semantic(conn, semantic, limit=int(k),
+                                         include_trashed=include_trashed)
         except index.EmbeddingsUnavailable:
             degraded = index.degraded_marker("notes", fallback="fuzzy")
             # Fall back to the dependency-free difflib matcher over the same
@@ -545,8 +551,7 @@ def search(
             for nid, s in _fuzzy_ids(conn, semantic, allowed):
                 _add(nid, s)
         for h in hits:
-            if h["score"] > 0.3:
-                _add(h["source_id"], h["score"])
+            _add(h["source_id"], h["score"])
 
     if not (query or fuzzy or semantic):
         # Most-recently-modified listing.
