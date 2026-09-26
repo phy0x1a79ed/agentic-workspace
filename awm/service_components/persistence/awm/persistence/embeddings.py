@@ -208,6 +208,8 @@ class _SentenceTransformer:
         return self._model
 
     def count_tokens(self, texts: list[str]) -> list[int]:
+        if not texts:
+            return []
         ids = self._load().tokenizer(texts, add_special_tokens=False, verbose=False)["input_ids"]
         return [len(x) for x in ids]
 
@@ -330,6 +332,8 @@ def chunk(body: str, target: int = CHUNK_TOKENS,
     and a chunk only starts mid-block when the block alone is over budget.
     """
     blocks = _blocks(body)
+    if not blocks:
+        return []
     chunks, cur, cur_sec, cur_n = [], [], "", 0
     for (sec, text), n in zip(blocks, ntok([t for _, t in blocks])):
         parts = [(text, n)] if n <= target else _split_long(text, target, ntok)
