@@ -226,11 +226,15 @@ export function createCollab(h: CollabHandlers) {
 
   // ---- socket -------------------------------------------------------------
 
+  // The room's emit topic as the service named it (`note:<user>:<id>` for a
+  // per-user store); the bare `note:<id>` is the legacy shape.
+  let topic: string | null = null;
+
   function openSocket(id: string, reopen: boolean) {
     const myGen = gen;
     let sock: WebSocket;
     try {
-      sock = new WebSocket(toWsUrl(svc('notes').url(`/emit/note:${id}`)));
+      sock = new WebSocket(toWsUrl(svc('notes').url(`/emit/${topic ?? `note:${id}`}`)));
     } catch {
       retry(id);
       return;
@@ -290,7 +294,8 @@ export function createCollab(h: CollabHandlers) {
     const myGen = gen;
     lastProbe = Date.now();
     try {
-      const snap = await svc('notes').fn<{ version: number; content: string }>('collab_open', { id });
+      const snap = await svc('notes').fn<{ version: number; content: string; topic?: string }>('collab_open', { id });
+      if (snap.topic) topic = snap.topic;
       if (gen !== myGen) return;
       integrate(snap.content, snap.version, true);
       if (text !== shadow) scheduleSend(0);
@@ -354,7 +359,8 @@ export function createCollab(h: CollabHandlers) {
     setLink('connecting');
     armDown();
     try {
-      const snap = await svc('notes').fn<{ version: number; content: string }>('collab_open', { id });
+      const snap = await svc('notes').fn<{ version: number; content: string; topic?: string }>('collab_open', { id });
+      if (snap.topic) topic = snap.topic;
       if (gen !== myGen) return;
       // The snapshot is the common ancestor: our local `text` is edits on top
       // of it. Don't patch backwards — just set the base and push any diff.

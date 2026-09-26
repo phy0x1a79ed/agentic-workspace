@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily timer for claude-archive-sessions.service
+
+[Timer]
+OnCalendar=*-*-* 03:30:00 America/Los_Angeles
+# A machine that was off catches up on the next boot. The first run after a long
+# gap therefore sweeps a large backlog, which is correct but slow.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

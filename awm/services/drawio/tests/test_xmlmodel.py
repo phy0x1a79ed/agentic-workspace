@@ -168,3 +168,44 @@ def test_special_characters_round_trip():
     assert X.normalize(once) == once
     assert ET.fromstring(once).find(".//mxCell[@id='a']").get("value") == \
         'a & b <x> "q"'
+
+
+# --- cutting a document down to one page -----------------------------------
+
+TWO = MINIMAL.replace("</mxfile>", """  <diagram id="p2" name="Page-2">
+    <mxGraphModel grid="1" pageWidth="850">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="b" value="B" vertex="1" parent="1" />
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>""")
+
+
+def test_a_cut_page_is_byte_identical_to_the_page_it_came_from():
+    """The view cache keys on the serialized page, so a cut that perturbed a
+    single byte would orphan every render already in the store."""
+    inside = X.serialize(X.parse(TWO).findall("diagram")[1])
+    alone = X.serialize(X.parse(X.single_page(TWO, 1)).findall("diagram")[0])
+    assert alone == inside
+
+
+def test_a_cut_keeps_the_documents_own_attributes():
+    cut = X.parse(X.single_page(TWO, 1))
+    assert [d.get("name") for d in cut.findall("diagram")] == ["Page-2"]
+    assert cut.get("pages") == "1"
+
+
+def test_cutting_past_the_end_is_refused():
+    with pytest.raises(X.MalformedDiagram, match="out of range"):
+        X.single_page(TWO, 5)
+
+
+def test_the_tree_handed_in_is_left_alone():
+    """Callers pass a tree they parsed for something else — resolving a page
+    name, most often — and go on using it."""
+    tree = X.parse(TWO)
+    X.single_page(tree, 0)
+    assert len(tree.findall("diagram")) == 2

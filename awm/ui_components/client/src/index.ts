@@ -2,6 +2,7 @@ export {
   apiFetch,
   awmAs,
   whoami,
+  logout,
   AuthError,
   HttpError,
   type ApiFetchInit,

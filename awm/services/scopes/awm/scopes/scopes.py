@@ -291,47 +291,22 @@ def _cleanup_worktree(bare_dir: Path, worktree_dir: Path, feature_branch: str,
 
 
 def _default_context(project: str, scope: str) -> str:
-    """Generate a default .awm/context.md for a new scope.
-
-    Debrief is a native Claude Code skill (~/.claude/skills/debrief/), so the
-    context just names it — no skill-service lookup is needed.
-    """
     return (
         f"# {project}/{scope}\n\n"
         f"## Startup\n\n"
-        f"1. Run `scope(verb=\"refresh\", args={{project:\"{project}\", scope:\"{scope}\"}})` to update the local history index\n"
-        f"2. Read `.awm/history.md` for session history, open issues, and resolved items\n\n"
-        f"## Work\n\n"
-        f"- Code is in the current directory (this IS the git worktree)\n"
-        f"- Project data is at `data/` (`.awm/data` is a symlink to it)\n"
-        f"- Reference protocols (git, mamba, etc.) are on disk at `.awm/skills/` if you need them\n"
-        f"- Do NOT edit `.awm/history.md` — use MCP tools\n\n"
-        f"## Data\n\n"
-        f"Data may be **versioned with DVC** "
-        f"(`scope_data_status project={project} scope={scope}` says which). When it is, "
-        f"the thing to internalise is that **there is only one lever**: a commit records "
-        f"your code and the exact data it was built against, together.\n\n"
-        f"- `data/<chunk>` holds the files; `data/<chunk>.dvc` is a ~110-byte **pin** "
-        f"tracked in this repo. The bytes live once in a workspace-shared cache.\n"
-        f"- To save data you wrote: `dvc add data/<chunk>`, then commit the changed "
-        f"`.dvc` pin **alongside your code**. That is the whole snapshot-and-publish "
-        f"story — there is no separate data verb, no data branch, no promote.\n"
-        f"- To take a sibling's data: merge their branch. The pin comes with it and "
-        f"the files are checked out for you.\n"
-        f"- Materialised files are **read-only** — they are hardlinks to the shared "
-        f"cache, so editing in place would corrupt it for every other scope. Write a "
-        f"new file, or `dvc unprotect <path>` first.\n"
-        f"- **Delete superseded data.** That is the point of versioning: an old version "
-        f"stays reachable from the commit that pinned it, so you never need two live "
-        f"copies to answer 'which one is current?'.\n"
-        f"- You need not hold every chunk on disk — `scope_data_mount` picks which ones "
-        f"materialise here. Unmounted chunks stay pinned and backed up regardless.\n"
-        f"- Never run a bare `dvc gc`: the cache is shared by every project.\n"
-        f"- If data is still the legacy shared directory, none of the above applies — "
-        f"it behaves exactly as it always has.\n\n"
+        f"1. `scope(verb=\"refresh\", args={{project:\"{project}\", scope:\"{scope}\"}})`\n"
+        f"2. Read `.awm/history.md` — session history, open issues, resolved items.\n"
+        f"3. `scope(verb=\"fetch\", args={{scope:\"{scope}\", kind:\"message\"}})`\n\n"
+        f"## This scope\n\n"
+        f"_Why this scope exists._\n\n"
+        f"## Working here\n\n"
+        f"The current directory is the git worktree. Data is at `data/`. Do not edit "
+        f"`.awm/history.md` — use the `scope` verbs.\n\n"
+        f"Workspace rules — data versioning, environments, the git model — are in "
+        f"`WORKSPACE.md` and are not repeated here.\n\n"
         f"## Debrief\n\n"
-        f"When the user asks you to debrief (or says \"debrief\"), run the `debrief` skill —\n"
-        f"the end-of-session protocol that commits, journals, and refreshes.\n"
+        f"Run the `debrief` skill when the work is done. When a plan drives the work, "
+        f"its last task is the debrief.\n"
     )
 
 
@@ -369,6 +344,14 @@ def _neutralise_title(text: str) -> str:
     return (text[:80] + "…") if len(text) > 80 else text
 
 
+# How many of a scope's OWN journal entries always survive into history.md, and
+# how many project-wide entries share the rest of the file. The floor is what
+# stops a busy project from crowding a scope out of its own history.
+_OWN_JOURNAL_FLOOR = 10
+_PROJECT_JOURNAL_WINDOW = 50
+_PER_SKILL_CAP = 10
+
+
 def _generate_history_md(project: str, scope: str) -> str:
     from awm.scopes.channel import _coerce_meta
 
@@ -381,20 +364,46 @@ def _generate_history_md(project: str, scope: str) -> str:
     )
 
     dao = ScopesDAO()
+    # 'allocated' is how every scope is born and nothing promotes it to
+    # 'active', so filtering on 'active' alone named ~1 sibling in 23. Every
+    # other live-scope predicate in this service uses the pair; this was the
+    # sole outlier.
     siblings = dao.query_all(
         "SELECT a.scope FROM agents a "
         "JOIN projects p ON p.id = a.project_id "
-        "WHERE p.name=? AND a.scope!=? AND a.status='active'",
+        "WHERE p.name=? AND a.scope!=? AND a.status IN ('allocated','active')",
         (project, scope),
     )
     # Journal entries are scope_posts with kind='journal' (a scope IS the
     # channel; the debrief is a self-post). Structured fields live in meta.
-    journals = dao.query_all(
+    #
+    # TWO queries, not one. A single project-wide SELECT ... LIMIT ranks a
+    # scope's own history against every sibling's, so in a busy project a scope
+    # opens the file the startup ritual sent it to and finds none of its own
+    # work — it then re-derives what a past session already proved. Measured on
+    # awm/svc-scopes: its four entries ranked 62nd, 67th, 68th and 88th of 95.
+    own = dao.query_all(
         "SELECT id, owner_scope, body, meta, ts FROM scope_posts "
-        "WHERE owner_project=? AND kind='journal' "
-        "ORDER BY ts DESC LIMIT 50",
-        (project,),
+        "WHERE owner_project=? AND owner_scope=? AND kind='journal' "
+        "ORDER BY ts DESC LIMIT ?",
+        (project, scope, _OWN_JOURNAL_FLOOR),
     )
+    own_total = dao.query_all(
+        "SELECT COUNT(*) AS n FROM scope_posts "
+        "WHERE owner_project=? AND owner_scope=? AND kind='journal'",
+        (project, scope),
+    )[0]["n"]
+    others = dao.query_all(
+        "SELECT id, owner_scope, body, meta, ts FROM scope_posts "
+        "WHERE owner_project=? AND owner_scope!=? AND kind='journal' "
+        "ORDER BY ts DESC LIMIT ?",
+        (project, scope, _PROJECT_JOURNAL_WINDOW),
+    )
+    others_total = dao.query_all(
+        "SELECT COUNT(*) AS n FROM scope_posts "
+        "WHERE owner_project=? AND owner_scope!=? AND kind='journal'",
+        (project, scope),
+    )[0]["n"]
 
     def _parse(row):
         meta = _coerce_meta(row["meta"])
@@ -402,35 +411,62 @@ def _generate_history_md(project: str, scope: str) -> str:
         title = _neutralise_title(meta.get("title") or body)
         return meta, title
 
+    def _entry(row, *, tag_scope: bool) -> list[str]:
+        meta, title = _parse(row)
+        outcome = f" [{meta['outcome']}]" if meta.get("outcome") else ""
+        tag = f" ({row['owner_scope']})" if tag_scope else ""
+        out = [f"**[{row['id']}] {title}**{outcome}{tag}"]
+        if meta.get("deviations"):
+            out.append(f"- Deviations: {meta['deviations']}")
+        if meta.get("suggestions"):
+            out.append(f"- Suggestions: {meta['suggestions']}")
+        out.append("")
+        return out
+
+    def _omitted(shown: int, total: int) -> str | None:
+        """The line that stops a truncated file from looking complete."""
+        n = total - shown
+        if n <= 0:
+            return None
+        return (f"*+{n} older not shown — `scope_fetch project={project} "
+                f"kind=journal` to read them.*\n")
+
     sections = []
     if siblings:
         lines = ["## Active Sibling Scopes\n"]
-        for s in siblings:
-            lines.append(f"- **{s['scope']}**")
+        for s_row in siblings:
+            lines.append(f"- **{s_row['scope']}**")
+        lines.append("")
         sections.append("\n".join(lines))
 
-    if journals:
+    if own:
+        lines = [f"## This Scope's Journal ({scope})\n"]
+        for row in own:
+            lines.extend(_entry(row, tag_scope=False))
+        tail = _omitted(len(own), own_total)
+        if tail:
+            lines.append(tail)
+        sections.append("\n".join(lines))
+
+    if others:
         by_skill: dict[str, list] = {}
-        for row in journals:
+        for row in others:
             meta, _ = _parse(row)
             key = meta.get("skill_path") or "(freeform)"
             by_skill.setdefault(key, []).append(row)
-        lines = ["## Journal\n"]
+        shown = 0
+        lines = ["## Sibling Scopes' Journal\n"]
         for skill_key, entries in by_skill.items():
             lines.append(f"### Skill: {skill_key}\n")
-            for row in entries[:10]:
-                meta, title = _parse(row)
-                outcome = f" [{meta['outcome']}]" if meta.get("outcome") else ""
-                scope_tag = f" ({row['owner_scope']})" if row["owner_scope"] != scope else ""
-                lines.append(f"**[{row['id']}] {title}**{outcome}{scope_tag}")
-                if meta.get("deviations"):
-                    lines.append(f"- Deviations: {meta['deviations']}")
-                if meta.get("suggestions"):
-                    lines.append(f"- Suggestions: {meta['suggestions']}")
-                lines.append("")
+            for row in entries[:_PER_SKILL_CAP]:
+                shown += 1
+                lines.extend(_entry(row, tag_scope=True))
+        tail = _omitted(shown, others_total)
+        if tail:
+            lines.append(tail)
         sections.append("\n".join(lines))
 
-    if not sections:
+    if not own and not others:
         sections.append(
             "*No journal entries yet. They appear here after agents post them "
             "via `scope_post kind=journal`.*\n"

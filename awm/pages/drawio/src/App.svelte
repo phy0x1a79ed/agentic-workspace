@@ -12,6 +12,7 @@
   import { onMount } from 'svelte';
   import DiagramTree from '$lib/DiagramTree.svelte';
   import PublishPanel from '$lib/PublishPanel.svelte';
+  import { UserChip } from '@awm/primitives';
   import {
     absolute, ago, autopublishList, buildTree, check, checkoutUrl, copyText,
     create, editorUrl, history, imageCellXml, info, list, renderSize, restore,
@@ -23,8 +24,8 @@
   // are meant to read beats one you might paste unread. The real one comes from
   // `copy url`, which is the only thing that knows the prefix and the encoding.
   const EXAMPLE_URL =
-    '/drawio-app/view/scadc/plasmids/plasmid' +
-    '?swap=ff00ff:00aa55&swap=00ff00:333333&crop=frame-a';
+    '/drawio-app/view/<folder>/<diagram>/<page>' +
+    '?swap=ff00ff:00aa55&swap=00ff00:333333&crop=<label>';
 
   let diagrams = $state<Diagram[]>([]);
   let tree = $state<TreeNode[]>([]);
@@ -67,8 +68,13 @@
       revisions = (await history(save)).revisions;
       // Rides the existing 5s poll, so a link created, stopped, or dropped by
       // the service (its target folder went away) shows up without a second
-      // timer.
-      links = (await autopublishList(allLinks ? undefined : save)).links;
+      // timer. Its own try: the public edge does not expose autopublish, and
+      // that must not blank the pages and history that did load.
+      try {
+        links = (await autopublishList(allLinks ? undefined : save)).links;
+      } catch {
+        links = [];
+      }
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
     }
@@ -195,6 +201,7 @@
 <main>
   <header>
     <h1>Diagrams</h1>
+    <UserChip links={[{ label: 'notes', href: '/ui/notes/' }]} />
     <p class="hint">
       Click to inspect, double-click or <em>open</em> to edit. Checkouts are
       agents' in-flight work — open one to review it before it lands.

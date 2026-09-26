@@ -11,6 +11,9 @@ itself is verified live (see INSTALL.md § Verify).
 
 from __future__ import annotations
 
+import io
+from urllib.parse import unquote_to_bytes
+
 import pytest
 
 from awm.drawio import export
@@ -229,16 +232,48 @@ def test_swaps_reach_a_referenced_svg_before_it_is_encoded(tmp_path):
     assert ";" not in uri
 
 
-def test_a_raster_image_is_left_alone(tmp_path):
-    """Documented, not worked around: a masked region inside a PNG cannot be
-    swapped, because the bytes are not text."""
+def test_a_raster_image_is_recoloured_too(tmp_path):
+    """A masked region inside a PNG is reachable — the pixels are decoded, the
+    colour pass runs, and the file keeps its own format on the way back out."""
+    from PIL import Image
+
     from awm.drawio import renderspec
 
     png = tmp_path / "figure.png"
-    png.write_bytes(b"\x89PNG\r\n\x1a\n\xff\x00\xff")
+    Image.new("RGB", (4, 4), (255, 0, 255)).save(png)
+    uri = export.data_uri(png, swaps=renderspec.parse_swaps(["ff00ff:00aa55"]))
+    assert uri.startswith("data:image/png,") and ";" not in uri
+
+    decoded = Image.open(io.BytesIO(unquote_to_bytes(uri.split(",", 1)[1])))
+    assert decoded.format == "PNG"
+    assert decoded.convert("RGB").getpixel((0, 0)) == (0, 0xAA, 0x55)
+
+
+def test_a_raster_that_matches_nothing_is_byte_identical(tmp_path):
+    """The content key is a hash of the inlined document; re-encoding an image
+    that did not match would rewrite every cache entry in the store."""
+    from PIL import Image
+
+    from awm.drawio import renderspec
+
+    png = tmp_path / "figure.png"
+    Image.new("RGB", (4, 4), (18, 52, 86)).save(png)
     before = export.data_uri(png)
     after = export.data_uri(png, swaps=renderspec.parse_swaps(["ff00ff:00aa55"]))
     assert before == after
+
+
+def test_an_undecodable_image_is_reported_not_silently_skipped(tmp_path):
+    """A swap that could not be *attempted* is a problem; one that matched
+    nothing is not."""
+    from awm.drawio import renderspec
+
+    png = tmp_path / "broken.png"
+    png.write_bytes(b"\x89PNG\r\n\x1a\n\xff\x00\xff")
+    problems: list[str] = []
+    export.data_uri(png, swaps=renderspec.parse_swaps(["ff00ff:00aa55"]),
+                    problems=problems)
+    assert problems and "broken.png" in problems[0]
 
 
 def test_crop_is_refused_for_a_container_format():

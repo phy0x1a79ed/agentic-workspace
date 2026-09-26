@@ -260,6 +260,19 @@ class ServiceAdapter:
 
     # -- dispatch ----------------------------------------------------------
 
+    def _missing_required_params(self, fn: str, args: dict[str, Any]) -> list[str]:
+        """Manifest-declared ``required: True`` params absent from ``args``.
+
+        The single choke point every call/notify passes through, so this one
+        check replaces a bare ``KeyError`` inside ~190 handlers across every
+        service with a clear, named usage error before the handler ever runs.
+        """
+        for entry in self.manifest.get("functions", []) or []:
+            if entry.get("name") == fn:
+                return [p["name"] for p in entry.get("params", []) or []
+                        if p.get("required") and p["name"] not in args]
+        return []
+
     async def _dispatch(self, fn: str | None, args: Any, as_: str | None) -> Any:
         handler = self.handlers.get(fn or "")
         if handler is None:
@@ -268,6 +281,10 @@ class ServiceAdapter:
         # ready before running it, so a call can legitimately land first.
         await self._await_init(f"call {fn!r}")
         args = args or {}
+        missing = self._missing_required_params(fn or "", args)
+        if missing:
+            raise ValueError(
+                f"{fn}: missing required argument(s): {', '.join(missing)}")
         # Pass as_ only if the handler asked for a second positional arg.
         try:
             nparams = len(inspect.signature(handler).parameters)

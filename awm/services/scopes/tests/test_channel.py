@@ -297,3 +297,58 @@ class TestHistoryTitleNeutralise:
         assert "</invoke>" not in md
         # the body-derived title is single-lined into the journal heading
         assert "Did the thing across lines" in md
+
+
+class TestHistoryRender:
+    """`.awm/history.md` is where the startup ritual sends every agent.
+
+    Measured on awm/svc-scopes before this was fixed: a single project-wide
+    ``ORDER BY ts DESC LIMIT`` ranked the scope's four journal entries 62nd,
+    67th, 68th and 88th of 95, so the file rendered 20 entries, none of them
+    the reader's own, and said nothing about the 75 it dropped.
+    """
+
+    def _journal(self, scope: str, title: str, ts=None):
+        from awm.scopes import channel
+        channel.post("awm", scope, author=f"agent:awm/{scope}", kind="journal",
+                     meta={"title": title}, body=title)
+
+    def test_own_entries_survive_a_busy_project(self, scopes_workspace):
+        """A sibling flood must not push a scope out of its own history."""
+        from awm.scopes.scopes import _generate_history_md
+        self._journal("mine", "MY-OWN-ENTRY")
+        for i in range(60):
+            self._journal(f"sib{i}", f"sibling entry {i}")
+        md = _generate_history_md("awm", "mine")
+        assert "MY-OWN-ENTRY" in md
+        assert "This Scope's Journal" in md
+
+    def test_states_how_many_it_omitted(self, scopes_workspace):
+        """Truncation must be visible: the file looked complete when it was not."""
+        from awm.scopes.scopes import _generate_history_md
+        for i in range(60):
+            self._journal(f"sib{i}", f"sibling entry {i}")
+        md = _generate_history_md("awm", "mine")
+        assert "not shown" in md
+
+    def test_no_omitted_line_when_nothing_was_omitted(self, scopes_workspace):
+        """Absent when everything fits — the marker has to mean something."""
+        from awm.scopes.scopes import _generate_history_md
+        self._journal("mine", "only entry")
+        md = _generate_history_md("awm", "mine")
+        assert "not shown" not in md
+
+    def test_siblings_use_the_live_status_pair(self, scopes_workspace):
+        """Scopes are born 'allocated' and nothing promotes them to 'active'.
+
+        Filtering on 'active' alone named 1 sibling in 23 on the real workspace.
+        Every other live-scope predicate in the service uses the pair.
+        """
+        from awm.scopes import scopes as sc
+        from awm.scopes.identity import ensure_agent
+        from awm.scopes.scopes import _generate_history_md
+        sc._ensure_project_row("awm")
+        # The default status, and the one nothing ever promotes.
+        ensure_agent("awm", "sib-allocated", status="allocated")
+        md = _generate_history_md("awm", "mine")
+        assert "sib-allocated" in md

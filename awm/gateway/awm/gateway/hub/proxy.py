@@ -6,7 +6,9 @@ Two distinct surfaces share this module:
   registrations. The hub forwards to the upstream service with the user's
   bearer/cookie stripped and any caller-supplied ``extra_headers`` merged in,
   preserving ``X-Awm-As`` (federation/peer auth is retired — no bearer is
-  injected).
+  injected). Passing ``prefix`` forwards the path with that prefix removed and
+  announces it as ``X-Forwarded-Prefix``, for an upstream that serves at the
+  root and rebases its own links from that header.
 * **Service RPC translator** (``proxy_service_http``,
   ``proxy_service_emit_ws``, ``proxy_session_ws``) — ``kind="service"``
   registrations. Translates browser-side REST/WS calls into JSON
@@ -81,27 +83,99 @@ def _hub_headers(
     return out
 
 
+def _rebase(path: str, prefix: str) -> str:
+    """Path as the upstream should see it once ``prefix`` is peeled off.
+
+    The prefix itself maps to "/", not "", so an upstream serving its index
+    at the root still answers a request for the bare mount point.
+    """
+    if not prefix or not (path == prefix or path.startswith(prefix + "/")):
+        return path
+    return path[len(prefix):] or "/"
+
+
+def _forwards_body(request: Request) -> bool:
+    """Did the client actually frame a request body?
+
+    Per RFC 9112 §6 an HTTP/1.1 body exists if and only if one of these two
+    headers is present; the method says nothing (bodyless POST and GET-with-body
+    both exist in the wild). Handing httpx a stream for a request that framed no
+    body makes it invent ``Transfer-Encoding: chunked`` and append a zero-length
+    chunk terminator. An upstream that never reads request bodies — the drawio
+    view listener is a stdlib ``ThreadingHTTPServer`` doing exactly that — then
+    parses that terminator as the next request line, answers ``400`` and drops
+    the connection, which the hub's pooled client has already handed to somebody
+    else. It surfaces as an intermittent gateway ``500``.
+
+    Read ``request.headers`` here, never the list ``_hub_headers`` returns: that
+    list has ``transfer-encoding`` stripped as hop-by-hop, and it is a list of
+    tuples, so a membership test against it is silently always false and would
+    drop the body off every upload.
+
+    Assumes HTTP/1.1 (uvicorn/h11, the only server the gateway runs). HTTP/2
+    frames a body with neither header, so this would need revisiting there.
+    """
+    return (
+        "content-length" in request.headers
+        or "transfer-encoding" in request.headers
+    )
+
+
 async def proxy_http(
     request: Request,
     target_base: str,
     extra_headers: list[tuple[str, str]] | None = None,
-) -> StreamingResponse:
+    *,
+    prefix: str = "",
+) -> Response:
     """Forward ``request`` to ``target_base + request.url.path`` and
     stream the response back. Body and response are streamed; no
-    materialization."""
-    url = target_base.rstrip("/") + request.url.path
+    materialization.
+
+    ``prefix`` (when set) is stripped from the forwarded path and sent as
+    ``X-Forwarded-Prefix``."""
+    url = target_base.rstrip("/") + _rebase(request.url.path, prefix)
     if request.url.query:
         url = f"{url}?{request.url.query}"
 
-    headers = _hub_headers(request.headers, extra_headers=extra_headers)
+    extras = list(extra_headers or [])
+    if prefix:
+        extras.append(("X-Forwarded-Prefix", prefix))
+    headers = _hub_headers(request.headers, extra_headers=extras)
 
-    req = _client().build_request(
-        method=request.method,
-        url=url,
-        headers=headers,
-        content=request.stream(),
-    )
-    upstream = await _client().send(req, stream=True)
+    def _build() -> httpx.Request:
+        return _client().build_request(
+            method=request.method,
+            url=url,
+            headers=headers,
+            content=request.stream() if _forwards_body(request) else None,
+        )
+
+    try:
+        upstream = await _client().send(_build(), stream=True)
+    except httpx.RemoteProtocolError as exc:
+        # A pooled socket the upstream closed between checkout and write. Safe
+        # to replay only when nothing was consumed and the method is idempotent
+        # — ``request.stream()`` is single-shot, so a body request cannot be.
+        replayable = (
+            not _forwards_body(request)
+            and request.method in ("GET", "HEAD", "OPTIONS")
+        )
+        if not replayable:
+            log.warning(
+                "hub upstream protocol error (%s %s): %s",
+                request.method, url, exc,
+            )
+            return JSONResponse(
+                {"error": "upstream connection dropped"}, status_code=502,
+            )
+        upstream = await _client().send(_build(), stream=True)
+    except httpx.TransportError as exc:
+        log.warning(
+            "hub upstream transport error (%s %s): %s",
+            request.method, url, exc,
+        )
+        return JSONResponse({"error": "upstream unreachable"}, status_code=502)
 
     resp_headers = [
         (k, v) for k, v in upstream.headers.items()
@@ -130,15 +204,19 @@ async def proxy_ws(
     client_ws: WebSocket,
     target_base: str,
     extra_headers: list[tuple[str, str]] | None = None,
+    *,
+    prefix: str = "",
 ) -> None:
     """Bridge a client WS to ``target_base + path`` via websockets.connect."""
-    path = client_ws.url.path
+    path = _rebase(client_ws.url.path, prefix)
     query = client_ws.url.query
     ws_target = _http_to_ws(target_base.rstrip("/")) + path
     if query:
         ws_target = f"{ws_target}?{query}"
 
     overrides = list(extra_headers or [])
+    if prefix:
+        overrides.append(("X-Forwarded-Prefix", prefix))
 
     try:
         upstream = await websockets.connect(

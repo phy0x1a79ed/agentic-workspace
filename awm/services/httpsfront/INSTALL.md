@@ -87,6 +87,17 @@ explicitly and merged in:
 | `AWM_HUB_URL` | injected by gateway | the loopback gateway it fronts |
 | `AWM_TLS_EXTRA_SANS` | — | extra cert SANs (see above) |
 | `REMOTE_AUDIO_CA_DIR` | `~/.config/remote-audio/ca` | shared root-CA location |
+| `AWM_EDGE_PROFILE` | — | `public`: only the paths in `policy.py` exist, no CA/link/landing routes, `SameSite=Strict` |
+| `AWM_EDGE_TLS` | `1` | `0`: plain HTTP on `127.0.0.1:$AWM_HTTPS_PORT` behind a TLS-terminating nginx |
+| `AWM_EDGE_TETHER` | `0` | `1`: mount the tether relay at `/tether`, reachable with **no session** |
+
+`AWM_EDGE_TETHER` is the one flag here that widens the door rather than
+narrowing it, so it is off unless a host means it. The person redeeming a
+tether invite is being helped with their own machine and has no account here;
+what keeps the mount narrow is the relay's own gating and an allow-list of
+exact path shapes, both described in `awm/httpsfront/tether.py`.
+
+On every profile the edge overwrites `X-Awm-As` with the session's verified subject (`user:<name>`, or `peer` for a bearer), so a downstream service may trust that header — except on the tether mount, which has no verified subject and where the header is stripped rather than defaulted. `/__auth/login` takes `{username, password}`; a blank username is the shared password. The readable `awm_as` cookie is the username for the pages' user chip and carries no authority.
 
 `AWM_HTTPS_PORT` is a clean one-line port knob: set it in the workspace's
 gitignored `$AWM_WORKSPACE/.awm/env` (merged into the gateway env at startup,
@@ -106,3 +117,25 @@ every service, including the mic's audio session — is reachable from the
 LAN/ZeroTier on `:8443` behind this one password. The gateway remains
 loopback-only for plain HTTP; this is the single TLS door in, and there is no
 longer any other.
+
+## Reuse: fronting something that is not the gateway
+
+`proxy.serve(upstream=…, landing=False, extra_routes=…, rewrite_origin=…)` is the
+whole reuse surface. `claude-science` and `dsh` both front their own loopback
+binaries with it rather than reimplementing TLS, the shared CA and the
+`awm_session` gate.
+
+`rewrite_origin` arbitrates two upstreams that want opposite things, which is why
+it exists as a flag rather than a decision. Note first that `host` is always
+dropped, so httpx derives it from the upstream URL and a wrapped app sees a
+loopback `Host` — that is deliberate and load-bearing, because it is what opens
+an app's loopback-pinned privileged plane to a remote browser. `Origin` is then
+forwarded verbatim by default, which is what `claude-science` needs: it
+allowlists the exact browser origins its WebSocket upgrades may come from, and
+rewriting the header would reject every handshake. `dsh` needs the reverse — its
+`/api` fence compares `Origin` against `Host` and demands they match, so the
+real browser origin can never satisfy it. `rewrite_origin=True` replaces a
+*present* `Origin` with the upstream's own scheme and authority, on the HTTP and
+WebSocket paths alike. It never mints one where the browser sent none: that would
+turn a same-origin navigation into a cross-origin request at the upstream.
+Default off, so the gateway front stays byte-identical.

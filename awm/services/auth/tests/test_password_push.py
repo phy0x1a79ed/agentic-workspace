@@ -1,6 +1,6 @@
 """What the daily password push says, and that it never breaks the mint.
 
-Three nodes now push into one Discord ``#notifications`` channel every ~12h, so a
+Three nodes now push into one Discord DM every ~12h, so a
 message that does not name its node is unusable. The link is the second half: the
 password is a tap, not a transcription job.
 
@@ -30,12 +30,14 @@ def pushed(monkeypatch):
         validity_hours = 24.0
         mint_cadence_hours = 12.0
         discord_account = "discord-bot"
-        discord_channel = "1522674357762261112"
+        discord_channel = "dm:188743359983124480"
         # 1 attempt / 0 backoff: existing tests exercise a single send, same
         # as before retries existed. Tests of the retry behavior itself
         # override these via monkeypatch.setattr(service, "_settings", ...).
         push_retry_attempts = 1
         push_retry_backoff_seconds = 0.0
+        penpot_rotation_hour = 4
+        penpot_rotation_enabled = True
 
     monkeypatch.setattr(service, "_settings", lambda: _S())
 
@@ -182,7 +184,7 @@ class _RetrySettings:
     push_enabled = True
     validity_hours = 24.0
     discord_account = "discord-bot"
-    discord_channel = "1522674357762261112"
+    discord_channel = "dm:188743359983124480"
     push_retry_attempts = 3
     push_retry_backoff_seconds = 0.0  # keep tests fast
 
@@ -244,6 +246,8 @@ async def test_h_status_reports_the_last_push_outcome(pushed, monkeypatch):
     # test of the push-status wiring, not a DB integration test.
     monkeypatch.setattr(store, "latest", lambda: None)
     monkeypatch.setattr(store, "valid_generations", lambda: [])
+    monkeypatch.setattr(store, "user_list", lambda: [])
+    monkeypatch.setattr(store, "penpot_list", lambda: [])
 
     await service._push_password_to_discord(PASSWORD, 0.0)
 

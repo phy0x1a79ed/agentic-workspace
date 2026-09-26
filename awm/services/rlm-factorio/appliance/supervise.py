@@ -488,11 +488,6 @@ class Engine:
     # a gameplay call block on an in-flight new/load. The Rcon I/O lock already
     # serializes the socket.
 
-    def op_observe(self, radius=None):
-        """Full world/body snapshot via the companion mod's observe interface."""
-        args = {"radius": int(radius)} if radius is not None else {}
-        return self._lua_json_call("observe", args)
-
     def op_events(self):
         """Drain the mod's bounded events ring buffer (return + clear happen in
         ONE Lua call, so nothing can slip between read and reset). An empty Lua
@@ -514,29 +509,28 @@ class Engine:
         return {"output": self._rcon_cmd("/silent-command " + code)}
 
     def op_pause(self, paused):
-        """Toggle game.tick_paused and report the resulting state."""
-        val = "true" if paused else "false"
+        """Set game.tick_paused, or flip it when `paused` is None, and report
+        the resulting state. The flip is done inside the one command rather
+        than read-then-write, so nothing can tick in between."""
+        val = "not game.tick_paused" if paused is None else \
+              ("true" if paused else "false")
         out = self._rcon_cmd(
             "/silent-command game.tick_paused=%s rcon.print(game.tick_paused)" % val
         ).strip()
         return {"paused": out == "true"}
 
-    def op_body_spawn(self, surface=None, x=0, y=0):
-        return self._lua_json_call("spawn", {
-            "surface": str(surface or "nauvis"), "x": float(x), "y": float(y),
-        })
-
-    def op_body_move(self, x, y):
-        return self._lua_json_call("set_target", {"x": float(x), "y": float(y)})
-
-    def op_body_stop(self):
-        return self._lua_json_call("stop")
-
     def op_iface(self, iface_fn, args):
-        """Generic passthrough to a mod remote-interface function (the gameplay
-        verbs: mine/craft/build/insert/take/research + the catalog queries).
-        Validation lives mod-side, where the world state is."""
-        return self._lua_json_call(iface_fn, args)
+        """Call one game-bot-control interface function by name.
+
+        The ONE route every world verb travels: the function name and its
+        arguments both come from the request, so a new mod capability needs no
+        plumbing here, and argument validation stays mod-side where the world
+        state actually is. `iface_fn` is interpolated into Lua, so it is
+        restricted to a bare identifier.
+        """
+        if not iface_fn or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", iface_fn):
+            raise ValueError("iface fn must be a bare identifier: %r" % (iface_fn,))
+        return self._lua_json_call(iface_fn, args or {})
 
     # -- boot --
 
@@ -616,35 +610,19 @@ class ControlHandler(BaseHTTPRequestHandler):
             # ---- gameplay / perceive (RCON-backed) ----
             if route == "/observe/events":
                 return self._send(200, {"ok": True, "result": ENGINE.op_events()})
-            if route == "/observe":
-                return self._send(200, {"ok": True, "result": ENGINE.op_observe(body.get("radius"))})
             if route == "/exec-lua":
                 return self._send(200, {"ok": True, "result": ENGINE.op_exec_lua(body.get("code"))})
             if route == "/pause":
-                return self._send(200, {"ok": True, "result": ENGINE.op_pause(bool(body.get("paused")))})
-            if route == "/body/spawn":
-                result = ENGINE.op_body_spawn(body.get("surface"), body.get("x", 0), body.get("y", 0))
-                return self._send(200, {"ok": True, "result": result})
-            if route == "/body/move":
-                if body.get("x") is None or body.get("y") is None:
-                    return self._send(400, {"ok": False, "error": "move requires x and y"})
-                return self._send(200, {"ok": True, "result": ENGINE.op_body_move(body["x"], body["y"])})
-            if route == "/body/stop":
-                return self._send(200, {"ok": True, "result": ENGINE.op_body_stop()})
-            # Gameplay verbs + catalog queries: generic mod-interface passthrough
-            # (validation is mod-side, where the world state is).
-            iface = {
-                "/body/mine": "mine",
-                "/body/craft": "craft",
-                "/body/build": "build",
-                "/body/insert": "insert",
-                "/body/take": "take",
-                "/research": "research",
-                "/observe/recipes": "recipes",
-                "/observe/technologies": "technologies",
-            }.get(route)
-            if iface:
-                return self._send(200, {"ok": True, "result": ENGINE.op_iface(iface, body)})
+                paused = body.get("paused")
+                return self._send(200, {"ok": True, "result": ENGINE.op_pause(
+                    None if paused is None else bool(paused))})
+            # Every remaining world verb is one mod-interface call. Naming the
+            # function in the body rather than in the path keeps the supervisor
+            # out of the business of knowing which verbs exist.
+            if route == "/iface":
+                fn = body.get("fn")
+                return self._send(200, {"ok": True,
+                                        "result": ENGINE.op_iface(fn, body.get("args"))})
             return self._send(404, {"ok": False, "error": "not found"})
         except FileNotFoundError as e:
             return self._send(404, {"ok": False, "error": str(e)})

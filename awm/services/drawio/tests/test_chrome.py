@@ -188,3 +188,53 @@ def test_pages_render_independently():
         assert "ELSEWHERE" in second and "HELLO" not in second
     finally:
         chrome.BROWSER.close()
+
+
+@pytest.mark.skipif(not _browser_available(),
+                    reason="needs Chrome and the gateway's /drawio-app mount")
+def test_the_export_tab_is_parked_and_reused():
+    """drawio's bundle is nine megabytes of JavaScript, and re-executing it was
+    most of what an SVG export cost. One tab stays loaded instead."""
+    try:
+        chrome.render_svg(XML)
+        parked = chrome.BROWSER._tab.target_id
+        chrome.render_svg(XML)
+        assert chrome.BROWSER._tab.target_id == parked
+    finally:
+        chrome.BROWSER.close()
+
+
+@pytest.mark.skipif(not _browser_available(),
+                    reason="needs Chrome and the gateway's /drawio-app mount")
+def test_a_reused_tab_renders_byte_identically():
+    """State carried over from the previous render would show up here — a
+    leftover container, a body still sized to the last diagram."""
+    try:
+        assert chrome.render_svg(XML) == chrome.render_svg(XML)
+    finally:
+        chrome.BROWSER.close()
+
+
+@pytest.mark.skipif(not _browser_available(),
+                    reason="needs Chrome and the gateway's /drawio-app mount")
+def test_a_broken_tab_is_rebuilt_rather_than_relied_on():
+    """Reuse is never load-bearing. Whatever goes wrong with the parked tab, the
+    render still happens — on a fresh one — instead of needing a restart."""
+    try:
+        first = chrome.render_svg(XML)
+        chrome.BROWSER._tab.evaluate("window.render = undefined;")
+        assert chrome.render_svg(XML) == first
+    finally:
+        chrome.BROWSER.close()
+
+
+@pytest.mark.skipif(not _browser_available(),
+                    reason="needs Chrome and the gateway's /drawio-app mount")
+def test_a_tab_that_vanished_is_rebuilt():
+    try:
+        first = chrome.render_svg(XML)
+        tab = chrome.BROWSER._tab
+        tab.send("Target.closeTarget", {"targetId": tab.target_id}, scoped=False)
+        assert chrome.render_svg(XML) == first
+    finally:
+        chrome.BROWSER.close()

@@ -1,2 +1,4 @@
 # Regenerable client-install mod zips (rebuild from the snippet in INSTALL.md)
 dist/
+# factorio.com credentials for the authenticated image build (see build.sh)
+secrets/

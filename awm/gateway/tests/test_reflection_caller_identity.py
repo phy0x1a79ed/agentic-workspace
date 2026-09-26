@@ -14,7 +14,21 @@ removed outright when there is no header.
 import pytest
 pytestmark = [pytest.mark.smoke]
 
+from awm.gateway import server as _server
 from awm.gateway.server import _stamp_reflection_caller
+
+
+@pytest.fixture
+def resolves(monkeypatch):
+    """Stand in for the ancestry walk so these tests never read live /proc."""
+    seen = []
+
+    def fake(pid, **kw):
+        seen.append(pid)
+        return {910: 900}.get(pid, pid)
+
+    monkeypatch.setattr(_server.mcp_caller, "resolve_caller_pid", fake)
+    return seen
 
 
 def test_stamps_pid_for_domain_call():
@@ -153,6 +167,36 @@ def test_walk_is_bounded(tmp_path):
     assert got == 200
 
 
+def test_stops_at_an_opencode_repl_pid(tmp_path):
+    # OpenCode writes no per-pid record file, so the walk must name the process
+    # whose exe is `opencode` — the direct analogue of the claude record stop.
+    got = _resolve_caller_pid(
+        200, sessions_dir=_sessions(tmp_path),
+        ppid_of=_chain({200: 400, 400: 1}),
+        is_opencode=lambda pid: pid == 400)
+    assert got == 400
+
+
+def test_opencode_stop_respects_first_match_too(tmp_path):
+    # Same safety property as the claude path: an agent nested inside another
+    # resolves to its own REPL, never to the session that spawned it.
+    got = _resolve_caller_pid(
+        200, sessions_dir=_sessions(tmp_path),
+        ppid_of=_chain({200: 400, 400: 500, 500: 1}),
+        is_opencode=lambda pid: pid in (400, 500))
+    assert got == 400
+
+
+def test_a_plain_process_does_not_stop_the_walk(tmp_path):
+    # The default `is_opencode` reads /proc; injected here as False so a wrapper
+    # (bash) between the proxy and the opencode REPL is walked past.
+    got = _resolve_caller_pid(
+        200, sessions_dir=_sessions(tmp_path),
+        ppid_of=_chain({200: 300, 300: 1}),
+        is_opencode=lambda pid: pid == 300)
+    assert got == 300
+
+
 def test_stops_at_init(tmp_path):
     # pid 1 is never a Claude session; walking into it (or past a vanished
     # process, where ppid_of returns None) ends the walk.
@@ -160,3 +204,61 @@ def test_stops_at_init(tmp_path):
         200, sessions_dir=_sessions(tmp_path), ppid_of=_chain({200: 1})) == 200
     assert _resolve_caller_pid(
         200, sessions_dir=_sessions(tmp_path), ppid_of=lambda pid: None) == 200
+
+
+# ---------------------------------------------------------------------------
+# `X-Awm-Caller-Pid` — the opt-in door for a caller that is not the proxy
+# ---------------------------------------------------------------------------
+
+def test_descendant_header_is_resolved_to_its_session(resolves):
+    # A hook's own pid names no session, so it is walked to the nearest ancestor
+    # that does. Without this the call refuses with "does not look like a Claude
+    # Code session" and the hook lane cannot exist at all.
+    args = {"verb": "mode", "args": {}}
+    _stamp_reflection_caller("reflection", args, None, "910")
+    assert args["args"]["_caller_pid"] == 900
+    assert resolves == [910]
+
+    flat = {}
+    _stamp_reflection_caller("reflection_mode", flat, None, "910")
+    assert flat["_caller_pid"] == 900
+
+
+def test_session_header_is_never_walked(resolves):
+    # The whole reason these are two headers: a walk here would turn a pid whose
+    # record has vanished into a climb to whatever ancestor session exists —
+    # which for a nested agent is the parent's prompt.
+    flat = {}
+    _stamp_reflection_caller("reflection_mode", flat, "910", None)
+    assert flat["_caller_pid"] == 910
+    assert resolves == []
+
+
+def test_session_header_wins_when_both_are_present(resolves):
+    flat = {}
+    _stamp_reflection_caller("reflection_mode", flat, "2488", "910")
+    assert flat["_caller_pid"] == 2488
+    assert resolves == []
+
+
+def test_unresolvable_descendant_is_stamped_unchanged(resolves):
+    # No session anywhere in the chain: the walk hands back the pid it was given
+    # and reflection refuses it, exactly as it would have before the header
+    # existed. The walk may not invent an identity.
+    flat = {}
+    _stamp_reflection_caller("reflection_mode", flat, None, "777")
+    assert flat["_caller_pid"] == 777
+
+
+def test_non_numeric_descendant_header_strips_a_model_supplied_pid(resolves):
+    flat = {"_caller_pid": 999}
+    _stamp_reflection_caller("reflection_mode", flat, None, "not-a-pid")
+    assert "_caller_pid" not in flat
+    assert resolves == []
+
+
+def test_descendant_header_does_not_touch_other_domains(resolves):
+    flat = {}
+    _stamp_reflection_caller("scope_refresh", flat, None, "910")
+    assert "_caller_pid" not in flat
+    assert resolves == []

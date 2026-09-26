@@ -3,8 +3,9 @@
 The failures worth pinning here are the quiet ones. A swap that chains instead
 of applying simultaneously produces a picture that looks plausible and is wrong.
 A blank parameter that vanishes before anyone can complain renders the plain
-page and reports success. A substitution that reaches an inlined data URI
-corrupts an image with no error anywhere. Each has a test below.
+page and reports success. A substitution that text-replaces an inlined data URI
+instead of decoding it corrupts an image with no error anywhere. Each has a
+test below.
 """
 
 from __future__ import annotations
@@ -147,25 +148,50 @@ def test_a_swap_that_matches_nothing_is_not_an_error():
 
 def test_style_colours_and_labels_are_swapped():
     swaps = R.parse_swaps(["ff00ff:00aa55"])
-    out, hits = R.swap_document(PAGE, swaps)
+    out, hits, _ = R.swap_document(PAGE, swaps)
     assert hits == 2                      # fillColor and strokeColor
     assert "#00aa55" in out and "ff00ff" not in out.lower()
 
 
-def test_an_inlined_data_uri_is_never_touched():
-    """The whole reason substitution is key-scoped rather than a text replace:
-    an `image=` value can be a megabyte of payload that must come through
-    byte-identical."""
+def test_an_inlined_data_uri_is_decoded_not_text_replaced():
+    """A swap reaches inside an `image=` payload — but by decoding it, never by
+    matching the encoded spelling. The trailing bare `ff00ff` here is not a
+    colour once decoded, and a text replace over the payload would have hit it
+    and corrupted the image."""
     payload = "data:image/svg+xml,%3Csvg%20fill%3D%22%23ff00ff%22%2F%3Eff00ff"
     xml = PAGE.replace('style="rounded=0;fillColor=#FF00FF;strokeColor=#f0f;"',
                        f'style="shape=image;image={payload};fillColor=#ff00ff;"')
-    out, _ = R.swap_document(xml, R.parse_swaps(["ff00ff:00aa55"]))
-    assert payload in out
+    out, hits, problems = R.swap_document(xml, R.parse_swaps(["ff00ff:00aa55"]))
+    assert not problems
+    assert hits == 2                # the fill inside the SVG, and the cell's own
+    assert "%2300aa55%22%2F%3Eff00ff" in out
     assert "fillColor=#00aa55" in out
 
 
+def test_an_image_that_matches_nothing_is_returned_byte_identical():
+    """Not an optimisation. The view cache is keyed on a hash of the inlined
+    document, so re-encoding an image that did not match would mint a new key
+    for every embedded image on every render and invalidate the whole store."""
+    payload = "data:image/svg+xml,%3Csvg%20fill%3D%22%23123456%22%2F%3E"
+    xml = PAGE.replace('style="rounded=0;fillColor=#FF00FF;strokeColor=#f0f;"',
+                       f'style="shape=image;image={payload};fillColor=#ff00ff;"')
+    out, _, _ = R.swap_document(xml, R.parse_swaps(["ff00ff:00aa55"]))
+    assert payload in out
+
+
+def test_a_view_reference_keeps_its_own_swap():
+    """An `image=` value can be another page's view URL, and that URL's colours
+    are decided by *its* query. Rewriting it here would make the enclosing
+    page's swaps cascade into an embedded page."""
+    url = "/drawio-app/view/fig/a.drawio/plasmid?swap=ff00ff:00cc96"
+    xml = PAGE.replace('style="rounded=0;fillColor=#FF00FF;strokeColor=#f0f;"',
+                       f'style="shape=image;image={url};"')
+    out, hits, _ = R.swap_document(xml, R.parse_swaps(["ff00ff:00aa55"]))
+    assert url in out and hits == 0
+
+
 def test_no_substitution_introduces_a_semicolon():
-    out, _ = R.swap_document(PAGE, R.parse_swaps(["ff00ff:00aa55"]))
+    out, _, _ = R.swap_document(PAGE, R.parse_swaps(["ff00ff:00aa55"]))
     style = out.split('style="')[1].split('"')[0]
     assert style.count(";") == PAGE.split('style="')[1].split('"')[0].count(";")
 
@@ -173,12 +199,12 @@ def test_no_substitution_introduces_a_semicolon():
 def test_an_html_label_is_swapped():
     xml = PAGE.replace('value="A"',
                        'value="&lt;font color=&quot;#ff00ff&quot;&gt;x&lt;/font&gt;"')
-    out, _ = R.swap_document(xml, R.parse_swaps(["ff00ff:00aa55"]))
+    out, _, _ = R.swap_document(xml, R.parse_swaps(["ff00ff:00aa55"]))
     assert "#00aa55" in out
 
 
 def test_no_swaps_leaves_the_document_untouched():
-    assert R.swap_document(PAGE, ()) == (PAGE, 0)
+    assert R.swap_document(PAGE, ()) == (PAGE, 0, [])
 
 
 def test_a_compressed_diagram_fails_loudly():

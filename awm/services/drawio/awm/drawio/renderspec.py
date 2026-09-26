@@ -21,17 +21,27 @@ Replacement is **simultaneous**, not sequential: ``swap=aa0000:bb0000`` and
 chain, because a single alternation is compiled over all the sources and a
 regex never rescans what it just wrote.
 
-What a swap reaches is deliberately narrow. Style values whose key ends in
+This module names the colours; :mod:`awm.drawio.recolour` applies them. The
+split is what keeps the grammar free of codecs and pixels — a swap reaches a
+style value, a label, a referenced file and an ``image=`` payload, and each of
+those is a different kind of content that only ``recolour`` has to know about.
+
+Which style keys count is the part that belongs here: values whose key ends in
 ``Color`` (plus drawio's two colour keys that do not, ``imageBorder`` and
-``imageBackground``), the colour spellings inside a cell's label, and the text
-of referenced ``/files/**.svg`` images. It does **not** reach an ``image=``
-value — that is how an inlined data URI survives the rewrite untouched, and a
-blanket text replace is ruled out for exactly that reason. Raster images cannot
-be masked at all: a pink region inside a PNG stays pink, which is a property of
-the format rather than a gap to be closed. Named colours (``red``), ``rgb()``
-notation and eight-digit ``#rrggbbaa`` are out of scope; eight-digit values are
-rejected at parse time rather than half-supported, because accepting them makes
-the width rule ambiguous.
+``imageBackground``) are colours, and values whose key ends in ``image`` are
+pictures, handed to ``recolour`` to be decoded rather than text-replaced. An
+``image=`` value that is another page's view URL is left exactly as it is: a
+reference's colours are decided by *its* query, not by the document that places
+it.
+
+Whatever the payload, a substitution never writes a ``;base64,`` marker back
+into a style string. drawio splits styles on ``;``, so such a URI truncates and
+the cell renders blank — which is also why drawio's own SVG import stores base64
+in the comma form.
+
+Named colours (``red``), ``rgb()`` notation and eight-digit ``#rrggbbaa`` are
+out of scope; eight-digit values are rejected at parse time rather than
+half-supported, because accepting them makes the width rule ambiguous.
 
 **``crop=<name>``**. Renders only the region covered by the shape on that page
 whose label — or, failing that, whose id — is ``<name>``. Draw a rectangle
@@ -55,6 +65,7 @@ from typing import Iterable, Mapping
 from urllib.parse import quote
 
 from . import xmlmodel
+from .recolour import Substituter, swap_text  # noqa: F401 — re-exported
 
 #: A separate prefix, nested under the editor's ``/drawio-app`` static mount.
 #: Lives here rather than in :mod:`awm.drawio.view` so that :mod:`awm.drawio
@@ -266,101 +277,63 @@ def describe(spec: RenderSpec) -> str:
 
 
 # --- colour substitution ---------------------------------------------------
+#
+# The substitution engine itself lives in :mod:`awm.drawio.recolour`; what is
+# here is the part that is specific to a ``.drawio`` document — which
+# attributes carry a colour, and which carry a picture.
 
-def _spellings(colour: str) -> list[str]:
-    """Every hex spelling that denotes this colour: ``ff00ff`` and ``f0f``."""
-    out = [colour]
-    if colour[0] == colour[1] and colour[2] == colour[3] and colour[4] == colour[5]:
-        out.append(colour[0] + colour[2] + colour[4])
-    return out
-
-
-class _Substituter:
-    """One compiled alternation over every source colour, applied in one pass.
-
-    Simultaneity falls out of this: ``re.sub`` never rescans its own output, so
-    a colour written by one swap can never be read by another. The trailing
-    lookahead stops a six-digit match from eating the first six digits of an
-    eight-digit value, and lets a three-digit source decline ``#abcdef``.
-    """
-
-    def __init__(self, swaps: tuple[tuple[str, str], ...]):
-        self.swaps = swaps
-        self._lookup: dict[str, str] = {}
-        alternatives: list[str] = []
-        for source, target in swaps:
-            for spelling in _spellings(source):
-                alternatives.append(spelling)
-                self._lookup[spelling] = target
-        alternatives.sort(key=len, reverse=True)
-        self._pattern = re.compile(
-            "#(" + "|".join(alternatives) + r")(?![0-9a-fA-F])",
-            re.IGNORECASE) if alternatives else None
-        self.hits = 0
-
-    def __bool__(self) -> bool:
-        return self._pattern is not None
-
-    def sub(self, text: str) -> str:
-        if self._pattern is None or not text:
-            return text
-
-        def _one(match: re.Match) -> str:
-            self.hits += 1
-            return "#" + self._lookup[match.group(1).lower()]
-
-        return self._pattern.sub(_one, text)
+def _is_image_key(key: str) -> bool:
+    """Whether this style key's value is a picture rather than a colour."""
+    return key.lower().endswith("image")
 
 
 def _is_colour_key(key: str) -> bool:
     return key.lower().endswith("color") or key in EXTRA_COLOUR_KEYS
 
 
-def _swap_style(style: str, sub: _Substituter) -> str:
-    """Rewrite only the colour-valued segments of a drawio style string.
+def _swap_style(style: str, sub: Substituter) -> str:
+    """Rewrite the colour-valued and image-valued segments of a style string.
 
-    Segment-wise rather than whole-string: an ``image=`` value can be a
-    megabyte of inlined data and must come through byte-identical, and the key
-    test is the mechanism that guarantees it. Empty segments and bare tokens are
-    preserved so the style comes back spelled the way it went in.
+    Segment-wise rather than whole-string: an ``image=`` value is a payload
+    with its own encoding, and a blanket text replace over it would corrupt it
+    — the colours inside are reached by decoding it, not by matching it. The
+    key test is what routes each segment to the right treatment. Empty segments
+    and bare tokens are preserved so the style comes back spelled the way it
+    went in.
     """
     parts = style.split(";")
     for index, segment in enumerate(parts):
         if "=" not in segment:
             continue
         key, value = segment.split("=", 1)
-        if not _is_colour_key(key):
+        if _is_colour_key(key):
+            replaced = sub.sub(value)
+        elif _is_image_key(key):
+            replaced = sub.sub_data_uri(value)
+        else:
             continue
-        replaced = sub.sub(value)
         if replaced != value:
             parts[index] = f"{key}={replaced}"
     return ";".join(parts)
 
 
-def swap_text(text: str, swaps: tuple[tuple[str, str], ...]) -> tuple[str, int]:
-    """Substitute colours in free text — a referenced SVG's source, say.
-
-    Returns the rewritten text and the number of replacements, because a swap
-    that matched nothing is not an error (a mask may live on one page and not
-    another) but must not be silent either.
-    """
-    if not swaps:
-        return text, 0
-    sub = _Substituter(swaps)
-    return sub.sub(text), sub.hits
-
-
-def swap_document(xml: str, swaps: tuple[tuple[str, str], ...]) -> tuple[str, int]:
+def swap_document(xml: str, swaps: tuple[tuple[str, str], ...]
+                  ) -> tuple[str, int, list[str]]:
     """Substitute colours in a ``.drawio`` document, structurally.
+
+    Returns the rewritten document, the number of colours replaced, and any
+    swap that could not be carried out — an image whose format this host has no
+    decoder for, say. A swap that *matched nothing* is not a problem; a swap
+    that could not be *attempted* is, and the caller reports it.
 
     Raises :class:`awm.drawio.xmlmodel.CompressedDiagram` for a deflated page:
     a compressed diagram renders fine but cannot be rewritten, and returning an
     un-swapped render would look exactly like a swap that matched nothing.
     """
     if not swaps:
-        return xml, 0
+        return xml, 0, []
     root = xmlmodel.parse(xml)
-    sub = _Substituter(swaps)
+    sub = Substituter(swaps)
     for element in root.iter():
         style = element.get("style")
         if style:
@@ -373,7 +346,7 @@ def swap_document(xml: str, swaps: tuple[tuple[str, str], ...]) -> tuple[str, in
                 replaced = sub.sub(value)
                 if replaced != value:
                     element.set(attr, replaced)
-    return xmlmodel.serialize(root), sub.hits
+    return xmlmodel.serialize(root), sub.hits, sub.problems
 
 
 # --- crop ------------------------------------------------------------------

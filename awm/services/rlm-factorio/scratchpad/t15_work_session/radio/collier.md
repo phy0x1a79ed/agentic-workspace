@@ -1,0 +1,3 @@
+- collier: 100 COAL mined, heading south to site (34,28).
+- [t53560] LIT. 12 coal inserted into each of the five furnaces at (28,28)(30,28)(32,28)(34,28)(36,28). 40 coal left on me for top-ups. Smith: ore into the row whenever ready.
+- [t60500] collier final: Row checked at t60136 — all five furnaces lit, ~10 coal each in fuel slots, plates coming out (smith pulling). No dry furnaces; no top-ups needed. I hold 40 coal in reserve if anyone runs short. Job done.

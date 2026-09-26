@@ -37,12 +37,41 @@ resume then. Two consequences fall out of that, and both have bitten:
   matches is dropped rather than delivered — a pid outlives nothing.
   `reflection_pending` lists what is currently owed.
 
+**How a send is confirmed.** One arbiter answers whether a send landed, on every
+lane: the session's own record at `~/.claude/sessions/<repl-pid>.json`, plus its
+transcript. Nothing reads the rendered screen. Reflection used to demand its own
+text back off the terminal before it would press Enter, and that veto caused the
+exact failure this service exists to prevent. Claude Code does not repaint the
+composer while it compacts, so the one window every deferred resume aims at is
+the one window a screen read cannot describe. A resume written into a live
+compaction now reports `enqueued` off the transcript's `queue-operation` entry
+and runs on the far side — measured on capella prod, a 163-second compaction took
+its resume 0.3 seconds in.
+
+Deleting that read would have removed two checks by accident, so both are now
+explicit. The record is sampled immediately before the write, and a record
+reading `waiting` refuses the attempt before anything is typed. That is the modal
+guard the screen read used to provide by luck, and it is strictly better, because
+it leaves no paste behind in somebody's open dialog. The daemon lane's
+`auth-required` frame is checked between the write and the Enter, through
+`check_not_rejected()` on the writer protocol — real on the daemon writer, a
+documented no-op on the others. Keep it on the protocol, because the sender must
+not be able to tell which lane it is holding.
+
+**Delivery rounds are spaced.** A failed round used to re-arm instantly, and the
+wait it re-entered answered "already started" off a start line still sitting in
+the transcript. So a four-round budget burned inside eight seconds of a
+compaction that ran for ninety-four. `ROUND_BACKOFF_S` holds off 30, then 60,
+then 120 seconds, sized against that measurement. Waiting itself stays unbounded.
+
 **Modal guard.** Some commands open a blocking modal/picker (`/mcp`, `/status`,
 `/config`, `/permissions`, `/agents`, …, and bare `/model`). These *swallow*
 pasted input — a follow-up Enter doesn't escape them and for a navigable list it
 drills deeper — so they would freeze the session (only a hand-typed Esc recovers).
 `send` **refuses** them outright (this cannot be overridden by `confirm`). Run
 them by hand. `/model opus` (with an argument) acts directly and is allowed.
+A modal that is *already* open when a send arrives is a different problem, and
+the record catches that one — see *How a send is confirmed* above.
 
 ## Who gets typed into
 
@@ -60,7 +89,7 @@ hosted:
 | `kind` | Backend | Reached via |
 |---|---|---|
 | `interactive` | `tmux_inject` | the pane whose process subtree contains the pid |
-| `bg` | `daemon_inject` | the PTY socket in `~/.claude/daemon/roster.json` |
+| `bg` | `awm.claudedaemon` | the PTY socket in `~/.claude/daemon/roster.json` |
 
 Both are exact lookups. Anything that does not resolve — no session record, a
 recycled pid whose `procStart` disagrees with `/proc`, an interactive session not
@@ -135,9 +164,8 @@ Five verbs, all on MCP + CLI + HTTP, none of which takes a target:
 
 - `reflection_send` — type any text/slash command into your own prompt and submit
   it. Destructive commands (`/clear`, `/quit`, `/exit`) require `confirm=true`;
-  modal commands (`/mcp`, `/status`, bare `/model`, …) are refused. A submitted
-  slash command is trailed by a `followup` prompt to keep the session alive.
-- `reflection_compact` — sugar for `send "/compact"` (with the same follow-up).
+  modal commands (`/mcp`, `/status`, bare `/model`, …) are refused.
+- `reflection_compact` — sugar for `send "/compact"`.
 - `reflection_mode` — put your own session back into bypass-permissions mode.
 - `reflection_pending` — list the deferred resumes still owed, node-wide. The
   one verb that is not caller-scoped, because its whole job is to make a *lost*
@@ -163,9 +191,33 @@ the session lands in auto, where a classifier gates every action.
 No hook output can fix this: the hook contract exposes per-call allow/deny and
 permission *rules*, but the session mode is internal state with no external
 setter. `reflection_mode` therefore does what a human would — presses the
-Shift+Tab permission-mode cycle — driven from a `PostToolUse` hook matching
-`ExitPlanMode` (which fires only when the tool actually executed, so an approval
-and never a rejection).
+Shift+Tab permission-mode cycle. `hooks/plan_mode_hook.py` is the trigger:
+
+```bash
+ln -s /home/tony/agentic_workspace/awm/services/reflection/hooks/plan_mode_hook.py \
+      ~/.claude/hooks/awm-reflection-mode.py
+```
+
+then merge `hooks/claude-settings-fragment.json` into the `PostToolUse` array of
+`~/.claude/settings.json`, **alongside** anything already matching
+`ExitPlanMode`. Editing that file is a global decision for every session on the
+box, which is why no installer touches it.
+
+The hook runs synchronously and calls `POST /invoke` directly rather than through
+the CLI, because identity travels in a header the CLI does not send. A hook's own
+pid names no session, so it sends `X-Awm-Caller-Pid` — the opt-in header that
+asks the gateway to walk its ancestry — plus the `session_id` Claude Code handed
+it on stdin as `expect_session`, which reflection refuses to act against if the
+walk resolved somewhere else. Detaching the hook (as the notify hook does) would
+reparent it away from the REPL and destroy that ancestry.
+
+Two guards, both read off the hook's own stdin: `tool_response` must carry a
+`plan` key (the approved shape — a rejection does not reach a `PostToolUse` hook
+at all, it is a separate `PermissionDenied` event), and `permission_mode` — which
+`ExitPlanMode` has already restored by the time the hook runs — must not already
+be `bypassPermissions`. A refusal it cannot retry past is appended to
+`~/.claude/awm-reflection-mode.log`; an unreadable footer is retried for ~15s,
+since whatever covers it after an approval is transient.
 
 It never counts presses. The cycle is `default → acceptEdits → plan →
 bypassPermissions → auto → default`, `bypassPermissions` and `auto` appear only
@@ -178,15 +230,20 @@ pressing anything, for the same reason the modal guard exists.
 Footer strings are TUI copy and can move under a CLI update; they fail safe,
 since an unrecognised footer reads as unknown and unknown does not act.
 
-One bounded gap, background sessions only: `default` paints no indicator, and
-that backend reads an append-only byte stream rather than a rendered screen, so
-a session sitting in `default` can read back as whatever mode last painted one.
-Output is discarded before each keypress, which fixes every read during a walk;
-only the first read can still be stale, and the worst outcome is that such a
-session is left alone rather than switched. Nothing repaints the footer on demand
-— an empty bracketed paste and a cursor key were both tried — so closing it
-properly means rendering the stream through a terminal emulator. The tmux backend
-is unaffected, and that is the path a phone-approved plan actually takes.
+Reading the footer is what bounds this to the tmux lane in practice. `capture-pane`
+renders the current screen; the daemon backend gets an append-only stream of
+repaint deltas, and the *first* read of a walk has nothing to discard, so a
+background session mid-turn reads back either no footer at all (`unknown`, which
+refuses) or the last one painted — which can name a mode it has since left, and
+that reads as "already in bypass" and returns ok having done nothing. Both were
+measured on one live background session minutes apart. Neither types blind, and
+both leave the session where it was; the useful lane is tmux, which is also the
+one a phone-approved plan takes.
+
+This footer walk is now the only place in the service that treats a rendered
+screen as evidence. Every send confirms from the record and the transcript
+instead. Keep the two apart. The reason the walk may read a screen is that it is
+asking what mode the TUI is displaying, which is a fact only the screen holds.
 
 ## Sessions reflection cannot reach
 

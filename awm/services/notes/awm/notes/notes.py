@@ -4,12 +4,12 @@ Every note is a uuid-named ``.md`` file (canonical content) plus a DB row (the
 title-as-path index + search indexes + trash state). Mutations keep the file,
 the ``notes`` row, the FTS mirror, and the embedding consistent.
 
-Surface split (mirrors the writing service):
-  - **read** (MCP + CLI + HTTP): :func:`search`, :func:`get`, :func:`tree`,
-    :func:`vocab_list`.
-  - **write / maintenance** (browser via ``/svc/notes/fn/*`` + CLI + HTTP; kept
-    off the agent MCP surface): :func:`create`, :func:`save`, :func:`trash`,
-    :func:`restore`, :func:`purge`, :func:`vocab_add`, :func:`vocab_remove`.
+Writing a note is one operation with one guard, wherever it comes from:
+:func:`save` and every checkout verb land through :func:`awm.notes.rooms.land`,
+which refuses a write composed against a note that has since moved. The only
+writer that does not is the browser's own keystroke stream, which owns the room
+it is writing to. See :mod:`awm.notes.checkout` for the contract an agent works
+through, and why it exists.
 """
 
 from __future__ import annotations
@@ -21,6 +21,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from . import checkout as checkout_mod
 from . import config, db, index, rooms, store
 
 _WORD = re.compile(r"[a-z0-9]+")
@@ -39,6 +40,9 @@ def _row(
     score: float | None = None,
     snippet: bool = False,
 ) -> dict[str, Any]:
+    # Prefer the live in-memory room over the (possibly lagging) on-disk file so
+    # a reader — agent, CLI, another tab — sees unflushed edits.
+    text = rooms.live_text(r["id"])
     out: dict[str, Any] = {
         "id": r["id"],
         "path": r["path"],
@@ -46,19 +50,27 @@ def _row(
         "modified": r["modified"],
         "deleted_at": r["deleted_at"],
         "file_path": str(store.file_path(r["id"])),
+        # The revision of the text above. Hand it back as `base_rev` on save,
+        # or take a checkout, and a write cannot silently land on top of
+        # someone else's.
+        "rev": db.text_rev(text),
     }
+    if rooms.file_diverged(r["id"]):
+        # The condition that makes an out-of-band file write invisible. Saying
+        # so here is what turns it from a mystery into a fact.
+        out["stale_file"] = True
+        out["warning"] = (
+            "this note is open in an editor and its file is behind the live "
+            "text; read `content` here, and write through notes checkout/merge "
+            "rather than the file"
+        )
     if score is not None:
         out["score"] = score
-    if include_content or snippet:
-        # Prefer the live in-memory room over the (possibly lagging) on-disk
-        # file so a reader — agent, CLI, another tab — sees unflushed edits.
-        live = rooms.live_content(r["id"])
-        text = live if live is not None else store.read(r["id"])
-        if include_content:
-            out["content"] = text
-        if snippet:
-            flat = re.sub(r"\s+", " ", text).strip()
-            out["snippet"] = flat[:180]
+    if include_content:
+        out["content"] = text
+    if snippet:
+        flat = re.sub(r"\s+", " ", text).strip()
+        out["snippet"] = flat[:180]
     return out
 
 
@@ -67,8 +79,20 @@ def _row(
 # ---------------------------------------------------------------------------
 
 
-def create(conn: sqlite3.Connection, *, path: str = "", content: str = "") -> dict[str, Any]:
-    """Create a new note (uuid file + row). Called on the editor's first edit."""
+def create(
+    conn: sqlite3.Connection,
+    *,
+    path: str = "",
+    content: str = "",
+    checkout: bool = False,
+    author: str = "agent",
+) -> dict[str, Any]:
+    """Create a new note (uuid file + row). Called on the editor's first edit.
+
+    Nothing exists to race here, so this is the one write with no guard. With
+    ``checkout`` it also hands back a working copy of the new note, so "make
+    this and fill it in" is one flow rather than two idioms.
+    """
     nid = str(uuid.uuid4())
     ts = db.now_iso()
     store.write(nid, content)
@@ -88,7 +112,10 @@ def create(conn: sqlite3.Connection, *, path: str = "", content: str = "") -> di
     db.fts_replace(conn, nid, path.strip(), content)
     _embed(conn, nid, content, chash)
     conn.commit()
-    return get(conn, nid, include_content=True)
+    out = get(conn, nid, include_content=True)
+    if checkout:
+        out["checkout"] = take_checkout(conn, nid, author=author)
+    return out
 
 
 def save(
@@ -97,41 +124,92 @@ def save(
     *,
     content: str | None = None,
     path: str | None = None,
+    base_rev: str | None = None,
+    author: str = "agent",
 ) -> dict[str, Any]:
-    """Update a note's content and/or title-path. Re-indexes FTS + re-embeds
-    when the content changed. No-op fields are left untouched."""
+    """Update a note's content and/or title-path.
+
+    A content save is a **merge, not a replacement**. The caller's text is
+    reconciled against whatever the note holds now — the live room if a browser
+    has it open — using the same three-way merge :func:`awm.notes.checkout`
+    uses, and the result lands atomically. So an edit composed against an older
+    copy folds in rather than erasing what happened since, and a genuine
+    conflict is refused with the checkout named, never guessed at.
+
+    ``base_rev`` is the ``rev`` this text was composed against, from any read
+    verb; it makes the merge base exact. Without it the base is taken to be the
+    note's file, which is right for the case that motivates it — a caller that
+    read the file, edited it, and is writing it back.
+    """
     r = db.get_note(conn, note_id)
     if r is None:
         raise ValueError(f"no such note: {note_id}")
     new_path = r["path"] if path is None else path.strip()
+
     if content is None:
-        new_content = store.read(note_id)
+        # Title-only. The body is untouched, but the keyword index is rebuilt
+        # from (path, body) as one row — so it must use the *live* body, or
+        # renaming an open note regresses its search text to the file's copy
+        # until the next flush.
+        new_content = rooms.live_text(note_id)
         chash = r["content_hash"]
+        db.upsert_note(
+            conn,
+            {
+                "id": note_id,
+                "path": new_path,
+                "created": r["created"],
+                "modified": db.now_iso(),
+                "deleted_at": r["deleted_at"],
+                "content_hash": chash,
+                "embedded_hash": r["embedded_hash"],
+            },
+        )
+        db.fts_replace(conn, note_id, new_path, new_content)
+        conn.commit()
+        return get(conn, note_id, include_content=False)
+
+    live = rooms.live_text(note_id)
+    live_rev = db.text_rev(live)
+    base = rooms.text_at_rev(note_id, base_rev) if base_rev else store.read(note_id)
+    if base is None:
+        raise checkout_mod.Behind(
+            f"the revision this save was composed against ({base_rev}) is no "
+            f"longer reachable; take a checkout of {note_id} and reconcile there"
+        )
+
+    if db.text_rev(base) == live_rev:
+        landed_text = content                      # nothing moved under us
+        conflicts = 0
     else:
-        new_content = content
-        chash = db.content_hash(content)
-        store.write(note_id, content)
-    db.upsert_note(
-        conn,
-        {
-            "id": note_id,
-            "path": new_path,
-            "created": r["created"],
-            "modified": db.now_iso(),
-            "deleted_at": r["deleted_at"],
-            "content_hash": chash,
-            "embedded_hash": r["embedded_hash"],
-        },
-    )
-    db.fts_replace(conn, note_id, new_path, new_content)
-    if chash != r["embedded_hash"]:
-        _embed(conn, note_id, new_content, chash)
-    conn.commit()
-    # If a live room exists (a browser has this note open), reconcile it to this
-    # out-of-band write so its collaborators and any reader stay consistent.
-    if content is not None:
-        rooms.sync_from_disk(note_id, new_content)
-    return get(conn, note_id, include_content=False)
+        landed_text, conflicts = checkout_mod.merge3(
+            base, content, live, labels=("your save", "common base", "live note"),
+        )
+    if conflicts:
+        raise checkout_mod.Conflicted(
+            f"{conflicts} conflict(s) between this save and the live note; "
+            f"take a checkout of {note_id}, run update, resolve by hand, then merge"
+        )
+
+    if new_path != r["path"]:
+        db.upsert_note(
+            conn,
+            {
+                "id": note_id,
+                "path": new_path,
+                "created": r["created"],
+                "modified": db.now_iso(),
+                "deleted_at": r["deleted_at"],
+                "content_hash": r["content_hash"],
+                "embedded_hash": r["embedded_hash"],
+            },
+        )
+        conn.commit()
+    landed = rooms.land(conn, note_id, landed_text, live_rev)
+    out = get(conn, note_id, include_content=False)
+    out["merged"] = landed_text != content
+    out["version"] = landed["version"]
+    return out
 
 
 def get(conn: sqlite3.Connection, note_id: str, *, include_content: bool = True) -> dict[str, Any]:
@@ -217,6 +295,73 @@ def _hard_delete(conn: sqlite3.Connection, note_id: str) -> None:
     db.delete_note_row(conn, note_id)
     store.remove(note_id)
     rooms.drop(note_id)
+    # A checkout of a note that no longer exists can never land; leaving it
+    # listed would be an invitation to try.
+    for handle in checkout_mod.registry().list(note_id):
+        checkout_mod.registry().discard(handle.id)
+
+
+# ---------------------------------------------------------------------------
+# Checkouts — the write path for anyone who is not the browser. The contract
+# and its reasoning live in :mod:`awm.notes.checkout`; these only add the two
+# things that module deliberately does not know about: the DB row (does this
+# note exist?) and the connection a merge needs to land through.
+# ---------------------------------------------------------------------------
+
+
+def take_checkout(conn: sqlite3.Connection, note_id: str, *, author: str = "agent") -> dict[str, Any]:
+    r = db.get_note(conn, note_id)
+    if r is None:
+        raise ValueError(f"no such note: {note_id}")
+    handle = checkout_mod.registry().checkout(note_id, author, note_path=r["path"])
+    out = handle.as_dict()
+    out["path"] = str(checkout_mod.registry().file_path(handle.id))
+    out["note"] = (
+        "edit the file at `path`, then merge. The live note is untouched until "
+        "you do, and your copy is untouched by whoever else is editing it."
+    )
+    return out
+
+
+def list_checkouts(note_id: str | None = None) -> dict[str, Any]:
+    handles = checkout_mod.registry().list(note_id)
+    return {"count": len(handles), "checkouts": [h.as_dict() for h in handles]}
+
+
+def checkout_path(handle: str) -> dict[str, Any]:
+    reg = checkout_mod.registry()
+    return {"handle": handle, "note_id": reg.note_id_of(handle),
+            "path": str(reg.file_path(handle))}
+
+
+def checkout_read(handle: str) -> dict[str, Any]:
+    reg = checkout_mod.registry()
+    return {"handle": handle, "note_id": reg.note_id_of(handle),
+            "content": reg.read(handle)}
+
+
+def checkout_write(handle: str, content: str) -> dict[str, Any]:
+    return checkout_mod.registry().write(handle, content)
+
+
+def checkout_status(handle: str) -> dict[str, Any]:
+    return checkout_mod.registry().status(handle)
+
+
+def checkout_update(handle: str) -> dict[str, Any]:
+    return checkout_mod.registry().update(handle)
+
+
+def checkout_resolve(handle: str) -> dict[str, Any]:
+    return checkout_mod.registry().resolve(handle)
+
+
+def checkout_merge(conn: sqlite3.Connection, handle: str, *, keep: bool = False) -> dict[str, Any]:
+    return checkout_mod.registry().merge(conn, handle, keep=keep)
+
+
+def checkout_discard(handle: str) -> dict[str, Any]:
+    return checkout_mod.registry().discard(handle)
 
 
 # ---------------------------------------------------------------------------

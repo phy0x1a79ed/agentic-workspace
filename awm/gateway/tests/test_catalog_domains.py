@@ -288,3 +288,85 @@ async def test_domain_name_without_verb_is_not_hijacked(monkeypatch, patched_reg
     monkeypatch.setattr(catalog.rpc, "get_control", lambda sid: _FakeChannel())
     with pytest.raises(ValueError):
         await catalog.dispatch("scope", {"something": 1})
+
+
+# ---------------------------------------------------------------------------
+# Domain-level prose (manifest "description")
+# ---------------------------------------------------------------------------
+#
+# Everything else the domain surface says is generated — the name and the verb
+# list — so a service could describe what it can DO and never how it is meant to
+# be used. That gap has teeth: `2fa` shows ten capable-looking verbs and no hint
+# that ssh(verb=connect) already arms the approver, and calling them by hand
+# spends Duo budget the fleet arbiter is not counting.
+
+
+def _blurbed(monkeypatch, blurb):
+    rec = ServiceRecord(
+        name="2fa", prefix="/svc/2fa", kind="service", service_id="sid-2fa",
+        api={"description": blurb,
+             "functions": [{"name": "ping", "tool": "2fa_ping",
+                            "description": "Probe Duo.", "params": []}]},
+    )
+    monkeypatch.setattr(catalog, "get_registry", lambda: _StubRegistry([rec]))
+
+
+def test_manifest_description_leads_the_domain_tool(monkeypatch):
+    _blurbed(monkeypatch, "Use ssh(verb=connect); it arms this for you.")
+    tool = {t.name: t for t in catalog.list_domain_tools()}["2fa"]
+    assert tool.description.startswith("Use ssh(verb=connect); it arms this for you.")
+    # The generated mechanics survive, after the prose — an agent that has
+    # already picked a verb has read the guidance too late.
+    assert "Verbs: ping" in tool.description
+
+
+def test_manifest_description_reaches_the_describe_verb(monkeypatch):
+    _blurbed(monkeypatch, "Use ssh(verb=connect); it arms this for you.")
+    out = catalog._describe_domain("2fa")
+    assert out["description"] == "Use ssh(verb=connect); it arms this for you."
+    assert [v["verb"] for v in out["verbs"]] == ["ping"]
+
+
+def test_a_service_without_the_key_is_unchanged(monkeypatch, patched_registry):
+    tool = {t.name: t for t in catalog.list_domain_tools()}["scope"]
+    assert tool.description.startswith("Generic 'scope' domain tool.")
+    assert "description" not in catalog._describe_domain("scope")
+
+
+def test_a_blank_description_is_not_a_description(monkeypatch):
+    _blurbed(monkeypatch, "   ")
+    tool = {t.name: t for t in catalog.list_domain_tools()}["2fa"]
+    assert tool.description.startswith("Generic '2fa' domain tool.")
+
+
+def test_a_cli_only_verb_carries_no_blurb_onto_the_mcp_surface(monkeypatch):
+    """A service whose only MCP-visible verb is filtered out has no MCP domain,
+    so its prose must not conjure one."""
+    rec = ServiceRecord(
+        name="2fa", prefix="/svc/2fa", kind="service", service_id="sid-2fa",
+        api={"description": "Operator surface.",
+             "functions": [{"name": "burst", "tool": "2fa_burst",
+                            "surfaces": ["cli", "http"],
+                            "description": "Arm.", "params": []}]},
+    )
+    monkeypatch.setattr(catalog, "get_registry", lambda: _StubRegistry([rec]))
+    assert "2fa" not in {t.name for t in catalog.list_domain_tools()}
+
+
+def test_a_multi_domain_service_blurbs_every_domain_it_projects(monkeypatch):
+    """Deterministic beats arbitrary: picking one of three would depend on
+    manifest ordering."""
+    rec = ServiceRecord(
+        name="scopes", prefix="/svc/scopes", kind="service", service_id="sid-s",
+        api={"description": "Scope machinery.",
+             "functions": [
+                 {"name": "search", "tool": "scope_search",
+                  "description": "s", "params": []},
+                 {"name": "create_project", "tool": "project_create",
+                  "description": "c", "params": []},
+             ]},
+    )
+    monkeypatch.setattr(catalog, "get_registry", lambda: _StubRegistry([rec]))
+    tools = {t.name: t for t in catalog.list_domain_tools()}
+    assert tools["scope"].description.startswith("Scope machinery.")
+    assert tools["project"].description.startswith("Scope machinery.")

@@ -8,6 +8,7 @@ export { default as Select } from './Select.svelte';
 export { default as Slider } from './Slider.svelte';
 export { default as Tag } from './Tag.svelte';
 export { default as Tooltip } from './Tooltip.svelte';
+export { default as UserChip } from './UserChip.svelte';
 
 // Gallery is a built-in demo surface; the awm/pages/components-gallery page
 // imports and mounts it (via the additive `flat` prop). Not a normal

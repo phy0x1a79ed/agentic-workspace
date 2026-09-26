@@ -8,7 +8,8 @@ attached, otherwise the base.
 Record kinds:
 
 * ``kind="url"`` — proxy HTTP/WS requests to ``url`` (external svc; preserved
-  for non-package registrations).
+  for non-package registrations). With ``strip_prefix``, the mount prefix is
+  removed from the forwarded path and echoed in ``X-Forwarded-Prefix``.
 * ``kind="static"`` — serve files from ``static_dir`` under the prefix
   (preserved for non-package registrations).
 * ``kind="page"`` — like ``static`` but prefix must begin ``/ui/``; never
@@ -51,6 +52,11 @@ class ServiceRecord:
     prefix: str
     kind: Kind = "url"
     url: str = ""                                   # kind == "url"
+    strip_prefix: bool = False                      # kind == "url": forward the
+    #   request path with `prefix` removed and send `X-Forwarded-Prefix`, for an
+    #   upstream that serves at the root and rebases its own links from that
+    #   header. Off by default: a mount whose upstream expects the full path
+    #   would break.
     static_dir: str = ""                            # kind in {"static","page"}
     entry: str | None = None                        # auto-shell entry (static only)
     css: tuple[str, ...] = ()                       # auto-shell stylesheets (static only)
@@ -114,12 +120,15 @@ class Registry:
     # Generic base registrations
     # ------------------------------------------------------------------
 
-    async def register(self, name: str, prefix: str, url: str) -> ServiceRecord:
+    async def register(
+        self, name: str, prefix: str, url: str, *, strip_prefix: bool = False,
+    ) -> ServiceRecord:
         prefix = _normalize_prefix(prefix)
         async with self._lock:
             self._check_register(prefix, name, "url", allow_shadow=False)
             rec = ServiceRecord(
                 name=name, prefix=prefix, kind="url", url=url.rstrip("/"),
+                strip_prefix=strip_prefix,
             )
             self._install_base(rec)
             return rec

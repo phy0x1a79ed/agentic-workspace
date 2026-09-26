@@ -84,6 +84,13 @@ class DeviceRuntime:
     # downstream consumer must require — see TwoFAService.ping.
     last_reachable_ts: float | None = None
     last_reach_error: str | None = None
+    # Monotonically increasing count of Duo transactions this process has
+    # OBSERVED for the device, across every burst window. Never reset while the
+    # process lives, which is what lets a caller take a reading before it does
+    # something that may fire a push and compare afterwards: equal readings mean
+    # Duo saw nothing in between. A restart zeroes it, and a reading that went
+    # backwards must therefore be read as "no evidence", never as zero.
+    transactions_seen: int = 0
 
     @property
     def enrolled(self) -> bool:
@@ -354,6 +361,11 @@ class TwoFAService:
             "approve_all_remaining_seconds": 0.0,
             "approved_count": 0,
             "last_burst": rt.last_burst,
+            # Duo transactions observed for this device over the life of this
+            # process. Only its DIFFERENCE against a reading taken earlier means
+            # anything — see start_burst's transactions_seen. Set on the base
+            # dict so an unenrolled device still answers the question.
+            "transactions_seen": rt.transactions_seen,
         }
         if not rt.enrolled:
             return out
@@ -510,6 +522,13 @@ class TwoFAService:
             # task already tore down (task None/done) we spawn a fresh one. This
             # closes the was_active TOCTOU that could strand a grant with no poller.
             live = rt.burst_task is not None and not rt.burst_task.done()
+            # The observation baseline. What makes it sound is that arming
+            # PRECEDES the caller's login — its own push can never already be in
+            # this number, so an unchanged count later cannot be hiding it. A
+            # concurrent sibling on the same device can land inside the window
+            # and inflate the later reading, which produces a spurious hold: the
+            # harmless direction.
+            seen_at_arm = rt.transactions_seen
             if not live:
                 rt.burst_task = asyncio.create_task(self._run_burst(rt, engine, interval))
         return {
@@ -518,16 +537,24 @@ class TwoFAService:
             "expected": budget,
             "interval": interval,
             "burst_remaining_seconds": _remaining(rt),
+            # The observation counter as of arming. A caller that is about to do
+            # something which may fire a push keeps this and compares it against
+            # the same field on `status` afterwards: an unchanged reading means
+            # Duo saw no transaction on this device in between, which is the only
+            # positive evidence that no MFA attempt was spent.
+            "transactions_seen": seen_at_arm,
         }
 
     async def _run_burst(self, rt: DeviceRuntime, engine: ApprovalEngine,
                          interval: float) -> None:
         start_approved = engine.approved_count
+        start_seen = rt.transactions_seen
         last_seen = start_approved
         notify = rt.burst_notify  # captured: the target that armed this window
         log.info("2fa burst[%s]: interval %.1fs, budget %d, window %.0fs",
                  rt.name, interval, engine.budget_remaining(), _remaining(rt))
         approved = 0
+        observed = 0
         final_notify = notify
         torn_down = False
         try:
@@ -542,7 +569,17 @@ class TwoFAService:
                            and engine.budget_remaining() > 0):
                         try:
                             txs = await asyncio.to_thread(engine.client.get_transactions)
+                            # This call IS a verified Duo round-trip, so record it
+                            # as one. Before this the timestamp moved only when
+                            # somebody called ping, which made it decay with idle
+                            # time alone — and a consumer requiring recency then
+                            # read a quiet approver as a broken one (2026-09-01: an
+                            # ssh hold on a host that was simply under maintenance
+                            # was filed as "approver-unavailable" on that basis).
+                            rt.last_reachable_ts = time.time()
+                            rt.last_reach_error = None
                             if txs:
+                                rt.transactions_seen += len(txs)
                                 log.info("2fa burst[%s]: %d pending transaction(s)",
                                          rt.name, len(txs))
                             await asyncio.to_thread(engine.handle_transactions, txs)
@@ -582,8 +619,10 @@ class TwoFAService:
                     # stray push outside a window can't be auto-approved later.
                     approved = engine.approved_count - start_approved
                     remaining = engine.clear_budget()
+                    observed = rt.transactions_seen - start_seen
                     rt.last_burst = {"approved": approved,
-                                     "expected_remaining": remaining}
+                                     "expected_remaining": remaining,
+                                     "observed": observed}
                     rt.burst_deadline = 0.0
                     rt.burst_task = None
                     rt.burst_notify = None
@@ -595,13 +634,17 @@ class TwoFAService:
                 # Abnormal exit (e.g. cancellation). Clear budget and detach so no
                 # authorization outlives the window and a re-arm can spawn afresh.
                 approved = engine.approved_count - start_approved
+                observed = rt.transactions_seen - start_seen
                 engine.clear_budget()
                 rt.burst_deadline = 0.0
                 if rt.burst_task is asyncio.current_task():
                     rt.burst_task = None
                 rt.burst_notify = None
-        log.info("2fa burst[%s]: window ended; approved %d login(s)",
-                 rt.name, approved)
+        # "approved 0" alone is ambiguous — it reads the same whether Duo never
+        # heard from the login or heard and we declined. The observed count
+        # separates them, and is the line a later diagnosis needs.
+        log.info("2fa burst[%s]: window ended; approved %d login(s), "
+                 "observed %d transaction(s)", rt.name, approved, observed)
         if final_notify is not None:
             # Fire-and-forget so the summary can't stall a concurrent re-arm.
             summary = (f"⌛ Approval window ended on `{rt.name}` — "
