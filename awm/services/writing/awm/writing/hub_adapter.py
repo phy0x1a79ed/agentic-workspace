@@ -24,9 +24,9 @@ import asyncio
 import logging
 from typing import Any
 
-from awm.gatewayclient import ServiceAdapter
+from awm.gatewayclient import ServiceAdapter, spawn_supervised
 
-from awm.writing import corpus, dao
+from awm.writing import corpus, dao, index
 
 log = logging.getLogger("awm.writing.hub_adapter")
 
