@@ -27,6 +27,15 @@ this folder (any folder with a `run.sh` under `awm/services/`), starts it with
 
 No auth — the registration handshake carries no token.
 
+## Search index
+
+The service keeps its search index in line with its tables by itself: once at
+startup and every six hours. Nothing needs running after a deploy. Run
+`awm scope reindex --dry-run` to see what is missing or stale. Run it without
+`--dry-run` to catch up now, or with `--force` to re-embed everything. Without
+the `awm-persistence[search]` extra, search falls back to keywords and says so
+in a `degraded` block.
+
 ## Optional dependency: `dvc`
 
 The data layer (`awm.scopes.data_dvc`) shells out to the `dvc` **binary**. It is

@@ -6,7 +6,7 @@ what was decided), so an autonomous agent can ask "was this decided before?" and
 on the answer instead of guessing or re-asking. It needs the `awm` conda env to
 contain its package plus the shared component libraries it imports (`config`,
 `persistence`, `gatewayclient`). Semantic search reuses the workspace embedding stack
-(`sentence-transformers` + `sqlite-vec`, already in the `awm` env).
+(`sentence-transformers`, already in the `awm` env).
 
 ## Install
 

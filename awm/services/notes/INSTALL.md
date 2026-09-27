@@ -19,8 +19,7 @@ sidecar (baked `AWM_PYTHON`) so the supervisor can respawn it under systemd.
 ## Dependencies
 
 - `awm-config`, `awm-persistence`, `awm-gatewayclient` (shared imported-source components).
-- Semantic search reuses `awm.persistence.embeddings` (all-MiniLM-L6-v2 +
-  sqlite-vec) — the same stack as the `writing` service. It is an **opt-in
+- Semantic search reuses `awm.persistence.embeddings` (all-MiniLM-L6-v2) — the same stack as the `writing` service. It is an **opt-in
   extra**, `awm-persistence[search]`, which `install.sh` installs explicitly;
   without it every other verb still works and only semantic search degrades.
 
