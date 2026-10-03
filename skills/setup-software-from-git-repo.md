@@ -35,7 +35,13 @@ Why `.awm/data/lib/` rather than the scope root:
 
 - Keeps third-party code out of the scope's git history
 - Lives with project data, so it's cleaned up appropriately with the scope
-- Consistent with the symlink layout documented in `.awm/context.md`
+- Consistent with the layout documented in `.awm/context.md`
+
+**Never `dvc add` a tree of git repos.** The layer's `.dvcignore` excludes
+`**/.git/` for this reason: hashing an inner `.git` turns one checkout into
+thousands of cache objects and the checkout stops being a checkout. Record the
+URL + commit instead — pinning is what makes a vendored checkout recoverable,
+not a copy of its bytes.
 
 If the user wants reproducibility, pin to a specific tag or commit immediately after cloning:
 

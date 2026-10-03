@@ -54,36 +54,44 @@ Polymorphic refs (`messages.recipient_id` / `messages.sender_id`,
 
 ## The `embeddings` table is per-service
 
-Any service that does semantic search gets its OWN copy of the tiny embeddings
-table. The DDL is exported as `awm.persistence.embeddings.EMBEDDINGS_DDL` —
-register it alongside that service's own tables in its `init_service_db` call.
-The engine functions (`embed_text`, `upsert_embedding(conn, …)`,
-`semantic_search(conn, …)`, `hybrid_augment(conn, …)`, `delete_embedding(conn,
-…)`) all take the service's own connection. Services known to index today:
-`skills` (skill files), and any of `scopes`/`artifacts` that index sessions /
-scopes / rooms / projects / artifacts (those feature-specific indexers were
-removed from `persistence` and must be reimplemented per-service against the
-owning service's DAO + its own embeddings table).
+A service that searches keeps its own `embeddings` table and its own
+`embeddings_fts` keyword index, in its own DB. The engine
+`awm.persistence.embeddings` owns both tables. `ensure_schema(conn)` creates them,
+and it upgrades the old one-row-per-item table in place. Every entry point calls
+it, so no service carries its own migration.
 
-`embeddings` v1 DDL (identical to legacy — seed is a straight copy):
+Index through `index_document` and `reindex`. Search through `search`. Never
+query the vectors directly. The contract, and why each part exists:
 
-```sql
-CREATE TABLE IF NOT EXISTS embeddings (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    source_type TEXT NOT NULL,
-    source_id TEXT NOT NULL,
-    chunk_text TEXT NOT NULL,
-    embedding BLOB NOT NULL,
-    updated_at TEXT NOT NULL,
-    UNIQUE(source_type, source_id)
-);
-```
+- **One row per chunk, over the whole item.** Structural chunks of at most 128
+  MiniLM tokens cover the full body. A vector of the first slice only missed
+  every detail past it.
+- **A header on every chunk.** Each chunk embeds "title — project/scope · date —
+  section" before its text. A chunk alone often lacks the words that say what
+  it is about.
+- **An item scores as its best chunk (MaxP).**
+- **Filter before ranking.** `search(..., allowed=<SQL returning ids>)` scores
+  only the chunks that pass. A global top-N cut followed by a filter returned
+  nothing for any selective filter.
+- **Keyword and meaning together.** BM25 over the same chunks is fused with
+  cosine by a convex combination (`ALPHA`) after min-max scaling. The query
+  reaches FTS5 as quoted terms, so punctuation cannot raise an error.
+- **Rows record their model and a content hash.** `reindex` re-embeds what is
+  missing, changed, or made by another model, and prunes what no longer exists.
+  Each service runs it at startup and every few hours. Changing `MODEL_NAME` or
+  the chunker therefore re-embeds everything with no manual step.
+- **Degraded, not silent.** Without the semantic stack the engine stores
+  keyword-only rows, and `search` returns a `degraded` block that callers pass
+  through.
 
-Legacy `state.db` rows to seed from: `SELECT source_type, source_id,
-chunk_text, embedding, updated_at FROM embeddings` — but filter by the
-`source_type` the owning service is responsible for (`'skill'` for skills,
-`'session'`/`'scope'`/`'room'`/`'project'` for scopes, `'artifact'` for
-artifacts).
+**CAUTION** The embedder is CPU-bound and loads once per process. Services run
+indexing on one background thread, and bind the DB path when a job is queued. A
+job that reads the path when it runs follows a test's monkeypatch back to the
+production DB.
+
+The choice of model, chunk size and fusion weight came from a labelled query
+set. Re-measure with `awm/services/scopes/scripts/search_eval.py` before
+changing any of them.
 
 ---
 
@@ -91,7 +99,7 @@ artifacts).
 
 | Service | Owns (v1 tables) |
 |---|---|
-| **scopes** | projects, users, agents, agent identity layer, session_logs, messages, rooms, guest_list, room_transcripts (+ embeddings for session/scope/room/project) |
+| **scopes** | projects, users, agents, agent identity layer, session_logs, messages, rooms, guest_list, room_transcripts (+ embeddings for post/scope/project) |
 | **agents** | agent_instances, agent_transcript |
 | **artifacts** | artifacts (+ embeddings for artifact) |
 | **skills** | embeddings (skill) only — catalog is file-based |
@@ -228,7 +236,7 @@ CREATE INDEX IF NOT EXISTS idx_room_transcripts_room_ts ON room_transcripts(room
 CREATE INDEX IF NOT EXISTS idx_room_transcripts_kind ON room_transcripts(room_id, kind, ts);
 ```
 
-Plus `embeddings` (see top) if scopes indexes sessions/scopes/rooms/projects.
+Plus `embeddings` (see top) for posts, scopes and projects.
 
 ## Legacy `state.db` shapes scopes SELECTs when seeding
 

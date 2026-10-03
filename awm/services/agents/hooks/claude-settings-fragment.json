@@ -1,0 +1,55 @@
+{
+  "_comment": "Merge these entries into the `hooks` block of ~/.claude/settings.json (keep existing hooks). The command points at a stable symlink (~/.claude/hooks/awm-notify-hook.py) so the settings never change across deploys — retarget the symlink at the service's hooks/hook.py (release tree on prod, a worktree copy while iterating). `|| true` keeps a missing/broken hook silent: it must never affect a turn.",
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 /home/tony/.claude/hooks/awm-notify-hook.py 2>/dev/null || true"
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 /home/tony/.claude/hooks/awm-notify-hook.py 2>/dev/null || true"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 /home/tony/.claude/hooks/awm-notify-hook.py 2>/dev/null || true"
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 /home/tony/.claude/hooks/awm-notify-hook.py 2>/dev/null || true"
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 /home/tony/.claude/hooks/awm-notify-hook.py 2>/dev/null || true"
+          }
+        ]
+      }
+    ]
+  }
+}

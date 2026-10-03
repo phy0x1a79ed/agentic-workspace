@@ -1,0 +1,783 @@
+# trilium
+
+One shared knowledge base — documents rather than bullet points, PDFs and
+figures beside the notes that cite them, and a history you can go back to.
+Upstream is TriliumNext/Trilium, forked into `projects/trilium`, run as a single
+server on loopback and served by awm's edge at `/trilium/`.
+
+Trilium is single-user per instance, and that is what this design wants: one
+instance, one database, one knowledge base that everyone signed in works in
+together. It is collaborative by being *shared* — one document, not a document
+each. It is durable by being *replicated*: that one document runs on three
+machines and converges within a minute. See *One document, three machines*.
+
+## Purpose & Contents
+
+This file holds the decisions a reader cannot recover from the code: why the
+vault is a second upstream on an existing listener rather than a mount or a host
+of its own, why it has no password, why the verbs that write notes are refused to
+anyone who arrives through the edge, how a public slice opens one subtree to
+somebody with no account, why the kanban board is Trilium's rather than this
+service's, why the document is replicated over an ssh forward rather than over
+the edge, why exactly one node may run a service that writes into the vault, why
+there are four kinds of database copy and only two of them survive a deletion,
+why a node that serves the tarball gets a directory where a node that builds the
+fork gets a checkout, and what a shared origin costs.
+
+Trilium's own architecture belongs to `projects/trilium` and its upstream docs.
+The patches we carry to it are the exception, because nothing in that project
+says why they are there. This file covers only the boundary between awm and
+Trilium.
+
+## The contract
+
+**One vault, and an account is the whole of joining it.** There is no per-person
+scope, port, subdomain or DNS record — the public host's `add-user.sh <name>` makes
+an auth account and stops, and that account reaches the vault immediately. This
+is the property to protect when changing anything here: the moment adding a
+person needs a second act somewhere else, the design has regressed to what it
+replaced.
+
+**The vault is one prefix, `/trilium/`, and the trailing slash is load-bearing.**
+Trilium has no URL-base setting: it serves its application shell from `/`, and
+every reference in that shell is *relative* — `./src/index-*.js`, `favicon.ico`,
+`manifest.webmanifest`, `./bootstrap`, the runtime's `assets/v<version>/` and
+`api/`, and the WebSocket URI it builds from `location.pathname`. Relative
+references resolve against the document's *directory*, so a shell at `/trilium/`
+puts every one of them inside `/trilium/`, where the edge strips the prefix back
+off. The mount is `awm/httpsfront/vault.py`, next to the public allow-list and
+for the same reason: a change to what a browser can reach should be a reviewed
+diff.
+
+CAUTION: the shell must never be served at `/trilium` without the slash. Two
+things break. Every relative reference resolves to the site root instead of the
+mount, so the page paints and then hangs half-built. And Trilium's own hashchange
+parser refuses any URL that does not contain the literal `/#root`, so the browser
+back button changes the address and the application ignores it. The edge answers
+the slash-less path with a 308.
+
+The prefix is also what keeps the vault's surface and awm's disjoint by
+construction. `/api/`, `/assets/`, `/src/`, `/bootstrap` and `/favicon.ico` at
+the site root are awm's, not the vault's. Do not add a root-level path to
+`vault.py` to make something work — a relative reference that escapes the mount
+is a bug in the mount.
+
+**There is no Trilium password, and that is a consequence rather than a
+shortcut.** Its own login existed to say *which person*, back when there was one
+instance each. With one shared vault it says nothing at all, and the awm edge
+already knows who signed in — so a second password would ask the same question
+twice and answer it worse. The child runs with `noAuthentication`, and a fresh
+vault is provisioned over loopback (`provision.py`) so nobody's first visit is a
+setup wizard.
+
+What that setting costs, exactly: **protected notes stop working.** They are
+encrypted with the Trilium password, and there is not one.
+
+**The invariant it rests on.** `noAuthentication` stands down *every* guard
+Trilium has — the shell, the internal API, the whole of ETAPI, the setup wizard's
+password gate, and the WebSocket's own check. What replaces them is not weaker
+but earlier: the edge authenticates the session before forwarding a byte — with
+one exception, `/slice/`, which has a section of its own below and is admitted
+with no session at all. That holds only while the edge is the **only** route in,
+so it is enforced rather than asserted, in three places:
+
+- the child binds loopback, and `child_env` both sets `TRILIUM_HOST` and *removes*
+  `TRILIUM_NETWORK_HOST` — upstream's `Network.host` defaults to `0.0.0.0` and
+  `TRILIUM_HOST` only out-ranks it by an ordering upstream is free to change;
+- no awm code binds that child anywhere else, and `tests/test_no_listener.py`
+  greps the package for the two symbols that would bring the retired per-person
+  TLS front back;
+- `install-awm.sh` *removes* any leftover Trilium nginx vhost and the retired
+  `TRILIUM_FRONTS` / `TRILIUM_DOMAIN` keys rather than merely not writing them.
+  Nothing else on a provisioned box ever deletes either, and a stale vhost
+  pointing straight at the loopback port would be a public, unauthenticated
+  knowledge base.
+
+`TRILIUM_EDGE_ONLY=0` is the one supported way to reach the vault by another
+route, and it takes the password back with it. One knob, so nobody can set half
+of this.
+
+**What a shared origin costs, stated because it was chosen.** The vault is on the
+same origin as the rest of awm, which the retired per-person subdomains were not.
+Trilium renders note content and runs user-authored *frontend* scripts — the
+setting we pass disables *backend* scripting only — so a malicious or imported
+note becomes script execution on the awm origin, able to make credentialed
+same-origin calls as whoever is reading it. `awm_session` is HttpOnly, so it
+cannot be read; it can be used. A shared vault raises this rather than lowering
+it, because one bad note reaches every reader — and a writable slice widens who
+can plant one from "people with an account" to "anyone with the link". Slice
+writes are sanitised on the way in for that reason, which is the right first move
+and not the complete one: the complete one is the separate origin below.
+
+That is accepted, not overlooked. The mitigations are the minimal forwarded path
+list (`/etapi/`, `/custom/`, `/share/` and `/mcp` are deliberately not forwarded, and
+are matched against the path *inside* the mount — see `vault.NOT_FORWARDED`), the operator-only verb split below, and a tight
+public allow-list. `/share/` stays off that list even though slices now do what
+it was for: it decides what is public from inside the document, by where a note
+is cloned, so the boundary would be set by whoever can edit the vault rather than
+by whoever can reach the host. A slice is minted by an operator verb and enforced
+against a token instead. The only complete fix is a separate origin, and the escape
+hatch if the trust assumption ever changes is **one** DNS record — a `vault.`
+host bound to the same edge — not one per person.
+
+**Read verbs are public; everything else is an operator's.** The vault is shared,
+so `restore` discards everyone's work and `snapshot` and `export` each rebuild
+the whole thing on a two-core box. `status`, `snapshots` and `url` are reachable
+from a browser; `start`, `stop`, `restart`, `provision`, `logs`, `snapshot`,
+`export`, `restore` and `note_upsert` are refused for any caller that arrived
+through an edge. `tests/test_operator_only.py` holds the two lists and fails
+until a newly added verb is put in one of them.
+
+The discriminator needs no new credential, because the edge already supplies one:
+`httpsfront` overwrites `X-Awm-As` on every request it forwards and never
+forwards an empty one, so **an absent identity means the call did not cross an
+edge** — it came from `/invoke` on loopback, which is the host's own CLI. That is
+`_operator_only` in `hub_adapter.py`, and it is the enforcement. The public
+allow-list is defence in depth, and could not be the enforcement: a mesh node's
+edge runs no profile and never consults it.
+
+CAUTION: this is deliberately *not* `userroot.wrap_handlers`. That answers
+"whose store?", which a shared vault never asks, and under
+`AWM_USER_ROOT_STRICT=1` it raises for exactly the caller we need to admit.
+
+**The children are on `compute`'s PROTECTED list.** The child is spawned in its
+own session, so the `awm-service` pattern does not cover it, and a long-lived
+node process that is idle until someone types is exactly the shape of a reaper
+victim. The entry matches the bundle path, because nothing on the command line is
+called `trilium`. Changing how `server.py` spawns the child without changing that
+pattern makes it reapable again, and nothing reports it.
+
+**Backend scripting and the SQL console are switched off explicitly.** Both
+default off on a server build. They are set anyway, because a `config.ini` in the
+data directory can turn either on, and on a public host either is arbitrary code
+execution.
+
+**The day-note launchers are moved off the launchbar on every start.** Trilium
+ships a "Today" button and a calendar widget. Both call `getDayNote`, which
+*creates* `Calendar / <year> / <month> / <date>` on first click and leaves it
+there. In a personal vault that is a feature. In one everybody shares it is a
+dated folder tree in everyone's note list because one person once opened a
+calendar. `provision.hide_day_note_launchers` moves both to the available set,
+plus the mobile bar's copy of the calendar.
+
+CAUTION: move, never delete. Upstream recreates a launcher whose *note* is
+missing, under the parent its definition names, so a delete comes back visible.
+It does not recreate a branch: `checkHiddenSubtree` enforces branch placement
+only for items marked `enforceBranches`, which no launcher is. Re-applying on
+every start is deliberate — the launchbar lives in the database, so anyone can
+put the button back, and the tree it creates is shared.
+
+**Why not a gateway `kind=url` mount.** The blocker dsh records: the gateway's
+WebSocket bridge forwards no headers at all, and Trilium's client holds a socket
+open for every change it renders. The edge route is the design, not a shortcut
+around one. Don't re-derive this.
+
+**No `Origin` rewrite, unlike dsh.** dsh needs one because its harness compares
+`Origin` to `Host`. Trilium's CSRF protection is a `csrf-csrf` double-submit
+cookie, which travels correctly through an unmodified proxy. Setting
+`rewrite_origin` here would hide nothing and buy nothing.
+
+**`trustedReverseProxy=loopback` is required, not cosmetic** — but not for the
+reason an older version of this file gave. It makes express read
+`X-Forwarded-For`, so Trilium's per-IP rate limiter on the shell sees the real
+visitor instead of every visitor collapsed onto `127.0.0.1`. It does *not*
+control the `Secure` flag on Trilium's session cookie: `session_parser.ts` uses a
+literal `config.Network.https`. `loopback` rather than `true`, because the edge
+always connects from there and a blanket trust would let a forged header past
+anything that reads a client address.
+
+## One document, three machines
+
+sirius holds the vault. altair and capella run copies of it that anyone can also
+write to, and an edit on any of the three reaches the other two inside a minute.
+Every machine therefore holds the whole knowledge base, which is the redundancy;
+the schedule under *Four kinds of copy* is the recovery, and they are not
+substitutes.
+
+**The topology is a star because Trilium's is.** An instance has exactly one
+upstream, so sirius is the centre and the others are spokes of it. Traffic goes
+both ways over that one link, so the result is still a complete copy everywhere.
+There is no second hub to fail over to and no way to make a ring.
+
+**The link is an ssh port forward, not the edge.** Two facts close the obvious
+routes. `noAuthentication` stands down the guard on `/api/sync/*` as well as
+everything else, and `/api/sync/stats` carries no guard at all — so the hub's
+vault port is a document that anyone reaching it may read and rewrite, and it
+must never be reachable off loopback. And the edge, which is the route people
+use, deliberately refuses a peer credential at the vault mount, which is the one
+credential a machine has. So each spoke's trilium service holds
+`ssh -N -L 127.0.0.1:<local>:127.0.0.1:<vault port> sirius` open, supervised by
+the same health tick that watches the vault child, and points its own Trilium
+down it. Both ends stay on loopback and nothing new is exposed to any network.
+See `awm/trilium/sync.py`.
+
+**One value decides which node a machine is.** `TRILIUM_SYNC_HUB` in the
+workspace env file names the hub's ssh destination. A node that has it is a
+spoke. A node without it is the hub — sirius has no env file at all, which is
+why it cannot accidentally become a client of itself. The hub's vault child is
+told `TRILIUM_SYNC_SYNCSERVERHOST=disabled` rather than nothing, because every
+node runs a *copy* of one database and a stored `syncServerHost` would travel
+with the copy; `disabled` is Trilium's own override for exactly that.
+
+The sync host is always the local end of this node's own forward, never the
+hub's address, so a machine cannot be pointed at a hub it holds no tunnel to.
+`child_env` asserts that, next to the assert that keeps the bind on loopback.
+
+**A machine is seeded by copying the database, not by the setup wizard.**
+Trilium's "sync from server" flow fetches a seed from behind a password check,
+and that check does not stand down when `noAuthentication` is set — it refuses
+outright because no password exists. Copying is the supported alternative rather
+than a workaround: the sync client's login step lowers its own pull cursor to the
+server's position and says in as many words that this is for a manually copied
+document. The instance identity is a random string minted per process and never
+stored, so two copies of one database come up as two distinct instances on their
+own.
+
+The procedure is: `trilium snapshot` on the hub, carry the file to the spoke,
+advance `lastSyncedPull` and `lastSyncedPush` in the copy to the highest synced
+`entity_changes` id it contains, then `trilium restore` it. The cursor step is an
+optimisation and not load-bearing — a raw copy converges too, by pushing its
+whole history back for the hub to discard — but on a real vault that is a
+pointless multi-megabyte first sync.
+
+WARNING: **a service that writes into the vault must run on exactly one
+machine.** The Zotero mirror runs on sirius. A second mirror against the same
+document would not merge with the first: each pass reconciles the tree against
+its own view of the library, so the two would take turns deleting what the other
+had just written. This is the least obvious consequence of sharing the document
+and the easiest to trip over, because installing the mirror on a second node
+looks like the obvious next step.
+
+WARNING: **a replica follows a deletion.** Within a minute of a note being
+deleted anywhere it is gone everywhere. Replication is not backup, which is why
+the snapshot schedule exists and is not optional.
+
+CAUTION: conflicts are resolved last-write-wins per note, on `utcDateChanged`.
+Editing one note on two machines at once keeps the later write and files the
+loser as a note revision. Recoverable, but not a merge.
+
+CAUTION: the clocks have to agree within five minutes or sync login is rejected
+outright, and every instance must report the same `syncVersion` — it is a
+constant in the build, so that is really a question about which bundle each
+machine runs. Both are the first things to suspect when a link goes quiet.
+`curl -s localhost:<vault port>/api/setup/status` answers the second without
+authentication.
+
+CAUTION: capella sleeps with its host, so it spends time behind. That is what the
+pull cursor is for; a lagging capella is not a broken link until you have checked
+that it is awake.
+
+## The note API, and why reading it is an operator verb
+
+The service can do to a note anything a person can: read it, create, update,
+delete, move, clone, place it under several parents at once, set and clear a
+label or relation, and attach a file. `awm trilium --help` lists them.
+
+**Every one is operator-only, reads included.** The rest of the write verbs are
+operator-only because the vault is shared and one person's button acts on
+everyone's work. `note_get` is different and lands in the same place for a
+different reason: the edge deliberately does not forward `/etapi/`, so that a
+note in the vault cannot run script that walks the vault. An open read verb
+would be that same surface wearing awm's name. Nothing is lost by keeping it on
+the host — the person reading the vault already has all of it in front of them.
+
+Three places where the ETAPI shape underneath is not the shape a caller expects,
+absorbed here so that every caller does not meet them separately:
+
+- **Attributes are not part of creating a note.** ETAPI's create-note whitelist
+  takes no attributes, so `note_create` taking `labels` is two or three calls
+  wearing one verb.
+- **A note's parent is a branch, not a field.** `note_place` sets the whole
+  parent set in one call, and always adds before it removes: a note's last
+  branch takes the note with it, so unplacing first deletes what you are moving.
+- **An attachment's bytes do not travel in its JSON.** The create body's
+  `content` is validated as a string. The row is made empty and the bytes are
+  PUT after it as `application/octet-stream`, which is what makes express hand
+  the route a Buffer rather than a mangled string.
+
+`note_update` reports what actually moved, not what it was handed: a field is
+compared before it is written, and offering a title that is already right
+reports nothing and writes nothing. A mirror running on a timer offers every
+field on every pass, so the alternative is a revision on every note every tick.
+
+An argument that is an object — `labels`, `relations` — is spelled as JSON,
+because one catalog projects each verb onto MCP, HTTP and the CLI and the CLI
+has no object type: `--labels '{"status": "To do"}'`.
+
+CAUTION: `note_upsert` is keyed on `(parent, exact title)`. Using it where a
+title can repeat is how one person's writing gets overwritten. Key on a label
+instead, the way the Zotero mirror keys on `#zoteroKey`.
+
+## A public slice of the vault
+
+A slice is a link that opens **one note and everything under it** to somebody
+with no awm account, optionally letting them edit note bodies, with each edit
+recorded against a name. It is the third state between "anyone with an account
+sees the whole vault" and "anyone without one sees none of it".
+
+**The affordance is in the note tree.** Right-click a note and choose "Share as
+slice…". The dialog takes a visitor name, a write toggle and an expiry. It mints
+the link, copies it, lists the note's live slices, and revokes one. The entry
+appears only where `AWM_HUB_URL` and `AWM_EDGE_URL` both reach the Trilium
+process, so an ordinary Trilium never shows it. It never appears inside a slice,
+because the mask refuses the three routes the dialog calls.
+
+Those routes are `GET /api/slices/:noteId`, `POST /api/slices` and `DELETE
+/api/slices/:token`, in `apps/server/src/routes/api/slices.ts`. Each one calls
+the gateway verb of the same name. They are server-only rather than shared with
+`trilium-core`, because the standalone WASM build has no transport to a loopback
+gateway.
+
+The same three acts from a terminal:
+
+```
+awm trilium slice-expose --note-id <id> --user steven   # bound to one visitor
+awm trilium slice-expose --note-id <id>                 # open; each visitor names themselves
+awm trilium slice-list
+awm trilium slice-revoke <token>
+```
+
+The URL is `https://<host>/slice/<token>/?user=steven#root/<noteId>`. The token
+is in the *path* for the same reason the vault is at a prefix: the shell's
+references are relative, so they resolve inside the slice's own mount, and two
+slices open in one browser get a cookie path each. The trailing slash is
+load-bearing exactly as it is for `/trilium/`; the edge answers the slash-less
+form with a 308.
+
+**Declare `AWM_EDGE_URL` on any node that mints links.** `_slice_url` builds the
+URL from `config.edge_url()`, which falls back to this host's mesh address and
+`AWM_HTTPS_PORT` when the variable is absent. A public node without it prints a
+link that resolves only on the mesh. Put the value in `/etc/awm/env` — on sirius,
+`https://nexus.tony-xy-liu.com`. The Trilium process inherits it from the gateway
+through the service, so one declaration serves the CLI and the dialog alike.
+
+**Six gates, and each is meant to be the one that holds.**
+
+- The **edge** classifies `/slice/` as a verdict of its own (`policy.Verdict.SLICE`)
+  and admits it with no subject. It resolves the token by calling
+  `trilium_slice_resolve` over the gateway on loopback — an operator verb, reached
+  because a loopback call carries no `X-Awm-As` — and caches the answer for a few
+  seconds so a page load is one round trip rather than hundreds. An unknown,
+  revoked or expired token is a **404, not a 403**: a slice that no longer exists
+  should look like a URL that never did.
+- The edge then **stamps three headers** and strips any the browser sent:
+  `X-Awm-Slice-Root`, `X-Awm-Slice-User`, `X-Awm-Slice-Write`. Trilium trusts them
+  exactly as much as it trusts loopback, which is total and correct.
+- The **mask** in the fork (`apps/server/src/routes/slice_mask.ts`) sits ahead of
+  the internal API router. It names the routes a slice may call and refuses
+  everything else, so a route an upstream merge adds fails closed. Each named
+  route resolves to a note, which must be the slice's root or a descendant —
+  computed live, so a note moved into the slice is in it without re-issuing the
+  link. Exactly one route may write, `PUT /api/notes/:noteId/data`, only when the
+  link permits it. Descent from the shared note is the whole of membership, so
+  that route accepts a note of any type.
+- The **tree route** (`packages/trilium-core/src/routes/api/tree.ts`) takes the
+  slice root and walks parents and children only inside it. Left unscoped, the
+  route recursed up to the vault root and returned every ancestor's title along
+  with the whole hidden subtree, whatever the mask allowed.
+- The **options route** answers a slice from `SLICE_READABLE_OPTIONS`, a named
+  list rather than the Options dialog's write allow-list. `openNoteContexts` and
+  `hoistedNoteId` name notes from all over the vault.
+- The **WebSocket** is tagged with its slice at the upgrade and its fan-out is
+  filtered by the same predicate, because a broadcast otherwise carries every note
+  id and title in the vault to a connection that may see one subtree. A branch
+  change is judged by both of its ends, or moving the shared note re-attaches its
+  real parent to the visitor's tree.
+
+The client is trimmed to match, and only to match. An action a slice cannot
+perform is left out of the interface rather than disabled, because a greyed
+control still asks to be tried. Every trimming point tests `slice.isSlice()` in
+`apps/client/src/services/slice.ts`, which is the way to find them all. A refused
+request is logged to the console rather than toasted, so a gap the trimming
+missed reads as silence. None of that is a boundary — the mask is, and it holds
+with the trimming reverted.
+
+**What a visitor's writing leaves behind.** A slice write to a text note is
+sanitised with the vault's own allow-list before it is stored. Sanitising is
+skipped for every other type, where it would destroy a code note's source or a
+canvas note's JSON. The write is then recorded as a revision whose `source` is
+`slice` and whose `description` is the visitor's name, throttled to one per note
+per visitor per snapshot interval. The ordinary pre-write snapshot
+still runs, so a note's first slice edit leaves two revisions: the state before
+anybody outside touched it, and that visitor's version. A named revision is spared
+by `eraseExcessRevisionSnapshots` only while `revisionIgnoreNamedSnapshots` is on,
+which is where to look if an audit trail goes missing.
+
+CAUTION: a link is a credential, and anyone it is forwarded to has it. Expiry and
+`slice-revoke` exist for that reason; nothing can make a link identify a person. A
+bound token at least fixes the name, so attribution can be shared but not forged.
+
+CAUTION: the tarball install path carries none of the fork's slice code, so
+upstream's build would answer every route a token reached. `slice_expose` and
+`slice_resolve` therefore refuse outright on a node not serving the fork —
+resolving as well as minting, because a replicated database carries the notes a
+token was minted against. That is a live condition rather than a hypothetical
+one: capella serves the tarball and now holds the shared document, so slices are
+minted and resolved on sirius alone. `ship-bundle.sh` closes the gap, but it is
+written for sirius today — the `/opt/awm` paths and the `awm` service account in
+it are that host's, not a mesh node's.
+
+## The board
+
+Trilium ships a board view, so a kanban board here is not something this service
+draws. A board is a `book` note carrying `#viewType=board`. A card is any note
+beneath it carrying the label the board groups by — `#status` unless
+`#board:groupBy` says otherwise. A board is therefore notes and labels and
+nothing else, which is why the note API already reaches all of it and this
+service offers no board verb.
+
+It offered three once. `board_ensure`, `card_upsert` and `board_cards` are gone,
+and each is replaced by something a person could do by hand:
+
+- **Make a board in the browser.** It is one of the collection types, two clicks
+  from the note menu. A board awm minted carried the labels without the
+  template, so a vault ended up holding two kinds of board that did not look
+  alike.
+- **Read a board with a search.** `note_search` for the grouping label,
+  restricted to the board's subtree, returns exactly the cards. `attrs_get`
+  says which column each one is in.
+- **Place a card with a note and a label.** `note_create` or `note_update` for
+  the card, then `attr_set` for the grouping label.
+
+**awm never invents a column.** It sets the grouping label only to a value the
+board's `label:<groupBy>` definition already offers, and refuses the write
+otherwise. The board view resolves its columns from that definition first, then
+from its saved `board.json` attachment, then from the values notes carry — so a
+value awm invents becomes a column on the next render, with nobody having asked
+for one. This is a rule for whoever writes the next caller, not a check in the
+code. The code that could have enforced it was the board module, and removing it
+was the point.
+
+CAUTION: the board groups its subtree **flattened and recursively**, so a card
+nested two levels down still appears on it. Placement inside the board matters
+less than the label.
+
+### The two patches we carry
+
+The fork was pristine at `v0.105.0` until this. Both patches are upstream bugs
+rather than local taste, so both belong upstream. Sending them is a decision
+nobody has made yet.
+
+- **A card says where it lives.** Grouping is recursive, so a board shows notes
+  from every depth of its subtree, and every one of them rendered as a bare
+  title. Two notes called "Outline" under different parents read as the same
+  card. A card now renders the titles between it and the board, joined by `/`.
+  The path is accumulated on the way down rather than climbed back up from the
+  card, because a note cloned to two places under one board has one path per
+  branch and only the walk knows which branch a card was reached by.
+- **A column change sticks.** A column change writes to three places — the
+  notes, the config attachment and the group-by definition — and each lands
+  separately. The board used to persist the columns it had just resolved on
+  every render, so any refresh reading a source the change had not reached yet
+  put the column back for good, and a second client with the same board open
+  wrote its own pre-change view over the first one's change. A render now writes
+  nothing. A board whose group-by definition lookup finds nothing at all is
+  given one once, on sight — what a newly created board needs, and all migration
+  0240 ever did for the boards that predated it. Everything else is written by
+  the column gesture that changed it, which stores the whole resolved list. A
+  definition an ancestor owns, or a template shares with notes off this board,
+  is not this board's to rewrite, and a column it names is refused with a
+  message rather than half-changed.
+
+A delete or a rename can still flicker: between the bulk action stripping the
+label off the cards and the definition write landing, a refresh can resolve the
+old column and draw it. Nothing persists it, and it goes when the write arrives.
+
+CAUTION: the tarball install path serves upstream's build, which has neither
+patch. A node that installs from the tarball shows bare card titles, and loses a
+column change made while the board is open in a second browser. Only a node that
+builds the fork carries them.
+
+## Where the vault's content lives
+
+`projects/trilium/release`, the same worktree the node serves. `live/` holds the
+database. `data/vault/` holds the pinned snapshots, the mirrored Zotero library
+and the markdown export. One path moves on a deploy instead of two, so nothing
+has to keep a second one in step.
+
+The path is the same on every node. What sits at it is not.
+
+- A node that builds the fork has a git worktree there with a DVC repository.
+  Its pins are committed on `release`.
+- A node that serves the published tarball has a plain directory. No `.git`, no
+  `.dvc`, no bare repository, no scope row. It holds no Trilium source, so git
+  has nothing to track and DVC has nothing to pin.
+
+Every write asks `is_checkout` before it pins or commits. Without a checkout the
+service writes its files and reports that it committed nothing. That is what
+lets a deployment box run this service with no code of its own, so treat it as
+load-bearing rather than as a graceful degradation.
+
+WARNING: the live database sits inside a git worktree on a build node. `git
+clean -fdx` there deletes it and nothing warns first.
+
+CAUTION: `live/` is excluded through the bare repository's `info/exclude`, never
+through the fork's root `.gitignore`. Upstream owns that file. Anything added to
+it conflicts at every version bump.
+
+The data tree is also excluded from the probe that decides whether to rebuild.
+`install.sh` and `instances.NOT_SOURCE` spell the same two exclusions. They have
+to agree, or a deploy alternates between rebuilding and not.
+
+## Four kinds of copy, and only one is a restore path
+
+| where | what | pinned | survives a deletion |
+|---|---|---|---|
+| the other two machines | the live replica, converged within a minute | no | no |
+| `live/backups/` | Trilium's own daily/weekly/monthly rotation | no | until the next rotation |
+| `data/vault/backups/` | named snapshots `trilium snapshot` moved there | yes | yes |
+| `data/vault/notes/` | the markdown export | yes | until the next export |
+
+**The replica is redundancy, not backup, and the difference is the column on the
+right.** It protects against losing a machine and against nothing else: a note
+deleted on any node is deleted on all of them within a minute. Only the pinned
+snapshots stand between a mistake and a permanent loss.
+
+**The snapshot schedule lives where a snapshot becomes a pin.** A supervised loop
+in this service wakes hourly and takes one when the newest is more than a day old
+— an age test rather than a time of day, so a node that was asleep at the nominal
+hour still snapshots when it wakes. Taking it, thinning the older ones and
+committing the pin land as one commit. From there the existing nightly archive
+job carries the bytes off-site, append-only, with no new work.
+
+That is why the schedule runs on altair and not on sirius. sirius has no checkout,
+so nothing it writes is pinned and nothing reaches the archive; altair holds the
+same document and does have one. The loop stands down on a node where
+`is_checkout` is false rather than writing copies nobody ships.
+
+The checked-out set is thinned so the working tree does not grow without bound:
+everything from the last fortnight is kept, and older snapshots are reduced to
+the newest of each calendar month. Safe only because the archive is append-only —
+pruning the tree does not prune what was already shipped.
+
+**The rolling backups cannot be the DVC chunk.** It is the tempting arrangement —
+they are the only consistent database copies on disk, because Trilium writes them
+under its sync mutex. `dvc add` replaces every file it pins with a read-only
+hardlink into the shared cache, and Trilium rewrites `backup-daily.db` in place:
+the write fails on permissions and the daily backup stops. So Trilium churns in
+`live/backups/`, and only copies this service moved under a timestamped name
+reach the chunk.
+
+WARNING: never pin the live database. `document.db` and its write-ahead log are
+one logical unit, so a pin taken while the server runs records a state that never
+existed — and it looks healthy until someone restores it.
+
+**The markdown export is a derived view.** Trilium stores markup as HTML, so the
+export is a conversion and importing it back is lossy. It is there to be read,
+searched and merged by a person. Recovery is a snapshot, never this.
+
+The export is pinned rather than committed as text, because the fork is a public
+repository. A pin publishes a hash and the bytes stay in the local cache. The
+cost is that an export no longer appears in a branch diff. The tree on disk is
+still diffable and an older export is still reachable through its pin.
+
+**`restore` is whole-vault, and that is a limitation with a reason.** Putting one
+note's revision back is `POST /api/revisions/{id}/restore`, on the internal API,
+behind `checkApiAuth` — which wants an express session, and this service opens
+none. So the single-note restore stays where the reader already is: one click in
+Trilium's own revisions dialog. What the verb restores is the whole database, and
+it moves the vault it replaced into `live/superseded/<timestamp>/` rather than
+deleting it.
+
+WARNING: on a shared vault a restore discards *everyone's* work since the
+snapshot, not one person's. That is why it is operator-only and why it needs
+`--confirm`, and why the page does not offer it.
+
+## Registrations
+
+One, plus a page that appears on its own:
+
+| kind | name | prefix / port | what |
+|---|---|---|---|
+| `service` | `trilium` | `/svc/trilium` | the verbs and the supervisor |
+| — | (page) | `/ui/trilium` | the reception page, mounted where `dist/` exists |
+
+**This service binds no listener at all.** The vault answers on loopback
+`awm.config.VAULT_PORT` (12511), and `awm.httpsfront` proxies `/trilium/` to it —
+so the port is defined in `awm.config` rather than here, because two processes
+must agree on it and neither owns it. There is deliberately nothing in this
+package that could bind a socket; see the invariant above.
+
+The reception page reports the server, the database, the snapshots and the bundle
+as separate states, because those are four different failures with four different
+fixes. It reports and does not control: every verb that acts on the vault is
+refused for a caller arriving through an edge.
+
+## Install
+
+```
+./install.sh
+```
+
+`awm/gateway/install.sh` runs this on every deploy. Every step is idempotent and
+skips itself when already satisfied. Two paths, and which one runs is the whole
+difference between a build node and a serving node:
+
+- **Build the fork.** `projects/trilium/release` *is* the runnable server, so
+  every line we change is tracked TypeScript on a branch rather than an edit to a
+  build artifact. Stamped on the fork's HEAD, its dirty flag and its lockfile
+  hash, and skipped when none of the three moved.
+- **Download the published tarball** for the pinned tag. Upstream ships a Node
+  runtime inside it, so this path needs no toolchain at all — which is what lets
+  sirius install in a minute instead of building TypeScript on two vCPUs. That
+  bundled runtime is also what a shipped fork bundle runs under.
+
+`TRILIUM_INSTALL_MODE` forces one; the default picks the build when a fork is
+checked out. A missing fork is a warning and a clean exit, because the gateway
+runs every service's install under `set -e` and a hard failure aborts the whole
+deploy on a node that simply does not serve Trilium. `TRILIUM_REQUIRE_SERVER=1`
+makes it fatal where one is expected.
+
+**A node that cannot build can still serve the fork.** It takes
+`apps/server/dist/` from a node that can:
+
+```
+./ship-bundle.sh [host]           # default: sirius
+```
+
+The script refuses a bundle that does not match the local HEAD, refuses a remote
+Node that does not match `.nvmrc`, copies the bundle and its build stamp, writes
+`node-bin`, swaps the directory, and restarts the unit. `entry_point()` tests for
+`dist/main.cjs` and prefers the fork whenever that file exists, so the copy is
+the switch and deleting `main.cjs` is the way back. sirius serves the fork this
+way, which is what lets it mint and resolve a slice.
+
+CAUTION: never give a serving node a fork checkout. `install.sh` picks its path
+by testing for `<fork>/.git`, so a checkout there turns every later deploy into a
+monorepo build the node cannot finish. A shipped bundle leaves that directory
+free of `.git`, which keeps the install on the tarball path while the fork bundle
+serves. That also leaves `source_state()` with no revision to report, so the
+build stamp the script copies is the only record of which commit is running.
+
+CAUTION: `node_exe()` returns the tarball's bundled Node only while the tarball
+is the chosen entry. The moment the fork entry exists it reads `node-bin` and
+falls back to a bare `node`, which systemd's PATH does not carry. The tarball's
+runtime and the fork's `.nvmrc` must name the same version. Both are 24.19.0 at
+v0.105.0, and a tag bump that moves one breaks the pairing with no warning.
+
+**The fork is a project, not a dependency.** Run this on a build node only, once.
+A serving node never runs it — that is what the CAUTION above forbids.
+
+```
+./bootstrap-fork.sh
+```
+
+CAUTION: `git clone --bare` turns every branch on the fork into a local head, and
+upstream maintains `release/v0.102.2`. Git stores refs as paths, so that head and
+a `release` branch cannot coexist and `scope create` fails on the collision. The
+script deletes the colliding heads; both remotes still carry them.
+
+**Install artifacts live beside the service, not in workspace state.** `server/`,
+`node-bin` and the tarball stamp are gitignored files under
+`awm/services/trilium/`. On sirius the install runs as the dev user while the
+gateway runs as the application account that owns the state root, so anything
+written at install time has to be on the install side of that line.
+
+## Deploy
+
+```
+./deploy.sh                       # this node's gateway
+
+# sirius is provisioned from its own repository, not this one
+VMs/digital_ocean/sirius/deploy.sh release
+```
+
+`deploy.sh` does three things `awm deploy` does not: it promotes the commits into
+the tree the editable install resolves `awm` to, it runs this service's
+`install.sh`, and it builds the page. The install matters because `awm deploy`
+re-runs a service's install script only when the *set* of installed dists
+changes — a rebuilt bundle never lands after the first deploy, the same trap that
+leaves drawio serving a stale client patch.
+
+`scripts/promote.sh` closes the same gap for a fleet promotion, and closes it
+*unconditionally* rather than on a pathspec: the fork lives in a separate
+repository, so no diff over the awm tree can see it move. The install is stamped
+and costs seconds when nothing did.
+
+`deploy.sh` makes the change live on this node and stops there. Pushing to
+GitHub, to capella's bare and to mira is fleet promotion, it is node-shape-
+specific, and a script that guesses at it ships something other than what was
+promoted.
+
+CAUTION: the merge commit is made in a throwaway worktree of the local bare,
+never in the release checkout. That checkout is a deploy target that gets
+`reset --hard`, so a commit authored there is discarded later with no warning.
+
+## sirius is not wired differently
+
+It used to be, and the whole of that difference is gone. nginx proxies `/`
+wholesale to the awm edge, and the vault is a path on that edge, so the public
+host serves it by the same route and the same code as a mesh node. There is no
+`TRILIUM_FRONTS`, no `TRILIUM_DOMAIN`, no generated vhost and no DNS record.
+
+One shape it does not share is the vault's. sirius holds no fork, so the path
+the service resolves is a directory there rather than a checkout — see *Where
+the vault's content lives*. The public host's `install-awm.sh` creates it with two
+mkdirs.
+
+The other is that it is the sync hub, and that is an absence rather than a
+setting: it has no `TRILIUM_SYNC_HUB` because it has no workspace env file at
+all. Every other node names it and opens a forward to it. Nothing on sirius is
+configured for this, and nothing should be — see *One document, three machines*.
+
+Two things are host-shaped. `client_max_body_size` in the nginx snippet the
+host's provisioning repository installs is 512m, because the vault is behind
+that one location and Trilium uploads whole PDFs and imports whole vaults in a
+single request. nginx generates the 413 itself, so the application never sees it
+and the editor simply appears to break. And `AWM_EDGE_URL` in `/etc/awm/env`
+names the public origin, because a slice link built from an enumerated mesh
+address resolves nowhere off the mesh.
+
+## Verify
+
+```
+awm services list | grep trilium
+awm trilium status
+awm trilium snapshots
+```
+
+`status` answers four separate questions — is the process up, did it bind, does
+it have a database, and is there a pinned snapshot — plus which bundle is being
+served and whether it matches the revision on disk. Asked through an edge it
+answers the first four and omits the pids and paths.
+
+The check that actually matters is not any of those: **open `/trilium/` in a
+browser, signed in, and confirm it paints and stays live.** A curl returning 200
+proves the shell was served; only a browser proves the WebSocket connected, and a
+vault whose socket never connects looks perfectly healthy and silently stops
+showing anyone else's edits.
+
+An end-to-end check of the data verbs, on the host:
+
+```
+awm trilium snapshot --name before-upgrade
+awm trilium export
+git -C projects/trilium/release log --oneline -2
+```
+
+Each commits one pin on `release`. `snapshot` adds a database copy under a name
+no other snapshot has. `export` replaces the notes chunk wholesale. Neither is
+reachable from a browser — run them where you can ssh.
+
+On a node with no checkout both write their files and report that they committed
+nothing. That is the expected answer there, not a failure.
+
+The replication link, on a spoke:
+
+```
+awm trilium status | python3 -c 'import json,sys; print(json.load(sys.stdin)["sync"])'
+curl -s localhost:12511/api/sync/stats
+```
+
+`status` reports the role, the hub, whether the forward is up and what the vault
+child was told its upstream is. `outstandingPullCount` of zero means this node
+has caught up. The check that proves the whole thing is still a person's: write a
+note on one machine and watch it appear on the other two within two minutes, then
+do it in the other direction. A vault that syncs happily can still be serving a
+shell whose WebSocket never connected.
+
+## AGPL-3.0
+
+Trilium carries it. Serving a modified version over a network triggers the
+source-offer obligation. Our fork is public on GitHub, which satisfies it. Keep
+it that way.

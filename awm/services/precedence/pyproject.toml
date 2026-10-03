@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "awm-precedence"
+version = "0.1.0"
+requires-python = ">=3.11"
+description = "AWM precedence service: a semantically-searchable archive of user-adjustment decisions for autonomous agents."
+dependencies = [
+    "awm-config",
+    "awm-persistence",
+    "awm-gatewayclient",
+]
+
+# PEP 420 namespace package: no top-level awm/__init__.py; the namespace dir is awm/precedence/.
+[tool.setuptools.packages.find]
+include = ["awm.precedence*"]
+namespaces = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+markers = [
+    "smoke: fast unit + tiny in-process tests; target <30s, run on every dev iteration",
+    "slow: spawns subprocesses, real git, or network simulation; excluded from smoke",
+    "unit: pure unit tests (models, validation, registries)",
+    "precedence: precedence decision-archive search + curation",
+    "integration: cross-component integration tests",
+]

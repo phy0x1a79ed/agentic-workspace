@@ -118,6 +118,34 @@ VAD_POLL_SEC = float(os.environ.get("PTT_VAD_POLL", "0.4"))
 SAMPLE_RATE = 16000
 SAMPLE_BYTES = 2  # int16 LE
 
+# --- no-speech hallucination gate ------------------------------------------
+# Whisper emits stock phrases over near-silent audio (subtitle-credit artifacts
+# baked into training) — "..." / "Thank you." / "Thanks for watching." — plus
+# bare punctuation. Left in, they pepper dictation with garbage at every pause.
+# We drop a segment when its whole text matches one of these AND (for the real
+# words) whisper itself is unsure it's speech. Pure punctuation/ellipsis is
+# always dropped; it is never meaningful content.
+_HALLUCINATION_RE = re.compile(
+    r"^(?:thank you|thanks for watching|please subscribe|"
+    r"thanks for listening|you|bye)\.?$",
+    re.IGNORECASE,
+)
+_PUNCT_ONLY_RE = re.compile(r"^[\W_]+$")  # "...", "…", ".", "-", etc.
+# Segments whose whisper no_speech_prob is at least this are treated as silence
+# for the purpose of the phrase gate above.
+_NO_SPEECH_MAX = float(os.environ.get("PTT_NO_SPEECH_MAX", "0.6"))
+
+
+def _is_hallucination(text: str, no_speech_prob: float) -> bool:
+    t = text.strip()
+    if not t:
+        return True
+    if _PUNCT_ONLY_RE.match(t):
+        return True
+    # A stock phrase counts as a hallucination only when whisper is also unsure
+    # it was speech, so a genuinely-spoken "thank you" survives.
+    return no_speech_prob >= _NO_SPEECH_MAX and bool(_HALLUCINATION_RE.match(t))
+
 
 def _transcribe_segments(
     pcm_bytes: bytes,
@@ -135,6 +163,11 @@ def _transcribe_segments(
     dictation caller passes a short glossary of custom terms so whisper spells
     them right (e.g. project names). ``None`` (the default) leaves behaviour
     exactly as before, so PTT/convo callers that pass nothing are unaffected.
+
+    ``condition_on_previous_text=False`` stops the decoder from feeding a bad
+    prior segment back in as context, which is what turns one hallucinated
+    "..." into a self-reinforcing cascade of them. No-speech segments are then
+    dropped by :func:`_is_hallucination`.
     """
     from awm.stt.stt import get_transcriber
 
@@ -148,8 +181,15 @@ def _transcribe_segments(
         beam_size=1,
         vad_filter=vad_filter,
         initial_prompt=initial_prompt or None,
+        condition_on_previous_text=False,
     )
-    return [(seg.text.strip(), seg.start, seg.end) for seg in segments]
+    out: list[tuple[str, float, float]] = []
+    for seg in segments:
+        text = seg.text.strip()
+        if _is_hallucination(text, getattr(seg, "no_speech_prob", 0.0)):
+            continue
+        out.append((text, seg.start, seg.end))
+    return out
 
 
 def _safe(s: str) -> str:
@@ -215,6 +255,13 @@ class SttAgent:
         # from the start frame's ``initial_prompt``. None = default whisper
         # behaviour. Used by the notes dictation to spell domain vocab correctly.
         self.initial_prompt: Optional[str] = None
+        # Dictation mode (notes page). Like continuous mode it runs the VAD +
+        # partial loops, but each silence-cut emits a single ``commit`` frame
+        # carrying ONLY that window's text — no cumulative composer, no convo
+        # accumulator, no auto-submit. The frontend shows the in-flight window as
+        # an interim "chip" (fed by ``partial``) and flushes it into the note on
+        # each ``commit``. Set from the start frame's ``dictation`` flag.
+        self.dictation: bool = False
 
     # ---- client management ----
 
@@ -239,6 +286,7 @@ class SttAgent:
             self._last_partial = ""
             self.telemetry = False
             self.initial_prompt = None
+            self.dictation = False
         self.last_active = time.monotonic()
 
     def is_idle(self, now: float) -> bool:
@@ -358,6 +406,49 @@ class SttAgent:
         self._cancel_cut_task()
         self._cut_task = asyncio.create_task(_run())
 
+    def _dispatch_dictation_cut(
+        self, preview: str, tail: bytes, committed_prefix: str
+    ) -> None:
+        """Finalize one dictation window and emit a single ``commit`` frame.
+
+        Dictation's answer to :meth:`_dispatch_convo_cut`, minus the accumulator:
+        the just-cut ``tail`` is accurately re-transcribed off the poll's critical
+        path and spliced onto ``committed_prefix`` to form THIS window's text,
+        which is broadcast as ``{"type":"commit","text": piece}`` — exactly one
+        window per frame, so the editor inserts one stable piece at a time and
+        never re-commits a revised preview (the duplication bug the cumulative
+        ``composer``/LCP-delta path caused). ``preview`` (already-streamed cosmetic
+        text) is the fallback when the re-pass comes up empty."""
+
+        async def _run() -> None:
+            loop = asyncio.get_running_loop()
+            repass_ms = 0.0
+            try:
+                async with self._whisper_lock:
+                    t0 = time.perf_counter()
+                    segments = await loop.run_in_executor(
+                        None, _transcribe_segments, tail, self.continuous,
+                        self.initial_prompt,
+                    )
+                    repass_ms = (time.perf_counter() - t0) * 1000
+            except Exception:  # noqa: BLE001
+                log.exception("dictation cut whisper pass failed for %s", self.user_id)
+                segments = []
+            await self._metric(
+                "whisper_repass", dur_ms=round(repass_ms, 1), segs=len(segments)
+            )
+            tail_text = " ".join(s[0] for s in segments if s[0]).strip()
+            piece = (committed_prefix + " " + tail_text).strip() or preview
+            if not piece:
+                await self._status("recording", "listening…")
+                return
+            await self._metric("dictation_commit", piece_len=len(piece))
+            await self.broadcast_json({"type": "commit", "text": piece})
+            await self._status("recording", "listening…")
+
+        self._cancel_cut_task()
+        self._cut_task = asyncio.create_task(_run())
+
     async def _silence_cut(self, joined: bytes, tail: bytes, committed_prefix: str) -> None:
         """Fire one silence-cut and reset the splice window so the next utterance
         transcribes from a fresh tail.
@@ -399,6 +490,10 @@ class SttAgent:
         )
         if self.convo is not None:
             self._dispatch_convo_cut(preview, tail, committed_prefix, cut_byte)
+        elif self.dictation:
+            # Dictation: emit one accurate ``commit`` per window (no accumulation,
+            # no submit). The editor flushes its interim chip into the note.
+            self._dispatch_dictation_cut(preview, tail, committed_prefix)
         elif preview:
             # PTT-continuous without a convo session (defensive — continuous always
             # builds one today): no LLM smoothing, so the streamed preview IS the
@@ -414,6 +509,7 @@ class SttAgent:
         context: Optional[str] = None,
         telemetry: bool = False,
         initial_prompt: Optional[str] = None,
+        dictation: bool = False,
     ) -> None:
         # Latest "start" wins — barge-in across clients.
         self._cancel_partial_task()
@@ -422,7 +518,11 @@ class SttAgent:
         self.pcm_chunks.clear()
         self.committed_text = ""
         self.committed_bytes = 0
-        self.continuous = (mode == "continuous")
+        self.dictation = bool(dictation)
+        # Dictation runs the same rolling/VAD machinery as continuous mode, so it
+        # sets continuous too; only the cut handling (commit-per-window vs
+        # convo-accumulate) and submit differ.
+        self.continuous = (mode == "continuous") or self.dictation
         self._silent_passes = 0
         self._last_partial = ""
         self._submitted = False
@@ -430,12 +530,13 @@ class SttAgent:
         self.initial_prompt = initial_prompt or None
         self.recording_client = ws
         self.last_active = time.monotonic()
-        # Continuous mode runs the convo inner loop: a per-session raw-transcript
-        # accumulator fed by each silence-cut. PTT mode leaves convo None. (The
-        # ``context`` field is still accepted from the frontend but unused now that
-        # there is no LLM prompt to feed it into.)
+        # Continuous (convo) mode runs the convo inner loop: a per-session
+        # raw-transcript accumulator fed by each silence-cut. PTT and DICTATION
+        # modes leave convo None — dictation emits a ``commit`` per window instead
+        # of accumulating. (The ``context`` field is still accepted from the
+        # frontend but unused now that there is no LLM prompt to feed it into.)
         self.convo = None
-        if self.continuous:
+        if self.continuous and not self.dictation:
             from awm.stt.convo import ConvoSession
 
             self.convo = ConvoSession()
@@ -463,6 +564,7 @@ class SttAgent:
         self._silent_passes = 0
         self._last_partial = ""
         self.telemetry = False
+        self.dictation = False
         await self._status("idle", "")
 
     async def handle_end(self, ws: WebSocket) -> None:
@@ -472,6 +574,38 @@ class SttAgent:
         self._cancel_partial_task()
         self._cancel_silence_task()
         self._cancel_cut_task()
+        if self.dictation:
+            # Flush the final in-progress window: words spoken right before the
+            # user hit stop, with no trailing pause, never triggered a silence-cut.
+            # Re-transcribe the uncommitted tail and emit one last `commit` so
+            # nothing is lost. (Only the current window — earlier windows already
+            # committed on their own cuts.)
+            tail = b"".join(self.pcm_chunks)[self.committed_bytes:]
+            prefix = self.committed_text
+            ip = self.initial_prompt
+            self.continuous = False
+            self.dictation = False
+            self.convo = None
+            self.pcm_chunks.clear()
+            self.committed_text = ""
+            self.committed_bytes = 0
+            self._last_partial = ""
+            if tail:
+                loop = asyncio.get_running_loop()
+                try:
+                    async with self._whisper_lock:
+                        segments = await loop.run_in_executor(
+                            None, _transcribe_segments, tail, True, ip,
+                        )
+                except Exception:  # noqa: BLE001
+                    log.exception("dictation final flush failed for %s", self.user_id)
+                    segments = []
+                tail_text = " ".join(s[0] for s in segments if s[0]).strip()
+                piece = (prefix + " " + tail_text).strip()
+                if piece:
+                    await self.broadcast_json({"type": "commit", "text": piece})
+            await self._status("idle", "")
+            return
         if self.continuous or self.convo is not None:
             # Convo mode emits a result per silence-cut; stopping just tears the
             # session down. No final full-PCM pass — in continuous mode
@@ -480,6 +614,7 @@ class SttAgent:
             # without a trailing pause is dropped (v1 limitation).
             self.continuous = False
             self.convo = None
+            self.dictation = False
             self.pcm_chunks.clear()
             self.committed_text = ""
             self.committed_bytes = 0
@@ -874,6 +1009,7 @@ async def run_stt_ws_session(websocket: WebSocket, user_as: str) -> None:
                     context=ctx if isinstance(ctx, str) else None,
                     telemetry=bool(payload.get("telemetry")),
                     initial_prompt=ip if isinstance(ip, str) else None,
+                    dictation=bool(payload.get("dictation")),
                 )
             elif t == "context":
                 # Frontend still pushes a recent-chat-history buffer; it only ever

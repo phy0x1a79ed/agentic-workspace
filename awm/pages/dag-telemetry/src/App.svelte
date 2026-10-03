@@ -16,7 +16,7 @@
    * list.
    */
   import { onDestroy } from 'svelte';
-  import { TaskList, FocusPanel, AttentionStrip, SteeringChip, buildIndex, deriveAttention } from '@awm/dag-graph';
+  import { TaskList, FocusPanel, SteeringChip, buildIndex } from '@awm/dag-graph';
   import {
     fetchDag,
     openNode,
@@ -28,7 +28,6 @@
     fetchTaskDetail,
     cancelTask,
     retryTask,
-    decomposeTask,
     type DagSnapshot,
     type DagTask,
     type TaskDetail,
@@ -93,12 +92,6 @@
     tasks.find((t) => t.task_id === selectedId) ?? null,
   );
   const isTerminal = $derived(!!selected && TERMINAL.has(selected.state));
-  // Whether the attention strip has anything to show (gates its padded bar so an
-  // empty strip takes no vertical space).
-  const hasAttention = $derived.by(() => {
-    const a = deriveAttention(tasks, now);
-    return a.wants.length > 0 || a.broken.length > 0;
-  });
 
   // The orchestrator plan is a single GLOBAL DAG — always fetch the whole graph;
   // there is no per-project view filter.
@@ -201,7 +194,6 @@
   }
   const onCancel = (id: string) => runLifecycle(cancelTask, id);
   const onRetry = (id: string) => runLifecycle(retryTask, id);
-  const onDecompose = (id: string) => runLifecycle(decomposeTask, id);
 
   // --- Steering controls (attach + hand-off; server-authoritative) ---------
 
@@ -281,23 +273,10 @@
 
   {#if error}<p class="error mono">{error}</p>{/if}
 
-  <!-- Attention strip: only what needs the human (wants-steering + broken),
-       derived from the same poll; the padded bar shows only when non-empty. -->
-  {#if hasAttention}
-    <div class="attn">
-      <AttentionStrip
-        tasks={tasks}
-        nowMs={now}
-        selectedTaskId={selectedId}
-        onSelectTask={(id) => (selectedId = id)}
-      />
-    </div>
-  {/if}
-
   <div class="panels">
     <section class="left">
       {#if index}
-        <TaskList {index} {query} selectedTaskId={selectedId} onSelectTask={(id) => (selectedId = id)} />
+        <TaskList {index} {query} nowMs={now} selectedTaskId={selectedId} onSelectTask={(id) => (selectedId = id)} />
       {:else}
         <p class="hint mono">loading the plan…</p>
       {/if}
@@ -323,7 +302,6 @@
                 {detail}
                 {onCancel}
                 {onRetry}
-                {onDecompose}
                 {lifecycleBusy}
               />
             </div>
@@ -446,13 +424,6 @@
     color: var(--warn, #f55);
     font-size: 12px;
     flex: 0 0 auto;
-  }
-  .attn {
-    flex: 0 0 auto;
-    padding: 6px 14px;
-    border-bottom: 1px solid var(--border, #333);
-    background: var(--surface, #1a1a1a);
-    overflow-x: auto;
   }
   .panels {
     flex: 1 1 auto;

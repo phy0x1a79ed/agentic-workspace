@@ -34,11 +34,20 @@ import asyncio
 import logging
 from typing import Any
 
+from awm import gatewayclient
 from awm.gatewayclient import ServiceAdapter
 from awm.rlm_browser import dao
-from awm.rlm_browser.browser import BrowserManager
+from awm.rlm_browser.browser import BrowserManager, _norm_mode
 
 log = logging.getLogger("awm.rlm_browser.hub_adapter")
+
+# `attached` mode drives one real, already-logged-in Chrome — a physical
+# singleton reachable only from whichever node it actually runs on. A node
+# that borrows it (no real Chrome of its own to attach to) sets this to the
+# owning peer's name; the owning node leaves it unset so its own calls stay
+# local. Mirrors AWM_TWOFA_PEER / AWM_SOCIAL_PEER / AWM_SSH_SLOT_PEER
+# (see FEDERATION.md § Singletons vs per-node services).
+_ATTACH_PEER_ENV = "AWM_RLM_BROWSER_ATTACH_PEER"
 
 
 def _mode_from_args(a: dict) -> str | None:
@@ -235,46 +244,95 @@ def _build() -> tuple[ServiceAdapter, BrowserManager]:
     # ``inspect.iscoroutinefunction`` and awaits these directly on its loop —
     # a lambda would not register as a coroutine fn and would needlessly hop a
     # worker thread just to build the coroutine.
+    async def _forward(peer: str, fn: str, a: dict) -> Any:
+        return await gatewayclient.call_maybe_peer(peer, "rlm-browser", fn, a)
+
     async def acquire(a):
+        mode = _norm_mode(_mode_from_args(a))
+        if mode == "attached":
+            peer = gatewayclient.peer_env(_ATTACH_PEER_ENV)
+            if peer:
+                result = await _forward(peer, "acquire", a)
+                mgr.note_forwarded(result["session_id"], peer)
+                return result
         return await mgr.acquire(
             a["game"], mode=_mode_from_args(a), opts=a.get("opts"))
 
     async def release(a):
+        peer = mgr.forwarded_peer(a["session_id"])
+        if peer:
+            result = await _forward(peer, "release", a)
+            mgr.forget_forwarded(a["session_id"])
+            return result
         return await mgr.release(a["session_id"])
 
     async def reset(a):
+        peer = mgr.forwarded_peer(a["session_id"])
+        if peer:
+            return await _forward(peer, "reset", a)
         return await mgr.reset(a["session_id"])
 
     async def status(a):
-        return await mgr.status(a.get("session_id"))
+        session_id = a.get("session_id")
+        peer = mgr.forwarded_peer(session_id) if session_id else None
+        if peer:
+            return await _forward(peer, "status", a)
+        # A bare status() (no session_id) stays local-only — it will not
+        # merge in sessions this node has forwarded elsewhere.
+        return await mgr.status(session_id)
 
     async def tab_open(a):
+        peer = mgr.forwarded_peer(a["session_id"])
+        if peer:
+            return await _forward(peer, "tab_open", a)
         return await mgr.tab_open(a["session_id"], a.get("url"))
 
     async def tab_close(a):
+        peer = mgr.forwarded_peer(a["session_id"])
+        if peer:
+            return await _forward(peer, "tab_close", a)
         return await mgr.tab_close(a["session_id"], a["tab_id"])
 
     async def tab_list(a):
+        peer = mgr.forwarded_peer(a["session_id"])
+        if peer:
+            return await _forward(peer, "tab_list", a)
         return await mgr.tab_list(a["session_id"])
 
     async def tab_activate(a):
+        peer = mgr.forwarded_peer(a["session_id"])
+        if peer:
+            return await _forward(peer, "tab_activate", a)
         return await mgr.tab_activate(a["session_id"], a["tab_id"])
 
     async def observe(a):
+        peer = mgr.forwarded_peer(a["session_id"])
+        if peer:
+            return await _forward(peer, "observe", a)
         return await mgr.observe(a["session_id"], a.get("tab_id"))
 
     async def screenshot(a):
+        peer = mgr.forwarded_peer(a["session_id"])
+        if peer:
+            return await _forward(peer, "screenshot", a)
         return await mgr.screenshot(
             a["session_id"], a.get("tab_id"),
             full_page=bool(a.get("full_page", False)))
 
     async def cdp(a):
+        peer = mgr.forwarded_peer(a["session_id"])
+        if peer:
+            return await _forward(peer, "cdp", a)
         return await mgr.cdp(
             a["session_id"], a["method"], tab_id=a.get("tab_id"),
             params=a.get("params"))
 
     async def commands(a):
-        return await mgr.commands(a.get("session_id"))
+        session_id = a.get("session_id")
+        peer = mgr.forwarded_peer(session_id) if session_id else None
+        if peer:
+            return await _forward(peer, "commands", a)
+        return await mgr.commands(session_id)
 
     handlers = {
         "acquire": acquire, "release": release, "reset": reset,

@@ -135,7 +135,7 @@ def test_cli_groups_and_commands_generated():
 
     app = typer.Typer()
     groups = register_cli_commands(app, GATEWAY_OPERATIONS, api_func=lambda *a, **k: None)
-    assert set(groups) == {"gateway", "services", "config"}
+    assert set(groups) == {"gateway", "services", "peer", "config"}
     gw = {c.name for c in groups["gateway"].registered_commands}
     sv = {c.name for c in groups["services"].registered_commands}
     cf = {c.name for c in groups["config"].registered_commands}

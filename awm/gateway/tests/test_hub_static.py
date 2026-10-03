@@ -271,6 +271,72 @@ class TestDenyMask:
         assert resp.status_code == 404
 
 
+class TestDenyNegation:
+    """Globs are gitignore-shaped: a leading ``!`` re-exposes and the LAST
+    matching glob wins. It exists so a servable subtree can be carved out of a
+    broad deny — the case that bites is a symlink whose *resolved* target lands
+    inside the masked directory, which 404s the link along with it."""
+
+    def _store_tree(self, tmp_path):
+        """A content-addressed object inside a masked dir, plus a link to it."""
+        obj_dir = tmp_path / ".git" / "objstore" / "XG" / "KJ"
+        obj_dir.mkdir(parents=True)
+        obj = obj_dir / "deadbeef.svg"
+        obj.write_text("<svg/>")
+        (tmp_path / "figures").mkdir()
+        link = tmp_path / "figures" / "fig.svg"
+        try:
+            link.symlink_to(obj)
+        except OSError:
+            pytest.skip("symlinks unsupported on this platform")
+        return obj
+
+    def test_symlink_into_a_masked_dir_is_served_through_a_negation(self, tmp_path):
+        self._store_tree(tmp_path)
+        rec = _rec("/files", tmp_path,
+                   deny=("**/.git/**", "!**/.git/objstore/**"))
+        resp = _run(serve_static(_request("/files/figures/fig.svg"), rec))
+        assert resp.status_code == 200
+        assert _read(resp) == b"<svg/>"
+
+    def test_the_same_symlink_404s_without_the_negation(self, tmp_path):
+        # Matching is on the resolved path, which is what makes the link 404.
+        self._store_tree(tmp_path)
+        rec = _rec("/files", tmp_path, deny=("**/.git/**",))
+        resp = _run(serve_static(_request("/files/figures/fig.svg"), rec))
+        assert resp.status_code == 404
+
+    def test_negation_does_not_unmask_the_rest_of_dot_git(self, tmp_path):
+        (tmp_path / ".git").mkdir()
+        (tmp_path / ".git" / "config").write_text("url = https://token@github")
+        rec = _rec("/files", tmp_path,
+                   deny=("**/.git/**", "!**/.git/objstore/**"))
+        resp = _run(serve_static(_request("/files/.git/config"), rec))
+        assert resp.status_code == 404
+
+    def test_later_secret_glob_re_masks_after_negation(self, tmp_path):
+        # Last-match-wins: a secret-shaped glob listed AFTER the negation still
+        # hides a re-exposed object that carries that extension.
+        obj_dir = tmp_path / ".git" / "objstore" / "aa" / "bb"
+        obj_dir.mkdir(parents=True)
+        (obj_dir / "cafe.pem").write_text("KEY")
+        rec = _rec("/files", tmp_path, deny=(
+            "**/.git/**", "!**/.git/objstore/**", "**/*.pem",
+        ))
+        resp = _run(serve_static(_request(
+            "/files/.git/objstore/aa/bb/cafe.pem"), rec))
+        assert resp.status_code == 404
+        assert b"KEY" not in _read(resp)
+
+    def test_bare_bang_is_ignored(self, tmp_path):
+        # A lone "!" carries no pattern — it must not become a match-everything
+        # unmask that voids the whole list.
+        (tmp_path / "secret.pem").write_text("KEY")
+        rec = _rec("/files", tmp_path, deny=("**/*.pem", "!"))
+        resp = _run(serve_static(_request("/files/secret.pem"), rec))
+        assert resp.status_code == 404
+
+
 class TestTraversalContainment:
     def test_traversal_above_root_is_404(self, spa_bundle, tmp_path):
         (tmp_path.parent / "secret.txt").write_text("nope")

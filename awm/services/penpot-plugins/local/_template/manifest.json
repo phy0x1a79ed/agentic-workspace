@@ -1,0 +1,10 @@
+{
+  "name": "Plugin name",
+  "description": "One sentence: what this plugin does and to what.",
+  "version": 2,
+  "code": "plugin.js",
+  "icon": "icon.png",
+  "permissions": [
+    "content:read"
+  ]
+}

@@ -100,40 +100,34 @@ def _rm_quiet(name: str) -> None:
 # -- 2FA burst (host-side) -------------------------------------------------
 
 def arm_2fa_burst(device: str) -> bool:
-    """Arm the local awm ``2fa`` Duo auto-approver for one push, best-effort.
+    """Arm the awm ``2fa`` Duo auto-approver for one push, best-effort.
 
-    POSTs ``/svc/2fa/fn/burst`` on our own gateway (``AWM_HUB_URL``) right before
-    a dial, so the Duo push openconnect triggers is auto-approved (~1s) instead
-    of waiting on a human phone tap. This replaces the old in-container POST to
-    mira's virtual-auth: the container can't reach the host gateway before its
-    tunnel is up, so the arming has to happen here on the host.
+    Called on the host right before a dial, so the Duo push openconnect triggers
+    is auto-approved (~1s) instead of waiting on a human phone tap. It runs here
+    rather than in the container because the container can't reach the host
+    gateway before its tunnel is up.
 
-    Returns True on a clean 2xx. Never raises — if the 2fa service is down the
-    dial simply falls back to a manual Duo approval (and likely times out).
+    Routed through the ``AWM_TWOFA_PEER`` selector like every other 2fa
+    consumer. It used to POST our own gateway unconditionally, which on a node
+    that borrows 2fa meant this one caller armed a local approver while ``ssh``
+    armed the owner's — the fleet-global attempt budget only holds if every
+    consumer agrees on where the singleton lives.
+
+    Returns True on a clean call. Never raises — if 2fa is unreachable the dial
+    falls back to a manual Duo approval (and likely times out).
     """
-    import json
-    import os
+    from awm import gatewayclient
 
-    hub = os.environ.get("AWM_HUB_URL", "").rstrip("/")
-    if not hub:
-        log.warning("AWM_HUB_URL unset; cannot arm 2fa burst for device %r", device)
-        return False
-    url = f"{hub}/svc/2fa/fn/burst"
+    peer = gatewayclient.peer_env("AWM_TWOFA_PEER")
     try:
-        proc = subprocess.run(
-            ["curl", "-fsS", "--max-time", "15", "-X", "POST", url,
-             "-H", "Content-Type: application/json",
-             "-d", json.dumps({"device": device})],
-            capture_output=True, text=True, timeout=20,
-        )
-    except (OSError, subprocess.SubprocessError) as exc:
-        log.warning("2fa burst arm error (device=%r): %s", device, exc)
+        gatewayclient.call_sync_maybe_peer(
+            peer, "2fa", "burst", {"device": device}, timeout=15)
+    except Exception as exc:  # noqa: BLE001 — arming is best-effort by contract
+        log.warning("2fa burst arm failed (device=%r, owner=%s): %s",
+                    device, peer or "local", exc)
         return False
-    if proc.returncode != 0:
-        log.warning("2fa burst arm failed (device=%r): %s", device,
-                    (proc.stderr or proc.stdout or "").strip() or "non-zero exit")
-        return False
-    log.info("armed 2fa burst device=%r before dial", device)
+    log.info("armed 2fa burst device=%r before dial (owner=%s)",
+             device, peer or "local")
     return True
 
 

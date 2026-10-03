@@ -69,10 +69,47 @@ def test_resolves_tmux_session_by_session_id(monkeypatch):
     assert sess == "awm-9-x"
 
 
+def test_resolves_adhoc_tmux_by_name(monkeypatch):
+    # An explicit tmux_session (machine-wide roster row, not a registry agent):
+    # verified to exist, returned directly — registry-agnostic.
+    monkeypatch.setattr(ts, "_tmux_has_session", lambda n: True)
+    sess, err = ts._resolve_tmux_session({"tmux_session": "fleet-proj-ab12"})
+    assert err is None
+    assert sess == "fleet-proj-ab12"
+
+
+def test_adhoc_tmux_missing_is_error(monkeypatch):
+    monkeypatch.setattr(ts, "_tmux_has_session", lambda n: False)
+    sess, err = ts._resolve_tmux_session({"tmux_session": "gone-xyz"})
+    assert sess is None
+    assert "no tmux session named" in err
+
+
+def test_adhoc_tmux_wins_over_scope(monkeypatch):
+    # If both an explicit name and a scope are present, the ad-hoc name is used
+    # (and the registry is never consulted).
+    monkeypatch.setattr(ts, "_tmux_has_session", lambda n: True)
+    monkeypatch.setattr(ai, "get_session_by_scope",
+                        lambda s: (_ for _ in ()).throw(AssertionError("used registry")))
+    sess, err = ts._resolve_tmux_session(
+        {"tmux_session": "adhoc-1", "scope": "s"})
+    assert err is None and sess == "adhoc-1"
+
+
 def test_terminal_registered_in_manifest():
     from awm.agents.hub_adapter import API_MANIFEST
     kinds = {s["kind"] for s in API_MANIFEST["sessions"]}
     assert "terminal" in kinds
+
+
+def test_spawn_and_kill_tmux_in_manifest():
+    from awm.agents.hub_adapter import API_MANIFEST, HANDLERS
+    names = {f["name"] for f in API_MANIFEST["functions"]}
+    assert {"spawn", "kill_tmux"} <= names
+    assert "spawn" in HANDLERS and "kill_tmux" in HANDLERS
+    # UI/human action — deliberately off the MCP surface.
+    spawn = next(f for f in API_MANIFEST["functions"] if f["name"] == "spawn")
+    assert "mcp" not in spawn["surfaces"]
 
 
 # ---------------------------------------------------------------------------

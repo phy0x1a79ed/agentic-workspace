@@ -1,16 +1,19 @@
-// Dictation transport — drives the existing `stt` service's `stream` session so
-// speech lands on the page as if typed. We deliberately do NOT reuse the
-// stt-composer UI: this is a headless controller that emits two things to the
-// editor —
-//   • interim text  (the live, still-changing tail — shown ghosted at the caret)
-//   • committed text (a finalized phrase — inserted at the caret for real)
+// Dictation transport — drives the `stt` service's `stream` session so speech
+// lands on the page as if typed. We deliberately do NOT reuse the stt-composer
+// UI: this is a headless controller that emits two things to the editor —
+//   • interim text  (the live, still-changing window — shown as a ghost "chip"
+//                    at the caret)
+//   • committed text (a finalized window — inserted at the caret for real)
 //
-// It runs the session in `continuous` mode: the backend streams `partial`
-// frames (interim) and, after each speech→silence cut, a cumulative `composer`
-// frame. Committing the *delta* of successive composer frames turns the stream
-// into "phrase appears when you pause", which reads as natural dictation. The
-// custom vocabulary is passed as whisper's `initial_prompt` so domain terms are
-// spelled correctly.
+// It runs the session in the backend's `dictation` mode (continuous VAD/partial
+// machinery, but a per-window `commit` frame instead of a cumulative composer):
+//   • `partial` → replace the chip with the live window tail
+//   • `commit`  → flush that window into the note and clear the chip
+// One `commit` == one speech→silence window, so text lands one whole stable
+// piece at a time. There is no delta math — the old cumulative-composer + LCP
+// approach double-committed each window (rough preview then accurate re-pass),
+// which is what produced the duplicated phrases. The custom vocabulary is passed
+// as whisper's `initial_prompt` so domain terms are spelled correctly.
 
 import { svc, toWsUrl } from '@awm/client';
 import workletUrl from './audio/worklet.js?url';
@@ -24,14 +27,6 @@ export interface DictationHandlers {
   onLevel?: (level: number) => void; // 0..1 mic RMS, for the pulse meter
 }
 
-/** Longest-common-prefix delta: the newly-added tail of `cur` vs `prev`. */
-function commitDelta(prev: string, cur: string): string {
-  if (cur.startsWith(prev)) return cur.slice(prev.length);
-  let i = 0;
-  while (i < prev.length && i < cur.length && prev[i] === cur[i]) i++;
-  return cur.slice(i);
-}
-
 export function createDictation(h: DictationHandlers) {
   let ws: WebSocket | null = null;
   let audioCtx: AudioContext | null = null;
@@ -39,7 +34,6 @@ export function createDictation(h: DictationHandlers) {
   let workletNode: AudioWorkletNode | null = null;
   let sourceNode: MediaStreamAudioSourceNode | null = null;
   let recording = false;
-  let prevComposer = '';
   let hotwords = '';
 
   function setState(s: DictationState, detail?: string) {
@@ -89,20 +83,15 @@ export function createDictation(h: DictationHandlers) {
     try { msg = JSON.parse(ev.data); } catch { return; }
     switch (msg.type) {
       case 'partial':
+        // Live, still-changing window tail → the interim chip (wholesale replace).
         if (typeof msg.text === 'string') h.onInterim?.(msg.text);
         break;
-      case 'composer':
-        if (typeof msg.text === 'string') {
-          const delta = commitDelta(prevComposer, msg.text);
-          prevComposer = msg.text;
-          if (delta.trim()) { h.onCommit?.(delta); h.onInterim?.(''); }
+      case 'commit':
+        // One finalized window → insert for real and clear the chip. The editor
+        // clears the chip in the same transaction as the insert.
+        if (typeof msg.text === 'string' && msg.text.trim()) {
+          h.onCommit?.(msg.text.trim());
         }
-        break;
-      case 'submit':
-        // Whole message finished; its text was already committed via composer
-        // deltas. Reset so the next message's composer starts fresh.
-        prevComposer = '';
-        h.onInterim?.('');
         break;
       case 'status':
         if (msg.stage === 'idle') setState('idle');
@@ -135,10 +124,10 @@ export function createDictation(h: DictationHandlers) {
         return;
       }
       recording = true;
-      prevComposer = '';
       ws.send(JSON.stringify({
         type: 'start',
         mode: 'continuous',
+        dictation: true,
         initial_prompt: hotwords || undefined,
       }));
       setState('listening');

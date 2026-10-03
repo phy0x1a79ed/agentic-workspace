@@ -7,11 +7,15 @@ HTTP *and* WebSocket — to the loopback awm gateway (`AWM_HUB_URL`, normally
 `http://127.0.0.1:7819`).
 
 Why it exists: the gateway binds loopback-only plain HTTP by design, but browser
-APIs like `getUserMedia` (the notes-page dictation) require a *secure context*,
-which off-localhost means HTTPS. Rather than re-architect the loopback gateway,
-this rides its own off-host HTTPS listener — exactly as `mic` and `fileviewer`
-serve their surfaces off-hub — and the gateway registration provides supervision
-plus an `httpsfront_status` verb only.
+APIs like `getUserMedia` (the notes-page dictation, the mic page) require a
+*secure context*, which off-localhost means HTTPS. Rather than re-architect the
+loopback gateway, this rides its own off-host HTTPS listener, and the gateway
+registration provides supervision plus an `httpsfront_status` verb only.
+
+`fileviewer` and `mic` each used to serve their own surface off-hub the same
+way; both have since been folded in. httpsfront is now the **only** off-host
+listener in awm, and everything else rides the gateway behind it — which is also
+why it is the only holder of the CA.
 
 Because every awm page makes *same-origin* relative calls (`/svc/*`, same-origin
 WebSockets), fronting the gateway wholesale is what makes those calls work under
@@ -53,7 +57,7 @@ Both live in `/usr/bin`, on the minimal systemd PATH the supervisor uses.
 ## TLS — reuses the remote-audio CA
 
 Certs are minted by `awm.httpsfront.certs` into a gitignored `.certs/` next to
-the service. The **root CA is shared with remote-audio / the `mic` service** at
+the service. The **root CA is shared with remote-audio** at
 `~/.config/remote-audio/ca` (override with `REMOTE_AUDIO_CA_DIR`), so a device
 that already trusts that root needs no new setup. The root is minted only the
 first time it's missing; only the short-lived leaf rotates (re-minted whenever
@@ -83,6 +87,17 @@ explicitly and merged in:
 | `AWM_HUB_URL` | injected by gateway | the loopback gateway it fronts |
 | `AWM_TLS_EXTRA_SANS` | — | extra cert SANs (see above) |
 | `REMOTE_AUDIO_CA_DIR` | `~/.config/remote-audio/ca` | shared root-CA location |
+| `AWM_EDGE_PROFILE` | — | `public`: only the paths in `policy.py` exist, no CA/link/landing routes, `SameSite=Strict` |
+| `AWM_EDGE_TLS` | `1` | `0`: plain HTTP on `127.0.0.1:$AWM_HTTPS_PORT` behind a TLS-terminating nginx |
+| `AWM_EDGE_TETHER` | `0` | `1`: mount the tether relay at `/tether`, reachable with **no session** |
+
+`AWM_EDGE_TETHER` is the one flag here that widens the door rather than
+narrowing it, so it is off unless a host means it. The person redeeming a
+tether invite is being helped with their own machine and has no account here;
+what keeps the mount narrow is the relay's own gating and an allow-list of
+exact path shapes, both described in `awm/httpsfront/tether.py`.
+
+On every profile the edge overwrites `X-Awm-As` with the session's verified subject (`user:<name>`, or `peer` for a bearer), so a downstream service may trust that header — except on the tether mount, which has no verified subject and where the header is stripped rather than defaulted. `/__auth/login` takes `{username, password}`; a blank username is the shared password. The readable `awm_as` cookie is the username for the pages' user chip and carries no authority.
 
 `AWM_HTTPS_PORT` is a clean one-line port knob: set it in the workspace's
 gitignored `$AWM_WORKSPACE/.awm/env` (merged into the gateway env at startup,
@@ -97,7 +112,30 @@ there is no plain-HTTP relay. A future port change is one line in `.awm/env`.
 
 ## Exposure note
 
-Fronting the gateway wholesale means the **entire unauthenticated awm surface**
-is reachable from the LAN/ZeroTier on `:8443` — the same exposure posture as the
-`mic` bridge on `:12200`. The gateway remains loopback-only for plain HTTP; this
-is the single TLS door in.
+Fronting the gateway wholesale means the **entire awm surface** — every page and
+every service, including the mic's audio session — is reachable from the
+LAN/ZeroTier on `:8443` behind this one password. The gateway remains
+loopback-only for plain HTTP; this is the single TLS door in, and there is no
+longer any other.
+
+## Reuse: fronting something that is not the gateway
+
+`proxy.serve(upstream=…, landing=False, extra_routes=…, rewrite_origin=…)` is the
+whole reuse surface. `claude-science` and `dsh` both front their own loopback
+binaries with it rather than reimplementing TLS, the shared CA and the
+`awm_session` gate.
+
+`rewrite_origin` arbitrates two upstreams that want opposite things, which is why
+it exists as a flag rather than a decision. Note first that `host` is always
+dropped, so httpx derives it from the upstream URL and a wrapped app sees a
+loopback `Host` — that is deliberate and load-bearing, because it is what opens
+an app's loopback-pinned privileged plane to a remote browser. `Origin` is then
+forwarded verbatim by default, which is what `claude-science` needs: it
+allowlists the exact browser origins its WebSocket upgrades may come from, and
+rewriting the header would reject every handshake. `dsh` needs the reverse — its
+`/api` fence compares `Origin` against `Host` and demands they match, so the
+real browser origin can never satisfy it. `rewrite_origin=True` replaces a
+*present* `Origin` with the upstream's own scheme and authority, on the HTTP and
+WebSocket paths alike. It never mints one where the browser sent none: that would
+turn a same-origin navigation into a cross-origin request at the upstream.
+Default off, so the gateway front stays byte-identical.

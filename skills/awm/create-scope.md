@@ -22,9 +22,16 @@ This creates branch `feat/<scope>`, worktree at `projects/<project>/<scope>/`, a
 cd projects/<project>/<scope>/
 ```
 
-The worktree is the agent's CWD. All git operations target `feat/<scope>` in place — no branch switching. Data is reachable via `.awm/data/` (symlink to `data/<project>/`) and skill catalogs via `.awm/skills/`.
+The worktree is the agent's CWD. All git operations target `feat/<scope>` in place — no branch switching. Data is reachable via `.awm/data/` and skill catalogs via `.awm/skills/`.
 
-For end-of-session logging, follow `skill_get path="awm/debrief.md"`.
+Data is versioned by the commit that versions the code: `data/<chunk>` holds the
+files and the tracked `data/<chunk>.dvc` pin records them, so `dvc add` plus an
+ordinary commit is the whole save-and-publish story. Projects that have not been
+converted keep a plain `.awm/data` symlink to `data/<project>/`, shared by every
+scope. `scope_data_status project=<p> scope=<s>` reports which. See
+WORKSPACE.md § *Data*.
+
+For end-of-session logging, run the native `debrief` skill (`~/.claude/skills/debrief/`).
 
 ## List
 

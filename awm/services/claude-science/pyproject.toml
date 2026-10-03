@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "awm-claude-science"
+version = "0.1.0"
+requires-python = ">=3.11"
+description = "AWM claude-science service: supervise the Claude Science workbench daemon (adopt-don't-own), put authenticated TLS fronts on the mesh in front of its UI and preview origins, and bridge a curated slice of awm's tool surface to it as an MCP connector."
+dependencies = [
+    "awm-config",
+    "awm-gatewayclient",
+    # Service-on-service: the mesh fronts are a configuration of httpsfront's
+    # cert minting, auth gate and reverse proxy, not a second implementation.
+    "awm-httpsfront",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest",
+]
+
+# PEP 420 namespace package: no top-level awm/__init__.py; the namespace dir is awm/claude_science/.
+[tool.setuptools.packages.find]
+include = ["awm.claude_science*"]
+namespaces = true
+
+[tool.pytest.ini_options]
+markers = [
+    "smoke: fast unit tests; target <30s",
+    "unit: pure unit tests, no network or subprocesses",
+]

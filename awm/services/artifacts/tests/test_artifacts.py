@@ -328,3 +328,34 @@ class TestRegisterArtifactIntegration:
         results = search_artifacts(project="proj")
         ids = [a.id for a in results.artifacts]
         assert info.id in ids
+
+
+# ---------------------------------------------------------------------------
+# Search index — reindex, filter-first search, prune on sync
+# ---------------------------------------------------------------------------
+
+
+class TestSearchIndex:
+    def test_reindex_then_search_by_meaning_within_a_filter(self, workspace):
+        from awm.artifacts.artifacts import reindex_artifacts, search_artifacts
+        for i in range(12):
+            _direct_insert("proj", "scope-a", f"data/proj/heatmap{i}.png", name=f"heatmap {i}")
+        target = _direct_insert("other", "scope-b", "data/other/map.png", name="coverage heatmap")
+        assert reindex_artifacts()["indexed"] == 13
+        assert reindex_artifacts(dry_run=True)["current"] == 13
+        res = search_artifacts(query="heatmaps of coverage", project="other")
+        assert [a.id for a in res.artifacts] == [target]
+        assert res.degraded is None
+
+    def test_sync_prunes_the_index_of_stale_artifacts(self, workspace):
+        from awm.artifacts.artifacts import reindex_artifacts
+        path = "data/proj/fig1.png"
+        full = workspace / path
+        full.parent.mkdir(parents=True, exist_ok=True)
+        full.write_bytes(b"fake")
+        _direct_insert("proj", "scope-a", path)
+        reindex_artifacts()
+        full.unlink()
+        with patch("awm.artifacts.artifacts.WORKSPACE_ROOT", workspace):
+            result = sync_artifacts(force=True)
+        assert result["embeddings_pruned"] == 1

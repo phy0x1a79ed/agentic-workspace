@@ -1,9 +1,7 @@
 """Tests for awm.writing — corpus search + curation on an isolated service DB.
 
-The embedding-backed paths (add/embed/semantic) require the workspace embedding
-stack (sentence-transformers + sqlite-vec); those tests skip if it's absent.
-Keyword/metadata paths, the manifest surface split, and tag validation run
-without any model.
+The embedding-backed paths (add/embed/semantic) run through the shared engine
+with the stub model from ``conftest.py``; they need only numpy.
 """
 
 from __future__ import annotations
@@ -14,10 +12,7 @@ import pytest
 
 pytestmark = [pytest.mark.writing]
 
-_HAS_EMBED = (
-    importlib.util.find_spec("sentence_transformers") is not None
-    and importlib.util.find_spec("sqlite_vec") is not None
-)
+_HAS_EMBED = importlib.util.find_spec("numpy") is not None
 needs_embed = pytest.mark.skipif(not _HAS_EMBED, reason="embedding stack not installed")
 
 
@@ -174,3 +169,81 @@ def test_link_unlink_dup_excluded_from_search(conn):
     corpus.unlink_dup(conn, b["id"])
     names2 = {h["id"] for h in corpus.search(conn, query="civic")["results"]}
     assert b["id"] in names2
+
+
+# ---------------------------------------------------------------------------
+# Degrading honestly when the embedding stack is absent
+#
+# These run *without* the stack on purpose — they pin the behaviour a stackless
+# node actually gets, which is exactly what the `needs_embed` tests above can
+# never observe.
+# ---------------------------------------------------------------------------
+
+
+def _unavailable(*a, **k):
+    from awm.writing.index import EmbeddingsUnavailable
+    raise EmbeddingsUnavailable("sentence-transformers: not installed")
+
+
+def test_add_lands_without_the_stack_and_leaves_the_stamp_stale(conn, monkeypatch):
+    from awm.writing import corpus, index
+
+    monkeypatch.setattr(index, "embed_sample", _unavailable)
+    s = corpus.add(conn, text="The trolley problem asks whether one may divert.",
+                   name="trolley")
+    assert s["embedding_deferred"] is True
+    row = conn.execute("SELECT content_hash, embedded_hash FROM samples WHERE id=?",
+                       (s["id"],)).fetchone()
+    # Stale on purpose: `embed` finds it by exactly this disagreement.
+    assert row["embedded_hash"] != row["content_hash"]
+    # The text itself landed and is keyword-searchable.
+    assert corpus.search(conn, query="trolley")["count"] == 1
+
+
+def test_semantic_search_degrades_instead_of_returning_nothing(conn, monkeypatch):
+    from awm.writing import corpus, index
+
+    monkeypatch.setattr(index, "embed_sample", _unavailable)
+    corpus.add(conn, text="A sonnet about the sea and longing.", name="sonnet")
+    monkeypatch.setattr(index, "search_semantic", _unavailable)
+
+    res = corpus.search(conn, semantic="sonnet")
+    assert res["degraded"]["semantic"] == "unavailable"
+    assert res["degraded"]["fallback"] in ("keyword", "listing")
+    assert "writing/install.sh" in res["degraded"]["fix"]
+    assert res["count"] >= 1, "a missing dependency must not read as an empty corpus"
+
+    # A free-text semantic string with FTS-hostile punctuation still answers.
+    assert corpus.search(conn, semantic='"the sea", longing!')["count"] >= 1
+
+    # Healthy keyword search carries no marker — the key is additive.
+    assert "degraded" not in corpus.search(conn, query="sonnet")
+
+
+def test_embed_refuses_rather_than_reporting_zero(conn, monkeypatch):
+    from awm.writing import corpus, index
+
+    monkeypatch.setattr(index, "probe",
+                        lambda: {"available": False, "missing": ["sqlite_vec"]})
+    with pytest.raises(index.EmbeddingsUnavailable):
+        corpus.embed(conn)
+
+
+def test_dedup_finds_near_duplicates_from_stored_vectors(conn):
+    from awm.writing import corpus, index
+
+    body = "An essay on tidal energy and the ecology of estuaries. " * 20
+    a = corpus.add(conn, text=body, name="tidal-v1", type="academic")
+    b = corpus.add(conn, text=body + "One more closing line.", name="tidal-v2", type="academic")
+    corpus.add(conn, text="A recipe for bread with rye flour and caraway.", name="bread")
+    pairs = index.pairwise_cosine(conn)
+    assert {pairs[0][0], pairs[0][1]} == {a["id"], b["id"]}
+    assert pairs[0][2] > 0.95
+    assert pairs[0][2] >= pairs[-1][2]
+
+
+def test_keyword_search_tolerates_punctuation(conn):
+    from awm.writing import corpus
+
+    corpus.add(conn, text="Notes on a-b testing and the c statistic.", name="ab")
+    assert corpus.search(conn, query='a-b "c')["count"] == 1

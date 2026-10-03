@@ -4,8 +4,9 @@ A Python feature service in the `awm.writing` namespace: a searchable/curatable
 corpus of the author's own prose, used as a **style reference** so an assistant
 can match the voice. It needs the `awm` conda env to contain its package plus the
 shared component libraries it imports (`config`, `persistence`, `gatewayclient`).
-Semantic search reuses the workspace embedding stack (`sentence-transformers` +
-`sqlite-vec`, already in the `awm` env).
+Semantic search reuses the workspace embedding stack (`sentence-transformers`),
+which `install.sh` pulls in as `awm-persistence[search]` — an
+opt-in extra, not something the env is guaranteed to already have.
 
 ## Install
 

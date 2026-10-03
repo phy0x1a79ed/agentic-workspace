@@ -70,13 +70,33 @@ class TestToolsEndpoint:
             Tool.model_validate(t)
             schema = t["inputSchema"]
             assert schema["required"] == ["verb"]
-            assert set(schema["properties"]) == {"verb", "args"}
+            # ``peer`` aims a call at another fleet node — it rides the standard
+            # envelope precisely so a peer never needs its own copy of the tool.
+            assert set(schema["properties"]) == {"verb", "args", "peer"}
 
     def test_view_domains_is_strictly_smaller(self, client):
         expanded = client.get("/tools").json()["tools"]
         domains = client.get("/tools", params={"view": "domains"}).json()["tools"]
         # The collapse only ever shrinks the surface.
         assert len(domains) <= len(expanded)
+
+    def test_view_domains_default_excludes_peers(self, client):
+        """The plain collapsed view is what a *peer* fetches from this node's
+        edge. It must stay local-only, or the fleet would advertise transitive
+        peers this node cannot dial."""
+        plain = client.get("/tools", params={"view": "domains"}).json()["tools"]
+        assert not any(t["name"] == "providersOf" for t in plain)
+
+    def test_view_domains_with_peers_adds_the_discovery_tool(self, client):
+        """``peers=1`` is the agent-facing view: same one-tool-per-domain shape,
+        widened to the fleet, plus the reserved providersOf. With no peers joined
+        it is the local view plus that one tool."""
+        fleet = client.get(
+            "/tools", params={"view": "domains", "peers": 1}).json()["tools"]
+        names = [t["name"] for t in fleet]
+        assert "providersOf" in names
+        assert not any("@" in n for n in names)
+        assert len(names) == len(set(names))
 
 
 # ---------------------------------------------------------------------------

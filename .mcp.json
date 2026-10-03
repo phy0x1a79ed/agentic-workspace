@@ -1,0 +1,25 @@
+{
+  "mcpServers": {
+    "awm": {
+      "command": "/home/tony/lib/miniforge3/envs/awm/bin/awm-mcp",
+      "args": [],
+      "env": {
+        "AWM_WORKSPACE": "/home/tony/agentic_workspace"
+      }
+    },
+    "chrome-devtools": {
+      "command": "/home/tony/lib/miniforge3/envs/awm/bin/npx",
+      "args": [
+        "-y",
+        "chrome-devtools-mcp@latest",
+        "--browserUrl",
+        "http://172.25.176.1:19222",
+        "--usageStatistics",
+        "false"
+      ],
+      "env": {
+        "PATH": "/home/tony/lib/miniforge3/envs/awm/bin:/usr/local/bin:/usr/bin:/bin"
+      }
+    }
+  }
+}

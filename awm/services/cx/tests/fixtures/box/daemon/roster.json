@@ -1,0 +1,67 @@
+{
+ "proto": 1,
+ "supervisorPid": "__ALIVE_PID__",
+ "updatedAt": 1789074857786,
+ "workers": {
+  "warmfresh": {
+   "cliVersion": "2.1.268",
+   "startedAt": 1789074857271,
+   "ptySock": "/tmp/cc-daemon/fixture/warmfresh.pty.sock",
+   "ptyAuth": "00000000000000000000000000000000",
+   "sessionId": "warmfresh-0000-0000-0000-000000000000",
+   "replPid": "__ALIVE_PID__",
+   "replProcStart": "__ALIVE_START__",
+   "dispatch": {
+    "source": "shell",
+    "seed": {
+     "name": "<warm dunlin>"
+    }
+   }
+  },
+  "adopted": {
+   "cliVersion": "2.1.268",
+   "startedAt": 1789069504602,
+   "ptySock": "/tmp/cc-daemon/fixture/adopted.pty.sock",
+   "ptyAuth": "00000000000000000000000000000000",
+   "sessionId": "adopted-0000-0000-0000-000000000000",
+   "replPid": "__ALIVE_PID__",
+   "replProcStart": "__ALIVE_START__",
+   "dispatch": {
+    "source": "shell",
+    "seed": {
+     "name": "<warm zorilla>"
+    }
+   }
+  },
+  "stranded": {
+   "cliVersion": "2.1.267",
+   "startedAt": 1789017792414,
+   "ptySock": "/tmp/cc-daemon/fixture/stranded.pty.sock",
+   "ptyAuth": "00000000000000000000000000000000",
+   "sessionId": "stranded-0000-0000-0000-000000000000",
+   "replPid": "__ALIVE_PID__",
+   "replProcStart": "__ALIVE_START__",
+   "dispatch": {
+    "source": "shell",
+    "seed": {
+     "name": "<warm saiga>"
+    }
+   }
+  },
+  "strandeddead": {
+   "cliVersion": "2.1.267",
+   "startedAt": 1789017792414,
+   "ptySock": "/tmp/cc-daemon/fixture/strandeddead.pty.sock",
+   "ptyAuth": "00000000000000000000000000000000",
+   "sessionId": "strandeddead-0000-0000-0000-000000000000",
+   "replPid": 2,
+   "replProcStart": "1",
+   "dispatch": {
+    "source": "shell",
+    "seed": {
+     "name": "<warm saiga>"
+    }
+   }
+  }
+ }
+}

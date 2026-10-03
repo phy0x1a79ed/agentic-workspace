@@ -9,7 +9,7 @@ import pytest
 
 pytestmark = [pytest.mark.agent, pytest.mark.smoke]
 
-from awm.agents.dao import AgentsDAO
+from awm.agents.dao import AgentsDAO, SCHEMA_VERSION
 from awm.agents._time import now_ms
 
 _PLACEMENT_COLS = {"mode", "task_ref", "agent_ref", "placement_token"}
@@ -20,6 +20,12 @@ def _cols(conn_or_dao, table: str) -> set[str]:
         return {r["name"]
                 for r in conn_or_dao.query_all(f"PRAGMA table_info({table})")}
     return {r["name"] for r in conn_or_dao.execute(f"PRAGMA table_info({table})")}
+
+
+def _has_table(conn, table: str) -> bool:
+    return conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+        (table,)).fetchone() is not None
 
 
 class TestFreshSchema:
@@ -104,8 +110,11 @@ class TestMigration:
             "SELECT * FROM agent_instances WHERE scope='legacy'").fetchone()
         assert row is not None
         assert row["mode"] == "conversational"
+        # v3→v4 stands up the absorbed fleet observe-plane tables.
+        assert _has_table(conn, "fleet_sessions")
+        assert _has_table(conn, "fleet_notifications")
         ver = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-        assert ver == 3
+        assert ver == SCHEMA_VERSION
         conn.close()
 
     def test_v2_to_v3_drops_project_keeps_rows(self, tmp_path, monkeypatch):
@@ -159,6 +168,9 @@ class TestMigration:
         trow = conn.execute(
             "SELECT * FROM agent_transcript WHERE scope='v2row'").fetchone()
         assert trow is not None and trow["body"] == "hi"
+        # v3→v4 stands up the absorbed fleet observe-plane tables.
+        assert _has_table(conn, "fleet_sessions")
+        assert _has_table(conn, "fleet_notifications")
         ver = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-        assert ver == 3
+        assert ver == SCHEMA_VERSION
         conn.close()

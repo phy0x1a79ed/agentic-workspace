@@ -54,14 +54,21 @@ import asyncio
 import json
 import logging
 import os
+import re
 import subprocess
+import tempfile
 import time
+import urllib.parse
 from pathlib import Path
 from typing import Any, AsyncIterator
 
 import httpx
 
 from awm.gatewayclient.adapter import ServiceAdapter, SessionContext
+from awm.gatewayclient.subscription import (
+    SupervisedSubscription,
+    spawn_supervised,
+)
 
 log = logging.getLogger("awm.gatewayclient")
 
@@ -72,11 +79,17 @@ __all__ = [
     "call_peer_sync",
     "resolve_peer",
     "fetch_peer_cred",
+    "fetch_peer_cred_async",
+    "fetch_peer_file",
+    "fetch_peer_file_sync",
     "subscribe",
     "subscribe_peer",
     "peer_env",
     "call_maybe_peer",
+    "call_sync_maybe_peer",
     "subscribe_maybe_peer",
+    "SupervisedSubscription",
+    "spawn_supervised",
     "acquire_lease",
     "acquire_lease_peer",
     "acquire_lease_maybe_peer",
@@ -88,6 +101,13 @@ __all__ = [
     "ServiceAdapter",
     "SessionContext",
 ]
+
+# Keepalive for every subscription socket, pinned rather than inherited from
+# the websockets library's defaults. This is the ONLY detector of a half-open
+# TCP connection (one where the peer vanished without a FIN), so a future
+# change to the library's defaults must not be able to silently remove it.
+# ~40 s to notice a dead socket.
+_PING_KWARGS = {"ping_interval": 20.0, "ping_timeout": 20.0}
 
 # Default only used when AWM_HUB_URL is unset. Prefer the env var: the hub
 # injects it into every service process and it carries the correct per-sandbox
@@ -200,6 +220,7 @@ async def subscribe(
     topic: str,
     *,
     as_: str | None = None,
+    on_connect: Any = None,
 ) -> AsyncIterator[Any]:
     """Async generator over a service's emitter topic, via the gateway.
 
@@ -213,6 +234,10 @@ async def subscribe(
     The ``X-Awm-As`` identity header is sent as a connect header when
     ``as_`` is given (the gateway's emit route reads it the same way the
     HTTP route reads it).
+
+    ``on_connect``, if given, is called with no arguments once the socket is
+    open — so a supervisor can observe "connected" without this function
+    growing a reconnect loop it must not have.
     """
     import websockets  # local import: WS isn't needed on the call() hot path
 
@@ -228,7 +253,10 @@ async def subscribe(
         additional_headers=extra or None,
         max_size=None,
         open_timeout=10,
+        **_PING_KWARGS,
     ) as ws:
+        if on_connect is not None:
+            on_connect()
         async for raw in ws:
             if isinstance(raw, (bytes, bytearray)):
                 # Non-direct emit fan-out is always JSON text; ignore binary.
@@ -259,6 +287,27 @@ _PEER_ADDR_TTL = 60.0
 _PEER_CRED_TTL = 300.0
 _peer_addr_cache: dict[str, tuple[float, dict[str, Any]]] = {}
 _peer_cred_cache: dict[str, tuple[float, str]] = {}
+
+# Cred-fetch resilience. The fetch is a plain `ssh <alias> cat` — idempotent and
+# side-effect-free on the peer, and it never touches a lockout-sensitive host or
+# spends an MFA attempt. Retrying it is therefore FREE of lockout risk, which is
+# what makes a bounded retry safe here but not on the ssh attempt it guards.
+#
+# ConnectTimeout matters more than it looks: peer aliases inherit
+# `connecttimeout none` from ssh's defaults, so a blackholed route (WSL2 NAT
+# churn when a docker network comes up, say) hangs for the FULL subprocess
+# timeout rather than failing fast. Capping the TCP connect turns a 15 s stall
+# into a ~5 s one and lets the retries actually run inside a sane budget.
+_PEER_CRED_ATTEMPTS = 3
+_PEER_CRED_BACKOFF = 0.5      # seconds before retry 2; doubled for each retry after
+_PEER_CRED_CONNECT_TIMEOUT = 5  # ssh -o ConnectTimeout=<n>
+
+
+class _TransientCredError(PeerError):
+    """A cred fetch that failed in a way a retry could plausibly fix (ssh could
+    not reach the peer). Never raised for a definitive answer — a peer that
+    replies "no such variable" is misconfigured, not flaky, so retrying it just
+    burns the caller's fail-closed budget."""
 
 
 def _peer_ca() -> str:
@@ -303,6 +352,39 @@ def resolve_peer(name: str, *, timeout: float = 10.0) -> dict[str, Any]:
     return entry
 
 
+def _fetch_peer_cred_once(ssh_alias: str, timeout: float) -> str:
+    """One ``ssh <alias> 'cat "$AWM_PEER_CRED"'``. Raises
+    :class:`_TransientCredError` when ssh could not reach the peer (exit 255 is
+    ssh's own "connection failed", as distinct from the remote command's status),
+    plain :class:`PeerError` when the peer answered definitively."""
+    try:
+        out = subprocess.run(
+            ["ssh", "-o", "BatchMode=yes",
+             "-o", f"ConnectTimeout={_PEER_CRED_CONNECT_TIMEOUT}",
+             ssh_alias, 'cat "$AWM_PEER_CRED"'],
+            capture_output=True, text=True, timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise _TransientCredError(
+            f"ssh fetch of peer cred from {ssh_alias!r} failed: {exc}") from exc
+    except OSError as exc:
+        # Could not even spawn ssh — a local defect, not peer flakiness.
+        raise PeerError(
+            f"ssh fetch of peer cred from {ssh_alias!r} failed: {exc}") from exc
+    if out.returncode == 255:
+        raise _TransientCredError(
+            f"ssh fetch of peer cred from {ssh_alias!r} exited 255: "
+            f"{out.stderr.strip()[:200]}")
+    if out.returncode != 0:
+        raise PeerError(
+            f"ssh fetch of peer cred from {ssh_alias!r} exited {out.returncode}: "
+            f"{out.stderr.strip()[:200]}")
+    cred = out.stdout.strip()
+    if not cred:
+        raise PeerError(f"peer cred from {ssh_alias!r} is empty ($AWM_PEER_CRED unset?)")
+    return cred
+
+
 def fetch_peer_cred(ssh_alias: str, *, force: bool = False,
                     timeout: float = 15.0) -> str:
     """Fetch a peer's current credential via SSH: ``ssh <alias> 'cat "$AWM_PEER_CRED"'``.
@@ -311,28 +393,68 @@ def fetch_peer_cred(ssh_alias: str, *, force: bool = False,
     exchange to attack. Single-quoted so ``$AWM_PEER_CRED`` expands on the peer.
     Cached; pass ``force=True`` to bypass the cache (used on a 401 to pick up a
     rotated credential). Raises :class:`PeerError` on any ssh failure.
+
+    Retries a transient ssh failure up to ``_PEER_CRED_ATTEMPTS`` times with
+    exponential backoff, so a momentary route blip does not fail a caller that
+    fails CLOSED on this (the ssh service's slot arbiter refuses a connect
+    outright when it cannot reach the arbiter peer). Retrying is safe precisely
+    because this fetch spends nothing — see the constants above. A definitive
+    error (bad exit, empty cred) raises at once without retrying.
+
+    ``timeout`` is the TOTAL budget across every attempt, not per-attempt: the
+    retries have to fit inside the caller's original deadline, or adding them
+    would multiply the worst case (3 x 15 s) and leave a fail-closed caller
+    hanging far longer than before. Attempts stop once the budget is spent.
+
+    BLOCKING — this shells out to ssh. Async callers must use
+    :func:`fetch_peer_cred_async`, which runs it off the event loop.
     """
     now = time.monotonic()
     if not force:
         hit = _peer_cred_cache.get(ssh_alias)
         if hit and hit[0] > now:
             return hit[1]
-    try:
-        out = subprocess.run(
-            ["ssh", "-o", "BatchMode=yes", ssh_alias, 'cat "$AWM_PEER_CRED"'],
-            capture_output=True, text=True, timeout=timeout,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        raise PeerError(f"ssh fetch of peer cred from {ssh_alias!r} failed: {exc}") from exc
-    if out.returncode != 0:
-        raise PeerError(
-            f"ssh fetch of peer cred from {ssh_alias!r} exited {out.returncode}: "
-            f"{out.stderr.strip()[:200]}")
-    cred = out.stdout.strip()
-    if not cred:
-        raise PeerError(f"peer cred from {ssh_alias!r} is empty ($AWM_PEER_CRED unset?)")
-    _peer_cred_cache[ssh_alias] = (now + _PEER_CRED_TTL, cred)
-    return cred
+    deadline = now + timeout
+    last: Exception | None = None
+    for attempt in range(_PEER_CRED_ATTEMPTS):
+        if attempt:
+            backoff = _PEER_CRED_BACKOFF * (2 ** (attempt - 1))
+            if time.monotonic() + backoff >= deadline:
+                break
+            time.sleep(backoff)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        try:
+            cred = _fetch_peer_cred_once(ssh_alias, remaining)
+        except _TransientCredError as exc:
+            last = exc
+            log.warning("peer cred fetch from %r failed (attempt %d/%d): %s",
+                        ssh_alias, attempt + 1, _PEER_CRED_ATTEMPTS, exc)
+            continue
+        # Cache against the clock AFTER the ssh round-trip: `now` predates the
+        # retries, and honouring it would shorten the TTL by the time we spent
+        # failing (a slow fetch would cache a cred that expires early).
+        _peer_cred_cache[ssh_alias] = (time.monotonic() + _PEER_CRED_TTL, cred)
+        return cred
+    raise PeerError(
+        f"ssh fetch of peer cred from {ssh_alias!r} failed within {timeout:.0f}s: "
+        f"{last}") from last
+
+
+async def fetch_peer_cred_async(ssh_alias: str, *, force: bool = False,
+                                timeout: float = 15.0) -> str:
+    """:func:`fetch_peer_cred` off the event loop.
+
+    The sync fetch shells out to ssh and can block for seconds (a blackholed
+    route burns ConnectTimeout, then the retries back off). Calling it directly
+    from a coroutine stalls the WHOLE service — for the ssh service that means
+    reconcile, status, and every other host's connect freeze behind one slow
+    peer. Resolve the module global at call time so tests that monkeypatch
+    ``fetch_peer_cred`` still take effect.
+    """
+    return await asyncio.to_thread(fetch_peer_cred, ssh_alias,
+                                   force=force, timeout=timeout)
 
 
 def _peer_headers(bearer: str, as_: str | None) -> dict[str, str]:
@@ -366,7 +488,7 @@ async def call_peer(
     ca = _peer_ca()
     body = json.dumps(args or {})
     for attempt in (0, 1):
-        bearer = fetch_peer_cred(ssh_alias, force=(attempt == 1))
+        bearer = await fetch_peer_cred_async(ssh_alias, force=(attempt == 1))
         async with httpx.AsyncClient(timeout=timeout, verify=ca) as cli:
             resp = await cli.post(url, content=body,
                                   headers=_peer_headers(bearer, as_))
@@ -408,6 +530,7 @@ async def subscribe_peer(
     topic: str,
     *,
     as_: str | None = None,
+    on_connect: Any = None,
 ) -> AsyncIterator[Any]:
     """Async generator over a peer node's emitter topic, via its edge directly.
 
@@ -441,7 +564,7 @@ async def subscribe_peer(
 
     conn = None
     for attempt in (0, 1):
-        bearer = fetch_peer_cred(ssh_alias, force=(attempt == 1))
+        bearer = await fetch_peer_cred_async(ssh_alias, force=(attempt == 1))
         headers = [("Authorization", f"Bearer {bearer}")]
         if as_ is not None:
             headers.append(("X-Awm-As", as_))
@@ -452,6 +575,7 @@ async def subscribe_peer(
                 ssl=ssl_ctx,
                 max_size=None,
                 open_timeout=10,
+                **_PING_KWARGS,
             )
         except websockets.InvalidStatus as exc:
             # Handshake rejected by the peer edge. 401/403 here means the bearer
@@ -465,6 +589,8 @@ async def subscribe_peer(
         break
 
     async with conn:
+        if on_connect is not None:
+            on_connect()
         async for raw in conn:
             if isinstance(raw, (bytes, bytearray)):
                 # Non-direct emit fan-out is always JSON text; ignore binary.
@@ -473,6 +599,122 @@ async def subscribe_peer(
                 yield json.loads(raw)
             except json.JSONDecodeError:
                 yield raw
+
+
+# ---------------------------------------------------------------------------
+# Cross-peer BYTES — the third transport, beside cross-peer calls and cross-peer
+# streaming. Neither of those can carry a file: `call_peer` is JSON and fully
+# buffered, and `subscribe_peer` discards binary frames outright. A service that
+# produces a file therefore returns its *address* on the serving node's
+# `fileviewer` mount, and the caller pulls the bytes down here.
+# ---------------------------------------------------------------------------
+
+_UNSAFE_NAME = re.compile(r"[^A-Za-z0-9._-]+")
+
+
+def _safe_basename(name: str, fallback: str = "peer-file") -> str:
+    """A filesystem-safe basename for a file whose name a PEER chose.
+
+    Directory components are stripped and unsafe characters collapsed: the
+    remote side names the file, this side names the directory, and nothing the
+    remote sends may escape it.
+    """
+    base = os.path.basename(urllib.parse.unquote(name or "")).strip()
+    base = _UNSAFE_NAME.sub("_", base).strip("._")
+    return base or fallback
+
+
+def fetch_peer_file_sync(
+    peer: str,
+    url: str,
+    *,
+    dest_dir: str | None = None,
+    filename: str | None = None,
+    entry: dict | None = None,
+    as_: str | None = None,
+    timeout: float = 120.0,
+) -> str:
+    """Download ``url`` from peer node ``peer`` and return the LOCAL path.
+
+    ``url`` must be **origin-relative** (``/files/tmp/awm-social-xyz/a.png``, as
+    returned beside a file in a service reply). The peer names the path; this
+    side names the host — an absolute or protocol-relative URL is refused, so a
+    reply cannot aim the credentialed request at a third party.
+
+    Same setup as :func:`call_peer` — resolve the peer's edge via the local
+    gateway, fetch the bearer over ssh, CA-verified TLS, one forced credential
+    re-fetch on a 401 — but the body is streamed to disk rather than parsed, so
+    a large file never lands in memory. Raises :class:`PeerError`; a 404 is
+    called out specially because the two ways to get one (the mount's denylist
+    hid the file, or the peer's ``fileviewer`` is not holding its mount) are
+    both invisible from the status alone.
+    """
+    if not isinstance(url, str) or not url.startswith("/"):
+        raise PeerError(
+            f"peer file url must be origin-relative (start with '/'), got {url!r}")
+    split = urllib.parse.urlsplit(url)
+    if split.scheme or split.netloc:
+        raise PeerError(f"peer file url must name no host, got {url!r}")
+
+    if entry is None or not entry.get("edge_url"):
+        entry = resolve_peer(peer)
+    edge = str(entry["edge_url"]).rstrip("/")
+    ssh_alias = entry.get("ssh_alias") or peer
+    ca = _peer_ca()
+    target = edge + url
+
+    if dest_dir is None:
+        dest_dir = tempfile.mkdtemp(prefix=f"awm-peer-{_safe_basename(peer, 'node')}-")
+    dest = os.path.join(dest_dir, _safe_basename(filename or split.path))
+
+    for attempt in (0, 1):
+        bearer = fetch_peer_cred(ssh_alias, force=(attempt == 1))
+        headers = {"Authorization": f"Bearer {bearer}"}
+        if as_ is not None:
+            headers["X-Awm-As"] = as_
+        # follow_redirects stays off: a redirect is the one way an origin-relative
+        # URL could still end up sending the bearer somewhere else.
+        with httpx.Client(timeout=timeout, verify=ca, follow_redirects=False) as cli:
+            with cli.stream("GET", target, headers=headers) as resp:
+                if resp.status_code == 401 and attempt == 0:
+                    continue  # credential likely rotated — re-fetch and retry
+                if resp.status_code == 404:
+                    raise PeerError(
+                        f"{peer} has no file at {url} — either its fileviewer "
+                        f"denylist hides it (*.key, *.pem, *.token, credentials, "
+                        f"secrets/…, which 404 exactly like a missing file), or "
+                        f"the peer's fileviewer is not holding its mount")
+                if resp.status_code >= 400:
+                    resp.read()
+                    raise PeerError(
+                        f"GET {url} from {peer} failed: HTTP {resp.status_code}: "
+                        f"{resp.text[:200]}")
+                with open(dest, "wb") as fh:
+                    for chunk in resp.iter_bytes(65536):
+                        fh.write(chunk)
+        return dest
+    raise PeerError(f"GET {url} from {peer} failed: unauthorized after credential refresh")
+
+
+async def fetch_peer_file(
+    peer: str,
+    url: str,
+    *,
+    dest_dir: str | None = None,
+    filename: str | None = None,
+    entry: dict | None = None,
+    as_: str | None = None,
+    timeout: float = 120.0,
+) -> str:
+    """:func:`fetch_peer_file_sync` off the event loop.
+
+    The download blocks on an ssh, a TLS handshake and then arbitrarily many
+    bytes to disk. Run in a thread so one large attachment cannot stall the
+    caller's whole service.
+    """
+    return await asyncio.to_thread(
+        fetch_peer_file_sync, peer, url, dest_dir=dest_dir, filename=filename,
+        entry=entry, as_=as_, timeout=timeout)
 
 
 # ---------------------------------------------------------------------------
@@ -518,12 +760,36 @@ async def call_maybe_peer(
     return await call(service, fn, args, as_=as_, timeout=timeout)
 
 
+def call_sync_maybe_peer(
+    peer: str | None,
+    service: str,
+    fn: str,
+    args: dict | None = None,
+    *,
+    as_: str | None = None,
+    timeout: float = 30.0,
+) -> Any:
+    """:func:`call_sync` when ``peer`` is falsy, else :func:`call_peer_sync`.
+
+    The blocking twin of :func:`call_maybe_peer`, for a consumer whose call site
+    is not on the event loop. It exists so such a consumer routes through the
+    same single branch point as everyone else: a sync caller that hand-rolls its
+    own local POST is exactly how a node ends up borrowing a singleton for one
+    consumer and not another, which is the half-routing this module's selectors
+    are here to prevent.
+    """
+    if peer:
+        return call_peer_sync(peer, service, fn, args, as_=as_, timeout=timeout)
+    return call_sync(service, fn, args, as_=as_, timeout=timeout)
+
+
 async def subscribe_maybe_peer(
     peer: str | None,
     service: str,
     topic: str,
     *,
     as_: str | None = None,
+    on_connect: Any = None,
 ) -> AsyncIterator[Any]:
     """:func:`subscribe` when ``peer`` is falsy, else :func:`subscribe_peer`.
 
@@ -532,9 +798,10 @@ async def subscribe_maybe_peer(
     handling is oblivious to whether the stream is local or from a peer.
     """
     if peer:
-        gen = subscribe_peer(peer, service, topic, as_=as_)
+        gen = subscribe_peer(peer, service, topic, as_=as_,
+                             on_connect=on_connect)
     else:
-        gen = subscribe(service, topic, as_=as_)
+        gen = subscribe(service, topic, as_=as_, on_connect=on_connect)
     async for item in gen:
         yield item
 
@@ -565,11 +832,18 @@ class Lease:
                 await lease.verdict(ok=success)
     """
 
-    def __init__(self, ws: Any, status: str, reason: str | None) -> None:
+    def __init__(self, ws: Any, status: str, reason: str | None,
+                 *, node: str | None = None) -> None:
         self._ws = ws
         # "granted" | "busy" | "locked" | "error" — the owning service's first frame.
         self.status = status
         self.reason = reason
+        # Who is holding the lease. Echoed in the verdict so an arbiter that
+        # reports a failure can name the node that actually made the attempt
+        # rather than itself — see the ssh service's lock alert. Passed in by the
+        # caller rather than looked up here: gatewayclient does not depend on
+        # awm-config, and "who is asking" is the caller's fact anyway.
+        self._node = node
         self._closed = False
 
     @property
@@ -580,9 +854,12 @@ class Lease:
         """Report the outcome on the held socket, then close (a clean release)."""
         if self._closed:
             return
+        frame: dict[str, Any] = {"verdict": "ok" if ok else "fail",
+                                 "reason": reason}
+        if self._node:
+            frame["node"] = self._node
         try:
-            await self._ws.send(json.dumps(
-                {"verdict": "ok" if ok else "fail", "reason": reason}))
+            await self._ws.send(json.dumps(frame))
         except Exception:  # noqa: BLE001 — socket already gone counts as a drop
             pass
         await self.aclose()
@@ -616,7 +893,7 @@ def _lease_ws_path(resp: httpx.Response, where: str) -> str:
     return ws_path
 
 
-async def _read_grant(ws: Any) -> Lease:
+async def _read_grant(ws: Any, node: str | None = None) -> Lease:
     """Read the owning service's first frame — its grant/deny — into a Lease."""
     try:
         raw = await asyncio.wait_for(ws.recv(), timeout=10.0)
@@ -630,7 +907,8 @@ async def _read_grant(ws: Any) -> Lease:
         frame = json.loads(raw) if isinstance(raw, str) else {}
     except json.JSONDecodeError:
         frame = {}
-    return Lease(ws, frame.get("lease") or "error", frame.get("reason"))
+    return Lease(ws, frame.get("lease") or "error", frame.get("reason"),
+                 node=node)
 
 
 async def acquire_lease(
@@ -639,6 +917,7 @@ async def acquire_lease(
     *,
     kind: str = "lease",
     as_: str | None = None,
+    node: str | None = None,
     timeout: float = 10.0,
 ) -> Lease:
     """Open a direct-session lease on a LOCAL service and read the grant frame.
@@ -651,7 +930,7 @@ async def acquire_lease(
     import websockets
 
     base = hub_base_url()
-    body = json.dumps({"host": host})
+    body = json.dumps({"host": host, "node": node} if node else {"host": host})
     async with httpx.AsyncClient(timeout=timeout) as cli:
         resp = await cli.post(f"{base}/svc/{service}/session/{kind}",
                               content=body, headers=_headers(as_))
@@ -661,7 +940,7 @@ async def acquire_lease(
     ws = await websockets.connect(f"{ws_base}{ws_path}",
                                   additional_headers=extra,
                                   max_size=None, open_timeout=10)
-    return await _read_grant(ws)
+    return await _read_grant(ws, node)
 
 
 async def acquire_lease_peer(
@@ -671,6 +950,7 @@ async def acquire_lease_peer(
     *,
     kind: str = "lease",
     as_: str | None = None,
+    node: str | None = None,
     timeout: float = 10.0,
 ) -> Lease:
     """:func:`acquire_lease` against a PEER node's service, via its edge directly.
@@ -691,12 +971,12 @@ async def acquire_lease_peer(
     ws_base = edge.replace("https://", "wss://").replace("http://", "ws://")
     ca = _peer_ca()
     ssl_ctx = ssl.create_default_context(cafile=ca)
-    body = json.dumps({"host": host})
+    body = json.dumps({"host": host, "node": node} if node else {"host": host})
     where = f"{service}@{peer}"
 
     ws = None
     for attempt in (0, 1):
-        bearer = fetch_peer_cred(ssh_alias, force=(attempt == 1))
+        bearer = await fetch_peer_cred_async(ssh_alias, force=(attempt == 1))
         async with httpx.AsyncClient(timeout=timeout, verify=ca) as cli:
             resp = await cli.post(f"{edge}/svc/{service}/session/{kind}",
                                   content=body, headers=_peer_headers(bearer, as_))
@@ -728,6 +1008,7 @@ async def acquire_lease_maybe_peer(
     *,
     kind: str = "lease",
     as_: str | None = None,
+    node: str | None = None,
     timeout: float = 10.0,
 ) -> Lease:
     """:func:`acquire_lease` when ``peer`` is falsy, else :func:`acquire_lease_peer`.
@@ -736,9 +1017,10 @@ async def acquire_lease_maybe_peer(
     local-vs-peer for a slot-arbiter consumer, so the decision lives here.
     """
     if peer:
-        return await acquire_lease_peer(peer, service, host,
-                                        kind=kind, as_=as_, timeout=timeout)
-    return await acquire_lease(service, host, kind=kind, as_=as_, timeout=timeout)
+        return await acquire_lease_peer(peer, service, host, kind=kind, as_=as_,
+                                        node=node, timeout=timeout)
+    return await acquire_lease(service, host, kind=kind, as_=as_, node=node,
+                               timeout=timeout)
 
 
 # ---------------------------------------------------------------------------

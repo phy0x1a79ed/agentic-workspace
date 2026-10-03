@@ -48,6 +48,9 @@ log = logging.getLogger("awm.twofa.service")
 # that node social is co-located so this is unset and social calls stay local.
 # A node that borrows social exports AWM_SOCIAL_PEER=<peer>. Read fresh per use.
 _SOCIAL_PEER_ENV = "AWM_SOCIAL_PEER"
+# Duo reachability probe budget. Short: `ping` is called on the recovery path,
+# where a slow answer is nearly as bad as a wrong one.
+_REACH_PROBE_TIMEOUT = 8
 
 
 def _tx_view(tx: Transaction) -> dict[str, Any]:
@@ -76,6 +79,18 @@ class DeviceRuntime:
     # window-end). Set by start_burst(notify=…); the social path uses it to
     # echo outcomes back to the Discord DM. None = silent.
     burst_notify: Any = None
+    # Wall-clock of the last VERIFIED round-trip to the Duo API for this
+    # device. Recency, not the absence of a recorded error, is what any
+    # downstream consumer must require — see TwoFAService.ping.
+    last_reachable_ts: float | None = None
+    last_reach_error: str | None = None
+    # Monotonically increasing count of Duo transactions this process has
+    # OBSERVED for the device, across every burst window. Never reset while the
+    # process lives, which is what lets a caller take a reading before it does
+    # something that may fire a push and compare afterwards: equal readings mean
+    # Duo saw nothing in between. A restart zeroes it, and a reading that went
+    # backwards must therefore be read as "no evidence", never as zero.
+    transactions_seen: int = 0
 
     @property
     def enrolled(self) -> bool:
@@ -94,6 +109,9 @@ class TwoFAService:
         }
         self._devices_lock = threading.Lock()
         self._social_task: asyncio.Task | None = None
+        # The live social/command subscription, once started. Read by `ping`
+        # so a deaf listener is visible before an emergency needs it.
+        self._social_sub: Any = None
 
     # ---- lifecycle --------------------------------------------------------
 
@@ -124,10 +142,12 @@ class TwoFAService:
         # connectors: a task on the already-running loop.
         if self.cfg.social_subscribe:
             try:
-                loop = asyncio.get_event_loop()
-                self._social_task = loop.create_task(self._social_listener())
+                from awm import gatewayclient
+                self._social_task = gatewayclient.spawn_supervised(
+                    "2fa/social-listener", self._social_listener)
             except RuntimeError as exc:  # no running loop (shouldn't happen at on_start)
-                log.warning("2fa: social subscription not started: %s", exc)
+                log.error("2fa: social subscription not started — Discord "
+                          "/approve will not arm a burst: %s", exc)
 
     def _load_engine(self, rt: DeviceRuntime) -> ApprovalEngine:
         """Build (and cache) one device's client + engine from on-disk creds.
@@ -164,29 +184,24 @@ class TwoFAService:
     async def _social_listener(self) -> None:
         """Listen to the social service's ``command`` emit and arm bursts.
 
-        Owns its own reconnect/backoff (``subscribe`` yields one socket's worth
-        of events then returns when it closes — it does NOT reconnect itself).
-        Best-effort: when no ``social`` service is on the gateway the connect
-        just fails and we retry with backoff, so this is inert until social
-        shows up. Cancelled cleanly on shutdown.
+        Reconnect, backoff, and the idle-deadline re-subscribe belong to
+        :class:`SupervisedSubscription` (``subscribe`` yields one socket's
+        worth of events then returns when it closes — it does NOT reconnect
+        itself). Best-effort: when no ``social`` service is on the gateway the
+        connect just fails and we retry with backoff, so this is inert until
+        social shows up. Cancelled cleanly on shutdown.
         """
         from awm import gatewayclient
 
-        log.info("2fa: subscribing to social/command for slash-armed bursts")
-        backoff = 2.0
-        while True:
-            try:
-                async for ev in gatewayclient.subscribe_maybe_peer(
-                        gatewayclient.peer_env(_SOCIAL_PEER_ENV),
-                        "social", "command"):
-                    backoff = 2.0  # connected and receiving
-                    await self._handle_social_command(ev)
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:  # noqa: BLE001 — never let the task die
-                log.debug("2fa: social subscription dropped (retrying): %s", exc)
-            await asyncio.sleep(backoff)
-            backoff = min(backoff * 1.5, 30.0)
+        def _stream():
+            # peer selector read per connection, so a re-home takes effect on
+            # the next reconnect without a restart.
+            return gatewayclient.subscribe_maybe_peer(
+                gatewayclient.peer_env(_SOCIAL_PEER_ENV), "social", "command")
+
+        self._social_sub = gatewayclient.SupervisedSubscription(
+            "2fa/social.command", _stream, self._handle_social_command)
+        await self._social_sub.run()
 
     async def _handle_social_command(self, ev: Any) -> None:
         """React to one social ``command`` event. Only ``approve`` arms a burst."""
@@ -264,21 +279,74 @@ class TwoFAService:
 
     # ---- verbs ------------------------------------------------------------
 
-    def _ping_one(self, rt: DeviceRuntime) -> dict[str, Any]:
-        return {
+    def _probe_one(self, rt: DeviceRuntime) -> dict[str, Any]:
+        """One device's reachability, via a real read-only Duo API call.
+
+        ``get_transactions`` is a GET that lists already-pending pushes: it
+        fires nothing, costs no multi-factor budget, and is the same call the
+        approval engine polls with — so if it works, the approver works.
+
+        This exists because ``ping`` used to report ``ok: true, enrolled:
+        true`` purely from local enrollment state, with no network call at
+        all. On 2026-07-26 it said exactly that while the Duo API was
+        unresolvable and every push was timing out. That false green is what
+        made the approver look healthy throughout the diagnosis, so nothing
+        downstream may depend on this answer until it is a real one.
+        """
+        out: dict[str, Any] = {
             "enrolled": rt.enrolled,
             "host": rt.client.host if rt.client else None,
             "burst_active": rt.burst_active(),
+            "reachable": False,
+            "last_reachable_at": rt.last_reachable_ts,
         }
+        if not rt.enrolled:
+            out["error"] = "device not enrolled"
+            return out
+        try:
+            engine = self._load_engine(rt)
+            engine.client.get_transactions(timeout=_REACH_PROBE_TIMEOUT)
+        except Exception as exc:  # noqa: BLE001 — an unreachable API IS the answer
+            rt.last_reach_error = f"{type(exc).__name__}: {exc}"
+            out["error"] = rt.last_reach_error
+            out["host"] = rt.client.host if rt.client else None
+            return out
+        rt.last_reachable_ts = time.time()
+        rt.last_reach_error = None
+        out.update(reachable=True, host=rt.client.host if rt.client else None,
+                   last_reachable_at=rt.last_reachable_ts)
+        return out
 
-    def ping(self, device: str | None = None) -> dict[str, Any]:
+    async def ping(self, device: str | None = None) -> dict[str, Any]:
+        """Reachability of the Duo API, per device. ``ok`` means *verified*.
+
+        The probe is blocking (``requests``), so it runs off the event loop.
+        """
         targets = self._target_devices(device)
+        probes = {rt.name: await asyncio.to_thread(self._probe_one, rt)
+                  for rt in targets}
+        ok = bool(probes) and all(p.get("reachable") for p in probes.values())
         if device and str(device).strip():
             rt = targets[0]
-            return {"ok": True, "device": rt.name, **self._ping_one(rt)}
+            return {"ok": ok, "device": rt.name, **probes[rt.name]}
+        return {"ok": ok, "devices": probes}
+
+    def reachability(self, device: str) -> dict[str, Any]:
+        """The last VERIFIED reachability for one device, without probing.
+
+        Read by the ssh arbiter's self-clear check. Deliberately returns the
+        recorded timestamp rather than a fresh probe result, so the caller
+        decides what counts as recent — "no error seen" must never be able to
+        stand in for "reachable".
+        """
+        rt = self._devices.get(str(device or "").strip())
+        if rt is None:
+            return {"known": False, "last_reachable_at": None}
         return {
-            "ok": True,
-            "devices": {rt.name: self._ping_one(rt) for rt in targets},
+            "known": True,
+            "enrolled": rt.enrolled,
+            "last_reachable_at": rt.last_reachable_ts,
+            "last_error": rt.last_reach_error,
         }
 
     def _status_one(self, rt: DeviceRuntime) -> dict[str, Any]:
@@ -293,6 +361,11 @@ class TwoFAService:
             "approve_all_remaining_seconds": 0.0,
             "approved_count": 0,
             "last_burst": rt.last_burst,
+            # Duo transactions observed for this device over the life of this
+            # process. Only its DIFFERENCE against a reading taken earlier means
+            # anything — see start_burst's transactions_seen. Set on the base
+            # dict so an unenrolled device still answers the question.
+            "transactions_seen": rt.transactions_seen,
         }
         if not rt.enrolled:
             return out
@@ -312,12 +385,42 @@ class TwoFAService:
         )
         return out
 
+    def _subscription_health(self) -> dict[str, Any]:
+        """Health of the social/command wire that carries ``/approve``.
+
+        A deaf listener used to be indistinguishable from an idle one. Never
+        raises: health has to be reportable precisely when things are broken.
+        """
+        sub = self._social_sub
+        if sub is None:
+            if not self.cfg.social_subscribe:
+                # Say *why* it is off. "Disabled" on the node that borrows 2fa
+                # is the correct state, and an operator who cannot tell that
+                # from a fault will go looking for a bug that isn't there.
+                from awm import gatewayclient
+                owner = gatewayclient.peer_env("AWM_TWOFA_PEER")
+                why = (f"2fa is owned by peer {owner!r}; only the owner listens "
+                       f"for /approve" if owner else
+                       "social subscription disabled by config")
+                return {"healthy": True, "connected": False,
+                        "listening": False, "owner": owner,
+                        "last_error": why}
+            return {"healthy": False, "connected": False,
+                    "last_error": "social listener not started"}
+        try:
+            return sub.health()
+        except Exception as exc:  # noqa: BLE001
+            return {"healthy": False, "last_error": f"unavailable: {exc}"}
+
     def status(self, device: str | None = None) -> dict[str, Any]:
         targets = self._target_devices(device)
+        sub = self._subscription_health()
         if device and str(device).strip():
             rt = targets[0]
-            return {"device": rt.name, **self._status_one(rt)}
-        return {"devices": {rt.name: self._status_one(rt) for rt in targets}}
+            return {"device": rt.name, **self._status_one(rt),
+                    "subscription": sub}
+        return {"devices": {rt.name: self._status_one(rt) for rt in targets},
+                "subscription": sub}
 
     def _pending_one(self, rt: DeviceRuntime) -> list[dict[str, Any]]:
         if not rt.enrolled:
@@ -419,6 +522,13 @@ class TwoFAService:
             # task already tore down (task None/done) we spawn a fresh one. This
             # closes the was_active TOCTOU that could strand a grant with no poller.
             live = rt.burst_task is not None and not rt.burst_task.done()
+            # The observation baseline. What makes it sound is that arming
+            # PRECEDES the caller's login — its own push can never already be in
+            # this number, so an unchanged count later cannot be hiding it. A
+            # concurrent sibling on the same device can land inside the window
+            # and inflate the later reading, which produces a spurious hold: the
+            # harmless direction.
+            seen_at_arm = rt.transactions_seen
             if not live:
                 rt.burst_task = asyncio.create_task(self._run_burst(rt, engine, interval))
         return {
@@ -427,16 +537,24 @@ class TwoFAService:
             "expected": budget,
             "interval": interval,
             "burst_remaining_seconds": _remaining(rt),
+            # The observation counter as of arming. A caller that is about to do
+            # something which may fire a push keeps this and compares it against
+            # the same field on `status` afterwards: an unchanged reading means
+            # Duo saw no transaction on this device in between, which is the only
+            # positive evidence that no MFA attempt was spent.
+            "transactions_seen": seen_at_arm,
         }
 
     async def _run_burst(self, rt: DeviceRuntime, engine: ApprovalEngine,
                          interval: float) -> None:
         start_approved = engine.approved_count
+        start_seen = rt.transactions_seen
         last_seen = start_approved
         notify = rt.burst_notify  # captured: the target that armed this window
         log.info("2fa burst[%s]: interval %.1fs, budget %d, window %.0fs",
                  rt.name, interval, engine.budget_remaining(), _remaining(rt))
         approved = 0
+        observed = 0
         final_notify = notify
         torn_down = False
         try:
@@ -451,7 +569,17 @@ class TwoFAService:
                            and engine.budget_remaining() > 0):
                         try:
                             txs = await asyncio.to_thread(engine.client.get_transactions)
+                            # This call IS a verified Duo round-trip, so record it
+                            # as one. Before this the timestamp moved only when
+                            # somebody called ping, which made it decay with idle
+                            # time alone — and a consumer requiring recency then
+                            # read a quiet approver as a broken one (2026-09-01: an
+                            # ssh hold on a host that was simply under maintenance
+                            # was filed as "approver-unavailable" on that basis).
+                            rt.last_reachable_ts = time.time()
+                            rt.last_reach_error = None
                             if txs:
+                                rt.transactions_seen += len(txs)
                                 log.info("2fa burst[%s]: %d pending transaction(s)",
                                          rt.name, len(txs))
                             await asyncio.to_thread(engine.handle_transactions, txs)
@@ -491,8 +619,10 @@ class TwoFAService:
                     # stray push outside a window can't be auto-approved later.
                     approved = engine.approved_count - start_approved
                     remaining = engine.clear_budget()
+                    observed = rt.transactions_seen - start_seen
                     rt.last_burst = {"approved": approved,
-                                     "expected_remaining": remaining}
+                                     "expected_remaining": remaining,
+                                     "observed": observed}
                     rt.burst_deadline = 0.0
                     rt.burst_task = None
                     rt.burst_notify = None
@@ -504,13 +634,17 @@ class TwoFAService:
                 # Abnormal exit (e.g. cancellation). Clear budget and detach so no
                 # authorization outlives the window and a re-arm can spawn afresh.
                 approved = engine.approved_count - start_approved
+                observed = rt.transactions_seen - start_seen
                 engine.clear_budget()
                 rt.burst_deadline = 0.0
                 if rt.burst_task is asyncio.current_task():
                     rt.burst_task = None
                 rt.burst_notify = None
-        log.info("2fa burst[%s]: window ended; approved %d login(s)",
-                 rt.name, approved)
+        # "approved 0" alone is ambiguous — it reads the same whether Duo never
+        # heard from the login or heard and we declined. The observed count
+        # separates them, and is the line a later diagnosis needs.
+        log.info("2fa burst[%s]: window ended; approved %d login(s), "
+                 "observed %d transaction(s)", rt.name, approved, observed)
         if final_notify is not None:
             # Fire-and-forget so the summary can't stall a concurrent re-arm.
             summary = (f"⌛ Approval window ended on `{rt.name}` — "

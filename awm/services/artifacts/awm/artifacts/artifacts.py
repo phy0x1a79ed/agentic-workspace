@@ -10,6 +10,7 @@ connection.
 
 from __future__ import annotations
 
+import logging
 import time
 from datetime import datetime, timezone
 
@@ -21,6 +22,8 @@ from awm.artifacts.models import (
     ArtifactInfo,
     ArtifactSearchResponse,
 )
+
+log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Time helpers (re-homed from identity — no import from scopes)
@@ -44,18 +47,31 @@ def ms_to_iso(ms: int | None) -> str | None:
 # ---------------------------------------------------------------------------
 
 _FORBIDDEN_CHARS = ("/", "\\", "\x00")
+_FORBIDDEN_SEGMENT_CHARS = ("\\", "\x00")
 
 
-def _validate_name(name: str, kind: str = "name") -> str:
+def _validate_name(name: str, kind: str = "name", *, allow_nesting: bool = False) -> str:
+    """Mirror of ``awm.scopes._validation.validate_name`` — kept in step by hand
+    so artifacts stays its own dist. Scope names nest (``fabfos/dev``); project
+    names do not, since a slashed project would imply a second bare repo."""
     if not isinstance(name, str) or not name:
         raise ValueError(f"{kind} must be a non-empty string")
-    if name in (".", ".."):
-        raise ValueError(f"{kind} cannot be '.' or '..'")
-    if name.startswith("."):
-        raise ValueError(f"{kind} cannot start with '.' (got {name!r})")
-    for ch in _FORBIDDEN_CHARS:
-        if ch in name:
-            raise ValueError(f"{kind} cannot contain {ch!r} (got {name!r})")
+    if allow_nesting:
+        if name.startswith("/") or name.endswith("/"):
+            raise ValueError(f"{kind} cannot start or end with '/' (got {name!r})")
+        segments, forbidden = name.split("/"), _FORBIDDEN_SEGMENT_CHARS
+    else:
+        segments, forbidden = [name], _FORBIDDEN_CHARS
+    for segment in segments:
+        if not segment:
+            raise ValueError(f"{kind} cannot contain an empty segment (got {name!r})")
+        if segment in (".", ".."):
+            raise ValueError(f"{kind} cannot contain '.' or '..' (got {name!r})")
+        if segment.startswith("."):
+            raise ValueError(f"{kind} cannot start with '.' (got {name!r})")
+        for ch in forbidden:
+            if ch in segment:
+                raise ValueError(f"{kind} cannot contain {ch!r} (got {name!r})")
     return name
 
 
@@ -108,37 +124,51 @@ def _row_to_info(row: dict) -> ArtifactInfo:
 # ---------------------------------------------------------------------------
 
 
+def _document(row) -> "engine.Document":
+    from awm.persistence import embeddings as engine
+    body = "\n".join(x for x in (row["description"] or "",
+                                  f"Type: {row['artifact_type'] or ''}",
+                                  f"Path: {row['path'] or ''}",
+                                  f"Tags: {row['tags'] or ''}") if x)
+    return engine.Document(str(row["id"]), body, title=row["name"] or "",
+                           context=f"{row['project']}/{row['scope']}")
+
+
 def _index_artifact(artifact_id: int) -> None:
-    """Embed the artifact's text and upsert into this service's embeddings table.
+    """Index one artifact in this service's search index; logs and moves on on failure.
 
-    Degrades gracefully when sentence-transformers / sqlite-vec are not installed.
+    A missed write is repaired by the next :func:`reindex_artifacts`, which the
+    service runs at startup and on every ``sync``.
     """
-    try:
-        from awm.persistence.embeddings import upsert_embedding
-        from awm.persistence.databases import get_connection
-    except ImportError:
-        return
+    from awm.persistence import embeddings as engine
+    from awm.persistence.databases import get_connection
 
-    dao = ArtifactsDAO()
-    row = dao.get_by_id(artifact_id)
+    row = ArtifactsDAO().get_by_id(artifact_id)
     if not row:
         return
-
-    parts = [row["name"] or "", row["artifact_type"] or "", row["description"] or "",
-             row["tags"] or ""]
-    text = " ".join(p for p in parts if p).strip()
-    if not text:
-        return
-
+    conn = get_connection("artifacts")
     try:
-        from awm.persistence.databases import get_connection as _gc
-        conn = _gc("artifacts")
-        try:
-            upsert_embedding(conn, "artifact", str(artifact_id), text)
-        finally:
-            conn.close()
-    except Exception:
-        pass
+        engine.index_document(conn, "artifact", _document(row))
+    except Exception:  # noqa: BLE001 — registering must not fail on the index
+        log.warning("artifacts: indexing %s failed", artifact_id, exc_info=True)
+    finally:
+        conn.close()
+
+
+def reindex_artifacts(*, force: bool = False, dry_run: bool = False) -> dict:
+    """Bring the search index in line with the current artifacts; returns counts."""
+    from awm.persistence import embeddings as engine
+    from awm.persistence.databases import get_connection
+
+    conn = get_connection("artifacts")
+    try:
+        rows = conn.execute(
+            "SELECT id, project, scope, name, artifact_type, path, description, tags"
+            " FROM artifacts WHERE status='current'").fetchall()
+        return engine.reindex(conn, "artifact", [_document(r) for r in rows],
+                              force=force, prune=True, dry_run=dry_run)
+    finally:
+        conn.close()
 
 
 # ---------------------------------------------------------------------------
@@ -150,7 +180,7 @@ def register_artifact(req: ArtifactRegisterRequest) -> ArtifactInfo:
     """Upserts on (path, project) — validate (project, scope) via scopes RPC
     BEFORE writing. On unresolvable scope, fail LOUDLY — no orphan rows."""
     _validate_name(req.project, kind="project name")
-    _validate_name(req.scope, kind="scope name")
+    _validate_name(req.scope, kind="scope name", allow_nesting=True)
 
     # RPC-validate: reject unresolvable scopes
     try:
@@ -227,7 +257,8 @@ def delete_artifact(artifact_id: int | str) -> dict:
         row = dao.delete_artifact(aid, conn=conn)
         if not row:
             raise ValueError(f"Artifact {artifact_id} not found")
-        dao.delete_embedding_by_source_id(str(aid), conn=conn)
+        from awm.persistence.embeddings import delete_document
+        delete_document(conn, "artifact", str(aid))
 
     return {"deleted": True, "id": aid, "name": row["name"], "path": row["path"]}
 
@@ -245,9 +276,11 @@ def search_artifacts(
     limit: int = 50,
     offset: int = 0,
 ) -> ArtifactSearchResponse:
-    """Search/filter artifacts. When ``query`` is set, returns keyword (LIKE on
-    name/description/tags) hits first, then semantic top-up via this service's
-    own embeddings table."""
+    """Search/filter current artifacts.
+
+    With a ``query``, name/description/tag substring matches come first, then
+    the rest ranked by meaning and keywords. Filters apply before ranking.
+    """
     dao = ArtifactsDAO()
     rows = dao.search(
         project=project,
@@ -257,47 +290,38 @@ def search_artifacts(
         limit=limit,
         offset=offset,
     )
-    items = [_row_to_info(r) for r in rows]
-
+    merged = [_row_to_info(r) for r in rows]
     if not query:
-        return ArtifactSearchResponse(artifacts=items, total=len(items))
+        return ArtifactSearchResponse(artifacts=merged, total=len(merged))
 
-    keyword_keys = {str(i.id) for i in items}
-
-    def _materialize(source_id: str) -> ArtifactInfo | None:
-        try:
-            aid = int(source_id)
-        except ValueError:
-            return None
-        row = dao.get_by_id(aid)
-        if row is None or row.get("status") != "current":
-            return None
-        if project and row["project"] != project:
-            return None
-        if scope and row["scope"] != scope:
-            return None
-        if artifact_type and row["artifact_type"] != artifact_type:
-            return None
-        return _row_to_info(row)
-
+    where, params = "", []
+    for col, val in (("project", project), ("scope", scope), ("artifact_type", artifact_type)):
+        if val:
+            where += f" AND {col} = ?"
+            params.append(val)
+    seen = {i.id for i in merged}
+    degraded = None
     try:
-        from awm.persistence.embeddings import hybrid_augment
+        from awm.persistence import embeddings as engine
         from awm.persistence.databases import get_connection
         conn = get_connection("artifacts")
         try:
-            merged = hybrid_augment(
-                conn, query,
-                source_type="artifact",
-                keyword_hits=items,
-                keyword_keys=keyword_keys,
-                materialize=_materialize,
-            )
+            res = engine.search(
+                conn, query, source_type="artifact", params=params, limit=offset + limit,
+                allowed="SELECT CAST(id AS TEXT) FROM artifacts WHERE status='current'" + where)
         finally:
             conn.close()
-    except Exception:
-        merged = items
-
-    return ArtifactSearchResponse(artifacts=merged, total=len(merged))
+        degraded = res.degraded
+        for h in res.hits[offset:]:
+            if len(merged) >= limit:
+                break
+            row = dao.get_by_id(int(h["source_id"]))
+            if row is not None and row["id"] not in seen:
+                merged.append(_row_to_info(row))
+                seen.add(row["id"])
+    except Exception as exc:  # noqa: BLE001 — reported, then answered by substring match
+        degraded = {"semantic": "error", "error": repr(exc)[:300], "fallback": "keyword"}
+    return ArtifactSearchResponse(artifacts=merged, total=len(merged), degraded=degraded)
 
 
 # ---------------------------------------------------------------------------
@@ -333,7 +357,7 @@ def get_content(artifact_ref: int | str) -> bytes:
 
 
 # ---------------------------------------------------------------------------
-# Sync — flip artifact status based on on-disk presence, prune embeddings
+# Sync — flip artifact status based on on-disk presence, then reindex
 # ---------------------------------------------------------------------------
 
 _SYNC_FP_KEY = "artifacts_sync_fp"
@@ -349,7 +373,6 @@ def sync_artifacts(force: bool = False) -> dict:
 
     marked_stale: list[int] = []
     restored: list[int] = []
-    restored_ids: list[int] = []
 
     with dao.transaction() as conn:
         rows = dao.get_all_for_sync(conn=conn)
@@ -361,7 +384,6 @@ def sync_artifacts(force: bool = False) -> dict:
                 marked_stale.append(aid)
             elif status == "stale" and exists:
                 restored.append(aid)
-                restored_ids.append(aid)
 
         ts = now_ms()
         if marked_stale:
@@ -369,24 +391,13 @@ def sync_artifacts(force: bool = False) -> dict:
         if restored:
             dao.restore_current(restored, ts, conn=conn)
 
-        # Prune embeddings for artifacts that are no longer current
-        current_ids = dao.get_current_ids(conn=conn)
-        embedding_ids = dao.get_embedding_source_ids(conn=conn)
-        stale_embeddings = [sid for sid in embedding_ids if sid not in current_ids]
-        if stale_embeddings:
-            dao.delete_stale_embeddings(stale_embeddings, conn=conn)
-
-    if restored_ids:
-        for aid in restored_ids:
-            try:
-                _index_artifact(aid)
-            except Exception:
-                pass
+    index = reindex_artifacts()
 
     set_config(_SYNC_FP_KEY, dao.get_fingerprint())
     return {
         "skipped": False,
         "marked_stale": len(marked_stale),
         "restored": len(restored),
-        "embeddings_pruned": len(stale_embeddings) if stale_embeddings else 0,
+        "indexed": index["indexed"],
+        "embeddings_pruned": index["pruned"],
     }

@@ -24,8 +24,9 @@ Identity + lifecycle:
 
 The per-game registry is a committed ``games/<game>.toml`` in this service's
 folder — realm, goal prompt, harness/model, turn budget. The default driver is
-**opencode on the free Zen DeepSeek** (model ``None`` → the opencode backend's
-own default): cheap enough to run on a cron. NOTE the standing caveat: opencode
+**opencode on a free Zen model** (a registry entry that omits ``model`` resolves
+to the same per-harness default a placement gets): cheap enough to run on a
+cron. NOTE the standing caveat: opencode
 ignores ``allowed_tools``, so the tool profile below is only enforced when a
 game pins ``harness = "claude"`` — on opencode it is a guardrail-not-boundary,
 consistent with the loopback bus precedent.
@@ -176,6 +177,22 @@ def _kickoff_text(spec: GameSpec) -> str:
 # Spawn / park
 # ---------------------------------------------------------------------------
 
+def _resolve_model(spec: GameSpec) -> str:
+    """The concrete model this game spawns under.
+
+    A registry entry may omit ``model``, but ``create_session`` hard-requires a
+    concrete one, so the harness default is filled here rather than passed
+    through as ``None``. The constants are placement's, so a game left on the
+    default moves with every other spawn when the free tier rotates.
+    """
+    from awm.agents.placement import (DEFAULT_CLAUDE_PLACEMENT_MODEL,
+                                      DEFAULT_OPENCODE_PLACEMENT_MODEL)
+    if spec.model:
+        return spec.model
+    return (DEFAULT_CLAUDE_PLACEMENT_MODEL if spec.harness == "claude"
+            else DEFAULT_OPENCODE_PLACEMENT_MODEL)
+
+
 async def spawn_for_game(game: str, *, source: str = "manual") -> dict:
     """Spawn one bounded play session for ``game`` (dedupes on the live slug).
 
@@ -210,7 +227,7 @@ async def spawn_for_game(game: str, *, source: str = "manual") -> dict:
         mode="gamebot",
         workdir=workspace_path,
         allowed_tools=list(GAMEBOT_TOOLS),
-        model=spec.model,
+        model=_resolve_model(spec),
         effort=spec.effort,
         fresh=True,
     )
@@ -301,44 +318,42 @@ _WAKE_TOPICS = [
 ]
 
 
+async def _handle_wake(topic: str, ev: object) -> None:
+    """One wake event: spawn the named game's agent. An event for an
+    unregistered game logs and drops."""
+    if not isinstance(ev, dict):
+        return
+    game = str(ev.get("game") or "").strip()
+    if not game:
+        return
+    try:
+        await spawn_for_game(game, source=topic)
+    except UnknownGameError:
+        log.info("gamebot: %s for unregistered game %r — dropped", topic, game)
+
+
 async def _topic_listener(service: str, topic: str) -> None:
-    """One never-die consumer loop over a gateway emitter (the 2fa envelope).
+    """One never-die consumer over a gateway emitter (the 2fa envelope).
 
     ``subscribe`` yields one socket's worth of events then returns when it
-    closes — reconnect/backoff is ours. Best-effort: while the emitting service
-    is absent the connect just fails and we retry, so this is inert until it
-    shows up. An event for an unregistered game logs and drops."""
-    log.info("gamebot: subscribing to %s/%s", service, topic)
-    backoff = 2.0
-    while True:
-        try:
-            async for ev in gatewayclient.subscribe(service, topic):
-                backoff = 2.0  # connected and receiving
-                if not isinstance(ev, dict):
-                    continue
-                game = str(ev.get("game") or "").strip()
-                if not game:
-                    continue
-                try:
-                    await spawn_for_game(game, source=topic)
-                except UnknownGameError:
-                    log.info("gamebot: %s for unregistered game %r — dropped",
-                             topic, game)
-                except Exception:  # noqa: BLE001
-                    log.warning("gamebot: spawn for %r (via %s) failed",
-                                game, topic, exc_info=True)
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:  # noqa: BLE001 — never let the loop die
-            log.debug("gamebot: %s/%s subscription dropped (retrying): %s",
-                      service, topic, exc)
-        await asyncio.sleep(backoff)
-        backoff = min(backoff * 1.5, 30.0)
+    closes; reconnect, backoff and the idle-deadline re-subscribe belong to
+    :class:`SupervisedSubscription`. Best-effort: while the emitting service is
+    absent the connect just fails and we retry, so this is inert until it shows
+    up."""
+    sub = gatewayclient.SupervisedSubscription(
+        f"gamebot/{service}.{topic}",
+        lambda: gatewayclient.subscribe(service, topic),
+        lambda ev: _handle_wake(topic, ev),
+    )
+    await sub.run()
 
 
 async def run_listeners() -> None:
     """The agents service's gamebot wake fabric — gathered next to the adapter
-    loop in ``hub_adapter.main`` (the events-service Scheduler pattern)."""
+    loop in ``hub_adapter.main`` (the events-service Scheduler pattern).
+
+    ``return_exceptions=True``: one listener escaping used to take the whole
+    gather — and with it the service's entire wake fabric — down with it."""
     await asyncio.gather(*(
         _topic_listener(svc, topic) for svc, topic in _WAKE_TOPICS
-    ))
+    ), return_exceptions=True)

@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "awm-drawio"
+version = "0.1.0"
+requires-python = ">=3.11"
+description = "AWM drawio service: an awm-owned diagram editor with a versioned store and a checkout/update/merge contract, so agents and people can edit the same diagram concurrently without silently losing each other's work."
+dependencies = [
+    "awm-config",
+    "awm-gatewayclient",
+    "awm-persistence",
+    # Recolouring a raster image: decode with Pillow, do the colour pass in
+    # numpy. See awm/drawio/recolour.py.
+    "pillow",
+    "numpy",
+]
+
+[project.optional-dependencies]
+# Auto-layout (dwg `layout`). Optional: every other operation works without it.
+layout = ["pygraphviz"]
+test = ["pytest"]
+
+# PEP 420 namespace package: no top-level awm/__init__.py; the namespace dir is awm/drawio/.
+[tool.setuptools.packages.find]
+include = ["awm.drawio*"]
+namespaces = true
+
+[tool.pytest.ini_options]
+markers = [
+    "smoke: fast unit tests; target <30s",
+]

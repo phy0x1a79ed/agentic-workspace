@@ -14,8 +14,8 @@ What it does:
   a restart never leaves a stale-only state (no dependency on `events`).
 - Signs **sliding session tokens** (HMAC-SHA256 with a long-lived secret); the
   edge verifies + refreshes cookies offline using material from `edge_material`.
-- Pushes the day's **login password** (never the peer credential) to Discord
-  `#notifications` on each mint, best-effort.
+- Pushes the day's **login password** (never the peer credential) to the
+  operator's Discord DM on each mint, best-effort.
 - Mirrors the current peer credential to a file (`$AWM_DIR/services/auth/
   peer_cred.current`) that `$AWM_PEER_CRED` points to, for the SSH peer-auth
   channel (`ssh <peer> 'cat "$AWM_PEER_CRED"'`).
@@ -42,6 +42,40 @@ The service's verbs mirror onto the CLI automatically:
     awm auth status       # rotation state summary
     awm auth rotate       # force a fresh mint now
 
+## User accounts
+
+Beside the rotating shared password, static per-user passwords:
+
+    awm auth user-add --username tony      # prints the generated password once
+    awm auth user-passwd --username tony   # new password, clears the lockout
+    awm auth user-disable --username tony [--disabled false]
+    awm auth user-list
+
+`verify` with a `username` mints a session as that user; failures count per username and per client IP and lock the key after `lockout_threshold` attempts for `lockout_minutes`. `AWM_AUTH_PROFILE=public` disables the shared path entirely: no minting, no Discord push, no peer credentials, and a login without a username fails.
+
+## Penpot credentials
+
+Penpot keeps its own accounts and has no "trust the proxy" mode, so this
+service also holds one Penpot credential per person. Nobody is ever shown it.
+
+    awm auth penpot-record --username tony --email tony@host --password …
+    awm auth penpot-session --username tony        # what the edge asks for
+    awm auth penpot-rotate [--username tony]       # force a replacement
+    awm auth penpot-list                           # no secrets
+
+The public host's `add-user.sh` calls `penpot-record` once, right after it creates
+the Penpot profile with the same password. A background loop replaces every
+stored password at `penpot_rotation_hour` local time, and catches up on start
+when the box was off at that hour. This loop runs on the `public` profile too:
+that flag turns off the *shared* password, and these are per-user foreign
+credentials.
+
+**CAUTION** The stored password is what a rotation offers Penpot as its *old*
+password. If the two drift apart, rotation is refused with
+`old-password-not-match` and there is no HTTP path back. Re-run
+`add-user.sh <name>` on the box holding the stack. It resets the Penpot
+password and records the new one, which is the only repair.
+
 ## Configuration (settings page / `awm config`)
 
 | Field | Default | Purpose |
@@ -50,9 +84,11 @@ The service's verbs mirror onto the CLI automatically:
 | `validity_hours` | `24` | hours a pair stays valid (> cadence → overlap) |
 | `session_ttl_hours` | `24` | sliding session lifetime (cookie refresh horizon) |
 | `max_session_days` | `30` | hard ceiling on total session age |
+| `lockout_threshold` | `6` | failed logins per username / client IP before a lock |
+| `lockout_minutes` | `15` | how long the lock holds |
 | `push_enabled` | `true` | push the login password to Discord on each mint |
 | `discord_account` | `discord-bot` | social account id for the push |
-| `discord_channel` | `1522674357762261112` | Discord `#notifications` channel id |
+| `discord_channel` | `dm:188743359983124480` | Discord target: a channel id, or `dm:<user_id>` for the operator's DM with the bot |
 
 ## Python dependencies
 

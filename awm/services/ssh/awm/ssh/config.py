@@ -27,7 +27,6 @@ KNOWN_HOSTS: dict[str, HostConfig] = {
     "sockeye3": HostConfig("sockeye3", "txyliu",   needs_vpn=True,  vpn_profile="ubc",  twofa_device="cwl"),
     "fir":      HostConfig("fir",      "phyberos",  needs_vpn=False,                    twofa_device="alliance", guarded=True),
     "chamois":  HostConfig("chamois",  "tliu",      needs_vpn=True,  vpn_profile="ubc"),
-    "micb0":    HostConfig("micb0",    "tliu",      needs_vpn=True,  vpn_profile="ubc"),
 }
 
 LIVE_DIR = os.path.expanduser("~/.ssh/live_connections")
@@ -66,3 +65,16 @@ def lock_path(cfg: HostConfig) -> str:
 
 def stderr_path(cfg: HostConfig) -> str:
     return os.path.join(LIVE_DIR, f"{cfg.host}.connect.stderr")
+
+
+def pid_path(cfg: HostConfig) -> str:
+    """Where a live connect records the pid of the ssh it spawned.
+
+    An ssh that hangs before authenticating never creates a ControlMaster
+    socket, so nothing that speaks through the socket can find it — not
+    `ssh -O exit`, and not the stale-socket sweep, which can only see files
+    that exist. On 2026-09-01 two such processes outlived the attempt that
+    made them by minutes, each holding an armed Duo window. This file is the
+    only handle a later service life has on that process.
+    """
+    return os.path.join(LIVE_DIR, f"{cfg.host}.master.pid")

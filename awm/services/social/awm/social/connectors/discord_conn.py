@@ -46,6 +46,8 @@ def _attachments_of(message) -> list[Attachment]:  # noqa: ANN001
 # by DMing the bot, that other services react to via the adapter's ``command``
 # emit. ``approve`` is consumed by the 2fa service to arm a Duo approval burst.
 APPROVE_COMMAND = "approve"
+# Channel form naming a user's DM with the bot, e.g. ``dm:188743359983124480``.
+DM_PREFIX = "dm:"
 # Duo devices a user can target. Mirrors the 2fa service's device names; offered
 # as Discord choices so the slash UI is a pick-list rather than free text.
 DEVICE_CHOICES = ("cwl", "alliance")
@@ -211,10 +213,7 @@ class DiscordConnector(Connector):
         if self._client is None:
             raise RuntimeError(f"discord[{self.account.name}] not started")
         await self._wait_ready()
-        target_id = int(thread or channel)
-        target = self._client.get_channel(target_id)
-        if target is None:
-            target = await self._client.fetch_channel(target_id)
+        target = await self._resolve_channel(thread or channel)
         sent = await target.send(text)
         return {
             "message_id": str(sent.id),
@@ -222,8 +221,30 @@ class DiscordConnector(Connector):
             "ts": sent.created_at.isoformat() if sent.created_at else "",
         }
 
+    async def _dm_channel(self, user_id: str):
+        """The DM channel with a user, opened on first use (discord.py caches it)."""
+        uid = int(user_id)
+        user = self._client.get_user(uid) or await self._client.fetch_user(uid)
+        return user.dm_channel or await user.create_dm()
+
+    async def open_dm(self, user: str) -> Channel:
+        if self._client is None:
+            raise RuntimeError(f"discord[{self.account.name}] not started")
+        await self._wait_ready()
+        user_id = user.removeprefix(DM_PREFIX)
+        dm = await self._dm_channel(user_id)
+        recipient = getattr(dm, "recipient", None)
+        return Channel(
+            id=str(dm.id),
+            name=str(recipient) if recipient else f"{DM_PREFIX}{user_id}",
+            kind="dm",
+        )
+
     async def _resolve_channel(self, channel: str):
-        """Resolve a channel id to a discord.py channel object (cached or fetched)."""
+        """Resolve a channel id, or ``dm:<user_id>`` for a DM with that user, to
+        a discord.py channel object (cached or fetched)."""
+        if channel.startswith(DM_PREFIX):
+            return await self._dm_channel(channel.removeprefix(DM_PREFIX))
         target_id = int(channel)
         target = self._client.get_channel(target_id)
         if target is None:

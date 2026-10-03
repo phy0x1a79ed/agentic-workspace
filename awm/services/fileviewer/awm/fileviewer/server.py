@@ -15,7 +15,9 @@ loopback-only and never reachable through the HTTPS front.
 *resolved* path) hides secrets — ssh keys, TLS private keys, the gateway auth
 token, ``.env`` files, ``.certs`` — and hides the mask override file itself. A
 masked path 404s exactly like a missing one; matching is on the symlink-resolved
-path, so a symlink to a secret can't slip past.
+path, so a symlink to a secret can't slip past. Globs are gitignore-shaped: a
+leading ``!`` re-exposes and the last match wins, so a servable subtree can be
+carved out of a broad deny without unmasking its siblings.
 
 Two records, two leases: the ``ServiceAdapter`` (``kind=service`` at
 ``/svc/fileviewer``) gives supervision + the ``fileviewer_status`` verb; this
@@ -50,9 +52,15 @@ MOUNT_ROOT = os.environ.get("FILEVIEWER_MOUNT_ROOT", "/")
 
 # Default mask: gitignore-style globs, matched by the gateway with
 # PurePosixPath.full_match against the resolved path relative to MOUNT_ROOT, so
-# ``**`` spans directories. Denylist-shaped and best-effort — a new secret type
-# in an unlisted location is exposed until added here (or via FILEVIEWER_MASK_FILE).
+# ``**`` spans directories. A leading ``!`` negates and the LAST matching glob
+# wins, so any negation must be listed *before* the secret patterns or it
+# re-exposes them. Denylist-shaped and best-effort — a new secret type in an
+# unlisted location is exposed until added here (or via FILEVIEWER_MASK_FILE).
 DEFAULT_MASK: tuple[str, ...] = (
+    # git internals (may hold remote tokens in config). No escape hatch is
+    # needed: a DVC-materialised file is an ordinary hardlink in the worktree,
+    # so it is served under its own name and never resolves into .git.
+    "**/.git/**",
     # ssh + gpg private material
     "**/.ssh/**", "**/.ssh",
     "**/.gnupg/**", "**/.gnupg",
@@ -69,8 +77,6 @@ DEFAULT_MASK: tuple[str, ...] = (
     "**/secrets/**", "**/*.secret",
     # dotenv
     "**/.env", "**/.env.*",
-    # git internals (may hold remote tokens in config)
-    "**/.git/**",
 )
 
 
@@ -112,8 +118,10 @@ def status() -> dict:
 
 def load_mask() -> tuple[str, ...]:
     """DEFAULT_MASK plus any globs from FILEVIEWER_MASK_FILE (gitignore-style:
-    one glob per line, ``#`` comments and blanks ignored). If that file sits
-    under the mount root, its own path is appended so the mask hides itself."""
+    one glob per line, ``#`` comments and blanks ignored, leading ``!`` negates).
+    Override globs land after the defaults, and the last match wins — so a file
+    line can both add a mask and punch a hole in one. If that file sits under the
+    mount root, its own path is appended so the mask hides itself."""
     globs = list(DEFAULT_MASK)
     mf = os.environ.get("FILEVIEWER_MASK_FILE")
     if mf:

@@ -49,13 +49,13 @@ install.
 
 ### opencode auth (for the convo dictation-cleanup loop)
 
-The cleanup loop uses opencode's free Zen `deepseek-v4-flash-free` model by
+The cleanup loop uses opencode's free Zen `nemotron-3.5-lightning-free` model by
 default (override with `CONVO_PROVIDER` / `CONVO_MODEL`). `opencode` reads its
 credentials from `~/.local/share/opencode/auth.json` automatically — add one
 once:
 
     opencode auth login        # choose "opencode" (Zen); paste the key
-    opencode run --model opencode/deepseek-v4-flash-free "say hi"   # verify
+    opencode run --model opencode/nemotron-3.5-lightning-free "say hi"   # verify
 
 Without a configured provider the cleanup calls fail and the convo loop falls
 back to showing the raw transcript with no auto-submit — STT itself (PTT mode

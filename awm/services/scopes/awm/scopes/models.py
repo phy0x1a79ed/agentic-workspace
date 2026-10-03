@@ -45,6 +45,9 @@ class ScopeUpdateRequest(BaseModel):
     action: str = Field(default="complete", pattern="^complete$")
     merge: bool = False
     cleanup: bool = False
+    # Teardown refuses when the scope's data clone holds content that exists
+    # nowhere else; `force` accepts that loss deliberately.
+    force: bool = False
 
 
 class ScopeSyncRequest(BaseModel):
@@ -65,6 +68,11 @@ class ScatterGatherResponse(BaseModel):
     hub_branch: str
     direction: str          # 'gather' (peripherals→hub) | 'scatter' (hub→peripherals)
     results: list[dict]
+    # Populated only when data=True. One dict per peripheral, same shape as
+    # ``results`` but with ``result`` also able to be ``blocked`` (incoming
+    # revision references content nothing holds).
+    data_results: list[dict] | None = None
+    data_summary: dict | None = None
     summary: dict
 
 
@@ -82,6 +90,7 @@ class ScopeInfo(BaseModel):
 class ScopeListResponse(BaseModel):
     scopes: list[ScopeInfo]
     total: int
+    degraded: dict | None = None
 
 
 class ScopeActionResponse(BaseModel):
@@ -136,3 +145,4 @@ class ProjectListInfo(BaseModel):
 
 class ProjectListResponse(BaseModel):
     projects: list[ProjectListInfo]
+    degraded: dict | None = None

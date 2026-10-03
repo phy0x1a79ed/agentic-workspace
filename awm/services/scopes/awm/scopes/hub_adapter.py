@@ -21,9 +21,9 @@ import asyncio
 import logging
 from typing import Any
 
-from awm.gatewayclient import ServiceAdapter
+from awm.gatewayclient import ServiceAdapter, spawn_supervised
 from awm.scopes import channel
-from awm.scopes import dao
+from awm.scopes import dao, search_index
 from awm.scopes.identity import (
     agent_id_for_scope,
     agent_record_for_scope,
@@ -41,6 +41,7 @@ from awm.scopes.operations.scope_channel import (
     SCOPE_CHANNEL_HANDLERS,
 )
 from awm.scopes.operations.projects import PROJECT_MANIFEST_FUNCTIONS, PROJECT_HANDLERS
+from awm.scopes.operations.goals import GOAL_MANIFEST_FUNCTIONS, GOAL_HANDLERS
 
 log = logging.getLogger("awm.scopes.hub_adapter")
 
@@ -220,6 +221,7 @@ API_MANIFEST: dict[str, Any] = {
         _IDENTITY_FUNCTIONS
         + SCOPE_MANIFEST_FUNCTIONS
         + SCOPE_CHANNEL_MANIFEST_FUNCTIONS
+        + GOAL_MANIFEST_FUNCTIONS
         + PROJECT_MANIFEST_FUNCTIONS
     ),
     "emitters": [
@@ -247,6 +249,7 @@ HANDLERS: dict[str, Any] = {
     **_IDENTITY_HANDLERS,
     **SCOPE_HANDLERS,
     **SCOPE_CHANNEL_HANDLERS,
+    **GOAL_HANDLERS,
     **PROJECT_HANDLERS,
 }
 
@@ -256,13 +259,19 @@ HANDLERS: dict[str, Any] = {
 # ---------------------------------------------------------------------------
 
 
+async def _on_start() -> None:
+    dao.init()
+    await asyncio.to_thread(search_index.ensure_schema)
+    spawn_supervised("scopes:search-backfill", search_index.backfill_loop)
+
+
 async def main() -> None:
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
     adapter = ServiceAdapter(
-        "scopes", API_MANIFEST, HANDLERS, on_start=dao.init,
+        "scopes", API_MANIFEST, HANDLERS, on_start=_on_start,
     )
     # Wire the `posts` emitter: `channel.post()` runs in a worker thread, so the
     # registered callable hands the async emit to this event loop thread-safely.

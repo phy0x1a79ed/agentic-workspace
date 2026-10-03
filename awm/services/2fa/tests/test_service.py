@@ -92,9 +92,14 @@ def inject(svc: TwoFAService, name: str, eng: FakeEngine) -> DeviceRuntime:
 def test_unenrolled_reports_cleanly(tmp_path):
     svc = TwoFAService(empty_cfg(tmp_path, "cwl", "alliance"))
     svc.init()  # must not raise without creds
-    ping = svc.ping()
+    ping = asyncio.run(svc.ping())
     assert ping["devices"]["cwl"]["enrolled"] is False
     assert ping["devices"]["alliance"]["enrolled"] is False
+    # ok must reflect a VERIFIED Duo round-trip, never local state alone —
+    # `ok: true, enrolled: true` with the API unreachable is exactly the false
+    # green that made the approver look healthy on 2026-07-26.
+    assert ping["ok"] is False
+    assert ping["devices"]["cwl"]["reachable"] is False
     st = svc.status()
     assert set(st["devices"]) == {"cwl", "alliance"}
     assert st["devices"]["cwl"]["enrolled"] is False
@@ -230,7 +235,8 @@ async def test_burst_exits_when_counter_satisfied(tmp_path):
             break
     assert rt.burst_active() is False
     assert eng.approved_count == 2
-    assert rt.last_burst == {"approved": 2, "expected_remaining": 0}
+    assert rt.last_burst == {"approved": 2, "expected_remaining": 0,
+                             "observed": 2}
 
 
 @pytest.mark.smoke
@@ -336,3 +342,150 @@ async def test_rearm_during_exit_is_not_stranded(tmp_path):
     assert r2["status"] == "extended"
     assert rt.burst_active() is True
     assert rt.engine.budget_remaining() >= 1  # new grant retained, not cleared
+
+
+# ---- reachability: ping must not be able to lie ---------------------------
+
+def _enrolled_cfg(tmp_path, *names: str) -> Config:
+    """Like :func:`empty_cfg`, but with cred files on disk so the devices read
+    as enrolled — reachability is only meaningful for an enrolled device."""
+    cfg = empty_cfg(tmp_path, *names)
+    for creds in cfg.devices.values():
+        creds.creds_path.write_text("{}")
+        creds.key_path.write_text("x")
+    return cfg
+
+
+class _ReachableClient:
+    host = "api-test.duosecurity.com"
+
+    def __init__(self, fail: bool = False) -> None:
+        self.fail = fail
+        self.calls = 0
+
+    def get_transactions(self, timeout=None):
+        self.calls += 1
+        if self.fail:
+            raise OSError("Temporary failure in name resolution")
+        return []
+
+
+@pytest.mark.smoke
+def test_ping_reports_unreachable_when_duo_cannot_be_reached(tmp_path):
+    """The exact 2026-07-26 shape: creds on disk, device enrolled, Duo API
+    unresolvable. ping used to answer ok/enrolled from local state and say
+    nothing about the network."""
+    svc = TwoFAService(_enrolled_cfg(tmp_path, "alliance"))
+    eng = FakeEngine()
+    eng.client = _ReachableClient(fail=True)
+    inject(svc, "alliance", eng)
+
+    res = asyncio.run(svc.ping("alliance"))
+    assert res["ok"] is False
+    assert res["reachable"] is False
+    assert "resolution" in res["error"]
+    # And nothing may claim a verified round-trip that never happened.
+    assert svc.reachability("alliance")["last_reachable_at"] is None
+
+
+@pytest.mark.smoke
+def test_ping_records_a_verified_round_trip(tmp_path):
+    svc = TwoFAService(_enrolled_cfg(tmp_path, "alliance"))
+    eng = FakeEngine()
+    eng.client = _ReachableClient()
+    inject(svc, "alliance", eng)
+
+    res = asyncio.run(svc.ping("alliance"))
+    assert res["ok"] is True and res["reachable"] is True
+    assert eng.client.calls == 1          # a real call, not a local guess
+    assert svc.reachability("alliance")["last_reachable_at"] is not None
+
+
+@pytest.mark.smoke
+def test_reachability_of_an_unknown_device_is_not_a_positive(tmp_path):
+    svc = TwoFAService(empty_cfg(tmp_path, "alliance"))
+    out = svc.reachability("nosuchdevice")
+    assert out["known"] is False
+    assert out["last_reachable_at"] is None
+
+
+# --- observation counting + reachability from real traffic --------------------
+#
+# Two facts the ssh breaker now depends on. Before them, "approved 0 login(s)"
+# was the only trace a window left, and it reads the same whether Duo was never
+# presented with a login or was and we declined — while `reachability` moved only
+# when somebody called `ping`, so it decayed with idle time and made a quiet
+# approver look like a broken one.
+
+
+@pytest.mark.smoke
+async def test_burst_counts_the_transactions_it_observes(tmp_path):
+    cfg = Config(devices={"cwl": _creds(tmp_path, "cwl")},
+                 burst_window_seconds=0.3, burst_interval_seconds=0.02)
+    svc = TwoFAService(cfg)
+    inject(svc, "cwl", FakeEngine(txs_per_poll=[[], [("a",), ("b",)], []]))
+
+    armed = await svc.start_burst("cwl", count=5)
+    assert armed["transactions_seen"] == 0, "the baseline is taken before polling"
+
+    await asyncio.sleep(0.4)
+    rt = svc._devices["cwl"]
+    assert rt.transactions_seen == 2
+    assert rt.last_burst["observed"] == 2
+    assert svc.status("cwl")["transactions_seen"] == 2
+
+
+@pytest.mark.smoke
+async def test_an_idle_window_observes_nothing(tmp_path):
+    """The shape that must stay distinguishable from a declined login."""
+    cfg = Config(devices={"alliance": _creds(tmp_path, "alliance")},
+                 burst_window_seconds=0.2, burst_interval_seconds=0.02)
+    svc = TwoFAService(cfg)
+    inject(svc, "alliance", FakeEngine())
+
+    await svc.start_burst("alliance", count=1)
+    await asyncio.sleep(0.3)
+
+    rt = svc._devices["alliance"]
+    assert rt.transactions_seen == 0
+    assert rt.last_burst == {"approved": 0, "expected_remaining": 1, "observed": 0}
+
+
+@pytest.mark.smoke
+async def test_a_burst_poll_counts_as_a_verified_round_trip(tmp_path):
+    """A window polls Duo every tick. Those are real round-trips, and recording
+    them is what stops an idle approver reading as an unavailable one."""
+    cfg = Config(devices={"alliance": _creds(tmp_path, "alliance")},
+                 burst_window_seconds=0.2, burst_interval_seconds=0.02)
+    svc = TwoFAService(cfg)
+    inject(svc, "alliance", FakeEngine())
+    rt = svc._devices["alliance"]
+    assert rt.last_reachable_ts is None
+
+    await svc.start_burst("alliance", count=1)
+    await asyncio.sleep(0.3)
+
+    assert rt.last_reachable_ts is not None
+    assert svc.reachability("alliance")["last_reachable_at"] == rt.last_reachable_ts
+
+
+@pytest.mark.smoke
+async def test_a_failing_poll_records_no_round_trip(tmp_path):
+    """A window that cannot reach Duo must not claim it did."""
+    cfg = Config(devices={"alliance": _creds(tmp_path, "alliance")},
+                 burst_window_seconds=0.2, burst_interval_seconds=0.02)
+    svc = TwoFAService(cfg)
+    eng = FakeEngine()
+
+    def _boom():
+        raise OSError("Temporary failure in name resolution")
+
+    eng.client.get_transactions = _boom
+    inject(svc, "alliance", eng)
+
+    await svc.start_burst("alliance", count=1)
+    await asyncio.sleep(0.3)
+
+    rt = svc._devices["alliance"]
+    assert rt.last_reachable_ts is None
+    assert rt.transactions_seen == 0

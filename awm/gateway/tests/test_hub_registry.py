@@ -88,6 +88,56 @@ def test_re_registering_same_name_updates(reg):
 
 
 # ---------------------------------------------------------------------------
+# Page registration (L1) — idempotent re-register keeps boot re-derive safe
+# ---------------------------------------------------------------------------
+
+
+def test_register_page_base(reg, tmp_path):
+    rec = _run(reg.register_page("fleet", "/ui/fleet", str(tmp_path)))
+    assert rec.kind == "page"
+    assert rec.backend_status == "ready"          # static; nothing to await
+    assert reg.longest_match("/ui/fleet") is rec
+    assert reg.longest_match("/ui/fleet/anything") is rec
+
+
+def test_register_page_idempotent_replaces_in_place(reg, tmp_path):
+    # Re-registering the same page (a second gateway boot) replaces the base in
+    # place rather than raising — what makes bootstrap_discovered_pages safe to
+    # re-run on every restart.
+    d1 = tmp_path / "a"; d1.mkdir()
+    d2 = tmp_path / "b"; d2.mkdir()
+    _run(reg.register_page("fleet", "/ui/fleet", str(d1)))
+    rec2 = _run(reg.register_page("fleet", "/ui/fleet", str(d2)))
+    assert reg.longest_match("/ui/fleet") is rec2
+    assert rec2.static_dir == str(d2)
+
+
+def test_register_page_conflict_different_name(reg, tmp_path):
+    _run(reg.register_page("fleet", "/ui/fleet", str(tmp_path)))
+    with pytest.raises(PrefixConflict):
+        _run(reg.register_page("other", "/ui/fleet", str(tmp_path)))
+
+
+def test_register_page_rejects_non_ui_prefix(reg, tmp_path):
+    with pytest.raises(PrefixConflict):
+        _run(reg.register_page("bad", "/svc/bad", str(tmp_path)))
+
+
+def test_shadow_over_autoregistered_page_base(reg, tmp_path):
+    # A page base auto-registered on boot must be shadowable — `awm dev shadow
+    # pages/<name>` overlays a worktree build on top of the discovered base.
+    base = _run(reg.register_page("fleet", "/ui/fleet", str(tmp_path / "base")))
+    (tmp_path / "base").mkdir()
+    overlay, evicted = _run(reg.replace_overlays(
+        _overlay("shadow:fleet", "/ui/fleet")))
+    assert evicted == []
+    assert reg.longest_match("/ui/fleet") is overlay
+    # Popping the overlay restores the discovered base.
+    _run(reg.evict_by_id(overlay.service_id))
+    assert reg.longest_match("/ui/fleet") is base
+
+
+# ---------------------------------------------------------------------------
 # Shadow overlay stack
 # ---------------------------------------------------------------------------
 

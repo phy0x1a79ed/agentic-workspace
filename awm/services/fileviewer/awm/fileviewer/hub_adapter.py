@@ -82,9 +82,9 @@ HANDLERS = {
 def _on_start() -> None:
     """Launch the static-mount register/hold-lease loop as a background task.
 
-    Runs once (inside the adapter's event loop) before the first control-WS
-    connect. ``hold_mount`` never returns, so it must be a task, not awaited —
-    awaiting it would block the adapter from ever serving its control WS."""
+    Runs once inside the adapter's event loop, alongside the control-WS
+    registration. ``hold_mount`` never returns, so it must be a task, not awaited —
+    awaiting it would keep the service permanently mid-initialisation."""
     asyncio.create_task(server.hold_mount())
     log.info("fileviewer static mount task launched (%s → %s)",
              server.MOUNT_PREFIX, server.MOUNT_ROOT)

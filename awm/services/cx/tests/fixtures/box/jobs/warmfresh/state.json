@@ -1,0 +1,10 @@
+{
+ "name": "<warm dunlin>",
+ "intent": "",
+ "needs": "send a prompt to start",
+ "cwd": "/home/tony",
+ "firstTerminalAt": null,
+ "createdAt": "2026-09-10T21:14:17.250Z",
+ "state": "working",
+ "nameSource": "user"
+}

@@ -1,6 +1,6 @@
 # Agentic Workspace Manager (AWM)
 
-*Human setup + usage guide for awm. Agents operating in this workspace load [`WORKSPACE.md`](WORKSPACE.md) at session start via the harness's native mechanism (see the `harness-setup` skill: `skill_get path="awm/harness-setup.md"`) and search skills via the `skill_search` MCP tool — not this file. **Do not merge this README into AGENTS.md or WORKSPACE.md** — their audience is agents in scope worktrees; this one's audience is humans installing, networking, and operating the system.*
+*Human setup + usage guide for awm. Agents operating in this workspace load [`WORKSPACE.md`](WORKSPACE.md) at session start via the harness's native mechanism (see the `harness-setup` writeup on disk at `.awm/skills/awm/harness-setup.md`) — not this file. **Do not merge this README into AGENTS.md or WORKSPACE.md** — their audience is agents in scope worktrees; this one's audience is humans installing, networking, and operating the system.*
 
 A lightweight Python service + CLI for coordinating multiple AI agents working in parallel on shared resources. Provides project/scope management, a skills catalog, the scope channel (per-scope journal + messages), artifact registration, autonomous agent spawning, and an MCP server for direct tool use by Claude Code / OpenCode / other MCP clients.
 
@@ -15,6 +15,16 @@ awm/gateway/setup.sh
 This creates an `awm` mamba environment, installs the gateway plus every
 discovered feature service, initializes runtime state, and adds `awm` and
 `awm-mcp` to your PATH.
+
+To run awm as a service account on a shared host, point `AWM_WORKSPACE` at a
+checkout the service account can read, and make the checkout's `.awm/`
+(gitignored) a symlink into a state dir the service account owns. Install
+with `AWM_SERVICES` set to the services the host needs. `setup.sh` refuses
+to run when `AWM_WORKSPACE` names a different checkout, so a second install
+cannot land in a home directory by accident. sirius, the public host behind
+`nexus.tony-xy-liu.com`, is the worked example. Its provisioning lives in its
+own repository, `phy0x1a79ed/cloud`, under `VMs/digital_ocean/sirius/`, because
+none of it is portable and awm installs on many machines.
 
 ## Manual Install
 
@@ -36,7 +46,7 @@ env with `AWM_ENV`.
 
 ## Harness Integration
 
-AWM drives **Claude Code** and **OpenCode** as first-class harnesses. The `harness-setup` skill (discoverable from inside an agent via `skill_get path="awm/harness-setup.md"`) covers:
+AWM drives **Claude Code** and **OpenCode** as first-class harnesses. The `harness-setup` writeup (on disk at `.awm/skills/awm/harness-setup.md` inside any scope) covers:
 
 - How Claude Code and OpenCode each pick up the 3-tier orientation (workspace `WORKSPACE.md` + repo `AGENTS.md` + scope `.awm/context.md`) — CC via instructions in `~/.claude/CLAUDE.md` that direct the agent to Read each tier; OC via native `AGENTS.md` walk-up plus per-scope `mcp-opencode.json` `instructions` array for the other two.
 - The MCP exporter framework that fans `<workspace>/.mcp.json` out to backend-specific configs (`spawn-mcp.json` for claude, `mcp-opencode.json` for opencode) — registered services are advertised even when their upstream is down.
@@ -314,7 +324,7 @@ awm gateway refresh   # restart server to pick up source changes (dev mode)
 
 The server auto-shuts down after 30 minutes of inactivity (configurable via `AWM_IDLE_SHUTDOWN` env var; set to `0` to disable).
 
-`awm <command> --help` lists every subcommand. Beyond the gateway-control groups, the CLI generates an `awm <domain> <verb>` command for every registered feature-service tool (`awm scope create`, `awm artifact register`, …) from the same live catalog the MCP surface reads. Note the surfaces are projected differently from one shared catalog: the **CLI and HTTP** stay fully expanded (one `awm <domain> <verb>` command and one `POST /invoke {name:"<domain>_<verb>"}` route per verb), while the **MCP** surface collapses to one generic `{verb,args}` tool per domain (`GET /tools?view=domains`, with a `describe` verb for parameter schemas) to keep the tool count small for agents. So shell usage is unchanged; only what an MCP client sees is collapsed. For agent-facing usage (scopes, the scope channel, artifacts, skills), see `WORKSPACE.md` — those workflows are typically driven from inside an MCP-equipped agent, not the shell.
+`awm <command> --help` lists every subcommand. Beyond the gateway-control groups, the CLI generates an `awm <domain> <verb>` command for every registered feature-service tool (`awm scope create`, `awm agent list`, …) from the same live catalog the MCP surface reads. Note the surfaces are projected differently from one shared catalog: the **CLI and HTTP** stay fully expanded (one `awm <domain> <verb>` command and one `POST /invoke {name:"<domain>_<verb>"}` route per verb), while the **MCP** surface collapses to one generic `{verb,args}` tool per domain (`GET /tools?view=domains`, with a `describe` verb for parameter schemas) to keep the tool count small for agents. So shell usage is unchanged; only what an MCP client sees is collapsed. For agent-facing usage (scopes, the scope channel, artifacts, skills), see `WORKSPACE.md` — those workflows are typically driven from inside an MCP-equipped agent, not the shell.
 
 ### Per-workspace env file
 
@@ -336,6 +346,70 @@ SSH_AUTH_SOCK=/run/user/1000/keyring/ssh
 Restart the daemon (`sudo systemctl restart awm.service` or
 `systemctl --user restart awm.service`, depending on which unit is
 live on your host) to pick up changes.
+
+## Project data — versioning and concurrency
+
+Data is versioned by the same commit that versions the code. A project opts in
+by being a DVC repo — a tracked `.dvc/config` in its checkout — and from then on:
+
+```
+projects/<project>/<scope>/data/<chunk>        the files (hardlinks into the cache)
+projects/<project>/<scope>/data/<chunk>.dvc    the pin — TRACKED, ~110 bytes
+<workspace>/data/.dvc_cache/                   the bytes, once, for every project
+```
+
+There is **one lever**. `dvc add data/<chunk>` writes the pin; committing it
+alongside your code records both together. Merging a branch brings its pins with
+it and a post-merge hook checks the files out, so a code merge *is* the data
+promote. Isolation is branch isolation — there is no data branch, no promote
+verb, and no separate `--data` leg on gather/scatter.
+
+```bash
+awm scope data-status <project> <scope>              # mode, pinning commit, what is materialised
+awm scope data-mount  <project> <scope> --chunks ... # what materialises on disk here
+awm scope data-gc --projects a --projects b          # reclaim cache space (dry run by default)
+```
+
+awm wires; DVC operates. Wiring is the absolute cache path in the untracked
+`.dvc/config.local`, `cache.type = hardlink,symlink` in the tracked config, the
+`dvc` merge driver and the post-merge/post-commit hooks in the common git dir,
+and the per-scope mount list. Everything else is `dvc add` / `dvc checkout` /
+`git commit` / `git merge`, unwrapped.
+
+Operational notes:
+
+- **Storage.** One physical copy per machine. `data/` and `projects/` must be on
+  the same filesystem or the hardlinks degrade to real copies.
+- **Materialised files are read-only** — they share an inode with the cache
+  object every other scope and every historical commit reads through. Write a new
+  file, or `dvc unprotect <path>` first. Never `chmod +w` one.
+- **Never run a bare `dvc gc`.** It collects against one worktree's view of a
+  cache the whole workspace shares. `awm scope data-gc` makes you name every
+  project to keep, defaults to dry-run, and refuses `all-branches`.
+- **Unconverted projects are untouched** and keep the legacy shared symlink at
+  `.awm/data`. Nothing migrates them; a project is wired the first time a scope
+  is created or healed after its checkout carries a tracked `.dvc/config`.
+- **dvc is optional.** It is resolved from `AWM_DVC_BIN`, then PATH, then the
+  known mamba envs; absent, every path degrades to the shared symlink rather than
+  failing. `AWM_DATA_DVC=0` forces that globally.
+
+## Off-site backup
+
+Chinook is the remote for the cache the way GitHub is the remote for the code.
+A daily timer runs `awm-dvc-sync`, which pushes `data/.dvc_cache` to the chinook
+Globus collection and blocks until the transfer reaches a terminal state. It is
+**append-only**: nothing this service does deletes on the remote, which is what
+makes a local `dvc gc` recoverable rather than permanent.
+
+`awm dvc pull --scope <path>` is the selective inverse — it resolves one scope's
+pins to their exact objects and fetches only those, then `dvc checkout`
+materialises them. See `awm/services/dvc/INSTALL.md`.
+
+**What is not backed up.** Only the cache travels. Code is covered by GitHub;
+anything in a worktree that is neither committed-and-pushed nor DVC-pinned —
+scratch directories, run outputs, `.awm/` service state — is covered by nothing,
+deliberately. `awm dvc coverage` lists exactly what that is, per scope, so the
+decision stays visible.
 
 ## Destructive operations
 
@@ -367,8 +441,8 @@ imported source.
         │                 │                  │
    ┌────▼─────┐     ┌──────▼──────┐    ┌──────▼──────┐
    │ scopes   │     │ agents      │    │ artifacts / │   …each an out-of-proc
-   │ service  │     │ service     │    │ skills /    │    feature service with
-   │ (+own DB)│     │ (+own DB)   │    │ discord     │    its own DB + run.sh
+   │ service  │     │ service     │    │ notes /     │    feature service with
+   │ (+own DB)│     │ (+own DB)   │    │ tether      │    its own DB + run.sh
    └──────────┘     └─────────────┘    └─────────────┘
 ```
 
@@ -386,7 +460,7 @@ awm/                          # nested tree of pip dists (PEP 420 namespace layo
   service_components/         # shared Python imported source (no install.sh)
     config/  persistence/  gatewayclient/  agentcore/
   services/                   # one folder per feature service (discovered)
-    scopes/  agents/  artifacts/  skills/  discord/
+    scopes/  agents/  artifacts/  dev/  tether/
       run.sh                  # the only entry the gateway runs (bash run.sh)
       INSTALL.md  install.sh
   ui_components/<name>/       # shared Svelte libraries, imported as @awm/<name>

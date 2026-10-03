@@ -1,0 +1,228 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>Penpot View Link</title>
+<style>
+  /* Deliberately unstyled beyond legibility — no @penpot/plugin-styles
+     import, to keep the plugin dependency-free and buildless. */
+  body {
+    font: 13px -apple-system, system-ui, sans-serif;
+    margin: 0;
+    padding: 12px;
+    color: #1f1f1f;
+    background: #fff;
+  }
+  header {
+    margin: 0 0 10px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid #e0e0e0;
+  }
+  h1 {
+    font-size: 13px;
+    font-weight: 600;
+    margin: 0 0 2px;
+    overflow-wrap: anywhere;
+  }
+  .sub {
+    font-size: 12px;
+    color: #666;
+    overflow-wrap: anywhere;
+  }
+  ul { list-style: none; margin: 0; padding: 0; }
+  li {
+    padding: 8px 0;
+    border-bottom: 1px solid #f0f0f0;
+  }
+  .name {
+    font-weight: 600;
+    overflow-wrap: anywhere;
+  }
+  .parent {
+    font-weight: 400;
+    color: #888;
+  }
+  .link {
+    display: block;
+    margin: 4px 0 6px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 11px;
+    color: #444;
+    overflow-wrap: anywhere;
+    user-select: all;
+  }
+  button {
+    padding: 4px 10px;
+    font: inherit;
+    font-size: 12px;
+    cursor: pointer;
+  }
+  #refresh { margin-top: 10px; }
+  #empty {
+    padding: 12px 0;
+    color: #666;
+  }
+  #status {
+    margin-top: 10px;
+    font-size: 12px;
+    min-height: 1em;
+    white-space: pre-wrap;
+  }
+  .error { color: #b00020; }
+  .ok { color: #1a7a1a; }
+</style>
+</head>
+<body>
+  <header>
+    <h1 id="pageName">Loading…</h1>
+    <div class="sub" id="fileName"></div>
+  </header>
+
+  <ul id="boards"></ul>
+  <div id="empty" hidden></div>
+
+  <button id="refresh">Refresh list</button>
+  <div id="status"></div>
+
+<script>
+  // Talks to plugin.js per docs/plugins/create-a-plugin.md § 2.4:
+  // penpot.ui.sendMessage() arrives here as a `message` event on `window`, and
+  // parent.postMessage() goes back the other way. No framework, no build step
+  // — this page is the asset as shipped.
+  //
+  // Every URL is built from this page's own location.origin. That is not a
+  // guess: this panel is served from the /penpot-plugins mount on the awm
+  // gateway, and /penpot-view is served from the same gateway on the same
+  // origin — true for the local stack and true behind the edge on nexus.
+  // So the plugin needs no per-instance configuration, and must not grow any.
+  var pageNameEl = document.getElementById("pageName");
+  var fileNameEl = document.getElementById("fileName");
+  var boardsEl = document.getElementById("boards");
+  var emptyEl = document.getElementById("empty");
+  var statusEl = document.getElementById("status");
+  var refreshBtn = document.getElementById("refresh");
+
+  function setStatus(text, kind) {
+    statusEl.textContent = text || "";
+    statusEl.className = kind || "";
+  }
+
+  function renderUrl(state, boardId) {
+    return (
+      location.origin +
+      "/penpot-view/" + state.fileId + "/" + state.pageId + "/" + boardId
+    );
+  }
+
+  // navigator.clipboard is undefined on an insecure origin, which is what a
+  // gateway reached over plain HTTP is. Fall back to the legacy path, and
+  // leave the URL itself selectable above the button either way, so a total
+  // failure is still recoverable by hand.
+  function copyText(text) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      return navigator.clipboard.writeText(text);
+    }
+    return new Promise(function (resolve, reject) {
+      var scratch = document.createElement("textarea");
+      scratch.value = text;
+      scratch.setAttribute("readonly", "");
+      scratch.style.position = "fixed";
+      scratch.style.opacity = "0";
+      document.body.appendChild(scratch);
+      scratch.select();
+      var copied = false;
+      try {
+        copied = document.execCommand("copy");
+      } catch (err) {
+        copied = false;
+      }
+      document.body.removeChild(scratch);
+      copied ? resolve() : reject(new Error("copy was refused"));
+    });
+  }
+
+  function render(state) {
+    boardsEl.textContent = "";
+    setStatus("");
+
+    if (!state.ready) {
+      pageNameEl.textContent = "No page open";
+      fileNameEl.textContent = "";
+      emptyEl.hidden = false;
+      emptyEl.textContent = "Open a file to list its boards.";
+      return;
+    }
+
+    pageNameEl.textContent = state.pageName || "Untitled page";
+    fileNameEl.textContent = state.fileName || "";
+
+    if (!state.boards.length) {
+      emptyEl.hidden = false;
+      // The page-level link would have been the answer here, and it does not
+      // render — see plugin.js. Say so rather than showing an empty list.
+      emptyEl.textContent =
+        "This page has no boards. A render URL addresses a board, so there is " +
+        "nothing to link yet. Add a board to the page.";
+      return;
+    }
+
+    emptyEl.hidden = true;
+
+    state.boards.forEach(function (board) {
+      var url = renderUrl(state, board.id);
+
+      var item = document.createElement("li");
+
+      var name = document.createElement("div");
+      name.className = "name";
+      name.textContent = board.name;
+      if (board.nested && board.parentName) {
+        var parent = document.createElement("span");
+        parent.className = "parent";
+        parent.textContent = " — in " + board.parentName;
+        name.appendChild(parent);
+      }
+
+      var link = document.createElement("code");
+      link.className = "link";
+      link.textContent = url;
+
+      var copy = document.createElement("button");
+      copy.type = "button";
+      copy.textContent = "Copy link";
+      copy.addEventListener("click", function () {
+        copyText(url).then(
+          function () {
+            setStatus("Copied " + board.name + ".", "ok");
+          },
+          function (err) {
+            setStatus(
+              "Could not copy: " + (err && err.message ? err.message : err) +
+                " — select the URL above and copy it by hand.",
+              "error"
+            );
+          }
+        );
+      });
+
+      item.appendChild(name);
+      item.appendChild(link);
+      item.appendChild(copy);
+      boardsEl.appendChild(item);
+    });
+  }
+
+  window.addEventListener("message", function (event) {
+    var msg = event.data;
+    if (!msg || typeof msg !== "object") return;
+    if (msg.type === "state") render(msg);
+  });
+
+  refreshBtn.addEventListener("click", function () {
+    parent.postMessage({ type: "refresh" }, "*");
+  });
+
+  parent.postMessage({ type: "ready" }, "*");
+</script>
+</body>
+</html>

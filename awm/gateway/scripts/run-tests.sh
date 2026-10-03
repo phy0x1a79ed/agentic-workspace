@@ -25,7 +25,7 @@ set -uo pipefail
 WS="$(git -C "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" rev-parse --show-toplevel)"
 cd "$WS"
 
-COMP="$WS/awm/service_components/config:$WS/awm/service_components/persistence:$WS/awm/service_components/gatewayclient"
+COMP="$WS/awm/service_components/config:$WS/awm/service_components/persistence:$WS/awm/service_components/gatewayclient:$WS/awm/service_components/claudedaemon"
 
 # dist name -> "<source-root-dir>::<test-dir>"
 # agentcore is a leaf component (no service folder) — it has its own source
@@ -34,26 +34,51 @@ declare -A DISTS=(
   [gateway]="$WS/awm/gateway::$WS/awm/gateway/tests"
   [agentcore]="$WS/awm/service_components/agentcore::$WS/awm/service_components/agentcore/tests"
   [gatewayclient]="$WS/awm/service_components/gatewayclient::$WS/awm/service_components/gatewayclient/tests"
+  [config]="$WS/awm/service_components/config::$WS/awm/service_components/config/tests"
+  [persistence]="$WS/awm/service_components/persistence::$WS/awm/service_components/persistence/tests"
   [telemetry]="$WS/awm/service_components/telemetry::$WS/awm/service_components/telemetry/tests"
+  [claudedaemon]="$WS/awm/service_components/claudedaemon::$WS/awm/service_components/claudedaemon/tests"
   [scopes]="$WS/awm/services/scopes::$WS/awm/services/scopes/tests"
   [workspace]="$WS/awm/services/workspace::$WS/awm/services/workspace/tests"
   [agents]="$WS/awm/services/agents::$WS/awm/services/agents/awm/tests"
   [artifacts]="$WS/awm/services/artifacts::$WS/awm/services/artifacts/tests"
   [writing]="$WS/awm/services/writing::$WS/awm/services/writing/tests"
+  [precedence]="$WS/awm/services/precedence::$WS/awm/services/precedence/tests"
   [events]="$WS/awm/services/events::$WS/awm/services/events/tests"
   [social]="$WS/awm/services/social::$WS/awm/services/social/tests"
   [2fa]="$WS/awm/services/2fa::$WS/awm/services/2fa/tests"
+  [ssh]="$WS/awm/services/ssh::$WS/awm/services/ssh/tests"
+  [auth]="$WS/awm/services/auth::$WS/awm/services/auth/tests"
+  [httpsfront]="$WS/awm/services/httpsfront::$WS/awm/services/httpsfront/tests"
   [rlm-browser]="$WS/awm/services/rlm-browser::$WS/awm/services/rlm-browser/tests"
   [orchestrator]="$WS/awm/services/orchestrator::$WS/awm/services/orchestrator/tests"
   [graphify]="$WS/awm/services/graphify::$WS/awm/services/graphify/tests"
   [stt]="$WS/awm/services/stt::$WS/awm/services/stt/awm/stt/tests"
   [tts]="$WS/awm/services/tts::$WS/awm/services/tts/awm/tts/tests"
   [fileviewer]="$WS/awm/services/fileviewer::$WS/awm/services/fileviewer/tests"
+  [drawio]="$WS/awm/services/drawio::$WS/awm/services/drawio/tests"
   [notes]="$WS/awm/services/notes::$WS/awm/services/notes/tests"
+  [virtmic]="$WS/awm/services/virtmic::$WS/awm/services/virtmic/tests"
+  [mic]="$WS/awm/services/mic::$WS/awm/services/mic/tests"
+  [vpn]="$WS/awm/services/vpn::$WS/awm/services/vpn/tests"
+  [compute]="$WS/awm/services/compute::$WS/awm/services/compute/tests"
+  [reflection]="$WS/awm/services/reflection::$WS/awm/services/reflection/tests"
+  [dvc]="$WS/awm/services/dvc::$WS/awm/services/dvc/tests"
+  [claude-science]="$WS/awm/services/claude-science::$WS/awm/services/claude-science/tests"
+  [dsh]="$WS/awm/services/dsh::$WS/awm/services/dsh/tests"
+  [hermes]="$WS/awm/services/hermes::$WS/awm/services/hermes/tests"
+  [trilium]="$WS/awm/services/trilium::$WS/awm/services/trilium/tests"
+  [zotero]="$WS/awm/services/zotero::$WS/awm/services/zotero/tests"
+  [penpot]="$WS/awm/services/penpot::$WS/awm/services/penpot/tests"
+  [penpot-view]="$WS/awm/services/penpot-view::$WS/awm/services/penpot-view/tests"
+  [penpot-plugins]="$WS/awm/services/penpot-plugins::$WS/awm/services/penpot-plugins/tests"
+  [cx]="$WS/awm/services/cx::$WS/awm/services/cx/tests"
+  [dev]="$WS/awm/services/dev::$WS/awm/services/dev/tests"
+  [tether]="$WS/awm/services/tether::$WS/awm/services/tether/tests"
 )
 
 # Stable run order.
-ORDER=(gateway agentcore gatewayclient telemetry scopes workspace agents artifacts writing events social 2fa rlm-browser orchestrator graphify stt tts fileviewer notes)
+ORDER=(gateway agentcore gatewayclient config persistence telemetry claudedaemon scopes workspace agents artifacts writing events precedence social 2fa ssh auth httpsfront rlm-browser orchestrator graphify stt tts fileviewer drawio notes virtmic mic vpn compute reflection dvc claude-science dsh hermes trilium zotero penpot penpot-view penpot-plugins cx dev tether)
 
 # Allow selecting a subset on the command line.
 if [ "$#" -gt 0 ]; then
@@ -61,6 +86,20 @@ if [ "$#" -gt 0 ]; then
 fi
 
 PYTEST_ARGS="${PYTEST_ARGS:-}"
+
+# Ask mamba where the env's interpreter is, once, and run pytest with it
+# directly. `mamba run --no-capture-output <cmd>` writes `exec -- <cmd>` into a
+# script it then runs under bash, and bash's `exec` rejects `--` — so on mamba
+# 2.5.0 every dist fails identically before pytest is ever reached, which reads
+# like a repo breakage and is not one.
+# `mamba run` appends a blank line of its own on some builds, so drop empties
+# before taking the last one — otherwise `tail -1` returns "" and every dist is
+# skipped with a message that reads like a broken env.
+PY="$(mamba run -n awm python -c 'import sys; print(sys.executable)' 2>/dev/null | grep -v '^[[:space:]]*$' | tail -1)"
+if [ ! -x "$PY" ]; then
+  echo "could not resolve the awm env's python (got '${PY:-<empty>}')" >&2
+  exit 1
+fi
 
 declare -A RESULT
 overall=0
@@ -81,8 +120,7 @@ for name in "${ORDER[@]}"; do
   echo "============================================================"
 
   PYTHONPATH="$src:$COMP" \
-    mamba run -n awm --no-capture-output \
-    python -m pytest "$testdir" -p no:cacheprovider ${PYTEST_ARGS}
+    "$PY" -m pytest "$testdir" -p no:cacheprovider ${PYTEST_ARGS}
   rc=$?
   if [ "$rc" -eq 0 ]; then
     RESULT[$name]="PASS"

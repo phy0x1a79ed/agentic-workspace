@@ -48,8 +48,10 @@ SCOPE_CHANNEL_MANIFEST_FUNCTIONS = [
         "tool": "scope_fetch",
         "description": (
             "Fetch or search a scope's posts — messages and journal entries. "
-            "Pass scope for one channel; add query for hybrid keyword+semantic "
-            "search; omit scope to search across scopes; kind filters (e.g. "
+            "Pass scope for one channel; add query to rank posts by relevance "
+            "(meaning and keywords over each post's full text, best first, each "
+            "hit with match.snippet — a limit of ~10 is plenty); omit scope to "
+            "search across scopes; kind filters (e.g. "
             "kind='journal' for session logs / debrief entries); post_id fetches "
             "one. For the most recent / last N entries pass order='desc' with "
             "limit (e.g. last 5 awm session logs: project='awm', kind='journal', "
@@ -101,6 +103,15 @@ def _handle_scope_post(args: dict) -> dict:
         meta=args.get("meta"),
         to_scope=args.get("to_scope"),
     )
+    # A journal post is a scope's debrief entry; refresh its indexes so the next
+    # session sees it without a manual scope_refresh. Best-effort: a refresh
+    # failure (e.g. scope dir absent in tests) must never fail the post.
+    if args.get("kind") == "journal":
+        try:
+            from awm.scopes import scopes
+            scopes.awm_refresh(args["project"], args["scope"])
+        except Exception:
+            pass
     return {"post": post.to_dict()}
 
 
@@ -109,18 +120,25 @@ def _handle_scope_fetch(args: dict) -> dict:
     if post_id:
         p = channel.get_post(post_id)
         return {"posts": [p.to_dict()] if p else [], "total": 1 if p else 0}
-    posts = channel.fetch(
+    common = dict(
         project=args.get("project"),
         scope=args.get("scope"),
         kind=args.get("kind"),
-        query=args.get("query"),
         author=args.get("author"),
         limit=int(args.get("limit", 50)),
         offset=int(args.get("offset", 0)),
         before_ts=args.get("before_ts"),
         order=args.get("order"),
     )
-    return {"posts": [p.to_dict() for p in posts], "total": len(posts)}
+    degraded = None
+    if args.get("query"):
+        posts, degraded = channel.search(query=args["query"], **common)
+    else:
+        posts = channel.fetch(**common)
+    out = {"posts": [p.to_dict() for p in posts], "total": len(posts)}
+    if degraded:
+        out["degraded"] = degraded
+    return out
 
 
 def _handle_scope_subscribe(args: dict) -> dict:

@@ -1,0 +1,17 @@
+{
+  "_comment": "Merge this entry into the `PostToolUse` array of ~/.claude/settings.json, alongside whatever already matches ExitPlanMode (it composes; it does not replace). The command points at a stable symlink (~/.claude/hooks/awm-reflection-mode.py) so the settings never change across deploys — retarget the symlink at the service's hooks/plan_mode_hook.py (release tree on prod, a worktree copy while iterating). `|| true` keeps a missing or broken hook silent: it must never affect a turn. The timeout must exceed the hook's own retry budget (~16s), or Claude Code kills it mid-POST.",
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "ExitPlanMode",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -S /home/tony/.claude/hooks/awm-reflection-mode.py 2>/dev/null || true",
+            "timeout": 20
+          }
+        ]
+      }
+    ]
+  }
+}

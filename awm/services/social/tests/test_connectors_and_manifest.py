@@ -187,6 +187,7 @@ class TestManifest:
             "social_operator_remove", "social_lookup",
             "social_buckets", "social_bucket_ls", "social_bucket_get",
             "social_bucket_put", "social_bucket_rm", "social_bucket_search",
+            "social_emit_probe",
         }
         # Tool names must be globally unique (the catalog warn-and-skips dups).
         tool_names = [f.get("tool", f["name"]) for f in fns]

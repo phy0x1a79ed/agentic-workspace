@@ -306,11 +306,23 @@ export interface TerminalHandlers {
  * the socket isn't live the instant this returns. `close()` is safe to call
  * before it finishes opening — it detaches, never killing the agent.
  */
+/**
+ * Terminal attach target. A registry agent is named by its unit `scope`; a
+ * machine-wide roster row (no registry agent) is attached ad-hoc by
+ * `tmux_session` name, which takes priority over `scope` when both are given.
+ */
+export interface TerminalTarget {
+  scope?: string;
+  tmux_session?: string;
+}
+
 export function openTerminal(
-  scope: string,
+  target: string | TerminalTarget,
   opts: { cols?: number; rows?: number },
   handlers: TerminalHandlers,
 ): TerminalSession {
+  const t: TerminalTarget =
+    typeof target === 'string' ? { scope: target } : target;
   let ws: WebSocket | null = null;
   let closed = false;
   const enc = new TextEncoder();
@@ -318,7 +330,11 @@ export function openTerminal(
   void (async () => {
     try {
       const { ws_path } = await svc('agents').session<{ ws_path: string }>('terminal', {
-        scope,
+        ...(t.tmux_session
+          ? { tmux_session: t.tmux_session }
+          : t.scope
+            ? { scope: t.scope }
+            : {}),
         ...(opts.cols ? { cols: opts.cols } : {}),
         ...(opts.rows ? { rows: opts.rows } : {}),
       });

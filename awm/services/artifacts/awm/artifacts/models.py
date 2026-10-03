@@ -40,3 +40,4 @@ class ArtifactInfo(BaseModel):
 class ArtifactSearchResponse(BaseModel):
     artifacts: list[ArtifactInfo]
     total: int
+    degraded: dict | None = None
