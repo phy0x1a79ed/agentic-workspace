@@ -122,11 +122,9 @@ class Rcon:
     Factorio speaks the Source RCON wire protocol: each packet is a
     little-endian int32 length followed by ``id`` (int32), ``type`` (int32), a
     null-terminated ascii body, and a trailing null byte. We authenticate once
-    on connect, then run commands synchronously. A trailing empty packet acts as
-    a sentinel so multi-packet (>4 KB) responses are fully drained before we
-    return. All socket I/O is serialized by a lock because the HTTP control
-    surface is a ``ThreadingHTTPServer`` -- concurrent control requests must not
-    interleave on the one socket.
+    on connect, then run commands synchronously. All socket I/O is serialized
+    by a lock because the HTTP control surface is a ``ThreadingHTTPServer`` --
+    concurrent control requests must not interleave on the one socket.
     """
 
     AUTH = 3
@@ -189,24 +187,15 @@ class Rcon:
             req_id = self._next_id()
             self._send(req_id, self.EXECCOMMAND, cmd)
             # Factorio replies to each EXECCOMMAND with exactly ONE packet bearing
-            # the same id (probed: no empty-sentinel echo, unlike Source servers).
-            # A >4 KB reply is split into multiple same-id packets that arrive
-            # back-to-back, so read the first match at the full timeout, then
-            # briefly drain any continuation fragments.
-            chunks = []
-            self.sock.settimeout(self.timeout)
+            # the same id, whatever its size (probed to 100 KB). Waiting for more
+            # stalls every caller queued on this lock.
             while True:
                 try:
                     rid, _typ, body = self._recv_packet()
                 except socket.timeout:
-                    break
+                    raise RconError("no rcon response")
                 if rid == req_id:
-                    chunks.append(body)
-                    self.sock.settimeout(0.3)   # short drain for fragments
-            self.sock.settimeout(self.timeout)
-            if not chunks:
-                raise RconError("no rcon response")
-            return "".join(chunks)
+                    return body
 
     def close(self) -> None:
         with self.lock:

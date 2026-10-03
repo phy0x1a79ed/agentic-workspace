@@ -32,10 +32,12 @@ plus the flagged cheats ``teleport`` and ``research`` — and the perceive verbs
 the caller, supplies the seat's player name to the world, so a verb cannot be
 aimed at a player the caller does not hold.
 
-They all travel the same path: the supervisor runs an in-container RCON client
-against the engine, and one control route (``/iface``) names a function of the
-baked-in ``game-bot-control`` mod. Adding a capability is a mod function and a
-handler, with nothing to plumb in between. The gameplay verbs are reach-gated —
+They all travel the same path: an RCON broker inside the appliance container
+(:mod:`awm.rlm_factorio.broker`) gives each seat its own engine socket, and
+each verb names a function of the ``game-bot-control`` mod. Adding a capability
+is a mod function and a handler, with nothing to plumb in between. Every
+command reports its engine script time; :mod:`awm.rlm_factorio.throttle` meters
+each seat by it, and a command over its budget comes back as OVER_BUDGET. The gameplay verbs are reach-gated —
 a seat walks to a thing before touching it — and act through the engine's own
 mechanics, so mining takes time and crafting counts toward research triggers.
 
@@ -68,16 +70,19 @@ Run via ``run.sh`` (which the hub spawns and respawns):
 from __future__ import annotations
 
 import asyncio
+import inspect
+import json
 import logging
 import os
 import signal
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Any
 
 from awm.gatewayclient import ServiceAdapter
-from awm.rlm_factorio import appliance, dao
+from awm.rlm_factorio import appliance, broker, dao, scan, throttle, validate
 
 log = logging.getLogger("awm.rlm_factorio.hub_adapter")
 
@@ -218,7 +223,8 @@ API_MANIFEST: dict[str, Any] = {
             ),
             "params": [
                 *_SEAT_TARGET,
-                {"name": "radius", "type": "integer", "required": False},
+                {"name": "radius", "type": "integer", "required": False,
+                 "description": "1-64 tiles"},
                 {"name": "screenshot", "type": "boolean", "required": False},
             ],
         },
@@ -246,10 +252,14 @@ API_MANIFEST: dict[str, Any] = {
                 *_SEAT_TARGET,
                 {"name": "x", "type": "number", "required": False},
                 {"name": "y", "type": "number", "required": False},
-                {"name": "width", "type": "integer", "required": False},
-                {"name": "height", "type": "integer", "required": False},
-                {"name": "zoom", "type": "number", "required": False},
-                {"name": "daytime", "type": "number", "required": False},
+                {"name": "width", "type": "integer", "required": False,
+                 "description": "16-4096 px"},
+                {"name": "height", "type": "integer", "required": False,
+                 "description": "16-4096 px"},
+                {"name": "zoom", "type": "number", "required": False,
+                 "description": "0.03125-8"},
+                {"name": "daytime", "type": "number", "required": False,
+                 "description": "0-1"},
                 {"name": "show_entity_info", "type": "boolean", "required": False},
                 {"name": "surface", "type": "string", "required": False},
                 {"name": "file", "type": "string", "required": False},
@@ -377,12 +387,25 @@ API_MANIFEST: dict[str, Any] = {
                 "remote.call('game_bot', <fn>, {seat=seat}). Your script is "
                 "preceded (on the same line, so line numbers still match your "
                 "file) by `local seat, player = ...` bound to the resolved "
-                "seat, so a file script needs no templating per seat."
+                "seat, so a file script needs no templating per seat. "
+                "Returns cost_ms, the engine script time the command used. A "
+                "command over its budget (15 ms by default; one tick is "
+                "16.7 ms) returns ok:false with an OVER_BUDGET error: it RAN, "
+                "its effects stand and its output is attached, so never "
+                "re-run it -- split the work, survey with scan, or pass "
+                "budget_ms for a write you know is heavy. Output past "
+                "max_output (16 KB by default) is truncated with a marker. "
+                "Each seat draws from its own script-time allowance; a seat "
+                "that overspends waits for it to refill (see load)."
             ),
             "params": [
                 *_SEAT_TARGET,
                 {"name": "code", "type": "string", "required": False},
                 {"name": "path", "type": "string", "required": False},
+                {"name": "max_output", "type": "integer", "required": False,
+                 "description": "characters of output to return, 256-1048576"},
+                {"name": "budget_ms", "type": "number", "required": False,
+                 "description": "raise this command's budget, up to 50 ms"},
             ],
             "timeout": 120.0,
         },
@@ -419,6 +442,8 @@ API_MANIFEST: dict[str, Any] = {
                 {"name": "clear", "type": "boolean", "required": False},
                 {"name": "force_build", "type": "boolean", "required": False},
                 {"name": "surface", "type": "string", "required": False},
+                {"name": "budget_ms", "type": "number", "required": False,
+                 "description": "raise this command's budget, up to 50 ms"},
             ],
             "timeout": 180.0,
         },
@@ -436,7 +461,8 @@ API_MANIFEST: dict[str, Any] = {
             ),
             "params": [
                 *_SEAT_TARGET,
-                {"name": "radius", "type": "number", "required": False},
+                {"name": "radius", "type": "number", "required": False,
+                 "description": "1-200 tiles"},
                 {"name": "x", "type": "number", "required": False},
                 {"name": "y", "type": "number", "required": False},
                 {"name": "x1", "type": "number", "required": False},
@@ -447,8 +473,67 @@ API_MANIFEST: dict[str, Any] = {
                 {"name": "include_tiles", "type": "boolean", "required": False},
                 {"name": "save_as", "type": "string", "required": False},
                 {"name": "surface", "type": "string", "required": False},
+                {"name": "budget_ms", "type": "number", "required": False,
+                 "description": "raise this command's budget, up to 50 ms"},
             ],
             "timeout": 180.0,
+        },
+        {
+            "name": "scan",
+            "tool": "rlm_factorio_scan",
+            "description": (
+                "Survey entities in an area, in pages. Give the corners "
+                "x1,y1,x2,y2, or radius around x,y (or around the seat). "
+                "Filters: name and type (one or a list), force. fields picks "
+                "what each entity carries (default name, position): name, "
+                "type, position, direction, status, recipe, unit_number, "
+                "health, ghost_name, amount, contents, force. Returns up to "
+                "limit entities (default 200, max 5000) plus next, a cursor: "
+                "pass it back with the same filters for the next page, until "
+                "next is null (complete:true). count_only:true returns just "
+                "the count. The realm splits the work into commands small "
+                "enough never to stall a tick, so a big area takes longer, "
+                "never fails. Pages are not a snapshot: something built or "
+                "removed between pages can be missed or seen twice. Use this "
+                "instead of an exec_lua find_entities_filtered over a large "
+                "area. " + _TARGET_DOC + " A seat is optional."
+            ),
+            "params": [
+                *_SEAT_TARGET,
+                {"name": "x1", "type": "number", "required": False},
+                {"name": "y1", "type": "number", "required": False},
+                {"name": "x2", "type": "number", "required": False},
+                {"name": "y2", "type": "number", "required": False},
+                {"name": "x", "type": "number", "required": False},
+                {"name": "y", "type": "number", "required": False},
+                {"name": "radius", "type": "number", "required": False,
+                 "description": "1-4096 tiles"},
+                {"name": "surface", "type": "string", "required": False},
+                {"name": "name", "type": "array", "required": False},
+                {"name": "type", "type": "array", "required": False},
+                {"name": "force", "type": "string", "required": False},
+                {"name": "fields", "type": "array", "required": False},
+                {"name": "limit", "type": "integer", "required": False,
+                 "description": "1-5000, default 200"},
+                {"name": "cursor", "type": "string", "required": False},
+                {"name": "count_only", "type": "boolean", "required": False},
+            ],
+            "timeout": 120.0,
+        },
+        {
+            "name": "load",
+            "tool": "rlm_factorio_load",
+            "description": (
+                "The game-call meters: server UPS, the limits in force, and "
+                "per connection (each seat, 'anon' for seatless calls) the "
+                "engine script ms/s it is spending, its allowance level and "
+                "debt, calls queued and in flight, over-budget count, and the "
+                "last time the throttle held it back and why. A seat in debt "
+                "waits; this is where to see it."
+            ),
+            "params": [
+                {"name": "session_id", "type": "string", "required": False},
+            ],
         },
         # ---- act: as a player (a seat drives all of these) ----
         {
@@ -667,7 +752,8 @@ def _drain_events(row: dict) -> list[dict]:
     """Drain the appliance's ring buffer; [] when the engine/RCON isn't ready
     (a re-exec window, or the container just came up) — the pump retries."""
     try:
-        result = appliance.control_post(row, "/observe/events", {}, timeout=10.0)
+        result, _ = _iface(row, "drain_events", {}, key=SYS, metered=False,
+                           timeout=10.0)
     except Exception:  # noqa: BLE001
         return []
     events = result.get("events") or []
@@ -702,6 +788,115 @@ def _require_session(session_id: str) -> dict:
     if row is None:
         raise ValueError(f"unknown session_id: {session_id!r}")
     return row
+
+
+# ---- game calls ------------------------------------------------------------
+#
+# Every game call names a connection key: a seat's player name, ANON for an
+# agent's seatless call, or SYS for the realm's own bookkeeping (join polling,
+# the events pump, the UPS sampler). Each key is its own engine socket and its
+# own throttle meter; SYS alone is unmetered.
+
+SYS = "sys"
+ANON = "anon"
+THROTTLE = throttle.Throttle()
+SCANNER = scan.Scanner()
+UPS_POLL_S = 1.0
+HANDLER_THREADS = int(os.environ.get("AWM_FACTORIO_HANDLER_THREADS", "64"))
+
+
+def _key(seat: dict | None) -> str:
+    return seat["player_name"] if seat else ANON
+
+
+def _run(row: dict, key: str, code: str, *, timeout: float = 60.0,
+         metered: bool = True) -> dict:
+    """Run Lua on ``key``'s socket. Returns {output, cost_ms}."""
+    deadline = time.monotonic() + timeout
+    if metered:
+        try:
+            THROTTLE.admit(key, deadline)
+        except throttle.Throttled as exc:
+            raise appliance.ApplianceError(str(exc)) from None
+    try:
+        result = broker.for_row(row).lua(
+            key, code, timeout=max(1.0, deadline - time.monotonic()))
+    except Exception:
+        if metered:
+            THROTTLE.release(key)
+        raise
+    if metered:
+        THROTTLE.charge(key, result["cost_ms"])
+    return result
+
+
+def _iface_code(fn: str, args: dict) -> str:
+    """``remote.call('game_bot', fn, args)`` with args carried as JSON, so no
+    argument ever needs a Lua-literal encoding."""
+    blob = json.dumps(args).replace("\\", "\\\\").replace("'", "\\'")
+    return ("local h=helpers "
+            f"local r=remote.call('game_bot','{fn}',h.json_to_table('{blob}') or {{}}) "
+            "rcon.print(h.table_to_json(r))")
+
+
+def _iface(row: dict, fn: str, args: dict, *, key: str, timeout: float = 60.0,
+           metered: bool = True) -> tuple[dict, float | None]:
+    """Call one game-bot-control function. Returns (result, cost_ms)."""
+    res = _run(row, key, _iface_code(fn, args), timeout=timeout, metered=metered)
+    out = res["output"].strip()
+    try:
+        return json.loads(out), res["cost_ms"]
+    except ValueError:
+        # A Lua error comes back as the engine's plain error text.
+        raise appliance.ApplianceError(out or f"{fn}: empty reply") from None
+
+
+def _over_budget(key: str, cost_ms: float | None, budget_ms: float) -> str | None:
+    if cost_ms is None or cost_ms <= budget_ms:
+        return None
+    THROTTLE.note_over_budget(key)
+    log.info("over budget: %s used %.1f ms (budget %.0f)", key, cost_ms, budget_ms)
+    return throttle.over_budget_message(cost_ms, budget_ms)
+
+
+def _budgeted(key: str, result: Any, cost_ms: float | None, budget_ms: float) -> Any:
+    """A verb's result, or the OVER_BUDGET envelope that still carries it."""
+    msg = _over_budget(key, cost_ms, budget_ms)
+    if msg is None:
+        return result
+    return {"ok": False, "ran": True, "error": msg, "cost_ms": cost_ms,
+            "result": result}
+
+
+def _close_conn(seat: dict) -> None:
+    """Close a departing seat's engine socket. Best-effort."""
+    session = dao.FactorioDAO().get_session(seat["session_id"])
+    if session is None:
+        return
+    try:
+        broker.for_row(session).close_conn(seat["player_name"])
+    except Exception:  # noqa: BLE001
+        log.debug("closing %s's socket failed", seat["player_name"], exc_info=True)
+
+
+def _sample_ups() -> None:
+    rows = [r for r in dao.FactorioDAO().live_sessions() if r["status"] == "ready"]
+    if not rows:
+        THROTTLE.forget_ups()
+        return
+    out = _run(rows[0], SYS, 'rcon.print(game.tick .. " " .. tostring(game.tick_paused))',
+               timeout=5.0, metered=False)["output"].split()
+    THROTTLE.note_tick(int(out[0]), out[1] == "true")
+
+
+async def _ups_sampler() -> None:
+    """Feed the throttle's UPS gate, forever."""
+    while True:
+        await asyncio.sleep(UPS_POLL_S)
+        try:
+            await asyncio.to_thread(_sample_ups)
+        except Exception:  # noqa: BLE001 — a dark engine just means no gate
+            THROTTLE.forget_ups()
 
 
 # ---- lifecycle -----------------------------------------------------------
@@ -811,10 +1006,8 @@ def _require_seat(seat_id: str) -> dict:
 
 
 def _lua(row: dict, code: str, *, timeout: float = 20.0) -> str:
-    """Run Lua in the session's scenario context, returning its rcon output."""
-    result = appliance.control_post(row, "/exec-lua", {"code": code},
-                                    timeout=timeout)
-    return str(result.get("output") or "").strip()
+    """Run the realm's own Lua in the scenario context, returning its output."""
+    return _run(row, SYS, code, timeout=timeout, metered=False)["output"].strip()
 
 
 def _player_index(row: dict, player_name: str) -> int:
@@ -887,8 +1080,8 @@ def _join(args: dict, as_: str | None = None) -> dict:
         # Connected is not yet able to act: freeplay puts a newly created player
         # through an intro cutscene, during which it has no character. `spawn`
         # ends that and guarantees the seat is embodied before join returns.
-        appliance.iface(row, "spawn", {"seat": seat["player_name"]},
-                        timeout=60.0)
+        _iface(row, "spawn", {"seat": seat["player_name"]},
+               key=seat["player_name"], metered=False)
     except Exception:
         appliance.seat_stop(container)
         d.set_seat(seat_id, status="error")
@@ -909,6 +1102,7 @@ def _join(args: dict, as_: str | None = None) -> dict:
 def _leave(args: dict) -> dict:
     seat_id = args["seat_id"]
     seat = _require_seat(seat_id)
+    _close_conn(seat)
     if seat["container_name"]:
         appliance.seat_stop(seat["container_name"])
     dao.FactorioDAO().set_seat(seat_id, status="stopped")
@@ -985,6 +1179,7 @@ def _reclaim(seat: dict, reason: str) -> None:
     is exactly the state this exists to clear, so a failed stop must not leave
     the row live or abort the sweep.
     """
+    _close_conn(seat)
     if seat["container_name"]:
         try:
             appliance.seat_stop(seat["container_name"])
@@ -1033,25 +1228,6 @@ async def _reaper() -> None:
             await asyncio.to_thread(_reap_once)
         except Exception:  # noqa: BLE001 -- a bad sweep must not end the reaper
             log.debug("reap sweep failed", exc_info=True)
-
-
-def _stop_all_seats(reason: str) -> int:
-    """Reclaim every live seat. Wired to SIGTERM in main(), not to atexit.
-
-    `awm services stop` SIGTERMs us and Python skips exit hooks on that path, so
-    teardown hung off atexit is teardown that never runs.
-
-    The host appliance is deliberately left up: it holds the world, and both
-    `acquire` and on_start are built to re-adopt it. Seats are not left up. A
-    client is stateless -- a lost one is replaced by joining again, which is the
-    rule on_start already follows -- and one that outlives the only process able
-    to reclaim it is precisely the leak. A restart therefore costs its agents a
-    re-join, which is the right side of that trade.
-    """
-    seats = dao.FactorioDAO().live_seats()
-    for seat in seats:
-        _reclaim(seat, reason)
-    return len(seats)
 
 
 # ---- act: world lifecycle ------------------------------------------------
@@ -1173,11 +1349,12 @@ def _act(fn: str, *keys: str, need_seat: bool = True, lists: tuple = ()):
         if seat is not None:
             body["seat"] = seat["player_name"]
             dao.FactorioDAO().touch_seat(seat["seat_id"])
-        result = appliance.iface(row, fn, body)
-        for key in lists:
-            if key in result:
-                result[key] = _as_list(result[key])
-        return result
+        key = _key(seat)
+        result, cost = _iface(row, fn, body, key=key)
+        for name in lists:
+            if name in result:
+                result[name] = _as_list(result[name])
+        return _budgeted(key, result, cost, throttle.CMD_BUDGET_MS)
     return handler
 
 
@@ -1188,14 +1365,16 @@ def _observe(args: dict) -> dict:
     if args.get("radius") is not None:
         body["radius"] = args["radius"]
     dao.FactorioDAO().touch_seat(seat["seat_id"])
-    snapshot = appliance.iface(row, "observe", body)
-    for key in _SNAPSHOT_LISTS:
-        if key in snapshot:
-            snapshot[key] = _as_list(snapshot[key])
+    key = _key(seat)
+    snapshot, cost = _iface(row, "observe", body, key=key)
+    for name in _SNAPSHOT_LISTS:
+        if name in snapshot:
+            snapshot[name] = _as_list(snapshot[name])
     shot = None
     if args.get("screenshot"):
         shot = _screenshot({"seat_id": seat["seat_id"]})["path"]
-    return {"snapshot": snapshot, "screenshot": shot}
+    return _budgeted(key, {"snapshot": snapshot, "screenshot": shot}, cost,
+                     throttle.CMD_BUDGET_MS)
 
 
 def _observe_events(args: dict) -> dict:
@@ -1215,6 +1394,7 @@ def _pause(args: dict) -> dict:
     a script resumes, and the reply says which state it landed in.
     """
     row, _ = _resolve(args, need_seat=False)
+    THROTTLE.forget_ups()
     paused = args.get("paused")
     body = {} if paused is None else {"paused": bool(paused)}
     return appliance.control_post(row, "/pause", body)
@@ -1224,6 +1404,14 @@ def _pause(args: dict) -> dict:
 # against handing the socket a whole file by accident, not a measured engine
 # limit.
 EXEC_LUA_MAX = 64 * 1024
+EXEC_OUTPUT_DEFAULT = 16 * 1024
+
+
+def _cap_output(output: str, limit: int) -> str:
+    if len(output) <= limit:
+        return output
+    return (output[:limit] + f"\n...[truncated: {limit} of {len(output)} characters "
+            "shown; pass max_output to raise the cap, or page with factorio_scan]")
 
 
 def _exec_lua(args: dict) -> dict:
@@ -1253,9 +1441,14 @@ def _exec_lua(args: dict) -> dict:
                 if name else "local seat, player = nil, nil; ")
     if seat is not None:
         dao.FactorioDAO().touch_seat(seat["seat_id"])
-    result = appliance.control_post(row, "/exec-lua", {"code": preamble + code},
-                                    timeout=120.0)
-    return {**result, "seat": name}
+    key = _key(seat)
+    res = _run(row, key, preamble + code, timeout=120.0)
+    output = _cap_output(res["output"], int(args.get("max_output") or EXEC_OUTPUT_DEFAULT))
+    result = {"output": output, "seat": name, "cost_ms": res["cost_ms"]}
+    msg = _over_budget(key, res["cost_ms"], throttle.command_budget(args.get("budget_ms")))
+    if msg:
+        result.update(ok=False, ran=True, error=msg)
+    return result
 
 
 # take_screenshot returns before the renderer has written anything, and the file
@@ -1297,7 +1490,7 @@ def _screenshot(args: dict) -> dict:
         if args.get(key) is not None:
             body[key] = args[key]
     dao.FactorioDAO().touch_seat(seat["seat_id"])
-    result = appliance.iface(row, "screenshot", body)
+    result, _ = _iface(row, "screenshot", body, key=_key(seat))
     path = str(out_dir / str(result["file"]))
     size = _wait_for_file(path)
     # How much world the frame covers, so pixels can be reasoned back to tiles:
@@ -1336,17 +1529,20 @@ def _blueprint_stamp(args: dict) -> dict:
     upload_id = seat["seat_id"]
     chunks = [text[i:i + BLUEPRINT_CHUNK]
               for i in range(0, len(text), BLUEPRINT_CHUNK)]
+    key = _key(seat)
     for n, chunk in enumerate(chunks):
-        appliance.iface(row, "bp_put",
-                        {"id": upload_id, "data": chunk, "reset": n == 0})
+        _iface(row, "bp_put", {"id": upload_id, "data": chunk, "reset": n == 0},
+               key=key)
     body = {"seat": seat["player_name"], "id": upload_id,
             "x": args["x"], "y": args["y"]}
     for key in ("direction", "surface", "build", "force_build", "clear"):
         if args.get(key) is not None:
             body[key] = args[key]
     dao.FactorioDAO().touch_seat(seat["seat_id"])
-    result = appliance.iface(row, "blueprint_stamp", body, timeout=120.0)
-    return {**result, "chunks": len(chunks), "characters": len(text)}
+    result, cost = _iface(row, "blueprint_stamp", body, key=key, timeout=120.0)
+    return _budgeted(key, {**result, "chunks": len(chunks), "characters": len(text),
+                           "cost_ms": cost},
+                     cost, throttle.command_budget(args.get("budget_ms")))
 
 
 def _blueprint_capture(args: dict) -> dict:
@@ -1363,7 +1559,9 @@ def _blueprint_capture(args: dict) -> dict:
         if args.get(key) is not None:
             body[key] = args[key]
     dao.FactorioDAO().touch_seat(seat["seat_id"])
-    result = appliance.iface(row, "blueprint_capture", body, timeout=120.0)
+    key = _key(seat)
+    result, cost = _iface(row, "blueprint_capture", body, key=key, timeout=120.0)
+    over = _over_budget(key, cost, throttle.command_budget(args.get("budget_ms")))
     src = appliance.session_output_dir(row["session_id"]) / str(result["file"])
     _wait_for_file(str(src))
     text = open(src, encoding="utf-8").read().strip()
@@ -1377,7 +1575,42 @@ def _blueprint_capture(args: dict) -> dict:
     # Small enough to hand straight to another agent; a big one stays a path.
     if len(text) <= BLUEPRINT_CHUNK:
         out["blueprint"] = text
+    if over:
+        return {"ok": False, "ran": True, "error": over, "cost_ms": cost, "result": out}
     return out
+
+
+def _scan(args: dict) -> dict:
+    """Survey entities in pages; see :mod:`awm.rlm_factorio.scan`."""
+    row, seat = _resolve(args, need_seat=False)
+    key = _key(seat)
+    if seat is not None:
+        dao.FactorioDAO().touch_seat(seat["seat_id"])
+
+    def run(code: str) -> tuple[str, float | None]:
+        res = _run(row, key, code, timeout=60.0)
+        return res["output"], res["cost_ms"]
+
+    def seat_position() -> dict:
+        name = seat["player_name"]
+        out = _run(row, key, f'local p = game.players["{name}"] rcon.print('
+                             f'helpers.table_to_json(p.position))')["output"]
+        return json.loads(out)
+
+    try:
+        return SCANNER.scan(key, args, run, seat_position if seat else None)
+    except scan.ScanError as exc:
+        raise ValueError(str(exc)) from None
+
+
+def _load(args: dict) -> dict:
+    """The throttle's meters, with each key tied back to its seat."""
+    snap = THROTTLE.snapshot()
+    by_player = {s["player_name"]: s["seat_id"] for s in dao.FactorioDAO().live_seats()}
+    for name, meter in snap["keys"].items():
+        meter["seat_id"] = by_player.get(name)
+        meter["scan_work_cap"] = SCANNER.caps.get(name)
+    return snap
 
 
 _move = _act("set_target", "x", "y")
@@ -1396,6 +1629,16 @@ _recipes = _act("recipes", "search", "limit", need_seat=False,
                 lists=("recipes",))
 _technologies = _act("technologies", "search", "only_unresearched", "limit",
                      need_seat=False, lists=("technologies",))
+
+
+def _checked(verb: str, handler):
+    """Validate a verb's arguments before its handler sees them."""
+    wants_as = len(inspect.signature(handler).parameters) >= 2
+
+    def run(args: dict, as_: str | None = None):
+        args = validate.check(verb, args or {})
+        return handler(args, as_) if wants_as else handler(args)
+    return run
 
 
 HANDLERS = {
@@ -1428,7 +1671,10 @@ HANDLERS = {
     "insert": _insert,
     "take": _take,
     "research": _research,
+    "scan": _scan,
+    "load": _load,
 }
+HANDLERS = {verb: _checked(verb, fn) for verb, fn in HANDLERS.items()}
 
 
 def _on_start() -> None:
@@ -1469,20 +1715,23 @@ async def main() -> None:
     )
     _ADAPTER = adapter
     loop = _LOOP = asyncio.get_running_loop()
+    # Every handler runs in this pool, and a seat held by the throttle holds a
+    # thread while it waits, so the pool must outnumber the seats comfortably.
+    loop.set_default_executor(ThreadPoolExecutor(max_workers=HANDLER_THREADS))
 
-    # Seats are torn down on the SIGNAL, never on adapter.run() simply
-    # returning. The adapter also stands down when the gateway rejects us as a
-    # duplicate registration, and tearing down there would have a stillborn
-    # second copy of the service stop the LIVE copy's seats.
+    # A shutdown leaves seats running. A restart adopts them in on_start, so a
+    # deploy costs the crew nothing; the reaper and leave/release remain the
+    # only ways a seat ends.
     signalled = asyncio.Event()
     for sig in (signal.SIGTERM, signal.SIGINT):
         try:
             loop.add_signal_handler(sig, signalled.set)
         except (NotImplementedError, ValueError, RuntimeError):
-            log.debug("no signal handler for %s; seats reaped on idle only", sig)
+            log.debug("no signal handler for %s", sig)
 
     pump = asyncio.create_task(_events_pump(adapter))
     reaper = asyncio.create_task(_reaper())
+    sampler = asyncio.create_task(_ups_sampler())
     serve = asyncio.create_task(adapter.run())
     stop = asyncio.create_task(signalled.wait())
     ended = None
@@ -1490,11 +1739,12 @@ async def main() -> None:
         await asyncio.wait({serve, stop}, return_when=asyncio.FIRST_COMPLETED)
         ended = serve if serve.done() else None
         if signalled.is_set():
-            n = await asyncio.to_thread(_stop_all_seats, "service shutdown")
-            log.info("shutdown: reclaimed %d seat(s)", n)
+            log.info("shutdown: leaving %d seat(s) running for the next start",
+                     len(dao.FactorioDAO().live_seats()))
     finally:
-        for task in (pump, reaper, stop, serve):
+        for task in (pump, reaper, sampler, stop, serve):
             task.cancel()
+        broker.stop_all()
     if ended is not None:
         await ended  # re-raise whatever ended the adapter
 

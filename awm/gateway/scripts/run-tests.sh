@@ -51,6 +51,7 @@ declare -A DISTS=(
   [auth]="$WS/awm/services/auth::$WS/awm/services/auth/tests"
   [httpsfront]="$WS/awm/services/httpsfront::$WS/awm/services/httpsfront/tests"
   [rlm-browser]="$WS/awm/services/rlm-browser::$WS/awm/services/rlm-browser/tests"
+  [rlm-factorio]="$WS/awm/services/rlm-factorio::$WS/awm/services/rlm-factorio/tests"
   [orchestrator]="$WS/awm/services/orchestrator::$WS/awm/services/orchestrator/tests"
   [graphify]="$WS/awm/services/graphify::$WS/awm/services/graphify/tests"
   [stt]="$WS/awm/services/stt::$WS/awm/services/stt/awm/stt/tests"
@@ -78,7 +79,7 @@ declare -A DISTS=(
 )
 
 # Stable run order.
-ORDER=(gateway agentcore gatewayclient config persistence telemetry claudedaemon scopes workspace agents artifacts writing events precedence social 2fa ssh auth httpsfront rlm-browser orchestrator graphify stt tts fileviewer drawio notes virtmic mic vpn compute reflection dvc claude-science dsh hermes trilium zotero penpot penpot-view penpot-plugins cx dev tether)
+ORDER=(gateway agentcore gatewayclient config persistence telemetry claudedaemon scopes workspace agents artifacts writing events precedence social 2fa ssh auth httpsfront rlm-browser rlm-factorio orchestrator graphify stt tts fileviewer drawio notes virtmic mic vpn compute reflection dvc claude-science dsh hermes trilium zotero penpot penpot-view penpot-plugins cx dev tether)
 
 # Allow selecting a subset on the command line.
 if [ "$#" -gt 0 ]; then
