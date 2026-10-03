@@ -39,14 +39,15 @@ def fake_engine(ents, cost_per_entity=0.01):
                       and P["x1"] <= e["position"]["x"] < P["x2"]
                       and P["y1"] <= e["position"]["y"] < P["y2"]
                       and (not names or e["name"] in names)]
-            work += len(inside) + 1
+            work += 1
             for e in inside:
+                work += 1
                 k += 1
                 if k > skip:
                     count += 1
                     if not P["count_only"]:
                         out.append(e)
-                    if count >= P["limit"]:
+                    if count >= P["limit"] or work >= P["work_cap"]:
                         nxt, done = [ci, k], True
                         break
             if done:
@@ -55,7 +56,8 @@ def fake_engine(ents, cost_per_entity=0.01):
             if work >= P["work_cap"] and ci < n:
                 nxt = [ci, 0]
                 break
-        return json.dumps({"rows": out, "count": count, "next": nxt}), work * cost_per_entity
+        return (json.dumps({"rows": out, "count": count, "next": nxt, "work": work}),
+                work * cost_per_entity)
     return run, calls
 
 
@@ -135,3 +137,27 @@ def test_page_code_escapes_quotes():
                            "ci": 0, "skip": 0, "name": ["it's"]},
                           fields=["name"], limit=1, count_only=False, work_cap=1)
     assert "it\\'s" in code and "@PARAMS@" not in code
+
+
+def test_dense_chunk_splits_across_pages():
+    ents = [{"name": "rock", "position": {"x": (i % 30) + 0.5, "y": (i // 30) * 0.1 + 0.5}}
+            for i in range(600)]
+    run, calls = fake_engine(ents, cost_per_entity=0.2)
+    seen = follow(scan.Scanner(), run, {"x1": 0, "y1": 0, "x2": 32, "y2": 32, "limit": 5000})
+    key = lambda e: (e["name"], e["position"]["x"], e["position"]["y"])
+    assert sorted(map(key, seen)) == sorted(map(key, ents))
+    assert len(calls) > 5
+
+
+def test_pages_settle_under_the_command_budget():
+    costs = []
+    run, _ = fake_engine(world(4000), cost_per_entity=0.05)
+    sc = scan.Scanner()
+
+    def metered(code):
+        out, cost = run(code)
+        costs.append(cost)
+        return out, cost
+    sc.scan("k", {**AREA, "count_only": True}, metered)
+    assert len(costs) > 3
+    assert max(costs[1:]) <= scan.throttle.CMD_BUDGET_MS

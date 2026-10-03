@@ -4,7 +4,9 @@ A scan walks the area's 32x32 chunks in a fixed row-major order. Each entity
 belongs to the chunk holding its position, which dedupes an entity whose box
 spans several chunks. One engine command stops at the result limit or at a
 work cap counted in entities examined -- Lua has no clock, so a count is the
-only deterministic stop. The realm resizes that cap from each command's
+only deterministic stop. The cap is checked after every emitted entity, so a
+dense chunk splits across pages too, and every page emits at least one entity.
+The realm resizes that cap from each command's
 measured cost, so a dense area costs more commands, never a slow tick.
 
 The cursor carries the resolved area and a position inside it (chunk index,
@@ -28,7 +30,8 @@ DEFAULT_FIELDS = ("name", "position")
 FIELDS = ("name", "type", "position", "direction", "status", "recipe",
           "unit_number", "health", "ghost_name", "amount", "contents", "force")
 WALL_S = 30.0
-CAP_START, CAP_MIN, CAP_MAX = 2000, 50, 50_000
+CAP_START, CAP_MIN, CAP_MAX = 300, 50, 50_000
+TARGET_SHARE = 0.4      # aim each page at this share of the command budget
 
 PAGE_LUA = r"""local h = helpers
 local P = h.json_to_table('@PARAMS@')
@@ -39,80 +42,73 @@ local cx1, cy1 = floor(P.x1 / 32), floor(P.y1 / 32)
 local cx2, cy2 = floor((P.x2 - 1e-9) / 32), floor((P.y2 - 1e-9) / 32)
 local w = cx2 - cx1 + 1
 local n = w * (cy2 - cy1 + 1)
-local F = {}
-for _, f in pairs(P.fields or {}) do F[f] = true end
-local status_name
-if F.status then
-  status_name = {}
-  for k, v in pairs(defines.entity_status) do status_name[v] = k end
-end
-local function row(e)
-  local r = {}
-  if F.name then r.name = e.name end
-  if F.type then r.type = e.type end
-  if F.position then r.position = e.position end
-  if F.direction then r.direction = e.direction end
-  if F.unit_number then r.unit_number = e.unit_number end
-  if F.force then r.force = e.force.name end
-  if F.health then r.health = e.health end
-  if F.status and e.status then r.status = status_name[e.status] end
-  if F.ghost_name and e.type == "entity-ghost" then r.ghost_name = e.ghost_name end
-  if F.amount and e.type == "resource" then r.amount = e.amount end
-  if F.recipe and (e.type == "assembling-machine" or e.type == "furnace") then
-    local ok, rc = pcall(e.get_recipe)
-    rc = ok and rc or nil
-    if not rc and e.type == "furnace" and e.previous_recipe then rc = e.previous_recipe.name end
-    if rc then r.recipe = type(rc) == "string" and rc or rc.name end
-  end
-  if F.contents then
-    local ok, top = pcall(e.get_max_inventory_index)
-    if ok and top then
-      local c = {}
-      for i = 1, top do
-        local inv = e.get_inventory(i)
-        if inv then
-          for _, it in pairs(inv.get_contents()) do
-            c[it.name] = (c[it.name] or 0) + it.count
-          end
-        end
-      end
-      if next(c) then r.contents = c end
-    end
-  end
-  return r
-end
+@ROW@
 local filt = {name = P.name, type = P.type, force = P.force}
 local out, count, work, ci, skip = {}, 0, 0, P.ci, P.skip
 local nxt, done = nil, false
 while ci < n do
-  local cx, cy = cx1 + ci % w, cy1 + floor(ci / w)
-  local k = 0
-  if s.is_chunk_generated({cx, cy}) then
-    filt.area = {{max(P.x1, cx * 32), max(P.y1, cy * 32)},
-                 {min(P.x2, cx * 32 + 32), min(P.y2, cy * 32 + 32)}}
-    local ents = s.find_entities_filtered(filt)
-    work = work + #ents + 1
-    for i = 1, #ents do
-      local e = ents[i]
-      local p = e.position
-      if floor(p.x / 32) == cx and floor(p.y / 32) == cy and p.x >= P.x1
-          and p.x < P.x2 and p.y >= P.y1 and p.y < P.y2 then
-        k = k + 1
-        if k > skip then
-          count = count + 1
-          if not P.count_only then out[#out + 1] = row(e) end
-          if count >= P.limit then nxt = {ci, k}; done = true; break end
-        end
-      end
-    end
-  else
-    work = work + 1
-  end
-  if done then break end
-  ci, skip = ci + 1, 0
-  if work >= P.work_cap and ci < n then nxt = {ci, 0}; break end
+local cx, cy = cx1 + ci % w, cy1 + floor(ci / w)
+local k = 0
+if s.is_chunk_generated({cx, cy}) then
+filt.area = {{max(P.x1, cx * 32), max(P.y1, cy * 32)},
+{min(P.x2, cx * 32 + 32), min(P.y2, cy * 32 + 32)}}
+local ents = s.find_entities_filtered(filt)
+work = work + 1
+for i = 1, #ents do
+local e = ents[i]
+work = work + 1
+local p = e.position
+if floor(p.x / 32) == cx and floor(p.y / 32) == cy and p.x >= P.x1
+and p.x < P.x2 and p.y >= P.y1 and p.y < P.y2 then
+k = k + 1
+if k > skip then
+count = count + 1
+if not P.count_only then out[#out + 1] = row(e) end
+if count >= P.limit or work >= P.work_cap then nxt = {ci, k}; done = true; break end
+end
+end
+end
+else
+work = work + 1
+end
+if done then break end
+ci, skip = ci + 1, 0
+if work >= P.work_cap and ci < n then nxt = {ci, 0}; break end
 end
 rcon.print(h.table_to_json({rows = out, count = count, next = nxt, work = work, chunks = n}))"""
+
+# One Lua statement per field, so a page carries only what was asked for: the
+# command's text is replicated to every peer at about 90 bytes a tick, so every
+# byte of it is latency.
+ROW_LUA = {
+    "name": "r.name=e.name",
+    "type": "r.type=e.type",
+    "position": "r.position=e.position",
+    "direction": "r.direction=e.direction",
+    "unit_number": "r.unit_number=e.unit_number",
+    "force": "r.force=e.force.name",
+    "health": "r.health=e.health",
+    "status": "if e.status then r.status=SN[e.status] end",
+    "ghost_name": 'if e.type=="entity-ghost" then r.ghost_name=e.ghost_name end',
+    "amount": 'if e.type=="resource" then r.amount=e.amount end',
+    "recipe": ('if e.type=="assembling-machine" or e.type=="furnace" then '
+               'local ok,rc=pcall(e.get_recipe) rc=ok and rc or nil '
+               'if not rc and e.type=="furnace" and e.previous_recipe then '
+               'rc=e.previous_recipe.name end '
+               'if rc then r.recipe=type(rc)=="string" and rc or rc.name end end'),
+    "contents": ('local ok,top=pcall(e.get_max_inventory_index) if ok and top then '
+                 'local c={} for i=1,top do local inv=e.get_inventory(i) if inv then '
+                 'for _,it in pairs(inv.get_contents()) do '
+                 'c[it.name]=(c[it.name] or 0)+it.count end end end '
+                 'if next(c) then r.contents=c end end'),
+}
+STATUS_LUA = "local SN={} for k,v in pairs(defines.entity_status) do SN[v]=k end"
+
+
+def _row_lua(fields) -> str:
+    body = " ".join(ROW_LUA[f] for f in FIELDS if f in fields)
+    head = STATUS_LUA + "\n" if "status" in fields else ""
+    return f"{head}local function row(e) local r={{}} {body} return r end"
 
 
 class ScanError(ValueError):
@@ -186,13 +182,13 @@ def _as_list(v) -> list:
 
 def page_code(q: dict, *, fields, limit: int, count_only: bool, work_cap: int) -> str:
     params = {k: q[k] for k in ("surface", "x1", "y1", "x2", "y2", "ci", "skip")}
-    params.update({"fields": list(fields), "limit": limit, "count_only": count_only,
-                   "work_cap": work_cap})
+    params.update({"limit": limit, "count_only": count_only, "work_cap": work_cap})
     for key in ("name", "type", "force"):
         if q.get(key) is not None:
             params[key] = q[key]
-    blob = json.dumps(params).replace("\\", "\\\\").replace("'", "\\'")
-    return PAGE_LUA.replace("@PARAMS@", blob)
+    blob = json.dumps(params, separators=(",", ":")).replace("\\", "\\\\").replace("'", "\\'")
+    return (PAGE_LUA.replace("@ROW@", _row_lua(fields))
+            .replace("@PARAMS@", blob))
 
 
 class Scanner:
@@ -201,16 +197,14 @@ class Scanner:
     def __init__(self):
         self.caps: dict[str, int] = {}
 
-    def _adapt(self, key: str, cost_ms: float | None) -> None:
-        cap = self.caps.get(key, CAP_START)
-        budget = throttle.CMD_BUDGET_MS
-        if cost_ms is None:
+    def _adapt(self, key: str, cost_ms: float | None, work: int) -> None:
+        # Cost per entity examined varies about tenfold with the fields asked
+        # for, so scale the cap by measured cost, damped to at most 2x a page.
+        if cost_ms is None or work <= 0:
             return
-        if cost_ms > 0.6 * budget:
-            cap = max(CAP_MIN, cap // 2)
-        elif cost_ms < 0.25 * budget:
-            cap = min(CAP_MAX, int(cap * 1.5))
-        self.caps[key] = cap
+        cap = self.caps.get(key, CAP_START)
+        fit = work * TARGET_SHARE * throttle.CMD_BUDGET_MS / max(cost_ms, 0.01)
+        self.caps[key] = int(max(CAP_MIN, min(CAP_MAX, cap * 2, fit)))
 
     def scan(self, key: str, args: dict, run: Callable[[str], tuple[str, float | None]],
              seat_position: Callable[[], dict] | None = None,
@@ -234,11 +228,11 @@ class Scanner:
                                       work_cap=self.caps.get(key, CAP_START)))
             commands += 1
             cost_total += cost or 0.0
-            self._adapt(key, cost)
             try:
                 page = json.loads(out)
             except ValueError:
                 raise ScanError(out.strip() or "scan page returned nothing") from None
+            self._adapt(key, cost, int(page.get("work") or 0))
             rows.extend(_as_list(page.get("rows")))
             total += int(page.get("count") or 0)
             nxt = _as_list(page.get("next")) or None
