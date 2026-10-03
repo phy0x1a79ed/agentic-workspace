@@ -72,7 +72,7 @@ cat <<EOS
       --exclude '.claude/worktrees' \\
       ./awm/  mira:$AWM_WS/awm/
     # plus the workspace docs agents load (the onboarding fix) + the operator contract:
-    rsync -av ./AGENTS.md ./WORKSPACE.md ./README.md ./FEDERATION.md mira:$AWM_WS/
+    rsync -av ./AGENTS.md ./PROTOCOLS.md ./ARCHITECTURE.md ./README.md ./FEDERATION.md mira:$AWM_WS/
 EOS
 pause "Sync the tree, then continue on mira"
 [ -d "$AWM_WS/awm/gateway" ] || { echo "!! $AWM_WS/awm/gateway not found — sync first"; exit 1; }

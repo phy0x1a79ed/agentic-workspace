@@ -13,7 +13,7 @@ this process dies between the fork and the child's first instruction.
 
 The child is respawned from a supervised loop rather than at import, because a
 service that blocks its startup on a subprocess is a service the gateway reaps
-as broken — see AGENTS.md § *The ready-ASAP contract*.
+as broken — see ARCHITECTURE.md § *The ready-ASAP contract*.
 """
 
 from __future__ import annotations

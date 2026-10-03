@@ -331,7 +331,7 @@ class TestHealWorktree:
         wt = tmp_path / "wt"
         wt.mkdir()
         _git_init_tracked_agents(wt)
-        (scopes_workspace["workspace"] / "WORKSPACE.md").write_text("# orient\n")
+        (scopes_workspace["workspace"] / "AGENTS.md").write_text("# orient\n")
         awm = wt / ".awm"
         awm.mkdir()
         (awm / "mcp-opencode.json").write_text(
@@ -344,7 +344,7 @@ class TestHealWorktree:
         import json
         cfg = json.loads((awm / "mcp-opencode.json").read_text())
         assert cfg["instructions"] == [
-            str(scopes_workspace["workspace"] / "WORKSPACE.md"),
+            str(scopes_workspace["workspace"] / "AGENTS.md"),
             ".awm/context.md",
         ]
 
@@ -352,7 +352,7 @@ class TestHealWorktree:
         wt = tmp_path / "wt"
         wt.mkdir()
         _git_init_tracked_agents(wt)
-        (scopes_workspace["workspace"] / "WORKSPACE.md").write_text("# orient\n")
+        (scopes_workspace["workspace"] / "AGENTS.md").write_text("# orient\n")
 
         actions = _heal_worktree(wt, project="proj-a", scope="s1", dry_run=False)
 

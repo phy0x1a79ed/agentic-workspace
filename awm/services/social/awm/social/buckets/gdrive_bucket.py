@@ -16,7 +16,7 @@ how the messaging connectors treat ambiguous lookups.
 
 The google client is synchronous and does blocking HTTP, so **every** call is
 dispatched through ``asyncio.to_thread`` — the adapter's control-WS loop must
-never block (AGENTS.md "Concurrency"). Google libraries are imported lazily so
+never block (ARCHITECTURE.md "Concurrency"). Google libraries are imported lazily so
 this module loads (for the registry/manifest) even where they aren't installed.
 """
 
