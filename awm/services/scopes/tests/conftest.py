@@ -24,6 +24,13 @@ def stub_embedder():
     embeddings.use_embedder(None)
 
 
+@pytest.fixture(autouse=True)
+def no_kb_recall(monkeypatch):
+    """Keep searches on the local index: the kb leg would otherwise call whatever gateway AWM_HUB_URL names."""
+    from awm.scopes import channel
+    monkeypatch.setattr(channel, "KB_RECALL", False)
+
+
 @pytest.fixture()
 def scopes_workspace(tmp_path, monkeypatch):
     """Set up a temporary workspace with all paths redirected for the scopes service.

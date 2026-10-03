@@ -18,7 +18,7 @@ def test_detail_deep_in_a_journal_is_found(scopes_workspace):
     for i in range(5):
         channel.post("awm", "dev", author="agent:awm/dev", kind="journal", body=f"routine day {i}")
     search_index.flush()
-    posts, degraded = channel.search(query="mooring mast leak", project="awm", kind="journal")
+    posts, degraded, _ = channel.search(query="mooring mast leak", project="awm", kind="journal")
     assert posts[0].id == target.id
     assert "zeppelin" in posts[0].match["snippet"]
     assert degraded is None
@@ -30,14 +30,14 @@ def test_filters_apply_before_ranking(scopes_workspace):
         channel.post("awm", "dev", author="user:a", kind="message", body=f"telescope mirror {i}")
     j = channel.post("other", "x", author="agent:other/x", kind="journal", body="the telescope")
     search_index.flush()
-    posts, _ = channel.search(query="telescope mirror", kind="journal", limit=3)
+    posts, _, _ = channel.search(query="telescope mirror", kind="journal", limit=3)
     assert [p.id for p in posts] == [j.id]
 
 
 def test_system_posts_fall_back_to_substring(scopes_workspace):
     from awm.scopes import channel
     channel.post("awm", "dev", author="system", kind="system", body="worktree healed")
-    posts, _ = channel.search(query="healed", kind="system")
+    posts, _, _ = channel.search(query="healed", kind="system")
     assert [p.body for p in posts] == ["worktree healed"]
 
 

@@ -50,7 +50,9 @@ SCOPE_CHANNEL_MANIFEST_FUNCTIONS = [
             "Fetch or search a scope's posts — messages and journal entries. "
             "Pass scope for one channel; add query to rank posts by relevance "
             "(meaning and keywords over each post's full text, best first, each "
-            "hit with match.snippet — a limit of ~10 is plenty); omit scope to "
+            "hit with match.snippet — a limit of ~10 is plenty; the reply's "
+            "`semantic` says which index ranked them: kb, local, or none for a "
+            "substring match); omit scope to "
             "search across scopes; kind filters (e.g. "
             "kind='journal' for session logs / debrief entries); post_id fetches "
             "one. For the most recent / last N entries pass order='desc' with "
@@ -130,12 +132,14 @@ def _handle_scope_fetch(args: dict) -> dict:
         before_ts=args.get("before_ts"),
         order=args.get("order"),
     )
-    degraded = None
+    degraded = semantic = None
     if args.get("query"):
-        posts, degraded = channel.search(query=args["query"], **common)
+        posts, degraded, semantic = channel.search(query=args["query"], **common)
     else:
         posts = channel.fetch(**common)
     out = {"posts": [p.to_dict() for p in posts], "total": len(posts)}
+    if semantic:
+        out["semantic"] = semantic
     if degraded:
         out["degraded"] = degraded
     return out
