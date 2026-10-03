@@ -57,6 +57,7 @@ services:
       # reads the file straight off disk instead of hauling a multi-kilobyte
       # string back over RCON, which fragments past ~4 KB.
       - ${FACTORIO_OUTPUT_DIR:-./output}:/opt/factorio/script-output
+      - ${FACTORIO_MOD_DIR:-./mods/game-bot-control}:/opt/factorio/mods/game-bot-control:ro
 
 volumes:
   factorio-saves:
