@@ -303,7 +303,7 @@ def _default_context(project: str, scope: str) -> str:
         f"The current directory is the git worktree. Data is at `data/`. Do not edit "
         f"`.awm/history.md` — use the `scope` verbs.\n\n"
         f"Workspace rules — data versioning, environments, the git model — are in "
-        f"`WORKSPACE.md` and are not repeated here.\n\n"
+        f"the workspace `AGENTS.md` and are not repeated here.\n\n"
         f"## Debrief\n\n"
         f"Run the `debrief` skill when the work is done. When a plan drives the work, "
         f"its last task is the debrief.\n"
@@ -610,7 +610,7 @@ def _write_scope_opencode_config(awm_dir: Path) -> None:
     else:
         out = {"$schema": "https://opencode.ai/config.json", "mcp": {}}
     instructions: list[str] = []
-    workspace_md = WORKSPACE_ROOT / "WORKSPACE.md"
+    workspace_md = WORKSPACE_ROOT / "AGENTS.md"
     if workspace_md.is_file():
         instructions.append(str(workspace_md))
     instructions.append(".awm/context.md")
@@ -713,7 +713,7 @@ def _heal_worktree(worktree_dir: Path, *, project: str, scope: str, dry_run: boo
         else:
             preview = {"$schema": "https://opencode.ai/config.json", "mcp": {}}
         instr: list[str] = []
-        wsmd = WORKSPACE_ROOT / "WORKSPACE.md"
+        wsmd = WORKSPACE_ROOT / "AGENTS.md"
         if wsmd.is_file():
             instr.append(str(wsmd))
         instr.append(".awm/context.md")

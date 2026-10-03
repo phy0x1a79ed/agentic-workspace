@@ -29,7 +29,7 @@ files and the tracked `data/<chunk>.dvc` pin records them, so `dvc add` plus an
 ordinary commit is the whole save-and-publish story. Projects that have not been
 converted keep a plain `.awm/data` symlink to `data/<project>/`, shared by every
 scope. `scope_data_status project=<p> scope=<s>` reports which. See
-WORKSPACE.md § *Data*.
+`AGENTS.md` § *Data*.
 
 For end-of-session logging, run the native `debrief` skill (`~/.claude/skills/debrief/`).
 

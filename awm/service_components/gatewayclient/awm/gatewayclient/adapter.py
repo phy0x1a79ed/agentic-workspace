@@ -152,7 +152,7 @@ class ServiceAdapter:
         ``call`` / ``notify`` / ``session.open`` envelopes that arrive during
         initialisation wait for it (up to ``AWM_INIT_WAIT_S``) rather than
         being answered against a half-built service, so a caller sees a slow
-        first call instead of an error. See AGENTS.md § *The ready-ASAP
+        first call instead of an error. See ARCHITECTURE.md § *The ready-ASAP
         contract* for why readiness has to be immediate.
     start_cmd:
         Argv the hub uses to respawn the service after a silence eviction.

@@ -67,7 +67,7 @@ def _on_start() -> None:
 
     ``hold_mount`` never returns, so it must be a task, not awaited — awaiting
     it would keep the service permanently mid-initialisation and the gateway
-    would eventually reap it as unready (see AGENTS.md's ready-ASAP contract).
+    would eventually reap it as unready (see ARCHITECTURE.md's ready-ASAP contract).
     """
     asyncio.create_task(mount.hold_mount())
     log.info("penpot-plugins mount task launched (%s → %s)",

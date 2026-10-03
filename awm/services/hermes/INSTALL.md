@@ -164,7 +164,7 @@ into every session; the cost is Hermes' own two-sentence identity paragraph,
 preserved beside it as `SOUL.md.hermes-default`. Project context is separate and
 needs nothing: Hermes walks `AGENTS.md` from the git root down and prefers
 `AGENTS.override.md`, which is how a session under this workspace picks up
-`WORKSPACE.md`.
+the workspace `AGENTS.md`.
 
 Verify with `hermes doctor` — it checks the key, the config version, and live
 OpenRouter connectivity. Two npm advisories against upstream's vendored web

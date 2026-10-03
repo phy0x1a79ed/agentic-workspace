@@ -53,6 +53,13 @@ _SERVICE_ROOT = Path(__file__).resolve().parents[2]
 COMPOSE_FILE = _SERVICE_ROOT / "appliance" / "docker-compose.yml"
 BUILD_SCRIPT = _SERVICE_ROOT / "appliance" / "build.sh"
 IMAGE = "rlm-factorio/appliance:2.1.20"   # must match docker-compose.yml
+# The control mod is bind-mounted into the host and every seat from this one
+# directory, so a mod change ships with a container restart instead of an image
+# rebuild. Host and seats must load identical bytes or a seat cannot join.
+MOD_DIR = Path(os.environ.get(
+    "AWM_FACTORIO_MOD_DIR",
+    str(_SERVICE_ROOT / "appliance" / "mods" / "game-bot-control")))
+MOD_MOUNT = "/opt/factorio/mods/game-bot-control"
 
 # Bring-up budget: the engine needs to load (and possibly generate) a world
 # before it reports (InGame). The first-run image build is budgeted separately
@@ -91,6 +98,7 @@ def compose_env(row: dict) -> dict[str, str]:
         "FACTORIO_CONTROL_PORT": str(row.get("control_port") or CONTROL_PORT),
         "FACTORIO_OUTPUT_DIR": str(session_output_dir(
             row.get("session_id") or "default")),
+        "FACTORIO_MOD_DIR": str(MOD_DIR),
     }
 
 
@@ -291,6 +299,7 @@ def seat_run(container: str, network: str, player_name: str,
         "-e", f"FACTORIO_PORT={SEAT_GAME_PORT}",
         "--cpus", SEAT_CPUS,
         "--memory", SEAT_MEMORY,
+        "-v", f"{MOD_DIR}:{MOD_MOUNT}:ro",
     ]
     if output_dir is not None:
         cmd += ["-v", f"{output_dir}:{SEAT_OUTPUT_DIR}"]

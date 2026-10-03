@@ -406,7 +406,7 @@ def _scan_hub_adapters() -> list[dict[str, Any]]:
 # How long a lease-holder may sit without a ready control channel before the
 # reaper treats it as a zombie rather than a slow starter. Must exceed the
 # worst honest time-to-ready — which is why the adapter now registers and
-# signals ready BEFORE running slow initialisation (see AGENTS.md § the
+# signals ready BEFORE running slow initialisation (see ARCHITECTURE.md § the
 # ready-ASAP contract): a service that buffers during init is ready in
 # milliseconds, so anything still unready after this is genuinely stuck.
 _READY_GRACE_S = 90.0

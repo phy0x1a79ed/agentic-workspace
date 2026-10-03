@@ -191,7 +191,7 @@ def _on_start() -> None:
 
     A task, not an ``await``: ``hold_mount`` never returns, and ``on_start``
     blocking here would stop the adapter's control WS from ever coming up
-    (AGENTS.md's ready-ASAP contract -- a slow ``on_start`` is treated as a
+    (ARCHITECTURE.md's ready-ASAP contract -- a slow ``on_start`` is treated as a
     broken service, not a loading one).
     """
     mount.view_server()
