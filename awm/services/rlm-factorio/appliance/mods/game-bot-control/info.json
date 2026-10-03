@@ -1,6 +1,6 @@
 {
   "name": "game-bot-control",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "title": "Game Bot Control",
   "author": "awm",
   "description": "Per-seat control of real multiplayer players over RCON: a seat registry keyed by player index, pathfinded movement, real (engine-driven) mining, the real crafting queue, build/insert/take, cheat-flagged research, and a drainable events buffer. State lives in `storage` so seats survive save/load.",

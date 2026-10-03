@@ -35,6 +35,18 @@ local MINE_TIMEOUT_TICKS = 3600  -- a mining order that yields nothing for a min
 local EVENTS_CAP = 64            -- bounded ring buffer for transient events
 local NEARBY_CAP = 50            -- cap observe's entity list so the RCON payload stays bounded
 local DEFAULT_RADIUS = 32
+local ORDER_KEEP_TICKS = 36000   -- a finished order stays readable for ten minutes
+local ORDERS_CAP = 256           -- finished orders kept past that, oldest dropped first
+local WAITS_CAP = 128
+local WAIT_STEP = 5              -- waits are examined on every 5th tick at most
+local SCRIPTS_CAP = 256
+local SCRIPT_MAX = 65536
+local BP_CHUNK_MAX, BP_CHUNKS_MAX, BP_IDS_MAX = 65536, 64, 16
+local GUARD_RADIUS = 24          -- a walk stops when an enemy comes this close
+local GUARD_HP = 0.5             -- ...or the seat's health falls under this share
+local WORM_SCAN = 56             -- worms are looked for this far out, then judged by range
+local WORM_MARGIN = 4
+local THROW_TRIES = 120          -- ticks a throw may go unaccepted before the order fails
 
 -- 8 headings stepping clockwise from east. Factorio's y grows DOWNWARD, so
 -- atan2(dy, dx) == 0 is east and +pi/2 is south. defines.direction is 16-way in
@@ -57,6 +69,11 @@ end
 local function init_state()
   storage.seats = storage.seats or {}
   storage.events = storage.events or {}
+  storage.orders = storage.orders or {}
+  storage.order_seq = storage.order_seq or 0
+  storage.waits = storage.waits or {}
+  storage.scripts = storage.scripts or {}
+  storage.script_data = storage.script_data or {}
   storage.bot = nil                     -- the pre-seat singleton; gone for good
   -- A save written by an older version can hold a move order whose target is
   -- not a number pair; on_tick would crash on it. Drop such orders on load.
@@ -86,6 +103,52 @@ end
 local function sqdist(a, b)
   local dx, dy = a.x - b.x, a.y - b.y
   return dx * dx + dy * dy
+end
+
+-- ---- orders ----------------------------------------------------------------
+--
+-- A walk, wait or throw outlives the RCON command that started it, so it gets
+-- an order record the caller polls by id. Records hold plain data only (plus
+-- an `entity` that order_status never returns): the caller reads them as JSON.
+
+local function new_order(kind, seat, fields)
+  storage.order_seq = storage.order_seq + 1
+  local o = { id = storage.order_seq, kind = kind, seat = seat,
+              status = "running", started = game.tick }
+  for k, v in pairs(fields or {}) do o[k] = v end
+  storage.orders[o.id] = o
+  return o
+end
+
+local function finish_order(id, status, result)
+  local o = id and storage.orders[id]
+  if not (o and o.status == "running") then return end
+  o.status = status
+  o.finished = game.tick
+  o.result = result
+  push_event("order_done", { id = o.id, kind = o.kind, seat = o.seat,
+                             status = status })
+end
+
+local function order_view(o)
+  return { id = o.id, kind = o.kind, seat = o.seat, status = o.status,
+           started = o.started, finished = o.finished, result = o.result,
+           target = o.target, cond = o.cond, item = o.item, want = o.want }
+end
+
+local function prune_orders()
+  local done = {}
+  for id, o in pairs(storage.orders) do
+    if o.status ~= "running" then
+      if game.tick - o.finished > ORDER_KEEP_TICKS then
+        storage.orders[id] = nil
+      else
+        done[#done + 1] = id
+      end
+    end
+  end
+  table.sort(done)
+  for i = 1, #done - ORDERS_CAP do storage.orders[done[i]] = nil end
 end
 
 -- ---- the seat registry -----------------------------------------------------
@@ -133,8 +196,12 @@ local function acting_player(args)
 end
 
 -- Forget everything about a seat's current move. Its walking_state is the
--- caller's call.
-local function clear_motion(s)
+-- caller's call. A walk order still running here was cut short; callers that
+-- know the outcome finish the order first.
+local function clear_motion(s, why)
+  if s.walk then finish_order(s.walk, why or "stopped") end
+  s.walk = nil
+  s.guard = nil
   s.target = nil
   s.last_dir = nil
   s.waypoints = nil
@@ -148,6 +215,19 @@ end
 
 local function clear_mining(s)
   s.mining = nil
+end
+
+local function clear_throw(s, why)
+  if s.throw then
+    finish_order(s.throw.id, why or "stopped", { thrown = s.throw.thrown })
+  end
+  s.throw = nil
+end
+
+local function clear_orders(s, why)
+  clear_motion(s, why)
+  clear_mining(s)
+  clear_throw(s, why)
 end
 
 -- Ask the engine for a route to s.target (async; answered by
@@ -169,41 +249,96 @@ local function request_path(s, character)
   }
 end
 
+local function on_path(e, index, s)
+  s.path_req = nil
+  s.path_wait = nil
+  local p = game.players[index]
+  local ch = p and p.character
+  if not (ch and ch.valid and s.target) then return end
+  if e.try_again_later then
+    request_path(s, ch)              -- pathfinder saturated; just re-ask
+    return
+  end
+  if e.path then
+    local wps = {}
+    for i, wp in ipairs(e.path) do
+      wps[i] = { x = wp.position.x, y = wp.position.y }
+    end
+    s.waypoints = wps
+    s.wp_i = 1
+  elseif sqdist(ch.position, s.target) <= 8 * 8 then
+    -- No route but the goal is near: fall back to the straight steer (the
+    -- pathfinder refuses goals inside collision boxes that a direct
+    -- approach can still get within reach of).
+    s.waypoints = nil
+  else
+    local tx, ty = s.target.x, s.target.y
+    p.walking_state = { walking = false }
+    finish_order(s.walk, "blocked", { reason = "no_path" })
+    clear_motion(s)
+    push_event("path_blocked", { seat = p.name, x = tx, y = ty,
+                                 reason = "no_path" })
+  end
+end
+
+-- An error in an event handler is fatal to the whole server, so a path answer
+-- that cannot be applied costs the seat its move, never the world.
 script.on_event(defines.events.on_script_path_request_finished, function(e)
   for index, s in pairs(storage.seats or {}) do
     if s.path_req and e.id == s.path_req then
-      s.path_req = nil
-      s.path_wait = nil
-      local p = game.players[index]
-      local ch = p and p.character
-      if not (ch and ch.valid and s.target) then return end
-      if e.try_again_later then
-        request_path(s, ch)              -- pathfinder saturated; just re-ask
-        return
-      end
-      if e.path then
-        local wps = {}
-        for i, wp in ipairs(e.path) do
-          wps[i] = { x = wp.position.x, y = wp.position.y }
-        end
-        s.waypoints = wps
-        s.wp_i = 1
-      elseif sqdist(ch.position, s.target) <= 8 * 8 then
-        -- No route but the goal is near: fall back to the straight steer (the
-        -- pathfinder refuses goals inside collision boxes that a direct
-        -- approach can still get within reach of).
-        s.waypoints = nil
-      else
-        local tx, ty = s.target.x, s.target.y
-        p.walking_state = { walking = false }
-        clear_motion(s)
-        push_event("path_blocked", { seat = p.name, x = tx, y = ty,
-                                     reason = "no_path" })
+      local ok, err = pcall(on_path, e, index, s)
+      if not ok then
+        local p = game.players[index]
+        if p and p.connected then p.walking_state = { walking = false } end
+        clear_motion(s, "error")
+        push_event("order_dropped", { seat = p and p.name, error = tostring(err) })
       end
       return
     end
   end
 end)
+
+-- ---- the walk guard --------------------------------------------------------
+
+local WORM_RANGE = {}   -- prototype name -> attack range; a pure cache
+
+local function worm_range(w)
+  local r = WORM_RANGE[w.name]
+  if not r then
+    local ok, ap = pcall(function() return w.prototype.attack_parameters end)
+    r = ok and ap and ap.range or 30
+    WORM_RANGE[w.name] = r
+  end
+  return r
+end
+
+-- What should stop this walk now, or nil. Enemies are checked every tick; a
+-- worm's reach depends on its range, so worms are judged every 5th tick.
+local function threat(s, ch)
+  local g = s.guard
+  if g.hp > 0 and ch.health < g.hp * ch.max_health then
+    return { reason = "hp", health = ch.health, max_health = ch.max_health }
+  end
+  local pos = ch.position
+  if g.radius > 0 then
+    local e = ch.surface.find_nearest_enemy{ position = pos, max_distance = g.radius,
+                                             force = ch.force }
+    if e and e.valid then
+      return { reason = "enemy", enemy = e.name, x = e.position.x, y = e.position.y,
+               distance = math.sqrt(sqdist(e.position, pos)) }
+    end
+  end
+  if g.worms and game.tick % 5 == 0 then
+    for _, w in pairs(ch.surface.find_entities_filtered{
+          type = "turret", force = "enemy", position = pos, radius = WORM_SCAN }) do
+      local reach = worm_range(w) + WORM_MARGIN
+      if sqdist(w.position, pos) <= reach * reach then
+        return { reason = "worm", enemy = w.name, x = w.position.x, y = w.position.y,
+                 distance = math.sqrt(sqdist(w.position, pos)) }
+      end
+    end
+  end
+end
 
 -- ---- the tick driver -------------------------------------------------------
 
@@ -247,6 +382,19 @@ local function drive_motion(p, s)
   local ch = p.character
   local pos = ch.position
 
+  if s.guard then
+    local t = threat(s, ch)
+    if t then
+      p.walking_state = { walking = false }
+      t.x0, t.y0 = pos.x, pos.y
+      finish_order(s.walk, "threat", t)
+      clear_motion(s)
+      t.seat = p.name
+      push_event("threat", t)
+      return
+    end
+  end
+
   -- Waiting on the pathfinder: hold position. Re-issue if the answer never
   -- comes -- request ids don't survive save/load or an engine re-exec.
   if s.path_req then
@@ -257,6 +405,7 @@ local function drive_motion(p, s)
 
   if sqdist(pos, s.target) <= ARRIVE_DIST * ARRIVE_DIST then
     p.walking_state = { walking = false }
+    finish_order(s.walk, "arrived", { x = pos.x, y = pos.y })
     clear_motion(s)
     push_event("arrived", { seat = p.name, x = pos.x, y = pos.y })
     return
@@ -273,6 +422,7 @@ local function drive_motion(p, s)
   if (s.stuck or 0) >= STUCK_TICKS then
     if sqdist(pos, s.target) <= 1.5 * 1.5 then
       p.walking_state = { walking = false }
+      finish_order(s.walk, "arrived", { x = pos.x, y = pos.y, inexact = true })
       clear_motion(s)
       push_event("arrived", { seat = p.name, x = pos.x, y = pos.y, inexact = true })
     elseif not s.repathed then
@@ -282,6 +432,7 @@ local function drive_motion(p, s)
     else
       local tx, ty = s.target.x, s.target.y
       p.walking_state = { walking = false }
+      finish_order(s.walk, "blocked", { reason = "stuck", x = pos.x, y = pos.y })
       clear_motion(s)
       push_event("path_blocked", { seat = p.name, x = tx, y = ty, reason = "stuck" })
     end
@@ -306,31 +457,142 @@ local function drive_motion(p, s)
   p.walking_state = { walking = true, direction = s.last_dir }
 end
 
+-- One tick of a seat's throw order: one capsule from its own inventory per
+-- capsule cooldown, through the cursor the way a player throws one.
+local function drive_throw(p, s)
+  local t = s.throw
+  if game.tick < t.next then return end
+  local inv = p.character.get_main_inventory()
+  local have = inv and inv.get_item_count(t.item) or 0
+  if have == 0 then
+    clear_throw(s, t.thrown > 0 and "out_of_items" or "no_items")
+    return
+  end
+  local pos = t.x and { x = t.x, y = t.y } or p.character.position
+  p.clear_cursor()
+  local stack = inv.find_item_stack(t.item)
+  if stack then p.cursor_stack.transfer_stack(stack) end
+  p.use_from_cursor(pos)
+  p.clear_cursor()
+  local used = have - inv.get_item_count(t.item)
+  if used > 0 then
+    t.thrown = t.thrown + used
+    t.tries = 0
+    t.next = game.tick + t.cooldown
+    if t.thrown >= t.want then clear_throw(s, "done") end
+  else
+    t.tries = t.tries + 1
+    t.next = game.tick + 1
+    if t.tries > THROW_TRIES then clear_throw(s, "refused") end
+  end
+end
+
+-- ---- wait conditions -------------------------------------------------------
+
+local STATUS_NAME = {}   -- defines.entity_status value -> name; a pure cache
+for k, v in pairs(defines.entity_status) do STATUS_NAME[v] = k end
+
+-- Each check returns (met, value). A target entity that is gone returns nil.
+local WAIT_CHECKS = {
+  ghosts = function(o)
+    local surf = game.surfaces[o.surface]
+    if not surf then return nil end
+    local n = surf.count_entities_filtered{ area = o.area,
+                                            type = { "entity-ghost", "tile-ghost" } }
+    return n <= o.max, n
+  end,
+  items = function(o)
+    local e = o.entity
+    if not (e and e.valid) then return nil end
+    local n = e.get_item_count(o.item)
+    if o.at_least then return n >= o.at_least, n end
+    return n <= o.at_most, n
+  end,
+  status = function(o)
+    local e = o.entity
+    if not (e and e.valid) then return nil end
+    local name = e.status and STATUS_NAME[e.status] or "none"
+    local hit = false
+    for _, want in pairs(o.statuses) do
+      if want == name then hit = true break end
+    end
+    if o.negate then hit = not hit end
+    return hit, name
+  end,
+  products = function(o)
+    local e = o.entity
+    if not (e and e.valid) then return nil end
+    local made = e.products_finished - o.base
+    return made >= o.delta, made
+  end,
+  order = function(o)
+    local other = storage.orders[o.order]
+    local st = other and other.status or "forgotten"
+    return st ~= "running", st
+  end,
+  ticks = function(o)
+    return game.tick >= o.started + o.ticks, game.tick - o.started
+  end,
+}
+
+local function check_waits()
+  for id in pairs(storage.waits) do
+    local o = storage.orders[id]
+    if not (o and o.status == "running") then
+      storage.waits[id] = nil
+    elseif game.tick >= o.next then
+      o.next = game.tick + o.every
+      local ok, met, value = pcall(WAIT_CHECKS[o.cond], o)
+      o.value = ok and value or nil
+      if not ok then
+        finish_order(id, "error", { error = tostring(met) })
+      elseif met == nil then
+        finish_order(id, "gone", {})
+      elseif met then
+        finish_order(id, "met", { value = value })
+      elseif game.tick >= o.deadline then
+        finish_order(id, "timeout", { value = value })
+      end
+      if o.status ~= "running" then
+        o.entity = nil
+        storage.waits[id] = nil
+      end
+    end
+  end
+end
+
 script.on_event(defines.events.on_tick, function()
   for index, s in pairs(storage.seats or {}) do
-    if s.target or s.mining then
+    if s.target or s.mining or s.throw then
       local p = game.players[index]
       if not (p and p.connected and p.character and p.character.valid) then
         -- The seat left or died mid-order; drop the order rather than steer a
         -- ghost. Its client is stateless, so re-joining starts clean.
-        clear_motion(s)
-        clear_mining(s)
+        clear_orders(s, "lost")
       else
         -- An error in on_tick is fatal to the whole server, so a seat whose
         -- order cannot be driven loses the order instead.
         local ok, err = pcall(function()
           if s.mining then drive_mining(p, s) end
           if s.target then drive_motion(p, s) end
+          if s.throw then drive_throw(p, s) end
         end)
         if not ok then
           p.walking_state = { walking = false }
-          clear_motion(s)
-          clear_mining(s)
+          clear_orders(s, "error")
           push_event("order_dropped", { seat = p.name, error = tostring(err) })
         end
       end
     end
   end
+  if game.tick % WAIT_STEP == 0 and next(storage.waits) then
+    local ok, err = pcall(check_waits)
+    if not ok then
+      for id in pairs(storage.waits) do finish_order(id, "error", { error = tostring(err) }) end
+      storage.waits = {}
+    end
+  end
+  if game.tick % 600 == 0 then pcall(prune_orders) end
 end)
 
 -- ---- seat lifecycle events -------------------------------------------------
@@ -343,20 +605,14 @@ end)
 
 script.on_event(defines.events.on_player_left_game, function(e)
   local s = storage.seats and storage.seats[e.player_index]
-  if s then
-    clear_motion(s)
-    clear_mining(s)
-  end
+  if s then clear_orders(s, "left") end
   local p = game.players[e.player_index]
   push_event("seat_left", { seat = p and p.name, index = e.player_index })
 end)
 
 script.on_event(defines.events.on_player_died, function(e)
   local s = storage.seats and storage.seats[e.player_index]
-  if s then
-    clear_motion(s)
-    clear_mining(s)
-  end
+  if s then clear_orders(s, "died") end
   local p = game.players[e.player_index]
   push_event("died", {
     seat = p and p.name,
@@ -423,25 +679,112 @@ local function seat_summary(p)
   }
 end
 
--- RCON callers send JSON, and a loosely formatted number arrives as a string
--- (bc prints 0.5 as ".5"). Every numeric argument is coerced here, once, so no
--- string can reach `storage` and from there the tick driver.
-local NUMERIC_ARGS = { "x", "y", "x1", "y1", "x2", "y2", "radius", "count",
-                       "limit", "width", "height", "zoom" }
+-- Every remote-interface argument is checked here, once, before any function
+-- sees it. RCON callers send JSON, and a loosely formatted number arrives as a
+-- string (bc prints 0.5 as ".5"), so numbers are coerced, which also keeps any
+-- string out of `storage` and from there the tick driver.
+local NUM_BOUNDS = {
+  x = { -1e6, 1e6 }, y = { -1e6, 1e6 }, x1 = { -1e6, 1e6 }, y1 = { -1e6, 1e6 },
+  x2 = { -1e6, 1e6 }, y2 = { -1e6, 1e6 },
+  radius = { 0, 1024 }, count = { 0, 1e6 }, limit = { 1, 1000 },
+  width = { 16, 4096 }, height = { 16, 4096 }, zoom = { 0.03125, 32 },
+  daytime = { 0, 1 }, player_index = { 1, 65535 },
+  every = { 1, 216000 }, timeout = { 1, 216000 }, ticks = { 1, 216000 },
+  max = { 0, 1e9 }, at_least = { 0, 1e9 }, at_most = { 0, 1e9 }, delta = { 1, 1e9 },
+  order = { 1, 2 ^ 53 }, guard_radius = { 0, 64 }, guard_hp = { 0, 1 },
+}
+local STR_MAX = {
+  seat = 64, name = 128, recipe = 128, surface = 64, target = 128, search = 128,
+  id = 64, file = 128, label = 256, direction = 32, item = 128, cond = 16,
+  data = BP_CHUNK_MAX, blueprint = 4 * 1024 * 1024, code = SCRIPT_MAX,
+}
 
-local function coerce_numbers(args)
-  if type(args) ~= "table" then return args end
-  for _, k in ipairs(NUMERIC_ARGS) do
+local function check_args(args)
+  if args == nil then return {} end
+  if type(args) ~= "table" then
+    error("arguments must be a table, got " .. type(args))
+  end
+  for k, b in pairs(NUM_BOUNDS) do
     local v = args[k]
-    if v ~= nil and type(v) ~= "number" then
-      local n = tonumber(v)
-      if n == nil or n ~= n or n == math.huge or n == -math.huge then
+    if v ~= nil then
+      local n = type(v) == "number" and v or (type(v) == "string" and tonumber(v)) or nil
+      if n == nil or n ~= n then
         error(string.format("argument %s must be a number, got %q", k, tostring(v)))
+      end
+      if n < b[1] or n > b[2] then
+        error(string.format("argument %s must be within [%g, %g], got %g", k, b[1], b[2], n))
       end
       args[k] = n
     end
   end
+  for k, max in pairs(STR_MAX) do
+    local v = args[k]
+    if type(v) == "number" then v = tostring(v) args[k] = v end
+    if v ~= nil then
+      if type(v) ~= "string" then
+        error(string.format("argument %s must be a string, got %s", k, type(v)))
+      end
+      if #v > max then
+        error(string.format("argument %s is %d characters, over %d", k, #v, max))
+      end
+    end
+  end
+  if args.file and (not args.file:match("^[%w%-_%./]+$") or args.file:find("..", 1, true)) then
+    error("argument file must be a plain relative path (letters, digits, - _ . /)")
+  end
   return args
+end
+
+-- The nearest machine, chest or other placed entity within 1.5 tiles of x,y.
+local function entity_at(args)
+  local surf = game.surfaces[args.surface or DEFAULT_SURFACE]
+  if not surf then error("no such surface: " .. tostring(args.surface)) end
+  local pos = { x = args.x, y = args.y }
+  local best, bestd
+  for _, e in pairs(surf.find_entities_filtered{ position = pos, radius = 1.5,
+                                                  name = args.name }) do
+    if e.valid and e.type ~= "character" and e.type ~= "resource" then
+      local d = sqdist(e.position, pos)
+      if not bestd or d < bestd then best, bestd = e, d end
+    end
+  end
+  if not best then error(string.format("no entity at (%.1f,%.1f)", pos.x, pos.y)) end
+  return best
+end
+
+-- ---- the stored-script registry --------------------------------------------
+--
+-- A command's text is replicated to every peer before it runs, so a long
+-- script pays for its length on every call. A stored script crosses the wire
+-- once and then runs by name. Its text lives in `storage`, so every peer holds
+-- the same copy; COMPILED is only a cache each peer rebuilds on demand.
+
+local COMPILED = {}
+
+-- A script must not register event handlers: a handler added outside
+-- control.lua is not in the save, so a peer that joins later runs without it
+-- and desyncs.
+local SCRIPT_PROXY = setmetatable({}, { __index = function(_, k)
+  if k == "on_event" or k == "on_nth_tick" or k == "on_init" or k == "on_load"
+     or k == "on_configuration_changed" then
+    error("a stored script may not register event handlers", 2)
+  end
+  return script[k]
+end })
+
+local function compiled(name)
+  local rec = storage.scripts[name]
+  if not rec then error("unknown script: " .. tostring(name) .. "; define it with script_define") end
+  local c = COMPILED[name]
+  if not (c and c.code == rec.code) then
+    -- One line of prefix keeps the script's own line numbers in errors.
+    local fn, err = load("local _ENV=(...) return (function(...) " .. rec.code ..
+                         "\nend)(select(2,...))", "=" .. name, "t")
+    if not fn then error("script " .. name .. " does not compile: " .. tostring(err)) end
+    c = { code = rec.code, fn = fn }
+    COMPILED[name] = c
+  end
+  return c.fn
 end
 
 local api = {
@@ -490,8 +833,7 @@ local api = {
                              surface = surf.name, cheated = true })
     end
     local s = seat_state(p.index)
-    clear_motion(s)
-    clear_mining(s)
+    clear_orders(s)
     return { ok = true, created = created, position = p.character.position,
              surface = p.character.surface.name, index = p.index }
   end,
@@ -511,8 +853,7 @@ local api = {
   stop = function(args)
     local p = resolve_player(args)
     local s = seat_state(p.index)
-    clear_motion(s)
-    clear_mining(s)
+    clear_orders(s)
     if p.connected then
       p.walking_state = { walking = false }
       p.mining_state = { mining = false }
@@ -528,8 +869,7 @@ local api = {
     local surf = args.surface and game.surfaces[args.surface] or p.character.surface
     if not surf then error("no such surface: " .. tostring(args.surface)) end
     local s = seat_state(p.index)
-    clear_motion(s)
-    clear_mining(s)
+    clear_orders(s)
     if not p.teleport({ x = args.x, y = args.y }, surf) then
       error(string.format("cannot teleport to (%.1f,%.1f)", args.x, args.y))
     end
@@ -779,7 +1119,13 @@ local api = {
     storage.bp = storage.bp or {}
     local id = tostring(args.id or "default")
     if args.reset then storage.bp[id] = {} end
+    if not storage.bp[id] and table_size(storage.bp) >= BP_IDS_MAX then
+      error("too many blueprint uploads in progress (" .. BP_IDS_MAX .. "); stamp or reset one")
+    end
     local buf = storage.bp[id] or {}
+    if #buf >= BP_CHUNKS_MAX then
+      error("blueprint " .. id .. " is over " .. BP_CHUNKS_MAX .. " chunks; reset it")
+    end
     buf[#buf + 1] = args.data or ""
     storage.bp[id] = buf
     return { ok = true, id = id, chunks = #buf }
@@ -1079,6 +1425,190 @@ local api = {
 
   -- Return-and-clear in ONE call so no event can slip between read and reset;
   -- the supervisor's poller re-emits these up the hub as rlm.factorio events.
+  -- ---- orders: they outlive the command that starts them ----
+
+  version = function()
+    return { version = script.active_mods[script.mod_name] }
+  end,
+
+  -- Walk with a guard: the seat stops by itself when an enemy comes within
+  -- guard_radius, a worm could reach it, or its health falls under guard_hp
+  -- of max. guard = false walks blind, which is how a seat retreats.
+  walk = function(args)
+    local p = acting_player(args)
+    if args.x == nil or args.y == nil then error("walk requires x and y") end
+    local s = seat_state(p.index)
+    clear_motion(s, "superseded")
+    s.target = { x = args.x, y = args.y }
+    if args.guard ~= false then
+      s.guard = { radius = args.guard_radius or GUARD_RADIUS,
+                  hp = args.guard_hp or GUARD_HP,
+                  worms = args.guard_worms ~= false }
+    end
+    local o = new_order("walk", p.name, { target = s.target })
+    s.walk = o.id
+    request_path(s, p.character)
+    return { ok = true, order = o.id, seat = p.name, target = s.target, guard = s.guard }
+  end,
+
+  -- Watch for a condition, checked every `every` ticks until it holds or
+  -- `timeout` ticks pass. The order ends met, timeout, gone (the entity was
+  -- removed) or error.
+  wait = function(args)
+    local cond = args.cond
+    if not WAIT_CHECKS[cond or ""] then
+      error("wait needs cond: ghosts, items, status, products, order or ticks")
+    end
+    if table_size(storage.waits) >= WAITS_CAP then
+      error("too many waits running (" .. WAITS_CAP .. "); let some finish")
+    end
+    local o = { cond = cond, every = math.max(args.every or 30, WAIT_STEP),
+                deadline = game.tick + (args.timeout or 3600), next = game.tick }
+    if cond == "ghosts" then
+      o.surface = args.surface or DEFAULT_SURFACE
+      if not game.surfaces[o.surface] then error("no such surface: " .. o.surface) end
+      if args.x1 and args.y1 and args.x2 and args.y2 then
+        o.area = { { math.min(args.x1, args.x2), math.min(args.y1, args.y2) },
+                   { math.max(args.x1, args.x2), math.max(args.y1, args.y2) } }
+      elseif args.x and args.y and args.radius then
+        o.area = { { args.x - args.radius, args.y - args.radius },
+                   { args.x + args.radius, args.y + args.radius } }
+      else
+        error("ghosts needs x1,y1,x2,y2, or x,y,radius")
+      end
+      if o.area[2][1] - o.area[1][1] > 1024 or o.area[2][2] - o.area[1][2] > 1024 then
+        error("ghosts area is over 1024 tiles on a side; split it")
+      end
+      o.max = args.max or 0
+    elseif cond == "items" or cond == "status" or cond == "products" then
+      if args.x ~= nil and args.y ~= nil then
+        o.entity = entity_at(args)
+      elseif cond == "items" and args.seat then
+        o.entity = acting_player(args).character
+      else
+        error(cond .. " needs the entity's x,y" .. (cond == "items" and ", or a seat" or ""))
+      end
+      o.target = { name = o.entity.name, x = o.entity.position.x, y = o.entity.position.y }
+      if cond == "items" then
+        if not (args.item and prototypes.item[args.item]) then
+          error("items needs 'item', an item name")
+        end
+        if (args.at_least == nil) == (args.at_most == nil) then
+          error("items needs exactly one of at_least, at_most")
+        end
+        o.item, o.at_least, o.at_most = args.item, args.at_least, args.at_most
+      elseif cond == "status" then
+        local st = args.status
+        if type(st) == "string" then st = { st } end
+        if type(st) ~= "table" or #st == 0 or #st > 32 then
+          error("status needs 'status': a status name or a list of them")
+        end
+        for _, n in pairs(st) do
+          if n ~= "none" and defines.entity_status[n] == nil then
+            error("unknown status: " .. tostring(n))
+          end
+        end
+        o.statuses, o.negate = st, args.negate and true or false
+      else
+        local ok, base = pcall(function() return o.entity.products_finished end)
+        if not ok then error(o.entity.name .. " does not count finished products") end
+        o.base, o.delta = base, args.delta or 1
+      end
+    elseif cond == "order" then
+      if not args.order then error("order needs 'order', an order id") end
+      o.order = args.order
+    else
+      o.ticks = args.ticks or 60
+    end
+    local rec = new_order("wait", args.seat, o)
+    storage.waits[rec.id] = true
+    return { ok = true, order = rec.id }
+  end,
+
+  -- Throw `count` capsules from the seat's own inventory, one per capsule
+  -- cooldown, at x,y or at the seat's feet.
+  throw = function(args)
+    local p = acting_player(args)
+    local proto = args.item and prototypes.item[args.item]
+    if not (proto and proto.type == "capsule") then
+      error("throw needs 'item', a capsule (got " .. tostring(args.item) .. ")")
+    end
+    if (args.x == nil) ~= (args.y == nil) then error("throw takes both x and y, or neither") end
+    local cooldown = 30
+    pcall(function() cooldown = proto.capsule_action.attack_parameters.cooldown end)
+    local s = seat_state(p.index)
+    clear_throw(s, "superseded")
+    local want = math.max(1, args.count or 1)
+    local o = new_order("throw", p.name, { item = args.item, want = want })
+    s.throw = { id = o.id, item = args.item, want = want, thrown = 0, tries = 0,
+                next = game.tick, cooldown = math.max(1, math.ceil(cooldown)),
+                x = args.x, y = args.y }
+    return { ok = true, order = o.id, seat = p.name, cooldown = s.throw.cooldown }
+  end,
+
+  order_status = function(args)
+    local ids = args.ids or { args.order }
+    if type(ids) ~= "table" or #ids == 0 or #ids > 64 then
+      error("order_status takes 'order', or 'ids' (1-64 order ids)")
+    end
+    local out = {}
+    for _, id in ipairs(ids) do
+      local o = storage.orders[tonumber(id) or 0]
+      out[#out + 1] = o and order_view(o) or { id = id, status = "unknown" }
+    end
+    return { orders = out, tick = game.tick }
+  end,
+
+  -- ---- stored scripts ----
+
+  script_define = function(args)
+    local name, code = args.name, args.code
+    if not (name and name:match("^[%w%-_%.:]+$") and #name <= 64) then
+      error("script name must be 1-64 letters, digits, - _ . :")
+    end
+    if not code then error("script_define requires 'code'") end
+    if not storage.scripts[name] and table_size(storage.scripts) >= SCRIPTS_CAP then
+      local oldest, at
+      for n, rec in pairs(storage.scripts) do
+        if not at or rec.used < at then oldest, at = n, rec.used end
+      end
+      storage.scripts[oldest] = nil
+      COMPILED[oldest] = nil
+    end
+    storage.scripts[name] = { code = code, defined = game.tick, used = game.tick }
+    local ok, err = pcall(compiled, name)
+    if not ok then
+      storage.scripts[name] = nil
+      COMPILED[name] = nil
+      error(err, 0)
+    end
+    return { ok = true, name = name, size = #code }
+  end,
+
+  -- Run a stored script with `args` as its `...`. It sees the game's globals,
+  -- a fresh table for its own, and `storage` bound to a table of its own.
+  script_run = function(args)
+    local fn = compiled(args.name)
+    storage.scripts[args.name].used = game.tick
+    local env = setmetatable({ storage = storage.script_data, script = SCRIPT_PROXY },
+                             { __index = _G })
+    return fn(env, args.args)
+  end,
+
+  script_list = function()
+    local out = {}
+    for n, rec in pairs(storage.scripts) do
+      out[#out + 1] = { name = n, size = #rec.code, used = rec.used }
+    end
+    return { scripts = out }
+  end,
+
+  script_drop = function(args)
+    storage.scripts[args.name or ""] = nil
+    COMPILED[args.name or ""] = nil
+    return { ok = true }
+  end,
+
   drain_events = function()
     local ev = storage.events or {}
     storage.events = {}
@@ -1126,10 +1656,10 @@ local api = {
         q[#q + 1] = { recipe = item.recipe, count = item.count }
       end
       out.crafting = q
-      local radius = args.radius or DEFAULT_RADIUS
+      local radius = math.min(args.radius or DEFAULT_RADIUS, 128)
       local near = {}
       for _, ent in pairs(ch.surface.find_entities_filtered{
-            position = ch.position, radius = radius }) do
+            position = ch.position, radius = radius, limit = NEARBY_CAP + 1 }) do
         if ent ~= ch and ent.valid then
           local rec = { name = ent.name, type = ent.type,
                         x = ent.position.x, y = ent.position.y }
@@ -1151,6 +1681,6 @@ local api = {
 
 local wrapped = {}
 for name, fn in pairs(api) do
-  wrapped[name] = function(args, ...) return fn(coerce_numbers(args), ...) end
+  wrapped[name] = function(args, ...) return fn(check_args(args), ...) end
 end
 remote.add_interface("game_bot", wrapped)
