@@ -93,6 +93,10 @@ PROTECTED: tuple[tuple[str, str], ...] = (
     # from the published tarball this service unpacks into its state directory.
     ("trilium-server", r"projects/trilium/\S*/apps/server/dist/main\.cjs"
                        r"|services/trilium/server/\S*main\.cjs"),
+    # The kb service spawns its server in its own session, and the server spawns
+    # an ingest worker that runs for hours at a time. Neither is covered by the
+    # awm-service pattern, and killing the worker mid-batch loses that batch.
+    ("kb-server",      r"-m\s+kb\.(server|worker)\b"),
     ("ssh-tunnel",     r"(^|/)ssh\s+.*(-[A-Za-z]*[NMWfL]|ControlMaster|ProxyCommand)"),
     ("init",           r"^/sbin/init\b|^/lib/systemd/systemd\b|^systemd\b"),
 )
