@@ -51,3 +51,16 @@ def test_directions_are_16_way():
 
 def test_unknown_verb_passes_through():
     assert validate.check("status", {"anything": object}) == {"anything": object}
+
+
+def test_order_verbs_are_bounded():
+    assert validate.check("walk", {"x": "1", "y": 2, "guard": "false"})["guard"] is False
+    with pytest.raises(validate.ArgError):
+        validate.check("walk", {"x": 1, "y": 2, "guard_radius": 100})
+    with pytest.raises(validate.ArgError, match="cond"):
+        validate.check("wait", {"cond": "forever"})
+    assert validate.check("wait", {"cond": "status", "status": "working"})["status"] == ["working"]
+    with pytest.raises(validate.ArgError):
+        validate.check("throw", {"item": "defender-capsule", "count": 500})
+    with pytest.raises(validate.ArgError):
+        validate.check("order", {"order": 1, "timeout": 3600})

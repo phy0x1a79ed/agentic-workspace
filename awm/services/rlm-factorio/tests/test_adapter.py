@@ -68,3 +68,59 @@ def test_every_handler_is_checked_and_manifested():
     names = {f["name"] for f in ha.API_MANIFEST["functions"]}
     assert set(ha.HANDLERS) == names
     assert all(fn.__name__ == "run" for fn in ha.HANDLERS.values())
+
+
+class ScriptedBroker(StubBroker):
+    """Replies in turn from a list of outputs."""
+
+    def __init__(self, outputs):
+        super().__init__()
+        self.outputs = list(outputs)
+
+    def lua(self, conn, code, *, timeout):
+        self.sent.append((conn, code))
+        return {"output": self.outputs.pop(0), "cost_ms": 0.1}
+
+
+@pytest.fixture()
+def scripted(monkeypatch):
+    def install(outputs):
+        b = ScriptedBroker(outputs)
+        monkeypatch.setattr(ha.broker, "for_row", lambda row: b)
+        monkeypatch.setattr(ha, "THROTTLE", throttle.Throttle())
+        ha._forget_mod_state("s1")
+        return b
+    return install
+
+
+def test_orders_refused_before_mod_05(scripted):
+    scripted(["0.4.1\n"])
+    with pytest.raises(appliance.ApplianceError, match="mod >= 0.5"):
+        ha._require_orders({"session_id": "s1"})
+
+
+def test_stored_script_defines_once_then_runs_by_name(scripted):
+    b = scripted(["hi\n", "hi\n"])
+    ha._run_stored({"session_id": "s1"}, "k", "rcon.print('hi')", "seat-1")
+    ha._run_stored({"session_id": "s1"}, "k", "rcon.print('hi')", "seat-1")
+    first, second = b.sent[0][1], b.sent[1][1]
+    assert "script_define" in first and "script_run" in first
+    assert "script_define" not in second and 'args="seat-1"' in second
+    assert len(second) < 120
+
+
+def test_stored_script_redefines_after_world_reload(scripted):
+    b = scripted(["hi\n", "Cannot execute command. Error: unknown script: x:\n", "hi\n"])
+    ha._run_stored({"session_id": "s1"}, "k", "rcon.print('hi')", None)
+    name = b.sent[0][1].split("name='")[1].split("'")[0]
+    b.outputs[0] = f"Cannot execute command. Error: unknown script: {name}; define it\n"
+    res = ha._run_stored({"session_id": "s1"}, "k", "rcon.print('hi')", None)
+    assert res["output"] == "hi\n" and "script_define" in b.sent[2][1]
+
+
+def test_await_order_polls_until_done(scripted, monkeypatch):
+    monkeypatch.setattr(ha, "ORDER_POLL_S", 0)
+    running = json.dumps({"orders": [{"id": 4, "status": "running"}]})
+    done = json.dumps({"orders": [{"id": 4, "status": "arrived"}]})
+    scripted([running, running, done])
+    assert ha._await_order({}, "k", 4, 5.0, None)["status"] == "arrived"

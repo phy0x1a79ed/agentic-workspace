@@ -70,6 +70,7 @@ Run via ``run.sh`` (which the hub spawns and respawns):
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import inspect
 import json
 import logging
@@ -406,8 +407,134 @@ API_MANIFEST: dict[str, Any] = {
                  "description": "characters of output to return, 256-1048576"},
                 {"name": "budget_ms", "type": "number", "required": False,
                  "description": "raise this command's budget, up to 50 ms"},
+                {"name": "cache", "type": "boolean", "required": False,
+                 "description": (
+                     "store the script in the world and run it by name, so "
+                     "repeat calls send a few dozen bytes instead of the whole "
+                     "text (mod >= 0.5; ignored on older worlds). A stored "
+                     "script runs in the MOD context: its globals last one "
+                     "call, `storage` is a table of its own, and it may not "
+                     "register event handlers")},
             ],
             "timeout": 120.0,
+        },
+        # ---- orders (mod >= 0.5): one blocking call instead of a poll loop ----
+        {
+            "name": "walk",
+            "tool": "rlm_factorio_walk",
+            "description": (
+                "Walk the seat to (x,y) by engine pathfinding and block until "
+                "the walk ends. Returns the order: status arrived, threat, "
+                "blocked, died, stopped or superseded, with result details "
+                "(where it stopped; for threat the reason enemy / worm / hp, "
+                "the enemy and its distance). The guard stops the seat by "
+                "itself within one tick when an enemy comes within "
+                "guard_radius (default 24), a worm could reach it, or health "
+                "falls under guard_hp (default 0.5 of max); guard=false walks "
+                "blind, which is how a seat retreats. status running means "
+                "timeout (default 120 s, max 600) passed first: the walk goes "
+                "on, and order waits on it. block=false returns the order id "
+                "at once. Needs mod >= 0.5. " + _TARGET_DOC
+            ),
+            "params": [
+                *_SEAT_TARGET,
+                {"name": "x", "type": "number", "required": True},
+                {"name": "y", "type": "number", "required": True},
+                {"name": "guard", "type": "boolean", "required": False},
+                {"name": "guard_radius", "type": "number", "required": False,
+                 "description": "tiles, 0-64; 0 ignores nearby enemies"},
+                {"name": "guard_hp", "type": "number", "required": False,
+                 "description": "share of max health, 0-1; 0 ignores health"},
+                {"name": "guard_worms", "type": "boolean", "required": False},
+                {"name": "timeout", "type": "number", "required": False,
+                 "description": "seconds to block, 1-600"},
+                {"name": "block", "type": "boolean", "required": False},
+            ],
+            "timeout": 660.0,
+        },
+        {
+            "name": "wait",
+            "tool": "rlm_factorio_wait",
+            "description": (
+                "Block until a condition holds in the world, checked inside "
+                "the engine every `every` ticks (default 30). Returns the "
+                "order: status met, timeout, gone (the entity was removed) or "
+                "error, with result.value. cond is one of: ghosts (x1,y1,x2,y2 "
+                "or x,y,radius; met when at most `max` ghosts, default 0, "
+                "remain), items (the entity at x,y, or the seat when x,y are "
+                "absent; item plus exactly one of at_least / at_most), status "
+                "(the entity at x,y; status = a name like working or "
+                "no_power, or a list; negate inverts), products (the crafting "
+                "machine at x,y finishes `delta` more products), order (another "
+                "order id ends), ticks (`ticks` pass). name narrows the entity "
+                "at x,y. timeout is seconds (default 60, max 600). block=false "
+                "returns the order id at once. Needs mod >= 0.5. " + _TARGET_DOC
+            ),
+            "params": [
+                *_SEAT_TARGET,
+                {"name": "cond", "type": "string", "required": True},
+                {"name": "x", "type": "number", "required": False},
+                {"name": "y", "type": "number", "required": False},
+                {"name": "x1", "type": "number", "required": False},
+                {"name": "y1", "type": "number", "required": False},
+                {"name": "x2", "type": "number", "required": False},
+                {"name": "y2", "type": "number", "required": False},
+                {"name": "radius", "type": "number", "required": False},
+                {"name": "surface", "type": "string", "required": False},
+                {"name": "name", "type": "string", "required": False},
+                {"name": "item", "type": "string", "required": False},
+                {"name": "at_least", "type": "integer", "required": False},
+                {"name": "at_most", "type": "integer", "required": False},
+                {"name": "status", "type": "array", "required": False},
+                {"name": "negate", "type": "boolean", "required": False},
+                {"name": "delta", "type": "integer", "required": False},
+                {"name": "order", "type": "integer", "required": False},
+                {"name": "ticks", "type": "integer", "required": False},
+                {"name": "max", "type": "integer", "required": False},
+                {"name": "every", "type": "integer", "required": False,
+                 "description": "ticks between checks, 5-216000"},
+                {"name": "timeout", "type": "number", "required": False,
+                 "description": "seconds to block, 1-600"},
+                {"name": "block", "type": "boolean", "required": False},
+            ],
+            "timeout": 660.0,
+        },
+        {
+            "name": "throw",
+            "tool": "rlm_factorio_throw",
+            "description": (
+                "Throw `count` capsules (default 1, max 100) of `item` from "
+                "the seat's own inventory, one per capsule cooldown, at x,y or "
+                "at the seat's feet; blocks until done. Returns the order: "
+                "status done, out_of_items, no_items, refused or stopped, "
+                "with result.thrown. Keeps defenders or distractors up without "
+                "a script per capsule. Needs mod >= 0.5. " + _TARGET_DOC
+            ),
+            "params": [
+                *_SEAT_TARGET,
+                {"name": "item", "type": "string", "required": True},
+                {"name": "count", "type": "integer", "required": False},
+                {"name": "x", "type": "number", "required": False},
+                {"name": "y", "type": "number", "required": False},
+                {"name": "timeout", "type": "number", "required": False,
+                 "description": "seconds to block, 1-600"},
+                {"name": "block", "type": "boolean", "required": False},
+            ],
+            "timeout": 660.0,
+        },
+        {
+            "name": "order",
+            "tool": "rlm_factorio_order",
+            "description": (
+                "Read a walk, wait or throw order by id; with timeout "
+                "(seconds, max 600) block until it ends. Needs mod >= 0.5."
+            ),
+            "params": [
+                *_SEAT_TARGET,
+                {"name": "order", "type": "integer", "required": True},
+                {"name": "timeout", "type": "number", "required": False},
+            ],
+            "timeout": 660.0,
         },
         {
             "name": "blueprint_stamp",
@@ -1247,6 +1374,7 @@ def _world_new(args: dict) -> dict:
     row = _require_session(sid)
     body = {"seed": args["seed"]} if args.get("seed") is not None else {}
     result = _world_op(sid, row, "world_new", "/new", body)
+    _forget_mod_state(sid)
     dao.FactorioDAO().set_runtime(sid, current_world=None)
     _fire(sid, "world_loaded", {"world": None, "seed": args.get("seed")})
     return result
@@ -1267,6 +1395,7 @@ def _world_load(args: dict) -> dict:
     sid = args["session_id"]
     row = _require_session(sid)
     result = _world_op(sid, row, "world_load", "/load", {"name": args["name"]})
+    _forget_mod_state(sid)
     dao.FactorioDAO().set_runtime(sid, current_world=result.get("world"))
     _fire(sid, "world_loaded", {"world": result.get("world")})
     return result
@@ -1442,13 +1571,148 @@ def _exec_lua(args: dict) -> dict:
     if seat is not None:
         dao.FactorioDAO().touch_seat(seat["seat_id"])
     key = _key(seat)
-    res = _run(row, key, preamble + code, timeout=120.0)
+    if args.get("cache") and _mod_version(row) >= ORDERS_MOD:
+        res = _run_stored(row, key, code, name)
+    else:
+        res = _run(row, key, preamble + code, timeout=120.0)
     output = _cap_output(res["output"], int(args.get("max_output") or EXEC_OUTPUT_DEFAULT))
     result = {"output": output, "seat": name, "cost_ms": res["cost_ms"]}
     msg = _over_budget(key, res["cost_ms"], throttle.command_budget(args.get("budget_ms")))
     if msg:
         result.update(ok=False, ran=True, error=msg)
     return result
+
+
+# ---- mod 0.5: orders and stored scripts ------------------------------------
+#
+# A walk, wait or throw runs inside the engine across many ticks; the realm
+# starts it and polls its order record, so the caller makes one blocking call
+# instead of a polling loop. A stored script crosses the wire once and then runs
+# by name, so a long script stops paying for its length on every call.
+
+ORDERS_MOD = (0, 5, 0)
+ORDER_POLL_S = 0.25
+ORDER_WAIT_MAX_S = 600.0
+MOD_VERSION_TTL_S = 60.0
+_MOD_LOCK = threading.Lock()
+_MOD_VERSIONS: dict[str, tuple[float, tuple[int, ...]]] = {}
+_DEFINED: dict[str, set[str]] = {}
+
+
+def _forget_mod_state(sid: str) -> None:
+    with _MOD_LOCK:
+        _MOD_VERSIONS.pop(sid, None)
+        _DEFINED.pop(sid, None)
+
+
+def _mod_version(row: dict) -> tuple[int, ...]:
+    sid = row["session_id"]
+    with _MOD_LOCK:
+        hit = _MOD_VERSIONS.get(sid)
+    if hit and time.monotonic() - hit[0] < MOD_VERSION_TTL_S:
+        return hit[1]
+    out = _run(row, SYS, "rcon.print(script.active_mods['game-bot-control'] or '0')",
+               timeout=10.0, metered=False)["output"].strip()
+    try:
+        version = tuple(int(part) for part in out.split("."))
+    except ValueError:
+        version = (0,)
+    with _MOD_LOCK:
+        _MOD_VERSIONS[sid] = (time.monotonic(), version)
+    return version
+
+
+def _require_orders(row: dict) -> None:
+    version = _mod_version(row)
+    if version < ORDERS_MOD:
+        raise appliance.ApplianceError(
+            "needs the game-bot-control mod >= 0.5; this world runs "
+            f"{'.'.join(map(str, version))}, and 0.5 arrives with the next world "
+            "restart")
+
+
+def _await_order(row: dict, key: str, order_id: int, timeout: float,
+                 seat: dict | None) -> dict:
+    deadline = time.monotonic() + timeout
+    while True:
+        res, _ = _iface(row, "order_status", {"order": order_id}, key=key)
+        order = _as_list(res.get("orders"))[0]
+        if order.get("status") != "running" or time.monotonic() + ORDER_POLL_S >= deadline:
+            return order
+        if seat is not None:
+            dao.FactorioDAO().touch_seat(seat["seat_id"])
+        time.sleep(ORDER_POLL_S)
+
+
+def _order_verb(fn: str, *keys: str, need_seat: bool = True, default_timeout: float):
+    """Handler factory: start a mod order, then block until it ends or times out."""
+    def handler(args: dict) -> dict:
+        row, seat = _resolve(args, need_seat=need_seat)
+        _require_orders(row)
+        body = {k: args[k] for k in keys if args.get(k) is not None}
+        if seat is not None:
+            body["seat"] = seat["player_name"]
+            dao.FactorioDAO().touch_seat(seat["seat_id"])
+        key = _key(seat)
+        timeout = min(float(args.get("timeout") or default_timeout), ORDER_WAIT_MAX_S)
+        if fn == "wait":
+            body["timeout"] = max(1, min(216000, int(timeout * 60)))
+        started, _ = _iface(row, fn, body, key=key)
+        if args.get("block") is False:
+            return started
+        # A wait ends itself at its own deadline; give that verdict time to land.
+        grace = 2.0 if fn == "wait" else 0.0
+        return _await_order(row, key, int(started["order"]), timeout + grace, seat)
+    return handler
+
+
+def _order(args: dict) -> dict:
+    row, seat = _resolve(args, need_seat=False)
+    _require_orders(row)
+    key = _key(seat)
+    timeout = min(float(args.get("timeout") or 0), ORDER_WAIT_MAX_S)
+    return _await_order(row, key, int(args["order"]), timeout, seat)
+
+
+_walk = _order_verb("walk", "x", "y", "guard", "guard_radius", "guard_hp",
+                    "guard_worms", default_timeout=120.0)
+_wait = _order_verb("wait", "cond", "x", "y", "x1", "y1", "x2", "y2", "radius",
+                    "surface", "name", "item", "at_least", "at_most", "status",
+                    "negate", "delta", "order", "ticks", "max", "every",
+                    need_seat=False, default_timeout=60.0)
+_throw = _order_verb("throw", "item", "count", "x", "y", default_timeout=60.0)
+
+
+def _lua_json(value: Any) -> str:
+    """``value`` as a Lua expression, decoded from JSON in the engine."""
+    blob = json.dumps(value).replace("\\", "\\\\").replace("'", "\\'")
+    return f"helpers.json_to_table('{blob}')"
+
+
+def _run_stored(row: dict, key: str, code: str, seat_name: str | None) -> dict:
+    """Run ``code`` as a stored script, defining it first when the world lacks it.
+
+    The seat binding is an argument, not text, so every seat shares one stored
+    copy of a script.
+    """
+    body = "local seat = ... local player = seat and game.players[seat] " + code
+    name = "x:" + hashlib.sha1(body.encode()).hexdigest()[:20]
+    run = (f"remote.call('game_bot','script_run',{{name='{name}',"
+           f"args={json.dumps(seat_name) if seat_name else 'nil'}}})")
+    sid = row["session_id"]
+    with _MOD_LOCK:
+        known = name in _DEFINED.get(sid, ())
+    if known:
+        res = _run(row, key, run, timeout=120.0)
+        if f"unknown script: {name}" not in res["output"]:
+            return res
+    define = ("remote.call('game_bot','script_define',"
+              + _lua_json({"name": name, "code": body}) + ") ")
+    res = _run(row, key, define + run, timeout=120.0)
+    if not res["output"].startswith("Cannot execute command"):
+        with _MOD_LOCK:
+            _DEFINED.setdefault(sid, set()).add(name)
+    return res
 
 
 # take_screenshot returns before the renderer has written anything, and the file
@@ -1673,6 +1937,10 @@ HANDLERS = {
     "research": _research,
     "scan": _scan,
     "load": _load,
+    "walk": _walk,
+    "wait": _wait,
+    "throw": _throw,
+    "order": _order,
 }
 HANDLERS = {verb: _checked(verb, fn) for verb, fn in HANDLERS.items()}
 
