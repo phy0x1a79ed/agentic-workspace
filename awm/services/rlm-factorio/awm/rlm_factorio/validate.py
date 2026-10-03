@@ -158,6 +158,7 @@ SPECS: dict[str, dict[str, Callable[[str, Any], Any]]] = {
     "throw": {"item": name, "count": integer(1, 100), "x": COORD, "y": COORD,
               "timeout": number(1, 600), "block": boolean},
     "order": {"order": integer(1, 2**53), "timeout": number(0, 600)},
+    "rejoin": {"parallel": integer(1, 4)},
     "world_save": {"name": text(100), "overwrite": boolean},
     "world_load": {"name": text(100)},
     "world_new": {"seed": integer(0, 2**32 - 1)},

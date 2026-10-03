@@ -181,6 +181,24 @@ API_MANIFEST: dict[str, Any] = {
             "timeout": 300.0,
         },
         {
+            "name": "rejoin",
+            "tool": "rlm_factorio_rejoin",
+            "description": (
+                "Reconnect seats after a world reload dropped them: restart "
+                "the seat's client under its own player name, so the seat id, "
+                "character and inventory all survive. Pass seat_id for one "
+                "seat, or session_id for every live seat (about a minute "
+                "each; parallel, 1-4, rejoins that many at once). Returns "
+                "{seats: [{seat_id, player_index | error}]}."
+            ),
+            "params": [
+                {"name": "seat_id", "type": "string", "required": False},
+                {"name": "session_id", "type": "string", "required": False},
+                {"name": "parallel", "type": "integer", "required": False},
+            ],
+            "timeout": 3600.0,
+        },
+        {
             "name": "leave",
             "tool": "rlm_factorio_leave",
             "description": (
@@ -1226,6 +1244,54 @@ def _join(args: dict, as_: str | None = None) -> dict:
             "owner": owner}
 
 
+def _rejoin_one(row: dict, seat: dict) -> dict:
+    d = dao.FactorioDAO()
+    project = row["compose_project"] or appliance.PROJECT
+    container = seat["container_name"] or appliance.seat_container_name(
+        project, seat["seat_id"])
+    _close_conn(seat)
+    appliance.seat_stop(container)
+    try:
+        appliance.seat_run(container, appliance.seat_network(project),
+                           seat["player_name"],
+                           output_dir=appliance.seat_output_dir(seat["seat_id"]))
+        index = _wait_seat_connected(row, seat, container)
+        _iface(row, "spawn", {"seat": seat["player_name"]},
+               key=seat["player_name"], metered=False)
+    except Exception as exc:  # noqa: BLE001
+        appliance.seat_stop(container)
+        d.set_seat(seat["seat_id"], status="error")
+        return {"seat_id": seat["seat_id"], "error": str(exc)}
+    d.set_seat(seat["seat_id"], status="ready", container_name=container,
+               player_index=index)
+    d.touch_seat(seat["seat_id"])
+    _fire(row["session_id"], "seat_joined", {"seat_id": seat["seat_id"],
+                                             "player_name": seat["player_name"],
+                                             "player_index": index, "rejoined": True})
+    return {"seat_id": seat["seat_id"], "player_index": index}
+
+
+def _rejoin(args: dict) -> dict:
+    """Reconnect seats under their own player names after a world reload.
+
+    A reload drops every client. Joining again would mint new seats and new
+    players; a rejoin keeps the seat id, and the same name brings back the same
+    player with its character and inventory. Each join loads the client's
+    sprites on several cores, so ``parallel`` (default 1) bounds how many load
+    at once.
+    """
+    if args.get("seat_id"):
+        seats = [_require_seat(args["seat_id"])]
+        row = _require_session(seats[0]["session_id"])
+    elif args.get("session_id"):
+        row = _require_session(args["session_id"])
+        seats = dao.FactorioDAO().live_seats(row["session_id"])
+    else:
+        raise ValueError("rejoin needs seat_id, or session_id for every live seat")
+    with ThreadPoolExecutor(max_workers=int(args.get("parallel") or 1)) as pool:
+        return {"seats": list(pool.map(lambda seat: _rejoin_one(row, seat), seats))}
+
+
 def _leave(args: dict) -> dict:
     seat_id = args["seat_id"]
     seat = _require_seat(seat_id)
@@ -1912,6 +1978,7 @@ HANDLERS = {
     "status": _status,
     "join": _join,
     "leave": _leave,
+    "rejoin": _rejoin,
     "seats": _seats,
     "observe": _observe,
     "screenshot": _screenshot,
