@@ -50,10 +50,21 @@ local DIRS = {
   defines.direction.northeast,
 }
 
+local function is_point(t)
+  return type(t) == "table" and type(t.x) == "number" and type(t.y) == "number"
+end
+
 local function init_state()
   storage.seats = storage.seats or {}
   storage.events = storage.events or {}
   storage.bot = nil                     -- the pre-seat singleton; gone for good
+  -- A save written by an older version can hold a move order whose target is
+  -- not a number pair; on_tick would crash on it. Drop such orders on load.
+  for _, s in pairs(storage.seats) do
+    if s.target ~= nil and not is_point(s.target) then
+      s.target, s.waypoints, s.wp_i, s.path_req = nil, nil, nil, nil
+    end
+  end
 end
 
 script.on_init(init_state)
@@ -305,8 +316,18 @@ script.on_event(defines.events.on_tick, function()
         clear_motion(s)
         clear_mining(s)
       else
-        if s.mining then drive_mining(p, s) end
-        if s.target then drive_motion(p, s) end
+        -- An error in on_tick is fatal to the whole server, so a seat whose
+        -- order cannot be driven loses the order instead.
+        local ok, err = pcall(function()
+          if s.mining then drive_mining(p, s) end
+          if s.target then drive_motion(p, s) end
+        end)
+        if not ok then
+          p.walking_state = { walking = false }
+          clear_motion(s)
+          clear_mining(s)
+          push_event("order_dropped", { seat = p.name, error = tostring(err) })
+        end
       end
     end
   end
@@ -402,7 +423,28 @@ local function seat_summary(p)
   }
 end
 
-remote.add_interface("game_bot", {
+-- RCON callers send JSON, and a loosely formatted number arrives as a string
+-- (bc prints 0.5 as ".5"). Every numeric argument is coerced here, once, so no
+-- string can reach `storage` and from there the tick driver.
+local NUMERIC_ARGS = { "x", "y", "x1", "y1", "x2", "y2", "radius", "count",
+                       "limit", "width", "height", "zoom" }
+
+local function coerce_numbers(args)
+  if type(args) ~= "table" then return args end
+  for _, k in ipairs(NUMERIC_ARGS) do
+    local v = args[k]
+    if v ~= nil and type(v) ~= "number" then
+      local n = tonumber(v)
+      if n == nil or n ~= n or n == math.huge or n == -math.huge then
+        error(string.format("argument %s must be a number, got %q", k, tostring(v)))
+      end
+      args[k] = n
+    end
+  end
+  return args
+end
+
+local api = {
 
   -- ---- registry ----
 
@@ -1105,4 +1147,10 @@ remote.add_interface("game_bot", {
     end
     return out
   end,
-})
+}
+
+local wrapped = {}
+for name, fn in pairs(api) do
+  wrapped[name] = function(args, ...) return fn(coerce_numbers(args), ...) end
+end
+remote.add_interface("game_bot", wrapped)
