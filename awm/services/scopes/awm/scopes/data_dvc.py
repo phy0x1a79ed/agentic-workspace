@@ -710,8 +710,8 @@ def provision_scope_data(project: str, scope: str, awm_dir: Path) -> dict:
         else:
             report["stale_checkout"] = sentinel.read_text()[-400:]
 
-    # `.awm/data` kept resolving for 125 scadc files and the WORKSPACE.md
-    # contract, so it survives as a relative symlink to the real data folder
+    # `.awm/data` kept resolving for 125 scadc files and the documented
+    # layout, so it survives as a relative symlink to the real data folder
     # rather than as a second copy. This makes repointing those callers optional
     # cleanup instead of a blocking migration step.
     linked = _link_compat_path(compat, repo_dir)
