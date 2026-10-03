@@ -3,8 +3,9 @@
 ## Purpose & Contents
 
 This file covers installing, building and running the Factorio realm, the seat
-model the service is built around, and how a person joins the world from their
-own Factorio client.
+model the service is built around, how game calls reach the engine and what they
+cost, how a mod change ships, and how a person joins the world from their own
+Factorio client.
 
 It does not list verbs or their parameters. `rlm(verb="describe")` answers that
 from the running manifest and cannot go stale. What is written here is what
@@ -114,14 +115,75 @@ elsewhere for an hour loses it.
 The reaper sweeps seats only. It never touches a session, so it cannot
 disconnect a person who joined from Steam or close the world under them.
 
-Teardown runs on SIGTERM, which is how `awm services stop` ends the service.
-Seats are reclaimed there. The host appliance is deliberately left up: it holds
-the world and both `acquire` and startup reconciliation re-adopt it.
+A realm restart leaves every seat running. SIGTERM (`awm services stop`, a
+deploy, a gateway restart) ends only the service process, and the next start
+adopts each seat whose container still runs. Only the reaper, `leave` and
+`release` tear seats down, so a realm deploy never drops the crew. Disabling the
+service therefore leaves seats running until `release` or the reaper of the next
+start. The host appliance is left up for the same reason: it holds the world, and
+both `acquire` and startup reconciliation re-adopt it.
 
 Screenshots are files, not payloads. A seat renders into its own bind-mounted
 `script-output` directory and the verb returns a path under
 `$AWM_WORKSPACE/.awm/services/rlm-factorio/output/seats/<seat_id>/`. Read the
 file to see it.
+
+## Game calls
+
+Every game call goes through one broker process per appliance,
+`appliance/rcon_broker.py`, which the realm starts with `docker exec` from the
+source in its own tree. A broker change therefore ships with a realm restart and
+never needs an image rebuild. The broker holds one RCON socket per connection
+key: one per seat, `anon` for a seatless agent call, and `sys` for the realm's
+own bookkeeping. One shared socket used to queue the whole crew behind a lock.
+
+**CAUTION:** Factorio answers each command with exactly one packet, even a
+100 KB reply. Never wait for more, and never send the Source-style empty
+sentinel packet. Factorio does not echo it, so the read hangs.
+
+The throttle meters each key in engine script milliseconds and charges a command
+after it runs. Nothing can stop a running command: Factorio's Lua has no clock
+and no debug hook, and a time-based stop would desync every peer. So a command
+over its budget still completes, and returns `OVER_BUDGET` with its output
+attached. A read too large for one command pages through `scan`, whose work cap
+counts entities examined, never time.
+
+## The cost of command text
+
+The engine sends a command's text to every peer before it runs the command, in
+per-tick segments whose size `server-settings.json` sets. It is 1000-1400 bytes
+here, up from Factorio's default of 25-100.
+
+**CAUTION:** the image bakes `appliance/config/server-settings.json`, and the
+engine reads it only when it starts. To change a running appliance, `docker cp`
+the file to `/factorio/config/server-settings.json` and reload the world. Then
+rebuild the image, or the next appliance comes up with the old file.
+
+Segment size is not the whole cost. On a test rig with 3 seats on a fresh map, the
+larger segments cut a 4 KB command from 550 ms to 50 ms. On the live world, with
+10 seats on a large base, a bare command takes about 150 ms. Text costs about
+0.85 ms per compressed byte there under either setting, and the cause is not yet
+known. `exec_lua cache=true` stores a script in the world once and then runs it
+by name, which avoids the cost for any script run more than once.
+
+## Changing the mod
+
+The host, every seat and every desktop client must load identical
+`game-bot-control` bytes. Each reads the mod only at start, and seats bind-mount
+the mod directory of the realm's tree. So a mod change ships only with a world
+reload:
+
+1. Save the world.
+2. Advance the realm's tree to the new mod, then restart the realm.
+3. Run `world_load` of that save.
+4. Run `rejoin` for the session.
+5. Install the new zip in every desktop client (§ *Joining the world*).
+
+**WARNING:** between steps 2 and 3, a seat that joins loads the new mod against
+the old engine and is refused. Hold all joins for the window.
+
+The realm verbs that need a newer mod (`walk`, `wait`, `throw`, `order`) refuse
+an older world with an error naming both versions.
 
 ## Sacred saves
 
@@ -131,9 +193,14 @@ never on a named save. A named save is an immutable snapshot. Nothing writes
 to clobber unless `overwrite` is true.
 
 `world_save` is a live console action and is seamless for connected players.
-`world_new` and `world_load` re-exec the engine in place: the container stays up,
-seats and any connected person drop to the menu and reconnect. Both discard
-unsaved progress, exactly as the desktop UI does. Snapshot first.
+`world_new` and `world_load` re-exec the engine in place: the container stays up
+and every client drops. Both discard unsaved progress, exactly as the desktop UI
+does. Snapshot first.
+
+A seat does not reconnect by itself after a reload. Run `rejoin`: it restarts
+each seat's client under its own player name, and the same name brings back the
+same player, so the seat id, character and inventory all survive. `join` would
+mint a new seat and a new player instead.
 
 Saves are ordinary `.zip` files, interchangeable with a desktop client.
 
@@ -158,6 +225,11 @@ Defaults suit one session on one host. A test rig must override the first four.
 | `AWM_FACTORIO_SEAT_JOIN_TIMEOUT` | `240` | seconds to wait for a seat to reach the world |
 | `AWM_FACTORIO_SCREENSHOT_TIMEOUT` | `60` | seconds to wait for a rendered PNG to settle |
 | `AWM_FACTORIO_EVENTS_POLL_S` | `2` | in-world event pump interval |
+| `AWM_FACTORIO_SEAT_MS_PER_S` | `50` | script ms per second each key may spend |
+| `AWM_FACTORIO_SEAT_BURST_MS` | `250` | script ms a quiet key may spend at once |
+| `AWM_FACTORIO_UPS_FLOOR` | `55` | below this UPS, only keys holding half a burst send |
+| `AWM_FACTORIO_CMD_BUDGET_MS` | `15` | per-command budget before `OVER_BUDGET` |
+| `AWM_FACTORIO_CMD_BUDGET_MAX_MS` | `50` | ceiling a call's `budget_ms` may raise it to |
 
 **WARNING:** the default project owns `rlm-factorio_factorio-saves`, the volume
 real worlds live in. A rig that leaves these at their defaults runs against it,
@@ -231,6 +303,10 @@ as a player. Two things about that surface are worth knowing before reading it:
   what the script *printed*, so a value comes back through `rcon.print(...)` and
   a bare `return` is discarded. It takes a file path as well as an inline string,
   which is the only form a multi-line script survives shell quoting in.
+- **`exec_lua cache=true` runs the script in the mod context** as a stored
+  script. Its globals last one call, `storage` is a table of its own, and it may
+  not register an event handler. A handler added outside `control.lua` is missing
+  from the save, so a peer that joins later runs without it and desyncs.
 
 The `factorio` emitter fires `rlm.factorio.<kind>` carrying
 `{session_id, kind, tick?, data}`: world and seat lifecycle events from the
