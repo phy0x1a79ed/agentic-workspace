@@ -516,10 +516,15 @@ class ServiceAdapter:
         self_minted = not sid
         # ``state["last_up"]`` tracks the last moment this target's control WS was
         # confirmed up (set in ``_serve`` on each inbound frame, and below on a
-        # clean WS close). Initialised to now so a target that can never reach its
-        # hub still gives up after the deadline rather than spinning. The box is
-        # per-loop so concurrent base + overlay loops keep independent deadlines.
-        state = {"last_up": monotonic()}
+        # clean WS close). ``state["down_since"]`` marks the first failure of the
+        # current outage; the give-up deadline counts from it, not from
+        # ``last_up``, so idle time on a healthy socket (no inbound frames) is
+        # never mistaken for an outage. A frameless reconnect does not advance
+        # ``last_up``, so a flapping gateway still runs the deadline down. The
+        # box is per-loop so concurrent base + overlay loops keep independent
+        # deadlines.
+        state: dict[str, float | None] = {"last_up": monotonic(),
+                                          "down_since": None}
         while True:
             try:
                 if not sid:
@@ -540,7 +545,12 @@ class ServiceAdapter:
                 log.info("%s: giving up: %s", name, exc)
                 return
             except Exception as exc:
-                if monotonic() - state["last_up"] > _RECONNECT_DEADLINE_S:
+                now = monotonic()
+                down_since = state["down_since"]
+                if down_since is None or state["last_up"] > down_since:
+                    # First failure since the link was last confirmed up.
+                    state["down_since"] = down_since = now
+                if now - down_since > _RECONNECT_DEADLINE_S:
                     # The gateway has been unreachable past the deadline — it
                     # is gone for good (hard kill / idle os._exit, where its
                     # lifespan shutdown never ran). Stop rather than spin

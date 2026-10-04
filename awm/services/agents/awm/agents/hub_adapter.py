@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import threading
 from typing import Any
 
 from awm.gatewayclient import ServiceAdapter
@@ -806,12 +807,28 @@ async def _h_list_scopes(args: dict) -> dict:
 # ---------------------------------------------------------------------------
 
 
+_report_lock = threading.Lock()
+
+
+def _report_sync(args: dict) -> dict:
+    """Ingest one report on a worker thread.
+
+    ``handle_report`` parses new transcript bytes (a whole transcript on a
+    session's first turn) and can wait up to the sqlite busy timeout. On the
+    event loop either stalls the control WS past its keepalive, and the gateway
+    respawns the service. The lock keeps reports serial, as they were on the
+    loop.
+    """
+    with _report_lock:
+        conn = dao.connect()
+        try:
+            return asyncio.run(roster.handle_report(conn, args or {}))
+        finally:
+            conn.close()
+
+
 async def _handle_report(args: dict) -> dict:
-    conn = dao.connect()
-    try:
-        delta = await roster.handle_report(conn, args or {})
-    finally:
-        conn.close()
+    delta = await asyncio.to_thread(_report_sync, args)
     await _emit_feed(delta)
     return delta
 
@@ -842,25 +859,33 @@ def _h_mark_seen(args: dict) -> dict:
         conn.close()
 
 
-async def _h_resolve(args: dict) -> dict:
+def _resolve_sync(args: dict) -> list:
     conn = dao.connect()
     try:
-        ids = roster.resolve_items(
+        return roster.resolve_items(
             conn, item_id=args.get("id"), session_id=args.get("session_id"),
             by="page")
     finally:
         conn.close()
+
+
+def _clear_sync() -> dict:
+    conn = dao.connect()
+    try:
+        return roster.clear_all(conn)
+    finally:
+        conn.close()
+
+
+async def _h_resolve(args: dict) -> dict:
+    ids = await asyncio.to_thread(_resolve_sync, args)
     delta = {"ok": True, "type": "resolve" if ids else None, "ids": ids}
     await _emit_feed(delta)
     return delta
 
 
 async def _h_clear(args: dict) -> dict:
-    conn = dao.connect()
-    try:
-        out = roster.clear_all(conn)
-    finally:
-        conn.close()
+    out = await asyncio.to_thread(_clear_sync)
     if out.get("resolved"):
         await _emit_feed({"type": "resolve", "ids": out["resolved"]})
     return out

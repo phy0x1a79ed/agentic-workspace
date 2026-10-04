@@ -252,6 +252,54 @@ class TestSweepAndVerbs:
         assert roster.stats(conn)["open_by_kind"] == {}
 
 
+class TestHubAdapterOffLoop:
+    """The roster handlers do sync sqlite and transcript I/O; run on the event
+    loop, a slow one starves the control WS keepalive and the gateway respawns
+    the service. They must run on a worker thread."""
+
+    def test_report_resolve_clear_run_off_the_event_loop(self, monkeypatch):
+        import asyncio
+        import threading
+        from awm.agents import hub_adapter, roster
+
+        threads: dict[str, int] = {}
+        real_report = roster.handle_report
+        real_resolve = roster.resolve_items
+        real_clear = roster.clear_all
+
+        async def spy_report(conn, event):
+            threads["report"] = threading.get_ident()
+            return await real_report(conn, event)
+
+        def spy_resolve(conn, **kw):
+            threads["resolve"] = threading.get_ident()
+            return real_resolve(conn, **kw)
+
+        def spy_clear(conn):
+            threads["clear"] = threading.get_ident()
+            return real_clear(conn)
+
+        monkeypatch.setattr(roster, "handle_report", spy_report)
+        monkeypatch.setattr(roster, "resolve_items", spy_resolve)
+        monkeypatch.setattr(roster, "clear_all", spy_clear)
+
+        async def main():
+            threads["loop"] = threading.get_ident()
+            d = await hub_adapter._handle_report({
+                "harness": "claude", "event": "error",
+                "session_id": "s-off", "message": "boom"})
+            r = await hub_adapter._h_resolve({"id": d["item"]["id"]})
+            c = await hub_adapter._h_clear({})
+            return d, r, c
+
+        d, r, c = asyncio.run(main())
+        assert d["type"] == "raise"
+        assert r["ids"] == [d["item"]["id"]]
+        assert c["resolved"] == []
+        for name in ("report", "resolve", "clear"):
+            assert threads[name] != threads["loop"], name
+
+
 # ---------------------------------------------------------------------------
 # Token / context accounting + EOOT
 # ---------------------------------------------------------------------------

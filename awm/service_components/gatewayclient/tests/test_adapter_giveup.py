@@ -268,8 +268,9 @@ def test_run_returns_after_deadline_of_transient_failures(monkeypatch):
     monkeypatch.setenv("AWM_SERVICE_ID", "sid-preset")
     monkeypatch.setattr(adapter_mod, "_RECONNECT_DEADLINE_S", 10.0)
 
-    # Fake clock: 0 (init), 6 (1st check, < 10 → retry), 12 (2nd check, > 10 →
-    # give up). Demonstrates the deadline counts repeated transient failures.
+    # Fake clock: 0 (init), 6 (1st failure starts the outage → retry), 12 (6s
+    # down → retry), 99 (93s down → give up). Demonstrates the deadline counts
+    # repeated transient failures from the first one.
     ticks = iter([0.0, 6.0, 12.0, 99.0, 99.0])
     monkeypatch.setattr(adapter_mod, "monotonic", lambda: next(ticks))
 
@@ -287,8 +288,67 @@ def test_run_returns_after_deadline_of_transient_failures(monkeypatch):
 
     monkeypatch.setattr(a, "_serve", _serve_transient)
     asyncio.run(asyncio.wait_for(a.run(), timeout=2))
-    # Retried at least once before the deadline tripped.
-    assert calls["n"] >= 2
+    # Retried before the deadline tripped.
+    assert calls["n"] == 3
+
+
+def test_run_idle_link_blip_retries_instead_of_exiting(monkeypatch):
+    # A service idle for longer than the deadline (no inbound frames, so
+    # last_up is stale) loses its WS once. That is the start of an outage, not
+    # the end of one: it must retry, not exit on the first failure.
+    monkeypatch.setenv("AWM_HUB_URL", "http://hub")
+    monkeypatch.setenv("AWM_SERVICE_ID", "sid-preset")
+    monkeypatch.setattr(adapter_mod, "_RECONNECT_DEADLINE_S", 10.0)
+    ticks = iter([0.0, 1000.0, 1001.0])
+    monkeypatch.setattr(adapter_mod, "monotonic", lambda: next(ticks))
+
+    async def _no_sleep(_):
+        return None
+
+    monkeypatch.setattr(adapter_mod.asyncio, "sleep", _no_sleep)
+
+    a = _adapter()
+    calls = {"n": 0}
+
+    async def _serve(hub_url, sid, **kw):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("keepalive ping timeout")
+        raise GiveUp("done")
+
+    monkeypatch.setattr(a, "_serve", _serve)
+    asyncio.run(asyncio.wait_for(a.run(), timeout=2))
+    assert calls["n"] == 2
+
+
+def test_run_frame_after_outage_starts_a_fresh_deadline(monkeypatch):
+    # Outage 1 runs 8s, the link recovers (a frame lands), then outage 2 starts
+    # at t=500: its deadline counts from 500, not from outage 1's start.
+    monkeypatch.setenv("AWM_HUB_URL", "http://hub")
+    monkeypatch.setenv("AWM_SERVICE_ID", "sid-preset")
+    monkeypatch.setattr(adapter_mod, "_RECONNECT_DEADLINE_S", 10.0)
+    ticks = iter([0.0, 100.0, 108.0, 500.0, 505.0])
+    monkeypatch.setattr(adapter_mod, "monotonic", lambda: next(ticks))
+
+    async def _no_sleep(_):
+        return None
+
+    monkeypatch.setattr(adapter_mod.asyncio, "sleep", _no_sleep)
+
+    a = _adapter()
+    calls = {"n": 0}
+
+    async def _serve(hub_url, sid, *, state, **kw):
+        calls["n"] += 1
+        if calls["n"] == 3:
+            state["last_up"] = 200.0  # a confirmed frame between outages
+        if calls["n"] == 5:
+            raise GiveUp("done")
+        raise RuntimeError("blip")
+
+    monkeypatch.setattr(a, "_serve", _serve)
+    asyncio.run(asyncio.wait_for(a.run(), timeout=2))
+    assert calls["n"] == 5
 
 
 # ---------------------------------------------------------------------------
