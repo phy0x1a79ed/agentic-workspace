@@ -146,10 +146,17 @@ hooks, and the mount list; `dvc add` / `dvc checkout` / `git commit` /
   merge — so it leaves a sentinel that `data_status` and provisioning surface.
 - **An absent mount list means "everything"; an empty one means "nothing."**
   Collapsing the two drags every cold chunk in the project onto disk.
-- **`gc` is a guard, not a wrapper.** The cache is shared workspace-wide, so
-  `data_gc` must be told every project whose data survives, defaults to dry-run,
-  and refuses `all-branches`. Note dvc's own output says "Removed N objects"
-  even for a dry run — trust the `dry_run` field in the reply.
+- **`gc` never runs `dvc gc`.** `dvc gc -p` holds the repo lock of every listed
+  worktree for its whole run and re-walks the shared history once per worktree.
+  One dry run locked ~100 worktrees for eight hours. `data_gc` reads the pins
+  itself, once per bare repo, and sweeps `files/md5` with no repo lock.
+- **CAUTION** The grace window is the only race guard. `dvc add` writes cache
+  objects before git can see any pin for them, so an unreferenced object
+  younger than `GC_GRACE_DAYS` survives. Shortening the window shortens the
+  time an unstaged pin is safe.
+- **A missing `.dir` manifest blocks gc.** Its children cannot be told apart
+  from garbage. Restore it from the archive, or name it in `accept_missing`.
+  A wired project must be named too: in `projects` to keep, `exclude` to drop.
 - **Teardown guards uncommitted work, not content.** Deleting a worktree unlinks
   names, never bytes. What dies is what was never committed — and under one
   lever that is `git status`, covering data and code at once.
