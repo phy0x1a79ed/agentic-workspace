@@ -35,7 +35,7 @@ from awm.config import (
     VAGRANT_PROJECT,
 )
 from awm.scopes.git_utils import run_git, detect_default_branch
-from awm.scopes import data_dvc
+from awm.scopes import data_dvc, search_index
 from awm.scopes.dao import ScopesDAO
 from awm.scopes.identity import (
     agent_id_for_scope,
@@ -303,7 +303,7 @@ def _default_context(project: str, scope: str) -> str:
         f"The current directory is the git worktree. Data is at `data/`. Do not edit "
         f"`.awm/history.md` — use the `scope` verbs.\n\n"
         f"Workspace rules — data versioning, environments, the git model — are in "
-        f"`WORKSPACE.md` and are not repeated here.\n\n"
+        f"the workspace `AGENTS.md` and are not repeated here.\n\n"
         f"## Debrief\n\n"
         f"Run the `debrief` skill when the work is done. When a plan drives the work, "
         f"its last task is the debrief.\n"
@@ -344,6 +344,14 @@ def _neutralise_title(text: str) -> str:
     return (text[:80] + "…") if len(text) > 80 else text
 
 
+# How many of a scope's OWN journal entries always survive into history.md, and
+# how many project-wide entries share the rest of the file. The floor is what
+# stops a busy project from crowding a scope out of its own history.
+_OWN_JOURNAL_FLOOR = 10
+_PROJECT_JOURNAL_WINDOW = 50
+_PER_SKILL_CAP = 10
+
+
 def _generate_history_md(project: str, scope: str) -> str:
     from awm.scopes.channel import _coerce_meta
 
@@ -356,20 +364,46 @@ def _generate_history_md(project: str, scope: str) -> str:
     )
 
     dao = ScopesDAO()
+    # 'allocated' is how every scope is born and nothing promotes it to
+    # 'active', so filtering on 'active' alone named ~1 sibling in 23. Every
+    # other live-scope predicate in this service uses the pair; this was the
+    # sole outlier.
     siblings = dao.query_all(
         "SELECT a.scope FROM agents a "
         "JOIN projects p ON p.id = a.project_id "
-        "WHERE p.name=? AND a.scope!=? AND a.status='active'",
+        "WHERE p.name=? AND a.scope!=? AND a.status IN ('allocated','active')",
         (project, scope),
     )
     # Journal entries are scope_posts with kind='journal' (a scope IS the
     # channel; the debrief is a self-post). Structured fields live in meta.
-    journals = dao.query_all(
+    #
+    # TWO queries, not one. A single project-wide SELECT ... LIMIT ranks a
+    # scope's own history against every sibling's, so in a busy project a scope
+    # opens the file the startup ritual sent it to and finds none of its own
+    # work — it then re-derives what a past session already proved. Measured on
+    # awm/svc-scopes: its four entries ranked 62nd, 67th, 68th and 88th of 95.
+    own = dao.query_all(
         "SELECT id, owner_scope, body, meta, ts FROM scope_posts "
-        "WHERE owner_project=? AND kind='journal' "
-        "ORDER BY ts DESC LIMIT 50",
-        (project,),
+        "WHERE owner_project=? AND owner_scope=? AND kind='journal' "
+        "ORDER BY ts DESC LIMIT ?",
+        (project, scope, _OWN_JOURNAL_FLOOR),
     )
+    own_total = dao.query_all(
+        "SELECT COUNT(*) AS n FROM scope_posts "
+        "WHERE owner_project=? AND owner_scope=? AND kind='journal'",
+        (project, scope),
+    )[0]["n"]
+    others = dao.query_all(
+        "SELECT id, owner_scope, body, meta, ts FROM scope_posts "
+        "WHERE owner_project=? AND owner_scope!=? AND kind='journal' "
+        "ORDER BY ts DESC LIMIT ?",
+        (project, scope, _PROJECT_JOURNAL_WINDOW),
+    )
+    others_total = dao.query_all(
+        "SELECT COUNT(*) AS n FROM scope_posts "
+        "WHERE owner_project=? AND owner_scope!=? AND kind='journal'",
+        (project, scope),
+    )[0]["n"]
 
     def _parse(row):
         meta = _coerce_meta(row["meta"])
@@ -377,35 +411,62 @@ def _generate_history_md(project: str, scope: str) -> str:
         title = _neutralise_title(meta.get("title") or body)
         return meta, title
 
+    def _entry(row, *, tag_scope: bool) -> list[str]:
+        meta, title = _parse(row)
+        outcome = f" [{meta['outcome']}]" if meta.get("outcome") else ""
+        tag = f" ({row['owner_scope']})" if tag_scope else ""
+        out = [f"**[{row['id']}] {title}**{outcome}{tag}"]
+        if meta.get("deviations"):
+            out.append(f"- Deviations: {meta['deviations']}")
+        if meta.get("suggestions"):
+            out.append(f"- Suggestions: {meta['suggestions']}")
+        out.append("")
+        return out
+
+    def _omitted(shown: int, total: int) -> str | None:
+        """The line that stops a truncated file from looking complete."""
+        n = total - shown
+        if n <= 0:
+            return None
+        return (f"*+{n} older not shown — `scope_fetch project={project} "
+                f"kind=journal` to read them.*\n")
+
     sections = []
     if siblings:
         lines = ["## Active Sibling Scopes\n"]
-        for s in siblings:
-            lines.append(f"- **{s['scope']}**")
+        for s_row in siblings:
+            lines.append(f"- **{s_row['scope']}**")
+        lines.append("")
         sections.append("\n".join(lines))
 
-    if journals:
+    if own:
+        lines = [f"## This Scope's Journal ({scope})\n"]
+        for row in own:
+            lines.extend(_entry(row, tag_scope=False))
+        tail = _omitted(len(own), own_total)
+        if tail:
+            lines.append(tail)
+        sections.append("\n".join(lines))
+
+    if others:
         by_skill: dict[str, list] = {}
-        for row in journals:
+        for row in others:
             meta, _ = _parse(row)
             key = meta.get("skill_path") or "(freeform)"
             by_skill.setdefault(key, []).append(row)
-        lines = ["## Journal\n"]
+        shown = 0
+        lines = ["## Sibling Scopes' Journal\n"]
         for skill_key, entries in by_skill.items():
             lines.append(f"### Skill: {skill_key}\n")
-            for row in entries[:10]:
-                meta, title = _parse(row)
-                outcome = f" [{meta['outcome']}]" if meta.get("outcome") else ""
-                scope_tag = f" ({row['owner_scope']})" if row["owner_scope"] != scope else ""
-                lines.append(f"**[{row['id']}] {title}**{outcome}{scope_tag}")
-                if meta.get("deviations"):
-                    lines.append(f"- Deviations: {meta['deviations']}")
-                if meta.get("suggestions"):
-                    lines.append(f"- Suggestions: {meta['suggestions']}")
-                lines.append("")
+            for row in entries[:_PER_SKILL_CAP]:
+                shown += 1
+                lines.extend(_entry(row, tag_scope=True))
+        tail = _omitted(shown, others_total)
+        if tail:
+            lines.append(tail)
         sections.append("\n".join(lines))
 
-    if not sections:
+    if not own and not others:
         sections.append(
             "*No journal entries yet. They appear here after agents post them "
             "via `scope_post kind=journal`.*\n"
@@ -549,7 +610,7 @@ def _write_scope_opencode_config(awm_dir: Path) -> None:
     else:
         out = {"$schema": "https://opencode.ai/config.json", "mcp": {}}
     instructions: list[str] = []
-    workspace_md = WORKSPACE_ROOT / "WORKSPACE.md"
+    workspace_md = WORKSPACE_ROOT / "AGENTS.md"
     if workspace_md.is_file():
         instructions.append(str(workspace_md))
     instructions.append(".awm/context.md")
@@ -652,7 +713,7 @@ def _heal_worktree(worktree_dir: Path, *, project: str, scope: str, dry_run: boo
         else:
             preview = {"$schema": "https://opencode.ai/config.json", "mcp": {}}
         instr: list[str] = []
-        wsmd = WORKSPACE_ROOT / "WORKSPACE.md"
+        wsmd = WORKSPACE_ROOT / "AGENTS.md"
         if wsmd.is_file():
             instr.append(str(wsmd))
         instr.append(".awm/context.md")
@@ -868,18 +929,7 @@ def _scaffold_awm_dir(
             conn=conn,
         )
 
-    # Embeddings index
-    try:
-        from awm.persistence.embeddings import upsert_embedding
-        from awm.persistence.databases import get_connection
-        text = f"{project}/{scope} {context_content[:500]}"
-        conn = get_connection("scopes")
-        try:
-            upsert_embedding(conn, "scope", f"{project}/{scope}", text[:500])
-        finally:
-            conn.close()
-    except Exception:
-        pass
+    search_index.index_scope(project, scope)
 
     return context_content
 
@@ -1002,17 +1052,7 @@ def repair_scope(project: str, scope: str) -> ScopeActionResponse:
             conn=conn,
         )
 
-    try:
-        from awm.persistence.embeddings import upsert_embedding
-        from awm.persistence.databases import get_connection
-        text = f"{project}/{scope}"
-        conn = get_connection("scopes")
-        try:
-            upsert_embedding(conn, "scope", f"{project}/{scope}", text)
-        finally:
-            conn.close()
-    except Exception:
-        pass
+    search_index.index_scope(project, scope)
 
     return ScopeActionResponse(
         project=project,
@@ -1439,16 +1479,7 @@ def delete_scope(project: str, scope: str, force: bool = False) -> ScopeActionRe
             (now_ms(), aid_row["id"]),
         )
 
-    try:
-        from awm.persistence.embeddings import delete_embedding
-        from awm.persistence.databases import get_connection
-        conn = get_connection("scopes")
-        try:
-            delete_embedding(conn, "scope", f"{project}/{scope}")
-        finally:
-            conn.close()
-    except Exception:
-        pass
+    search_index.index_scope(project, scope)
 
     return ScopeActionResponse(
         project=project, scope=scope, status="deleted",
@@ -1468,6 +1499,18 @@ def _v37_render_scope(r, session: int = 1) -> ScopeInfo:
     )
 
 
+_SCOPE_ROW_SQL = (
+    "SELECT a.id, a.scope, a.status, a.branch, a.worktree, "
+    "       a.created_at, p.name AS project_name, "
+    "       (SELECT COUNT(*) FROM agents a2 "
+    "        JOIN projects p2 ON p2.id = a2.project_id "
+    "        WHERE p2.name = p.name AND a2.scope = a.scope "
+    "        AND a2.created_at <= a.created_at) AS session "
+    "FROM agents a JOIN projects p ON p.id = a.project_id "
+    "WHERE 1=1"
+)
+
+
 def search_scopes(
     query: str | None = None,
     status: str = "active",
@@ -1475,90 +1518,56 @@ def search_scopes(
     limit: int = 50,
     offset: int = 0,
 ) -> ScopeListResponse:
-    """Search scopes. Defaults to status='active'."""
-    dao = ScopesDAO()
-    sql = (
-        "SELECT a.id, a.scope, a.status, a.branch, a.worktree, "
-        "       a.created_at, p.name AS project_name, "
-        "       (SELECT COUNT(*) FROM agents a2 "
-        "        JOIN projects p2 ON p2.id = a2.project_id "
-        "        WHERE p2.name = p.name AND a2.scope = a.scope "
-        "        AND a2.created_at <= a.created_at) AS session "
-        "FROM agents a JOIN projects p ON p.id = a.project_id "
-        "WHERE 1=1"
-    )
-    params: list = []
+    """Search scopes. Defaults to status='active'.
+
+    With a ``query``, scopes whose name contains it come first, then the rest
+    ranked by relevance of their goals and ``context.md``.
+    """
+    where, params = "", []
     if status and status != "all":
         if status == "active":
-            sql += " AND a.status IN ('allocated','active')"
+            where += " AND a.status IN ('allocated','active')"
         elif status == "completed":
-            sql += " AND a.status='retired'"
+            where += " AND a.status='retired'"
         elif status == "deleted":
             return ScopeListResponse(scopes=[], total=0)
         else:
-            sql += " AND a.status = ?"
+            where += " AND a.status = ?"
             params.append(status)
     if project:
-        sql += " AND p.name = ?"
+        where += " AND p.name = ?"
         params.append(project)
+
+    dao = ScopesDAO()
+    name_sql, name_params = where, list(params)
     if query:
-        sql += " AND a.scope LIKE ?"
-        params.append(f"%{query}%")
-    sql += " ORDER BY p.name, a.scope LIMIT ? OFFSET ?"
-    params.extend([limit, offset])
-    rows = dao.query_all(sql, params)
-
-    keyword_hits = [_v37_render_scope(r, session=r["session"] or 1) for r in rows]
-
+        name_sql += " AND a.scope LIKE ?"
+        name_params.append(f"%{query}%")
+    rows = dao.query_all(_SCOPE_ROW_SQL + name_sql + " ORDER BY p.name, a.scope LIMIT ? OFFSET ?",
+                         [*name_params, limit, offset])
+    merged = [_v37_render_scope(r, session=r["session"] or 1) for r in rows]
     if not query:
-        return ScopeListResponse(scopes=keyword_hits, total=len(keyword_hits))
+        return ScopeListResponse(scopes=merged, total=len(merged))
 
-    keyword_keys = {f"{s.project}/{s.scope}" for s in keyword_hits}
-
-    def _materialize(source_id: str):
-        if "/" not in source_id:
-            return None
-        proj, scp = source_id.split("/", 1)
-        if project and proj != project:
-            return None
-        d = ScopesDAO()
-        extra_sql = (
-            "SELECT a.id, a.scope, a.status, a.branch, a.worktree, "
-            "       a.created_at, p.name AS project_name, "
-            "       (SELECT COUNT(*) FROM agents a2 "
-            "        JOIN projects p2 ON p2.id = a2.project_id "
-            "        WHERE p2.name = p.name AND a2.scope = a.scope "
-            "        AND a2.created_at <= a.created_at) AS session "
-            "FROM agents a JOIN projects p ON p.id = a.project_id "
-            "WHERE p.name=? AND a.scope=?"
-        )
-        extra_params: list = [proj, scp]
-        if status and status != "all":
-            if status == "active":
-                extra_sql += " AND a.status IN ('allocated','active')"
-            elif status == "completed":
-                extra_sql += " AND a.status='retired'"
-            elif status == "deleted":
-                return None
-            else:
-                extra_sql += " AND a.status = ?"
-                extra_params.append(status)
-        row = d.query_one(extra_sql, extra_params)
-        return _v37_render_scope(row, session=row["session"] or 1) if row else None
-
+    seen = {f"{s.project}/{s.scope}" for s in merged}
+    degraded = None
     try:
-        from awm.persistence.embeddings import hybrid_augment
-        from awm.persistence.databases import get_connection
-        conn = get_connection("scopes")
-        try:
-            merged = hybrid_augment(
-                conn, query,
-                source_type="scope",
-                keyword_hits=keyword_hits, keyword_keys=keyword_keys,
-                materialize=_materialize,
-            )
-        finally:
-            conn.close()
-    except Exception:
-        merged = keyword_hits
-    return ScopeListResponse(scopes=merged, total=len(merged))
+        res = search_index.search(
+            "scope", query, params=params, limit=offset + limit,
+            allowed="SELECT p.name || '/' || a.scope FROM agents a"
+                    " JOIN projects p ON p.id = a.project_id WHERE 1=1" + where)
+        degraded = res.degraded
+        for h in res.hits[offset:]:
+            if len(merged) >= limit:
+                break
+            if h["source_id"] in seen:
+                continue
+            proj, scp = h["source_id"].split("/", 1)
+            row = dao.query_one(
+                _SCOPE_ROW_SQL + " AND p.name = ? AND a.scope = ?" + where
+                + " ORDER BY a.created_at DESC", [proj, scp, *params])
+            if row is not None:
+                merged.append(_v37_render_scope(row, session=row["session"] or 1))
+    except Exception as exc:  # noqa: BLE001 — reported, then answered by name match
+        degraded = {"semantic": "error", "error": repr(exc)[:300], "fallback": "keyword"}
+    return ScopeListResponse(scopes=merged, total=len(merged), degraded=degraded)

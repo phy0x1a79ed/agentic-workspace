@@ -376,10 +376,15 @@ URL and its document stays byte-for-byte canonical. Insert the image as a **link
 **Last-seen images.** `Cache-Control: no-cache` means the browser must revalidate
 before it may paint, and revalidating costs a server render pass — so reopening a
 consumer showed empty boxes until every image round-tripped. The client keeps the
-bytes it last saw in IndexedDB (keyed by the URL without its `?rev=` buster,
-bounded by count and total size) and paints them at first draw with no network at
-all. The revalidation behind that sends `If-None-Match` and touches the DOM only
-on a new `ETag`. Nothing about it writes to the model.
+bytes it last saw in IndexedDB (keyed by the view URL exactly as placed, bounded
+by count and total size) and paints them at first draw with no network at all.
+The revalidation behind that sends `If-None-Match` and touches the DOM only on a
+new `ETag`. Nothing about it writes to the model.
+
+**CAUTION** The client appends no cache-buster. It once appended `rev=<epoch-ms>`,
+which this server reads as "at this revision" — every busted refresh 404ed and
+silently did nothing. `cache: 'no-store'` on the fetch is what keeps the browser's
+own copy out of the way. Keep `rev` a revision selector on both sides.
 
 ### Registrations
 
@@ -396,6 +401,15 @@ Four, named `drawio` except the view mount (the registry keys records on
 The control WS does not cover mounts, so the static mount and the view mount each
 run their own register/hold-lease/reconnect loop — records are in-memory, and
 without it they would 404 after any gateway restart.
+
+**CAUTION** The view mount is `kind=url`, so every request to it is proxied by the
+gateway rather than served here. The listener is a stdlib `ThreadingHTTPServer`,
+which never reads request bodies. A proxy that frames a bodyless `GET` as chunked
+leaves a chunk terminator on the connection, and this listener answers it `400`
+and closes — which surfaces to the browser as an intermittent gateway `500` and a
+blank image. The gateway forwards no body framing a client did not send (see
+`awm.gateway.hub.proxy._forwards_body`). The listener drains or closes as a second
+line of defence. Both are required.
 
 ## Install
 
@@ -470,7 +484,7 @@ any other verb.
 
 | Var | Default | Effect |
 |---|---|---|
-| `AWM_DRAWIO_ROOT` | `<AWM_DIR>/services/drawio/diagrams` | the store |
+| `AWM_DRAWIO_ROOT` | `<AWM_DIR>/services/drawio/diagrams` | the legacy store; a bound user gets `<user root>/drawio` inside their worktree instead (`awm.config.userroot`), with the topic `drawio:<name>:<save>` |
 | `AWM_DRAWIO_CHECKOUTS` | `<AWM_DIR>/services/drawio/checkouts` | working copies |
 | `AWM_DRAWIO_AUTOPUBLISH` | `<AWM_DIR>/services/drawio/autopublish.json` | the autopublish link registry |
 | `AWM_DRAWIO_VIEWCACHE` | `<AWM_DIR>/services/drawio/viewcache` | rendered-page cache for the view URL |

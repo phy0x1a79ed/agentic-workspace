@@ -71,6 +71,28 @@ PROTECTED: tuple[tuple[str, str], ...] = (
                        r"|(^|/)uvicorn\b|-m\s+uvicorn\b"),
     ("awm-service",    r"-m\s+awm\.\w+\.hub_adapter\b|(^|/)hub_adapter\.py\b"),
     ("awm-sandbox",    r"awm/gateway/dev/run\.sh|(^|/)awm\s+dev\s+(start|shadow)\b"),
+    # The dsh service spawns the harness in its own session, so the node process
+    # is not covered by the awm-service pattern that protects its supervisor —
+    # and it is exactly the shape of a victim: a long-lived node process, idle
+    # until it streams, carrying the session id of the agent whose shell started
+    # the gateway. Only the harness itself; what it spawns to do work is work.
+    # Matched on the launcher path, because nothing on the command line is
+    # called `dsh` any more: the harness is built from the deepseek-harness
+    # fork and started as `node …/apps/cli/lib/bin.js`. The old registry
+    # runtime path is kept so a node that has not been repointed stays covered.
+    ("dsh-harness",    r"services/dsh/runtime/node_modules"
+                       r"|deepseek-harness/\S*/apps/cli/lib/bin\.js"
+                       r"|(^|/)dsh\s+.*--profile\s+web\b"),
+    # The trilium service spawns one node process per user in its own session,
+    # so they are not covered by the awm-service pattern that protects their
+    # supervisor — and they are exactly the shape of a victim: long-lived node
+    # processes, idle between edits, carrying the session id of whoever started
+    # the gateway. Killing one drops a person's browser mid-note. Matched on the
+    # bundle path, because nothing on the command line is called `trilium`: the
+    # server is launched as `node …/main.cjs`, either from the fork's build or
+    # from the published tarball this service unpacks into its state directory.
+    ("trilium-server", r"projects/trilium/\S*/apps/server/dist/main\.cjs"
+                       r"|services/trilium/server/\S*main\.cjs"),
     ("ssh-tunnel",     r"(^|/)ssh\s+.*(-[A-Za-z]*[NMWfL]|ControlMaster|ProxyCommand)"),
     ("init",           r"^/sbin/init\b|^/lib/systemd/systemd\b|^systemd\b"),
 )

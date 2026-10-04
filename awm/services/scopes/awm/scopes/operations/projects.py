@@ -46,7 +46,7 @@ def _handle_project_search(args: dict) -> dict:
         limit=int(args.get("limit", 50)),
         offset=int(args.get("offset", 0)),
     )
-    return result.model_dump()
+    return result.model_dump(exclude={"degraded"} if result.degraded is None else None)
 
 
 PROJECT_HANDLERS = {

@@ -278,7 +278,7 @@ class TestCreateSessionDispatch:
         ws.mkdir(parents=True)
 
         await create_session(scope="s", agent_cli="opencode",
-                             model="deepseek-v4-flash-free", workdir=str(ws))
+                             model="nemotron-3.5-lightning-free", workdir=str(ws))
 
         cfg = stub_agentcore["config"]
         assert cfg.harness == "opencode"

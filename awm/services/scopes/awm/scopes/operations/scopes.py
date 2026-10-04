@@ -1,7 +1,7 @@
 """Scope operation definitions for the gateway manifest."""
 
 from awm.scopes.models import ScopeCreateRequest, ScopeUpdateRequest
-from awm.scopes import scopes
+from awm.scopes import scopes, search_index
 
 
 # Manifest function descriptors (serializable dicts for API_MANIFEST["functions"])
@@ -34,7 +34,8 @@ SCOPE_MANIFEST_FUNCTIONS = [
         "name": "scope_search",
         "tool": "scope_search",
         "description": (
-            "Search scopes (hybrid keyword + semantic). "
+            "Search scopes: name matches first, then scopes ranked by the "
+            "meaning of their goals and context. "
             "Defaults to status='active'; pass status='all' for the full history."
         ),
         "params": [
@@ -44,6 +45,22 @@ SCOPE_MANIFEST_FUNCTIONS = [
             {"name": "limit", "type": "integer", "required": False},
             {"name": "offset", "type": "integer", "required": False},
         ],
+    },
+    {
+        "name": "scope_reindex",
+        "tool": "scope_reindex",
+        "description": (
+            "Bring the search index of posts, scopes and projects in line with "
+            "the tables: embeds what is missing, changed or made by another "
+            "model, and drops what no longer exists. Returns counts per type. "
+            "dry_run reports without writing; force re-embeds everything."
+        ),
+        "params": [
+            {"name": "dry_run", "type": "boolean", "required": False},
+            {"name": "force", "type": "boolean", "required": False},
+        ],
+        "surfaces": ["cli", "http"],
+        "timeout": 3600.0,
     },
     {
         "name": "scope_complete",
@@ -244,7 +261,7 @@ def _handle_scope_search(args: dict) -> dict:
         limit=int(args.get("limit", 50)),
         offset=int(args.get("offset", 0)),
     )
-    return result.model_dump()
+    return result.model_dump(exclude={"degraded"} if result.degraded is None else None)
 
 
 def _handle_scope_complete(args: dict) -> dict:
@@ -322,6 +339,11 @@ def _handle_scope_scatter(args: dict) -> dict:
     return result.model_dump()
 
 
+def _handle_scope_reindex(args: dict) -> dict:
+    return search_index.run_reindex(force=bool(args.get("force", False)),
+                                    dry_run=bool(args.get("dry_run", False)))
+
+
 def _handle_awm_refresh(args: dict) -> dict:
     return scopes.awm_refresh(args["project"], args["scope"])
 
@@ -329,6 +351,7 @@ def _handle_awm_refresh(args: dict) -> dict:
 SCOPE_HANDLERS = {
     "scope_create": _handle_scope_create,
     "scope_search": _handle_scope_search,
+    "scope_reindex": _handle_scope_reindex,
     "scope_complete": _handle_scope_complete,
     "scope_delete": _handle_scope_delete,
     "scope_heal": _handle_scope_heal,

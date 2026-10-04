@@ -61,6 +61,18 @@ def content_hash(text: str) -> str:
     return hashlib.sha1(normalize(text).encode("utf-8")).hexdigest()
 
 
+def text_rev(text: str) -> str:
+    """An exact-bytes revision token for a note's body.
+
+    Deliberately not :func:`content_hash`, which normalises whitespace and case
+    first: two bodies differing only in blank lines share a content hash. That
+    is right for "must this be re-embedded?" and wrong for "did someone else
+    change this note while I was editing it?", which is what every concurrency
+    decision in :mod:`awm.notes.checkout` turns on.
+    """
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+
+
 # ---------------------------------------------------------------------------
 # Row access
 # ---------------------------------------------------------------------------

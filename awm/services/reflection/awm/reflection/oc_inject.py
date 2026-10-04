@@ -16,10 +16,10 @@ fork:
   record (the DB), never from a read-back that cannot render.
 
 The writer is held inside the same context-manager shape :mod:`inject` drives
-for both Claude lanes — ``write`` / ``commit`` / ``clear`` / ``read_back`` and
-the ``read_back_is_evidence`` flag that says whether a negative read means
-anything. The serve lane's flag is ``False`` for exactly the daemon-lane
-reason: there is no screen, so a probe that never shows up proves nothing.
+for both Claude lanes — ``write`` / ``commit`` / ``clear`` /
+``check_not_rejected``. Nothing rendered is consulted on any lane: a send is
+confirmed from the session's own record and transcript, which for opencode means
+its database rather than Claude Code's session JSON.
 """
 from __future__ import annotations
 
@@ -50,10 +50,6 @@ class ServeError(OpencodeError):
 class _ServeWriter:
     """A serve-backed session: the commit is an HTTP POST, nothing renders."""
 
-    # There is no screen to read, so a silent read-back proves nothing — the
-    # daemon-lane rule. Confirmation comes from the session's own record.
-    read_back_is_evidence = False
-
     def __init__(self, lane: oc_session.OpencodeLane, *,
                  sleep: Callable[[float], None] = tmux_inject.time.sleep,
                  opener=None) -> None:
@@ -68,8 +64,13 @@ class _ServeWriter:
     def label(self) -> str:
         return f"serve {self._lane.session_id}"
 
-    def read_back(self) -> str:
-        return ""
+    def check_not_rejected(self) -> None:
+        """Nothing to check before the commit: the POST *is* the write.
+
+        A serve session buffers locally until :meth:`commit`, so there is no
+        window in which the far end could have refused something. A rejection
+        surfaces as the POST's own HTTP status.
+        """
 
     def clear(self) -> None:
         # A serve session has no prompt box to wipe; a failed attempt is simply

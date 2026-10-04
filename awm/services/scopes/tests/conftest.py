@@ -13,6 +13,17 @@ from pathlib import Path
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def stub_embedder():
+    """Index and search with a deterministic stub, never the real model."""
+    from awm.persistence import embeddings
+    from awm.persistence.search_testing import StubEmbedder
+    emb = StubEmbedder()
+    embeddings.use_embedder(emb)
+    yield emb
+    embeddings.use_embedder(None)
+
+
 @pytest.fixture()
 def scopes_workspace(tmp_path, monkeypatch):
     """Set up a temporary workspace with all paths redirected for the scopes service.
@@ -67,7 +78,7 @@ def scopes_workspace(tmp_path, monkeypatch):
     monkeypatch.setattr(scopes_dao, "_initialized", False)
     scopes_dao.init()
 
-    return {
+    yield {
         "workspace": workspace,
         "awm_dir": awm_dir,
         "services_dir": services_dir,
@@ -75,6 +86,10 @@ def scopes_workspace(tmp_path, monkeypatch):
         "skills_dir": skills_dir,
         "data_dir": data_dir,
     }
+    # Queued index writes resolve the DB path when they run: drain them while
+    # it still points at this test's workspace.
+    from awm.scopes import search_index
+    search_index.flush()
 
 
 @pytest.fixture()

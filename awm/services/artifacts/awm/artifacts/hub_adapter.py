@@ -15,7 +15,7 @@ import asyncio
 import logging
 from typing import Any
 
-from awm.gatewayclient import ServiceAdapter
+from awm.gatewayclient import ServiceAdapter, spawn_supervised
 from awm.artifacts import dao
 from awm.artifacts.artifacts import (
     register_artifact,
@@ -23,6 +23,7 @@ from awm.artifacts.artifacts import (
     search_artifacts,
     get_content,
     sync_artifacts,
+    reindex_artifacts,
 )
 from awm.artifacts.models import ArtifactRegisterRequest
 
@@ -79,10 +80,25 @@ API_MANIFEST: dict[str, Any] = {
         {
             "name": "sync",
             "tool": "artifact_sync",
-            "description": "Sync artifact status with on-disk reality; prune stale embeddings.",
+            "description": "Sync artifact status with on-disk reality, then reindex search.",
             "params": [
                 {"name": "force", "type": "boolean"},
             ],
+        },
+        {
+            "name": "reindex",
+            "tool": "artifact_reindex",
+            "description": (
+                "Bring the search index in line with the current artifacts: embeds "
+                "what is missing, changed or made by another model, drops the rest. "
+                "dry_run reports without writing; force re-embeds everything."
+            ),
+            "params": [
+                {"name": "dry_run", "type": "boolean"},
+                {"name": "force", "type": "boolean"},
+            ],
+            "surfaces": ["cli", "http"],
+            "timeout": 3600.0,
         },
     ],
     "emitters": [],
@@ -105,7 +121,7 @@ def _handle_search(args: dict) -> dict:
         limit=int(args.get("limit", 50)),
         offset=int(args.get("offset", 0)),
     )
-    return result.model_dump()
+    return result.model_dump(exclude={"degraded"} if result.degraded is None else None)
 
 
 def _handle_delete(args: dict) -> dict:
@@ -130,13 +146,34 @@ def _handle_sync(args: dict) -> dict:
     return sync_artifacts(force=bool(args.get("force", False)))
 
 
+def _handle_reindex(args: dict) -> dict:
+    return reindex_artifacts(force=bool(args.get("force", False)),
+                             dry_run=bool(args.get("dry_run", False)))
+
+
 HANDLERS = {
     "register": _handle_register,
     "search": _handle_search,
     "delete": _handle_delete,
     "get": _handle_get,
     "sync": _handle_sync,
+    "reindex": _handle_reindex,
 }
+
+_BACKFILL_EVERY_S = 6 * 3600
+
+
+async def _backfill_loop() -> None:
+    while True:
+        res = await asyncio.to_thread(reindex_artifacts)
+        if res["indexed"] or res["pruned"]:
+            log.info("artifacts backfill: %s", res)
+        await asyncio.sleep(_BACKFILL_EVERY_S)
+
+
+async def _on_start() -> None:
+    dao.init()
+    spawn_supervised("artifacts:search-backfill", _backfill_loop)
 
 
 async def main() -> None:
@@ -145,7 +182,7 @@ async def main() -> None:
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
     await ServiceAdapter(
-        "artifacts", API_MANIFEST, HANDLERS, on_start=dao.init,
+        "artifacts", API_MANIFEST, HANDLERS, on_start=_on_start,
     ).run()
 
 

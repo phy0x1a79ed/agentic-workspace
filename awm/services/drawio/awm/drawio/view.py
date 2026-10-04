@@ -590,7 +590,13 @@ class Renderer:
                                        scale=spec.scale, crop_id=crop_id)
             self.renders += 1
             variant_dir.mkdir(parents=True, exist_ok=True)
-            tmp = cache_file.with_name(f".{cache_file.name}.tmp")
+            # The listener is a ThreadingHTTPServer and the export subprocess
+            # is slow, so two requests for the same page and variant overlap
+            # routinely. A shared temp name lets them interleave into one file
+            # and publish the splice — which, being content-addressed, then
+            # answers with a stable ETag forever. Name it per writer instead.
+            tmp = cache_file.with_name(
+                f".{cache_file.name}.{os.getpid()}.{threading.get_ident()}.tmp")
             try:
                 tmp.write_bytes(data)
                 os.replace(tmp, cache_file)
@@ -870,9 +876,24 @@ class RenderResult:
 
 # --- the HTTP listener -----------------------------------------------------
 
-def _make_handler(renderer: Renderer):
+# A GET/HEAD body is always a peer bug here; read enough to resynchronise the
+# connection and no more, rather than letting one become a memory sink.
+_MAX_DRAIN = 1 << 20
+
+
+def _make_handler(renderer: Renderer, renderer_for=None):
+    """``renderer_for(as_)`` picks a renderer for the request's ``X-Awm-As``
+    (a per-user store); ``None`` from it, or no resolver, means ``renderer``."""
     class _Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
+
+        @property
+        def renderer(self) -> Renderer:
+            if renderer_for is not None:
+                chosen = renderer_for(self.headers.get("X-Awm-As"))
+                if chosen is not None:
+                    return chosen
+            return renderer
 
         def log_message(self, *args):  # noqa: D401 — silence stdlib access log
             return
@@ -885,6 +906,45 @@ def _make_handler(renderer: Renderer):
             self.end_headers()
             if self.command != "HEAD":
                 self.wfile.write(body)
+
+        def _drain_request_body(self) -> None:
+            """Leave no unread request bytes on a connection we will reuse.
+
+            Defence in depth, not the fix: the gateway's URL proxy used to
+            invent ``Transfer-Encoding: chunked`` on every bodyless proxied GET
+            (see ``awm.gateway.hub.proxy._forwards_body``), and this handler —
+            like every ``BaseHTTPRequestHandler`` — never reads ``rfile``. The
+            leftover chunk terminator was then parsed as the next request line,
+            answered ``400``, and the connection dropped underneath whoever the
+            proxy's pool had handed it to next. Do not delete the gateway fix
+            believing this covers it: this only stops a *malformed* peer from
+            desynchronising us, and it costs the connection when it does.
+
+            A declared ``Content-Length`` is consumed. Any other framing closes
+            the connection instead — a diagram service has no business
+            hand-rolling a chunked decoder, and closing is correct absolutely
+            where a decoder is correct only if it is right.
+            """
+            if "transfer-encoding" in self.headers:
+                self.close_connection = True
+                return
+            raw = self.headers.get("content-length")
+            if not raw:
+                return
+            try:
+                n = int(raw)
+            except ValueError:
+                self.close_connection = True
+                return
+            if n <= 0:
+                return
+            if n > _MAX_DRAIN:
+                self.close_connection = True
+                return
+            try:
+                self.rfile.read(n)
+            except OSError:
+                self.close_connection = True
 
         def _rel(self) -> tuple[str, dict]:
             parts = urlsplit(self.path)
@@ -922,6 +982,7 @@ def _make_handler(renderer: Renderer):
             GET can only ever fail should not answer this with a cheerful 200.
             The topic itself does not depend on the parameters, so every variant
             of a page subscribes once and they all refresh together."""
+            self._drain_request_body()
             rel, query = self._rel()
             try:
                 renderspec.from_query(query)
@@ -929,7 +990,7 @@ def _make_handler(renderer: Renderer):
                 self._fail(400, str(exc))
                 return
             try:
-                save, page, rev = renderer.resolve_meta(rel)
+                save, page, rev = self.renderer.resolve_meta(rel)
             except ViewError as exc:
                 self._fail(exc.status, str(exc))
                 return
@@ -942,6 +1003,7 @@ def _make_handler(renderer: Renderer):
             self.end_headers()
 
         def do_GET(self) -> None:  # noqa: N802 — stdlib naming
+            self._drain_request_body()
             rel, query = self._rel()
             try:
                 spec = renderspec.from_query(query)
@@ -953,7 +1015,7 @@ def _make_handler(renderer: Renderer):
             rev = (query.get("rev") or [None])[0] or None
 
             try:
-                result = renderer.render(rel, spec=spec, rev=rev)
+                result = self.renderer.render(rel, spec=spec, rev=rev)
             except ViewError as exc:
                 self._fail(exc.status, str(exc))
                 return
@@ -1001,9 +1063,11 @@ class ViewServer:
     service's asyncio loop, mirroring :func:`awm.drawio.mount.hold_mount`.
     """
 
-    def __init__(self, store: Store, renderer: Renderer | None = None):
+    def __init__(self, store: Store, renderer: Renderer | None = None,
+                 renderer_for=None):
         self.store = store
         self.renderer = renderer or Renderer(store)
+        self.renderer_for = renderer_for
         self._httpd: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
         self.port: int | None = None
@@ -1012,7 +1076,7 @@ class ViewServer:
 
     def start_listener(self) -> int:
         """Bind an ephemeral loopback port and serve in a background thread."""
-        handler = _make_handler(self.renderer)
+        handler = _make_handler(self.renderer, self.renderer_for)
         self._httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
         self.port = self._httpd.server_address[1]
         self._thread = threading.Thread(

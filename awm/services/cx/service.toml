@@ -1,0 +1,9 @@
+# This service bootstraps only on a gateway whose AWM_PROFILES includes one of
+# these (an explicit `awm services enable` still overrides).
+#
+# Gated because the warm start is only useful where somebody actually runs
+# Claude Code interactively, and because the `cx` script on PATH is the other
+# half of the feature — a node that has the service but not the script gains
+# nothing and a node that has neither should not be seeding sessions. Enabling
+# it explicitly per node is how the two halves are kept together.
+profiles = ["cx"]

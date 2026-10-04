@@ -47,6 +47,22 @@ set -euo pipefail
 ACTIVE_DIR="{active_dir}"
 mkdir -p "$ACTIVE_DIR"
 hostname > "$ACTIVE_DIR/hostname"
+
+# fir schedules by GPU, so four jobs share one four-card node and a fixed port
+# is a collision waiting to happen -- llama-server exits with "couldn't bind
+# HTTP server socket" and the serve looks like a model failure. Take the first
+# free port in the range and tell the tunnel which one it was.
+PORT={port}
+for p in $(seq {port} $(({port} + 99))); do
+    if ! (exec 3<>/dev/tcp/127.0.0.1/$p) 2>/dev/null; then
+        PORT=$p
+        break
+    fi
+    exec 3<&- 2>/dev/null
+done
+echo "$PORT" > "$ACTIVE_DIR/port"
+echo "serving on port $PORT"
+
 echo "running" > "$ACTIVE_DIR/status"
 
 cleanup() {{
@@ -57,7 +73,18 @@ trap cleanup EXIT
 
 echo "=== stage: copying to SLURM_TMPDIR ==="
 cp {container_path} $SLURM_TMPDIR/llamacpp.sif
-cp {model_gguf_path} $SLURM_TMPDIR/model.gguf
+
+# A model over ~50 GB is published as a split GGUF, named
+# ...-00001-of-000NN.gguf. llama.cpp is handed the first part and finds the rest
+# by that exact pattern, so the whole set travels and every name is preserved.
+# Renaming to a fixed model.gguf -- which this did -- silently reduces a split
+# model to its first shard, and it loads far enough to look like it worked.
+GGUF_SRC="{model_gguf_path}"
+GGUF_NAME=$(basename "$GGUF_SRC")
+case "$GGUF_NAME" in
+    *-00001-of-*) cp "${{GGUF_SRC%%-00001-of-*}}"-*-of-*.gguf "$SLURM_TMPDIR/" ;;
+    *)            cp "$GGUF_SRC" "$SLURM_TMPDIR/$GGUF_NAME" ;;
+esac
 
 echo "=== stage: loading module ==="
 module purge && module load {cfg.apptainer_module}
@@ -73,12 +100,13 @@ apptainer exec --nv --cleanenv \\
     --env LD_LIBRARY_PATH=/app \\
     "$SLURM_TMPDIR/llamacpp.sif" \\
     /app/llama-server \\
-        --model "$SLURM_TMPDIR/model.gguf" \\
+        --model "$SLURM_TMPDIR/$GGUF_NAME" \\
         --host 0.0.0.0 \\
-        --port {port} \\
+        --port "$PORT" \\
         --n-gpu-layers 999 \\
         --ctx-size {model.ctx_size} \\
         --cont-batching \\
+        --parallel {model.parallel} \\
         --alias {model.api_name}
 """
 

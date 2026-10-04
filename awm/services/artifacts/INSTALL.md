@@ -29,3 +29,12 @@ No auth — the registration handshake carries no token.
 
 To iterate against a running sandbox without installing, use
 `awm dev shadow awm/services/artifacts`; it execs this same `run.sh` as an overlay.
+
+## Search index
+
+The service keeps its search index in line with its tables by itself: once at
+startup and every six hours. Nothing needs running after a deploy. Run
+`awm artifact reindex --dry-run` to see what is missing or stale. Run it without
+`--dry-run` to catch up now, or with `--force` to re-embed everything. Without
+the `awm-persistence[search]` extra, search falls back to keywords and says so
+in a `degraded` block.

@@ -152,7 +152,7 @@ class ServiceAdapter:
         ``call`` / ``notify`` / ``session.open`` envelopes that arrive during
         initialisation wait for it (up to ``AWM_INIT_WAIT_S``) rather than
         being answered against a half-built service, so a caller sees a slow
-        first call instead of an error. See AGENTS.md § *The ready-ASAP
+        first call instead of an error. See ARCHITECTURE.md § *The ready-ASAP
         contract* for why readiness has to be immediate.
     start_cmd:
         Argv the hub uses to respawn the service after a silence eviction.
@@ -260,6 +260,19 @@ class ServiceAdapter:
 
     # -- dispatch ----------------------------------------------------------
 
+    def _missing_required_params(self, fn: str, args: dict[str, Any]) -> list[str]:
+        """Manifest-declared ``required: True`` params absent from ``args``.
+
+        The single choke point every call/notify passes through, so this one
+        check replaces a bare ``KeyError`` inside ~190 handlers across every
+        service with a clear, named usage error before the handler ever runs.
+        """
+        for entry in self.manifest.get("functions", []) or []:
+            if entry.get("name") == fn:
+                return [p["name"] for p in entry.get("params", []) or []
+                        if p.get("required") and p["name"] not in args]
+        return []
+
     async def _dispatch(self, fn: str | None, args: Any, as_: str | None) -> Any:
         handler = self.handlers.get(fn or "")
         if handler is None:
@@ -268,6 +281,10 @@ class ServiceAdapter:
         # ready before running it, so a call can legitimately land first.
         await self._await_init(f"call {fn!r}")
         args = args or {}
+        missing = self._missing_required_params(fn or "", args)
+        if missing:
+            raise ValueError(
+                f"{fn}: missing required argument(s): {', '.join(missing)}")
         # Pass as_ only if the handler asked for a second positional arg.
         try:
             nparams = len(inspect.signature(handler).parameters)

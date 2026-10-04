@@ -34,8 +34,8 @@ from typing import Any
 
 from awm.gatewayclient import ServiceAdapter
 
+from awm import claudedaemon
 from awm.reflection import (
-    daemon_inject,
     inject,
     oc_inject,
     oc_session,
@@ -183,7 +183,7 @@ def _caller_pid(args: dict) -> Any:
 # distinction the caller cares about is whether their command ran, not which
 # layer declined.
 _FAILURES = (session_target.ResolveError, oc_session.ResolveError,
-             tmux_inject.TmuxError, daemon_inject.DaemonError,
+             tmux_inject.TmuxError, claudedaemon.DaemonError,
              oc_inject.OpencodeError, oc_inject.ServeError,
              inject.DeliveryError)
 

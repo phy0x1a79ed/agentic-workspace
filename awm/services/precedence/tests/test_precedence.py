@@ -1,9 +1,7 @@
 """Tests for awm.precedence — decision-archive search + reputation + curation.
 
-The embedding-backed paths (add/embed/fielded semantic) require the workspace
-embedding stack (sentence-transformers + sqlite-vec); those tests skip if it's
-absent. The manifest surface split, the pure usefulness math, tag/keyword paths,
-votes, notes, and the supersede lifecycle run without any model.
+The embedding-backed paths (add/embed/fielded semantic) run through the shared
+engine with the stub model from ``conftest.py``; they need only numpy.
 """
 
 from __future__ import annotations
@@ -15,10 +13,7 @@ import pytest
 
 pytestmark = [pytest.mark.precedence]
 
-_HAS_EMBED = (
-    importlib.util.find_spec("sentence_transformers") is not None
-    and importlib.util.find_spec("sqlite_vec") is not None
-)
+_HAS_EMBED = importlib.util.find_spec("numpy") is not None  # the stub embedder needs only numpy
 needs_embed = pytest.mark.skipif(not _HAS_EMBED, reason="embedding stack not installed")
 
 
@@ -346,3 +341,22 @@ def test_embed_refuses_rather_than_reporting_zero(conn, monkeypatch):
                         lambda: {"available": False, "missing": ["sqlite_vec"]})
     with pytest.raises(index.EmbeddingsUnavailable):
         store.embed(conn)
+
+
+def test_filters_select_candidates_before_the_semantic_cut(conn):
+    from awm.precedence import config, store
+
+    for i in range(config.SEMANTIC_LIMIT + 20):
+        store.add(conn, context=f"choosing a database engine for service {i}",
+                  question="which database engine", decision=f"use engine {i}")
+    rare = store.add(conn, context="picking storage for a tiny tool",
+                     question="which database engine", decision="sqlite", tag=["scope:tiny"])
+    res = store.search(conn, question="which database engine", tag=["scope:tiny"])
+    assert [r["id"] for r in res["results"]] == [rare["id"]]
+
+
+def test_keyword_with_fts_syntax_errors_matches_words(conn):
+    from awm.precedence import store
+
+    store.add(conn, context="a-b rollout", question="ship it?", decision="ship behind a flag")
+    assert store.search(conn, keyword='a-b "rollout')["count"] == 1

@@ -1,10 +1,10 @@
 # Agentic Workspace Manager (AWM)
 
-*Human setup + usage guide for awm. Agents operating in this workspace load [`WORKSPACE.md`](WORKSPACE.md) at session start via the harness's native mechanism (see the `harness-setup` writeup on disk at `.awm/skills/awm/harness-setup.md`) — not this file. **Do not merge this README into AGENTS.md or WORKSPACE.md** — their audience is agents in scope worktrees; this one's audience is humans installing, networking, and operating the system.*
+*Human setup + usage guide for awm. Agents operating in this workspace load [`AGENTS.md`](AGENTS.md) at session start via the harness's native mechanism (see the `harness-setup` writeup on disk at `.awm/skills/awm/harness-setup.md`) — not this file. **Do not merge this README into AGENTS.md, PROTOCOLS.md or ARCHITECTURE.md** — their audience is agents; this one's audience is humans installing, networking, and operating the system.*
 
 A lightweight Python service + CLI for coordinating multiple AI agents working in parallel on shared resources. Provides project/scope management, a skills catalog, the scope channel (per-scope journal + messages), artifact registration, autonomous agent spawning, and an MCP server for direct tool use by Claude Code / OpenCode / other MCP clients.
 
-For agent-facing structural docs (paths, MCP tools, scope lifecycle), see [`WORKSPACE.md`](WORKSPACE.md). For **awm-internal architecture** — modifying the hub, registry, supervisor, RPC layer, manifest generator — see [`AGENTS.md`](AGENTS.md). This README covers install and the *usage* side of the package model (authoring components / services / pages); AGENTS.md covers the *implementation* side.
+For agent orientation (paths, MCP tools, startup), see [`AGENTS.md`](AGENTS.md). For workspace procedures (scope lifecycle, naming, hubs, data, backups), see [`PROTOCOLS.md`](PROTOCOLS.md). For **awm-internal architecture** — modifying the hub, registry, supervisor, RPC layer, manifest generator — see [`ARCHITECTURE.md`](ARCHITECTURE.md). This README covers install and the *usage* side of the package model (authoring components / services / pages); ARCHITECTURE.md covers the *implementation* side.
 
 ## Quick Install
 
@@ -15,6 +15,16 @@ awm/gateway/setup.sh
 This creates an `awm` mamba environment, installs the gateway plus every
 discovered feature service, initializes runtime state, and adds `awm` and
 `awm-mcp` to your PATH.
+
+To run awm as a service account on a shared host, point `AWM_WORKSPACE` at a
+checkout the service account can read, and make the checkout's `.awm/`
+(gitignored) a symlink into a state dir the service account owns. Install
+with `AWM_SERVICES` set to the services the host needs. `setup.sh` refuses
+to run when `AWM_WORKSPACE` names a different checkout, so a second install
+cannot land in a home directory by accident. sirius, the public host behind
+`nexus.tony-xy-liu.com`, is the worked example. Its provisioning lives in its
+own repository, `phy0x1a79ed/cloud`, under `VMs/digital_ocean/sirius/`, because
+none of it is portable and awm installs on many machines.
 
 ## Manual Install
 
@@ -38,7 +48,7 @@ env with `AWM_ENV`.
 
 AWM drives **Claude Code** and **OpenCode** as first-class harnesses. The `harness-setup` writeup (on disk at `.awm/skills/awm/harness-setup.md` inside any scope) covers:
 
-- How Claude Code and OpenCode each pick up the 3-tier orientation (workspace `WORKSPACE.md` + repo `AGENTS.md` + scope `.awm/context.md`) — CC via instructions in `~/.claude/CLAUDE.md` that direct the agent to Read each tier; OC via native `AGENTS.md` walk-up plus per-scope `mcp-opencode.json` `instructions` array for the other two.
+- How Claude Code and OpenCode each pick up the 3-tier orientation (workspace `AGENTS.md` + repo `AGENTS.md` + scope `.awm/context.md`) — CC loads both `AGENTS.md` tiers by its native walk-up and Reads `.awm/context.md` at the workspace startup ritual; OC walks the repo `AGENTS.md` natively and loads the other two through the per-scope `mcp-opencode.json` `instructions` array.
 - The MCP exporter framework that fans `<workspace>/.mcp.json` out to backend-specific configs (`spawn-mcp.json` for claude, `mcp-opencode.json` for opencode) — registered services are advertised even when their upstream is down.
 - Per-session harness selection via the `agent_cli` column on `agent_sessions`.
 - Healing existing scopes that pre-date the wiring: `awm scope heal`.
@@ -221,7 +231,7 @@ awm dev shadow --port 7821 pages/<name>   # serve awm/pages/<name>/dist at /ui/<
 ```
 
 Build first — the shadow (and prod) serve the built `dist/` directory, not the
-source. (See `AGENTS.md` § *Frontend component system* for the canonical
+source. (See `ARCHITECTURE.md` § *Frontend* for the canonical
 build/shadow SOP and how resolution works.)
 
 ### Composing components into a page
@@ -296,7 +306,7 @@ Browser-side, the hub exposes:
 - **Shadow can't displace a component.** Edit the component, rebuild the page that imports it, then shadow the page.
 - **`run.sh` must be self-contained.** The gateway runs `bash run.sh` with only the three injected env vars on a minimal systemd `PATH`. A Python `run.sh` that relies on `mamba` being on `PATH` breaks on respawn — source the `.runtime-env` sidecar and exec the baked `AWM_PYTHON` interpreter (see *Authoring a service*).
 
-See `AGENTS.md` for **awm-internal** architecture — the registry overlay, supervisor PID journal, `rpc.py` envelope schemas, and how to modify the hub itself.
+See `ARCHITECTURE.md` for **awm-internal** architecture — the registry overlay, supervisor PID journal, `rpc.py` envelope schemas, and how to modify the hub itself.
 
 ## Server Lifecycle
 
@@ -314,7 +324,7 @@ awm gateway refresh   # restart server to pick up source changes (dev mode)
 
 The server auto-shuts down after 30 minutes of inactivity (configurable via `AWM_IDLE_SHUTDOWN` env var; set to `0` to disable).
 
-`awm <command> --help` lists every subcommand. Beyond the gateway-control groups, the CLI generates an `awm <domain> <verb>` command for every registered feature-service tool (`awm scope create`, `awm agent list`, …) from the same live catalog the MCP surface reads. Note the surfaces are projected differently from one shared catalog: the **CLI and HTTP** stay fully expanded (one `awm <domain> <verb>` command and one `POST /invoke {name:"<domain>_<verb>"}` route per verb), while the **MCP** surface collapses to one generic `{verb,args}` tool per domain (`GET /tools?view=domains`, with a `describe` verb for parameter schemas) to keep the tool count small for agents. So shell usage is unchanged; only what an MCP client sees is collapsed. For agent-facing usage (scopes, the scope channel, artifacts, skills), see `WORKSPACE.md` — those workflows are typically driven from inside an MCP-equipped agent, not the shell.
+`awm <command> --help` lists every subcommand. Beyond the gateway-control groups, the CLI generates an `awm <domain> <verb>` command for every registered feature-service tool (`awm scope create`, `awm agent list`, …) from the same live catalog the MCP surface reads. Note the surfaces are projected differently from one shared catalog: the **CLI and HTTP** stay fully expanded (one `awm <domain> <verb>` command and one `POST /invoke {name:"<domain>_<verb>"}` route per verb), while the **MCP** surface collapses to one generic `{verb,args}` tool per domain (`GET /tools?view=domains`, with a `describe` verb for parameter schemas) to keep the tool count small for agents. So shell usage is unchanged; only what an MCP client sees is collapsed. For agent-facing usage (scopes, the scope channel, artifacts, skills), see `AGENTS.md` and `PROTOCOLS.md` — those workflows are typically driven from inside an MCP-equipped agent, not the shell.
 
 ### Per-workspace env file
 
@@ -431,8 +441,8 @@ imported source.
         │                 │                  │
    ┌────▼─────┐     ┌──────▼──────┐    ┌──────▼──────┐
    │ scopes   │     │ agents      │    │ artifacts / │   …each an out-of-proc
-   │ service  │     │ service     │    │ skills /    │    feature service with
-   │ (+own DB)│     │ (+own DB)   │    │ discord     │    its own DB + run.sh
+   │ service  │     │ service     │    │ notes /     │    feature service with
+   │ (+own DB)│     │ (+own DB)   │    │ tether      │    its own DB + run.sh
    └──────────┘     └─────────────┘    └─────────────┘
 ```
 
@@ -450,7 +460,7 @@ awm/                          # nested tree of pip dists (PEP 420 namespace layo
   service_components/         # shared Python imported source (no install.sh)
     config/  persistence/  gatewayclient/  agentcore/
   services/                   # one folder per feature service (discovered)
-    scopes/  agents/  artifacts/  skills/  discord/
+    scopes/  agents/  artifacts/  dev/  tether/
       run.sh                  # the only entry the gateway runs (bash run.sh)
       INSTALL.md  install.sh
   ui_components/<name>/       # shared Svelte libraries, imported as @awm/<name>
@@ -468,7 +478,7 @@ awm/                          # nested tree of pip dists (PEP 420 namespace layo
 ```
 
 For the awm-internal architecture in detail (registry, supervisor, RPC
-envelope layer, manifest generator), see [`AGENTS.md`](AGENTS.md).
+envelope layer, manifest generator), see [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
 ## Troubleshooting
 
@@ -484,4 +494,4 @@ envelope layer, manifest generator), see [`AGENTS.md`](AGENTS.md).
 
 ## What goes in this file
 
-README.md is the human-facing setup + usage guide for awm: how to install it, wire up harness integration, and the *usage* side of the package model — the day-to-day workflows for authoring a service, a page, or a component, controlling and shadowing services, talking to the hub from a page, and operating the server. Agent-facing structural orientation goes in `WORKSPACE.md`; awm-internal architecture and implementation detail go in `AGENTS.md`.
+README.md is the human-facing setup + usage guide for awm: how to install it, wire up harness integration, and the *usage* side of the package model — the day-to-day workflows for authoring a service, a page, or a component, controlling and shadowing services, talking to the hub from a page, and operating the server. Agent orientation goes in `AGENTS.md`; workspace procedures go in `PROTOCOLS.md`; awm-internal architecture and implementation detail go in `ARCHITECTURE.md`.

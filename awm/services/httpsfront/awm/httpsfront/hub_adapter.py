@@ -33,9 +33,10 @@ import time
 from pathlib import Path
 from typing import Any
 
+from awm import config
 from awm.gatewayclient import ServiceAdapter
 
-from awm.httpsfront import certs, proxy, store
+from awm.httpsfront import certs, penpot, proxy, store, tether, vault
 
 log = logging.getLogger("awm.httpsfront.hub_adapter")
 
@@ -46,6 +47,53 @@ SANS_FILE = SERVICE_DIR / ".sans"                # host-specific extra SANs (git
 
 PORT = int(os.environ.get("AWM_HTTPS_PORT", "8443"))
 UPSTREAM = os.environ.get("AWM_HUB_URL", "http://127.0.0.1:7819/")
+# "public" narrows the front to the policy allow-list (see proxy.build_app).
+PROFILE = (os.environ.get("AWM_EDGE_PROFILE") or "").strip().lower() or None
+# 0 → plain HTTP on loopback behind a TLS-terminating nginx; no certs minted.
+TLS = os.environ.get("AWM_EDGE_TLS", "1").strip().lower() not in ("0", "false", "no")
+# The shared knowledge base, served at /trilium/ on this same listener. On by
+# default: off is the visibly broken direction — nobody can reach the vault, and
+# somebody says so within the minute. The dangerous direction is a vault
+# reachable by something that is not this edge, and that is closed in
+# awm.trilium, where the child is bound, rather than here.
+VAULT = os.environ.get("AWM_EDGE_VAULT", "1").strip().lower() not in ("0", "false", "no")
+VAULT_UPSTREAM = config.VAULT_URL if VAULT else None
+
+# Penpot on this same listener. Off by default, unlike the vault: it needs a
+# running container stack and a `PENPOT_PUBLIC_URI` that agrees with the mount
+# (see awm.httpsfront.penpot), so enabling it stays an explicit choice rather
+# than something a bare upgrade should flip on.
+PENPOT = os.environ.get("AWM_EDGE_PENPOT", "0").strip().lower() not in ("0", "false", "no")
+
+# The tether relay on this same listener. Off by default, and the most
+# deliberate of the three: its paths are the only ones on this edge reachable
+# with no session at all, because the person redeeming an invite is being
+# helped with their own machine and has no awm account. A host that is not
+# running a relay should not be advertising a door to one.
+TETHER = os.environ.get("AWM_EDGE_TETHER", "0").strip().lower() not in ("0", "false", "no")
+TETHER_UPSTREAM = config.TETHER_URL if TETHER else None
+
+
+def _claimed_by_both() -> list[str]:
+    """Paths both the vault and Penpot claim on this listener.
+
+    Derived, never asserted. Both mount under a prefix of their own, so the
+    intersection is empty and stays empty — but it is computed rather than
+    declared so that a future mount that *does* collide says so at startup
+    instead of failing as one app silently swallowing the other's traffic.
+    """
+    candidates = {vault.SHELL, vault.SHELL_BARE, penpot.SHELL, penpot.SHELL_BARE}
+    return sorted(p for p in candidates if vault.owns(p) and penpot.owns(p))
+
+
+if PENPOT and VAULT:
+    _both = _claimed_by_both()
+    if _both:
+        log.warning(
+            "AWM_EDGE_PENPOT and AWM_EDGE_VAULT both claim %s on this "
+            "listener. The vault is resolved first, so Penpot will load its "
+            "shell and then fail every request it makes.", ", ".join(_both))
+PENPOT_UPSTREAM = config.PENPOT_URL if PENPOT else None
 
 # Live status, filled once the listener comes up.
 _STATUS: dict[str, Any] = {
@@ -53,7 +101,20 @@ _STATUS: dict[str, Any] = {
     "tls": False,
     "san": None,
     "upstream": UPSTREAM,
+    # The extra upstreams on this listener, and the only place an operator can
+    # see whether the edge thinks it is serving the vault or Penpot at all.
+    "vault_upstream": VAULT_UPSTREAM,
+    "penpot_upstream": PENPOT_UPSTREAM,
+    "tether_upstream": TETHER_UPSTREAM,
+    # Where each mounted app answers, so an operator can see the mount the
+    # containers' own PENPOT_PUBLIC_URI has to agree with.
+    "vault_mount": vault.SHELL if VAULT else None,
+    "penpot_mount": penpot.SHELL if PENPOT else None,
+    # The address the operator reads out. Worth surfacing because it is the one
+    # string a person has to say correctly over a phone.
+    "tether_mount": tether.PREFIX if TETHER else None,
     "serving": False,
+    "profile": PROFILE or "default",
 }
 
 
@@ -84,7 +145,10 @@ def _h_status(args: dict) -> dict:
     st["ca_url"] = (
         f"https://{host or '<host-ip>'}:{st['listener_port']}/ca.crt"
     )
-    st["url_shape"] = f"https://{host or '<host-ip>'}:{st['listener_port']}/ui/notes/"
+    # The front's own root, not a page. This runs on every node, and which page
+    # is worth landing on differs between them — naming one here was only ever
+    # right on the host that happened to serve it.
+    st["url_shape"] = f"https://{host or '<host-ip>'}:{st['listener_port']}/"
     return st
 
 
@@ -96,13 +160,18 @@ def _serve_forever(info: dict) -> None:
     thread for the life of the process (= the life of the gateway lease)."""
     while True:
         try:
-            _STATUS.update(serving=True, tls=True, san=info["san"])
+            _STATUS.update(serving=True, tls=TLS, san=info.get("san"))
             proxy.serve(
                 port=PORT,
-                cert=info["cert"],
-                key=info["key"],
-                ca=info["ca"],
+                cert=info.get("cert", ""),
+                key=info.get("key", ""),
+                ca=info.get("ca", ""),
                 upstream=UPSTREAM,
+                profile=PROFILE,
+                tls=TLS,
+                vault_upstream=VAULT_UPSTREAM,
+                penpot_upstream=PENPOT_UPSTREAM,
+                tether_upstream=TETHER_UPSTREAM,
             )
         except Exception:  # noqa: BLE001
             log.exception("https front listener crashed; restarting in 2s")
@@ -118,15 +187,20 @@ def _on_start() -> None:
     """
     store.init()
 
-    sans = certs.resolve_sans(san_file=SANS_FILE)
-    info = certs.ensure_certs(CERT_DIR, sans=sans)
-    log.info("certs ready (SAN=%s)", info["san"])
+    if TLS:
+        sans = certs.resolve_sans(san_file=SANS_FILE)
+        info = certs.ensure_certs(CERT_DIR, sans=sans)
+        log.info("certs ready (SAN=%s)", info["san"])
+    else:
+        info = {}
+        log.info("AWM_EDGE_TLS=0: plain HTTP on loopback, no certs")
 
     t = threading.Thread(
         target=_serve_forever, args=(info,), daemon=True, name="httpsfront"
     )
     t.start()
-    log.info("https front thread launched on :%d → %s (tls on)", PORT, UPSTREAM)
+    log.info("front thread launched on :%d → %s (tls %s, profile %s)",
+             PORT, UPSTREAM, "on" if TLS else "off", PROFILE or "default")
 
 
 async def main() -> None:

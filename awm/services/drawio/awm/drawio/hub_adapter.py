@@ -25,6 +25,14 @@ agents can drive the whole workflow. The editor's own plumbing (``editor_save``,
 only — it is a browser protocol, not something an agent should ever call, and
 putting it on the MCP surface would just be a way to corrupt a diagram.
 
+**Per-user stores.** A caller the edge verified as ``user:<name>`` (see
+``awm.config.userroot``) gets a :class:`Service` over ``<user root>/drawio``
+inside the user's scope worktree — the worktree's own git is the history —
+with checkouts under ``SERVICES_DIR/drawio/users/<name>/``. Built lazily,
+kept for the process lifetime. Anything else uses the legacy store. The
+autopublish registry and the view cache stay legacy-only (the view mount
+does resolve a user's store by ``X-Awm-As``).
+
 **Background work.** Three tasks are started here and never awaited: the static
 mount's lease loop, the autopublish debounce loop, and the boot-time autopublish
 reconciliation. Awaiting any of them would stop the adapter serving its control
@@ -39,8 +47,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 from typing import Any
 
+from awm.config import autocommit, userroot
 from awm.gatewayclient import ServiceAdapter
 
 from awm.drawio import chrome, export, mount, store as store_mod
@@ -58,6 +68,9 @@ _CLI_HTTP = ["cli", "http"]
 ADAPTER: ServiceAdapter | None = None
 SERVICE: Service | None = None
 PUBLISHER: AutoPublisher | None = None
+# user -> Service over that user's worktree store.
+_USER_SERVICES: dict[str, Service] = {}
+_USER_LOCK = threading.Lock()
 VIEW: ViewServer | None = None
 
 
@@ -578,16 +591,54 @@ API_MANIFEST: dict[str, Any] = {
 
 # -- handlers ---------------------------------------------------------------
 
+def _user_service(user: str) -> Service:
+    with _USER_LOCK:
+        service = _USER_SERVICES.get(user)
+        if service is None:
+            root = userroot.root_for(user)
+            store = Store(root / "drawio")
+            state = userroot.state_dir("drawio", user)
+            service = Service(store, Checkouts(store, state / "checkouts"),
+                              emit=_emit, user=user)
+            store.subscribe(lambda save, rev: autocommit.pin_figures(root, user))
+            _USER_SERVICES[user] = service
+            log.info("drawio: user store for %s at %s", user, store.root)
+        return service
+
+
 def _svc() -> Service:
+    user = userroot.current()
+    if user:
+        return _user_service(user)
     if SERVICE is None:  # pragma: no cover — set in main() before serving
         raise RuntimeError("drawio service not initialized")
     return SERVICE
 
 
 def _pub() -> AutoPublisher:
+    if userroot.current():
+        raise RuntimeError("autopublish is not available on a per-user store")
     if PUBLISHER is None:  # pragma: no cover — set in main() before serving
         raise RuntimeError("drawio service not initialized")
     return PUBLISHER
+
+
+def _renderer_for(as_: str | None):
+    """The view mount's per-request renderer: a user's store, else legacy."""
+    user = userroot.user_of(as_)
+    if not user:
+        return None
+    try:
+        service = _user_service(user)
+    except userroot.UnknownUser:
+        return None
+    renderer = getattr(service, "_view_renderer", None)
+    if renderer is None:
+        renderer = view_mod.Renderer(
+            service.store, userroot.state_dir("drawio", user) / "viewcache")
+        service.store.subscribe(renderer.prune_for_commit)
+        service._view_renderer = renderer  # type: ignore[attr-defined]
+    return renderer
 
 
 def _author(as_: str | None) -> str:
@@ -610,7 +661,7 @@ def _as_list(value) -> list[str]:
     return [str(part) for part in value]
 
 
-HANDLERS: dict[str, Any] = {
+_HANDLERS: dict[str, Any] = {
     "list": lambda a: _svc().list(),
     "info": lambda a: _svc().info(a["save"]),
     "cells": lambda a: _svc().cells(a["save"], page=a.get("page"),
@@ -667,12 +718,16 @@ HANDLERS: dict[str, Any] = {
     "editor_close": lambda a: _editor_close(a),
     "status_service": lambda a: _status_service(),
 }
+HANDLERS: dict[str, Any] = userroot.wrap_handlers(_HANDLERS)
 
 
 def _editor_open(args: dict) -> dict:
     service = _svc()
-    service.note_tab(store_mod.normalize_save_path(args["save"]), args["tab"])
-    return service.info(args["save"])
+    save = store_mod.normalize_save_path(args["save"])
+    service.note_tab(save, args["tab"])
+    info = service.info(args["save"])
+    info["topic"] = service.topic_of(save)
+    return info
 
 
 def _editor_ack(args: dict) -> dict:
@@ -731,7 +786,7 @@ def _on_start() -> None:
     # The view layer: a URL that returns a page's live SVG. Two commit
     # subscribers — prune the cache a rename/removal orphaned, and tell
     # subscribed consumers the page moved so they re-fetch their placed image.
-    VIEW = ViewServer(store)
+    VIEW = ViewServer(store, renderer_for=_renderer_for)
     store.subscribe(VIEW.renderer.prune_for_commit)
     ViewNotifier(_emit).attach(store)
 

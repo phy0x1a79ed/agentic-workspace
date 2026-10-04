@@ -93,26 +93,35 @@ def _promise(**over) -> pending.Pending:
 
 
 class Writer:
-    """A lane that accepts anything and shows what was written."""
+    """A lane that accepts anything and refuses nothing."""
 
     label = "the fake lane"
 
     def __init__(self, seen):
         self.seen = seen
-        self._screen = ""
-
-    def read_back(self):
-        return self._screen
 
     def clear(self):
-        self._screen = ""
+        pass
 
     def write(self, text):
         self.seen.append(text)
-        self._screen += text
+
+    def check_not_rejected(self):
+        pass
 
     def commit(self):
         pass
+
+
+@pytest.fixture(autouse=True)
+def _no_round_backoff(monkeypatch):
+    """Collapse the between-rounds hold, except where a test is about it.
+
+    The real values are tens of seconds, deliberately — they are sized against a
+    94-second compaction, not against a test suite. A test that wants to see the
+    spacing sets them back.
+    """
+    monkeypatch.setattr(inject, "ROUND_BACKOFF_S", (0.0,))
 
 
 @pytest.fixture(autouse=True)
@@ -378,6 +387,60 @@ def test_giving_up_after_max_delivery_rounds_still_rearms_the_stop_gate(
     pending.record(_promise())
     inject._await_and_resume(_promise(), tail=Tail(in_flight=False, landed=False))
     assert (_gate_dir / LANE.session_id).exists()
+
+
+# ---------------------------------------------------------------------------
+# Spacing the delivery rounds
+# ---------------------------------------------------------------------------
+
+def test_consecutive_delivery_rounds_are_separated_in_time(lane, monkeypatch):
+    # 2026-09-07: all four delivery rounds for one resume were spent inside 7.7
+    # seconds of a `/compact` that ran for 94, because a failed round re-entered
+    # the wait and the wait saw the command's own start line still sitting in the
+    # transcript and returned "started" straight back. Whatever is wrong with a
+    # lane at the moment a round fails does not change in 40ms.
+    slept = []
+    monkeypatch.setattr(inject, "ROUND_BACKOFF_S", (30.0, 60.0, 120.0))
+    monkeypatch.setattr(watcher, "await_completion",
+                        lambda *a, **kw: watcher.SETTLED_OUTCOME)
+    monkeypatch.setattr(inject, "VERIFY_WAIT_S", 0.0)
+    pending.record(_promise())
+    inject._await_and_resume(_promise(), tail=Tail(in_flight=False, landed=False),
+                             sleep=slept.append)
+    assert lane == ["resume"] * inject.MAX_DELIVERY_ROUNDS
+    holds = [s for s in slept if s >= 30.0]
+    assert holds == [30.0, 60.0, 120.0], \
+        "one hold before each re-armed round, escalating"
+    assert sum(holds) > 94, "and the budget outlasts the longest compaction seen"
+
+
+def test_the_first_round_is_not_held_up(lane, monkeypatch):
+    # The spacing is between *retries*. A resume that is deliverable the first
+    # time must go in the instant the session reaches its command.
+    slept = []
+    monkeypatch.setattr(inject, "ROUND_BACKOFF_S", (30.0, 60.0, 120.0))
+    monkeypatch.setattr(watcher, "await_completion",
+                        lambda *a, **kw: watcher.SETTLED_OUTCOME)
+    pending.record(_promise())
+    inject._await_and_resume(_promise(), sleep=slept.append)
+    assert lane == ["resume"]
+    assert [s for s in slept if s >= 30.0] == []
+
+
+def test_a_round_that_ended_in_a_hold_re_arms_without_a_pause(lane, monkeypatch):
+    # A session that has not reached its command yet is the mechanism working,
+    # and waiting on it is unbounded by design. Only a failed *delivery* is
+    # spaced; holding must stay as responsive as it was.
+    slept = []
+    monkeypatch.setattr(inject, "ROUND_BACKOFF_S", (30.0, 60.0, 120.0))
+    monkeypatch.setattr(watcher, "await_completion",
+                        _outcomes(*[watcher.TIMED_OUT] * 3))
+    monkeypatch.setattr(watcher, "has_started", lambda *a, **kw: False)
+    pending.record(_promise())
+    with pytest.raises(Stop):
+        inject._await_and_resume(_promise(), tail=Tail(in_flight=False),
+                                 sleep=slept.append)
+    assert [s for s in slept if s >= 30.0] == []
 
 
 def test_a_long_held_promise_survives_while_its_session_lives(monkeypatch):

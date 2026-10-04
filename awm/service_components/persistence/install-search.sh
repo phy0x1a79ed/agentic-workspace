@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Install the persistence component's `search` extra — the semantic-search stack
-# (sentence-transformers + sqlite-vec) shared by every service that embeds.
+# (sentence-transformers, which brings numpy) shared by every service that embeds.
 #
 # Called explicitly from the install.sh of each consuming service. It is
 # deliberately NOT a dependency of the component or of any service's

@@ -27,7 +27,8 @@ import logging
 import time
 from typing import Callable, Optional
 
-from awm.reflection import daemon_inject, session_target, tmux_inject
+from awm import claudedaemon
+from awm.reflection import session_target, tmux_inject
 
 log = logging.getLogger("awm.reflection.permission_mode")
 
@@ -139,10 +140,10 @@ class _DaemonSession:
     """Read the footer and press Shift+Tab over a background session's PTY."""
 
     def __init__(self, target: session_target.DaemonLane, *,
-                 opener=daemon_inject._open_unix,
+                 opener=claudedaemon.open_unix,
                  sleep: Callable[[float], None] = time.sleep) -> None:
         self._target = target
-        self._conn = daemon_inject._connect(target, opener=opener, sleep=sleep)
+        self._conn = claudedaemon.connect(target, opener=opener, sleep=sleep)
 
     @property
     def label(self) -> str:

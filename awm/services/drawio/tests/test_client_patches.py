@@ -97,9 +97,32 @@ def test_preconfig_bounds_the_view_store():
     assert "function evictViews()" in src
 
 
-def test_preconfig_does_not_key_the_view_store_on_the_cache_buster():
-    """`?rev=` moves on every refresh; keyed on it the store would write a fresh
-    entry each time and never once hit."""
+def test_preconfig_sends_no_cache_buster():
+    """`rev` is a revision selector on the server, not a spare parameter. The
+    client used to bust its refreshes with `rev=<epoch-ms>`, which 404s — so the
+    refresh that was supposed to fix a stale image did nothing at all, and the
+    stale image stayed. `cache: 'no-store'` is what keeps the browser's own copy
+    out of the way; nothing needs appending to the URL."""
     src = (PATCHES / "PreConfig.js").read_text(encoding="utf-8")
-    body = src.split("function cacheKey(url) {", 1)[1].split("\n  }", 1)[0]
-    assert "rev=" in body and "replace" in body
+    assert "'rev='" not in src and '"rev="' not in src
+    assert "Date.now()" not in src.split("function requestViewImage", 1)[1]
+
+
+def test_preconfig_does_not_read_a_failed_fetch_as_unchanged():
+    """Only a 304 means "unchanged". Any other failure answered as "unchanged"
+    leaves the placement showing the previous render with nothing reported —
+    which is how a stale picture outlives a fixed server."""
+    src = (PATCHES / "PreConfig.js").read_text(encoding="utf-8")
+    body = src.split("function requestViewImage(url) {", 1)[1].split("\n  }", 1)[0]
+    assert "if (r.status === 304) return null;" in body
+    assert "if (!r.ok) throw" in body
+
+
+def test_preconfig_refetches_rather_than_joining_a_stale_inflight_request():
+    """Autosave fires every two seconds. A refresh that joins the fetch already
+    in flight answers with the save before last, so the newest edit never
+    appears."""
+    src = (PATCHES / "PreConfig.js").read_text(encoding="utf-8")
+    body = src.split("function fetchViewImage(url) {", 1)[1].split("\n  }", 1)[0]
+    assert "viewStale[url] = true;" in body
+    assert "delete viewStale[url];" in body

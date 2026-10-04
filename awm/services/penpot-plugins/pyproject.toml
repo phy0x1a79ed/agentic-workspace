@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "awm-penpot-plugins"
+version = "0.1.0"
+requires-python = ">=3.11"
+description = "AWM penpot-plugins service: a static gateway mount that gives every first-party Penpot plugin a stable install URL (/penpot-plugins/<name>/manifest.json), for local dev now and sirius later, without depending on a third-party static host."
+dependencies = [
+    "awm-config",
+    "awm-gatewayclient",
+]
+
+[project.optional-dependencies]
+test = ["pytest"]
+
+# PEP 420 namespace package: no top-level awm/__init__.py; the namespace dir is awm/penpot_plugins/.
+[tool.setuptools.packages.find]
+include = ["awm.penpot_plugins*"]
+namespaces = true
+
+[tool.pytest.ini_options]
+markers = [
+    "smoke: fast unit tests; target <30s",
+]

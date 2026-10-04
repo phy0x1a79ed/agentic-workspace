@@ -1,4 +1,4 @@
-"""The tmux lane: type into an interactive session's pane, and read it back.
+"""The tmux lane: type into an interactive session's pane.
 
 An agent running the interactive ``claude`` TUI inside a tmux pane cannot type a
 control command into itself — but any process on the host, as the same user, can
@@ -33,9 +33,7 @@ from typing import Any, Callable, Iterator, Optional
 log = logging.getLogger("awm.reflection.tmux_inject")
 
 # Settle beat between the paste landing and the Enter that submits it, so the
-# TUI has focused the pasted input before we press return — and between a write
-# and the read-back that verifies it, so we classify the redrawn prompt rather
-# than the one we just invalidated.
+# TUI has focused the pasted input before we press return.
 _SETTLE_S = 0.15
 
 # Ctrl-U: kill the prompt line. Only ever sent before a *retry*, to wipe whatever
@@ -211,9 +209,9 @@ def capture_pane(pane: str, *, socket: Optional[str] = None,
 # ---------------------------------------------------------------------------
 
 class _TmuxWriter:
-    """Write to, and read back from, one pane.
+    """Write to one pane.
 
-    The four verbs are the same four the daemon lane offers, because
+    The verbs are the same ones the daemon lane offers, because
     :mod:`awm.reflection.inject` drives both through this shape and must not know
     which one it is holding.
     """
@@ -225,18 +223,23 @@ class _TmuxWriter:
         self._runner = runner
         self._sleep = sleep
 
-    # `capture-pane` renders the pane's *current* state, so a probe that is not
-    # in the read-back is genuinely not on screen. That makes a negative read
-    # here real evidence — see the daemon lane, where it is not.
-    read_back_is_evidence = True
-
     @property
     def label(self) -> str:
         return f"pane {self._lane.pane}"
 
-    def read_back(self) -> str:
-        return capture_pane(self._lane.pane, socket=self._socket,
-                            runner=self._runner)
+    def check_not_rejected(self) -> None:
+        """Nothing to check: tmux has no channel on which a paste is refused.
+
+        `paste-buffer` either succeeds against a live pane — which
+        :func:`open_lane` has just re-asserted — or it fails loudly as a
+        `TmuxError`. There is no equivalent of the daemon lane's `auth-required`
+        frame, so this is a no-op and not a stub waiting to be filled in.
+
+        What emphatically does not belong here is a `capture-pane` check that the
+        paste is on screen. Claude Code stops painting its composer while it
+        compacts, which is precisely the window every deferred resume is aimed
+        at, so such a check reads a false negative exactly when it matters.
+        """
 
     def clear(self) -> None:
         _run(_base_argv(self._socket)

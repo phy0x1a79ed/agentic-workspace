@@ -27,6 +27,15 @@ log = logging.getLogger("awm.twofa.hub_adapter")
 _svc = TwoFAService()
 
 API_MANIFEST: dict[str, Any] = {
+    "description": (
+        "The fleet's single Duo approver. You almost certainly do not want to "
+        "call it: `ssh(verb=connect)` and the vpn service arm it themselves, "
+        "immediately before the one login they are about to make, and the fleet "
+        "counts MFA attempts on that basis. Arming a window by hand spends "
+        "budget nothing is accounting for, on an account that locks out after "
+        "10 failed attempts in a row. What is left here is diagnosis: ask "
+        "whether the approver can reach Duo and what it has seen."
+    ),
     "functions": [
         {
             "name": "devices",
@@ -55,8 +64,10 @@ API_MANIFEST: dict[str, Any] = {
             "tool": "2fa_reachability",
             "description": (
                 "The last VERIFIED Duo round-trip for one device, as a "
-                "timestamp, without probing. For callers that must require "
-                "recency rather than the absence of a recorded error."
+                "timestamp, without probing. A burst window refreshes it every "
+                "poll, so it now reflects real traffic rather than only the "
+                "last explicit ping — but it still only says WHEN, so prefer "
+                "2fa_ping to ask whether the approver works right now."
             ),
             "params": [
                 {"name": "device", "type": "string", "required": True},
@@ -67,8 +78,12 @@ API_MANIFEST: dict[str, Any] = {
             "tool": "2fa_status",
             "description": (
                 "Full 2fa state: enrolled?, burst active?/expected approvals, "
-                "held logins, approve-all window, approved count. device=<name> "
-                "for one device; omit to report every device."
+                "held logins, approve-all window, approved count, and "
+                "transactions_seen — Duo transactions observed for the device "
+                "over this process's life. Only the difference between two "
+                "readings of transactions_seen means anything: an unchanged "
+                "count across an attempt proves Duo was never presented with a "
+                "login. device=<name> for one device; omit to report every one."
             ),
             "params": [
                 {"name": "device", "type": "string", "required": False},
@@ -88,9 +103,13 @@ API_MANIFEST: dict[str, Any] = {
         {
             "name": "activate",
             "tool": "2fa_activate",
+            # CLI/HTTP only. Enrolment is an operator act at a keyboard, with a
+            # code out of an email. Nothing an agent does should reach it.
+            "surfaces": ["cli", "http"],
             "description": (
                 "Enroll a Duo device from a 'CODE-BASE64HOST' activation string "
-                "(the QR / email value) under device=<name>; writes creds 0600."
+                "(the QR / email value) under device=<name>; writes creds 0600. "
+                "Operator verb — CLI only (`awm 2fa activate`)."
             ),
             "params": [
                 {"name": "code", "type": "string", "required": True},
@@ -100,11 +119,21 @@ API_MANIFEST: dict[str, Any] = {
         {
             "name": "burst",
             "tool": "2fa_burst",
+            # CLI/HTTP only. A burst is authorization to approve a login without
+            # a human, and it is only safe when the thing that arms it is also
+            # the thing about to log in — which is why ssh and vpn arm their own,
+            # one push at a time, over RPC (unaffected by this key). An agent
+            # arming one is authorizing a login it does not control.
+            "surfaces": ["cli", "http"],
             "description": (
                 "Open (or extend) a counted poll window on device=<name> that "
                 "auto-approves lone Duo logins. count= expected approvals to add "
                 "(default 1); overlapping bursts add to the counter and extend "
-                "the window. Returns started/extended."
+                "the window. Returns started/extended, plus transactions_seen — "
+                "Duo's observation count at arming, which a caller compares "
+                "against 2fa_status afterwards to prove no login was presented. "
+                "CLI only: ssh and vpn arm their own window per login, so an "
+                "agent arming one is authorizing a login nothing is counting."
             ),
             "params": [
                 {"name": "device", "type": "string", "required": True},
@@ -116,7 +145,13 @@ API_MANIFEST: dict[str, Any] = {
         {
             "name": "approve",
             "tool": "2fa_approve",
-            "description": "Approve a held Duo login by urgid on device=<name>.",
+            # CLI/HTTP only: answering a live MFA challenge is the operator's
+            # decision, and the whole security property of the second factor.
+            "surfaces": ["cli", "http"],
+            "description": (
+                "Approve a held Duo login by urgid on device=<name>. "
+                "Operator verb — CLI only (`awm 2fa approve`)."
+            ),
             "params": [
                 {"name": "urgid", "type": "string", "required": True},
                 {"name": "device", "type": "string", "required": True},
@@ -125,7 +160,11 @@ API_MANIFEST: dict[str, Any] = {
         {
             "name": "deny",
             "tool": "2fa_deny",
-            "description": "Deny a held Duo login by urgid on device=<name>.",
+            "surfaces": ["cli", "http"],
+            "description": (
+                "Deny a held Duo login by urgid on device=<name>. "
+                "Operator verb — CLI only (`awm 2fa deny`)."
+            ),
             "params": [
                 {"name": "urgid", "type": "string", "required": True},
                 {"name": "device", "type": "string", "required": True},
@@ -134,9 +173,13 @@ API_MANIFEST: dict[str, Any] = {
         {
             "name": "approve_all",
             "tool": "2fa_approve_all",
+            # CLI/HTTP only, and the widest of them: an uncounted 5-minute
+            # blanket yes to anything Duo presents.
+            "surfaces": ["cli", "http"],
             "description": (
                 "Open a 5-minute approve-all window on device=<name> and clear "
-                "every held login."
+                "every held login. Operator verb — CLI only "
+                "(`awm 2fa approve-all`)."
             ),
             "params": [
                 {"name": "device", "type": "string", "required": True},

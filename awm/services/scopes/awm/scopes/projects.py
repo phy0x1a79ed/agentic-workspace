@@ -1,7 +1,6 @@
 """Project CRUD — ports new-project.sh (v1 modular).
 
-All SQL goes through ScopesDAO. Embeddings indexing is reimplemented
-against the scopes service's own embeddings table.
+All SQL goes through ScopesDAO; search indexing goes through ``search_index``.
 """
 
 from __future__ import annotations
@@ -17,6 +16,7 @@ from awm.config import (
     VAGRANT_PROJECT,
 )
 from awm.scopes.git_utils import run_git as _run, detect_default_branch as _detect_default_branch
+from awm.scopes import search_index
 from awm.scopes.dao import ScopesDAO
 from awm.scopes.models import (
     ProjectCreateRequest, ProjectCreateResponse,
@@ -78,21 +78,6 @@ def _clone_bare(url: str, bare_dir: Path) -> None:
             f"git said: {stderr}"
         )
     raise RuntimeError(f"git clone of {url!r} failed (exit {r.returncode}): {stderr}")
-
-
-def _index_project(name: str) -> None:
-    """Upsert a project embedding in the scopes DB. Silently no-ops on failure."""
-    try:
-        from awm.persistence.embeddings import upsert_embedding
-        from awm.persistence.databases import get_connection
-        text = name
-        conn = get_connection("scopes")
-        try:
-            upsert_embedding(conn, "project", name, text)
-        finally:
-            conn.close()
-    except Exception:
-        pass
 
 
 def create_project(req: ProjectCreateRequest) -> ProjectCreateResponse:
@@ -184,7 +169,7 @@ def create_project(req: ProjectCreateRequest) -> ProjectCreateResponse:
         branch=default_branch,
     )
 
-    _index_project(req.name)
+    search_index.index_project(req.name)
 
     return ProjectCreateResponse(
         name=req.name,
@@ -229,37 +214,20 @@ def search_projects(
 
     if active_only:
         items = [p for p in items if p.scope_counts.active > 0]
-    if query:
-        q = query.lower()
-        items = [p for p in items if q in p.name.lower()]
-
-    paged = items[offset:offset + limit]
-
     if not query:
-        return ProjectListResponse(projects=paged)
+        return ProjectListResponse(projects=items[offset:offset + limit])
 
-    keyword_keys = {p.name for p in paged}
-
-    def _materialize(name: str):
-        if active_only and by_project.get(name, ProjectScopeCounts()).active <= 0:
-            return None
-        if name not in by_project:
-            return None
-        return ProjectListInfo(name=name, scope_counts=by_project[name])
-
+    q = query.lower()
+    merged = [p for p in items if q in p.name.lower()][offset:offset + limit]
+    seen = {p.name for p in merged}
+    eligible = {p.name: p for p in items}
+    degraded = None
     try:
-        from awm.persistence.embeddings import hybrid_augment
-        from awm.persistence.databases import get_connection
-        conn = get_connection("scopes")
-        try:
-            merged = hybrid_augment(
-                conn, query,
-                source_type="project",
-                keyword_hits=paged, keyword_keys=keyword_keys,
-                materialize=_materialize,
-            )
-        finally:
-            conn.close()
-    except Exception:
-        merged = paged
-    return ProjectListResponse(projects=merged)
+        res = search_index.search("project", query, limit=len(eligible) or 1)
+        degraded = res.degraded
+        ranked = [eligible[h["source_id"]] for h in res.hits
+                  if h["source_id"] in eligible and h["source_id"] not in seen]
+        merged += ranked[:max(0, limit - len(merged))]
+    except Exception as exc:  # noqa: BLE001 — reported, then answered by name match
+        degraded = {"semantic": "error", "error": repr(exc)[:300], "fallback": "keyword"}
+    return ProjectListResponse(projects=merged, degraded=degraded)

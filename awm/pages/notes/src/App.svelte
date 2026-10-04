@@ -14,6 +14,7 @@
   import { writeDraft, readDraft, clearDraft, migrateBlankDraft } from './lib/draft';
   import NoteTree from './lib/NoteTree.svelte';
   import VocabPanel from './lib/VocabPanel.svelte';
+  import { UserChip } from '@awm/primitives';
 
   interface Open {
     id: string | null;      // null = the unsaved blank note (lazy-persisted)
@@ -716,6 +717,7 @@
           <span class="mic-label">{dictState === 'listening' ? 'Listening' : dictState === 'connecting' ? '…' : 'Dictate'}</span>
         </button>
         <button class="rail-btn" title={rightOpen ? 'Hide vocabulary' : 'Dictation vocabulary'} aria-label="Toggle vocabulary panel" class:on={rightOpen} onclick={toggleRight}>Aa</button>
+        <UserChip links={[{ label: 'diagrams', href: '/ui/drawio/' }]} />
         <button
           class="rail-btn theme-btn"
           title={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}

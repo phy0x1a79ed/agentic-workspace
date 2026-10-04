@@ -184,6 +184,27 @@ HOST = "127.0.0.1"
 PORT = int(os.environ.get("AWM_PORT", "7819"))
 BASE_URL = f"http://{HOST}:{PORT}"
 
+# The shared Trilium vault's loopback port. Named here rather than in either
+# service because two processes have to agree on it and neither owns it: the
+# trilium supervisor binds it, and the edge proxies to it. One definition means
+# there is no RPC to make, no table to cache, and nothing to go stale.
+VAULT_PORT = int(os.environ.get("AWM_VAULT_PORT", "12511"))
+VAULT_URL = f"http://{HOST}:{VAULT_PORT}"
+
+# Penpot's frontend nginx port, on the local production stack. Named here for
+# the same reason as VAULT_PORT: two processes have to agree on it and
+# neither owns it — the penpot service's stack supervisor publishes it, and
+# httpsfront proxies to it.
+PENPOT_PORT = int(os.environ.get("AWM_PENPOT_PORT", "9001"))
+PENPOT_URL = f"http://{HOST}:{PENPOT_PORT}"
+
+# The tether relay's loopback port, on the public host. Named here for the same
+# reason again: the relay binds it and the edge proxies to it, and neither owns
+# it. The relay reads the same variable itself, so this constant and that binary
+# agree by reading one name rather than by two defaults that happen to match.
+TETHER_PORT = int(os.environ.get("AWM_TETHER_PORT", "12520"))
+TETHER_URL = f"http://{HOST}:{TETHER_PORT}"
+
 IDLE_SHUTDOWN_SECONDS = int(os.environ.get("AWM_IDLE_SHUTDOWN", "1800"))  # 30 min
 
 ACCESS_LOG = AWM_DIR / "access.log"

@@ -155,19 +155,36 @@ class Store:
             )
         return proc
 
+    _ATTRIBUTES = (
+        "# Diagrams are canonical XML text. Never let a platform rewrite\n"
+        "# line endings underneath the normalizer.\n"
+        "*.drawio -text -merge=binary diff\n"
+    )
+
     def _ensure_repo(self) -> None:
+        """Own a repo at ``root``, or join the one ``root`` sits inside.
+
+        A per-user store is a subdirectory of the user's scope worktree, so
+        that repo is used as-is — every git call runs with ``root`` as cwd
+        and paths relative to it — and only the attributes file is added.
+        """
         self.root.mkdir(parents=True, exist_ok=True)
         if (self.root / ".git").exists():
+            return
+        inside = self._git("rev-parse", "--show-toplevel", check=False)
+        if inside.returncode == 0:
+            attrs = self.root / ".gitattributes"
+            if not attrs.is_file():
+                attrs.write_text(self._ATTRIBUTES, encoding="utf-8")
+                self._git("add", "--", ".gitattributes")
+                self._git("commit", "-m",
+                          "init drawio store\n\nAuthor-Handle: system",
+                          "--", ".gitattributes")
             return
         # -b main rather than relying on init.defaultBranch, which is unset on
         # git 2.34 and would leave us on 'master' plus a warning on every init.
         self._git("init", "-b", "main")
-        (self.root / ".gitattributes").write_text(
-            "# Diagrams are canonical XML text. Never let a platform rewrite\n"
-            "# line endings underneath the normalizer.\n"
-            "*.drawio -text -merge=binary diff\n",
-            encoding="utf-8",
-        )
+        (self.root / ".gitattributes").write_text(self._ATTRIBUTES, encoding="utf-8")
         self._git("add", ".gitattributes")
         self._git("commit", "-m", "init drawio store\n\nAuthor-Handle: system")
 
@@ -224,7 +241,8 @@ class Store:
         path = self._require(save) if rev is None else normalize_save_path(save)
         if rev is None:
             return (self.root / path).read_text(encoding="utf-8")
-        proc = self._git("show", f"{rev}:{path}", check=False)
+        # ``./`` keeps the path relative to the store, not the repo root.
+        proc = self._git("show", f"{rev}:./{path}", check=False)
         if proc.returncode != 0:
             raise UnknownDiagram(f"{path!r} does not exist at revision {rev!r}")
         return proc.stdout
@@ -364,8 +382,11 @@ class Store:
             return False
         if time.time() - int(when) > SETTLE_SECONDS:
             return False
+        # --relative: paths as seen from the store root, and anything the
+        # tip touched outside the store (another service's files in a shared
+        # worktree) makes the list disagree, which is the right answer.
         touched = self._git(
-            "show", "--name-only", "--format=", sha, check=False,
+            "show", "--name-only", "--relative", "--format=", sha, check=False,
         ).stdout.split()
         return touched == [path]
 

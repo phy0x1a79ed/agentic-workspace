@@ -90,6 +90,7 @@ class ScopeInfo(BaseModel):
 class ScopeListResponse(BaseModel):
     scopes: list[ScopeInfo]
     total: int
+    degraded: dict | None = None
 
 
 class ScopeActionResponse(BaseModel):
@@ -144,3 +145,4 @@ class ProjectListInfo(BaseModel):
 
 class ProjectListResponse(BaseModel):
     projects: list[ProjectListInfo]
+    degraded: dict | None = None
