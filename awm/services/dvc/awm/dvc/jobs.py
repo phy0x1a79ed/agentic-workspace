@@ -25,6 +25,7 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from time import time
@@ -38,6 +39,18 @@ from awm.dvc import sync as syncmod
 from awm.persistence.databases import new_uuid
 
 log = logging.getLogger("awm.dvc.jobs")
+
+# Runs this process has claimed and is still submitting. Building a whole-tree
+# transfer takes minutes, and the adopt sweep must not mistake that for a dead
+# submitter.
+_submitting: set[str] = set()
+_submitting_lock = threading.Lock()
+
+
+def submitting() -> frozenset[str]:
+    """Run ids this process claimed whose submit has not returned yet."""
+    with _submitting_lock:
+        return frozenset(_submitting)
 
 CACHE_SYNC = "cache_sync"
 WORKSPACE_BACKUP = "workspace_backup"
@@ -214,20 +227,26 @@ def run_job(
             "note": note,
         }
 
+    with _submitting_lock:
+        _submitting.add(run["id"])
     try:
-        result = spec.submit()
-    except Exception as exc:  # noqa: BLE001 — the row is the error report
-        dao.fail(run["id"], f"{type(exc).__name__}: {exc}")
-        log.error("%s: submit failed: %s", name, exc)
-        raise
+        try:
+            result = spec.submit()
+        except Exception as exc:  # noqa: BLE001 — the row is the error report
+            dao.fail(run["id"], f"{type(exc).__name__}: {exc}")
+            log.error("%s: submit failed: %s", name, exc)
+            raise
 
-    task_id = str(result.get("task_id") or "")
-    if not task_id:
-        # Shouldn't happen: a non-dry submit either returns an id or raises.
-        dao.fail(run["id"], "submit returned no task id")
-        return {**result, "job": name, "run_id": run["id"]}
+        task_id = str(result.get("task_id") or "")
+        if not task_id:
+            # Shouldn't happen: a non-dry submit either returns an id or raises.
+            dao.fail(run["id"], "submit returned no task id")
+            return {**result, "job": name, "run_id": run["id"]}
 
-    dao.mark_submitted(run["id"], task_id, label=spec.label)
+        dao.mark_submitted(run["id"], task_id, label=spec.label)
+    finally:
+        with _submitting_lock:
+            _submitting.discard(run["id"])
     log.info("%s: submitted task %s (trigger=%s)", name, task_id, trigger)
     return {**result, "job": name, "run_id": run["id"], "trigger": trigger}
 

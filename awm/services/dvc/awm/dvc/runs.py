@@ -254,7 +254,7 @@ class RunsDAO(BaseDAO):
     def mark_submitted(self, run_id: str, task_id: str, *, label: str = "") -> None:
         self.execute(
             "UPDATE dvc_runs SET status = 'running', task_id = ?, label = ?, "
-            "submitted_at = ? WHERE id = ?",
+            "submitted_at = ?, error = '', finished_at = 0 WHERE id = ?",
             (task_id, label, time(), run_id),
         )
 

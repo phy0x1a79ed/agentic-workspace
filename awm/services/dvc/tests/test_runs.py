@@ -144,3 +144,16 @@ def test_iso_and_to_epoch_round_trip():
     assert runs.to_epoch("nonsense") is None
     assert runs.to_epoch(1_700_000_000) == 1_700_000_000.0
     assert runs.to_epoch(runs.iso(1_700_000_000)) == 1_700_000_000.0
+
+
+def test_a_submit_that_lands_after_an_orphan_verdict_clears_the_verdict(dvc_db):
+    """The row must not read SUCCEEDED beside "nothing was submitted"."""
+    run = dvc_db.begin_run("workspace_backup")
+    dvc_db.fail(run["id"], "orphaned: no Globus task")
+
+    dvc_db.mark_submitted(run["id"], "task-abc")
+    row = dvc_db.get_run(run["id"])
+
+    assert row["status"] == "running"
+    assert row["error"] == ""
+    assert row["finished_at"] == 0

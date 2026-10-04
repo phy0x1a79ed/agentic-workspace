@@ -118,3 +118,21 @@ async def test_a_run_still_submitting_is_given_time_before_being_declared_orphan
 
     assert dvc_db.get_run(run["id"])["status"] == "submitting"
     assert s._watching == {}
+
+
+async def test_a_run_this_process_is_still_submitting_is_never_declared_orphaned(
+    adopter, dvc_db, monkeypatch
+):
+    """Capella's mirror spends ~15 min building its transfer before submit returns."""
+    s, adapter = adopter
+    run = dvc_db.begin_run("workspace_backup")
+    dvc_db.execute(
+        "UPDATE dvc_runs SET started_at = ? WHERE id = ?",
+        (time() - schedmod.ORPHAN_AFTER_S - 1, run["id"]),
+    )
+    monkeypatch.setattr(schedmod.jobs, "submitting", lambda: frozenset({run["id"]}))
+
+    await s._adopt_sweep()
+
+    assert dvc_db.get_run(run["id"])["status"] == "submitting"
+    assert adapter.events == []

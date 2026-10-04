@@ -53,7 +53,10 @@ POLL_MAX_S = 5.0        # cap on the reconcile sleep, so a schedule edit lands f
 JITTER_S = 60.0         # pre-submit spread; a fleet must not hit one collection at 04:00
 WATCH_POLL_S = 30       # Globus has no push, so a verdict costs a poll
 PROGRESS_EMIT_S = 120   # floor for re-emitting unchanged counters
-ORPHAN_AFTER_S = 300    # a live row with no task id this long never got submitted
+# A live row with no task id this long never got submitted. Only a submitter in
+# another process (the console script) reaches this check; this process's own are
+# exempted by `jobs.submitting()`. Capella's mirror takes ~15 min to build.
+ORPHAN_AFTER_S = 3600
 STALL_AFTER_S = 26 * 3600  # a daily job still running past the next one's slot
 
 # Consecutive unqueryable polls before a watcher gives up on the task. At
@@ -287,6 +290,8 @@ class Scheduler:
             if not run["task_id"]:
                 # Inserted, then the process died before `globus submit`
                 # returned — or before it was even called. Nothing to adopt.
+                if run["id"] in jobs.submitting():
+                    continue
                 if now - float(run["started_at"] or 0) > ORPHAN_AFTER_S:
                     msg = (
                         "orphaned: the run claimed the slot but no Globus task "
