@@ -12,7 +12,9 @@ Runs as a sibling task next to the adapter + scheduler
 emits through the adapter's live control WS — a safe no-op while it is down
 (same best-effort contract as the scheduler's ticks). While a source service is
 absent from the gateway the subscribe just fails and retries with backoff, so
-the funnel is inert until the realm shows up.
+the funnel is inert until the realm shows up. A source the gateway reports
+*disabled* is not subscribed at all — each refused attempt costs two gateway
+log lines — and is re-checked every :data:`DISABLED_RECHECK_S`.
 """
 
 from __future__ import annotations
@@ -26,6 +28,7 @@ log = logging.getLogger("awm.events.funnel")
 
 WAKE_TOPIC = "agent.wake"
 DEBOUNCE_S = 60.0
+DISABLED_RECHECK_S = 300.0
 
 
 @dataclass(frozen=True)
@@ -96,6 +99,25 @@ class Funnel:
 
     # -- consumer loops -------------------------------------------------------
 
+    async def _source_enabled(self, service: str) -> bool:
+        """False only when the gateway says ``service`` is disabled; any
+        doubt (gateway down, service unknown) answers True."""
+        import httpx
+
+        from awm import gatewayclient
+
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as cli:
+                r = await cli.get(
+                    f"{gatewayclient.hub_base_url()}/hub/services/discovered")
+            r.raise_for_status()
+            for s in r.json().get("services", []):
+                if s.get("name") == service:
+                    return bool(s.get("enabled", True))
+        except Exception as exc:  # noqa: BLE001 — a probe must never kill the loop
+            log.debug("funnel: enabled probe for %s failed: %s", service, exc)
+        return True
+
     async def _listen(self, src: WakeSource) -> None:
         """One never-die consumer loop (reconnect/backoff — the 2fa envelope)."""
         from awm import gatewayclient
@@ -103,7 +125,17 @@ class Funnel:
         log.info("funnel: subscribing to %s/%s (game=%s)",
                  src.service, src.topic, src.game)
         backoff = 2.0
+        parked = False
         while True:
+            if not await self._source_enabled(src.service):
+                if not parked:
+                    log.info("funnel: %s is disabled; not subscribing "
+                             "(re-checking every %.0fs)",
+                             src.service, DISABLED_RECHECK_S)
+                    parked = True
+                await asyncio.sleep(DISABLED_RECHECK_S)
+                continue
+            parked = False
             try:
                 async for ev in gatewayclient.subscribe(src.service, src.topic):
                     backoff = 2.0  # connected and receiving

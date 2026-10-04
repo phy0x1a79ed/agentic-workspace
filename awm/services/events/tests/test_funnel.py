@@ -78,3 +78,62 @@ class TestHandle:
     def test_non_wake_event_not_emitted(self, funnel, src):
         assert _run(funnel._handle(src, {"kind": "world_saved"})) is False
         assert funnel.adapter.emits == []
+
+
+class _StopLoop(Exception):
+    pass
+
+
+class TestListen:
+    """``_listen`` must not knock on a disabled source's emitter: each refused
+    subscribe is two gateway log lines, forever."""
+
+    def _drive(self, monkeypatch, funnel, src, *, enabled: list[bool]):
+        from awm import gatewayclient
+        import awm.events.funnel as funnel_mod
+
+        subscribes: list[str] = []
+        sleeps: list[float] = []
+        answers = iter(enabled)
+
+        async def fake_enabled(service):
+            return next(answers)
+
+        async def fake_subscribe(service, topic):
+            subscribes.append(service)
+            raise ConnectionError("403")
+            yield  # pragma: no cover — makes this an async generator
+
+        async def fake_sleep(s):
+            sleeps.append(s)
+            if len(sleeps) >= len(enabled):
+                raise _StopLoop
+
+        monkeypatch.setattr(funnel, "_source_enabled", fake_enabled)
+        monkeypatch.setattr(gatewayclient, "subscribe", fake_subscribe)
+        monkeypatch.setattr(funnel_mod.asyncio, "sleep", fake_sleep)
+        with pytest.raises(_StopLoop):
+            _run(funnel._listen(src))
+        return subscribes, sleeps
+
+    def test_disabled_source_is_never_subscribed(self, monkeypatch, funnel, src):
+        from awm.events.funnel import DISABLED_RECHECK_S
+        subs, sleeps = self._drive(monkeypatch, funnel, src,
+                                   enabled=[False, False, False])
+        assert subs == []
+        assert sleeps == [DISABLED_RECHECK_S] * 3
+
+    def test_source_enabled_later_is_subscribed(self, monkeypatch, funnel, src):
+        subs, _ = self._drive(monkeypatch, funnel, src,
+                              enabled=[False, True, True])
+        assert subs == ["rlm-factorio", "rlm-factorio"]
+
+    def test_probe_doubt_answers_enabled(self, monkeypatch, funnel):
+        import httpx
+
+        class Boom:
+            def __init__(self, *a, **k):
+                raise httpx.ConnectError("gateway down")
+
+        monkeypatch.setattr(httpx, "AsyncClient", Boom)
+        assert _run(funnel._source_enabled("rlm-factorio")) is True
