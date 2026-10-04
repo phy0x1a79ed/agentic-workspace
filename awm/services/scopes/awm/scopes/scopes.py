@@ -1340,21 +1340,49 @@ def data_status(project: str, scope: str) -> dict:
     return data_dvc.data_status(project, scope, _scope_worktree(project, scope))
 
 
+def _dvc_wired_projects() -> set[str]:
+    """Every project whose objects may live in the shared cache.
+
+    Wired means the common git config carries awm's merge driver, or any
+    worktree tracks a ``.dvc/config``. A project whose worktrees cannot be
+    enumerated counts as wired: the caller then has to name it either way.
+    """
+    wired: set[str] = set()
+    for bare in sorted(PROJECTS_DIR.glob("*/.bare")):
+        project = bare.parent.name
+        r = run_git(["git", "-C", str(bare), "config", "--get", "merge.dvc.driver"])
+        if r.returncode == 0 and r.stdout.strip():
+            wired.add(project)
+            continue
+        try:
+            worktrees = _project_worktrees(project)
+        except (FileNotFoundError, RuntimeError):
+            wired.add(project)
+            continue
+        if any(data_dvc.is_dvc_repo(wt) for wt in worktrees):
+            wired.add(project)
+    return wired
+
+
 def data_gc(projects: list[str], dry_run: bool = True,
-            keep: str = "all-commits") -> dict:
+            keep: str = "all-commits", exclude: list[str] | None = None,
+            accept_missing: list[str] | None = None) -> dict:
     """Reclaim cache objects no listed project references. Dry by default.
 
-    Deliberately takes a *list* of projects and has no "just this one" mode: the
-    cache is shared workspace-wide, so collecting against an incomplete set is
-    how you delete another project's data. See ``data_dvc.collect_garbage``.
+    Every DVC-wired project must appear in ``projects`` (its data survives) or
+    in ``exclude`` (its data is dropped on purpose). See
+    ``data_dvc.collect_garbage``.
     """
-    repos: list[Path] = []
+    listed: list[data_dvc.GcProject] = []
     for proj in projects:
         validate_name(proj, kind="project name")
-        for wt in sorted(_project_worktrees(proj)):
-            if wt.is_dir() and data_dvc.is_dvc_repo(wt):
-                repos.append(wt)
-    return data_dvc.collect_garbage(repos, dry_run=dry_run, keep=keep)
+        listed.append(data_dvc.GcProject(
+            proj, PROJECTS_DIR / proj / ".bare", sorted(_project_worktrees(proj))))
+    for proj in exclude or []:
+        validate_name(proj, kind="project name")
+    return data_dvc.collect_garbage(
+        listed, wired=_dvc_wired_projects(), exclude=exclude,
+        accept_missing=accept_missing, dry_run=dry_run, keep=keep)
 
 
 def data_mount(project: str, scope: str, chunks: list[str] | None = None) -> dict:

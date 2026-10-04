@@ -55,13 +55,19 @@ legacy shared symlink rather than breaking scope creation.
 
 from __future__ import annotations
 
+import fcntl
+import json
 import logging
 import os
 import shutil
 import stat
 import subprocess
+import time
+from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
+
+import yaml
 
 from awm import config as _config
 
@@ -792,61 +798,6 @@ def _head_rev(repo: Path) -> str:
     return (r.stdout or "").strip() if r.returncode == 0 else ""
 
 
-def collect_garbage(repos: list[Path], *, dry_run: bool = True,
-                    keep: str = "all-commits") -> dict:
-    """Reclaim cache objects no listed repository references. **Guarded.**
-
-    This is the only operation in the workspace that can destroy data, and it is
-    wrapped rather than exposed because every one of its defaults is wrong here.
-
-    * The cache is shared by **every** project, so a collection that does not
-      name all of them treats the others' content as garbage. Hence ``repos`` is
-      required and plural, and DVC is told about each with ``-p``.
-    * The safe revision set is ``--all-commits``, **not** ``--all-branches``.
-      The latter keeps only branch *tips*, which would delete content referenced
-      by historical commits — silently breaking the consistent-snapshot property
-      that is the entire point of this layer. ``--workspace`` is worse still.
-    * It fails **late and quietly**. Files already materialised survive, because
-      the workspace hardlink keeps the inode alive; the loss only surfaces at
-      the next fresh checkout, in some other scope, possibly weeks later.
-    * ``dvc gc --dry`` prints "**Removed** N objects" rather than "would
-      remove", so its output cannot be used to tell a dry run from a real one.
-      The ``dry_run`` flag in the returned report is the only trustworthy
-      statement of which one happened, which is why it is always reported.
-
-    Defaults to a dry run on purpose: the caller must ask for deletion.
-    """
-    if not dvc_available():
-        return {"result": "unavailable", "detail": "dvc not found"}
-    if not repos:
-        return {"result": "refused", "detail":
-                "no repositories given — collecting against an incomplete set "
-                "treats every other project's content as garbage"}
-    if keep not in ("all-commits", "all-tags"):
-        return {"result": "refused", "detail":
-                f"keep={keep!r} refused. Only 'all-commits' (and 'all-tags') "
-                f"preserve content referenced by historical commits; "
-                f"'all-branches' keeps branch tips ONLY and 'workspace' keeps "
-                f"just what is checked out right now."}
-
-    args = ["gc", f"--{keep}", "-f"]
-    for r in repos:
-        args += ["-p", str(r)]
-    if dry_run:
-        args.append("--dry")
-    out = _dvc(repos[0], *args, timeout=None)
-    return {
-        "result": "ok" if out.returncode == 0 else "error",
-        # Stated explicitly because DVC's own output does NOT distinguish these.
-        "dry_run": dry_run,
-        "deleted_anything": (not dry_run) and out.returncode == 0,
-        "keep": keep,
-        "repos": [str(r) for r in repos],
-        "cache": str(cache_dir()),
-        "output": _out(out)[-2000:],
-    }
-
-
 def data_status(project: str, scope: str, worktree: Path) -> dict:
     """Describe a scope's data view: mode, the commit that pins it, and drift.
 
@@ -899,3 +850,381 @@ def data_status(project: str, scope: str, worktree: Path) -> dict:
         if missing.returncode == 0 and missing.stdout:
             out["data_status"] = missing.stdout.strip()[:2000]
     return out
+
+
+# ---------------------------------------------------------------------------
+# Garbage collection
+# ---------------------------------------------------------------------------
+
+# An unreferenced object younger than this is never collected. It is the race
+# guard: a `dvc add` writes its objects before its pin exists anywhere git can
+# see, and this engine takes no repo locks to wait it out.
+GC_GRACE_DAYS = 14
+
+_PIN_PATHSPECS = ("*.dvc", "*dvc.lock")
+_BLOB_MODES = ("100644", "100755")
+_NULL_SHA = "0" * 40
+
+
+class GcRefused(Exception):
+    """A condition under which no object may be deleted."""
+
+
+@dataclass
+class GcProject:
+    name: str
+    bare: Path
+    worktrees: list[Path] = field(default_factory=list)
+
+
+def _git_z(repo: Path, *args: str) -> list[str]:
+    r = subprocess.run(["git", "-C", str(repo), *args],
+                       capture_output=True, env=_env())
+    if r.returncode != 0:
+        raise GcRefused(f"git {' '.join(args[:2])} failed in {repo}: "
+                        f"{r.stderr.decode(errors='replace').strip()[-400:]}")
+    return r.stdout.decode(errors="surrogateescape").split("\0")
+
+
+def _is_pin_path(path: str) -> bool:
+    name = path.rsplit("/", 1)[-1]
+    return name == "dvc.lock" or (name.endswith(".dvc") and name != ".dvc")
+
+
+def _history_pin_blobs(bare: Path) -> dict[str, str]:
+    """Every pin blob any commit reachable from any ref ever introduced.
+
+    The first-parent diff of every commit, with ``--root``, visits every blob
+    of every reachable tree at least once: a blob either differs from the
+    first parent's at its path, or it was already introduced further back. A
+    merge's conflict resolution shows up as its own first-parent change.
+    """
+    toks = _git_z(bare, "log", "--all", "--root", "--diff-merges=first-parent",
+                  "--no-renames", "--raw", "--no-abbrev", "-z", "--format=",
+                  "--", *_PIN_PATHSPECS)
+    blobs: dict[str, str] = {}
+    i = 0
+    while i < len(toks):
+        meta = toks[i].lstrip("\n")
+        if not meta.startswith(":") or i + 1 >= len(toks):
+            i += 1
+            continue
+        path = toks[i + 1]
+        i += 2
+        _old_mode, new_mode, _old, new, *_ = meta[1:].split()
+        if new_mode in _BLOB_MODES and new != _NULL_SHA and _is_pin_path(path):
+            blobs.setdefault(new, path)
+    return blobs
+
+
+def _staged_pin_blobs(worktree: Path) -> dict[str, str]:
+    blobs: dict[str, str] = {}
+    for rec in _git_z(worktree, "ls-files", "-s", "-z", "--", *_PIN_PATHSPECS):
+        if not rec:
+            continue
+        info, _, path = rec.partition("\t")
+        mode, sha, _stage = info.split()
+        if mode in _BLOB_MODES and _is_pin_path(path):
+            blobs.setdefault(sha, path)
+    return blobs
+
+
+def _unstaged_pin_files(worktree: Path) -> list[Path]:
+    """Modified and untracked pins on disk. Gitignored pins are not listed:
+    walking ignored trees costs minutes per worktree, and the grace window
+    covers the pin a ``dvc add`` has written but nobody has staged yet."""
+    paths = _git_z(worktree, "ls-files", "-z", "-m", "-o", "--exclude-standard",
+                   "--", *_PIN_PATHSPECS)
+    return [worktree / p for p in dict.fromkeys(paths) if p and _is_pin_path(p)]
+
+
+def _read_blobs(bare: Path, shas: set[str]) -> dict[str, bytes]:
+    if not shas:
+        return {}
+    r = subprocess.run(["git", "-C", str(bare), "cat-file", "--batch"],
+                       input="".join(f"{s}\n" for s in shas).encode(),
+                       capture_output=True, env=_env())
+    if r.returncode != 0:
+        raise GcRefused(f"git cat-file failed in {bare}: "
+                        f"{r.stderr.decode(errors='replace').strip()[-400:]}")
+    out, i, blobs = r.stdout, 0, {}
+    while i < len(out):
+        nl = out.index(b"\n", i)
+        header = out[i:nl].decode().split()
+        if len(header) < 3:
+            raise GcRefused(f"pin blob {header[0]} is {header[1]} in {bare}")
+        size = int(header[2])
+        blobs[header[0]] = out[nl + 1:nl + 1 + size]
+        i = nl + 1 + size + 1
+    return blobs
+
+
+def _pin_hashes(text: bytes | str, origin: str) -> set[str]:
+    """The md5 of every output a ``.dvc`` file or ``dvc.lock`` names.
+
+    Outputs only, as DVC's own gc does: a dependency hash records what a stage
+    read, and that content is kept, or not, by whichever pin outputs it.
+    """
+    try:
+        doc = yaml.safe_load(text)
+    except yaml.YAMLError as e:
+        raise GcRefused(f"cannot parse pin {origin}: {e}") from e
+    if doc is None:
+        return set()
+    if not isinstance(doc, dict):
+        raise GcRefused(f"pin {origin} is not a mapping")
+    outs = list(doc.get("outs") or [])
+    if origin.endswith("dvc.lock"):
+        # schema 2 nests stages under `stages`; schema 1 put them at top level.
+        stages = doc.get("stages") if "schema" in doc else doc
+        for stage in (stages or {}).values():
+            if isinstance(stage, dict):
+                outs += stage.get("outs") or []
+    hashes: set[str] = set()
+    for out in outs:
+        if not isinstance(out, dict):
+            raise GcRefused(f"pin {origin} has a malformed output: {out!r}")
+        for entry in [out, *(out.get("files") or [])]:
+            md5 = entry.get("md5") if isinstance(entry, dict) else None
+            if md5:
+                hashes.add(str(md5).lower())
+    return hashes
+
+
+def _object_path(cache: Path, oid: str) -> Path:
+    return cache / "files" / "md5" / oid[:2] / oid[2:]
+
+
+def _expand_dirs(cache: Path, hashes: dict[str, str],
+                 missing: dict[str, str]) -> set[str]:
+    """Add every file a ``.dir`` manifest lists. A manifest absent from the
+    cache goes into ``missing``: its children are unknown, so nothing is safe."""
+    expanded = set(hashes)
+    for oid, origin in hashes.items():
+        if not oid.endswith(".dir"):
+            continue
+        try:
+            entries = json.loads(_object_path(cache, oid).read_bytes())
+        except FileNotFoundError:
+            missing[oid] = origin
+            continue
+        except (OSError, ValueError) as e:
+            raise GcRefused(f"cannot read .dir manifest {oid}: {e}") from e
+        for entry in entries:
+            if entry.get("md5"):
+                expanded.add(str(entry["md5"]).lower())
+    return expanded
+
+
+def project_keep_set(project: GcProject, cache: Path) -> tuple[set[str], dict]:
+    """Every cache object one project still references, read without a lock.
+
+    Read once per bare repo, not once per worktree: history is shared by every
+    worktree, so only the index and the unstaged files differ between them.
+    """
+    started = time.monotonic()
+    blobs = _history_pin_blobs(project.bare)
+    history_blobs = len(blobs)
+    staged: dict[str, str] = {}
+    on_disk: list[Path] = []
+    missing_worktrees: list[str] = []
+    for wt in project.worktrees:
+        if not wt.is_dir():
+            missing_worktrees.append(str(wt))
+            continue
+        staged |= _staged_pin_blobs(wt)
+        # `dvc add` cannot run outside a DVC repo, so only a DVC worktree can
+        # hold an unstaged pin, and the untracked walk is the slow part.
+        if is_dvc_repo(wt):
+            on_disk += _unstaged_pin_files(wt)
+
+    blobs = staged | blobs
+    hashes: dict[str, str] = {}
+    for sha, body in _read_blobs(project.bare, set(blobs)).items():
+        origin = f"{project.name}:{blobs[sha]}"
+        for oid in _pin_hashes(body, origin):
+            hashes.setdefault(oid, origin)
+    for pin in on_disk:
+        try:
+            body = pin.read_bytes()
+        except FileNotFoundError:
+            continue  # `ls-files -m` lists a deleted pin too
+        for oid in _pin_hashes(body, str(pin)):
+            hashes.setdefault(oid, str(pin))
+
+    missing: dict[str, str] = {}
+    keep = _expand_dirs(cache, hashes, missing)
+    return keep, {
+        "worktrees": len(project.worktrees),
+        "missing_worktrees": missing_worktrees,
+        "pin_blobs": len(blobs),
+        "history_pin_blobs": history_blobs,
+        "unstaged_pins": len(on_disk),
+        "referenced": len(keep),
+        "missing_dir_manifests": dict(sorted(missing.items())),
+        "seconds": round(time.monotonic() - started, 2),
+    }
+
+
+def _check_cache_layout(cache: Path) -> None:
+    """Refuse a cache this engine does not understand.
+
+    Only DVC 3's ``files/md5`` layout is walked. A legacy 2.x top-level object
+    or a run-cache would be invisible to the sweep and to the keep-set alike.
+    """
+    if not cache.is_dir():
+        raise GcRefused(f"no cache at {cache}")
+    extra = sorted(p.name for p in cache.iterdir() if p.name != "files")
+    extra += sorted(f"files/{p.name}" for p in (cache / "files").iterdir()
+                    if p.name != "md5")
+    if extra:
+        raise GcRefused(f"unknown cache layout at {cache}: {', '.join(extra[:10])}")
+
+
+def _gc_lock_path(cache: Path) -> Path:
+    return cache.parent / f"{cache.name}.gc.lock"
+
+
+def _acquire_gc_lock(cache: Path):
+    path = _gc_lock_path(cache)
+    fh = path.open("a+")
+    try:
+        fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        fh.seek(0)
+        holder = fh.read().strip() or "unknown holder"
+        fh.close()
+        raise GcRefused(f"another gc is running ({holder})") from None
+    fh.seek(0)
+    fh.truncate()
+    fh.write(f"pid {os.getpid()} since {time.strftime('%Y-%m-%dT%H:%M:%S%z')}\n")
+    fh.flush()
+    return fh
+
+
+def _sweep(cache: Path, keep: set[str], *, dry_run: bool, grace_s: float) -> dict:
+    cutoff = time.time() - grace_s
+    stats = {"objects": 0, "referenced": 0, "grace_protected": 0,
+             "collected": 0, "collected_bytes": 0, "bytes_freed": 0,
+             "still_linked": 0, "errors": []}
+    md5_root = cache / "files" / "md5"
+    for shard in sorted(os.scandir(md5_root), key=lambda e: e.name):
+        if shard.is_dir(follow_symlinks=False):
+            entries = [(shard.name + obj.name, obj) for obj in os.scandir(shard.path)]
+        elif shard.name.startswith(".") and shard.name.endswith(".tmp"):
+            # An interrupted transfer's partial file. Never referenced, so the
+            # grace window alone decides whether it is still in flight.
+            entries = [(shard.name, shard)]
+        else:
+            raise GcRefused(f"unknown cache layout: {shard.path} is not a shard dir")
+        for oid, obj in entries:
+            _sweep_one(oid, obj, keep, cutoff, dry_run, stats)
+    stats["errors"] = stats["errors"][:20]
+    return stats
+
+
+def _sweep_one(oid: str, obj: os.DirEntry, keep: set[str], cutoff: float,
+               dry_run: bool, stats: dict) -> None:
+    stats["objects"] += 1
+    if oid in keep:
+        stats["referenced"] += 1
+        return
+    st = obj.stat(follow_symlinks=False)
+    if max(st.st_mtime, st.st_ctime) > cutoff:
+        stats["grace_protected"] += 1
+        return
+    stats["collected"] += 1
+    stats["collected_bytes"] += st.st_size
+    # A second link means a worktree still holds the inode, so deleting the
+    # cache entry frees nothing yet.
+    if st.st_nlink > 1:
+        stats["still_linked"] += 1
+    else:
+        stats["bytes_freed"] += st.st_size
+    if dry_run:
+        return
+    try:
+        os.unlink(obj.path)
+    except PermissionError:
+        chmod_dirs_writable(Path(obj.path).parent)
+        try:
+            os.unlink(obj.path)
+        except OSError as e:
+            stats["errors"].append(f"{obj.path}: {e}")
+    except OSError as e:
+        stats["errors"].append(f"{obj.path}: {e}")
+
+
+def collect_garbage(projects: list[GcProject], *, wired: set[str],
+                    exclude: list[str] | None = None,
+                    accept_missing: list[str] | None = None, dry_run: bool = True,
+                    keep: str = "all-commits",
+                    grace_days: float = GC_GRACE_DAYS) -> dict:
+    """Delete cache objects no listed project references. **Guarded**, dry by default.
+
+    Takes no DVC repo lock and never runs ``dvc gc``, which locks every listed
+    worktree for its whole run and re-walks the shared history once per
+    worktree. Refuses, deleting nothing, unless every wired project is either
+    listed or deliberately excluded, every referenced ``.dir`` manifest is in
+    the cache or named in ``accept_missing``, and no other gc is running.
+    """
+    if keep != "all-commits":
+        return {"result": "refused", "detail":
+                f"keep={keep!r} refused. Only 'all-commits' is supported: it keeps "
+                f"every output any commit, staged index or worktree file pins."}
+    if not projects:
+        return {"result": "refused", "detail":
+                "no projects given — collecting against an incomplete set "
+                "treats every other project's content as garbage"}
+    listed = {p.name for p in projects}
+    excluded = set(exclude or [])
+    if listed & excluded:
+        return {"result": "refused", "detail":
+                f"projects both listed and excluded: {sorted(listed & excluded)}"}
+    unlisted = sorted(wired - listed - excluded)
+    if unlisted:
+        return {"result": "refused", "detail":
+                f"DVC-wired projects neither listed nor excluded: {unlisted}. "
+                f"Their objects would be collected. List them in `projects` to "
+                f"keep their data, or in `exclude` to drop it deliberately."}
+
+    cache = cache_dir()
+    report: dict = {"dry_run": dry_run, "deleted_anything": False, "keep": keep,
+                    "cache": str(cache), "grace_days": grace_days,
+                    "excluded": sorted(excluded),
+                    "accepted_missing": sorted(accept_missing or [])}
+    started = time.monotonic()
+    try:
+        _check_cache_layout(cache)
+        lock = _acquire_gc_lock(cache)
+    except GcRefused as e:
+        return {"result": "refused", "detail": str(e), **report}
+    try:
+        keep_set: set[str] = set()
+        per_project: dict[str, dict] = {}
+        for proj in projects:
+            refs, info = project_keep_set(proj, cache)
+            keep_set |= refs
+            per_project[proj.name] = info
+        report["projects"] = per_project
+        accepted = set(accept_missing or [])
+        missing = {oid: origin for info in per_project.values()
+                   for oid, origin in info["missing_dir_manifests"].items()
+                   if oid not in accepted}
+        if missing:
+            shown = dict(list(missing.items())[:10])
+            return {"result": "refused", **report, "detail":
+                    f"{len(missing)} referenced .dir manifests are absent from "
+                    f"the cache, so their files cannot be told apart from "
+                    f"garbage: {shown}. Restore them from the archive, or pass "
+                    f"their ids in `accept_missing` once you know the files "
+                    f"are gone too."}
+        report["sweep"] = _sweep(cache, keep_set, dry_run=dry_run,
+                                 grace_s=grace_days * 86400)
+    except GcRefused as e:
+        return {"result": "refused", "detail": str(e), **report}
+    finally:
+        lock.close()
+    report["deleted_anything"] = not dry_run and report["sweep"]["collected"] > 0
+    report["seconds"] = round(time.monotonic() - started, 2)
+    return {"result": "ok", **report}

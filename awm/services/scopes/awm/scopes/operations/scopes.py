@@ -195,20 +195,22 @@ SCOPE_MANIFEST_FUNCTIONS = [
         "description": (
             "Reclaim shared-cache space by deleting objects no listed project "
             "references. DRY RUN BY DEFAULT — pass dry_run=false to delete. "
-            "The cache is shared workspace-wide, so you must list EVERY project "
-            "whose data must survive; anything omitted is treated as garbage. "
-            "keep defaults to 'all-commits', which preserves content referenced "
-            "by historical commits; 'all-branches' would keep only branch tips "
-            "and is refused. Note dvc's own output says 'Removed N objects' "
-            "even for a dry run — trust the dry_run field in the reply."
+            "The cache is shared workspace-wide: name every DVC-wired project "
+            "either in projects (its data survives) or in exclude (its data is "
+            "dropped on purpose), or the call is refused. Keeps every output "
+            "pinned by any commit, staged index or worktree file, plus any "
+            "object touched within the grace window. Refuses while a pinned "
+            ".dir manifest is missing from the cache, unless its id is in "
+            "accept_missing. Takes no repo locks; only one gc runs at a time."
         ),
         "params": [
             {"name": "projects", "type": "array", "required": True},
+            {"name": "exclude", "type": "array", "required": False},
+            {"name": "accept_missing", "type": "array", "required": False},
             {"name": "dry_run", "type": "boolean", "required": False},
             {"name": "keep", "type": "string", "required": False},
         ],
-        # walks all history of every named project.
-        "timeout": 1800.0,
+        "timeout": 600.0,
     },
     {
         "name": "awm_refresh",
@@ -280,6 +282,8 @@ def _handle_data_gc(args: dict) -> dict:
         args["projects"],
         dry_run=bool(args.get("dry_run", True)),
         keep=args.get("keep", "all-commits"),
+        exclude=args.get("exclude"),
+        accept_missing=args.get("accept_missing"),
     )
 
 
