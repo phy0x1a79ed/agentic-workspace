@@ -170,7 +170,7 @@ A service registers and sends its `ready` frame before `on_start` runs, then fin
 - an in-band `{"kind":"shutdown"}` frame
 - a close `4410` (evicted by a newer overlay)
 
-It also exits when the gateway stays unreachable past `AWM_RECONNECT_DEADLINE_S` (default 10s), measured from the last confirmed-up disconnect. A transient blip still retries with backoff. Only a confirmed inbound frame refreshes the deadline clock, so an accept followed by an immediate close cannot keep resetting it.
+It also exits when the gateway stays unreachable past `AWM_RECONNECT_DEADLINE_S` (default 10s). The deadline counts from the first failure of the outage, not from the last inbound frame. An idle service receives no frames, so a deadline counted from the last frame let a single keepalive blip end it with zero retries. Only a confirmed inbound frame ends an outage, so an accept followed by an immediate close cannot restart the deadline.
 
 A self-minted sid (empty `AWM_SERVICE_ID`) clears on every disconnect. The next loop re-registers and hits `409`, then `GiveUp`, against a live incumbent. A hub-assigned sid survives a disconnect, for respawn by sid. This is the backstop for a hard-killed gateway, where lifespan shutdown never runs.
 
