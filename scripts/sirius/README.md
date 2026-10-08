@@ -81,6 +81,7 @@ the box afterwards to install it.
 | the tether macOS client | `awm/services/tether/build-macos.sh`, run on the Mac |
 | a new paper in Zotero | nothing. altair pulls and ships it, and the timer here applies it |
 | a new person | `scripts/sirius/add-user.sh <name>` |
+| a Penpot plugin everyone should have | `scripts/sirius/penpot-plugins.sh` |
 
 `deploy.sh` covers the routine case on its own. It decides whether the diff
 touched an install file, and it calls `install-awm.sh` when it did. Do not run

@@ -13,7 +13,10 @@
 # accounts of its own and gives each new one a private team. So this also
 # creates the person's Penpot profile, hands awm the credential nobody is ever
 # told, and calls penpot-team.sh to put them in the one shared team -- after
-# which they see everyone's figures and everyone sees theirs.
+# which they see everyone's figures and everyone sees theirs. It then calls
+# penpot-plugins.sh, because Penpot keeps its plugin registry per profile too,
+# so a plugin this box installed for everybody is not a plugin a new account
+# has.
 #
 #   scripts/sirius/add-user.sh <name>
 #
@@ -184,6 +187,13 @@ if penpot_stack_here && command -v docker >/dev/null; then
     # profile, so it also repairs anyone added before it existed.
     "$(dirname "$0")/penpot-team.sh" || \
         echo "   !! shared team not joined; this person sees only their own figures" >&2
+
+    step "penpot plugins"
+    # Penpot's plugin registry is per profile, so a new account starts with an
+    # empty plugin menu however the existing ones were filled. Sweeps every
+    # profile for the same reason the team step does.
+    "$(dirname "$0")/penpot-plugins.sh" || \
+        echo "   !! plugins not installed; this person has an empty plugin menu" >&2
 else
     echo "   no penpot stack at $PENPOT_COMPOSE_DIR — skipped"
 fi
