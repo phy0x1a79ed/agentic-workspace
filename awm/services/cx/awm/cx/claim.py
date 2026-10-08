@@ -6,6 +6,10 @@ Claude Code reloads project settings, project MCP servers, project skills and
 the destination's CLAUDE.md on that move, so a moved session is equivalent to
 one launched there.
 
+The claim then renames the session to `claimed <noun>`, which is what stops it
+advertising itself as a spare. That name is a placeholder: a hook clears it on
+the first real prompt and Claude Code titles the session itself.
+
 CAUTION: CLAUDE.md accumulates across moves. The destination's file is added and
 the origin's is not removed, which is why a session is seeded where there is no
 CLAUDE.md and moved exactly once, on its way to its user. A session that already
@@ -65,7 +69,7 @@ async def claim(cwd: str) -> dict[str, Any]:
             return _miss(f"{want} would ask the user to trust it first")
         started = time.monotonic()
         try:
-            await asyncio.to_thread(_type_cd, s, want)
+            await asyncio.to_thread(_type_command, s, f"/cd {want}")
         except claudedaemon.DaemonError as exc:
             return _miss(f"{s.short} would not take the move: {exc}")
         typed = time.monotonic()
@@ -75,6 +79,12 @@ async def claim(cwd: str) -> dict[str, Any]:
         settled = _recheck(s.short, want)
         if settled is None:
             return _miss(f"{s.short} was taken while we were moving it")
+        # After the recheck, never before it: the recheck asks whether the name
+        # still carries the pool's prefix, and this is what takes it away.
+        # Nothing waits for the rename to land. It is the session's own next
+        # turn, it costs the caller nothing to miss, and `cx` is already
+        # attaching by the time it does.
+        await asyncio.to_thread(_rename, settled, s.short)
         log.info("cx: %s claimed %s in %.0fms (typing %.0fms, landing %.0fms)",
                  want, s.short, (time.monotonic() - started) * 1000,
                  (typed - started) * 1000, (time.monotonic() - typed) * 1000)
@@ -86,8 +96,8 @@ def _miss(reason: str) -> dict[str, Any]:
     return {"session": None, "reason": reason}
 
 
-def _type_cd(s: sessions.Session, want: str) -> None:
-    """Type `/cd <dir>` into the session, over the daemon's PTY socket."""
+def _type_command(s: sessions.Session, text: str) -> None:
+    """Type one slash command into the session, over the daemon's PTY socket."""
     def beat(seconds: float) -> None:
         time.sleep(min(seconds, SETTLE_S))
 
@@ -96,9 +106,38 @@ def _type_cd(s: sessions.Session, want: str) -> None:
         # its text in the composer for this one to concatenate onto, and an
         # empty composer does not notice the key.
         conn.send_keys(b"\x15")
-        conn.type_text(f"/cd {want}")
+        conn.type_text(text)
         beat(SETTLE_S)
         conn.press_enter()
+
+
+def claimed_name(name: str, short: str) -> str:
+    """The name a spare takes when a terminal claims it: `<warm serval>` to
+    `claimed serval`.
+
+    The pool's noun is kept because it is the only handle the user already has:
+    the session they just watched appear as `<warm serval>` is the one now
+    called `claimed serval`. The short id stands in if the name is not shaped
+    the way the pool writes them, which only happens if the prefix is
+    reconfigured mid-life.
+    """
+    noun = name[len(config.name_prefix()):].strip().rstrip(">").strip()
+    return f"{config.claimed_prefix()}{noun or short}"
+
+
+def _rename(s: sessions.Session, short: str) -> None:
+    """Take the pool's name off a session that now belongs to somebody.
+
+    Typed as `/rename`, not written into the state record: the vendor's own
+    path updates the record and the session registry together, and with an
+    argument it costs no language model call. A failure here is logged and
+    swallowed. The caller has a working session either way, and refusing to
+    hand it over because it kept the wrong name would be the worse outcome.
+    """
+    try:
+        _type_command(s, f"/rename {claimed_name(s.name, short)}")
+    except claudedaemon.DaemonError as exc:
+        log.warning("cx: %s kept its pool name — %s", short, exc)
 
 
 def _abandon(s: sessions.Session) -> None:

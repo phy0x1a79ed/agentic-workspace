@@ -22,6 +22,26 @@ def test_identity_comes_from_the_state_record_not_the_roster(by_short):
     assert not sessions.is_ours(adopted)
 
 
+def test_the_pool_still_knows_a_session_it_renamed_itself(by_short):
+    """`claimed vole` reads as nobody's session by name and is still ours."""
+    from awm.cx import sessions
+
+    s = by_short["claimedfresh"]
+    assert s.name == "claimed vole"
+    assert not sessions.is_ours(s)
+    assert sessions.was_ours(s)
+
+
+def test_a_session_the_pool_never_made_is_never_collected(by_short):
+    import dataclasses
+
+    from awm.cx import sessions
+
+    s = dataclasses.replace(by_short["warmfresh"], seed_name=None, name="mine")
+    assert not sessions.was_ours(s)
+    assert not sessions.removable(s, version=VERSION, now=_just_after(s) + 1e6)
+
+
 def test_a_fresh_warm_session_is_claimable(by_short):
     from awm.cx import sessions
 
@@ -39,14 +59,43 @@ def test_an_adopted_session_is_never_claimed_and_never_deleted(by_short):
     assert not sessions.removable(s, version=VERSION, now=now)
 
 
-def test_a_live_session_that_was_claimed_is_left_alone(by_short):
+def test_a_live_session_that_was_just_claimed_is_left_alone(by_short):
     from awm.cx import sessions
 
-    s = by_short["stranded"]
+    s = by_short["claimedfresh"]
     now = _just_after(s)
     assert s.origin_cwd is not None
     assert not sessions.claimable(s, version=VERSION, now=now)
     assert not sessions.removable(s, version=VERSION, now=now)
+
+
+def test_a_claim_nobody_ever_used_is_collected_once_it_ages_out(by_short):
+    """The leak this predicate was widened for: taken, never spoken to, and
+    refused forever by a rule that only meant to protect a live conversation."""
+    from awm.cx import config, sessions
+
+    s = by_short["stranded"]
+    assert s.origin_cwd is not None and s.tokens == 0
+    old = _just_after(s) + config.rotate_age_s()
+    assert sessions.removable(s, version=VERSION, now=old, attached=frozenset())
+
+
+def test_a_claim_with_a_terminal_on_it_is_never_collected(by_short):
+    """Somebody who ran `cx`, walked away, and came back to an empty composer."""
+    from awm.cx import config, sessions
+
+    s = by_short["stranded"]
+    old = _just_after(s) + config.rotate_age_s()
+    assert not sessions.removable(s, version=VERSION, now=old,
+                                  attached=frozenset({"stranded"}))
+
+
+def test_an_attached_session_is_read_off_the_process_table(monkeypatch):
+    """There is no field for this anywhere; the attaching argv is the whole
+    signal, so a change to how `cx` attaches silently unprotects a session."""
+    from awm.cx import sessions
+
+    assert "warmfresh" not in sessions.attached_shorts()
 
 
 def test_the_same_session_is_collected_once_its_process_is_gone(by_short):
@@ -119,9 +168,18 @@ def test_status_names_the_reason_each_session_is_unavailable(box):
     from awm.cx import pool
 
     rows = {r["session"]: r for r in pool.status()["sessions"]}
-    assert rows["adopted"]["why_not"] == "renamed"
+    assert rows["adopted"]["why_not"] == "prompted"
     assert rows["stranded"]["why_not"] == "claimed"
+    assert rows["claimedfresh"]["why_not"] == "claimed"
     assert rows["strandeddead"]["why_not"] == "gone"
+
+
+def test_status_still_holds_a_session_the_pool_renamed_on_claim(box):
+    """It is no longer called `<warm ...>` anything, and dropping it is how a
+    claimed session comes to look like a second spare."""
+    from awm.cx import pool
+
+    assert "claimedfresh" in {r["session"] for r in pool.status()["sessions"]}
 
 
 def _just_after(s) -> float:
@@ -162,20 +220,22 @@ def test_the_removal_plan_holds_only_the_session_nobody_can_reach(box):
     """The one case removal exists for, and nothing else on a live box."""
     from awm.cx import remove
 
-    items = remove.plan(now=_now_for(box))
-    assert [i["session"] for i in items] == ["strandeddead"]
-    assert items[0]["why"] == "the process is gone"
+    items = {i["session"]: i for i in remove.plan(now=_now_for(box))}
+    assert set(items) == {"strandeddead", "stranded"}
+    assert items["strandeddead"]["why"] == "the process is gone"
+    assert "never prompted" in items["stranded"]["why"]
 
 
 def test_the_removal_plan_is_empty_while_every_session_is_alive(box, monkeypatch):
-    from awm.cx import remove, sessions
+    from awm.cx import remove
 
-    # Drop the corpse and nothing is left to collect: the adopted session is
-    # renamed, the stranded one was claimed, and the fresh one is in use.
+    # Drop the corpse and the abandoned claim, and nothing is left to collect:
+    # the adopted session has been prompted, and the other two are young.
     import json
     roster = box / "daemon" / "roster.json"
     data = json.loads(roster.read_text())
     del data["workers"]["strandeddead"]
+    del data["workers"]["stranded"]
     roster.write_text(json.dumps(data))
     assert remove.plan(now=_now_for(box)) == []
 

@@ -41,19 +41,27 @@ def warm(all_sessions: list[sessions.Session], *, version: str | None,
 
 def why_not(s: sessions.Session, *, version: str | None,
             now: float | None = None) -> str | None:
-    """Why this session cannot be handed out, in a word a person can act on."""
+    """Why this session cannot be handed out, in a word a person can act on.
+
+    Ordered by what the reader can do about it, not by how the predicates
+    happen to be written. A rename used to come first and now comes late: the
+    pool renames every session it hands out, so "renamed" stopped being news
+    and "claimed" is what the reader wants to see. It still answers "renamed"
+    for the case it was written for, a spare somebody adopted without ever
+    going through `cx`.
+    """
     if version is None:
         return "no claude binary"
     if not s.has_record:
         return "deleted"
-    if not sessions.is_ours(s):
-        return "renamed"
-    if s.tokens != 0:
-        return "prompted"
     if not sessions.is_alive(s):
         return "gone"
+    if s.tokens != 0:
+        return "prompted"
     if s.origin_cwd is not None:
         return "claimed"
+    if not sessions.is_ours(s):
+        return "renamed"
     if not sessions.is_untouched(s):
         return "used"
     if s.cli_version != version:
@@ -68,13 +76,13 @@ def status(loop: Any = None) -> dict[str, Any]:
     now = time.time()
     version = sessions.binary_version()
     pid = sessions.daemon_pid()
-    # A session the pool seeded and somebody then adopted still appears here,
-    # marked "renamed". Where a session went is the question status exists to
-    # answer, and dropping it the instant it is renamed answers nothing.
+    # Everything the pool ever seeded, under whatever name it wears now. Where
+    # a session went is the question status exists to answer, and dropping it
+    # the instant it is renamed answers nothing.
     prefix = config.name_prefix()
     mine = [s for s in sessions.load()
-            if s.has_record
-            and (sessions.is_ours(s) or (s.seed_name or "").startswith(prefix))]
+            if s.has_record and (sessions.is_ours(s) or sessions.was_ours(s))]
+    attached = sessions.attached_shorts()
     rows = []
     for s in mine:
         rows.append({
@@ -85,8 +93,10 @@ def status(loop: Any = None) -> dict[str, Any]:
             "cwd": s.cwd,
             "cli_version": s.cli_version,
             "claimable": sessions.claimable(s, version=version, now=now),
+            "attached": s.short in attached,
             "why_not": why_not(s, version=version, now=now),
-            "removable": sessions.removable(s, version=version, now=now),
+            "removable": sessions.removable(s, version=version, now=now,
+                                            attached=attached),
         })
     rows.sort(key=lambda r: r["age_s"])
     out: dict[str, Any] = {
