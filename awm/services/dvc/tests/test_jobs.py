@@ -168,3 +168,23 @@ def test_the_jobs_and_the_run_status_domain_agree():
 
     assert set(runs.LIVE) == {"submitting", "running"}
     assert globus.TERMINAL == {"SUCCEEDED", "FAILED"}
+
+
+def test_a_run_is_marked_submitting_only_while_its_submit_is_in_flight(dvc_db,
+                                                                       monkeypatch):
+    spec = jobs.JOBS[jobs.WORKSPACE_BACKUP]
+    seen: list[frozenset[str]] = []
+
+    def submit(*, dry_run=False):
+        seen.append(jobs.submitting())
+        return {"submitted": True, "task_id": "task-1"}
+
+    monkeypatch.setitem(
+        jobs.JOBS, jobs.WORKSPACE_BACKUP,
+        type(spec)(**{**spec.__dict__, "submit": submit}),
+    )
+
+    result = jobs.run_job(jobs.WORKSPACE_BACKUP)
+
+    assert seen == [frozenset({result["run_id"]})]
+    assert jobs.submitting() == frozenset()
