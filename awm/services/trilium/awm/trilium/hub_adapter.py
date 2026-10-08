@@ -448,7 +448,8 @@ API_MANIFEST: dict[str, Any] = {
                 {"name": "user", "type": "string",
                  "description": "Bind the token to this visitor name. Omit for an open link."},
                 {"name": "write", "type": "boolean",
-                 "description": "Let the visitor edit note bodies. Default false (read-only)."},
+                 "description": "Let the visitor create, edit, move and delete notes inside the "
+                                "slice. Default false (read-only)."},
                 {"name": "expires_in_hours", "type": "number",
                  "description": "The link stops resolving after this many hours. Default never."},
             ],

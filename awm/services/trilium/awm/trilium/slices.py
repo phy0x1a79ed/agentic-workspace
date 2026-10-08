@@ -1,7 +1,8 @@
 """Slice tokens: minting, listing, revoking and resolving.
 
 A slice is a link that opens one note and its descendants to somebody with no
-awm account, optionally letting them edit note bodies. The token is a
+awm account, optionally letting them do the work of a small vault inside it. The
+token is a
 credential, so it lives in this service's own SQLite DB rather than on a note
 -- a note anyone signed in can read would otherwise leak the very thing that
 stands in for a password.
