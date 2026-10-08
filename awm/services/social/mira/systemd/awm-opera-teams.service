@@ -11,11 +11,15 @@ Environment=DISPLAY=:20
 # GNOME session, which would otherwise pull the browser onto the wrong display.
 UnsetEnvironment=WAYLAND_DISPLAY
 # A DEDICATED browser (Opera) so the automation profile never collides with the
-# user's own google-chrome on mira. Opens Teams (the future connector's target)
-# plus app.slack.com as a Slack-web fallback the extractor can read instead of the
-# desktop app. --remote-debugging-port binds 127.0.0.1 only.
-# --ozone-platform=x11: pin X11 so Opera renders to our Xvfb, not the real GNOME
-# wayland compositor it would otherwise auto-detect (see awm-slack.service).
+# user's own google-chrome on mira. Opens Teams plus app.slack.com — the Slack tab
+# is what the API daemon and the extractor both drive.
+# --remote-debugging-port binds 127.0.0.1 only (RCE-equivalent surface; never
+# expose off-host). --disable-gpu: no GPU under Xvfb. The logins persist under
+# ~/snap/opera so a restart comes back signed in.
+# --ozone-platform=x11: unsetting WAYLAND_DISPLAY isn't enough — Chromium
+# auto-detects the wayland-0 socket in XDG_RUNTIME_DIR and would render to the
+# real GNOME compositor instead of our Xvfb. Pin X11. The occlusion flag stops
+# Chromium painting the off-screen Xvfb window black.
 # The sharepoint.com tab backs the OneDrive bucket (MIRA_STORAGE=onedrive); its
 # Microsoft SSO carries over from the Teams login in the same Opera profile.
 ExecStartPre=/bin/sleep 2
