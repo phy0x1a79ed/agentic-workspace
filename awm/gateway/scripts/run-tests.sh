@@ -76,10 +76,11 @@ declare -A DISTS=(
   [cx]="$WS/awm/services/cx::$WS/awm/services/cx/tests"
   [dev]="$WS/awm/services/dev::$WS/awm/services/dev/tests"
   [tether]="$WS/awm/services/tether::$WS/awm/services/tether/tests"
+  [kb]="$WS/awm/services/kb::$WS/awm/services/kb/tests"
 )
 
 # Stable run order.
-ORDER=(gateway agentcore gatewayclient config persistence telemetry claudedaemon scopes workspace agents artifacts writing events precedence social 2fa ssh auth httpsfront rlm-browser rlm-factorio orchestrator graphify stt tts fileviewer drawio notes virtmic mic vpn compute reflection dvc claude-science dsh hermes trilium zotero penpot penpot-view penpot-plugins cx dev tether)
+ORDER=(gateway agentcore gatewayclient config persistence telemetry claudedaemon scopes workspace agents artifacts writing events precedence social 2fa ssh auth httpsfront rlm-browser rlm-factorio orchestrator graphify stt tts fileviewer drawio notes virtmic mic vpn compute reflection dvc claude-science dsh hermes trilium zotero penpot penpot-view penpot-plugins cx dev tether kb)
 
 # Allow selecting a subset on the command line.
 if [ "$#" -gt 0 ]; then

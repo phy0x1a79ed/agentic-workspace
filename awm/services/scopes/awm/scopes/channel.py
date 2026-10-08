@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import uuid as _uuid
 from dataclasses import dataclass
 
@@ -367,26 +368,64 @@ def fetch(*, project: str | None = None, scope: str | None = None,
     return [_row_to_post(r) for r in rows]
 
 
+#: Rank searches with the kb service where it holds every post. 0 keeps every
+#: search on the local index.
+KB_RECALL = os.environ.get("SCOPES_KB_RECALL", "1").strip().lower() not in ("0", "false", "no", "off")
+#: A hybrid kb recall answers in well under a second. Past this, the local index answers instead.
+KB_TIMEOUT_S = 5.0
+
+
+def _kb_hits(query: str, project: str | None, scope: str | None, kind: str | None,
+             limit: int) -> list[dict] | None:
+    """kb's ranking of this node's posts, or None when kb is absent, partial or failing.
+
+    ``require_complete`` makes kb refuse until it holds every post, so routing
+    here never narrows what a search can find.
+    """
+    if not KB_RECALL or limit > 100:
+        return None
+    try:
+        from awm.gatewayclient import call_sync
+        res = call_sync("kb", "recall", {
+            "query": query, "sources": ["posts"], "project": project, "scope": scope,
+            "kind": kind, "limit": limit, "require_complete": True}, timeout=KB_TIMEOUT_S)
+        return [{"source_id": str(h["ref"]["id"]), "score": h["score"], "snippet": h.get("snippet") or ""}
+                for h in res["hits"]]
+    except Exception:  # noqa: BLE001 — any refusal or failure means the local index answers
+        return None
+
+
 def search(*, query: str, project: str | None = None, scope: str | None = None,
            kind: str | None = None, author: str | None = None, limit: int = 50,
            offset: int = 0, before_ts: str | None = None,
-           order: str | None = None) -> tuple[list[ScopePost], dict | None]:
-    """Posts matching ``query`` by meaning and keyword, best first, and a ``degraded`` block.
+           order: str | None = None) -> tuple[list[ScopePost], dict | None, str]:
+    """Posts matching ``query`` by meaning and keyword, best first, a ``degraded`` block,
+    and which engine ranked them: ``kb``, ``local``, or ``none`` for a substring match.
 
     The filters narrow the candidates before ranking. ``order`` re-sorts the
     selected posts by time. A kind the index does not hold (``system``) falls
-    back to a substring match.
+    back to a substring match. kb filters by project, scope and kind only, so a
+    search by author or time stays on the local index.
     """
     where, params = _post_filter(project, scope, kind, author, before_ts)
     degraded = None
-    if kind and kind not in search_index.INDEXED_KINDS:
+    semantic = "none"
+    indexed = not kind or kind in search_index.INDEXED_KINDS
+    kb = (_kb_hits(query, project, scope, kind, offset + limit)
+          if indexed and not author and before_ts is None else None)
+    if not indexed:
         ids = None
+    elif kb is not None:
+        ids = [h["source_id"] for h in kb][offset:]
+        matches = {h["source_id"]: h for h in kb}
+        semantic = "kb"
     else:
         try:
             res = search_index.search("post", query, allowed=f"SELECT id FROM scope_posts WHERE 1=1{where}",
                                       params=params, limit=offset + limit)
             ids, degraded = [h["source_id"] for h in res.hits][offset:], res.degraded
             matches = {h["source_id"]: h for h in res.hits}
+            semantic = "local"
         except Exception as exc:  # noqa: BLE001 — reported, then answered by keyword
             ids = None
             degraded = {"semantic": "error", "error": repr(exc)[:300], "fallback": "keyword"}
@@ -405,7 +444,7 @@ def search(*, query: str, project: str | None = None, scope: str | None = None,
             p.match = {"score": h["score"], "snippet": h["snippet"]}
     if order in ("asc", "desc"):
         posts.sort(key=lambda p: p.ts, reverse=order == "desc")
-    return posts, degraded
+    return posts, degraded, semantic
 
 
 # ---------------------------------------------------------------------------
