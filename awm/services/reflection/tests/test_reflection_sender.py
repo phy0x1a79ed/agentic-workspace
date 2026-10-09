@@ -223,6 +223,7 @@ def test_a_resume_into_a_compacting_session_commits_once_and_is_enqueued(
     class Tail:
         def poll(self): return True
         def watch(self, _t): pass
+        def expect(self, _t): pass
         def landed(self, _t): return True
 
     events = []
@@ -301,6 +302,7 @@ def test_a_session_held_at_shell_by_a_background_task_is_confirmed_by_record(
     class Tail:
         def poll(self): return True
         def watch(self, _t): pass
+        def expect(self, _t): pass
         def landed(self, _t): return True
         def tool_call_in_flight(self): return False
         def queued(self, _t): return False
@@ -321,6 +323,7 @@ def test_a_busy_session_whose_transcript_shows_the_line_is_evidence(monkeypatch)
     class Tail:
         def poll(self): return True
         def watch(self, _t): pass
+        def expect(self, _t): pass
         def landed(self, _t): return True
 
     events = []

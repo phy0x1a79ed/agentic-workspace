@@ -164,6 +164,69 @@ def test_a_pasted_resume_is_recognised_through_its_envelope(sessions):
     assert tail.started(resume, since_ms=1_000_000) is True
 
 
+def blind_enqueue(when_ms):
+    """How 2.1.295 records a pasted prompt joining the queue: no content at all."""
+    entry = queue("enqueue")
+    entry["timestamp"] = at(when_ms)
+    return entry
+
+
+def test_a_content_less_enqueue_after_we_typed_is_ours(sessions):
+    # 2026-10-09: the only trace of a resume queued behind `/compact` for the
+    # whole compaction. Unseen, the verify called it lost and re-sent it.
+    tail = transcript.Tail(4242)
+    tail.watch("resume please")
+    tail.expect("resume please", now_ms=2_000_000)
+    append(sessions, blind_enqueue(2_000_050))
+    tail.poll()
+    assert tail.landed("resume please") is True
+    assert tail.queued("resume please") is True
+    assert tail.landed("resume please", since_ms=1_000_000) is True
+
+
+def test_a_content_less_enqueue_from_before_we_typed_is_not_ours(sessions):
+    tail = transcript.Tail(4242)
+    tail.expect("resume please", now_ms=2_000_000)
+    append(sessions, blind_enqueue(1_999_000))
+    tail.poll()
+    assert tail.landed("resume please") is False
+
+
+def test_a_content_less_enqueue_is_not_ours_unless_we_are_typing(sessions):
+    # Watching for a resume due later is not typing it: a paste made by somebody
+    # else in the meantime must not count as its delivery.
+    tail = transcript.Tail(4242)
+    tail.watch("resume please")
+    append(sessions, blind_enqueue(2_000_050))
+    tail.poll()
+    assert tail.landed("resume please") is False
+
+
+def test_one_paste_claims_one_enqueue(sessions):
+    tail = transcript.Tail(4242)
+    tail.expect("resume please", now_ms=2_000_000)
+    append(sessions, blind_enqueue(2_000_050), queue("dequeue"))
+    tail.poll()
+    tail.watch("other")
+    append(sessions, blind_enqueue(2_000_090))
+    tail.poll()
+    assert tail.consumed("resume please") is True
+    assert tail.queued("resume please") is False
+
+
+def test_landed_since_ignores_an_identical_resume_from_an_earlier_compaction(
+        sessions):
+    tail = transcript.Tail(4242)
+    tail.watch("resume please")
+    append(sessions, prompt_taken_up("resume please", when_ms=1_000_000))
+    tail.poll()
+    assert tail.landed("resume please") is True
+    assert tail.landed("resume please", since_ms=1_500_000) is False
+    append(sessions, prompt_taken_up(pasted("resume please"), when_ms=2_000_000))
+    tail.poll()
+    assert tail.landed("resume please", since_ms=1_500_000) is True
+
+
 def test_an_envelope_around_other_text_is_not_a_match(sessions):
     tail = transcript.Tail(4242)
     tail.watch("resume please")

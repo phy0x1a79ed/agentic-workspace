@@ -342,6 +342,8 @@ def _attempt(repl_pid: int, text: str, *, enter: bool, clear_first: bool,
     with _open_lane(lane, **kw) as writer:
         if clear_first:
             writer.clear()
+        if tail is not None:
+            tail.expect(text)
         writer.write(text)
         # The one thing a lane can say about a write it just took: not that it
         # arrived, only that the host did not announce discarding it.
@@ -729,6 +731,15 @@ def _await_and_resume_inner(item: pending.Pending, tail, who,
                                       "settling and the resume going in")
             pending.record(item)
             continue
+
+        # A copy from an earlier round can turn up after its verify gave up on
+        # it: a paste queued behind `/compact` shows only when compaction ends.
+        tail.poll()
+        if tail.landed(item.followup, since_ms=item.injected_at_ms) is True:
+            pending.clear(item.repl_pid)
+            log.info("reflection: the resume for session %s arrived from an "
+                     "earlier round; not typing it again", who)
+            return
 
         # Forget the promise BEFORE delivering on it, not after. The two
         # orderings trade opposite failure modes across a restart in the gap:
