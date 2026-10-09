@@ -112,6 +112,22 @@ node's workspace. Confirm with `awm auth peer-credential`, which prints the path
 
 Alternative: `~/.ssh/environment` with `PermitUserEnvironment yes` in `sshd_config`.
 
+### A peer another person runs
+
+Point the `--ssh-alias` at the contained `awmpeer` login, never at a full account. A full
+account carries that operator's keys, sudo, ssh masters and loopback services, so a login
+there reaches everything they can. Run `sudo scripts/peer-account.sh` on each end. It
+gives `awmpeer` a shell with no sudo, no ssh forwarding, and no new outbound connections,
+loopback included. altair↔shaula is the first pair to use it.
+
+`--cred` mirrors the credential to `/var/lib/awmpeer/peer_cred`, and `awmpeer`'s
+`AWM_PEER_CRED` points there. The `auth` service rewrites `peer_cred.current` with mode 600
+on every mint, which drops any group or ACL grant. A root path unit copies the file on each
+change instead, so the operator's home stays closed.
+
+**CAUTION** The fetched credential is still operator-equivalent on `/invoke` (minus vault
+and penpot). The contained login limits the ssh hop, not what the bearer may call.
+
 ### ControlMaster
 
 Mesh peers have no Duo, so a plain `ssh <alias>` is fast; if the host's ssh config
