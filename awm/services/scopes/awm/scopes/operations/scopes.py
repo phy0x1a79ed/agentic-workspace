@@ -18,11 +18,17 @@ SCOPE_MANIFEST_FUNCTIONS = [
         "description": (
             "Create a new scope (worktree + .awm/ metadata) for a project. "
             "The new branch defaults to feat/<scope>; pass branch_name to name "
-            "it explicitly (e.g. a plain branch like 'release' or 'dev')."
+            "it explicitly (e.g. a plain branch like 'release' or 'dev'). "
+            "Example: project='awm', scope='svc-diplomacy' creates "
+            "projects/awm/svc-diplomacy on branch feat/svc-diplomacy."
         ),
         "params": [
-            {"name": "project", "type": "string", "required": True},
-            {"name": "scope", "type": "string", "required": True},
+            {"name": "project", "type": "string", "required": True,
+             "description": "Name of an existing project, the directory under "
+                            "projects/ (e.g. 'awm'). Not the workspace or the MCP namespace."},
+            {"name": "scope", "type": "string", "required": True,
+             "description": "Name for the new scope, unique within the project "
+                            "(e.g. 'svc-diplomacy'). Becomes the worktree directory name."},
             {"name": "from_branch", "type": "string", "required": False},
             {"name": "branch_name", "type": "string", "required": False},
             {"name": "context", "type": "string", "required": False},
