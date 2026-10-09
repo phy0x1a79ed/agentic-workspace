@@ -26,6 +26,15 @@ cannot say at all:
 * ``queue-operation dequeue`` — the whole queue drained into the next turn. It
   carries no content, so it settles every line queued up to that point.
 
+An ``enqueue`` can carry no content either: Claude Code (seen on 2.1.295) records
+a *pasted* prompt that way, and a resume is long enough to go in as a paste. Such
+an entry names nobody, so it is matched by time instead — to the line
+:meth:`Tail.expect` was told is being typed, if it is stamped after that moment.
+Missing it is not harmless: the paste only turns up as a ``user`` entry once the
+session reaches it, which for a resume queued behind ``/compact`` is after the
+whole compaction, and a verify that cannot see the enqueue meanwhile calls the
+resume lost and types it in again.
+
 Of those, the plain ``user`` entry is the only one that says the line is
 *running*: Claude Code writes it as the turn begins, so for ``/compact`` it is
 stamped at the instant compaction starts, minutes before the
@@ -51,6 +60,7 @@ import json
 import logging
 import os
 import re
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -177,12 +187,49 @@ class Tail:
         self._started: dict[str, int] = {}
         self._compacted_at = 0
         self._open_tools: set[str] = set()
+        # When each watched line was last seen reaching the session, by any route.
+        self._landed_at: dict[str, int] = {}
+        # The line being typed in right now, and the moment typing began: the one
+        # owner a content-less enqueue can have.
+        self._expecting: Optional[tuple[str, int]] = None
 
     # -- what we are looking for -------------------------------------------
 
     def watch(self, text: str) -> None:
         """Track ``text`` from here on; call before the text is typed in."""
         self._watched.add((text or "").strip())
+
+    def expect(self, text: str, *, now_ms: Optional[int] = None) -> None:
+        """``text`` is being typed in now; call immediately before the write.
+
+        Narrower than :meth:`watch`, which may be called long before a resume is
+        due. Only the line named here, and only from this moment, can claim a
+        content-less enqueue — so a paste somebody else makes while we wait is
+        never taken for ours.
+        """
+        text = (text or "").strip()
+        self._watched.add(text)
+        self._expecting = (text, now_ms if now_ms is not None
+                           else int(time.time() * 1000))
+
+    def _note_landed(self, text: str, stamp: int, *, queued: bool) -> None:
+        if queued:
+            self._queued.add(text)
+        else:
+            self._consumed.add(text)
+            self._queued.discard(text)
+        self._landed_at[text] = max(self._landed_at.get(text, 0), stamp)
+
+    def _paste_owner(self, stamp: int) -> str:
+        """The expected line a content-less enqueue stamped ``stamp`` belongs to."""
+        if self._expecting is None or not stamp:
+            return ""
+        text, since = self._expecting
+        if stamp < since:
+            return ""
+        # One paste, one enqueue.
+        self._expecting = None
+        return text
 
     # -- reading ------------------------------------------------------------
 
@@ -277,10 +324,9 @@ class Tail:
                 # The turn running this line has begun. Written by the CLI as the
                 # prompt is taken up, which for a slash command is the moment the
                 # command starts — not when it finishes.
-                self._started[text] = max(self._started.get(text, 0),
-                                          _stamp_ms(entry))
-                self._consumed.add(text)
-                self._queued.discard(text)
+                stamp = _stamp_ms(entry)
+                self._started[text] = max(self._started.get(text, 0), stamp)
+                self._note_landed(text, stamp, queued=False)
             return
 
         if kind == "system" and entry.get("subtype") == "compact_boundary":
@@ -290,18 +336,20 @@ class Tail:
         if kind == "queue-operation":
             op = entry.get("operation")
             text = _unwrapped(entry.get("content"))
+            stamp = _stamp_ms(entry)
             if op == "enqueue":
-                if text in self._watched:
-                    self._queued.add(text)
+                if not text:
+                    text = self._paste_owner(stamp)
+                if text and text in self._watched:
+                    self._note_landed(text, stamp, queued=True)
             elif op in _QUEUE_CONSUMES:
                 if text in self._watched:
-                    self._consumed.add(text)
-                    self._queued.discard(text)
+                    self._note_landed(text, stamp, queued=False)
             elif op == "dequeue":
                 # Carries no content: the queue drained wholesale into the turn
                 # that is starting, so everything outstanding went with it.
-                self._consumed |= self._queued
-                self._queued.clear()
+                for text in list(self._queued):
+                    self._note_landed(text, stamp, queued=False)
             return
 
         if kind == "attachment":
@@ -311,8 +359,7 @@ class Tail:
             if attachment.get("type") == "queued_command":
                 text = _unwrapped(attachment.get("prompt"))
                 if text in self._watched:
-                    self._consumed.add(text)
-                    self._queued.discard(text)
+                    self._note_landed(text, _stamp_ms(entry), queued=False)
 
     # -- questions ----------------------------------------------------------
 
@@ -368,16 +415,19 @@ class Tail:
             return None
         return (text or "").strip() in self._queued
 
-    def landed(self, text: str) -> Optional[bool]:
+    def landed(self, text: str, *, since_ms: Optional[int] = None) -> Optional[bool]:
         """Did ``text`` reach the session at all — consumed *or* queued?
 
         This is the question a sender asks: the keystrokes arrived and the
         session acknowledged them. Whether the queue has handed them to a turn
-        yet is :meth:`consumed`.
+        yet is :meth:`consumed`. ``since_ms`` asks it of this delivery alone: a
+        resume is often word for word the one sent after the last compaction.
         """
         if not self._ever_read:
             return None
         text = (text or "").strip()
+        if since_ms is not None:
+            return self._landed_at.get(text, 0) > since_ms
         return text in self._consumed or text in self._queued
 
     def tool_call_in_flight(self) -> Optional[bool]:

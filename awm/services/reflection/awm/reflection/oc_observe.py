@@ -131,6 +131,11 @@ class OpencodeTail:
         """Track ``text`` from here on; call before the text is typed in."""
         self._watched.add((text or "").strip())
 
+    def expect(self, text: str, *, now_ms: Optional[int] = None) -> None:
+        """``text`` is being typed in now. opencode records every prompt with its
+        text, so there is no anonymous entry to attribute and this only watches."""
+        self.watch(text)
+
     # -- reading ------------------------------------------------------------
 
     def _resolve(self) -> Optional[str]:
@@ -233,11 +238,14 @@ class OpencodeTail:
         """
         return None
 
-    def landed(self, text: str) -> Optional[bool]:
+    def landed(self, text: str, *, since_ms: Optional[int] = None) -> Optional[bool]:
         """Did ``text`` reach the session at all? ``None`` if unknown."""
         if not self._ever_read:
             return None
-        return (text or "").strip() in self._consumed
+        text = (text or "").strip()
+        if since_ms is not None:
+            return self._started.get(text, 0) > since_ms
+        return text in self._consumed
 
     def tool_call_in_flight(self) -> Optional[bool]:
         """Is a tool still running? ``None`` if the DB was unreadable."""

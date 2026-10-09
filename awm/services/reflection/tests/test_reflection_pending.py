@@ -32,10 +32,12 @@ LANE = session_target.TmuxLane(pane="%7", session_id="sid-1", repl_pid=4242,
 class Tail:
     """A transcript that answers whatever the test says it answers."""
 
-    def __init__(self, in_flight=None, landed=None, started=False):
+    def __init__(self, in_flight=None, landed=None, started=False,
+                 landed_since=lambda: False):
         self._in_flight = in_flight
         self._landed = landed
         self._started = started
+        self._landed_since = landed_since
 
     def poll(self):
         return self._in_flight is not None
@@ -43,10 +45,15 @@ class Tail:
     def watch(self, _text):
         pass
 
+    def expect(self, _text):
+        pass
+
     def tool_call_in_flight(self):
         return self._in_flight
 
-    def landed(self, _text):
+    def landed(self, _text, *, since_ms=None):
+        if since_ms is not None:
+            return self._landed_since()
         return self._landed
 
     def consumed(self, _text):
@@ -344,6 +351,21 @@ def test_a_delivery_the_session_never_showed_is_tried_again(lane, monkeypatch):
     assert lane == ["resume"] * inject.MAX_DELIVERY_ROUNDS
     [item] = pending.load_all()
     assert "never showed it arriving" in item.last_outcome
+
+
+def test_a_resume_that_turns_up_after_its_verify_gave_up_is_not_sent_again(
+        lane, monkeypatch):
+    # 2026-10-09, Claude Code 2.1.295: a resume pasted behind `/compact` showed
+    # in the transcript only when compaction ended, 70s on — after the verify
+    # had called it lost. Each later round typed another copy in.
+    monkeypatch.setattr(watcher, "await_completion",
+                        lambda *a, **kw: watcher.STARTED_OUTCOME)
+    monkeypatch.setattr(inject, "VERIFY_WAIT_S", 0.0)
+    pending.record(_promise())
+    tail = Tail(in_flight=False, landed=False, landed_since=lambda: bool(lane))
+    inject._await_and_resume(_promise(), tail=tail)
+    assert lane == ["resume"]
+    assert pending.load_all() == []
 
 
 def test_an_unreadable_transcript_does_not_license_a_second_delivery(
