@@ -6,6 +6,7 @@
 #   sudo scripts/peer-account.sh [--key PUBKEY_FILE ...] [--from CIDR[,CIDR]] [--cred FILE]
 #   sudo scripts/peer-account.sh --remove
 #
+# --key replaces the installed keys. Without it a re-run keeps them.
 # --from pins every key to the peer's source address. --cred mirrors this
 # node's peer-credential file to /var/lib/awmpeer/peer_cred, readable by
 # awmpeer, so the peer's `cat "$AWM_PEER_CRED"` fetch works without awmpeer
@@ -53,7 +54,6 @@ if [ "$REMOVE" = 1 ]; then
     exit 0
 fi
 
-[ ${#KEYS[@]} -gt 0 ] || echo "no --key given: $PEER gets an empty authorized_keys" >&2
 for k in "${KEYS[@]+"${KEYS[@]}"}"; do ssh-keygen -lf "$k" >/dev/null || { echo "not a public key: $k" >&2; exit 1; }; done
 [ -z "$CRED" ] || [ -f "$CRED" ] || { echo "no such credential file: $CRED" >&2; exit 1; }
 
@@ -78,12 +78,16 @@ step "authorized_keys"
 OPTS="restrict,pty"
 [ -n "$FROM" ] && OPTS="$OPTS,from=\"$FROM\""
 install -d -m 755 -o root -g root "$HOME_DIR/.ssh"
-TMP_KEYS=$(mktemp)
-for k in "${KEYS[@]+"${KEYS[@]}"}"; do
-    grep -Ev '^\s*(#|$)' "$k" | while read -r line; do echo "$OPTS $line"; done
-done > "$TMP_KEYS"
-install -m 644 -o root -g root "$TMP_KEYS" "$HOME_DIR/.ssh/authorized_keys"
-rm -f "$TMP_KEYS"
+if [ ${#KEYS[@]} -gt 0 ] || [ ! -f "$HOME_DIR/.ssh/authorized_keys" ]; then
+    TMP_KEYS=$(mktemp)
+    for k in "${KEYS[@]+"${KEYS[@]}"}"; do
+        grep -Ev '^\s*(#|$)' "$k" | while read -r line; do echo "$OPTS $line"; done
+    done > "$TMP_KEYS"
+    install -m 644 -o root -g root "$TMP_KEYS" "$HOME_DIR/.ssh/authorized_keys"
+    rm -f "$TMP_KEYS"
+else
+    echo "no --key given: keeping the installed keys"
+fi
 
 step "sshd"
 TMP_DROPIN=$(mktemp)
