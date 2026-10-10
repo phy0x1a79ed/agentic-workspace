@@ -181,10 +181,19 @@ def test_a_call_with_no_verb_is_refused(client, dispatched, modes):
     assert dispatched == []
 
 
-def test_a_flat_name_that_also_carries_a_verb_must_pass_as_both(client, dispatched, modes):
+def test_a_flat_name_that_also_carries_a_verb_is_judged_as_the_flat_call_dispatch_makes(
+        client, dispatched, modes, catalog_of_services):
     modes[PID] = "representative"
-    assert invoke(client, "board_list", {"verb": "list"}).status_code == 403
+    # dispatch takes the flat path when the name is a known tool, so a stray
+    # `verb` argument cannot turn board_list into another verb
+    assert invoke(client, "board_list", {"verb": "list"}).status_code == 200
     assert invoke(client, "board_list", {}).status_code == 200
+
+
+def test_an_unknown_domain_with_a_verb_is_read_as_a_domain_call(client, dispatched, modes):
+    modes[PID] = "representative"
+    assert domain_call(client, "board", "list").status_code == 200
+    assert domain_call(client, "elsewhere", "list").status_code == 403
 
 
 def test_a_malformed_args_bag_is_refused(client, dispatched, modes):
@@ -506,41 +515,139 @@ def test_a_cx_launched_job_with_no_lineage_is_the_most_restricted_mode(client, d
     assert invoke(client, "reflection_compact").status_code == 200
 
 
-# --- the delegate: a deny-style mode ---------------------------------------------
+# --- the delegate: an effect-based mode ----------------------------------------
 
 
-@pytest.mark.parametrize("domain,verb", [("board", "complete"), ("board", "post"),
-                                         ("scope", "post"), ("kb", "search"),
-                                         ("cx", "list"), ("reflection", "compact")])
-def test_a_delegate_may_call_what_is_not_denied(client, dispatched, modes, domain, verb):
+def _fn(name, effect=None, tool=None):
+    spec = {"name": name}
+    if effect:
+        spec["effect"] = effect
+    if tool:
+        spec["tool"] = tool
+    return spec
+
+
+@pytest.fixture
+def catalog_of_services(monkeypatch):
+    """A catalog whose verbs declare effects, as the services do."""
+    records = [
+        _service("board", [_fn("post", "queue"), _fn("list", "read"), _fn("get", "read"),
+                           _fn("complete", "queue"), _fn("fail", "queue"),
+                           _fn("claim", "queue"), _fn("party_list", "read"),
+                           _fn("party_add", "secret")]),
+        _service("scope", [_fn("post", "write"), _fn("fetch", "read"), _fn("create", "write"),
+                           _fn("sync")]),
+        _service("kb", [_fn("search", "read"), _fn("add", "write")]),
+        _service("cx", [_fn("list", "read"), _fn("start", "write"), _fn("stop", "write")]),
+        _service("door", [_fn("list", "read"), _fn("assign", "write")]),
+        _service("rlm-browser", [_fn("cdp", "read", tool="rlm_browser_cdp"),
+                                 _fn("open", "write", tool="rlm_browser_open")]),
+        _service("reflection", [_fn("compact"), _fn("send")]),
+        _service("auth", [_fn("token", "secret")]),
+    ]
+
+    class Registry:
+        def service_records(self):
+            return list(records)
+
+    monkeypatch.setattr(server.catalog, "get_registry", lambda: Registry())
+    return records
+
+
+DELEGATE_ALLOWED = [("reflection", "compact"), ("reflection", "whoami"), ("kb", "search"), ("cx", "list"), ("scope", "fetch"), ("board", "get"),
+                    ("board", "list"), ("board", "complete"), ("board", "fail")]
+DELEGATE_REFUSED = [("scope", "post"), ("scope", "create"), ("scope", "sync"),
+                    ("kb", "add"), ("cx", "start"), ("cx", "stop"), ("door", "list"),
+                    ("door", "assign"), ("rlm", "browser_cdp"), ("rlm", "browser_open"),
+                    ("board", "claim"), ("board", "party_list"), ("board", "party_add"),
+                    ("reflection", "send"), ("reflection", "mode"), ("auth", "token"),
+                    ("nowhere", "verb")]
+
+
+@pytest.mark.parametrize("domain,verb", DELEGATE_ALLOWED)
+def test_a_delegate_may_call_what_declares_read_and_finish_its_card(
+        client, dispatched, modes, catalog_of_services, domain, verb):
     modes[PID] = "delegate"
     assert domain_call(client, domain, verb).status_code == 200
     assert invoke(client, f"{domain}_{verb}").status_code == 200
 
 
-@pytest.mark.parametrize("domain,verb", [("cx", "start"), ("cx", "stop"), ("ssh", "connect"),
-                                         ("auth", "login"), ("vpn", "up"), ("social", "send"),
-                                         ("gateway", "restart"), ("services", "stop"),
-                                         ("board", "party_add"), ("reflection", "mode"),
-                                         ("reflection", "send")])
-def test_a_delegate_is_refused_what_is_denied(client, dispatched, modes, domain, verb):
+@pytest.mark.parametrize("domain,verb", DELEGATE_REFUSED)
+def test_a_delegate_is_refused_everything_else(client, dispatched, modes,
+                                               catalog_of_services, domain, verb):
     modes[PID] = "delegate"
     assert domain_call(client, domain, verb).status_code == 403
     assert invoke(client, f"{domain}_{verb}").status_code == 403
     assert dispatched == []
 
 
-def test_a_delegate_may_not_name_a_peer(client, dispatched, modes):
+def test_a_delegate_posts_a_reply_message_and_nothing_else(client, dispatched, modes,
+                                                           catalog_of_services):
+    modes[PID] = "delegate"
+    reply = {"kind": "message", "recipient": "mock", "title": "t", "body": "b",
+             "reply_to": "a" * 32}
+    assert domain_call(client, "board", "post", reply).status_code == 200
+    assert invoke(client, "board_post", reply).status_code == 200
+    for bad in ({**reply, "kind": "request"}, {k: v for k, v in reply.items() if k != "reply_to"}):
+        assert domain_call(client, "board", "post", bad).status_code == 403
+        assert invoke(client, "board_post", bad).status_code == 403
+    assert len(dispatched) == 2
+
+
+def test_a_delegate_may_not_name_a_peer(client, dispatched, modes, catalog_of_services):
     modes[PID] = "delegate"
     assert domain_call(client, "kb", "search", peer="capella").status_code == 403
 
 
-def test_the_door_applies_the_delegate_deny_set(door, modes):
+def test_the_door_judges_a_delegate_by_the_declared_effect(door, modes):
     modes[PID] = "delegate"
-    kb = _service("kb", [{"name": "search"}])
-    ssh = _service("ssh", [{"name": "connect"}])
+    kb = _service("kb", [_fn("search", "read"), _fn("add", "write"), _fn("odd")])
     assert door(kb, "search").status_code == 503
-    assert door(ssh, "connect").status_code == 403
+    assert door(kb, "add").status_code == 403
+    assert door(kb, "odd").status_code == 403
+    rlm = _service("rlm-browser", [_fn("cdp", "read", tool="rlm_browser_cdp")])
+    assert door(rlm, "cdp").status_code == 403
+    assert door(_service("door", [_fn("list", "read")]), "list").status_code == 403
+
+
+def test_the_door_refuses_a_delegate_post_it_cannot_inspect(door, modes):
+    modes[PID] = "delegate"
+    board = _service("board", [_fn("post", "queue"), _fn("fail", "queue")])
+    assert door(board, "post", body={"kind": "message", "reply_to": "a" * 32}).status_code == 403
+    assert door(board, "fail").status_code == 503
+
+
+# --- gateway-native ops are judged by what they resolve to ---------------------------
+
+
+@pytest.mark.parametrize("mode", ["representative", "secretary", "unknown", "delegate"])
+@pytest.mark.parametrize("name", ["awm_restart", "awm_mcp_sync"])
+def test_a_flat_native_op_is_judged_as_its_group_and_command(client, dispatched, modes,
+                                                             catalog_of_services, mode, name):
+    modes[PID] = mode
+    assert invoke(client, name).status_code == 403
+    assert dispatched == []
+
+
+def test_the_native_op_resolves_to_its_cli_group_and_command(catalog_of_services):
+    domain, verb, effect, _, flat = server._resolve_call("awm_restart", {})
+    assert (domain, verb, effect, flat) == ("gateway", "restart", "write", True)
+    assert server._resolve_call("gateway", {"verb": "restart"})[:3] == (
+        "gateway", "restart", "write")
+
+
+def test_a_native_read_op_is_open_to_the_delegate_only_by_its_effect(
+        client, dispatched, modes, catalog_of_services):
+    modes[PID] = "delegate"
+    assert invoke(client, "awm_status").status_code == 200  # gateway.status declares read
+    modes[PID] = "representative"
+    server._mode_cache.clear()
+    assert invoke(client, "awm_status").status_code == 403
+
+
+def test_a_flat_describe_through_a_native_name_is_still_refused(client, dispatched, modes):
+    modes[PID] = "representative"
+    assert invoke(client, "gateway_describe").status_code == 403
 
 
 # --- malformed requests -------------------------------------------------------------

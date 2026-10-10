@@ -114,3 +114,13 @@ def reannounce_s() -> float:
     ``AWM_DOOR_REANNOUNCE_MIN`` is in minutes; the default is 10.
     """
     return _float("AWM_DOOR_REANNOUNCE_MIN", 10.0) * 60.0
+
+
+def projects_dir() -> Path:
+    """The projects tree. Resolved as cx resolves it, so both see the same worktrees."""
+    override = os.environ.get("AWM_CX_PROJECTS")
+    if override:
+        return Path(override)
+    from awm import config as awm_config
+
+    return awm_config.canonical_workspace() / "projects"

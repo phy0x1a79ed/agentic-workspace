@@ -120,17 +120,18 @@ async def test_the_cursor_is_saved_only_after_the_card_write_commits(queue, monk
     assert queue.status_of(second["id"]) == "claiming"  # only the mark made before the claim
 
 
-async def test_a_failed_claim_leaves_the_cursor_behind_and_a_restart_retries(queue):
+async def test_a_storage_failure_leaves_the_cursor_behind_and_a_restart_retries(queue, monkeypatch):
     sub, board, _ = build(queue)
     card = board.add(make_card())
     board.post_event("card.posted", card)
-    board.claim_error = BoardError(503, "board is down")
-    with pytest.raises(BoardError):
+    real = queue.enqueue
+    monkeypatch.setattr(queue, "enqueue", lambda *a, **k: (_ for _ in ()).throw(OSError("disk full")))
+    with pytest.raises(OSError):
         await sub.consume()
     assert queue.cursor() is None
-    board.claim_error = None
+    monkeypatch.setattr(queue, "enqueue", real)
     await sub.consume()
-    assert queue.get(card["id"]) is not None
+    assert queue.status_of(card["id"]) == "queued"
     assert queue.cursor() == 1
 
 
@@ -245,8 +246,7 @@ async def test_a_claim_that_dies_in_transit_leaves_the_mark_for_recovery(queue):
     card = board.add(make_card())
     board.claim_error = BoardError(503, "board is down")
     board.post_event("card.posted", card)
-    with pytest.raises(BoardError):
-        await sub.consume()
+    await sub.consume()
     assert queue.status_of(card["id"]) == "claiming"
     board.claim_error = None
     board.cards[card["id"]].update(status="in_progress", claimant="tony")  # the claim had landed
@@ -447,3 +447,46 @@ async def test_the_real_client_drives_the_subscriber(queue):
     assert queue.get(card["id"])["status"] == "queued"
     assert any(r.url.path == f"/board/cards/{card['id']}/claim" for r in seen)
     assert all(r.headers["authorization"] == "Bearer tok" for r in seen)
+
+
+async def test_a_failing_claim_on_the_stream_is_left_for_the_catch_up_and_the_cursor_advances(queue):
+    sub, board, _ = build(queue)
+    card = board.add(make_card())
+    board.post_event("card.posted", card)
+    board.claim_error = BoardError(503, "board is down")
+    await sub.consume()  # does not raise: the event is not retried for ever
+    assert queue.cursor() == 1
+    assert queue.status_of(card["id"]) == "claiming"
+    assert "503" in sub.last_error
+    board.claim_error = None
+    await sub.catch_up()
+    assert queue.status_of(card["id"]) == "queued"
+    assert board.claims == [card["id"], card["id"]]
+
+
+async def test_a_network_error_on_a_claim_is_handled_the_same_way(queue):
+    sub, board, _ = build(queue)
+    card = board.add(make_card())
+    board.post_event("card.posted", card)
+    board.claim_error = httpx.ConnectError("down")
+    await sub.consume()
+    assert queue.cursor() == 1
+
+
+async def test_a_failed_event_asks_for_a_prompt_catch_up(queue, monkeypatch):
+    monkeypatch.setattr("awm.representative.subscriber.KICK_DELAY_S", 0.01)
+    sub, board, _ = build(queue, catchup_s=3600.0)
+    card = board.add(make_card())
+    board.post_event("card.posted", card)
+    board.claim_error = BoardError(503, "down")
+    await sub.consume()
+    board.claim_error = None
+    task = asyncio.create_task(sub._periodic())
+    for _ in range(100):
+        if queue.status_of(card["id"]) == "queued":
+            break
+        await asyncio.sleep(0.02)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert queue.status_of(card["id"]) == "queued"

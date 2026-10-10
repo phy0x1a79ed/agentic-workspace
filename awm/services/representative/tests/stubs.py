@@ -131,9 +131,13 @@ class FakeCx:
             return {"ok": False, "reason": self.refuse}
         self._n += 1
         job = f"job{self._n:04d}"
-        self.rows.append({"job": job, "name": spec["name"], "mode": spec["mode"], "state": "idle"})
+        self.rows.append({"job": job, "name": spec["name"], "mode": spec["mode"], "state": "idle",
+                          "caller": "local", "parent": None})
         return {"ok": True, "job": job, "mode": spec["mode"]}
 
 
-def session_row(mode: str, job: str = "abc12345", state: str = "idle", name: str | None = None) -> dict:
-    return {"job": job, "name": name or mode, "mode": mode, "state": state}
+def session_row(mode: str, job: str = "abc12345", state: str = "idle", name: str | None = None,
+                caller: str | None = None, parent: str | None = None) -> dict:
+    """A cx list row. A hand-started session has no lineage, so no caller."""
+    return {"job": job, "name": name or mode, "mode": mode, "state": state,
+            "caller": caller, "parent": parent}

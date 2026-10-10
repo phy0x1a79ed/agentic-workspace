@@ -563,8 +563,10 @@ def _svc_stamp(svc: str, headers: Any, as_: str | None) -> Callable[[str, dict],
 # `_stamp_caller` resolves it. A request that carries `X-Awm-As` came through an
 # edge or from a placed agent, where the pid header is not trusted, and is not
 # gated here: the edge gates it by relation and effect. WebSocket, emit and
-# hub-proxied paths are ungated too, because a restricted session has no raw
-# HTTP tool to reach them (its launch tool list holds no Bash or WebFetch).
+# hub-proxied paths carry no pid header and are ungated. That is safe only while
+# a restricted session cannot make a raw HTTP request: its launch tool list holds
+# no Bash or WebFetch, and its policy refuses every awm verb that could (the
+# `rlm` browser, which can fetch from the loopback gateway, is denied by name).
 #
 # The mode is read from disk by `awm.claudedaemon.sessionmode`, the same module
 # cx uses, so no IPC to the cx process is involved. Any failure to establish a
@@ -621,47 +623,74 @@ def _caller_mode(headers: Any, as_: str | None) -> str | None:
     return _mode_of_pid(pid)
 
 
+def _resolve_call(name: str, args: dict) -> tuple[str | None, str | None, str | None, dict, bool]:
+    """What `catalog.dispatch` would run for this call, as the gate sees it.
+
+    Returns `(domain, verb, effect, call_args, flat)`. The target is the one
+    dispatch resolves, not the one the name suggests: a gateway-native op is
+    judged by its `cli_group` and `cli_command` however it is named, and the
+    effect is the one the verb declares (None when no verb answers to the call).
+    Dispatch takes the domain shape when the args carry a `verb` and the name is
+    a domain; a name it cannot place is read as a domain too, which only makes
+    the answer stricter.
+    """
+    domains = catalog._domain_catalog()
+    flat_native = catalog._GATEWAY_OPS_BY_NAME.get(name)
+    flat_entry = catalog._flat_entries().get(name)
+    if "verb" in args and (name in domains or (flat_native is None and flat_entry is None)):
+        verb = args.get("verb")
+        inner = args.get("args")
+        entry = next((v for v in domains.get(name, []) if v["verb"] == verb), None)
+        return (name, verb if isinstance(verb, str) else None,
+                entry["effect"] if entry else None,
+                inner if isinstance(inner, dict) else {}, False)
+    if flat_native is not None:
+        return flat_native.cli_group, flat_native.cli_command, flat_native.effect, args, True
+    domain, sep, verb = name.partition("_")
+    if not sep:
+        return None, None, None, args, True
+    return domain, verb, flat_entry["effect"] if flat_entry else None, args, True
+
+
 def _call_refusal(mode: str | None, name: str, args: Any) -> str | None:
     """Why a session in `mode` may not make this `/invoke` call, or None.
 
-    A flat call names `<domain>_<verb>`. A domain call names the domain and
-    carries the verb and the optional `peer` in its args. A call that could be
-    read either way must pass as both.
+    The call is judged by what dispatch would run (`_resolve_call`), so naming a
+    gateway-native op by its flat name cannot dodge a policy.
     """
     if not session_modes.is_restricted(mode):
         return None
     if not isinstance(args, dict):
         return session_modes.refusal(mode, None, None)
-    peer = args.get("peer")
-    domain, sep, verb = name.partition("_")
-    if not sep:
-        return session_modes.refusal(mode, name, args.get("verb"), peer)
-    if verb == "describe":
+    domain, verb, effect, call_args, flat = _resolve_call(name, args)
+    if flat and verb == "describe":
         return f"mode {mode!r} may describe a domain only through its domain call"
-    reason = session_modes.refusal(mode, domain, verb, peer)
-    if reason is None and "verb" in args:
-        reason = session_modes.refusal(mode, name, args.get("verb"), peer)
-    return reason
+    return session_modes.refusal(mode, domain, verb, args.get("peer"),
+                                 effect=effect, call_args=call_args)
 
 
 def _door_refusal(mode: str | None, rec: Any, rel: str) -> str | None:
     """Why a session in `mode` may not use this `/svc/<svc>/...` path, or None.
 
     A function is judged by its tool name (`domain_verb`), which a manifest may
-    set apart from the internal function name the path carries. Every other
-    path under a service (sessions, emit streams) is closed to a restricted mode.
+    set apart from the internal function name the path carries, and by the effect
+    it declares. The body is not read here, so a verb that is allowed only for
+    certain arguments is refused. Every other path under a service (sessions,
+    emit streams) is closed to a restricted mode.
     """
     if not session_modes.is_restricted(mode):
         return None
     if not rel.startswith("/fn/"):
         return f"mode {mode!r} may use only a service's functions"
     fn = rel[len("/fn/"):].split("/")[0]
-    tool = f"{rec.name}_{fn}"
+    tool, effect = f"{rec.name}_{fn}", None
     for spec in (getattr(rec, "api", None) or {}).get("functions", []) or []:
         if isinstance(spec, dict) and spec.get("name") == fn:
-            tool = catalog._tool_name(rec, spec)
+            tool, effect = catalog._tool_name(rec, spec), catalog._fn_policy(spec)[0]
             break
-    return _call_refusal(mode, tool, {})
+    domain, sep, verb = tool.partition("_")
+    return session_modes.refusal(mode, domain if sep else None, verb if sep else None,
+                                 effect=effect, call_args=None)
 
 
 @app.post("/invoke")

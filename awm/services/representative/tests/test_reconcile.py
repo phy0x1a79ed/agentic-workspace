@@ -229,3 +229,116 @@ async def test_representative_job_reads_cx_fresh(queue):
     cx.unavailable = True
     assert await loop.representative_job() is None
     assert await loop.alive() == {"representative": None, "secretary": None}
+
+
+async def test_a_start_that_outlived_its_call_is_adopted_on_the_next_tick(queue):
+    cx = FakeCx()
+    cx.refuse = "cx start failed: timed out"
+    cx.rows.append(session_row("representative", job="late0001", caller="local"))
+    cx.rows[-1]["name"] = personas().REPRESENTATIVE["name"]
+    ours(queue, cx, "secretary", job="sec00001")
+    woke = []
+    loop = loop_for(cx, queue, on_started=woke.append)
+    await loop.tick()
+    assert cx.started == []  # nothing new is started
+    assert queue.session_jobs("representative") == {"late0001"}
+    assert loop.jobs["representative"] == "late0001"
+    assert woke == ["representative"]  # the new owner hears of waiting cards
+    assert await loop.representative_job() == "late0001"
+
+
+@pytest.mark.parametrize("row", [
+    dict(caller=None),                          # hand-started: no lineage
+    dict(caller="local", parent="par00001"),    # started by a session, not by the door
+    dict(caller="local", name="other name"),    # not the reserved name
+])
+async def test_only_the_doors_own_unrecorded_session_is_adopted(queue, row):
+    cx = FakeCx()
+    ours(queue, cx, "secretary", job="sec00001")
+    fields = dict(name=personas().REPRESENTATIVE["name"], caller="local", parent=None, **{})
+    fields.update(row)
+    cx.rows.append(session_row("representative", job="odd00001", **fields))
+    cx.refuse = "no"
+    await loop_for(cx, queue).tick()
+    assert queue.session_jobs("representative") == set()
+
+
+def work_personas(where=("awm", "door-work")):
+    stub = personas()
+    stub.work_where = lambda: where
+    return stub
+
+
+class ScopeCalls:
+    """A stand-in for the gateway call that creates a scope's worktree."""
+
+    def __init__(self, projects, *, fail=None, make=True):
+        self.projects, self.fail, self.make = projects, fail, make
+        self.calls = []
+
+    async def __call__(self, service, fn, args, **kw):
+        self.calls.append((service, fn, args))
+        if self.fail:
+            raise RuntimeError(self.fail)
+        if self.make:
+            (self.projects / args["project"] / args["scope"]).mkdir(parents=True)
+        return {"ok": True}
+
+
+async def test_the_work_scope_is_created_once_when_it_is_missing(queue, tmp_path):
+    scopes = ScopeCalls(tmp_path / "projects")
+    loop = loop_for(FakeCx(), queue, personas=work_personas(), scope_call=scopes)
+    await loop.tick()
+    await loop.tick()
+    assert scopes.calls == [("scopes", "scope_create", {"project": "awm", "scope": "door-work"})]
+
+
+async def test_an_existing_work_scope_is_left_alone(queue, tmp_path):
+    (tmp_path / "projects" / "awm" / "door-work").mkdir(parents=True)
+    scopes = ScopeCalls(tmp_path / "projects")
+    await loop_for(FakeCx(), queue, personas=work_personas(), scope_call=scopes).tick()
+    assert scopes.calls == []
+
+
+async def test_the_work_scope_comes_from_personas(queue, tmp_path):
+    scopes = ScopeCalls(tmp_path / "projects")
+    await loop_for(FakeCx(), queue, personas=work_personas(("other", "nested/work")),
+                   scope_call=scopes).tick()
+    assert scopes.calls[0][2] == {"project": "other", "scope": "nested/work"}
+
+
+async def test_a_failed_scope_create_is_retried_next_tick_and_roles_still_start(queue, tmp_path):
+    scopes = ScopeCalls(tmp_path / "projects", fail="scopes is down")
+    cx = FakeCx()
+    loop = loop_for(cx, queue, personas=work_personas(), scope_call=scopes)
+    await loop.tick()
+    assert [s["mode"] for s in cx.started] == ["representative", "secretary"]
+    scopes.fail = None
+    await loop.tick()
+    assert len(scopes.calls) == 2
+    assert (tmp_path / "projects" / "awm" / "door-work").is_dir()
+
+
+async def test_a_create_that_leaves_no_worktree_counts_as_a_failure(queue, tmp_path):
+    scopes = ScopeCalls(tmp_path / "projects", make=False)
+    loop = loop_for(FakeCx(), queue, personas=work_personas(), scope_call=scopes)
+    await loop.tick()
+    await loop.tick()
+    assert len(scopes.calls) == 2
+
+
+async def test_no_scope_is_created_while_the_door_is_off(queue, tmp_path, monkeypatch):
+    monkeypatch.setenv("AWM_FRONT_DOOR", "0")
+    scopes = ScopeCalls(tmp_path / "projects")
+    await loop_for(FakeCx(), queue, personas=work_personas(), scope_call=scopes).tick()
+    assert scopes.calls == []
+
+
+def test_the_real_personas_default_to_awm_door_work(monkeypatch):
+    from awm.representative import personas as real
+
+    monkeypatch.delenv("AWM_DOOR_WORK_PROJECT", raising=False)
+    monkeypatch.delenv("AWM_DOOR_WORK_SCOPE", raising=False)
+    assert real.work_where() == ("awm", "door-work")
+    monkeypatch.setenv("AWM_DOOR_WORK_SCOPE", "elsewhere")
+    assert real.work_where() == ("awm", "elsewhere")

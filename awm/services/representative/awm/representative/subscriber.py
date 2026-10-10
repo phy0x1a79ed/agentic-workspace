@@ -28,6 +28,8 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Callable
 
+import httpx
+
 from awm.board.client import RESYNC, BoardConflict, BoardError, BoardRefused
 
 from awm.representative import CLAIMING, DONE, FAILED, GONE, TERMINAL
@@ -40,6 +42,7 @@ MOVED = "card.moved"
 PAGE = 200
 MAX_PAGES = 50
 RESTART_DELAY_S = 2.0
+KICK_DELAY_S = 10.0
 MAX_RESTART_DELAY_S = 120.0
 REFUSED_DELAY_S = 300.0
 
@@ -61,6 +64,7 @@ class Subscriber:
         self._clock = clock
         self._lock = asyncio.Lock()
         self._progress = False
+        self._kick = asyncio.Event()
         self.attached = False
         self.last_error: str | None = None
 
@@ -81,8 +85,9 @@ class Subscriber:
         if card.get("kind") == "message":
             self._queued(card, reopen=reopen)
             return True
-        if self.queue.has(card["id"]) and not claim_known:
-            return False
+        held = self.queue.status_of(card["id"])
+        if held is not None and held != CLAIMING and not claim_known:
+            return False  # a `claiming` row is retried: a claim by the same swarm is idempotent
         marked = self.queue.begin_claim(card)
         try:
             claimed = await self.client.claim(card["id"])
@@ -136,7 +141,15 @@ class Subscriber:
             await self._catch_up()
             self.queue.set_cursor(event_id, force=True)
         else:
-            await self._apply(type_, card)
+            try:
+                await self._apply(type_, card)
+            except (BoardError, httpx.HTTPError) as exc:
+                # Retrying the same event would fail the same way for ever. The
+                # card keeps its `claiming` mark and the next catch-up takes it.
+                log.warning("door: event %s on card %s failed (%s); left for the catch-up",
+                            event_id, card.get("id"), exc)
+                self.last_error = f"event {event_id} failed: {exc}"
+                self._kick.set()
             self.queue.set_cursor(event_id)
         self._progress = True
 
@@ -259,7 +272,12 @@ class Subscriber:
 
     async def _periodic(self) -> None:
         while True:
-            await asyncio.sleep(self._catchup_s)
+            try:
+                await asyncio.wait_for(self._kick.wait(), timeout=self._catchup_s)
+                await asyncio.sleep(KICK_DELAY_S)  # a failed event asks for a catch-up, not a spin
+            except (TimeoutError, asyncio.TimeoutError):
+                pass
+            self._kick.clear()
             try:
                 await self.catch_up()
             except asyncio.CancelledError:
