@@ -11,6 +11,7 @@ register into the catalog/hub. See `catalog.py` for the registration contract.
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from collections.abc import Callable
 from contextlib import asynccontextmanager
@@ -27,11 +28,14 @@ from awm.config import (
     WORKSPACE_ROOT,
     IDLE_SHUTDOWN_SECONDS,
 )
+from awm.config import modes as session_modes
 from awm.gateway import catalog, mcp_caller, peer_catalog
 from awm.gateway.gateway_ops import GATEWAY_OPERATIONS
 from awm.gateway.operations import register_fastapi_routes
 
 __version__ = "0.1.0"
+
+log = logging.getLogger("awm.gateway.server")
 
 # ---------------------------------------------------------------------------
 # Idle shutdown state
@@ -187,6 +191,15 @@ async def lifespan(app: FastAPI):
     import os
     PID_FILE.parent.mkdir(parents=True, exist_ok=True)
     PID_FILE.write_text(str(os.getpid()))
+
+    # The session mode gate reads cx's lineage records. A missing directory is
+    # not an error for the reader, but creating it here keeps the question from
+    # arising before the first `cx start`.
+    try:
+        from awm.claudedaemon import sessionmode
+        sessionmode.starts_dir().mkdir(parents=True, exist_ok=True)
+    except Exception as exc:  # noqa: BLE001 — the gate fails closed on its own
+        log.warning("could not create cx's lineage directory: %s", exc)
 
     # Own SIGTERM / SIGINT at the event-loop level so we can DRAIN our services
     # in-band before uvicorn tears their control WSs down.
@@ -532,6 +545,118 @@ def _svc_stamp(svc: str, headers: Any, as_: str | None) -> Callable[[str, dict],
     return stamp
 
 
+# ---------------------------------------------------------------------------
+# Session mode gate
+# ---------------------------------------------------------------------------
+# A session started in a restricted mode (the representative, the secretary)
+# may call only the verbs `awm.config.modes` lists for that mode. The gate runs
+# on both doors a session's calls arrive through, `/invoke` and
+# `/svc/<svc>/fn/<fn>`, before dispatch. The calling session is the one the
+# `X-Awm-Session-Pid` / `X-Awm-Caller-Pid` header names, resolved as
+# `_stamp_caller` resolves it. A request that carries `X-Awm-As` came through an
+# edge or from a placed agent, where the pid header is not trusted, and is not
+# gated here: the edge gates it by relation and effect. WebSocket, emit and
+# hub-proxied paths are ungated too, because a restricted session has no raw
+# HTTP tool to reach them (its launch tool list holds no Bash or WebFetch).
+#
+# The mode is read from disk by `awm.claudedaemon.sessionmode`, the same module
+# cx uses, so no IPC to the cx process is involved. Any failure to establish a
+# mode is `"unknown"`, which `awm.config.modes` restricts hardest.
+
+_MODE_CACHE_TTL_S: float = 5.0
+_MODE_CACHE_MAX: int = 256
+_mode_cache: dict[int, tuple[float, str | None]] = {}
+
+
+def _mode_of_pid(pid: int) -> str | None:
+    """`mode_of` for a pid, remembered for `_MODE_CACHE_TTL_S` seconds."""
+    now = time.monotonic()
+    hit = _mode_cache.get(pid)
+    if hit is not None and now - hit[0] < _MODE_CACHE_TTL_S:
+        return hit[1]
+    try:
+        from awm.claudedaemon import sessionmode
+        mode = sessionmode.mode_of(pid)
+    except Exception as exc:  # noqa: BLE001 — a failed lookup is a restriction
+        log.warning("mode gate: could not look up the mode of pid %s: %s", pid, exc)
+        mode = session_modes.UNKNOWN
+    if len(_mode_cache) >= _MODE_CACHE_MAX:
+        for stale in [p for p, (at, _) in _mode_cache.items()
+                      if now - at >= _MODE_CACHE_TTL_S]:
+            del _mode_cache[stale]
+        if len(_mode_cache) >= _MODE_CACHE_MAX:
+            _mode_cache.clear()
+    _mode_cache[pid] = (now, mode)
+    return mode
+
+
+def _caller_mode(headers: Any, as_: str | None) -> str | None:
+    """The mode of the session making this request, or None when it has none.
+
+    None means the request is not from a session (no pid header, or an edge or
+    placed-agent request) or is from one that is positively not cx-started.
+    """
+    if as_:
+        return None
+    session = headers.get("X-Awm-Session-Pid")
+    descendant = headers.get("X-Awm-Caller-Pid")
+    raw = session or descendant
+    if not raw:
+        return None
+    try:
+        if not (raw.isascii() and raw.isdigit()):
+            return session_modes.UNKNOWN
+        pid = int(raw)
+        if not session:
+            pid = mcp_caller.resolve_caller_pid(pid)
+    except Exception:  # noqa: BLE001
+        return session_modes.UNKNOWN
+    return _mode_of_pid(pid)
+
+
+def _call_refusal(mode: str | None, name: str, args: Any) -> str | None:
+    """Why a session in `mode` may not make this `/invoke` call, or None.
+
+    A flat call names `<domain>_<verb>`. A domain call names the domain and
+    carries the verb and the optional `peer` in its args. A call that could be
+    read either way must pass as both.
+    """
+    if not session_modes.is_restricted(mode):
+        return None
+    if not isinstance(args, dict):
+        return session_modes.refusal(mode, None, None)
+    peer = args.get("peer")
+    domain, sep, verb = name.partition("_")
+    if not sep:
+        return session_modes.refusal(mode, name, args.get("verb"), peer)
+    if verb == "describe":
+        return f"mode {mode!r} may describe a domain only through its domain call"
+    reason = session_modes.refusal(mode, domain, verb, peer)
+    if reason is None and "verb" in args:
+        reason = session_modes.refusal(mode, name, args.get("verb"), peer)
+    return reason
+
+
+def _door_refusal(mode: str | None, rec: Any, rel: str) -> str | None:
+    """Why a session in `mode` may not use this `/svc/<svc>/...` path, or None.
+
+    A function is judged by its tool name (`domain_verb`), which a manifest may
+    set apart from the internal function name the path carries. Every other
+    path under a service (sessions, emit streams) is closed to a restricted mode.
+    """
+    if not session_modes.is_restricted(mode):
+        return None
+    if not rel.startswith("/fn/"):
+        return f"mode {mode!r} may use only a service's functions"
+    fn = rel[len("/fn/"):].split("/")[0]
+    tool = f"{rec.name}_{fn}"
+    for spec in (getattr(rec, "api", None) or {}).get("functions", []) or []:
+        if isinstance(spec, dict) and spec.get("name") == fn:
+            tool = catalog._tool_name(rec, spec)
+            break
+    return _call_refusal(mode, tool, {})
+
+
 @app.post("/invoke")
 async def invoke_tool(payload: dict, request: Request):
     """Dispatch an MCP-style tool call by name through the catalog. Async so
@@ -540,15 +665,31 @@ async def invoke_tool(payload: dict, request: Request):
     forwards here over HTTP so the core can restart without tearing down the
     stdio pipe Claude Code has open."""
     name = payload.get("name")
-    args = payload.get("args", {}) or {}
+    args = payload.get("args")
     if not name:
         raise HTTPException(400, "missing 'name' in payload")
+    if not isinstance(name, str):
+        raise HTTPException(400, "'name' must be a string")
+    if args is None:
+        args = {}
+    if not isinstance(args, dict):
+        raise HTTPException(400, "'args' must be an object")
     as_ = request.headers.get("X-Awm-As")
+    mode = await asyncio.to_thread(_caller_mode, request.headers, as_)
+    reason = _call_refusal(mode, name, args)
+    if reason:
+        log.info("mode gate: refused %s — %s", name, reason)
+        raise HTTPException(403, reason)
     _stamp_caller(name, args, request.headers.get("X-Awm-Session-Pid"),
                   request.headers.get("X-Awm-Caller-Pid"), as_)
     try:
         result = await catalog.dispatch(name, args, as_=as_)
     except peer_catalog.PeerRedirect as e:
+        if session_modes.is_restricted(mode):
+            # A gated session may not run a verb on another node, whether it
+            # named the peer or the domain's default provider is one.
+            log.info("mode gate: refused %s — it resolves to a peer", name)
+            raise HTTPException(403, f"mode {mode!r} may not run a verb on a peer")
         # The call belongs to a peer. The gateway resolves, never relays — so a
         # caller that told us it can dial a peer edge (only `awm-mcp` does, via
         # this header) gets the address back and makes the call itself, keeping
@@ -665,7 +806,7 @@ class HubRoutingMiddleware:
         )
         from fastapi import WebSocket as _WS
         from starlette.datastructures import Headers
-        from starlette.responses import PlainTextResponse
+        from starlette.responses import JSONResponse, PlainTextResponse
 
         rel = path[len(rec.prefix):]
         # Forward the advisory caller identity (the attaching placement's unit
@@ -680,6 +821,13 @@ class HubRoutingMiddleware:
 
         if scope["type"] == "http":
             request = Request(scope, receive=receive)
+            mode = await asyncio.to_thread(_caller_mode, headers, as_)
+            reason = _door_refusal(mode, rec, rel)
+            if reason:
+                log.info("mode gate: refused /svc/%s%s — %s", rec.name, rel, reason)
+                response = JSONResponse({"error": reason}, status_code=403)
+                await response(scope, receive, send)
+                return
             if rel.startswith("/fn/"):
                 response = await proxy_service_http(
                     request, rec.service_id, as_=as_, stamp=stamp,

@@ -7,10 +7,11 @@ what is running or to stop one it started.
 A started session is not a pool session. It never carries the pool's name
 prefix, so nothing in the pool's removal predicates can collect it.
 
-A session's mode is how a later gateway gate restricts it, so every path that
+A session's mode is how the gateway gate restricts it, so every path that
 cannot establish a mode answers restrictively. A pending record is written
 before the launch, so a launch that outlives its timeout still has a declared
-mode; `mode_of` answers `"unknown"` when it cannot read what it needs, and
+mode; `mode_of` (implemented in `awm.claudedaemon.sessionmode`, which the
+gateway imports) answers `"unknown"` when it cannot read what it needs, and
 never turns that into "no mode".
 
 Who may start a session is decided here, from the caller identity the gateway
@@ -24,7 +25,6 @@ job without one, so an agent cannot stop a session cx did not start, and
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import logging
 import os
@@ -37,8 +37,8 @@ from pathlib import Path
 from typing import Any
 
 from awm import gatewayclient
-from awm.claudedaemon import launch, roster
-from awm.config import caller_peer, node_name, node_role, peer_relation
+from awm.claudedaemon import launch, roster, sessionmode
+from awm.config import caller_peer, modes, node_name, node_role, peer_relation
 
 from awm.cx import config, sessions, trust
 
@@ -48,11 +48,22 @@ PERMISSION_MODES = ("acceptEdits", "auto", "bypassPermissions", "manual",
                     "dontAsk", "plan")
 EFFORTS = ("low", "medium", "high", "xhigh", "max")
 
-#: Default mode of a started session. The representative's gate keys on its own
-#: mode name; every other session is a plain worker.
+#: Default mode of a started session. A gated mode keys on its own name; every
+#: other session is a plain worker.
 DEFAULT_MODE = "worker"
 
-UNKNOWN = "unknown"
+#: What a caller in a gated mode may ask for. Everything else about the session
+#: it starts is cx's choice (`_child_spec`), so a card cannot talk the
+#: representative into starting a stronger session than a delegate.
+CHILD_FREE_ARGS = frozenset({"project", "scope", "prompt", "name", "model", "effort"})
+CHILD_OVERRIDES = ("permission", "allowed_tools", "disallowed_tools", "tools",
+                   "remote_control", "mode", "restricted", "strict_mcp")
+CHILD_MODELS = frozenset({"sonnet", "opus", "haiku", "sonnet[1m]", "opus[1m]"})
+
+UNKNOWN = sessionmode.UNKNOWN
+
+#: Re-exported: the gateway reads the same answer through `claudedaemon`.
+mode_of = sessionmode.mode_of
 
 STOP_TIMEOUT_S = 20.0
 SCOPE_CREATE_TIMEOUT_S = 1700.0
@@ -63,10 +74,13 @@ PRUNE_GRACE_S = 120.0
 PENDING_TTL_S = 300.0
 
 _PATH_PART = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+#: A tool name, or a tool name with a rule in parentheses. A comma would split
+#: the rule inside the comma-joined flag, and a leading `-` would read as a flag.
+_TOOL = re.compile(r"^[A-Za-z][A-Za-z0-9_*.-]{0,127}(\([^,()\n]{1,200}\))?$")
 _MODEL = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._\[\]:-]*$")
-_MODE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,39}$")
+_MODE = sessionmode.MODE_PATTERN
 _RC_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
-_JOB = re.compile(r"^[0-9a-f]{8}$")
+_JOB = sessionmode.JOB_PATTERN
 
 #: Serialises the name check and the launch, so two starts of one name cannot
 #: both pass the check.
@@ -129,11 +143,13 @@ async def _start(args: dict[str, Any], as_: str | None) -> dict[str, Any]:
         raise Refused(reason)
     spec = _parse(args)
     ensure_starts_dir()
-    _check_caller_mode(args.get("_caller_pid"), spec["mode"])
+    confined = _apply_caller_policy(args, spec)
+    if spec["strict_mcp"]:
+        spec["mcp_config"] = str(_write_mcp_config())
     if sessions.daemon_pid() is None:
         raise Refused("no claude code daemon is running — a session started now "
                       "would land inside awm's control group")
-    cwd = await _resolve_worktree(spec["project"], spec["scope"])
+    cwd = await _resolve_worktree(spec["project"], spec["scope"], create=not confined)
     if not trust.trusted(cwd):
         raise Refused(f"{cwd} is not a trusted directory; trust it once in a "
                       "terminal first")
@@ -178,21 +194,42 @@ async def _start(args: dict[str, Any], as_: str | None) -> dict[str, Any]:
             "parent": parent, "mode": spec["mode"]}
 
 
-def _check_caller_mode(caller_pid: Any, new_mode: str) -> None:
-    """A restricted caller may start only plain workers, and an unknown one nothing.
+def _apply_caller_policy(args: dict[str, Any], spec: dict[str, Any]) -> bool:
+    """Hold the new session to what its caller is allowed to start.
 
-    No `_caller_pid` means an operator or a service rather than a session, which
-    carries no mode. A caller in `worker` mode is unrestricted.
+    No `_caller_pid` means an operator or a service (the front door), which
+    carries no mode and may ask for anything. A session caller:
+
+    - may not ask for a reserved name or mode: only the front door starts the
+      representative and the secretary, and only cx assigns `delegate`;
+    - in an unknown mode may start nothing;
+    - in a gated mode (`modes.MODES`) gets a delegate. It may name the project,
+      scope, prompt, name, an allowlisted model and the effort, and nothing
+      else, and the scope must already exist. cx fixes the rest.
+
+    Returns whether the new session is confined to an existing scope.
     """
+    caller_pid = args.get("_caller_pid")
     if caller_pid is None:
-        return
+        return False
+    if spec["mode"] in modes.RESERVED_MODES or spec["name"] in modes.RESERVED_NAMES:
+        raise Refused(f"only the front door may start a session named or moded "
+                      f"{sorted(modes.RESERVED_NAMES | modes.RESERVED_MODES)}")
     mode = mode_of(caller_pid)
     if mode == UNKNOWN:
         raise Refused("the caller's mode could not be determined, so it may not "
                       "start sessions")
-    if mode not in (None, DEFAULT_MODE) and new_mode != DEFAULT_MODE:
-        raise Refused(f"a session in mode {mode!r} may start only {DEFAULT_MODE!r} "
-                      "sessions")
+    if not modes.is_restricted(mode):
+        return False
+    given = [k for k in CHILD_OVERRIDES if args.get(k) not in (None, "", [])]
+    if given:
+        raise Refused(f"a session in mode {mode!r} may not set {', '.join(given)}; "
+                      "cx starts its sessions as delegates")
+    if spec["model"] not in CHILD_MODELS and args.get("model"):
+        raise Refused(f"a session in mode {mode!r} may use only the models "
+                      f"{', '.join(sorted(CHILD_MODELS))}")
+    spec.update(config.child_policy())
+    return True
 
 
 def _parse(args: dict[str, Any]) -> dict[str, Any]:
@@ -233,17 +270,34 @@ def _parse(args: dict[str, Any]) -> dict[str, Any]:
         "prompt": prompt or None, "model": model, "effort": effort,
         "permission": permission, "mode": mode,
         "disallowed_tools": _tool_list(args.get("disallowed_tools")),
+        "allowed_tools": _tool_list(args.get("allowed_tools"), "allowed_tools"),
+        "tools": _tool_list(args.get("tools"), "tools"),
+        "restricted": _flag(args.get("restricted"), "restricted"),
+        "strict_mcp": _flag(args.get("strict_mcp"), "strict_mcp"),
         "remote_control": _remote_control(args.get("remote_control"), name),
     }
 
 
-def _tool_list(value: Any) -> list[str]:
+def _flag(value: Any, field: str) -> bool:
+    if value is None:
+        return False
+    if not isinstance(value, bool):
+        raise Refused(f"{field} must be true or false")
+    return value
+
+
+def _tool_list(value: Any, field: str = "disallowed_tools") -> list[str]:
     if value is None or value == "":
         return []
     items = value.split(",") if isinstance(value, str) else value
     if not isinstance(items, list) or not all(isinstance(t, str) for t in items):
-        raise Refused("disallowed_tools must be a list of tool names")
-    return [t.strip() for t in items if t.strip()]
+        raise Refused(f"{field} must be a list of tool names")
+    tools = [t.strip() for t in items if t.strip()]
+    bad = [t for t in tools if not _TOOL.match(t)]
+    if bad:
+        raise Refused(f"{field} holds {bad[0]!r}, which is not a tool name or a "
+                      "tool rule such as Read(./**) or mcp__awm__*")
+    return tools
 
 
 def _remote_control(value: Any, name: str) -> str | None:
@@ -275,21 +329,52 @@ def build_flags(spec: dict[str, Any]) -> list[str]:
     """
     flags = ([f"--permission-mode={spec['permission']}"] if spec["permission"]
              else config.skip_permission_flags())
+    if spec["restricted"]:
+        flags.append("--restricted")
+    if spec["tools"]:
+        flags.append("--tools=" + ",".join(spec["tools"]))
+    if spec["strict_mcp"]:
+        flags += ["--strict-mcp-config", f"--mcp-config={spec['mcp_config']}"]
     if spec["disallowed_tools"]:
         flags.append("--disallowedTools=" + ",".join(spec["disallowed_tools"]))
+    if spec["allowed_tools"]:
+        flags.append("--allowedTools=" + ",".join(spec["allowed_tools"]))
     if spec["remote_control"]:
         flags.append(f"--remote-control={spec['remote_control']}")
     return [*flags, f"--effort={spec['effort']}", f"--model={spec['model']}"]
 
 
-async def _resolve_worktree(project: str, scope: str) -> Path:
-    """The scope's worktree, created through the scopes service when absent."""
+def _write_mcp_config() -> Path:
+    """The awm-only MCP config a strict session loads, from the workspace's own."""
+    try:
+        server = config.awm_mcp_server()
+    except (OSError, ValueError) as exc:
+        raise Refused(f"cannot read the workspace MCP config: {exc}") from exc
+    if server is None:
+        raise Refused("the workspace .mcp.json names no awm server, so a strict "
+                      "session has nothing to load")
+    path = config.mcp_config_path()
+    try:
+        _write_json(path, {"mcpServers": {"awm": server}})
+    except OSError as exc:
+        raise Refused(f"cannot write the MCP config ({exc})") from exc
+    return path
+
+
+async def _resolve_worktree(project: str, scope: str, *, create: bool = True) -> Path:
+    """The scope's worktree, created through the scopes service when absent.
+
+    A caller that may not create scopes (`create=False`) gets a refusal instead.
+    """
     root = config.projects_dir()
     cwd = root / project / scope
     if not cwd.resolve().is_relative_to(root.resolve()):
         raise Refused("the scope resolves outside the projects directory")
     if cwd.is_dir():
         return cwd
+    if not create:
+        raise Refused(f"scope {project}/{scope} does not exist, and this caller "
+                      "may not create scopes")
     try:
         await create_scope(project, scope)
     except Exception as exc:  # noqa: BLE001 — any failure is the reason
@@ -317,10 +402,6 @@ def _name_taken(name: str) -> bool:
 # --- lineage -----------------------------------------------------------------
 
 
-class _Unreadable(Exception):
-    """A record `mode_of` needs is missing or unreadable."""
-
-
 def ensure_starts_dir() -> None:
     try:
         config.starts_dir().mkdir(parents=True, exist_ok=True)
@@ -334,8 +415,7 @@ def _lineage_path(job: str) -> Path:
 
 
 def _pending_path(name: str) -> Path:
-    digest = hashlib.sha256(name.encode()).hexdigest()[:16]
-    return config.starts_dir() / f"pending-{digest}.json"
+    return sessionmode.pending_path(name)
 
 
 def read_lineage(job: str) -> dict[str, Any] | None:
@@ -477,101 +557,6 @@ def adopt_pending(now: float | None = None) -> list[str]:
         except OSError as exc:
             log.warning("cx: pending record %s: %s", path.name, exc)
     return adopted
-
-
-def mode_of(caller_pid: int) -> str | None:
-    """The mode of the session whose REPL is `caller_pid`.
-
-    Three answers, and a gate must treat them differently:
-
-    - a mode string: `caller_pid` is a session cx started (or is about to adopt),
-      and this is the mode it was declared with;
-    - `None`: `caller_pid` is positively not a cx-started session. It is an
-      interactive terminal, a pool session, or a hand-started job, and the roster
-      and the session's own record both say so;
-    - `"unknown"`: anything else, including an invalid pid, an unreadable or
-      missing roster, jobs directory, session record or lineage record, and a
-      background session with no record of how it was started. Treat it as the
-      most restricted mode.
-    """
-    if not isinstance(caller_pid, int) or isinstance(caller_pid, bool) or caller_pid <= 0:
-        return UNKNOWN
-    try:
-        return _mode_of(caller_pid)
-    except (_Unreadable, roster.Unreadable, OSError, ValueError, TypeError):
-        return UNKNOWN
-
-
-def _mode_of(pid: int) -> str | None:
-    workers = roster.read_json_strict(config.roster_path()).get("workers")
-    if (not isinstance(workers, dict) or not config.jobs_dir().is_dir()
-            or not config.sessions_dir().is_dir()):
-        raise _Unreadable("roster, jobs directory or sessions directory missing")
-    lineage, pending = _read_starts()
-    for short, w in workers.items():
-        if (isinstance(w, dict) and w.get("replPid") == pid
-                and roster.proc_start(pid) == str(w.get("replProcStart"))):
-            seed = ((w.get("dispatch") or {}).get("seed") or {}).get("name")
-            state = roster.read_json(config.jobs_dir() / short / "state.json")
-            return _declared_mode(short, {seed, state.get("name")}, lineage, pending)
-    rec = _session_record(pid)
-    if rec is None or rec.get("kind") != "bg":
-        return None
-    mode = _declared_mode(str(rec.get("jobId") or ""), {rec.get("name")},
-                          lineage, pending)
-    return UNKNOWN if mode is None else mode
-
-
-def _declared_mode(job: str, names: set, lineage: dict[str, dict],
-                   pending: list[dict]) -> str | None:
-    """The mode recorded for this job, else for a pending start of its name."""
-    rec = lineage.get(job)
-    if rec is None:
-        rec = next((p for p in pending if p.get("name") in names), None)
-    if rec is None:
-        return None
-    mode = rec.get("mode")
-    if not isinstance(mode, str) or not _MODE.match(mode):
-        raise _Unreadable(f"the record of {job} carries no valid mode")
-    return mode
-
-
-def _read_starts() -> tuple[dict[str, dict], list[dict]]:
-    """Every lineage and pending record, raising if any is unreadable."""
-    lineage: dict[str, dict] = {}
-    pending: list[dict] = []
-    directory = config.starts_dir()
-    if not directory.is_dir():
-        raise _Unreadable("the lineage directory is missing")
-    for fname in os.listdir(directory):
-        if not fname.endswith(".json"):
-            continue
-        data = json.loads((directory / fname).read_text())
-        if not isinstance(data, dict):
-            raise _Unreadable(f"{fname} is not an object")
-        if fname.startswith("pending-"):
-            pending.append(data)
-        elif _JOB.match(fname[:-5]):
-            lineage[fname[:-5]] = data
-    return lineage, pending
-
-
-def _session_record(pid: int) -> dict[str, Any] | None:
-    """Claude Code's record of the live process `pid`; None when it has none."""
-    directory = config.sessions_dir()
-    if not directory.is_dir():
-        raise _Unreadable("the sessions directory is missing")
-    path = directory / f"{pid}.json"
-    if not path.exists():
-        return None
-    data = json.loads(path.read_text())
-    if not isinstance(data, dict):
-        raise _Unreadable(f"{path.name} is not an object")
-    live = roster.proc_start(pid)
-    claimed = str(data.get("procStart", ""))
-    if live is None or (claimed and claimed != live):
-        raise _Unreadable(f"the record of pid {pid} is stale")
-    return data
 
 
 def _parent_of(pid: Any) -> str | None:

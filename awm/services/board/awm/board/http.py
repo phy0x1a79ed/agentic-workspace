@@ -32,6 +32,8 @@ from awm.board import stream as streams
 log = logging.getLogger("awm.board.http")
 
 LIST_FILTERS = ("sender", "recipient", "claimant", "status", "kind", "reply_to")
+#: Paging, passed to ``Board.list`` as text; a value that is not a whole number answers 400.
+LIST_PAGING = ("limit", "offset")
 
 _NOT_FOUND = {"error": "not found"}
 
@@ -168,7 +170,7 @@ class Door:
         party = await self._party(request)
         if party is None:
             return not_found()
-        filters = {k: v for k in LIST_FILTERS if (v := request.query_params.get(k))}
+        filters = {k: v for k in LIST_FILTERS + LIST_PAGING if (v := request.query_params.get(k))}
         return await self._call(self.board.list, party, **filters)
 
     async def get_card(self, request: Request) -> JSONResponse:

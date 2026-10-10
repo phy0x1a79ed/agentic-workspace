@@ -56,7 +56,19 @@ def _is_opencode(pid: int) -> bool:
     return os.path.basename(exe) == "opencode"
 
 
-def resolve_caller_pid(start_pid: int, *, sessions_dir: str = SESSIONS_DIR,
+def _default_sessions_dir() -> str:
+    """Where the gateway's mode gate reads session records, so both agree.
+
+    `SESSIONS_DIR` is the fallback when `claudedaemon` is not importable.
+    """
+    try:
+        from awm.claudedaemon import sessionmode
+        return str(sessionmode.sessions_dir())
+    except Exception:  # noqa: BLE001
+        return SESSIONS_DIR
+
+
+def resolve_caller_pid(start_pid: int, *, sessions_dir: str | None = None,
                        ppid_of=_ppid_of, is_opencode=_is_opencode,
                        max_hops: int = MAX_ANCESTRY_HOPS) -> int:
     """The nearest ancestor that is an agent session — usually our parent.
@@ -78,6 +90,7 @@ def resolve_caller_pid(start_pid: int, *, sessions_dir: str = SESSIONS_DIR,
     own exe is ``opencode``). A chain containing neither returns ``start_pid``
     unchanged, so a genuine non-agent caller refuses exactly as it did before.
     """
+    sessions_dir = sessions_dir or _default_sessions_dir()
     pid: int | None = start_pid
     for _ in range(max_hops):
         if pid is None or pid <= 1:

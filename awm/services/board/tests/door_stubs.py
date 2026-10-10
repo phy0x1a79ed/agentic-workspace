@@ -173,7 +173,10 @@ class StubBoard:
                 out = [c for c in out if c[key] == filters[key]]
         if "sender" in filters:
             out = [c for c in out if c["sender"]["swarm"] == filters["sender"]]
-        return out
+        limit, offset = int(filters.get("limit") or 100), int(filters.get("offset") or 0)
+        if not 1 <= limit <= 500 or offset < 0:
+            raise ValueError("bad paging")
+        return out[offset:offset + limit]
 
     def sweep(self):
         self.sweeps += 1

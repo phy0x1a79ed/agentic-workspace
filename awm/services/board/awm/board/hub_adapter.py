@@ -129,6 +129,8 @@ API_MANIFEST: dict[str, Any] = {
                 _param("status", "string", "`posted`, `in_progress`, `done` or `failed`."),
                 _param("kind", "string", "`request` or `message`."),
                 _param("reply_to", "string", "Only answers to this card id."),
+                _param("limit", "integer", "At most this many cards (default 100, at most 500)."),
+                _param("offset", "integer", "Skip this many cards, oldest first."),
             ],
             "timeout": 60,
         },
@@ -267,7 +269,8 @@ async def get(args: dict, as_: str | None = None) -> dict:
 
 
 async def list_cards(args: dict, as_: str | None = None) -> dict:
-    reply = await _relay(lambda c: c.list(**{k: args[k] for k in CARD_FIELDS if args.get(k)}), as_)
+    paging = {k: args[k] for k in ("limit", "offset") if args.get(k) not in (None, "")}
+    reply = await _relay(lambda c: c.list(**paging, **{k: args[k] for k in CARD_FIELDS if args.get(k)}), as_)
     return {"ok": True, "cards": reply["result"]} if reply.get("ok") else reply
 
 

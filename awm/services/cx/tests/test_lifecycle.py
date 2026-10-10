@@ -87,6 +87,12 @@ def home(tmp_path, monkeypatch):
     monkeypatch.setenv("AWM_CX_SESSIONS", str(h.sessions))
     monkeypatch.setenv("AWM_CX_PROJECTS", str(h.projects))
     monkeypatch.setenv("AWM_CX_TRUST_FILE", str(trust))
+    h.mcp_source = tmp_path / "workspace.mcp.json"
+    h.mcp_source.write_text(json.dumps({"mcpServers": {
+        "awm": {"command": "/opt/awm/bin/awm-mcp", "args": [],
+                "env": {"AWM_WORKSPACE": "/ws"}, "extra": "dropped"},
+        "other": {"command": "npx"}}}))
+    monkeypatch.setenv("AWM_CX_MCP_SOURCE", str(h.mcp_source))
     monkeypatch.delenv("AWM_NODE_ROLE", raising=False)
     monkeypatch.setenv("AWM_NODE_NAME", "testnode")
     return h
@@ -223,6 +229,28 @@ def test_arguments_override_the_defaults_in_equals_form(home, launched):
     assert call["flags"] == ["--permission-mode=plan", "--disallowedTools=Write,Edit",
                              "--remote-control=worker-one", "--effort=high",
                              "--model=opus"]
+
+
+def test_allowed_tools_become_one_equals_form_flag(home, launched):
+    start({**BASE, "permission": "dontAsk", "disallowed_tools": ["Bash"],
+           "allowed_tools": ["mcp__awm__*", "SendMessage"], "remote_control": "rc1"})
+    flags = launched[0]["flags"]
+    assert flags == ["--permission-mode=dontAsk", "--disallowedTools=Bash",
+                     "--allowedTools=mcp__awm__*,SendMessage", "--remote-control=rc1",
+                     "--effort=medium", "--model=sonnet[1m]"]
+    assert "--allowedTools" not in flags
+
+
+def test_allowed_tools_may_be_a_comma_string_and_default_to_none(home, launched):
+    start({**BASE, "allowed_tools": "Read,Skill"})
+    assert "--allowedTools=Read,Skill" in launched[0]["flags"]
+    start({**BASE, "name": "second"})
+    assert not any(f.startswith("--allowedTools") for f in launched[1]["flags"])
+
+
+def test_allowed_tools_must_be_a_list_of_names(home, launched):
+    out = start({**BASE, "allowed_tools": [1, 2]})
+    assert not out["ok"] and "allowed_tools" in out["reason"]
 
 
 def test_every_valued_flag_uses_the_equals_form(home, launched):
@@ -435,7 +463,7 @@ def test_an_oserror_from_the_start_path_is_a_refusal_not_a_crash(home, monkeypat
     def boom():
         raise OSError("disk gone")
 
-    monkeypatch.setattr(lifecycle, "_resolve_worktree", lambda *a: boom())
+    monkeypatch.setattr(lifecycle, "_resolve_worktree", lambda *a, **k: boom())
     out = start(BASE)
     assert out["ok"] is False and "disk gone" in out["reason"]
 
@@ -615,29 +643,110 @@ def test_stop_never_deletes_the_conversation():
 # --- the caller's mode gates what it may start -------------------------------
 
 
-def test_a_restricted_caller_may_start_only_workers(home, launched):
+@pytest.mark.parametrize("caller_mode", ["representative", "secretary", "delegate"])
+def test_a_gated_caller_gets_a_delegate_with_a_fixed_policy(home, launched, caller_mode):
+    parent_session(home, mode=caller_mode)
+    ok = start({**BASE, "model": "opus", "effort": "high", "prompt": "do it",
+                "_caller_pid": os.getpid()})
+    assert ok["ok"] and ok["mode"] == "delegate" and ok["parent"] == PARENT_JOB
+    flags = launched[0]["flags"]
+    assert "--permission-mode=dontAsk" in flags and "--restricted" in flags
+    assert "--strict-mcp-config" in flags
+    tools = next(f for f in flags if f.startswith("--tools="))
+    assert "Bash" not in tools.split("=", 1)[1].split(",")
+    assert "Edit" in tools and "SendMessage" in tools
+    allowed = next(f for f in flags if f.startswith("--allowedTools="))
+    assert "mcp__awm__*" in allowed and "Bash" not in allowed.split(",")
+    assert not any(f.startswith(("--remote-control", "--dangerously")) for f in flags)
+    assert "--model=opus" in flags and "--effort=high" in flags
+
+
+def test_the_delegate_loads_only_the_awm_server_from_the_workspace_config(home, launched):
     parent_session(home, mode="representative")
-    ok = start({**BASE, "_caller_pid": os.getpid()})
-    assert ok["ok"] and ok["mode"] == "worker" and ok["parent"] == PARENT_JOB
-    assert start({**BASE, "name": "two", "mode": "worker",
-                  "_caller_pid": os.getpid()})["ok"]
-    for mode in ("representative", "rep2"):
-        out = start({**BASE, "name": f"n-{mode}", "mode": mode,
-                     "_caller_pid": os.getpid()})
-        assert out["ok"] is False and "worker" in out["reason"]
+    start({**BASE, "_caller_pid": os.getpid()})
+    flags = launched[0]["flags"]
+    path = next(f for f in flags if f.startswith("--mcp-config=")).split("=", 1)[1]
+    assert json.loads(open(path).read()) == {"mcpServers": {"awm": {
+        "command": "/opt/awm/bin/awm-mcp", "args": [],
+        "env": {"AWM_WORKSPACE": "/ws"}}}}
 
 
-def test_a_worker_or_unmoded_caller_may_start_any_mode(home, launched):
+@pytest.mark.parametrize("override", [
+    {"permission": "bypassPermissions"}, {"permission": "plan"},
+    {"allowed_tools": ["Bash"]}, {"disallowed_tools": ["Read"]}, {"tools": ["Bash"]},
+    {"remote_control": True}, {"remote_control": "x"}, {"mode": "worker"},
+    {"restricted": False}, {"strict_mcp": False}, {"model": "opus-evil"},
+])
+def test_a_gated_caller_may_not_override_the_policy(home, launched, override):
+    parent_session(home, mode="representative")
+    out = start({**BASE, "_caller_pid": os.getpid(), **override})
+    assert out["ok"] is False and launched == []
+
+
+def test_a_gated_caller_may_not_create_a_scope(home, launched, monkeypatch):
+    from awm.cx import lifecycle
+
+    async def boom(*a, **k):
+        raise AssertionError("created a scope")
+
+    monkeypatch.setattr(lifecycle, "create_scope", boom)
+    parent_session(home, mode="secretary")
+    out = start({"project": "awm", "scope": "nowhere", "_caller_pid": os.getpid()})
+    assert out["ok"] is False and "may not create scopes" in out["reason"]
+    assert launched == []
+
+
+def test_a_missing_awm_mcp_server_refuses_a_delegate(home, launched):
+    parent_session(home, mode="representative")
+    home.mcp_source.write_text(json.dumps({"mcpServers": {}}))
+    out = start({**BASE, "_caller_pid": os.getpid()})
+    assert out["ok"] is False and "awm server" in out["reason"]
+
+
+def test_the_front_door_with_no_session_may_start_the_reserved_sessions(home, launched):
+    out = start({**BASE, "name": "representative", "mode": "representative",
+                 "permission": "dontAsk", "tools": ["SendMessage"],
+                 "restricted": True, "strict_mcp": True})
+    assert out["ok"] and out["mode"] == "representative"
+    flags = launched[0]["flags"]
+    assert "--tools=SendMessage" in flags and "--restricted" in flags
+
+
+@pytest.mark.parametrize("caller_mode", [None, "worker", "other"])
+@pytest.mark.parametrize("ask", [{"mode": "representative"}, {"mode": "secretary"},
+                                 {"mode": "delegate"}, {"name": "representative"},
+                                 {"name": "secretary"}])
+def test_a_session_may_not_start_a_reserved_name_or_mode(home, launched, caller_mode, ask):
+    parent_session(home, mode=caller_mode)
+    out = start({**BASE, "_caller_pid": os.getpid(), **ask})
+    assert out["ok"] is False and "front door" in out["reason"]
+    assert launched == []
+
+
+def test_a_worker_or_unmoded_caller_may_start_any_other_mode(home, launched):
     parent_session(home, mode="worker")
-    assert start({**BASE, "mode": "representative", "_caller_pid": os.getpid()})["ok"]
+    assert start({**BASE, "mode": "rep2", "_caller_pid": os.getpid()})["ok"]
     from awm.cx import config
 
     for f in os.listdir(config.starts_dir()):
         os.unlink(config.starts_dir() / f)
     home.set_workers({})
     parent_session(home)  # no lineage: an ordinary session
-    assert start({**BASE, "name": "other", "mode": "representative",
+    assert start({**BASE, "name": "other", "mode": "rep3",
                   "_caller_pid": os.getpid()})["ok"]
+
+
+@pytest.mark.parametrize("field", ["tools", "allowed_tools", "disallowed_tools"])
+@pytest.mark.parametrize("bad", ["Bash;rm", "-x", "Read,Write(", "a b", ["ok", "--evil"],
+                                 "Bash(a,b)", 5])
+def test_tool_lists_are_validated(home, launched, field, bad):
+    out = start({**BASE, field: bad})
+    assert out["ok"] is False and field in out["reason"]
+
+
+def test_tool_rules_with_a_specifier_are_accepted(home, launched):
+    out = start({**BASE, "allowed_tools": ["Read(./**)", "mcp__awm__*", "Bash(git *)"]})
+    assert out["ok"]
 
 
 def test_a_caller_whose_mode_is_unknown_may_not_start(home, launched):
@@ -804,31 +913,74 @@ def test_mode_of_is_unknown_when_the_roster_is_unreadable(home, launched):
     assert lifecycle.mode_of(os.getppid()) == "unknown"
 
 
-def test_mode_of_is_unknown_when_the_roster_is_missing(home, launched):
+def test_mode_of_keeps_the_recorded_mode_when_the_roster_is_missing(home, launched):
     from awm.cx import lifecycle
 
-    start(BASE)
+    start({**BASE, "mode": "rep2"})
+    home.record(os.getppid(), "bg", CHILD_JOB)
     home.roster.unlink()
+    assert lifecycle.mode_of(os.getppid()) == "rep2"
+
+
+def test_mode_of_is_unknown_for_a_bg_session_when_the_roster_is_missing_and_no_lineage(
+        home, launched):
+    from awm.cx import config, lifecycle
+
+    start(BASE)
+    home.record(os.getppid(), "bg", CHILD_JOB)
+    home.roster.unlink()
+    os.unlink(config.starts_dir() / f"{CHILD_JOB}.json")
     assert lifecycle.mode_of(os.getppid()) == "unknown"
 
 
-@pytest.mark.parametrize("what", ["starts", "jobs", "sessions"])
-def test_mode_of_is_unknown_when_a_config_directory_is_missing(home, launched, what):
+def test_mode_of_is_unknown_when_a_cx_launched_job_lost_its_lineage(home, launched):
     import shutil
 
     from awm.cx import config, lifecycle
 
     start(BASE)
-    shutil.rmtree({"starts": config.starts_dir(), "jobs": home.jobs,
-                   "sessions": home.sessions}[what])
+    workers = home.workers()
+    workers[CHILD_JOB]["dispatch"]["launch"] = {"args": ["--permission-mode=dontAsk"]}
+    home.set_workers(workers)
+    shutil.rmtree(config.starts_dir())
     assert lifecycle.mode_of(os.getppid()) == "unknown"
 
 
-def test_mode_of_is_unknown_when_a_lineage_record_is_corrupt(home, launched):
+def test_mode_of_is_none_for_a_job_without_cx_launch_flags_and_no_lineage(home, launched):
+    import shutil
+
     from awm.cx import config, lifecycle
 
     start(BASE)
+    shutil.rmtree(config.starts_dir())
+    assert lifecycle.mode_of(os.getppid()) is None
+
+
+@pytest.mark.parametrize("what", ["jobs", "sessions"])
+def test_mode_of_survives_a_missing_jobs_or_sessions_directory(home, launched, what):
+    import shutil
+
+    from awm.cx import lifecycle
+
+    start({**BASE, "mode": "rep2"})
+    shutil.rmtree({"jobs": home.jobs, "sessions": home.sessions}[what])
+    assert lifecycle.mode_of(os.getppid()) == "rep2"
+
+
+def test_a_corrupt_record_of_another_job_does_not_change_the_answer(home, launched):
+    from awm.cx import config, lifecycle
+
+    start({**BASE, "mode": "rep2"})
     (config.starts_dir() / "cccccccc.json").write_text("{ not json")
+    (config.starts_dir() / "pending-0123456789abcdef.json").write_text("{ not json")
+    assert lifecycle.mode_of(os.getppid()) == "rep2"
+
+
+def test_mode_of_is_unknown_when_the_callers_own_lineage_record_is_corrupt(home, launched):
+    from awm.cx import config, lifecycle
+
+    start(BASE)
+    (config.starts_dir() / f"{CHILD_JOB}.json").write_text("{ not json")
     assert lifecycle.mode_of(os.getppid()) == "unknown"
 
 

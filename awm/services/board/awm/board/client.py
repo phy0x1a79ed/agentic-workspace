@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Callable
 
 import httpx
 
@@ -136,14 +136,24 @@ class BoardClient:
     async def get(self, card_id: str) -> dict:
         return await self._send("GET", f"/cards/{card_id}")
 
-    async def list(self, **filters: str) -> list[dict]:
-        params = {k: v for k, v in filters.items() if v}
+    async def list(self, *, limit: int | None = None, offset: int | None = None,
+                   **filters: str) -> list[dict]:
+        """Cards the party may see, oldest first. ``limit`` and ``offset`` page the answer."""
+        params: dict[str, Any] = {k: v for k, v in filters.items() if v}
+        if limit is not None:
+            params["limit"] = int(limit)
+        if offset:
+            params["offset"] = int(offset)
         return await self._send("GET", "/cards", params=params)
 
     # -- the stream ----------------------------------------------------------
 
-    async def stream(self, last_event_id: int | None = None) -> AsyncIterator[tuple[int, str, dict]]:
+    async def stream(self, last_event_id: int | None = None, *,
+                     on_state: Callable[[bool], None] | None = None) -> AsyncIterator[tuple[int, str, dict]]:
         """Yield ``(event_id, type, card)`` forever, reconnecting from the last id seen.
+
+        ``on_state`` is called with True once a connection is accepted and with
+        False when it ends or fails, so a caller can tell attached from retrying.
 
         A refused token ends the iteration with ``BoardRefused``, because
         retrying a revoked token only repeats the refusal. Anything else —
@@ -166,6 +176,8 @@ class BoardClient:
                         raise BoardRefused(404, "stream refused")
                     if not response.is_success:
                         raise BoardError(response.status_code, "stream failed")
+                    if on_state is not None:
+                        on_state(True)
                     async for event_id, event_type, card in _parse(response.aiter_lines()):
                         delay = self._backoff_start
                         if card is None:  # a bare id: the server handing over its head
@@ -186,6 +198,9 @@ class BoardClient:
                 raise
             except (httpx.HTTPError, BoardError) as exc:
                 log.warning("board stream dropped (%s); reconnecting in %.1fs", exc, delay)
+            finally:
+                if on_state is not None:
+                    on_state(False)
             await asyncio.sleep(delay)
             delay = min(delay * 2, self._backoff_max)
 

@@ -71,6 +71,42 @@ async def test_verbs_hit_the_door_with_the_bearer_and_the_right_shape():
     assert dict(seen[5].url.params) == {"status": "posted", "kind": "request"}  # empty filters are dropped
 
 
+async def test_list_sends_paging_and_drops_empty_values():
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, json=[])
+
+    async with client_for(handler) as client:
+        await client.list(status="posted", limit=200, offset=400)
+        await client.list(limit=50, offset=0)
+        await client.list()
+    assert dict(seen[0].url.params) == {"status": "posted", "limit": "200", "offset": "400"}
+    assert dict(seen[1].url.params) == {"limit": "50"}
+    assert dict(seen[2].url.params) == {}
+
+
+async def test_the_stream_reports_when_it_is_attached_and_when_it_is_not():
+    states: list[bool] = []
+    attempts = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        attempts.append(1)
+        if len(attempts) == 1:
+            return httpx.Response(502)
+        return httpx.Response(200, headers={"content-type": "text/event-stream"},
+                              content=chunked(sse((1, "card.posted", {"id": "a"}))))
+
+    async with client_for(handler) as client:
+        events = client.stream(on_state=states.append)
+        await asyncio.wait_for(anext(events), 3)
+        live = list(states)
+        await events.aclose()
+    assert live == [False, True]  # refused once, then attached
+    assert states[-1] is False  # closing the stream detaches it
+
+
 async def test_404_and_409_are_their_own_errors():
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path.endswith("/claim"):

@@ -166,6 +166,16 @@ async def test_the_card_verbs_relay_to_the_host_and_the_sender_is_the_swarm_toke
     assert [c["id"] for c in listed["cards"]] == [card["id"]]
 
 
+async def test_list_relays_paging_to_the_host(relay):
+    for i in range(3):
+        await hub_adapter.post({"kind": "request", "recipient": "beta", "title": str(i)})
+    page = await hub_adapter.list_cards({"recipient": "beta", "limit": 2, "offset": 1})
+    assert [c["title"] for c in page["cards"]] == ["1", "2"]
+    assert (await hub_adapter.list_cards({"limit": 0 or "", "offset": ""}))["ok"] is True
+    spec = next(f for f in hub_adapter.API_MANIFEST["functions"] if f["name"] == "list")
+    assert {"limit", "offset"} <= {p["name"] for p in spec["params"]}
+
+
 async def test_claim_complete_and_fail_relay_with_the_hosts_status(relay, monkeypatch):
     posted = (await hub_adapter.post({"kind": "request", "recipient": "alpha", "title": "t"}))["card"]
     claimed = await hub_adapter.claim({"card_id": posted["id"]})
