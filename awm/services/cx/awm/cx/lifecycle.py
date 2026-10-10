@@ -658,18 +658,24 @@ def _job_row(s: sessions.Session, rec: dict[str, Any] | None,
              node: str) -> dict[str, Any]:
     rec = rec or {}
     project, scope = _project_scope(s.cwd)
-    state = _read_json(config.jobs_dir() / s.short / "state.json").get("state")
+    record = _read_json(config.jobs_dir() / s.short / "state.json")
+    state = record.get("state")
     return {
         "job": s.short, "tmux": None, "name": s.name, "node": node,
         "project": rec.get("project", project), "scope": rec.get("scope", scope),
         "cwd": s.cwd,
         "state": (state or "unknown") if sessions.is_alive(s) else "gone",
+        "needs": record.get("needs"), "detail": _clip(record.get("detail")),
         "attach": f"claude attach {s.short}",
         "parent": rec.get("parent"), "caller": rec.get("caller"),
         "mode": rec.get("mode"), "remote_control": rec.get("remote_control"),
         "started_at": rec.get("started_at") or _iso_ms(s.started_at_ms),
         "pool": sessions.is_ours(s) or sessions.was_ours(s),
     }
+
+
+def _clip(text: Any, limit: int = 200) -> str | None:
+    return text[:limit] if isinstance(text, str) else None
 
 
 def _interactive_row(rec: dict[str, Any], panes: dict[int, str],
@@ -680,6 +686,7 @@ def _interactive_row(rec: dict[str, Any], panes: dict[int, str],
         "job": None, "tmux": tmux, "name": rec.get("name"), "node": node,
         "project": project, "scope": scope, "cwd": rec.get("cwd"),
         "state": rec.get("status") or "unknown",
+        "needs": None, "detail": None,
         "attach": f"tmux attach -t {tmux}" if tmux else None,
         "parent": None, "caller": None, "mode": None, "remote_control": None,
         "started_at": _iso_ms(rec.get("startedAt")), "pool": False,

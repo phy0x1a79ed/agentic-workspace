@@ -386,7 +386,7 @@ def resolve(tool: str, local_domains: Mapping[str, list[str]],
        peer that also has it available as an override.
     3. Otherwise, if exactly **one** peer has it, that peer is the sole provider
        and the default — so a peer-only domain is callable with no ``peer`` at
-       all, which is what keeps today's ``orch``/``artifact`` reachable.
+       all, which is what keeps today's ``orch`` reachable.
     4. Otherwise (several peers, no local, no declared home) there is **no
        default**: the caller must name one. Guessing would silently bind a call
        to whichever node happened to sort first.

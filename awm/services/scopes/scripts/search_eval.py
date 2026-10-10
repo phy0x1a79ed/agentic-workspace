@@ -39,7 +39,6 @@ _LIVE = {
     "note": ("notes_search", lambda q, f, k: {"semantic": q, "k": k, **f}, "results"),
     "writing": ("writing_search", lambda q, f, k: {"semantic": q, "k": k, **f}, "results"),
     "precedence": ("precedence_search", lambda q, f, k: {"context": q, "k": k, **f}, "results"),
-    "artifact": ("artifact_search", lambda q, f, k: {"query": q, "limit": k, **f}, "artifacts"),
 }
 
 

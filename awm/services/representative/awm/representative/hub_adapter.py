@@ -58,7 +58,11 @@ API_MANIFEST: dict[str, Any] = {
                 "Whether the front door is enabled on this node and why not, "
                 "the node's role and swarm, the board cursor, the card counts "
                 "by status, and whether the representative and the secretary "
-                "are alive."
+                "are alive. `sessions` gives each one's `alive`, `state` "
+                "(running, waiting, blocked, failed, exited, missing, unknown) "
+                "and a short `reason`, such as blocked / auth_required when "
+                "the Claude login has expired. Running and waiting count as "
+                "alive."
             ),
             "params": [],
             "timeout": 60,
@@ -176,14 +180,16 @@ async def status(args: dict, as_: str | None = None) -> dict:
         "counts": None,
         "representative_alive": None,
         "secretary_alive": None,
+        "sessions": None,
     }
     if why is not None or RUNTIME is None:
         return out
     out["cursor"] = RUNTIME.queue.cursor()
     out["counts"] = RUNTIME.queue.counts()
-    alive = await RUNTIME.loop.alive()
-    out["representative_alive"] = alive["representative"]
-    out["secretary_alive"] = alive["secretary"]
+    health = await RUNTIME.loop.health()
+    out["sessions"] = health
+    out["representative_alive"] = health["representative"]["alive"]
+    out["secretary_alive"] = health["secretary"]["alive"]
     out["board"] = _board_state(RUNTIME)
     out["reconcile"] = RUNTIME.loop.status()
     return out

@@ -53,7 +53,23 @@ renamed session still counts. Another session carrying the label is logged and
 ignored. If the queue database is lost, a surviving session is no longer
 recognised, and the replacement start is refused while it still holds the name. A missing role is started with the launch config in
 `personas.py`, which always passes an explicit `permission`. The door never
-stops, renames or takes a session. When `cx list` fails the tick does nothing.
+renames or takes a session. When `cx list` fails the tick does nothing.
+
+A session counts as alive only when it can work. `door status` gives each role
+`sessions.<role>` with `alive`, `state` and `reason`. `representative_alive` and
+`secretary_alive` stay. The state comes from the `state`, `needs` and `detail`
+fields of the role's `cx list` row. Claude Code sets `blocked` and `failed` from
+API errors and also from the session's own last line, so the `needs` text decides
+which kind it is.
+
+| State | Meaning | What the door does |
+|---|---|---|
+| `running` | `working`, `done`, a `failed:` line the session wrote itself, or a state the door does not know. Alive | Nothing. |
+| `waiting` | `blocked` with a rate limit, overload, server error, a question or any text the session wrote. It clears on the next prompt. Alive | Nothing. |
+| `blocked` | A person must act: `auth_required` (login expired), org OAuth not allowed, account on hold, cloud credentials, verification, usage limit | One warning per change of state. A restart cannot fix a login. When it clears, the door announces the queued cards again at once. |
+| `failed` | `failed` with the `API error` text | Stops the session, which the door started, and starts a new one. At most one restart per back-off period (60 s, doubling to 15 min). |
+| `exited`, `missing` | No live session | Starts one, backing off after a failed start. |
+| `unknown` | cx could not answer | Nothing. |
 
 The reconcile loop holds a non-blocking lock on `<state>/reconcile.lock` for
 the life of the process, so a second copy of the service reconciles nothing.

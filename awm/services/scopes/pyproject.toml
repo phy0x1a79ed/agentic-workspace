@@ -37,7 +37,6 @@ markers = [
     "messaging: rooms / messages / posts / control plane",
     "auth: login / exposed app / auth service",
     "mcp: mcp server / exports / cli context emit",
-    "artifacts: artifact registry",
     "sessions: session log / history",
     "agent: agent instances / vagrant sessions",
     "misc: outliers (skills, locks, voice config, ssh tunnel)",

@@ -17,7 +17,7 @@ needs_embed = pytest.mark.skipif(not _HAS_EMBED, reason="embedding stack not ins
 
 
 # ---------------------------------------------------------------------------
-# Fixtures — isolated service DB in a temp dir (mirrors the artifacts pattern)
+# Fixtures — isolated service DB in a temp dir
 # ---------------------------------------------------------------------------
 
 

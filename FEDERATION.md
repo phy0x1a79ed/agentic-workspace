@@ -121,7 +121,7 @@ The edge caches the auth material for up to 30 seconds (`httpsfront/auth.py` `_R
 
 Each peer book entry (`<AWM_DIR>/state/peers.json`) holds the edge URL, the ssh alias, the relation, the swarm, the principal, the role, the pinned public key with its fingerprint, and the grants. `gateway/peers.py` owns the writes. `awm.config.peerbook` is the only reader. An entry written before relations existed reads as domestic.
 
-- **relation.** `domestic` marks a peer of this swarm and trusts it in full. `foreign` marks a peer of another swarm. A foreign peer needs a swarm other than this node's swarm.
+- **relation.** `domestic` marks a peer of this swarm and trusts it with every verb except the peer-book writes (`peer add|join|set|grant|revoke|forget`) and the `auth` verbs `sign_peer_token` and `edge_material`, which refuse every stamp. `cx start` and `cx stop` refuse the legacy bare `peer`, which names no node. `foreign` marks a peer of another swarm. A foreign peer needs a swarm other than this node's swarm.
 - **swarm and principal.** The swarm names the peer's swarm. The principal names the person the peer acts for.
 - **role.** `fleet` or `station`.
 - **grants.** The read categories a foreign peer may use. The categories today are `journals` and `kb`. A grant on a domestic peer is stored and changes nothing.
@@ -131,7 +131,7 @@ Two environment variables describe this node itself:
 - `AWM_NODE_ROLE` is `fleet` (default) or `station`. A station hosts services for others and runs no agent sessions. `cx start` and the front door refuse on a station, and the gateway logs a warning at boot when a station has `cx` enabled. Any other value is an error.
 - `AWM_SWARM` names this node's swarm (default `tony`). The front door claims cards for it, and archive hits carry it as `origin_swarm`.
 
-Manage entries with `awm peer add|set|grant|revoke|list|resolve|forget` or the `peer` domain, which carries the same verbs. The writes declare `effect = write`, so a foreign caller and a restricted session cannot run them. **CAUTION** Domestic trust is full trust. A domestic peer can change this node's book. Mark a node domestic only if you control it.
+Manage entries with `awm peer add|set|grant|revoke|list|resolve|forget` or the `peer` domain, which carries the same verbs. The peer-book writes close to a caller with a peer stamp. Each write refuses `peer` and `peer:<node>` on every door, the HTTP routes included. A domestic peer is refused as much as a foreign one. The refusal is a `PermissionError`, which `/invoke` and the routes answer with 403. A foreign caller never reaches it, because the foreign gate answers 404 first. The operator CLI, a local agent and a person signed in at the edge (`user:<sub>`, including `user:operator`) pass. The writes also declare `effect = write`, so a restricted session cannot run them. **CAUTION** Domestic trust is full trust. A domestic peer can start a session here with `cx start`, and that session's agent carries a local stamp. Mark a node domestic only if you control it.
 
 ## The foreign gate
 

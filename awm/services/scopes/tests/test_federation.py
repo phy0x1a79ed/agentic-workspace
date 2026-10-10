@@ -177,7 +177,7 @@ def test_every_scopes_verb_declares_an_effect():
 
 READS = {"scope_search", "scope_data_status", "project_search", "resolveScope", "resolveRef",
          "scope_fetch", "scope_archive_search", "scope_goal_read", "scope_goal_history"}
-JOURNAL_READS = {"scope_fetch", "scope_archive_search", "scope_goal_read", "scope_goal_history"}
+JOURNAL_READS = {"scope_fetch", "scope_archive_search"}
 
 
 def test_only_the_known_reads_are_reads():
@@ -188,6 +188,14 @@ def test_only_the_known_reads_are_reads():
 def test_journal_text_reads_carry_the_journals_category_and_nothing_else_does():
     categorised = {n: f["category"] for n, f in _functions().items() if f.get("category")}
     assert categorised == {n: "journals" for n in JOURNAL_READS}
+
+
+def test_goal_reads_carry_no_category():
+    """No grant reaches a goal read, so a foreign peer's tool list never shows one."""
+    fns = _functions()
+    for name in ("scope_goal_read", "scope_goal_history"):
+        assert fns[name]["effect"] == "read"
+        assert fns[name].get("category") is None
 
 
 def test_the_archive_verb_has_a_handler_and_a_scope_domain_tool():
