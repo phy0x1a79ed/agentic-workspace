@@ -150,6 +150,13 @@ class AuthGate:
                 self._fetched_at = now
             return self._material
 
+    async def peer_credentials(self) -> list[str] | None:
+        """The legacy node-wide bearers on file, or ``None`` when no material is held."""
+        mat = await self._material_fresh()
+        if not mat:
+            return None
+        return [str(c) for c in mat.get("peer_credentials") or []]
+
     async def authenticate(self, *, cookie: str | None,
                            bearer: str | None) -> tuple[bool, str | None, str | None]:
         """Return ``(ok, refreshed_cookie_token_or_None, sub)``.

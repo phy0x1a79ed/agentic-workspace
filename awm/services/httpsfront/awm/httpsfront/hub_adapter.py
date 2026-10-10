@@ -36,7 +36,7 @@ from typing import Any
 from awm import config
 from awm.gatewayclient import ServiceAdapter
 
-from awm.httpsfront import certs, penpot, proxy, store, tether, vault
+from awm.httpsfront import board, certs, penpot, proxy, store, tether, vault
 
 log = logging.getLogger("awm.httpsfront.hub_adapter")
 
@@ -73,6 +73,33 @@ PENPOT = os.environ.get("AWM_EDGE_PENPOT", "0").strip().lower() not in ("0", "fa
 TETHER = os.environ.get("AWM_EDGE_TETHER", "0").strip().lower() not in ("0", "false", "no")
 TETHER_UPSTREAM = config.TETHER_URL if TETHER else None
 
+# The federation board on this same listener. Off by default, and meant for the
+# one host that runs the board: its paths are reachable with no edge session,
+# because the board authenticates its own parties. The port is the board
+# service's own (`awm.board.DEFAULT_PORT`, 12521), read the same way it reads it.
+def _board_upstream() -> str | None:
+    """The board's loopback URL when ``AWM_EDGE_BOARD`` turns the door on, else ``None``.
+
+    On only for ``1/true/yes/on``. The port is read only when the door is on,
+    and a bad one leaves the door off with a log line rather than stopping the
+    whole edge.
+    """
+    if os.environ.get("AWM_EDGE_BOARD", "").strip().lower() not in ("1", "true", "yes", "on"):
+        return None
+    raw = os.environ.get("AWM_BOARD_PORT") or "12521"
+    try:
+        port = int(raw)
+        if not 1 <= port <= 65535:
+            raise ValueError(raw)
+    except ValueError:
+        log.error("AWM_BOARD_PORT=%r is not a port; the board door stays off", raw)
+        return None
+    return f"http://127.0.0.1:{port}"
+
+
+BOARD_UPSTREAM = _board_upstream()
+BOARD = BOARD_UPSTREAM is not None
+
 
 def _claimed_by_both() -> list[str]:
     """Paths both the vault and Penpot claim on this listener.
@@ -106,6 +133,7 @@ _STATUS: dict[str, Any] = {
     "vault_upstream": VAULT_UPSTREAM,
     "penpot_upstream": PENPOT_UPSTREAM,
     "tether_upstream": TETHER_UPSTREAM,
+    "board_upstream": BOARD_UPSTREAM,
     # Where each mounted app answers, so an operator can see the mount the
     # containers' own PENPOT_PUBLIC_URI has to agree with.
     "vault_mount": vault.SHELL if VAULT else None,
@@ -113,6 +141,7 @@ _STATUS: dict[str, Any] = {
     # The address the operator reads out. Worth surfacing because it is the one
     # string a person has to say correctly over a phone.
     "tether_mount": tether.PREFIX if TETHER else None,
+    "board_mount": board.PREFIX if BOARD else None,
     "serving": False,
     "profile": PROFILE or "default",
 }
@@ -173,6 +202,7 @@ def _serve_forever(info: dict) -> None:
                 vault_upstream=VAULT_UPSTREAM,
                 penpot_upstream=PENPOT_UPSTREAM,
                 tether_upstream=TETHER_UPSTREAM,
+                board_upstream=BOARD_UPSTREAM,
             )
         except Exception:  # noqa: BLE001
             log.exception("https front listener crashed; restarting in 2s")
