@@ -460,7 +460,10 @@ def test_a_pid_with_no_record_is_not_gated(client, dispatched, home):
     assert invoke(client, "ssh_connect").status_code == 200
 
 
-def test_an_unreadable_roster_leaves_only_compaction(client, dispatched, home):
+def test_an_unreadable_roster_leaves_only_compaction(client, dispatched, home, monkeypatch):
+    from awm.claudedaemon import sessionmode
+
+    monkeypatch.setattr(sessionmode, "_may_be_a_session", lambda pid: True)
     _start_session(home, "representative")
     (home / "daemon" / "roster.json").write_text("{ not json")
     assert invoke(client, "board_list").status_code == 403
