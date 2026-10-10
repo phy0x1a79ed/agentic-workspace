@@ -175,6 +175,10 @@ def _on_start() -> None:
     and respawned, rather than leaving the service registered and healthy with
     the warm session silently absent.
     """
+    try:
+        lifecycle.ensure_starts_dir()
+    except lifecycle.Refused as exc:
+        log.warning("cx: %s", exc)
     why = LOOP.enabled()
     if why:
         log.info("cx: not reconciling — %s", why)
@@ -204,7 +208,10 @@ async def _claim(args: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-async def _list(args: dict[str, Any]) -> dict[str, Any]:
+async def _list(args: dict[str, Any], as_: str | None = None) -> dict[str, Any]:
+    reason = lifecycle.caller_refusal(as_)
+    if reason:
+        return {"ok": False, "reason": reason}
     rows = await asyncio.to_thread(
         lifecycle.collect, args.get("project") or None, args.get("scope") or None)
     return {"sessions": rows, "pool": pool.status(LOOP)}

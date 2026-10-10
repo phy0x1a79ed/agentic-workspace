@@ -23,6 +23,7 @@ import asyncio
 import base64
 import json
 import logging
+from collections.abc import Callable
 from typing import Any
 
 import httpx
@@ -301,8 +302,12 @@ async def proxy_service_http(
     service_id: str,
     *,
     as_: str | None,
+    stamp: Callable[[str, dict], None] | None = None,
 ) -> Response:
     """Translate ``POST /svc/<name>/fn/<fn>`` into a control-WS call.
+
+    ``stamp(fn, args)`` attaches the gateway's caller identity to a dict body in
+    place, as the MCP door does, so a body can never carry its own.
 
     Body is read as JSON (empty body → null args). Function is dispatched
     against the service's api manifest; declared no-response functions go
@@ -334,6 +339,10 @@ async def proxy_service_http(
         except json.JSONDecodeError:
             return JSONResponse({"error": "request body is not valid JSON"},
                                 status_code=400)
+    if stamp is not None and (args is None or isinstance(args, dict)):
+        stamped = {} if args is None else args
+        stamp(fn, stamped)
+        args = stamped if (stamped or args is not None) else None
     if spec.get("no_response"):
         ch.notify(fn, args, as_=as_)
         return Response(status_code=202)

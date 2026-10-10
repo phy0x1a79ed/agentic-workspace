@@ -8,6 +8,7 @@ version = "0.1.0"
 requires-python = ">=3.11"
 description = "AWM transcripts service: sweeps Claude Code session logs out of ~/.claude/projects into a gzipped archive, keeping each session's transcript and its sidecar tree together, and prunes the archive so it stops growing without bound."
 dependencies = [
+    "awm-claudedaemon",
     "awm-config",
     "awm-gatewayclient",
     "awm-persistence",

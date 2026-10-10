@@ -99,8 +99,10 @@ class Loop:
         for item in done:
             log.info("cx: %s %s (%s)", "removed" if item["removed"] else "kept",
                      item["session"], item["why"])
+        for job in lifecycle.adopt_pending():
+            log.info("cx: adopted %s for a start that outlived its launch", job)
         for job in lifecycle.prune_lineage():
-            log.info("cx: dropped the lineage of %s, which the roster no longer holds",
+            log.info("cx: dropped the lineage of %s, which was removed",
                      job)
         self._last_tick = time.time()
 

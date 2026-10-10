@@ -36,7 +36,14 @@ class Unreadable(RuntimeError):
     Distinct from a record that is absent, which reads as empty: a caller that
     must not act on a guess (a sweep deciding what is live) treats this as
     "assume live" and never as "nothing there".
+
+    ``path`` is the exact file (or directory) that could not be read, so an
+    operator can repair or delete it.
     """
+
+    def __init__(self, path: Path, why: str):
+        self.path = Path(path)
+        super().__init__(f"cannot read {path} ({why}); what it holds is unknown")
 
 
 def claude_home() -> Path:
@@ -207,9 +214,9 @@ def read_json_strict(path: Path) -> dict:
     except FileNotFoundError:
         return {}
     except (OSError, ValueError) as exc:
-        raise Unreadable(f"{path}: {exc}") from None
+        raise Unreadable(path, str(exc)) from None
     if not isinstance(data, dict):
-        raise Unreadable(f"{path}: not a JSON object")
+        raise Unreadable(path, "not a JSON object")
     return data
 
 
@@ -383,7 +390,7 @@ def live_session_ids(*, sessions_dir: Path | None = None,
     try:
         records = list(sessions_d.glob("*.json"))
     except OSError as exc:
-        raise Unreadable(f"{sessions_d}: {exc}") from None
+        raise Unreadable(sessions_d, str(exc)) from None
     for rec in records:
         try:
             pid = int(rec.stem)
@@ -406,7 +413,7 @@ def live_session_ids(*, sessions_dir: Path | None = None,
     except FileNotFoundError:
         jobs = []
     except OSError as exc:
-        raise Unreadable(f"{jobs_d}: {exc}") from None
+        raise Unreadable(jobs_d, str(exc)) from None
     for job in jobs:
         state = read_json_strict(job / "state.json")
         for key in ("sessionId", "resumeSessionId"):

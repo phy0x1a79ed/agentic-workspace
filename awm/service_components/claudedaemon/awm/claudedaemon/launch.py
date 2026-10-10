@@ -90,7 +90,7 @@ def build_argv(*, claude: str, name: str, flags: list[str] | tuple[str, ...],
     The prompt goes after a `--`. Without it the CLI drops the prompt silently
     and the session starts empty.
     """
-    cmd = [claude, "--bg", "-n", name, *flags]
+    cmd = [claude, "--bg", f"--name={name}", *flags]
     if prompt:
         cmd += ["--", prompt]
     bus = user_manager_env()

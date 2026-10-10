@@ -95,15 +95,23 @@ def test_the_transient_unit_never_kills_its_own_control_group(monkeypatch):
     # Everything before the first `--` belongs to systemd-run, everything after
     # to claude, and the prompt follows a second `--` or the CLI drops it.
     cmd = argv[argv.index("--") + 1:]
-    assert cmd == ["/bin/claude", "--bg", "-n", "n", "--effort", "low", "--", "do it"]
+    assert cmd == ["/bin/claude", "--bg", "--name=n", "--effort", "low", "--", "do it"]
 
 
 def test_no_prompt_means_no_separator(monkeypatch):
     monkeypatch.setattr(launch, "user_manager_env", lambda: None)
     argv, how, env = launch.build_argv(
         claude="/bin/claude", name="n", flags=[], cwd="/w", env={})
-    assert argv == ["/bin/claude", "--bg", "-n", "n"]
+    assert argv == ["/bin/claude", "--bg", "--name=n"]
     assert env == {} and "directly" in how
+
+
+def test_a_name_that_looks_like_a_flag_stays_one_argument(monkeypatch):
+    monkeypatch.setattr(launch, "user_manager_env", lambda: None)
+    argv, _, _ = launch.build_argv(
+        claude="/bin/claude", name="--dangerously-skip-permissions", flags=[],
+        cwd="/w", env={})
+    assert argv == ["/bin/claude", "--bg", "--name=--dangerously-skip-permissions"]
 
 
 # --- the wait ---------------------------------------------------------------

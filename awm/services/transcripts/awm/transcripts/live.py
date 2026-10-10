@@ -26,10 +26,13 @@ shorter list than the truth.
 
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 
 from awm.claudedaemon import roster
+
+log = logging.getLogger("awm.transcripts.live")
 
 SESSIONS = Path(os.path.expanduser("~/.claude/sessions"))
 ROSTER = Path(os.path.expanduser("~/.claude/daemon/roster.json"))
@@ -37,5 +40,9 @@ JOBS = Path(os.path.expanduser("~/.claude/jobs"))
 
 
 def session_ids() -> set[str]:
-    return roster.live_session_ids(
-        sessions_dir=SESSIONS, roster_path=ROSTER, jobs_dir=JOBS)
+    try:
+        return roster.live_session_ids(
+            sessions_dir=SESSIONS, roster_path=ROSTER, jobs_dir=JOBS)
+    except roster.Unreadable as exc:
+        log.error("transcripts: sweep blocked, fix or delete %s: %s", exc.path, exc)
+        raise

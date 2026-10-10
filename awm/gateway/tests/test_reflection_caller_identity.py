@@ -12,6 +12,8 @@ own prompt, and `cx start` records the caller as the new session's parent, so a
 overwritten from the header, and removed outright when there is no header.
 """
 
+import json
+
 import pytest
 pytestmark = [pytest.mark.smoke]
 
@@ -179,6 +181,108 @@ def test_a_domain_that_shares_a_prefix_with_cx_is_left_alone():
     flat = {}
     _stamp_caller("cxx_start", flat, "2488")
     assert "_caller_pid" not in flat
+
+
+# ---------------------------------------------------------------------------
+# an edge-forwarded request carries no trusted pid header
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("name,shape", [
+    ("reflection", "nested"), ("reflection_compact", "flat"),
+    ("cx", "nested"), ("cx_start", "flat"),
+])
+def test_pid_headers_are_ignored_when_the_request_carries_x_awm_as(name, shape):
+    if shape == "nested":
+        args = {"verb": "start" if name == "cx" else "compact",
+                "args": {"_caller_pid": 999}}
+        bag = lambda: args["args"]  # noqa: E731
+    else:
+        args = {"_caller_pid": 999}
+        bag = lambda: args  # noqa: E731
+    _stamp_caller(name, args, "2488", "77", "peer:capella")
+    assert "_caller_pid" not in bag()
+
+
+def test_pid_header_still_stamps_without_x_awm_as():
+    args = {}
+    _stamp_caller("cx_start", args, "2488", None, None)
+    assert args["_caller_pid"] == 2488
+
+
+# ---------------------------------------------------------------------------
+# the /svc/<svc>/fn/<fn> door stamps like /invoke
+# ---------------------------------------------------------------------------
+
+
+class _FakeChannel:
+    def __init__(self):
+        import asyncio
+
+        self.ready = asyncio.Event()
+        self.ready.set()
+        self.calls = []
+
+    def function_spec(self, fn):
+        return {}
+
+    async def call(self, fn, args, as_=None, timeout=30.0):
+        self.calls.append((fn, args))
+        return {"ok": True}
+
+
+async def _post_svc(monkeypatch, svc, fn, body, headers=None, as_=None):
+    from starlette.datastructures import Headers
+    from starlette.requests import Request
+
+    from awm.gateway.hub import proxy
+
+    ch = _FakeChannel()
+    monkeypatch.setattr(proxy.rpc, "get_control", lambda sid: ch)
+    raw = json.dumps(body).encode() if body is not None else b""
+
+    async def receive():
+        return {"type": "http.request", "body": raw, "more_body": False}
+
+    scope = {"type": "http", "method": "POST", "path": f"/svc/{svc}/fn/{fn}",
+             "headers": [(b"content-type", b"application/json")], "query_string": b""}
+    request = Request(scope, receive)
+    hdr = Headers(headers=headers or {})
+    await proxy.proxy_service_http(request, "sid", as_=as_,
+                                   stamp=_server._svc_stamp(svc, hdr, as_))
+    return ch.calls[0][1]
+
+
+
+@pytest.mark.parametrize("svc,fn", [("cx", "start"), ("cx", "stop"),
+                                    ("reflection", "compact")])
+async def test_svc_door_strips_a_body_supplied_caller_pid(monkeypatch, svc, fn):
+    args = await _post_svc(monkeypatch, svc, fn, {"project": "awm", "_caller_pid": 999})
+    assert "_caller_pid" not in args and args["project"] == "awm"
+
+
+async def test_svc_door_stamps_from_the_header(monkeypatch):
+    args = await _post_svc(monkeypatch, "cx", "start", {"_caller_pid": 999},
+                           headers={"X-Awm-Session-Pid": "2488"})
+    assert args["_caller_pid"] == 2488
+
+
+async def test_svc_door_ignores_the_header_on_an_edge_request(monkeypatch):
+    args = await _post_svc(monkeypatch, "cx", "start", {"_caller_pid": 999},
+                           headers={"X-Awm-Session-Pid": "2488"}, as_="peer:capella")
+    assert "_caller_pid" not in args
+
+
+async def test_svc_door_leaves_other_services_and_verbs_alone(monkeypatch):
+    args = await _post_svc(monkeypatch, "cx", "list", {"_caller_pid": 5})
+    assert args["_caller_pid"] == 5
+    args = await _post_svc(monkeypatch, "notes", "post", {"_caller_pid": 5})
+    assert args["_caller_pid"] == 5
+
+
+async def test_svc_door_with_no_body_still_calls_with_no_args(monkeypatch):
+    args = await _post_svc(monkeypatch, "cx", "list", None)
+    assert args is None
 
 
 # ---------------------------------------------------------------------------

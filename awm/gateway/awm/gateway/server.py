@@ -12,7 +12,9 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections.abc import Callable
 from contextlib import asynccontextmanager
+from typing import Any
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request
@@ -462,7 +464,8 @@ def _stamped_bag(name: str, args: dict) -> dict | None:
 
 
 def _stamp_caller(name: str, args: dict, pid_header: str | None,
-                  descendant_header: str | None = None) -> None:
+                  descendant_header: str | None = None,
+                  as_: str | None = None) -> None:
     """Stamp the calling session's own pid onto a call that acts on a session.
 
     `awm-mcp` runs as a stdio child of the session that calls it, so it forwards
@@ -492,16 +495,36 @@ def _stamp_caller(name: str, args: dict, pid_header: str | None,
     the walk to callers that asked for it, and the resolved pid is still only a
     narrowing step — the receiving service re-reads the record and checks it.
     ``X-Awm-Session-Pid`` wins when both are present.
+
+    A request that carries ``X-Awm-As`` was forwarded by an edge or comes from a
+    placed agent, so a pid header on it names a process on some other host or in
+    some other context. Both pid headers are ignored then, and the value is
+    stripped like any other call without one.
     """
     inner = _stamped_bag(name, args)
     if inner is None:
         return
+    if as_:
+        pid_header = descendant_header = None
     if pid_header and pid_header.isdigit():
         inner["_caller_pid"] = int(pid_header)
     elif descendant_header and descendant_header.isdigit():
         inner["_caller_pid"] = mcp_caller.resolve_caller_pid(int(descendant_header))
     else:
         inner.pop("_caller_pid", None)
+
+
+def _svc_stamp(svc: str, headers: Any, as_: str | None) -> Callable[[str, dict], None]:
+    """The `/svc/<svc>/fn/<fn>` door's caller stamp: the one `/invoke` applies.
+
+    A `_caller_pid` in a request body is never trusted, whichever door the call
+    came through.
+    """
+    def stamp(fn: str, args: dict) -> None:
+        _stamp_caller(f"{svc}_{fn}", args, headers.get("X-Awm-Session-Pid"),
+                      headers.get("X-Awm-Caller-Pid"), as_)
+
+    return stamp
 
 
 @app.post("/invoke")
@@ -517,7 +540,7 @@ async def invoke_tool(payload: dict, request: Request):
         raise HTTPException(400, "missing 'name' in payload")
     as_ = request.headers.get("X-Awm-As")
     _stamp_caller(name, args, request.headers.get("X-Awm-Session-Pid"),
-                  request.headers.get("X-Awm-Caller-Pid"))
+                  request.headers.get("X-Awm-Caller-Pid"), as_)
     try:
         result = await catalog.dispatch(name, args, as_=as_)
     except peer_catalog.PeerRedirect as e:
@@ -645,13 +668,16 @@ class HubRoutingMiddleware:
         # Headers(scope=...) reads the ASGI header list for both http and
         # websocket scopes — the MCP /invoke path reads the same header. Purely
         # advisory: no bearer, no change to the loopback no-auth model.
-        as_ = Headers(scope=scope).get("X-Awm-As")
+        headers = Headers(scope=scope)
+        as_ = headers.get("X-Awm-As")
+
+        stamp = _svc_stamp(rec.name, headers, as_)
 
         if scope["type"] == "http":
             request = Request(scope, receive=receive)
             if rel.startswith("/fn/"):
                 response = await proxy_service_http(
-                    request, rec.service_id, as_=as_,
+                    request, rec.service_id, as_=as_, stamp=stamp,
                 )
             elif rel.startswith("/session/") and request.method == "POST":
                 response = await open_session_via_http(

@@ -7,6 +7,12 @@ what is running or to stop one it started.
 A started session is not a pool session. It never carries the pool's name
 prefix, so nothing in the pool's removal predicates can collect it.
 
+A session's mode is how a later gateway gate restricts it, so every path that
+cannot establish a mode answers restrictively. A pending record is written
+before the launch, so a launch that outlives its timeout still has a declared
+mode; `mode_of` answers `"unknown"` when it cannot read what it needs, and
+never turns that into "no mode".
+
 Who may start a session is decided here, from the caller identity the gateway
 attached. `parent` comes only from the pid the gateway stamped on the call
 (`_caller_pid`), never from an argument the model supplied. Each started
@@ -18,6 +24,7 @@ job without one, so an agent cannot stop a session cx did not start, and
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -25,12 +32,12 @@ import re
 import shutil
 import subprocess
 import time
-import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from awm import gatewayclient
+from awm.claudedaemon import launch, roster
 from awm.config import caller_peer, node_name, node_role, peer_relation
 
 from awm.cx import config, sessions, trust
@@ -45,17 +52,20 @@ EFFORTS = ("low", "medium", "high", "xhigh", "max")
 #: mode name; every other session is a plain worker.
 DEFAULT_MODE = "worker"
 
-LAUNCH_TIMEOUT_S = 45.0
-POLL_S = 0.25
+UNKNOWN = "unknown"
+
 STOP_TIMEOUT_S = 20.0
 SCOPE_CREATE_TIMEOUT_S = 1700.0
 #: A lineage record younger than this is never pruned, so a record written the
 #: instant a job registers cannot be collected before the roster shows it.
 PRUNE_GRACE_S = 120.0
+#: How long a pending record waits for its late job before it is dropped.
+PENDING_TTL_S = 300.0
 
 _PATH_PART = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 _MODEL = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._\[\]:-]*$")
 _MODE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,39}$")
+_RC_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 _JOB = re.compile(r"^[0-9a-f]{8}$")
 
 #: Serialises the name check and the launch, so two starts of one name cannot
@@ -108,6 +118,9 @@ async def start(args: dict[str, Any], as_: str | None = None) -> dict[str, Any]:
     except Refused as exc:
         log.info("cx: start refused — %s", exc)
         return {"ok": False, "reason": str(exc)}
+    except OSError as exc:
+        log.warning("cx: start failed — %s", exc)
+        return {"ok": False, "reason": f"start failed: {exc}"}
 
 
 async def _start(args: dict[str, Any], as_: str | None) -> dict[str, Any]:
@@ -115,6 +128,8 @@ async def _start(args: dict[str, Any], as_: str | None) -> dict[str, Any]:
     if reason:
         raise Refused(reason)
     spec = _parse(args)
+    ensure_starts_dir()
+    _check_caller_mode(args.get("_caller_pid"), spec["mode"])
     if sessions.daemon_pid() is None:
         raise Refused("no claude code daemon is running — a session started now "
                       "would land inside awm's control group")
@@ -122,30 +137,62 @@ async def _start(args: dict[str, Any], as_: str | None) -> dict[str, Any]:
     if not trust.trusted(cwd):
         raise Refused(f"{cwd} is not a trusted directory; trust it once in a "
                       "terminal first")
+    parent = _parent_of(args.get("_caller_pid"))
+    caller = caller_peer(as_) or as_ or "local"
     async with _START_LOCK:
         if _name_taken(spec["name"]):
             raise Refused(f"a live session is already named {spec['name']!r}")
-        flags = build_flags(spec)
+        record = {
+            "name": spec["name"], "project": spec["project"], "scope": spec["scope"],
+            "cwd": str(cwd), "parent": parent, "caller": caller,
+            "mode": spec["mode"], "remote_control": spec["remote_control"],
+            "model": spec["model"], "started_at": _iso(time.time()),
+            "started_epoch": time.time(),
+        }
+        _write_pending(record)
         try:
-            session = await launch_session(cwd=cwd, name=spec["name"], flags=flags,
-                                           prompt=spec["prompt"])
+            session = await launch.launch(
+                cwd=cwd, name=spec["name"], flags=build_flags(spec), env={},
+                prompt=spec["prompt"], claude=config.claude_bin(),
+                unit_prefix="awm-cx-start", roster_path=config.roster_path(),
+                jobs_dir=config.jobs_dir(),
+                accept=lambda s: spec["name"] in (s.seed_name, s.name))
+        except launch.Refused as exc:
+            _drop_pending(spec["name"])
+            raise Refused(str(exc)) from exc
         except (TimeoutError, OSError) as exc:
+            # The pending record stays: the job may still appear, and until it
+            # is adopted the declared mode applies to it by name.
             raise Refused(f"the session did not start: {exc}") from exc
-        parent = _parent_of(args.get("_caller_pid"))
-        caller = caller_peer(as_) or as_ or "local"
-        _write_lineage(session.short, {
-            "job": session.short, "name": spec["name"], "project": spec["project"],
-            "scope": spec["scope"], "cwd": str(cwd), "parent": parent,
-            "caller": caller, "mode": spec["mode"],
-            "remote_control": spec["remote_control"], "model": spec["model"],
-            "started_at": _iso(time.time()),
-        })
+        try:
+            _write_lineage(session.short, {**record, "job": session.short})
+        except OSError as exc:
+            raise Refused(f"started {session.short} but could not record it "
+                          f"({exc}); the pending record keeps its mode") from exc
+        _drop_pending(spec["name"])
     log.info("cx: started %s as %s in %s (mode %s)", spec["name"], session.short,
              cwd, spec["mode"])
     return {"ok": True, "job": session.short, "name": spec["name"],
             "node": node_name(), "project": spec["project"], "scope": spec["scope"],
             "cwd": str(cwd), "attach": f"claude attach {session.short}",
             "parent": parent, "mode": spec["mode"]}
+
+
+def _check_caller_mode(caller_pid: Any, new_mode: str) -> None:
+    """A restricted caller may start only plain workers, and an unknown one nothing.
+
+    No `_caller_pid` means an operator or a service rather than a session, which
+    carries no mode. A caller in `worker` mode is unrestricted.
+    """
+    if caller_pid is None:
+        return
+    mode = mode_of(caller_pid)
+    if mode == UNKNOWN:
+        raise Refused("the caller's mode could not be determined, so it may not "
+                      "start sessions")
+    if mode not in (None, DEFAULT_MODE) and new_mode != DEFAULT_MODE:
+        raise Refused(f"a session in mode {mode!r} may start only {DEFAULT_MODE!r} "
+                      "sessions")
 
 
 def _parse(args: dict[str, Any]) -> dict[str, Any]:
@@ -157,11 +204,15 @@ def _parse(args: dict[str, Any]) -> dict[str, Any]:
             or not all(_PATH_PART.match(part) for part in scope.split("/"))):
         raise Refused("scope must be a scope name (nested scopes use '/')")
     name = args.get("name") or scope
-    if (not isinstance(name, str) or not name.strip() or len(name) > 80
-            or not name.isprintable()):
-        raise Refused("name must be a short printable string")
-    if name.startswith(config.name_prefix()):
-        raise Refused(f"a name may not start with the pool prefix {config.name_prefix()!r}")
+    if not isinstance(name, str):
+        raise Refused("name must be a string")
+    name = name.strip()
+    if not name or len(name) > 80 or not name.isprintable() or name.startswith("-"):
+        raise Refused("name must be a short printable string that does not "
+                      "start with '-'")
+    pool_marks = {"<warm", config.name_prefix().strip().lower()} - {""}
+    if any(mark in name.lower() for mark in pool_marks):
+        raise Refused("a name may not carry the pool's prefix")
     prompt = args.get("prompt")
     if prompt is not None and not isinstance(prompt, str):
         raise Refused("prompt must be a string")
@@ -178,11 +229,11 @@ def _parse(args: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(mode, str) or not _MODE.match(mode):
         raise Refused("mode must be a short label")
     return {
-        "project": project, "scope": scope, "name": name.strip(),
+        "project": project, "scope": scope, "name": name,
         "prompt": prompt or None, "model": model, "effort": effort,
         "permission": permission, "mode": mode,
         "disallowed_tools": _tool_list(args.get("disallowed_tools")),
-        "remote_control": _remote_control(args.get("remote_control"), name.strip()),
+        "remote_control": _remote_control(args.get("remote_control"), name),
     }
 
 
@@ -196,30 +247,39 @@ def _tool_list(value: Any) -> list[str]:
 
 
 def _remote_control(value: Any, name: str) -> str | None:
-    """The Remote Control name to use, or None when it is off."""
+    """The Remote Control name to use, or None when it is off.
+
+    The flag takes an optional value, and the CLI reads a value that starts with
+    `-` as a new flag, so a name is held to a plain label. `true` derives one
+    from the session name.
+    """
     if value is None or value is False:
         return None
     if value is True:
-        return name
-    if isinstance(value, str) and value.strip():
+        derived = re.sub(r"[^A-Za-z0-9._-]+", "-", name).strip("-._")[:64]
+        if not _RC_NAME.match(derived):
+            raise Refused("remote_control needs a name; pass one explicitly")
+        return derived
+    if isinstance(value, str) and _RC_NAME.match(value.strip()):
         return value.strip()
-    raise Refused("remote_control must be true, false or a name")
+    raise Refused("remote_control must be true, false or a plain label")
 
 
 def build_flags(spec: dict[str, Any]) -> list[str]:
-    """The claude flags for a start. `--model` goes last, just before the prompt.
+    """The claude flags for a start, every valued flag in its `=` form.
 
+    The `=` form keeps a value that starts with `-` from being read as a flag.
     The model is a flag, not `ANTHROPIC_MODEL`: the flag wins where the two
     disagree, and it is the only per-session setting that is stated in the
     session's own launch record.
     """
-    flags = (["--permission-mode", spec["permission"]] if spec["permission"]
+    flags = ([f"--permission-mode={spec['permission']}"] if spec["permission"]
              else config.skip_permission_flags())
     if spec["disallowed_tools"]:
-        flags += ["--disallowedTools", ",".join(spec["disallowed_tools"])]
+        flags.append("--disallowedTools=" + ",".join(spec["disallowed_tools"]))
     if spec["remote_control"]:
-        flags += ["--remote-control", spec["remote_control"]]
-    return [*flags, "--effort", spec["effort"], "--model", spec["model"]]
+        flags.append(f"--remote-control={spec['remote_control']}")
+    return [*flags, f"--effort={spec['effort']}", f"--model={spec['model']}"]
 
 
 async def _resolve_worktree(project: str, scope: str) -> Path:
@@ -249,78 +309,33 @@ def _name_taken(name: str) -> bool:
     if any(s.has_record and s.name == name and sessions.is_alive(s)
            for s in sessions.load()):
         return True
+    if any(p.get("name") == name for _, p in _pending_records()):
+        return True
     return any(rec.get("name") == name for rec in _interactive_records())
-
-
-# --- launching ---------------------------------------------------------------
-
-
-def launch_argv(cwd: Path, name: str, flags: list[str],
-                prompt: str | None) -> tuple[list[str], dict[str, str]]:
-    """The command that starts one session, and the env it needs.
-
-    `--working-directory` is what sets the session's directory: a user unit
-    starts in the home directory whatever the launcher's own cwd was.
-    `KillMode=process` keeps a session out of the unit's cgroup teardown.
-    The prompt follows a `--`; without it the CLI drops the prompt silently.
-    """
-    claude = [config.claude_bin(), "--bg", "-n", name, *flags]
-    if prompt:
-        claude += ["--", prompt]
-    bus = _user_manager_env()
-    if not bus:
-        return claude, {}
-    unit = f"awm-cx-start-{uuid.uuid4().hex[:8]}"
-    return [
-        "systemd-run", "--user", "--quiet", "--collect", f"--unit={unit}",
-        "--property=Restart=no", "--property=KillMode=process", "--nice=19",
-        f"--working-directory={cwd}", "--", *claude,
-    ], bus
-
-
-def _user_manager_env() -> dict[str, str] | None:
-    if not shutil.which("systemd-run"):
-        return None
-    runtime = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
-    if not Path(runtime, "bus").is_socket():
-        return None
-    return {"XDG_RUNTIME_DIR": runtime,
-            "DBUS_SESSION_BUS_ADDRESS": f"unix:path={runtime}/bus"}
-
-
-async def launch_session(*, cwd: Path, name: str, flags: list[str],
-                         prompt: str | None) -> sessions.Session:
-    """Start the session and return the roster's record of it.
-
-    The exit status of the launch is not trusted: the session is the daemon's
-    child, so the only proof one exists is a new roster entry carrying the name.
-    """
-    before = {s.short for s in sessions.load()}
-    argv, extra_env = launch_argv(cwd, name, flags, prompt)
-    proc = await asyncio.create_subprocess_exec(
-        *argv, cwd=str(cwd),
-        env={**os.environ, **extra_env, "HOME": str(Path.home())},
-        stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
-    try:
-        await asyncio.wait_for(proc.wait(), timeout=LAUNCH_TIMEOUT_S)
-    except (TimeoutError, asyncio.TimeoutError):
-        proc.kill()
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + LAUNCH_TIMEOUT_S
-    while loop.time() < deadline:
-        for s in sessions.load():
-            if s.short not in before and name in (s.seed_name, s.name):
-                return s
-        await asyncio.sleep(POLL_S)
-    raise TimeoutError(f"no session named {name!r} appeared within "
-                       f"{LAUNCH_TIMEOUT_S:.0f}s")
 
 
 # --- lineage -----------------------------------------------------------------
 
 
+class _Unreadable(Exception):
+    """A record `mode_of` needs is missing or unreadable."""
+
+
+def ensure_starts_dir() -> None:
+    try:
+        config.starts_dir().mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise Refused(f"cannot keep lineage records ({exc}); refusing to start "
+                      "a session that could not be recorded") from exc
+
+
 def _lineage_path(job: str) -> Path:
     return config.starts_dir() / f"{job}.json"
+
+
+def _pending_path(name: str) -> Path:
+    digest = hashlib.sha256(name.encode()).hexdigest()[:16]
+    return config.starts_dir() / f"pending-{digest}.json"
 
 
 def read_lineage(job: str) -> dict[str, Any] | None:
@@ -333,13 +348,34 @@ def read_lineage(job: str) -> dict[str, Any] | None:
     return data if isinstance(data, dict) else None
 
 
-def _write_lineage(job: str, record: dict[str, Any]) -> None:
-    path = _lineage_path(job)
+def _write_json(path: Path, record: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".tmp")
     tmp.write_text(json.dumps(record, indent=1))
     os.chmod(tmp, 0o600)
     os.replace(tmp, path)
+
+
+def _write_lineage(job: str, record: dict[str, Any]) -> None:
+    _write_json(_lineage_path(job), record)
+
+
+def _write_pending(record: dict[str, Any]) -> None:
+    """Record the declared mode before the launch; no record, no launch."""
+    try:
+        _write_json(_pending_path(record["name"]), {**record, "pending": True})
+    except OSError as exc:
+        raise Refused(f"cannot keep lineage records ({exc}); refusing to start "
+                      "a session that could not be recorded") from exc
+
+
+def _drop_pending(name: str) -> None:
+    try:
+        _pending_path(name).unlink()
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        log.warning("cx: could not drop the pending record of %r: %s", name, exc)
 
 
 def _lineage_records() -> dict[str, dict[str, Any]]:
@@ -356,22 +392,49 @@ def _lineage_records() -> dict[str, dict[str, Any]]:
     return out
 
 
-def prune_lineage(now: float | None = None) -> list[str]:
-    """Delete lineage records whose job the roster no longer holds.
+def _pending_records() -> list[tuple[Path, dict[str, Any]]]:
+    out = []
+    try:
+        names = os.listdir(config.starts_dir())
+    except OSError:
+        return out
+    for fname in names:
+        if fname.startswith("pending-") and fname.endswith(".json"):
+            path = config.starts_dir() / fname
+            try:
+                data = json.loads(path.read_text())
+            except (OSError, ValueError):
+                continue
+            if isinstance(data, dict) and isinstance(data.get("name"), str):
+                out.append((path, data))
+    return out
 
-    Does nothing when no daemon runs: the roster then reads as empty and every
-    record would look orphaned.
+
+def prune_lineage(now: float | None = None) -> list[str]:
+    """Delete lineage records of jobs that `claude rm` has removed.
+
+    A stopped job keeps its record: `claude attach` brings the conversation
+    back, and it must come back in the same mode. The job is gone only when the
+    roster no longer holds it and its state record is deleted. Nothing is pruned
+    when the roster or the jobs directory cannot be read, because every record
+    would then look orphaned.
     """
-    if sessions.daemon_pid() is None:
+    try:
+        workers = roster.read_json_strict(config.roster_path()).get("workers")
+    except roster.Unreadable:
         return []
-    held = {s.short for s in sessions.load()}
+    jobs = config.jobs_dir()
+    if not isinstance(workers, dict) or not jobs.is_dir():
+        return []
     now = time.time() if now is None else now
     gone = []
     for job in _lineage_records():
         path = _lineage_path(job)
-        if job in held:
+        if job in workers:
             continue
         try:
+            if (jobs / job / "state.json").exists():
+                continue
             if now - path.stat().st_mtime < PRUNE_GRACE_S:
                 continue
             path.unlink()
@@ -381,33 +444,150 @@ def prune_lineage(now: float | None = None) -> list[str]:
     return gone
 
 
-def mode_of(caller_pid: int) -> str | None:
-    """The mode of the session whose REPL is `caller_pid`, or None.
+def adopt_pending(now: float | None = None) -> list[str]:
+    """Give a pending record to the job that outlived its launch timeout.
 
-    None means the pid is no session cx started: an interactive terminal, a
-    pool session, a hook, or a pid with no roster entry.
+    A pending record whose job never appeared is dropped after `PENDING_TTL_S`.
+    A start in flight holds the start lock and is left to finish.
+    """
+    if _START_LOCK.locked():
+        return []
+    pending = _pending_records()
+    if not pending:
+        return []
+    now = time.time() if now is None else now
+    held = _lineage_records()
+    live = sessions.load()
+    adopted = []
+    for path, rec in pending:
+        started = rec.get("started_epoch")
+        started = started if isinstance(started, (int, float)) else 0.0
+        late = next((s for s in live
+                     if rec["name"] in (s.seed_name, s.name) and s.short not in held
+                     and (s.started_at_ms or 0) / 1000.0 >= started - 5.0), None)
+        try:
+            if late is not None:
+                _write_lineage(late.short, {**rec, "job": late.short})
+                path.unlink()
+                adopted.append(late.short)
+                log.info("cx: adopted %s for the pending start of %r",
+                         late.short, rec["name"])
+            elif now - started > PENDING_TTL_S:
+                path.unlink()
+        except OSError as exc:
+            log.warning("cx: pending record %s: %s", path.name, exc)
+    return adopted
+
+
+def mode_of(caller_pid: int) -> str | None:
+    """The mode of the session whose REPL is `caller_pid`.
+
+    Three answers, and a gate must treat them differently:
+
+    - a mode string: `caller_pid` is a session cx started (or is about to adopt),
+      and this is the mode it was declared with;
+    - `None`: `caller_pid` is positively not a cx-started session. It is an
+      interactive terminal, a pool session, or a hand-started job, and the roster
+      and the session's own record both say so;
+    - `"unknown"`: anything else, including an invalid pid, an unreadable or
+      missing roster, jobs directory, session record or lineage record, and a
+      background session with no record of how it was started. Treat it as the
+      most restricted mode.
     """
     if not isinstance(caller_pid, int) or isinstance(caller_pid, bool) or caller_pid <= 0:
+        return UNKNOWN
+    try:
+        return _mode_of(caller_pid)
+    except (_Unreadable, roster.Unreadable, OSError, ValueError, TypeError):
+        return UNKNOWN
+
+
+def _mode_of(pid: int) -> str | None:
+    workers = roster.read_json_strict(config.roster_path()).get("workers")
+    if (not isinstance(workers, dict) or not config.jobs_dir().is_dir()
+            or not config.sessions_dir().is_dir()):
+        raise _Unreadable("roster, jobs directory or sessions directory missing")
+    lineage, pending = _read_starts()
+    for short, w in workers.items():
+        if (isinstance(w, dict) and w.get("replPid") == pid
+                and roster.proc_start(pid) == str(w.get("replProcStart"))):
+            seed = ((w.get("dispatch") or {}).get("seed") or {}).get("name")
+            state = roster.read_json(config.jobs_dir() / short / "state.json")
+            return _declared_mode(short, {seed, state.get("name")}, lineage, pending)
+    rec = _session_record(pid)
+    if rec is None or rec.get("kind") != "bg":
         return None
-    records = _lineage_records()
-    if not records:
+    mode = _declared_mode(str(rec.get("jobId") or ""), {rec.get("name")},
+                          lineage, pending)
+    return UNKNOWN if mode is None else mode
+
+
+def _declared_mode(job: str, names: set, lineage: dict[str, dict],
+                   pending: list[dict]) -> str | None:
+    """The mode recorded for this job, else for a pending start of its name."""
+    rec = lineage.get(job)
+    if rec is None:
+        rec = next((p for p in pending if p.get("name") in names), None)
+    if rec is None:
         return None
-    for s in sessions.load():
-        if s.repl_pid == caller_pid and sessions.is_alive(s):
-            rec = records.get(s.short)
-            return rec.get("mode") if rec else None
-    return None
+    mode = rec.get("mode")
+    if not isinstance(mode, str) or not _MODE.match(mode):
+        raise _Unreadable(f"the record of {job} carries no valid mode")
+    return mode
+
+
+def _read_starts() -> tuple[dict[str, dict], list[dict]]:
+    """Every lineage and pending record, raising if any is unreadable."""
+    lineage: dict[str, dict] = {}
+    pending: list[dict] = []
+    directory = config.starts_dir()
+    if not directory.is_dir():
+        raise _Unreadable("the lineage directory is missing")
+    for fname in os.listdir(directory):
+        if not fname.endswith(".json"):
+            continue
+        data = json.loads((directory / fname).read_text())
+        if not isinstance(data, dict):
+            raise _Unreadable(f"{fname} is not an object")
+        if fname.startswith("pending-"):
+            pending.append(data)
+        elif _JOB.match(fname[:-5]):
+            lineage[fname[:-5]] = data
+    return lineage, pending
+
+
+def _session_record(pid: int) -> dict[str, Any] | None:
+    """Claude Code's record of the live process `pid`; None when it has none."""
+    directory = config.sessions_dir()
+    if not directory.is_dir():
+        raise _Unreadable("the sessions directory is missing")
+    path = directory / f"{pid}.json"
+    if not path.exists():
+        return None
+    data = json.loads(path.read_text())
+    if not isinstance(data, dict):
+        raise _Unreadable(f"{path.name} is not an object")
+    live = roster.proc_start(pid)
+    claimed = str(data.get("procStart", ""))
+    if live is None or (claimed and claimed != live):
+        raise _Unreadable(f"the record of pid {pid} is stale")
+    return data
 
 
 def _parent_of(pid: Any) -> str | None:
-    """The calling session: its job id when a background job, else its session id."""
+    """The calling session: its job id when a background job, else its session id.
+
+    Taken from the session's own record after checking that the record belongs to
+    the live process, so a stale record cannot name a parent.
+    """
     if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
         return None
-    for s in sessions.load():
-        if s.repl_pid == pid:
-            return s.short
-    rec = _read_json(config.sessions_dir() / f"{pid}.json")
-    return str(rec.get("jobId") or rec.get("sessionId") or f"pid:{pid}")
+    rec = roster.session_by_pid(pid, sessions_dir=config.sessions_dir())
+    if not rec:
+        return None
+    if rec.get("kind") == "bg" and rec.get("jobId"):
+        return str(rec["jobId"])
+    return str(rec["sessionId"]) if rec.get("sessionId") else None
 
 
 # --- stop --------------------------------------------------------------------
@@ -419,8 +599,11 @@ async def stop(args: dict[str, Any], as_: str | None = None) -> dict[str, Any]:
     job = args.get("job")
     if not reason and (not isinstance(job, str) or not _JOB.match(job)):
         reason = "job must be a job id"
-    if not reason and read_lineage(job) is None:
+    rec = None if reason else read_lineage(job)
+    if not reason and rec is None:
         reason = f"job {job} was not started by cx start, so cx will not stop it"
+    if not reason:
+        reason = _stop_caller_refusal(args.get("_caller_pid"), rec)
     if reason:
         log.info("cx: stop refused — %s", reason)
         return {"ok": False, "reason": reason}
@@ -428,6 +611,25 @@ async def stop(args: dict[str, Any], as_: str | None = None) -> dict[str, Any]:
     if not ok:
         return {"ok": False, "job": job, "reason": detail}
     return {"ok": True, "job": job}
+
+
+def _stop_caller_refusal(caller_pid: Any, rec: dict[str, Any]) -> str | None:
+    """A session with a cx mode may stop only the jobs it started itself.
+
+    No `_caller_pid`, or a pid that is positively not a cx session, is an
+    operator or a service and may stop any job cx started.
+    """
+    if caller_pid is None:
+        return None
+    mode = mode_of(caller_pid)
+    if mode is None:
+        return None
+    if mode == UNKNOWN:
+        return "the caller's mode could not be determined, so it may not stop sessions"
+    parent = _parent_of(caller_pid)
+    if parent is not None and parent == rec.get("parent"):
+        return None
+    return "a session may stop only the jobs it started"
 
 
 async def run_claude_stop(job: str) -> tuple[bool, str]:
@@ -526,7 +728,7 @@ def _interactive_records() -> list[dict[str, Any]]:
         pid = rec.get("pid")
         if rec.get("kind") == "bg" or not isinstance(pid, int):
             continue
-        if sessions._proc_start(pid) != str(rec.get("procStart")):
+        if roster.proc_start(pid) != str(rec.get("procStart")):
             continue
         out.append(rec)
     return out

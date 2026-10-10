@@ -38,3 +38,14 @@ def test_a_torn_roster_stops_the_sweep_rather_than_emptying_the_list(home):
     (home / "roster.json").write_text('{"workers": ')
     with pytest.raises(roster.Unreadable):
         live.session_ids()
+
+
+def test_a_corrupt_job_record_is_named_in_the_error_and_the_log(home, caplog):
+    bad = home / "jobs" / "j1" / "state.json"
+    bad.write_text("{torn")
+    with caplog.at_level("ERROR", logger="awm.transcripts.live"):
+        with pytest.raises(roster.Unreadable) as exc:
+            live.session_ids()
+    assert exc.value.path == bad
+    assert str(bad) in str(exc.value)
+    assert str(bad) in caplog.text
