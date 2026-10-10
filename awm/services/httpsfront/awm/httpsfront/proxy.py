@@ -15,7 +15,8 @@ per-path allowlist to keep in sync.
 
 Two things the edge asserts on every proxied request: the caller is
 authenticated, and ``X-Awm-As`` names the identity the session was minted
-for (``user:<sub>``, or ``peer`` for a bearer). The browser's own value of
+for (``user:<sub>``, ``peer:<node>`` for a verified node token, or bare ``peer``
+for the legacy bearer). The browser's own value of
 that header is discarded — downstream services trust it, so only the edge may
 write it.
 
@@ -67,7 +68,16 @@ from starlette.routing import Route, WebSocketRoute
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from awm.httpsfront import pages, penpot, policy, slices, store, tether, vault
-from awm.httpsfront.auth import AS_COOKIE_NAME, COOKIE_NAME, PEER_SUB, AuthGate, bearer_of
+from awm.httpsfront.auth import (
+    AS_COOKIE_NAME,
+    COOKIE_NAME,
+    PEER_PREFIX,
+    PEER_SUB,
+    AuthGate,
+    bearer_of,
+    is_foreign_peer,
+    is_machine_sub,
+)
 
 log = logging.getLogger("awm.httpsfront.proxy")
 
@@ -152,7 +162,11 @@ PUBLIC_HOME = vault.SHELL
 
 
 def _as_header(sub: str | None) -> str:
-    return PEER_SUB if sub == PEER_SUB else f"user:{sub or 'operator'}"
+    """The identity stamped on a forwarded request: ``peer`` for the legacy
+    bearer, ``peer:<node>`` for a verified node, else ``user:<sub>``."""
+    if sub == PEER_SUB or (sub and sub.startswith(PEER_PREFIX)):
+        return sub
+    return f"user:{sub or 'operator'}"
 
 
 def _origin_override(app) -> str | None:
@@ -418,6 +432,8 @@ async def _logout(request: Request) -> Response:
 
 async def _whoami(request: Request) -> Response:
     ok, _, sub = await _authenticate_sub(request)
+    if ok and is_foreign_peer(sub):
+        return _not_found()
     if ok:
         return JSONResponse({"user": sub})
     return JSONResponse({"error": "unauthenticated"}, status_code=401)
@@ -434,9 +450,11 @@ async def _public_home(request: Request) -> Response:
 async def _root(request: Request) -> Response:
     """Authenticated landing page at ``/`` — a dynamic index of ``/ui/*`` pages
     pulled from the gateway registry, tagged and filterable via ``store``."""
-    ok, refreshed = await _authenticate(request)
+    ok, refreshed, sub = await _authenticate_sub(request)
     if not ok:
         return _deny(request)
+    if is_foreign_peer(sub):
+        return _not_found()
     app = request.app
     services: list = []
     try:
@@ -721,6 +739,11 @@ async def _http_proxy(request: Request) -> Response:
         return _deny(request)
     if public and not policy.allows(path, sub):
         return _not_found()
+    # A foreign node gets the gateway's calling surface and nothing else. The
+    # vault and Penpot are among the "nothing else", so this comes before the
+    # branches below ever pick them as an upstream.
+    if is_foreign_peer(sub) and not policy.foreign_allows(path):
+        return _not_found()
     # The vault and Penpot are the upstreams on this listener that are not the
     # gateway. Which upstream is decided here and nowhere else, from a path
     # the caller cannot use to name anything but one of these two apps. The
@@ -731,7 +754,7 @@ async def _http_proxy(request: Request) -> Response:
     penpot_up = _penpot_up(app)
     bridge: str | None = None
     if vault_up and vault.owns(path):
-        if not public and sub in (PEER_SUB, "operator"):
+        if not public and is_machine_sub(sub):
             # The mesh edge runs no allow-list, so the check `policy.allows`
             # would have made on the public profile is made here instead.
             return _not_found()
@@ -741,7 +764,7 @@ async def _http_proxy(request: Request) -> Response:
             return _not_found()
         up, raw = vault_up, inner
     elif penpot_up and penpot.owns(path):
-        if not public and sub in (PEER_SUB, "operator"):
+        if not public and is_machine_sub(sub):
             return _not_found()
         inner = penpot.upstream_raw_path(raw)
         if inner is None:
@@ -1032,7 +1055,7 @@ async def _bridge_penpot_session(request: Request, out: Response, kind: str,
     service that is down, a machine bearer. Penpot then shows its own login
     screen, which is exactly what it did before this bridge existed.
     """
-    if sub in (PEER_SUB, "operator"):
+    if is_machine_sub(sub):
         return
     presented = request.cookies.get(penpot.COOKIE_NAME)
     gate: AuthGate = request.app.state.gate
@@ -1181,7 +1204,9 @@ async def _ws_proxy(ws: WebSocket) -> None:
         if not ok or (public and not policy.allows(ws.url.path, sub)):
             await ws.close(code=1008)  # policy violation
             return
-        if (is_vault or is_penpot) and sub in (PEER_SUB, "operator"):
+        # A foreign node has no WebSocket at all; a domestic peer has the
+        # gateway's, but never the vault's or Penpot's.
+        if is_foreign_peer(sub) or ((is_vault or is_penpot) and is_machine_sub(sub)):
             await ws.close(code=1008)
             return
 
@@ -1302,9 +1327,11 @@ def _gated(
     proxied path as far as auth is concerned.
     """
     async def _wrapped(request: Request) -> Response:
-        ok, refreshed = await _authenticate(request)
+        ok, refreshed, sub = await _authenticate_sub(request)
         if not ok:
             return _deny(request)
+        if is_foreign_peer(sub):
+            return _not_found()
         resp = await handler(request)
         if refreshed:
             _set_session_cookie(

@@ -599,31 +599,84 @@ class PeerJoinRequest(BaseModel):
     name: str
     edge_url: str
     ssh_alias: str | None = None
+    relation: str | None = None
+    swarm: str | None = None
+    principal: str | None = None
+    role: str | None = None
+    public_key: str | None = None
+
+
+class PeerSetRequest(BaseModel):
+    """Body for ``peer set`` — change trust fields on a recorded peer."""
+
+    name: str
+    relation: str | None = None
+    swarm: str | None = None
+    principal: str | None = None
+    role: str | None = None
+    public_key: str | None = None
+
+
+class PeerGrantRequest(BaseModel):
+    """Body for ``peer grant`` / ``peer revoke`` — one read category for one peer."""
+
+    name: str
+    category: str
 
 
 def _op_peer_join(req: PeerJoinRequest) -> dict[str, Any]:
-    """Record (or update) a peer: name → HTTPS edge URL + ssh alias.
+    """Record (or update) a peer: name → HTTPS edge URL + ssh alias + trust record.
 
     Local to this node's book. Run it on both nodes to make the relationship
     mutual (each side records the other) — the gateway never syncs peers.
     """
     from awm.gateway import peers
 
-    try:
-        return {"peer": peers.add(req.name, req.edge_url, req.ssh_alias)}
-    except ValueError as exc:
-        raise ValueError(str(exc)) from exc
+    return {"peer": peers.add(
+        req.name, req.edge_url, req.ssh_alias, relation=req.relation,
+        swarm=req.swarm, principal=req.principal, role=req.role,
+        public_key=req.public_key)}
+
+
+def _op_peer_set(req: PeerSetRequest) -> dict[str, Any]:
+    """Update a recorded peer's relation, swarm, principal, role or public key.
+
+    Setting ``public_key`` pins the key and recomputes its fingerprint.
+    """
+    from awm.gateway import peers
+
+    return {"peer": peers.update(
+        req.name, relation=req.relation, swarm=req.swarm,
+        principal=req.principal, role=req.role, public_key=req.public_key)}
+
+
+def _op_peer_grant(req: PeerGrantRequest) -> dict[str, Any]:
+    """Grant a foreign peer one read category (a lowercase slug, e.g. ``journals``)."""
+    from awm.gateway import peers
+
+    record, warning = peers.grant(req.name, req.category)
+    out: dict[str, Any] = {"peer": record}
+    if warning:
+        out["warning"] = warning
+    return out
+
+
+def _op_peer_revoke(req: PeerGrantRequest) -> dict[str, Any]:
+    """Revoke one read category from a peer."""
+    from awm.gateway import peers
+
+    return {"peer": peers.revoke(req.name, req.category)}
 
 
 def _op_peer_list() -> dict[str, Any]:
-    """List every recorded peer (name, edge URL, ssh alias)."""
+    """List every recorded peer with its full record."""
     from awm.gateway import peers
 
     return {"peers": peers.list_all()}
 
 
 def _op_peer_resolve(name: str) -> dict[str, Any]:
-    """Resolve one peer name to its edge URL + ssh alias. 404 if unknown.
+    """Resolve one peer name to its full record (edge URL, relation, key...). 404 if unknown.
 
     Pure directory lookup — it returns an address and never proxies. Callers use
     the address to reach the peer's edge directly.
@@ -634,6 +687,34 @@ def _op_peer_resolve(name: str) -> dict[str, Any]:
     if entry is None:
         raise FileNotFoundError(f"unknown peer: {name}")
     return {"peer": entry}
+
+
+def _peer_trust_params() -> list[Param]:
+    return [
+        Param(name="relation", type="string", required=False, cli_type="option",
+              description="domestic (same swarm, fully trusted) or foreign."),
+        Param(name="swarm", type="string", required=False, cli_type="option",
+              description="Swarm the peer belongs to (lowercase slug)."),
+        Param(name="principal", type="string", required=False, cli_type="option",
+              description="Short name of the person the peer acts for."),
+        Param(name="role", type="string", required=False, cli_type="option",
+              description="fleet or station."),
+        Param(name="public_key", type="string", required=False, cli_type="option",
+              description="Peer's ed25519 public key, base64 of the raw 32 bytes."),
+    ]
+
+
+def _peer_join_params() -> list[Param]:
+    return [
+        Param(name="name", type="string", required=True, cli_type="argument",
+              description="Peer node name (single token; how it is addressed "
+                          "in <svc>@<peer>)."),
+        Param(name="edge_url", type="string", required=True, cli_type="argument",
+              description="Peer HTTPS edge URL (bare host:port → https://)."),
+        Param(name="ssh_alias", type="string", required=False, cli_type="option",
+              description="ssh host for the $AWM_PEER_CRED fetch (default: name)."),
+        *_peer_trust_params(),
+    ]
 
 
 def _op_peer_forget(name: str) -> dict[str, Any]:
@@ -910,36 +991,97 @@ GATEWAY_OPERATIONS: list[Operation] = [
     # --- peer directory (federation address book) -------------------------
     Operation(
         name="peer_join",
-        description="Record a peer node (name → HTTPS edge URL + ssh alias) in "
-                    "this node's address book. Run on both nodes for a mutual link.",
+        description="Record a peer node (name → HTTPS edge URL + ssh alias, plus "
+                    "relation, swarm, principal, role, public key) in this node's "
+                    "address book. Run on both nodes for a mutual link.",
         service_func=_op_peer_join,
         http_method="POST", http_path="/peers",
         cli_group="peer", cli_command="join",
         output=JsonOutput(),
         request_model=PeerJoinRequest,
+        params=_peer_join_params(),
+        surfaces=_CLI,
+        effect="write",
+    ),
+    Operation(
+        name="peer_add",
+        description="Record a peer node in this node's address book (same as "
+                    "peer_join).",
+        service_func=_op_peer_join,
+        http_method="POST", http_path="/peers/add",
+        cli_group="peer", cli_command="add",
+        output=JsonOutput(),
+        request_model=PeerJoinRequest,
+        params=_peer_join_params(),
+        surfaces=_CLI,
+        effect="write",
+    ),
+    Operation(
+        name="peer_set",
+        description="Change a recorded peer's relation, swarm, principal, role or "
+                    "public key. Setting the key pins it and computes its fingerprint.",
+        service_func=_op_peer_set,
+        http_method="POST", http_path="/peers/set",
+        cli_group="peer", cli_command="set",
+        output=JsonOutput(),
+        request_model=PeerSetRequest,
         params=[
             Param(name="name", type="string", required=True, cli_type="argument",
-                  description="Peer node name (single token; how it is addressed "
-                              "in <svc>@<peer>)."),
-            Param(name="edge_url", type="string", required=True, cli_type="argument",
-                  description="Peer HTTPS edge URL (bare host:port → https://)."),
-            Param(name="ssh_alias", type="string", required=False, cli_type="option",
-                  description="ssh host for the $AWM_PEER_CRED fetch (default: name)."),
+                  description="Peer node name to update."),
+            *_peer_trust_params(),
         ],
         surfaces=_CLI,
+        effect="write",
+    ),
+    Operation(
+        name="peer_grant",
+        description="Grant a foreign peer one read category (e.g. journals, kb). "
+                    "Meaningless for a domestic peer; the result warns.",
+        service_func=_op_peer_grant,
+        http_method="POST", http_path="/peers/grant",
+        cli_group="peer", cli_command="grant",
+        output=JsonOutput(),
+        request_model=PeerGrantRequest,
+        params=[
+            Param(name="name", type="string", required=True, cli_type="argument",
+                  description="Peer node name."),
+            Param(name="category", type="string", required=True, cli_type="argument",
+                  description="Read category to grant (lowercase slug)."),
+        ],
+        surfaces=_CLI,
+        effect="write",
+    ),
+    Operation(
+        name="peer_revoke",
+        description="Revoke one read category from a peer.",
+        service_func=_op_peer_revoke,
+        http_method="POST", http_path="/peers/revoke",
+        cli_group="peer", cli_command="revoke",
+        output=JsonOutput(),
+        request_model=PeerGrantRequest,
+        params=[
+            Param(name="name", type="string", required=True, cli_type="argument",
+                  description="Peer node name."),
+            Param(name="category", type="string", required=True, cli_type="argument",
+                  description="Read category to revoke."),
+        ],
+        surfaces=_CLI,
+        effect="write",
     ),
     Operation(
         name="peer_list",
-        description="List recorded peers (name, edge URL, ssh alias).",
+        description="List recorded peers with every record field (edge URL, "
+                    "relation, swarm, principal, role, key fingerprint, grants).",
         service_func=_op_peer_list,
         http_method="GET", http_path="/peers",
         cli_group="peer", cli_command="list",
         output=JsonOutput(), surfaces=_CLI,
+        effect="read",
     ),
     Operation(
         name="peer_resolve",
-        description="Resolve a peer name to its edge URL + ssh alias (directory "
-                    "lookup only; never proxies).",
+        description="Resolve a peer name to its full record (directory lookup "
+                    "only; never proxies).",
         service_func=_op_peer_resolve,
         http_method="GET", http_path="/peers/{name}",
         cli_group="peer", cli_command="resolve",
@@ -948,6 +1090,7 @@ GATEWAY_OPERATIONS: list[Operation] = [
                       location="path", cli_type="argument",
                       description="Peer node name to resolve.")],
         surfaces=_CLI,
+        effect="read",
     ),
     Operation(
         name="peer_forget",
@@ -955,6 +1098,7 @@ GATEWAY_OPERATIONS: list[Operation] = [
         service_func=_op_peer_forget,
         http_method="DELETE", http_path="/peers/{name}",
         cli_group="peer", cli_command="forget",
+        effect="write",
         output=JsonOutput(),
         params=[Param(name="name", type="string", required=True,
                       location="path", cli_type="argument",
