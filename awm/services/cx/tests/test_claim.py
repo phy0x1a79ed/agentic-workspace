@@ -39,6 +39,31 @@ def test_an_unreadable_trust_file_reads_as_untrusted(monkeypatch, tmp_path):
     assert not trust.trusted("/home/tony")
 
 
+def test_a_start_in_a_git_repo_needs_the_repos_own_trust_entry(tmp_path, monkeypatch):
+    """`claude --bg` refuses with "Workspace not trusted" for a repo whose only
+    trusted parent is an ancestor, so the start must refuse first."""
+    import subprocess
+
+    from awm.cx import trust
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    ancestor = tmp_path / "ancestor.json"
+    ancestor.write_text(json.dumps({"projects": {str(tmp_path): {
+        "hasTrustDialogAccepted": True}}}))
+    monkeypatch.setenv("AWM_CX_TRUST_FILE", str(ancestor))
+    assert trust.trusted(repo)
+    why = trust.start_refusal(repo)
+    assert why and str(repo.resolve()) in why and "claude" in why
+
+    own = tmp_path / "own.json"
+    own.write_text(json.dumps({"projects": {str(repo.resolve()): {
+        "hasTrustDialogAccepted": True}}}))
+    monkeypatch.setenv("AWM_CX_TRUST_FILE", str(own))
+    assert trust.start_refusal(repo) is None
+
+
 async def test_an_untrusted_directory_is_refused_without_touching_a_session(
         box, trust_file, monkeypatch):
     """The dialog default is "No, stay put", and a session sitting on it
