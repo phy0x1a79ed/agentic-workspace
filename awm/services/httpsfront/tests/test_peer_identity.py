@@ -152,20 +152,56 @@ def test_every_peer_identity_is_a_machine():
         assert not is_machine_sub(sub), sub
 
 
+RELATIONS = {"mira": "domestic", "shaula": "foreign"}.get
+
+
 def test_only_unlisted_and_foreign_nodes_are_foreign():
+    assert not is_foreign_peer("peer", RELATIONS)
+    assert not is_foreign_peer("peer:mira", RELATIONS)
+    assert is_foreign_peer("peer:shaula", RELATIONS)
+    assert is_foreign_peer("peer:nobody", RELATIONS)
+    assert not is_foreign_peer("tony", RELATIONS)
+    assert not is_foreign_peer(None, RELATIONS)
+
+
+def test_a_node_with_no_relation_source_is_foreign():
+    assert is_foreign_peer("peer:mira")
     assert not is_foreign_peer("peer")
-    assert not is_foreign_peer("peer:mira")
-    assert is_foreign_peer("peer:shaula")
-    assert is_foreign_peer("peer:nobody")
-    assert not is_foreign_peer("tony")
-    assert not is_foreign_peer(None)
 
 
-def test_the_foreign_door_is_invoke_and_tools_exactly():
-    assert policy.foreign_allows("/invoke") and policy.foreign_allows("/tools")
-    for path in ("/", "/invoke/", "/tools/x", "/hub/services", "/svc/notes/fn/list",
-                 "/trilium/", "/penpot/", "/files/x", "/__auth/whoami"):
+def test_the_relation_comes_from_the_material_snapshot_not_the_book(peer_book, keys):
+    """The book on disk says mira is foreign now; the snapshot that held her key
+    said domestic, and that is what this request is judged by."""
+    peer_book({"mira": {"relation": "foreign"}})
+    _, public = keys
+    gate = _gate(peers=[_peer("mira", public, "domestic")])
+    assert not is_foreign_peer("peer:mira", gate.peer_relation)
+    gate = _gate(peers=[_peer("mira", public, "foreign")])
+    assert is_foreign_peer("peer:mira", gate.peer_relation)
+    assert gate.peer_relation("rigel") is None
+
+
+def test_the_foreign_door_is_tools_exactly():
+    assert policy.FOREIGN_PATHS == frozenset({"/tools"})
+    assert policy.foreign_allows("/tools")
+    for path in ("/invoke", "/", "/invoke/", "/tools/x", "/hub/services",
+                 "/svc/notes/fn/list", "/trilium/", "/penpot/", "/files/x",
+                 "/__auth/whoami"):
         assert not policy.foreign_allows(path), path
+
+
+def test_an_fqdn_hostname_and_a_bare_book_name_agree(monkeypatch, keys):
+    """This node's name may be an FQDN and the issuer's book name bare, or the
+    reverse; the token and the edge compare the first label, lowercased."""
+    monkeypatch.setenv("AWM_NODE_NAME", "Altair.Lab.Example.com")
+    private, public = keys
+    gate = _gate(peers=[_peer("Mira.lab.example.com", public)])
+    token = peertoken.sign(private, iss="MIRA", aud="altair")
+    assert _auth(gate, token) == (True, None, "peer:Mira.lab.example.com")
+    token = peertoken.sign(private, iss="mira.lab.example.com",
+                           aud="altair.lab.example.com")
+    assert _auth(gate, token)[0] is True
+    assert _auth(gate, peertoken.sign(private, iss="mira", aud="altair2"))[0] is False
 
 
 def test_a_machine_is_not_a_person_on_the_public_policy():
@@ -182,7 +218,12 @@ VAULT = "http://127.0.0.1:12511"
 PENPOT = "http://127.0.0.1:9001"
 
 BEARERS = {"b-legacy": "peer", "b-mira": "peer:mira", "b-shaula": "peer:shaula",
-           "b-nobody": "peer:nobody"}
+           "b-nobody": "peer:nobody",
+           "awmpt1.mira-token": "peer:mira", "awmpt1.shaula-token": "peer:shaula"}
+
+#: Headers only a local process may set, spelled in the cases a client might try.
+CALLER_HEADERS = {"X-Awm-Caller-Pid": "1", "x-awm-session-pid": "2",
+                  "X-AWM-PEER-REDIRECT": "1"}
 
 
 class _Gate:
@@ -192,6 +233,9 @@ class _Gate:
         if cookie == SESSION:
             return True, None, "tony"
         return False, None, None
+
+    def peer_relation(self, node):
+        return RELATIONS(node)
 
     async def session_ttl_seconds(self):
         return 3600.0
@@ -215,15 +259,18 @@ def _edge(bearer=None):
                           extra_routes=[("/signin", ["GET"], _extra)])
     app.state.gate = _Gate()
     seen: list = []
+    sent: list = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         seen.append((str(request.url), request.headers.get("x-awm-as")))
+        sent.append({k.lower(): v for k, v in request.headers.items()})
         return httpx.Response(200, content=_body())
 
     headers = {"Authorization": f"Bearer {bearer}"} if bearer else {}
     with TestClient(app, base_url="https://mesh.example", follow_redirects=False,
                     headers=headers) as c:
         c.app.state.client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        c.sent = sent
         yield c, seen
 
 
@@ -251,11 +298,41 @@ def test_no_peer_reaches_the_vault_or_penpot(bearer, path):
 
 
 @pytest.mark.parametrize("bearer", ["b-shaula", "b-nobody"])
-def test_a_foreign_node_reaches_invoke_and_tools(bearer):
+def test_a_foreign_node_reaches_tools_only(bearer):
     with _edge(bearer) as (c, seen):
-        assert c.post("/invoke", json={"name": "x", "args": {}}).status_code == 200
         assert c.get("/tools").status_code == 200
+        assert c.get("/tools", params={"view": "domains"}).status_code == 200
     assert [s[1] for s in seen] == [BEARERS[bearer]] * 2
+
+
+@pytest.mark.parametrize("bearer", ["b-shaula", "b-nobody"])
+@pytest.mark.parametrize("method", ["get", "post", "put", "delete"])
+def test_a_foreign_nodes_invoke_is_404_until_the_effect_gate_exists(bearer, method):
+    """The flat /invoke has no per-verb check yet, so a foreign caller on it
+    could call `auth_edge_material`. Wave 2 re-adds it behind the gate."""
+    with _edge(bearer) as (c, seen):
+        r = getattr(c, method)("/invoke")
+        assert r.status_code == 404
+        assert c.post("/invoke", json={"name": "auth_edge_material", "args": {}}
+                      ).status_code == 404
+    assert seen == []
+
+
+@pytest.mark.parametrize("bearer", ["b-shaula", "b-nobody"])
+@pytest.mark.parametrize("query", ["peers=1", "peers=0", "view=domains&peers=1",
+                                   "%70eers=1", "peers"])
+def test_a_foreign_node_cannot_ask_for_the_fleet_view(bearer, query):
+    with _edge(bearer) as (c, seen):
+        assert c.get(f"/tools?{query}").status_code == 404
+    assert seen == []
+
+
+@pytest.mark.parametrize("bearer", ["b-legacy", "b-mira"])
+def test_a_domestic_node_keeps_the_fleet_view_and_invoke(bearer):
+    with _edge(bearer) as (c, seen):
+        assert c.get("/tools?peers=1&view=domains").status_code == 200
+        assert c.post("/invoke", json={"name": "x", "args": {}}).status_code == 200
+    assert len(seen) == 2
 
 
 @pytest.mark.parametrize("bearer", ["b-shaula", "b-nobody"])
@@ -308,3 +385,111 @@ def test_websockets_by_peer_kind(monkeypatch, bearer, path, reaches):
     assert bool(dialled) is reaches
     if reaches:
         assert dialled[0][1]["X-Awm-As"] == BEARERS[bearer]
+
+
+# -- headers that name a local session ----------------------------------------
+
+@pytest.mark.parametrize("bearer", [None, "b-legacy", "b-mira", "awmpt1.mira-token"])
+def test_caller_pid_headers_never_cross_the_edge(bearer):
+    """Reflection and `cx start` act on the session a pid names. A remote caller
+    that could set one would act on any local session."""
+    with _edge(bearer) as (c, seen):
+        c.cookies.set(COOKIE_NAME, SESSION, domain="mesh.example")
+        assert c.get("/svc/notes/fn/list", headers=CALLER_HEADERS).status_code == 200
+    (sent,) = c.sent
+    for name in CALLER_HEADERS:
+        assert name.lower() not in sent, name
+    assert not [k for k in sent if k.startswith("x-awm-") and k != "x-awm-as"]
+
+
+def test_caller_pid_headers_are_stripped_on_a_foreign_nodes_tools_call_too():
+    with _edge("b-shaula") as (c, _):
+        assert c.get("/tools", headers=CALLER_HEADERS).status_code == 200
+    (sent,) = c.sent
+    assert not [k for k in sent if k.startswith("x-awm-") and k != "x-awm-as"]
+    assert sent["x-awm-as"] == "peer:shaula"
+
+
+def test_duplicate_caller_headers_are_all_dropped():
+    with _edge("b-mira") as (c, _):
+        c.get("/svc/x", headers=[("X-Awm-Session-Pid", "1"), ("x-awm-session-pid", "2"),
+                                 ("X-Awm-As", "user:tony"), ("x-awm-as", "user:root")])
+    (sent,) = c.sent
+    assert "x-awm-session-pid" not in sent and sent["x-awm-as"] == "peer:mira"
+
+
+@pytest.mark.parametrize("bearer", [None, "b-legacy", "b-mira"])
+def test_caller_pid_headers_do_not_ride_a_websocket(monkeypatch, bearer):
+    dialled: list = []
+
+    async def connect(url, *, additional_headers=None, **kw):
+        dialled.append(dict(additional_headers or {}))
+        raise RuntimeError("upstream refused")
+
+    monkeypatch.setattr(proxy.websockets, "connect", connect)
+    headers = dict(CALLER_HEADERS, cookie=f"{COOKIE_NAME}={SESSION}")
+    if bearer:
+        headers["Authorization"] = f"Bearer {bearer}"
+    with _edge() as (c, _):
+        try:
+            with c.websocket_connect("/svc/drawio/emit/t", headers=headers):
+                pass
+        except Exception:  # noqa: BLE001
+            pass
+    assert dialled
+    lowered = {k.lower() for k in dialled[0]}
+    assert not lowered & {n.lower() for n in CALLER_HEADERS}
+
+
+# -- the node token is for the edge only --------------------------------------
+
+def test_a_consumed_node_token_is_not_forwarded_over_http():
+    with _edge("awmpt1.mira-token") as (c, _):
+        assert c.get("/svc/notes/fn/list").status_code == 200
+    assert "authorization" not in c.sent[0]
+    assert c.sent[0]["x-awm-as"] == "peer:mira"
+
+
+def test_a_node_token_is_not_forwarded_when_a_cookie_carried_the_request():
+    """The bearer was not what authenticated this call, but it is still a live
+    credential somewhere, and an upstream app has no use for it."""
+    with _edge("awmpt1.not-a-real-token") as (c, _):
+        c.cookies.set(COOKIE_NAME, SESSION, domain="mesh.example")
+        assert c.get("/svc/notes/fn/list").status_code == 200
+    assert "authorization" not in c.sent[0]
+    assert c.sent[0]["x-awm-as"] == "user:tony"
+
+
+@pytest.mark.parametrize("bearer", ["b-legacy"])
+def test_the_legacy_bearer_is_forwarded_exactly_as_before(bearer):
+    with _edge(bearer) as (c, _):
+        assert c.get("/svc/notes/fn/list").status_code == 200
+    assert c.sent[0]["authorization"] == f"Bearer {bearer}"
+
+
+def test_a_session_users_own_authorization_is_forwarded_as_before():
+    with _edge() as (c, _):
+        c.cookies.set(COOKIE_NAME, SESSION, domain="mesh.example")
+        c.get("/svc/notes/fn/list", headers={"Authorization": "Basic dGVzdDp0ZXN0"})
+    assert c.sent[0]["authorization"] == "Basic dGVzdDp0ZXN0"
+
+
+@pytest.mark.parametrize("bearer,forwarded", [
+    ("awmpt1.mira-token", False), ("b-legacy", True)])
+def test_a_node_token_is_not_forwarded_over_a_websocket(monkeypatch, bearer, forwarded):
+    dialled: list = []
+
+    async def connect(url, *, additional_headers=None, **kw):
+        dialled.append({k.lower(): v for k, v in (additional_headers or {}).items()})
+        raise RuntimeError("upstream refused")
+
+    monkeypatch.setattr(proxy.websockets, "connect", connect)
+    with _edge() as (c, _):
+        try:
+            with c.websocket_connect("/svc/drawio/emit/t",
+                                     headers={"Authorization": f"Bearer {bearer}"}):
+                pass
+        except Exception:  # noqa: BLE001
+            pass
+    assert dialled
+    assert ("authorization" in dialled[0]) is forwarded

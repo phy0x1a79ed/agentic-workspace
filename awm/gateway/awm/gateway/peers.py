@@ -20,18 +20,22 @@ is a single JSON file beside the gateway's other runtime state.
 
 from __future__ import annotations
 
+import fcntl
 import json
 import logging
+import os
 import re
+import tempfile
 import time
-from typing import Any
+from contextlib import contextmanager
+from typing import Any, Iterator
 
-from awm.config import node_role, peerbook
+from awm.config import node_role, node_swarm, peerbook
 
 log = logging.getLogger(__name__)
 
 #: Services that only a fleet node runs. A station that enables one is misconfigured.
-FLEET_SERVICES = ("cx", "agents")
+FLEET_SERVICES = ("cx",)
 
 _SLUG = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 _PRINCIPAL = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
@@ -44,12 +48,46 @@ def _normalize_edge(url: str) -> str:
     return url
 
 
-def _save(peers: dict[str, Any]) -> None:
+@contextmanager
+def _locked_book() -> Iterator[dict[str, Any]]:
+    """Hold an exclusive lock on the book and yield its parsed contents.
+
+    Every read-modify-write runs inside this, so concurrent writers serialise.
+    Raises ``ValueError`` when the book exists but cannot be parsed, so a writer
+    never replaces a damaged book with a one-peer file.
+    """
     path = peerbook.peers_file()
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(peers, indent=2, sort_keys=True))
-    tmp.replace(path)
+    with open(path.with_suffix(".json.lock"), "a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        yield peerbook.load_book(strict=True)
+
+
+def _save(peers: dict[str, Any]) -> None:
+    """Replace the book atomically: unique temp file, fsync, rename. Call under the lock."""
+    path = peerbook.peers_file()
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".peers-", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as fh:
+            fh.write(json.dumps(peers, indent=2, sort_keys=True))
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.chmod(tmp, 0o644)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except FileNotFoundError:
+            pass
+        raise
+
+
+def _check_final(record: dict[str, Any]) -> None:
+    """Refuse a record that would pass a foreign peer off as one of this swarm."""
+    if record["relation"] == "foreign" and record["swarm"] == node_swarm():
+        raise ValueError(
+            f"{record['name']} is foreign, so it needs an explicit swarm other than "
+            f"this node's swarm ({node_swarm()!r})")
 
 
 def _check_relation(value: str) -> str:
@@ -160,24 +198,22 @@ def add(
     edge = _normalize_edge(edge_url)
     if not edge:
         raise ValueError("edge_url is required")
-    peers = peerbook.load_book()
-    existing = peers.get(name) if isinstance(peers.get(name), dict) else None
-    record = peerbook._normalise(name, existing or {})
-    if existing is None and relation == "foreign" and swarm is None:
-        raise ValueError("a foreign peer needs its swarm")
-    now = time.time()
-    record.update(
-        name=name,
-        edge_url=edge,
-        ssh_alias=(ssh_alias or "").strip() or record["ssh_alias"],
-        added_at=(existing or {}).get("added_at") or now,
-        updated_at=now,
-    )
-    _apply_fields(record, relation=relation, swarm=swarm, principal=principal,
-                  role=role, public_key=public_key)
-    peers[name] = record
-    _save(peers)
-    return record
+    with _locked_book() as peers:
+        existing = peers.get(name) if isinstance(peers.get(name), dict) else None
+        record = peerbook._normalise(name, existing or {})
+        now = time.time()
+        record.update(
+            edge_url=edge,
+            ssh_alias=(ssh_alias or "").strip() or record["ssh_alias"],
+            added_at=(existing or {}).get("added_at") or now,
+            updated_at=now,
+        )
+        _apply_fields(record, relation=relation, swarm=swarm, principal=principal,
+                      role=role, public_key=public_key)
+        _check_final(record)
+        peers[name] = record
+        _save(peers)
+        return record
 
 
 def update(
@@ -196,14 +232,15 @@ def update(
     if all(v is None for v in given):
         raise ValueError(
             "nothing to set: give relation, swarm, principal, role or public_key")
-    peers = peerbook.load_book()
-    record = _stored(peers, name)
-    _apply_fields(record, relation=relation, swarm=swarm, principal=principal,
-                  role=role, public_key=public_key)
-    record["updated_at"] = time.time()
-    peers[name] = record
-    _save(peers)
-    return record
+    with _locked_book() as peers:
+        record = _stored(peers, name)
+        _apply_fields(record, relation=relation, swarm=swarm, principal=principal,
+                      role=role, public_key=public_key)
+        _check_final(record)
+        record["updated_at"] = time.time()
+        peers[name] = record
+        _save(peers)
+        return record
 
 
 def grant(name: str, category: str) -> tuple[dict[str, Any], str | None]:
@@ -214,28 +251,28 @@ def grant(name: str, category: str) -> tuple[dict[str, Any], str | None]:
     """
     name = (name or "").strip()
     category = _check_grant(category)
-    peers = peerbook.load_book()
-    record = _stored(peers, name)
-    if category not in record["grants"]:
-        record["grants"].append(category)
-        record["updated_at"] = time.time()
-        peers[name] = record
-        _save(peers)
-    return record, _domestic_grant_warning(record, category)
+    with _locked_book() as peers:
+        record = _stored(peers, name)
+        if category not in record["grants"]:
+            record["grants"].append(category)
+            record["updated_at"] = time.time()
+            peers[name] = record
+            _save(peers)
+        return record, _domestic_grant_warning(record, category)
 
 
 def revoke(name: str, category: str) -> dict[str, Any]:
     """Remove a category from a peer's grants. Revoking one never granted is a no-op."""
     name = (name or "").strip()
     category = _check_grant(category)
-    peers = peerbook.load_book()
-    record = _stored(peers, name)
-    if category in record["grants"]:
-        record["grants"].remove(category)
-        record["updated_at"] = time.time()
-        peers[name] = record
-        _save(peers)
-    return record
+    with _locked_book() as peers:
+        record = _stored(peers, name)
+        if category in record["grants"]:
+            record["grants"].remove(category)
+            record["updated_at"] = time.time()
+            peers[name] = record
+            _save(peers)
+        return record
 
 
 def _domestic_grant_warning(record: dict[str, Any], category: str) -> str | None:
@@ -254,13 +291,13 @@ def resolve(name: str) -> dict[str, Any] | None:
 
 
 def remove(name: str) -> dict[str, Any] | None:
-    peers = peerbook.load_book()
     key = (name or "").strip()
-    entry = peers.pop(key, None)
-    if entry is None:
-        return None
-    _save(peers)
-    return peerbook._normalise(key, entry) if isinstance(entry, dict) else entry
+    with _locked_book() as peers:
+        entry = peers.pop(key, None)
+        if entry is None:
+            return None
+        _save(peers)
+        return peerbook._normalise(key, entry) if isinstance(entry, dict) else entry
 
 
 def warn_station_fleet_services() -> list[str]:

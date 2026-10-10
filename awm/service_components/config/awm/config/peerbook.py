@@ -44,20 +44,34 @@ def peers_file() -> Path:
     return _config.AWM_DIR / "state" / "peers.json"
 
 
-def load_book() -> dict[str, Any]:
-    """The raw stored book, ``{name: entry}``; empty when missing or unreadable."""
+def load_book(*, strict: bool = False) -> dict[str, Any]:
+    """The raw stored book, ``{name: entry}``.
+
+    A missing file is an empty book. An unreadable or corrupt file is empty too,
+    unless ``strict``: a writer must never overwrite a book it could not read,
+    so ``strict`` raises ``ValueError`` instead.
+    """
+    path = peers_file()
     try:
-        data = json.loads(peers_file().read_text())
-    except (OSError, ValueError):
+        data = json.loads(path.read_text())
+    except FileNotFoundError:
         return {}
-    return data if isinstance(data, dict) else {}
+    except (OSError, ValueError) as exc:
+        if strict:
+            raise ValueError(f"peer book {path} is unreadable: {exc}") from exc
+        return {}
+    if not isinstance(data, dict):
+        if strict:
+            raise ValueError(f"peer book {path} is corrupt: expected a JSON object")
+        return {}
+    return data
 
 
 def _normalise(name: str, entry: dict[str, Any]) -> dict[str, Any]:
     grants = entry.get("grants")
     record = dict(entry)
     record.update(
-        name=entry.get("name") or name,
+        name=name,
         edge_url=entry.get("edge_url"),
         ssh_alias=entry.get("ssh_alias") or name,
         relation=entry.get("relation") or "domestic",

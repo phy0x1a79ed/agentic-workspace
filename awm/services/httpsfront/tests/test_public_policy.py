@@ -36,6 +36,9 @@ class _Gate:
             return True, None, SUBS[cookie]
         return False, None, None
 
+    def peer_relation(self, node):
+        return {"mira": "domestic"}.get(node)
+
     async def verify_login(self, *, username, password, client_ip):
         if username == "locked":
             return {"ok": False, "locked": True, "retry_after": 321}

@@ -129,3 +129,52 @@ def test_public_key_is_accepted_unpadded_and_urlsafe(keys):
 def test_a_key_of_the_wrong_length_is_refused():
     with pytest.raises(peertoken.TokenError):
         peertoken.fingerprint(base64.b64encode(b"short").decode())
+
+
+def _forged(private, claims_json: str) -> str:
+    """A correctly signed token whose payload is the given raw JSON text."""
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    key = Ed25519PrivateKey.from_private_bytes(base64.b64decode(private))
+    payload = base64.urlsafe_b64encode(claims_json.encode()).rstrip(b"=").decode()
+    sig = base64.urlsafe_b64encode(key.sign(f"awmpt1.{payload}".encode())).rstrip(b"=")
+    return f"awmpt1.{payload}.{sig.decode()}"
+
+
+@pytest.mark.parametrize("iat,exp", [
+    ("true", "true"),
+    ("NaN", "NaN"),
+    ("Infinity", "Infinity"),
+    ("-Infinity", "Infinity"),
+    ("1e999", "1e999"),
+    ("1800000000.5", "1800000300.5"),
+    ("1800000000.0", "1800000300.0"),
+    ('"1800000000"', '"1800000300"'),
+    ("null", "null"),
+])
+def test_iat_and_exp_must_be_finite_integers(keys, iat, exp):
+    private, public = keys
+    token = _forged(private, f'{{"iss":"altair","aud":"mira","iat":{iat},"exp":{exp}}}')
+    with pytest.raises(peertoken.TokenError):
+        peertoken.verify(token, public, aud="mira", now=NOW)
+
+
+def test_the_forging_helper_makes_valid_tokens(keys):
+    private, public = keys
+    token = _forged(private, f'{{"iss":"altair","aud":"mira","iat":{NOW},"exp":{NOW + 300}}}')
+    assert peertoken.verify(token, public, aud="mira", now=NOW)["iss"] == "altair"
+
+
+def test_node_label_is_the_first_label_lowercased():
+    assert peertoken.node_label("Altair.Example.COM") == "altair"
+    assert peertoken.node_label(" mira ") == "mira"
+    assert peertoken.node_label(None) == ""
+
+
+def test_an_fqdn_and_a_bare_name_are_the_same_node(keys):
+    private, public = keys
+    token = peertoken.sign(private, iss="Altair.lab.example.com", aud="MIRA.lab.example.com", now=NOW)
+    assert peertoken.issuer_of(token) == "altair"
+    assert peertoken.verify(token, public, aud="mira", now=NOW)["aud"] == "mira"
+    assert peertoken.verify(token, public, aud="mira.other.net", now=NOW)
+    with pytest.raises(peertoken.TokenError, match="audience"):
+        peertoken.verify(token, public, aud="shaula.lab.example.com", now=NOW)

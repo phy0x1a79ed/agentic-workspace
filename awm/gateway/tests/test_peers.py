@@ -84,6 +84,89 @@ def test_readd_keeps_trust_fields_and_added_at(book):
 def test_foreign_add_needs_swarm():
     with pytest.raises(ValueError, match="swarm"):
         peers.add("envoy", "envoy:1", relation="foreign")
+    with pytest.raises(ValueError, match="swarm"):
+        peers.add("envoy", "envoy:1", relation="foreign", swarm="tony")
+    assert peers.list_all() == []
+
+
+def test_foreign_set_needs_a_distinct_swarm(book):
+    peers.add("mira", "mira:1")
+    before = book.read_text()
+    with pytest.raises(ValueError, match="swarm"):
+        peers.update("mira", relation="foreign")
+    with pytest.raises(ValueError, match="swarm"):
+        peers.update("mira", relation="foreign", swarm="tony")
+    assert book.read_text() == before
+    assert peers.update("mira", relation="foreign", swarm="blue")["swarm"] == "blue"
+
+
+def test_foreign_swarm_is_checked_against_this_nodes_swarm(monkeypatch):
+    monkeypatch.setenv("AWM_SWARM", "blue")
+    with pytest.raises(ValueError, match="swarm"):
+        peers.add("envoy", "envoy:1", relation="foreign", swarm="blue")
+    assert peers.add("envoy", "envoy:1", relation="foreign", swarm="tony")["swarm"] == "tony"
+
+
+def test_readd_cannot_turn_domestic_entry_foreign_without_swarm(book):
+    peers.add("mira", "mira:1")
+    before = book.read_text()
+    with pytest.raises(ValueError, match="swarm"):
+        peers.add("mira", "mira:2", relation="foreign")
+    assert book.read_text() == before
+
+
+def test_readd_of_foreign_entry_keeps_its_swarm():
+    peers.add("envoy", "envoy:1", relation="foreign", swarm="blue")
+    again = peers.add("envoy", "envoy:2", relation="foreign")
+    assert again["swarm"] == "blue"
+
+
+@pytest.mark.parametrize("shape", ["{bad", "[]", "null", '"x"'])
+def test_writers_refuse_a_corrupt_book(book, shape):
+    book.parent.mkdir(parents=True)
+    book.write_text(shape)
+    for call in (
+        lambda: peers.add("mira", "mira:1"),
+        lambda: peers.update("mira", role="fleet"),
+        lambda: peers.grant("mira", "kb"),
+        lambda: peers.revoke("mira", "kb"),
+        lambda: peers.remove("mira"),
+    ):
+        with pytest.raises(ValueError, match="peer book"):
+            call()
+    assert book.read_text() == shape
+    assert peers.list_all() == []  # readers still treat it as empty
+
+
+def test_stored_name_that_differs_from_key_is_ignored(book):
+    _seed(book, {"mira": {"name": "other", "edge_url": "https://mira:1"}})
+    assert peers.resolve("mira")["name"] == "mira"
+    assert [r["name"] for r in peers.list_all()] == ["mira"]
+    assert peers.update("mira", role="station")["name"] == "mira"
+    assert json.loads(book.read_text())["mira"]["name"] == "mira"
+
+
+def test_concurrent_writers_all_land_and_leave_no_temp_files(book):
+    import threading
+    errors = []
+
+    def worker(i):
+        try:
+            peers.add(f"p{i}", f"p{i}:1")
+            peers.grant(f"p{i}", "kb")
+        except Exception as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    threads = [threading.Thread(target=worker, args=(i,)) for i in range(12)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert not errors
+    stored = json.loads(book.read_text())
+    assert sorted(stored) == sorted(f"p{i}" for i in range(12))
+    assert all(v["grants"] == ["kb"] for v in stored.values())
+    assert [f.name for f in book.parent.iterdir() if f.name.endswith(".tmp")] == []
 
 
 @pytest.mark.parametrize("kw", [{"relation": "friendly"}, {"role": "admiral"},
@@ -210,7 +293,7 @@ def _fake_discovery(monkeypatch, services):
 
 def test_station_with_fleet_service_warns(monkeypatch, caplog):
     monkeypatch.setenv("AWM_NODE_ROLE", "station")
-    _fake_discovery(monkeypatch, [("cx", True), ("agents", False), ("kb", True)])
+    _fake_discovery(monkeypatch, [("cx", True), ("agents", True), ("kb", True)])
     with caplog.at_level(logging.WARNING, logger="awm.gateway.peers"):
         assert peers.warn_station_fleet_services() == ["cx"]
     assert "cx" in caplog.text

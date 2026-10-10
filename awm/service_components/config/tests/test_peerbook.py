@@ -151,3 +151,20 @@ def test_fingerprint_of_raw_key_bytes():
     for bad in ("", "  ", "***"):
         with pytest.raises(ValueError):
             peerbook._fingerprint(bad)
+
+
+def test_normalise_forces_name_to_book_key(tmp_path):
+    _write_book(tmp_path, {"mira": {"name": "someone-else", "edge_url": "https://m"}})
+    assert config.peer_record("mira")["name"] == "mira"
+    assert [r["name"] for r in config.list_records()] == ["mira"]
+
+
+def test_load_book_strict_raises_on_damage_only(tmp_path):
+    assert peerbook.load_book(strict=True) == {}  # missing file is an empty book
+    path = tmp_path / "state" / "peers.json"
+    path.parent.mkdir(parents=True)
+    for bad in ("{nope", "[]"):
+        path.write_text(bad)
+        assert peerbook.load_book() == {}
+        with pytest.raises(ValueError):
+            peerbook.load_book(strict=True)

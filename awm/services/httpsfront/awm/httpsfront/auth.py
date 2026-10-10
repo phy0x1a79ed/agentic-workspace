@@ -76,15 +76,20 @@ def is_machine_sub(sub: str | None) -> bool:
     return sub == "operator" or is_peer_sub(sub)
 
 
-def is_foreign_peer(sub: str | None) -> bool:
+def is_foreign_peer(sub: str | None, relation_of=None) -> bool:
     """Whether ``sub`` is a node outside this swarm.
 
-    ``peer:<node>`` is foreign unless the book says domestic, so a node missing
-    from the book gets the narrow door. The legacy bearer is the old node-wide
-    credential and is not foreign.
+    ``peer:<node>`` is foreign unless ``relation_of(node)`` says domestic, so a
+    node the relation source does not know, or no source at all, gets the narrow
+    door. ``relation_of`` is the gate's :meth:`AuthGate.peer_relation`: the
+    relation comes from the same material snapshot that held the key, never a
+    separate read of the book. The legacy bearer is the old node-wide credential
+    and is not foreign.
     """
     node = config.caller_peer(sub)
-    return node is not None and config.peer_relation(node) != "domestic"
+    if node is None:
+        return False
+    return (relation_of(node) if relation_of else None) != "domestic"
 
 
 def legacy_bearer_enabled(mat: dict[str, Any] | None = None) -> bool:
@@ -100,14 +105,14 @@ def _verified_node(mat: dict[str, Any], token: str) -> str | None:
     if issuer is None:
         return None
     for peer in mat.get("peers") or []:
-        if peer.get("name") != issuer or not peer.get("public_key"):
+        if peertoken.node_label(peer.get("name")) != issuer or not peer.get("public_key"):
             continue
         try:
             peertoken.verify(token, peer["public_key"], aud=config.node_name())
         except peertoken.TokenError as exc:
             log.info("edge: node token from %s refused: %s", issuer, exc)
             return None
-        return issuer
+        return peer["name"]
     return None
 
 
@@ -118,6 +123,13 @@ class AuthGate:
         self._material: dict[str, Any] | None = None
         self._fetched_at = 0.0
         self._lock = asyncio.Lock()
+
+    def peer_relation(self, node: str) -> str | None:
+        """``domestic`` or ``foreign`` for ``node`` per the cached material, else ``None``."""
+        for peer in (self._material or {}).get("peers") or []:
+            if peer.get("name") == node:
+                return peer.get("relation")
+        return None
 
     async def _material_fresh(self) -> dict[str, Any] | None:
         now = time.monotonic()

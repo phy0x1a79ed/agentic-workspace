@@ -55,6 +55,7 @@ import logging
 import os
 import re
 import secrets
+import stat
 import time
 import urllib.parse
 from pathlib import Path
@@ -138,50 +139,83 @@ def node_key_file() -> Path:
     return Path(config.SERVICES_DIR) / store.SERVICE / NODE_KEY_NAME
 
 
-def ensure_node_key() -> str:
-    """The node's private key, minted once and kept in a 0600 file.
+class NodeKeyError(RuntimeError):
+    """The node key file is not something auth may sign with."""
 
-    Created exclusively so two starts racing each other cannot mint two keys:
-    the loser reads what the winner wrote.
+
+def _write_new_key_file(path: Path, private: str) -> None:
+    """Put ``private`` at ``path`` atomically, unless something is already there.
+
+    The key is written complete and flushed to disk under a private temporary
+    name, then linked into place. ``link`` fails if ``path`` exists, so a reader
+    never sees a partial key and two starts racing each other cannot mint two.
     """
-    path = node_key_file()
-    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.{secrets.token_hex(4)}.tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     try:
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    except FileExistsError:
-        return path.read_text().strip()
-    private = peertoken.generate_private_key()
-    with os.fdopen(fd, "w") as fh:
-        fh.write(private + "\n")
-    log.info("auth: minted this node's ed25519 key (%s)",
-             peertoken.fingerprint(peertoken.public_key_of(private)))
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w") as fh:
+            fh.write(private + "\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+        try:
+            os.link(tmp, path)
+        except FileExistsError:
+            return
+        dir_fd = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
+        log.info("auth: minted this node's ed25519 key (%s)",
+                 peertoken.fingerprint(peertoken.public_key_of(private)))
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def _read_node_key(path: Path) -> str:
+    """The key in ``path``, after checking it is a private 32-byte seed."""
+    st = path.lstat()
+    if not stat.S_ISREG(st.st_mode):
+        raise NodeKeyError(f"{path} is not a regular file")
+    if stat.S_IMODE(st.st_mode) != 0o600:
+        raise NodeKeyError(
+            f"{path} has mode {stat.S_IMODE(st.st_mode):04o}; expected 0600. "
+            "Run chmod 600 on it, or move it aside to mint a new identity")
+    private = path.read_text().strip()
+    try:
+        peertoken.public_key_of(private)
+    except (peertoken.TokenError, ValueError) as exc:
+        raise NodeKeyError(f"{path} does not hold a 32-byte ed25519 key: {exc}") from exc
     return private
 
 
-def _peer_names() -> list[str]:
-    """Names in the peer book. The book has no listing accessor, so the keys of
-    its file are read and each record then comes through ``peer_record``."""
-    import json
-    from awm.config.peerbook import peers_file
-    try:
-        book = json.loads(peers_file().read_text())
-    except (OSError, ValueError):
-        return []
-    return sorted(book) if isinstance(book, dict) else []
+def ensure_node_key() -> str:
+    """The node's private key, minted once and kept in a 0600 file."""
+    path = node_key_file()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not os.path.lexists(path):
+        _write_new_key_file(path, peertoken.generate_private_key())
+    return _read_node_key(path)
+
+
+def _operator_only(as_: str | None, verb: str) -> None:
+    """Refuse a verb that arrived through an edge listener.
+
+    The edge always stamps ``X-Awm-As``; a call from this host's own CLI or
+    service has none. The verbs guarded this way hand out the means to act as
+    this node or to forge a session, which no caller across an edge may have.
+    """
+    if as_ is not None:
+        raise PermissionError(
+            f"{verb} is an operator verb: run it on the host, not through an edge")
 
 
 def _edge_peers() -> list[dict[str, Any]]:
     """Each book peer's name, public key and relation, for the edge to verify
     node tokens against. Never carries a secret."""
-    out = []
-    for name in _peer_names():
-        record = config.peer_record(name)
-        if record is None:
-            continue
-        out.append({"name": record["name"],
-                    "public_key": record.get("public_key"),
-                    "relation": record["relation"]})
-    return out
+    return [{"name": r["name"], "public_key": r.get("public_key"),
+             "relation": r["relation"]} for r in config.list_records()]
 
 
 # ---------------------------------------------------------------------------
@@ -639,18 +673,19 @@ def h_verify(args: dict) -> dict:
     return {"ok": True, "sub": sub, "token": token, "session_ttl_seconds": ttl}
 
 
-def h_edge_material(args: dict) -> dict:
+def h_edge_material(args: dict, as_: str | None = None) -> dict:
     """Material the httpsfront edge caches to enforce auth offline.
 
     Returns the signing secret (to verify+slide cookies without an RPC per
     request), the currently-valid peer credentials (to check peer bearers), the
     book's peers with their public keys (to verify node tokens), and the
-    session-lifetime knobs. Loopback-only in practice — the edge itself blocks
-    this path to any unauthenticated external caller.
+    session-lifetime knobs. Operator-only: the edge itself fetches it with no
+    ``as_``, and a call that crossed an edge carries one and is refused.
 
     The legacy bearers are withheld once ``AWM_PEER_LEGACY_BEARER=0``. The
     public profile verifies no peers at all, bearer or token.
     """
+    _operator_only(as_, "edge_material")
     s = _settings()
     shared = shared_password_enabled()
     legacy = ([g["peer_credential"] for g in store.valid_generations()]
@@ -671,13 +706,18 @@ def h_node_key(args: dict) -> dict:
     return {"public_key": public, "fingerprint": peertoken.fingerprint(public)}
 
 
-def h_sign_peer_token(args: dict) -> dict:
-    """A short-lived token naming this node, for the node called ``aud``."""
-    aud = str((args or {}).get("aud") or "").strip()
+def h_sign_peer_token(args: dict, as_: str | None = None) -> dict:
+    """A short-lived token naming this node, for the node called ``aud``.
+
+    Operator-only: whoever can ask for this speaks as this node to every other.
+    """
+    _operator_only(as_, "sign_peer_token")
+    aud = peertoken.node_label((args or {}).get("aud"))
     if not aud:
         raise ValueError("aud is required")
-    token = peertoken.sign(ensure_node_key(), iss=config.node_name(), aud=aud)
-    return {"token": token, "iss": config.node_name(), "aud": aud,
+    iss = peertoken.node_label(config.node_name())
+    token = peertoken.sign(ensure_node_key(), iss=iss, aud=aud)
+    return {"token": token, "iss": iss, "aud": aud,
             "expires_in": peertoken.TOKEN_TTL_SECONDS}
 
 

@@ -84,9 +84,19 @@ def fingerprint(public_key_b64: str) -> str:
     return "SHA256:" + base64.b64encode(digest).decode("ascii").rstrip("=")
 
 
+def node_label(name: str | None) -> str:
+    """A node's identity in a token: the first DNS label, lowercased.
+
+    ``node_name()`` may be an FQDN on one node and a bare name on another, so
+    both ends of a token compare this form and never the raw string.
+    """
+    return (name or "").strip().split(".")[0].lower()
+
+
 def sign(private_key_b64: str, *, iss: str, aud: str, now: float | None = None,
          ttl: float = TOKEN_TTL_SECONDS) -> str:
     """A token from node ``iss`` for node ``aud``, valid for ``ttl`` seconds."""
+    iss, aud = node_label(iss), node_label(aud)
     if not iss or not aud:
         raise ValueError("iss and aud are required")
     key = Ed25519PrivateKey.from_private_bytes(_decode_key(private_key_b64, "private key"))
@@ -133,7 +143,7 @@ def issuer_of(token: str) -> str | None:
         iss = _claims_of(payload).get("iss")
     except TokenError:
         return None
-    return iss if isinstance(iss, str) and iss else None
+    return node_label(iss) or None if isinstance(iss, str) else None
 
 
 def verify(token: str, public_key_b64: str, *, aud: str, now: float | None = None,
@@ -154,12 +164,14 @@ def verify(token: str, public_key_b64: str, *, aud: str, now: float | None = Non
     claims = _claims_of(payload)
     iss, claimed_aud = claims.get("iss"), claims.get("aud")
     iat, exp = claims.get("iat"), claims.get("exp")
-    if not isinstance(iss, str) or not iss:
+    if not isinstance(iss, str) or not node_label(iss):
         raise TokenError("missing iss")
-    if claimed_aud != aud:
+    if not isinstance(claimed_aud, str) or node_label(claimed_aud) != node_label(aud):
         raise TokenError("wrong audience")
-    if not all(isinstance(t, (int, float)) and not isinstance(t, bool) for t in (iat, exp)):
-        raise TokenError("missing iat or exp")
+    # `type(...) is int` rejects bool (an int subclass) and every float, which
+    # is how NaN, Infinity and 1e999 reach a JSON-parsed claim.
+    if type(iat) is not int or type(exp) is not int:
+        raise TokenError("iat and exp must be integers")
     current = time.time() if now is None else now
     if current > exp + skew:
         raise TokenError("expired")

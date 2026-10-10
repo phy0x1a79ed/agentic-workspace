@@ -59,13 +59,16 @@ from enum import Enum
 from awm.httpsfront import penpot, slices, tether, vault
 from awm.httpsfront.auth import is_machine_sub
 
-#: The only paths a foreign node reaches on a mesh edge. Both are the gateway's
-#: own calling surface, where the effect gate decides what the verb may do.
-FOREIGN_PATHS = frozenset({"/invoke", "/tools"})
+# The only paths a foreign node reaches on a mesh edge. Wave 2 re-adds
+# "/invoke" here once the gateway effect gate exists: until then the flat
+# /invoke dispatch has no per-verb check, and a foreign caller on it could call
+# auth.edge_material and forge a session. The catalog's own `peers` view is
+# withheld from a foreign caller by the proxy, not by this set.
+FOREIGN_PATHS = frozenset({"/tools"})
 
 
 def foreign_allows(path: str) -> bool:
-    """Whether a foreign node may reach ``path``: ``/invoke`` and ``/tools``, nothing else.
+    """Whether a foreign node may reach ``path``: ``FOREIGN_PATHS``, nothing else.
 
     Everything else on a mesh edge — WebSockets, emit topics, files, the hub,
     the vault, Penpot, the landing page — answers 404 to a foreign node.
