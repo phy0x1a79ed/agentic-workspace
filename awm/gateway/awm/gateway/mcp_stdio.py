@@ -50,7 +50,7 @@ import urllib.request
 from typing import Any
 
 from awm import config
-from awm.gateway import mcp_caller, mcp_http
+from awm.gateway import mcp_caller, mcp_http, mcp_more
 
 SERVER_NAME = "awm"
 SERVER_VERSION = "0.1.0"
@@ -251,10 +251,11 @@ def _handle_tools_list() -> dict:
 
     ``view=domains`` asks for the collapsed one-tool-per-domain surface;
     ``peers=1`` makes it fleet-wide from the gateway's background snapshot
-    (one loopback GET, not an ssh per peer).
+    (one loopback GET, not an ssh per peer). ``tiers=1`` narrows that to the
+    core domains plus ``providersOf`` and the ``more`` call-through tool.
     """
     data = _request_with_retry(
-        "GET", "/tools", params={"view": "domains", "peers": "1"},
+        "GET", "/tools", params={"view": "domains", "peers": "1", "tiers": "1"},
         read_timeout=mcp_http.catalog_read_timeout())
     # The core emits the optional Tool fields it has nothing to say about as
     # explicit nulls (``annotations``, ``icons``, ``_meta``, …). The SDK proxy
@@ -269,6 +270,10 @@ def _handle_tools_call(params: dict) -> dict:
     name = params.get("name", "")
     arguments = params.get("arguments") or {}
     try:
+        # ``more(domain=D, verb=V, ...)`` is the call-through to a discoverable
+        # domain. Rewritten to the direct call before anything reads ``name``, so
+        # headers, redirect, file localisation and errors are the direct call's.
+        name, arguments = mcp_more.rewrite_call(name, arguments)
         # A placed agent's proxy carries its placement identity in AWM_AS (set
         # in its per-placement spawn-mcp config). Read at call time, not import
         # time, so a reused proxy always reflects its own env.

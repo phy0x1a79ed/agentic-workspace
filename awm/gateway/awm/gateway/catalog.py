@@ -75,9 +75,9 @@ from typing import Any
 from mcp.types import Tool
 from starlette.concurrency import run_in_threadpool
 
-from awm.gateway import peer_catalog
+from awm.gateway import mcp_more, peer_catalog
 from awm.gateway.gateway_ops import GATEWAY_OPERATIONS
-from awm.gateway.hub import rpc
+from awm.gateway.hub import discovery, rpc
 from awm.gateway.hub.registry import ServiceRecord, get_registry
 from awm.gateway.operations import _call_service, _to_mcp_tool, operations_to_mcp_tools
 
@@ -277,6 +277,14 @@ _DESCRIBE_VERB = "describe"
 #: ``describe`` verb.
 _PROVIDERS_TOOL = "providersOf"
 
+#: The reserved call-through tool for discoverable domains (see ``mcp_more``).
+_MORE_TOOL = mcp_more.MORE_TOOL
+
+#: Gateway-native domains that are core. They have no service folder to carry a
+#: ``tier`` key, so they are named here; ``gateway`` and ``config`` stay
+#: discoverable.
+_NATIVE_CORE_DOMAINS = frozenset({"services", "peer"})
+
 # The minimal envelope every domain tool advertises (discovery-only — the rich
 # per-verb schema is fetched via ``describe``, never inlined here).
 _DOMAIN_INPUT_SCHEMA: dict[str, Any] = {
@@ -461,7 +469,128 @@ async def _providers_of(tool: str | None = None,
     }
 
 
-def list_domain_tools(*, peers: bool = False) -> list[Tool]:
+def _core_domains() -> set[str]:
+    """Domains this node declares core: the gateway-native core set plus every
+    domain projected by a running LOCAL service whose ``service.toml`` says
+    ``tier = "core"``. A domain only a peer provides is never in this set — what
+    a peer calls core is not our word to adopt."""
+    core = set(_NATIVE_CORE_DOMAINS)
+    for rec in get_registry().service_records():
+        if discovery.service_tier(rec.name) != discovery.TIER_CORE:
+            continue
+        for fn in (rec.api or {}).get("functions", []) or []:
+            if not (isinstance(fn, dict) and fn.get("name")):
+                continue
+            if not _fn_on_surface(fn, "mcp"):
+                continue
+            core.add(_tool_name(rec, fn).partition("_")[0])
+    return core
+
+
+def _one_line(text: str, limit: int = 110) -> str:
+    """First sentence of ``text`` on one line, capped at ``limit`` characters."""
+    flat = " ".join(text.split())
+    head, sep, _ = flat.partition(". ")
+    flat = head + ("." if sep else "")
+    return flat if len(flat) <= limit else flat[: limit - 1].rstrip() + "…"
+
+
+def _node_phrase(res: dict[str, Any]) -> str:
+    """Where a domain runs by default, in a few words."""
+    reason = res["reason"]
+    others = [p["peer"] for p in res["providers"] if p["peer"] != res["default"]]
+    if reason == peer_catalog.REASON_LOCAL:
+        return "this node" + (f", also {', '.join(others)}" if others else "")
+    if reason == peer_catalog.REASON_SINGLETON:
+        return f"{res['default']} (singleton)"
+    if reason == peer_catalog.REASON_SOLE_PEER:
+        return str(res["default"])
+    if reason == peer_catalog.REASON_AMBIGUOUS:
+        return "peer= required: " + ", ".join(p["peer"] for p in res["providers"])
+    return "unknown"
+
+
+def _discoverable_line(res: dict[str, Any], blurb: str | None) -> str:
+    """One index line: name, the service's own blurb (else its verb names), node."""
+    if blurb:
+        what = _one_line(blurb)
+    else:
+        verbs = _advertised_verbs(res)
+        what = "verbs: " + (", ".join(verbs) if verbs else "none known")
+    return f"- {res['tool']}: {what} [{_node_phrase(res)}]"
+
+
+def _more_tool(hidden_lines: list[str]) -> Tool:
+    """The ``more`` call-through tool; its description is the discoverable index."""
+    index = "\n".join(hidden_lines) if hidden_lines else "(none)"
+    return Tool(
+        name=_MORE_TOOL,
+        description=(
+            "Reach an awm domain that is not listed as its own tool. "
+            "more(domain, verb, args, peer) runs that domain's verb exactly as "
+            "calling the domain directly would; verb='describe' returns the "
+            "domain's verb schemas; more() with no domain lists them. "
+            "Discoverable domains:\n" + index),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "domain": {"type": "string",
+                           "description": "The discoverable domain to call. "
+                                          "Omit to list the domains."},
+                "verb": {"type": "string",
+                         "description": "The verb to run in that domain, or "
+                                        "'describe' for its schemas."},
+                "args": {"type": "object",
+                         "description": "Arguments for the verb (see describe)."},
+                "peer": {"type": "string",
+                         "description": "Optional. Run on a specific fleet node; "
+                                        "providersOf(tool=<domain>) lists them."},
+            },
+        },
+        # A router: the target verb's own effect applies when it is invoked.
+        **{"_meta": {"effect": "read"}},
+    )
+
+
+def _tier_split(local_verbs: dict[str, list[str]],
+                snap: dict[str, dict[str, Any]],
+                blurbs: dict[str, str]
+                ) -> tuple[list[dict[str, Any]], list[str]]:
+    """Fleet domains split by tier: ``(core resolutions, discoverable index lines)``.
+
+    A domain is core only if a local service declares it. Everything else the
+    fleet can reach, a peer-only domain included, is discoverable."""
+    core = _core_domains()
+    shown: list[dict[str, Any]] = []
+    lines: list[str] = []
+    for domain in peer_catalog.fleet_domains(local_verbs, snap):
+        res = peer_catalog.resolve(domain, local_verbs, snap)
+        if domain in core:
+            shown.append(res)
+        else:
+            lines.append(_discoverable_line(res, blurbs.get(domain)))
+    return shown, lines
+
+
+def _more_index(args: dict[str, Any]) -> str:
+    """Answer ``more`` with no domain: the discoverable domains, one line each.
+
+    A call that does name a domain never reaches the gateway as ``more`` — the MCP
+    proxies rewrite it to the direct call, so the caller stamp and the gates see
+    the true domain and verb. Reaching here with one means a caller skipped the
+    rewrite, and running it unstamped would bypass those gates."""
+    domain = args.get("domain")
+    if isinstance(domain, str) and domain.strip():
+        raise ValueError(
+            f"'{_MORE_TOOL}' with a domain is rewritten by the MCP proxy; "
+            f"call {domain.strip()!r} directly with {{verb, args, peer}}")
+    domains = _domain_catalog()
+    local_verbs = _local_domain_verbs(domains)
+    _, lines = _tier_split(local_verbs, peer_catalog.snapshot(), _domain_blurbs())
+    return "\n".join(lines) if lines else "No discoverable domains."
+
+
+def list_domain_tools(*, peers: bool = False, tiers: bool = False) -> list[Tool]:
     """Project the collapsed per-domain MCP surface — one ``Tool`` per domain,
     each advertising the ``{verb, args, peer}`` envelope with ``verb`` enumerated.
 
@@ -477,6 +606,13 @@ def list_domain_tools(*, peers: bool = False) -> list[Tool]:
     catalog was merged under ``<domain>@<peer>`` names and two peers tripled the
     tool count for no new capability. The reserved ``providersOf`` tool is
     appended so the peer options are discoverable without listing them per tool.
+
+    ``tiers=True`` (only with ``peers=True``) narrows that fleet surface to the
+    **core** domains, ``providersOf`` and the ``more`` call-through tool, whose
+    description indexes every other fleet domain. The filter lives here, after
+    the fleet union and never in ``_domain_catalog``: dispatch, ``describe``,
+    ``providersOf`` and the peers' own sweeps of our local view all read the
+    unfiltered catalog, so a discoverable domain stays fully callable.
     """
     catalog = _domain_catalog()
     local_verbs = _local_domain_verbs(catalog)
@@ -493,14 +629,21 @@ def list_domain_tools(*, peers: bool = False) -> list[Tool]:
                 for domain, verbs in local_verbs.items()]
 
     snap = peer_catalog.snapshot()
+    hidden_lines: list[str] = []
+    if tiers:
+        shown, hidden_lines = _tier_split(local_verbs, snap, blurbs)
+    else:
+        shown = [peer_catalog.resolve(domain, local_verbs, snap)
+                 for domain in peer_catalog.fleet_domains(local_verbs, snap)]
     out: list[Tool] = []
-    for domain in peer_catalog.fleet_domains(local_verbs, snap):
-        res = peer_catalog.resolve(domain, local_verbs, snap)
-        out.append(Tool(name=domain,
+    for res in shown:
+        out.append(Tool(name=res["tool"],
                         description=_fleet_domain_description(
-                            res, blurbs.get(domain)),
+                            res, blurbs.get(res["tool"])),
                         inputSchema=_domain_envelope(_advertised_verbs(res))))
     out.append(_providers_tool())
+    if tiers:
+        out.append(_more_tool(hidden_lines))
     return out
 
 
@@ -696,6 +839,8 @@ async def dispatch(name: str, args: dict, as_: str | None = None) -> str:
     if name == _PROVIDERS_TOOL:
         return _serialize(await _providers_of(
             args.get("tool"), bool(args.get("refresh"))))
+    if name == _MORE_TOOL:
+        return _serialize(_more_index(args))
     if "verb" in args:
         domains = _domain_catalog()
         if name in domains or name in peer_catalog.fleet_domains(

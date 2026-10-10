@@ -1,0 +1,3 @@
+# Core tier: the scope, project and ref domains are listed on the agent-facing
+# MCP surface. Without this key a service is discoverable (reached via `more`).
+tier = "core"
