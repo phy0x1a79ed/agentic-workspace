@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import sys
 from pathlib import Path
 
@@ -88,10 +89,11 @@ async def test_no_cursor_means_live_events_only():
         wakeup.notify()
 
     poster = asyncio.create_task(post_later())
-    chunks = await take(gen, 2)
+    chunks = await take(gen, 3)
     await gen.aclose()
     await poster
-    assert chunks[1].decode().startswith("id: 2\n")
+    assert chunks[1] == b"id: 1\n\n"  # the head, handed over before any real event
+    assert chunks[2].decode().startswith("id: 2\n")
 
 
 async def test_the_tail_delivers_an_event_appended_after_the_replay():
@@ -129,6 +131,82 @@ async def test_a_revoked_party_loses_the_stream_at_the_next_heartbeat():
     alive["yes"] = False
     rest = [chunk async for chunk in gen]
     assert rest == []
+
+
+async def test_a_live_start_on_an_empty_log_hands_over_id_zero():
+    gen = stream.event_stream(StubEvents(), ALPHA, None, heartbeat_s=60)
+    chunks = await take(gen, 2)
+    await gen.aclose()
+    assert chunks == [stream.PREAMBLE, b"id: 0\n\n"]
+
+
+async def test_a_cursor_newer_than_the_log_gets_one_resync_then_a_live_stream():
+    events = StubEvents()
+    events.append("card.posted", card(1))
+    events.append("card.posted", card(2))
+    wakeup = stream.Wakeup()
+    gen = stream.event_stream(events, ALPHA, 99, wakeup=wakeup, heartbeat_s=60, poll_s=0.05)
+    chunks = await take(gen, 2)
+    assert chunks[1].decode().startswith("id: 2\nevent: resync\n")
+    assert json.loads(chunks[1].decode().split("data: ")[1]) == {"latest": 2, "oldest": 1}
+
+    events.append("card.posted", card(3))
+    wakeup.notify()
+    after = await take(gen, 1)
+    await gen.aclose()
+    assert after[0].decode().startswith("id: 3\nevent: card.posted\n")  # nothing replayed from 99
+
+
+async def test_a_cursor_older_than_the_oldest_retained_event_gets_a_resync():
+    events = StubEvents()
+    for n in range(1, 8):
+        events.append("card.posted", card(n))
+    events.drop_through(5)  # pruned: 6 and 7 remain
+    gen = stream.event_stream(events, ALPHA, 2, heartbeat_s=60)
+    chunks = await take(gen, 2)
+    await gen.aclose()
+    assert chunks[1].decode().startswith("id: 7\nevent: resync\n")
+    assert json.loads(chunks[1].decode().split("data: ")[1]) == {"latest": 7, "oldest": 6}
+
+
+async def test_a_cursor_just_before_the_oldest_event_replays_without_a_resync():
+    events = StubEvents()
+    for n in range(1, 8):
+        events.append("card.posted", card(n))
+    events.drop_through(5)
+    gen = stream.event_stream(events, ALPHA, 5, heartbeat_s=60)
+    chunks = await take(gen, 3)
+    await gen.aclose()
+    assert [c.decode().split("\n")[0] for c in chunks[1:]] == ["id: 6", "id: 7"]
+
+
+async def test_a_revoked_party_loses_the_stream_even_while_events_keep_flowing():
+    events = StubEvents()
+    alive = {"yes": True}
+    gen = stream.event_stream(events, ALPHA, 0, heartbeat_s=0.15, poll_s=0.01,
+                              still_valid=lambda: alive["yes"])
+    stop = asyncio.Event()
+
+    async def keep_posting():
+        n = 0
+        while not stop.is_set():
+            n += 1
+            events.append("card.posted", card(n))
+            await asyncio.sleep(0.01)
+
+    poster = asyncio.create_task(keep_posting())
+
+    async def drain():
+        async for _ in gen:
+            pass
+
+    reader = asyncio.create_task(drain())
+    await asyncio.sleep(0.3)
+    assert not reader.done()
+    alive["yes"] = False
+    await asyncio.wait_for(reader, 2)  # ends within about one heartbeat interval
+    stop.set()
+    await poster
 
 
 async def test_maintain_sweeps_repeatedly_and_prunes_on_its_own_schedule():

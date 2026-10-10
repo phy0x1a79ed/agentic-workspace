@@ -62,11 +62,13 @@ class StubParties:
 class StubEvents:
     def __init__(self) -> None:
         self.log: list[dict] = []
+        self._last = 0
         self._lock = threading.Lock()
 
     def append(self, type: str, card: dict) -> int:
         with self._lock:
-            event = {"id": len(self.log) + 1, "type": type, "card": dict(card), "created_at": time.time()}
+            self._last += 1
+            event = {"id": self._last, "type": type, "card": dict(card), "created_at": time.time()}
             self.log.append(event)
             return event["id"]
 
@@ -76,7 +78,16 @@ class StubEvents:
 
     def latest_id(self) -> int:
         with self._lock:
-            return len(self.log)
+            return self.log[-1]["id"] if self.log else 0
+
+    def oldest_id(self) -> int:
+        with self._lock:
+            return self.log[0]["id"] if self.log else 0
+
+    def drop_through(self, event_id: int) -> None:
+        """Simulate pruning: forget every event up to and including ``event_id``."""
+        with self._lock:
+            self.log = [e for e in self.log if e["id"] > event_id]
 
     def prune(self, days: float = 30) -> int:
         return 0

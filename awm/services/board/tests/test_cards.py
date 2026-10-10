@@ -7,6 +7,7 @@ import pytest
 
 from awm.board.cards import COLUMNS, Board, BoardLocked
 from awm.board.parties import Conflict, Forbidden, NotFound
+from awm.board.vault import VaultError
 
 
 def request(board, party, to="collins", **kw):
@@ -99,7 +100,8 @@ def test_a_body_that_could_be_confused_with_the_result_is_refused(board, tony):
 
 @pytest.mark.parametrize("bad", [
     {"kind": "quest"}, {"priority": "whenever"}, {"recipient": "Not A Slug"},
-    {"title": "  "}, {"body": None}])
+    {"title": "  "}, {"title": 7}, {"title": None}, {"body": None}, {"body": 12},
+    {"recipient": None}, {"reply_to": "a" * 32}])    # a reply is a message, not a request
 def test_bad_input_is_refused(board, tony, bad):
     args = dict(kind="request", recipient="collins", title="t", body="b")
     args.update(bad)
@@ -143,18 +145,91 @@ def test_anyone_claims_an_open_card(board, tony, make_party):
 
 def test_a_message_cannot_be_claimed(board, tony, collins, trilium):
     card = message(board, tony)
-    with pytest.raises(Conflict):
+    with pytest.raises(Forbidden):
         board.claim(collins, card["id"])
     note = trilium.card_note(card["id"])
     assert trilium.label(note, "status") == "Posted" and trilium.label(note, "cardClaimant") == ""
     assert board.get(collins, card["id"])["claimant"] is None
 
 
-def test_a_held_card_cannot_be_claimed_again(board, tony, collins):
+def test_a_card_held_by_another_swarm_is_a_conflict(board, tony, make_party):
+    mock, shaula = make_party("mock"), make_party("shaula")
+    card = request(board, tony, to="open")
+    board.claim(mock, card["id"])
+    with pytest.raises(Conflict):
+        board.claim(shaula, card["id"])
+
+
+def test_a_finished_card_cannot_be_claimed_again(board, tony, collins):
     card = request(board, tony)
     board.claim(collins, card["id"])
+    board.complete(collins, card["id"], "ok")
     with pytest.raises(Conflict):
         board.claim(collins, card["id"])
+
+
+def test_a_repeat_claim_by_the_holder_returns_the_card_without_a_new_event(
+        board, events, tony, collins):
+    card = request(board, tony)
+    first = board.claim(collins, card["id"])
+    before = events.latest_id()
+    again = board.claim(collins, card["id"])
+    assert again == first and again["status"] == "in_progress"
+    assert events.latest_id() == before
+
+
+def test_a_failed_first_claim_leaves_a_card_the_retry_can_take(
+        board, trilium, events, tony, collins, make_party):
+    card = request(board, tony, to="open")
+    trilium.fail_after_labels = 1                  # claimant lands, status does not
+    with pytest.raises(VaultError):
+        board.claim(collins, card["id"])
+    note = trilium.card_note(card["id"])
+    assert trilium.label(note, "cardClaimant") == "collins"
+    assert trilium.label(note, "status") == "Posted"
+    other = make_party("mock")                     # a stale claimant does not hold the card
+    retried = board.claim(other, card["id"])
+    assert retried["claimant"] == "mock" and retried["status"] == "in_progress"
+    assert trilium.label(note, "cardClaimant") == "mock"
+    claims = [e for e in events.since(0, {"swarm": "tony"}) if e["type"] == "card.claimed"]
+    assert [e["card"]["claimant"] for e in claims] == ["mock"]
+
+
+def test_a_retry_by_the_same_swarm_after_a_failed_claim_works(board, trilium, tony, collins):
+    card = request(board, tony)
+    trilium.fail_after_labels = 2
+    with pytest.raises(VaultError):
+        board.claim(collins, card["id"])
+    assert board.claim(collins, card["id"])["status"] == "in_progress"
+
+
+def test_a_timeout_after_the_write_lets_the_holder_retry_and_keeps_others_out(
+        board, trilium, events, tony, collins, make_party):
+    card = request(board, tony, to="open")
+    trilium.fail_after_apply = True                # the claim landed, the reply was lost
+    with pytest.raises(VaultError):
+        board.claim(collins, card["id"])
+    note = trilium.card_note(card["id"])
+    assert trilium.label(note, "status") == "In progress"
+    with pytest.raises(Conflict):
+        board.claim(make_party("mock"), card["id"])
+    retried = board.claim(collins, card["id"])
+    assert retried["status"] == "in_progress" and retried["claimant"] == "collins"
+    claims = [e for e in events.since(0, {"swarm": "tony"}) if e["type"] == "card.claimed"]
+    assert len(claims) == 1                        # the log gets the claim once, on the retry
+    before = events.latest_id()
+    board.claim(collins, card["id"])
+    assert events.latest_id() == before
+
+
+def test_a_failed_finish_can_be_retried(board, trilium, tony, collins):
+    card = request(board, tony)
+    board.claim(collins, card["id"])
+    trilium.fail_after_labels = 1
+    with pytest.raises(VaultError):
+        board.complete(collins, card["id"], "ok")
+    assert board.complete(collins, card["id"], "ok")["result"] == "ok"
+    assert board.get(tony, card["id"])["body"] == "please"
 
 
 def test_only_the_claimant_completes_or_fails(board, tony, collins, make_party):
@@ -179,9 +254,9 @@ def test_a_finished_card_cannot_finish_again(board, tony, collins):
     card = request(board, tony)
     board.claim(collins, card["id"])
     board.complete(collins, card["id"], "ok")
-    with pytest.raises(Conflict):
+    with pytest.raises(Forbidden):
         board.complete(collins, card["id"], "again")
-    with pytest.raises(Conflict):
+    with pytest.raises(Forbidden):
         board.fail(collins, card["id"], "again")
 
 
@@ -374,7 +449,7 @@ def test_a_card_seen_for_the_first_time_is_recorded_without_an_event(
         "cardId": "d" * 32, "cardKind": "request", "cardFrom": "tony", "cardTo": "collins",
         "status": "Posted"})
     assert board.sweep() == []
-    assert events.seen_all()["d" * 32] == "posted"
+    assert events.seen_all()["d" * 32]["status"] == "posted"
     trilium.gui_move("d" * 32, "Done")
     assert [e["card"]["status"] for e in board.sweep()] == ["done"]
 
@@ -390,9 +465,57 @@ def test_a_deleted_card_is_forgotten(board, trilium, events, tony):
 # -- one board per lock file ------------------------------------------------------
 
 
-def test_a_second_board_on_the_same_lock_is_refused(board, vault, events, tmp_path):
-    with pytest.raises(BoardLocked):
-        Board(vault, events, lock_path=tmp_path / "board.lock")
+def test_a_respawn_in_the_same_process_reuses_the_lock(board, vault, events, tmp_path):
+    again = Board(vault, events, lock_path=tmp_path / "board.lock")
+    assert again._guard is board._guard      # one claim lock for every board on the path
+    again.close()
+    request_ok = board.post({"swarm": "tony", "principal": "a", "party_id": "p"},
+                            kind="request", recipient="collins", title="t", body="b")
+    assert request_ok["status"] == "posted"
+
+
+def test_the_flock_is_held_until_the_last_board_in_the_process_closes(
+        board, vault, events, tmp_path):
+    second = Board(vault, events, lock_path=tmp_path / "board.lock")
+    lock = str(tmp_path / "board.lock")
+    board.close()
+    assert _probe(lock) == 7                 # the respawn still holds it
+    second.close()
+    assert _probe(lock) != 7
+
+
+def _probe(lock: str) -> int:
+    code = ("import sys\n"
+            "from awm.board.cards import Board, BoardLocked\n"
+            "try:\n"
+            "    Board(None, None, lock_path=sys.argv[1])\n"
+            "except BoardLocked:\n"
+            "    sys.exit(7)\n")
+    return subprocess.run([sys.executable, "-c", code, lock], env=os.environ,
+                          capture_output=True).returncode
+
+
+def test_two_threads_on_two_boards_still_claim_once(
+        board, vault, events, trilium, tmp_path, tony, make_party):
+    other = Board(vault, events, lock_path=tmp_path / "board.lock")
+    card = request(board, tony, to="open")
+    trilium.latency = 0.02
+    barrier = threading.Barrier(2)
+    results = []
+
+    def go(b, who):
+        barrier.wait()
+        try:
+            results.append(b.claim(who, card["id"])["claimant"])
+        except Conflict:
+            results.append("conflict")
+
+    threads = [threading.Thread(target=go, args=(b, make_party(name)))
+               for b, name in ((board, "collins"), (other, "mock"))]
+    [t.start() for t in threads]
+    [t.join() for t in threads]
+    other.close()
+    assert sorted(results)[0] == "conflict" and len(results) == 2
 
 
 def test_a_second_process_is_refused_and_a_released_lock_is_free(
@@ -411,3 +534,105 @@ def test_a_second_process_is_refused_and_a_released_lock_is_free(
                            capture_output=True)
     assert freed.returncode != 7      # it got past the lock (and then tripped on the None vault)
     Board(vault, events, lock_path=lock).close()
+
+
+# -- reads take no claim lock ----------------------------------------------------
+
+
+def test_get_and_list_do_not_wait_for_the_claim_lock(board, tony):
+    card = request(board, tony)
+    held, release, out = threading.Event(), threading.Event(), {}
+
+    def hold():
+        with board._guard:
+            held.set()
+            release.wait(5)
+
+    holder = threading.Thread(target=hold)
+    holder.start()
+    held.wait(5)
+
+    def read():
+        out["get"] = board.get(tony, card["id"])
+        out["list"] = board.list(tony)
+
+    reader = threading.Thread(target=read)
+    reader.start()
+    reader.join(2)
+    release.set()
+    holder.join()
+    assert not reader.is_alive() and out["get"]["id"] == card["id"]
+    assert [c["id"] for c in out["list"]] == [card["id"]]
+
+
+def test_list_pages_with_limit_and_offset(board, tony):
+    ids = [request(board, tony, body=str(i))["id"] for i in range(5)]
+    assert [c["id"] for c in board.list(tony, limit=2)] == ids[:2]
+    assert [c["id"] for c in board.list(tony, limit=2, offset=2)] == ids[2:4]
+    assert [c["id"] for c in board.list(tony, offset=4)] == ids[4:]
+    assert [c["body"] for c in board.list(tony, limit=2, offset=1)] == ["1", "2"]
+    assert len(board.list(tony)) == 5
+
+
+def test_list_reads_bodies_only_for_the_page(board, trilium, tony):
+    for i in range(6):
+        request(board, tony)
+    trilium.calls.clear()
+    board.list(tony, limit=2)
+    assert len([1 for fn, _ in trilium.calls if fn == "note_get"]) == 2
+
+
+@pytest.mark.parametrize("bad", [{"limit": 0}, {"limit": 501}, {"offset": -1}])
+def test_bad_paging_is_refused(board, tony, bad):
+    with pytest.raises(ValueError):
+        board.list(tony, **bad)
+
+
+# -- columns the board does not own ------------------------------------------------
+
+
+def test_columns_match_case_insensitively(board, trilium, tony, collins):
+    card = request(board, tony)
+    trilium.gui_move(card["id"], "in progress")
+    assert board.get(tony, card["id"])["status"] == "in_progress"
+    [event] = board.sweep()
+    assert event["card"]["status"] == "in_progress"
+
+
+def test_an_unknown_column_keeps_the_last_known_status(board, trilium, events, tony, collins):
+    card = request(board, tony)
+    board.claim(collins, card["id"])
+    trilium.gui_move(card["id"], "Blocked")
+    assert board.get(tony, card["id"])["status"] == "in_progress"
+    assert board.sweep() == []
+    assert [c["status"] for c in board.list(tony)] == ["in_progress"]
+    assert board.get(tony, card["id"])["status"] != "blocked"
+    assert events.seen_all()[card["id"]]["status"] == "in_progress"
+    trilium.gui_move(card["id"], "Done")             # back into a known column
+    assert [e["card"]["status"] for e in board.sweep()] == ["done"]
+
+
+def test_an_unknown_column_on_a_card_never_seen_reads_as_posted(board, trilium, board_note):
+    trilium.add_note("hand made", board_note, labels={
+        "cardId": "e" * 32, "cardFrom": "tony", "cardTo": "collins", "status": "Someday"})
+    assert board.get({"swarm": "collins"}, "e" * 32)["status"] == "posted"
+
+
+# -- the watcher also watches the recipient and the claimant ---------------------------
+
+
+def test_a_hand_edit_of_the_recipient_is_reported(board, trilium, tony, collins):
+    card = request(board, tony, to="collins")
+    trilium.set_attr(trilium.card_note(card["id"]), "cardTo", "mock")
+    [event] = board.sweep()
+    assert event["type"] == "card.moved" and event["card"]["recipient"] == "mock"
+    assert board.sweep() == []
+
+
+def test_a_hand_edit_of_the_claimant_is_reported(board, trilium, tony, collins):
+    card = request(board, tony)
+    board.claim(collins, card["id"])
+    trilium.set_attr(trilium.card_note(card["id"]), "cardClaimant", "mock")
+    [event] = board.sweep()
+    assert event["card"]["claimant"] == "mock" and event["card"]["status"] == "in_progress"
+    assert board.sweep() == []

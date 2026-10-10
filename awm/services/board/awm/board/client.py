@@ -19,6 +19,10 @@ log = logging.getLogger("awm.board.client")
 #: connection is half-open, and the stream reconnects.
 STREAM_READ_TIMEOUT_S = 95.0
 
+#: The event type that tells a caller its cursor is unusable: catch up with
+#: ``list`` and carry on. Its card is ``{"latest": id, "oldest": id|None}``.
+RESYNC = "resync"
+
 BACKOFF_START_S = 1.0
 BACKOFF_MAX_S = 30.0
 
@@ -144,6 +148,10 @@ class BoardClient:
         A refused token ends the iteration with ``BoardRefused``, because
         retrying a revoked token only repeats the refusal. Anything else —
         a dropped connection, a 5xx, silence — backs off and reconnects.
+
+        An event of type ``resync`` means the server could not replay from the
+        cursor: its card is ``{"latest", "oldest"}`` and the caller should catch
+        up with ``list`` before trusting the events that follow.
         """
         cursor = last_event_id
         delay = self._backoff_start
@@ -160,6 +168,15 @@ class BoardClient:
                         raise BoardError(response.status_code, "stream failed")
                     async for event_id, event_type, card in _parse(response.aiter_lines()):
                         delay = self._backoff_start
+                        if card is None:  # a bare id: the server handing over its head
+                            if cursor is None or event_id > cursor:
+                                cursor = event_id
+                            continue
+                        if event_type == RESYNC:
+                            # The server cannot replay from our cursor and has moved it to its head.
+                            cursor = event_id
+                            yield event_id, event_type, card
+                            continue
                         if cursor is not None and event_id <= cursor:
                             continue
                         cursor = event_id
@@ -173,14 +190,19 @@ class BoardClient:
             delay = min(delay * 2, self._backoff_max)
 
 
-async def _parse(lines: AsyncIterator[str]) -> AsyncIterator[tuple[int, str, dict]]:
-    """Fold SSE lines into events. Comments and events without an id are skipped."""
+async def _parse(lines: AsyncIterator[str]) -> AsyncIterator[tuple[int, str, dict | None]]:
+    """Fold SSE lines into events. Comments and events without an id are skipped.
+
+    A frame with an id and no data yields ``(id, type, None)``: a cursor, not an event.
+    """
     event_id: int | None = None
     event_type = "message"
     data: list[str] = []
     async for line in lines:
         if line == "":
-            if event_id is not None and data:
+            if event_id is not None and not data:
+                yield event_id, event_type, None
+            elif event_id is not None:
                 try:
                     yield event_id, event_type, json.loads("\n".join(data))
                 except ValueError:

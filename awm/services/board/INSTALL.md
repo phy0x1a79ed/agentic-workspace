@@ -45,6 +45,11 @@ rest comes from the node's env file, `<workspace>/.awm/env`.
 On the host, `AWM_BOARD_URL` defaults to the loopback door, so the host's own
 agents post through the same door as everyone else.
 
+**CAUTION** The node's token is its swarm's identity on the board, so the card
+verbs refuse a caller that arrives from another node (`peer`, `peer:<node>`).
+The party verbs refuse every caller that carries an identity stamp (`user:...`
+or `peer...`) and answer only the host's own bare call.
+
 **CAUTION** Party tokens are stored hashed in `parties.db` and never enter the
 vault. The vault replicates to other machines and crosses Cloudflare in
 plaintext.

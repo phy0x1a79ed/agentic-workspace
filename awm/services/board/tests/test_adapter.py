@@ -22,7 +22,7 @@ pytestmark = [pytest.mark.unit, pytest.mark.smoke]
 EFFECTS = {
     "post": "queue", "claim": "queue", "complete": "queue", "fail": "queue",
     "get": "read", "list": "read",
-    "party_add": "write", "party_revoke": "write", "party_list": "read",
+    "party_add": "secret", "party_revoke": "write", "party_list": "read",
 }
 
 
@@ -110,13 +110,23 @@ async def test_party_revoke_cuts_the_token_off(host):
     assert missing["ok"] is False
 
 
-async def test_admin_verbs_refuse_a_caller_from_another_node(host):
+@pytest.mark.parametrize("caller", ["peer", "peer:shaula", "user:x", "user", "anything"])
+async def test_admin_verbs_refuse_every_stamped_caller(host, caller):
+    """Only the host's own bare CLI call passes: an edge user or a mesh peer carries an identity."""
     args = {"swarm": "alpha", "principal": "p", "relation": "domestic"}
-    for caller in ("peer", "peer:shaula"):
-        assert (await hub_adapter.party_add(args, caller))["ok"] is False
-        assert (await hub_adapter.party_list({}, caller))["ok"] is False
+    for reply in (
+        await hub_adapter.party_add(args, caller),
+        await hub_adapter.party_list({}, caller),
+        await hub_adapter.party_revoke({"party_id": "x"}, caller),
+    ):
+        assert reply["ok"] is False
     assert not host.parties.rows
-    assert (await hub_adapter.party_list({}, "user"))["ok"] is True
+
+
+async def test_admin_verbs_accept_the_hosts_own_bare_call(host):
+    args = {"swarm": "alpha", "principal": "p", "relation": "domestic"}
+    assert (await hub_adapter.party_add(args, None))["ok"] is True
+    assert (await hub_adapter.party_list({}, None))["ok"] is True
 
 
 async def test_admin_verbs_say_so_while_the_host_is_still_starting(monkeypatch):
@@ -171,6 +181,59 @@ async def test_claim_complete_and_fail_relay_with_the_hosts_status(relay, monkey
     await hub_adapter.claim({"card_id": second["id"]})
     failed = await hub_adapter.fail({"card_id": second["id"], "reason": "no"})
     assert failed["card"]["status"] == "failed"
+
+
+@pytest.mark.parametrize("caller", ["peer", "peer:shaula", "peer:capella"])
+async def test_card_verbs_refuse_a_caller_from_another_node(relay, caller):
+    """The node's swarm token is the board identity; a mesh caller must not borrow it."""
+    calls = [
+        hub_adapter.post({"kind": "message", "recipient": "beta", "title": "t"}, caller),
+        hub_adapter.claim({"card_id": "c"}, caller),
+        hub_adapter.complete({"card_id": "c", "result": "r"}, caller),
+        hub_adapter.fail({"card_id": "c", "reason": "r"}, caller),
+        hub_adapter.get({"card_id": "c"}, caller),
+        hub_adapter.list_cards({}, caller),
+    ]
+    for reply in await asyncio.gather(*calls):
+        assert reply["ok"] is False
+        assert "another node" in reply["error"]
+    assert not relay.board.cards  # nothing reached the host
+
+
+@pytest.mark.parametrize("caller", [None, "user:x"])
+async def test_card_verbs_serve_local_agents_and_local_users(relay, caller):
+    posted = await hub_adapter.post({"kind": "message", "recipient": "beta", "title": "t"}, caller)
+    assert posted["ok"] is True
+    assert (await hub_adapter.list_cards({}, caller))["ok"] is True
+
+
+async def test_a_supervised_respawn_reuses_the_host_state(monkeypatch):
+    built = []
+
+    class FakeState:
+        def __init__(self, directory):
+            built.append(directory)
+            self.app, self.board, self.events = object(), object(), object()
+
+    served = []
+
+    async def fake_serve(app, host, port, **kw):
+        served.append(1)
+        raise RuntimeError("door died")
+
+    async def fake_maintain(board, events):
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(hub_adapter, "HOST", None)
+    monkeypatch.setattr(hub_adapter, "HostState", FakeState)
+    from awm.board import http, stream
+    monkeypatch.setattr(http, "serve", fake_serve)
+    monkeypatch.setattr(stream, "maintain", fake_maintain)
+    for _ in range(2):  # the supervisor calls the factory again after each death
+        with pytest.raises(BaseException):
+            await hub_adapter._serve_host()
+    assert len(built) == 1
+    assert len(served) == 2
 
 
 async def test_a_refusal_at_the_host_comes_back_as_a_reply_not_an_exception(relay, monkeypatch):

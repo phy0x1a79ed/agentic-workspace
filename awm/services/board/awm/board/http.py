@@ -14,6 +14,7 @@ nothing after a mutating call.
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 import uuid
 from typing import Any
@@ -44,6 +45,22 @@ def _bearer(request: Request) -> str | None:
     scheme, _, token = header.partition(" ")
     token = token.strip()
     return token if scheme.lower() == "bearer" and token else None
+
+
+def guarded(handler: Any) -> Any:
+    """Wrap a route so an unexpected failure is logged and answered, not leaked as Starlette's 500 page."""
+
+    @functools.wraps(handler)
+    async def wrapper(request: Request) -> Any:
+        try:
+            return await handler(request)
+        except HTTPException:
+            raise
+        except Exception:  # noqa: BLE001 — the door answers every request
+            log.exception("board: unhandled error on %s %s", request.method, request.url.path)
+            return JSONResponse({"error": "internal error"}, status_code=500)
+
+    return wrapper
 
 
 def _exceptions() -> tuple[type, type, type, type]:
@@ -235,13 +252,13 @@ def create_app(
 ) -> Starlette:
     door = Door(board, parties, events, wakeup=wakeup, heartbeat_s=heartbeat_s, poll_s=poll_s)
     routes = [
-        Route(f"{PREFIX}/cards", door.post_card, methods=["POST"]),
-        Route(f"{PREFIX}/cards", door.list_cards, methods=["GET"]),
-        Route(f"{PREFIX}/cards/{{card_id}}", door.get_card, methods=["GET"]),
-        Route(f"{PREFIX}/cards/{{card_id}}/claim", door.claim_card, methods=["POST"]),
-        Route(f"{PREFIX}/cards/{{card_id}}/complete", door.complete_card, methods=["POST"]),
-        Route(f"{PREFIX}/cards/{{card_id}}/fail", door.fail_card, methods=["POST"]),
-        Route(f"{PREFIX}/stream", door.stream, methods=["GET"]),
+        Route(f"{PREFIX}/cards", guarded(door.post_card), methods=["POST"]),
+        Route(f"{PREFIX}/cards", guarded(door.list_cards), methods=["GET"]),
+        Route(f"{PREFIX}/cards/{{card_id}}", guarded(door.get_card), methods=["GET"]),
+        Route(f"{PREFIX}/cards/{{card_id}}/claim", guarded(door.claim_card), methods=["POST"]),
+        Route(f"{PREFIX}/cards/{{card_id}}/complete", guarded(door.complete_card), methods=["POST"]),
+        Route(f"{PREFIX}/cards/{{card_id}}/fail", guarded(door.fail_card), methods=["POST"]),
+        Route(f"{PREFIX}/stream", guarded(door.stream), methods=["GET"]),
     ]
     return Starlette(routes=routes, exception_handlers={HTTPException: _refuse})
 

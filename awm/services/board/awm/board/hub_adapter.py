@@ -135,7 +135,7 @@ API_MANIFEST: dict[str, Any] = {
         {
             "name": "party_add",
             "tool": "board_party_add",
-            "effect": "write",
+            "effect": "secret",
             "description": (
                 "Host only. Mint a party and its bearer token. The token is "
                 "in this answer and nowhere else: it cannot be shown again."
@@ -209,8 +209,19 @@ def _refusal(exc: BoardError) -> dict:
     return {"ok": False, "status": exc.status, "error": str(exc)}
 
 
-async def _relay(call: Any) -> dict:
-    """Run ``call(client)`` against the door and fold the outcome into a reply."""
+def _is_mesh_caller(as_: str | None) -> bool:
+    return as_ == "peer" or (as_ or "").startswith("peer:")
+
+
+async def _relay(call: Any, as_: str | None = None) -> dict:
+    """Run ``call(client)`` against the door and fold the outcome into a reply.
+
+    The node's swarm token is the board identity of whoever calls this verb, so
+    a caller from another node, foreign or not, is refused: it would act as this
+    swarm. Local agents (no identity) and local users pass.
+    """
+    if _is_mesh_caller(as_):
+        return {"ok": False, "error": "board card verbs act as this node's swarm and cannot be run from another node"}
     target = _door_target()
     if isinstance(target, str):
         return {"ok": False, "error": target}
@@ -231,32 +242,32 @@ def _card_reply(reply: dict) -> dict:
     return reply
 
 
-async def post(args: dict) -> dict:
+async def post(args: dict, as_: str | None = None) -> dict:
     return _card_reply(await _relay(lambda c: c.post(
         kind=args["kind"], recipient=args["recipient"], title=args["title"],
         body=args.get("body") or "", priority=args.get("priority") or "normal",
         reply_to=args.get("reply_to") or None,
-    )))
+    ), as_))
 
 
-async def claim(args: dict) -> dict:
-    return _card_reply(await _relay(lambda c: c.claim(args["card_id"])))
+async def claim(args: dict, as_: str | None = None) -> dict:
+    return _card_reply(await _relay(lambda c: c.claim(args["card_id"]), as_))
 
 
-async def complete(args: dict) -> dict:
-    return _card_reply(await _relay(lambda c: c.complete(args["card_id"], args.get("result"))))
+async def complete(args: dict, as_: str | None = None) -> dict:
+    return _card_reply(await _relay(lambda c: c.complete(args["card_id"], args.get("result")), as_))
 
 
-async def fail(args: dict) -> dict:
-    return _card_reply(await _relay(lambda c: c.fail(args["card_id"], args.get("reason") or "")))
+async def fail(args: dict, as_: str | None = None) -> dict:
+    return _card_reply(await _relay(lambda c: c.fail(args["card_id"], args.get("reason") or ""), as_))
 
 
-async def get(args: dict) -> dict:
-    return _card_reply(await _relay(lambda c: c.get(args["card_id"])))
+async def get(args: dict, as_: str | None = None) -> dict:
+    return _card_reply(await _relay(lambda c: c.get(args["card_id"]), as_))
 
 
-async def list_cards(args: dict) -> dict:
-    reply = await _relay(lambda c: c.list(**{k: args[k] for k in CARD_FIELDS if args.get(k)}))
+async def list_cards(args: dict, as_: str | None = None) -> dict:
+    reply = await _relay(lambda c: c.list(**{k: args[k] for k in CARD_FIELDS if args.get(k)}), as_)
     return {"ok": True, "cards": reply["result"]} if reply.get("ok") else reply
 
 
@@ -266,8 +277,9 @@ async def list_cards(args: dict) -> dict:
 def _admin_refusal(verb: str, as_: str | None) -> dict | None:
     if role() != ROLE_HOST:
         return {"ok": False, "error": f"{verb} runs on the board host only; this node is a client"}
-    if as_ == "peer" or (as_ or "").startswith("peer:"):
-        return {"ok": False, "error": f"{verb} cannot be run from another node"}
+    if as_ is not None:
+        # Any stamped identity crossed an edge or the mesh. Only the host's own CLI arrives bare.
+        return {"ok": False, "error": f"{verb} is an operator verb: run it on the host"}
     if HOST is None:
         return {"ok": False, "error": "the board host is still starting"}
     return None
@@ -362,7 +374,10 @@ async def _serve_host() -> None:
     from awm.board import http, stream
 
     global HOST
-    HOST = await asyncio.to_thread(HostState, data_dir())
+    if HOST is None:
+        # Built once and kept across supervised respawns: a second Board in
+        # this process would meet its own claim lock.
+        HOST = await asyncio.to_thread(HostState, data_dir())
     log.info("board: serving the door on 127.0.0.1:%d", port())
     async with asyncio.TaskGroup() as group:
         group.create_task(http.serve(HOST.app, "127.0.0.1", port()))

@@ -103,7 +103,7 @@ def parse_last_event_id(value: str | None) -> int | None:
 
 
 def head(events: Any, party: dict) -> int:
-    """The newest event id this party could see, for a stream that wants live events only."""
+    """The newest event id in the log, for a stream that wants live events only."""
     probe = getattr(events, "latest_id", None)
     if callable(probe):
         return int(probe())
@@ -111,6 +111,24 @@ def head(events: Any, party: dict) -> int:
     for entry in events.since(0, party):
         last = max(last, unpack(entry)[0])
     return last
+
+
+def oldest(events: Any) -> int | None:
+    """The oldest event id still retained, or ``None`` when the log cannot say."""
+    probe = getattr(events, "oldest_id", None)
+    return int(probe()) if callable(probe) else None
+
+
+def is_stale(last_id: int, latest: int, retained_from: int | None) -> bool:
+    """True when a cursor points somewhere the log cannot replay from.
+
+    Newer than the log's head means the log was reset or the client is confused.
+    Older than the oldest retained event means pruning removed events the
+    client never saw. Either way the client must catch up from the card list.
+    """
+    if last_id > latest:
+        return True
+    return bool(retained_from) and last_id < retained_from - 1
 
 
 async def event_stream(
@@ -126,17 +144,37 @@ async def event_stream(
     """Replay what the party missed after ``last_id``, then tail the log forever.
 
     ``last_id=None`` means a live stream: the cursor starts at the newest event
-    rather than at the beginning. ``still_valid`` is asked at each heartbeat; a
-    party revoked mid-stream loses its stream within one interval.
+    and the first frame carries it as a bare ``id:`` so the client holds a
+    cursor before its first real event. A cursor the log cannot replay from
+    gets one ``resync`` frame and then a live stream from the head.
+    ``still_valid`` runs once per heartbeat interval whatever else was sent, so
+    a party revoked mid-stream loses its stream even while events keep flowing.
     """
-    cursor = last_id if last_id is not None else await asyncio.to_thread(head, events, party)
+    latest = await asyncio.to_thread(head, events, party)
+    opening = [PREAMBLE]
+    if last_id is None:
+        cursor = latest
+        opening.append(f"id: {latest}\n\n".encode())
+    else:
+        retained_from = await asyncio.to_thread(oldest, events)
+        if is_stale(last_id, latest, retained_from):
+            cursor = latest
+            opening.append(frame(latest, "resync", {"latest": latest, "oldest": retained_from}))
+        else:
+            cursor = last_id
     waiter = wakeup.subscribe() if wakeup is not None else None
-    yield PREAMBLE
+    for chunk in opening:
+        yield chunk
     next_beat = time.monotonic() + heartbeat_s
+    next_check = next_beat if still_valid is not None else float("inf")
     try:
         while True:
             if waiter is not None:
                 waiter.clear()
+            if still_valid is not None and time.monotonic() >= next_check:
+                if not await asyncio.to_thread(still_valid):
+                    return
+                next_check = time.monotonic() + heartbeat_s
             batch = await asyncio.to_thread(events.since, cursor, party)
             for entry in batch:
                 event_id, event_type, card = unpack(entry)
@@ -147,12 +185,11 @@ async def event_stream(
                 next_beat = time.monotonic() + heartbeat_s
             if batch:
                 continue
-            remaining = next_beat - time.monotonic()
+            remaining = min(next_beat, next_check) - time.monotonic()
             if remaining <= 0:
-                if still_valid is not None and not await asyncio.to_thread(still_valid):
-                    return
-                yield HEARTBEAT
-                next_beat = time.monotonic() + heartbeat_s
+                if time.monotonic() >= next_beat:
+                    yield HEARTBEAT
+                    next_beat = time.monotonic() + heartbeat_s
                 continue
             timeout = min(poll_s, remaining)
             if waiter is None:

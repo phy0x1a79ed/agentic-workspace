@@ -176,3 +176,30 @@ async def test_list_passes_only_the_filters_that_are_set(door):
     assert len(everything) == 2
     assert [c["kind"] for c in requests] == ["request"]
     assert none == []
+
+
+async def test_an_unexpected_failure_answers_500_with_the_minimal_body(door, caplog):
+    def explode(*args, **kwargs):
+        raise RuntimeError("secret internals")
+
+    door.board.list = explode
+    async with door.client(door.tokens["alpha"]) as client:
+        response = await client.get("/board/cards")
+    assert response.status_code == 500
+    assert response.json() == {"error": "internal error"}
+    assert "secret internals" not in response.text
+    assert "unhandled error" in caplog.text
+
+
+async def test_a_vault_failure_is_a_503_and_a_value_error_a_400(door):
+    from awm.board.vault import VaultError
+
+    def down(*args, **kwargs):
+        raise VaultError("trilium is gone")
+
+    door.board.get = down
+    async with door.client(door.tokens["alpha"]) as client:
+        response = await client.get(f"/board/cards/{uuid.uuid4().hex}")
+        assert response.status_code == 503
+        assert response.json() == {"error": "vault unavailable"}
+        assert (await client.post("/board/cards", json={**CARD, "kind": "quest"})).status_code == 400

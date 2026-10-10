@@ -32,6 +32,11 @@ class FakeTrilium:
         self.calls: list[tuple[str, dict]] = []
         self.hooks: dict[str, list] = {}
         self.latency = 0.0
+        #: One-shot faults for `note_update`. Trilium writes labels one call at a
+        #: time, so a call can die partway (`fail_after_labels` = how many labels
+        #: land first) or land fully and still report a failure (`fail_after_apply`).
+        self.fail_after_labels: int | None = None
+        self.fail_after_apply = False
         self._lock = threading.RLock()
 
     # -- the transport the vault is given -------------------------------------
@@ -145,8 +150,16 @@ class FakeTrilium:
             self.notes[note_id]["title"] = title
         if content is not None:
             self.notes[note_id]["content"] = content
+        written = 0
         for name, value in (labels or {}).items():
             self.set_attr(note_id, name, str(value))
+            written += 1
+            if self.fail_after_labels is not None and written >= self.fail_after_labels:
+                self.fail_after_labels = None
+                raise RuntimeError("fault: the call died after a label write")
+        if self.fail_after_apply:
+            self.fail_after_apply = False
+            raise RuntimeError("fault: the call timed out after the write landed")
         return {"note_id": note_id, "changed": {}}
 
 

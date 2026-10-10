@@ -62,9 +62,72 @@ def test_event_cards_are_snapshots(events):
 
 
 def test_last_seen_map_roundtrips(events):
-    events.seen_set("a", "posted")
-    events.seen_set("a", "done")
-    events.seen_set("b", "posted")
-    assert events.seen_all() == {"a": "done", "b": "posted"}
+    events.seen_set("a", "posted", "tony", "")
+    events.seen_set("a", "done", "tony", "collins")
+    events.seen_set("b", "posted", "open", "")
+    assert events.seen_all() == {
+        "a": {"status": "done", "recipient": "tony", "claimant": "collins"},
+        "b": {"status": "posted", "recipient": "open", "claimant": ""}}
     events.seen_drop(["a"])
-    assert events.seen_all() == {"b": "posted"}
+    assert list(events.seen_all()) == ["b"]
+
+
+def test_oldest_id_tracks_the_prune_window(events, tmp_path):
+    assert events.oldest_id() == 0
+    first = events.append("card.posted", card("a"))
+    second = events.append("card.posted", card("b"))
+    assert events.oldest_id() == first
+    raw = sqlite3.connect(tmp_path / "events.db")
+    raw.execute("UPDATE events SET created_at=? WHERE id=?", (time.time() - 40 * 86400, first))
+    raw.commit()
+    events.prune(days=30)
+    assert events.oldest_id() == second
+    events.prune(days=0)
+    assert events.oldest_id() == 0
+
+
+def test_since_filters_in_sql_and_limits(events):
+    tony = {"swarm": "tony"}
+    for i in range(30):
+        events.append("card.posted", card(f"other{i}", sender="collins", recipient="mock"))
+    mine = [events.append("card.posted", card(f"mine{i}", sender="collins", recipient="tony"))
+            for i in range(5)]
+    assert [e["id"] for e in events.since(0, tony)] == mine
+    assert [e["id"] for e in events.since(0, tony, limit=2)] == mine[:2]
+    assert [e["id"] for e in events.since(mine[1], tony, limit=2)] == mine[2:4]
+    assert len(events.since(0, {"swarm": "mock"}, limit=10)) == 10
+
+
+def test_since_defaults_to_500(events):
+    for i in range(520):
+        events.append("card.posted", card(f"c{i}", recipient="tony"))
+    assert len(events.since(0, {"swarm": "tony"})) == 500
+
+
+def test_the_columns_the_filter_uses_are_indexed(events, tmp_path):
+    raw = sqlite3.connect(tmp_path / "events.db")
+    names = {r[1] for r in raw.execute("PRAGMA index_list(events)")}
+    assert {"events_sender", "events_recipient"} <= names
+
+
+def test_a_version_1_log_is_migrated(tmp_path):
+    from awm.board.events import Events
+    path = tmp_path / "old.db"
+    raw = sqlite3.connect(path)
+    raw.executescript("""
+        CREATE TABLE events (id INTEGER PRIMARY KEY AUTOINCREMENT, type TEXT NOT NULL,
+            card_id TEXT NOT NULL, sender TEXT NOT NULL, recipient TEXT NOT NULL,
+            card TEXT NOT NULL, created_at REAL NOT NULL);
+        CREATE TABLE last_seen (card_id TEXT PRIMARY KEY, status TEXT NOT NULL);
+        CREATE TABLE schema_version (version INTEGER NOT NULL);
+        INSERT INTO schema_version VALUES (1);
+        INSERT INTO last_seen VALUES ('x', 'posted');
+    """)
+    raw.commit()
+    raw.close()
+    migrated = Events(path)
+    assert migrated.seen_all()["x"] == {"status": "posted", "recipient": None, "claimant": None}
+    migrated.seen_set("x", "done", "tony", "")
+    assert migrated.seen_all()["x"]["status"] == "done"
+    names = {r[1] for r in sqlite3.connect(path).execute("PRAGMA index_list(events)")}
+    assert "events_sender" in names

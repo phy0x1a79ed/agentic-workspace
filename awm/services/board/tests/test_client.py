@@ -143,6 +143,49 @@ async def test_the_stream_retries_when_the_connection_fails():
     assert len(attempts) == 3
 
 
+async def test_a_bare_id_from_the_server_becomes_the_cursor_for_the_next_connect():
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if len(requests) == 1:  # a live start: only the head, then the connection drops
+            body = [b"retry: 3000\n\n", b"id: 41\n\n"]
+        else:
+            body = sse((42, "card.posted", {"id": "a"}))
+        return httpx.Response(200, content=chunked(body))
+
+    async with client_for(handler) as client:
+        events = client.stream()
+        got = await asyncio.wait_for(anext(events), 3)
+        await events.aclose()
+    assert got[0] == 42  # the bare id was not surfaced as an event
+    assert requests[0].headers.get("last-event-id") is None
+    assert requests[1].headers.get("last-event-id") == "41"
+
+
+async def test_a_resync_frame_is_surfaced_and_moves_the_cursor_even_backwards():
+    requests: list[httpx.Request] = []
+    resync = b'id: 7\nevent: resync\ndata: {"latest":7,"oldest":3}\n\n'
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if len(requests) == 1:
+            body = [resync]  # the client had asked from 99, past the server's head
+        else:
+            body = sse((8, "card.posted", {"id": "a"}))
+        return httpx.Response(200, content=chunked(body))
+
+    async with client_for(handler) as client:
+        events = client.stream(last_event_id=99)
+        first = await asyncio.wait_for(anext(events), 3)
+        second = await asyncio.wait_for(anext(events), 3)
+        await events.aclose()
+    assert first == (7, "resync", {"latest": 7, "oldest": 3})
+    assert second[0] == 8
+    assert requests[0].headers["last-event-id"] == "99"
+    assert requests[1].headers["last-event-id"] == "7"
+
+
 async def test_a_refused_token_ends_the_stream_instead_of_retrying_forever():
     attempts = []
 
@@ -207,6 +250,21 @@ async def test_a_swarm_posts_and_the_other_hears_it_on_the_stream(live):
         kinds = [(await asyncio.wait_for(anext(replay), 5))[1] for _ in range(3)]
         await replay.aclose()
         assert kinds == ["card.posted", "card.claimed", "card.completed"]
+
+
+async def test_the_real_door_resyncs_a_client_whose_cursor_is_past_its_head(live):
+    _, token = live.parties.add("alpha", "p", "domestic")
+    live.events.append("card.posted", card_for("alpha"))
+    async with BoardClient(live.url, token) as client:
+        events = client.stream(last_event_id=500)
+        kind = (await asyncio.wait_for(anext(events), 5))[1]
+        await events.aclose()
+    assert kind == "resync"
+
+
+def card_for(swarm: str) -> dict:
+    return {"id": "x", "sender": {"swarm": swarm, "principal": "p", "party": "z"},
+            "recipient": "beta", "status": "posted"}
 
 
 async def test_a_revoked_token_is_refused_by_the_real_door(live):
