@@ -20,6 +20,7 @@ def door_env(monkeypatch, tmp_path):
     monkeypatch.setenv("AWM_SWARM", "tony")
     monkeypatch.setenv("AWM_DOOR_DB", str(tmp_path / "door.db"))
     monkeypatch.setenv("AWM_DOOR_STATE", str(tmp_path / "state"))
+    monkeypatch.setenv("AWM_CX_PROJECTS", str(tmp_path / "projects"))
     for name in ("AWM_BOARD_URL", "AWM_BOARD_TOKEN"):
         monkeypatch.delenv(name, raising=False)
 

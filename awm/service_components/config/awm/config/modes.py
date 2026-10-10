@@ -5,11 +5,15 @@ calling session's mode up and refuses any call the mode's policy does not admit
 (`refusal`). A mode that is not listed in `MODES`, such as the default `worker`,
 is unrestricted.
 
-A policy is one of two shapes. An `Allow` policy names the only verbs a session
-may call, and suits a session with a fixed job (the representative, the
-secretary). A `Deny` policy names what a session may not call and admits the
-rest, and suits a session that does open-ended work (the delegate). Both name a
-domain and a verb, because that is the unit a caller addresses.
+A policy is one of two shapes, and both admit only what they name or declare:
+
+- `Allow` names the exact (domain, verb) pairs a session may call. It suits a
+  session with a fixed job (the representative, the secretary).
+- `ByEffect` admits verbs by the effect they declare (`read`, `queue`, `write`
+  or `secret`), minus domains and verbs named out, plus a few named exceptions.
+  It suits a session that does open-ended work (the delegate) and has no tool
+  that runs code: a verb with no declared effect counts as `write`, so a new
+  verb is closed until its author declares it a read.
 
 A policy is a guardrail on the agent-facing doors: it cannot cover a built-in
 tool the session itself holds, which is why a restricted session also launches
@@ -19,7 +23,7 @@ with an explicit tool list.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable
 
 REPRESENTATIVE = "representative"
 SECRETARY = "secretary"
@@ -40,6 +44,7 @@ RESERVED_MODES = frozenset({REPRESENTATIVE, SECRETARY, DELEGATE})
 RESERVED_NAMES = frozenset({REPRESENTATIVE, SECRETARY})
 
 Pair = tuple[str, str]
+CallArgs = dict[str, Any]
 
 
 def _pairs(domain: str, *verbs: str) -> frozenset[Pair]:
@@ -52,38 +57,51 @@ class Allow:
 
     pairs: frozenset[Pair]
 
-    def domains(self) -> frozenset[str]:
-        return frozenset(d for d, _ in self.pairs)
-
-    def admits(self, domain: str, verb: str) -> bool:
-        return (domain, verb) in self.pairs
-
     def uses(self, domain: str) -> bool:
-        return domain in self.domains()
+        return any(d == domain for d, _ in self.pairs)
+
+    def admits(self, domain: str, verb: str, effect: str | None,
+               call_args: CallArgs | None) -> bool:
+        return (domain, verb) in self.pairs
 
 
 @dataclass(frozen=True)
-class Deny:
-    """A session in this mode may call anything except what is named here.
+class ByEffect:
+    """A session in this mode may call verbs that declare one of `effects`.
 
-    `domains` are denied whole, `pairs` singly, and `keep` exempts a pair from
-    a whole-domain denial.
+    `pairs` are admitted whatever they declare, and `when` admits a pair only
+    for calls whose own arguments pass its test. `denied_domains` and
+    `denied_pairs` are refused whatever they declare, and win over everything.
     """
 
-    domains: frozenset[str] = frozenset()
+    effects: frozenset[str]
+    denied_domains: frozenset[str] = frozenset()
+    denied_pairs: frozenset[Pair] = frozenset()
     pairs: frozenset[Pair] = frozenset()
-    keep: frozenset[Pair] = field(default_factory=frozenset)
-
-    def admits(self, domain: str, verb: str) -> bool:
-        if (domain, verb) in self.pairs:
-            return False
-        return domain not in self.domains or (domain, verb) in self.keep
+    when: dict[Pair, Callable[[CallArgs], bool]] = field(default_factory=dict)
 
     def uses(self, domain: str) -> bool:
-        return domain not in self.domains or any(d == domain for d, _ in self.keep)
+        return domain not in self.denied_domains
+
+    def admits(self, domain: str, verb: str, effect: str | None,
+               call_args: CallArgs | None) -> bool:
+        if domain in self.denied_domains or (domain, verb) in self.denied_pairs:
+            return False
+        if (domain, verb) in self.pairs:
+            return True
+        test = self.when.get((domain, verb))
+        if test is not None:
+            return isinstance(call_args, dict) and test(call_args)
+        return effect in self.effects
 
 
-Policy = Allow | Deny
+Policy = Allow | ByEffect
+
+
+def is_reply(call_args: CallArgs) -> bool:
+    """Whether a `board post` is a message card answering another card."""
+    reply_to = call_args.get("reply_to")
+    return call_args.get("kind") == "message" and isinstance(reply_to, str) and bool(reply_to)
 
 
 #: A restricted session can always shed its own context. `compact` acts only on
@@ -94,14 +112,6 @@ _REFLECTION = _pairs("reflection", "compact", "whoami")
 #: Pure reads of the scope channel.
 _SCOPE_READS = (_pairs("scope", "fetch", "search", "goal_read", "goal_history", "resolve")
                 | _pairs("project", "search"))
-
-#: Domains a delegate may not touch at all: remote access, credentials, the
-#: network, node administration and anything that runs code elsewhere.
-_DELEGATE_DENIED_DOMAINS = frozenset({
-    "cx", "ssh", "auth", "peer", "config", "vpn", "2fa", "tether", "social",
-    "httpsfront", "gateway", "services", "dsh", "compute", "dev", "agent",
-    "orch", "workspace",
-})
 
 MODES: dict[str, Policy] = {
     # Triage only: read cards, start or list workers, record the hand-off, and
@@ -123,16 +133,17 @@ MODES: dict[str, Policy] = {
         | _REFLECTION
         | _SCOPE_READS
     ),
-    # The worker a restricted session starts for a card. It works freely in the
-    # awm domains that cannot reach outside the node, and may finish its card
-    # on the board, but it cannot start sessions, reach other hosts, touch
-    # credentials or administer the node.
-    DELEGATE: Deny(
-        domains=_DELEGATE_DENIED_DOMAINS,
-        keep=_pairs("cx", "list"),
-        pairs=(_pairs("board", "party_add", "party_revoke", "party_list")
-               | _pairs("reflection", "send", "mode")
-               | _pairs("scope", "delete", "data_gc")),
+    # The worker a restricted session starts for a card. It reads what the
+    # node declares readable and finishes its card on the board, and it posts a
+    # message card only as a reply. It starts nothing, writes no scope, queue or
+    # setting, and has no browser: `rlm` can drive a loopback browser to the
+    # gateway's HTTP door, past this gate.
+    DELEGATE: ByEffect(
+        effects=frozenset({"read"}),
+        denied_domains=frozenset({"rlm", "door"}),
+        denied_pairs=_pairs("board", "party_list"),
+        pairs=_pairs("board", "get", "list", "complete", "fail") | _REFLECTION,
+        when={("board", "post"): is_reply},
     ),
     # A session whose mode could not be established gets the least that keeps
     # it alive: it can compact itself and nothing else.
@@ -145,14 +156,16 @@ def is_restricted(mode: str | None) -> bool:
     return mode is not None and mode in MODES
 
 
-def refusal(mode: str | None, domain: str | None, verb: Any,
-            peer: Any = None) -> str | None:
+def refusal(mode: str | None, domain: str | None, verb: Any, peer: Any = None, *,
+            effect: str | None = None, call_args: CallArgs | None = None) -> str | None:
     """Why a session in `mode` may not call `domain`'s `verb`, or None if it may.
 
-    `describe` is allowed for a domain the mode can use at all, so a restricted
-    session can read the schemas of the verbs it holds. A restricted mode may
-    not name a `peer`: the verb would then run on another node, past this
-    node's gate.
+    `effect` is the effect the verb declares (None when the caller could not
+    resolve the call to a declared verb), and `call_args` the verb's own
+    arguments, for a rule that depends on them. `describe` is allowed for a
+    domain the mode can use at all, so a restricted session can read the schemas
+    of the verbs it holds. A restricted mode may not name a `peer`: the verb
+    would then run on another node, past this node's gate.
     """
     if not is_restricted(mode):
         return None
@@ -166,6 +179,6 @@ def refusal(mode: str | None, domain: str | None, verb: Any,
         if policy.uses(domain):
             return None
         return f"{label} may not use the {domain!r} domain"
-    if policy.admits(domain, verb):
+    if policy.admits(domain, verb, effect, call_args):
         return None
     return f"{label} may not call {domain}.{verb}"

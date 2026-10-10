@@ -277,3 +277,107 @@ def test_the_paths_follow_cx_environment_overrides(home, tmp_path, monkeypatch):
 def test_the_default_paths_sit_under_the_claude_home(home):
     assert sessionmode.starts_dir() == home.root / "cx" / "starts"
     assert sessionmode.roster_path() == home.roster
+
+
+# --- a process a restricted session starts ------------------------------------
+
+PARENT = os.getppid()
+PARENT_JOB = "cdcdcdcd"
+
+
+def _restricted_parent(home, mode="delegate"):
+    """The test process's real parent as a cx-started background session."""
+    home.record(PARENT, "bg", PARENT_JOB)
+    (home.starts / f"{PARENT_JOB}.json").write_text(json.dumps({"mode": mode}))
+
+
+def test_a_child_with_its_own_interactive_record_inherits_its_parents_mode(home):
+    _restricted_parent(home)
+    home.record(ME, "interactive")
+    assert mode_of(ME) == "delegate"
+
+
+def test_a_child_with_no_record_at_all_inherits_too(home):
+    _restricted_parent(home, "representative")
+    assert mode_of(ME) == "representative"
+
+
+def test_the_walk_passes_ancestors_that_are_not_sessions(home, monkeypatch):
+    _restricted_parent(home)
+    home.record(ME, "interactive")
+    monkeypatch.setattr(sessionmode, "_ppid", {ME: 987650, 987650: 987651, 987651: PARENT}.get)
+    assert mode_of(ME) == "delegate"
+
+
+def test_a_plain_worker_ancestor_gives_the_worker_mode(home):
+    _restricted_parent(home, "worker")
+    home.record(ME, "interactive")
+    assert mode_of(ME) == "worker"
+
+
+def test_an_ancestor_job_with_a_damaged_lineage_makes_the_child_unknown(home):
+    _restricted_parent(home)
+    (home.starts / f"{PARENT_JOB}.json").write_text("{ not json")
+    home.record(ME, "interactive")
+    assert mode_of(ME) == UNKNOWN
+
+
+def test_no_session_ancestor_leaves_an_interactive_process_ungated(home):
+    home.record(ME, "interactive")
+    assert mode_of(ME) is None
+
+
+def test_an_ancestor_that_is_a_plain_interactive_session_is_passed_over(home):
+    home.record(PARENT, "interactive")
+    home.record(ME, "interactive")
+    assert mode_of(ME) is None
+
+
+def test_an_ancestor_with_an_unreadable_interactive_record_is_skipped(home):
+    (home.sessions / f"{PARENT}.json").write_text("{ not json")
+    home.record(ME, "interactive")
+    assert mode_of(ME) is None
+
+
+def test_the_walk_is_bounded_and_survives_a_cycle(home, monkeypatch):
+    home.record(ME, "interactive")
+    monkeypatch.setattr(sessionmode, "_ppid", lambda pid: ME)
+    assert mode_of(ME) is None
+    calls = []
+    monkeypatch.setattr(sessionmode, "_ppid", lambda pid: calls.append(pid) or pid + 1)
+    mode_of(ME)
+    assert len(calls) <= sessionmode.MAX_ANCESTRY_HOPS
+
+
+# --- an interactive session that took over a parked job -----------------------
+
+
+def test_an_interactive_record_with_a_parked_job_keeps_the_jobs_mode(home):
+    home.worker()
+    home.lineage("representative")
+    (home.sessions / f"{ME}.json").write_text(json.dumps({
+        "pid": ME, "procStart": _proc_start(ME), "kind": "interactive",
+        "parkedJobId": JOB, "name": "rep"}))
+    assert mode_of(ME) == "representative"
+
+
+def test_a_parked_job_without_lineage_is_not_cx_started(home):
+    (home.sessions / f"{ME}.json").write_text(json.dumps({
+        "pid": ME, "procStart": _proc_start(ME), "kind": "interactive",
+        "parkedJobId": "eeeeeeee"}))
+    assert mode_of(ME) is None
+
+
+def test_a_parked_job_with_a_damaged_lineage_is_unknown(home):
+    (home.starts / "eeeeeeee.json").write_text("{ not json")
+    (home.sessions / f"{ME}.json").write_text(json.dumps({
+        "pid": ME, "procStart": _proc_start(ME), "kind": "interactive",
+        "parkedJobId": "eeeeeeee"}))
+    assert mode_of(ME) == UNKNOWN
+
+
+def test_a_parked_job_id_that_is_not_a_job_id_is_ignored(home):
+    (home.sessions / f"{ME}.json").write_text(json.dumps({
+        "pid": ME, "procStart": _proc_start(ME), "kind": "interactive",
+        "parkedJobId": "../../x"}))
+    assert mode_of(ME) is None

@@ -38,6 +38,9 @@ JOB_PATTERN = re.compile(r"^[0-9a-f]{8}$")
 #: job carrying one but no lineage record was started by cx and lost its record.
 _CX_LAUNCH_FLAGS = ("--permission-mode", "--restricted")
 
+#: How far up the process tree a child looks for the session that started it.
+MAX_ANCESTRY_HOPS = 16
+
 
 # --- where cx keeps its records ---------------------------------------------
 
@@ -106,21 +109,81 @@ def mode_of(caller_pid: int) -> str | None:
 
 def _mode_of(pid: int) -> str | None:
     rec = _session_record(pid)
-    if rec is not None:
-        if rec.get("kind") != "bg":
+    if rec is not None and rec.get("kind") == "bg":
+        return _bg_mode(rec)
+    parked = _parked_mode(rec)
+    if parked is not None:
+        return parked
+    if rec is None:
+        unrecorded = _unrecorded_mode(pid)
+        if unrecorded is not None:
+            return unrecorded
+    return _inherited_mode(pid)
+
+
+def _bg_mode(rec: dict[str, Any]) -> str | None:
+    job = rec.get("jobId")
+    if not isinstance(job, str) or not JOB_PATTERN.match(job):
+        raise _Unreadable("a background session record carries no job id")
+    worker = (_workers(strict=False) or {}).get(job)
+    declared = _declared(job, _names(job, worker, rec.get("name")))
+    if declared is not None:
+        return declared
+    worker = (_workers(strict=True) or {}).get(job)
+    if not isinstance(worker, dict):
+        raise _Unreadable("the roster does not list the background session")
+    return UNKNOWN if _looks_cx_started(worker) else None
+
+
+def _parked_mode(rec: dict[str, Any] | None) -> str | None:
+    """The mode of the job an interactive session took over.
+
+    Attaching a terminal to a background job parks the job and runs its
+    conversation in an interactive process, so the process that calls is not the
+    job's REPL. It keeps the job's mode, or attaching would lift the gate.
+    """
+    parked = (rec or {}).get("parkedJobId")
+    if not isinstance(parked, str) or not JOB_PATTERN.match(parked):
+        return None
+    worker = (_workers(strict=False) or {}).get(parked)
+    return _declared(parked, _names(parked, worker, (rec or {}).get("name")))
+
+
+def _inherited_mode(pid: int) -> str | None:
+    """The mode of the nearest ancestor process that is a cx-started session.
+
+    A process a restricted session starts (a `claude -p` child, a teammate) has
+    its own session record, and that record says only that it is interactive.
+    Without this walk it would be ungated. The first ancestor with a mode, an
+    `unknown` included, decides. An ancestor record that cannot be read is
+    skipped, except for a background session, which makes the answer unknown.
+    """
+    current = pid
+    for _ in range(MAX_ANCESTRY_HOPS):
+        current = _ppid(current)
+        if current is None or current <= 1:
             return None
-        job = rec.get("jobId")
-        if not isinstance(job, str) or not JOB_PATTERN.match(job):
-            raise _Unreadable("a background session record carries no job id")
-        worker = (_workers(strict=False) or {}).get(job)
-        declared = _declared(job, _names(job, worker, rec.get("name")))
-        if declared is not None:
-            return declared
-        worker = (_workers(strict=True) or {}).get(job)
-        if not isinstance(worker, dict):
-            raise _Unreadable("the roster does not list the background session")
-        return UNKNOWN if _looks_cx_started(worker) else None
-    return _unrecorded_mode(pid)
+        try:
+            rec = _session_record(current)
+        except (_Unreadable, OSError, ValueError, TypeError):
+            continue
+        if rec is None:
+            continue
+        try:
+            mode = _bg_mode(rec) if rec.get("kind") == "bg" else _parked_mode(rec)
+        except (_Unreadable, roster.Unreadable, OSError, ValueError, TypeError):
+            return UNKNOWN
+        if mode is not None:
+            return mode
+    return None
+
+
+def _ppid(pid: int) -> int | None:
+    try:
+        with open(f"/proc/{pid}/stat") as fh:
+            return int(fh.read().rpartition(") ")[2].split()[1])
+    except (OSError, ValueError, IndexError):
+        return None
 
 
 def _unrecorded_mode(pid: int) -> str | None:

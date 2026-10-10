@@ -23,6 +23,8 @@ import os
 import time
 from typing import Any, Callable
 
+from awm import gatewayclient
+
 from awm.representative import config, sessions
 from awm.representative.store import Queue
 
@@ -40,10 +42,12 @@ MAX_RETRY_S = 900.0
 class Loop:
     def __init__(self, queue: Queue, cx: Any = None, personas: Any = None,
                  interval_s: float | None = None,
-                 on_started: Callable[[str], None] | None = None) -> None:
+                 on_started: Callable[[str], None] | None = None,
+                 scope_call: Callable[..., Any] | None = None) -> None:
         self.queue = queue
         self.cx = cx or sessions.Cx()
         self._on_started = on_started or (lambda role: None)
+        self._scope_call = scope_call or gatewayclient.call
         self._personas = personas
         self._interval_s = interval_s
         self._lock_fd: int | None = None
@@ -110,6 +114,7 @@ class Loop:
             return
         if not self._take_lock():
             return
+        await self._ensure_work_scope()
         try:
             rows = await self.cx.list()
         except sessions.CxUnavailable as exc:
@@ -118,6 +123,29 @@ class Loop:
         for role in ROLES:
             await self._ensure(role, rows)
         self._last_tick = time.time()
+
+    async def _ensure_work_scope(self) -> None:
+        """Make sure the scope delegates start in exists. A failure is logged and retried next tick.
+
+        `scope_create` is the only call that makes the worktree directory cx checks
+        for, so the check is the directory itself and nothing is called when it is there.
+        """
+        where = getattr(self._personas_obj(), "work_where", None)
+        if where is None:
+            return
+        project, scope = where()
+        if (config.projects_dir() / project / scope).is_dir():
+            return
+        try:
+            await self._scope_call("scopes", "scope_create",
+                                   {"project": project, "scope": scope}, timeout=300.0)
+        except Exception as exc:  # noqa: BLE001 — the roles still need their sessions
+            self._note("workscope", f"could not create the work scope {project}/{scope}: {exc}")
+            return
+        if (config.projects_dir() / project / scope).is_dir():
+            log.info("door: created the work scope %s/%s", project, scope)
+        else:
+            self._note("workscope", f"scope_create answered but {project}/{scope} has no worktree")
 
     async def _ensure(self, role: str, rows: list[dict]) -> None:
         spec = self._spec(role)
@@ -128,6 +156,9 @@ class Loop:
             self._note(f"spec:{role}", f"{role}: {problem}")
             return
         jobs = self.queue.session_jobs(role)
+        adopted = self._adopt(role, spec, rows, jobs)
+        if adopted:
+            jobs = self.queue.session_jobs(role)
         for stranger in sessions.strangers(rows, spec["mode"], jobs):
             self._note(f"stranger:{stranger.get('job')}",
                        f"{role}: session {stranger.get('job')} carries mode {spec['mode']!r} "
@@ -165,6 +196,26 @@ class Loop:
         self._note(f"start:{role}", f"{role}: cx would not start it: "
                    f"{reply.get('reason') or reply.get('error') or reply!r}")
 
+    def _adopt(self, role: str, spec: dict, rows: list[dict], jobs: set[str]) -> bool:
+        """Record a session of this role that the door started but never recorded.
+
+        A `cx start` that timed out or failed after the job launched leaves a
+        live session the door has no record of. It is the door's own when it
+        carries the role's reserved name and mode label and its lineage shows a
+        caller with no session pid: only the door starts those, and cx refuses
+        everyone else. Returns True if a job was recorded.
+        """
+        found = False
+        for row in sessions.strangers(rows, spec["mode"], jobs):
+            if (row.get("name") == spec.get("name") and row.get("job")
+                    and row.get("caller") is not None and row.get("parent") is None):
+                self.queue.record_session(role, row["job"])
+                log.info("door: adopted %s as the %s; its start outlived the call", row["job"], role)
+                found = True
+        if found:
+            self._on_started(role)
+        return found
+
     @staticmethod
     def _problem(spec: dict) -> str | None:
         if not spec.get("mode"):
@@ -173,14 +224,19 @@ class Loop:
             return "the launch config has no permission; cx would default to skip-permissions"
         return None
 
+    def _personas_obj(self) -> Any:
+        if self._personas is not None:
+            return self._personas
+        try:
+            return importlib.import_module("awm.representative.personas")
+        except ImportError as exc:
+            self._note("personas", f"no launch configs: {exc}")
+            return None
+
     def _spec(self, role: str) -> dict | None:
-        personas = self._personas
+        personas = self._personas_obj()
         if personas is None:
-            try:
-                personas = importlib.import_module("awm.representative.personas")
-            except ImportError as exc:
-                self._note("personas", f"no launch configs: {exc}")
-                return None
+            return None
         spec = getattr(personas, role.upper(), None)
         if not isinstance(spec, dict):
             self._note(f"personas:{role}", f"personas has no {role.upper()} launch config")

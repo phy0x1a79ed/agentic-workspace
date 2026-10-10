@@ -643,6 +643,10 @@ def test_stop_never_deletes_the_conversation():
 # --- the caller's mode gates what it may start -------------------------------
 
 
+def allowed_list(flags):
+    return next(f for f in flags if f.startswith("--allowedTools=")).split("=", 1)[1].split(",")
+
+
 @pytest.mark.parametrize("caller_mode", ["representative", "secretary", "delegate"])
 def test_a_gated_caller_gets_a_delegate_with_a_fixed_policy(home, launched, caller_mode):
     parent_session(home, mode=caller_mode)
@@ -654,7 +658,9 @@ def test_a_gated_caller_gets_a_delegate_with_a_fixed_policy(home, launched, call
     assert "--strict-mcp-config" in flags
     tools = next(f for f in flags if f.startswith("--tools="))
     assert "Bash" not in tools.split("=", 1)[1].split(",")
-    assert "Edit" in tools and "SendMessage" in tools
+    assert "Edit" in tools and "Task" in tools
+    assert "SendMessage" not in tools and "ListAgents" not in tools
+    assert not any(t in allowed_list(flags) for t in ("SendMessage", "ListAgents"))
     allowed = next(f for f in flags if f.startswith("--allowedTools="))
     assert "mcp__awm__*" in allowed and "Bash" not in allowed.split(",")
     assert not any(f.startswith(("--remote-control", "--dangerously")) for f in flags)

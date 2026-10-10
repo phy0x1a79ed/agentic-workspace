@@ -41,6 +41,7 @@ first, and each door starts its own representative.
 | `AWM_DOOR_NOTIFY_BATCH_S` | seconds a new card waits for others before the representative is woken (default 5) |
 | `AWM_DOOR_NOTIFY_RETRY_S` | seconds before a failed wake is retried (default 30) |
 | `AWM_DOOR_REANNOUNCE_MIN` | minutes a card may stay queued before the representative is told again, "N still waiting" (default 10) |
+| `AWM_DOOR_WORK_PROJECT`, `AWM_DOOR_WORK_SCOPE` | where delegates start when a card names no scope (default `awm`, `door-work`). The door creates the scope with `scope_create` on a tick when its worktree is missing, and retries on the next tick after a failure |
 | `AWM_DOOR_MESSAGE_BACKLOG_S` | how old a message card may be and still be queued by a catch-up (default 3 days) |
 
 ## How it keeps its sessions

@@ -152,3 +152,17 @@ def test_every_allowed_verb_in_the_instructions_is_on_the_allowlist():
     for verb in ("cx.start", "cx.list", "cx.stop", "door.status", "door.list", "door.get",
                  "board.list", "board.get", "scope.search", "scope.fetch"):
         assert verb in sec
+
+
+def test_delegates_default_to_a_dedicated_scope_not_the_representatives(monkeypatch):
+    assert personas.work_where() == ("awm", "door-work")
+    text = personas.REPRESENTATIVE["prompt"]
+    assert 'project "awm", scope "door-work"' in text
+    assert "Never start a delegate in your own scope" in text
+    assert (personas.REPRESENTATIVE["project"], personas.REPRESENTATIVE["scope"]) != (
+        "awm", "door-work")
+    monkeypatch.setenv("AWM_DOOR_WORK_PROJECT", "other")
+    monkeypatch.setenv("AWM_DOOR_WORK_SCOPE", "desk")
+    assert personas.work_where() == ("other", "desk")
+    assert 'project "other", scope "desk"' in personas.build_representative()["prompt"]
+    assert personas.build_representative()["scope"] == "svc-representative"

@@ -154,10 +154,11 @@ def projects_dir() -> Path:
     return awm_config.canonical_workspace() / "projects"
 
 
-#: The built-in tools a delegate holds: file work inside its scope, and the
-#: tools that talk to other agents. There is no Bash, so it runs nothing.
+#: The built-in tools a delegate holds: file work inside its scope and its own
+#: subagents. There is no Bash, so it runs nothing, and no SendMessage or
+#: ListAgents, so a card cannot reach another session through it.
 DELEGATE_TOOLS = ["Read", "Grep", "Glob", "Edit", "Write", "MultiEdit", "TodoWrite",
-                  "Task", "Agent", "SendMessage", "ListAgents", "Skill", "ToolSearch"]
+                  "Task", "Agent", "Skill", "ToolSearch"]
 
 
 def child_policy() -> dict:
@@ -175,7 +176,7 @@ def child_policy() -> dict:
         "tools": list(DELEGATE_TOOLS),
         "allowed_tools": [*DELEGATE_TOOLS, "mcp__awm__*"],
         "disallowed_tools": ["Bash", "PowerShell", "Monitor", "Workflow", "WebFetch",
-                             "WebSearch", "NotebookEdit"],
+                             "WebSearch", "NotebookEdit", "SendMessage", "ListAgents"],
         "restricted": True, "strict_mcp": True, "remote_control": None,
     }
 
