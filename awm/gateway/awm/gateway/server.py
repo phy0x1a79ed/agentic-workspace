@@ -399,7 +399,7 @@ register_fastapi_routes(app, GATEWAY_OPERATIONS)
 # ---------------------------------------------------------------------------
 
 @app.get("/tools")
-def list_tools_endpoint(view: str | None = None, peers: int = 0):
+def list_tools_endpoint(view: str | None = None, peers: int = 0, tiers: int = 0):
     """Return the current MCP tool definitions from the live catalog.
 
     The thin stdio proxy fetches this on every `list_tools` call instead of
@@ -419,9 +419,12 @@ def list_tools_endpoint(view: str | None = None, peers: int = 0):
     fleet would advertise transitive peers this node cannot dial), and no existing
     consumer of the plain view changes shape. Still sync: the peer data comes from
     a background snapshot, so this route never waits on a peer even cold.
+
+    ``tiers=1`` (with ``peers=1``) narrows the fleet view to the core domains,
+    ``providersOf`` and the ``more`` call-through tool.
     """
     if view == "domains":
-        tools = catalog.list_domain_tools(peers=bool(peers))
+        tools = catalog.list_domain_tools(peers=bool(peers), tiers=bool(tiers))
     else:
         tools = catalog.list_tools()
     return {"tools": [t.model_dump(by_alias=True) for t in tools]}

@@ -3,3 +3,7 @@
 # these. Prod's deliberately-live rlm-browser is preserved by its explicit
 # enabled.json entry (`awm services enable rlm-browser`), which always wins.
 profiles = ["gamebot"]
+
+# Core tier: the rlm domain is listed on the agent-facing MCP surface. Independent
+# of the profile gate above, which only decides whether the service runs.
+tier = "core"
