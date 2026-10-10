@@ -255,3 +255,20 @@ def load_env_file(path: Path = ENV_FILE) -> int:
     if applied:
         log.info("loaded %d env vars from %s", applied, path)
     return applied
+
+
+# ---------------------------------------------------------------------------
+# Federation reader contracts (re-exported; defined in submodules)
+# ---------------------------------------------------------------------------
+
+from awm.config.effects import EFFECTS, verb_category, verb_effect  # noqa: E402,F401
+from awm.config.peerbook import (  # noqa: E402,F401
+    GRANT_CATEGORIES,
+    RELATIONS,
+    ROLES,
+    caller_peer,
+    node_role,
+    node_swarm,
+    peer_record,
+    peer_relation,
+)

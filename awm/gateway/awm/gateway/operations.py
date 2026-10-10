@@ -12,6 +12,7 @@ import typer
 from fastapi import HTTPException, Query
 from mcp.types import Tool
 
+from awm.config import EFFECTS
 from awm.gateway import mcp_http
 
 
@@ -96,6 +97,8 @@ class Operation:
     surfaces: frozenset[str] = field(default_factory=lambda: _DEFAULT_SURFACES)
     peer_only: bool = False
     tags: list[str] = field(default_factory=list)
+    effect: str = "write"
+    category: str | None = None
 
     def __post_init__(self) -> None:
         if self.peer_only:
@@ -108,6 +111,11 @@ class Operation:
         if unknown:
             raise ValueError(
                 f"Operation {self.name!r}: unknown surfaces {sorted(unknown)}"
+            )
+        if self.effect not in EFFECTS:
+            raise ValueError(
+                f"Operation {self.name!r}: unknown effect {self.effect!r} "
+                f"(expected one of {EFFECTS})"
             )
 
 
