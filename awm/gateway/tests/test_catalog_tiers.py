@@ -45,11 +45,18 @@ def _rec(name, tools):
 @pytest.fixture()
 def tiered(tmp_path, monkeypatch, awm_workspace):
     """Local services ``scopes`` (core), ``kb`` (no service.toml), ``hpcllm``
-    (tier-less toml) and ``broken`` (unparseable toml); mira alone runs ``orch``."""
+    (tier-less toml) and ``broken`` (unparseable toml) are running. Core folders
+    ``social``, ``rlm-browser`` and ``cx`` and ``tether`` are on disk but not
+    running here: mira runs ``social`` and ``rlm``, nobody runs ``cx`` or
+    ``tether``. mira alone runs the non-core ``orch``."""
     root = tmp_path / "services"
     for name, toml in (("scopes", 'tier = "core"\n'), ("kb", None),
                        ("hpcllm", '# nothing to say\n'),
-                       ("broken", "tier = [not toml")):
+                       ("broken", "tier = [not toml"),
+                       ("social", 'tier = "core"\n'),
+                       ("rlm-browser", 'profiles = ["gamebot"]\ntier = "core"\n'),
+                       ("cx", 'profiles = ["cx"]\ntier = "core"\n'),
+                       ("tether", 'tier = "core"\n')):
         (root / name).mkdir(parents=True)
         (root / name / "run.sh").write_text("#!/bin/bash\n")
         if toml is not None:
@@ -65,7 +72,8 @@ def tiered(tmp_path, monkeypatch, awm_workspace):
         _rec("broken", ["broken_run"]),
     ])
     monkeypatch.setattr(catalog, "get_registry", lambda: stub)
-    snap = {"mira": {"domains": {"orch": ["run"], "scope": ["search"]},
+    snap = {"mira": {"domains": {"orch": ["run"], "scope": ["search"],
+                                 "social": ["send"], "rlm": ["act"]},
                      "reachable": True, "error": None}}
     monkeypatch.setattr(peer_catalog, "snapshot", lambda: snap)
     return root
@@ -208,7 +216,7 @@ def test_core_domain_is_listed_and_discoverable_ones_are_hidden(tiered):
 def test_a_peer_only_domain_is_hidden_and_indexed_with_its_verbs(tiered):
     tools = {t.name: t for t in catalog.list_domain_tools(peers=True, tiers=True)}
     assert "orch" not in tools
-    assert "- orch: verbs: run [mira]" in tools["more"].description
+    assert "- orch: run [mira]" in tools["more"].description
 
 
 def test_the_index_names_each_hidden_domain_once_and_no_core_domain(tiered):
@@ -217,8 +225,47 @@ def test_the_index_names_each_hidden_domain_once_and_no_core_domain(tiered):
     lines = [ln for ln in desc.splitlines() if ln.startswith("- ")]
     assert {ln.split(":")[0] for ln in lines} == {
         "- kb", "- hpcllm", "- broken", "- orch", "- gateway", "- config"}
-    assert "- scope:" not in desc and "- services:" not in desc
-    assert "[this node]" in next(ln for ln in lines if ln.startswith("- kb:"))
+    for core in ("scope", "services", "social", "rlm", "cx", "tether"):
+        assert f"- {core}:" not in desc
+
+
+def test_a_core_domain_stays_listed_when_only_a_peer_serves_it(tiered):
+    """``social`` and ``rlm`` run only on mira: the folder on disk decides, not
+    the local registry."""
+    names = _names(catalog.list_domain_tools(peers=True, tiers=True))
+    assert "social" in names and "rlm" in names
+
+
+def test_a_core_domain_stays_listed_when_its_local_service_is_down(
+        tiered, monkeypatch):
+    monkeypatch.setattr(catalog, "get_registry", lambda: _StubRegistry([]))
+    names = _names(catalog.list_domain_tools(peers=True, tiers=True))
+    assert "scope" in names, "folder `scopes` provides scope, project and ref"
+
+
+def test_a_core_domain_nothing_serves_is_omitted(tiered):
+    tools = {t.name: t for t in catalog.list_domain_tools(peers=True, tiers=True)}
+    assert "cx" not in tools and "tether" not in tools
+    assert "cx" not in tools["more"].description
+
+
+def test_a_registered_core_service_names_its_domains_from_its_manifest(
+        tiered, monkeypatch):
+    rec = _rec("social", ["social_send", "messaging_inbox"])
+    monkeypatch.setattr(catalog, "get_registry", lambda: _StubRegistry([rec]))
+    assert {"social", "messaging"} <= catalog._core_domains()
+
+
+def test_the_unregistered_folder_fallback(tiered, monkeypatch):
+    monkeypatch.setattr(catalog, "get_registry", lambda: _StubRegistry([]))
+    assert catalog._core_domains() == {
+        "services", "peer", "scope", "project", "ref", "social", "rlm", "cx",
+        "tether"}
+
+
+def test_core_services_reads_the_files_on_disk(tiered):
+    assert discovery.core_services() == [
+        "cx", "rlm-browser", "scopes", "social", "tether"]
 
 
 def test_a_blurb_replaces_the_verb_list_in_the_index(tiered, monkeypatch):
@@ -227,16 +274,47 @@ def test_a_blurb_replaces_the_verb_list_in_the_index(tiered, monkeypatch):
     monkeypatch.setattr(catalog, "get_registry", lambda: _StubRegistry([rec]))
     desc = {t.name: t for t in catalog.list_domain_tools(
         peers=True, tiers=True)}["more"].description
-    assert "- kb: Knowledge base. [this node]" in desc
+    assert "\n- kb: Knowledge base." in desc
+    assert "- kb: Knowledge base. [" not in desc, "local domains carry no node"
 
 
 def test_a_peer_cannot_make_a_domain_core(tiered, monkeypatch):
     """The snapshot carries verbs only; a domain is core on our say-so alone."""
-    snap = {"mira": {"domains": {"kb": ["get"], "tether": ["send"]},
+    snap = {"mira": {"domains": {"kb": ["get"], "newthing": ["go"]},
                      "reachable": True, "error": None}}
     monkeypatch.setattr(peer_catalog, "snapshot", lambda: snap)
     names = _names(catalog.list_domain_tools(peers=True, tiers=True))
-    assert "tether" not in names and "kb" not in names
+    assert "newthing" not in names and "kb" not in names
+
+
+def test_the_description_stays_bounded_with_many_domains(tiered, monkeypatch):
+    many = [_rec(f"dom{i:02d}", [f"dom{i:02d}_verb{j}" for j in range(30)])
+            for i in range(40)]
+    many[0].api["description"] = "A long blurb. " + "x" * 600
+    monkeypatch.setattr(catalog, "get_registry", lambda: _StubRegistry(many))
+    tools = {t.name: t for t in catalog.list_domain_tools(peers=True, tiers=True)}
+    desc = tools["more"].description
+    assert len(desc) <= catalog._MORE_DESCRIPTION_CAP
+    assert desc.endswith("… call more() with no domain for the full list")
+    assert "verb5" not in desc, "at most five verbs per line"
+    assert "- dom00: A long blurb." in desc
+    assert max(len(ln) for ln in desc.splitlines()[1:]) < 120
+
+
+def test_more_with_no_domain_lists_every_domain_whatever_the_description_holds(
+        tiered, monkeypatch):
+    many = [_rec(f"dom{i:02d}", [f"dom{i:02d}_verb{j}" for j in range(30)])
+            for i in range(40)]
+    monkeypatch.setattr(catalog, "get_registry", lambda: _StubRegistry(many))
+    out = asyncio.run(catalog.dispatch("more", {}))
+    assert sum(ln.startswith("- dom") for ln in out.splitlines()) == 40
+    assert "verb29" in out, "the full list keeps every verb"
+
+
+def test_a_short_index_is_not_cut(tiered):
+    desc = {t.name: t for t in catalog.list_domain_tools(
+        peers=True, tiers=True)}["more"].description
+    assert "full list" not in desc
 
 
 def test_peers_false_is_unchanged_by_the_tier_work(tiered):
@@ -284,8 +362,60 @@ def test_rewrite_maps_more_to_the_direct_call():
 
 
 def test_rewrite_leaves_a_domainless_call_for_the_gateway_to_list():
-    for args in ({}, {"verb": "list"}, {"domain": ""}, {"domain": 7}):
+    for args in ({}, {"verb": "list"}, {"domain": ""}, {"domain": None}):
         assert mcp_more.rewrite_call("more", args) == ("more", args)
+
+
+_BAD_DOMAINS = ["kb@capella", "@capella", "kb/../x", "kb capella", " kb", "kb\n",
+                "a/b", "", 7, ["kb"]]
+
+
+@pytest.mark.parametrize("domain", [d for d in _BAD_DOMAINS if d != ""])
+def test_a_domain_that_is_not_a_plain_name_is_never_rewritten(domain):
+    args = {"domain": domain, "verb": "get", "peer": "mira"}
+    assert mcp_more.rewrite_call("more", args) == ("more", args)
+    assert not mcp_more.is_plain_domain(domain)
+
+
+@pytest.mark.parametrize("domain", ["kb", "2fa", "penpot-view", "providersOf"])
+def test_plain_domain_names_are_accepted(domain):
+    assert mcp_more.is_plain_domain(domain)
+
+
+@pytest.mark.parametrize("domain", ["kb@capella", "kb/x", "kb capella", 7])
+async def test_a_bad_domain_errors_like_an_unknown_domain(tiered, domain):
+    with pytest.raises(ValueError) as unknown:
+        await catalog.dispatch("nope", {"verb": "x"})
+    with pytest.raises(ValueError) as bad:
+        await catalog.dispatch(*mcp_more.rewrite_call(
+            "more", {"domain": domain, "verb": "x"}))
+    assert str(bad.value) == f"Unknown tool: {domain}"
+    assert str(unknown.value) == "Unknown tool: nope"
+
+
+def test_stdio_proxy_never_dials_a_peer_for_a_domain_with_an_at_sign(monkeypatch):
+    dialled = []
+    monkeypatch.setattr(mcp_stdio, "_peer_invoke",
+                        lambda *a, **k: dialled.append(a) or {"result": "x"})
+    sent, _ = _calls_via_stdio(monkeypatch, [
+        {"name": "more", "arguments": {"domain": "kb@capella", "verb": "get"}}])
+    assert not dialled
+    assert sent[0][2]["name"] == "more", "goes to the local gateway, which refuses it"
+
+
+def test_sdk_proxy_never_dials_a_peer_for_a_domain_with_an_at_sign(monkeypatch):
+    sdk = pytest.importorskip("awm.gateway.mcp_server_sdk")
+    dialled = []
+
+    async def peer(*a, **k):
+        dialled.append(a)
+        return {"result": "x"}
+
+    monkeypatch.setattr(sdk, "_peer_invoke", peer)
+    sent, _ = _calls_via_sdk(monkeypatch, [
+        {"name": "more", "arguments": {"domain": "kb@capella", "verb": "get"}}])
+    assert not dialled
+    assert sent[0][2]["name"] == "more"
 
 
 async def test_a_discoverable_domain_gives_the_same_result_through_more(

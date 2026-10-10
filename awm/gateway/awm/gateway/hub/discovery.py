@@ -209,6 +209,20 @@ def read_tier(folder: Path) -> str:
     return tier
 
 
+def core_services() -> list[str]:
+    """Names of the service folders on disk that declare ``tier = "core"``.
+
+    Read from the files, not from what is running: a core service that is down,
+    profile-gated off on this node, or served only by a peer is still core."""
+    root = services_root()
+    if not root.is_dir():
+        return []
+    return [entry.name for entry in sorted(root.iterdir())
+            if entry.is_dir() and not entry.name.startswith((".", "_"))
+            and (entry / RUN_SCRIPT).is_file()
+            and read_tier(entry) == TIER_CORE]
+
+
 def service_tier(name: str) -> str:
     """Tier of the service folder called ``name`` under the services root."""
     if not name or name != Path(name).name or name.startswith("."):
