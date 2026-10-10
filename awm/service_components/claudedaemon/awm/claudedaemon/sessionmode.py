@@ -34,10 +34,6 @@ UNKNOWN = "unknown"
 MODE_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,39}$")
 JOB_PATTERN = re.compile(r"^[0-9a-f]{8}$")
 
-#: Launch flags that only `cx start` passes on its own sessions. A background
-#: job carrying one but no lineage record was started by cx and lost its record.
-_CX_LAUNCH_FLAGS = ("--permission-mode", "--restricted")
-
 #: How far up the process tree a child looks for the session that started it.
 MAX_ANCESTRY_HOPS = 16
 
@@ -107,18 +103,67 @@ def mode_of(caller_pid: int) -> str | None:
         return UNKNOWN
 
 
+class _Roster:
+    """The roster's workers, read at most once for one `mode_of` call.
+
+    A failed read is remembered too, so a damaged roster costs one read, not
+    one per ancestor.
+    """
+
+    def __init__(self) -> None:
+        self._workers: dict[str, Any] | None = None
+        self._error: Exception | None = None
+
+    def workers(self) -> dict[str, Any]:
+        if self._error is not None:
+            raise self._error
+        if self._workers is None:
+            try:
+                self._workers = _workers(strict=True) or {}
+            except (_Unreadable, roster.Unreadable, OSError, ValueError, TypeError) as exc:
+                self._error = exc
+                raise
+        return self._workers
+
+
 def _mode_of(pid: int) -> str | None:
-    rec = _session_record(pid)
+    if roster.proc_start(pid) is None:
+        # No such process: nothing about it can be positively known, and the
+        # ancestor walk below would read a missing /proc entry as "no parent".
+        raise _Unreadable(f"pid {pid} is not a running process")
+    view = _Roster()
+    rec, claims_job = _verified_record(pid)
     if rec is not None and rec.get("kind") == "bg":
         return _bg_mode(rec)
     parked = _parked_mode(rec)
     if parked is not None:
         return parked
     if rec is None:
-        unrecorded = _unrecorded_mode(pid)
-        if unrecorded is not None:
+        listed, unrecorded = _unrecorded_mode(pid, view)
+        if listed:
+            # The roster names this process as a job REPL, and says whether cx
+            # started it. Nothing above it can change that.
             return unrecorded
-    return _inherited_mode(pid)
+    inherited = _inherited_mode(pid, view)
+    if inherited is None and claims_job:
+        return UNKNOWN
+    return inherited
+
+
+def _verified_record(pid: int) -> tuple[dict[str, Any] | None, bool]:
+    """The session record of `pid`, and whether an untrusted one claimed a job.
+
+    A record that carries no `procStart` cannot be told from one left behind by
+    an earlier process with the same pid, so it is not allowed to grant anything,
+    and above all not `None`. It is dropped, and the roster and the ancestors
+    decide. Only when they find nothing, and the dropped record said it was a
+    background session or a parked job, does the caller get `unknown`: a record
+    that says "I am a job" must not turn into "I am an ordinary terminal".
+    """
+    rec = _session_record(pid)
+    if rec is None or rec.get("procStart"):
+        return rec, False
+    return None, rec.get("kind") == "bg" or isinstance(rec.get("parkedJobId"), str)
 
 
 def _bg_mode(rec: dict[str, Any]) -> str | None:
@@ -149,33 +194,101 @@ def _parked_mode(rec: dict[str, Any] | None) -> str | None:
     return _declared(parked, _names(parked, worker, (rec or {}).get("name")))
 
 
-def _inherited_mode(pid: int) -> str | None:
+def _inherited_mode(pid: int, view: _Roster) -> str | None:
     """The mode of the nearest ancestor process that is a cx-started session.
 
-    A process a restricted session starts (a `claude -p` child, a teammate) has
-    its own session record, and that record says only that it is interactive.
-    Without this walk it would be ungated. The first ancestor with a mode, an
-    `unknown` included, decides. An ancestor record that cannot be read is
-    skipped, except for a background session, which makes the answer unknown.
+    A process a restricted session starts (a `claude -p` child, a teammate, an
+    MCP proxy behind a wrapper) is not itself the session, and without this walk
+    it would be ungated. The first ancestor with a mode, an `unknown` included,
+    decides. Every ancestor is looked up in the roster, because a background
+    REPL may have no session record or a stale one: a record that is missing,
+    stale or unreadable counts as no record. A background record that is
+    readable is read as the session's own.
     """
     current = pid
     for _ in range(MAX_ANCESTRY_HOPS):
-        current = _ppid(current)
-        if current is None or current <= 1:
+        parent = _ppid(current)
+        if parent is None:
+            # The process was alive a moment ago, so an unreadable parent is a
+            # process that died under us, not the top of the tree. A reparented
+            # process shows ppid 1, which ends the walk below.
+            return UNKNOWN
+        current = parent
+        if current <= 1:
             return None
         try:
-            rec = _session_record(current)
+            rec, claims_job = _verified_record(current)
         except (_Unreadable, OSError, ValueError, TypeError):
-            continue
-        if rec is None:
-            continue
+            rec, claims_job = None, False
         try:
-            mode = _bg_mode(rec) if rec.get("kind") == "bg" else _parked_mode(rec)
+            if rec is None:
+                mode = _unrecorded_mode(current, view)[1]
+                if mode is None and claims_job:
+                    return UNKNOWN
+            else:
+                mode = _bg_mode(rec) if rec.get("kind") == "bg" else _parked_mode(rec)
         except (_Unreadable, roster.Unreadable, OSError, ValueError, TypeError):
             return UNKNOWN
         if mode is not None:
             return mode
     return None
+
+
+_NODE_LIKE = frozenset({"node", "nodejs", "bun"})
+_CLAUDE_DIRS = frozenset({"claude", "claude-code"})
+
+
+def _path_parts(path: str) -> list[str]:
+    return [p for p in path.split("/") if p]
+
+
+def _looks_like_claude(argv: list[str], exe: str | None) -> bool:
+    """Whether a command line or an executable path is Claude Code's.
+
+    Judged on argv[0] (and argv[1] behind a JavaScript runtime) and on the
+    executable, never on the arguments: a path argument such as `claudedaemon`
+    or `~/.claude` says nothing about the process.
+    """
+    def claude_path(path: str) -> bool:
+        parts = _path_parts(path)
+        return bool(parts) and (parts[-1].startswith("claude") and parts[-1] != "claudedaemon"
+                                or any(p in _CLAUDE_DIRS for p in parts))
+
+    if exe and claude_path(exe):
+        return True
+    if not argv:
+        return False
+    if claude_path(argv[0]):
+        return True
+    runtime = os.path.basename(argv[0])
+    return runtime in _NODE_LIKE and len(argv) > 1 and claude_path(argv[1])
+
+
+def _may_be_a_session(pid: int) -> bool:
+    """Whether a process could be a Claude Code REPL, for judging a damaged roster.
+
+    This decides only how a roster that cannot be read is treated: `unknown` for
+    a process that may be a session, "no information" for a shell or a wrapper.
+    A readable roster is always consulted. The command line and the executable
+    are read separately and either one that answers decides, because the
+    executable link is refused for another user's and non-dumpable processes
+    (sshd, sudo, login) while the command line is not. Only when neither can be
+    read is the process assumed to be a session.
+    """
+    argv: list[str] | None = None
+    exe: str | None = None
+    try:
+        with open(f"/proc/{pid}/cmdline", "rb") as fh:
+            argv = [a.decode(errors="replace") for a in fh.read().split(b"\0") if a]
+    except OSError:
+        pass
+    try:
+        exe = os.readlink(f"/proc/{pid}/exe")
+    except OSError:
+        pass
+    if not argv and exe is None:
+        return True
+    return _looks_like_claude(argv or [], exe)
 
 
 def _ppid(pid: int) -> int | None:
@@ -186,16 +299,28 @@ def _ppid(pid: int) -> int | None:
         return None
 
 
-def _unrecorded_mode(pid: int) -> str | None:
-    """A pid with no session record: the roster is the only thing that can name it."""
-    for job, worker in (_workers(strict=True) or {}).items():
+def _unrecorded_mode(pid: int, view: _Roster) -> tuple[bool, str | None]:
+    """A pid with no session record: the roster is the only thing that can name it.
+
+    Returns whether the roster lists the process as a job REPL, and the mode it
+    gives it (None for a job cx did not start). A roster that cannot be read says
+    nothing about a shell, so it is an error only for a process that may be a
+    Claude Code session.
+    """
+    try:
+        workers = view.workers()
+    except (_Unreadable, roster.Unreadable, OSError, ValueError, TypeError):
+        if _may_be_a_session(pid):
+            raise
+        return False, None
+    for job, worker in workers.items():
         if (isinstance(worker, dict) and worker.get("replPid") == pid
                 and roster.proc_start(pid) == str(worker.get("replProcStart"))):
             declared = _declared(job, _names(job, worker, None))
             if declared is not None:
-                return declared
-            return UNKNOWN if _looks_cx_started(worker) else None
-    return None
+                return True, declared
+            return True, UNKNOWN if _looks_cx_started(worker) else None
+    return False, None
 
 
 def _workers(*, strict: bool) -> dict[str, Any] | None:
@@ -253,14 +378,28 @@ def _read_record(path: Path) -> dict[str, Any] | None:
 
 
 def _looks_cx_started(worker: dict[str, Any]) -> bool:
-    """Whether the job's recorded launch arguments are ones only cx passes."""
+    """Whether the job's recorded launch flags are ones only cx writes.
+
+    This is a fallback for a job whose lineage record is gone, so it matches the
+    exact `=` forms `build_flags` writes and nothing a person types: a person
+    passes `--permission-mode plan` as two tokens, and a resumed job keeps them
+    that way. A start with `--permission-mode=<mode>` or `--restricted` is cx's.
+    So is a start that passes both `--effort=` and `--model=`, which covers a
+    skip-permissions start. A resumed job keeps its flags under
+    `dispatch.launch.flagArgs`. The roster records no environment variable cx
+    could set as a stronger marker: only provider variables survive the launch.
+    """
     dispatch = worker.get("dispatch") if isinstance(worker.get("dispatch"), dict) else {}
     launch = dispatch.get("launch") if isinstance(dispatch.get("launch"), dict) else {}
     tokens: list[Any] = []
-    for source in (launch.get("args"), worker.get("respawnFlags")):
+    for source in (launch.get("args"), launch.get("flagArgs"),
+                   dispatch.get("respawnFlags"), worker.get("respawnFlags")):
         if isinstance(source, list):
             tokens.extend(source)
-    return any(isinstance(t, str) and t.partition("=")[0] in _CX_LAUNCH_FLAGS for t in tokens)
+    strings = [t for t in tokens if isinstance(t, str)]
+    equals = {t.partition("=")[0] for t in strings if "=" in t}
+    return ("--restricted" in strings or "--permission-mode" in equals
+            or {"--effort", "--model"} <= equals)
 
 
 def _session_record(pid: int) -> dict[str, Any] | None:

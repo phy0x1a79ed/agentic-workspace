@@ -911,9 +911,11 @@ def test_mode_of_an_invalid_pid_is_unknown(home, bad):
     assert lifecycle.mode_of(bad) == "unknown"
 
 
-def test_mode_of_is_unknown_when_the_roster_is_unreadable(home, launched):
+def test_mode_of_is_unknown_when_the_roster_is_unreadable(home, launched, monkeypatch):
+    from awm.claudedaemon import sessionmode
     from awm.cx import lifecycle
 
+    monkeypatch.setattr(sessionmode, "_may_be_a_session", lambda pid: True)
     start({**BASE, "mode": "representative"})
     home.roster.write_text("{ not json")
     assert lifecycle.mode_of(os.getppid()) == "unknown"

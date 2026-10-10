@@ -420,6 +420,11 @@ def home(tmp_path, monkeypatch):
     for var in ("AWM_CX_ROSTER", "AWM_CX_JOBS", "AWM_CX_SESSIONS", "AWM_CX_STATE"):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setattr(server, "_mode_cache", {})
+    # the tests run under a real Claude Code session; its processes are not
+    # candidates for the ancestor lookup unless a test says so
+    from awm.claudedaemon import sessionmode
+
+    monkeypatch.setattr(sessionmode, "_may_be_a_session", lambda pid: False)
     return root
 
 
@@ -455,7 +460,10 @@ def test_a_pid_with_no_record_is_not_gated(client, dispatched, home):
     assert invoke(client, "ssh_connect").status_code == 200
 
 
-def test_an_unreadable_roster_leaves_only_compaction(client, dispatched, home):
+def test_an_unreadable_roster_leaves_only_compaction(client, dispatched, home, monkeypatch):
+    from awm.claudedaemon import sessionmode
+
+    monkeypatch.setattr(sessionmode, "_may_be_a_session", lambda pid: True)
     _start_session(home, "representative")
     (home / "daemon" / "roster.json").write_text("{ not json")
     assert invoke(client, "board_list").status_code == 403
@@ -502,6 +510,44 @@ def test_a_corrupt_record_of_another_job_does_not_lock_the_representative(client
     (home / "cx" / "starts" / "pending-0123456789abcdef.json").write_text("[")
     assert invoke(client, "board_list").status_code == 200
     assert invoke(client, "board_post").status_code == 403
+
+
+def test_a_proxy_whose_repl_has_no_session_record_is_gated_by_the_roster(
+        client, dispatched, home, monkeypatch):
+    """The REPL of a cx-started delegate has no sessions/<pid>.json, and its MCP
+    proxy runs under a wrapper: the caller is a record-less child of a listed job."""
+    from awm.claudedaemon import sessionmode
+
+    parent = os.getppid()
+    (home / "daemon" / "roster.json").write_text(json.dumps({"workers": {"abababab": {
+        "replPid": parent, "replProcStart": _proc_start(parent),
+        "dispatch": {"seed": {"name": "rep"}}}}}))
+    (home / "cx" / "starts" / "abababab.json").write_text(json.dumps({"mode": "delegate"}))
+    monkeypatch.setattr(sessionmode, "_may_be_a_session", lambda pid: pid == parent)
+    assert invoke(client, "scope_post").status_code == 403
+    assert invoke(client, "reflection_compact").status_code == 200
+
+
+def test_a_header_naming_a_pid_with_no_process_is_the_most_restricted_mode(client, dispatched,
+                                                                          home):
+    """The T14 fail-open: pid 4999999 has no /proc entry, and the walk up from it
+    used to end at once and read as "not cx-started"."""
+    dead = {"X-Awm-Session-Pid": "4999999"}
+    assert not os.path.exists("/proc/4999999")
+    assert invoke(client, "scope_post", headers=dead).status_code == 403
+    assert domain_call(client, "scope", "post", headers=dead).status_code == 403
+    assert invoke(client, "reflection_compact", headers=dead).status_code == 200
+    descendant = {"X-Awm-Caller-Pid": "4999999"}
+    assert invoke(client, "scope_post", headers=descendant).status_code == 403
+    assert dispatched and all(c[0] == "reflection_compact" for c in dispatched)
+
+
+def test_a_pid_that_exists_but_is_interactive_stays_ungated(client, dispatched, home):
+    (home / "sessions" / f"{PID}.json").write_text(json.dumps({
+        "pid": PID, "procStart": _proc_start(PID), "kind": "interactive"}))
+    assert invoke(client, "scope_post").status_code == 200
+    assert invoke(client, "scope_post",
+                  headers={"X-Awm-Caller-Pid": str(PID)}).status_code == 200
 
 
 def test_a_cx_launched_job_with_no_lineage_is_the_most_restricted_mode(client, dispatched, home):
