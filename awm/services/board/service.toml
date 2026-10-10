@@ -1,0 +1,3 @@
+# The board is part of the base catalog on every node. A node picks its role
+# with AWM_BOARD_ROLE; only the host runs the door.
+tier = "core"
