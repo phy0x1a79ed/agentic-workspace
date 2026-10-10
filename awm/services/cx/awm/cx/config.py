@@ -10,22 +10,24 @@ import os
 import shutil
 from pathlib import Path
 
+from awm.claudedaemon import sessionmode
 
-def _home() -> Path:
-    return Path(os.environ.get("CLAUDE_CONFIG_DIR") or (Path.home() / ".claude"))
+# The five paths below are resolved by `claudedaemon.sessionmode`, which the
+# gateway reads with no cx process in between. One definition keeps the writer
+# and the gateway's reader pointed at the same lineage directory.
 
 
 #: The daemon's roster of background sessions. Liveness, the PTY lane, the CLI
 #: version and the start time come from here; nothing about identity does.
 def roster_path() -> Path:
-    return Path(os.environ.get("AWM_CX_ROSTER") or (_home() / "daemon" / "roster.json"))
+    return sessionmode.roster_path()
 
 
 #: One directory per session, holding the session's own state record. This is
 #: the only source of identity: whether a session has been renamed, prompted or
 #: moved.
 def jobs_dir() -> Path:
-    return Path(os.environ.get("AWM_CX_JOBS") or (_home() / "jobs"))
+    return sessionmode.jobs_dir()
 
 
 #: Sessions are named so they read as tooling in `claude agents` and nobody
@@ -126,21 +128,20 @@ def loop_enabled() -> bool:
 
 
 def state_dir() -> Path:
-    p = Path(os.environ.get("AWM_CX_STATE") or (_home() / "cx"))
-    return p
+    return sessionmode.state_dir()
 
 
 #: One JSON file per session `start` created, named for the job. It is the only
 #: record of who started a session and in what mode: `stop` acts on a job only
 #: when it has one, and `mode_of` reads the mode from it.
 def starts_dir() -> Path:
-    return state_dir() / "starts"
+    return sessionmode.starts_dir()
 
 
 #: Claude Code's per-process session records, which name every live REPL,
 #: interactive or background.
 def sessions_dir() -> Path:
-    return Path(os.environ.get("AWM_CX_SESSIONS") or (_home() / "sessions"))
+    return sessionmode.sessions_dir()
 
 
 #: Where scope worktrees live: `<canonical workspace>/projects/<project>/<scope>`.
@@ -151,3 +152,54 @@ def projects_dir() -> Path:
     from awm import config as awm_config
 
     return awm_config.canonical_workspace() / "projects"
+
+
+#: The built-in tools a delegate holds: file work inside its scope, and the
+#: tools that talk to other agents. There is no Bash, so it runs nothing.
+DELEGATE_TOOLS = ["Read", "Grep", "Glob", "Edit", "Write", "MultiEdit", "TodoWrite",
+                  "Task", "Agent", "SendMessage", "ListAgents", "Skill", "ToolSearch"]
+
+
+def child_policy() -> dict:
+    """What cx imposes on a session that a gated session started.
+
+    `dontAsk` denies at once anything that would prompt, so an unwatched
+    delegate cannot stall. `restricted` confines the file tools to the scope's
+    worktree and ignores user settings, and the strict MCP config leaves it only
+    the awm server.
+    """
+    from awm.config import modes
+
+    return {
+        "mode": modes.DELEGATE, "permission": "dontAsk",
+        "tools": list(DELEGATE_TOOLS),
+        "allowed_tools": [*DELEGATE_TOOLS, "mcp__awm__*"],
+        "disallowed_tools": ["Bash", "PowerShell", "Monitor", "Workflow", "WebFetch",
+                             "WebSearch", "NotebookEdit"],
+        "restricted": True, "strict_mcp": True, "remote_control": None,
+    }
+
+
+def mcp_source() -> Path:
+    """The workspace's own MCP config, which names how to start the awm server."""
+    env = os.environ.get("AWM_CX_MCP_SOURCE")
+    if env:
+        return Path(env)
+    from awm import config as awm_config
+
+    return awm_config.canonical_workspace() / ".mcp.json"
+
+
+def awm_mcp_server() -> dict | None:
+    """The `awm` server entry of the workspace MCP config, or None if it has none."""
+    import json
+
+    data = json.loads(mcp_source().read_text())
+    server = (data.get("mcpServers") or {}).get("awm") if isinstance(data, dict) else None
+    if not isinstance(server, dict) or not isinstance(server.get("command"), str):
+        return None
+    return {k: server[k] for k in ("type", "command", "args", "env") if k in server}
+
+
+def mcp_config_path() -> Path:
+    return state_dir() / "mcp-awm.json"

@@ -1,0 +1,4 @@
+# Discoverable tier: the door domain is reached through the `more` tool, not
+# listed on the default MCP surface. The service starts everywhere and does
+# nothing unless AWM_FRONT_DOOR=1 on a fleet node.
+tier = "discoverable"

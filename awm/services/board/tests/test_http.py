@@ -178,6 +178,21 @@ async def test_list_passes_only_the_filters_that_are_set(door):
     assert none == []
 
 
+async def test_list_pages_with_limit_and_offset_and_refuses_bad_paging(door):
+    async with door.client(door.tokens["alpha"]) as alpha, door.client(door.tokens["beta"]) as beta:
+        ids = [(await alpha.post("/board/cards", json={**CARD, "title": str(i)})).json()["id"]
+               for i in range(5)]
+        first = (await beta.get("/board/cards", params={"limit": 2})).json()
+        second = (await beta.get("/board/cards", params={"limit": 2, "offset": 2})).json()
+        tail = (await beta.get("/board/cards", params={"offset": 4})).json()
+        bad = await beta.get("/board/cards", params={"limit": "many"})
+        too_big = await beta.get("/board/cards", params={"limit": 501})
+    assert [c["id"] for c in first] == ids[:2]
+    assert [c["id"] for c in second] == ids[2:4]
+    assert [c["id"] for c in tail] == ids[4:]
+    assert bad.status_code == 400 and too_big.status_code == 400
+
+
 async def test_an_unexpected_failure_answers_500_with_the_minimal_body(door, caplog):
     def explode(*args, **kwargs):
         raise RuntimeError("secret internals")

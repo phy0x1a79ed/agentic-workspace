@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "awm-representative"
+version = "0.1.0"
+requires-python = ">=3.11"
+description = "AWM front door: queues the board's cards addressed to this swarm and keeps a representative and a secretary session alive."
+dependencies = [
+    "awm-config",
+    "awm-gatewayclient",
+    "awm-persistence",
+    "awm-board",
+    "awm-claudedaemon",
+    "httpx",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest",
+    "pytest-asyncio",
+]
+
+# PEP 420 namespace package: no top-level awm/__init__.py; the namespace dir is awm/representative/.
+[tool.setuptools.packages.find]
+include = ["awm.representative*"]
+namespaces = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+markers = [
+    "smoke: fast unit tests; target <30s",
+    "unit: pure unit tests, no network or subprocesses",
+]
