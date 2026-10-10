@@ -679,16 +679,20 @@ async def invoke_tool(payload: dict, request: Request):
         raise HTTPException(400, "'name' must be a string")
     if args is None:
         args = {}
-    if not isinstance(args, dict):
-        raise HTTPException(400, "'args' must be an object")
     as_ = request.headers.get("X-Awm-As")
-    mode = await asyncio.to_thread(_caller_mode, request.headers, as_)
-    reason = _call_refusal(mode, name, args)
-    if reason:
-        log.info("mode gate: refused %s — %s", name, reason)
-        raise HTTPException(403, reason)
-    _stamp_caller(name, args, request.headers.get("X-Awm-Session-Pid"),
-                  request.headers.get("X-Awm-Caller-Pid"), as_)
+    mode = None
+    if isinstance(args, dict):
+        mode = await asyncio.to_thread(_caller_mode, request.headers, as_)
+        reason = _call_refusal(mode, name, args)
+        if reason:
+            log.info("mode gate: refused %s — %s", name, reason)
+            raise HTTPException(403, reason)
+        _stamp_caller(name, args, request.headers.get("X-Awm-Session-Pid"),
+                      request.headers.get("X-Awm-Caller-Pid"), as_)
+    elif not as_:
+        raise HTTPException(400, "'args' must be an object")
+    # An edge-stamped caller with a non-object `args` carries no session to gate
+    # or stamp, and the catalog's own gate answers it (404 for a foreign node).
     try:
         result = await catalog.dispatch(name, args, as_=as_)
     except peer_catalog.PeerRedirect as e:
@@ -851,7 +855,7 @@ class HubRoutingMiddleware:
         ws = _WS(scope, receive=receive, send=send)
         if rel.startswith("/session/"):
             sid = rel[len("/session/"):]
-            await proxy_session_ws(ws, rec.service_id, sid)
+            await proxy_session_ws(ws, rec.service_id, sid, as_=as_)
             return
         if rel.startswith("/emit/"):
             topic = rel[len("/emit/"):]

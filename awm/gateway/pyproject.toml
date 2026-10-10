@@ -9,6 +9,7 @@ requires-python = ">=3.11"
 description = "AWM gateway: the sole interface. Dynamically loads feature modules and re-exposes each as MCP + CLI + HTTP/WS; owns routing, service supervision, daemon lifecycle."
 dependencies = [
     "awm-config",
+    "awm-claudedaemon",
     "awm-persistence",
     "awm-scopes",
     "awm-artifacts",

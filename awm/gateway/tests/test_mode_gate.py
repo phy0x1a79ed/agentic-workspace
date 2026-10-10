@@ -557,6 +557,19 @@ def test_a_non_object_args_is_a_400_before_stamping_or_the_gate(client, dispatch
     assert dispatched == [] and modes["lookups"] == []
 
 
+def test_an_edge_stamped_non_object_args_is_left_to_the_catalog_gate(client, monkeypatch):
+    seen = []
+
+    async def refuse(name, args, as_=None):
+        seen.append((name, args, as_))
+        raise ValueError(f"Unknown tool: {name}")
+
+    monkeypatch.setattr(server.catalog, "dispatch", refuse)
+    resp = client.post("/invoke", json={"name": "reflection", "args": [1]},
+                       headers={"X-Awm-As": "peer:capella"})
+    assert resp.status_code == 404 and seen == [("reflection", [1], "peer:capella")]
+
+
 @pytest.mark.parametrize("payload", [["x"], "text", 5, None])
 def test_a_non_object_payload_is_rejected(client, dispatched, payload):
     assert client.post("/invoke", json=payload, headers=HEAD).status_code in (400, 422)
