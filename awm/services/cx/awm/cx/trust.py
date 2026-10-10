@@ -35,3 +35,12 @@ def trusted(path: str | Path) -> bool:
     The check is `awm.claudedaemon.trust.trusted`, aimed at cx's trust file.
     """
     return _shared.trusted(path, trust_file=trust_file())
+
+
+def start_refusal(path: str | Path) -> str | None:
+    """Why `claude --bg` would refuse to start in ``path``, or None.
+
+    Stricter than `trusted`: inside a git repository the repository's own trust
+    entry is required. See `awm.claudedaemon.trust`.
+    """
+    return _shared.start_refusal(path, trust_file=trust_file())

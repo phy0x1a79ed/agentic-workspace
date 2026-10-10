@@ -150,9 +150,9 @@ async def _start(args: dict[str, Any], as_: str | None) -> dict[str, Any]:
         raise Refused("no claude code daemon is running — a session started now "
                       "would land inside awm's control group")
     cwd = await _resolve_worktree(spec["project"], spec["scope"], create=not confined)
-    if not trust.trusted(cwd):
-        raise Refused(f"{cwd} is not a trusted directory; trust it once in a "
-                      "terminal first")
+    untrusted = await asyncio.to_thread(trust.start_refusal, cwd)
+    if untrusted:
+        raise Refused(untrusted)
     parent = _parent_of(args.get("_caller_pid"))
     caller = caller_peer(as_) or as_ or "local"
     async with _START_LOCK:
