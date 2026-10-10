@@ -35,6 +35,7 @@ API_MANIFEST: dict[str, Any] = {
     "functions": [
         {
             "name": "status",
+            "effect": "read",
             "tool": "penpot_plugins_status",
             "description": (
                 "Report the penpot-plugins static mount: its origin-relative "

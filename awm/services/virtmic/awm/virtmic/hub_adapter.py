@@ -48,6 +48,7 @@ API_MANIFEST: dict[str, Any] = {
     "functions": [
         {
             "name": "status",
+            "effect": "read",
             "description": (
                 "Report virtual-microphone health: PulseAudio reachability, "
                 "whether the daemon is systemd-managed, whether the virtmic "
@@ -58,6 +59,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "ensure",
+            "effect": "write",
             "description": (
                 "Run one reconcile pass now: ensure the PulseAudio config, "
                 "daemon, virtmic null-sink, and default capture source are all "

@@ -117,6 +117,28 @@ def _author_to_stored(display: str, *, conn=None) -> str:
     return f"user:{display}"
 
 
+def edge_origin(as_: str | None) -> str | None:
+    """``as_`` when the edge stamped it as a peer identity (``peer`` or ``peer:<node>``), else ``None``."""
+    if as_ == "peer" or (as_ or "").startswith("peer:"):
+        return as_
+    return None
+
+
+def is_foreign(as_: str | None) -> bool:
+    """Whether the edge stamped ``as_`` as a foreign node, by the gateway gate's rule.
+
+    A ``peer:<node>`` stamp is foreign unless the peer book calls ``<node>``
+    domestic; a node the book does not know, or a stamp naming no node, is
+    foreign. The bare legacy ``peer`` and an absent identity are not.
+    """
+    if not isinstance(as_, str) or not as_.startswith("peer:"):
+        return False
+    from awm import config
+    node = config.caller_peer(as_)
+    record = config.peer_record(node) if node else None
+    return record is None or record["relation"] != "domestic"
+
+
 def _author_to_display(author_ref: str) -> str:
     """Render the stored author back to the display form."""
     if not author_ref or author_ref == SYSTEM_REF:
@@ -246,15 +268,26 @@ def set_emitter(fn) -> None:
 
 def post(project: str, scope: str, *, author: str, body: str,
          kind: str = "message", meta: dict | None = None,
-         to_scope: str | None = None) -> ScopePost:
+         to_scope: str | None = None, origin: str | None = None) -> ScopePost:
     """Append a post to a scope's channel and fan it out to live subscribers
-    and the cross-service emitter."""
+    and the cross-service emitter.
+
+    ``origin`` is an edge-stamped peer identity (see :func:`edge_origin`). It is
+    stored verbatim as the author and ``author`` is ignored: a peer's claim about
+    who it is never outranks the edge's. The claim is kept in
+    ``meta["claimed_author"]`` so a domestic reader can see which agent sent it.
+    A caller with no stamp may not send an author of the ``peer:`` shape.
+    """
+    if origin is None and (author or "").startswith("peer:"):
+        raise ValueError("author 'peer:...' is reserved for edge-stamped peer identities")
     now = now_ms()
     pid = str(_uuid.uuid4())
-    meta = _coerce_meta(meta)
+    meta = dict(_coerce_meta(meta))
+    if origin and author:
+        meta["claimed_author"] = author
     dao = ScopesDAO()
     with dao.transaction() as conn:
-        author_ref = _author_to_stored(author, conn=conn)
+        author_ref = origin or _author_to_stored(author, conn=conn)
         ScopesDAO(conn=conn).execute(
             "INSERT INTO scope_posts "
             "(id, owner_project, owner_scope, author, kind, body, meta, ts) "
@@ -305,7 +338,7 @@ def _post_filter(project, scope, kind, author, before_ts) -> tuple[str, list]:
         params.append(kind)
     if author:
         sql += " AND author = ?"
-        params.append(_author_to_stored(author))
+        params.append(author if edge_origin(author) else _author_to_stored(author))
     if before_ts is not None:
         bms = iso_to_ms(before_ts)
         if bms is not None:

@@ -91,3 +91,20 @@ def awm_workspace(tmp_path, monkeypatch):
         "skills_dir": skills_dir,
         "data_dir": data_dir,
     }
+
+
+@pytest.fixture()
+def domestic_peers(tmp_path, monkeypatch):
+    """A peer book listing the peers the hand-built snapshots in the surface tests
+    name, all domestic. The provider directory keeps only peers the book calls
+    domestic, so a snapshot naming a peer the book lacks reads as empty."""
+    import json
+
+    import awm.config.peerbook as peerbook
+
+    path = tmp_path / "domestic-peers.json"
+    path.write_text(json.dumps({
+        name: {"edge_url": f"https://{name}:12100", "relation": "domestic"}
+        for name in ("altair", "mira", "cosmos", "capella", "fir")}))
+    monkeypatch.setattr(peerbook, "peers_file", lambda: path)
+    return path

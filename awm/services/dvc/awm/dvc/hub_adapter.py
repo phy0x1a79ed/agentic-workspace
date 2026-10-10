@@ -78,6 +78,7 @@ API_MANIFEST: dict[str, Any] = {
     "functions": [
         {
             "name": "status",
+            "effect": "read",
             "tool": "dvc_status",
             "description": (
                 "Report a scope's DVC pin state against the local cache: pin count, "
@@ -90,6 +91,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "resolve",
+            "effect": "read",
             "tool": "dvc_resolve",
             "description": (
                 "List the exact object hashes a scope depends on, split into "
@@ -101,6 +103,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "pull",
+            "effect": "write",
             "tool": "dvc_pull",
             "description": (
                 "Fetch from chinook only the cache objects this scope pins and does "
@@ -116,6 +119,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "push",
+            "effect": "write",
             "tool": "dvc_push",
             "description": (
                 "Send the cache objects this scope pins up to chinook. Submits a "
@@ -128,6 +132,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "sync",
+            "effect": "write",
             "tool": "dvc_sync",
             "description": (
                 "Submit the daily sync of the shared DVC cache (data/.dvc_cache) to "
@@ -156,6 +161,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "coverage",
+            "effect": "read",
             "tool": "dvc_coverage",
             "description": (
                 "Report what would be lost if this machine died: per scope worktree, "
@@ -178,6 +184,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "task",
+            "effect": "read",
             "tool": "dvc_task",
             "description": (
                 "Status of a Globus task submitted by this service: state, files "
@@ -199,6 +206,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "jobs",
+            "effect": "read",
             "tool": "dvc_jobs",
             "description": (
                 "The two scheduled backups — cache_sync (append-only archive of "
@@ -214,6 +222,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "runs",
+            "effect": "read",
             "tool": "dvc_runs",
             "description": (
                 "Backup run history — one row per attempt, from every entry "
@@ -236,6 +245,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "run",
+            "effect": "write",
             "tool": "dvc_run",
             "description": (
                 "Trigger a backup job now, out of schedule. Submits and returns "
@@ -255,6 +265,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "schedule",
+            "effect": "write",
             "tool": "dvc_schedule",
             "description": (
                 "Change when a backup job runs, or disable it. Accepts a 5-field "

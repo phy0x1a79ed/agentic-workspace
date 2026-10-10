@@ -51,6 +51,7 @@ API_MANIFEST: dict[str, Any] = {
     "functions": [
         {
             "name": "status",
+            "effect": "read",
             "tool": "trilium_status",
             "description": (
                 "Whether the vault is up, whether it has a database yet, how "
@@ -63,6 +64,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "start",
+            "effect": "write",
             "tool": "trilium_start",
             "description": (
                 "Start the vault's server if it is not running. Operator only: "
@@ -73,6 +75,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "stop",
+            "effect": "write",
             "tool": "trilium_stop",
             "description": (
                 "Stop the vault's server. Operator only — this takes the "
@@ -83,6 +86,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "restart",
+            "effect": "write",
             "tool": "trilium_restart",
             "description": "Stop then start the vault's server. Operator only.",
             "params": [],
@@ -90,6 +94,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "url",
+            "effect": "read",
             "tool": "trilium_url",
             "description": (
                 "Where the vault is served. A path, not a URL: it is on the "
@@ -99,6 +104,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "provision",
+            "effect": "write",
             "tool": "trilium_provision",
             "description": (
                 "Create the vault's database if it has none. Idempotent, and "
@@ -109,6 +115,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "snapshot",
+            "effect": "write",
             "tool": "trilium_snapshot",
             "description": (
                 "Ask Trilium for a consistent database copy, move it into the "
@@ -128,6 +135,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "snapshots",
+            "effect": "read",
             "tool": "trilium_snapshots",
             "description": (
                 "Every database copy the vault has, newest first: the pinned "
@@ -138,6 +146,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "restore",
+            "effect": "write",
             "tool": "trilium_restore",
             "description": (
                 "Replace the whole vault with a snapshot, moving the database "
@@ -155,6 +164,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "export",
+            "effect": "write",
             "tool": "trilium_export",
             "description": (
                 "Export the vault as markdown into notes/ and commit it. A "
@@ -171,6 +181,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "logs",
+            "effect": "read",
             "tool": "trilium_logs",
             "description": (
                 "Tail the vault server's log. Operator only: it carries "
@@ -183,6 +194,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "note_upsert",
+            "effect": "write",
             "tool": "trilium_note_upsert",
             "description": (
                 "Write a note: create it under a parent, or replace the body "
@@ -203,6 +215,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "note_get",
+            "effect": "read",
             "tool": "trilium_note_get",
             "description": (
                 "One note: its title, type, attributes, attachments, parents "
@@ -218,6 +231,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "note_children",
+            "effect": "read",
             "tool": "trilium_note_children",
             "description": (
                 "The direct children of a note, in tree order, without their "
@@ -230,6 +244,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "note_search",
+            "effect": "read",
             "tool": "trilium_note_search",
             "description": (
                 "Search the vault in Trilium's own search grammar — "
@@ -252,6 +267,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "note_create",
+            "effect": "write",
             "tool": "trilium_note_create",
             "description": (
                 "Create a note under a parent and return its id. Unlike "
@@ -279,6 +295,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "note_update",
+            "effect": "write",
             "tool": "trilium_note_update",
             "description": (
                 "Change a note in place: its title, type, mime, body, or any "
@@ -301,6 +318,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "note_place",
+            "effect": "write",
             "tool": "trilium_note_place",
             "description": (
                 "Make a note's parents exactly this set — one call for what "
@@ -317,6 +335,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "note_delete",
+            "effect": "write",
             "tool": "trilium_note_delete",
             "description": (
                 "Delete a note and everything under it. Operator only, and it "
@@ -329,6 +348,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "note_move",
+            "effect": "write",
             "tool": "trilium_note_move",
             "description": (
                 "Move a note under a new parent, leaving it in one place. "
@@ -343,6 +363,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "note_clone",
+            "effect": "write",
             "tool": "trilium_note_clone",
             "description": (
                 "Also show this note under another parent. One note in two "
@@ -358,6 +379,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "attrs_get",
+            "effect": "read",
             "tool": "trilium_attrs_get",
             "description": (
                 "Every label and relation on a note, including the ones it "
@@ -370,6 +392,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "attr_set",
+            "effect": "write",
             "tool": "trilium_attr_set",
             "description": (
                 "Give a note exactly one label or relation of this name. "
@@ -392,6 +415,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "attr_delete",
+            "effect": "write",
             "tool": "trilium_attr_delete",
             "description": (
                 "Remove every attribute of this name the note owns. An "
@@ -409,6 +433,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "attachment_put",
+            "effect": "write",
             "tool": "trilium_attachment_put",
             "description": (
                 "Attach a file to a note, from a path on this host or from "
@@ -432,6 +457,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "slice_expose",
+            "effect": "secret",
             "tool": "trilium_slice_expose",
             "description": (
                 "Mint a link that opens one note and its descendants to "
@@ -456,6 +482,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "slice_list",
+            "effect": "secret",
             "tool": "trilium_slice_list",
             "description": (
                 "Every slice ever minted, newest first -- active and revoked "
@@ -468,6 +495,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "slice_revoke",
+            "effect": "write",
             "tool": "trilium_slice_revoke",
             "description": (
                 "Revoke a slice token; a later slice_resolve of it answers "
@@ -481,6 +509,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "slice_resolve",
+            "effect": "secret",
             "tool": "trilium_slice_resolve",
             "description": (
                 "What a slice token opens: the note, whether the visitor may "

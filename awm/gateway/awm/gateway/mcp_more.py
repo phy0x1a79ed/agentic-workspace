@@ -26,9 +26,8 @@ _PLAIN_DOMAIN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
 def is_plain_domain(domain: Any) -> bool:
     """Whether ``domain`` is a bare domain name: no ``@``, ``/`` or whitespace.
 
-    ``<domain>@<peer>`` is the legacy shim both proxies honour by dialling the
-    peer edge directly. A rewritten ``more`` call must never reach it, so peer
-    routing stays in the ``peer`` argument."""
+    A rewritten ``more`` call must name a real domain, never a node-suffixed
+    form such as ``kb@mira``, so peer routing stays in the ``peer`` argument."""
     return isinstance(domain, str) and _PLAIN_DOMAIN.fullmatch(domain) is not None
 
 

@@ -183,7 +183,8 @@ def get_goal(goal_id: str) -> Goal | None:
 def set_goal(*, objective: str, author: str, level: str | None = None,
              project: str | None = None, scope: str | None = None,
              fallback: str | None = None, stop_line: str | None = None,
-             noise: str | None = None, supersedes: str | None = None) -> Goal:
+             noise: str | None = None, supersedes: str | None = None,
+             origin: str | None = None) -> Goal:
     """Record a goal, optionally as a revision of an existing one.
 
     A partial goal is recorded rather than refused — the missing disposition
@@ -230,11 +231,12 @@ def set_goal(*, objective: str, author: str, level: str | None = None,
         meta["supersedes"] = supersedes
 
     post = channel.post(owner[0], owner[1], author=author, body=objective,
-                        kind=GOAL_KIND, meta=meta)
+                        kind=GOAL_KIND, meta=meta, origin=origin)
     return _post_to_goal(post)
 
 
-def retire_goal(goal_id: str, *, author: str, reason: str = "") -> Goal:
+def retire_goal(goal_id: str, *, author: str, reason: str = "",
+                origin: str | None = None) -> Goal:
     """Append a tombstone retiring ``goal_id``. Nothing is deleted; the retired
     goal stays readable through :func:`history` and a raw ``scope_fetch``."""
     target = get_goal(goal_id)
@@ -244,7 +246,7 @@ def retire_goal(goal_id: str, *, author: str, reason: str = "") -> Goal:
         raise GoalError(f"{goal_id!r} is already a tombstone")
     post = channel.post(target.project, target.scope, author=author,
                         body=reason or "", kind=GOAL_KIND,
-                        meta={"retires": goal_id})
+                        meta={"retires": goal_id}, origin=origin)
     return _post_to_goal(post)
 
 

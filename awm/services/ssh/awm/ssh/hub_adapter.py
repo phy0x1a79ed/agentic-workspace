@@ -27,6 +27,7 @@ API_MANIFEST: dict[str, Any] = {
     "functions": [
         {
             "name": "connect",
+            "effect": "write",
             "tool": "ssh_connect",
             "description": (
                 "Open a ControlMaster SSH connection to a managed host. "
@@ -51,6 +52,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "disconnect",
+            "effect": "write",
             "tool": "ssh_disconnect",
             "description": (
                 "Close the ControlMaster SSH connection to a host. Does NOT abort "
@@ -65,6 +67,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "status",
+            "effect": "read",
             "tool": "ssh_status",
             "description": (
                 "List all managed hosts and their connection state. Reports an "
@@ -79,6 +82,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "notify_test",
+            "effect": "write",
             "tool": "ssh_notify_test",
             "description": (
                 "Fire the Discord lock-alert wire on demand to confirm the ssh "
@@ -95,6 +99,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "receive_test",
+            "effect": "write",
             "tool": "ssh_receive_test",
             "description": (
                 "The inbound twin of notify_test: prove this service can still "

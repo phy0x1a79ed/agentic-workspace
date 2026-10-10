@@ -405,6 +405,7 @@ API_MANIFEST: dict[str, Any] = {
     "functions": [
         {
             "name": "send",
+            "effect": "write",
             "tool": "social_send",
             "description": "Send a message as a configured account to a channel.",
             "params": [
@@ -416,6 +417,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "fetch",
+            "effect": "read",
             "tool": "social_fetch",
             "description": "Fetch a channel's existing messages live from the "
                            "platform (incl. ones from before the service started), "
@@ -430,6 +432,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "search",
+            "effect": "read",
             "tool": "social_search",
             "description": "Search a platform's own message index live (Slack "
                            "search.messages, Gmail X-GM-RAW, Teams best-effort). "
@@ -444,6 +447,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "download_attachments",
+            "effect": "write",
             "tool": "social_download_attachments",
             "description": "Download a message's attachments to a system temp dir "
                            "(outside the awm workspace). Re-fetches the message "
@@ -459,11 +463,13 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "accounts",
+            "effect": "read",
             "tool": "social_accounts",
             "description": "List configured accounts with platform, kind, and live status.",
         },
         {
             "name": "channels",
+            "effect": "read",
             "tool": "social_channels",
             "description": "List channels visible to a configured account. "
                            "`include_dms=true` also enumerates direct/group DMs "
@@ -475,6 +481,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "open_dm",
+            "effect": "write",
             "tool": "social_open_dm",
             "description": "Resolve a platform user (by id, or by name where the "
                            "platform supports it) to a direct-message channel and "
@@ -486,6 +493,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "list_operators",
+            "effect": "read",
             "tool": "social_operators",
             "description": "List whitelisted operators, optionally by platform.",
             "params": [
@@ -494,6 +502,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "add_operator",
+            "effect": "write",
             "tool": "social_operator_add",
             "description": "Whitelist a platform user and map them to an awm_user.",
             "params": [
@@ -504,6 +513,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "remove_operator",
+            "effect": "write",
             "tool": "social_operator_remove",
             "description": "Remove a platform user from the whitelist.",
             "params": [
@@ -513,6 +523,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "lookup",
+            "effect": "read",
             "tool": "social_lookup",
             "description": "Resolve a (platform, user id) to its awm_user (or null).",
             "params": [
@@ -522,6 +533,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "buckets",
+            "effect": "read",
             "tool": "social_buckets",
             "description": "List configured cloud file-store buckets (Google "
                            "Drive, OneDrive/SharePoint) with kind, root, and live "
@@ -529,6 +541,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "bucket_ls",
+            "effect": "read",
             "tool": "social_bucket_ls",
             "description": "List the immediate children of a folder in a bucket. "
                            "`path` is relative to the bucket root (omit for root). "
@@ -540,6 +553,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "bucket_get",
+            "effect": "write",
             "tool": "social_bucket_get",
             "description": "Download one file from a bucket to a system temp dir "
                            "(outside the awm workspace) and return its absolute "
@@ -553,6 +567,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "bucket_put",
+            "effect": "write",
             "tool": "social_bucket_put",
             "description": "Upload a local file (`src` = a filesystem path) to "
                            "`path` in a bucket, creating or overwriting it. "
@@ -567,6 +582,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "bucket_rm",
+            "effect": "write",
             "tool": "social_bucket_rm",
             "description": "Delete the file/folder at `path` in a bucket.",
             "params": [
@@ -576,6 +592,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "bucket_search",
+            "effect": "read",
             "tool": "social_bucket_search",
             "description": "Search a bucket for files matching `query` (Google "
                            "Drive: name match across the drive; OneDrive: "
@@ -588,6 +605,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "emit_probe",
+            "effect": "queue",
             "tool": "social_emit_probe",
             "description": "Emit a synthetic, inert `command` event carrying "
                            "only `nonce`, so a subscriber can prove on demand "

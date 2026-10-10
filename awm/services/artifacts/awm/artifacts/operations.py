@@ -61,11 +61,14 @@ class Operation:
     output: Any = None
     request_model: Any = None
     params: list[Param] = field(default_factory=list)
+    effect: str = "write"
+    category: str | None = None
 
 
 ARTIFACT_OPERATIONS: list[Operation] = [
     Operation(
         name="artifact_register",
+        effect="write",
         description="Register an output artifact (figure, dataset, report, etc.).",
         service_func=artifacts.register_artifact,
         http_method="POST",
@@ -98,6 +101,7 @@ ARTIFACT_OPERATIONS: list[Operation] = [
     ),
     Operation(
         name="artifact_search",
+        effect="read",
         description="Search/list registered artifacts by project, type, or free-text query.",
         service_func=artifacts.search_artifacts,
         http_method="GET",
