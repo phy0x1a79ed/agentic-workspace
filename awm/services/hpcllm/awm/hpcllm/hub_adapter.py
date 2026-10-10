@@ -30,6 +30,7 @@ API_MANIFEST: dict[str, Any] = {
     "functions": [
         {
             "name": "serve_request",
+            "effect": "write",
             "tool": "hpcllm_serve_request",
             "description": (
                 "Request an LLM server on an HPC cluster. Returns immediately "
@@ -48,6 +49,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "serve_status",
+            "effect": "read",
             "tool": "hpcllm_serve_status",
             "description": "Get current status of a serve request.",
             "params": [
@@ -56,6 +58,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "serve_cancel",
+            "effect": "write",
             "tool": "hpcllm_serve_cancel",
             "description": (
                 "Cancel a serve request: scancel the SLURM job, remove the "
@@ -67,12 +70,14 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "serve_list",
+            "effect": "read",
             "tool": "hpcllm_serve_list",
             "description": "List all active (non-terminal) serve requests.",
             "params": [],
         },
         {
             "name": "model_list",
+            "effect": "read",
             "tool": "hpcllm_model_list",
             "description": "List available models for a cluster (or all).",
             "params": [

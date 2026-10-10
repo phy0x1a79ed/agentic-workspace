@@ -707,8 +707,8 @@ def _peer_trust_params() -> list[Param]:
 def _peer_join_params() -> list[Param]:
     return [
         Param(name="name", type="string", required=True, cli_type="argument",
-              description="Peer node name (single token; how it is addressed "
-                          "in <svc>@<peer>)."),
+              description="Peer node name (single token; the value of peer= "
+                          "in a domain call)."),
         Param(name="edge_url", type="string", required=True, cli_type="argument",
               description="Peer HTTPS edge URL (bare host:port → https://)."),
         Param(name="ssh_alias", type="string", required=False, cli_type="option",
@@ -872,6 +872,7 @@ GATEWAY_OPERATIONS: list[Operation] = [
         http_method="GET", http_path="/status",
         cli_group="gateway", cli_command="status",
         output=JsonOutput(), surfaces=_CLI,
+        effect="read",
     ),
     Operation(
         name="awm_restart",
@@ -885,6 +886,7 @@ GATEWAY_OPERATIONS: list[Operation] = [
         # surface. The labels are the fold key, not a CLI opt-in.
         cli_group="gateway", cli_command="restart",
         output=JsonOutput(), surfaces=_MCP_HTTP,
+        effect="write",
     ),
     Operation(
         name="awm_mcp_sync",
@@ -893,6 +895,7 @@ GATEWAY_OPERATIONS: list[Operation] = [
         http_method="POST", http_path="/mcp-sync",
         cli_group="gateway", cli_command="mcp-sync",
         output=JsonOutput(), surfaces=_CLI,
+        effect="write",
     ),
     Operation(
         name="gateway_list",
@@ -901,6 +904,7 @@ GATEWAY_OPERATIONS: list[Operation] = [
         http_method="GET", http_path="/hub/services",
         cli_group="gateway", cli_command="list",
         output=JsonOutput(), surfaces=_CLI,
+        effect="read",
     ),
     Operation(
         name="gateway_deregister",
@@ -919,6 +923,7 @@ GATEWAY_OPERATIONS: list[Operation] = [
                               "(page|service|url|static)."),
         ],
         surfaces=_CLI,
+        effect="write",
     ),
     # --- feature-service lifecycle (awm services *) -----------------------
     # `list` and `start` keep a hand-authored CLI command (offline fallback /
@@ -931,6 +936,7 @@ GATEWAY_OPERATIONS: list[Operation] = [
         http_method="GET", http_path="/hub/services/discovered",
         cli_group="services", cli_command="list",
         output=JsonOutput(), surfaces=_MCP_HTTP,
+        effect="read",
     ),
     Operation(
         name="services_start",
@@ -939,6 +945,7 @@ GATEWAY_OPERATIONS: list[Operation] = [
         http_method="POST", http_path="/hub/services/{name}/start",
         cli_group="services", cli_command="start",
         output=JsonOutput(), params=[_NAME_PARAM], surfaces=_MCP_HTTP,
+        effect="write",
     ),
     Operation(
         name="services_stop",
@@ -947,6 +954,7 @@ GATEWAY_OPERATIONS: list[Operation] = [
         http_method="POST", http_path="/hub/services/{name}/stop",
         cli_group="services", cli_command="stop",
         output=JsonOutput(), params=[_NAME_PARAM], surfaces=_CLI,
+        effect="write",
     ),
     Operation(
         name="services_restart",
@@ -955,6 +963,7 @@ GATEWAY_OPERATIONS: list[Operation] = [
         http_method="POST", http_path="/hub/services/{name}/restart",
         cli_group="services", cli_command="restart",
         output=JsonOutput(), params=[_NAME_PARAM], surfaces=_CLI,
+        effect="write",
     ),
     Operation(
         name="services_enable",
@@ -963,6 +972,7 @@ GATEWAY_OPERATIONS: list[Operation] = [
         http_method="POST", http_path="/hub/services/{name}/enable",
         cli_group="services", cli_command="enable",
         output=JsonOutput(), params=[_NAME_PARAM], surfaces=_CLI,
+        effect="write",
     ),
     Operation(
         name="services_disable",
@@ -971,6 +981,7 @@ GATEWAY_OPERATIONS: list[Operation] = [
         http_method="POST", http_path="/hub/services/{name}/disable",
         cli_group="services", cli_command="disable",
         output=JsonOutput(), params=[_NAME_PARAM], surfaces=_CLI,
+        effect="write",
     ),
     Operation(
         name="services_reap",
@@ -987,6 +998,7 @@ GATEWAY_OPERATIONS: list[Operation] = [
             description="List the orphaned hub_adapters without killing them.",
         )],
         surfaces=_CLI,
+        effect="write",
     ),
     # --- peer directory (federation address book) -------------------------
     Operation(
@@ -1127,6 +1139,7 @@ GATEWAY_OPERATIONS: list[Operation] = [
                               "background snapshot."),
         ],
         surfaces=_CLI,
+        effect="read",
     ),
     # --- config contracts (settings page) ---------------------------------
     Operation(
@@ -1137,6 +1150,7 @@ GATEWAY_OPERATIONS: list[Operation] = [
         http_method="GET", http_path="/config/contracts",
         cli_group="config", cli_command="contracts",
         output=JsonOutput(), surfaces=_CLI,
+        effect="read",
     ),
     Operation(
         name="config_set",
@@ -1154,5 +1168,6 @@ GATEWAY_OPERATIONS: list[Operation] = [
                   description="Field values to persist (full object)."),
         ],
         surfaces=_MCP_HTTP,
+        effect="write",
     ),
 ]

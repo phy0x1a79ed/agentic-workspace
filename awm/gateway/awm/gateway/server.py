@@ -401,7 +401,8 @@ register_fastapi_routes(app, GATEWAY_OPERATIONS)
 # ---------------------------------------------------------------------------
 
 @app.get("/tools")
-def list_tools_endpoint(view: str | None = None, peers: int = 0, tiers: int = 0):
+def list_tools_endpoint(request: Request, view: str | None = None, peers: int = 0,
+                        tiers: int = 0):
     """Return the current MCP tool definitions from the live catalog.
 
     The thin stdio proxy fetches this on every `list_tools` call instead of
@@ -424,11 +425,17 @@ def list_tools_endpoint(view: str | None = None, peers: int = 0, tiers: int = 0)
 
     ``tiers=1`` (with ``peers=1``) narrows the fleet view to the core domains,
     ``providersOf`` and the ``more`` call-through tool.
+
+    A foreign caller (the edge stamps ``X-Awm-As: peer:<node>``) sees only the
+    domains and verbs it may call, whichever view it asks for; ``peers`` and
+    ``tiers`` are ignored for it.
     """
+    grants = catalog.foreign_grants(request.headers.get("X-Awm-As"))
     if view == "domains":
-        tools = catalog.list_domain_tools(peers=bool(peers), tiers=bool(tiers))
+        tools = catalog.list_domain_tools(
+            peers=bool(peers), tiers=bool(tiers), grants=grants)
     else:
-        tools = catalog.list_tools()
+        tools = catalog.list_tools(grants=grants)
     return {"tools": [t.model_dump(by_alias=True) for t in tools]}
 
 

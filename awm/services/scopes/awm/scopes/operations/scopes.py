@@ -15,6 +15,7 @@ SCOPE_MANIFEST_FUNCTIONS = [
     {
         "name": "scope_create",
         "tool": "scope_create",
+        "effect": "write",
         "description": (
             "Create a new scope (worktree + .awm/ metadata) for a project. "
             "The new branch defaults to feat/<scope>; pass branch_name to name "
@@ -39,6 +40,7 @@ SCOPE_MANIFEST_FUNCTIONS = [
     {
         "name": "scope_search",
         "tool": "scope_search",
+        "effect": "read",
         "description": (
             "Search scopes: name matches first, then scopes ranked by the "
             "meaning of their goals and context. "
@@ -55,6 +57,7 @@ SCOPE_MANIFEST_FUNCTIONS = [
     {
         "name": "scope_reindex",
         "tool": "scope_reindex",
+        "effect": "write",
         "description": (
             "Bring the search index of posts, scopes and projects in line with "
             "the tables: embeds what is missing, changed or made by another "
@@ -71,6 +74,7 @@ SCOPE_MANIFEST_FUNCTIONS = [
     {
         "name": "scope_complete",
         "tool": "scope_complete",
+        "effect": "write",
         "description": "Complete (retire) a scope. Optionally merge and clean up the worktree.",
         "params": [
             {"name": "project", "type": "string", "required": True},
@@ -82,6 +86,7 @@ SCOPE_MANIFEST_FUNCTIONS = [
     {
         "name": "scope_delete",
         "tool": "scope_delete",
+        "effect": "write",
         "description": (
             "Delete a scope and clean up its worktree and branch. Refuses when "
             "the worktree has uncommitted changes -- which now covers data as "
@@ -99,6 +104,7 @@ SCOPE_MANIFEST_FUNCTIONS = [
     {
         "name": "scope_heal",
         "tool": "scope_heal",
+        "effect": "write",
         "description": (
             "Idempotent repair pass over active scopes: enforce tier-3 = .awm/ "
             "only (strip @.awm/context.md imports, drop untracked AGENTS.md / "
@@ -118,6 +124,7 @@ SCOPE_MANIFEST_FUNCTIONS = [
     {
         "name": "scope_repair",
         "tool": "scope_repair",
+        "effect": "write",
         "description": "Reconcile an on-disk worktree with a missing agents DB row.",
         "params": [
             {"name": "project", "type": "string", "required": True},
@@ -127,6 +134,7 @@ SCOPE_MANIFEST_FUNCTIONS = [
     {
         "name": "scope_sync",
         "tool": "scope_sync",
+        "effect": "write",
         "description": "Sync a scope's feature branch with a base branch via merge or rebase.",
         "params": [
             {"name": "project", "type": "string", "required": True},
@@ -138,6 +146,7 @@ SCOPE_MANIFEST_FUNCTIONS = [
     {
         "name": "scope_gather",
         "tool": "scope_gather",
+        "effect": "write",
         "description": (
             "Fan-in: merge each peripheral scope's branch into a hub scope's "
             "branch (runs in the hub worktree, which must be clean and on the "
@@ -158,6 +167,7 @@ SCOPE_MANIFEST_FUNCTIONS = [
     {
         "name": "scope_scatter",
         "tool": "scope_scatter",
+        "effect": "write",
         "description": (
             "Fan-out: merge a hub scope's branch into each peripheral scope's "
             "branch (each merge runs in that peripheral's worktree). A dirty or "
@@ -178,6 +188,7 @@ SCOPE_MANIFEST_FUNCTIONS = [
     {
         "name": "scope_data_status",
         "tool": "scope_data_status",
+        "effect": "read",
         "description": (
             "Report a scope's data view: mode (dvc | legacy shared symlink | "
             "missing), the commit that pins the data, which chunks it pins, "
@@ -195,6 +206,7 @@ SCOPE_MANIFEST_FUNCTIONS = [
     {
         "name": "scope_data_mount",
         "tool": "scope_data_mount",
+        "effect": "write",
         "description": (
             "Choose which data chunks this scope materialises on disk, e.g. "
             "['data/pipeline/model']. Every chunk the branch pins stays pinned, "
@@ -215,6 +227,7 @@ SCOPE_MANIFEST_FUNCTIONS = [
     {
         "name": "scope_data_gc",
         "tool": "scope_data_gc",
+        "effect": "write",
         "description": (
             "Reclaim shared-cache space by deleting objects no listed project "
             "references. DRY RUN BY DEFAULT — pass dry_run=false to delete. "
@@ -238,6 +251,7 @@ SCOPE_MANIFEST_FUNCTIONS = [
     {
         "name": "awm_refresh",
         "tool": "scope_refresh",
+        "effect": "write",
         "description": "Re-generate .awm/history.md for a scope.",
         "params": [
             {"name": "project", "type": "string", "required": True},

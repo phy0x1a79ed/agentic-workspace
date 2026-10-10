@@ -8,6 +8,7 @@ PROJECT_MANIFEST_FUNCTIONS = [
     {
         "name": "project_create",
         "tool": "project_create",
+        "effect": "write",
         "description": "Create a new project with bare repository, worktree, and data dirs.",
         "params": [
             {"name": "name", "type": "string", "required": True},
@@ -18,6 +19,7 @@ PROJECT_MANIFEST_FUNCTIONS = [
     {
         "name": "project_search",
         "tool": "project_search",
+        "effect": "read",
         "description": "List/search projects with per-status scope counts.",
         "params": [
             {"name": "query", "type": "string", "required": False},

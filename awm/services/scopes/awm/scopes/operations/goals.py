@@ -16,13 +16,14 @@ There is no delete verb and no edit-in-place. The post log has no mutation path
 and goals do not add one.
 """
 
-from awm.scopes import goals
+from awm.scopes import channel, goals
 
 
 GOAL_MANIFEST_FUNCTIONS = [
     {
         "name": "scope_goal_set",
         "tool": "scope_goal_set",
+        "effect": "write",
         "description": (
             "Record what the user is actually after, at the altitude they said "
             "it, in their own words. level ∈ workspace|project|scope decides the "
@@ -64,6 +65,7 @@ GOAL_MANIFEST_FUNCTIONS = [
     {
         "name": "scope_goal_retire",
         "tool": "scope_goal_retire",
+        "effect": "write",
         "description": (
             "Retire a goal by appending a tombstone. Nothing is deleted — the "
             "goal drops out of the goal_read set but stays readable via "
@@ -78,6 +80,8 @@ GOAL_MANIFEST_FUNCTIONS = [
     {
         "name": "scope_goal_read",
         "tool": "scope_goal_read",
+        "effect": "read",
+        "category": "journals",
         "description": (
             "Every goal in force at a scope — the workspace frame, the project's "
             "goals and the scope's own, unioned and ordered broad to specific. "
@@ -96,6 +100,8 @@ GOAL_MANIFEST_FUNCTIONS = [
     {
         "name": "scope_goal_history",
         "tool": "scope_goal_history",
+        "effect": "read",
+        "category": "journals",
         "description": (
             "The full chain of restatements a goal belongs to, oldest first — "
             "how the objective drifted, and the tombstone if it was retired."
@@ -107,7 +113,7 @@ GOAL_MANIFEST_FUNCTIONS = [
 ]
 
 
-def _handle_goal_set(args: dict) -> dict:
+def _handle_goal_set(args: dict, as_: str | None = None) -> dict:
     goal = goals.set_goal(
         objective=args["objective"],
         author=args["author"],
@@ -120,18 +126,27 @@ def _handle_goal_set(args: dict) -> dict:
         stop_line=args.get("stop_line"),
         noise=args.get("noise"),
         supersedes=args.get("supersedes"),
+        origin=channel.edge_origin(as_),
     )
     return {"goal": goal.to_dict()}
 
 
-def _handle_goal_retire(args: dict) -> dict:
+def _handle_goal_retire(args: dict, as_: str | None = None) -> dict:
     tombstone = goals.retire_goal(
         args["goal_id"], author=args["author"], reason=args.get("reason") or "",
+        origin=channel.edge_origin(as_),
     )
     return {"tombstone": tombstone.to_dict(), "retired": args["goal_id"]}
 
 
-def _handle_goal_read(args: dict) -> dict:
+def _refuse_foreign(as_: str | None) -> None:
+    """Goals are not journals: the verb keeps its category, but no foreign caller reads them."""
+    if channel.is_foreign(as_):
+        raise PermissionError("goals are not readable by peers")
+
+
+def _handle_goal_read(args: dict, as_: str | None = None) -> dict:
+    _refuse_foreign(as_)
     levels = args.get("levels")
     if isinstance(levels, str):  # a harness may hand a comma list through
         levels = [x.strip() for x in levels.split(",") if x.strip()]
@@ -142,7 +157,8 @@ def _handle_goal_read(args: dict) -> dict:
             "total": len(found), "rendered": rendered}
 
 
-def _handle_goal_history(args: dict) -> dict:
+def _handle_goal_history(args: dict, as_: str | None = None) -> dict:
+    _refuse_foreign(as_)
     chain = goals.history(args["goal_id"])
     return {"chain": [g.to_dict() for g in chain], "total": len(chain)}
 

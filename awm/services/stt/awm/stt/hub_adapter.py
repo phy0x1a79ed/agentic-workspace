@@ -42,6 +42,7 @@ API_MANIFEST: dict[str, Any] = {
     "functions": [
         {
             "name": "transcribe",
+            "effect": "write",
             "description": (
                 "HTTP-fallback STT: base64 int16 LE 16 kHz mono PCM in, "
                 "transcribed text out."

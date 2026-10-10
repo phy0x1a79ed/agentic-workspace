@@ -44,6 +44,7 @@ API_MANIFEST: dict[str, Any] = {
     "functions": [
         {
             "name": "status",
+            "effect": "read",
             "tool": "compute_status",
             "description": (
                 "Report the local-compute watchdog: box size, the derived caps "
@@ -58,6 +59,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "sessions",
+            "effect": "read",
             "tool": "compute_sessions",
             "description": (
                 "Live per-agent-session footprint: how many processes each "
@@ -72,6 +74,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "explain",
+            "effect": "read",
             "tool": "compute_explain",
             "description": (
                 "Explain one process: which agent session owns it and how that "
@@ -85,6 +88,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "decisions",
+            "effect": "read",
             "tool": "compute_decisions",
             "description": (
                 "The watchdog's ledger, newest first — every judgement it "
@@ -98,6 +102,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "arm",
+            "effect": "write",
             "tool": "compute_arm",
             "description": (
                 "Set the watchdog's posture: 'observe' (judges and records, "
@@ -116,6 +121,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "tune",
+            "effect": "write",
             "tool": "compute_tune",
             "description": (
                 "Read or set thresholds at runtime — cpu_headroom_cores, "
@@ -131,6 +137,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "grant",
+            "effect": "write",
             "tool": "compute_grant",
             "description": (
                 "Take a bounded exemption for a session that legitimately needs "
@@ -150,12 +157,14 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "grants",
+            "effect": "read",
             "tool": "compute_grants",
             "description": "List every live exemption: session, size, reason, expiry.",
             "params": [],
         },
         {
             "name": "revoke",
+            "effect": "write",
             "tool": "compute_revoke",
             "description": "Revoke a session's live exemptions immediately.",
             "params": [{"name": "session", "type": "string", "required": True}],

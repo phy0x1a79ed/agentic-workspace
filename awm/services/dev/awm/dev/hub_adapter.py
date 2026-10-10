@@ -30,9 +30,9 @@ from awm.dev import dev
 log = logging.getLogger("awm.dev.hub_adapter")
 
 
-def _fn(name: str, description: str) -> dict[str, Any]:
+def _fn(name: str, description: str, effect: str = "write") -> dict[str, Any]:
     return {"name": name, "tool": f"dev_{name}", "description": description,
-            "params": []}
+            "params": [], "effect": effect}
 
 
 API_MANIFEST: dict[str, Any] = {
@@ -43,7 +43,7 @@ API_MANIFEST: dict[str, Any] = {
         _fn("stop", "Stop this worktree's dev sandbox (services + gateway)."),
         _fn("restart", "Restart this worktree's dev sandbox."),
         _fn("seed", "(Re)seed the dev sandbox DB without restarting."),
-        _fn("status", "Show what this worktree's dev sandbox is running."),
+        _fn("status", "Show what this worktree's dev sandbox is running.", "read"),
     ],
     "emitters": [],
     "sessions": [],

@@ -33,6 +33,7 @@ API_MANIFEST: dict[str, Any] = {
     "functions": [
         {
             "name": "register",
+            "effect": "write",
             "tool": "artifact_register",
             "description": "Register or update an artifact (figure, dataset, report, model, script, other).",
             "params": [
@@ -50,6 +51,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "search",
+            "effect": "read",
             "tool": "artifact_search",
             "description": "Search/list registered artifacts by project, type, or free-text query.",
             "params": [
@@ -63,6 +65,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "delete",
+            "effect": "write",
             "tool": "artifact_delete",
             "description": "Delete an artifact by id.",
             "params": [
@@ -71,6 +74,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "get",
+            "effect": "read",
             "tool": "artifact_get",
             "description": "Fetch artifact metadata by id.",
             "params": [
@@ -79,6 +83,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "sync",
+            "effect": "write",
             "tool": "artifact_sync",
             "description": "Sync artifact status with on-disk reality, then reindex search.",
             "params": [
@@ -87,6 +92,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "reindex",
+            "effect": "write",
             "tool": "artifact_reindex",
             "description": (
                 "Bring the search index in line with the current artifacts: embeds "

@@ -52,6 +52,7 @@ API_MANIFEST: dict[str, Any] = {
     "functions": [
         {
             "name": "send",
+            "effect": "write",
             "tool": "reflection_send",
             "description": (
                 "Type a command/text into YOUR OWN prompt and submit it (no Escape, "
@@ -85,6 +86,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "compact",
+            "effect": "write",
             "tool": "reflection_compact",
             "description": (
                 "Compact your own conversation: injects /compact into your own "
@@ -107,6 +109,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "mode",
+            "effect": "write",
             "tool": "reflection_mode",
             "description": (
                 "Put your own session back into bypass-permissions mode. Approving "
@@ -127,6 +130,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "pending",
+            "effect": "read",
             "tool": "reflection_pending",
             "description": (
                 "List the deferred resumes this service still owes — one per "
@@ -141,6 +145,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "whoami",
+            "effect": "read",
             "tool": "reflection_whoami",
             "description": (
                 "Report which session reflection resolves you to, and how it would "

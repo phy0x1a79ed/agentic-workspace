@@ -188,8 +188,9 @@ def add(
 ) -> dict[str, Any]:
     """Record (or update) a peer. Returns the stored full record.
 
-    ``name`` is the peer's node name (single token, how it is addressed in
-    ``<svc>@<peer>``). ``edge_url`` is the peer's HTTPS front; a bare
+    ``name`` is the peer's node name (single token; the value of ``peer=`` in a
+    domain call and of the ``peer`` argument to ``gatewayclient.call_peer``).
+    ``edge_url`` is the peer's HTTPS front; a bare
     ``host:port`` is coerced to ``https://host:port``. ``ssh_alias`` defaults to
     ``name`` — the ssh host the ``$AWM_PEER_CRED`` fetch targets. A trust field
     left out keeps its stored value, or the domestic default for a new peer.

@@ -63,6 +63,7 @@ API_MANIFEST: dict[str, Any] = {
     "functions": [
         {
             "name": "status",
+            "effect": "read",
             "description": (
                 "Report the active stream count, last PCM timestamp, and the "
                 "virtmic sink's health (sink presence and default capture "
@@ -72,6 +73,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "ensure_sink",
+            "effect": "write",
             "description": (
                 "DEPRECATED — use virtmic_ensure. Forwards to the virtmic "
                 "service, which owns PulseAudio and the null-sink."

@@ -40,6 +40,7 @@ API_MANIFEST: dict[str, Any] = {
     "functions": [
         {
             "name": "status",
+            "effect": "read",
             "tool": "dsh_status",
             "description": (
                 "Report the DeepSeek Harness: whether the fork worktree is "
@@ -54,6 +55,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "start",
+            "effect": "write",
             "tool": "dsh_start",
             "description": (
                 "Start the harness web server on loopback, waiting until it "
@@ -64,6 +66,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "stop",
+            "effect": "write",
             "tool": "dsh_stop",
             "description": (
                 "Stop the harness web server, ending live GUI connections. "
@@ -76,6 +79,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "restart",
+            "effect": "write",
             "tool": "dsh_restart",
             "description": (
                 "Stop the harness and start it again — e.g. to pick up an edited "
@@ -86,6 +90,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "url",
+            "effect": "read",
             "tool": "dsh_url",
             "description": (
                 "The mesh URL that opens the harness GUI. Behind awm's edge "
@@ -95,6 +100,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "model",
+            "effect": "write",
             "tool": "dsh_model",
             "description": (
                 "The default model new sessions start on. With no arguments, "
@@ -119,6 +125,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "logs",
+            "effect": "read",
             "tool": "dsh_logs",
             "description": "Tail the harness's stdout/stderr log.",
             "params": [

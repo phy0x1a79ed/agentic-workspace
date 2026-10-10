@@ -79,6 +79,7 @@ API_MANIFEST: dict[str, Any] = {
         # ---- diagrams -----------------------------------------------------
         {
             "name": "list",
+            "effect": "read",
             "tool": "drawio_list",
             "description": (
                 "List every saved diagram in its folder structure, with page "
@@ -89,6 +90,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "info",
+            "effect": "read",
             "tool": "drawio_info",
             "description": (
                 "One diagram's detail: per-page names and cell counts, current "
@@ -99,6 +101,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "cells",
+            "effect": "read",
             "tool": "drawio_cells",
             "description": (
                 "Inspect a diagram's cells (id, page, kind, label) without "
@@ -118,6 +121,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "read",
+            "effect": "read",
             "tool": "drawio_read",
             "description": (
                 "The raw canonical XML of a diagram, optionally at an older "
@@ -134,12 +138,14 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "create",
+            "effect": "write",
             "tool": "drawio_create",
             "description": "Create a new empty diagram at the given path.",
             "params": [{"name": "save", "type": "string", "required": True}],
         },
         {
             "name": "import",
+            "effect": "write",
             "tool": "drawio_import",
             "description": (
                 "Import an existing .drawio file from the filesystem into the "
@@ -154,6 +160,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "history",
+            "effect": "read",
             "tool": "drawio_history",
             "description": "Revisions of a diagram, newest first, with author and label.",
             "params": [
@@ -163,6 +170,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "diff",
+            "effect": "read",
             "tool": "drawio_diff",
             "description": "Textual diff of a diagram between two revisions.",
             "params": [
@@ -175,6 +183,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "restore",
+            "effect": "write",
             "tool": "drawio_restore",
             "description": (
                 "Restore a diagram to an earlier revision, landed as a NEW "
@@ -189,6 +198,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "check",
+            "effect": "read",
             "tool": "drawio_check",
             "description": (
                 "Verify every /files/... image reference in a diagram actually "
@@ -201,6 +211,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "export",
+            "effect": "write",
             "tool": "drawio_export",
             "description": (
                 "Render a diagram to PDF/PNG/JPG/SVG, once. (For a file that "
@@ -240,6 +251,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "url",
+            "effect": "read",
             "tool": "drawio_url",
             "description": (
                 "The editor URL for a diagram, or for a checkout of one — open "
@@ -254,6 +266,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "view_url",
+            "effect": "read",
             "tool": "drawio_view_url",
             "description": (
                 "The URL that serves one page (or the whole document) as a "
@@ -296,6 +309,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "remove",
+            "effect": "write",
             "tool": "drawio_remove",
             "description": "Delete a diagram (recoverable: its history is kept).",
             "params": [{"name": "save", "type": "string", "required": True}],
@@ -305,6 +319,7 @@ API_MANIFEST: dict[str, Any] = {
         # ---- autopublish links --------------------------------------------
         {
             "name": "autopublish",
+            "effect": "write",
             "tool": "drawio_autopublish",
             "description": (
                 "Keep a file on disk continuously rendered from a diagram. "
@@ -351,6 +366,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "autopublish_list",
+            "effect": "read",
             "tool": "drawio_autopublish_list",
             "description": (
                 "Every autopublish link, optionally just one diagram's. Shows "
@@ -363,6 +379,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "autopublish_stop",
+            "effect": "write",
             "tool": "drawio_autopublish_stop",
             "description": (
                 "Stop an autopublish link. The file it already published is "
@@ -373,6 +390,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "autopublish_now",
+            "effect": "write",
             "tool": "drawio_autopublish_now",
             "description": (
                 "Force autopublish links to re-render right now and report "
@@ -393,6 +411,7 @@ API_MANIFEST: dict[str, Any] = {
         # ---- checkouts ----------------------------------------------------
         {
             "name": "checkout",
+            "effect": "write",
             "tool": "drawio_checkout",
             "description": (
                 "Take a working copy of a diagram and get back a handle. Edit it "
@@ -405,6 +424,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "edit",
+            "effect": "write",
             "tool": "drawio_edit",
             "description": (
                 "Apply editing operations to a checkout. All-or-nothing: if any "
@@ -426,6 +446,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "externalize",
+            "effect": "write",
             "tool": "drawio_externalize",
             "description": (
                 "Rewrite a checkout's embedded image payloads "
@@ -454,6 +475,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "path",
+            "effect": "read",
             "tool": "drawio_path",
             "description": (
                 "The filesystem path of a checkout's file — for looking at it, "
@@ -465,6 +487,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "status",
+            "effect": "read",
             "tool": "drawio_status",
             "description": (
                 "Where a checkout stands: whether it has changes to land "
@@ -475,6 +498,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "update",
+            "effect": "write",
             "tool": "drawio_update",
             "description": (
                 "Pull the live diagram's changes into your checkout. Clean "
@@ -489,6 +513,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "resolve",
+            "effect": "write",
             "tool": "drawio_resolve",
             "description": (
                 "Declare a hand-resolved checkout clean. Refuses while conflict "
@@ -498,6 +523,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "merge",
+            "effect": "write",
             "tool": "drawio_merge",
             "description": (
                 "Land your checkout onto the live diagram as one transaction. "
@@ -516,12 +542,14 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "discard",
+            "effect": "write",
             "tool": "drawio_discard",
             "description": "Throw away a checkout and everything in it.",
             "params": [{"name": "handle", "type": "string", "required": True}],
         },
         {
             "name": "checkouts",
+            "effect": "read",
             "tool": "drawio_checkouts",
             "description": "Every checkout currently open, optionally for one diagram.",
             "params": [{"name": "save", "type": "string"}],
@@ -530,6 +558,7 @@ API_MANIFEST: dict[str, Any] = {
         # ---- editor plumbing (browser only) -------------------------------
         {
             "name": "editor_open",
+            "effect": "write",
             "description": "Editor tab announces it is showing a diagram.",
             "params": [{"name": "save", "type": "string", "required": True},
                        {"name": "tab", "type": "string", "required": True},
@@ -538,6 +567,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "editor_save",
+            "effect": "write",
             "description": (
                 "Editor tab autosave. Carries the revision the tab is based on; "
                 "a stale save is rejected rather than applied."
@@ -552,6 +582,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "editor_flush_ack",
+            "effect": "write",
             "description": "Editor tab confirms it has flushed for a pending merge.",
             "params": [{"name": "save", "type": "string", "required": True},
                        {"name": "tab", "type": "string", "required": True}],
@@ -559,6 +590,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "editor_close",
+            "effect": "write",
             "description": "Editor tab is going away.",
             "params": [{"name": "save", "type": "string", "required": True},
                        {"name": "tab", "type": "string", "required": True}],
@@ -566,6 +598,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "status_service",
+            "effect": "read",
             "tool": "drawio_service_status",
             "description": (
                 "Service health: store location, diagram and checkout counts, "
@@ -577,6 +610,7 @@ API_MANIFEST: dict[str, Any] = {
     "emitters": [
         {
             "name": "diagram",
+            "effect": "write",
             "topic": "drawio:<save>",
             "description": (
                 "Live coordination with editor tabs: {'type':'flush'} asks tabs "

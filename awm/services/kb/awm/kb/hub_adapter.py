@@ -42,6 +42,8 @@ API_MANIFEST: dict[str, Any] = {
     "functions": [
         {
             "name": "status",
+            "effect": "read",
+            "category": "kb",
             "tool": "kb_status",
             "description": (
                 "Whether the kb server is up, how many posts and papers it holds, its ingest "
@@ -52,6 +54,8 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "recall",
+            "effect": "read",
+            "category": "kb",
             "tool": "kb_recall",
             "description": (
                 "Ranked hits for a query, each with its source: a post id with project and "
@@ -79,6 +83,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "start",
+            "effect": "write",
             "tool": "kb_start",
             "description": "Start the kb server if it is not running. Operator only.",
             "params": [],
@@ -86,6 +91,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "stop",
+            "effect": "write",
             "tool": "kb_stop",
             "description": (
                 "Stop the kb server and keep it down until `kb start`. scope_fetch falls "
@@ -96,6 +102,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "restart",
+            "effect": "write",
             "tool": "kb_restart",
             "description": "Stop then start the kb server. Operator only.",
             "params": [],
@@ -103,12 +110,14 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "logs",
+            "effect": "read",
             "tool": "kb_logs",
             "description": "The tail of the kb server's log. Operator only.",
             "params": [{"name": "tail", "type": "integer", "description": "Lines from the end. Default 200."}],
         },
         {
             "name": "sweep",
+            "effect": "write",
             "tool": "kb_sweep",
             "description": (
                 "Send kb every post on this node now, and have it forget deleted ones. "
@@ -119,6 +128,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "sync",
+            "effect": "write",
             "tool": "kb_sync",
             "description": (
                 "Re-read the Zotero library: through the API when ZOTERO_API_KEY is set, "
@@ -128,6 +138,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "snapshot",
+            "effect": "write",
             "tool": "kb_snapshot",
             "description": (
                 "Pause ingest, stop the server, copy its store to data/store in the kb "
@@ -150,6 +161,11 @@ def _operator_only(as_: str | None, verb: str) -> None:
 
 
 async def _h_status(args: dict, as_: str | None = None) -> dict:
+    if _foreign(as_):
+        try:
+            return {"kb": {"counts": (await client.status()).get("counts")}}
+        except Exception:  # noqa: BLE001 — a foreign caller gets no detail
+            return {"kb": {"error": "unavailable"}}
     out: dict[str, Any] = {"server": await asyncio.to_thread(CHILD.snapshot), "feed": FEED.snapshot()}
     if out["server"]["listening"]:
         try:
@@ -159,9 +175,36 @@ async def _h_status(args: dict, as_: str | None = None) -> dict:
     return out
 
 
+#: The modes that rank rows from kb's own store and so honour `sources`. graph and answer run
+#: cognee with access control off, where `datasets` does not scope, and answer spends LLM budget.
+_PLAIN_MODES = ("hybrid", "vector", "lexical")
+
+
+def _foreign(as_: str | None) -> bool:
+    """A peer node outside this swarm. An unknown peer counts as foreign; a non-peer caller does not."""
+    node = config.caller_peer(as_)
+    return node is not None and config.peer_relation(node) != "domestic"
+
+
+def _posts_readable(as_: str | None) -> bool:
+    """Whether this caller may read scope-post text through kb.
+
+    Posts are journal content, so a foreign peer needs the `journals` grant on top of `kb`.
+    """
+    if not _foreign(as_):
+        return True
+    return "journals" in ((config.peer_record(config.caller_peer(as_)) or {}).get("grants") or [])
+
+
 async def _h_recall(args: dict, as_: str | None = None) -> dict:
     body = {k: args[k] for k in ("query", "mode", "sources", "project", "scope", "kind", "limit",
                                  "require_complete", "search_type") if args.get(k) is not None}
+    if _foreign(as_) and (body.get("mode", "hybrid") not in _PLAIN_MODES or "search_type" in body):
+        raise PermissionError("a foreign peer may use only the hybrid, vector and lexical modes")
+    if not _posts_readable(as_):
+        body["sources"] = [s for s in (body.get("sources") or ["posts", "papers"]) if s != "posts"]
+        if not body["sources"]:
+            return {"hits": [], "note": "posts need the journals grant"}
     return await client.recall(body)
 
 

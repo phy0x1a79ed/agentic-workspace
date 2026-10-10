@@ -47,6 +47,7 @@ API_MANIFEST: dict[str, Any] = {
     "functions": [
         {
             "name": "status",
+            "effect": "read",
             "tool": "hermes_status",
             "description": (
                 "Report the Hermes Agent dashboard: whether it is listening and "
@@ -60,6 +61,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "start",
+            "effect": "write",
             "tool": "hermes_start",
             "description": (
                 "Adopt the running dashboard, or launch one into a transient "
@@ -72,6 +74,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "stop",
+            "effect": "write",
             "tool": "hermes_stop",
             "description": (
                 "Stop the dashboard, ending live chat sessions and PTYs. "
@@ -83,6 +86,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "restart",
+            "effect": "write",
             "tool": "hermes_restart",
             "description": (
                 "Stop the dashboard and start it again — e.g. to pick up a "
@@ -94,6 +98,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "logs",
+            "effect": "read",
             "tool": "hermes_logs",
             "description": (
                 "Tail the dashboard's output: the transient unit's journal when "
@@ -108,6 +113,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "url",
+            "effect": "read",
             "tool": "hermes_url",
             "description": (
                 "Where to reach the dashboard: the mesh TLS front for a browser "
@@ -118,6 +124,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "model",
+            "effect": "write",
             "tool": "hermes_model",
             "description": (
                 "Read the configured provider, default model and base URL. Pass "

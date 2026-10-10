@@ -19,6 +19,8 @@ from awm.gateway import catalog, mcp_more, mcp_stdio, peer_catalog
 from awm.gateway.hub import discovery
 from awm.gateway.hub.registry import ServiceRecord
 
+pytestmark = pytest.mark.usefixtures("domestic_peers")
+
 
 # ---------------------------------------------------------------------------
 # Fixtures

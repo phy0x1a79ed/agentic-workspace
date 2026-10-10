@@ -67,6 +67,7 @@ API_MANIFEST: dict[str, Any] = {
     "functions": [
         {
             "name": "invite",
+            "effect": "secret",
             "tool": "tether_invite",
             "description": (
                 "Mint an invite code and open a session for it at the relay. "
@@ -87,6 +88,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "status",
+            "effect": "read",
             "tool": "tether_status",
             "description": (
                 "Report this host's role, whether its binaries are built and "
@@ -97,6 +99,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "run",
+            "effect": "write",
             "tool": "tether_run",
             "description": (
                 "Start one command on the owner's machine in a live session. "
@@ -123,6 +126,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "shell",
+            "effect": "write",
             "tool": "tether_shell",
             "description": (
                 "Open a terminal on the owner's machine, rather than running "
@@ -147,6 +151,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "keys",
+            "effect": "write",
             "tool": "tether_keys",
             "description": (
                 "Type at a task. This talks to the PROGRAM, not to the person "
@@ -171,6 +176,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "resize",
+            "effect": "write",
             "tool": "tether_resize",
             "description": (
                 "Tell a task its terminal changed size. A full-screen program "
@@ -187,6 +193,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "close",
+            "effect": "write",
             "tool": "tether_close",
             "description": (
                 "Stop a task. This kills it rather than signalling end of "
@@ -201,6 +208,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "tasks",
+            "effect": "read",
             "tool": "tether_tasks",
             "description": (
                 "What is open right now in a session: each task, what it is, "
@@ -214,6 +222,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "send",
+            "effect": "write",
             "tool": "tether_send",
             "description": (
                 "Say a line to the person at the other keyboard. It appears "
@@ -233,6 +242,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "cut",
+            "effect": "write",
             "tool": "tether_cut",
             "description": (
                 "End a session from this side. The owner's client notices and "
@@ -250,6 +260,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "drain",
+            "effect": "write",
             "tool": "tether_drain",
             "description": (
                 "Read what has happened in a session: commands and their "
@@ -288,6 +299,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "logs",
+            "effect": "read",
             "tool": "tether_logs",
             "description": "Tail this host's tether daemon log.",
             "params": [

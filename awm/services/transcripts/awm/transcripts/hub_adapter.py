@@ -53,6 +53,7 @@ API_MANIFEST: dict[str, Any] = {
     "functions": [
         {
             "name": "status",
+            "effect": "read",
             "tool": "transcripts_status",
             "description": (
                 "Report the live session tree and the archive: session count, "
@@ -69,6 +70,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "sweep",
+            "effect": "write",
             "tool": "transcripts_sweep",
             "description": (
                 "Gzip every session older than the retention into the archive "
@@ -84,6 +86,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "search",
+            "effect": "read",
             "tool": "transcripts_search",
             "description": (
                 "Regex-search archived transcripts without unpacking them. "
@@ -102,6 +105,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "restore",
+            "effect": "write",
             "tool": "transcripts_restore",
             "description": (
                 "Put one archived session back into the live tree, transcript "
@@ -118,6 +122,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "runs",
+            "effect": "read",
             "tool": "transcripts_runs",
             "description": "Recent sweeps and prunes, newest first.",
             "params": [{"name": "limit", "type": "number", "required": False,
@@ -126,6 +131,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "prune",
+            "effect": "write",
             "tool": "transcripts_prune",
             "description": (
                 "Delete archived sessions older than the retention. This is the "
