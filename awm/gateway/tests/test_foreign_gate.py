@@ -704,3 +704,58 @@ async def test_one_peer_that_never_answers_cannot_hold_the_sweep(world, monkeypa
     snap = await asyncio.wait_for(peer_catalog.sweep(), 5)
     assert snap["mira"]["reachable"] is False
     assert "TimeoutError" in snap["mira"]["error"]
+
+
+# ---------------------------------------------------------------------------
+# A granted verb that refuses part of what it serves
+# ---------------------------------------------------------------------------
+
+
+def _raising(world, message, error_class):
+    exc = catalog.rpc.RpcError(message)
+    exc.error_class = error_class
+
+    async def call(fn, args, as_=None, timeout=None):
+        raise exc
+
+    world.call = call
+    return exc
+
+
+async def test_a_service_permission_error_reads_like_an_unknown_tool_to_a_foreign_caller(world):
+    _raising(world, "peers may read journal posts only", "PermissionError")
+    assert await _refused("kb_search", {}) == "Unknown tool: kb_search"
+    refused = await _refused("kb", {"verb": "search"})
+    assert refused == (await _refused("kb", {"verb": "add"})).replace("'add'", "'search'")
+    assert "journal" not in refused
+
+
+async def test_the_same_refusal_through_more_is_an_unknown_tool(world):
+    _raising(world, "peers may read journal posts only", "PermissionError")
+    with pytest.raises(ValueError, match="Unknown"):
+        await catalog.dispatch("more", {"domain": "kb", "verb": "search"}, as_=FOREIGN)
+
+
+async def test_other_service_errors_reach_a_foreign_caller_unchanged(world):
+    for error_class in ("ValueError", "KeyError", None):
+        exc = _raising(world, "bad arguments", error_class)
+        with pytest.raises(catalog.rpc.RpcError) as got:
+            await catalog.dispatch("kb_search", {}, as_=FOREIGN)
+        assert got.value is exc
+
+
+@pytest.mark.parametrize("as_", [None, "peer", "peer:mira"])
+async def test_a_permission_error_for_other_callers_is_not_remapped(world, as_):
+    exc = _raising(world, "refused", "PermissionError")
+    with pytest.raises(catalog.rpc.RpcError) as got:
+        await catalog.dispatch("kb_search", {}, as_=as_)
+    assert got.value is exc
+
+
+def test_a_service_permission_error_is_a_404_over_http_for_a_foreign_caller(http, world):
+    _raising(world, "goals are not readable by peers", "PermissionError")
+    for name, args in (("kb_search", {}), ("kb", {"verb": "search"})):
+        resp = _post(http, name, args)
+        assert resp.status_code == 404, resp.text
+        assert "goals" not in resp.text
+    assert _post(http, "kb_search", {}, as_="peer:mira").status_code == 500

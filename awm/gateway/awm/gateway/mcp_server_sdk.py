@@ -290,13 +290,13 @@ def _ensure_core_running() -> None:
     )
     if r.returncode == 0:
         return
-    # Port-check: if something is already listening on :7819, don't spawn
-    # a duplicate. (The status loop above will recover when the existing
+    # Port-check: if something is already listening on the configured port, don't
+    # spawn a duplicate. (The status loop above will recover when the existing
     # process becomes responsive.)
     import socket as _socket
     with _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM) as s:
         try:
-            s.connect(("127.0.0.1", 7819))
+            s.connect(("127.0.0.1", config.PORT))
             return
         except OSError:
             pass

@@ -1094,8 +1094,27 @@ async def _dispatch_foreign(name: str, args: dict, as_: str | None,
     if "verb" in args and name in domains:
         if not isinstance(args["verb"], str):
             raise ValueError(f"Unknown tool: {name}")
-        return await _dispatch_domain(name, args, as_, domains, local_only=True)
+        try:
+            return await _dispatch_domain(name, args, as_, domains, local_only=True)
+        except rpc.RpcError as exc:
+            raise _refusal_as_unknown(
+                exc, f"Unknown verb {args['verb']!r} for domain {name!r}") from None
     entry = _flat_entries().get(name)
     if entry is None or not _allowed(entry["effect"], entry["category"], grants):
         raise ValueError(f"Unknown tool: {name}")
-    return await _run_entry(entry, args, as_)
+    try:
+        return await _run_entry(entry, args, as_)
+    except rpc.RpcError as exc:
+        raise _refusal_as_unknown(exc, f"Unknown tool: {name}") from None
+
+
+def _refusal_as_unknown(exc: rpc.RpcError, unknown: str) -> Exception:
+    """A service's own ``PermissionError`` for a foreign caller, as the 404 an
+    unknown tool gets; any other service error is returned unchanged.
+
+    A verb whose category the peer holds can still refuse part of what it serves
+    (scopes shows a peer journals but not messages). That refusal must look like
+    the gate's, or its message tells the peer which verbs and kinds exist."""
+    if exc.error_class == "PermissionError":
+        return ValueError(unknown)
+    return exc

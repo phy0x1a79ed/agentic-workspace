@@ -195,7 +195,9 @@ class ControlChannel:
             pending.future.set_result(env.get("result"))
         else:
             err = env.get("error") or "service reported error"
-            pending.future.set_exception(RpcError(str(err)))
+            exc = RpcError(str(err))
+            exc.error_class = env.get("error_class")
+            pending.future.set_exception(exc)
 
     # -- Emitters ---------------------------------------------------------
 
@@ -336,7 +338,11 @@ class ControlChannel:
 
 
 class RpcError(Exception):
-    """Service-side error or transport failure during a call/session."""
+    """Service-side error or transport failure during a call/session.
+
+    ``error_class`` is the exception class name the service raised, when it said."""
+
+    error_class: str | None = None
 
 
 # ---------------------------------------------------------------------------
