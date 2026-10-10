@@ -107,18 +107,56 @@ def mode_of(caller_pid: int) -> str | None:
         return UNKNOWN
 
 
+class _Roster:
+    """The roster's workers, read at most once for one `mode_of` call."""
+
+    def __init__(self) -> None:
+        self._workers: dict[str, Any] | None = None
+
+    def workers(self) -> dict[str, Any]:
+        if self._workers is None:
+            self._workers = _workers(strict=True) or {}
+        return self._workers
+
+
 def _mode_of(pid: int) -> str | None:
-    rec = _session_record(pid)
+    if roster.proc_start(pid) is None:
+        # No such process: nothing about it can be positively known, and the
+        # ancestor walk below would read a missing /proc entry as "no parent".
+        raise _Unreadable(f"pid {pid} is not a running process")
+    view = _Roster()
+    rec, claims_job = _verified_record(pid)
     if rec is not None and rec.get("kind") == "bg":
         return _bg_mode(rec)
     parked = _parked_mode(rec)
     if parked is not None:
         return parked
     if rec is None:
-        unrecorded = _unrecorded_mode(pid)
-        if unrecorded is not None:
+        listed, unrecorded = _unrecorded_mode(pid, view)
+        if listed:
+            # The roster names this process as a job REPL, and says whether cx
+            # started it. Nothing above it can change that.
             return unrecorded
-    return _inherited_mode(pid)
+    inherited = _inherited_mode(pid, view)
+    if inherited is None and claims_job:
+        return UNKNOWN
+    return inherited
+
+
+def _verified_record(pid: int) -> tuple[dict[str, Any] | None, bool]:
+    """The session record of `pid`, and whether an untrusted one claimed a job.
+
+    A record that carries no `procStart` cannot be told from one left behind by
+    an earlier process with the same pid, so it is not allowed to grant anything,
+    and above all not `None`. It is dropped, and the roster and the ancestors
+    decide. Only when they find nothing, and the dropped record said it was a
+    background session or a parked job, does the caller get `unknown`: a record
+    that says "I am a job" must not turn into "I am an ordinary terminal".
+    """
+    rec = _session_record(pid)
+    if rec is None or rec.get("procStart"):
+        return rec, False
+    return None, rec.get("kind") == "bg" or isinstance(rec.get("parkedJobId"), str)
 
 
 def _bg_mode(rec: dict[str, Any]) -> str | None:
@@ -149,33 +187,61 @@ def _parked_mode(rec: dict[str, Any] | None) -> str | None:
     return _declared(parked, _names(parked, worker, (rec or {}).get("name")))
 
 
-def _inherited_mode(pid: int) -> str | None:
+def _inherited_mode(pid: int, view: _Roster) -> str | None:
     """The mode of the nearest ancestor process that is a cx-started session.
 
-    A process a restricted session starts (a `claude -p` child, a teammate) has
-    its own session record, and that record says only that it is interactive.
-    Without this walk it would be ungated. The first ancestor with a mode, an
-    `unknown` included, decides. An ancestor record that cannot be read is
-    skipped, except for a background session, which makes the answer unknown.
+    A process a restricted session starts (a `claude -p` child, a teammate, an
+    MCP proxy behind a wrapper) is not itself the session, and without this walk
+    it would be ungated. The first ancestor with a mode, an `unknown` included,
+    decides. An ancestor is recognised by its session record, or, when it has
+    none, by the roster (a background REPL may have no record). An ancestor
+    record that cannot be read is skipped, except for a background session, which
+    makes the answer unknown.
     """
     current = pid
-    for _ in range(MAX_ANCESTRY_HOPS):
-        current = _ppid(current)
-        if current is None or current <= 1:
+    for hop in range(MAX_ANCESTRY_HOPS):
+        parent = _ppid(current)
+        if parent is None:
+            # The caller was alive a moment ago, so a missing parent is a
+            # process that died under us, not the top of the tree.
+            return UNKNOWN if hop == 0 else None
+        current = parent
+        if current <= 1:
             return None
         try:
-            rec = _session_record(current)
+            rec, claims_job = _verified_record(current)
         except (_Unreadable, OSError, ValueError, TypeError):
             continue
-        if rec is None:
-            continue
         try:
-            mode = _bg_mode(rec) if rec.get("kind") == "bg" else _parked_mode(rec)
+            if rec is None:
+                mode = (_unrecorded_mode(current, view)[1]
+                        if _may_be_a_session(current) else None)
+                if mode is None and claims_job:
+                    return UNKNOWN
+            else:
+                mode = _bg_mode(rec) if rec.get("kind") == "bg" else _parked_mode(rec)
         except (_Unreadable, roster.Unreadable, OSError, ValueError, TypeError):
             return UNKNOWN
         if mode is not None:
             return mode
     return None
+
+
+def _may_be_a_session(pid: int) -> bool:
+    """Whether an ancestor without a session record could be a Claude Code REPL.
+
+    The roster is only worth reading, and a damaged one only worth failing on,
+    for a process that looks like Claude Code. A shell or a wrapper never is. A
+    process whose command line cannot be read is assumed to be.
+    """
+    try:
+        with open(f"/proc/{pid}/cmdline", "rb") as fh:
+            argv = fh.read().split(b"\0")
+        exe = os.readlink(f"/proc/{pid}/exe")
+    except OSError:
+        return True
+    names = [os.path.basename(a.decode(errors="replace")) for a in argv if a]
+    return any(n.startswith("claude") for n in names) or "/claude/" in exe
 
 
 def _ppid(pid: int) -> int | None:
@@ -186,16 +252,20 @@ def _ppid(pid: int) -> int | None:
         return None
 
 
-def _unrecorded_mode(pid: int) -> str | None:
-    """A pid with no session record: the roster is the only thing that can name it."""
-    for job, worker in (_workers(strict=True) or {}).items():
+def _unrecorded_mode(pid: int, view: _Roster) -> tuple[bool, str | None]:
+    """A pid with no session record: the roster is the only thing that can name it.
+
+    Returns whether the roster lists the process as a job REPL, and the mode it
+    gives it (None for a job cx did not start).
+    """
+    for job, worker in view.workers().items():
         if (isinstance(worker, dict) and worker.get("replPid") == pid
                 and roster.proc_start(pid) == str(worker.get("replProcStart"))):
             declared = _declared(job, _names(job, worker, None))
             if declared is not None:
-                return declared
-            return UNKNOWN if _looks_cx_started(worker) else None
-    return None
+                return True, declared
+            return True, UNKNOWN if _looks_cx_started(worker) else None
+    return False, None
 
 
 def _workers(*, strict: bool) -> dict[str, Any] | None:

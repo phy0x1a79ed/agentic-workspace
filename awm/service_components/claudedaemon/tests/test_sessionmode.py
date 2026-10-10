@@ -56,6 +56,16 @@ class Home:
             "jobId": job, "name": name}))
 
 
+@pytest.fixture(autouse=True)
+def hermetic_tree(monkeypatch):
+    """Walk from this process to its real parent and then to init, and treat no
+    ancestor as a possible Claude Code process unless a test says so. The tests
+    run under a real session; its records must not leak in."""
+    monkeypatch.setattr(sessionmode, "_ppid",
+                        lambda pid: {ME: os.getppid()}.get(pid, 1))
+    monkeypatch.setattr(sessionmode, "_may_be_a_session", lambda pid: False)
+
+
 @pytest.fixture
 def home(tmp_path, monkeypatch):
     for var in ("AWM_CX_ROSTER", "AWM_CX_JOBS", "AWM_CX_SESSIONS", "AWM_CX_STATE"):
@@ -381,3 +391,178 @@ def test_a_parked_job_id_that_is_not_a_job_id_is_ignored(home):
         "pid": ME, "procStart": _proc_start(ME), "kind": "interactive",
         "parkedJobId": "../../x"}))
     assert mode_of(ME) is None
+
+
+# --- a pid that does not exist ------------------------------------------------
+
+
+def _dead_pid() -> int:
+    pid = 4_999_999
+    assert not os.path.exists(f"/proc/{pid}")
+    return pid
+
+
+def test_a_pid_with_no_process_is_unknown_not_ungated(home):
+    assert mode_of(_dead_pid()) == UNKNOWN
+
+
+def test_a_dead_pid_is_unknown_even_with_a_healthy_home_and_a_restricted_ancestor(home):
+    _restricted_parent(home)
+    assert mode_of(_dead_pid()) == UNKNOWN
+
+
+def test_a_dead_pid_with_a_leftover_record_is_unknown(home):
+    pid = _dead_pid()
+    (home.sessions / f"{pid}.json").write_text(json.dumps({
+        "pid": pid, "procStart": "1", "kind": "interactive"}))
+    assert mode_of(pid) == UNKNOWN
+
+
+def test_a_running_process_with_no_parents_left_keeps_the_ungated_meaning(home, monkeypatch):
+    home.record(ME, "interactive")
+    monkeypatch.setattr(sessionmode, "_ppid", lambda pid: 1)
+    assert mode_of(ME) is None
+    # the top of the tree is reached some hops up
+    monkeypatch.setattr(sessionmode, "_ppid", {ME: 987650, 987650: None}.get)
+    assert mode_of(ME) is None
+
+
+def test_a_process_whose_parent_cannot_be_read_at_once_is_unknown(home, monkeypatch):
+    """The process was alive a moment ago, so a missing parent is a death under us."""
+    home.record(ME, "interactive")
+    monkeypatch.setattr(sessionmode, "_ppid", lambda pid: None)
+    assert mode_of(ME) == UNKNOWN
+
+
+def test_a_running_interactive_process_stays_ungated(home):
+    home.record(ME, "interactive")
+    assert mode_of(ME) is None
+    assert mode_of(os.getppid()) is None
+
+
+# --- an ancestor REPL with no session record ----------------------------------
+
+
+def _roster_lists(home, pid, job, name="rep"):
+    """The roster lists `pid` as the REPL of cx-started job `job`."""
+    home.roster.write_text(json.dumps({"workers": {job: {
+        "replPid": pid, "replProcStart": _proc_start(pid),
+        "dispatch": {"seed": {"name": name}}}}}))
+
+
+def _wrapper_chain(monkeypatch, *hops):
+    chain = dict(zip((ME, *hops), (*hops, 1)))
+    monkeypatch.setattr(sessionmode, "_ppid", lambda pid: chain.get(pid, 1))
+
+
+def test_a_proxy_behind_a_wrapper_inherits_the_mode_of_a_record_less_repl(home, monkeypatch):
+    """The REPL has no sessions/<pid>.json; its MCP proxy runs under `mamba run`."""
+    _roster_lists(home, PARENT, PARENT_JOB)
+    (home.starts / f"{PARENT_JOB}.json").write_text(json.dumps({"mode": "delegate"}))
+    monkeypatch.setattr(sessionmode, "_may_be_a_session", lambda pid: pid == PARENT)
+    _wrapper_chain(monkeypatch, 987650, PARENT)
+    assert mode_of(PARENT) == "delegate"
+    assert mode_of(ME) == "delegate"  # the child, itself record-less and unlisted
+    home.record(ME, "interactive")
+    assert mode_of(ME) == "delegate"
+
+
+def test_a_wrapper_pid_is_judged_by_the_repl_above_it(home, monkeypatch):
+    _roster_lists(home, PARENT, PARENT_JOB)
+    (home.starts / f"{PARENT_JOB}.json").write_text(json.dumps({"mode": "representative"}))
+    monkeypatch.setattr(sessionmode, "_may_be_a_session", lambda pid: pid == PARENT)
+    # this process stands in for the wrapper: it has no record and is not listed
+    _wrapper_chain(monkeypatch, 987650, PARENT)
+    assert mode_of(ME) == "representative"
+
+
+def test_a_cx_launched_record_less_ancestor_without_lineage_is_unknown(home, monkeypatch):
+    _roster_lists(home, PARENT, PARENT_JOB)
+    roster_data = json.loads(home.roster.read_text())
+    roster_data["workers"][PARENT_JOB]["dispatch"]["launch"] = {
+        "args": ["--permission-mode=dontAsk"]}
+    home.roster.write_text(json.dumps(roster_data))
+    monkeypatch.setattr(sessionmode, "_may_be_a_session", lambda pid: True)
+    assert mode_of(ME) == UNKNOWN
+
+
+def test_a_listed_ancestor_that_cx_did_not_start_is_passed_over(home, monkeypatch):
+    _roster_lists(home, PARENT, PARENT_JOB)
+    monkeypatch.setattr(sessionmode, "_may_be_a_session", lambda pid: True)
+    assert mode_of(ME) is None
+
+
+def test_a_damaged_roster_makes_a_session_looking_ancestor_unknown(home, monkeypatch):
+    home.roster.write_text("{ not json")
+    monkeypatch.setattr(sessionmode, "_may_be_a_session", lambda pid: pid == PARENT)
+    assert mode_of(ME) == UNKNOWN
+
+
+def test_a_damaged_roster_does_not_lock_out_a_terminal_whose_ancestors_are_shells(home):
+    home.roster.write_text("{ not json")
+    home.record(ME, "interactive")
+    assert mode_of(ME) is None
+    assert mode_of(ME) is None
+
+
+def test_the_roster_is_read_once_however_many_ancestors_are_checked(home, monkeypatch):
+    reads = []
+    real = sessionmode._workers
+    monkeypatch.setattr(sessionmode, "_workers", lambda strict: reads.append(strict) or real(strict=strict))
+    monkeypatch.setattr(sessionmode, "_may_be_a_session", lambda pid: True)
+    chain = {ME: 987650, 987650: 987651, 987651: 987652, 987652: PARENT, PARENT: 1}
+    monkeypatch.setattr(sessionmode, "_ppid", lambda pid: chain.get(pid, 1))
+    home.record(ME, "interactive")
+    assert mode_of(ME) is None
+    assert len(reads) == 1
+
+
+def test_the_may_be_a_session_filter_recognises_claude_processes(monkeypatch):
+    monkeypatch.undo()
+    assert sessionmode._may_be_a_session(10**9) is True  # unreadable: assume it may
+    assert sessionmode._may_be_a_session(os.getpid()) is False  # the test interpreter
+
+
+# --- a record without procStart is not trusted ---------------------------------
+
+
+def _bare_record(home, pid, **fields):
+    (home.sessions / f"{pid}.json").write_text(json.dumps({"pid": pid, **fields}))
+
+
+def test_an_interactive_record_without_procstart_grants_nothing_but_adds_no_restriction(home):
+    _bare_record(home, ME, kind="interactive")
+    assert mode_of(ME) is None
+
+
+def test_a_record_without_procstart_falls_through_to_the_ancestors(home):
+    _restricted_parent(home)
+    _bare_record(home, ME, kind="interactive")
+    assert mode_of(ME) == "delegate"
+
+
+def test_a_bg_record_without_procstart_and_no_other_evidence_is_unknown(home):
+    _bare_record(home, ME, kind="bg", jobId=JOB)
+    assert mode_of(ME) == UNKNOWN
+
+
+def test_a_parked_record_without_procstart_and_no_other_evidence_is_unknown(home):
+    _bare_record(home, ME, kind="interactive", parkedJobId=JOB)
+    assert mode_of(ME) == UNKNOWN
+
+
+def test_a_bg_record_without_procstart_is_judged_by_the_roster(home):
+    _bare_record(home, ME, kind="bg", jobId=JOB)
+    home.worker()
+    home.lineage("secretary")
+    assert mode_of(ME) == "secretary"
+
+
+def test_an_empty_procstart_is_treated_as_missing(home):
+    _bare_record(home, ME, kind="bg", jobId=JOB, procStart="")
+    assert mode_of(ME) == UNKNOWN
+
+
+def test_a_mismatched_procstart_is_still_stale(home):
+    home.record(ME, "interactive", proc_start="1")
+    assert mode_of(ME) == UNKNOWN
