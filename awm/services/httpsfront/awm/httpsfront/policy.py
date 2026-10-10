@@ -7,7 +7,7 @@ is not listed here is a 404 whether or not it carries a session, so nothing
 else in awm — the hub control plane, ``/invoke``, other services, the
 fileviewer root — is even discoverable from outside.
 
-Seven answers per path:
+Eight answers per path:
 
 * ``DENY``  — not part of the public surface. 404.
 * ``OPEN``  — allowed for any authenticated session.
@@ -41,6 +41,12 @@ Seven answers per path:
   into existence from outside. The mount is an allow-list of exact path grammars
   rather than a prefix, so a slot the relay never issued is turned away here
   before it costs a socket. See :mod:`awm.httpsfront.tether`.
+* ``BOARD`` — the federation board, the **third** verdict allowed with no edge
+  session. Callers are parties of the board, foreign swarms among them, and the
+  board authenticates their own bearer, which the edge passes through unread.
+  Like ``TETHER`` it is an allow-list of exact shapes (see
+  :mod:`awm.httpsfront.board`), and a path inside the mount that no shape
+  claims is ``DENY``. Whether a board is wired at all is the proxy's question.
 * ``PENPOT`` — Penpot's own root-level frontend paths, gated the same way as
   ``VAULT`` and for the same reason: a person's design files, not a machine's.
   Penpot's credential commands are the exception: they answer ``DENY``, because
@@ -56,15 +62,15 @@ from __future__ import annotations
 import re
 from enum import Enum
 
-from awm.httpsfront import penpot, slices, tether, vault
+from awm.httpsfront import board, penpot, slices, tether, vault
 from awm.httpsfront.auth import is_machine_sub
 
-# The only paths a foreign node reaches on a mesh edge. Wave 2 re-adds
-# "/invoke" here once the gateway effect gate exists: until then the flat
-# /invoke dispatch has no per-verb check, and a foreign caller on it could call
-# auth.edge_material and forge a session. The catalog's own `peers` view is
-# withheld from a foreign caller by the proxy, not by this set.
-FOREIGN_PATHS = frozenset({"/tools"})
+# The only paths a foreign node reaches on a mesh edge. "/invoke" is here
+# because the gateway's effect gate (catalog.dispatch) limits a foreign caller
+# to the read verbs its grants name; the edge does not repeat that check, so
+# this set must never grow past the paths that gate covers. The catalog's own
+# `peers` view is withheld from a foreign caller by the proxy, not by this set.
+FOREIGN_PATHS = frozenset({"/tools", "/invoke"})
 
 
 def foreign_allows(path: str) -> bool:
@@ -83,6 +89,7 @@ class Verdict(str, Enum):
     VAULT = "vault"
     SLICE = "slice"
     TETHER = "tether"
+    BOARD = "board"
     PENPOT = "penpot"
 
 
@@ -157,6 +164,14 @@ def classify(path: str) -> Verdict:
         return Verdict.TETHER
     if tether.refused(path):
         return Verdict.DENY
+    # The board's mount, same position and same reasoning as the tether: a
+    # separate upstream whose paths nothing below may shadow, and whose near
+    # misses must not fall through to the gateway. The verdict is path-only;
+    # the method is checked where the request is forwarded.
+    if board.owns(path):
+        return Verdict.BOARD
+    if board.in_mount(path):
+        return Verdict.DENY
     # Same reasoning, same position, for Penpot. The two mounts are disjoint
     # by construction now that each has a prefix of its own, so the order
     # between them decides nothing.
@@ -203,6 +218,10 @@ def allows(path: str, sub: str | None) -> bool:
         # being helped, on their own machine, and requiring an awm account of
         # them would defeat the tool. The relay does its own gating — see the
         # module docstring and :mod:`awm.httpsfront.tether`.
+        return True
+    if verdict is Verdict.BOARD:
+        # No subject: the caller is a party of the board, which authenticates
+        # its own bearer. See :mod:`awm.httpsfront.board`.
         return True
     if verdict is Verdict.DENY or not sub:
         return False

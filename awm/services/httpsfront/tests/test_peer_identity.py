@@ -5,8 +5,9 @@ only for this node's name, and yields ``peer:<node>``; the legacy bearer still
 yields bare ``peer`` until ``AWM_PEER_LEGACY_BEARER=0`` retires it; a domestic
 node is a peer in every way the legacy bearer was (the gateway, never the vault,
 Penpot or a person's files); a foreign node, or one the book does not list,
-reaches ``/invoke`` and ``/tools`` and gets a 404 for everything else the mesh
-edge serves, WebSockets included.
+reaches ``/invoke`` and ``/tools`` (the gateway's effect gate limits what it may
+call there) and gets a 404 for everything else the mesh edge serves, WebSockets
+included.
 """
 
 from __future__ import annotations
@@ -181,10 +182,11 @@ def test_the_relation_comes_from_the_material_snapshot_not_the_book(peer_book, k
     assert gate.peer_relation("rigel") is None
 
 
-def test_the_foreign_door_is_tools_exactly():
-    assert policy.FOREIGN_PATHS == frozenset({"/tools"})
+def test_the_foreign_door_is_tools_and_invoke_exactly():
+    assert policy.FOREIGN_PATHS == frozenset({"/tools", "/invoke"})
     assert policy.foreign_allows("/tools")
-    for path in ("/invoke", "/", "/invoke/", "/tools/x", "/hub/services",
+    assert policy.foreign_allows("/invoke")
+    for path in ("/", "/invoke/", "/peers", "/tools/invoke", "/invoke/x", "/tools/x", "/hub/services",
                  "/svc/notes/fn/list", "/trilium/", "/penpot/", "/files/x",
                  "/__auth/whoami"):
         assert not policy.foreign_allows(path), path
@@ -306,15 +308,33 @@ def test_a_foreign_node_reaches_tools_only(bearer):
 
 
 @pytest.mark.parametrize("bearer", ["b-shaula", "b-nobody"])
-@pytest.mark.parametrize("method", ["get", "post", "put", "delete"])
-def test_a_foreign_nodes_invoke_is_404_until_the_effect_gate_exists(bearer, method):
-    """The flat /invoke has no per-verb check yet, so a foreign caller on it
-    could call `auth_edge_material`. Wave 2 re-adds it behind the gate."""
+def test_a_foreign_node_reaches_invoke_and_the_gateway_decides(bearer):
+    """The edge forwards `/invoke` stamped with the caller's identity; the
+    gateway's effect gate, not the edge, refuses what its grants do not cover."""
     with _edge(bearer) as (c, seen):
-        r = getattr(c, method)("/invoke")
-        assert r.status_code == 404
-        assert c.post("/invoke", json={"name": "auth_edge_material", "args": {}}
-                      ).status_code == 404
+        assert c.post("/invoke", json={"name": "kb_search", "args": {}}).status_code == 200
+    assert [s[1] for s in seen] == [BEARERS[bearer]]
+    assert seen[0][0].startswith(GATEWAY + "/invoke")
+
+
+@pytest.mark.parametrize("bearer", ["b-shaula", "b-nobody"])
+@pytest.mark.parametrize("path", ["/svc/notes/fn/list", "/svc/auth/fn/edge_material",
+                                  "/peers", "/tools/peers", "/invoke/", "/invoke/x",
+                                  "/hub/services", "/hub/register", "/files/x"])
+@pytest.mark.parametrize("method", ["get", "post", "put", "delete"])
+def test_a_foreign_node_still_reaches_nothing_beyond_tools_and_invoke(
+        bearer, path, method):
+    with _edge(bearer) as (c, seen):
+        assert getattr(c, method)(path).status_code == 404
+    assert seen == []
+
+
+@pytest.mark.parametrize("bearer", ["b-shaula", "b-nobody"])
+@pytest.mark.parametrize("query", ["peers=1", "peers", "view=domains&peers=0"])
+@pytest.mark.parametrize("path", ["/tools", "/invoke"])
+def test_a_foreign_node_cannot_widen_either_door_to_the_fleet(bearer, path, query):
+    with _edge(bearer) as (c, seen):
+        assert c.get(f"{path}?{query}").status_code == 404
     assert seen == []
 
 
@@ -408,6 +428,19 @@ def test_caller_pid_headers_are_stripped_on_a_foreign_nodes_tools_call_too():
     (sent,) = c.sent
     assert not [k for k in sent if k.startswith("x-awm-") and k != "x-awm-as"]
     assert sent["x-awm-as"] == "peer:shaula"
+
+
+@pytest.mark.parametrize("bearer", ["b-shaula", "b-nobody"])
+def test_a_foreign_nodes_invoke_reaches_the_gateway_with_only_the_edges_stamp(bearer):
+    forged = {"X-Awm-Peer-Redirect": "1", "X-Awm-Session-Pid": "4242",
+              "X-Awm-Caller-Pid": "4243", "X-Awm-As": "user:tony"}
+    with _edge(bearer) as (c, seen):
+        assert c.post("/invoke", json={"name": "kb_search", "args": {}},
+                      headers=forged).status_code == 200
+    (sent,) = c.sent
+    assert sent["x-awm-as"] == BEARERS[bearer]
+    assert not [k for k in sent if k.startswith("x-awm-") and k != "x-awm-as"]
+    assert [s[0].startswith(GATEWAY + "/invoke") for s in seen] == [True]
 
 
 def test_duplicate_caller_headers_are_all_dropped():
