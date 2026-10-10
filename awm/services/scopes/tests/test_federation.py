@@ -117,8 +117,9 @@ def test_a_foreign_fetch_of_another_kind_is_refused(scopes_workspace, peer_book,
 def test_a_foreign_fetch_by_post_id_needs_a_journal(scopes_workspace, peer_book):
     msg = _post(None, author="agent:awm/dev", body="chatter", kind="message")
     jr = _post(None, author="agent:awm/dev", body="debrief", kind="journal")
-    with pytest.raises(PermissionError):
-        _fetch("peer:capella", post_id=msg["id"])
+    missing = _fetch("peer:capella", post_id="nope")
+    assert _fetch("peer:capella", post_id=msg["id"]) == missing == {"posts": [], "total": 0}
+    assert _fetch("peer:stranger", post_id=msg["id"]) == missing
     assert _fetch("peer:capella", post_id=jr["id"])["total"] == 1
     assert _fetch("peer:orion", post_id=msg["id"])["total"] == 1
     assert _fetch("peer:capella", post_id="nope")["total"] == 0

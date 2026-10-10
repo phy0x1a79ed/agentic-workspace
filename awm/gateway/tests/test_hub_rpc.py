@@ -72,6 +72,23 @@ class TestCallReply:
             assert ch._pending == {}
         _run(go())
 
+    def test_error_reply_carries_the_services_error_class(self, ch):
+        async def go():
+            task = asyncio.create_task(ch.call("boom", None))
+            env = await ch.next_outbound()
+            ch.handle_reply({"kind": "reply", "id": env["id"], "ok": False,
+                             "error": "no", "error_class": "PermissionError"})
+            with pytest.raises(RpcError) as got:
+                await task
+            assert got.value.error_class == "PermissionError"
+            task = asyncio.create_task(ch.call("boom", None))
+            env = await ch.next_outbound()
+            ch.handle_reply({"kind": "reply", "id": env["id"], "ok": False, "error": "old"})
+            with pytest.raises(RpcError) as got:
+                await task
+            assert got.value.error_class is None
+        _run(go())
+
     def test_call_times_out(self, ch):
         async def go():
             with pytest.raises(asyncio.TimeoutError):

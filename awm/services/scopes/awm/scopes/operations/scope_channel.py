@@ -156,7 +156,7 @@ def _handle_scope_fetch(args: dict, as_: str | None = None) -> dict:
     if post_id:
         p = channel.get_post(post_id)
         if p is not None and foreign and p.kind != "journal":
-            raise PermissionError("peers may read journal posts only")
+            p = None  # answer as for a post that does not exist, so ids cannot be probed
         return {"posts": [p.to_dict()] if p else [], "total": 1 if p else 0}
     common = dict(
         project=args.get("project"),
