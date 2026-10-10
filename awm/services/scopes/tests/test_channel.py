@@ -86,7 +86,7 @@ class TestChannelOps:
 
     def test_post_fires_emitter(self, scopes_workspace):
         """Every post fans out one cross-service `posts` emit (the live
-        subscription the agents service rides instead of a poll)."""
+        subscription consumers ride instead of a poll)."""
         from awm.scopes import channel
         seen: list[dict] = []
         channel.set_emitter(lambda payload: seen.append(payload))

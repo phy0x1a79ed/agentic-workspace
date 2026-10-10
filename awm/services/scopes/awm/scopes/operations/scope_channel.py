@@ -7,9 +7,6 @@ families with one small surface:
                             pattern; ``query`` → hybrid search, ``kind`` filter).
   - ``scope_subscribe``   — enroll a guest (scope or user) as a subscriber.
   - ``scope_unsubscribe`` — remove a subscriber.
-
-``scope_post`` is also the cross-service entry the agents service calls to
-broadcast an agent's rendered output into its scope channel.
 """
 
 from awm.scopes import channel
@@ -29,7 +26,7 @@ SCOPE_CHANNEL_MANIFEST_FUNCTIONS = [
         # ordered <parameter> blocks; a long multi-line value can bleed past its
         # closing tag and swallow any parameter emitted AFTER it. Keeping the one
         # long free-text field terminal means a bleed has no trailing param to
-        # corrupt (kind/meta survive). Sibling ops (agent_post, scope_create) put
+        # corrupt (kind/meta survive). A sibling op (scope_create) put
         # their free-text field last for the same reason. Do not move body up.
         "params": [
             {"name": "project", "type": "string", "required": True},

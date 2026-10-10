@@ -57,16 +57,24 @@ def seed_dir() -> Path:
     return Path(os.environ.get("AWM_CX_SEED_DIR") or Path.home())
 
 
+def default_model() -> str:
+    return os.environ.get("AWM_CX_MODEL") or "sonnet[1m]"
+
+
+def default_effort() -> str:
+    return os.environ.get("AWM_CX_EFFORT") or "medium"
+
+
+def skip_permission_flags() -> list[str]:
+    return ["--dangerously-skip-permissions", "--allow-dangerously-skip-permissions"]
+
+
 def seed_env() -> dict[str, str]:
-    return {"ANTHROPIC_MODEL": os.environ.get("AWM_CX_MODEL") or "sonnet[1m]"}
+    return {"ANTHROPIC_MODEL": default_model()}
 
 
 def seed_flags() -> list[str]:
-    return [
-        "--dangerously-skip-permissions",
-        "--allow-dangerously-skip-permissions",
-        "--effort", os.environ.get("AWM_CX_EFFORT") or "medium",
-    ]
+    return [*skip_permission_flags(), "--effort", default_effort()]
 
 
 #: Resolved rather than looked up at use: this service runs under systemd, whose
@@ -120,3 +128,26 @@ def loop_enabled() -> bool:
 def state_dir() -> Path:
     p = Path(os.environ.get("AWM_CX_STATE") or (_home() / "cx"))
     return p
+
+
+#: One JSON file per session `start` created, named for the job. It is the only
+#: record of who started a session and in what mode: `stop` acts on a job only
+#: when it has one, and `mode_of` reads the mode from it.
+def starts_dir() -> Path:
+    return state_dir() / "starts"
+
+
+#: Claude Code's per-process session records, which name every live REPL,
+#: interactive or background.
+def sessions_dir() -> Path:
+    return Path(os.environ.get("AWM_CX_SESSIONS") or (_home() / "sessions"))
+
+
+#: Where scope worktrees live: `<canonical workspace>/projects/<project>/<scope>`.
+def projects_dir() -> Path:
+    env = os.environ.get("AWM_CX_PROJECTS")
+    if env:
+        return Path(env)
+    from awm import config as awm_config
+
+    return awm_config.canonical_workspace() / "projects"

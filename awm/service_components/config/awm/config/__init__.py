@@ -37,13 +37,11 @@ WORKSPACE_ROOT = find_workspace_root()
 # DBs live. For a normal (native) service the local root IS the canonical
 # workspace, so the two coincide and nothing changes. A shadow overlay is the
 # exception: it runs with an ISOLATED local root (so its per-service DBs never
-# collide with the idle base it shadows — the agents boot-reconcile closes every
-# open instance row), yet its placed agents must still operate in the REAL
-# workspace. The hub therefore reports its canonical workspace to every service
+# collide with the idle base it shadows), yet the work it drives must still
+# operate in the REAL workspace. The hub therefore reports its canonical workspace to every service
 # on register (``ServiceRegisterResponse.canonical_workspace``); the gatewayclient
 # adapter calls :func:`set_canonical_workspace` with it. A service that resolves
-# where agents work (the agents service's spawned MCP env, etc.) reads
-# :func:`canonical_workspace`; its DB paths stay on the local ``WORKSPACE_ROOT``.
+# where the real workspace is reads :func:`canonical_workspace`; its DB paths stay on the local ``WORKSPACE_ROOT``.
 # Until a register handshake binds it, canonical defaults to the local root, so
 # tests and never-registered processes are unaffected.
 _CANONICAL_WORKSPACE: Path = WORKSPACE_ROOT
@@ -77,10 +75,6 @@ LOG_FILE = AWM_DIR / "awm.log"
 ENV_FILE = AWM_DIR / "env"
 
 PROJECTS_DIR = WORKSPACE_ROOT / "projects"
-# Per-task workspace units (the DAG-node execution sandbox the workspace service
-# provisions) live at this top-level dir — the node-side analog of PROJECTS_DIR.
-# Gitignored; one subdir per unit slug.
-TASKS_DIR = WORKSPACE_ROOT / "tasks"
 DATA_DIR = WORKSPACE_ROOT / "data"
 SERVICES_DIR = AWM_DIR / "services"
 

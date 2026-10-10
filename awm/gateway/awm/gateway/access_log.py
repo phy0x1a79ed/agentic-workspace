@@ -1,7 +1,7 @@
 """JSON-line audit trail for the exposed listener.
 
 One line per authenticated request that mutated state. Bodies are not
-logged — the prompt of an agent_spawn or the contents of a message stay out
+logged — the prompt of a cx start or the contents of a message stay out
 of the access log to avoid leaking sensitive data on disk.
 """
 

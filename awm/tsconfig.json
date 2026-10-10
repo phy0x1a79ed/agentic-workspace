@@ -50,7 +50,7 @@
     // Resolve workspace `@awm/<name>` imports to each package's source entry,
     // so `tsc`/`svelte-check` follow cross-package imports without a build.
     // A glob fallback keeps this resilient to packages that don't exist yet
-    // (e.g. @awm/agent-chat is built in a later wave) — the explicit entries
+    // (e.g. a library added in a later wave) — the explicit entries
     // win for current packages; the glob covers any future ui_components/<x>.
     "baseUrl": ".",
     "paths": {

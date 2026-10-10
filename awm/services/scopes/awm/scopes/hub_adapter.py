@@ -230,8 +230,7 @@ API_MANIFEST: dict[str, Any] = {
             "description": (
                 "Fires once per new scope-channel post. Payload "
                 "{project, scope, post}; subscribers filter by (project, "
-                "scope). The agents service subscribes to feed human messages "
-                "into a live agent's stdin (a live subscription, not a poll)."
+                "scope)."
             ),
         },
     ],

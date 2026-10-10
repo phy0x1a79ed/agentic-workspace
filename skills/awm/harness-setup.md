@@ -106,26 +106,11 @@ In each scope, `awm scope create` writes `<scope>/.awm/mcp-opencode.json` with:
 
 OpenCode resolves the absolute workspace `AGENTS.md` path and the cwd-relative `.awm/context.md` at startup, loading both as system instructions. Tier 2 (the scope's own `AGENTS.md`) is found by OC's native walk-up — listing it here too would double-inject.
 
-For OC to pick up the per-scope file, launch with `OPENCODE_CONFIG=<scope>/.awm/mcp-opencode.json` or let AWM's spawner do that for you (§5).
+For OC to pick up the per-scope file, launch with `OPENCODE_CONFIG=<scope>/.awm/mcp-opencode.json`.
 
-## 5. AWM-spawned agents
+## 5. Sessions started by awm
 
-AWM launches agents via the agents service — `agent_spawn scope=…` (a scope IS the channel; the agent's rendered output is posted back to its scope via `scope_post`). The harness is per-session, persisted on the `agent_sessions.agent_cli` column. Default is `claude`.
-
-To spawn an opencode worker:
-
-```
-agent_spawn project="proj" scope="scope" agent_cli="opencode"
-```
-
-AWM constructs the argv (`opencode run --format json --dir <wd> [--dangerously-skip-permissions] [--model …]`) and sets `OPENCODE_CONFIG` to the **per-scope** `.awm/mcp-opencode.json` if it exists (fallback: workspace-level cfg). The per-scope file's `instructions` array auto-loads the workspace `AGENTS.md` + `.awm/context.md` on top of the workspace MCP catalog.
-
-The spawn picks up:
-
-- **MCP catalog** via `--strict-mcp-config --mcp-config <workspace>/.awm/spawn-mcp.json` (claude) or `OPENCODE_CONFIG` (opencode).
-- **Workspace + repo context** via CC's native `AGENTS.md` walk-up (CC), or the per-scope `mcp-opencode.json` `instructions` plus OC's walk-up (OC).
-- **Scope context** via the startup ritual's Read (CC) or the `instructions` array (OC).
-- **Permission mode** — `bypassPermissions` by default for worker scopes, configurable per session.
+awm starts Claude Code sessions through `cx start` (a background `claude --bg` job in a scope's worktree). The session loads context the same way a manual launch does: CC's native `AGENTS.md` walk-up for the workspace and repo tiers, and the startup ritual's Read for `.awm/context.md`. awm no longer spawns OpenCode workers; launch `opencode` by hand with `OPENCODE_CONFIG` as in §4.
 
 ### Context loading — no CLI command
 

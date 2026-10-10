@@ -309,7 +309,7 @@ class ReapRequest(BaseModel):
 
 # Matches the ``awm.<svc>.hub_adapter`` module token in a process cmdline (the
 # only thing a feature service is ever launched as), e.g.
-# ``python -m awm.agents.hub_adapter``. The gateway itself is ``awm.gateway
+# ``python -m awm.stt.hub_adapter``. The gateway itself is ``awm.gateway
 # serve`` and the MCP proxy is ``awm-mcp`` — neither matches.
 _HUB_ADAPTER_RE = re.compile(r"awm\.[\w.]*hub_adapter")
 

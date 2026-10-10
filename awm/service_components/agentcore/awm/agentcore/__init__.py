@@ -2,8 +2,8 @@
 
 One job: talk to a ``claude`` or ``opencode`` subprocess and yield normalized
 :class:`AgentEvent`s, in ``live`` or ``oneshot`` mode, by config. Reused by the
-agents service (live chat) and the stt cleanup (one-shot). NO scope /
-transcript / gateway concerns; NO ``awm.config`` import — this stays a leaf.
+stt cleanup (one-shot). NO scope / transcript /
+gateway concerns; NO ``awm.config`` import — this stays a leaf.
 
 Public surface::
 

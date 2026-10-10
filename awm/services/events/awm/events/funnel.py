@@ -3,7 +3,7 @@
 The events service's second half (the Scheduler being the first): a set of
 never-die consumer loops over other services' emitters that filter to the
 wake-worthy kinds, debounce per game, and re-emit one normalized ``agent.wake``
-``{game, reason, source}`` — the single topic the agents service's gamebot
+``{game, reason, source}`` — the single topic a gamebot
 listener consumes. Adding a wake source (a browser realm, an effector) is one
 row in :data:`SOURCES`.
 

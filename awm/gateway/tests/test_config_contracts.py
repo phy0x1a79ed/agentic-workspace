@@ -65,12 +65,12 @@ def _wire(monkeypatch, recs, controls):
 
 async def test_contracts_folds_values_and_skips_opt_outs(monkeypatch):
     recs = [
-        _rec("agents", api={"config": _AGENTS_CFG}),
+        _rec("demo", api={"config": _AGENTS_CFG}),
         _rec("2fa", api={"functions": [{"name": "ping"}]}),  # opted out
         _rec("dashboard", kind="page", api={"config": _AGENTS_CFG}),  # not a service
     ]
     controls = {
-        "sid-agents": _FakeChannel(
+        "sid-demo": _FakeChannel(
             lambda fn, args: {
                 "title": "Agent default driver",
                 "schema": _AGENTS_CFG["schema"],
@@ -82,23 +82,23 @@ async def test_contracts_folds_values_and_skips_opt_outs(monkeypatch):
 
     out = (await _op_config_contracts())["contracts"]
     keys = [c["key"] for c in out]
-    assert "agents" in keys
+    assert "demo" in keys
     assert "2fa" not in keys  # opt-out service is absent
     assert "dashboard" not in keys  # non-service kind is absent
     assert "gateway" in keys  # global slot always appended
 
-    agents = next(c for c in out if c["key"] == "agents")
+    agents = next(c for c in out if c["key"] == "demo")
     assert agents["unavailable"] is False
     assert agents["values"] == {"harness": "claude", "model": "haiku"}
     assert agents["title"] == "Agent default driver"
 
 
 async def test_down_service_degrades_to_unavailable(monkeypatch):
-    recs = [_rec("agents", api={"config": _AGENTS_CFG})]
+    recs = [_rec("demo", api={"config": _AGENTS_CFG})]
     _wire(monkeypatch, recs, {})  # no control channel → down
 
     agents = next(
-        c for c in (await _op_config_contracts())["contracts"] if c["key"] == "agents"
+        c for c in (await _op_config_contracts())["contracts"] if c["key"] == "demo"
     )
     assert agents["unavailable"] is True
     assert agents["values"] is None
@@ -122,10 +122,10 @@ async def test_set_routes_to_owning_service(monkeypatch):
         return {"title": "Agent default driver", "schema": _AGENTS_CFG["schema"],
                 "values": args["values"]}
 
-    recs = [_rec("agents", api={"config": _AGENTS_CFG})]
-    _wire(monkeypatch, recs, {"sid-agents": _FakeChannel(_responder)})
+    recs = [_rec("demo", api={"config": _AGENTS_CFG})]
+    _wire(monkeypatch, recs, {"sid-demo": _FakeChannel(_responder)})
 
-    out = await _op_config_set(ConfigSetRequest(key="agents",
+    out = await _op_config_set(ConfigSetRequest(key="demo",
                                                 values={"harness": "claude"}))
     assert seen["fn"] == "config_set"
     assert seen["args"] == {"values": {"harness": "claude"}}
@@ -146,10 +146,10 @@ async def test_set_service_without_contract_raises(monkeypatch):
 
 
 async def test_set_down_service_raises(monkeypatch):
-    recs = [_rec("agents", api={"config": _AGENTS_CFG})]
+    recs = [_rec("demo", api={"config": _AGENTS_CFG})]
     _wire(monkeypatch, recs, {})  # registered but no channel
     with pytest.raises(RuntimeError):
-        await _op_config_set(ConfigSetRequest(key="agents", values={}))
+        await _op_config_set(ConfigSetRequest(key="demo", values={}))
 
 
 async def test_set_global_slot_is_noop(monkeypatch):

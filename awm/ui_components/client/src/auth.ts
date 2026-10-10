@@ -46,8 +46,7 @@ export interface ApiFetchInit extends Omit<RequestInit, 'body'> {
 export async function apiFetch<T = unknown>(path: string, init: ApiFetchInit = {}): Promise<T> {
   const headers = new Headers(init.headers ?? {});
   // Default the caller identity to the operator (`user:<n>`), but let a caller
-  // override it explicitly — an attached chat acts AS its placement's unit slug
-  // so the agents service's attach-gated admin relay resolves the right caller.
+  // override it explicitly.
   if (!headers.has('X-Awm-As')) headers.set('X-Awm-As', awmAs());
 
   let body: BodyInit | null | undefined = undefined;

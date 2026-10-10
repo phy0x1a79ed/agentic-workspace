@@ -21,8 +21,7 @@ Sessions:
     ``stt_result`` / ``composer`` / ``submit`` frames back. In continuous mode
     the convo dictation-cleanup inner loop runs (an ``awm.agentcore`` opencode
     one-shot per silence-cut). This is the only session the service exposes; the
-    mock ``chat`` partner was dropped — the real agent (agents service) replaces
-    it.
+    mock ``chat`` partner was dropped.
 """
 
 from __future__ import annotations
