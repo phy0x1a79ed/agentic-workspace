@@ -77,7 +77,16 @@ __all__ = [
     "call_sync",
     "call_peer",
     "call_peer_sync",
+    "invoke_peer",
+    "invoke_peer_sync",
+    "peer_token",
+    "peer_token_sync",
+    "peer_send",
+    "peer_send_sync",
+    "peer_send_cred",
+    "peer_send_cred_sync",
     "resolve_peer",
+    "resolve_peer_async",
     "fetch_peer_cred",
     "fetch_peer_cred_async",
     "fetch_peer_file",
@@ -271,7 +280,8 @@ async def subscribe(
 # Cross-peer calls — reach ANOTHER node's service edge directly (never relayed
 # through a gateway). The local gateway is asked only to RESOLVE the peer's
 # address; the call then goes straight to the peer's httpsfront edge, over
-# CA-verified TLS, authenticated with a bearer fetched over SSH.
+# CA-verified TLS, authenticated with a node-signed token (or, for a domestic
+# peer that has not upgraded, a bearer fetched over SSH).
 # ---------------------------------------------------------------------------
 
 
@@ -350,6 +360,18 @@ def resolve_peer(name: str, *, timeout: float = 10.0) -> dict[str, Any]:
         raise PeerError(f"peer {name!r} has no edge_url")
     _peer_addr_cache[name] = (now + _PEER_ADDR_TTL, entry)
     return entry
+
+
+async def resolve_peer_async(name: str, *, timeout: float = 10.0) -> dict[str, Any]:
+    """:func:`resolve_peer` for async callers: a cache hit costs nothing, a miss
+    runs the blocking lookup in a worker thread so a slow local gateway never
+    stalls the caller's event loop (and a ``wait_for`` around the call can fire).
+    Resolves the module global at call time so tests that patch ``resolve_peer``
+    still take effect."""
+    hit = _peer_addr_cache.get(name)
+    if hit and hit[0] > time.monotonic():
+        return hit[1]
+    return await asyncio.to_thread(resolve_peer, name, timeout=timeout)
 
 
 def _fetch_peer_cred_once(ssh_alias: str, timeout: float) -> str:
@@ -464,6 +486,200 @@ def _peer_headers(bearer: str, as_: str | None) -> dict[str, str]:
     return h
 
 
+# ---- Node-signed tokens -----------------------------------------------------
+# A peer edge accepts either a short-lived token signed by THIS node's key (the
+# local ``auth`` service holds the key; ``sign_peer_token`` is operator-only, so
+# it is called with no identity) or, for a domestic peer on a node that has not
+# upgraded yet, the legacy shared bearer fetched over ssh. A foreign peer never
+# sees the legacy bearer: if the token path fails, the call fails.
+
+_PEER_TOKEN_MARGIN = 30.0     # stop reusing a token this long before it expires
+_PEER_TOKEN_DEFAULT_TTL = 300.0
+#: The edge's answer to a credential it does not accept. Only this status sends a
+#: domestic peer to the legacy bearer: a 403 is an authorisation verdict on a
+#: caller the edge did identify, which a different credential cannot cure.
+_TOKEN_REFUSED = (401,)
+#: How long a domestic peer that refused our token is called with the legacy
+#: bearer straight away, so an un-upgraded node costs one failed attempt per
+#: window rather than a signing RPC and two requests per call.
+_PEER_TOKEN_REFUSAL_TTL = 300.0
+_peer_token_cache: dict[str, tuple[float, str]] = {}
+_peer_token_refused: dict[str, float] = {}
+
+
+def _peer_aud(peer: str) -> str:
+    """The node label a token for ``peer`` must name as its audience."""
+    try:
+        from awm.config import peertoken
+    except ImportError as exc:
+        raise PeerError(f"cannot sign a node token for {peer!r}: {exc}") from exc
+    aud = peertoken.node_label(peer)
+    if not aud:
+        raise PeerError("cannot sign a node token for an empty peer name")
+    return aud
+
+
+def _is_foreign(entry: dict[str, Any] | None) -> bool:
+    """Whether a resolved peer entry is not domestic. A ``relation`` key that is
+    absent means the answering gateway predates relations, so every peer was
+    domestic; one that is present but empty or unknown fails closed as foreign."""
+    entry = entry or {}
+    return "relation" in entry and entry["relation"] != "domestic"
+
+
+def _skip_token(peer: str, foreign: bool) -> bool:
+    """Whether to go straight to the legacy bearer: a domestic peer that refused
+    our token within the last ``_PEER_TOKEN_REFUSAL_TTL`` seconds."""
+    return (not foreign
+            and _peer_token_refused.get(_peer_aud(peer), 0.0) > time.monotonic())
+
+
+def _note_token_refused(peer: str, foreign: bool, status: int) -> None:
+    """Drop the cached token, log the audience we signed for (a book name that
+    differs from the peer's node name shows up here), and remember a domestic
+    refusal."""
+    aud = _peer_aud(peer)
+    _peer_token_cache.pop(aud, None)
+    log.warning("peer %r refused the signed token (HTTP %s, aud=%r)%s",
+                peer, status, aud,
+                "" if foreign else "; using the legacy bearer for a while")
+    if not foreign:
+        _peer_token_refused[aud] = time.monotonic() + _PEER_TOKEN_REFUSAL_TTL
+
+
+def _cached_peer_token(aud: str) -> str | None:
+    hit = _peer_token_cache.get(aud)
+    if hit and hit[0] > time.monotonic():
+        return hit[1]
+    return None
+
+
+def _remember_peer_token(aud: str, reply: Any) -> str:
+    token = reply.get("token") if isinstance(reply, dict) else None
+    if not isinstance(token, str) or not token:
+        raise PeerError(f"auth.sign_peer_token returned no token for {aud!r}")
+    try:
+        ttl = float(reply.get("expires_in") or _PEER_TOKEN_DEFAULT_TTL)
+    except (TypeError, ValueError):
+        ttl = _PEER_TOKEN_DEFAULT_TTL
+    _peer_token_cache[aud] = (
+        time.monotonic() + max(ttl - _PEER_TOKEN_MARGIN, 0.0), token)
+    return token
+
+
+def peer_token_sync(peer: str, *, force: bool = False) -> str:
+    """A signed token for ``peer``, from the cache until shortly before expiry.
+
+    Raises :class:`PeerError` when the local ``auth`` service cannot sign one."""
+    aud = _peer_aud(peer)
+    if not force:
+        hit = _cached_peer_token(aud)
+        if hit:
+            return hit
+    try:
+        reply = call_sync("auth", "sign_peer_token", {"aud": aud}, as_=None,
+                          timeout=10.0)
+    except (GatewayCallError, httpx.HTTPError) as exc:
+        raise PeerError(f"could not sign a node token for {peer!r}: {exc}") from exc
+    return _remember_peer_token(aud, reply)
+
+
+async def peer_token(peer: str, *, force: bool = False) -> str:
+    """Async variant of :func:`peer_token_sync`."""
+    aud = _peer_aud(peer)
+    if not force:
+        hit = _cached_peer_token(aud)
+        if hit:
+            return hit
+    try:
+        reply = await call("auth", "sign_peer_token", {"aud": aud}, as_=None,
+                           timeout=10.0)
+    except (GatewayCallError, httpx.HTTPError) as exc:
+        raise PeerError(f"could not sign a node token for {peer!r}: {exc}") from exc
+    return _remember_peer_token(aud, reply)
+
+
+async def peer_send_cred(peer: str, entry: dict[str, Any] | None,
+                         send: Any) -> tuple[httpx.Response, str]:
+    """:func:`peer_send` that also returns the credential the answer came on, for
+    a caller that must open a second connection (a WS) with the same credential."""
+    entry = entry or {}
+    foreign = _is_foreign(entry)
+    token = None
+    try:
+        if not _skip_token(peer, foreign):
+            token = await peer_token(peer)
+    except PeerError as exc:
+        if foreign:
+            raise
+        log.info("no signed token for domestic peer %r (%s); using the legacy bearer",
+                 peer, exc)
+    if token is not None:
+        resp = await send(token)
+        if resp.status_code not in _TOKEN_REFUSED:
+            return resp, token
+        _note_token_refused(peer, foreign, resp.status_code)
+        if foreign:
+            return resp, token
+    ssh_alias = entry.get("ssh_alias") or peer
+    for attempt in (0, 1):
+        bearer = await fetch_peer_cred_async(ssh_alias, force=(attempt == 1))
+        resp = await send(bearer)
+        if resp.status_code == 401 and attempt == 0:
+            continue  # credential likely rotated — force a re-fetch and retry
+        return resp, bearer
+    return resp, bearer
+
+
+def peer_send_cred_sync(peer: str, entry: dict[str, Any] | None,
+                        send: Any) -> tuple[httpx.Response, str]:
+    """Synchronous variant of :func:`peer_send_cred`."""
+    entry = entry or {}
+    foreign = _is_foreign(entry)
+    token = None
+    try:
+        if not _skip_token(peer, foreign):
+            token = peer_token_sync(peer)
+    except PeerError as exc:
+        if foreign:
+            raise
+        log.info("no signed token for domestic peer %r (%s); using the legacy bearer",
+                 peer, exc)
+    if token is not None:
+        resp = send(token)
+        if resp.status_code not in _TOKEN_REFUSED:
+            return resp, token
+        _note_token_refused(peer, foreign, resp.status_code)
+        if foreign:
+            return resp, token
+    ssh_alias = entry.get("ssh_alias") or peer
+    for attempt in (0, 1):
+        bearer = fetch_peer_cred(ssh_alias, force=(attempt == 1))
+        resp = send(bearer)
+        if resp.status_code == 401 and attempt == 0:
+            continue
+        return resp, bearer
+    return resp, bearer
+
+
+async def peer_send(peer: str, entry: dict[str, Any] | None, send: Any) -> httpx.Response:
+    """Run ``send(bearer) -> Response`` against ``peer`` with the right credential.
+
+    The signed token goes first. When a domestic peer's edge refuses it with a
+    401 (an un-upgraded node), or this node cannot sign one, the request is
+    repeated once with the legacy ssh-fetched bearer, itself re-fetched once on a
+    401; the peer is then called with the legacy bearer directly for a few
+    minutes. A foreign peer is never offered the legacy bearer: its refusal is
+    returned as is, and a signing failure raises :class:`PeerError`.
+    """
+    return (await peer_send_cred(peer, entry, send))[0]
+
+
+def peer_send_sync(peer: str, entry: dict[str, Any] | None, send: Any) -> httpx.Response:
+    """Synchronous variant of :func:`peer_send`; ``send`` is a plain function."""
+    return peer_send_cred_sync(peer, entry, send)[0]
+
+
 async def call_peer(
     peer: str,
     service: str,
@@ -476,25 +692,24 @@ async def call_peer(
     """Call ``fn`` on ``service`` running on peer node ``peer`` and return the
     JSON result.
 
-    Resolves the peer's edge via the local gateway, fetches the peer bearer over
-    SSH, then POSTs ``{edge}/svc/{service}/fn/{fn}`` **directly to the peer edge**
-    over CA-verified TLS — no bytes traverse the local gateway. On a 401 the
-    credential is re-fetched once (it may have rotated) and the call retried.
+    Resolves the peer's edge via the local gateway, then POSTs
+    ``{edge}/svc/{service}/fn/{fn}`` **directly to the peer edge** over
+    CA-verified TLS — no bytes traverse the local gateway. Authenticates with a
+    node-signed token; a domestic peer that refuses it gets the legacy ssh-fetched
+    bearer instead (see :func:`peer_send`).
     """
-    entry = resolve_peer(peer)
+    entry = await resolve_peer_async(peer)
     edge = entry["edge_url"].rstrip("/")
-    ssh_alias = entry.get("ssh_alias") or peer
     url = f"{edge}/svc/{service}/fn/{fn}"
     ca = _peer_ca()
     body = json.dumps(args or {})
-    for attempt in (0, 1):
-        bearer = await fetch_peer_cred_async(ssh_alias, force=(attempt == 1))
+
+    async def send(bearer: str) -> httpx.Response:
         async with httpx.AsyncClient(timeout=timeout, verify=ca) as cli:
-            resp = await cli.post(url, content=body,
+            return await cli.post(url, content=body,
                                   headers=_peer_headers(bearer, as_))
-        if resp.status_code == 401 and attempt == 0:
-            continue  # credential likely rotated — force a re-fetch and retry
-        return _parse_reply(resp, f"{service}@{peer}", fn)
+
+    resp = await peer_send(peer, entry, send)
     return _parse_reply(resp, f"{service}@{peer}", fn)
 
 
@@ -510,18 +725,82 @@ def call_peer_sync(
     """Synchronous variant of :func:`call_peer`."""
     entry = resolve_peer(peer)
     edge = entry["edge_url"].rstrip("/")
-    ssh_alias = entry.get("ssh_alias") or peer
     url = f"{edge}/svc/{service}/fn/{fn}"
     ca = _peer_ca()
     body = json.dumps(args or {})
-    for attempt in (0, 1):
-        bearer = fetch_peer_cred(ssh_alias, force=(attempt == 1))
+
+    def send(bearer: str) -> httpx.Response:
         with httpx.Client(timeout=timeout, verify=ca) as cli:
-            resp = cli.post(url, content=body, headers=_peer_headers(bearer, as_))
-        if resp.status_code == 401 and attempt == 0:
-            continue
-        return _parse_reply(resp, f"{service}@{peer}", fn)
+            return cli.post(url, content=body, headers=_peer_headers(bearer, as_))
+
+    resp = peer_send_sync(peer, entry, send)
     return _parse_reply(resp, f"{service}@{peer}", fn)
+
+
+def _parse_invoke_reply(resp: httpx.Response, peer: str, name: str) -> Any:
+    """The ``result`` of a peer ``/invoke`` reply, JSON-decoded when it is a JSON
+    object or array and the raw string otherwise (``"42"`` stays a string). Non-2xx raises :class:`GatewayCallError`."""
+    body = _parse_reply(resp, f"{peer}", name)
+    result = body.get("result") if isinstance(body, dict) else body
+    if isinstance(result, str) and result.lstrip()[:1] in ("{", "["):
+        try:
+            return json.loads(result)
+        except json.JSONDecodeError:
+            return result
+    return result
+
+
+async def invoke_peer(
+    peer: str,
+    name: str,
+    args: dict | None = None,
+    *,
+    timeout: float = 30.0,
+) -> Any:
+    """Call the tool ``name`` on ``peer`` through its edge ``/invoke``.
+
+    ``name`` is the flat tool name (``kb_search``) or a domain name with
+    ``args={"verb": ..., "args": {...}}``. This is the door a foreign peer
+    exposes, so it carries no ``X-Awm-As``: the peer's edge stamps who we are
+    from the signed token. A foreign peer is only ever offered the token; a
+    domestic one may fall back to the legacy bearer (see :func:`peer_send`).
+    Raises :class:`PeerError` for setup failures and :class:`GatewayCallError`
+    for a non-2xx reply, which for a refused verb is the peer's 404.
+    """
+    entry = await resolve_peer_async(peer)
+    edge = entry["edge_url"].rstrip("/")
+    ca = _peer_ca()
+    body = json.dumps({"name": name, "args": args or {}})
+
+    async def send(bearer: str) -> httpx.Response:
+        async with httpx.AsyncClient(timeout=timeout, verify=ca) as cli:
+            return await cli.post(f"{edge}/invoke", content=body,
+                                  headers=_peer_headers(bearer, None))
+
+    resp = await peer_send(peer, entry, send)
+    return _parse_invoke_reply(resp, peer, name)
+
+
+def invoke_peer_sync(
+    peer: str,
+    name: str,
+    args: dict | None = None,
+    *,
+    timeout: float = 30.0,
+) -> Any:
+    """Synchronous variant of :func:`invoke_peer`."""
+    entry = resolve_peer(peer)
+    edge = entry["edge_url"].rstrip("/")
+    ca = _peer_ca()
+    body = json.dumps({"name": name, "args": args or {}})
+
+    def send(bearer: str) -> httpx.Response:
+        with httpx.Client(timeout=timeout, verify=ca) as cli:
+            return cli.post(f"{edge}/invoke", content=body,
+                            headers=_peer_headers(bearer, None))
+
+    resp = peer_send_sync(peer, entry, send)
+    return _parse_invoke_reply(resp, peer, name)
 
 
 async def subscribe_peer(
@@ -535,9 +814,10 @@ async def subscribe_peer(
     """Async generator over a peer node's emitter topic, via its edge directly.
 
     The cross-peer analogue of :func:`subscribe`. Resolves the peer's edge via
-    the local gateway, fetches the peer bearer over SSH, then opens a WebSocket
-    to ``{edge}/svc/{service}/emit/{topic}`` **directly on the peer edge** (never
-    relayed through a gateway), over CA-verified TLS with the bearer. Yields the
+    the local gateway, then opens a WebSocket to
+    ``{edge}/svc/{service}/emit/{topic}`` **directly on the peer edge** (never
+    relayed through a gateway), over CA-verified TLS with a node-signed token (a
+    domestic peer that refuses it gets the ssh-fetched legacy bearer). Yields the
     decoded payload per frame, byte-for-byte as :func:`subscribe` does for a
     local topic — a consumer cannot tell a peer stream from a local one.
 
@@ -555,38 +835,65 @@ async def subscribe_peer(
     import ssl
     import websockets  # local import: WS isn't needed on the call() hot path
 
-    entry = resolve_peer(peer)
+    entry = await resolve_peer_async(peer)
     edge = entry["edge_url"].rstrip("/")
     ssh_alias = entry.get("ssh_alias") or peer
+    foreign = _is_foreign(entry)
     ws_base = edge.replace("https://", "wss://").replace("http://", "ws://")
     ws_url = f"{ws_base}/svc/{service}/emit/{topic}"
     ssl_ctx = ssl.create_default_context(cafile=_peer_ca())
 
-    conn = None
-    for attempt in (0, 1):
-        bearer = await fetch_peer_cred_async(ssh_alias, force=(attempt == 1))
+    async def connect(bearer: str):
         headers = [("Authorization", f"Bearer {bearer}")]
         if as_ is not None:
             headers.append(("X-Awm-As", as_))
-        try:
-            conn = await websockets.connect(
-                ws_url,
-                additional_headers=headers,
-                ssl=ssl_ctx,
-                max_size=None,
-                open_timeout=10,
-                **_PING_KWARGS,
-            )
-        except websockets.InvalidStatus as exc:
-            # Handshake rejected by the peer edge. 401/403 here means the bearer
-            # was stale (rotated) — force a re-fetch and reconnect once, the WS
-            # analogue of call_peer's 401 retry. Any other status, or a second
-            # rejection, propagates loudly.
-            status = getattr(getattr(exc, "response", None), "status_code", None)
-            if attempt == 0 and status in (401, 403):
-                continue
+        return await websockets.connect(
+            ws_url,
+            additional_headers=headers,
+            ssl=ssl_ctx,
+            max_size=None,
+            open_timeout=10,
+            **_PING_KWARGS,
+        )
+
+    def refused(exc: Exception) -> bool:
+        status = getattr(getattr(exc, "response", None), "status_code", None)
+        return status in _TOKEN_REFUSED
+
+    # The signed token goes first. A domestic peer that refuses it, or a node that
+    # cannot sign one, gets the legacy bearer; a foreign peer never does. (A
+    # foreign edge serves only /tools and /invoke, so its handshake fails cleanly.)
+    conn = None
+    token = None
+    try:
+        if not _skip_token(peer, foreign):
+            token = await peer_token(peer)
+    except PeerError:
+        if foreign:
             raise
-        break
+    if token is not None:
+        try:
+            conn = await connect(token)
+        except websockets.InvalidStatus as exc:
+            if not refused(exc):
+                raise
+            _note_token_refused(peer, foreign, 401)
+            if foreign:
+                raise
+    if conn is None:
+        for attempt in (0, 1):
+            bearer = await fetch_peer_cred_async(ssh_alias, force=(attempt == 1))
+            try:
+                conn = await connect(bearer)
+            except websockets.InvalidStatus as exc:
+                # Handshake rejected by the peer edge. 401 here means the
+                # bearer was stale (rotated) — force a re-fetch and reconnect
+                # once, the WS analogue of call_peer's 401 retry. Any other
+                # status, or a second rejection, propagates loudly.
+                if attempt == 0 and refused(exc):
+                    continue
+                raise
+            break
 
     async with conn:
         if on_connect is not None:
@@ -610,6 +917,15 @@ async def subscribe_peer(
 # ---------------------------------------------------------------------------
 
 _UNSAFE_NAME = re.compile(r"[^A-Za-z0-9._-]+")
+
+
+class _FileFetch:
+    """The outcome of one download attempt, shaped for :func:`peer_send_sync`
+    (which reads only ``status_code``); the bytes are already on disk on a 2xx."""
+
+    def __init__(self, status_code: int, text: str = "") -> None:
+        self.status_code = status_code
+        self.text = text
 
 
 def _safe_basename(name: str, fallback: str = "peer-file") -> str:
@@ -659,7 +975,6 @@ def fetch_peer_file_sync(
     if entry is None or not entry.get("edge_url"):
         entry = resolve_peer(peer)
     edge = str(entry["edge_url"]).rstrip("/")
-    ssh_alias = entry.get("ssh_alias") or peer
     ca = _peer_ca()
     target = edge + url
 
@@ -667,8 +982,7 @@ def fetch_peer_file_sync(
         dest_dir = tempfile.mkdtemp(prefix=f"awm-peer-{_safe_basename(peer, 'node')}-")
     dest = os.path.join(dest_dir, _safe_basename(filename or split.path))
 
-    for attempt in (0, 1):
-        bearer = fetch_peer_cred(ssh_alias, force=(attempt == 1))
+    def send(bearer: str) -> _FileFetch:
         headers = {"Authorization": f"Bearer {bearer}"}
         if as_ is not None:
             headers["X-Awm-As"] = as_
@@ -676,24 +990,34 @@ def fetch_peer_file_sync(
         # URL could still end up sending the bearer somewhere else.
         with httpx.Client(timeout=timeout, verify=ca, follow_redirects=False) as cli:
             with cli.stream("GET", target, headers=headers) as resp:
-                if resp.status_code == 401 and attempt == 0:
-                    continue  # credential likely rotated — re-fetch and retry
-                if resp.status_code == 404:
-                    raise PeerError(
-                        f"{peer} has no file at {url} — either its fileviewer "
-                        f"denylist hides it (*.key, *.pem, *.token, credentials, "
-                        f"secrets/…, which 404 exactly like a missing file), or "
-                        f"the peer's fileviewer is not holding its mount")
-                if resp.status_code >= 400:
+                status = resp.status_code
+                if status in _TOKEN_REFUSED or status == 404:
+                    return _FileFetch(status)
+                if status >= 400:
                     resp.read()
-                    raise PeerError(
-                        f"GET {url} from {peer} failed: HTTP {resp.status_code}: "
-                        f"{resp.text[:200]}")
+                    return _FileFetch(status, resp.text)
                 with open(dest, "wb") as fh:
                     for chunk in resp.iter_bytes(65536):
                         fh.write(chunk)
-        return dest
-    raise PeerError(f"GET {url} from {peer} failed: unauthorized after credential refresh")
+                return _FileFetch(status)
+
+    # A foreign peer's edge serves only /tools and /invoke, so a foreign fetch
+    # fails with the 404 below; it is never offered the legacy bearer.
+    result = peer_send_sync(peer, entry, send)
+    if result.status_code == 404:
+        raise PeerError(
+            f"{peer} has no file at {url} — either its fileviewer "
+            f"denylist hides it (*.key, *.pem, *.token, credentials, "
+            f"secrets/…, which 404 exactly like a missing file), or "
+            f"the peer's fileviewer is not holding its mount")
+    if result.status_code in _TOKEN_REFUSED:
+        raise PeerError(
+            f"GET {url} from {peer} failed: unauthorized after credential refresh")
+    if result.status_code >= 400:
+        raise PeerError(
+            f"GET {url} from {peer} failed: HTTP {result.status_code}: "
+            f"{result.text[:200]}")
+    return dest
 
 
 async def fetch_peer_file(
@@ -956,32 +1280,33 @@ async def acquire_lease_peer(
     """:func:`acquire_lease` against a PEER node's service, via its edge directly.
 
     The direct-session analogue of :func:`call_peer` / :func:`subscribe_peer`:
-    resolve the peer edge, fetch the bearer over SSH, POST the session open and
-    open the lease WS **on the peer edge** over CA-verified TLS with the bearer.
-    One credential-refresh retry on a stale-bearer rejection (401/403), mirroring
-    :func:`call_peer`.
+    resolve the peer edge, POST the session open with a node-signed token (the
+    legacy ssh bearer only for a domestic peer that refuses it, see
+    :func:`peer_send`) and open the lease WS **on the peer edge** over
+    CA-verified TLS with the credential that opened the session. One retry if the
+    socket handshake rejects it with a 401.
     """
     import ssl
 
     import websockets
 
-    entry = resolve_peer(peer)
+    entry = await resolve_peer_async(peer)
     edge = entry["edge_url"].rstrip("/")
-    ssh_alias = entry.get("ssh_alias") or peer
+    foreign = _is_foreign(entry)
     ws_base = edge.replace("https://", "wss://").replace("http://", "ws://")
     ca = _peer_ca()
     ssl_ctx = ssl.create_default_context(cafile=ca)
     body = json.dumps({"host": host, "node": node} if node else {"host": host})
     where = f"{service}@{peer}"
 
+    async def post(bearer: str) -> httpx.Response:
+        async with httpx.AsyncClient(timeout=timeout, verify=ca) as cli:
+            return await cli.post(f"{edge}/svc/{service}/session/{kind}",
+                                  content=body, headers=_peer_headers(bearer, as_))
+
     ws = None
     for attempt in (0, 1):
-        bearer = await fetch_peer_cred_async(ssh_alias, force=(attempt == 1))
-        async with httpx.AsyncClient(timeout=timeout, verify=ca) as cli:
-            resp = await cli.post(f"{edge}/svc/{service}/session/{kind}",
-                                  content=body, headers=_peer_headers(bearer, as_))
-        if resp.status_code == 401 and attempt == 0:
-            continue  # credential likely rotated — re-fetch and retry
+        resp, bearer = await peer_send_cred(peer, entry, post)
         ws_path = _lease_ws_path(resp, where)
         headers = [("Authorization", f"Bearer {bearer}")]
         if as_ is not None:
@@ -992,7 +1317,12 @@ async def acquire_lease_peer(
                 ssl=ssl_ctx, max_size=None, open_timeout=10)
         except websockets.InvalidStatus as exc:
             status = getattr(getattr(exc, "response", None), "status_code", None)
-            if attempt == 0 and status in (401, 403):
+            # The credential that opened the session was refused on the socket:
+            # drop what we cached and open once more. Never for a foreign peer,
+            # whose retry would only repeat the same refusal.
+            if attempt == 0 and status in _TOKEN_REFUSED and not foreign:
+                _peer_token_cache.pop(_peer_aud(peer), None)
+                _peer_cred_cache.pop(entry.get("ssh_alias") or peer, None)
                 continue
             raise
         break

@@ -46,6 +46,7 @@ API_MANIFEST: dict[str, Any] = {
         # ---- read (MCP + CLI + HTTP) -------------------------------------
         {
             "name": "search",
+            "effect": "read",
             "tool": "notes_search",
             "description": "Search notes by keyword (FTS5), fuzzy title/content "
                            "match, or semantic similarity. Rows carry `rev` (what "
@@ -64,6 +65,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "get",
+            "effect": "read",
             "tool": "notes_get",
             "description": "Fetch one note: path, timestamps, content, and the "
                            "revision that content is at. `file_path` is where the "
@@ -79,6 +81,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "tree",
+            "effect": "read",
             "tool": "notes_tree",
             "description": "All notes' path + metadata for the side-panel tree "
                            "(active + trashed), no content. `file_path` is a read "
@@ -90,6 +93,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "vocab_list",
+            "effect": "read",
             "tool": "notes_vocab_list",
             "description": "The custom dictation vocabulary (whisper hotwords).",
             "params": [],
@@ -97,6 +101,7 @@ API_MANIFEST: dict[str, Any] = {
         # ---- write / maintenance (MCP + CLI + HTTP + browser proxy) ------
         {
             "name": "create",
+            "effect": "write",
             "tool": "notes_create",
             "description": "Create a new note. Pass checkout to get a working "
                            "copy of it back in the same call.",
@@ -109,6 +114,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "save",
+            "effect": "write",
             "tool": "notes_save",
             "timeout": 120,
             "description": "Write a note's content and/or title-path in one call. "
@@ -131,18 +137,21 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "trash",
+            "effect": "write",
             "tool": "notes_trash",
             "description": "Soft-delete a note to the 30-day trash.",
             "params": [{"name": "id", "type": "string", "required": True}],
         },
         {
             "name": "restore",
+            "effect": "write",
             "tool": "notes_restore",
             "description": "Restore a note from the trash.",
             "params": [{"name": "id", "type": "string", "required": True}],
         },
         {
             "name": "purge",
+            "effect": "write",
             "tool": "notes_purge",
             "description": "Hard-delete a note now (id), or purge all trash past "
                            "the 30-day TTL (no id). The only unrecoverable verb "
@@ -151,18 +160,21 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "vocab_add",
+            "effect": "write",
             "tool": "notes_vocab_add",
             "description": "Add a custom dictation term.",
             "params": [{"name": "term", "type": "string", "required": True}],
         },
         {
             "name": "vocab_remove",
+            "effect": "write",
             "tool": "notes_vocab_remove",
             "description": "Remove a custom dictation term.",
             "params": [{"name": "term", "type": "string", "required": True}],
         },
         {
             "name": "reindex",
+            "effect": "write",
             "tool": "notes_reindex",
             # The first embed in a fresh process downloads/loads the model, so
             # the default 30s RPC budget is nowhere near enough.
@@ -174,6 +186,7 @@ API_MANIFEST: dict[str, Any] = {
         # ---- checkouts (MCP + CLI + HTTP) --------------------------------
         {
             "name": "checkout",
+            "effect": "write",
             "tool": "notes_checkout",
             "description": "Take a working copy of a note and get back a handle. "
                            "Edit it for as long as you like while someone types "
@@ -185,6 +198,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "path",
+            "effect": "read",
             "tool": "notes_path",
             "description": "The filesystem path of a checkout's working copy — "
                            "edit it with whatever tool you like. Never edit a LIVE "
@@ -194,6 +208,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "read",
+            "effect": "read",
             "tool": "notes_read",
             "description": "The working copy's text, for a caller that cannot "
                            "reach the filesystem.",
@@ -201,6 +216,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "write",
+            "effect": "write",
             "tool": "notes_write",
             "description": "Replace the working copy's text. Local to your "
                            "checkout until you merge.",
@@ -211,6 +227,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "status",
+            "effect": "read",
             "tool": "notes_status",
             "description": "Where a checkout stands: whether it has changes to "
                            "land (ahead), whether the live note has moved since "
@@ -220,6 +237,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "update",
+            "effect": "write",
             "tool": "notes_update",
             "timeout": 120,
             "description": "Pull the live note's changes into your checkout. "
@@ -233,6 +251,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "resolve",
+            "effect": "write",
             "tool": "notes_resolve",
             "description": "Declare a hand-resolved checkout clean. Refuses while "
                            "conflict markers remain.",
@@ -240,6 +259,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "merge",
+            "effect": "write",
             "tool": "notes_merge",
             "timeout": 120,
             "description": "Land your checkout onto the live note as one "
@@ -254,12 +274,14 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "discard",
+            "effect": "write",
             "tool": "notes_discard",
             "description": "Throw away a checkout and everything in it.",
             "params": [{"name": "handle", "type": "string", "required": True}],
         },
         {
             "name": "checkouts",
+            "effect": "read",
             "tool": "notes_checkouts",
             "description": "Every checkout currently open, optionally for one note.",
             "params": [{"name": "id", "type": "string"}],
@@ -267,6 +289,7 @@ API_MANIFEST: dict[str, Any] = {
         # ---- live collaboration (browser only; off the agent MCP surface) --
         {
             "name": "collab_open",
+            "effect": "write",
             "tool": "notes_collab_open",
             "surfaces": _CLI_HTTP,
             "description": "Join a note's live room; returns {version, content}.",
@@ -274,6 +297,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "collab_edit",
+            "effect": "write",
             "tool": "notes_collab_edit",
             "surfaces": _CLI_HTTP,
             "description": "Merge a client edit into a note's live room and fan "

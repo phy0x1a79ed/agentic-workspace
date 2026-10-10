@@ -71,8 +71,8 @@ def _event_from_row(row: dict) -> dict:
 class TelemetryStore(BaseDAO):
     """Append-only telemetry events in a host service's own DB.
 
-    ``TelemetryStore("orchestrator")`` ensures the ``telemetry_events`` table in
-    the orchestrator's DB and reads/writes it via the shared :class:`BaseDAO`
+    ``TelemetryStore("svc")`` ensures the ``telemetry_events`` table in
+    the service's DB and reads/writes it via the shared :class:`BaseDAO`
     helpers. One store per service; cheap to construct.
     """
 

@@ -4,7 +4,7 @@ The workspace knowledgebase as an awm service. It supervises the kb server from 
 
 ## Purpose & Contents
 
-This file holds the contract between awm and the kb server: what the child runs under, which keys it gets, where its store lives, what makes `scope_fetch` trust it, and what must stay in step with the scopes service. How the server works, and why it uses Cognee the way it does, is in `projects/kb`'s `AGENTS.md`.
+This file holds the contract between awm and the kb server: what the child runs under, which keys it gets, where its store lives, what makes `scope_fetch` trust it, what a foreign peer may recall, and what must stay in step with the scopes service. How the server works, and why it uses Cognee the way it does, is in `projects/kb`'s `AGENTS.md`.
 
 ## The child
 
@@ -51,3 +51,9 @@ Two paths keep kb current. The `posts` subscription forwards each new post. The 
 **CAUTION** `feed.KINDS` must equal the scopes service's `search_index.INDEXED_KINDS`. If kb holds fewer kinds, `scope_fetch` routed to kb silently finds less than the local index would.
 
 Journals are per-node, so the feed and the gate use the local gateway, never a peer's kb.
+
+## A foreign peer's recall
+
+A foreign peer holding the `kb` grant may call `status` and `recall`, both declared `read` with category `kb` (`FEDERATION.md` § *The foreign gate*). `status` returns counts and nothing else. `recall` accepts the hybrid, vector and lexical modes only. Those modes rank rows from kb's own store and honour `sources`. The `graph` and `answer` modes run Cognee with access control off, where `datasets` does not scope, and `answer` spends LLM budget on the caller's behalf. A refused mode raises `PermissionError`, which the gateway returns as the same 404 an unknown tool gets.
+
+Posts are journal content. A foreign peer without the `journals` grant gets papers only, whatever `sources` it names.

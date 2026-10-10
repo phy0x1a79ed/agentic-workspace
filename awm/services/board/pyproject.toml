@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "awm-board"
+version = "0.1.0"
+requires-python = ">=3.11"
+description = "AWM board service: federation cards exchanged between swarms, stored in the Trilium vault and served over one bearer-authenticated door."
+dependencies = [
+    "awm-config",
+    "awm-gatewayclient",
+    "awm-persistence",
+    "httpx",
+    "starlette",
+    "uvicorn",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest",
+    "pytest-asyncio",
+    "httpx",
+]
+
+# PEP 420 namespace package: no top-level awm/__init__.py; the namespace dir is awm/board/.
+[tool.setuptools.packages.find]
+include = ["awm.board*"]
+namespaces = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+markers = [
+    "smoke: fast unit tests; target <30s",
+    "unit: pure unit tests, no network or subprocesses",
+    "integration: binds a loopback port",
+]

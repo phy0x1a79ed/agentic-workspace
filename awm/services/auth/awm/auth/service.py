@@ -55,13 +55,14 @@ import logging
 import os
 import re
 import secrets
+import stat
 import time
 import urllib.parse
 from pathlib import Path
 from typing import Any
 
 from awm import config
-from awm.config import SERVICES_DIR, tokens
+from awm.config import SERVICES_DIR, peertoken, tokens
 
 from awm.auth import penpot, store
 from awm.auth.config import CONTRACT
@@ -77,6 +78,12 @@ _HOUR = 3600.0
 _DAY = 86400.0
 
 _PROFILE_ENV = "AWM_AUTH_PROFILE"
+
+# While this is unset or anything but "0", the edge still accepts the shared
+# peer bearer next to node tokens. Setting it to "0" retires the bearer.
+LEGACY_BEARER_ENV = "AWM_PEER_LEGACY_BEARER"
+
+NODE_KEY_NAME = "node_ed25519.key"
 
 # Same shape ``awm.config.userroot`` accepts: the username doubles as a
 # directory name under projects/userdata/.
@@ -116,6 +123,99 @@ def shared_password_enabled() -> bool:
     """The rotating shared password (and everything hanging off it: minting,
     the Discord push, peer credentials) is off on the public profile."""
     return profile() != "public"
+
+
+def legacy_bearer_enabled() -> bool:
+    return (os.environ.get(LEGACY_BEARER_ENV) or "").strip() != "0"
+
+
+# ---------------------------------------------------------------------------
+# Node identity
+# ---------------------------------------------------------------------------
+
+
+def node_key_file() -> Path:
+    """Where the node's private key lives, beside the service database."""
+    return Path(config.SERVICES_DIR) / store.SERVICE / NODE_KEY_NAME
+
+
+class NodeKeyError(RuntimeError):
+    """The node key file is not something auth may sign with."""
+
+
+def _write_new_key_file(path: Path, private: str) -> None:
+    """Put ``private`` at ``path`` atomically, unless something is already there.
+
+    The key is written complete and flushed to disk under a private temporary
+    name, then linked into place. ``link`` fails if ``path`` exists, so a reader
+    never sees a partial key and two starts racing each other cannot mint two.
+    """
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.{secrets.token_hex(4)}.tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w") as fh:
+            fh.write(private + "\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+        try:
+            os.link(tmp, path)
+        except FileExistsError:
+            return
+        dir_fd = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
+        log.info("auth: minted this node's ed25519 key (%s)",
+                 peertoken.fingerprint(peertoken.public_key_of(private)))
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def _read_node_key(path: Path) -> str:
+    """The key in ``path``, after checking it is a private 32-byte seed."""
+    st = path.lstat()
+    if not stat.S_ISREG(st.st_mode):
+        raise NodeKeyError(f"{path} is not a regular file")
+    if stat.S_IMODE(st.st_mode) != 0o600:
+        raise NodeKeyError(
+            f"{path} has mode {stat.S_IMODE(st.st_mode):04o}; expected 0600. "
+            "Run chmod 600 on it, or move it aside to mint a new identity")
+    private = path.read_text().strip()
+    try:
+        peertoken.public_key_of(private)
+    except (peertoken.TokenError, ValueError) as exc:
+        raise NodeKeyError(f"{path} does not hold a 32-byte ed25519 key: {exc}") from exc
+    return private
+
+
+def ensure_node_key() -> str:
+    """The node's private key, minted once and kept in a 0600 file."""
+    path = node_key_file()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not os.path.lexists(path):
+        _write_new_key_file(path, peertoken.generate_private_key())
+    return _read_node_key(path)
+
+
+def _operator_only(as_: str | None, verb: str) -> None:
+    """Refuse a verb that arrived through an edge listener.
+
+    The edge always stamps ``X-Awm-As``; a call from this host's own CLI or
+    service has none. The verbs guarded this way hand out the means to act as
+    this node or to forge a session, which no caller across an edge may have.
+    """
+    if as_ is not None:
+        raise PermissionError(
+            f"{verb} is an operator verb: run it on the host, not through an edge")
+
+
+def _edge_peers() -> list[dict[str, Any]]:
+    """Each book peer's name, public key and relation, for the edge to verify
+    node tokens against. Never carries a secret."""
+    return [{"name": r["name"], "public_key": r.get("public_key"),
+             "relation": r["relation"]} for r in config.list_records()]
 
 
 # ---------------------------------------------------------------------------
@@ -346,6 +446,7 @@ async def on_start() -> None:
     """Adapter ``on_start``: init DB, ensure secret, mint-if-stale, spawn loops."""
     store.init()
     store.ensure_secret()
+    ensure_node_key()
     # Before the profile check, and supervised rather than bare: the Penpot
     # credentials are per-user foreign credentials, so the public host — the
     # one profile that switches the shared password off — is precisely the host
@@ -572,23 +673,52 @@ def h_verify(args: dict) -> dict:
     return {"ok": True, "sub": sub, "token": token, "session_ttl_seconds": ttl}
 
 
-def h_edge_material(args: dict) -> dict:
+def h_edge_material(args: dict, as_: str | None = None) -> dict:
     """Material the httpsfront edge caches to enforce auth offline.
 
     Returns the signing secret (to verify+slide cookies without an RPC per
-    request), the currently-valid peer credentials (to check peer bearers), and
-    the session-lifetime knobs. Loopback-only in practice — the edge itself
-    blocks this path to any unauthenticated external caller.
+    request), the currently-valid peer credentials (to check peer bearers), the
+    book's peers with their public keys (to verify node tokens), and the
+    session-lifetime knobs. Operator-only: the edge itself fetches it with no
+    ``as_``, and a call that crossed an edge carries one and is refused.
+
+    The legacy bearers are withheld once ``AWM_PEER_LEGACY_BEARER=0``. The
+    public profile verifies no peers at all, bearer or token.
     """
+    _operator_only(as_, "edge_material")
     s = _settings()
-    peers = ([g["peer_credential"] for g in store.valid_generations()]
-             if shared_password_enabled() else [])
+    shared = shared_password_enabled()
+    legacy = ([g["peer_credential"] for g in store.valid_generations()]
+              if shared and legacy_bearer_enabled() else [])
     return {
         "secret": store.ensure_secret(),
-        "peer_credentials": peers,
+        "peer_credentials": legacy,
+        "peers": _edge_peers() if shared else [],
+        "legacy_bearer": legacy_bearer_enabled(),
         "session_ttl_seconds": s.session_ttl_hours * _HOUR,
         "max_session_seconds": s.max_session_days * _DAY,
     }
+
+
+def h_node_key(args: dict) -> dict:
+    """This node's public key and its fingerprint, for pairing with a peer."""
+    public = peertoken.public_key_of(ensure_node_key())
+    return {"public_key": public, "fingerprint": peertoken.fingerprint(public)}
+
+
+def h_sign_peer_token(args: dict, as_: str | None = None) -> dict:
+    """A short-lived token naming this node, for the node called ``aud``.
+
+    Operator-only: whoever can ask for this speaks as this node to every other.
+    """
+    _operator_only(as_, "sign_peer_token")
+    aud = peertoken.node_label((args or {}).get("aud"))
+    if not aud:
+        raise ValueError("aud is required")
+    iss = peertoken.node_label(config.node_name())
+    token = peertoken.sign(ensure_node_key(), iss=iss, aud=aud)
+    return {"token": token, "iss": iss, "aud": aud,
+            "expires_in": peertoken.TOKEN_TTL_SECONDS}
 
 
 async def h_rotate(args: dict) -> dict:

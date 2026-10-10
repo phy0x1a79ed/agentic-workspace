@@ -1,12 +1,12 @@
 """In-process live bus — the live side of a telemetry stream.
 
 As a service appends an event it also publishes it here, so a live WS session
-can stream new events after replaying the cursored backfill. Generalizes the
-agents transcript ``agent_bus`` to arbitrary streams (keyed by the event's
+can stream new events after replaying the cursored backfill. Generalizes a
+transcript bus to arbitrary streams (keyed by the event's
 ``stream``) and to the event wire shape (``{seq, id, stream, kind, body, meta,
 ts}``).
 
-Backpressure mirrors the agents/scopes ``lagged`` pattern: on a full subscriber
+Backpressure mirrors the scopes ``lagged`` pattern: on a full subscriber
 queue we enqueue a single ``{"type": "lagged"}`` sentinel (drop-newest rather
 than block the publisher) and let the session writer close — the client
 reconnects with its last cursor and replays the gap by poll.

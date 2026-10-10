@@ -48,15 +48,16 @@ Never edit `.awm/history.md` by hand. Use the `scope` verbs.
 
 ## MCP tools
 
-The `awm-mcp` server is registered in `<workspace>/.mcp.json`. Its surface comes live from the running feature services, collapsed to one tool per domain: `scope`, `project`, `agent`, `services`, and others. Call each with `{ "verb": "<name>", "args": { … } }`.
+The `awm-mcp` server is registered in `<workspace>/.mcp.json`. Its surface comes live from the running feature services, collapsed to one tool per domain: `scope`, `project`, `cx`, `services`, and others. Call each with `{ "verb": "<name>", "args": { … } }`.
 
 Discover the catalog. Do not memorize it.
 
-1. The domain tools your client exposes are the catalog. A client that defers schemas shows a domain as a bare name. Load it with `ToolSearch`, or run `services(verb="list")`.
-2. Call a domain with `verb="describe"` for its verbs and parameter schemas. Add `args={"verb":"<name>"}` for one verb.
-3. Add the optional `peer` key to run a verb on another node. `providersOf(tool="<domain>")` lists the valid values. A wrong `peer` is refused, never run locally.
+1. The domain tools your client exposes are the core catalog. A client that defers schemas shows a domain as a bare name. Load it with `ToolSearch`, or run `services(verb="list")`.
+2. Reach every other domain with `more(domain="<domain>", verb="<name>", args={…})`. Run `more()` with no domain to list them.
+3. Call a domain with `verb="describe"` for its verbs and parameter schemas. Add `args={"verb":"<name>"}` for one verb.
+4. Add the optional `peer` key to run a verb on another node. `providersOf(tool="<domain>")` lists the valid values, which are domestic nodes only. A wrong `peer` is refused, never run locally.
 
-Check for a tool before you hand a task to the user. Sending a message, approving a login, capturing audio and restarting a VPN each look like human jobs, and each has a domain. A placed agent's mode limits which verbs it may call, and the server rejects the rest.
+Check for a tool before you hand a task to the user. Sending a message, approving a login, capturing audio and restarting a VPN each look like human jobs, and each has a domain. A restricted session's mode limits which verbs it may call, and the server rejects the rest.
 
 Three domains change how you work:
 
@@ -101,4 +102,4 @@ awm itself uses the `awm` env.
 
 Run the `debrief` skill. It corrects docs the work made wrong, commits code and data pins, and journals the session.
 
-Check `.awm/skills/` for a procedure before you improvise an unfamiliar workflow.
+Check `.awm/skills/` for a procedure before you improvise an unfamiliar workflow. Read `.awm/skills/awm/board-card.md` before you act on a federation board card.

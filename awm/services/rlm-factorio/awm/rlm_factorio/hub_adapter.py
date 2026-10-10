@@ -105,6 +105,7 @@ API_MANIFEST: dict[str, Any] = {
         # ---- lifecycle ----
         {
             "name": "acquire",
+            "effect": "write",
             "tool": "rlm_factorio_acquire",
             "description": (
                 "Acquire a Factorio realm session: bring the appliance container "
@@ -122,6 +123,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "release",
+            "effect": "write",
             "tool": "rlm_factorio_release",
             "description": (
                 "Release a session: stop + remove the appliance container. The "
@@ -134,6 +136,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "reset",
+            "effect": "write",
             "tool": "rlm_factorio_reset",
             "description": (
                 "Reset a session in place: generate a fresh world (discards live "
@@ -146,6 +149,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "status",
+            "effect": "read",
             "tool": "rlm_factorio_status",
             "description": (
                 "Status of one session (pass session_id) or all sessions (omit "
@@ -159,6 +163,7 @@ API_MANIFEST: dict[str, Any] = {
         # ---- seats ----
         {
             "name": "join",
+            "effect": "write",
             "tool": "rlm_factorio_join",
             "description": (
                 "Join the session's world as a real multiplayer player: start a "
@@ -182,6 +187,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "rejoin",
+            "effect": "write",
             "tool": "rlm_factorio_rejoin",
             "description": (
                 "Reconnect seats after a world reload dropped them: restart "
@@ -200,6 +206,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "leave",
+            "effect": "write",
             "tool": "rlm_factorio_leave",
             "description": (
                 "Release a seat: disconnect its player and remove the seat "
@@ -212,6 +219,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "seats",
+            "effect": "read",
             "tool": "rlm_factorio_seats",
             "description": (
                 "List seats, optionally for one session: their player name and "
@@ -227,6 +235,7 @@ API_MANIFEST: dict[str, Any] = {
         # ---- perceive ----
         {
             "name": "observe",
+            "effect": "write",
             "tool": "rlm_factorio_observe",
             "description": (
                 "Look at the world through one seat: {snapshot, screenshot}. "
@@ -249,6 +258,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "screenshot",
+            "effect": "write",
             "tool": "rlm_factorio_screenshot",
             "description": (
                 "Render what the world looks like around a seat and return "
@@ -287,6 +297,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "observe_events",
+            "effect": "write",
             "tool": "rlm_factorio_observe_events",
             "description": (
                 "Drain the session's pending events: returns {events: [{kind, "
@@ -300,6 +311,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "recipes",
+            "effect": "read",
             "tool": "rlm_factorio_recipes",
             "description": (
                 "List the force's unlocked recipes ({name, ingredients, "
@@ -319,6 +331,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "technologies",
+            "effect": "read",
             "tool": "rlm_factorio_technologies",
             "description": (
                 "List technologies ({name, researched, prerequisites}). "
@@ -335,6 +348,7 @@ API_MANIFEST: dict[str, Any] = {
         # ---- act: world lifecycle (sacred saves) ----
         {
             "name": "world_new",
+            "effect": "write",
             "tool": "rlm_factorio_world_new",
             "description": (
                 "Generate a fresh world and re-exec the engine on it. Discards "
@@ -349,6 +363,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "world_save",
+            "effect": "write",
             "tool": "rlm_factorio_world_save",
             "description": (
                 "Snapshot the running world to an immutable named .zip (live "
@@ -364,6 +379,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "world_load",
+            "effect": "write",
             "tool": "rlm_factorio_world_load",
             "description": (
                 "Load a named save and re-exec the engine on a copy of it. The "
@@ -379,6 +395,7 @@ API_MANIFEST: dict[str, Any] = {
         # ---- act: live control ----
         {
             "name": "pause",
+            "effect": "write",
             "tool": "rlm_factorio_pause",
             "description": (
                 "Pause or resume the live world (game.tick_paused); with no "
@@ -395,6 +412,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "exec_lua",
+            "effect": "write",
             "tool": "rlm_factorio_exec_lua",
             "description": (
                 "Run Lua in the running world. Pass code inline OR path = a "
@@ -439,6 +457,7 @@ API_MANIFEST: dict[str, Any] = {
         # ---- orders (mod >= 0.5): one blocking call instead of a poll loop ----
         {
             "name": "walk",
+            "effect": "write",
             "tool": "rlm_factorio_walk",
             "description": (
                 "Walk the seat to (x,y) by engine pathfinding and block until "
@@ -472,6 +491,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "wait",
+            "effect": "write",
             "tool": "rlm_factorio_wait",
             "description": (
                 "Block until a condition holds in the world, checked inside "
@@ -519,6 +539,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "throw",
+            "effect": "write",
             "tool": "rlm_factorio_throw",
             "description": (
                 "Throw `count` capsules (default 1, max 100) of `item` from "
@@ -542,6 +563,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "order",
+            "effect": "read",
             "tool": "rlm_factorio_order",
             "description": (
                 "Read a walk, wait or throw order by id; with timeout "
@@ -556,6 +578,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "blueprint_stamp",
+            "effect": "write",
             "tool": "rlm_factorio_blueprint_stamp",
             "description": (
                 "Stamp a blueprint string at (x,y) on the shared force. Pass "
@@ -594,6 +617,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "blueprint_capture",
+            "effect": "write",
             "tool": "rlm_factorio_blueprint_capture",
             "description": (
                 "Capture a region of the world as a blueprint string, so one "
@@ -625,6 +649,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "scan",
+            "effect": "read",
             "tool": "rlm_factorio_scan",
             "description": (
                 "Survey entities in an area, in pages. Give the corners "
@@ -667,6 +692,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "load",
+            "effect": "read",
             "tool": "rlm_factorio_load",
             "description": (
                 "The game-call meters: server UPS, the limits in force, and "
@@ -683,6 +709,7 @@ API_MANIFEST: dict[str, Any] = {
         # ---- act: as a player (a seat drives all of these) ----
         {
             "name": "move",
+            "effect": "write",
             "tool": "rlm_factorio_move",
             "description": (
                 "Walk the seat to (x,y) via engine pathfinding (routes around "
@@ -697,6 +724,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "stop",
+            "effect": "write",
             "tool": "rlm_factorio_stop",
             "description": (
                 "Halt the seat where it stands: clears its walk target and any "
@@ -706,6 +734,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "teleport",
+            "effect": "write",
             "tool": "rlm_factorio_teleport",
             "description": (
                 "Put the seat at (x,y) instantly. A CHEAT and flagged as one "
@@ -722,6 +751,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "respawn",
+            "effect": "write",
             "tool": "rlm_factorio_respawn",
             "description": (
                 "Give a seat a body again, now: skips the death countdown and "
@@ -733,6 +763,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "mine",
+            "effect": "write",
             "tool": "rlm_factorio_mine",
             "description": (
                 "Mine the resource/tree/rock nearest (x,y) into the seat's own "
@@ -752,6 +783,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "craft",
+            "effect": "write",
             "tool": "rlm_factorio_craft",
             "description": (
                 "Queue a handcraft on the seat's real crafting queue (consumes "
@@ -768,6 +800,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "build",
+            "effect": "write",
             "tool": "rlm_factorio_build",
             "description": (
                 "Place an item from the seat's inventory as an entity at (x,y) "
@@ -784,6 +817,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "insert",
+            "effect": "write",
             "tool": "rlm_factorio_insert",
             "description": (
                 "Move items from the seat's inventory into the entity at (x,y) "
@@ -802,6 +836,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "take",
+            "effect": "write",
             "tool": "rlm_factorio_take",
             "description": (
                 "Take items from the entity at (x,y) into the seat's inventory "
@@ -819,6 +854,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "research",
+            "effect": "write",
             "tool": "rlm_factorio_research",
             "description": (
                 "Unlock a technology directly (CHEAT path, flagged "

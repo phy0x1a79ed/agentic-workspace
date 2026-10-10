@@ -7,7 +7,27 @@ the service DB lands under ``tmp_path``, and resets ``store``'s
 
 from __future__ import annotations
 
+import json
+
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def peer_book(tmp_path, monkeypatch):
+    """An empty peer book in tmp, so no test reads the real node's.
+
+    Call the fixture's value with a ``{name: entry}`` mapping to fill it. A node
+    missing from the book is foreign to the edge, which is what an empty one
+    means for every test that does not say otherwise.
+    """
+    path = tmp_path / "peers.json"
+    monkeypatch.setattr("awm.config.peerbook.peers_file", lambda: path)
+    monkeypatch.delenv("AWM_PEER_LEGACY_BEARER", raising=False)
+
+    def write(book: dict) -> None:
+        path.write_text(json.dumps(book))
+
+    return write
 
 
 @pytest.fixture()

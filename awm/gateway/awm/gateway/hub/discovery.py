@@ -27,10 +27,18 @@ sets it in its gitignored dev ``.env``, prod sets none). Resolution precedence:
 1. an explicit ``enabled.json`` entry always wins (both true and false — the
    operator's word, e.g. prod's deliberately-live rlm-browser);
 2. else a marked service is enabled iff its profiles intersect the active set;
-3. else (no marker — every pre-existing service) enabled.
+3. else (no ``profiles`` key — every pre-existing service, and a ``service.toml``
+   that carries only other keys such as ``tier``) enabled everywhere, the
+   *baseline*.
 
 A corrupt marker reads as marked-but-unmatched (disabled + logged), never
 fail-open.
+
+Tier: the same ``service.toml`` may carry ``tier = "core"``. A core service's
+domains are advertised on the agent-facing MCP surface; every other domain is
+*discoverable* and reached through the ``more`` tool (see ``catalog``). The key
+is independent of ``profiles``; absent, unknown or unreadable means
+discoverable. It never affects whether the service runs.
 """
 
 from __future__ import annotations
@@ -134,31 +142,92 @@ PROFILE_MARKER = "service.toml"
 
 def active_profiles() -> set[str]:
     """The running gateway's profile set, from the ``AWM_PROFILES`` env
-    (comma list; unset ⇒ empty ⇒ only unmarked/core services bootstrap)."""
+    (comma list; unset ⇒ empty ⇒ only unmarked baseline services bootstrap)."""
     raw = os.environ.get("AWM_PROFILES") or ""
     return {p.strip() for p in raw.split(",") if p.strip()}
 
 
 def _read_profiles(folder: Path) -> list[str] | None:
     """The service's committed profile marker: the ``profiles`` list from
-    ``service.toml``. ``None`` = no marker (core, enabled everywhere). A
-    corrupt/malformed marker returns ``[]`` — marked-but-unmatched (disabled),
-    never fail-open."""
+    ``service.toml``. ``None`` = not profile-gated (baseline, enabled
+    everywhere): no file, or a file with no ``profiles`` key. A file that does
+    not parse, or whose ``profiles`` is not a list, returns ``[]`` —
+    marked-but-unmatched (disabled), never fail-open."""
     path = folder / PROFILE_MARKER
     if not path.is_file():
         return None
     try:
         data = tomllib.loads(path.read_text(encoding="utf-8"))
-    except (OSError, tomllib.TOMLDecodeError) as exc:
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
         log.warning("could not parse %s: %s — treating as profile-gated off",
                     path, exc)
         return []
-    profiles = data.get("profiles")
+    if "profiles" not in data:
+        return None
+    profiles = data["profiles"]
     if not isinstance(profiles, list):
-        log.warning("%s has no valid 'profiles' list — treating as "
+        log.warning("%s has an invalid 'profiles' value — treating as "
                     "profile-gated off", path)
         return []
     return [str(p).strip() for p in profiles if str(p).strip()]
+
+
+# ---------------------------------------------------------------------------
+# Tier (committed service.toml ``tier`` key)
+# ---------------------------------------------------------------------------
+
+TIER_CORE = "core"
+TIER_DISCOVERABLE = "discoverable"
+
+# (path, mtime_ns, size) -> tier. /tools is fetched on every client tool-list, so
+# a service.toml is re-read only when it changes.
+_tier_cache: dict[tuple[str, int, int], str] = {}
+
+
+def read_tier(folder: Path) -> str:
+    """The service folder's tier: ``"core"`` only when ``service.toml`` says
+    ``tier = "core"``. A missing file, a missing or unknown key, or a file that
+    does not parse is ``"discoverable"`` — never a crash, never core by accident."""
+    path = folder / PROFILE_MARKER
+    try:
+        st = path.stat()
+    except OSError:
+        return TIER_DISCOVERABLE
+    key = (str(path), st.st_mtime_ns, st.st_size)
+    cached = _tier_cache.get(key)
+    if cached is not None:
+        return cached
+    tier = TIER_DISCOVERABLE
+    try:
+        data = tomllib.loads(path.read_text(encoding="utf-8"))
+        value = data.get("tier")
+        if isinstance(value, str) and value.strip().lower() == TIER_CORE:
+            tier = TIER_CORE
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
+        log.warning("could not read tier from %s: %s — discoverable", path, exc)
+    _tier_cache[key] = tier
+    return tier
+
+
+def core_services() -> list[str]:
+    """Names of the service folders on disk that declare ``tier = "core"``.
+
+    Read from the files, not from what is running: a core service that is down,
+    profile-gated off on this node, or served only by a peer is still core."""
+    root = services_root()
+    if not root.is_dir():
+        return []
+    return [entry.name for entry in sorted(root.iterdir())
+            if entry.is_dir() and not entry.name.startswith((".", "_"))
+            and (entry / RUN_SCRIPT).is_file()
+            and read_tier(entry) == TIER_CORE]
+
+
+def service_tier(name: str) -> str:
+    """Tier of the service folder called ``name`` under the services root."""
+    if not name or name != Path(name).name or name.startswith("."):
+        return TIER_DISCOVERABLE
+    return read_tier(services_root() / name)
 
 
 def _resolve_enabled(name: str, folder: Path,

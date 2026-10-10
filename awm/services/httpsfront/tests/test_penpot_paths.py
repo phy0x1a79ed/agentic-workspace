@@ -164,6 +164,8 @@ def test_a_peer_bearer_is_not_a_person():
     session — has no business in a person's design files."""
     assert policy.allows(penpot.SHELL, "tony")
     assert not policy.allows(penpot.SHELL, "peer")
+    assert not policy.allows(penpot.SHELL, "peer:mira")
+    assert not policy.allows(penpot.SHELL, "peer:shaula")
     assert not policy.allows(penpot.SHELL, "operator")
     assert not policy.allows(penpot.SHELL, None)
 

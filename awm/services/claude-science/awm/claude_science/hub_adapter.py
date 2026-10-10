@@ -56,6 +56,7 @@ API_MANIFEST: dict[str, Any] = {
     "functions": [
         {
             "name": "status",
+            "effect": "read",
             "tool": "science_status",
             "description": (
                 "Report the Claude Science workbench: whether the daemon is "
@@ -69,6 +70,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "start",
+            "effect": "write",
             "tool": "science_start",
             "description": (
                 "Adopt the running workbench daemon, or launch one detached if "
@@ -80,6 +82,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "stop",
+            "effect": "write",
             "tool": "science_stop",
             "description": (
                 "Stop the workbench daemon through its own socket, ending live "
@@ -91,6 +94,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "restart",
+            "effect": "write",
             "tool": "science_restart",
             "description": (
                 "Stop the workbench daemon and start it again — e.g. to pick up "
@@ -101,6 +105,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "logs",
+            "effect": "read",
             "tool": "science_logs",
             "description": "Tail the workbench daemon's log.",
             "params": [
@@ -110,6 +115,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "url",
+            "effect": "secret",
             "tool": "science_url",
             "description": (
                 "Mint a fresh single-use sign-in link for the workbench, valid "
@@ -121,6 +127,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "signin_url",
+            "effect": "secret",
             "tool": "science_signin_url",
             "description": (
                 "The mesh URL that signs a browser into the workbench in one "
@@ -131,6 +138,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "connector",
+            "effect": "write",
             "tool": "science_connector",
             "description": (
                 "The workbench's local (stdio) MCP servers. With no arguments, "
@@ -162,6 +170,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "grants",
+            "effect": "write",
             "tool": "science_grants",
             "description": (
                 "The host directories Claude may read or write inside the "
@@ -179,6 +188,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "update_check",
+            "effect": "read",
             "tool": "science_update_check",
             "description": (
                 "Ask the binary whether a newer build is available. Reports "

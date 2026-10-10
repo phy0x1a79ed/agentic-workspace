@@ -15,7 +15,8 @@ per-path allowlist to keep in sync.
 
 Two things the edge asserts on every proxied request: the caller is
 authenticated, and ``X-Awm-As`` names the identity the session was minted
-for (``user:<sub>``, or ``peer`` for a bearer). The browser's own value of
+for (``user:<sub>``, ``peer:<node>`` for a verified node token, or bare ``peer``
+for the legacy bearer). The browser's own value of
 that header is discarded — downstream services trust it, so only the edge may
 write it.
 
@@ -41,6 +42,7 @@ and the listener dies with it (one supervised lifetime, exactly like ``mic``).
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
 import logging
 import socket
@@ -66,8 +68,18 @@ from starlette.responses import (
 from starlette.routing import Route, WebSocketRoute
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
-from awm.httpsfront import pages, penpot, policy, slices, store, tether, vault
-from awm.httpsfront.auth import AS_COOKIE_NAME, COOKIE_NAME, PEER_SUB, AuthGate, bearer_of
+from awm.config import peertoken
+from awm.httpsfront import board, pages, penpot, policy, slices, store, tether, vault
+from awm.httpsfront.auth import (
+    AS_COOKIE_NAME,
+    COOKIE_NAME,
+    PEER_PREFIX,
+    PEER_SUB,
+    AuthGate,
+    bearer_of,
+    is_foreign_peer,
+    is_machine_sub,
+)
 
 log = logging.getLogger("awm.httpsfront.proxy")
 
@@ -152,7 +164,11 @@ PUBLIC_HOME = vault.SHELL
 
 
 def _as_header(sub: str | None) -> str:
-    return PEER_SUB if sub == PEER_SUB else f"user:{sub or 'operator'}"
+    """The identity stamped on a forwarded request: ``peer`` for the legacy
+    bearer, ``peer:<node>`` for a verified node, else ``user:<sub>``."""
+    if sub == PEER_SUB or (sub and sub.startswith(PEER_PREFIX)):
+        return sub
+    return f"user:{sub or 'operator'}"
 
 
 def _origin_override(app) -> str | None:
@@ -167,11 +183,32 @@ def _origin_override(app) -> str | None:
     return getattr(app.state, "origin_override", None)
 
 
+#: Headers the gateway reads as *who is calling* or *which session this is*.
+#: Only a local process may set the pid pair and the redirect flag; a caller
+#: that crossed the edge could otherwise point reflection or `cx start`'s parent
+#: stamp at any local session. Dropped, never forwarded, case-insensitively.
+_CALLER_HEADERS = frozenset({
+    "x-awm-as", "x-awm-caller-pid", "x-awm-session-pid", "x-awm-peer-redirect"})
+
+
+def _consumed_node_token(authorization: str | None, sub: str | None) -> bool:
+    """Whether this ``Authorization`` is a node token the edge has read.
+
+    Any ``awmpt1.`` bearer counts, verified or not: one that failed here may
+    still be live at the node it was signed for, and an upstream app that saw it
+    could replay it there.
+    """
+    bearer = bearer_of(authorization)
+    return (bool(sub) and sub.startswith(PEER_PREFIX)) or peertoken.looks_like_token(bearer)
+
+
 def _req_headers(request: Request, sub: str | None = None) -> dict[str, str]:
-    hdrs = {k: v for k, v in request.headers.items() if k.lower() not in _HOP}
+    hdrs = {k: v for k, v in request.headers.items()
+            if k.lower() not in _HOP and k.lower() not in _CALLER_HEADERS}
+    if _consumed_node_token(request.headers.get("authorization"), sub):
+        hdrs.pop("authorization", None)
     hdrs["X-Forwarded-Proto"] = "https"
     # Overwrite, never default: the browser's value is unverified.
-    hdrs.pop("x-awm-as", None)
     hdrs["X-Awm-As"] = _as_header(sub)
     override = _origin_override(request.app)
     # Only rewrite a header the browser actually sent: minting an Origin where
@@ -271,6 +308,12 @@ async def _authenticate_sub(request: Request) -> tuple[bool, str | None, str | N
         cookie=request.cookies.get(COOKIE_NAME),
         bearer=bearer_of(request.headers.get("authorization")),
     ))
+
+
+def _foreign(app, sub: str | None) -> bool:
+    """Whether ``sub`` is a foreign node, by the relation in the gate's own
+    material snapshot (see :func:`awm.httpsfront.auth.is_foreign_peer`)."""
+    return is_foreign_peer(sub, getattr(app.state.gate, "peer_relation", None))
 
 
 def _is_public(app) -> bool:
@@ -418,6 +461,8 @@ async def _logout(request: Request) -> Response:
 
 async def _whoami(request: Request) -> Response:
     ok, _, sub = await _authenticate_sub(request)
+    if ok and _foreign(request.app, sub):
+        return _not_found()
     if ok:
         return JSONResponse({"user": sub})
     return JSONResponse({"error": "unauthenticated"}, status_code=401)
@@ -434,9 +479,11 @@ async def _public_home(request: Request) -> Response:
 async def _root(request: Request) -> Response:
     """Authenticated landing page at ``/`` — a dynamic index of ``/ui/*`` pages
     pulled from the gateway registry, tagged and filterable via ``store``."""
-    ok, refreshed = await _authenticate(request)
+    ok, refreshed, sub = await _authenticate_sub(request)
     if not ok:
         return _deny(request)
+    if _foreign(request.app, sub):
+        return _not_found()
     app = request.app
     services: list = []
     try:
@@ -562,6 +609,10 @@ def _penpot_up(app) -> str | None:
 
 def _tether_up(app) -> str | None:
     return getattr(app.state, "tether_http_up", None)
+
+
+def _board_up(app) -> str | None:
+    return getattr(app.state, "board_http_up", None)
 
 
 async def _vault_bare(request: Request) -> Response:
@@ -716,11 +767,28 @@ async def _http_proxy(request: Request) -> Response:
     if tether.owns(path):
         return (await _tether_proxy(request, raw, tether_up)
                 if tether_up else _not_found())
+    # The board mount, answered before authentication because the board
+    # authenticates its own parties and the edge must not stand in front of
+    # that with a login or a node token. The whole mount is claimed on every
+    # node, wired or not, so a path under it never reaches the gateway.
+    if board.in_mount(path):
+        board_up = _board_up(app)
+        if not board_up or not board.allows(request.method, path):
+            return _not_found()
+        return await _board_proxy(request, raw, board_up)
     ok, refreshed, sub = await _authenticate_sub(request)
     if not ok:
         return _deny(request)
     if public and not policy.allows(path, sub):
         return _not_found()
+    # A foreign node gets the gateway's calling surface and nothing else. The
+    # vault and Penpot are among the "nothing else", so this comes before the
+    # branches below ever pick them as an upstream.
+    if _foreign(app, sub):
+        # `peers` widens the catalog to the fleet view, which is ours to show
+        # our own swarm and nobody else.
+        if not policy.foreign_allows(path) or "peers" in request.query_params:
+            return _not_found()
     # The vault and Penpot are the upstreams on this listener that are not the
     # gateway. Which upstream is decided here and nowhere else, from a path
     # the caller cannot use to name anything but one of these two apps. The
@@ -731,7 +799,7 @@ async def _http_proxy(request: Request) -> Response:
     penpot_up = _penpot_up(app)
     bridge: str | None = None
     if vault_up and vault.owns(path):
-        if not public and sub in (PEER_SUB, "operator"):
+        if not public and is_machine_sub(sub):
             # The mesh edge runs no allow-list, so the check `policy.allows`
             # would have made on the public profile is made here instead.
             return _not_found()
@@ -741,7 +809,7 @@ async def _http_proxy(request: Request) -> Response:
             return _not_found()
         up, raw = vault_up, inner
     elif penpot_up and penpot.owns(path):
-        if not public and sub in (PEER_SUB, "operator"):
+        if not public and is_machine_sub(sub):
             return _not_found()
         inner = penpot.upstream_raw_path(raw)
         if inner is None:
@@ -828,6 +896,155 @@ async def _tether_proxy(request: Request, raw: bytes, up: str) -> Response:
         status_code=resp.status_code,
         background=BackgroundTask(resp.aclose),
     )
+    out.raw_headers = [
+        (k.encode("latin-1"), v.encode("latin-1")) for k, v in _resp_headers(resp)
+    ]
+    return out
+
+
+def _board_headers(request: Request, *, drop_auth: bool = False) -> dict[str, str]:
+    """The request headers the board is sent: the caller's, minus every claim of identity.
+
+    ``Authorization`` is the board's own party bearer and rides untouched, unless
+    ``drop_auth`` says it is a mesh credential (a node token or the legacy
+    node-wide bearer), which is removed so the board never holds a credential
+    that is live elsewhere. Every ``X-Awm-*`` header goes, not only the four the
+    gateway reads, and so does the edge's session cookie. ``Content-Length`` is
+    dropped because the body is re-read under a cap and httpx restates it.
+    ``Last-Event-ID`` and everything else is forwarded as sent.
+    """
+    hdrs = {}
+    for key, value in request.headers.items():
+        low = key.lower()
+        if (low in _HOP or low in _CALLER_HEADERS or low.startswith("x-awm-")
+                or low.startswith("x-forwarded-") or low in ("cookie", "content-length")):
+            continue
+        hdrs[key] = value
+    if drop_auth:
+        hdrs.pop("authorization", None)
+    hdrs["X-Forwarded-Proto"] = "https"
+    host = request.headers.get("host")
+    if host:
+        hdrs["X-Forwarded-Host"] = host
+    if request.client:
+        hdrs["X-Forwarded-For"] = request.client.host
+    return hdrs
+
+
+async def _capped_body(request: Request, cap: int) -> bytes | None:
+    """The request body, or ``None`` once it exceeds ``cap`` bytes.
+
+    Checked against the declared length first, then while reading, so a chunked
+    body with no length is stopped as well.
+    """
+    declared = request.headers.get("content-length", "")
+    if declared.isdigit() and int(declared) > cap:
+        return None
+    chunks: list[bytes] = []
+    size = 0
+    async for chunk in request.stream():
+        size += len(chunk)
+        if size > cap:
+            return None
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+async def _relay(resp: httpx.Response):
+    """The upstream body as it arrives, closing the upstream however the client leaves.
+
+    A background task would not run when the client drops mid-stream, and a
+    board stream is open until somebody does exactly that.
+    """
+    try:
+        async for chunk in resp.aiter_raw():
+            yield chunk
+    except httpx.TransportError:
+        # The board went away mid-stream: end the body, as a closed socket would.
+        pass
+    finally:
+        await resp.aclose()
+
+
+async def _is_mesh_credential(gate, bearer: str | None) -> bool | None:
+    """Whether ``bearer`` is a credential the edge itself honours between nodes.
+
+    A node token, or the legacy node-wide bearer (whether or not it is still
+    accepted: a retired one is still one the board must not see). ``None`` says
+    the edge cannot tell because it holds no auth material yet.
+    """
+    if not bearer:
+        return False
+    if peertoken.looks_like_token(bearer):
+        return True
+    known = await gate.peer_credentials()
+    if known is None:
+        return None
+    return any(hmac.compare_digest(bearer.encode(), c.encode()) for c in known)
+
+
+#: The board leg's own connection pool. Every open ``/board/stream`` holds a
+#: connection for as long as its party stays, and the shared client's pool is
+#: also what every other leg of the edge waits on, so board streams must not be
+#: able to fill it. Read is unbounded (a stream is quiet for up to 30 s between
+#: heartbeats); the pool wait is short so exhaustion fails fast instead of
+#: queueing.
+BOARD_LIMITS = httpx.Limits(max_connections=64, max_keepalive_connections=16)
+BOARD_TIMEOUT = httpx.Timeout(connect=5.0, read=None, write=10.0, pool=2.0)
+
+
+def _board_client() -> httpx.AsyncClient:
+    return httpx.AsyncClient(limits=BOARD_LIMITS, timeout=BOARD_TIMEOUT,
+                             follow_redirects=False)
+
+
+async def _board_proxy(request: Request, raw: bytes, up: str) -> Response:
+    """Forward one request to the board. No session, and no opinion.
+
+    What the mount allows is decided in :mod:`awm.httpsfront.board` by the shape
+    of the method and path. What is left is transport, and the headers that
+    matter on the way through (see :func:`_board_headers`).
+
+    The board's answers pass through as sent: its 404 for every refusal, its
+    409 for a held claim, its 400 for a bad body. The stream is relayed chunk
+    by chunk with no read timeout, because the board speaks on it only every
+    30 s. It uses the board's own client (see :data:`BOARD_LIMITS`), so a crowd
+    of open streams can exhaust that pool and nothing else on the edge; a
+    request that cannot get a slot is answered 503 at once.
+
+    ``Authorization`` is checked as a set: more than one header is refused,
+    because the node-token test and the forwarded value would otherwise be able
+    to read different ones.
+    """
+    inner = board.upstream_raw_path(raw)
+    if inner is None:
+        return _not_found()
+    auths = request.headers.getlist("authorization")
+    if len(auths) > 1:
+        return _not_found()
+    drop_auth = False
+    if auths:
+        drop_auth = await _is_mesh_credential(
+            request.app.state.gate, bearer_of(auths[0]))
+        if drop_auth is None:
+            return _not_found()
+    body = await _capped_body(request, board.MAX_BODY)
+    if body is None:
+        return Response("request body too large", status_code=413)
+    client: httpx.AsyncClient = request.app.state.board_client
+    url = _upstream_url(up, inner, request.scope.get("query_string") or b"")
+    upstream_req = client.build_request(
+        request.method, url, headers=_board_headers(request, drop_auth=drop_auth),
+        content=body,
+    )
+    try:
+        resp = await client.send(upstream_req, stream=True)
+    except httpx.PoolTimeout:
+        return Response("board busy", status_code=503)
+    except httpx.TransportError:
+        # The same answer the board gives for everything it declines.
+        return _not_found()
+    out = StreamingResponse(_relay(resp), status_code=resp.status_code)
     out.raw_headers = [
         (k.encode("latin-1"), v.encode("latin-1")) for k, v in _resp_headers(resp)
     ]
@@ -941,7 +1158,7 @@ def _slice_req_headers(request: Request, info: dict, visitor) -> dict[str, str]:
     hdrs = {k: v for k, v in request.headers.items() if k.lower() not in _HOP}
     hdrs["X-Forwarded-Proto"] = "https"
     for name in (slices.HEADER_ROOT, slices.HEADER_USER, slices.HEADER_WRITE,
-                 "X-Awm-As"):
+                 *_CALLER_HEADERS):
         hdrs.pop(name.lower(), None)
     hdrs[slices.HEADER_ROOT] = info["note_id"]
     hdrs[slices.HEADER_WRITE] = "1" if info.get("write") else "0"
@@ -1032,7 +1249,7 @@ async def _bridge_penpot_session(request: Request, out: Response, kind: str,
     service that is down, a machine bearer. Penpot then shows its own login
     screen, which is exactly what it did before this bridge existed.
     """
-    if sub in (PEER_SUB, "operator"):
+    if is_machine_sub(sub):
         return
     presented = request.cookies.get(penpot.COOKIE_NAME)
     gate: AuthGate = request.app.state.gate
@@ -1084,6 +1301,10 @@ async def _ws_proxy(ws: WebSocket) -> None:
     path = ws.url.path
     raw = _raw_target(ws.scope, path)
     if _re_segments(raw, path):
+        await ws.close(code=1008)
+        return
+    # The board speaks SSE, never a socket, and its mount is not the gateway's.
+    if board.in_mount(path):
         await ws.close(code=1008)
         return
     query = ws.scope.get("query_string") or b""
@@ -1181,7 +1402,9 @@ async def _ws_proxy(ws: WebSocket) -> None:
         if not ok or (public and not policy.allows(ws.url.path, sub)):
             await ws.close(code=1008)  # policy violation
             return
-        if (is_vault or is_penpot) and sub in (PEER_SUB, "operator"):
+        # A foreign node has no WebSocket at all; a domestic peer has the
+        # gateway's, but never the vault's or Penpot's.
+        if _foreign(app, sub) or ((is_vault or is_penpot) and is_machine_sub(sub)):
             await ws.close(code=1008)
             return
 
@@ -1196,6 +1419,10 @@ async def _ws_proxy(ws: WebSocket) -> None:
         v = ws.headers.get(k)
         if v:
             fwd[k] = v
+    # Only these three are copied, so none of `_CALLER_HEADERS` can ride along;
+    # a node token is dropped for the reason given at `_consumed_node_token`.
+    if _consumed_node_token(fwd.get("authorization"), sub):
+        fwd.pop("authorization", None)
     if slice_info is not None:
         visitor = _slice_visitor(ws, slice_info, slice_token)
         if visitor is _SLICE_MISMATCH:
@@ -1302,9 +1529,11 @@ def _gated(
     proxied path as far as auth is concerned.
     """
     async def _wrapped(request: Request) -> Response:
-        ok, refreshed = await _authenticate(request)
+        ok, refreshed, sub = await _authenticate_sub(request)
         if not ok:
             return _deny(request)
+        if _foreign(request.app, sub):
+            return _not_found()
         resp = await handler(request)
         if refreshed:
             _set_session_cookie(
@@ -1323,7 +1552,8 @@ def build_app(upstream: str, ca_path: str, *, landing: bool = True,
               profile: str | None = None,
               vault_upstream: str | None = None,
               penpot_upstream: str | None = None,
-              tether_upstream: str | None = None) -> Starlette:
+              tether_upstream: str | None = None,
+              board_upstream: str | None = None) -> Starlette:
     """Assemble the front. ``landing=False`` drops the awm index page at ``/``.
 
     ``profile="public"`` builds the internet-facing door: no CA download, no
@@ -1374,6 +1604,12 @@ def build_app(upstream: str, ca_path: str, *, landing: bool = True,
     Off by default, and left off wherever no relay is running: this is the one
     mount whose whole surface is public, so it should be present only where
     somebody meant it to be.
+
+    ``board_upstream`` adds the federation board, mounted at :data:`board.PREFIX`
+    and, like the tether, reachable with no edge session: the board
+    authenticates its own parties and the edge passes their ``Authorization``
+    through. Only the method-and-path shapes in :mod:`awm.httpsfront.board`
+    are forwarded. Off by default; the mount answers 404 until it is wired.
 
     ``rewrite_origin=True`` replaces a present ``Origin`` with the upstream's
     own scheme+authority on both the HTTP and the WebSocket path. Two wrapped
@@ -1438,10 +1674,13 @@ def build_app(upstream: str, ca_path: str, *, landing: bool = True,
     @asynccontextmanager
     async def _lifespan(app_: Starlette):
         app_.state.client = httpx.AsyncClient(timeout=None, follow_redirects=False)
+        app_.state.board_client = _board_client() if board_upstream else None
         try:
             yield
         finally:
             await app_.state.client.aclose()
+            if app_.state.board_client is not None:
+                await app_.state.board_client.aclose()
 
     app = Starlette(routes=routes, lifespan=_lifespan)
     app.state.http_up = http_up
@@ -1477,6 +1716,7 @@ def build_app(upstream: str, ca_path: str, *, landing: bool = True,
     else:
         app.state.tether_http_up = None
         app.state.tether_ws_up = None
+    app.state.board_http_up = board_upstream.rstrip("/") if board_upstream else None
     return app
 
 
@@ -1488,7 +1728,8 @@ def serve(*, port: int, cert: str, key: str, ca: str, upstream: str,
           tls: bool = True,
           vault_upstream: str | None = None,
           penpot_upstream: str | None = None,
-          tether_upstream: str | None = None) -> None:
+          tether_upstream: str | None = None,
+          board_upstream: str | None = None) -> None:
     """Bind ``0.0.0.0:port`` with TLS and reverse-proxy to ``upstream`` forever
     (blocks). Designed to run in a daemon thread from the hub adapter.
 
@@ -1506,7 +1747,8 @@ def serve(*, port: int, cert: str, key: str, ca: str, upstream: str,
                     rewrite_origin=rewrite_origin, profile=profile,
                     vault_upstream=vault_upstream,
                     penpot_upstream=penpot_upstream,
-                    tether_upstream=tether_upstream)
+                    tether_upstream=tether_upstream,
+                    board_upstream=board_upstream)
     bind: dict = (
         {"host": "0.0.0.0", "ssl_certfile": cert, "ssl_keyfile": key}
         if tls else

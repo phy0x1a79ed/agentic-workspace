@@ -44,6 +44,7 @@ API_MANIFEST: dict[str, Any] = {
     "functions": [
         {
             "name": "status",
+            "effect": "read",
             "tool": "penpot_status",
             "description": (
                 "Whether the Penpot stack is up, and which containers (if "
@@ -55,6 +56,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "start",
+            "effect": "write",
             "tool": "penpot_start",
             "description": (
                 "Bring the compose stack up (`docker compose up -d`) if it "
@@ -65,6 +67,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "stop",
+            "effect": "write",
             "tool": "penpot_stop",
             "description": (
                 "Take the compose stack down (`docker compose down`). "
@@ -75,6 +78,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "restart",
+            "effect": "write",
             "tool": "penpot_restart",
             "description": "Stop then start the compose stack. Operator only.",
             "params": [],
@@ -82,6 +86,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "logs",
+            "effect": "read",
             "tool": "penpot_logs",
             "description": (
                 "Tail `docker compose logs` for the stack, or one container. "
@@ -96,6 +101,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "url",
+            "effect": "read",
             "tool": "penpot_url",
             "description": (
                 "Where Penpot is served. A path, not a URL: it is on the "

@@ -90,6 +90,9 @@ explicitly and merged in:
 | `AWM_EDGE_PROFILE` | — | `public`: only the paths in `policy.py` exist, no CA/link/landing routes, `SameSite=Strict` |
 | `AWM_EDGE_TLS` | `1` | `0`: plain HTTP on `127.0.0.1:$AWM_HTTPS_PORT` behind a TLS-terminating nginx |
 | `AWM_EDGE_TETHER` | `0` | `1`: mount the tether relay at `/tether`, reachable with **no session** |
+| `AWM_EDGE_BOARD` | `0` | `1`: mount the federation board at `/board/`, reachable with **no session** |
+| `AWM_BOARD_PORT` | `12521` | the board's loopback port, which the board mount forwards to |
+| `AWM_PEER_LEGACY_BEARER` | on | `0`: refuse the legacy shared bearer, so only a node token authenticates a peer |
 
 `AWM_EDGE_TETHER` is the one flag here that widens the door rather than
 narrowing it, so it is off unless a host means it. The person redeeming a
@@ -97,7 +100,9 @@ tether invite is being helped with their own machine and has no account here;
 what keeps the mount narrow is the relay's own gating and an allow-list of
 exact path shapes, both described in `awm/httpsfront/tether.py`.
 
-On every profile the edge overwrites `X-Awm-As` with the session's verified subject (`user:<name>`, or `peer` for a bearer), so a downstream service may trust that header — except on the tether mount, which has no verified subject and where the header is stripped rather than defaulted. `/__auth/login` takes `{username, password}`; a blank username is the shared password. The readable `awm_as` cookie is the username for the pages' user chip and carries no authority.
+`AWM_EDGE_BOARD` widens the door like the tether flag does, so it is off unless a host means it. The board authenticates its own parties with a bearer the board issued, so the mount answers before edge authentication. It forwards only the exact method-and-path shapes in `awm/httpsfront/board.py`. The mount **strips every `X-Awm-*` header**, `Cookie` and `X-Forwarded-*` from the request. It also removes a node token or the legacy bearer, so the board never holds a credential that is live elsewhere. The edge claims the whole `/board` mount on every node, wired or not, and a path under it never reaches the gateway.
+
+On every profile the edge overwrites `X-Awm-As` with the session's verified subject (`user:<name>`, `peer:<node>` for a node token, or the bare `peer` for the legacy bearer), so a downstream service may trust that header — except on the tether and board mounts, which have no verified subject and where the header is stripped rather than defaulted. A node that the peer book does not call domestic reaches only `/tools` and `/invoke` (`FEDERATION.md` § *The foreign gate*). `/__auth/login` takes `{username, password}`; a blank username is the shared password. The readable `awm_as` cookie is the username for the pages' user chip and carries no authority.
 
 `AWM_HTTPS_PORT` is a clean one-line port knob: set it in the workspace's
 gitignored `$AWM_WORKSPACE/.awm/env` (merged into the gateway env at startup,

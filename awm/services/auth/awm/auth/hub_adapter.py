@@ -8,7 +8,10 @@ Verbs:
   - ``password``        current login password + window (loopback/CLI).
   - ``peer_credential`` current peer credential + its mirror-file path.
   - ``verify``          login password → signed session token.
-  - ``edge_material``   signing secret + valid peer creds for the edge.
+  - ``edge_material``   signing secret + valid peer creds + book peers' public
+                        keys for the edge.
+  - ``node_key``        this node's public key and fingerprint.
+  - ``sign_peer_token`` a five-minute token proving this node to another node.
   - ``rotate``          force a mint now (ops/testing).
   - ``status``          rotation state summary, incl. last push outcome.
   - ``user_add`` / ``user_passwd`` / ``user_disable`` / ``user_list``
@@ -40,6 +43,7 @@ API_MANIFEST: dict[str, Any] = {
     "functions": [
         {
             "name": "password",
+            "effect": "secret",
             "surfaces": _CLI_HTTP,
             "description": "Get the current day's awm login password and its "
                            "validity window (loopback/CLI only).",
@@ -47,6 +51,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "peer_credential",
+            "effect": "secret",
             "surfaces": _CLI_HTTP,
             "description": "Get the current peer credential and the path of the "
                            "file it is mirrored to for the SSH peer-auth channel.",
@@ -54,6 +59,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "verify",
+            "effect": "secret",
             "description": "Validate a login (per-user password when username "
                            "is given, else the shared password); on success "
                            "return a signed session token for the edge to set "
@@ -67,20 +73,40 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "edge_material",
+            "effect": "secret",
             "surfaces": _CLI_HTTP,
             "description": "Signing secret + currently-valid peer credentials + "
+                           "each book peer's name, public key and relation + "
                            "session-lifetime knobs, for the httpsfront edge to "
                            "enforce auth offline.",
             "params": [],
         },
         {
+            "name": "node_key",
+            "effect": "read",
+            "description": "This node's ed25519 public key and its fingerprint, "
+                           "to hand to a peer that will verify this node's "
+                           "tokens. The private key is never returned.",
+            "params": [],
+        },
+        {
+            "name": "sign_peer_token",
+            "effect": "secret",
+            "surfaces": _CLI_HTTP,
+            "description": "Sign a five-minute token that proves this node's "
+                           "identity to the node named by aud.",
+            "params": [{"name": "aud", "type": "string", "required": True}],
+        },
+        {
             "name": "rotate",
+            "effect": "secret",
             "surfaces": _CLI_HTTP,
             "description": "Force minting a fresh credential pair now.",
             "params": [],
         },
         {
             "name": "status",
+            "effect": "read",
             "description": "Report rotation state: valid generations, latest "
                            "window, cadence, the last Discord push attempt's "
                            "outcome, and the peer-cred file path.",
@@ -88,6 +114,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "user_add",
+            "effect": "secret",
             "surfaces": _CLI_HTTP,
             "description": "Create a user account. The password is generated "
                            "server-side and returned once.",
@@ -95,6 +122,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "user_passwd",
+            "effect": "secret",
             "surfaces": _CLI_HTTP,
             "description": "Reset a user's password to a fresh generated one, "
                            "returned once. Clears the user's lockout.",
@@ -102,6 +130,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "user_disable",
+            "effect": "write",
             "surfaces": _CLI_HTTP,
             "description": "Disable (default) or re-enable a user account.",
             "params": [
@@ -111,12 +140,14 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "user_list",
+            "effect": "read",
             "surfaces": _CLI_HTTP,
             "description": "List user accounts (no secrets).",
             "params": [],
         },
         {
             "name": "penpot_record",
+            "effect": "secret",
             "surfaces": _CLI_HTTP,
             "description": "Record the Penpot credential awm holds on a user's "
                            "behalf. Overwrites an existing one, which is how a "
@@ -130,6 +161,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "penpot_session",
+            "effect": "secret",
             "surfaces": _CLI_HTTP,
             "description": "Log in to Penpot as a named user and return the "
                            "session cookie for the edge to set. Cached per "
@@ -144,6 +176,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "penpot_rotate",
+            "effect": "secret",
             "surfaces": _CLI_HTTP,
             "description": "Replace the stored Penpot password for one user, "
                            "or for everyone when username is omitted.",
@@ -151,6 +184,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "penpot_list",
+            "effect": "read",
             "surfaces": _CLI_HTTP,
             "description": "List the recorded Penpot credentials (no secrets).",
             "params": [],
@@ -168,6 +202,8 @@ HANDLERS: dict[str, Any] = {
     "peer_credential": service.h_peer_credential,
     "verify": service.h_verify,
     "edge_material": service.h_edge_material,
+    "node_key": service.h_node_key,
+    "sign_peer_token": service.h_sign_peer_token,
     "rotate": service.h_rotate,
     "status": service.h_status,
     "user_add": service.h_user_add,

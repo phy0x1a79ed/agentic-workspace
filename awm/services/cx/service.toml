@@ -7,3 +7,7 @@
 # nothing and a node that has neither should not be seeding sessions. Enabling
 # it explicitly per node is how the two halves are kept together.
 profiles = ["cx"]
+
+# Core tier: the cx domain is listed on the agent-facing MCP surface. Independent
+# of the profile gate above, which only decides whether the service runs.
+tier = "core"

@@ -240,10 +240,9 @@ a curl cannot reach.
 
 ## Not done here
 
-**Hermes is not a spawnable harness.** `agent_spawn agent_cli="hermes"` would
-need an `agentcore/hermes_backend.py` beside `opencode_backend.py`. Config
-parity is what "mirrors opencode" meant; the spawner is a separate piece of work
-and easy to add later.
+**Hermes is not a session harness.** `cx start` launches Claude Code sessions
+only. Config parity is what "mirrors opencode" meant, and a Hermes launcher is a
+separate piece of work.
 
 **Nothing pins a version.** `hermes update` rewrites the checkout at
 `$HERMES_HOME/hermes-agent` in place, and this service supervises whatever that

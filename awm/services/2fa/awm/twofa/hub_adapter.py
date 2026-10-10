@@ -39,6 +39,7 @@ API_MANIFEST: dict[str, Any] = {
     "functions": [
         {
             "name": "devices",
+            "effect": "read",
             "tool": "2fa_devices",
             "description": (
                 "List discovered Duo devices and their enrollment — the valid "
@@ -47,6 +48,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "ping",
+            "effect": "read",
             "tool": "2fa_ping",
             "description": (
                 "Reachability + enrollment check. Makes a REAL read-only Duo "
@@ -61,6 +63,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "reachability",
+            "effect": "read",
             "tool": "2fa_reachability",
             "description": (
                 "The last VERIFIED Duo round-trip for one device, as a "
@@ -75,6 +78,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "status",
+            "effect": "read",
             "tool": "2fa_status",
             "description": (
                 "Full 2fa state: enrolled?, burst active?/expected approvals, "
@@ -91,6 +95,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "pending",
+            "effect": "read",
             "tool": "2fa_pending",
             "description": (
                 "List currently-held (burst) Duo logins awaiting a decision. "
@@ -102,6 +107,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "activate",
+            "effect": "secret",
             "tool": "2fa_activate",
             # CLI/HTTP only. Enrolment is an operator act at a keyboard, with a
             # code out of an email. Nothing an agent does should reach it.
@@ -118,6 +124,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "burst",
+            "effect": "write",
             "tool": "2fa_burst",
             # CLI/HTTP only. A burst is authorization to approve a login without
             # a human, and it is only safe when the thing that arms it is also
@@ -144,6 +151,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "approve",
+            "effect": "write",
             "tool": "2fa_approve",
             # CLI/HTTP only: answering a live MFA challenge is the operator's
             # decision, and the whole security property of the second factor.
@@ -159,6 +167,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "deny",
+            "effect": "write",
             "tool": "2fa_deny",
             "surfaces": ["cli", "http"],
             "description": (
@@ -172,6 +181,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "approve_all",
+            "effect": "write",
             "tool": "2fa_approve_all",
             # CLI/HTTP only, and the widest of them: an uncounted 5-minute
             # blanket yes to anything Duo presents.

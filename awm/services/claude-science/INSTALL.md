@@ -276,10 +276,10 @@ governs it. Nothing in this fleet can consume it as a *connector*, but it is a
 working MCP-over-HTTP endpoint for awm — usable by any MCP client that is not
 this workbench.
 
-**The allowlist is a security control.** awm has no per-caller mode and no
-read-only credential — anything on the loopback bus can call `ssh`, `compute`,
-`social`, gateway control and the agent write verbs, and the `agent` domain's
-own verb gate documents itself as *not* a trust boundary. So the bridge ships an
+**The allowlist is a security control.** awm has no read-only credential, and a
+caller of this bridge carries no session mode — anything on the loopback bus can
+call `ssh`, `compute`, `social` and gateway control, and the mode gate for
+`cx`-started sessions documents itself as *not* a trust boundary. So the bridge ships an
 explicit `{domain: verbs}` list, enforced on `tools/call` and not merely on
 `tools/list` (hiding a tool is not refusing it). It defaults to read/query verbs
 of `scope`, `project`, `notes`, `drawio`, `graphify`, `dvc`, `artifact`,

@@ -1,6 +1,6 @@
 """Public entry points: ``open_agent`` (the config factory) + ``run_once``.
 
-These are the single dynamic entry points the agents service uses.
+These are the single dynamic entry points consumers use.
 ``open_agent(config)`` selects the backend from ``config.harness`` and threads
 everything else in. ``run_once`` is generic over
 the session — open → send → drain until terminal → close — so a one-shot is

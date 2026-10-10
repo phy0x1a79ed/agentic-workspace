@@ -64,6 +64,7 @@ API_MANIFEST: dict[str, Any] = {
         # ---- lifecycle ----
         {
             "name": "acquire",
+            "effect": "write",
             "tool": "rlm_browser_acquire",
             "description": (
                 "Acquire a browser realm session for a game; returns "
@@ -84,6 +85,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "release",
+            "effect": "write",
             "tool": "rlm_browser_release",
             "description": "Release a session: tear its Chrome down and drop the row.",
             "params": [
@@ -92,6 +94,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "reset",
+            "effect": "write",
             "tool": "rlm_browser_reset",
             "description": (
                 "Reset a session in place: close every tab, keep the browser + "
@@ -103,6 +106,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "status",
+            "effect": "read",
             "tool": "rlm_browser_status",
             "description": (
                 "Status of one session (pass session_id) or all (omit it). "
@@ -116,6 +120,7 @@ API_MANIFEST: dict[str, Any] = {
         # ---- tabs ----
         {
             "name": "tab_open",
+            "effect": "write",
             "tool": "rlm_browser_tab_open",
             "description": "Open a new tab (optionally at url). Returns {tab_id}.",
             "params": [
@@ -125,6 +130,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "tab_close",
+            "effect": "write",
             "tool": "rlm_browser_tab_close",
             "description": "Close a tab by tab_id.",
             "params": [
@@ -134,6 +140,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "tab_list",
+            "effect": "read",
             "tool": "rlm_browser_tab_list",
             "description": "List the session's live tabs. Returns {tabs: [...]}.",
             "params": [
@@ -142,6 +149,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "tab_activate",
+            "effect": "write",
             "tool": "rlm_browser_tab_activate",
             "description": "Bring a tab to the foreground by tab_id.",
             "params": [
@@ -152,6 +160,7 @@ API_MANIFEST: dict[str, Any] = {
         # ---- perceive (conveniences over CDP) ----
         {
             "name": "observe",
+            "effect": "write",
             "tool": "rlm_browser_observe",
             "description": (
                 "Read a tab's RENDERED page (post-JS DOM). Returns "
@@ -164,6 +173,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "screenshot",
+            "effect": "read",
             "tool": "rlm_browser_screenshot",
             "description": (
                 "Capture a PNG of a tab. Returns {tab_id, image (base64), "
@@ -178,6 +188,7 @@ API_MANIFEST: dict[str, Any] = {
         # ---- engine relay (THE full act set) ----
         {
             "name": "cdp",
+            "effect": "write",
             "tool": "rlm_browser_cdp",
             "description": (
                 "Relay an arbitrary Chrome DevTools Protocol method to the "
@@ -198,6 +209,7 @@ API_MANIFEST: dict[str, Any] = {
         # ---- discovery (live, from the engine) ----
         {
             "name": "commands",
+            "effect": "write",
             "tool": "rlm_browser_commands",
             "description": (
                 "Return the running Chrome's LIVE CDP protocol descriptor "

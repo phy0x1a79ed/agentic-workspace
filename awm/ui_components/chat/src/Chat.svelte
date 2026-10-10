@@ -9,7 +9,7 @@
    * It is **controlled and presentational**: the parent owns the `posts` buffer
    * and the send handler, Chat renders them and owns only the input wiring. It
    * knows nothing about agents / scopes / TTS engines — every consumer (the
-   * agent page via @awm/agent-chat, the stt mock page, the tts engine tester)
+   * stt mock page, the tts engine tester)
    * mounts this same component and injects its own data source via `posts` +
    * `onSend`, plus optional `header` / `aside` snippet slots.
    *
@@ -48,17 +48,13 @@
      *  absent (the composer's telemetry helpers stay dark). Lets a host render
      *  an <SttTelemetry> timeline against this composite's STT pipeline. */
     onTelemetry?: (e: TelemetryEvent) => void;
-    /** Agent identity (the unit slug). When set, the transcript pane gains a
-     *  Transcript | Terminal tablist (forwarded to <TtsHistory>) so the live
-     *  agent's tmux pane is viewable/drivable alongside its transcript. */
-    slug?: string;
     /** Transcript-only: hide the composer entirely (no input region). Used for
      *  a finished placement whose transcript is reviewed but not extended. */
     readonly?: boolean;
   }
   let {
     posts, onSend, chatContext = '', onReplay, header, aside,
-    offline = false, onTelemetry, slug, readonly = false,
+    offline = false, onTelemetry, readonly = false,
   }: Props = $props();
 
   // The single send seam. Both SttComposer signals call it; the gate drops a
@@ -76,7 +72,7 @@
   {/if}
 
   <div class="history-wrap">
-    <TtsHistory {posts} onspeak={onReplay} {slug} />
+    <TtsHistory {posts} onspeak={onReplay} />
   </div>
 
   {#if aside}

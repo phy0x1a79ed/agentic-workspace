@@ -30,7 +30,7 @@ import os
 import time
 from typing import Any
 
-from awm.cx import config, pool, remove, seed, sessions
+from awm.cx import config, lifecycle, pool, remove, seed, sessions
 
 log = logging.getLogger("awm.cx.reconcile")
 
@@ -99,6 +99,11 @@ class Loop:
         for item in done:
             log.info("cx: %s %s (%s)", "removed" if item["removed"] else "kept",
                      item["session"], item["why"])
+        for job in lifecycle.adopt_pending():
+            log.info("cx: adopted %s for a start that outlived its launch", job)
+        for job in lifecycle.prune_lineage():
+            log.info("cx: dropped the lineage of %s, which was removed",
+                     job)
         self._last_tick = time.time()
 
     async def _seed(self) -> None:

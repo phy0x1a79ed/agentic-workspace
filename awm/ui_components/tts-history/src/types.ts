@@ -1,7 +1,7 @@
 /**
  * Wire shape for a rendered transcript row. Structurally compatible with the
- * scope channel's `ScopePost` (from `@awm/client`) and the agents service's
- * acts, so posts/acts from either side drop straight into `<TtsHistory>`.
+ * scope channel's `ScopePost` (from `@awm/client`), so fetched posts drop
+ * straight into `<TtsHistory>`.
  * Vendored here so any page or component that renders a transcript imports
  * `Post` from one place.
  */

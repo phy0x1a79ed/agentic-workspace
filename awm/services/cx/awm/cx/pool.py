@@ -1,4 +1,4 @@
-"""The pool's read-only view of itself — what `cx status` answers with.
+"""The pool's read-only view of itself — what the `cx list` pool summary answers with.
 
 Everything here is derived from the live session records at the moment it is
 asked. There is no stored pointer to the current warm session, because a stored

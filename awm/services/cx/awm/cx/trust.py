@@ -19,27 +19,28 @@ nothing else.
 
 from __future__ import annotations
 
-import json
 import os
 from pathlib import Path
 
+from awm.claudedaemon import trust as _shared
+
 
 def trust_file() -> Path:
-    return Path(os.environ.get("AWM_CX_TRUST_FILE") or (Path.home() / ".claude.json"))
+    return Path(os.environ.get("AWM_CX_TRUST_FILE") or _shared.default_trust_file())
 
 
 def trusted(path: str | Path) -> bool:
-    """True if `/cd path` would move without opening the trust dialog."""
-    try:
-        with open(trust_file(), "rb") as fh:
-            projects = (json.load(fh) or {}).get("projects")
-    except (OSError, ValueError, AttributeError):
-        return False
-    if not isinstance(projects, dict):
-        return False
-    p = Path(path).resolve()
-    for cand in (p, *p.parents):
-        entry = projects.get(str(cand))
-        if isinstance(entry, dict) and entry.get("hasTrustDialogAccepted"):
-            return True
-    return False
+    """True if `/cd path` would move without opening the trust dialog.
+
+    The check is `awm.claudedaemon.trust.trusted`, aimed at cx's trust file.
+    """
+    return _shared.trusted(path, trust_file=trust_file())
+
+
+def start_refusal(path: str | Path) -> str | None:
+    """Why `claude --bg` would refuse to start in ``path``, or None.
+
+    Stricter than `trusted`: inside a git repository the repository's own trust
+    entry is required. See `awm.claudedaemon.trust`.
+    """
+    return _shared.start_refusal(path, trust_file=trust_file())

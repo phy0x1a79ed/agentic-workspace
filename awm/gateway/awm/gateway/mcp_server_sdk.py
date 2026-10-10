@@ -37,7 +37,7 @@ from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 
 from awm import config
-from awm.gateway import mcp_caller, mcp_http
+from awm.gateway import mcp_caller, mcp_http, mcp_more
 from awm.gateway._path import resolve_bin
 
 server = Server("awm")
@@ -70,9 +70,13 @@ async def list_tools() -> list[Tool]:
     names — two peers tripled the tool list for no new capability, and every
     single ``list_tools`` paid an ssh per peer. The gateway now keeps that map in a
     background snapshot, so this is one loopback GET.
+
+    ``tiers=1`` narrows the surface to the core domains plus ``providersOf`` and
+    the ``more`` call-through tool; the discoverable domains are reached through
+    ``more`` (see ``mcp_more``).
     """
     data = await _request_with_retry(
-        "GET", "/tools", params={"view": "domains", "peers": "1"},
+        "GET", "/tools", params={"view": "domains", "peers": "1", "tiers": "1"},
         read_timeout=mcp_http.catalog_read_timeout())
     return [Tool.model_validate(t) for t in data["tools"]]
 
@@ -80,9 +84,12 @@ async def list_tools() -> list[Tool]:
 @server.call_tool()
 async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     try:
+        # ``more(domain=D, verb=V, ...)`` is the call-through to a discoverable
+        # domain; rewritten to the direct call before anything reads ``name``.
+        name, arguments = mcp_more.rewrite_call(name, arguments)
         # A placed agent's proxy carries its placement identity in AWM_AS (set
         # in its per-placement spawn-mcp config). Stamp it as X-Awm-As so the
-        # core can resolve the call to that placement (the agents B-op tools
+        # core can resolve the call to that placement (the placement B-op tools
         # need no model-supplied token). Read at call time, not import time, so a
         # reused proxy always reflects its own env. Absent for normal sessions.
         as_ = os.environ.get("AWM_AS")
@@ -97,15 +104,6 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         # configured command breaks the one-hop assumption, so walk up to the
         # nearest ancestor that is a session (see mcp_caller).
         session_pid = str(mcp_caller.resolve_caller_pid(os.getppid()))
-        # Compatibility shim: a client holding a stale tool list may still name
-        # ``<domain>@<peer>``. Those names are no longer advertised (the surface
-        # carries one tool per domain with a ``peer`` argument instead), but
-        # honouring them costs four lines and avoids a hard break.
-        if "@" in name:
-            base, _, peer_name = name.rpartition("@")
-            data = await _peer_invoke(peer_name, base, arguments, as_)
-            return [TextContent(
-                type="text", text=await _localize(data["result"], peer_name, as_))]
         headers = {}
         if as_:
             headers["X-Awm-As"] = as_
@@ -228,36 +226,34 @@ async def _request_with_retry(
 async def _peer_invoke(peer_name: str, base_name: str, arguments: dict,
                        as_: str | None,
                        entry: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Invoke ``base_name`` on ``peer_name``'s edge directly. Re-fetches the
-    credential once on a 401 (it may have rotated).
+    """Invoke ``base_name`` on ``peer_name``'s edge directly with a signed node
+    token. A domestic peer that refuses it gets the legacy ssh-fetched bearer
+    (re-fetched once on a 401); a foreign peer never does — see
+    ``gatewayclient.peer_send``.
 
-    ``entry`` is the peer's already-resolved ``{edge_url, ssh_alias}`` — a
-    redirect carries it, so following one costs no second lookup. Absent (the
-    legacy ``@peer`` path) it is resolved from the local gateway's book.
+    ``entry`` is the peer's already-resolved ``{edge_url, ssh_alias, relation}`` —
+    a redirect carries it, so following one costs no second lookup. Absent, it is
+    resolved from the local gateway's book.
     """
     from awm import gatewayclient
 
     if entry is None or not entry.get("edge_url"):
         entry = await asyncio.to_thread(gatewayclient.resolve_peer, peer_name)
     edge = entry["edge_url"].rstrip("/")
-    alias = entry.get("ssh_alias") or peer_name
     ca = gatewayclient._peer_ca()
-    resp = None
-    for attempt in (0, 1):
-        bearer = await asyncio.to_thread(
-            lambda: gatewayclient.fetch_peer_cred(alias, force=(attempt == 1)))
+    # Same ladder as the loopback path; only the connect leg stays short.
+    ptmo = httpx.Timeout(mcp_http.read_timeout(), connect=10.0)
+
+    async def send(bearer: str) -> httpx.Response:
         headers = {"Authorization": f"Bearer {bearer}"}
         if as_:
             headers["X-Awm-As"] = as_
-        # Same ladder as the loopback path; only the connect leg stays short.
-        ptmo = httpx.Timeout(mcp_http.read_timeout(), connect=10.0)
         async with httpx.AsyncClient(timeout=ptmo, verify=ca) as cli:
-            resp = await cli.post(f"{edge}/invoke",
+            return await cli.post(f"{edge}/invoke",
                                   json={"name": base_name, "args": arguments},
                                   headers=headers)
-        if resp.status_code == 401 and attempt == 0:
-            continue
-        break
+
+    resp = await gatewayclient.peer_send(peer_name, entry, send)
     resp.raise_for_status()
     return resp.json()
 
@@ -294,13 +290,13 @@ def _ensure_core_running() -> None:
     )
     if r.returncode == 0:
         return
-    # Port-check: if something is already listening on :7819, don't spawn
-    # a duplicate. (The status loop above will recover when the existing
+    # Port-check: if something is already listening on the configured port, don't
+    # spawn a duplicate. (The status loop above will recover when the existing
     # process becomes responsive.)
     import socket as _socket
     with _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM) as s:
         try:
-            s.connect(("127.0.0.1", 7819))
+            s.connect(("127.0.0.1", config.PORT))
             return
         except OSError:
             pass

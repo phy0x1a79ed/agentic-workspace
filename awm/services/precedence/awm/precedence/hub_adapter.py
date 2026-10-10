@@ -41,6 +41,7 @@ API_MANIFEST: dict[str, Any] = {
         # ---- read / contribute (MCP + CLI + HTTP) ------------------------
         {
             "name": "search",
+            "effect": "read",
             "tool": "precedence_search",
             "description": "Look up past user-adjustment decisions by meaning. Supply "
                            "any subset of context/question/decision as independent "
@@ -74,6 +75,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "get",
+            "effect": "read",
             "tool": "precedence_get",
             "description": "Fetch one decision: the triple, status, tags, votes, "
                            "seen-count, provenance, and attached notes.",
@@ -83,6 +85,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "stats",
+            "effect": "read",
             "tool": "precedence_stats",
             "description": "Archive summary: counts by status/source, embed coverage, "
                            "notes, total votes.",
@@ -90,6 +93,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "add",
+            "effect": "write",
             "tool": "precedence_add",
             "description": "Add a user-adjustment decision: the free-text triple "
                            "(context, question, decision). Embedded per-field and "
@@ -108,6 +112,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "note",
+            "effect": "write",
             "tool": "precedence_note",
             "description": "Attach a note to a decision — a signal that something "
                            "changed that may affect its outcome (e.g. tooling was built).",
@@ -121,6 +126,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "vote",
+            "effect": "write",
             "tool": "precedence_vote",
             "description": "Up/down vote a decision to indicate how good the entry is; "
                            "feeds the usefulness ranking.",
@@ -133,6 +139,7 @@ API_MANIFEST: dict[str, Any] = {
         # ---- curation (CLI + HTTP only) ----------------------------------
         {
             "name": "edit",
+            "effect": "write",
             "tool": "precedence_edit",
             "surfaces": _CLI_HTTP,
             "description": "Edit a decision's fields/tags (re-embeds if the triple changed).",
@@ -148,6 +155,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "supersede",
+            "effect": "write",
             "tool": "precedence_supersede",
             "surfaces": _CLI_HTTP,
             "description": "Supersede/retire a decision (status flips; optional pointer "
@@ -164,6 +172,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "remove",
+            "effect": "write",
             "tool": "precedence_remove",
             "surfaces": _CLI_HTTP,
             "description": "Hard-delete a decision (row, notes, tags, FTS, embeddings).",
@@ -171,6 +180,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "merge",
+            "effect": "write",
             "tool": "precedence_merge",
             "surfaces": _CLI_HTTP,
             "description": "Absorb duplicate entries into a keeper (folds tags, notes, "
@@ -183,6 +193,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "import",
+            "effect": "write",
             "tool": "precedence_import",
             "surfaces": _CLI_HTTP,
             "timeout": 600,
@@ -197,6 +208,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "embed",
+            "effect": "write",
             "tool": "precedence_embed",
             "surfaces": _CLI_HTTP,
             "timeout": 600,

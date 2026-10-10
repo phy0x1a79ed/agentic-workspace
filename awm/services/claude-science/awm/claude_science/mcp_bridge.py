@@ -67,7 +67,7 @@ PROTOCOL_VERSION = "2025-06-18"
 #: the ordinary MCP surface but still reachable here. 2fa's arming and approval
 #: verbs are marked that way. Allowlisting a domain here therefore grants more
 #: than the same domain grants over MCP.
-#:   agent / orch / scope write — spawn work or mutate branches
+#:   scope write                — mutates branches
 #:   services / gateway control — can stop the very service serving this
 #:   compute                    — schedules jobs on shared machines
 DEFAULT_ALLOWLIST: dict[str, tuple[str, ...]] = {

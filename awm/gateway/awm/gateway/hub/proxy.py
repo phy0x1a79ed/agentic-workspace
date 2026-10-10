@@ -23,6 +23,7 @@ import asyncio
 import base64
 import json
 import logging
+from collections.abc import Callable
 from typing import Any
 
 import httpx
@@ -296,19 +297,50 @@ def _http_to_ws(url: str) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _is_foreign_caller(as_: str | None) -> bool:
+    """Whether ``as_`` is a foreign peer, which has no business on any ``/svc``
+    door: the edge already keeps it out, and this is the backstop for the window
+    in which the edge's cached peer material is stale after a relation change.
+    Imported lazily because ``catalog`` imports this package."""
+    from awm.gateway import catalog  # noqa: PLC0415
+
+    return catalog.foreign_grants(as_) is not None
+
+
+_NOT_FOUND = {"error": "not found"}
+
+
+async def _refuse_foreign_ws(client_ws: WebSocket, as_: str | None) -> bool:
+    """Close a not-yet-accepted socket from a foreign peer; True if it was closed.
+    Closing before ``accept`` answers the handshake with an HTTP error."""
+    if not _is_foreign_caller(as_):
+        return False
+    try:
+        await client_ws.close(code=1008, reason="not found")
+    except Exception:
+        pass
+    return True
+
+
 async def proxy_service_http(
     request: Request,
     service_id: str,
     *,
     as_: str | None,
+    stamp: Callable[[str, dict], None] | None = None,
 ) -> Response:
     """Translate ``POST /svc/<name>/fn/<fn>`` into a control-WS call.
+
+    ``stamp(fn, args)`` attaches the gateway's caller identity to a dict body in
+    place, as the MCP door does, so a body can never carry its own.
 
     Body is read as JSON (empty body → null args). Function is dispatched
     against the service's api manifest; declared no-response functions go
     via ``notify`` (returns 202), everything else awaits a ``reply``
-    envelope (returns the result as JSON).
+    envelope (returns the result as JSON). A foreign peer gets a 404.
     """
+    if _is_foreign_caller(as_):
+        return JSONResponse(_NOT_FOUND, status_code=404)
     ch = rpc.get_control(service_id)
     if ch is None or not ch.ready.is_set():
         return JSONResponse(
@@ -334,6 +366,10 @@ async def proxy_service_http(
         except json.JSONDecodeError:
             return JSONResponse({"error": "request body is not valid JSON"},
                                 status_code=400)
+    if stamp is not None and (args is None or isinstance(args, dict)):
+        stamped = {} if args is None else args
+        stamp(fn, stamped)
+        args = stamped if (stamped or args is not None) else None
     if spec.get("no_response"):
         ch.notify(fn, args, as_=as_)
         return Response(status_code=202)
@@ -359,8 +395,10 @@ async def open_session_via_http(
     Body is the ``init`` payload (json). Allocates a session_id (and, for
     direct kinds, a bridge_id), sends ``session.open`` to the service,
     awaits ``session.opened``, returns ``{ws_path: "/svc/<name>/session/<id>"}``
-    on success.
+    on success. A foreign peer gets a 404.
     """
+    if _is_foreign_caller(as_):
+        return JSONResponse(_NOT_FOUND, status_code=404)
     ch = rpc.get_control(service_id)
     if ch is None or not ch.ready.is_set():
         return JSONResponse({"error": "service control channel not open"},
@@ -403,6 +441,8 @@ async def proxy_session_ws(
     client_ws: WebSocket,
     service_id: str,
     session_id: str,
+    *,
+    as_: str | None = None,
 ) -> None:
     """Browser-side WS for an open session.
 
@@ -414,7 +454,12 @@ async def proxy_session_ws(
     ``session.frame`` envelope onto the control WS; routes service
     ``session.frame`` envelopes back to the browser, JSON for json
     payloads or decoded base64 for binary.
+
+    ``as_`` is the caller's identity when the route knows it; a foreign peer is
+    closed out before the socket is accepted.
     """
+    if await _refuse_foreign_ws(client_ws, as_):
+        return
     ch = rpc.get_control(service_id)
     if ch is None or not ch.ready.is_set():
         try:
@@ -582,8 +627,10 @@ async def proxy_service_emit_ws(
 
     Direct emitters use a different path (a bridge) and never reach
     this handler — the route picks ``proxy_session_ws``-style relay
-    for them instead.
+    for them instead. A foreign peer is closed out before the socket is accepted.
     """
+    if await _refuse_foreign_ws(client_ws, as_):
+        return
     ch = rpc.get_control(service_id)
     if ch is None or not ch.ready.is_set():
         try:

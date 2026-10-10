@@ -9,6 +9,6 @@ auth, ever. Browser-side, calls go to ``/svc/stt/{fn,session}/*`` and the hub
 relays them across the control + bridge WSes.
 
 Surface: ``transcribe`` (HTTP-fallback STT) + the direct ``stream`` session
-(faster-whisper PTT/continuous dictation, with the convo cleanup loop). The
-convo cleanup runs through ``awm.agentcore.run_once`` (opencode one-shot).
+(faster-whisper PTT/continuous dictation, with the raw-transcript convo
+composer). There is no LLM in the loop.
 """

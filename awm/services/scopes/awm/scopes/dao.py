@@ -10,8 +10,8 @@ other cross-service refs use natural keys.
 machinery: a scope owns one channel, and everything written to it — messages,
 journal (debrief) entries, system notices — is a row in ``scope_posts``
 differentiated by ``kind``. Subscribers (besides the owner scope) live in
-``scope_subscribers``. Raw agent acts are NOT here — they belong to the agent
-and live in the agents service's own DB; you subscribe to an agent for those.
+``scope_subscribers``. Raw agent acts are NOT here; a session's own transcript
+is read through the transcripts service.
 """
 
 from __future__ import annotations

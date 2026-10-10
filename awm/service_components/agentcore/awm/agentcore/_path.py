@@ -1,6 +1,6 @@
 """PATH resolution for bare-binary subprocess calls (leaf copy).
 
-Lifted from ``awm.agents._path`` so agentcore stays a leaf with no awm-side
+Kept as a leaf copy so agentcore has no awm-side
 imports. The harness CLIs (``claude``, ``opencode``) commonly live in
 user-local bins that systemd's minimal PATH omits, so we search a couple of
 extra locations explicitly.

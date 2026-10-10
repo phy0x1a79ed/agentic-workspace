@@ -151,8 +151,8 @@ def cache_stats() -> dict:
 
 API_MANIFEST: dict[str, Any] = {
     "functions": [
-        {"name": "status"},
-        {"name": "force_refresh", "params": [
+        {"name": "status", "effect": "read"},
+        {"name": "force_refresh", "effect": "write", "params": [
             {"name": "file_id", "type": "string", "required": True},
             {"name": "page_id", "type": "string", "required": True},
             {"name": "board_id", "type": "string", "required": True},
@@ -160,8 +160,8 @@ API_MANIFEST: dict[str, Any] = {
             {"name": "swap", "type": "array", "required": False},
             {"name": "crop", "type": "string", "required": False},
         ]},
-        {"name": "cache_stats"},
-        {"name": "seed_demo", "params": [
+        {"name": "cache_stats", "effect": "read"},
+        {"name": "seed_demo", "effect": "write", "params": [
             {"name": "token", "type": "string", "required": False},
             {"name": "team", "type": "string", "required": False},
         ]},

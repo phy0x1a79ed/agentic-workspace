@@ -38,6 +38,7 @@ API_MANIFEST: dict[str, Any] = {
         # ---- read (MCP + CLI + HTTP) -------------------------------------
         {
             "name": "search",
+            "effect": "read",
             "tool": "writing_search",
             "description": "Search the writing corpus by keyword (FTS5), semantic "
                            "similarity, or hybrid, with metadata + tag filters.",
@@ -61,6 +62,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "get",
+            "effect": "read",
             "tool": "writing_get",
             "description": "Fetch one sample: metadata, tags, dup status, and full text.",
             "params": [
@@ -71,18 +73,21 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "stats",
+            "effect": "read",
             "tool": "writing_stats",
             "description": "Corpus summary: counts by type/grade, embed coverage, untagged.",
             "params": [],
         },
         {
             "name": "vocab",
+            "effect": "read",
             "tool": "writing_vocab",
             "description": "The closed tag vocabulary (valid form/register/grade values).",
             "params": [],
         },
         {
             "name": "feed",
+            "effect": "read",
             "tool": "writing_feed",
             "description": "Style-reference feed: full-text records for the "
                            "style-grade non-duplicate keepers (filterable) — the "
@@ -99,6 +104,7 @@ API_MANIFEST: dict[str, Any] = {
         # ---- write / maintenance (CLI + HTTP only) -----------------------
         {
             "name": "add",
+            "effect": "write",
             "tool": "writing_add",
             "surfaces": _CLI_HTTP,
             "description": "Add a new sample from inline text (stored in-DB + embedded).",
@@ -111,6 +117,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "retag",
+            "effect": "write",
             "tool": "writing_retag",
             "surfaces": _CLI_HTTP,
             "description": "Add/remove tags on a sample.",
@@ -122,6 +129,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "remove",
+            "effect": "write",
             "tool": "writing_remove",
             "surfaces": _CLI_HTTP,
             "description": "Remove a sample (drops its row, tags, FTS, and embedding).",
@@ -129,6 +137,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "link_dup",
+            "effect": "write",
             "tool": "writing_link_dup",
             "surfaces": _CLI_HTTP,
             "description": "Mark reviewed duplicates against a keeper.",
@@ -140,6 +149,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "unlink_dup",
+            "effect": "write",
             "tool": "writing_unlink_dup",
             "surfaces": _CLI_HTTP,
             "description": "Clear duplicate status on a sample.",
@@ -147,6 +157,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "import",
+            "effect": "write",
             "tool": "writing_import",
             "surfaces": _CLI_HTTP,
             "timeout": 600,
@@ -159,6 +170,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "embed",
+            "effect": "write",
             "tool": "writing_embed",
             "surfaces": _CLI_HTTP,
             "timeout": 600,
@@ -167,6 +179,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "dedup",
+            "effect": "write",
             "tool": "writing_dedup",
             "surfaces": _CLI_HTTP,
             "timeout": 300,

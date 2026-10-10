@@ -112,10 +112,9 @@ The harness talks to the loopback port directly; no token, no cookie.
 
 ## Page stripes
 
-The web UI is composed of per-page stripes under `../packages/pages/<name>/`
+The web UI is composed of per-page stripes under `awm/pages/<name>/`
 (Svelte 5 + Vite), each registered with the hub as `kind=page` and served at
-`/ui/<name>/`. The active pages are `agent`, `tts`, `stt`, and
-`components-gallery`.
+`/ui/<name>/`. The pages are the folders under `awm/pages/`.
 
 `./run.sh start` builds the pages (`npm run build --workspaces`) into `dist/`
 as the hub comes up. See the root `README.md` § *Developing a package* for the

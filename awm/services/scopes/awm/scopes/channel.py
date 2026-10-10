@@ -4,9 +4,8 @@ There is no separate rooms/messages/session_logs machinery. Every scope owns
 one append-only post log (``scope_posts``); messages, journal (debrief)
 entries, and system notices are all rows there, differentiated by ``kind``.
 Other scopes/users subscribe to a channel (``scope_subscribers``); the owner is
-implicit (the scope itself). Raw agent acts are NOT here — they belong to the
-agent and live in the agents service's own DB; you subscribe to an *agent* for
-those, and message a *scope* for these.
+implicit (the scope itself). Raw agent acts are NOT here; a session's own
+transcript is read through the transcripts service.
 
 Addressing is the scope's natural key ``(project, scope)``. For legacy
 non-agent targets (a user/project/workspace inbox) the channel need not be a
@@ -118,6 +117,28 @@ def _author_to_stored(display: str, *, conn=None) -> str:
     return f"user:{display}"
 
 
+def edge_origin(as_: str | None) -> str | None:
+    """``as_`` when the edge stamped it as a peer identity (``peer`` or ``peer:<node>``), else ``None``."""
+    if as_ == "peer" or (as_ or "").startswith("peer:"):
+        return as_
+    return None
+
+
+def is_foreign(as_: str | None) -> bool:
+    """Whether the edge stamped ``as_`` as a foreign node, by the gateway gate's rule.
+
+    A ``peer:<node>`` stamp is foreign unless the peer book calls ``<node>``
+    domestic; a node the book does not know, or a stamp naming no node, is
+    foreign. The bare legacy ``peer`` and an absent identity are not.
+    """
+    if not isinstance(as_, str) or not as_.startswith("peer:"):
+        return False
+    from awm import config
+    node = config.caller_peer(as_)
+    record = config.peer_record(node) if node else None
+    return record is None or record["relation"] != "domestic"
+
+
 def _author_to_display(author_ref: str) -> str:
     """Render the stored author back to the display form."""
     if not author_ref or author_ref == SYSTEM_REF:
@@ -224,22 +245,7 @@ def _broadcast(project: str, scope: str, event: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Delivery hook (agents service registers a sink to enqueue posts into stdin)
-# ---------------------------------------------------------------------------
-
-_delivery_sink = None  # Callable[(project, scope, ScopePost)] | None
-
-
-def set_delivery_sink(fn) -> None:
-    """Register an optional sink that receives every post destined for a
-    channel whose owner scope runs a live agent. The agents service sets this
-    (in-process when co-resident; otherwise it subscribes over the gateway)."""
-    global _delivery_sink
-    _delivery_sink = fn
-
-
-# ---------------------------------------------------------------------------
-# Cross-service emitter (the `posts` pub/sub topic the agents service subs to)
+# Cross-service emitter (the `posts` pub/sub topic)
 # ---------------------------------------------------------------------------
 
 _emitter = None  # Callable[[dict], None] | None
@@ -250,9 +256,7 @@ def set_emitter(fn) -> None:
 
     The scopes service declares a ``posts`` emitter; on start the hub adapter
     sets this to a thread-safe scheduler that ``emit``s ``{project, scope,
-    post}`` over the gateway. The agents service subscribes to it to feed human
-    messages into a live agent's stdin (a live subscription, not a poll).
-    ``post()`` runs in a worker thread, so the registered callable must hand
+    post}`` over the gateway. ``post()`` runs in a worker thread, so the registered callable must hand
     the coroutine to the service's event loop itself."""
     global _emitter
     _emitter = fn
@@ -264,15 +268,26 @@ def set_emitter(fn) -> None:
 
 def post(project: str, scope: str, *, author: str, body: str,
          kind: str = "message", meta: dict | None = None,
-         to_scope: str | None = None) -> ScopePost:
+         to_scope: str | None = None, origin: str | None = None) -> ScopePost:
     """Append a post to a scope's channel and fan it out to live subscribers
-    and (if registered) the agent-delivery sink."""
+    and the cross-service emitter.
+
+    ``origin`` is an edge-stamped peer identity (see :func:`edge_origin`). It is
+    stored verbatim as the author and ``author`` is ignored: a peer's claim about
+    who it is never outranks the edge's. The claim is kept in
+    ``meta["claimed_author"]`` so a domestic reader can see which agent sent it.
+    A caller with no stamp may not send an author of the ``peer:`` shape.
+    """
+    if origin is None and (author or "").startswith("peer:"):
+        raise ValueError("author 'peer:...' is reserved for edge-stamped peer identities")
     now = now_ms()
     pid = str(_uuid.uuid4())
-    meta = _coerce_meta(meta)
+    meta = dict(_coerce_meta(meta))
+    if origin and author:
+        meta["claimed_author"] = author
     dao = ScopesDAO()
     with dao.transaction() as conn:
-        author_ref = _author_to_stored(author, conn=conn)
+        author_ref = origin or _author_to_stored(author, conn=conn)
         ScopesDAO(conn=conn).execute(
             "INSERT INTO scope_posts "
             "(id, owner_project, owner_scope, author, kind, body, meta, ts) "
@@ -290,11 +305,6 @@ def post(project: str, scope: str, *, author: str, body: str,
         try:
             _emitter({"project": project, "scope": scope,
                       "post": post_obj.to_dict()})
-        except Exception:
-            pass
-    if _delivery_sink is not None and not (to_scope and to_scope != f"{project}/{scope}"):
-        try:
-            _delivery_sink(project, scope, post_obj)
         except Exception:
             pass
     if kind in search_index.INDEXED_KINDS and body:
@@ -328,7 +338,7 @@ def _post_filter(project, scope, kind, author, before_ts) -> tuple[str, list]:
         params.append(kind)
     if author:
         sql += " AND author = ?"
-        params.append(_author_to_stored(author))
+        params.append(author if edge_origin(author) else _author_to_stored(author))
     if before_ts is not None:
         bms = iso_to_ms(before_ts)
         if bms is not None:

@@ -5,7 +5,7 @@
   import type { TelemetryEvent } from '@awm/stt-telemetry';
   // Vite-bundled worklet URL: `?url` returns the asset URL at build time.
   // The bundled file is fetched relative to the page origin, so it works
-  // whether the page is served from /ui/stt/, /ui/agent/, or anywhere
+  // whether the page is served from /ui/stt/, /ui/dashboard/, or anywhere
   // else under the hub.
   import workletUrl from './lib/audio/worklet.js?url';
 

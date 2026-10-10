@@ -37,8 +37,8 @@ To iterate against a running sandbox without installing, use
   into the gateway catalog as `events_schedule` / `events_unschedule` /
   `events_list`.
 - **emitter:** `schedule.tick{game}` — fired on cadence (jittered), fanned out
-  on `/svc/events/emit/schedule.tick`. The `agents` service subscribes to wake a
-  bot for that game.
+  on `/svc/events/emit/schedule.tick`. A subscriber wakes a bot for that game. No
+  service in this tree subscribes today.
 
 ### Cron syntax
 

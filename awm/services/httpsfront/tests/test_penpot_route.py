@@ -255,18 +255,37 @@ def test_signed_out_penpot_asks_for_a_login():
     assert r.status_code == 200 and "username" in r.text
 
 
-def test_a_peer_bearer_does_not_get_penpot():
+#: The legacy bearer, a domestic node's token, and a foreign node's.
+PEERS = ["peer", "peer:mira", "peer:shaula"]
+
+
+@pytest.fixture(autouse=True)
+def _book(peer_book):
+    peer_book({"mira": {"relation": "domestic"}, "shaula": {"relation": "foreign"}})
+
+
+@pytest.mark.parametrize("sub", PEERS)
+def test_a_peer_does_not_get_penpot(sub):
     _, handler = _recorder()
-    with _client(_app(sub="peer"), handler) as c:
+    with _client(_app(sub=sub), handler) as c:
         assert c.get(penpot.SHELL).status_code == 404
 
 
-def test_a_peer_is_refused_on_the_mesh_profile_too():
+@pytest.mark.parametrize("sub", PEERS)
+def test_a_peer_is_refused_on_the_mesh_profile_too(sub):
     """The mesh edge consults no allow-list, so the check has to be in the
     branch rather than in policy — this is that check."""
-    _, handler = _recorder()
-    with _client(_app(sub="peer", profile=None), handler) as c:
+    seen, handler = _recorder()
+    with _client(_app(sub=sub, profile=None), handler) as c:
         assert c.get(penpot.SHELL).status_code == 404
+    assert "url" not in seen
+
+
+@pytest.mark.parametrize("sub", PEERS)
+def test_a_peer_is_refused_penpots_socket(monkeypatch, sub):
+    seen = _ws_target(monkeypatch, _app(sub=sub, profile=None),
+                      penpot.SHELL + "ws/notifications")
+    assert "url" not in seen
 
 
 # -- when penpot is not there --------------------------------------------------

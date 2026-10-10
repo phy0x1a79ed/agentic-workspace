@@ -88,7 +88,7 @@ def test_origin_of(url, expected):
 async def test_reap_kills_only_matching_origin_orphans(monkeypatch):
     killed = _capture_kills(monkeypatch)
     _fake_scan(monkeypatch, [
-        {"pid": 1001, "cmdline": "python -m awm.agents.hub_adapter",
+        {"pid": 1001, "cmdline": "python -m awm.demo.hub_adapter",
          "hub_url": "http://127.0.0.1:7819/"},   # prod orphan → reap
         {"pid": 1002, "cmdline": "python -m awm.tts.hub_adapter",
          "hub_url": "http://127.0.0.1:7821/"},   # dev hub child → keep
@@ -105,12 +105,12 @@ async def test_reap_kills_only_matching_origin_orphans(monkeypatch):
 async def test_reap_skips_live_lease_holders(monkeypatch):
     killed = _capture_kills(monkeypatch)
     # A healthy base on this origin holds a lease — must NOT be reaped.
-    rec = await _register_base("agents", pid=2001)
+    rec = await _register_base("demo", pid=2001)
     _hold_lease(rec.service_id)
     _fake_scan(monkeypatch, [
-        {"pid": 2001, "cmdline": "python -m awm.agents.hub_adapter",
+        {"pid": 2001, "cmdline": "python -m awm.demo.hub_adapter",
          "hub_url": "http://127.0.0.1:7819/"},   # live base → keep
-        {"pid": 2002, "cmdline": "python -m awm.agents.hub_adapter",
+        {"pid": 2002, "cmdline": "python -m awm.demo.hub_adapter",
          "hub_url": "http://127.0.0.1:7819/"},   # extra generation → reap
     ])
     out = await go._op_services_reap(go.ReapRequest(dry_run=False))

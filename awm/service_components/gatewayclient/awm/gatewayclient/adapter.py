@@ -409,6 +409,7 @@ class ServiceAdapter:
             await ws.send(json.dumps({
                 "kind": "reply", "id": env.get("id"),
                 "ok": False, "error": str(exc),
+                "error_class": type(exc).__name__,
             }))
 
     async def _handle_notify(self, env: dict[str, Any]) -> None:

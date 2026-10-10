@@ -39,8 +39,6 @@ declare -A DISTS=(
   [telemetry]="$WS/awm/service_components/telemetry::$WS/awm/service_components/telemetry/tests"
   [claudedaemon]="$WS/awm/service_components/claudedaemon::$WS/awm/service_components/claudedaemon/tests"
   [scopes]="$WS/awm/services/scopes::$WS/awm/services/scopes/tests"
-  [workspace]="$WS/awm/services/workspace::$WS/awm/services/workspace/tests"
-  [agents]="$WS/awm/services/agents::$WS/awm/services/agents/awm/tests"
   [artifacts]="$WS/awm/services/artifacts::$WS/awm/services/artifacts/tests"
   [writing]="$WS/awm/services/writing::$WS/awm/services/writing/tests"
   [precedence]="$WS/awm/services/precedence::$WS/awm/services/precedence/tests"
@@ -52,7 +50,6 @@ declare -A DISTS=(
   [httpsfront]="$WS/awm/services/httpsfront::$WS/awm/services/httpsfront/tests"
   [rlm-browser]="$WS/awm/services/rlm-browser::$WS/awm/services/rlm-browser/tests"
   [rlm-factorio]="$WS/awm/services/rlm-factorio::$WS/awm/services/rlm-factorio/tests"
-  [orchestrator]="$WS/awm/services/orchestrator::$WS/awm/services/orchestrator/tests"
   [graphify]="$WS/awm/services/graphify::$WS/awm/services/graphify/tests"
   [stt]="$WS/awm/services/stt::$WS/awm/services/stt/awm/stt/tests"
   [tts]="$WS/awm/services/tts::$WS/awm/services/tts/awm/tts/tests"
@@ -77,10 +74,13 @@ declare -A DISTS=(
   [dev]="$WS/awm/services/dev::$WS/awm/services/dev/tests"
   [tether]="$WS/awm/services/tether::$WS/awm/services/tether/tests"
   [kb]="$WS/awm/services/kb::$WS/awm/services/kb/tests"
+  [board]="$WS/awm/services/board::$WS/awm/services/board/tests"
+  [transcripts]="$WS/awm/services/transcripts::$WS/awm/services/transcripts/tests"
+  [representative]="$WS/awm/services/representative:$WS/awm/services/board::$WS/awm/services/representative/tests"
 )
 
 # Stable run order.
-ORDER=(gateway agentcore gatewayclient config persistence telemetry claudedaemon scopes workspace agents artifacts writing events precedence social 2fa ssh auth httpsfront rlm-browser rlm-factorio orchestrator graphify stt tts fileviewer drawio notes virtmic mic vpn compute reflection dvc claude-science dsh hermes trilium zotero penpot penpot-view penpot-plugins cx dev tether kb)
+ORDER=(gateway agentcore gatewayclient config persistence telemetry claudedaemon scopes artifacts writing events precedence social 2fa ssh auth httpsfront rlm-browser rlm-factorio graphify stt tts fileviewer drawio notes virtmic mic vpn compute reflection dvc claude-science dsh hermes trilium zotero penpot penpot-view penpot-plugins cx dev tether kb board representative transcripts)
 
 # Allow selecting a subset on the command line.
 if [ "$#" -gt 0 ]; then

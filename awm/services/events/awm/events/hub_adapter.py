@@ -7,8 +7,8 @@ loop that emits ``schedule.tick`` for every persisted schedule.
 
 The three schedule functions are exposed over the control WS and projected into
 the gateway catalog as ``events_<fn>`` tools. ``schedule.tick{game}`` is declared
-as an emitter and fanned out on ``/svc/events/emit/schedule.tick``; the ``agents``
-service subscribes to it to wake a bot for the game.
+as an emitter and fanned out on ``/svc/events/emit/schedule.tick``; subscribers
+use it to wake a bot for the game.
 
 Run via ``run.sh`` (which the hub spawns and respawns):
     python -m awm.events.hub_adapter
@@ -33,6 +33,7 @@ API_MANIFEST: dict[str, Any] = {
     "functions": [
         {
             "name": "schedule",
+            "effect": "write",
             "tool": "events_schedule",
             "description": (
                 "Schedule recurring schedule.tick emissions for a game. "
@@ -46,6 +47,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "unschedule",
+            "effect": "write",
             "tool": "events_unschedule",
             "description": "Remove a game's schedule (stops its ticks).",
             "params": [
@@ -54,6 +56,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "list",
+            "effect": "read",
             "tool": "events_list",
             "description": "List all active game schedules.",
         },
