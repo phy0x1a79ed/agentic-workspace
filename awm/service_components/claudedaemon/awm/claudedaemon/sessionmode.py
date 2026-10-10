@@ -34,10 +34,6 @@ UNKNOWN = "unknown"
 MODE_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,39}$")
 JOB_PATTERN = re.compile(r"^[0-9a-f]{8}$")
 
-#: Launch flags that only `cx start` passes on its own sessions. A background
-#: job carrying one but no lineage record was started by cx and lost its record.
-_CX_LAUNCH_FLAGS = ("--permission-mode", "--restricted")
-
 #: How far up the process tree a child looks for the session that started it.
 MAX_ANCESTRY_HOPS = 16
 
@@ -382,13 +378,16 @@ def _read_record(path: Path) -> dict[str, Any] | None:
 
 
 def _looks_cx_started(worker: dict[str, Any]) -> bool:
-    """Whether the job's recorded launch flags are ones only cx passes.
+    """Whether the job's recorded launch flags are ones only cx writes.
 
-    A start with an explicit permission mode or `--restricted` is cx's. So is a
-    start that passes both `--effort=` and `--model=` in the `=` form, which is
-    how `build_flags` writes them and how neither the pool nor a person does
-    (this covers a skip-permissions start, which has no permission flag). A
-    resumed job keeps its flags under `dispatch.launch.flagArgs`.
+    This is a fallback for a job whose lineage record is gone, so it matches the
+    exact `=` forms `build_flags` writes and nothing a person types: a person
+    passes `--permission-mode plan` as two tokens, and a resumed job keeps them
+    that way. A start with `--permission-mode=<mode>` or `--restricted` is cx's.
+    So is a start that passes both `--effort=` and `--model=`, which covers a
+    skip-permissions start. A resumed job keeps its flags under
+    `dispatch.launch.flagArgs`. The roster records no environment variable cx
+    could set as a stronger marker: only provider variables survive the launch.
     """
     dispatch = worker.get("dispatch") if isinstance(worker.get("dispatch"), dict) else {}
     launch = dispatch.get("launch") if isinstance(dispatch.get("launch"), dict) else {}
@@ -397,9 +396,10 @@ def _looks_cx_started(worker: dict[str, Any]) -> bool:
                    dispatch.get("respawnFlags"), worker.get("respawnFlags")):
         if isinstance(source, list):
             tokens.extend(source)
-    flags = {t.partition("=")[0] for t in tokens if isinstance(t, str)}
-    equals = {t.partition("=")[0] for t in tokens if isinstance(t, str) and "=" in t}
-    return bool(flags & set(_CX_LAUNCH_FLAGS)) or {"--effort", "--model"} <= equals
+    strings = [t for t in tokens if isinstance(t, str)]
+    equals = {t.partition("=")[0] for t in strings if "=" in t}
+    return ("--restricted" in strings or "--permission-mode" in equals
+            or {"--effort", "--model"} <= equals)
 
 
 def _session_record(pid: int) -> dict[str, Any] | None:

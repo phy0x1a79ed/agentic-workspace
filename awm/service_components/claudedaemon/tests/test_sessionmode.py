@@ -228,7 +228,7 @@ def _launched_with(home, args, key="args"):
 
 
 @pytest.mark.parametrize("args,key", [
-    (["--permission-mode=dontAsk"], "args"), (["--permission-mode", "plan"], "args"),
+    (["--permission-mode=dontAsk"], "args"),
     (["--restricted"], "args"), (["--permission-mode=dontAsk"], "respawnFlags"),
 ])
 def test_a_job_launched_with_cx_flags_but_no_lineage_is_unknown(home, args, key):
@@ -707,6 +707,36 @@ def test_the_pool_seed_flags_are_not_a_cx_start(home):
 def test_one_equals_form_flag_alone_is_not_enough(home):
     home.worker()
     _launch(home, args=["--model=opus"])
+    assert mode_of(ME) is None
+
+
+@pytest.mark.parametrize("source", ["fleet", "shell"])
+@pytest.mark.parametrize("flags", [
+    ["--permission-mode", "plan"], ["--permission-mode", "bypassPermissions"],
+    ["--dangerously-skip-permissions", "--effort", "high", "--name", "x",
+     "--permission-mode", "plan"],
+    ["--effort", "high", "--model", "opus"],
+])
+def test_a_persons_space_form_flags_on_a_resumed_job_are_not_a_cx_start(home, source, flags):
+    """Tony's own resumed fleet sessions carry `--permission-mode plan` as two
+    tokens and have no lineage; they must stay ungated."""
+    home.worker()
+    data = json.loads(home.roster.read_text())
+    dispatch = data["workers"][JOB]["dispatch"]
+    dispatch["source"] = source
+    dispatch["launch"] = {"mode": "resume", "flagArgs": flags}
+    dispatch["respawnFlags"] = flags
+    home.roster.write_text(json.dumps(data))
+    assert mode_of(ME) is None
+
+
+def test_the_space_form_of_a_permission_mode_never_counts_in_any_launch_field(home):
+    home.worker()
+    _launch(home, args=["--permission-mode", "plan"], flagArgs=["--permission-mode", "plan"])
+    data = json.loads(home.roster.read_text())
+    data["workers"][JOB]["dispatch"]["respawnFlags"] = ["--permission-mode", "dontAsk"]
+    data["workers"][JOB]["respawnFlags"] = ["--permission-mode", "dontAsk"]
+    home.roster.write_text(json.dumps(data))
     assert mode_of(ME) is None
 
 
