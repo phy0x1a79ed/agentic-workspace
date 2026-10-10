@@ -72,6 +72,23 @@ async def test_status_reports_counts_cursor_and_liveness(runtime, queue):
     assert out["representative_alive"] is True
     assert out["secretary_alive"] is False
     assert out["board"] == "connected"
+    assert out["sessions"]["representative"] == {"alive": True, "state": "running", "reason": "", "job": "r1"}
+    assert out["sessions"]["secretary"]["state"] == "missing"
+
+
+async def test_status_shows_a_login_block_as_not_alive_with_the_reason(runtime):
+    runtime.loop.cx.rows[0].update(state="blocked", needs="login required \u2014 run /login")
+    out = await hub_adapter.status({})
+    assert out["representative_alive"] is False
+    assert out["sessions"]["representative"] == {
+        "alive": False, "state": "blocked", "reason": "auth_required", "job": "r1"}
+
+
+async def test_status_when_cx_cannot_answer_says_unknown(runtime):
+    runtime.loop.cx.unavailable = True
+    out = await hub_adapter.status({})
+    assert out["representative_alive"] is None
+    assert out["sessions"]["representative"]["state"] == "unknown"
 
 
 async def test_status_says_connecting_until_the_stream_is_attached(runtime):
@@ -156,3 +173,11 @@ async def test_the_queue_verbs_refuse_while_the_door_is_off(monkeypatch):
     for call in (hub_adapter.list_cards({}), hub_adapter.get({"card_id": "a"}),
                  hub_adapter.assign({"card_id": "a", "agent": "b"})):
         assert (await call)["ok"] is False
+
+
+async def test_status_reports_a_session_waiting_on_the_next_prompt_as_alive(runtime):
+    runtime.loop.cx.rows[0].update(state="blocked", needs="rate limited \u2014 wait and retry")
+    out = await hub_adapter.status({})
+    assert out["representative_alive"] is True
+    assert out["sessions"]["representative"] == {
+        "alive": True, "state": "waiting", "reason": "rate limited \u2014 wait and retry", "job": "r1"}

@@ -77,7 +77,7 @@ from starlette.concurrency import run_in_threadpool
 
 from awm.config import caller_peer, peer_record, verb_category, verb_effect
 from awm.gateway import mcp_more, peer_catalog
-from awm.gateway.gateway_ops import GATEWAY_OPERATIONS
+from awm.gateway.gateway_ops import GATEWAY_OPERATIONS, bound_caller
 from awm.gateway.hub import discovery, rpc
 from awm.gateway.hub.registry import ServiceRecord, get_registry
 from awm.gateway.operations import _call_service, _to_mcp_tool, operations_to_mcp_tools
@@ -998,9 +998,10 @@ async def _run_entry(entry: dict[str, Any], args: dict, as_: str | None) -> str:
     """Run the native op or service function a catalog entry resolved to."""
     op = entry.get("op")
     if op is not None:
-        if inspect.iscoroutinefunction(op.service_func):
-            return _serialize(await _call_service(op, args))
-        return _serialize(await run_in_threadpool(_call_service, op, args))
+        with bound_caller(as_):
+            if inspect.iscoroutinefunction(op.service_func):
+                return _serialize(await _call_service(op, args))
+            return _serialize(await run_in_threadpool(_call_service, op, args))
     return _serialize(await _rpc_call(entry["rec"], entry["fn"], args, as_))
 
 

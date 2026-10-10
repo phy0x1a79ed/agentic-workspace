@@ -58,7 +58,7 @@ async def list_tools() -> list[Tool]:
 
     Requests the collapsed per-domain surface (``?view=domains``): one generic
     ``{verb, args, peer}`` tool per domain instead of hundreds of verb-tools, so a
-    non-deferring client (a spawned agentcore bot, opencode) carries a tiny tool
+    non-deferring client (a spawned bot, opencode) carries a tiny tool
     surface and learns each domain's verbs + params on demand via the reserved
     ``describe`` verb. The CLI/HTTP surfaces stay expanded (they read the default
     ``/tools``).

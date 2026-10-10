@@ -21,7 +21,7 @@ All three modes scaffold: bare repo at `projects/<project>/.bare/`, a default-br
 
 - Bare repo: `git -C projects/<project>/.bare rev-parse --is-bare-repository` returns `true`.
 - Default-branch worktree exists at `projects/<project>/<default-branch>/` and is checked out to that branch.
-- `projects/<project>/<default-branch>/.awm/` exists with `context.md`, `history.md`, `artifacts.md`, and `data`/`skills` symlinks.
+- `projects/<project>/<default-branch>/.awm/` exists with `context.md`, `history.md`, and `data`/`skills` symlinks.
 - `data/<project>/raw/` and `data/<project>/staged/` exist.
 - For `--fork` / `--clone`: `git -C projects/<project>/.bare remote -v` shows the expected `origin` (and `upstream` on fork).
 - Initial commit is present on the default branch (fresh mode).
@@ -33,7 +33,7 @@ All three modes scaffold: bare repo at `projects/<project>/.bare/`, a default-br
 projects/<project>/
   .bare/                   # bare repo
   <default-branch>/        # worktree checked out to the default branch
-    .awm/                  # gitignored scope metadata (context/history/artifacts + symlinks)
+    .awm/                  # gitignored scope metadata (context/history + symlinks)
 
 data/<project>/
   raw/                     # immutable inputs

@@ -81,7 +81,6 @@ GOAL_MANIFEST_FUNCTIONS = [
         "name": "scope_goal_read",
         "tool": "scope_goal_read",
         "effect": "read",
-        "category": "journals",
         "description": (
             "Every goal in force at a scope — the workspace frame, the project's "
             "goals and the scope's own, unioned and ordered broad to specific. "
@@ -101,7 +100,6 @@ GOAL_MANIFEST_FUNCTIONS = [
         "name": "scope_goal_history",
         "tool": "scope_goal_history",
         "effect": "read",
-        "category": "journals",
         "description": (
             "The full chain of restatements a goal belongs to, oldest first — "
             "how the objective drifted, and the tombstone if it was retired."
@@ -140,9 +138,9 @@ def _handle_goal_retire(args: dict, as_: str | None = None) -> dict:
 
 
 def _refuse_foreign(as_: str | None) -> None:
-    """Goals are not journals: the verb keeps its category, but no foreign caller reads them."""
+    """Goals are not journals: the verbs carry no category, so the foreign gate never lets a foreign caller reach them. This refusal backs the gate."""
     if channel.is_foreign(as_):
-        raise PermissionError("goals are not readable by peers")
+        raise PermissionError("goals are not readable by foreign peers")
 
 
 def _handle_goal_read(args: dict, as_: str | None = None) -> dict:

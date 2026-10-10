@@ -118,15 +118,7 @@ def test_no_category_outside_kb_and_scopes():
 
 def test_operation_files_are_scanned():
     files = {e["file"] for es in MANIFESTS.values() for e in es}
-    assert "artifacts/awm/artifacts/operations.py" in files
     assert any(f.startswith("scopes/awm/scopes/operations/") for f in files)
-
-
-def test_artifacts_operation_dataclass_accepts_effect():
-    src = ast.parse((SERVICES / "artifacts/awm/artifacts/operations.py").read_text())
-    cls = next(n for n in ast.walk(src) if isinstance(n, ast.ClassDef) and n.name == "Operation")
-    fields = {n.target.id for n in cls.body if isinstance(n, ast.AnnAssign)}
-    assert {"effect", "category"} <= fields
 
 
 def test_relabelled_verbs_are_write():

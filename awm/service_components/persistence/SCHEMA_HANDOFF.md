@@ -100,7 +100,6 @@ changing any of them.
 | Service | Owns (v1 tables) |
 |---|---|
 | **scopes** | projects, users, agents, agent identity layer, session_logs, messages, rooms, guest_list, room_transcripts (+ embeddings for post/scope/project) |
-| **artifacts** | artifacts (+ embeddings for artifact) |
 | **skills** | embeddings (skill) only — catalog is file-based |
 | **discord** | discord_operators |
 | **config** | config (KV) — already wired by T1 |
@@ -255,41 +254,6 @@ SELECT room_id, guest_kind, guest_ref, display_name, subscriptions FROM guest_li
 
 -- room_transcripts: author is a polymorphic ref (resolve per top note)
 SELECT id, room_id, author, kind, body, meta, ts FROM room_transcripts;
-```
-
----
-
-# artifacts
-
-## v1 schema (artifacts.db)
-
-```sql
--- agent_id FK dropped; (project, scope) carried inline.
-CREATE TABLE IF NOT EXISTS artifacts (
-    id             INTEGER PRIMARY KEY AUTOINCREMENT,
-    project        TEXT NOT NULL,
-    scope          TEXT NOT NULL,
-    name           TEXT NOT NULL DEFAULT '',
-    artifact_type  TEXT NOT NULL DEFAULT '',
-    path           TEXT NOT NULL DEFAULT '',
-    description    TEXT,
-    format         TEXT,
-    tags           TEXT,
-    status         TEXT NOT NULL DEFAULT 'current',
-    created_at     INTEGER NOT NULL,
-    updated_at     INTEGER NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_artifacts_scope ON artifacts(project, scope, created_at DESC);
-```
-
-Plus `embeddings` (see top), `source_type='artifact'`.
-
-## Legacy `state.db` shapes artifacts SELECTs when seeding
-
-```sql
--- legacy carries agent_id; join to (project, scope)
-SELECT agent_id, name, artifact_type, path, description, format, tags,
-       status, created_at, updated_at FROM artifacts;
 ```
 
 ---

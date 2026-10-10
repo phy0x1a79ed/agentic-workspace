@@ -6,11 +6,11 @@ paste one into that pane. tmux buffers the input and the TUI runs it the instant
 the current turn ends, which is exactly when a self-directed ``/compact`` should
 fire.
 
-The paste sequence mirrors ``awm.agentcore.claude_backend._paste_prompt``:
+The paste sequence is:
 ``load-buffer`` (stdin) → ``paste-buffer -d -p`` (``-p`` = *bracketed* paste, so a
 leading ``/`` lands as literal text instead of opening the TUI's slash menu) →
 ``send-keys Enter``. Crucially it sends **no Escape** — Escape would cancel the
-agent's in-flight turn (that is ``claude_backend.interrupt``'s job); we want the
+agent's in-flight turn (that is an interrupt's job); we want the
 command to *queue* behind the current turn, not interrupt it.
 
 This module knows tmux and nothing else. Which session to type into is

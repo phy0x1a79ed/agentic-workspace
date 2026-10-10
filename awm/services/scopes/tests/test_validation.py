@@ -6,9 +6,6 @@ workspace layout, cannot escape it. Scope names may nest — ``fabfos/dev`` is a
 scope at ``projects/metasmith/fabfos/dev`` — so ``/`` is a separator there and
 each segment is validated as a flat name would be. Project names still reject
 ``/`` outright: a slashed project implies a second bare repo one level down.
-
-(The artifacts-service entry point for the same guard lives in the artifacts
-dist tests; artifacts is its own dist with its own ``_validate_name``.)
 """
 
 from __future__ import annotations

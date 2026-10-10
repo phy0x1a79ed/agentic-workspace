@@ -1,7 +1,7 @@
 """``BaseDAO`` — own-or-passed-connection data-access base.
 
 Feature services subclass this in their own dist (e.g.
-``class ArtifactDAO(BaseDAO)``) to hang their SQL off it. The base is
+``class ScopesDAO(BaseDAO)``) to hang their SQL off it. The base is
 deliberately generic: NO feature-specific SQL lives here.
 
 The own-or-passed pattern is hoisted from the ``conn: sqlite3.Connection |

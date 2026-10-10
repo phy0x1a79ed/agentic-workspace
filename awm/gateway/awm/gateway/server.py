@@ -4,7 +4,7 @@ This is the gateway's HTTP surface. It exposes only what the gateway owns
 itself — the daemon lifecycle (`/status`, `/restart`), the generic tool
 dispatch the MCP proxy rides (`/tools`, `/invoke`, both backed by the live
 `catalog`), and the hub control plane + routing middleware. Feature surfaces
-(scopes, artifacts, …) are NOT baked in here — they arrive as services
+(scopes, social, …) are NOT baked in here — they arrive as services
 register into the catalog/hub. See `catalog.py` for the registration contract.
 """
 
@@ -19,6 +19,7 @@ from typing import Any
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
 
 from awm.config import (
     HOST,
@@ -30,7 +31,7 @@ from awm.config import (
 )
 from awm.config import modes as session_modes
 from awm.gateway import catalog, mcp_caller, peer_catalog
-from awm.gateway.gateway_ops import GATEWAY_OPERATIONS
+from awm.gateway.gateway_ops import GATEWAY_OPERATIONS, bound_caller
 from awm.gateway.operations import register_fastapi_routes
 
 __version__ = "0.1.0"
@@ -396,6 +397,18 @@ async def track_activity(request, call_next):
     return await call_next(request)
 
 
+@app.middleware("http")
+async def bind_caller_stamp(request, call_next):
+    """Let the generated control-plane routes see the edge's ``X-Awm-As``."""
+    with bound_caller(request.headers.get("X-Awm-As")):
+        return await call_next(request)
+
+
+@app.exception_handler(PermissionError)
+async def _refuse_permission(request, exc):
+    return JSONResponse({"detail": str(exc)}, status_code=403)
+
+
 # ---------------------------------------------------------------------------
 # Generated control-plane routes
 # ---------------------------------------------------------------------------
@@ -746,6 +759,8 @@ async def invoke_tool(payload: dict, request: Request):
         raise HTTPException(404, str(e))
     except FileExistsError as e:
         raise HTTPException(409, str(e))
+    except PermissionError as e:
+        raise HTTPException(403, str(e))
     except RuntimeError as e:
         raise HTTPException(500, str(e))
     except Exception as e:  # noqa: BLE001 — surface anything else with class+message

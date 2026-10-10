@@ -28,18 +28,14 @@ cd "$WS"
 COMP="$WS/awm/service_components/config:$WS/awm/service_components/persistence:$WS/awm/service_components/gatewayclient:$WS/awm/service_components/claudedaemon"
 
 # dist name -> "<source-root-dir>::<test-dir>"
-# agentcore is a leaf component (no service folder) — it has its own source
-# root + tests/ like the feature dists; it ships in the same per-dist runner.
 declare -A DISTS=(
   [gateway]="$WS/awm/gateway::$WS/awm/gateway/tests"
-  [agentcore]="$WS/awm/service_components/agentcore::$WS/awm/service_components/agentcore/tests"
   [gatewayclient]="$WS/awm/service_components/gatewayclient::$WS/awm/service_components/gatewayclient/tests"
   [config]="$WS/awm/service_components/config::$WS/awm/service_components/config/tests"
   [persistence]="$WS/awm/service_components/persistence::$WS/awm/service_components/persistence/tests"
   [telemetry]="$WS/awm/service_components/telemetry::$WS/awm/service_components/telemetry/tests"
   [claudedaemon]="$WS/awm/service_components/claudedaemon::$WS/awm/service_components/claudedaemon/tests"
   [scopes]="$WS/awm/services/scopes::$WS/awm/services/scopes/tests"
-  [artifacts]="$WS/awm/services/artifacts::$WS/awm/services/artifacts/tests"
   [writing]="$WS/awm/services/writing::$WS/awm/services/writing/tests"
   [precedence]="$WS/awm/services/precedence::$WS/awm/services/precedence/tests"
   [events]="$WS/awm/services/events::$WS/awm/services/events/tests"
@@ -80,7 +76,7 @@ declare -A DISTS=(
 )
 
 # Stable run order.
-ORDER=(gateway agentcore gatewayclient config persistence telemetry claudedaemon scopes artifacts writing events precedence social 2fa ssh auth httpsfront rlm-browser rlm-factorio graphify stt tts fileviewer drawio notes virtmic mic vpn compute reflection dvc claude-science dsh hermes trilium zotero penpot penpot-view penpot-plugins cx dev tether kb board representative transcripts)
+ORDER=(gateway gatewayclient config persistence telemetry claudedaemon scopes writing events precedence social 2fa ssh auth httpsfront rlm-browser rlm-factorio graphify stt tts fileviewer drawio notes virtmic mic vpn compute reflection dvc claude-science dsh hermes trilium zotero penpot penpot-view penpot-plugins cx dev tether kb board representative transcripts)
 
 # Allow selecting a subset on the command line.
 if [ "$#" -gt 0 ]; then

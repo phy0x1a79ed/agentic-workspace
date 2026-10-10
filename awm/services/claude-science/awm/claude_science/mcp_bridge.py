@@ -77,7 +77,6 @@ DEFAULT_ALLOWLIST: dict[str, tuple[str, ...]] = {
     "drawio": ("list", "info", "read", "cells", "export", "url", "view_url"),
     "graphify": ("find", "refs", "query", "path", "affected"),
     "dvc": ("coverage",),
-    "artifact": ("list", "get"),
     "precedence": ("search",),
 }
 

@@ -282,7 +282,7 @@ call `ssh`, `compute`, `social` and gateway control, and the mode gate for
 `cx`-started sessions documents itself as *not* a trust boundary. So the bridge ships an
 explicit `{domain: verbs}` list, enforced on `tools/call` and not merely on
 `tools/list` (hiding a tool is not refusing it). It defaults to read/query verbs
-of `scope`, `project`, `notes`, `drawio`, `graphify`, `dvc`, `artifact`,
+of `scope`, `project`, `notes`, `drawio`, `graphify`, `dvc`,
 `precedence`. Widen it in `CLAUDE_SCIENCE_MCP_ALLOW`, deliberately.
 
 ## Host file access

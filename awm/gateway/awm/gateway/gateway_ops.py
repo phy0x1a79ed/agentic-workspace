@@ -38,8 +38,10 @@ import logging
 import os
 import re
 import sys
+from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 from pydantic import BaseModel
 
@@ -47,6 +49,48 @@ from awm.gateway.operations import JsonOutput, Operation, Param
 
 _CLI = frozenset({"cli", "mcp", "http"})
 _MCP_HTTP = frozenset({"mcp", "http"})
+
+
+# ---------------------------------------------------------------------------
+# Caller identity for in-process ops
+# ---------------------------------------------------------------------------
+# A gateway op runs in this process and is handed only its declared params, so
+# the ``X-Awm-As`` stamp rides in a context variable. ``server`` binds it for
+# every HTTP request and ``catalog`` binds it around each op it dispatches.
+
+_CALLER_AS: ContextVar[str | None] = ContextVar("awm_gateway_caller_as", default=None)
+
+
+@contextmanager
+def bound_caller(as_: str | None) -> Iterator[None]:
+    """Make ``as_`` the caller stamp that ops run inside the block can see."""
+    token = _CALLER_AS.set(as_)
+    try:
+        yield
+    finally:
+        _CALLER_AS.reset(token)
+
+
+def is_peer_stamp(as_: str | None) -> bool:
+    """Whether ``as_`` is a peer identity: the legacy bare ``peer`` or ``peer:<anything>``.
+
+    Case and surrounding space are ignored, so a malformed stamp fails closed."""
+    if not isinstance(as_, str):
+        return False
+    stamp = as_.strip().lower()
+    return stamp == "peer" or stamp.startswith("peer:")
+
+
+def _book_writer_only(verb: str) -> None:
+    """Refuse a peer-book write that arrived under a peer identity.
+
+    Only this node changes its own book, so the refusal holds for a domestic
+    peer as much as a foreign one. No stamp (the local CLI) and a non-peer stamp
+    (a placed agent, an operator session) pass."""
+    if is_peer_stamp(_CALLER_AS.get()):
+        raise PermissionError(
+            f"peer {verb} changes this node's peer book: run it on this node, "
+            "not through an edge")
 
 
 # ---------------------------------------------------------------------------
@@ -630,6 +674,7 @@ def _op_peer_join(req: PeerJoinRequest) -> dict[str, Any]:
     Local to this node's book. Run it on both nodes to make the relationship
     mutual (each side records the other) — the gateway never syncs peers.
     """
+    _book_writer_only("join")
     from awm.gateway import peers
 
     return {"peer": peers.add(
@@ -638,11 +683,18 @@ def _op_peer_join(req: PeerJoinRequest) -> dict[str, Any]:
         public_key=req.public_key)}
 
 
+def _op_peer_add(req: PeerJoinRequest) -> dict[str, Any]:
+    """Same as ``peer join``, under its own verb name in the refusal."""
+    _book_writer_only("add")
+    return _op_peer_join(req)
+
+
 def _op_peer_set(req: PeerSetRequest) -> dict[str, Any]:
     """Update a recorded peer's relation, swarm, principal, role or public key.
 
     Setting ``public_key`` pins the key and recomputes its fingerprint.
     """
+    _book_writer_only("set")
     from awm.gateway import peers
 
     return {"peer": peers.update(
@@ -652,6 +704,7 @@ def _op_peer_set(req: PeerSetRequest) -> dict[str, Any]:
 
 def _op_peer_grant(req: PeerGrantRequest) -> dict[str, Any]:
     """Grant a foreign peer one read category (a lowercase slug, e.g. ``journals``)."""
+    _book_writer_only("grant")
     from awm.gateway import peers
 
     record, warning = peers.grant(req.name, req.category)
@@ -663,6 +716,7 @@ def _op_peer_grant(req: PeerGrantRequest) -> dict[str, Any]:
 
 def _op_peer_revoke(req: PeerGrantRequest) -> dict[str, Any]:
     """Revoke one read category from a peer."""
+    _book_writer_only("revoke")
     from awm.gateway import peers
 
     return {"peer": peers.revoke(req.name, req.category)}
@@ -719,6 +773,7 @@ def _peer_join_params() -> list[Param]:
 
 def _op_peer_forget(name: str) -> dict[str, Any]:
     """Remove a peer from this node's book."""
+    _book_writer_only("forget")
     from awm.gateway import peers
 
     entry = peers.remove(name)
@@ -1019,7 +1074,7 @@ GATEWAY_OPERATIONS: list[Operation] = [
         name="peer_add",
         description="Record a peer node in this node's address book (same as "
                     "peer_join).",
-        service_func=_op_peer_join,
+        service_func=_op_peer_add,
         http_method="POST", http_path="/peers/add",
         cli_group="peer", cli_command="add",
         output=JsonOutput(),

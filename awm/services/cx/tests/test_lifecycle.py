@@ -1089,6 +1089,20 @@ def test_list_merges_roster_lineage_and_interactive_sessions(home, launched, mon
     assert list(rows) == [PARENT_JOB, "main", CHILD_JOB], "oldest first"
 
 
+def test_list_carries_needs_and_detail_from_the_job_record(home, monkeypatch):
+    from awm.cx import lifecycle
+
+    monkeypatch.setattr(lifecycle, "_tmux_panes", dict)
+    home.add(PARENT_JOB, "<warm saiga>", os.getpid())
+    path = home.jobs / PARENT_JOB / "state.json"
+    rec = json.loads(path.read_text())
+    rec.update(state="blocked", needs="login required \u2014 run /login", detail="d" * 500)
+    path.write_text(json.dumps(rec))
+    row = next(r for r in lifecycle.collect() if r["job"] == PARENT_JOB)
+    assert row["state"] == "blocked" and row["needs"] == "login required \u2014 run /login"
+    assert row["detail"] == "d" * 200
+
+
 def test_list_filters_by_project_and_scope(home, launched, monkeypatch):
     from awm.cx import lifecycle
 

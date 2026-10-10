@@ -118,6 +118,8 @@ class FakeCx:
         self.started: list[dict] = []
         self.unavailable = False
         self.refuse: str | None = None
+        self.refuse_stop: str | None = None
+        self.stopped: list[str] = []
         self._n = 0
 
     async def list(self) -> list[dict]:
@@ -136,8 +138,19 @@ class FakeCx:
         return {"ok": True, "job": job, "mode": spec["mode"]}
 
 
+    async def stop(self, job: str) -> dict:
+        self.stopped.append(job)
+        if self.refuse_stop:
+            return {"ok": False, "reason": self.refuse_stop}
+        for row in self.rows:
+            if row.get("job") == job:
+                row["state"] = "gone"
+        return {"ok": True, "job": job}
+
+
 def session_row(mode: str, job: str = "abc12345", state: str = "idle", name: str | None = None,
-                caller: str | None = None, parent: str | None = None) -> dict:
+                caller: str | None = None, parent: str | None = None,
+                needs: str | None = None, detail: str | None = None) -> dict:
     """A cx list row. A hand-started session has no lineage, so no caller."""
     return {"job": job, "name": name or mode, "mode": mode, "state": state,
-            "caller": caller, "parent": parent}
+            "caller": caller, "parent": parent, "needs": needs, "detail": detail}

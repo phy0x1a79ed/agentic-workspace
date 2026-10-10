@@ -10,7 +10,23 @@ nothing, because starting on an unknown state is how duplicates happen. A role
 is present when a live session carries its mode label *and* is one the door
 started (the queue database records the job ids). Other sessions carrying the
 label are logged and ignored. The door starts a missing role with the launch
-config from `awm.representative.personas` and never stops or takes a session.
+config from `awm.representative.personas` and never takes a session.
+
+A present session is alive only when it can work (`sessions.assess`). What the
+door does with the others:
+
+* running: nothing.
+* exited or missing: start one, backing off after a failed start.
+* waiting (a rate limit, overload, a question the session asked): nothing. It
+  clears on the next prompt.
+* blocked (login expired, usage limit, account or org problem): nothing but a
+  warning when the state changes. A restart cannot answer a login, and a loop
+  of restarts would only pile up sessions, so the door leaves the session for a
+  person. When it recovers the door calls `on_started`, so queued cards are
+  announced again at once.
+* failed (an unclassified API error): stop it, which the door may do because it
+  started it, and start a new one. Restarts back off, doubling from
+  `MIN_RETRY_S`. A session's own "failed: ..." line is not this state.
 """
 
 from __future__ import annotations
@@ -55,6 +71,9 @@ class Loop:
         self._notes: dict[str, float] = {}
         self._next_try: dict[str, float] = {}
         self._failures: dict[str, int] = {}
+        self._restarts: dict[str, int] = {}
+        self._restarted_at: dict[str, float] = {}
+        self._seen: dict[str, tuple] = {}
         self.jobs: dict[str, str] = {}
         self._running = False
 
@@ -92,18 +111,25 @@ class Loop:
         except sessions.CxUnavailable:
             return None
 
-    async def alive(self) -> dict[str, bool | None]:
-        """Whether each role has a live session. None means cx could not say."""
+    async def health(self) -> dict[str, dict[str, Any]]:
+        """Per role: ``alive`` (None when cx could not say), ``state``, ``reason`` and ``job``."""
         try:
             rows = await self.cx.list()
-        except sessions.CxUnavailable:
-            return {role: None for role in ROLES}
-        out: dict[str, bool | None] = {}
+        except sessions.CxUnavailable as exc:
+            unknown = {"alive": None, "state": "unknown", "reason": str(exc), "job": None}
+            return {role: dict(unknown) for role in ROLES}
+        out: dict[str, dict[str, Any]] = {}
         for role in ROLES:
             spec = self._spec(role)
-            out[role] = (bool(sessions.holders(rows, spec["mode"], self.queue.session_jobs(role)))
-                         if spec else None)
+            if spec is None:
+                out[role] = {"alive": None, "state": "unknown", "reason": "no launch config", "job": None}
+                continue
+            out[role] = sessions.assess(rows, spec["mode"], self.queue.session_jobs(role)).as_dict()
         return out
+
+    async def alive(self) -> dict[str, bool | None]:
+        """Whether each role has a session that can work. None means cx could not say."""
+        return {role: h["alive"] for role, h in (await self.health()).items()}
 
     # -- one tick ------------------------------------------------------------
 
@@ -164,25 +190,36 @@ class Loop:
                        f"{role}: session {stranger.get('job')} carries mode {spec['mode']!r} "
                        "but the door did not start it; ignoring it")
         have = sessions.holders(rows, spec["mode"], jobs)
+        health = sessions.assess(rows, spec["mode"], jobs)
+        self._report(role, health)
+        stopped: str | None = None
         if have:
-            self.jobs[role] = have[0].get("job") or ""
-            self._failures.pop(role, None)
             if len(have) > 1:
                 self._note(f"dup:{role}", f"{role}: {len(have)} live sessions carry mode "
                            f"{spec['mode']!r}; the door leaves them alone")
-            return
+            if not health.restartable:
+                self.jobs[role] = health.job or ""
+                if health.alive:
+                    self._failures.pop(role, None)
+                    self._settle_restarts(role)
+                return
+            stopped = await self._stop_failed(role, health)
+            if stopped is None:
+                return
         self.jobs.pop(role, None)
-        taken = [r for r in rows if r.get("name") == spec.get("name") and r.get("state") != sessions.GONE]
+        taken = [r for r in rows if r.get("name") == spec.get("name")
+                 and r.get("state") != sessions.GONE and r.get("job") != stopped]
         if taken:
             self._note(f"name:{role}", f"{role}: a session the door did not start already "
                        f"holds the name {spec.get('name')!r}; not starting")
             return
-        if self._next_try.get(role, 0.0) > time.time():
+        if stopped is None and self._next_try.get(role, 0.0) > time.time():
             return
         reply = await self.cx.start(spec)
         if reply.get("ok"):
             self._failures.pop(role, None)
-            self._next_try.pop(role, None)
+            if stopped is None:
+                self._next_try.pop(role, None)
             self.jobs[role] = reply.get("job") or ""
             if reply.get("job"):
                 self.queue.record_session(role, reply["job"])
@@ -195,6 +232,50 @@ class Loop:
         self._next_try[role] = time.time() + wait
         self._note(f"start:{role}", f"{role}: cx would not start it: "
                    f"{reply.get('reason') or reply.get('error') or reply!r}")
+
+    async def _stop_failed(self, role: str, health: sessions.Health) -> str | None:
+        """Stop the door's failed session so a new one can start. Returns its job, or None to wait.
+
+        A failed session is stopped at most once per back-off period, so a
+        session that fails as soon as it starts cannot make the door churn.
+        """
+        if self._next_try.get(role, 0.0) > time.time():
+            return None
+        self._restarts[role] = self._restarts.get(role, 0) + 1
+        self._restarted_at[role] = time.time()
+        self._next_try[role] = time.time() + self._restart_wait(role)
+        reply = await self.cx.stop(health.job or "")
+        if not reply.get("ok"):
+            self._note(f"stop:{role}", f"{role}: cx would not stop the failed session "
+                       f"{health.job}: {reply.get('reason') or reply!r}")
+            return None
+        log.info("door: stopped the failed %s %s (%s); starting a new one", role, health.job, health.reason)
+        return health.job
+
+    def _restart_wait(self, role: str) -> float:
+        base = max(MIN_RETRY_S, self._interval_s or config.reconcile_interval_s())
+        return min(MAX_RETRY_S, base * 2 ** (self._restarts.get(role, 1) - 1))
+
+    def _settle_restarts(self, role: str) -> None:
+        """Forget past restarts once the replacement has run for a while without failing."""
+        since = self._restarted_at.get(role)
+        if since is not None and time.time() - since >= QUIET_S:
+            self._restarts.pop(role, None)
+            self._restarted_at.pop(role, None)
+
+    def _report(self, role: str, health: sessions.Health) -> None:
+        """Log a session that cannot work once per change of state, and wake the role on recovery."""
+        seen = (health.job, health.state, health.reason)
+        before = self._seen.get(role)
+        if before == seen:
+            return
+        self._seen[role] = seen
+        if health.state in (sessions.BLOCKED, sessions.FAILED):
+            log.warning("door: the %s (%s) is %s: %s", role, health.job, health.state,
+                        health.reason or "no reason given")
+        elif health.alive and before is not None and before[1] in (sessions.BLOCKED, sessions.FAILED):
+            log.info("door: the %s (%s) can work again", role, health.job)
+            self._on_started(role)
 
     def _adopt(self, role: str, spec: dict, rows: list[dict], jobs: set[str]) -> bool:
         """Record a session of this role that the door started but never recorded.

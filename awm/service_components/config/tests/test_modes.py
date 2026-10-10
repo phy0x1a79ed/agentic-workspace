@@ -109,7 +109,7 @@ def test_a_delegate_may_call_a_verb_that_declares_read(domain, verb):
 
 @pytest.mark.parametrize("effect", ["write", "queue", "secret", None])
 @pytest.mark.parametrize("domain,verb", [("scope", "post"), ("cx", "start"), ("cx", "stop"),
-                                         ("kb", "add"), ("artifact", "publish"),
+                                         ("kb", "add"), ("notes", "write"),
                                          ("precedence", "record"), ("scope", "sync"),
                                          ("reflection", "send")])
 def test_a_delegate_is_refused_every_other_effect_and_an_undeclared_one(domain, verb, effect):

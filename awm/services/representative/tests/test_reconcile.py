@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 
 import pytest
 
@@ -113,7 +114,7 @@ async def test_two_live_copies_are_left_alone(queue):
     ours(queue, cx, "secretary", job="c3c3c3c3")
     await loop_for(cx, queue).tick()
     assert cx.started == []
-    assert not hasattr(cx, "stop")  # the door has no way to stop a session
+    assert cx.stopped == []  # duplicates are never stopped
 
 
 async def test_nothing_starts_when_cx_cannot_say_what_is_running(queue):
@@ -342,3 +343,196 @@ def test_the_real_personas_default_to_awm_door_work(monkeypatch):
     assert real.work_where() == ("awm", "door-work")
     monkeypatch.setenv("AWM_DOOR_WORK_SCOPE", "elsewhere")
     assert real.work_where() == ("awm", "elsewhere")
+
+
+# -- a session that is up but cannot work ---------------------------------------
+
+LOGIN = "login required \u2014 run /login"
+
+
+def modes_started(cx):
+    return [s["mode"] for s in cx.started]
+
+
+async def test_a_representative_blocked_on_login_is_not_alive_and_not_restarted(queue, caplog):
+    cx = FakeCx()
+    ours(queue, cx, "representative", state="blocked", needs=LOGIN)
+    ours(queue, cx, "secretary", job="sec00001", state="done")
+    loop = loop_for(cx, queue)
+    health = await loop.health()
+    assert health["representative"] == {"alive": False, "state": "blocked",
+                                        "reason": "auth_required", "job": "abc12345"}
+    assert health["secretary"]["alive"] is True
+    assert (await loop.alive())["representative"] is False
+    with caplog.at_level("WARNING"):
+        for _ in range(5):
+            await loop.tick()
+    assert cx.started == [] and cx.stopped == []  # no restart storm
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert len(warnings) == 1 and "auth_required" in warnings[0].getMessage()
+    assert loop.jobs["representative"] == "abc12345"
+
+
+async def test_a_changed_block_is_warned_about_again_and_recovery_wakes_the_role(queue, caplog):
+    cx = FakeCx()
+    ours(queue, cx, "representative", state="blocked", needs=LOGIN)
+    ours(queue, cx, "secretary", job="sec00001", state="done")
+    woke = []
+    loop = loop_for(cx, queue, on_started=woke.append)
+    with caplog.at_level("INFO"):
+        await loop.tick()
+        cx.rows[0]["needs"] = "usage limit reached \u2014 check plan"
+        await loop.tick()
+        assert woke == []
+        cx.rows[0]["state"] = "working"
+        await loop.tick()
+        await loop.tick()
+    levels = [(r.levelname, r.getMessage()) for r in caplog.records if "representative" in r.getMessage()]
+    assert [lv for lv, _ in levels].count("WARNING") == 2
+    assert "usage limit reached" in levels[1][1]
+    assert levels[-1] == ("INFO", "door: the representative (abc12345) can work again")
+    assert woke == ["representative"]  # once, so queued cards are announced again at once
+    assert (await loop.health())["representative"]["state"] == "running"
+    assert cx.started == [] and cx.stopped == []
+
+
+@pytest.mark.parametrize("needs", [
+    "org disabled OAuth \u2014 use API key or ask admin",
+    "account on hold \u2014 see detail",
+    "cloud credentials unavailable \u2014 check or refresh them",
+    "organization verification required \u2014 see detail",
+    "usage limit reached \u2014 check plan",
+])
+async def test_a_block_only_a_person_can_clear_is_not_alive_and_keeps_claude_codes_words(queue, needs):
+    cx = FakeCx()
+    ours(queue, cx, "representative", state="blocked", needs=needs)
+    health = (await loop_for(cx, queue).health())["representative"]
+    assert (health["alive"], health["state"], health["reason"]) == (False, "blocked", needs)
+
+
+@pytest.mark.parametrize("needs", [
+    "rate limited \u2014 wait and retry",
+    "API overloaded \u2014 wait and retry",
+    "API unavailable \u2014 retry",
+    "request too large \u2014 /compact or trim",
+    "which of the two cards first?",   # the session's own closing question
+    "blocked: globus login needed",    # the session's own line, not an expired login
+    None,
+])
+async def test_a_block_that_clears_on_the_next_prompt_is_waiting_and_alive(queue, needs):
+    cx = FakeCx()
+    ours(queue, cx, "representative", state="blocked", needs=needs)
+    ours(queue, cx, "secretary", job="sec00001", state="done")
+    loop = loop_for(cx, queue)
+    health = (await loop.health())["representative"]
+    assert (health["alive"], health["state"]) == (True, "waiting")
+    assert health["reason"] == (needs or "needs input")
+    await loop.tick()
+    assert cx.started == [] and cx.stopped == []
+
+
+async def test_a_login_expired_detail_marks_auth_required_when_needs_is_otherwise(queue):
+    cx = FakeCx()
+    ours(queue, cx, "representative", state="blocked", needs="API error \u2014 see detail",
+         detail="Login expired. Run /login")
+    health = (await loop_for(cx, queue).health())["representative"]
+    assert (health["alive"], health["reason"]) == (False, "auth_required")
+
+
+@pytest.mark.parametrize("state", ["working", "done", "idle", "unknown"])
+async def test_a_running_session_is_alive_and_untouched(queue, state):
+    cx = FakeCx()
+    ours(queue, cx, "representative", state=state)
+    ours(queue, cx, "secretary", job="sec00001", state=state)
+    loop = loop_for(cx, queue)
+    await loop.tick()
+    await loop.tick()
+    assert cx.started == [] and cx.stopped == []
+    assert (await loop.health())["representative"] == {
+        "alive": True, "state": "running", "reason": "", "job": "abc12345"}
+
+
+async def test_an_exited_session_is_reported_then_restarted(queue):
+    cx = FakeCx()
+    ours(queue, cx, "representative", state="gone")
+    ours(queue, cx, "secretary", job="sec00001", state="done")
+    loop = loop_for(cx, queue)
+    health = (await loop.health())["representative"]
+    assert (health["alive"], health["state"], health["job"]) == (False, "exited", "abc12345")
+    await loop.tick()
+    assert modes_started(cx) == ["representative"]
+    assert cx.stopped == []
+    assert (await loop.health())["representative"]["state"] == "running"
+
+
+async def test_a_role_the_door_never_started_is_missing(queue):
+    health = await loop_for(FakeCx(), queue).health()
+    assert health["representative"] == {"alive": False, "state": "missing", "reason": "", "job": None}
+
+
+async def test_health_says_unknown_when_cx_cannot_answer(queue):
+    cx = FakeCx()
+    cx.unavailable = True
+    health = await loop_for(cx, queue).health()
+    assert health["representative"]["alive"] is None
+    assert health["representative"]["state"] == "unknown"
+
+
+async def test_a_failed_session_is_stopped_and_replaced(queue):
+    cx = FakeCx()
+    ours(queue, cx, "representative", state="failed", needs="API error")
+    ours(queue, cx, "secretary", job="sec00001", state="done")
+    loop = loop_for(cx, queue)
+    assert (await loop.health())["representative"]["reason"] == "API error"
+    await loop.tick()
+    assert cx.stopped == ["abc12345"]
+    assert modes_started(cx) == ["representative"]
+    assert queue.session_jobs("representative") == {"abc12345", "job0001"}
+    assert loop.jobs["representative"] == "job0001"
+
+
+async def test_a_replacement_that_fails_again_waits_out_the_back_off(queue):
+    cx = FakeCx()
+    ours(queue, cx, "representative", state="failed", needs="API error")
+    ours(queue, cx, "secretary", job="sec00001", state="done")
+    loop = loop_for(cx, queue)
+    await loop.tick()
+    cx.rows[-1].update(state="failed", needs="API error")  # the replacement fails at once
+    for _ in range(4):
+        await loop.tick()
+    assert cx.stopped == ["abc12345"] and len(cx.started) == 1
+    loop._next_try["representative"] = 0.0  # the wait is over
+    await loop.tick()
+    assert cx.stopped == ["abc12345", "job0001"] and len(cx.started) == 2
+    first = loop._next_try["representative"] - time.time()
+    assert first > reconcile.MIN_RETRY_S  # doubled
+
+
+async def test_a_failed_session_cx_will_not_stop_is_not_replaced(queue):
+    cx = FakeCx()
+    cx.refuse_stop = "cx will not stop it"
+    ours(queue, cx, "representative", state="failed", needs="API error")
+    ours(queue, cx, "secretary", job="sec00001", state="done")
+    loop = loop_for(cx, queue)
+    for _ in range(3):
+        await loop.tick()
+    assert cx.stopped == ["abc12345"] and cx.started == []
+
+
+async def test_a_failed_line_the_session_wrote_itself_is_not_a_failure_to_restart(queue):
+    cx = FakeCx()
+    ours(queue, cx, "representative", state="failed", needs="board unreachable for card X")
+    ours(queue, cx, "secretary", job="sec00001", state="done")
+    loop = loop_for(cx, queue)
+    for _ in range(3):
+        await loop.tick()
+    assert (await loop.health())["representative"]["state"] == "running"
+    assert cx.started == [] and cx.stopped == []
+
+
+async def test_a_blocked_or_failed_session_the_door_did_not_start_is_never_touched(queue):
+    cx = FakeCx([session_row("representative", job="evil0001", state="failed"),
+                 session_row("secretary", job="evil0002", state="blocked", name="other")])
+    await loop_for(cx, queue).tick()
+    assert cx.stopped == []
+    assert modes_started(cx) == ["representative", "secretary"]

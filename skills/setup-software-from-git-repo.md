@@ -111,4 +111,4 @@ When setup is complete (or blocked), summarize for the user:
 - Any bugs, workarounds, or deviations encountered (for later triage)
 - Any integration files created but left unwired (with full paths)
 
-Debriefing (session logging, artifact registration) is a separate skill the user triggers explicitly — do **not** run it as part of this protocol.
+Debriefing (session logging) is a separate skill the user triggers explicitly — do **not** run it as part of this protocol.

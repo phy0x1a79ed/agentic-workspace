@@ -15,7 +15,7 @@ awm is a modular **gateway** plus a set of out-of-process **feature services**. 
 The tree is a set of pip dists under `awm/` that merge into the PEP 420 `awm` namespace:
 
 - **Gateway** — `awm.gateway`. It discovers, bootstraps and supervises services, and renders their APIs onto MCP, HTTP and the CLI.
-- **Shared Python components** — `awm/service_components/`: `awm.config`, `awm.persistence`, `awm.gatewayclient`, `awm.agentcore`, `awm.claudedaemon`. These are imported source with no `install.sh`.
+- **Shared Python components** — `awm/service_components/`: `awm.config`, `awm.persistence`, `awm.gatewayclient`, `awm.claudedaemon`. These are imported source with no `install.sh`.
 - **Frontend source** — `awm/ui_components/` and `awm/pages/`. See § *Frontend*.
 - **Feature services** — `awm/services/<name>/`, each with its own dist, DB and `run.sh`. `awm services list` reports the live set. Each folder's `INSTALL.md` is its contract.
 
@@ -29,16 +29,6 @@ The `awm/gateway/awm/gateway/` nesting is intentional. It is a PEP 420 layout th
 ### Ownership and identity
 
 Each feature service owns its own SQLite DB. There is no shared `state.db`. Services refer to each other's records by natural key, such as an agent's `(project, scope)` pair. A service validates such a key by calling the owner over gateway RPC, never by importing it. `scopes` owns identity and exposes it through the RPCs frozen in `awm/services/scopes/IDENTITY_CONTRACT.md`.
-
-### agentcore
-
-`awm.agentcore` talks to a CLI agent harness and yields normalized events. It knows nothing about scopes or the gateway and imports neither `awm.config` nor the gateway.
-
-- `open_agent(AgentConfig)` returns an `AgentSession` with `subscribe()`, `send()` and `close()`. `run_once(config, prompt, schema?)` wraps it for one shot.
-- Both harnesses are subprocess drivers. Claude runs as `--print` stream-json with `--permission-mode=bypassPermissions`. OpenCode runs as a warm `opencode serve` with `--dangerously-skip-permissions`. There is no Agent SDK and no OpenRouter.
-- Both map into one `AgentEvent{id, kind, text?, data?, ts}`. `id` is the dedupe and cursor key end to end.
-
-No service imports agentcore today. `cx` starts Claude Code sessions through `awm.claudedaemon` instead, and `stt` convo mode no longer uses agentcore. It accumulates the raw whisper transcript and submits on measured silence.
 
 ### claudedaemon
 
