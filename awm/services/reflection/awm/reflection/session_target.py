@@ -32,7 +32,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-from awm.claudedaemon import DaemonLane
+from awm.claudedaemon import DaemonLane, roster
 
 log = logging.getLogger("awm.reflection.session_target")
 
@@ -77,57 +77,30 @@ def _proc_start(pid: int) -> Optional[str]:
     everything before the *last* ``)`` is skipped; after that, field N sits at
     index N-3.
     """
-    try:
-        with open(f"/proc/{pid}/stat", encoding="utf-8") as fp:
-            data = fp.read()
-    except OSError:
-        return None
-    try:
-        return data[data.rfind(")") + 2:].split()[19]
-    except IndexError:
-        return None
+    return roster.proc_start(pid)
 
 
 def read_session_record(repl_pid: int) -> dict:
     """Return Claude Code's session record for ``repl_pid``.
 
     Raises :class:`ResolveError` if there is no record, it is unreadable, or it
-    describes a *different* process that has since inherited this pid. Records
-    are keyed by pid and pids get recycled, so the record's ``procStart`` is
-    checked against the live process's start time before it is trusted — without
-    that, a long-dead session's record could point injection at whatever now
-    holds its number.
+    describes a *different* process that has since inherited this pid. The read
+    and the recycled-pid check are `awm.claudedaemon.roster.read_session_record`;
+    the directory and the start-time reader are passed in so they stay
+    overridable here.
     """
-    path = SESSIONS_DIR / f"{repl_pid}.json"
     try:
-        record = json.loads(path.read_text())
-    except FileNotFoundError:
-        raise ResolveError(
-            f"no Claude Code session record for pid {repl_pid}; the caller does "
-            f"not look like a Claude Code session, so there is nothing to inject "
-            f"into") from None
-    except (OSError, ValueError) as exc:
-        raise ResolveError(f"could not read session record for pid {repl_pid}: "
-                           f"{exc}") from None
-
-    live = _proc_start(repl_pid)
-    if live is None:
-        raise ResolveError(f"calling process {repl_pid} is gone")
-    claimed = str(record.get("procStart", ""))
-    if claimed and claimed != live:
-        raise ResolveError(
-            f"session record for pid {repl_pid} is stale (it describes a process "
-            f"started at {claimed}, but pid {repl_pid} started at {live} — the pid "
-            f"was recycled); refusing to inject")
-    return record
+        return roster.read_session_record(
+            repl_pid, sessions_dir=SESSIONS_DIR, proc_start_fn=_proc_start)
+    except roster.SessionRecordError as exc:
+        raise ResolveError(str(exc)) from None
 
 
 def _children() -> dict[int, list[int]]:
     """ppid → [child pids] for the live process table, via the test seam."""
     if PROCESS_CHILDREN is not None:
         return PROCESS_CHILDREN()
-    from awm.reflection import tmux_inject
-    return tmux_inject._ppid_children()
+    return roster.ppid_children()
 
 
 def _roster_worker(record: dict, repl_pid: int) -> dict:
@@ -147,10 +120,8 @@ def _roster_worker(record: dict, repl_pid: int) -> dict:
     belongs to somebody else — and refusing there is what keeps a looser join key
     from ever widening who reflection can type into.
     """
-    from awm.reflection import tmux_inject
-
     try:
-        roster = json.loads(ROSTER_PATH.read_text())
+        daemon_roster = json.loads(ROSTER_PATH.read_text())
     except FileNotFoundError:
         raise ResolveError(
             "the Claude Code daemon roster does not exist, so this background "
@@ -158,7 +129,7 @@ def _roster_worker(record: dict, repl_pid: int) -> dict:
     except (OSError, ValueError) as exc:
         raise ResolveError(f"could not read the daemon roster: {exc}") from None
 
-    workers = roster.get("workers") or {}
+    workers = daemon_roster.get("workers") or {}
     job_id = str(record.get("jobId") or "")
     session_id = str(record.get("sessionId") or "")
     kids: Optional[dict[int, list[int]]] = None
@@ -174,7 +145,7 @@ def _roster_worker(record: dict, repl_pid: int) -> dict:
         kids = _children()
         worker = next((w for w in workers.values()
                        if isinstance(w.get("pid"), int)
-                       and tmux_inject._subtree_contains(w["pid"], repl_pid, kids)),
+                       and roster.subtree_contains(w["pid"], repl_pid, kids)),
                       None)
     if worker is None:
         raise ResolveError(
@@ -186,7 +157,7 @@ def _roster_worker(record: dict, repl_pid: int) -> dict:
     if isinstance(host, int) and _proc_start(host) is not None:
         if kids is None:
             kids = _children()
-        if not tmux_inject._subtree_contains(host, repl_pid, kids):
+        if not roster.subtree_contains(host, repl_pid, kids):
             raise ResolveError(
                 f"the daemon roster entry for job {job_id or '<unset>'} names PTY "
                 f"host {host}, which is running but does not contain pid "

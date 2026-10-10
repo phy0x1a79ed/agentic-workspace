@@ -82,7 +82,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     try:
         # A placed agent's proxy carries its placement identity in AWM_AS (set
         # in its per-placement spawn-mcp config). Stamp it as X-Awm-As so the
-        # core can resolve the call to that placement (the agents B-op tools
+        # core can resolve the call to that placement (the placement B-op tools
         # need no model-supplied token). Read at call time, not import time, so a
         # reused proxy always reflects its own env. Absent for normal sessions.
         as_ = os.environ.get("AWM_AS")

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import time
 from pathlib import Path
 
 import pytest
@@ -35,11 +36,20 @@ def box(tmp_path, monkeypatch):
     root = tmp_path / "claude"
     shutil.copytree(FIXTURES, root)
     roster = root / "daemon" / "roster.json"
-    roster.write_text(
+    text = (
         roster.read_text()
         .replace('"__ALIVE_PID__"', str(os.getpid()))
         .replace('"__ALIVE_START__"', json.dumps(_own_proc_start()))
     )
+    # The capture's start times age with the wall clock until every session is
+    # past the rotate age. Shift them together so the newest is seconds old and
+    # the spacing between sessions stays as captured.
+    data = json.loads(text)
+    newest = max(w["startedAt"] for w in data["workers"].values())
+    shift = int(time.time() * 1000) - 5000 - newest
+    for w in data["workers"].values():
+        w["startedAt"] += shift
+    roster.write_text(json.dumps(data))
     monkeypatch.setenv("AWM_CX_ROSTER", str(roster))
     monkeypatch.setenv("AWM_CX_JOBS", str(root / "jobs"))
     monkeypatch.setenv("AWM_CX_STATE", str(root / "cx"))

@@ -5,7 +5,7 @@ behind one object so a service's adapter is a few lines:
 
     from awm.telemetry import Telemetry
 
-    tel = Telemetry("orchestrator")
+    tel = Telemetry("svc")
 
     # publish (append + live fan-out) wherever state changes:
     tel.emit(f"task:{task_id}", "state_changed", "", {"from": a, "to": b})

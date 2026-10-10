@@ -1,21 +1,22 @@
-"""Tests for `_stamp_reflection_caller` — the /invoke header-to-arg identity stamp.
+"""Tests for `_stamp_caller` — the /invoke header-to-arg identity stamp.
 
 An agent should never need to discover or pass anything about itself: `awm-mcp`
 runs as a stdio child of the calling session and forwards its parent pid as
-`X-Awm-Session-Pid`, and this is the one place that attaches it to a reflection
-call before the call reaches the catalog.
+`X-Awm-Session-Pid`, and this is the one place that attaches it to a call that
+acts on a session (every reflection verb, and `cx` `start` and `stop`) before
+the call reaches the catalog.
 
 The stamp is authoritative, not a default. Reflection injects into the caller's
-own prompt, so a `_caller_pid` the model could set would be a way to type into
-another agent's session — hence it is always overwritten from the header, and
-removed outright when there is no header.
+own prompt, and `cx start` records the caller as the new session's parent, so a
+`_caller_pid` the model could set would name another agent — hence it is always
+overwritten from the header, and removed outright when there is no header.
 """
 
 import pytest
 pytestmark = [pytest.mark.smoke]
 
 from awm.gateway import server as _server
-from awm.gateway.server import _stamp_reflection_caller
+from awm.gateway.server import _stamp_caller
 
 
 @pytest.fixture
@@ -33,17 +34,17 @@ def resolves(monkeypatch):
 
 def test_stamps_pid_for_domain_call():
     args = {"verb": "compact", "args": {}}
-    _stamp_reflection_caller("reflection", args, "2488")
+    _stamp_caller("reflection", args, "2488")
     assert args["args"]["_caller_pid"] == 2488
 
 
 def test_stamps_pid_for_flat_call():
     args = {}
-    _stamp_reflection_caller("reflection_compact", args, "2488")
+    _stamp_caller("reflection_compact", args, "2488")
     assert args["_caller_pid"] == 2488
 
     args2 = {}
-    _stamp_reflection_caller("reflection_send", args2, "77")
+    _stamp_caller("reflection_send", args2, "77")
     assert args2["_caller_pid"] == 77
 
 
@@ -51,17 +52,17 @@ def test_creates_the_args_bag_when_the_domain_call_omits_it():
     # A no-argument `reflection(verb="compact")` arrives with no inner bag at
     # all; identity still has to land somewhere.
     args = {"verb": "compact"}
-    _stamp_reflection_caller("reflection", args, "2488")
+    _stamp_caller("reflection", args, "2488")
     assert args["args"]["_caller_pid"] == 2488
 
 
 def test_model_supplied_caller_pid_is_overwritten():
     args = {"verb": "compact", "args": {"_caller_pid": 999}}
-    _stamp_reflection_caller("reflection", args, "2488")
+    _stamp_caller("reflection", args, "2488")
     assert args["args"]["_caller_pid"] == 2488
 
     flat = {"_caller_pid": 999}
-    _stamp_reflection_caller("reflection_compact", flat, "2488")
+    _stamp_caller("reflection_compact", flat, "2488")
     assert flat["_caller_pid"] == 2488
 
 
@@ -69,17 +70,17 @@ def test_model_supplied_caller_pid_is_stripped_without_a_header():
     # No header means no known caller. Leaving the model's value in place would
     # let an agent name a target; it must be removed, not honoured.
     args = {"verb": "compact", "args": {"_caller_pid": 999}}
-    _stamp_reflection_caller("reflection", args, None)
+    _stamp_caller("reflection", args, None)
     assert "_caller_pid" not in args["args"]
 
     flat = {"_caller_pid": 999}
-    _stamp_reflection_caller("reflection_compact", flat, None)
+    _stamp_caller("reflection_compact", flat, None)
     assert "_caller_pid" not in flat
 
 
 def test_non_numeric_header_is_ignored():
     args = {"verb": "compact", "args": {"_caller_pid": 999}}
-    _stamp_reflection_caller("reflection", args, "not-a-pid")
+    _stamp_caller("reflection", args, "not-a-pid")
     assert "_caller_pid" not in args["args"]
 
 
@@ -90,17 +91,93 @@ def test_covers_verbs_added_after_this_was_written():
     # as "no caller" and refuses every call to them.
     for verb in ("mode", "whoami", "some_future_verb"):
         flat = {}
-        _stamp_reflection_caller(f"reflection_{verb}", flat, "2488")
+        _stamp_caller(f"reflection_{verb}", flat, "2488")
         assert flat["_caller_pid"] == 2488, verb
 
 
 def test_other_domains_untouched():
     args = {"verb": "post", "args": {"_caller_pid": 5}}
-    _stamp_reflection_caller("notes", args, "2488")
+    _stamp_caller("notes", args, "2488")
     assert args["args"]["_caller_pid"] == 5
 
     flat = {}
-    _stamp_reflection_caller("scope_refresh", flat, "2488")
+    _stamp_caller("scope_refresh", flat, "2488")
+    assert "_caller_pid" not in flat
+
+
+# ---------------------------------------------------------------------------
+# `cx` start and stop
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("verb", ["start", "stop"])
+def test_cx_start_and_stop_are_stamped_in_both_shapes(verb):
+    nested = {"verb": verb, "args": {}}
+    _stamp_caller("cx", nested, "2488")
+    assert nested["args"]["_caller_pid"] == 2488
+
+    flat = {}
+    _stamp_caller(f"cx_{verb}", flat, "2488")
+    assert flat["_caller_pid"] == 2488
+
+
+def test_cx_domain_call_without_an_args_bag_gets_one():
+    args = {"verb": "start"}
+    _stamp_caller("cx", args, "2488")
+    assert args["args"]["_caller_pid"] == 2488
+
+
+@pytest.mark.parametrize("pid_header", ["2488", None, "not-a-pid"])
+def test_model_supplied_caller_pid_on_cx_start_never_survives(pid_header):
+    nested = {"verb": "start", "args": {"project": "awm", "_caller_pid": 999}}
+    _stamp_caller("cx", nested, pid_header)
+    assert nested["args"].get("_caller_pid") != 999
+    assert nested["args"]["project"] == "awm"
+
+    flat = {"_caller_pid": 999}
+    _stamp_caller("cx_stop", flat, pid_header)
+    assert flat.get("_caller_pid") != 999
+
+
+def test_model_supplied_caller_pid_on_cx_start_is_stripped_without_a_header():
+    nested = {"verb": "start", "args": {"_caller_pid": 999}}
+    _stamp_caller("cx", nested, None)
+    assert "_caller_pid" not in nested["args"]
+
+    flat = {"_caller_pid": 999}
+    _stamp_caller("cx_start", flat, None)
+    assert "_caller_pid" not in flat
+
+
+def test_cx_start_descendant_header_is_walked(resolves):
+    flat = {}
+    _stamp_caller("cx_start", flat, None, "910")
+    assert flat["_caller_pid"] == 900 and resolves == [910]
+
+
+@pytest.mark.parametrize("verb", ["list", "claim", "seed", "remove", None])
+def test_other_cx_verbs_are_left_alone(verb):
+    nested = {"args": {"_caller_pid": 5}}
+    if verb:
+        nested["verb"] = verb
+    _stamp_caller("cx", nested, "2488")
+    assert nested["args"]["_caller_pid"] == 5
+
+    if verb:
+        flat = {"_caller_pid": 5}
+        _stamp_caller(f"cx_{verb}", flat, "2488")
+        assert flat["_caller_pid"] == 5
+
+
+def test_cx_verb_that_only_starts_with_start_is_left_alone():
+    flat = {}
+    _stamp_caller("cx_start_later", flat, "2488")
+    assert "_caller_pid" not in flat
+
+
+def test_a_domain_that_shares_a_prefix_with_cx_is_left_alone():
+    flat = {}
+    _stamp_caller("cxx_start", flat, "2488")
     assert "_caller_pid" not in flat
 
 
@@ -215,12 +292,12 @@ def test_descendant_header_is_resolved_to_its_session(resolves):
     # that does. Without this the call refuses with "does not look like a Claude
     # Code session" and the hook lane cannot exist at all.
     args = {"verb": "mode", "args": {}}
-    _stamp_reflection_caller("reflection", args, None, "910")
+    _stamp_caller("reflection", args, None, "910")
     assert args["args"]["_caller_pid"] == 900
     assert resolves == [910]
 
     flat = {}
-    _stamp_reflection_caller("reflection_mode", flat, None, "910")
+    _stamp_caller("reflection_mode", flat, None, "910")
     assert flat["_caller_pid"] == 900
 
 
@@ -229,14 +306,14 @@ def test_session_header_is_never_walked(resolves):
     # record has vanished into a climb to whatever ancestor session exists —
     # which for a nested agent is the parent's prompt.
     flat = {}
-    _stamp_reflection_caller("reflection_mode", flat, "910", None)
+    _stamp_caller("reflection_mode", flat, "910", None)
     assert flat["_caller_pid"] == 910
     assert resolves == []
 
 
 def test_session_header_wins_when_both_are_present(resolves):
     flat = {}
-    _stamp_reflection_caller("reflection_mode", flat, "2488", "910")
+    _stamp_caller("reflection_mode", flat, "2488", "910")
     assert flat["_caller_pid"] == 2488
     assert resolves == []
 
@@ -246,19 +323,19 @@ def test_unresolvable_descendant_is_stamped_unchanged(resolves):
     # and reflection refuses it, exactly as it would have before the header
     # existed. The walk may not invent an identity.
     flat = {}
-    _stamp_reflection_caller("reflection_mode", flat, None, "777")
+    _stamp_caller("reflection_mode", flat, None, "777")
     assert flat["_caller_pid"] == 777
 
 
 def test_non_numeric_descendant_header_strips_a_model_supplied_pid(resolves):
     flat = {"_caller_pid": 999}
-    _stamp_reflection_caller("reflection_mode", flat, None, "not-a-pid")
+    _stamp_caller("reflection_mode", flat, None, "not-a-pid")
     assert "_caller_pid" not in flat
     assert resolves == []
 
 
 def test_descendant_header_does_not_touch_other_domains(resolves):
     flat = {}
-    _stamp_reflection_caller("scope_refresh", flat, None, "910")
+    _stamp_caller("scope_refresh", flat, None, "910")
     assert "_caller_pid" not in flat
     assert resolves == []

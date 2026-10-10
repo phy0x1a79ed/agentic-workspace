@@ -1,15 +1,16 @@
-"""Hub adapter for the `cx` service — the warm start for Claude Code.
+"""Hub adapter for the `cx` service — Claude Code sessions on this node.
 
-Keeps one background Claude Code session idling so that `cx` in a terminal
-attaches to a renderer that has already started, instead of paying a cold
-launch. The session is seeded in a neutral directory and moved to the caller's
-directory at claim time, so the pool is not keyed by directory and the first
-`cx` in a project is as fast as the hundredth.
+`start`, `list` and `stop` are the session lifecycle other agents use. The rest
+of the service is the warm start: it keeps one background Claude Code session
+idling so that `cx` in a terminal attaches to a renderer that has already
+started, instead of paying a cold launch. The session is seeded in a neutral
+directory and moved to the caller's directory at claim time, so the pool is not
+keyed by directory and the first `cx` in a project is as fast as the hundredth.
 
 Every function carries an explicit ``tool`` name under a ``cx_`` prefix, which
 is what decides the domain: the gateway folds the MCP surface by splitting the
-projected name on its first underscore. So the surface is ``awm cx status`` and
-``mcp__awm__cx {verb:"status"}``.
+projected name on its first underscore. So the surface is ``awm cx list`` and
+``mcp__awm__cx {verb:"list"}``.
 
 Run via ``run.sh`` (which the gateway spawns and respawns):
     python -m awm.cx.hub_adapter
@@ -23,7 +24,7 @@ from typing import Any
 
 from awm.gatewayclient import ServiceAdapter, spawn_supervised
 
-from awm.cx import claim, pool, reconcile, remove, seed
+from awm.cx import claim, lifecycle, pool, reconcile, remove, seed
 
 log = logging.getLogger("awm.cx.hub_adapter")
 
@@ -31,23 +32,87 @@ LOOP = reconcile.Loop()
 
 API_MANIFEST: dict[str, Any] = {
     "description": (
-        "The warm start for Claude Code. A background session is kept idling "
-        "so the `cx` command in a terminal attaches to an already-painted "
-        "renderer. Read `status` to see what is being held; the other verbs "
-        "are for operating the pool, and `cx` itself is the everyday surface."
+        "Claude Code sessions on this node. `start` creates a named background "
+        "session in a scope's worktree, `list` shows every session with its "
+        "lineage, and `stop` ends one that `start` created. The service also "
+        "keeps one warm session idling so the `cx` command in a terminal "
+        "attaches to an already-painted renderer; `claim`, `seed` and `remove` "
+        "operate that pool, and `cx` itself is the everyday surface."
     ),
     "functions": [
         {
-            "name": "status",
-            "tool": "cx_status",
+            "name": "start",
+            "tool": "cx_start",
             "description": (
-                "Report the pool: every session this service owns with its "
-                "age, whether it is claimable and why not, whether a Claude "
-                "Code daemon is running at all, the binary version the pool "
-                "seeds against, whether this process holds the reconcile lock "
-                "and when its last tick ran."
+                "Start a named background Claude Code session in a scope's "
+                "worktree, creating the worktree if it is absent, and return "
+                "its job id and the `claude attach` command. Refuses on a "
+                "station, for a caller that is not a domestic peer, when no "
+                "Claude Code daemon runs, when the worktree is untrusted, or "
+                "when a live session already holds the name. The session "
+                "defaults to skip-permissions, sonnet[1m] and medium effort."
             ),
-            "params": [],
+            "params": [
+                {"name": "project", "type": "string", "required": True,
+                 "description": "The project the scope belongs to."},
+                {"name": "scope", "type": "string", "required": True,
+                 "description": "The scope whose worktree is the session's directory."},
+                {"name": "prompt", "type": "string",
+                 "description": "The first task. Without one the session starts empty."},
+                {"name": "name", "type": "string",
+                 "description": "The session's name; defaults to the scope."},
+                {"name": "model", "type": "string",
+                 "description": "A model alias or full name."},
+                {"name": "effort", "type": "string",
+                 "description": "low, medium, high, xhigh or max."},
+                {"name": "permission", "type": "string",
+                 "description": "A permission mode (plan, acceptEdits, auto, "
+                                "manual, dontAsk, bypassPermissions). Omitted "
+                                "means skip-permissions."},
+                {"name": "mode", "type": "string",
+                 "description": "A label recorded with the session, which a "
+                                "gateway gate can key on. Defaults to worker."},
+                {"name": "disallowed_tools", "type": "array",
+                 "description": "Tool names the session may not use."},
+                {"name": "remote_control", "type": "boolean",
+                 "description": "Enable Remote Control, named for the session."},
+            ],
+            "timeout": 1800,
+            "effect": "write",
+        },
+        {
+            "name": "list",
+            "tool": "cx_list",
+            "description": (
+                "List the sessions on this node: background jobs with their "
+                "state, parent, caller and mode, interactive terminal sessions "
+                "with a `tmux attach` command, and the warm pool. Read this to "
+                "see what is running; the pool summary says whether a Claude "
+                "Code daemon runs at all, the binary version the pool seeds "
+                "against and when the reconcile loop last ticked."
+            ),
+            "params": [
+                {"name": "project", "type": "string",
+                 "description": "Only sessions in this project."},
+                {"name": "scope", "type": "string",
+                 "description": "Only sessions in this scope."},
+            ],
+            "effect": "read",
+        },
+        {
+            "name": "stop",
+            "tool": "cx_stop",
+            "description": (
+                "Stop a session that `start` created. The conversation is "
+                "kept and `claude attach <job>` reopens it. Refuses a job "
+                "that `start` did not create."
+            ),
+            "params": [
+                {"name": "job", "type": "string", "required": True,
+                 "description": "The job id `start` returned."},
+            ],
+            "timeout": 30,
+            "effect": "write",
         },
         {
             "name": "claim",
@@ -63,6 +128,7 @@ API_MANIFEST: dict[str, Any] = {
                  "description": "The directory to move the session to."},
             ],
             "timeout": 9,
+            "effect": "write",
         },
         {
             "name": "seed",
@@ -77,6 +143,7 @@ API_MANIFEST: dict[str, Any] = {
             ),
             "params": [],
             "timeout": 60,
+            "effect": "write",
         },
         {
             "name": "remove",
@@ -94,6 +161,7 @@ API_MANIFEST: dict[str, Any] = {
                  "description": "Carry out the plan (default false)."},
             ],
             "timeout": 120,
+            "effect": "write",
         },
     ],
     "emitters": [],
@@ -136,8 +204,24 @@ async def _claim(args: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+async def _list(args: dict[str, Any]) -> dict[str, Any]:
+    rows = await asyncio.to_thread(
+        lifecycle.collect, args.get("project") or None, args.get("scope") or None)
+    return {"sessions": rows, "pool": pool.status(LOOP)}
+
+
+async def _start(args: dict[str, Any], as_: str | None = None) -> dict[str, Any]:
+    return await lifecycle.start(args, as_)
+
+
+async def _stop(args: dict[str, Any], as_: str | None = None) -> dict[str, Any]:
+    return await lifecycle.stop(args, as_)
+
+
 HANDLERS: dict[str, Any] = {
-    "status": lambda args: pool.status(LOOP),
+    "start": _start,
+    "list": _list,
+    "stop": _stop,
     "claim": _claim,
     "seed": _seed,
     "remove": _remove,

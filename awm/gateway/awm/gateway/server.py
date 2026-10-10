@@ -426,27 +426,59 @@ def list_tools_endpoint(view: str | None = None, peers: int = 0):
 
 
 # The expanded surface names a verb `<domain>_<verb>`, and service names cannot
-# contain an underscore, so this prefix is exactly reflection's verbs — including
-# ones added later, which a hand-maintained list would silently miss.
-_REFLECTION_FLAT_PREFIX = "reflection_"
+# contain an underscore, so the domain is exactly the text before the first one.
+#
+# The domains whose calls are stamped with the caller's pid, and the verbs of each
+# that are. `None` means every verb, including ones added later, which a
+# hand-maintained list would silently miss. A domain gets a narrow list when only
+# some of its verbs act on, or on behalf of, the calling session.
+_CALLER_STAMPED: dict[str, frozenset[str] | None] = {
+    "reflection": None,
+    "cx": frozenset({"start", "stop"}),
+}
 
 
-def _stamp_reflection_caller(name: str, args: dict, pid_header: str | None,
-                             descendant_header: str | None = None) -> None:
-    """Stamp the calling session's own pid onto a reflection call.
+def _stamped_bag(name: str, args: dict) -> dict | None:
+    """The dict that carries `_caller_pid` for this call, or None if it is not stamped.
+
+    Domain shape (``name`` is the domain, the verb is ``args["verb"]``) nests the
+    verb's arguments under ``args["args"]``; flat shape (``<domain>_<verb>``)
+    carries them at the top level. The bag is created when the domain call omits
+    it, so identity still has somewhere to land.
+    """
+    domain, sep, verb = name.partition("_")
+    if domain not in _CALLER_STAMPED:
+        return None
+    verbs = _CALLER_STAMPED[domain]
+    if sep:
+        return args if verbs is None or verb in verbs else None
+    if verbs is not None and args.get("verb") not in verbs:
+        return None
+    inner = args.get("args")
+    if not isinstance(inner, dict):
+        inner = {}
+        args["args"] = inner
+    return inner
+
+
+def _stamp_caller(name: str, args: dict, pid_header: str | None,
+                  descendant_header: str | None = None) -> None:
+    """Stamp the calling session's own pid onto a call that acts on a session.
 
     `awm-mcp` runs as a stdio child of the session that calls it, so it forwards
     its parent pid as `X-Awm-Session-Pid`; that identifies the caller regardless
-    of whether it is hosted in a tmux pane or as a background job. Reflection is
-    the only domain whose contract with the model requires zero awareness of any
-    of this — calls arrive carrying nothing about who is making them, and this is
-    the one place identity is attached before dispatch.
+    of whether it is hosted in a tmux pane or as a background job. The stamped
+    calls (`_CALLER_STAMPED`) are every `reflection` verb, which injects into the
+    caller's own prompt, and `cx` `start` and `stop`, which record the caller as
+    the new session's parent. Their contract with the model requires zero
+    awareness of any of this: calls arrive carrying nothing about who is making
+    them, and this is the one place identity is attached before dispatch.
 
     The value is always *overwritten*, and stripped entirely when no header is
     present, so `_caller_pid` cannot be supplied from the model side. That is the
-    point: reflection injects into the caller's own prompt, so being able to name
-    a different target would turn it into a way to type into other agents.
-    Scoped to reflection only — no other service's args are touched. Mutates
+    point: with reflection, naming a different target would turn it into a way to
+    type into other agents, and with `cx start` it would let a session claim any
+    other session as its parent. No other call's args are touched. Mutates
     ``args`` in place (mirrors how the flat/domain shapes already nest it).
 
     ``X-Awm-Caller-Pid`` is the opt-in second door, for a caller that is *some
@@ -458,17 +490,11 @@ def _stamp_reflection_caller(name: str, args: dict, pid_header: str | None,
     fail-closed refusal (a pid with no record) into a climb to whatever *ancestor*
     session exists, which for a nested agent is the parent's prompt. Opt-in keeps
     the walk to callers that asked for it, and the resolved pid is still only a
-    narrowing step — reflection re-reads the record and checks it before typing.
+    narrowing step — the receiving service re-reads the record and checks it.
     ``X-Awm-Session-Pid`` wins when both are present.
     """
-    if name == "reflection":
-        inner = args.get("args")
-        if not isinstance(inner, dict):
-            inner = {}
-            args["args"] = inner
-    elif name.startswith(_REFLECTION_FLAT_PREFIX):
-        inner = args
-    else:
+    inner = _stamped_bag(name, args)
+    if inner is None:
         return
     if pid_header and pid_header.isdigit():
         inner["_caller_pid"] = int(pid_header)
@@ -490,8 +516,8 @@ async def invoke_tool(payload: dict, request: Request):
     if not name:
         raise HTTPException(400, "missing 'name' in payload")
     as_ = request.headers.get("X-Awm-As")
-    _stamp_reflection_caller(name, args, request.headers.get("X-Awm-Session-Pid"),
-                             request.headers.get("X-Awm-Caller-Pid"))
+    _stamp_caller(name, args, request.headers.get("X-Awm-Session-Pid"),
+                  request.headers.get("X-Awm-Caller-Pid"))
     try:
         result = await catalog.dispatch(name, args, as_=as_)
     except peer_catalog.PeerRedirect as e:

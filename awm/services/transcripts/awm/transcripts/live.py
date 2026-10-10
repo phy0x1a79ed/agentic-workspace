@@ -17,63 +17,25 @@ complete on its own:
   roster keeps the id the job started with, so this is the only place the
   current one appears.
 
-CAUTION: unreadable means live. A sweep that cannot tell must not delete.
+CAUTION: unreadable means live. A sweep that cannot tell must not delete. The
+read is `awm.claudedaemon.roster.live_session_ids`, which raises
+`roster.Unreadable` for a record that exists and cannot be read; that error
+propagates out of `session_ids`, so the sweep stops instead of acting on a
+shorter list than the truth.
 """
 
 from __future__ import annotations
 
-import json
 import os
 from pathlib import Path
+
+from awm.claudedaemon import roster
 
 SESSIONS = Path(os.path.expanduser("~/.claude/sessions"))
 ROSTER = Path(os.path.expanduser("~/.claude/daemon/roster.json"))
 JOBS = Path(os.path.expanduser("~/.claude/jobs"))
 
 
-def _running(pid: int) -> bool:
-    return Path(f"/proc/{pid}").exists()
-
-
-def _load(path: Path) -> dict:
-    try:
-        return json.loads(path.read_text())
-    except (OSError, ValueError):
-        return {}
-
-
 def session_ids() -> set[str]:
-    ids: set[str] = set()
-
-    try:
-        records = list(SESSIONS.glob("*.json"))
-    except OSError:
-        records = []
-    for rec in records:
-        try:
-            pid = int(rec.stem)
-        except ValueError:
-            continue
-        if not _running(pid):
-            continue
-        sid = _load(rec).get("sessionId")
-        if sid:
-            ids.add(str(sid))
-
-    for worker in (_load(ROSTER).get("workers") or {}).values():
-        sid = worker.get("sessionId")
-        if sid:
-            ids.add(str(sid))
-
-    try:
-        jobs = [d for d in JOBS.iterdir() if d.is_dir()]
-    except OSError:
-        jobs = []
-    for job in jobs:
-        state = _load(job / "state.json")
-        for key in ("sessionId", "resumeSessionId"):
-            sid = state.get(key)
-            if sid:
-                ids.add(str(sid))
-
-    return ids
+    return roster.live_session_ids(
+        sessions_dir=SESSIONS, roster_path=ROSTER, jobs_dir=JOBS)
