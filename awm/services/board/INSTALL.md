@@ -26,8 +26,10 @@ Trilium admits loopback callers only, so the host must be the node that runs
 it. Exactly one host process may run: it holds `process.lock` and a second
 process refuses to start. A claim is atomic only while that holds.
 
-The edge mounts the door at `/board/` on the public name. The host binds
-loopback and never a public port.
+The edge mounts the door at `/board/` on the public name when `AWM_EDGE_BOARD=1`
+on the edge. `AWM_BOARD_PORT` must agree on both sides. The mount strips every
+`X-Awm-*` header (`awm/services/httpsfront/INSTALL.md`). The host binds loopback
+and never a public port.
 
 ## Environment
 

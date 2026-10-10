@@ -521,9 +521,8 @@ def _stamp_caller(name: str, args: dict, pid_header: str | None,
     narrowing step — the receiving service re-reads the record and checks it.
     ``X-Awm-Session-Pid`` wins when both are present.
 
-    A request that carries ``X-Awm-As`` was forwarded by an edge or comes from a
-    placed agent, so a pid header on it names a process on some other host or in
-    some other context. Both pid headers are ignored then, and the value is
+    A request that carries ``X-Awm-As`` was forwarded by an edge, so a pid header
+    on it names a process on some other host or in some other context. Both pid headers are ignored then, and the value is
     stripped like any other call without one.
     """
     inner = _stamped_bag(name, args)
@@ -561,7 +560,7 @@ def _svc_stamp(svc: str, headers: Any, as_: str | None) -> Callable[[str, dict],
 # `/svc/<svc>/fn/<fn>`, before dispatch. The calling session is the one the
 # `X-Awm-Session-Pid` / `X-Awm-Caller-Pid` header names, resolved as
 # `_stamp_caller` resolves it. A request that carries `X-Awm-As` came through an
-# edge or from a placed agent, where the pid header is not trusted, and is not
+# edge, where the pid header is not trusted, and is not
 # gated here: the edge gates it by relation and effect. WebSocket, emit and
 # hub-proxied paths carry no pid header and are ungated. That is safe only while
 # a restricted session cannot make a raw HTTP request: its launch tool list holds
@@ -602,8 +601,8 @@ def _mode_of_pid(pid: int) -> str | None:
 def _caller_mode(headers: Any, as_: str | None) -> str | None:
     """The mode of the session making this request, or None when it has none.
 
-    None means the request is not from a session (no pid header, or an edge or
-    placed-agent request) or is from one that is positively not cx-started.
+    None means the request is not from a session (no pid header, or an edge
+    request) or is from one that is positively not cx-started.
     """
     if as_:
         return None

@@ -100,19 +100,10 @@ changing any of them.
 | Service | Owns (v1 tables) |
 |---|---|
 | **scopes** | projects, users, agents, agent identity layer, session_logs, messages, rooms, guest_list, room_transcripts (+ embeddings for post/scope/project) |
-| **agents** | agent_instances, agent_transcript |
 | **artifacts** | artifacts (+ embeddings for artifact) |
 | **skills** | embeddings (skill) only — catalog is file-based |
 | **discord** | discord_operators |
 | **config** | config (KV) — already wired by T1 |
-
-> Note: in legacy v37, `agent_instances` lived in the same DB as `agents`. The
-> plan assigns `agent_instances` + `agent_transcript` to the **agents** service.
-> Since `agent_instances.agent_id` referenced `agents(id)` (a `scopes`-owned
-> table), that FK crosses the DB boundary and is re-keyed to `project, scope`
-> below. `agent_transcript` has no legacy table (the legacy room/agent
-> transcript was `room_transcripts`, owned by scopes); it is a new agents-owned
-> table — seed source is empty, define fresh.
 
 ---
 
@@ -265,56 +256,6 @@ SELECT room_id, guest_kind, guest_ref, display_name, subscriptions FROM guest_li
 -- room_transcripts: author is a polymorphic ref (resolve per top note)
 SELECT id, room_id, author, kind, body, meta, ts FROM room_transcripts;
 ```
-
----
-
-# agents
-
-## v1 schema (agents.db)
-
-```sql
--- agent_instances: legacy agent_id → agents(id) was a scopes-owned FK; drop
--- it and carry (project, scope) inline.
-CREATE TABLE IF NOT EXISTS agent_instances (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    project         TEXT NOT NULL,
-    scope           TEXT NOT NULL,
-    cli_session_id  TEXT,
-    log_path        TEXT,
-    started_at      INTEGER NOT NULL,
-    ended_at        INTEGER,
-    data            TEXT NOT NULL DEFAULT '{}'
-);
-CREATE INDEX IF NOT EXISTS idx_agent_instances_scope_started
-    ON agent_instances(project, scope, started_at DESC);
-CREATE INDEX IF NOT EXISTS idx_agent_instances_open
-    ON agent_instances(project, scope) WHERE ended_at IS NULL;
-
--- agent_transcript: NEW agents-owned table (no legacy source). Define to the
--- agents service's needs; suggested shape mirrors room_transcripts.
-CREATE TABLE IF NOT EXISTS agent_transcript (
-    id          TEXT PRIMARY KEY,
-    project     TEXT NOT NULL,
-    scope       TEXT NOT NULL,
-    kind        TEXT NOT NULL,
-    body        TEXT NOT NULL DEFAULT '',
-    meta        TEXT NOT NULL DEFAULT '{}',
-    ts          INTEGER NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_agent_transcript_scope_ts
-    ON agent_transcript(project, scope, ts);
-```
-
-## Legacy `state.db` shapes agents SELECTs when seeding
-
-```sql
--- agent_instances: legacy agent_id → resolve to (project, scope) via the
--- identity join at the top of this doc.
-SELECT agent_id, cli_session_id, log_path, started_at, ended_at, data
-  FROM agent_instances;
-```
-
-`agent_transcript` has no legacy seed source — start empty.
 
 ---
 

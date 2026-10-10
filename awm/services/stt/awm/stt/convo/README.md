@@ -5,7 +5,7 @@ the raw STT transcript is accumulated into a single composer message; once the m
 has been silent long enough the message auto-submits. There is no LLM. PTT mode is
 untouched.
 
-> The former LLM "refiner" (an `awm.agentcore` opencode one-shot that rewrote each
+> The former LLM "refiner" (an opencode one-shot that rewrote each
 > cut and voted on completeness) was removed — it added ~6s of latency and the raw
 > whisper text, re-passed accurately on each cut, is good enough. The
 > `CONVO_REFINE`/`CONVO_PROVIDER`/`CONVO_MODEL` knobs and the `cleanup.py`/`prompt.py`

@@ -474,6 +474,16 @@ beneath it carrying the label the board groups by — `#status` unless
 nothing else, which is why the note API already reaches all of it and this
 service offers no board verb.
 
+The federation board is one such board. The note that carries `#federationBoard`
+is the board, and each card is a child note. The `board` service
+(`awm/services/board/`) writes those cards through this service's note verbs,
+so a card's status is its column and a drag in the browser changes it. This
+service's verbs admit loopback callers only, so the `board` host must run on the
+node that runs Trilium. Make that board in the browser like any other and label
+it. The `board` service refuses to guess when no note carries the label or two
+do. It writes only the four values `Posted`, `In progress`, `Done` and `Failed`,
+so the board's `label:status` definition must offer them.
+
 It offered three once. `board_ensure`, `card_upsert` and `board_cards` are gone,
 and each is replaced by something a person could do by hand:
 

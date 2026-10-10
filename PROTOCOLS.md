@@ -65,9 +65,8 @@ A hub scope integrates a set of peripheral scopes with two local git operations.
 
 | Hub | Branch | Peripherals |
 |-----|--------|-------------|
-| `feat-dag` | `feat/feat-dag` | `svc-agents`, `svc-orchestrator`, `svc-events`, `web-stt`, `web-tts`, `web-ui` |
+| `feat-dag` | `feat/feat-dag` | `svc-events`, `web-stt`, `web-tts`, `web-ui` |
 | `feat-gamebot` | `feat/feat-gamebot` | `svc-effector`, `svc-events`, `rlm-browser`, `rlm-factorio`, `rlm-chess` |
-| `feat-fleet` | `feat/feat-fleet` | `svc-agents` |
 | `dev` | `dev` | all promotable scopes |
 
 A hub may copy its row into its `.awm/context.md`.

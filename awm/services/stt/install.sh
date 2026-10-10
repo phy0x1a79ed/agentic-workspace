@@ -4,11 +4,8 @@
 # Installs the component libraries it imports (config, persistence,
 # gatewayclient) first, then the service itself — which pulls in
 # `faster-whisper` for STT and `numpy`. Components have no install.sh of their
-# own — they are pulled in here as plain editable dependencies. The convo
-# cleanup loop drives the `awm.agentcore` opencode one-shot path; `agentcore` is
-# pure imported source (no install.sh) and is resolved on PYTHONPATH by the dev
-# sandbox / installed alongside the gateway in prod. Override the target env
-# with AWM_ENV=<name>.
+# own — they are pulled in here as plain editable dependencies. Override the
+# target env with AWM_ENV=<name>.
 #
 # NOTE: faster-whisper downloads its model weights on FIRST use (default
 # `small.en`), not at install time — the first transcription pays a one-time

@@ -2,7 +2,7 @@
 
 ## Purpose & Contents
 
-This file is the reference for agents that change awm itself. It covers the gateway, the feature-service contract and lifecycle, the catalog that renders services onto MCP, HTTP and the CLI, dev sandboxes, the data-layer internals, the frontend component system, federation pitfalls, a file map, and how to run tests.
+This file is the reference for agents that change awm itself. It covers the gateway, the feature-service contract and lifecycle, the catalog that renders services onto MCP, HTTP and the CLI, the tier split and the verb gates, dev sandboxes, the data-layer internals, the frontend component system, federation pitfalls, a file map, and how to run tests.
 
 Agent orientation goes in `AGENTS.md`. Workspace procedures go in `PROTOCOLS.md`. Human install and service authoring go in `README.md` § *Authoring a service*. Cross-node design goes in `FEDERATION.md`.
 
@@ -38,20 +38,21 @@ Each feature service owns its own SQLite DB. There is no shared `state.db`. Serv
 - Both harnesses are subprocess drivers. Claude runs as `--print` stream-json with `--permission-mode=bypassPermissions`. OpenCode runs as a warm `opencode serve` with `--dangerously-skip-permissions`. There is no Agent SDK and no OpenRouter.
 - Both map into one `AgentEvent{id, kind, text?, data?, ts}`. `id` is the dedupe and cursor key end to end.
 
-The agents service builds its sessions through agentcore. `stt` convo mode does not use it. It accumulates the raw whisper transcript and submits on measured silence.
+No service imports agentcore today. `cx` starts Claude Code sessions through `awm.claudedaemon` instead, and `stt` convo mode no longer uses agentcore. It accumulates the raw whisper transcript and submits on measured silence.
+
+### claudedaemon
+
+`awm.claudedaemon` is everything awm knows about Claude Code's background sessions. It reads the daemon roster and the per-job and per-process records (`roster`), launches a session (`launch`), checks directory trust (`trust`), types a line into a session over the daemon's PTY socket (`pty`, `lane`, `job`) and answers which restricted mode a session runs in (`sessionmode`). It decides nothing about whose session a caller may reach. `cx`, `reflection`, `transcripts`, the front door and the gateway each import it and each make that decision for themselves.
+
+**CAUTION** `sessionmode` is the one reader of `cx start`'s lineage records. The gateway gate and `cx` both call it, so the writer and the reader resolve the same directory from the same environment variables. A second copy of that resolution reads no record for any session and answers "not restricted".
 
 ### A scope is the channel
 
-There are no `rooms`, `messages` or `session_logs` tables. One `scope_posts` table (kind `message`, `journal`, `system`, …) and `scope_subscribers`, addressed by `(project, scope)`, carry everything. A non-agent inbox (`user:`, `project:`, `workspace`) is a non-literal channel with `owner_project=''`. The surface is `scope_post`, `scope_fetch`, `scope_subscribe` and `scope_unsubscribe`, in `awm/services/scopes/awm/scopes/channel.py` and `operations/scope_channel.py`.
+There are no `rooms`, `messages` or `session_logs` tables. One `scope_posts` table (kind `message`, `journal`, `system`, …) and `scope_subscribers`, addressed by `(project, scope)`, carry everything. A non-agent inbox (`user:`, `project:`, `workspace`) is a non-literal channel with `owner_project=''`. The surface is `scope_post`, `scope_fetch`, `scope_subscribe`, `scope_unsubscribe` and `scope_archive_search`, in `awm/services/scopes/awm/scopes/channel.py`, `archive.py` and `operations/scope_channel.py`.
 
-The chat data flow is asymmetric:
+A post is passive mail. It starts no session and wakes no one. Agents on one node message each other with Claude's `SendMessage`, and swarms message each other through the board (`skills/awm/board-card.md`). Only a deliberate post, such as a debrief, enters the channel.
 
-1. The frontend posts human messages to the scope with `scope_post`.
-2. The agents service subscribes to the scope's channel and feeds the agent's stdin.
-3. The agents service records the agent's per-turn acts in `agent_transcript`. The agents `transcript` WS serves them with backfill from a cursor and live push, de-duplicated by act `id`.
-4. The frontend subscribes to the agents service for output.
-
-Agent output is not posted back to the scope. Only a deliberate agent message, such as a debrief, is an explicit `scope_post`.
+A post that arrives through the edge takes its author from the edge's `X-Awm-As` stamp, never from the `author` argument. The claimed author moves to `meta.claimed_author`. A caller with no stamp may not send an author of the form `peer:…`.
 
 ## Service hub
 
@@ -82,9 +83,10 @@ A service declares its API as a serializable `ready.api` manifest with `function
 
 A manifest function may carry these keys:
 
-- `"tool"` sets its exact MCP name and decouples it from the internal op `name` used for RPC. The surface then reads `scope_create` and `agent_spawn` while internal names, including the frozen camelCase identity RPCs, stay unchanged. Override names must be globally unique. `list_tools` warns and skips a duplicate.
+- `"tool"` sets its exact MCP name and decouples it from the internal op `name` used for RPC. The surface then reads `scope_create` and `cx_start` while internal names, including the frozen camelCase identity RPCs, stay unchanged. Override names must be globally unique. `list_tools` warns and skips a duplicate.
 - `"surfaces": ["cli","http"]` keeps a verb off MCP. The default is all three. `_domain_catalog` skips non-`mcp` functions and `_dispatch_domain` rejects them, while the CLI's flat `/invoke` still reaches them. This is how `writing` and `2fa` ship CLI-only write verbs.
 - `"timeout"` sets the verb's budget. See § *The timeout ladder*.
+- `"effect"` (`read`, `queue`, `write` or `secret`) and `"category"` feed the gates in § *Verb gating*. An omitted effect means `write`.
 
 A manifest may also carry a top-level `"description"`. `_domain_blurbs` puts it before the generated domain description and adds it to the `describe` reply. It is the only guidance an agent reads before it chooses a verb. `2fa` uses it to send callers to `ssh(verb=connect)`. It applies to this node only, because a peer's blurb lives in the peer's catalog.
 
@@ -96,6 +98,8 @@ A manifest may also carry a top-level `"description"`. `_domain_blurbs` puts it 
 
 Adding `&peers=1` widens the collapse to the fleet, and the envelope's `peer` key picks the node (`FEDERATION.md` § *Cross-peer calls*). It is opt-in because a peer fetches the plain view from this node's edge. That view must stay local-only, or the fleet advertises transitive peers that nobody can dial.
 
+Adding `&tiers=1` narrows the fleet view to the core domains, `providersOf` and the call-through tool `more`. Both MCP proxies request `?view=domains&peers=1&tiers=1`.
+
 `dispatch()` checks for a domain before the flat branches. When `name` is a known domain and `args` has `verb`, `_dispatch_domain` routes it:
 
 - `verb="describe"` is answered from the catalog with no service round trip. `describe` is reserved on every domain.
@@ -105,6 +109,14 @@ Adding `&peers=1` widens the collapse to the fleet, and the envelope's `peer` ke
 The collapse is additive. Reverting the proxy's `?view=domains` request undoes it.
 
 **CAUTION** A domain's verbs must be unique. Folding warns and keeps the first. Keep a new `"tool"` override in real `<domain>_<verb>` form. A bare single-token override becomes its own one-verb domain. A two-word service name splits at its first underscore: `claude-science` projecting `claude_science_status` lands as domain `claude`, verb `science_status`. Such a service must pick a one-token domain, for example `science_status`.
+
+### Tiers
+
+A service folder's `service.toml` may set `tier = "core"`. Any other service is discoverable. Gateway-native `services` and `peer` are core by name (`catalog._NATIVE_CORE_DOMAINS`). A domain that only a peer provides is always discoverable. The tier decides only what the MCP list advertises. It never decides whether a service runs, and `profiles` never decides the tier.
+
+A call `more(domain, verb, args, peer)` reaches a discoverable domain. Each MCP proxy rewrites it to the ordinary call for the real domain (`mcp_more.rewrite_call`) before it leaves the proxy. The gateway therefore stamps the caller and applies every gate against the true domain and verb. A `more` call that reaches the gateway with a domain skipped that rewrite and is refused. Keep the rewrite in `mcp_more.py`, the one place both proxies share.
+
+**CAUTION** `service.toml` is also the profile gate. `discovery._read_profiles` must treat a file with no `profiles` key as baseline, enabled everywhere. Reading the absence as "gated off" would switch off every service that carries only a `tier`.
 
 ### The timeout ladder
 
@@ -121,15 +133,19 @@ Both proxies share `mcp_http` so they cannot drift. The `AWM_MCP_SDK=1` rollback
 
 **CAUTION** A change here reaches agents only after their MCP clients restart.
 
-### Server-side verb gating
+### Verb gating
 
-All placement verbs sit on the one `agent` domain tool, so claude's `--allowedTools` cannot limit which verb a placed agent calls. OpenCode ignores `--allowedTools` entirely. The agents service therefore gates server-side:
+Three gates decide who may call a verb. They share one declaration. Each manifest verb states an `effect`, and a read verb may add a `category` (`journals`, `kb`). A verb with no effect counts as `write`, so a new verb stays closed until its author opens it. A native gateway op never carries a category.
 
-- `placement.VERB_PROFILES` is the per-mode verb allowlist. Spawn records it as `allowed_verbs` on the `agent_instances` row.
-- `placement.ensure_verb_allowed(as_, verb)` runs in the `hub_adapter` relay wrappers, keyed on the `X-Awm-As` identity. It rejects a disallowed verb under any harness. `task_fail` is always allowed.
-- `--allowedTools` carries only filesystem built-ins and `mcp__awm__agent`.
+1. **Foreign gate.** `catalog.dispatch` sends a caller stamped `peer:<node>` to `_dispatch_foreign` unless the peer book calls the node domestic. The caller runs a verb only if the verb is `read` and its category is in the peer record's `grants`. Every other case raises the error an unknown tool raises, which the edge returns as 404. This covers `providersOf`, any `peer` argument (no onward hop through this node) and a service's own `PermissionError` (`_refusal_as_unknown`). A refusal then reveals nothing about what exists. `/tools` and `describe` show the same cut catalog. The gate reads the peer book on every call.
+2. **Edge path list.** `httpsfront/policy.py` `FOREIGN_PATHS` lets a foreign node reach `/tools` and `/invoke` and nothing else. The edge does not repeat the verb check. Add a path to that set only when the foreign gate covers it. `hub/proxy.py` refuses a foreign caller on every `/svc` path as a backstop.
+3. **Mode gate.** A session that `cx start` launched in a restricted mode may call only the verbs `awm.config.modes` lists for that mode. A policy is either an `Allow` list of exact verbs or a `ByEffect` rule. The gate runs in `gateway/server.py` on `/invoke` and on `/svc/<svc>/fn/<fn>`, and it closes every other `/svc` path to the session. A restricted session may not name a `peer`. A request that carries `X-Awm-As` came through the edge, so the mode gate skips it.
 
-**CAUTION** This is a guardrail, not a trust boundary. `X-Awm-As` is plaintext and spoofable on the unauthenticated loopback bus, so an agent with `Bash` can curl `/invoke` as anyone. The fix is a per-placement bearer secret built on the existing `placement_token`. It is not built.
+The mode gate finds the caller through its pid: `X-Awm-Session-Pid` (set by `awm-mcp`, a stdio child of the session) or `X-Awm-Caller-Pid` (a hook). `claudedaemon.sessionmode.mode_of` reads the mode from disk, and the gateway caches the answer for 5 seconds. The answer is a mode string, `None` (positively not cx-started) or `"unknown"`. Treat `unknown` as the most restricted mode, which may compact the session and nothing else. Any failure to read a record is `unknown`, never `None`.
+
+**CAUTION** The mode gate is a guardrail on the agent-facing doors, not a trust boundary. The loopback gateway is open, and a request with no pid header carries no mode. The gate holds only while a restricted session cannot make a raw HTTP request. Its launch tool list holds no Bash or WebFetch, and no policy admits the `rlm` browser.
+
+**CAUTION** The gate cannot cover Claude's built-in tools. The representative keeps `SendMessage` and `ListAgents`, and both reach every session on the shared Claude daemon. Its instructions limit `SendMessage` to hand-offs. One front door per swarm is a deployment rule, and nothing in code enforces it.
 
 ### The gateway's own control plane
 
@@ -291,7 +307,7 @@ All are unauthenticated. The gateway binds loopback only.
 - **Use `gatewayclient.SupervisedSubscription` for every emit subscription.** When an emitter restarts, the gateway drops its subscribers from the fan-out table. Unless the proxy also closes the socket, the consumer waits forever on a connection whose keepalives still pass, because they only prove the gateway is alive. Three services once shipped the same naive loop and went deaf together. The helper reconnects, bounds staleness with a jittered idle deadline and reports `healthy`. Show `healthy` in the service's `status`.
 - **Use `gatewayclient.spawn_supervised` for every long-lived background task.** A bare `asyncio.create_task` whose handle nobody reads leaves the service looking healthy with that capability gone if the task raised on its first line. The wrapper logs at ERROR and respawns. It treats a return as a defect, so a supervised loop must never exit. Check the shutdown flag and skip the tick.
 - **A 502 from `/svc/<name>/fn/<fn>` is an application error.** `proxy.py` maps every `RpcError` to 502, so a healthy service answering `{"error":"no such note"}` looks like a broken one at the HTTP layer. The transport codes are 503 (control channel not open) and 504 (no reply in time). A stopped service returns 404, and its emit-WS upgrade returns 403. A frontend that treats `status >= 500` as disconnected flaps on a healthy service. Bounce the socket on 0, 503, 504 or a fetch `TypeError` only, and let the emit socket's close report a stopped service. `pages/notes/src/lib/collab.ts::isLinkError` does this. A stubbed test cannot catch it. Ask the running gateway what it returns.
-- **A child that must outlive awm needs its own cgroup.** In prod, `systemctl restart awm` kills by control group, and every descendant inherits the cgroup however it forks or `setsid`s. Detaching defeats only signal-based teardown. Place a survivor outside `awm.service` with `systemd-run --user` in a transient unit, as `awm/services/claude-science` does. The inverse trap is `awm/services/cx`: a Claude Code background session inherits the cgroup and environment of whichever process first started the node's `claude daemon`. A service that starts one when no daemon is up donates awm's cgroup to every session on the node. cx refuses to seed unless a daemon is already running. The transient unit is only the backstop. Either failure is invisible in dev: the process is simply gone after the next restart.
+- **A child that must outlive awm needs its own cgroup.** In prod, `systemctl restart awm` kills by control group, and every descendant inherits the cgroup however it forks or `setsid`s. Detaching defeats only signal-based teardown. Place a survivor outside `awm.service` with `systemd-run --user` in a transient unit, as `awm/services/claude-science` does. The inverse trap is `awm/services/cx`: a Claude Code background session inherits the cgroup and environment of whichever process first started the node's `claude daemon`. A service that starts one when no daemon is up donates awm's cgroup to every session on the node. cx refuses to seed or start a session unless a daemon is already running (`claudedaemon.launch`). The transient unit is only the backstop. Either failure is invisible in dev: the process is simply gone after the next restart.
 
 ## Data-layer internals
 
@@ -351,9 +367,10 @@ Visit `http://127.0.0.1:7821/ui/<name>/`. Ctrl-C pops the overlay and dev's base
 
 ## Federation
 
-Read `FEDERATION.md` before you touch anything cross-node. The loopback gateway stays open and unauthenticated. A peer's services are reached directly on that peer's `httpsfront` edge over CA-verified TLS, with a bearer fetched by ssh. The gateway is a directory (`peer_resolve`, `peer_providers`), not a router. A call that belongs to a peer comes back as the peer's address for the caller to dial.
+Read `FEDERATION.md` before you touch anything cross-node. The loopback gateway stays open and unauthenticated. A peer's services are reached directly on that peer's `httpsfront` edge over CA-verified TLS, with a node-signed token. The gateway is a directory (`peer_resolve`, `peer_providers`), not a router. A call that belongs to a peer comes back as the peer's address for the caller to dial.
 
 - This is not the retired v0 federation (cr-sqlite replication, leader election, a `peers` registry). The git history of its deletion is not a guide to the current system.
+- The gateway trusts `X-Awm-As` because the edge strips every inbound caller header (`X-Awm-As`, `X-Awm-Caller-Pid`, `X-Awm-Session-Pid`, `X-Awm-Peer-Redirect`) and stamps its own. A new edge mount must do the same. The board mount strips every `X-Awm-*` header and removes a mesh credential (a node token or the legacy bearer) before the request reaches the board. The board authenticates its own party bearer and must never hold a credential that is live elsewhere.
 - A singleton is re-homed per node, not per call. `AWM_TWOFA_PEER`, `AWM_SOCIAL_PEER` and `AWM_SSH_SLOT_PEER` in `<workspace>/.awm/env` name the owning node. `gatewayclient.call_maybe_peer`, `call_sync_maybe_peer` and `subscribe_maybe_peer` are the single branch point. Use them even from sync code. A hand-rolled local POST is how one consumer borrows while another does not.
 
 What is singular is the resource, not always the service:
@@ -370,8 +387,9 @@ When you need something not mapped here, query the `graphify` domain (`find`, `r
 - **RPC layer** — `hub/rpc.py`: `ControlChannel` per service, the `_pending` call table, subscribers, sessions, bridge ids.
 - **Service translator and bridge** — `hub/proxy.py`: `proxy_service_http`, `open_session_via_http`, `proxy_session_ws`, `proxy_service_emit_ws`.
 - **Supervisor and journal** — `hub/supervisor.py`: `reconcile_journaled_services`, `bootstrap`, `spawn_service`, `kill_pid_group`, `supervise_disconnect`. State is at `<AWM_DIR>/state/services.json`.
-- **Catalog** — `catalog.py`: `_tool_name`, `list_tools` and `dispatch` for the expanded surface, `list_domain_tools`, `_describe_domain` and `_dispatch_domain` for the collapsed one.
-- **Federation directory** — `peers.py` maps a name to an edge address. `peer_catalog.py` maps a name to its domains, holds the default-provider rules and raises `PeerRedirect` instead of relaying. `peer_files.py` turns `files[]` a peer returned into local copies over the peer's `/files` mount. It is its own module because both MCP proxies must call it, or the rollback proxy hands back paths that exist only on the peer.
+- **Catalog** — `catalog.py`: `_tool_name`, `list_tools` and `dispatch` for the expanded surface, `list_domain_tools`, `_describe_domain` and `_dispatch_domain` for the collapsed one. The foreign gate (`foreign_grants`, `_dispatch_foreign`) and the tier split (`_tier_split`, `_more_tool`) live here. `mcp_more.py` holds the `more` rewrite, and `hub/discovery.py` reads `tier`.
+- **Mode gate** — `server.py` (`_caller_mode`, `_call_refusal`, `_door_refusal`) applies the policies in `awm/service_components/config/awm/config/modes.py`. `awm/service_components/claudedaemon/awm/claudedaemon/sessionmode.py` answers `mode_of`.
+- **Federation directory** — `peers.py` maps a name to its peer record (edge address, relation, swarm, role, pinned key, grants) and owns the writes. `awm.config.peerbook` is the one reader. `peer_catalog.py` maps a name to the domains of its domestic peers, holds the default-provider rules and raises `PeerRedirect` instead of relaying. `peer_files.py` turns `files[]` a peer returned into local copies over the peer's `/files` mount. It is its own module because both MCP proxies must call it, or the rollback proxy hands back paths that exist only on the peer.
 - **MCP proxies** — `mcp_server.py` picks `mcp_stdio.py` (default) or `mcp_server_sdk.py` (`AWM_MCP_SDK=1`). `mcp_http.py` holds the timeout ladder both share.
 - **Gateway control ops** — `gateway_ops.py`, generated through `operations.py`.
 - **CLI** — `cli.py`. The `gateway` and `services` groups are generated from `GATEWAY_OPERATIONS`. `awm dev shadow` (search `dev_app`) and the page-shadow helpers (`_shadow_page_target`, `_read_prefix_txt`, `_post_page_register`) live there.

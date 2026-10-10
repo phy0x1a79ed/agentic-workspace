@@ -51,7 +51,7 @@ If this is a workspace-level skill with no obvious project/scope, skip this step
 
 ### 3. Verify every tool call against the live tool surface
 
-awm is a modular gateway: every operation is **projected from a feature service's `ready.api` manifest**, not hand-registered in one dispatch file. An operation exists if some service under `awm/services/<svc>/` declares the underlying function in its manifest and the gateway projects it. Note the MCP surface is **collapsed by domain** — an agent sees one generic `{verb, args}` tool per domain (`scope`, `agent`, `rlm`, …) and learns a domain's verbs via its reserved `describe` verb — while the CLI/HTTP surfaces and the **default** `GET /tools` stay **expanded** (one `<domain>_<verb>` entry per op). For skill verification, the expanded list is exactly what you want.
+awm is a modular gateway: every operation is **projected from a feature service's `ready.api` manifest**, not hand-registered in one dispatch file. An operation exists if some service under `awm/services/<svc>/` declares the underlying function in its manifest and the gateway projects it. Note the MCP surface is **collapsed by domain** — an agent sees one generic `{verb, args}` tool per domain (`scope`, `cx`, `rlm`, …) and learns a domain's verbs via its reserved `describe` verb — while the CLI/HTTP surfaces and the **default** `GET /tools` stay **expanded** (one `<domain>_<verb>` entry per op). For skill verification, the expanded list is exactly what you want.
 
 Two cheap ways to confirm a tool is live:
 

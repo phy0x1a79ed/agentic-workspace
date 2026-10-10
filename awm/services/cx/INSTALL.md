@@ -2,15 +2,18 @@
 
 ## Purpose & Contents
 
-`cx` is the warm start for Claude Code. The service keeps one background session
-idling. The `cx` command claims it and attaches, so a launch paints an
-already-started renderer instead of booting one.
+`cx` runs Claude Code sessions on a node. It does two jobs. It starts, lists and
+stops named background sessions for other agents. It also keeps one background
+session idling, and the `cx` command claims that session and attaches, so a
+launch paints an already-started renderer instead of booting one.
 
 This file holds what installing and operating the service needs, and the
-reasoning that reading the code does not give: why a session is moved exactly
-once, which of two files answers which question about a session, how a session
-comes by its name, why the service refuses to seed on a node with no daemon,
-and what the pool deliberately does not do.
+reasoning that reading the code does not give: who may start a session and what
+a restricted caller gets, where a session's mode lives, why a session is moved
+exactly once, which of two files answers which question about a session, how a
+session comes by its name, why the service refuses to seed or start on a node
+with no daemon, which trust rule applies to a move and to a start, and what the
+pool deliberately does not do. The verb list is in `awm cx --help`.
 
 ## Install
 
@@ -35,30 +38,105 @@ and this service into the `awm` env. Override the env with `AWM_ENV=<name>`.
 
 `service.toml` gates discovery on the `cx` profile, so the service does not
 start on a node that has not asked for it. An explicit `awm services enable cx`
-overrides the gate and is the intended way to turn it on.
+overrides the gate and is the intended way to turn it on. The same file sets
+`tier = "core"`, so the `cx` domain is on the default MCP list wherever the
+service runs.
+
+A station (`AWM_NODE_ROLE=station`) runs no sessions. `start` refuses there, and
+the gateway logs a warning at boot if a station enables this service.
 
 ## Operate
 
-    awm cx status            # what is held, and why anything is unavailable
-    awm cx remove            # what may be deleted, and why. Deletes nothing
+    awm cx list              # every session on this node, and the pool summary
+    awm cx start --help      # start a named session in a scope's worktree
+    awm cx stop --help       # stop a session that start created
+    awm cx remove            # what the pool may delete, and why. Deletes nothing
     awm cx remove --apply    # delete it
-    awm cx seed              # start one session now, or say why it is refused
+    awm cx seed              # start one warm session now, or say why it is refused
 
-`status` derives everything from the live session records. There is no stored
-pointer to "the current session", because a stored pointer is a second thing
-that has to agree with the records and it is the half that goes stale.
+`list` derives the pool summary from the live session records. There is no
+stored pointer to "the current session", because a stored pointer is a second
+thing that has to agree with the records and it is the half that goes stale.
 
 Every knob is an environment variable on the service process. `AWM_CX_WANT=0`
 stops the pool without stopping the service. `AWM_CX_LOOP=0` stops the reconcile
 loop alone. `AWM_CX_ROTATE_AGE_S` sets the age at which a session is replaced.
 `AWM_CX_PREFIX`, `AWM_CX_SEED_DIR`, `AWM_CX_MODEL`, `AWM_CX_EFFORT` and
-`AWM_CX_CLAUDE` shape what is seeded. See `awm/cx/config.py`.
+`AWM_CX_CLAUDE` shape what is seeded. `AWM_CX_PROJECTS` sets the root of the
+scope worktrees that `start` uses, and `AWM_CX_MCP_SOURCE` names the MCP config a
+strict session copies. See `awm/cx/config.py`.
 
 `AWM_CX_CLAIMED_PREFIX` is the one knob the hook reads too, from its own copy of
 the default. Change it on the service and the hook stops recognising the
 sessions the service renames. A test asserts the two agree.
 
 ## Why the shape is what it is
+
+### Sessions started for other agents
+
+`start` creates a named background session in a scope's worktree and returns its
+job id and the `claude attach` command. It creates the worktree through the
+`scopes` service when the caller may and the worktree is absent. A session
+defaults to skip-permissions, `sonnet[1m]` and medium effort. The model is a
+`--model` flag, because the flag wins over `ANTHROPIC_MODEL` where the two
+disagree.
+
+`start` refuses when any of these holds:
+
+1. The node is a station.
+2. The caller is a peer that is not a verified, domestic node.
+3. No Claude Code daemon runs.
+4. The claude workspace-trust check fails (see *A directory must be trusted*).
+5. A live session already holds the name.
+
+`stop` ends only a session that `start` created, and it keeps the conversation.
+It finds such a session by its lineage record. A session that cx started may
+stop only the jobs it started itself. An operator, a service or a session that
+cx did not start may stop any job `start` created.
+
+A lineage record is one JSON file per started session, under `starts/` in cx's
+state directory. It holds the name, scope, parent, caller and mode. `parent`
+comes from the pid the gateway stamps on the call, never from an argument the
+model supplies. A pending record goes to disk before the launch, so a launch
+that outlives its timeout still has a declared mode. The reconcile loop adopts
+the late job, or drops the record after five minutes.
+
+#### A caller in a restricted mode starts a delegate
+
+The representative and the secretary run in restricted modes (`awm.config.modes`).
+A card must not talk either into starting a session stronger than itself, so cx
+ignores what such a caller asks for. It accepts `project`, `scope`, `prompt`,
+`name`, `effort` and a model from an allowlist. It refuses `permission`, `mode`,
+`remote_control` and the tool and confinement arguments. It starts a `delegate`
+with a fixed policy:
+
+- Permission `dontAsk`, so a session nobody watches denies a prompt at once and
+  cannot stall.
+- A fixed built-in tool list with no Bash, and `SendMessage` and `ListAgents`
+  disallowed, so a card cannot reach another session through it.
+- `--restricted`, which confines the file tools to the worktree and ignores user
+  settings.
+- A strict MCP config that holds only the awm server, copied from the workspace
+  `.mcp.json`.
+
+The scope must already exist for such a caller. The names `representative` and
+`secretary` and the modes `representative`, `secretary` and `delegate` are
+reserved. A session that asks for one is refused. Only a caller with no session
+pid (the front door service or an operator) may use them. A caller whose mode cannot be read starts
+nothing.
+
+The arguments `allowed_tools`, `tools`, `restricted` and `strict_mcp` exist for
+that front door and for operators. They map to `claude --allowedTools`,
+`--tools`, `--restricted` and `--strict-mcp-config`.
+
+#### Where a mode lives
+
+The gateway gates a calling session by its mode, and cx gates what that session
+may start or stop by it. Both read the answer from `awm.claudedaemon.sessionmode`,
+which reads the lineage records and Claude Code's own session records from disk.
+The gateway therefore needs no call into this process. The answer is a mode
+string, `None` for a session that cx did not start, or `unknown`. A caller reads
+`unknown` as the most restricted mode.
 
 ### A session is moved exactly once
 
@@ -133,7 +211,7 @@ them too, so the two agree if that ever changes.
 title does not. A session that respawns comes back under whatever `/rename` last
 put there, which is `claimed <noun>`. The next prompt fixes it.
 
-### Seeding refuses when no daemon is running
+### Seeding and starting refuse when no daemon is running
 
 Every background Claude Code session on a node is a child of the first daemon
 started after the reboot, and inherits that daemon's control group **and its
@@ -143,25 +221,34 @@ every session on the box would come up with an environment that has no
 `~/.local/bin` on its PATH.
 
 So the service reads the roster's supervisor pid, checks it against `/proc`, and
-refuses to seed when no daemon is running. No daemon means nobody is using
-Claude Code on that node, and a cold first launch is the right answer there.
+refuses to seed or start when no daemon is running. No daemon means nobody is
+using Claude Code on that node, and a cold first launch is the right answer
+there.
 
 The transient systemd unit covers the residual race where the daemon dies
 between the check and the launch. It carries `KillMode=process`. Without that,
 tearing the unit down kills its whole control group, which in that race holds
 the fresh daemon and the session it was launching.
 
-### A trusted directory is checked before the move
+### A directory must be trusted before a move or a start
 
 `/cd` into a directory the session has not worked in before opens a trust dialog
 whose default answer is "No, stay put". A session sitting on that dialog has not
 moved and is not idle, and the next claim's keystrokes answer the dialog instead
 of moving. One untrusted directory therefore cost every claim after it.
 
-The pool asks first. Trust is recorded per directory in `~/.claude.json` and
-inherited from any trusted ancestor. An untrusted target is refused in
-milliseconds and the caller launches cold, where the user answers the trust
-prompt themselves.
+The pool asks first. Trust is recorded per directory in `~/.claude.json`. For a
+move, a trusted ancestor counts. An untrusted target is refused in milliseconds
+and the caller launches cold, where the user answers the trust prompt
+themselves.
+
+`start` applies a stricter rule, because `claude --bg` does. Inside a git
+repository the repository's own trust entry is required, and a trusted parent
+such as the home directory does not count. A scope worktree belongs to a bare
+clone, so the entry is the project's `.bare` directory. A start that fails the
+rule would not error. The daemon refuses with "Workspace not trusted" and the
+caller waits out its launch timeout, so cx checks first and names the directory.
+Both rules live in `awm.claudedaemon.trust`.
 
 ### Almost nothing is collected once somebody has it
 
@@ -223,4 +310,4 @@ Only one copy may own the pool. The reconcile loop takes a non-blocking
 exclusive lock and skips the tick if it cannot get it, which covers an
 `awm dev shadow` overlay, a dev sandbox running its own copy against the same
 home directory, a stray manual run, and a predecessor that has not finished
-dying. `status` reports whether the answering process holds it.
+dying. The `list` pool summary reports whether the answering process holds it.
