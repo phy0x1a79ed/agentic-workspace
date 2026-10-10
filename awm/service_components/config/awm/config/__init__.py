@@ -267,6 +267,8 @@ from awm.config.peerbook import (  # noqa: E402,F401
     RELATIONS,
     ROLES,
     caller_peer,
+    list_records,
+    load_book,
     node_role,
     node_swarm,
     peer_record,

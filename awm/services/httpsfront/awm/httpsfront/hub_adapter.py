@@ -122,6 +122,7 @@ API_MANIFEST: dict[str, Any] = {
     "functions": [
         {
             "name": "status",
+            "effect": "read",
             "description": (
                 "Report the HTTPS front's listener port, TLS state, the SAN set "
                 "of the leaf cert, the loopback gateway it fronts, and the "

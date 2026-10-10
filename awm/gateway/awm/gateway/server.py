@@ -302,6 +302,8 @@ async def lifespan(app: FastAPI):
             reconcile_journaled_services,
             self_heal_loop,
         )
+        from awm.gateway.peers import warn_station_fleet_services
+        warn_station_fleet_services()
         await reconcile_journaled_services()
         await bootstrap_discovered_services()
         # 2b. Register discovered page bundles (/ui/<name>). Pages hold no

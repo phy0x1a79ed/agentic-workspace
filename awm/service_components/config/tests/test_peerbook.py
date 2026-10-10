@@ -130,3 +130,41 @@ def test_verb_effect_and_category():
         config.verb_effect({"name": "x", "effect": "delete"})
     assert config.verb_category({"name": "x"}) is None
     assert config.verb_category({"name": "x", "category": "kb"}) == "kb"
+
+
+def test_list_records_normalises_and_sorts(tmp_path):
+    _write_book(tmp_path, {"b": {"edge_url": "https://b"}, "a": {"relation": "foreign"},
+                           "junk": "not-a-dict"})
+    recs = config.list_records()
+    assert [r["name"] for r in recs] == ["a", "b"]
+    assert recs[0]["relation"] == "foreign" and recs[1]["relation"] == "domestic"
+    assert recs[1]["grants"] == []
+
+
+def test_fingerprint_of_raw_key_bytes():
+    import base64
+    import hashlib
+    raw = bytes(range(32))
+    expected = "SHA256:" + base64.b64encode(hashlib.sha256(raw).digest()).decode().rstrip("=")
+    assert peerbook._fingerprint(base64.b64encode(raw).decode()) == expected
+    assert not expected.endswith("=")
+    for bad in ("", "  ", "***"):
+        with pytest.raises(ValueError):
+            peerbook._fingerprint(bad)
+
+
+def test_normalise_forces_name_to_book_key(tmp_path):
+    _write_book(tmp_path, {"mira": {"name": "someone-else", "edge_url": "https://m"}})
+    assert config.peer_record("mira")["name"] == "mira"
+    assert [r["name"] for r in config.list_records()] == ["mira"]
+
+
+def test_load_book_strict_raises_on_damage_only(tmp_path):
+    assert peerbook.load_book(strict=True) == {}  # missing file is an empty book
+    path = tmp_path / "state" / "peers.json"
+    path.parent.mkdir(parents=True)
+    for bad in ("{nope", "[]"):
+        path.write_text(bad)
+        assert peerbook.load_book() == {}
+        with pytest.raises(ValueError):
+            peerbook.load_book(strict=True)

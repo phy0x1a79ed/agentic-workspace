@@ -15,7 +15,8 @@ per-path allowlist to keep in sync.
 
 Two things the edge asserts on every proxied request: the caller is
 authenticated, and ``X-Awm-As`` names the identity the session was minted
-for (``user:<sub>``, or ``peer`` for a bearer). The browser's own value of
+for (``user:<sub>``, ``peer:<node>`` for a verified node token, or bare ``peer``
+for the legacy bearer). The browser's own value of
 that header is discarded — downstream services trust it, so only the edge may
 write it.
 
@@ -66,8 +67,18 @@ from starlette.responses import (
 from starlette.routing import Route, WebSocketRoute
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
+from awm.config import peertoken
 from awm.httpsfront import pages, penpot, policy, slices, store, tether, vault
-from awm.httpsfront.auth import AS_COOKIE_NAME, COOKIE_NAME, PEER_SUB, AuthGate, bearer_of
+from awm.httpsfront.auth import (
+    AS_COOKIE_NAME,
+    COOKIE_NAME,
+    PEER_PREFIX,
+    PEER_SUB,
+    AuthGate,
+    bearer_of,
+    is_foreign_peer,
+    is_machine_sub,
+)
 
 log = logging.getLogger("awm.httpsfront.proxy")
 
@@ -152,7 +163,11 @@ PUBLIC_HOME = vault.SHELL
 
 
 def _as_header(sub: str | None) -> str:
-    return PEER_SUB if sub == PEER_SUB else f"user:{sub or 'operator'}"
+    """The identity stamped on a forwarded request: ``peer`` for the legacy
+    bearer, ``peer:<node>`` for a verified node, else ``user:<sub>``."""
+    if sub == PEER_SUB or (sub and sub.startswith(PEER_PREFIX)):
+        return sub
+    return f"user:{sub or 'operator'}"
 
 
 def _origin_override(app) -> str | None:
@@ -167,11 +182,32 @@ def _origin_override(app) -> str | None:
     return getattr(app.state, "origin_override", None)
 
 
+#: Headers the gateway reads as *who is calling* or *which session this is*.
+#: Only a local process may set the pid pair and the redirect flag; a caller
+#: that crossed the edge could otherwise point reflection or `cx start`'s parent
+#: stamp at any local session. Dropped, never forwarded, case-insensitively.
+_CALLER_HEADERS = frozenset({
+    "x-awm-as", "x-awm-caller-pid", "x-awm-session-pid", "x-awm-peer-redirect"})
+
+
+def _consumed_node_token(authorization: str | None, sub: str | None) -> bool:
+    """Whether this ``Authorization`` is a node token the edge has read.
+
+    Any ``awmpt1.`` bearer counts, verified or not: one that failed here may
+    still be live at the node it was signed for, and an upstream app that saw it
+    could replay it there.
+    """
+    bearer = bearer_of(authorization)
+    return (bool(sub) and sub.startswith(PEER_PREFIX)) or peertoken.looks_like_token(bearer)
+
+
 def _req_headers(request: Request, sub: str | None = None) -> dict[str, str]:
-    hdrs = {k: v for k, v in request.headers.items() if k.lower() not in _HOP}
+    hdrs = {k: v for k, v in request.headers.items()
+            if k.lower() not in _HOP and k.lower() not in _CALLER_HEADERS}
+    if _consumed_node_token(request.headers.get("authorization"), sub):
+        hdrs.pop("authorization", None)
     hdrs["X-Forwarded-Proto"] = "https"
     # Overwrite, never default: the browser's value is unverified.
-    hdrs.pop("x-awm-as", None)
     hdrs["X-Awm-As"] = _as_header(sub)
     override = _origin_override(request.app)
     # Only rewrite a header the browser actually sent: minting an Origin where
@@ -271,6 +307,12 @@ async def _authenticate_sub(request: Request) -> tuple[bool, str | None, str | N
         cookie=request.cookies.get(COOKIE_NAME),
         bearer=bearer_of(request.headers.get("authorization")),
     ))
+
+
+def _foreign(app, sub: str | None) -> bool:
+    """Whether ``sub`` is a foreign node, by the relation in the gate's own
+    material snapshot (see :func:`awm.httpsfront.auth.is_foreign_peer`)."""
+    return is_foreign_peer(sub, getattr(app.state.gate, "peer_relation", None))
 
 
 def _is_public(app) -> bool:
@@ -418,6 +460,8 @@ async def _logout(request: Request) -> Response:
 
 async def _whoami(request: Request) -> Response:
     ok, _, sub = await _authenticate_sub(request)
+    if ok and _foreign(request.app, sub):
+        return _not_found()
     if ok:
         return JSONResponse({"user": sub})
     return JSONResponse({"error": "unauthenticated"}, status_code=401)
@@ -434,9 +478,11 @@ async def _public_home(request: Request) -> Response:
 async def _root(request: Request) -> Response:
     """Authenticated landing page at ``/`` — a dynamic index of ``/ui/*`` pages
     pulled from the gateway registry, tagged and filterable via ``store``."""
-    ok, refreshed = await _authenticate(request)
+    ok, refreshed, sub = await _authenticate_sub(request)
     if not ok:
         return _deny(request)
+    if _foreign(request.app, sub):
+        return _not_found()
     app = request.app
     services: list = []
     try:
@@ -721,6 +767,14 @@ async def _http_proxy(request: Request) -> Response:
         return _deny(request)
     if public and not policy.allows(path, sub):
         return _not_found()
+    # A foreign node gets the gateway's calling surface and nothing else. The
+    # vault and Penpot are among the "nothing else", so this comes before the
+    # branches below ever pick them as an upstream.
+    if _foreign(app, sub):
+        # `peers` widens the catalog to the fleet view, which is ours to show
+        # our own swarm and nobody else.
+        if not policy.foreign_allows(path) or "peers" in request.query_params:
+            return _not_found()
     # The vault and Penpot are the upstreams on this listener that are not the
     # gateway. Which upstream is decided here and nowhere else, from a path
     # the caller cannot use to name anything but one of these two apps. The
@@ -731,7 +785,7 @@ async def _http_proxy(request: Request) -> Response:
     penpot_up = _penpot_up(app)
     bridge: str | None = None
     if vault_up and vault.owns(path):
-        if not public and sub in (PEER_SUB, "operator"):
+        if not public and is_machine_sub(sub):
             # The mesh edge runs no allow-list, so the check `policy.allows`
             # would have made on the public profile is made here instead.
             return _not_found()
@@ -741,7 +795,7 @@ async def _http_proxy(request: Request) -> Response:
             return _not_found()
         up, raw = vault_up, inner
     elif penpot_up and penpot.owns(path):
-        if not public and sub in (PEER_SUB, "operator"):
+        if not public and is_machine_sub(sub):
             return _not_found()
         inner = penpot.upstream_raw_path(raw)
         if inner is None:
@@ -941,7 +995,7 @@ def _slice_req_headers(request: Request, info: dict, visitor) -> dict[str, str]:
     hdrs = {k: v for k, v in request.headers.items() if k.lower() not in _HOP}
     hdrs["X-Forwarded-Proto"] = "https"
     for name in (slices.HEADER_ROOT, slices.HEADER_USER, slices.HEADER_WRITE,
-                 "X-Awm-As"):
+                 *_CALLER_HEADERS):
         hdrs.pop(name.lower(), None)
     hdrs[slices.HEADER_ROOT] = info["note_id"]
     hdrs[slices.HEADER_WRITE] = "1" if info.get("write") else "0"
@@ -1032,7 +1086,7 @@ async def _bridge_penpot_session(request: Request, out: Response, kind: str,
     service that is down, a machine bearer. Penpot then shows its own login
     screen, which is exactly what it did before this bridge existed.
     """
-    if sub in (PEER_SUB, "operator"):
+    if is_machine_sub(sub):
         return
     presented = request.cookies.get(penpot.COOKIE_NAME)
     gate: AuthGate = request.app.state.gate
@@ -1181,7 +1235,9 @@ async def _ws_proxy(ws: WebSocket) -> None:
         if not ok or (public and not policy.allows(ws.url.path, sub)):
             await ws.close(code=1008)  # policy violation
             return
-        if (is_vault or is_penpot) and sub in (PEER_SUB, "operator"):
+        # A foreign node has no WebSocket at all; a domestic peer has the
+        # gateway's, but never the vault's or Penpot's.
+        if _foreign(app, sub) or ((is_vault or is_penpot) and is_machine_sub(sub)):
             await ws.close(code=1008)
             return
 
@@ -1196,6 +1252,10 @@ async def _ws_proxy(ws: WebSocket) -> None:
         v = ws.headers.get(k)
         if v:
             fwd[k] = v
+    # Only these three are copied, so none of `_CALLER_HEADERS` can ride along;
+    # a node token is dropped for the reason given at `_consumed_node_token`.
+    if _consumed_node_token(fwd.get("authorization"), sub):
+        fwd.pop("authorization", None)
     if slice_info is not None:
         visitor = _slice_visitor(ws, slice_info, slice_token)
         if visitor is _SLICE_MISMATCH:
@@ -1302,9 +1362,11 @@ def _gated(
     proxied path as far as auth is concerned.
     """
     async def _wrapped(request: Request) -> Response:
-        ok, refreshed = await _authenticate(request)
+        ok, refreshed, sub = await _authenticate_sub(request)
         if not ok:
             return _deny(request)
+        if _foreign(request.app, sub):
+            return _not_found()
         resp = await handler(request)
         if refreshed:
             _set_session_cookie(

@@ -57,7 +57,23 @@ import re
 from enum import Enum
 
 from awm.httpsfront import penpot, slices, tether, vault
-from awm.httpsfront.auth import PEER_SUB
+from awm.httpsfront.auth import is_machine_sub
+
+# The only paths a foreign node reaches on a mesh edge. Wave 2 re-adds
+# "/invoke" here once the gateway effect gate exists: until then the flat
+# /invoke dispatch has no per-verb check, and a foreign caller on it could call
+# auth.edge_material and forge a session. The catalog's own `peers` view is
+# withheld from a foreign caller by the proxy, not by this set.
+FOREIGN_PATHS = frozenset({"/tools"})
+
+
+def foreign_allows(path: str) -> bool:
+    """Whether a foreign node may reach ``path``: ``FOREIGN_PATHS``, nothing else.
+
+    Everything else on a mesh edge — WebSockets, emit topics, files, the hub,
+    the vault, Penpot, the landing page — answers 404 to a foreign node.
+    """
+    return path in FOREIGN_PATHS
 
 
 class Verdict(str, Enum):
@@ -191,14 +207,15 @@ def allows(path: str, sub: str | None) -> bool:
     if verdict is Verdict.DENY or not sub:
         return False
     if verdict is Verdict.VAULT:
-        # A person, not a machine. A peer bearer is another node's process and
-        # has no business in a human's knowledge base; `operator` is the shared
-        # -password session, which this profile does not issue anyway.
-        return sub not in (PEER_SUB, "operator")
+        # A person, not a machine. A peer (the legacy bearer or a verified
+        # `peer:<node>`) is another node's process and has no business in a
+        # human's knowledge base; `operator` is the shared-password session,
+        # which this profile does not issue anyway.
+        return not is_machine_sub(sub)
     if verdict is Verdict.PENPOT:
-        # Same exclusion, same reason: a peer/operator machine bearer has no
+        # Same exclusion, same reason: a peer/operator machine identity has no
         # business in a person's design files.
-        return sub not in (PEER_SUB, "operator")
+        return not is_machine_sub(sub)
     m = _EMIT.match(path)
     if m:
         svc, topic = m.groups()

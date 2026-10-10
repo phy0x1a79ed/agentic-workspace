@@ -30,9 +30,14 @@ class _Gate:
     async def authenticate(self, *, cookie=None, bearer=None):
         if bearer == "peer-cred":
             return True, None, "peer"
+        if bearer == "node-mira":
+            return True, None, "peer:mira"
         if cookie in SUBS:
             return True, None, SUBS[cookie]
         return False, None, None
+
+    def peer_relation(self, node):
+        return {"mira": "domestic"}.get(node)
 
     async def verify_login(self, *, username, password, client_ip):
         if username == "locked":
@@ -91,6 +96,24 @@ def test_a_peer_bearer_is_stamped_as_peer():
         c.get("/svc/notes/fn/list", headers={
             "Authorization": "Bearer peer-cred", "X-Awm-As": "user:tony"})
     assert seen["x-awm-as"] == "peer"
+
+
+def test_a_node_token_is_stamped_as_peer_colon_node(peer_book):
+    peer_book({"mira": {"relation": "domestic"}})
+    with _client(_app(), token=None) as c:
+        seen = _capture(c)
+        r = c.get("/svc/notes/fn/list", headers={
+            "Authorization": "Bearer node-mira", "X-Awm-As": "user:tony"})
+    assert r.status_code == 200
+    assert seen["x-awm-as"] == "peer:mira"
+
+
+def test_a_forged_peer_header_never_reaches_the_gateway(peer_book):
+    """A browser (or a foreign node) naming itself `peer:mira` gets overwritten."""
+    with _client(_app()) as c:
+        seen = _capture(c)
+        c.get("/svc/notes/fn/list", headers={"X-Awm-As": "peer:mira"})
+    assert seen["x-awm-as"] == "user:tony"
 
 
 def test_ws_forwards_only_the_verified_identity(monkeypatch):
