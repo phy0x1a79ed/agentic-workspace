@@ -60,11 +60,11 @@ def seed_dir() -> Path:
 
 
 def default_model() -> str:
-    return os.environ.get("AWM_CX_MODEL") or "sonnet[1m]"
+    return os.environ.get("AWM_CX_MODEL") or "opus"
 
 
 def default_effort() -> str:
-    return os.environ.get("AWM_CX_EFFORT") or "medium"
+    return os.environ.get("AWM_CX_EFFORT") or "high"
 
 
 def skip_permission_flags() -> list[str]:

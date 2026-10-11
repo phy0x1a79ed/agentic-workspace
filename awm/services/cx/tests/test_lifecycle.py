@@ -212,11 +212,11 @@ def test_the_accept_filter_takes_only_the_named_session(home, launched):
     assert not accept(S("other", "other"))
 
 
-def test_defaults_are_skip_permissions_sonnet_and_medium(home, launched):
+def test_defaults_are_skip_permissions_opus_and_high(home, launched):
     start(BASE)
     flags = launched[0]["flags"]
     assert "--dangerously-skip-permissions" in flags
-    assert flags[-2:] == ["--effort=medium", "--model=sonnet[1m]"]
+    assert flags[-2:] == ["--effort=high", "--model=opus"]
     assert not any(f.startswith(("--permission-mode", "--remote-control")) for f in flags)
 
 
@@ -237,7 +237,7 @@ def test_allowed_tools_become_one_equals_form_flag(home, launched):
     flags = launched[0]["flags"]
     assert flags == ["--permission-mode=dontAsk", "--disallowedTools=Bash",
                      "--allowedTools=mcp__awm__*,SendMessage", "--remote-control=rc1",
-                     "--effort=medium", "--model=sonnet[1m]"]
+                     "--effort=high", "--model=opus"]
     assert "--allowedTools" not in flags
 
 

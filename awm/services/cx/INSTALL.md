@@ -77,7 +77,7 @@ sessions the service renames. A test asserts the two agree.
 `start` creates a named background session in a scope's worktree and returns its
 job id and the `claude attach` command. It creates the worktree through the
 `scopes` service when the caller may and the worktree is absent. A session
-defaults to skip-permissions, `sonnet[1m]` and medium effort. The model is a
+defaults to skip-permissions, `opus` and high effort. The model is a
 `--model` flag, because the flag wins over `ANTHROPIC_MODEL` where the two
 disagree.
 

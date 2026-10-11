@@ -50,7 +50,7 @@ API_MANIFEST: dict[str, Any] = {
                 "station, for a caller that is not a domestic peer, when no "
                 "Claude Code daemon runs, when the worktree is untrusted, or "
                 "when a live session already holds the name. The session "
-                "defaults to skip-permissions, sonnet[1m] and medium effort. "
+                "defaults to skip-permissions, opus and high effort. "
                 "A caller in a gated mode (the representative, the secretary) "
                 "may set only project, scope, prompt, name, model and effort: "
                 "cx starts a delegate with a fixed tool set, the scope must "
