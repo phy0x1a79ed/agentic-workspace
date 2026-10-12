@@ -11,7 +11,7 @@ Exactly one node per swarm sets ``AWM_FRONT_DOOR=1``. Nothing in code prevents
 a second.
 """
 
-#: The gateway domain. A one-token name, so the projected tool is ``reporting_<verb>``.
+#: The gateway domain. A one-token name, so the projected tools are ``operations_<verb>``.
 DOMAIN = "reporting"
 
 #: Card statuses in the queue.

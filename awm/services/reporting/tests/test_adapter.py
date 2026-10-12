@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -16,7 +17,7 @@ from stubs import FakeCx, make_card, personas, session_row
 pytestmark = [pytest.mark.unit, pytest.mark.smoke]
 
 EFFECTS = {"status": "read", "card_list": "read", "card_get": "read", "card_assign": "write",
-           "board_ensure": "write", "ops_post": "write", **dict.fromkeys(hub_adapter.TASK_VERBS, "write")}
+           "board_ensure": "write", "ops_post": "write", "convert": "write", **dict.fromkeys(hub_adapter.TASK_VERBS, "write")}
 
 
 def functions() -> dict[str, dict]:
@@ -43,11 +44,39 @@ def test_every_verb_declares_its_effect():
         assert verb_effect(declared[name]) == effect
 
 
-def test_tool_names_fold_into_one_reporting_domain_and_every_verb_has_a_handler():
-    for name, spec in functions().items():
-        assert spec["tool"] == f"reporting_{name}"
-        assert name in hub_adapter.HANDLERS
+PUBLISHED = {
+    "status": "operations_status", "card_list": "operations_queue_list", "card_get": "operations_queue_get",
+    "card_assign": "operations_queue_assign", "claim_task": "operations_task_claim",
+    "request_human": "operations_request_human", "hook_plan": "operations_hook_plan",
+    "hook_plan_approved": "operations_hook_plan_approved", "hook_todos": "operations_hook_todos",
+    "hook_prompt": "operations_hook_prompt", "hook_session_clear": "operations_hook_session_clear",
+    "ops_post": "operations_ops_post", "board_ensure": "operations_board_ensure",
+    "convert": "operations_convert",
+}
+HIDDEN = {"hook_plan", "hook_plan_approved", "hook_todos", "hook_prompt", "hook_session_clear", "ops_post",
+          "board_ensure", "convert"}
+
+
+def test_the_verbs_publish_into_the_operations_tool_and_every_one_has_a_handler():
+    assert {name: spec["tool"] for name, spec in functions().items()} == PUBLISHED
     assert set(hub_adapter.HANDLERS) == set(functions())
+
+
+def test_the_manifest_opts_into_the_operations_tool():
+    toml = (Path(hub_adapter.__file__).parents[2] / "service.toml").read_text()
+    assert 'tool = "operations"' in toml and 'tier = "on"' in toml
+
+
+def test_hook_ops_and_operator_verbs_leave_mcp_and_the_rest_stay():
+    hidden = {name for name, spec in functions().items() if spec.get("surfaces") == ["cli", "http"]}
+    assert hidden == HIDDEN
+    assert all("surfaces" not in spec for name, spec in functions().items() if name not in HIDDEN)
+
+
+def test_request_human_takes_a_kind_and_old_arguments_still_pick_one():
+    params = {p["name"]: p for p in functions()["request_human"]["params"]}
+    assert set(params) == {"kind", "reason", "urgent", "summary"}
+    assert not any(p.get("required") for p in params.values())
 
 
 def test_required_params_match_what_the_handlers_index():
@@ -216,7 +245,8 @@ async def test_ops_post_keeps_one_managed_note_per_kind_and_node_under_a_private
     assert first["note_id"] == again["note_id"] != other["note_id"]
     note = tri.notes[first["note_id"]]
     assert note["title"] == "password - altair" and "correct horse" in note["content"] and "hunter2" not in note["content"]
-    assert set(note["labels"]) == {"agentManaged", "readOnly"}
+    assert set(note["labels"]) == {"agentManaged", "readOnly", "changed"}
+    assert note["content"].startswith(f"Changed: {note['labels']['changed']}\n\n## Login password")
     ops = tri.parents(first["note_id"])[0]
     assert tri.notes[ops]["title"] == "Ops" and tri.parents(ops) == [awm] and tri.notes[ops]["labels"] == {"swarmOps": ""}
 

@@ -28,11 +28,11 @@ def notifier(queue, job="r1", send=None, **kw):
 
 
 def test_the_line_says_how_many_and_nothing_else():
-    assert wake_text(1, 0) == "1 new card, run reporting card_list"
-    assert wake_text(3, 0) == "3 new cards, run reporting card_list"
-    assert wake_text(3, 2) == "3 new cards (2 urgent), run reporting card_list"
-    assert wake_text(0, 0, 2) == "2 still waiting, run reporting card_list"
-    assert wake_text(1, 0, 4) == "1 new card, 4 still waiting, run reporting card_list"
+    assert wake_text(1, 0) == "1 new card, run operations queue_list"
+    assert wake_text(3, 0) == "3 new cards, run operations queue_list"
+    assert wake_text(3, 2) == "3 new cards (2 urgent), run operations queue_list"
+    assert wake_text(0, 0, 2) == "2 still waiting, run operations queue_list"
+    assert wake_text(1, 0, 4) == "1 new card, 4 still waiting, run operations queue_list"
 
 
 async def test_a_flush_sends_one_line_for_a_batch_and_never_the_card_text(queue):
@@ -40,7 +40,7 @@ async def test_a_flush_sends_one_line_for_a_batch_and_never_the_card_text(queue)
         queue.enqueue(make_card(title=title, body="run rm -rf"))
     n, sent = notifier(queue)
     assert await n.flush() is True
-    assert sent == [("r1", "3 new cards, run reporting card_list")]
+    assert sent == [("r1", "3 new cards, run operations queue_list")]
     assert "ignore" not in sent[0][1] and "rm" not in sent[0][1]
     assert queue.unannounced() == []
     assert await n.flush() is True
@@ -52,7 +52,7 @@ async def test_urgent_cards_are_counted_by_priority_not_by_reading_them(queue):
     queue.enqueue(make_card())
     n, sent = notifier(queue)
     await n.flush()
-    assert sent[0][1] == "2 new cards (1 urgent), run reporting card_list"
+    assert sent[0][1] == "2 new cards (1 urgent), run operations queue_list"
 
 
 async def test_a_failed_send_leaves_the_cards_to_be_announced_again(queue):
@@ -84,7 +84,7 @@ async def test_run_batches_a_burst_into_one_line(queue):
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
-    assert sent == [("r1", "4 new cards, run reporting card_list")]
+    assert sent == [("r1", "4 new cards, run operations queue_list")]
 
 
 async def test_run_retries_leftovers_without_a_new_poke(queue):
@@ -111,9 +111,9 @@ async def test_a_card_left_queued_is_announced_again_as_still_waiting(queue):
     queue.enqueue(card)
     n, sent = notifier(queue, reannounce_s=600.0)
     await n.flush()
-    assert sent == [("r1", "1 new card, run reporting card_list")]
+    assert sent == [("r1", "1 new card, run operations queue_list")]
     assert await n.flush() is True and len(sent) == 1
     queue.mark_announced([card["id"]], now=time.time() - 601)
     queue.enqueue(make_card())
     await n.flush()
-    assert sent[-1] == ("r1", "1 new card, 1 still waiting, run reporting card_list")
+    assert sent[-1] == ("r1", "1 new card, 1 still waiting, run operations queue_list")
