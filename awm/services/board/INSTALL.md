@@ -4,8 +4,8 @@
 
 This file is the operator's contract for the `board` service: what it is, which
 role a node plays, the environment each role reads, and how to mint a party. It
-does not hold the card contract or the verb list. `awm board --help` renders
-the verbs from the live manifest.
+does not hold the card contract or the verb list. `awm operations --help`
+renders the verbs from the live manifest.
 
 ## What this is
 
@@ -13,7 +13,9 @@ The federation board. A **card** is a request or a message that one swarm
 addresses to another swarm, or to `open`. A **party** is one bearer token held
 by a swarm or a sovereign, and the token is the only identity the board trusts.
 Cards live in the Trilium vault as child notes of the note carrying the
-`#federationBoard` label. The board service is the only writer.
+`#federationBoard` label. The board service is the only writer. Its verbs
+publish into the `operations` tool, named `operations_board_*` for cards and
+`operations_party_*` for parties.
 
 ## Two roles, one folder
 
@@ -66,11 +68,12 @@ Override the env with `AWM_ENV=<name>`.
 
 ## Mint a party
 
-On the host, call `board party_add` with the party's `swarm`, `principal` and
-`relation` (`domestic`, `foreign` or `sovereign`). The answer carries the token
-once. Put it in the owning swarm's env file as `AWM_BOARD_TOKEN`. Run
-`party_revoke` with the party id from `party_list` to cut it off; its token and
-any open stream stop working within one heartbeat.
+On the host, call `operations_party_add` with the party's `swarm`, `principal`
+and `relation` (`domestic`, `foreign` or `sovereign`). The answer carries the
+token once. Put it in the owning swarm's env file as `AWM_BOARD_TOKEN`. Run
+`operations_party_revoke` with the party id from `operations_party_list` to cut
+it off; its token and any open stream stop working within one heartbeat. The
+party verbs are CLI and HTTP only: they are not on the MCP surface.
 
 ## Tests
 

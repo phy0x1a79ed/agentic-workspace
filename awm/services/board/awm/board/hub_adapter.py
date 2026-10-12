@@ -1,4 +1,4 @@
-"""Hub adapter for the board service: the ``board`` MCP domain.
+"""Hub adapter for the board service: the card and party verbs of the ``operations`` tool.
 
 One folder, two roles, chosen by ``AWM_BOARD_ROLE``:
 
@@ -34,7 +34,7 @@ from awm.board.client import BoardClient, BoardError
 
 log = logging.getLogger("awm.board.hub_adapter")
 
-HOST_ONLY = ("party_add", "party_revoke", "party_list")
+HOST_ONLY = ("operations_party_add", "operations_party_revoke", "operations_party_list")
 CARD_FIELDS = ("sender", "recipient", "claimant", "status", "kind", "reply_to")
 
 #: Set once the host's stores exist. The admin verbs read it.
@@ -62,8 +62,8 @@ API_MANIFEST: dict[str, Any] = {
     ),
     "functions": [
         {
-            "name": "post",
-            "tool": "board_post",
+            "name": "operations_board_post",
+            "tool": "operations_board_post",
             "effect": "queue",
             "description": (
                 "Post a card to a swarm, or to `open` for any swarm to claim. "
@@ -80,16 +80,16 @@ API_MANIFEST: dict[str, Any] = {
             "timeout": 60,
         },
         {
-            "name": "claim",
-            "tool": "board_claim",
+            "name": "operations_board_claim",
+            "tool": "operations_board_claim",
             "effect": "queue",
             "description": "Claim a request card. Answers a conflict when another party already holds it.",
             "params": [_param("card_id", "string", "The card's id.", True)],
             "timeout": 60,
         },
         {
-            "name": "complete",
-            "tool": "board_complete",
+            "name": "operations_board_complete",
+            "tool": "operations_board_complete",
             "effect": "queue",
             "description": "Finish a card you claimed, with its result.",
             "params": [
@@ -99,8 +99,8 @@ API_MANIFEST: dict[str, Any] = {
             "timeout": 60,
         },
         {
-            "name": "fail",
-            "tool": "board_fail",
+            "name": "operations_board_fail",
+            "tool": "operations_board_fail",
             "effect": "queue",
             "description": "Give up on a card you claimed, with the reason.",
             "params": [
@@ -110,16 +110,16 @@ API_MANIFEST: dict[str, Any] = {
             "timeout": 60,
         },
         {
-            "name": "get",
-            "tool": "board_get",
+            "name": "operations_board_get",
+            "tool": "operations_board_get",
             "effect": "read",
             "description": "Read one card you may see.",
             "params": [_param("card_id", "string", "The card's id.", True)],
             "timeout": 60,
         },
         {
-            "name": "list",
-            "tool": "board_list",
+            "name": "operations_board_list",
+            "tool": "operations_board_list",
             "effect": "read",
             "description": "List the cards you may see, narrowed by any of the filters.",
             "params": [
@@ -135,8 +135,9 @@ API_MANIFEST: dict[str, Any] = {
             "timeout": 60,
         },
         {
-            "name": "party_add",
-            "tool": "board_party_add",
+            "name": "operations_party_add",
+            "tool": "operations_party_add",
+            "surfaces": ["cli", "http"],
             "effect": "secret",
             "description": (
                 "Host only. Mint a party and its bearer token. The token is "
@@ -149,15 +150,17 @@ API_MANIFEST: dict[str, Any] = {
             ],
         },
         {
-            "name": "party_revoke",
-            "tool": "board_party_revoke",
+            "name": "operations_party_revoke",
+            "tool": "operations_party_revoke",
+            "surfaces": ["cli", "http"],
             "effect": "write",
             "description": "Host only. Revoke a party. Its token stops working at once.",
-            "params": [_param("party_id", "string", "The party's id, from party_list.", True)],
+            "params": [_param("party_id", "string", "The party's id, from operations_party_list.", True)],
         },
         {
-            "name": "party_list",
-            "tool": "board_party_list",
+            "name": "operations_party_list",
+            "tool": "operations_party_list",
+            "surfaces": ["cli", "http"],
             "effect": "read",
             "description": "Host only. List the parties. Tokens are never shown.",
             "params": [],
@@ -293,7 +296,7 @@ def _public(row: dict) -> dict:
 
 
 async def party_add(args: dict, as_: str | None = None) -> dict:
-    refused = _admin_refusal("party_add", as_)
+    refused = _admin_refusal("operations_party_add", as_)
     if refused:
         return refused
     try:
@@ -306,7 +309,7 @@ async def party_add(args: dict, as_: str | None = None) -> dict:
 
 
 async def party_revoke(args: dict, as_: str | None = None) -> dict:
-    refused = _admin_refusal("party_revoke", as_)
+    refused = _admin_refusal("operations_party_revoke", as_)
     if refused:
         return refused
     try:
@@ -317,7 +320,7 @@ async def party_revoke(args: dict, as_: str | None = None) -> dict:
 
 
 async def party_list(args: dict, as_: str | None = None) -> dict:
-    refused = _admin_refusal("party_list", as_)
+    refused = _admin_refusal("operations_party_list", as_)
     if refused:
         return refused
     rows = await asyncio.to_thread(HOST.parties.list)
@@ -325,15 +328,15 @@ async def party_list(args: dict, as_: str | None = None) -> dict:
 
 
 HANDLERS: dict[str, Any] = {
-    "post": post,
-    "claim": claim,
-    "complete": complete,
-    "fail": fail,
-    "get": get,
-    "list": list_cards,
-    "party_add": party_add,
-    "party_revoke": party_revoke,
-    "party_list": party_list,
+    "operations_board_post": post,
+    "operations_board_claim": claim,
+    "operations_board_complete": complete,
+    "operations_board_fail": fail,
+    "operations_board_get": get,
+    "operations_board_list": list_cards,
+    "operations_party_add": party_add,
+    "operations_party_revoke": party_revoke,
+    "operations_party_list": party_list,
 }
 
 

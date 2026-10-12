@@ -20,10 +20,13 @@ from awm.config import verb_effect  # noqa: E402
 pytestmark = [pytest.mark.unit, pytest.mark.smoke]
 
 EFFECTS = {
-    "post": "queue", "claim": "queue", "complete": "queue", "fail": "queue",
-    "get": "read", "list": "read",
-    "party_add": "secret", "party_revoke": "write", "party_list": "read",
+    "operations_board_post": "queue", "operations_board_claim": "queue",
+    "operations_board_complete": "queue", "operations_board_fail": "queue",
+    "operations_board_get": "read", "operations_board_list": "read",
+    "operations_party_add": "secret", "operations_party_revoke": "write",
+    "operations_party_list": "read",
 }
+HIDDEN = {"operations_party_add", "operations_party_revoke", "operations_party_list"}
 
 
 def functions() -> dict[str, dict]:
@@ -38,20 +41,36 @@ def test_every_verb_declares_the_effect_the_plan_gives_it():
         assert verb_effect(declared[name]) == effect
 
 
-def test_tool_names_fold_into_one_board_domain_and_every_verb_has_a_handler():
+def test_every_verb_is_named_under_the_operations_tool_and_has_a_handler():
     for name, spec in functions().items():
-        assert spec["tool"] == f"board_{name}"
-        assert spec["tool"].split("_", 1)[0] == "board"
+        assert spec["tool"] == name
+        assert name.split("_", 1)[0] == "operations"
         assert name in hub_adapter.HANDLERS
+    assert set(hub_adapter.HANDLERS) == set(EFFECTS)
+
+
+def test_only_the_party_verbs_leave_the_mcp_surface():
+    hidden = {name for name, spec in functions().items() if spec.get("surfaces") == ["cli", "http"]}
+    assert hidden == HIDDEN
+    assert all("surfaces" not in spec for name, spec in functions().items() if name not in HIDDEN)
+
+
+def test_the_manifest_declares_the_operations_tool_switched_on():
+    import tomllib
+
+    manifest = tomllib.loads((Path(__file__).parent.parent / "service.toml").read_text())
+    assert manifest["tool"] == "operations"
+    assert manifest["tier"] == "on"
 
 
 def test_required_params_are_declared_where_a_handler_indexes_them():
     declared = functions()
-    for name in ("post",):
+    for name in ("operations_board_post",):
         required = {p["name"] for p in declared[name]["params"] if p.get("required")}
         assert required == {"kind", "recipient", "title"}
-    for name in ("claim", "complete", "fail", "get"):
-        assert [p["name"] for p in declared[name]["params"] if p.get("required")] == ["card_id"]
+    for name in ("complete", "claim", "fail", "get"):
+        declared_params = declared[f"operations_board_{name}"]["params"]
+        assert [p["name"] for p in declared_params if p.get("required")] == ["card_id"]
 
 
 def test_the_role_defaults_to_client_and_rejects_nonsense(monkeypatch):
@@ -68,9 +87,9 @@ def test_the_role_defaults_to_client_and_rejects_nonsense(monkeypatch):
 
 
 @pytest.mark.parametrize("verb,args", [
-    ("party_add", {"swarm": "alpha", "principal": "p", "relation": "domestic"}),
-    ("party_revoke", {"party_id": "x"}),
-    ("party_list", {}),
+    ("operations_party_add", {"swarm": "alpha", "principal": "p", "relation": "domestic"}),
+    ("operations_party_revoke", {"party_id": "x"}),
+    ("operations_party_list", {}),
 ])
 async def test_the_client_role_refuses_the_host_only_verbs(monkeypatch, verb, args):
     monkeypatch.setenv("AWM_BOARD_ROLE", "client")
@@ -172,7 +191,7 @@ async def test_list_relays_paging_to_the_host(relay):
     page = await hub_adapter.list_cards({"recipient": "beta", "limit": 2, "offset": 1})
     assert [c["title"] for c in page["cards"]] == ["1", "2"]
     assert (await hub_adapter.list_cards({"limit": 0 or "", "offset": ""}))["ok"] is True
-    spec = next(f for f in hub_adapter.API_MANIFEST["functions"] if f["name"] == "list")
+    spec = next(f for f in hub_adapter.API_MANIFEST["functions"] if f["name"] == "operations_board_list")
     assert {"limit", "offset"} <= {p["name"] for p in spec["params"]}
 
 
