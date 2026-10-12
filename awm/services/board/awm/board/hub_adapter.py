@@ -34,7 +34,7 @@ from awm.board.client import BoardClient, BoardError
 
 log = logging.getLogger("awm.board.hub_adapter")
 
-HOST_ONLY = ("operations_party_add", "operations_party_revoke", "operations_party_list")
+HOST_ONLY = ("party_add", "party_revoke", "party_list")
 CARD_FIELDS = ("sender", "recipient", "claimant", "status", "kind", "reply_to")
 
 #: Set once the host's stores exist. The admin verbs read it.
@@ -62,7 +62,7 @@ API_MANIFEST: dict[str, Any] = {
     ),
     "functions": [
         {
-            "name": "operations_board_post",
+            "name": "post",
             "tool": "operations_board_post",
             "effect": "queue",
             "description": (
@@ -80,7 +80,7 @@ API_MANIFEST: dict[str, Any] = {
             "timeout": 60,
         },
         {
-            "name": "operations_board_claim",
+            "name": "claim",
             "tool": "operations_board_claim",
             "effect": "queue",
             "description": "Claim a request card. Answers a conflict when another party already holds it.",
@@ -88,7 +88,7 @@ API_MANIFEST: dict[str, Any] = {
             "timeout": 60,
         },
         {
-            "name": "operations_board_complete",
+            "name": "complete",
             "tool": "operations_board_complete",
             "effect": "queue",
             "description": "Finish a card you claimed, with its result.",
@@ -99,7 +99,7 @@ API_MANIFEST: dict[str, Any] = {
             "timeout": 60,
         },
         {
-            "name": "operations_board_fail",
+            "name": "fail",
             "tool": "operations_board_fail",
             "effect": "queue",
             "description": "Give up on a card you claimed, with the reason.",
@@ -110,7 +110,7 @@ API_MANIFEST: dict[str, Any] = {
             "timeout": 60,
         },
         {
-            "name": "operations_board_get",
+            "name": "get",
             "tool": "operations_board_get",
             "effect": "read",
             "description": "Read one card you may see.",
@@ -118,7 +118,7 @@ API_MANIFEST: dict[str, Any] = {
             "timeout": 60,
         },
         {
-            "name": "operations_board_list",
+            "name": "list",
             "tool": "operations_board_list",
             "effect": "read",
             "description": "List the cards you may see, narrowed by any of the filters.",
@@ -135,7 +135,7 @@ API_MANIFEST: dict[str, Any] = {
             "timeout": 60,
         },
         {
-            "name": "operations_party_add",
+            "name": "party_add",
             "tool": "operations_party_add",
             "surfaces": ["cli", "http"],
             "effect": "secret",
@@ -150,7 +150,7 @@ API_MANIFEST: dict[str, Any] = {
             ],
         },
         {
-            "name": "operations_party_revoke",
+            "name": "party_revoke",
             "tool": "operations_party_revoke",
             "surfaces": ["cli", "http"],
             "effect": "write",
@@ -158,7 +158,7 @@ API_MANIFEST: dict[str, Any] = {
             "params": [_param("party_id", "string", "The party's id, from operations_party_list.", True)],
         },
         {
-            "name": "operations_party_list",
+            "name": "party_list",
             "tool": "operations_party_list",
             "surfaces": ["cli", "http"],
             "effect": "read",
@@ -296,7 +296,7 @@ def _public(row: dict) -> dict:
 
 
 async def party_add(args: dict, as_: str | None = None) -> dict:
-    refused = _admin_refusal("operations_party_add", as_)
+    refused = _admin_refusal("party_add", as_)
     if refused:
         return refused
     try:
@@ -309,7 +309,7 @@ async def party_add(args: dict, as_: str | None = None) -> dict:
 
 
 async def party_revoke(args: dict, as_: str | None = None) -> dict:
-    refused = _admin_refusal("operations_party_revoke", as_)
+    refused = _admin_refusal("party_revoke", as_)
     if refused:
         return refused
     try:
@@ -320,7 +320,7 @@ async def party_revoke(args: dict, as_: str | None = None) -> dict:
 
 
 async def party_list(args: dict, as_: str | None = None) -> dict:
-    refused = _admin_refusal("operations_party_list", as_)
+    refused = _admin_refusal("party_list", as_)
     if refused:
         return refused
     rows = await asyncio.to_thread(HOST.parties.list)
@@ -328,15 +328,15 @@ async def party_list(args: dict, as_: str | None = None) -> dict:
 
 
 HANDLERS: dict[str, Any] = {
-    "operations_board_post": post,
-    "operations_board_claim": claim,
-    "operations_board_complete": complete,
-    "operations_board_fail": fail,
-    "operations_board_get": get,
-    "operations_board_list": list_cards,
-    "operations_party_add": party_add,
-    "operations_party_revoke": party_revoke,
-    "operations_party_list": party_list,
+    "post": post,
+    "claim": claim,
+    "complete": complete,
+    "fail": fail,
+    "get": get,
+    "list": list_cards,
+    "party_add": party_add,
+    "party_revoke": party_revoke,
+    "party_list": party_list,
 }
 
 
