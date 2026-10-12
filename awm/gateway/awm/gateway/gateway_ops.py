@@ -162,6 +162,8 @@ async def _op_gateway_list() -> dict[str, Any]:
             entry["dir"] = rec.static_dir
         elif rec.kind == "service":
             entry["api"] = rec.api
+            if rec.refusal:
+                entry["refusal"] = rec.refusal
         out.append(entry)
     return {"services": out}
 
@@ -787,9 +789,9 @@ async def _op_peer_providers(tool: str | None = None,
     """Which fleet nodes can serve an MCP tool, and which one it defaults to.
 
     The companion of the address book: ``peer_resolve`` says *where a node is*,
-    this says *what a node can do*. It is the same handler the reserved
-    ``providersOf`` MCP tool uses, so ``awm peer providers`` and what an agent
-    sees can never disagree.
+    this says *what a node can do*. It answers from the same resolution
+    that fills each MCP tool's ``peer`` enum, so ``awm peer providers`` and what an
+    agent sees can never disagree.
 
     Imported locally because ``catalog`` imports this module at load time — the
     dependency has to point one way only.
@@ -1176,7 +1178,7 @@ GATEWAY_OPERATIONS: list[Operation] = [
         name="peer_providers",
         description="Which fleet nodes can serve a given MCP tool/domain and "
                     "which one it goes to by default (omit the tool for the "
-                    "whole fleet map). Backs the providersOf MCP tool.",
+                    "whole fleet map).",
         service_func=_op_peer_providers,
         # Not ``/peers/providers``: ``GET /peers/{name}`` is registered ahead of
         # it and would swallow "providers" as a peer name. The ``-`` segment says

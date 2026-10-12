@@ -75,7 +75,8 @@ class ServiceRecord:
 
     # Lifecycle bookkeeping for kind="service". ``backend_status`` mirrors
     # the ready state the client surface gates on.
-    backend_status: str = "starting"                # starting | ready | down
+    backend_status: str = "starting"                # starting | ready | down | refused
+    refusal: str = ""                               # why a refused manifest was refused
     backend_pid: int | None = None
 
     teardown: Callable[[], Awaitable[None]] | None = field(

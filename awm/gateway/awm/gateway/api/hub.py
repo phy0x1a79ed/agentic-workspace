@@ -42,6 +42,7 @@ from fastapi import (
 )
 from pydantic import BaseModel, Field, model_validator
 
+from awm.gateway import surface
 from awm.gateway.hub import rpc
 from awm.gateway.hub.lease import LeaseAlreadyHeld, get_lease_manager
 from awm.gateway.hub.registry import (
@@ -486,11 +487,31 @@ async def service_control(websocket: WebSocket, service_id: str) -> None:
                       rec.name, exc_info=True)
 
 
+def _registration_refusal(service_id: str, api: dict[str, Any]) -> str | None:
+    """Why the manifest a service sent in ``ready`` is refused, or ``None``."""
+    registry = get_registry()
+    rec = registry.get_by_id(service_id)
+    if rec is None:
+        return None
+    others = [(r.name, r.api) for r in registry.service_records()
+              if r.service_id != service_id]
+    try:
+        surface.check_registration(rec.name, api, others)
+    except surface.RegistrationError as exc:
+        return str(exc)
+    return None
+
+
 def _route_inbound(ch: "rpc.ControlChannel", service_id: str,
                    env: dict[str, Any]) -> None:
     kind = env.get("kind")
     if kind == "ready":
-        ch.set_api(env.get("api") or {})
+        api = env.get("api") or {}
+        refusal = _registration_refusal(service_id, api)
+        if refusal:
+            log.error("%s", refusal)
+            api = {}
+        ch.set_api(api)
         # Re-look-up the record fresh by service_id rather than trusting a record
         # captured at WS-accept time: a concurrent reconcile / disconnect-respawn
         # may have replaced the registry record for this service_id in the
@@ -500,7 +521,10 @@ def _route_inbound(ch: "rpc.ControlChannel", service_id: str,
         rec = registry.get_by_id(service_id)
         if rec is not None:
             rec.api = ch.api
-            rec.backend_status = "ready"
+            rec.refusal = refusal or ""
+            rec.backend_status = "refused" if refusal else "ready"
+            if refusal:
+                return
             # Reaching ready is the only honest evidence a respawn worked, so
             # it is what resets the crash-loop budget.
             if not rec.is_overlay:

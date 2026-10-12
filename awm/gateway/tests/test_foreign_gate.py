@@ -39,7 +39,8 @@ class _FakeChannel:
 
 
 def _fn(name, effect=None, category=None, tool=None):
-    spec = {"name": name, "description": f"{name}.", "params": []}
+    spec = {"name": name, "description": f"{name}.",
+            "params": [{"name": "q", "type": "string"}]}
     if effect:
         spec["effect"] = effect
     if category:
@@ -195,7 +196,6 @@ async def test_providers_of_is_refused(world):
     ("kb", {"verb": "search", "peer": "local"}),
     ("kb", {"verb": "search", "args": {"peer": "mira"}}),
     ("kb_search", {"peer": "mira"}),
-    ("more", {"domain": "kb", "verb": "search", "peer": "mira"}),
 ])
 async def test_a_peer_argument_is_refused(world, name, args):
     await _refused(name, args)
@@ -208,7 +208,7 @@ async def test_an_empty_peer_argument_is_not_a_hop(world):
 
 
 # ---------------------------------------------------------------------------
-# describe and more
+# describe
 # ---------------------------------------------------------------------------
 
 
@@ -223,22 +223,6 @@ async def test_describe_of_a_single_hidden_verb_is_refused(world):
 
 async def test_describe_of_a_domain_with_no_allowed_verb_is_refused(world):
     assert await _refused("scope", {"verb": "describe"}) == "Unknown tool: scope"
-
-
-async def test_more_lists_only_allowed_verbs(world):
-    out = await catalog.dispatch("more", {}, as_=FOREIGN)
-    assert out == "- kb: verbs: search"
-    assert "scope" not in out and "add" not in out
-
-
-async def test_more_calls_only_allowed_verbs(world):
-    out = await catalog.dispatch(
-        "more", {"domain": "kb", "verb": "search", "args": {"q": 1}}, as_=FOREIGN)
-    assert json.loads(out) == {"ran": "search"}
-    await _refused("more", {"domain": "kb", "verb": "add"})
-    await _refused("more", {"domain": "scope", "verb": "archive"})
-    await _refused("more", {"domain": "providersOf"})
-    await _refused("more", {"domain": "kb@hub", "verb": "search"})
 
 
 # ---------------------------------------------------------------------------
@@ -283,295 +267,6 @@ async def test_other_callers_are_unchanged(world, as_):
     assert [c[0] for c in world.calls] == ["add", "add"]
 
 
-async def test_the_legacy_bearer_still_reaches_providers_of(world):
-    out = json.loads(await catalog.dispatch("providersOf", {}, as_="peer"))
-    assert "tools" in out
-
-
-# ---------------------------------------------------------------------------
-# /tools
-# ---------------------------------------------------------------------------
-
-
-def test_a_foreign_domain_listing_is_cut_to_what_it_may_call(world):
-    tools = {t.name: t for t in catalog.list_domain_tools(
-        peers=True, tiers=True, grants=frozenset({"kb"}))}
-    assert set(tools) == {"kb"}, "no providersOf, no more, no scope, no native"
-    assert tools["kb"].inputSchema["properties"]["verb"]["enum"] == ["search", "describe"]
-    assert "peer" not in tools["kb"].inputSchema["properties"]
-    assert "add" not in tools["kb"].description
-
-
-def test_a_domestic_listing_is_unchanged(world):
-    names = {t.name for t in catalog.list_domain_tools()}
-    assert {"kb", "scope", "legacy", "nat"} <= names
-    kb = next(t for t in catalog.list_domain_tools() if t.name == "kb")
-    assert "peer" in kb.inputSchema["properties"]
-
-
-def test_a_foreign_flat_listing_is_cut_to_what_it_may_call(world):
-    assert {t.name for t in catalog.list_tools(grants=frozenset({"kb"}))} == {
-        "kb_search"}
-    assert {t.name for t in catalog.list_tools(grants=frozenset({"kb", "journals"}))} == {
-        "kb_search", "scope_archive"}
-    assert {"kb_add", "legacy_old"} <= {t.name for t in catalog.list_tools()}
-
-
-def test_the_tools_endpoint_reads_the_edge_stamp(world):
-    from awm.gateway import server
-
-    def listing(as_, **kw):
-        headers = {"X-Awm-As": as_} if as_ else {}
-        out = server.list_tools_endpoint(SimpleNamespace(headers=headers), **kw)
-        return {t["name"] for t in out["tools"]}
-
-    assert listing(FOREIGN, view="domains") == {"kb"}
-    assert listing(FOREIGN) == {"kb_search"}
-    assert listing(FOREIGN, view="domains", peers=1, tiers=1) == {"kb"}
-    assert listing("peer:") == set() and listing("peer: ") == set()
-    assert "scope" in listing(None, view="domains")
-    assert "kb_add" in listing("peer")
-
-
-# ---------------------------------------------------------------------------
-# A foreign peer never enters our catalog
-# ---------------------------------------------------------------------------
-
-
-def _hub_snapshot():
-    return {
-        "mira": {"domains": {"orch": ["run"]}, "reachable": True, "error": None},
-        "hub": {"domains": {"hubonly": ["go"], "kb": ["search"]},
-                "reachable": True, "error": None},
-    }
-
-
-def test_a_foreign_peers_domain_never_appears_in_the_fleet(world, monkeypatch):
-    monkeypatch.setattr(peer_catalog, "_snapshot", _hub_snapshot())
-    assert set(peer_catalog.snapshot()) == {"mira"}
-    assert "hubonly" not in peer_catalog.fleet_domains({})
-    assert "orch" in peer_catalog.fleet_domains({})
-    assert peer_catalog.resolve("hubonly", {})["reason"] == peer_catalog.REASON_UNKNOWN
-    with pytest.raises(ValueError):
-        peer_catalog.choose_target("hubonly", "hub", {})
-
-
-def test_a_snapshot_passed_in_is_filtered_too(world):
-    assert "hubonly" not in peer_catalog.fleet_domains({}, _hub_snapshot())
-    res = peer_catalog.resolve("kb", {}, _hub_snapshot())
-    assert res["reason"] == peer_catalog.REASON_UNKNOWN
-
-
-def test_a_foreign_peers_domain_is_in_no_description_and_not_in_more(
-        world, monkeypatch):
-    monkeypatch.setattr(peer_catalog, "_snapshot", _hub_snapshot())
-    text = " ".join(t.description for t in catalog.list_domain_tools(
-        peers=True, tiers=True))
-    assert "hubonly" not in text
-    assert "orch" in text, "a domestic peer's domain is still indexed"
-    assert "hubonly" not in catalog._more_index({})
-    assert "hubonly" not in " ".join(
-        t.description for t in catalog.list_domain_tools(peers=True))
-
-
-async def test_a_foreign_peer_is_never_a_default_provider(world, monkeypatch):
-    monkeypatch.setattr(peer_catalog, "_snapshot", _hub_snapshot())
-    res = peer_catalog.resolve("kb", catalog._local_domain_verbs(catalog._domain_catalog()))
-    assert [p["peer"] for p in res["providers"]] == ["local"]
-    with pytest.raises(ValueError, match="Unknown tool"):
-        await catalog.dispatch("hubonly", {"verb": "go"})
-
-
-def test_a_declared_home_owned_by_a_foreign_peer_is_ignored(world, monkeypatch):
-    monkeypatch.setenv("AWM_DOMAIN_HOME_vault", "hub")
-    assert "vault" not in peer_catalog.declared_homes()
-    monkeypatch.setenv("AWM_DOMAIN_HOME_vault", "mira")
-    assert peer_catalog.declared_homes()["vault"] == "mira"
-
-
-async def test_the_sweep_skips_foreign_peers(world, monkeypatch):
-    fetched = []
-
-    async def fake_fetch(entry):
-        fetched.append(entry["name"])
-        return {"orch": ["run"]}
-
-    monkeypatch.setattr(peer_catalog, "_fetch_peer", fake_fetch)
-    monkeypatch.setattr(peer_catalog, "_sweep_lock", None)
-    monkeypatch.setattr(peer_catalog, "_swept_at", 0.0)
-    snap = await peer_catalog.sweep()
-    assert fetched == ["mira"]
-    assert set(snap) == {"mira"}
-
-
-# ---------------------------------------------------------------------------
-# The MCP proxies dial a peer edge through gatewayclient's token path
-# ---------------------------------------------------------------------------
-
-
-def _fake_response(status=200, body=None):
-    return SimpleNamespace(
-        status_code=status, text=json.dumps(body or {}), json=lambda: body or {},
-        raise_for_status=lambda: None)
-
-
-def test_the_stdio_proxy_dials_a_redirect_through_peer_send_sync(monkeypatch):
-    from awm import gatewayclient
-    from awm.gateway import mcp_stdio
-
-    seen = {}
-
-    def fake_send(peer, entry, send):
-        seen["peer"], seen["entry"] = peer, entry
-        return _fake_response(200, {"result": "R"})
-
-    monkeypatch.setattr(gatewayclient, "peer_send_sync", fake_send)
-    monkeypatch.setattr(gatewayclient, "_peer_ca", lambda: "/x/ca.pem")
-    entry = {"peer": "mira", "edge_url": "https://mira:12100", "relation": "domestic"}
-    assert mcp_stdio._peer_invoke("mira", "kb", {"verb": "get"}, None, entry=entry) == {
-        "result": "R"}
-    assert seen == {"peer": "mira", "entry": entry}
-
-
-def test_the_stdio_proxy_raises_the_peers_refusal(monkeypatch):
-    from awm import gatewayclient
-    from awm.gateway import mcp_stdio
-
-    monkeypatch.setattr(gatewayclient, "peer_send_sync",
-                        lambda p, e, s: _fake_response(404, {"detail": "no"}))
-    monkeypatch.setattr(gatewayclient, "_peer_ca", lambda: "/x/ca.pem")
-    with pytest.raises(mcp_stdio._HTTPStatusError) as exc:
-        mcp_stdio._peer_invoke("mira", "kb", {}, None,
-                               entry={"edge_url": "https://mira:12100"})
-    assert exc.value.status == 404
-
-
-def test_the_sdk_proxy_dials_a_redirect_through_peer_send(monkeypatch):
-    import asyncio
-
-    sdk = pytest.importorskip("awm.gateway.mcp_server_sdk")
-    from awm import gatewayclient
-
-    seen = {}
-
-    async def fake_send(peer, entry, send):
-        seen["peer"], seen["entry"] = peer, entry
-        return _fake_response(200, {"result": "R"})
-
-    monkeypatch.setattr(gatewayclient, "peer_send", fake_send)
-    monkeypatch.setattr(gatewayclient, "_peer_ca", lambda: "/x/ca.pem")
-    entry = {"peer": "mira", "edge_url": "https://mira:12100", "relation": "domestic"}
-    out = asyncio.run(sdk._peer_invoke("mira", "kb", {"verb": "get"}, None, entry=entry))
-    assert out == {"result": "R"}
-    assert seen == {"peer": "mira", "entry": entry}
-
-
-def test_a_node_suffixed_tool_name_goes_to_the_local_gateway_not_a_peer(monkeypatch):
-    from awm.gateway import mcp_stdio
-
-    sent, dialled = [], []
-    monkeypatch.setattr(mcp_stdio, "_peer_invoke",
-                        lambda *a, **k: dialled.append(a) or {"result": "x"})
-    monkeypatch.setattr(mcp_stdio, "_request_with_retry",
-                        lambda method, path, json_body=None, **kw: sent.append(json_body)
-                        or {"result": "refused"})
-    mcp_stdio._handle_tools_call({"name": "kb@mira", "arguments": {"verb": "get"}})
-    assert not dialled
-    assert sent[0]["name"] == "kb@mira"
-
-
-def test_a_peer_redirect_payload_names_the_relation(awm_workspace):
-    _write_book(awm_workspace["awm_dir"], mira={
-        "edge_url": "https://mira:12100", "relation": "domestic"})
-    assert peer_catalog.PeerRedirect("mira", "kb", "get").payload()["relation"] == "domestic"
-
-
-# ---------------------------------------------------------------------------
-# Hardening
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize("stamp", ["peer:", "peer: ", "peer:   "])
-async def test_a_malformed_peer_stamp_is_foreign_with_no_grants(world, stamp):
-    assert catalog.foreign_grants(stamp) == frozenset()
-    await _refused("kb_search", {}, as_=stamp)
-    await _refused("kb", {"verb": "search"}, as_=stamp)
-    await _refused("kb", {"verb": "describe"}, as_=stamp)
-    assert world.calls == []
-
-
-def test_only_a_real_node_stamp_or_no_stamp_is_not_foreign(world):
-    assert catalog.foreign_grants(None) is None
-    assert catalog.foreign_grants("peer") is None
-    assert catalog.foreign_grants("placed-1") is None
-    assert catalog.foreign_grants("peer:mira") is None
-    assert catalog.foreign_grants("peer:hub") == frozenset({"kb"})
-
-
-@pytest.mark.parametrize("book", ["{ not json", "[]", "null", None])
-async def test_a_corrupt_or_missing_book_fails_closed(world, book):
-    path = world.awm_dir / "state" / "peers.json"
-    if book is None:
-        path.unlink()
-    else:
-        path.write_text(book)
-    await _refused("kb_search", {})
-    await _refused("kb", {"verb": "search"})
-    await _refused("kb_search", {}, as_="peer:mira")   # nobody is known to be domestic
-    assert world.calls == []
-    assert catalog.foreign_grants("peer") is None, "the legacy bearer is not a node stamp"
-
-
-def test_a_corrupt_book_leaves_no_provider(world, monkeypatch):
-    monkeypatch.setattr(peer_catalog, "_snapshot", _hub_snapshot())
-    (world.awm_dir / "state" / "peers.json").write_text("{ not json")
-    assert peer_catalog.snapshot() == {}
-    assert "orch" not in peer_catalog.fleet_domains({})
-
-
-def test_a_peer_missing_from_the_book_is_not_a_provider(world, monkeypatch):
-    monkeypatch.setattr(peer_catalog, "_snapshot", {
-        "ghost": {"domains": {"spooky": ["boo"]}, "reachable": True, "error": None}})
-    assert "spooky" not in peer_catalog.fleet_domains({})
-
-
-async def test_a_malformed_manifest_entry_cannot_break_the_foreign_surface(
-        world, monkeypatch):
-    stub = _StubRegistry([
-        _rec("kb", _fn("search", "read", "kb")),
-        _rec("bad",
-             {"name": "a", "effect": "read", "category": ["kb"]},
-             {"name": "b", "effect": ["read"], "category": "kb"},
-             {"name": "c", "effect": "read", "category": {"x": 1}},
-             {"name": "d", "effect": 7, "category": 7}),
-    ])
-    monkeypatch.setattr(catalog, "get_registry", lambda: stub)
-    for verb in "abcd":
-        await _refused(f"bad_{verb}", {})
-        await _refused("bad", {"verb": verb})
-    assert {t.name for t in catalog.list_tools(grants=frozenset({"kb"}))} == {"kb_search"}
-    assert {t.name for t in catalog.list_domain_tools(grants=frozenset({"kb"}))} == {"kb"}
-    assert catalog._allowed("read", ["kb"], frozenset({"kb"})) is False
-    assert catalog._allowed(["read"], "kb", frozenset({"kb"})) is False
-
-
-@pytest.mark.parametrize("name,args", [
-    ("kb_search", [1, 2]),
-    ("kb_search", "text"),
-    ("kb", {"verb": ["search"]}),
-    ("kb", {"verb": {"a": 1}}),
-    ("kb", {"verb": "search", "args": [1]}),
-    ("kb", {"verb": "describe", "args": "x"}),
-    ("more", {"domain": ["kb"]}),
-    (["kb_search"], {}),
-])
-async def test_malformed_input_from_a_foreign_caller_is_a_refusal_not_a_crash(
-        world, name, args):
-    with pytest.raises(ValueError):
-        await catalog.dispatch(name, args, as_=FOREIGN)
-    assert world.calls == []
-
-
 async def test_dispatch_runs_the_entry_the_gate_approved(world, monkeypatch):
     """The catalog entry carries its function; a different registry at call time
     cannot redirect the call."""
@@ -614,7 +309,6 @@ def test_a_refusal_is_a_404_over_http_and_an_allowed_read_is_a_200(http, world):
     assert ok.status_code == 200 and json.loads(ok.json()["result"]) == {"ran": "search"}
     for name, args in (("kb_add", {}), ("scope_archive", {}), ("providersOf", {}),
                        ("kb", {"verb": "add"}), ("kb_search", {"peer": "mira"}),
-                       ("more", {"domain": "kb", "verb": "add"}),
                        ("nat_peek", {}), ("nope", {})):
         resp = _post(http, name, args)
         assert resp.status_code == 404, (name, args, resp.text)
@@ -728,12 +422,6 @@ async def test_a_service_permission_error_reads_like_an_unknown_tool_to_a_foreig
     refused = await _refused("kb", {"verb": "search"})
     assert refused == (await _refused("kb", {"verb": "add"})).replace("'add'", "'search'")
     assert "journal" not in refused
-
-
-async def test_the_same_refusal_through_more_is_an_unknown_tool(world):
-    _raising(world, "peers may read journal posts only", "PermissionError")
-    with pytest.raises(ValueError, match="Unknown"):
-        await catalog.dispatch("more", {"domain": "kb", "verb": "search"}, as_=FOREIGN)
 
 
 async def test_other_service_errors_reach_a_foreign_caller_unchanged(world):

@@ -85,16 +85,15 @@ class TestToolsEndpoint:
         edge. It must stay local-only, or the fleet would advertise transitive
         peers this node cannot dial."""
         plain = client.get("/tools", params={"view": "domains"}).json()["tools"]
-        assert not any(t["name"] == "providersOf" for t in plain)
+        assert not any("@" in t["name"] for t in plain)
 
-    def test_view_domains_with_peers_adds_the_discovery_tool(self, client):
+    def test_view_domains_with_peers_is_the_fleet_view(self, client):
         """``peers=1`` is the agent-facing view: same one-tool-per-domain shape,
-        widened to the fleet, plus the reserved providersOf. With no peers joined
-        it is the local view plus that one tool."""
+        widened to the fleet, with no reserved tools beside the domains."""
         fleet = client.get(
             "/tools", params={"view": "domains", "peers": 1}).json()["tools"]
         names = [t["name"] for t in fleet]
-        assert "providersOf" in names
+        assert "providersOf" not in names and "more" not in names
         assert not any("@" in n for n in names)
         assert len(names) == len(set(names))
 

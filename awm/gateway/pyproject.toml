@@ -30,6 +30,9 @@ awm-mcp = "awm.gateway.mcp_server:main"
 include = ["awm.gateway*"]
 namespaces = true
 
+[tool.setuptools.package-data]
+"awm.gateway" = ["usage_seed.txt"]
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 markers = [

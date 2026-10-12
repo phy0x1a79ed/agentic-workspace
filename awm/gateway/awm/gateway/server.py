@@ -340,7 +340,7 @@ async def lifespan(app: FastAPI):
         #      peer_catalog.refresh_loop — which peer provides which MCP domain.
         #        A sweep costs an ssh plus a TLS round trip to a host that may be
         #        asleep, so it is kept off the request path entirely: `/tools` and
-        #        providersOf read whatever this last produced.
+        #        the tool descriptions read whatever this last produced.
         from awm.gatewayclient import spawn_supervised
 
         from awm.gateway.gateway_ops import reap_loop
@@ -427,8 +427,7 @@ register_fastapi_routes(app, GATEWAY_OPERATIONS)
 # ---------------------------------------------------------------------------
 
 @app.get("/tools")
-def list_tools_endpoint(request: Request, view: str | None = None, peers: int = 0,
-                        tiers: int = 0):
+def list_tools_endpoint(request: Request, view: str | None = None, peers: int = 0):
     """Return the current MCP tool definitions from the live catalog.
 
     The thin stdio proxy fetches this on every `list_tools` call instead of
@@ -449,17 +448,14 @@ def list_tools_endpoint(request: Request, view: str | None = None, peers: int = 
     consumer of the plain view changes shape. Still sync: the peer data comes from
     a background snapshot, so this route never waits on a peer even cold.
 
-    ``tiers=1`` (with ``peers=1``) narrows the fleet view to the core domains,
-    ``providersOf`` and the ``more`` call-through tool.
-
     A foreign caller (the edge stamps ``X-Awm-As: peer:<node>``) sees only the
-    domains and verbs it may call, whichever view it asks for; ``peers`` and
-    ``tiers`` are ignored for it.
+    domains and verbs it may call, whichever view it asks for; ``peers`` is
+    ignored for it.
     """
     grants = catalog.foreign_grants(request.headers.get("X-Awm-As"))
     if view == "domains":
         tools = catalog.list_domain_tools(
-            peers=bool(peers), tiers=bool(tiers), grants=grants)
+            peers=bool(peers), grants=grants)
     else:
         tools = catalog.list_tools(grants=grants)
     return {"tools": [t.model_dump(by_alias=True) for t in tools]}
@@ -758,6 +754,8 @@ async def invoke_tool(payload: dict, request: Request):
         if request.headers.get("X-Awm-Peer-Redirect"):
             return {"peer_redirect": e.payload()}
         raise HTTPException(421, str(e))
+    except catalog.ArgumentError as e:
+        raise HTTPException(400, e.payload)
     except ValueError as e:
         # Unknown tool name -> 404
         raise HTTPException(404, str(e))

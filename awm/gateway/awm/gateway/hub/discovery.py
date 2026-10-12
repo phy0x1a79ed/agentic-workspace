@@ -34,11 +34,10 @@ sets it in its gitignored dev ``.env``, prod sets none). Resolution precedence:
 A corrupt marker reads as marked-but-unmatched (disabled + logged), never
 fail-open.
 
-Tier: the same ``service.toml`` may carry ``tier = "core"``. A core service's
-domains are advertised on the agent-facing MCP surface; every other domain is
-*discoverable* and reached through the ``more`` tool (see ``catalog``). The key
-is independent of ``profiles``; absent, unknown or unreadable means
-discoverable. It never affects whether the service runs.
+Tool and tier: the same ``service.toml`` may carry ``tool`` (the MCP tool the
+service publishes under; the folder name when absent) and ``tier`` (``"on"``, or
+``"off"`` to keep the tool off the MCP surface; anything else reads as ``"on"``).
+Both are independent of ``profiles`` and never affect whether the service runs.
 """
 
 from __future__ import annotations
@@ -173,61 +172,70 @@ def _read_profiles(folder: Path) -> list[str] | None:
 
 
 # ---------------------------------------------------------------------------
-# Tier (committed service.toml ``tier`` key)
+# Tool and tier (committed service.toml ``tool`` and ``tier`` keys)
 # ---------------------------------------------------------------------------
 
-TIER_CORE = "core"
-TIER_DISCOVERABLE = "discoverable"
+TIER_ON = "on"
+TIER_OFF = "off"
 
-# (path, mtime_ns, size) -> tier. /tools is fetched on every client tool-list, so
-# a service.toml is re-read only when it changes.
-_tier_cache: dict[tuple[str, int, int], str] = {}
+# (path, mtime_ns, size) -> (tool or None, tier). /tools is fetched on every
+# client tool-list, so a service.toml is re-read only when it changes.
+_surface_cache: dict[tuple[str, int, int], tuple[str | None, str]] = {}
 
 
-def read_tier(folder: Path) -> str:
-    """The service folder's tier: ``"core"`` only when ``service.toml`` says
-    ``tier = "core"``. A missing file, a missing or unknown key, or a file that
-    does not parse is ``"discoverable"`` — never a crash, never core by accident."""
+def _read_surface(folder: Path) -> tuple[str | None, str]:
     path = folder / PROFILE_MARKER
     try:
         st = path.stat()
     except OSError:
-        return TIER_DISCOVERABLE
+        return None, TIER_ON
     key = (str(path), st.st_mtime_ns, st.st_size)
-    cached = _tier_cache.get(key)
+    cached = _surface_cache.get(key)
     if cached is not None:
         return cached
-    tier = TIER_DISCOVERABLE
+    tool: str | None = None
+    tier = TIER_ON
     try:
         data = tomllib.loads(path.read_text(encoding="utf-8"))
+        value = data.get("tool")
+        if isinstance(value, str) and value.strip():
+            tool = value.strip()
         value = data.get("tier")
-        if isinstance(value, str) and value.strip().lower() == TIER_CORE:
-            tier = TIER_CORE
+        if isinstance(value, str) and value.strip().lower() == TIER_OFF:
+            tier = TIER_OFF
     except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
-        log.warning("could not read tier from %s: %s — discoverable", path, exc)
-    _tier_cache[key] = tier
-    return tier
+        log.warning("could not read tool/tier from %s: %s — defaults", path, exc)
+    _surface_cache[key] = (tool, tier)
+    return tool, tier
 
 
-def core_services() -> list[str]:
-    """Names of the service folders on disk that declare ``tier = "core"``.
+def read_tier(folder: Path) -> str:
+    """The service folder's tier: ``"off"`` only when ``service.toml`` says
+    ``tier = "off"``. Anything else, the legacy ``core`` and ``more`` included,
+    a missing file or a file that does not parse, is ``"on"``: a broken manifest
+    never switches a tool off."""
+    return _read_surface(folder)[1]
 
-    Read from the files, not from what is running: a core service that is down,
-    profile-gated off on this node, or served only by a peer is still core."""
-    root = services_root()
-    if not root.is_dir():
-        return []
-    return [entry.name for entry in sorted(root.iterdir())
-            if entry.is_dir() and not entry.name.startswith((".", "_"))
-            and (entry / RUN_SCRIPT).is_file()
-            and read_tier(entry) == TIER_CORE]
+
+def read_tool(folder: Path, default: str | None = None) -> str:
+    """The tool the service folder publishes under: the ``tool`` key of its
+    ``service.toml``, else ``default``, else the folder name."""
+    return _read_surface(folder)[0] or default or folder.name
 
 
 def service_tier(name: str) -> str:
     """Tier of the service folder called ``name`` under the services root."""
     if not name or name != Path(name).name or name.startswith("."):
-        return TIER_DISCOVERABLE
+        return TIER_ON
     return read_tier(services_root() / name)
+
+
+def service_tool(name: str) -> str:
+    """Tool of the service folder called ``name``; ``name`` itself when it is not
+    a folder under the services root."""
+    if not name or name != Path(name).name or name.startswith("."):
+        return name
+    return read_tool(services_root() / name, name)
 
 
 def _resolve_enabled(name: str, folder: Path,
