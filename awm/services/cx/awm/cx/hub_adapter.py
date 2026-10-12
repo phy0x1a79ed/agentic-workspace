@@ -9,8 +9,9 @@ started, instead of paying a cold launch. The session is seeded in a neutral
 directory and moved to the caller's directory at claim time, so the pool is not
 keyed by directory and the first `cx` in a project is as fast as the hundredth.
 
-Every function is named ``reflection_<verb>``, matching the service's
-``tool = "reflection"``. So the surface is ``awm reflection list_other`` and
+Every function publishes a ``tool`` named ``reflection_<verb>_other``, matching
+the service's ``tool = "reflection"``, while ``name`` stays the service-internal
+handle behind ``/svc/cx/fn/<name>``. So the surface is ``awm reflection list_other`` and
 ``mcp__awm__reflection {verb:"list_other"}``. The pool verbs are hidden from
 MCP.
 
@@ -44,7 +45,7 @@ API_MANIFEST: dict[str, Any] = {
     ),
     "functions": [
         {
-            "name": "reflection_start_other",
+            "name": "start",
             "tool": "reflection_start_other",
             "description": (
                 "Start a named background Claude Code session in a scope's "
@@ -103,7 +104,7 @@ API_MANIFEST: dict[str, Any] = {
             "effect": "write",
         },
         {
-            "name": "reflection_list_other",
+            "name": "list",
             "tool": "reflection_list_other",
             "description": (
                 "List the sessions on this node: background jobs with their "
@@ -122,7 +123,7 @@ API_MANIFEST: dict[str, Any] = {
             "effect": "read",
         },
         {
-            "name": "reflection_stop_other",
+            "name": "stop",
             "tool": "reflection_stop_other",
             "description": (
                 "Stop a session that `start_other` created. The conversation is "
@@ -137,7 +138,7 @@ API_MANIFEST: dict[str, Any] = {
             "effect": "write",
         },
         {
-            "name": "reflection_claim_other",
+            "name": "claim",
             "tool": "reflection_claim_other",
             "surfaces": ["cli", "http"],
             "description": (
@@ -154,7 +155,7 @@ API_MANIFEST: dict[str, Any] = {
             "effect": "write",
         },
         {
-            "name": "reflection_seed_other",
+            "name": "seed",
             "tool": "reflection_seed_other",
             "surfaces": ["cli", "http"],
             "description": (
@@ -170,7 +171,7 @@ API_MANIFEST: dict[str, Any] = {
             "effect": "write",
         },
         {
-            "name": "reflection_remove_other",
+            "name": "remove",
             "tool": "reflection_remove_other",
             "surfaces": ["cli", "http"],
             "description": (
@@ -251,12 +252,12 @@ async def _stop(args: dict[str, Any], as_: str | None = None) -> dict[str, Any]:
 
 
 HANDLERS: dict[str, Any] = {
-    "reflection_start_other": _start,
-    "reflection_list_other": _list,
-    "reflection_stop_other": _stop,
-    "reflection_claim_other": _claim,
-    "reflection_seed_other": _seed,
-    "reflection_remove_other": _remove,
+    "start": _start,
+    "list": _list,
+    "stop": _stop,
+    "claim": _claim,
+    "seed": _seed,
+    "remove": _remove,
 }
 
 

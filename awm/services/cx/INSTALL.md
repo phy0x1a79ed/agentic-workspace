@@ -305,7 +305,7 @@ then happens inside a service that is already warm, which keeps a Python
 interpreter start off the path of every launch.
 
 The timeouts have to agree with each other. `MOVE_TIMEOUT_S` in `awm/cx/claim.py`
-is how long a move may take, the manifest's `reflection_claim_other` timeout must exceed it, and
+is how long a move may take, the manifest's `claim` timeout must exceed it, and
 `CX_WAIT` in `bin/cx` must exceed that. A budget below the one beneath it aborts
 a claim that was about to succeed, and the session is spent for nothing. A test
 asserts the ladder.

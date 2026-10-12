@@ -1160,7 +1160,7 @@ def test_list_filters_by_project_and_scope(home, launched, monkeypatch):
 async def test_the_list_verb_keeps_the_pool_summary(home, launched):
     from awm.cx import hub_adapter
 
-    out = await hub_adapter.HANDLERS["reflection_list_other"]({})
+    out = await hub_adapter.HANDLERS["list"]({})
     assert set(out) == {"sessions", "pool"}
     assert {"warm", "want", "daemon_pid", "loop"} <= set(out["pool"])
 
@@ -1169,9 +1169,9 @@ async def test_the_list_verb_applies_the_peer_refusal(home, launched, peers):
     from awm.cx import hub_adapter
 
     for who in ("peer", "peer:john", "peer:stranger"):
-        out = await hub_adapter.HANDLERS["reflection_list_other"]({}, who)
+        out = await hub_adapter.HANDLERS["list"]({}, who)
         assert out["ok"] is False and "sessions" not in out, who
-    out = await hub_adapter.HANDLERS["reflection_list_other"]({}, "peer:capella")
+    out = await hub_adapter.HANDLERS["list"]({}, "peer:capella")
     assert "sessions" in out
 
 
@@ -1189,11 +1189,10 @@ def test_the_manifest_declares_effects_and_drops_status():
     from awm.cx.hub_adapter import API_MANIFEST
 
     fns = {f["name"]: f for f in API_MANIFEST["functions"]}
-    assert {f"reflection_{v}_other" for v in
-            ("start", "list", "stop", "claim", "seed", "remove")} == set(fns)
+    assert {"start", "list", "stop", "claim", "seed", "remove"} == set(fns)
     assert "status" not in fns and "wake" not in fns
-    assert fns["reflection_start_other"]["effect"] == "write"
-    assert fns["reflection_stop_other"]["effect"] == "write"
-    assert fns["reflection_list_other"]["effect"] == "read"
+    assert fns["start"]["effect"] == "write"
+    assert fns["stop"]["effect"] == "write"
+    assert fns["list"]["effect"] == "read"
     assert all(f["effect"] in ("read", "write") for f in fns.values())
     assert "tier" not in str(API_MANIFEST)
