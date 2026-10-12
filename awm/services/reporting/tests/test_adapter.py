@@ -15,7 +15,7 @@ from stubs import FakeCx, make_card, personas, session_row
 pytestmark = [pytest.mark.unit, pytest.mark.smoke]
 
 EFFECTS = {"status": "read", "card_list": "read", "card_get": "read", "card_assign": "write",
-           "board_ensure": "write"}
+           "board_ensure": "write", **dict.fromkeys(hub_adapter.TASK_VERBS, "write")}
 
 
 def functions() -> dict[str, dict]:

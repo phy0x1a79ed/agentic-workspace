@@ -129,3 +129,36 @@ def projects_dir() -> Path:
     from awm import config as awm_config
 
     return awm_config.canonical_workspace() / "projects"
+
+
+def project_scope(cwd: str | None) -> tuple[str | None, str | None]:
+    """Project and scope from a directory under the projects tree, else None."""
+    if not cwd:
+        return None, None
+    try:
+        parts = Path(cwd).resolve().relative_to(projects_dir().resolve()).parts
+    except (ValueError, OSError):
+        return None, None
+    return (parts[0], "/".join(parts[1:]) or None) if parts else (None, None)
+
+
+def remind_s() -> float:
+    """How long a task stays blocked on an urgent request before Tony is reminded once."""
+    return _float("AWM_REPORTING_REMIND_S", 3600.0)
+
+
+def dm_target() -> tuple[str, str]:
+    """The social account and channel that carry an urgent request to Tony."""
+    return (os.environ.get("AWM_REPORTING_DM_ACCOUNT") or "discord-bot",
+            os.environ.get("AWM_REPORTING_DM_CHANNEL") or "dm:188743359983124480")
+
+
+def trilium_url() -> str | None:
+    """Where Tony opens a Trilium note from, up to the ``#``, or None when no edge is known."""
+    override = (os.environ.get("AWM_REPORTING_TRILIUM_URL") or "").strip()
+    if override:
+        return override.rstrip("/")
+    from awm.config import edge_url
+
+    edge = edge_url()
+    return f"{edge}/trilium" if edge else None

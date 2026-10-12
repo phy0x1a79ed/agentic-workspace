@@ -105,14 +105,17 @@ class SwarmBoard:
             raise BoardError(f"{len(roots)} AWM notes sit under the root; pass parent")
         return roots[0]
 
-    async def move(self, note_id: str, column: str) -> bool:
-        """Show the card under ``column`` and under no other swarm column. True if it moved."""
+    async def move(self, note_id: str, column: str | None = None, *, into: str | None = None) -> bool:
+        """Show the card under ``column`` (or the note ``into``) and under no other swarm column.
+
+        True if it moved. Other parents, such as a clone on Tony's board, stay.
+        """
         lay = await self.layout()
         if note_id in {lay.board, lay.ledger, *lay.columns.values()}:
             raise BoardError(f"{note_id} is part of the board, not a card")
         note = await self._call("note_get", note_id=note_id, content=False)
         parents = set(note.get("parentNoteIds") or [])
-        wanted = (parents - set(lay.columns.values())) | {lay.columns[column]}
+        wanted = (parents - set(lay.columns.values())) | {into or lay.columns[column]}
         if wanted == parents:
             return False
         await self._call("note_place", note_id=note_id, parents=sorted(wanted))

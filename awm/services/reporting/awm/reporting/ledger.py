@@ -23,7 +23,7 @@ COLUMNS = {PROPOSED: "Proposed", PLANNED: "Planned", ACTIVE: "Active",
            BLOCKED: "Blocked", REVIEW: "Pending review"}
 
 _FIELDS = frozenset({
-    "session_id", "title", "project", "scope", "model", "effort", "state", "note_id",
+    "session_id", "title", "project", "scope", "model", "effort", "state", "note_id", "shown", "dirty",
     "plan", "reason", "urgent", "blocked_at", "reminded", "ended", "closed"})
 
 

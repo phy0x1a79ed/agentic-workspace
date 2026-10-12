@@ -24,9 +24,11 @@ from awm.gatewayclient import ServiceAdapter, spawn_supervised
 from awm.reporting import DOMAIN, STATUSES, config
 from awm.reporting.notify import Notifier
 from awm.reporting.reconcile import Loop
+from awm.reporting.ledger import Ledger
 from awm.reporting.store import Queue
 from awm.reporting.subscriber import Subscriber
 from awm.reporting.swarmboard import BoardError, SwarmBoard
+from awm.reporting.tasks import Tasks
 
 log = logging.getLogger("awm.reporting.hub_adapter")
 
@@ -108,6 +110,116 @@ API_MANIFEST: dict[str, Any] = {
             ],
         },
         {
+            "name": "hook_plan",
+            "tool": "reporting_hook_plan",
+            "effect": "write",
+            "description": (
+                "Hook verb, called by the plan-file hook, not by an agent. A plan "
+                "file was written or edited in plan mode: put the plan on the "
+                "calling session's card, and make a card in Planned when the "
+                "session has none. The session is the caller; session_id is "
+                "only a check."
+            ),
+            "params": [
+                _param("session_id", "string", "The calling session's id.", True),
+                _param("plan_path", "string", "The plan file."),
+                _param("plan_text", "string", "The plan's full text.", True),
+            ],
+        },
+        {
+            "name": "hook_plan_approved",
+            "tool": "reporting_hook_plan_approved",
+            "effect": "write",
+            "description": (
+                "Hook verb, called by the ExitPlanMode hook, not by an agent. The "
+                "plan was approved: record it and move the session's card to Active."
+            ),
+            "params": [
+                _param("session_id", "string", "The calling session's id.", True),
+                _param("plan_text", "string", "The approved plan's full text."),
+            ],
+        },
+        {
+            "name": "hook_todos",
+            "tool": "reporting_hook_todos",
+            "effect": "write",
+            "description": (
+                "Hook verb, called by the task hooks, not by an agent. The session's "
+                "todo list changed: rewrite the card's Todo section. An item that "
+                "leaves the list moves to Removed with its time and is never "
+                "deleted. An empty list removes every open item. A session with no "
+                "card is ignored."
+            ),
+            "params": [
+                _param("session_id", "string", "The calling session's id.", True),
+                _param("items", "array", "The full list, each item with id, subject and status.", True),
+            ],
+        },
+        {
+            "name": "hook_prompt",
+            "tool": "reporting_hook_prompt",
+            "effect": "write",
+            "description": (
+                "Hook verb, called by the prompt hook, not by an agent. A prompt "
+                "that says claim or attach and holds a Trilium note URL claims "
+                "that task, exactly as claim_task does. Any prompt moves a "
+                "Blocked card back to Active. The result's `blocked` says "
+                "whether the card is still Blocked."
+            ),
+            "params": [
+                _param("session_id", "string", "The calling session's id.", True),
+                _param("prompt", "string", "The prompt Tony sent.", True),
+            ],
+        },
+        {
+            "name": "claim_task",
+            "tool": "reporting_claim_task",
+            "effect": "write",
+            "description": (
+                "Take the task at a Trilium note URL for your session, when Tony "
+                "gives you a link to a task note. The card moves to Planned and "
+                "the task is recorded in this node's ledger. A note outside the "
+                "Swarm board is cloned into Proposed first, and Tony's copy stays "
+                "where it is."
+            ),
+            "params": [_param("url", "string", "The task note's Trilium URL.", True)],
+        },
+        {
+            "name": "request_human_user",
+            "tool": "reporting_request_human_user",
+            "effect": "write",
+            "description": (
+                "Tell Tony you are stopped on something only he can give: a "
+                "login, a decision, an approval. Use this instead of "
+                "AskUserQuestion whenever nobody may be watching your terminal, "
+                "which is every background session: the card moves to Blocked "
+                "with your reason and shows on his board, while a question "
+                "asked in the session shows him nothing. With urgent=true he "
+                "also gets one Discord message with the task link and the "
+                "attach command, and one reminder later if the card is still "
+                "Blocked. Urgent means all three hold: the work is stopped, "
+                "only Tony can unblock it, and waiting costs something real, "
+                "such as an expired login that holds a queue. Leave urgent "
+                "false for an ordinary question. Never use this to report "
+                "progress. His next prompt to you moves the card back to Active."
+            ),
+            "params": [
+                _param("reason", "string", "What you need from Tony, in one or two sentences.", True),
+                _param("urgent", "boolean", "Send a Discord message now. Default false."),
+            ],
+        },
+        {
+            "name": "request_human_review",
+            "tool": "reporting_request_human_review",
+            "effect": "write",
+            "description": (
+                "Say the work is ready for Tony to look at. The card moves to "
+                "Pending review with your summary. Call it as the last step of a "
+                "task. It sends no message: Tony sees the card on his board."
+            ),
+            "params": [_param("summary", "string", "What was done and where to look, in a few sentences.", True)],
+        },
+        {
             "name": "board_ensure",
             "tool": "reporting_board_ensure",
             "effect": "write",
@@ -138,6 +250,7 @@ class Runtime:
                                  reannounce_s=config.reannounce_s())
         self.loop = Loop(self.queue, on_started=self._started)
         self.board = SwarmBoard()
+        self.tasks = Tasks(Ledger(config.db_path()), self.board)
         self.subscriber: Subscriber | None = None
         self.board_problem: str | None = None
         target = config.board_target()
@@ -285,7 +398,21 @@ async def board_ensure(args: dict, as_: str | None = None) -> dict:
         return {"ok": False, "error": str(exc)}
 
 
+TASK_VERBS = ("hook_plan", "hook_plan_approved", "hook_todos", "hook_prompt", "claim_task",
+              "request_human_user", "request_human_review")
+
+
+def _task_verb(name: str) -> Any:
+    async def verb(args: dict, as_: str | None = None) -> dict:
+        if RUNTIME is None:
+            return {"ok": False, "error": "reporting is not running on this node"}
+        return await RUNTIME.tasks.call(name, args)
+
+    return verb
+
+
 HANDLERS: dict[str, Any] = {
+    **{name: _task_verb(name) for name in TASK_VERBS},
     "status": status,
     "card_list": list_cards,
     "card_get": get,
