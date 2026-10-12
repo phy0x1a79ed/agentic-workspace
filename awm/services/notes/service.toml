@@ -1,0 +1,7 @@
+tool = "notes"
+tier = "on"
+
+[[archive]]
+name = "notes"
+mode = "index"
+export = "notes_export"

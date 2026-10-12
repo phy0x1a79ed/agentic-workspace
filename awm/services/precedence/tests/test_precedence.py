@@ -53,7 +53,7 @@ def test_manifest_surface_split():
 
     fns = {f["name"]: f for f in API_MANIFEST["functions"]}
     reads = {"search", "get", "stats", "add", "note", "vote"}
-    curation = {"edit", "supersede", "remove", "merge", "import", "embed"}
+    curation = {"edit", "supersede", "remove", "merge", "import", "embed", "export"}
     assert reads | curation == set(fns)
     # read/contribute verbs omit surfaces (default all three)
     for name in reads:
@@ -360,3 +360,80 @@ def test_keyword_with_fts_syntax_errors_matches_words(conn):
 
     store.add(conn, context="a-b rollout", question="ship it?", decision="ship behind a flag")
     assert store.search(conn, keyword='a-b "rollout')["count"] == 1
+
+
+# ---------------------------------------------------------------------------
+# export — the archive's page of documents
+# ---------------------------------------------------------------------------
+
+
+def _decisions(conn, n=5):
+    from awm.precedence import store
+    return [store.add(conn, context=f"situation {i}", question=f"question {i}?",
+                      decision=f"decide {i}", tag=["t"], created="2026-01-1%d" % i)["id"]
+            for i in range(n)]
+
+
+def test_export_pages_active_decisions_in_id_order(conn):
+    from awm.precedence import export, store
+    ids = sorted(_decisions(conn))
+    store.supersede(conn, ids[0])
+    seen, cursor, pages = [], None, 0
+    while True:
+        page = export.export_page(conn, cursor, 2)
+        pages += 1
+        seen += [d["id"] for d in page["documents"]]
+        if page["done"]:
+            assert page["ids"] == ids[1:] and page["next_cursor"] is None
+            break
+        assert "ids" not in page and page["next_cursor"] == page["documents"][-1]["id"]
+        cursor = page["next_cursor"]
+    assert seen == ids[1:] and pages == 2
+
+
+def test_export_document_shape(conn):
+    from awm.precedence import export, store
+    did = store.add(conn, context="the kitchen", question="which sink?", decision="the deep one",
+                    tag=["home"], created="2026-03-04")["id"]
+    store.note(conn, did, body="the sink was replaced", kind="context-change")
+    (doc,) = export.export_page(conn)["documents"]
+    assert set(doc) == {"id", "title", "text", "ts", "kind"}
+    assert doc["title"] == "which sink?" and doc["kind"] == "decision"
+    assert doc["ts"] == "2026-03-04T00:00:00+00:00"
+    assert "Decision: the deep one" in doc["text"] and "Tags: home" in doc["text"]
+    assert "Note (context-change): the sink was replaced" in doc["text"]
+
+
+def test_export_is_not_a_sighting(conn):
+    from awm.precedence import export, store
+    did = _decisions(conn, 1)[0]
+    export.export_page(conn)
+    assert store.get(conn, did)["seen_count"] == 0
+    store.search(conn, decision="decide 0")
+    assert store.get(conn, did)["seen_count"] == 1
+    export.export_page(conn)
+    assert store.get(conn, did)["seen_count"] == 1
+
+
+def test_export_limit_is_clamped(conn):
+    from awm.precedence import export
+    _decisions(conn, 3)
+    assert len(export.export_page(conn, None, 0)["documents"]) == 1
+    assert len(export.export_page(conn, None, 5000)["documents"]) == 3
+
+
+def test_export_raises_on_an_unreadable_store(conn):
+    from awm.precedence import export
+    conn.execute("DROP TABLE decisions")
+    with pytest.raises(Exception):
+        export.export_page(conn)
+
+
+def test_the_archive_table_names_the_export_verb():
+    import tomllib
+    from pathlib import Path
+    import awm.precedence
+    toml = Path(awm.precedence.__path__[0]).parents[1] / "service.toml"
+    data = tomllib.loads(toml.read_text())
+    assert data["tool"] == "precedence"
+    assert data["archive"] == [{"name": "precedence", "mode": "index", "export": "precedence_export"}]

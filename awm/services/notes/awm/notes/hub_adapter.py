@@ -11,8 +11,9 @@ alike: the three surfaces carry the same verbs, so the tool an agent can see is
 the tool it should reach for. Writing is safe to expose because every write goes
 through the checkout contract (:mod:`awm.notes.checkout`) rather than around it.
 
-Two verbs are the exception. ``collab_open``/``collab_edit`` declare
-``surfaces: [cli, http]`` — they are a keystroke-level browser protocol carrying
+Three verbs are the exception and declare ``surfaces: [cli, http]``. ``export``
+pages the live notes to the search archive and is for that local service alone.
+``collab_open``/``collab_edit`` are a keystroke-level browser protocol carrying
 a room version, and putting them on the agent surface would only be a way to
 corrupt a note. The notes page reaches them over the unauthenticated
 ``/svc/notes/fn/<fn>`` proxy, which is not the MCP catalog, so the gate does not
@@ -31,7 +32,7 @@ from typing import Any
 from awm.config import autocommit, userroot
 from awm.gatewayclient import ServiceAdapter, spawn_supervised
 
-from awm.notes import config, dao, index, notes, rooms
+from awm.notes import config, dao, export, index, notes, rooms
 
 log = logging.getLogger("awm.notes.hub_adapter")
 
@@ -311,6 +312,21 @@ API_MANIFEST: dict[str, Any] = {
                                 "skip its own edit."},
             ],
         },
+        {
+            "name": "export",
+            "effect": "read",
+            "tool": "notes_export",
+            "surfaces": _CLI_HTTP,
+            "description": "Page the live notes (not the trash) as search documents for the "
+                           "archive's `notes` source. The last page also returns `ids`, every "
+                           "live note id. Local callers only.",
+            "params": [
+                {"name": "cursor", "type": "string",
+                 "description": "The previous page's next_cursor. Omit to start a pass."},
+                {"name": "limit", "type": "integer",
+                 "description": "Documents per page, 1-1000. Default 200."},
+            ],
+        },
     ],
     # A note's collaborators subscribe to the dynamic per-note topic
     # ``note:<id>`` (see ``config.collab_topic``); dynamic topics need no
@@ -558,6 +574,14 @@ async def _handle_collab_edit(args: dict) -> dict:
     return res
 
 
+def _handle_export(args: dict) -> dict:
+    conn = dao.connect()
+    try:
+        return export.export_page(conn, args.get("cursor") or None, args.get("limit"))
+    finally:
+        conn.close()
+
+
 _HANDLERS = {
     "search": _handle_search,
     "get": _handle_get,
@@ -583,6 +607,7 @@ _HANDLERS = {
     "discard": _handle_discard,
     "collab_open": _handle_collab_open,
     "collab_edit": _handle_collab_edit,
+    "export": _handle_export,
 }
 HANDLERS = userroot.wrap_handlers(_HANDLERS)
 

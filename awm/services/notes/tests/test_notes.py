@@ -333,3 +333,67 @@ def test_reindex_catches_a_model_change(conn):
     embeddings.use_embedder(StubEmbedder("stub-b"))
     assert notes.reindex(conn)["embedded"] == 1
     assert notes.reindex(conn)["embedded"] == 0
+
+
+# ---------------------------------------------------------------------------
+# export — the archive's page of documents
+# ---------------------------------------------------------------------------
+
+
+def _live_notes(conn, n=5):
+    return sorted(notes.create(conn, path=f"research/n{i}", content=f"note body {i}")["id"] for i in range(n))
+
+
+def test_export_pages_in_id_order_and_ends_with_every_live_id(conn):
+    from awm.notes import export
+    ids = _live_notes(conn)
+    seen, cursor = [], None
+    while True:
+        page = export.export_page(conn, cursor, 2)
+        seen += [d["id"] for d in page["documents"]]
+        if page["done"]:
+            assert page["ids"] == ids and page["next_cursor"] is None
+            break
+        assert "ids" not in page and page["next_cursor"] == page["documents"][-1]["id"]
+        cursor = page["next_cursor"]
+    assert seen == ids
+
+
+def test_export_leaves_the_trash_out_and_reads_live_text(conn):
+    from awm.notes import export
+    ids = _live_notes(conn, 3)
+    notes.trash(conn, ids[0])
+    rooms.open_room(ids[1], initial_content="unflushed edit")
+    page = export.export_page(conn)
+    assert page["ids"] == ids[1:]
+    docs = {d["id"]: d for d in page["documents"]}
+    assert set(docs[ids[2]]) == {"id", "title", "text", "ts"}
+    assert docs[ids[2]]["title"].startswith("research/n") and docs[ids[2]]["text"].startswith("note body")
+    assert docs[ids[1]]["text"] == "unflushed edit"
+
+
+def test_export_raises_when_the_file_store_holds_no_notes(conn):
+    from awm.notes import export
+    ids = _live_notes(conn, 2)
+    for i in ids:
+        store.remove(i)
+    with pytest.raises(FileNotFoundError):
+        export.export_page(conn)
+
+
+def test_export_raises_on_an_unreadable_database(conn):
+    from awm.notes import export
+    conn.execute("DROP TABLE notes")
+    with pytest.raises(Exception):
+        export.export_page(conn)
+
+
+def test_the_archive_table_names_the_export_verb():
+    import tomllib
+    from pathlib import Path
+    import awm.notes
+    data = tomllib.loads((Path(awm.notes.__path__[0]).parents[1] / "service.toml").read_text())
+    assert data["archive"] == [{"name": "notes", "mode": "index", "export": "notes_export"}]
+    from awm.notes.hub_adapter import API_MANIFEST, HANDLERS
+    fn = next(f for f in API_MANIFEST["functions"] if f["name"] == "export")
+    assert fn["surfaces"] == ["cli", "http"] and fn["tool"] == "notes_export" and "export" in HANDLERS

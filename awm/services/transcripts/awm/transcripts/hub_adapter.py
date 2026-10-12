@@ -31,7 +31,7 @@ from typing import Any
 
 from awm.gatewayclient import ServiceAdapter
 
-from awm.transcripts import runs, search, status, sweep
+from awm.transcripts import query, runs, search, status, sweep
 
 log = logging.getLogger("awm.transcripts.hub_adapter")
 
@@ -149,6 +149,32 @@ API_MANIFEST: dict[str, Any] = {
             "surfaces": _CLI_HTTP,
             "timeout": 900.0,
         },
+        {
+            "name": "query",
+            "effect": "read",
+            "tool": "transcripts_query",
+            "surfaces": _CLI_HTTP,
+            "description": (
+                "Search archived transcripts for words, ignoring case, and return the lines "
+                "as search hits. This is the archive's live `transcripts` source: the search "
+                "service calls it at query time and only when asked for the source by name. "
+                "Only `query`, `project` and `limit` narrow it; the other filters are accepted "
+                "and ignored."
+            ),
+            "params": [
+                {"name": "query", "type": "string", "required": True,
+                 "description": "Words to find, matched literally."},
+                {"name": "project", "type": "string", "required": False,
+                 "description": "Restrict to project directories containing this substring."},
+                {"name": "scope", "type": "string", "required": False, "description": "Ignored."},
+                {"name": "kind", "type": "string", "required": False, "description": "Ignored."},
+                {"name": "after", "type": "string", "required": False, "description": "Ignored."},
+                {"name": "before", "type": "string", "required": False, "description": "Ignored."},
+                {"name": "limit", "type": "number", "required": False,
+                 "description": "Maximum hits. Default 20."},
+            ],
+            "timeout": 300.0,
+        },
     ]
 }
 
@@ -177,6 +203,8 @@ HANDLERS = {
     "sweep":   _sweep,
     "search":  lambda a: search.find(a["pattern"], project=a.get("project"),
                                      limit=int(a.get("limit") or search.MAX_HITS)),
+    "query":   lambda a: query.hits(a["query"], project=a.get("project"),
+                                    limit=int(a.get("limit") or query.MAX_HITS)),
     "restore": lambda a: sweep.restore(a["project"], a["session"]),
     "runs":    lambda a: {"runs": runs.RunsDAO().recent(int(a.get("limit") or 20))},
     "prune":   _prune,

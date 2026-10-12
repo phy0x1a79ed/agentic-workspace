@@ -11,7 +11,7 @@ Surface split (enforced by the gateway via the per-function ``surfaces`` field):
   the user's past decisions *and* grow it (add entries, attach change-signal
   notes, vote on usefulness).
 - **curation** verbs (``edit``/``supersede``/``remove``/``merge``/``import``/
-  ``embed``) declare ``surfaces: [cli, http]`` so they are reachable from the host
+  ``embed``/``export``) declare ``surfaces: [cli, http]`` so they are reachable from the host
   ``awm precedence …`` CLI (and loopback HTTP) but never advertised to spawned
   agents on the MCP surface. This is the mechanism that keeps the archive both
   self-growing and clean — it is a surface gate, not an auth boundary (the
@@ -29,7 +29,7 @@ from typing import Any
 
 from awm.gatewayclient import ServiceAdapter, spawn_supervised
 
-from awm.precedence import dao, index, store
+from awm.precedence import dao, export, index, store
 
 log = logging.getLogger("awm.precedence.hub_adapter")
 
@@ -215,6 +215,21 @@ API_MANIFEST: dict[str, Any] = {
             "description": "Embed new/changed decisions per-field (or all, with force).",
             "params": [{"name": "force", "type": "boolean"}],
         },
+        {
+            "name": "export",
+            "effect": "read",
+            "tool": "precedence_export",
+            "surfaces": _CLI_HTTP,
+            "description": "Page the active decisions as search documents for the archive's "
+                           "`precedence` source. The last page also returns `ids`, every "
+                           "document id. Local callers only.",
+            "params": [
+                {"name": "cursor", "type": "string",
+                  "description": "The previous page's next_cursor. Omit to start a pass."},
+                {"name": "limit", "type": "integer",
+                  "description": "Documents per page, 1-1000. Default 200."},
+            ],
+        },
     ],
     "emitters": [],
     "sessions": [],
@@ -363,6 +378,14 @@ def _handle_import(args: dict) -> dict:
         conn.close()
 
 
+def _handle_export(args: dict) -> dict:
+    conn = dao.connect()
+    try:
+        return export.export_page(conn, args.get("cursor") or None, args.get("limit"))
+    finally:
+        conn.close()
+
+
 def _handle_embed(args: dict) -> dict:
     conn = dao.connect()
     try:
@@ -384,6 +407,7 @@ HANDLERS = {
     "merge": _handle_merge,
     "import": _handle_import,
     "embed": _handle_embed,
+    "export": _handle_export,
 }
 
 

@@ -1,7 +1,7 @@
 """Scrapers that mine existing workspace history into precedence *candidates*.
 
 Each function here is **pure**: it reads a source (memory files on disk, the
-scopes service DB) and returns a list of candidate decision dicts in the
+journal service DB) and returns a list of candidate decision dicts in the
 staging-manifest entry shape::
 
     {context, question, decision, created, source, source_ref, tags, notes}
@@ -15,7 +15,7 @@ the precedence plan; the three sources, in descending signal:
 1. **feedback memories** — ``feedback_*.md`` under the auto-memory dir. The
    user's own corrections, distilled. ``**Why:**`` → context, the frontmatter
    ``description`` → question, the body rule + ``**How to apply:**`` → decision.
-2. **operator posts** — ``scope_posts`` authored by ``user:operator``. The
+2. **operator posts** — journal ``scope_posts`` authored by ``user:operator``. The
    cleanest bulk user-origin steering; heavily test-noise in practice, so a
    light gate drops throwaway/demo posts before curation sees them.
 3. **journal decisions** — ``scope_posts`` of ``kind='journal'``,
@@ -120,12 +120,12 @@ def scrape_memories(memory_dir: str | Path) -> list[dict[str, Any]]:
 
 
 # ---------------------------------------------------------------------------
-# scopes.db access (Python sqlite3 — there is no sqlite3 CLI on the box)
+# journal.db access (Python sqlite3 — there is no sqlite3 CLI on the box)
 # ---------------------------------------------------------------------------
 
 
-def _open_scopes(scopes_db: str | Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(str(scopes_db))
+def _open_journal(journal_db: str | Path) -> sqlite3.Connection:
+    conn = sqlite3.connect(str(journal_db))
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -137,7 +137,7 @@ _NOISE_RE = re.compile(
 
 
 def scrape_operator_posts(
-    scopes_db: str | Path, *, min_len: int = 40
+    journal_db: str | Path, *, min_len: int = 40
 ) -> list[dict[str, Any]]:
     """Candidates from ``user:operator`` messages. A light gate drops test noise.
 
@@ -146,7 +146,7 @@ def scrape_operator_posts(
     (drop ``_unowned`` scopes, slash commands, obvious test strings, and very
     short bodies) trims the worst so the curator reviews real steering.
     """
-    conn = _open_scopes(scopes_db)
+    conn = _open_journal(journal_db)
     try:
         rows = conn.execute(
             "SELECT id, owner_project, owner_scope, body, ts FROM scope_posts "
@@ -185,7 +185,7 @@ _USER_MARK_RE = re.compile(
 
 
 def scrape_journal_decisions(
-    scopes_db: str | Path,
+    journal_db: str | Path,
     *,
     user_marked_only: bool = True,
     limit: int | None = None,
@@ -198,7 +198,7 @@ def scrape_journal_decisions(
     ``user_marked_only`` (default) keeps only items whose text names the user —
     the subset that records a real user decision rather than an internal one.
     """
-    conn = _open_scopes(scopes_db)
+    conn = _open_journal(journal_db)
     try:
         rows = conn.execute(
             "SELECT id, owner_project, owner_scope, meta, ts FROM scope_posts "
@@ -254,7 +254,7 @@ def scrape_journal_decisions(
 def build_candidates(
     *,
     memory_dir: str | Path,
-    scopes_db: str | Path,
+    journal_db: str | Path,
     include_operator: bool = True,
     include_journal: bool = True,
     journal_user_marked_only: bool = True,
@@ -267,10 +267,10 @@ def build_candidates(
     decisions: list[dict[str, Any]] = []
     decisions += scrape_memories(memory_dir)
     if include_operator:
-        decisions += scrape_operator_posts(scopes_db)
+        decisions += scrape_operator_posts(journal_db)
     if include_journal:
         decisions += scrape_journal_decisions(
-            scopes_db,
+            journal_db,
             user_marked_only=journal_user_marked_only,
             limit=journal_limit,
         )
