@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "awm-journal"
+version = "0.1.0"
+requires-python = ">=3.11"
+description = "AWM journal service: scope post channels, goals and the history.md render."
+dependencies = [
+    "awm-config",
+    "awm-persistence",
+    "awm-gatewayclient",
+]
+
+# PEP 420 namespace package: no top-level awm/__init__.py; the namespace dir is awm/journal/.
+[tool.setuptools.packages.find]
+include = ["awm.journal*"]
+namespaces = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+markers = [
+    "smoke: fast unit + tiny in-process tests; target <30s, run on every dev iteration",
+    "journal: posts, subscribers, goals and the history render",
+    "integration: cross-component integration tests",
+]

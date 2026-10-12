@@ -15,7 +15,6 @@ from typing import Any
 
 from awm import config
 from awm.config.peertoken import node_label
-from awm.scopes import channel
 
 #: Budget for one peer, connect to reply.
 PEER_TIMEOUT_S = 10.0
@@ -80,10 +79,14 @@ async def _search_peer(rec: dict, args: dict, limit: int) -> tuple[str, list[dic
 
 
 def _local_search(query: str, project: str | None, scope: str | None, limit: int) -> list[dict]:
-    posts, _degraded, _engine = channel.search(
-        query=query, project=project, scope=scope, kind="journal", limit=limit)
+    from awm.gatewayclient import call_sync
+    args = {"query": query, "kind": "journal", "limit": limit}
+    if project:
+        args["project"] = project
+    if scope:
+        args["scope"] = scope
+    hits = list(call_sync("journal", "fetch", args, timeout=PEER_TIMEOUT_S).get("posts", []))
     swarm, node = config.node_swarm(), config.node_name()
-    hits = [p.to_dict() for p in posts]
     for hit in hits:
         hit["origin_swarm"] = swarm
         hit["origin_node"] = node
@@ -110,6 +113,10 @@ def _peer_names(raw: Any) -> list[str] | None:
     return [str(n).strip() for n in raw if str(n).strip()]
 
 
+def _from_peer(as_: str | None) -> bool:
+    return as_ == "peer" or (as_ or "").startswith("peer:")
+
+
 async def archive_search(args: dict, as_: str | None = None) -> dict:
     """Journal hits for ``query`` from this node and every peer, tagged by origin.
 
@@ -129,7 +136,7 @@ async def archive_search(args: dict, as_: str | None = None) -> dict:
     book = {r["name"]: r for r in config.list_records() if node_label(r["name"]) != here}
     peers: dict[str, Any] = {}
     records: list[dict] = []
-    if channel.edge_origin(as_) is None:
+    if not _from_peer(as_):
         for name in (wanted if wanted is not None else sorted(book)):
             if name in book:
                 records.append(book[name])
