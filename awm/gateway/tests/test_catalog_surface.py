@@ -18,7 +18,7 @@ from awm.gateway.operations import register_service_cli_commands
 pytestmark = pytest.mark.usefixtures("domestic_peers")
 
 
-_NATIVE = {"gateway", "services", "peer", "config"}
+_NATIVE = {"awm", "operations"}
 
 
 def _services_only(catalog_map):
@@ -37,7 +37,7 @@ class _Channel:
     def __init__(self):
         self.calls = []
 
-    async def call(self, fn, args, as_=None, timeout=None):
+    async def call(self, fn, args, as_=None, timeout=None, grants=None):
         self.calls.append((fn, args))
         return {"ran": fn}
 

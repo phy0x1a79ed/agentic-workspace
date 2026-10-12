@@ -43,7 +43,7 @@ from fastapi import (
 from pydantic import BaseModel, Field, model_validator
 
 from awm.gateway import surface
-from awm.gateway.hub import rpc
+from awm.gateway.hub import discovery, rpc
 from awm.gateway.hub.lease import LeaseAlreadyHeld, get_lease_manager
 from awm.gateway.hub.registry import (
     NoBaseToShadow, PrefixConflict, ServiceRecord, get_registry,
@@ -521,6 +521,7 @@ def _route_inbound(ch: "rpc.ControlChannel", service_id: str,
         rec = registry.get_by_id(service_id)
         if rec is not None:
             rec.api = ch.api
+            rec.archive = [] if refusal else discovery.service_archive(rec.name)
             rec.refusal = refusal or ""
             rec.backend_status = "refused" if refusal else "ready"
             if refusal:

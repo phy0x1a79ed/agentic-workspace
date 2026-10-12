@@ -5,7 +5,8 @@ re-exposes (MCP / CLI / HTTP) is assembled here from two inputs and rendered to
 all three surfaces by the (unchanged) ``operations.py`` compiler:
 
 1. **Native ops** — a static table of operations the gateway owns itself
-   (``awm_status`` / ``awm_restart`` / ``awm_mcp_sync``). Dispatched to local
+   (``awm_status``, ``awm_services_*``, ``operations_peer_*``, ...), published
+   as verbs of the ``awm`` and ``operations`` tools. Dispatched to local
    in-process callables.
 2. **Registered-service ops** — read live from the hub registry. Each service
    that has opened its control WS and sent a ``ready`` frame carries an ``api``
@@ -75,8 +76,8 @@ from typing import Any
 from mcp.types import Tool
 from starlette.concurrency import run_in_threadpool
 
-from awm.config import caller_peer, peer_record, verb_category, verb_effect
-from awm.gateway import peer_catalog, surface, usage
+from awm.config import ARCHIVE_CATEGORY, caller_peer, peer_record, verb_category, verb_effect
+from awm.gateway import aliases, peer_catalog, surface, usage
 from awm.gateway.gateway_ops import GATEWAY_OPERATIONS, bound_caller
 from awm.gateway.hub import discovery, rpc
 from awm.gateway.hub.registry import ServiceRecord, get_registry
@@ -120,10 +121,14 @@ def _serialize(obj: Any) -> str:
 # ---------------------------------------------------------------------------
 
 # MCP-surface gateway tools, keyed by name for dispatch + uniqueness reservation.
+# A native verb hidden from MCP (no "mcp" surface) still runs by its flat name
+# over HTTP, so the dispatch table holds every op with an agent or HTTP surface.
 _GATEWAY_MCP_TOOLS: list[Tool] = operations_to_mcp_tools(GATEWAY_OPERATIONS)
 _GATEWAY_OPS_BY_NAME = {
-    op.name: op for op in GATEWAY_OPERATIONS if "mcp" in op.surfaces
+    op.name: op for op in GATEWAY_OPERATIONS if op.surfaces & {"mcp", "http"}
 }
+
+usage.set_renames(aliases.usage_renames())
 
 
 # ---------------------------------------------------------------------------
@@ -273,9 +278,14 @@ def _fn_policy(fn: dict) -> tuple[str, str | None]:
 def _allowed(effect: Any, category: Any, grants: frozenset[str]) -> bool:
     """Whether a verb declaring ``effect``/``category`` is open to a caller holding
     ``grants``. Anything but strings is refused, so one malformed manifest entry
-    cannot raise inside the gate."""
-    return (isinstance(effect, str) and effect == "read"
-            and isinstance(category, str) and category in grants)
+    cannot raise inside the gate. A verb in the ``archive`` category answers for
+    itself by the grants it is handed (see :func:`_rpc_call`), so any caller
+    holding a grant may reach it."""
+    if not (isinstance(effect, str) and effect == "read" and isinstance(category, str)):
+        return False
+    if category == ARCHIVE_CATEGORY:
+        return bool(grants)
+    return category in grants
 
 
 def _flat_entries() -> dict[str, dict[str, Any]]:
@@ -332,15 +342,20 @@ def _fn_timeout(rec: ServiceRecord, internal_name: str) -> float | None:
     return None
 
 
-async def _rpc_call(rec: ServiceRecord, fn: str, args: dict, as_: str | None) -> Any:
-    """RPC a service function over its control WS, applying its manifest timeout."""
+async def _rpc_call(rec: ServiceRecord, fn: str, args: dict, as_: str | None,
+                    grants: frozenset[str] | None = None) -> Any:
+    """RPC a service function over its control WS, applying its manifest timeout.
+
+    ``grants`` is a foreign caller's read grants; the service sees them as
+    ``args["_grants"]`` (see :meth:`rpc.ControlChannel.call`)."""
     ch = rpc.get_control(rec.service_id)
     if ch is None:
         raise RuntimeError(f"service {rec.name!r} control channel not open")
+    extra: dict[str, Any] = {"grants": grants} if grants is not None else {}
     timeout = _fn_timeout(rec, fn)
     if timeout is not None:
-        return await ch.call(fn, args, as_=as_, timeout=timeout)
-    return await ch.call(fn, args, as_=as_)
+        return await ch.call(fn, args, as_=as_, timeout=timeout, **extra)
+    return await ch.call(fn, args, as_=as_, **extra)
 
 
 # ---------------------------------------------------------------------------
@@ -350,9 +365,9 @@ async def _rpc_call(rec: ServiceRecord, fn: str, args: dict, as_: str | None) ->
 # generator and the flat ``/invoke`` dispatch both depend on it). This second,
 # *parallel* projection folds that same surface by **tool**: each service
 # publishes under the ``tool`` its ``service.toml`` names, and a published name is
-# ``<tool>_<verb>`` (see ``surface``). Gateway-native ops group by their
-# ``cli_group``, the verb being their ``cli_command``. The MCP stdio proxy
-# requests this view, so a client carries a few dozen generic tools instead of
+# ``<tool>_<verb>`` (see ``surface``). Gateway-native ops group by their ``tool``
+# and ``verb`` (their CLI group and command, when those are not set). The MCP
+# stdio proxy requests this view, so a client carries a few dozen generic tools instead of
 # hundreds of verb-tools; verbs and their full param schemas come from the
 # ``describe`` verb.
 #
@@ -452,7 +467,7 @@ def _domain_catalog() -> dict[str, list[dict[str, Any]]]:
     for op in GATEWAY_OPERATIONS:
         if "mcp" not in op.surfaces:
             continue
-        _add(op.cli_group, op.cli_command, _to_mcp_tool(op), origin="gateway-native",
+        _add(op.mcp_tool, op.mcp_verb, _to_mcp_tool(op), origin="gateway-native",
              effect=op.effect, category=None, op=op)
 
     for rec in get_registry().service_records():
@@ -770,7 +785,7 @@ def describe_overview(limit: int = DESCRIBE_LIMIT,
     A tool only a peer serves appears in ``tools`` alone: its verbs' summaries
     live on that node."""
     cat = catalog if catalog is not None else _domain_catalog()
-    counts = usage.totals()
+    counts = usage.totals(resolve=aliases.renamed_pair)
     rows = [(domain, e) for domain, entries in cat.items() for e in entries]
     scored = sorted(rows, key=lambda r: -counts.get((r[0], r[1]["verb"]), 0))
     chosen: list[tuple[str, dict[str, Any]]] = []
@@ -827,10 +842,10 @@ def _answer_describe(name: str, inner: dict, catalog: dict) -> dict:
 
 
 def _find_native_op(domain: str, verb: str):
-    """Locate the MCP-surface gateway-native Operation for a domain/verb pair
-    (domain = ``cli_group``, verb = ``cli_command``), else ``None``."""
+    """Locate the MCP-surface gateway-native Operation for a tool/verb pair, else
+    ``None``."""
     for op in GATEWAY_OPERATIONS:
-        if "mcp" in op.surfaces and op.cli_group == domain and op.cli_command == verb:
+        if "mcp" in op.surfaces and op.mcp_tool == domain and op.mcp_verb == verb:
             return op
     return None
 
@@ -885,7 +900,8 @@ def _check_envelope(name: str, args: dict, entry: dict[str, Any] | None) -> None
 
 async def _dispatch_domain(name: str, args: dict, as_: str | None,
                            catalog: dict[str, list[dict[str, Any]]],
-                           *, local_only: bool = False) -> str:
+                           *, local_only: bool = False,
+                           grants: frozenset[str] | None = None) -> str:
     """Dispatch a collapsed per-tool call (``{verb, args, peer}``).
 
     Routing comes first: the envelope's optional ``peer`` (or, absent one, the
@@ -933,10 +949,11 @@ async def _dispatch_domain(name: str, args: dict, as_: str | None,
     if entry is None:
         raise ValueError(f"Unknown verb {verb!r} for domain {name!r}")
     usage.record(name, entry["verb"])
-    return await _run_entry(entry, inner, as_)
+    return await _run_entry(entry, inner, as_, grants)
 
 
-async def _run_entry(entry: dict[str, Any], args: dict, as_: str | None) -> str:
+async def _run_entry(entry: dict[str, Any], args: dict, as_: str | None,
+                     grants: frozenset[str] | None = None) -> str:
     """Run the native op or service function a catalog entry resolved to."""
     op = entry.get("op")
     if op is not None:
@@ -945,7 +962,44 @@ async def _run_entry(entry: dict[str, Any], args: dict, as_: str | None) -> str:
                 return _serialize(await _call_service(op, args))
             return _serialize(await run_in_threadpool(_call_service, op, args))
     _check_arguments(entry["rec"], entry["fn"], args)
-    return _serialize(await _rpc_call(entry["rec"], entry["fn"], args, as_))
+    return _serialize(await _rpc_call(entry["rec"], entry["fn"], args, as_, grants))
+
+
+def published_name_of(service: str, fn: str) -> str:
+    """The flat name the registered ``service``'s internal function ``fn`` is
+    published as; ``<service>_<fn>`` when it is not registered."""
+    for rec in get_registry().service_records():
+        if rec.name != service:
+            continue
+        for spec in (rec.api or {}).get("functions", []) or []:
+            if isinstance(spec, dict) and spec.get("name") == fn:
+                return _tool_name(rec, spec)
+    return f"{service}_{fn}"
+
+
+def _flat_names() -> set[str]:
+    """Every flat name the catalog can run: native ops and published service
+    functions, hidden ones included."""
+    names = set(_GATEWAY_OPS_BY_NAME)
+    for rec in get_registry().service_records():
+        for fn in (rec.api or {}).get("functions", []) or []:
+            if isinstance(fn, dict) and fn.get("name"):
+                names.add(_tool_name(rec, fn))
+    return names
+
+
+def resolve_alias(name: str, args: dict) -> tuple[str, dict]:
+    """The call a request becomes once an old name is replaced by its successor.
+
+    Idempotent, and the identity for a name that is registered or has no row, or
+    whose successor is absent."""
+    if not isinstance(name, str) or not isinstance(args, dict):
+        return name, args
+
+    def visible(tool: str, verb: str) -> bool:
+        return any(e["verb"] == verb for e in _domain_catalog().get(tool, []))
+
+    return aliases.resolve(name, args, flat_names=_flat_names, visible=visible)
 
 
 async def dispatch(name: str, args: dict, as_: str | None = None) -> str:
@@ -974,8 +1028,12 @@ async def dispatch(name: str, args: dict, as_: str | None = None) -> str:
     A foreign caller (``X-Awm-As`` naming a peer the book does not call domestic)
     goes through :func:`_dispatch_foreign` instead, which runs only the ``read``
     verbs in the categories its record grants.
+
+    A name that an earlier release published (see :mod:`aliases`) is rewritten to
+    its successor first, so the gates below judge the verb that will run.
     """
     args = args or {}
+    name, args = resolve_alias(name, args)
     grants = foreign_grants(as_)
     if grants is not None:
         return await _dispatch_foreign(name, args, as_, grants)
@@ -1020,7 +1078,8 @@ async def _dispatch_foreign(name: str, args: dict, as_: str | None,
         if not isinstance(args["verb"], str):
             raise ValueError(f"Unknown tool: {name}")
         try:
-            return await _dispatch_domain(name, args, as_, domains, local_only=True)
+            return await _dispatch_domain(name, args, as_, domains, local_only=True,
+                                          grants=grants)
         except rpc.RpcError as exc:
             raise _refusal_as_unknown(
                 exc, f"Unknown verb {args['verb']!r} for domain {name!r}") from None
@@ -1028,7 +1087,7 @@ async def _dispatch_foreign(name: str, args: dict, as_: str | None,
     if entry is None or not _allowed(entry["effect"], entry["category"], grants):
         raise ValueError(f"Unknown tool: {name}")
     try:
-        return await _run_entry(entry, args, as_)
+        return await _run_entry(entry, args, as_, grants)
     except rpc.RpcError as exc:
         raise _refusal_as_unknown(exc, f"Unknown tool: {name}") from None
 

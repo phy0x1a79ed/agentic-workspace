@@ -34,6 +34,7 @@ generator, so they're re-shaped here).
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import re
@@ -49,6 +50,8 @@ from awm.gateway.operations import JsonOutput, Operation, Param
 
 _CLI = frozenset({"cli", "mcp", "http"})
 _MCP_HTTP = frozenset({"mcp", "http"})
+_CLI_HTTP = frozenset({"cli", "http"})
+_HTTP = frozenset({"http"})
 
 
 # ---------------------------------------------------------------------------
@@ -99,18 +102,20 @@ def _book_writer_only(verb: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _op_status() -> dict[str, Any]:
-    """Gateway-native status: workspace root, core process info, uptime.
+async def _op_status() -> dict[str, Any]:
+    """The node's status in one call: the gateway process, every service's state,
+    auth's credential rotation, the node role and the compute watchdog.
 
-    Identical payload on all three surfaces (CLI ``awm gateway status``, HTTP
-    ``GET /status``, MCP ``awm_status``). ``active_scopes`` stays 0 until a
-    scopes service registers — kept for shape stability and the
-    ``_process_utils.probe_existing_awm`` health check."""
+    The first keys are what ``GET /status`` has always answered (the startup
+    probe reads them), so the payload only grows. ``active_scopes`` stays 0 until
+    a scopes service registers, for shape stability. A service that is down or
+    slow reads as absent or as an error in its own section; it never fails the
+    call."""
     from awm.config import WORKSPACE_ROOT
     from awm.gateway import catalog
 
     uptime = catalog.core_uptime()
-    return {
+    status: dict[str, Any] = {
         "status": "ok",
         "workspace_root": str(WORKSPACE_ROOT),
         "active_scopes": 0,
@@ -120,6 +125,44 @@ def _op_status() -> dict[str, Any]:
         "core_python": sys.executable,
         "core_sys_path_head": sys.path[:3],
     }
+    status.update(_node_identity())
+    rows = (await _op_services_list())["services"]
+    status["services"] = {row["name"]: row["status"] for row in rows}
+    status["services_down"] = [row["name"] for row in rows
+                               if row["enabled"] and row["status"] != "ready"]
+    auth, compute = await asyncio.gather(
+        _service_reading("auth", "status"), _service_reading("compute", "status"))
+    status["auth"] = auth
+    status["compute"] = compute
+    return status
+
+
+def _node_identity() -> dict[str, Any]:
+    from awm.config import node_role, node_swarm
+
+    try:
+        return {"node_role": node_role(), "swarm": node_swarm()}
+    except ValueError as exc:
+        return {"node_role": None, "node_role_error": str(exc)}
+
+
+_READING_TIMEOUT_S = 1.5
+
+
+async def _service_reading(service: str, fn: str) -> Any:
+    """What ``service``'s ``fn`` answers right now, ``None`` when the service is not
+    registered, or ``{"error": ...}`` when it fails or is slow."""
+    from awm.gateway.hub import rpc
+    from awm.gateway.hub.registry import get_registry
+
+    rec = get_registry().get_by_name("service", service)
+    ch = rpc.get_control(rec.service_id) if rec is not None else None
+    if ch is None:
+        return None
+    try:
+        return await ch.call(fn, {}, timeout=_READING_TIMEOUT_S)
+    except Exception as exc:  # noqa: BLE001 — a section must not fail the status
+        return {"error": str(exc) or type(exc).__name__}
 
 
 def _op_restart() -> Any:
@@ -664,7 +707,7 @@ class PeerSetRequest(BaseModel):
 
 
 class PeerGrantRequest(BaseModel):
-    """Body for ``peer grant`` / ``peer revoke`` — one read category for one peer."""
+    """Body for ``peer grant`` / ``peer revoke`` — one archive source for one peer."""
 
     name: str
     category: str
@@ -705,7 +748,7 @@ def _op_peer_set(req: PeerSetRequest) -> dict[str, Any]:
 
 
 def _op_peer_grant(req: PeerGrantRequest) -> dict[str, Any]:
-    """Grant a foreign peer one read category (a lowercase slug, e.g. ``journals``)."""
+    """Grant a foreign peer one archive source (e.g. ``journals``)."""
     _book_writer_only("grant")
     from awm.gateway import peers
 
@@ -924,7 +967,9 @@ GATEWAY_OPERATIONS: list[Operation] = [
     # --- gateway lifecycle / lease ----------------------------------------
     Operation(
         name="awm_status",
-        description="Get AWM gateway status: workspace root, core process info, uptime.",
+        tool="awm", verb="status",
+        description="This node's status in one call: gateway, every service's state, "
+                    "auth rotation, node role and the compute watchdog.",
         service_func=_op_status,
         http_method="GET", http_path="/status",
         cli_group="gateway", cli_command="status",
@@ -933,29 +978,29 @@ GATEWAY_OPERATIONS: list[Operation] = [
     ),
     Operation(
         name="awm_restart",
+        tool="awm", verb="restart",
         description="Restart the AWM core systemd unit (awm.service).",
         service_func=_op_restart,
         http_method="POST", http_path="/restart",
-        # Labelled even though ``surfaces`` withholds the CLI (``awm gateway
-        # restart`` is hand-authored in cli.py): the collapsed MCP projection
-        # folds native ops by cli_group/cli_command, so empty labels produced a
-        # domain named '' with a single verb named '' — an unusable tool on the
-        # surface. The labels are the fold key, not a CLI opt-in.
+        # ``awm gateway restart`` is hand-authored in cli.py; the labels keep the
+        # op from being an unlabelled CLI entry.
         cli_group="gateway", cli_command="restart",
-        output=JsonOutput(), surfaces=_MCP_HTTP,
+        output=JsonOutput(), surfaces=_HTTP,
         effect="write",
     ),
     Operation(
         name="awm_mcp_sync",
+        tool="awm", verb="mcp_sync",
         description="Read workspace .mcp.json and regenerate backend-specific MCP configs under .awm/.",
         service_func=_op_mcp_sync,
         http_method="POST", http_path="/mcp-sync",
         cli_group="gateway", cli_command="mcp-sync",
-        output=JsonOutput(), surfaces=_CLI,
+        output=JsonOutput(), surfaces=_CLI_HTTP,
         effect="write",
     ),
     Operation(
-        name="gateway_list",
+        name="awm_registry_list",
+        tool="awm", verb="registry_list",
         description="List hub registrations (services / pages / url / static) and lease state.",
         service_func=_op_gateway_list,
         http_method="GET", http_path="/hub/services",
@@ -964,7 +1009,8 @@ GATEWAY_OPERATIONS: list[Operation] = [
         effect="read",
     ),
     Operation(
-        name="gateway_deregister",
+        name="awm_registry_deregister",
+        tool="awm", verb="registry_deregister",
         description="Force-evict a hub registration by name (independent of its lease holder).",
         service_func=_op_gateway_deregister,
         http_method="DELETE", http_path="/hub/services/{name}",
@@ -979,7 +1025,7 @@ GATEWAY_OPERATIONS: list[Operation] = [
                   description="Disambiguate if the name exists across kinds "
                               "(page|service|url|static)."),
         ],
-        surfaces=_CLI,
+        surfaces=_CLI_HTTP,
         effect="write",
     ),
     # --- feature-service lifecycle (awm services *) -----------------------
@@ -987,7 +1033,8 @@ GATEWAY_OPERATIONS: list[Operation] = [
     # --all) but their HTTP route + MCP tool are generated from here, so the
     # handler is still single-sourced. Hence surfaces={mcp,http}.
     Operation(
-        name="services_list",
+        name="awm_services_list",
+        tool="awm", verb="services_list",
         description="List discovered services with their enable + running state.",
         service_func=_op_services_list,
         http_method="GET", http_path="/hub/services/discovered",
@@ -996,7 +1043,8 @@ GATEWAY_OPERATIONS: list[Operation] = [
         effect="read",
     ),
     Operation(
-        name="services_start",
+        name="awm_services_start",
+        tool="awm", verb="services_start",
         description="Start a stopped service (idempotent).",
         service_func=_op_services_start,
         http_method="POST", http_path="/hub/services/{name}/start",
@@ -1005,7 +1053,8 @@ GATEWAY_OPERATIONS: list[Operation] = [
         effect="write",
     ),
     Operation(
-        name="services_stop",
+        name="awm_services_stop",
+        tool="awm", verb="services_stop",
         description="Stop a running service (evict + kill + drop journal entry).",
         service_func=_op_services_stop,
         http_method="POST", http_path="/hub/services/{name}/stop",
@@ -1014,7 +1063,8 @@ GATEWAY_OPERATIONS: list[Operation] = [
         effect="write",
     ),
     Operation(
-        name="services_restart",
+        name="awm_services_restart",
+        tool="awm", verb="services_restart",
         description="Restart a service (stop then start).",
         service_func=_op_services_restart,
         http_method="POST", http_path="/hub/services/{name}/restart",
@@ -1023,25 +1073,28 @@ GATEWAY_OPERATIONS: list[Operation] = [
         effect="write",
     ),
     Operation(
-        name="services_enable",
+        name="awm_services_enable",
+        tool="awm", verb="services_enable",
         description="Enable a service (persists across restart) and start it now.",
         service_func=_op_services_enable,
         http_method="POST", http_path="/hub/services/{name}/enable",
         cli_group="services", cli_command="enable",
-        output=JsonOutput(), params=[_NAME_PARAM], surfaces=_CLI,
+        output=JsonOutput(), params=[_NAME_PARAM], surfaces=_CLI_HTTP,
         effect="write",
     ),
     Operation(
-        name="services_disable",
+        name="awm_services_disable",
+        tool="awm", verb="services_disable",
         description="Disable a service (stays down across restart) and stop it now.",
         service_func=_op_services_disable,
         http_method="POST", http_path="/hub/services/{name}/disable",
         cli_group="services", cli_command="disable",
-        output=JsonOutput(), params=[_NAME_PARAM], surfaces=_CLI,
+        output=JsonOutput(), params=[_NAME_PARAM], surfaces=_CLI_HTTP,
         effect="write",
     ),
     Operation(
-        name="services_reap",
+        name="awm_services_reap",
+        tool="awm", verb="services_reap",
         description="Reap orphaned hub_adapter processes targeting this gateway "
                     "that hold no live lease (--dry-run lists only).",
         service_func=_op_services_reap,
@@ -1054,12 +1107,13 @@ GATEWAY_OPERATIONS: list[Operation] = [
             cli_name="--dry-run",
             description="List the orphaned hub_adapters without killing them.",
         )],
-        surfaces=_CLI,
+        surfaces=_CLI_HTTP,
         effect="write",
     ),
     # --- peer directory (federation address book) -------------------------
     Operation(
-        name="peer_join",
+        name="operations_peer_join",
+        tool="operations", verb="peer_join",
         description="Record a peer node (name → HTTPS edge URL + ssh alias, plus "
                     "relation, swarm, principal, role, public key) in this node's "
                     "address book. Run on both nodes for a mutual link.",
@@ -1069,11 +1123,12 @@ GATEWAY_OPERATIONS: list[Operation] = [
         output=JsonOutput(),
         request_model=PeerJoinRequest,
         params=_peer_join_params(),
-        surfaces=_CLI,
+        surfaces=_CLI_HTTP,
         effect="write",
     ),
     Operation(
-        name="peer_add",
+        name="operations_peer_add",
+        tool="operations", verb="peer_add",
         description="Record a peer node in this node's address book (same as "
                     "peer_join).",
         service_func=_op_peer_add,
@@ -1082,11 +1137,12 @@ GATEWAY_OPERATIONS: list[Operation] = [
         output=JsonOutput(),
         request_model=PeerJoinRequest,
         params=_peer_join_params(),
-        surfaces=_CLI,
+        surfaces=_CLI_HTTP,
         effect="write",
     ),
     Operation(
-        name="peer_set",
+        name="operations_peer_set",
+        tool="operations", verb="peer_set",
         description="Change a recorded peer's relation, swarm, principal, role or "
                     "public key. Setting the key pins it and computes its fingerprint.",
         service_func=_op_peer_set,
@@ -1099,13 +1155,15 @@ GATEWAY_OPERATIONS: list[Operation] = [
                   description="Peer node name to update."),
             *_peer_trust_params(),
         ],
-        surfaces=_CLI,
+        surfaces=_CLI_HTTP,
         effect="write",
     ),
     Operation(
-        name="peer_grant",
-        description="Grant a foreign peer one read category (e.g. journals, kb). "
-                    "Meaningless for a domestic peer; the result warns.",
+        name="operations_peer_grant",
+        tool="operations", verb="peer_grant",
+        description="Grant a foreign peer one archive source (a name from search "
+                    "sources, e.g. journals). Meaningless for a domestic peer; "
+                    "the result warns.",
         service_func=_op_peer_grant,
         http_method="POST", http_path="/peers/grant",
         cli_group="peer", cli_command="grant",
@@ -1115,13 +1173,14 @@ GATEWAY_OPERATIONS: list[Operation] = [
             Param(name="name", type="string", required=True, cli_type="argument",
                   description="Peer node name."),
             Param(name="category", type="string", required=True, cli_type="argument",
-                  description="Read category to grant (lowercase slug)."),
+                  description="Archive source to grant (lowercase slug)."),
         ],
-        surfaces=_CLI,
+        surfaces=_CLI_HTTP,
         effect="write",
     ),
     Operation(
-        name="peer_revoke",
+        name="operations_peer_revoke",
+        tool="operations", verb="peer_revoke",
         description="Revoke one read category from a peer.",
         service_func=_op_peer_revoke,
         http_method="POST", http_path="/peers/revoke",
@@ -1134,11 +1193,12 @@ GATEWAY_OPERATIONS: list[Operation] = [
             Param(name="category", type="string", required=True, cli_type="argument",
                   description="Read category to revoke."),
         ],
-        surfaces=_CLI,
+        surfaces=_CLI_HTTP,
         effect="write",
     ),
     Operation(
-        name="peer_list",
+        name="operations_peer_list",
+        tool="operations", verb="peer_list",
         description="List recorded peers with every record field (edge URL, "
                     "relation, swarm, principal, role, key fingerprint, grants).",
         service_func=_op_peer_list,
@@ -1148,7 +1208,8 @@ GATEWAY_OPERATIONS: list[Operation] = [
         effect="read",
     ),
     Operation(
-        name="peer_resolve",
+        name="operations_peer_resolve",
+        tool="operations", verb="peer_resolve",
         description="Resolve a peer name to its full record (directory lookup "
                     "only; never proxies).",
         service_func=_op_peer_resolve,
@@ -1162,7 +1223,8 @@ GATEWAY_OPERATIONS: list[Operation] = [
         effect="read",
     ),
     Operation(
-        name="peer_forget",
+        name="operations_peer_forget",
+        tool="operations", verb="peer_forget",
         description="Remove a peer from this node's address book.",
         service_func=_op_peer_forget,
         http_method="DELETE", http_path="/peers/{name}",
@@ -1172,10 +1234,11 @@ GATEWAY_OPERATIONS: list[Operation] = [
         params=[Param(name="name", type="string", required=True,
                       location="path", cli_type="argument",
                       description="Peer node name to forget.")],
-        surfaces=_CLI,
+        surfaces=_CLI_HTTP,
     ),
     Operation(
-        name="peer_providers",
+        name="awm_providers",
+        tool="awm", verb="providers",
         description="Which fleet nodes can serve a given MCP tool/domain and "
                     "which one it goes to by default (omit the tool for the "
                     "whole fleet map).",
@@ -1195,12 +1258,13 @@ GATEWAY_OPERATIONS: list[Operation] = [
                   description="Sweep every peer now instead of reading the "
                               "background snapshot."),
         ],
-        surfaces=_CLI,
+        surfaces=_CLI_HTTP,
         effect="read",
     ),
     # --- config contracts (settings page) ---------------------------------
     Operation(
-        name="config_contracts",
+        name="awm_config_contracts",
+        tool="awm", verb="config_contracts",
         description="List every opted-in service config contract + live values "
                     "(plus the gateway global slot) for the settings page.",
         service_func=_op_config_contracts,
@@ -1210,7 +1274,8 @@ GATEWAY_OPERATIONS: list[Operation] = [
         effect="read",
     ),
     Operation(
-        name="config_set",
+        name="awm_config_set",
+        tool="awm", verb="config_set",
         description="Persist a config contract's values to its owning service "
                     "(or the gateway global slot).",
         service_func=_op_config_set,
@@ -1224,7 +1289,7 @@ GATEWAY_OPERATIONS: list[Operation] = [
             Param(name="values", type="object", required=False,
                   description="Field values to persist (full object)."),
         ],
-        surfaces=_MCP_HTTP,
+        surfaces=_HTTP,
         effect="write",
     ),
 ]

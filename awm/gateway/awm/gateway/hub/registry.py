@@ -70,6 +70,9 @@ class ServiceRecord:
     # in its `ready` frame (functions/emitters/sessions). The control WS
     # state lives on the rpc.py ControlChannel keyed by service_id.
     api: dict[str, Any] = field(default_factory=dict)
+    # The ``[[archive]]`` tables of the service's ``service.toml``: the search
+    # sources it plugs in, read when the service reaches ``ready``.
+    archive: list[dict[str, Any]] = field(default_factory=list)
     start_cmd: list[str] = field(default_factory=list)
     cwd: str = ""
 

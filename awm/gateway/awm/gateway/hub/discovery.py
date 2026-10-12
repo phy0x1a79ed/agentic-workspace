@@ -34,10 +34,12 @@ sets it in its gitignored dev ``.env``, prod sets none). Resolution precedence:
 A corrupt marker reads as marked-but-unmatched (disabled + logged), never
 fail-open.
 
-Tool and tier: the same ``service.toml`` may carry ``tool`` (the MCP tool the
-service publishes under; the folder name when absent) and ``tier`` (``"on"``, or
-``"off"`` to keep the tool off the MCP surface; anything else reads as ``"on"``).
-Both are independent of ``profiles`` and never affect whether the service runs.
+Tool, tier and archive: the same ``service.toml`` may carry ``tool`` (the MCP
+tool the service publishes under; the folder name when absent), ``tier``
+(``"on"``, or ``"off"`` to keep the tool off the MCP surface; anything else reads
+as ``"on"``) and ``[[archive]]`` tables (the search sources the service plugs
+in). All are independent of ``profiles`` and never affect whether the service
+runs.
 """
 
 from __future__ import annotations
@@ -178,34 +180,42 @@ def _read_profiles(folder: Path) -> list[str] | None:
 TIER_ON = "on"
 TIER_OFF = "off"
 
-# (path, mtime_ns, size) -> (tool or None, tier). /tools is fetched on every
+# (path, mtime_ns, size) -> parsed service.toml. /tools is fetched on every
 # client tool-list, so a service.toml is re-read only when it changes.
-_surface_cache: dict[tuple[str, int, int], tuple[str | None, str]] = {}
+_manifest_cache: dict[tuple[str, int, int], dict] = {}
 
 
-def _read_surface(folder: Path) -> tuple[str | None, str]:
+def _read_manifest(folder: Path) -> dict:
+    """The parsed ``service.toml`` of ``folder``; empty when it is missing or does
+    not parse."""
     path = folder / PROFILE_MARKER
     try:
         st = path.stat()
     except OSError:
-        return None, TIER_ON
+        return {}
     key = (str(path), st.st_mtime_ns, st.st_size)
-    cached = _surface_cache.get(key)
+    cached = _manifest_cache.get(key)
     if cached is not None:
         return cached
-    tool: str | None = None
-    tier = TIER_ON
     try:
         data = tomllib.loads(path.read_text(encoding="utf-8"))
-        value = data.get("tool")
-        if isinstance(value, str) and value.strip():
-            tool = value.strip()
-        value = data.get("tier")
-        if isinstance(value, str) and value.strip().lower() == TIER_OFF:
-            tier = TIER_OFF
     except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
-        log.warning("could not read tool/tier from %s: %s — defaults", path, exc)
-    _surface_cache[key] = (tool, tier)
+        log.warning("could not read %s: %s — defaults", path, exc)
+        data = {}
+    _manifest_cache[key] = data
+    return data
+
+
+def _read_surface(folder: Path) -> tuple[str | None, str]:
+    data = _read_manifest(folder)
+    tool: str | None = None
+    tier = TIER_ON
+    value = data.get("tool")
+    if isinstance(value, str) and value.strip():
+        tool = value.strip()
+    value = data.get("tier")
+    if isinstance(value, str) and value.strip().lower() == TIER_OFF:
+        tier = TIER_OFF
     return tool, tier
 
 
@@ -221,6 +231,39 @@ def read_tool(folder: Path, default: str | None = None) -> str:
     """The tool the service folder publishes under: the ``tool`` key of its
     ``service.toml``, else ``default``, else the folder name."""
     return _read_surface(folder)[0] or default or folder.name
+
+
+def read_archive(folder: Path) -> list[dict]:
+    """The ``[[archive]]`` tables of the service folder's ``service.toml``: one
+    ``{name, mode, ...}`` dict per search source it plugs in. A table without a
+    string ``name`` is dropped."""
+    tables = _read_manifest(folder).get("archive")
+    if not isinstance(tables, list):
+        return []
+    return [dict(t) for t in tables
+            if isinstance(t, dict) and isinstance(t.get("name"), str) and t["name"].strip()]
+
+
+def service_archive(name: str) -> list[dict]:
+    """Archive tables of the service folder called ``name`` under the services root."""
+    if not name or name != Path(name).name or name.startswith("."):
+        return []
+    return read_archive(services_root() / name)
+
+
+def archive_sources() -> list[str]:
+    """Every archive source name any discovered service declares, in folder order."""
+    root = services_root()
+    if not root.is_dir():
+        return []
+    seen: list[str] = []
+    for entry in sorted(root.iterdir()):
+        if not entry.is_dir() or entry.name.startswith((".", "_")):
+            continue
+        for table in read_archive(entry):
+            if table["name"] not in seen:
+                seen.append(table["name"])
+    return seen
 
 
 def service_tier(name: str) -> str:

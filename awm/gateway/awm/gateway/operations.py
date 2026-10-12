@@ -76,7 +76,9 @@ class Operation:
     """A declarative operation definition.
 
     ``surfaces`` controls which generated surfaces are emitted for this
-    operation (subset of ``{"cli", "mcp", "http"}``). ``peer_only=True``
+    operation (subset of ``{"cli", "mcp", "http"}``). ``tool`` and ``verb`` name
+    the operation on the MCP surface when that differs from its CLI group and
+    command (the ``awm`` tool folds several CLI groups). ``peer_only=True``
     short-circuits the surfaces to ``{"http"}`` and tags the route so
     callers / generators know it belongs to the peer-facing API (federation
     receivers — auth is per-peer bearer + ``X-Awm-From``, not operator
@@ -99,6 +101,18 @@ class Operation:
     tags: list[str] = field(default_factory=list)
     effect: str = "write"
     category: str | None = None
+    tool: str = ""
+    verb: str = ""
+
+    @property
+    def mcp_tool(self) -> str:
+        """The MCP tool this operation is a verb of: ``tool``, else ``cli_group``."""
+        return self.tool or self.cli_group
+
+    @property
+    def mcp_verb(self) -> str:
+        """The verb it answers to inside that tool: ``verb``, else ``cli_command``."""
+        return self.verb or self.cli_command
 
     def __post_init__(self) -> None:
         if self.peer_only:
@@ -536,7 +550,7 @@ def _make_service_cli_handler(tool: dict, api_func: Callable) -> Callable:
         _invoke_dispatch(tool_name, api_func, kwargs)
 
     # A tool's inputSchema lists params in manifest/display order, which is free
-    # to put a required field last (scope_post deliberately puts `body` last so a
+    # to put a required field last (journal_post deliberately puts `body` last so a
     # serialization bleed has no trailing param to corrupt). But an
     # inspect.Signature forbids a no-default parameter after a defaulted one, so
     # build params then stable-sort required-before-optional. Every field is a

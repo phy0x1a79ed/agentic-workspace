@@ -32,9 +32,11 @@ class _StubRegistry:
 class _FakeChannel:
     def __init__(self):
         self.calls = []
+        self.grants = []
 
-    async def call(self, fn, args, as_=None, timeout=None):
+    async def call(self, fn, args, as_=None, timeout=None, grants=None):
         self.calls.append((fn, args, as_))
+        self.grants.append(grants)
         return {"ran": fn}
 
 
@@ -409,7 +411,7 @@ def _raising(world, message, error_class):
     exc = catalog.rpc.RpcError(message)
     exc.error_class = error_class
 
-    async def call(fn, args, as_=None, timeout=None):
+    async def call(fn, args, as_=None, timeout=None, grants=None):
         raise exc
 
     world.call = call

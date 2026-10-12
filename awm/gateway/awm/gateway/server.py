@@ -195,7 +195,7 @@ async def lifespan(app: FastAPI):
 
     # The session mode gate reads cx's lineage records. A missing directory is
     # not an error for the reader, but creating it here keeps the question from
-    # arising before the first `cx start`.
+    # arising before the first `start_other`.
     try:
         from awm.claudedaemon import sessionmode
         sessionmode.starts_dir().mkdir(parents=True, exist_ok=True)
@@ -461,17 +461,19 @@ def list_tools_endpoint(request: Request, view: str | None = None, peers: int = 
     return {"tools": [t.model_dump(by_alias=True) for t in tools]}
 
 
-# The expanded surface names a verb `<domain>_<verb>`, and service names cannot
-# contain an underscore, so the domain is exactly the text before the first one.
+# The expanded surface names a verb `<tool>_<verb>`, and tool names cannot
+# contain an underscore, so the tool is exactly the text before the first one.
 #
-# The domains whose calls are stamped with the caller's pid, and the verbs of each
+# The tools whose calls are stamped with the caller's pid, and the verbs of each
 # that are. `None` means every verb, including ones added later, which a
-# hand-maintained list would silently miss. A domain gets a narrow list when only
-# some of its verbs act on, or on behalf of, the calling session.
+# hand-maintained list would silently miss. A tool gets a narrow list when only
+# some of its verbs act on, or on behalf of, the calling session. The keys are
+# published tool names: a service is stamped under the tool it publishes into
+# (cx's `start_other` and `stop_other` record the caller as parent, and are
+# `reflection` verbs), never under its folder name.
 _CALLER_STAMPED: dict[str, frozenset[str] | None] = {
     "reflection": None,
-    "cx": frozenset({"start", "stop"}),
-    "reporting": None,
+    "operations": None,
     "trilium": frozenset({
         "note_upsert", "note_create", "note_update", "note_place", "note_delete",
         "note_move", "note_clone", "attr_set", "attr_delete", "attachment_put"}),
@@ -510,16 +512,17 @@ def _stamp_caller(name: str, args: dict, pid_header: str | None,
     its parent pid as `X-Awm-Session-Pid`; that identifies the caller regardless
     of whether it is hosted in a tmux pane or as a background job. The stamped
     calls (`_CALLER_STAMPED`) are every `reflection` verb, which injects into the
-    caller's own prompt, and `cx` `start` and `stop`, which record the caller as
-    the new session's parent, every `reporting` verb, and the `trilium` write
-    verbs, which the write gate checks. Their contract with the model requires zero
+    caller's own prompt and, as `start_other` and `stop_other`, records the caller
+    as the parent of the session it starts or stops, every `operations` verb (the
+    reporting ones act for the calling session), and the `trilium` write verbs,
+    which the write gate checks. Their contract with the model requires zero
     awareness of any of this: calls arrive carrying nothing about who is making
     them, and this is the one place identity is attached before dispatch.
 
     The value is always *overwritten*, and stripped entirely when no header is
     present, so `_caller_pid` cannot be supplied from the model side. That is the
     point: with reflection, naming a different target would turn it into a way to
-    type into other agents, and with `cx start` it would let a session claim any
+    type into other agents, and with `start_other` it would let a session claim any
     other session as its parent. No other call's args are touched. Mutates
     ``args`` in place (mirrors how the flat/domain shapes already nest it).
 
@@ -556,11 +559,13 @@ def _stamp_caller(name: str, args: dict, pid_header: str | None,
 def _svc_stamp(svc: str, headers: Any, as_: str | None) -> Callable[[str, dict], None]:
     """The `/svc/<svc>/fn/<fn>` door's caller stamp: the one `/invoke` applies.
 
-    A `_caller_pid` in a request body is never trusted, whichever door the call
-    came through.
+    The path names the service's internal function, so the stamp is looked up under
+    the name that function is published as. A `_caller_pid` in a request body is
+    never trusted, whichever door the call came through.
     """
     def stamp(fn: str, args: dict) -> None:
-        _stamp_caller(f"{svc}_{fn}", args, headers.get("X-Awm-Session-Pid"),
+        _stamp_caller(catalog.published_name_of(svc, fn), args,
+                      headers.get("X-Awm-Session-Pid"),
                       headers.get("X-Awm-Caller-Pid"), as_)
 
     return stamp
@@ -642,7 +647,7 @@ def _resolve_call(name: str, args: dict) -> tuple[str | None, str | None, str | 
 
     Returns `(domain, verb, effect, call_args, flat)`. The target is the one
     dispatch resolves, not the one the name suggests: a gateway-native op is
-    judged by its `cli_group` and `cli_command` however it is named, and the
+    judged by its tool and verb however it is named, and the
     effect is the one the verb declares (None when no verb answers to the call).
     Dispatch takes the domain shape when the args carry a `verb` and the name is
     a domain; a name it cannot place is read as a domain too, which only makes
@@ -659,7 +664,7 @@ def _resolve_call(name: str, args: dict) -> tuple[str | None, str | None, str | 
                 entry["effect"] if entry else None,
                 inner if isinstance(inner, dict) else {}, False)
     if flat_native is not None:
-        return flat_native.cli_group, flat_native.cli_command, flat_native.effect, args, True
+        return flat_native.mcp_tool, flat_native.mcp_verb, flat_native.effect, args, True
     domain, sep, verb = name.partition("_")
     if not sep:
         return None, None, None, args, True
@@ -724,6 +729,7 @@ async def invoke_tool(payload: dict, request: Request):
         args = {}
     as_ = request.headers.get("X-Awm-As")
     mode = None
+    name, args = catalog.resolve_alias(name, args)
     if isinstance(args, dict):
         mode = await asyncio.to_thread(_caller_mode, request.headers, as_)
         reason = _call_refusal(mode, name, args)

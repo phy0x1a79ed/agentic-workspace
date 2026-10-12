@@ -3,11 +3,11 @@
 An agent should never need to discover or pass anything about itself: `awm-mcp`
 runs as a stdio child of the calling session and forwards its parent pid as
 `X-Awm-Session-Pid`, and this is the one place that attaches it to a call that
-acts on a session (every reflection verb, and `cx` `start` and `stop`) before
-the call reaches the catalog.
+acts on a session (every reflection verb, `start_other` and `stop_other`
+included, and every operations verb) before the call reaches the catalog.
 
 The stamp is authoritative, not a default. Reflection injects into the caller's
-own prompt, and `cx start` records the caller as the new session's parent, so a
+own prompt, and `start_other` records the caller as the new session's parent, so a
 `_caller_pid` the model could set would name another agent — hence it is always
 overwritten from the header, and removed outright when there is no header.
 """
@@ -46,7 +46,7 @@ def test_stamps_pid_for_flat_call():
     assert args["_caller_pid"] == 2488
 
     args2 = {}
-    _stamp_caller("reflection_send", args2, "77")
+    _stamp_caller("reflection_message_self", args2, "77")
     assert args2["_caller_pid"] == 77
 
 
@@ -103,83 +103,69 @@ def test_other_domains_untouched():
     assert args["args"]["_caller_pid"] == 5
 
     flat = {}
-    _stamp_caller("scope_refresh", flat, "2488")
+    _stamp_caller("journal_post", flat, "2488")
     assert "_caller_pid" not in flat
 
 
 # ---------------------------------------------------------------------------
-# `cx` start and stop
+# `start_other` and `stop_other`: cx's verbs, published under reflection
 # ---------------------------------------------------------------------------
+#
+# Losing this stamp silently drops delegate confinement (a delegate's lineage is
+# read from the pid) and the stop-ownership check, so each shape is pinned.
 
 
-@pytest.mark.parametrize("verb", ["start", "stop"])
-def test_cx_start_and_stop_are_stamped_in_both_shapes(verb):
+@pytest.mark.parametrize("verb", ["start_other", "stop_other"])
+def test_start_other_and_stop_other_are_stamped_in_both_shapes(verb):
     nested = {"verb": verb, "args": {}}
-    _stamp_caller("cx", nested, "2488")
+    _stamp_caller("reflection", nested, "2488")
     assert nested["args"]["_caller_pid"] == 2488
 
     flat = {}
-    _stamp_caller(f"cx_{verb}", flat, "2488")
+    _stamp_caller(f"reflection_{verb}", flat, "2488")
     assert flat["_caller_pid"] == 2488
 
 
-def test_cx_domain_call_without_an_args_bag_gets_one():
-    args = {"verb": "start"}
-    _stamp_caller("cx", args, "2488")
+@pytest.mark.parametrize("verb", ["list_other", "claim_other", "seed_other", "remove_other"])
+def test_the_other_cx_verbs_ride_the_reflection_stamp_too(verb):
+    flat = {}
+    _stamp_caller(f"reflection_{verb}", flat, "2488")
+    assert flat["_caller_pid"] == 2488
+
+
+def test_a_domain_call_without_an_args_bag_to_start_other_gets_one():
+    args = {"verb": "start_other"}
+    _stamp_caller("reflection", args, "2488")
     assert args["args"]["_caller_pid"] == 2488
 
 
 @pytest.mark.parametrize("pid_header", ["2488", None, "not-a-pid"])
-def test_model_supplied_caller_pid_on_cx_start_never_survives(pid_header):
-    nested = {"verb": "start", "args": {"project": "awm", "_caller_pid": 999}}
-    _stamp_caller("cx", nested, pid_header)
+def test_model_supplied_caller_pid_on_start_other_never_survives(pid_header):
+    nested = {"verb": "start_other", "args": {"project": "awm", "_caller_pid": 999}}
+    _stamp_caller("reflection", nested, pid_header)
     assert nested["args"].get("_caller_pid") != 999
     assert nested["args"]["project"] == "awm"
 
     flat = {"_caller_pid": 999}
-    _stamp_caller("cx_stop", flat, pid_header)
+    _stamp_caller("reflection_stop_other", flat, pid_header)
     assert flat.get("_caller_pid") != 999
 
 
-def test_model_supplied_caller_pid_on_cx_start_is_stripped_without_a_header():
-    nested = {"verb": "start", "args": {"_caller_pid": 999}}
-    _stamp_caller("cx", nested, None)
-    assert "_caller_pid" not in nested["args"]
-
-    flat = {"_caller_pid": 999}
-    _stamp_caller("cx_start", flat, None)
-    assert "_caller_pid" not in flat
-
-
-def test_cx_start_descendant_header_is_walked(resolves):
+def test_start_other_descendant_header_is_walked(resolves):
     flat = {}
-    _stamp_caller("cx_start", flat, None, "910")
+    _stamp_caller("reflection_start_other", flat, None, "910")
     assert flat["_caller_pid"] == 900 and resolves == [910]
 
 
-@pytest.mark.parametrize("verb", ["list", "claim", "seed", "remove", None])
-def test_other_cx_verbs_are_left_alone(verb):
-    nested = {"args": {"_caller_pid": 5}}
-    if verb:
-        nested["verb"] = verb
-    _stamp_caller("cx", nested, "2488")
-    assert nested["args"]["_caller_pid"] == 5
-
-    if verb:
-        flat = {"_caller_pid": 5}
-        _stamp_caller(f"cx_{verb}", flat, "2488")
-        assert flat["_caller_pid"] == 5
-
-
-def test_cx_verb_that_only_starts_with_start_is_left_alone():
+def test_the_retired_cx_tool_is_no_longer_a_stamped_key():
     flat = {}
-    _stamp_caller("cx_start_later", flat, "2488")
+    _stamp_caller("cx_start", flat, "2488")
     assert "_caller_pid" not in flat
 
 
-def test_a_domain_that_shares_a_prefix_with_cx_is_left_alone():
+def test_a_tool_that_shares_a_prefix_with_reflection_is_left_alone():
     flat = {}
-    _stamp_caller("cxx_start", flat, "2488")
+    _stamp_caller("reflectionx_start_other", flat, "2488")
     assert "_caller_pid" not in flat
 
 
@@ -190,11 +176,11 @@ def test_a_domain_that_shares_a_prefix_with_cx_is_left_alone():
 
 @pytest.mark.parametrize("name,shape", [
     ("reflection", "nested"), ("reflection_compact", "flat"),
-    ("cx", "nested"), ("cx_start", "flat"),
+    ("operations", "nested"), ("reflection_start_other", "flat"),
 ])
 def test_pid_headers_are_ignored_when_the_request_carries_x_awm_as(name, shape):
     if shape == "nested":
-        args = {"verb": "start" if name == "cx" else "compact",
+        args = {"verb": "queue_list" if name == "operations" else "compact",
                 "args": {"_caller_pid": 999}}
         bag = lambda: args["args"]  # noqa: E731
     else:
@@ -206,13 +192,39 @@ def test_pid_headers_are_ignored_when_the_request_carries_x_awm_as(name, shape):
 
 def test_pid_header_still_stamps_without_x_awm_as():
     args = {}
-    _stamp_caller("cx_start", args, "2488", None, None)
+    _stamp_caller("reflection_start_other", args, "2488", None, None)
     assert args["_caller_pid"] == 2488
 
 
 # ---------------------------------------------------------------------------
 # the /svc/<svc>/fn/<fn> door stamps like /invoke
 # ---------------------------------------------------------------------------
+
+
+def _record(name, **published):
+    from awm.gateway.hub.registry import ServiceRecord
+
+    return ServiceRecord(name=name, prefix=f"/svc/{name}", kind="service",
+                         api={"functions": [{"name": fn, "tool": tool}
+                                            for fn, tool in published.items()]})
+
+
+class _Registry:
+    def __init__(self, records):
+        self._records = records
+
+    def service_records(self):
+        return list(self._records)
+
+
+#: What the services publish. The door's path names the internal function, so the
+#: stamp has to look the published name up.
+_PUBLISHED = [
+    _record("cx", start="reflection_start_other", stop="reflection_stop_other",
+            list="reflection_list_other"),
+    _record("reporting", claim_task="operations_task_claim"),
+    _record("reflection", compact="reflection_compact"),
+]
 
 
 class _FakeChannel:
@@ -226,7 +238,7 @@ class _FakeChannel:
     def function_spec(self, fn):
         return {}
 
-    async def call(self, fn, args, as_=None, timeout=30.0):
+    async def call(self, fn, args, as_=None, timeout=30.0, grants=None):
         self.calls.append((fn, args))
         return {"ok": True}
 
@@ -239,6 +251,7 @@ async def _post_svc(monkeypatch, svc, fn, body, headers=None, as_=None):
 
     ch = _FakeChannel()
     monkeypatch.setattr(proxy.rpc, "get_control", lambda sid: ch)
+    monkeypatch.setattr(_server.catalog, "get_registry", lambda: _Registry(_PUBLISHED))
     raw = json.dumps(body).encode() if body is not None else b""
 
     async def receive():
@@ -273,9 +286,22 @@ async def test_svc_door_ignores_the_header_on_an_edge_request(monkeypatch):
     assert "_caller_pid" not in args
 
 
-async def test_svc_door_leaves_other_services_and_verbs_alone(monkeypatch):
-    args = await _post_svc(monkeypatch, "cx", "list", {"_caller_pid": 5})
-    assert args["_caller_pid"] == 5
+async def test_svc_door_stamps_cx_by_the_name_it_publishes_under(monkeypatch):
+    """`/svc/cx/fn/stop` names the internal function; the stamp is keyed by the
+    published `reflection_stop_other`."""
+    for fn in ("start", "stop", "list"):
+        args = await _post_svc(monkeypatch, "cx", fn, {"_caller_pid": 999},
+                               headers={"X-Awm-Session-Pid": "2488"})
+        assert args["_caller_pid"] == 2488, fn
+
+
+async def test_svc_door_stamps_reporting_under_operations(monkeypatch):
+    args = await _post_svc(monkeypatch, "reporting", "claim_task", {"_caller_pid": 999},
+                           headers={"X-Awm-Session-Pid": "2488"})
+    assert args["_caller_pid"] == 2488
+
+
+async def test_svc_door_leaves_other_services_alone(monkeypatch):
     args = await _post_svc(monkeypatch, "notes", "post", {"_caller_pid": 5})
     assert args["_caller_pid"] == 5
 
@@ -440,14 +466,14 @@ def test_non_numeric_descendant_header_strips_a_model_supplied_pid(resolves):
 
 def test_descendant_header_does_not_touch_other_domains(resolves):
     flat = {}
-    _stamp_caller("scope_refresh", flat, None, "910")
+    _stamp_caller("journal_render", flat, None, "910")
     assert "_caller_pid" not in flat
     assert resolves == []
 
 
 def test_reporting_and_trilium_writes_are_stamped_and_the_body_caller_dropped():
-    reporting = {"verb": "claim_task", "args": {"_caller": "x", "_caller_pid": 9}}
-    _stamp_caller("reporting", reporting, "2488")
+    reporting = {"verb": "task_claim", "args": {"_caller": "x", "_caller_pid": 9}}
+    _stamp_caller("operations", reporting, "2488")
     assert reporting["args"] == {"_caller_pid": 2488}
 
     flat = {"_caller": "x", "_caller_pid": 9}

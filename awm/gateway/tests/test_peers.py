@@ -274,11 +274,12 @@ def test_grant_verb_warns_for_domestic():
 
 def test_peer_op_effects():
     effects = {o.name: o.effect for o in gateway_ops.GATEWAY_OPERATIONS
-               if o.cli_group == "peer"}
-    for name in ("peer_list", "peer_resolve"):
+               if o.mcp_tool == "operations"}
+    for name in ("operations_peer_list", "operations_peer_resolve"):
         assert effects[name] == "read"
-    for name in ("peer_add", "peer_join", "peer_set", "peer_grant", "peer_revoke",
-                 "peer_forget"):
+    for name in ("operations_peer_add", "operations_peer_join", "operations_peer_set",
+                 "operations_peer_grant", "operations_peer_revoke",
+                 "operations_peer_forget"):
         assert effects[name] == "write"
 
 

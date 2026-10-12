@@ -64,8 +64,8 @@ class TestToolsEndpoint:
         tools = resp.json()["tools"]
         assert tools, "expected at least the gateway-native domains"
         names = {t["name"] for t in tools}
-        # gateway-native ops fold to the gateway / services domains
-        assert {"gateway", "services"} <= names
+        # gateway-native ops fold into the awm tool and, for the peer book, operations
+        assert {"awm", "operations"} <= names
         for t in tools:
             Tool.model_validate(t)
             schema = t["inputSchema"]
