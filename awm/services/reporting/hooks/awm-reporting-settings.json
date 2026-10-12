@@ -1,4 +1,5 @@
 {
+  "awaySummaryEnabled": false,
   "hooks": {
     "PostToolUse": [
       {
