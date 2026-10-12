@@ -2,7 +2,7 @@
 
 *Human setup + usage guide for awm. Agents operating in this workspace load [`AGENTS.md`](AGENTS.md) at session start via the harness's native mechanism (see the `harness-setup` writeup on disk at `.awm/skills/awm/harness-setup.md`) — not this file. **Do not merge this README into AGENTS.md, PROTOCOLS.md or ARCHITECTURE.md** — their audience is agents; this one's audience is humans installing, networking, and operating the system.*
 
-A lightweight Python service + CLI for coordinating multiple AI agents working in parallel on shared resources. Provides project/scope management, the scope channel (per-scope journal + messages), background Claude Code sessions (`cx start`), cross-node federation, and an MCP server for direct tool use by Claude Code / OpenCode / other MCP clients.
+A lightweight Python service + CLI for coordinating multiple AI agents working in parallel on shared resources. Provides project/scope management, the journal (per-scope posts, goals and history), one ranked search over what the swarm knows, background Claude Code sessions (`reflection start_other`), cross-node federation, and an MCP server for direct tool use by Claude Code / OpenCode / other MCP clients.
 
 For agent orientation (paths, MCP tools, startup), see [`AGENTS.md`](AGENTS.md). For workspace procedures (scope lifecycle, naming, hubs, data, backups), see [`PROTOCOLS.md`](PROTOCOLS.md). For **awm-internal architecture** — modifying the hub, registry, supervisor, RPC layer, manifest generator — see [`ARCHITECTURE.md`](ARCHITECTURE.md). This README covers install and the *usage* side of the package model (authoring components / services / pages); ARCHITECTURE.md covers the *implementation* side.
 
@@ -68,6 +68,7 @@ auth — ever.**
 | `run.sh` | **yes**, executable | The *only* thing the gateway ever runs to start the service: `bash run.sh`. Self-contained — it must launch the process with no extra arguments and no inherited assumptions. |
 | `INSTALL.md` | **yes** | Human install notes: deps, env, anything an operator needs. |
 | `install.sh` | optional | Editable-installs the service's deps and writes the `.runtime-env` sidecar (see below). Picked up automatically by the install loop. |
+| `service.toml` | optional | `tool` (the MCP tool the service publishes under, default the folder name), `tier` (`on` or `off`) and `[[archive]]` tables that plug the service into `search`. Every function the service registers is published as `<tool>_<verb>`. |
 
 ### The three injected env vars (and *only* these)
 
@@ -323,7 +324,7 @@ awm gateway refresh   # restart server to pick up source changes (dev mode)
 
 The server auto-shuts down after 30 minutes of inactivity (configurable via `AWM_IDLE_SHUTDOWN` env var; set to `0` to disable).
 
-`awm <command> --help` lists every subcommand. Beyond the gateway-control groups, the CLI generates an `awm <domain> <verb>` command for every registered feature-service tool (`awm scope create`, `awm cx list`, …) from the same live catalog the MCP surface reads. Note the surfaces are projected differently from one shared catalog: the **CLI and HTTP** stay fully expanded (one `awm <domain> <verb>` command and one `POST /invoke {name:"<domain>_<verb>"}` route per verb), while the **MCP** surface collapses to one generic `{verb,args}` tool per core domain (`GET /tools?view=domains`, with a `describe` verb for parameter schemas) plus a `more` tool that reaches every other domain, to keep the tool count small for agents. So shell usage is unchanged; only what an MCP client sees is collapsed. For agent-facing usage (scopes, the scope channel), see `AGENTS.md` and `PROTOCOLS.md` — those workflows are typically driven from inside an MCP-equipped agent, not the shell.
+`awm <command> --help` lists every subcommand. Beyond the gateway-control groups, the CLI generates an `awm <tool> <verb>` command for every registered feature-service verb (`awm scope create`, `awm reflection list-other`, …) from the same live catalog the MCP surface reads. Note the surfaces are projected differently from one shared catalog: the **CLI and HTTP** stay fully expanded, hidden verbs included (one `awm <tool> <verb>` command and one `POST /invoke {name:"<tool>_<verb>"}` route per verb), while the **MCP** surface collapses to one generic `{verb,args,peer}` tool per service tool (`GET /tools?view=domains`, with a `describe` verb for parameter schemas), all top-level, to keep the tool count small for agents. A service's `service.toml` sets its `tool` and its `tier` (`on` or `off`), and an off tool stays on the CLI and HTTP. So shell usage is unchanged; only what an MCP client sees is collapsed. For agent-facing usage (scopes, the journal), see `AGENTS.md` and `PROTOCOLS.md` — those workflows are typically driven from inside an MCP-equipped agent, not the shell.
 
 ### Per-workspace env file
 
@@ -331,7 +332,7 @@ The server auto-shuts down after 30 minutes of inactivity (configurable via `AWM
 (if present) and merge its `KEY=VAL` lines into the process env before
 doing anything else. Use it to plumb things into the daemon that
 systemd doesn't forward by default — the canonical case is
-`SSH_AUTH_SOCK` so `project_create --clone git@github.com:…` reaches
+`SSH_AUTH_SOCK` so `awm scope create --new-project --clone-url git@github.com:…` reaches
 your user ssh-agent. Format is dumb `KEY=VAL` per line, `#` for
 comments, leading `export ` tolerated, single- or double-quoted values
 are unquoted. Existing env vars are overridden; missing file is a no-op.

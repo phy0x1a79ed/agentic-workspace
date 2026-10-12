@@ -2,7 +2,7 @@
 
 ## Purpose & Contents
 
-This file is the reference for agents that change awm itself. It covers the gateway, the feature-service contract and lifecycle, the catalog that renders services onto MCP, HTTP and the CLI, the tier split and the verb gates, dev sandboxes, the data-layer internals, the frontend component system, federation pitfalls, a file map, and how to run tests.
+This file is the reference for agents that change awm itself. It covers the gateway, the feature-service contract and lifecycle, the one-tool-per-service rule and the catalog that renders services onto MCP, HTTP and the CLI, the on and off tiers, ranked describe, the verb gates, the search archive, dev sandboxes, the data-layer internals, the frontend component system, federation pitfalls, a file map, and how to run tests.
 
 Agent orientation goes in `AGENTS.md`. Workspace procedures go in `PROTOCOLS.md`. Human install and service authoring go in `README.md` § *Authoring a service*. Cross-node design goes in `FEDERATION.md`.
 
@@ -34,11 +34,13 @@ Each feature service owns its own SQLite DB. There is no shared `state.db`. Serv
 
 `awm.claudedaemon` is everything awm knows about Claude Code's background sessions. It reads the daemon roster and the per-job and per-process records (`roster`), launches a session (`launch`), checks directory trust (`trust`), types a line into a session over the daemon's PTY socket (`pty`, `lane`, `job`) and answers which restricted mode a session runs in (`sessionmode`). It decides nothing about whose session a caller may reach. `cx`, `reflection`, `transcripts`, `reporting` and the gateway each import it and each make that decision for themselves.
 
-**CAUTION** `sessionmode` is the one reader of `cx start`'s lineage records. The gateway gate and `cx` both call it, so the writer and the reader resolve the same directory from the same environment variables. A second copy of that resolution reads no record for any session and answers "not restricted".
+**CAUTION** `sessionmode` is the one reader of the lineage records that `reflection start_other` writes. The gateway gate and the `cx` service both call it, so the writer and the reader resolve the same directory from the same environment variables. A second copy of that resolution reads no record for any session and answers "not restricted".
 
-### A scope is the channel
+### The journal is the channel
 
-There are no `rooms`, `messages` or `session_logs` tables. One `scope_posts` table (kind `message`, `journal`, `system`, …) and `scope_subscribers`, addressed by `(project, scope)`, carry everything. A non-agent inbox (`user:`, `project:`, `workspace`) is a non-literal channel with `owner_project=''`. The surface is `scope_post`, `scope_fetch`, `scope_subscribe`, `scope_unsubscribe` and `scope_archive_search`, in `awm/services/scopes/awm/scopes/channel.py`, `archive.py` and `operations/scope_channel.py`.
+The `journal` service owns every post and goal, in its own database. It split out of `scopes` so that worktree lifecycle and messaging deploy and fail apart. There are no `rooms`, `messages` or `session_logs` tables. One `scope_posts` table (kind `message`, `journal`, `system`, `goal`, …) and `scope_subscribers`, addressed by `(project, scope)`, carry everything. A non-agent inbox (`user:`, `project:`, `workspace`) is a non-literal channel with `owner_project=''`.
+
+`journal` validates a literal scope through the `resolveScope` RPC to `scopes`, and an unreachable `scopes` never blocks a post. `journal render` writes a scope's `.awm/history.md`, and `scope heal` calls it over the gateway. The service publishes the `posts` topic with payload `{project, scope, post}`. `awm/services/journal/INSTALL.md` covers the first-start copy of the old tables out of the `scopes` database.
 
 A post is passive mail. It starts no session and wakes no one. Agents on one node message each other with Claude's `SendMessage`, and swarms message each other through the board (`skills/awm/board-card.md`). Only a deliberate post, such as a debrief, enters the channel.
 
@@ -71,12 +73,26 @@ A backend is a folder under `awm/services/<name>/` with a self-contained executa
 
 A service declares its API as a serializable `ready.api` manifest with `functions`, `emitters` and `subscriptions`. The catalog (`catalog.py`) compiles the manifest into `Operation`s and renders them onto MCP, HTTP and the CLI. `/tools` and `/invoke` read from it. The hub-mediated comms model (`call` request and reply, `emit` and `sub` pub/sub, `Bridge` streaming, identity through `as_`, never direct sockets) is documented in `catalog.py`.
 
+#### One tool per service
+
+A service publishes under one tool. Its `service.toml` names the tool with `tool` (default: the folder name), and every function it registers is published as `<tool>_<verb>`. Before this rule a tool took its name from each function's prefix, so one service could publish several tools and a hand-kept table papered over the mismatch. Now the service record decides.
+
+- **Enforcement.** `surface.check_registration` runs when a service registers (`api/hub.py`). It refuses a function not named `<tool>_<verb>` and a verb that another service already holds in the same tool, and it names every offender. A refused service registers nothing and is not respawned. `gateway/tests/test_tool_rule.py` applies the rule to every manifest in the tree, and `LEGACY_ALLOWLIST` is empty. Keep it empty.
+- **Shared tools.** Two services may share a tool. `reflection` serves the `reflection` and `cx` services, `operations` serves `reporting`, `board` and the gateway's native peer book, and `awm` serves the gateway's native ops and `auth`. The `scopes` service keeps worktree lifecycle and `dvc` owns the data verbs (`mount`, `gc`, `scope_status`). `scopes` imports `awm.dvc.data_dvc` for provisioning.
+- **Internal names.** A manifest function's `name` is the service-internal handle that `/svc/<service>/fn/<name>` and caller stamping dispatch on. It keeps its value when the published name changes. The frozen identity RPCs (`FROZEN_RPCS`: `resolveScope`, `resolveRef`, `project_ensure`, `scope_ensure`) are exempt from the rule.
+- **Tool names.** A tool name holds letters, digits and hyphens. The catalog splits a published name at the tool prefix (`surface.split_published`), so `penpot-plugins_status` is tool `penpot-plugins`, verb `status`. An underscore in a tool name would make that split ambiguous.
+
 A manifest function may carry these keys:
 
-- `"tool"` sets its exact MCP name and decouples it from the internal op `name` used for RPC. The surface then reads `scope_create` and `cx_start` while internal names, including the frozen camelCase identity RPCs, stay unchanged. Override names must be globally unique. `list_tools` warns and skips a duplicate.
-- `"surfaces": ["cli","http"]` keeps a verb off MCP. The default is all three. `_domain_catalog` skips non-`mcp` functions and `_dispatch_domain` rejects them, while the CLI's flat `/invoke` still reaches them. This is how `writing` and `2fa` ship CLI-only write verbs.
+- `"tool"` is the published name, `<tool>_<verb>`.
+- `"surfaces": ["cli","http"]` keeps a verb off MCP. The default is all three. `_domain_catalog` skips non-`mcp` functions and `_dispatch_domain` rejects them, while the CLI's flat `/invoke` still reaches them. Use it for hook-only, host-only, operator and test verbs, so the agent surface holds only what an agent should call.
+- `"params"` declares the verb's arguments. See § *Discovery and strict arguments*.
 - `"timeout"` sets the verb's budget. See § *The timeout ladder*.
 - `"effect"` (`read`, `queue`, `write` or `secret`) and `"category"` feed the gates in § *Verb gating*. An omitted effect means `write`.
+
+#### Old names
+
+`aliases.py` maps each renamed verb's old name to its successor for HTTP and peer callers, so a peer on the previous release and an old hook script keep working for one release. A row may also rename or drop an argument and inject one (`project_create` becomes `scope create` with `new_project`). A row fires only when the old name no longer registers and its target does, so a live verb is never shadowed. A verb removed with no successor has no row and fails as an unknown tool. MCP lists only the new names. The mode gate checks after alias resolution.
 
 A manifest may also carry a top-level `"description"`. `_domain_blurbs` puts it before the generated domain description and adds it to the `describe` reply. It is the only guidance an agent reads before it chooses a verb. `2fa` uses it to send callers to `ssh(verb=connect)`. It applies to this node only, because a peer's blurb lives in the peer's catalog.
 
@@ -84,27 +100,37 @@ A manifest may also carry a top-level `"description"`. `_domain_blurbs` puts it 
 
 `catalog.list_tools()` is the expanded surface, one tool per verb. The CLI generator (`register_service_cli_commands`) and flat `/invoke` dispatch depend on it.
 
-`catalog.list_domain_tools()` folds the same surface into one `{verb, args}` tool per domain. It splits the projected name on the first underscore: `scope_create` becomes domain `scope`, verb `create`. Native ops fold by `cli_group` and `cli_command`. `GET /tools?view=domains` returns this view, and the MCP stdio proxy requests it. Every MCP client therefore carries the small surface, while the default `/tools`, the CLI and HTTP stay expanded.
+`catalog.list_domain_tools()` folds the same surface into one `{verb, args, peer}` call per tool. It splits the published name at the tool prefix: `scope_create` becomes tool `scope`, verb `create`. Native ops carry their own `tool` and `verb`. `GET /tools?view=domains` returns this view, and the MCP stdio proxy requests it. Every MCP client therefore carries the small surface, while the default `/tools`, the CLI and HTTP stay expanded.
 
 Adding `&peers=1` widens the collapse to the fleet, and the envelope's `peer` key picks the node (`FEDERATION.md` § *Cross-peer calls*). It is opt-in because a peer fetches the plain view from this node's edge. That view must stay local-only, or the fleet advertises transitive peers that nobody can dial.
 
-Adding `&tiers=1` narrows the fleet view to the core domains, `providersOf` and the call-through tool `more`. Both MCP proxies request `?view=domains&peers=1&tiers=1`.
+Both MCP proxies request `?view=domains&peers=1`. A tool that only a peer serves still lists top-level on a node that does not run it.
 
-`dispatch()` checks for a domain before the flat branches. When `name` is a known domain and `args` has `verb`, `_dispatch_domain` routes it:
+`dispatch()` checks for a tool before the flat branches. When `name` is a known tool and `args` has `verb`, `_dispatch_domain` routes it:
 
-- `verb="describe"` is answered from the catalog with no service round trip. `describe` is reserved on every domain.
+- `verb="describe"` is answered from the catalog with no service round trip. `describe` is reserved on every tool.
 - A native verb runs its `Operation`.
-- A service verb resolves back to its internal function through `_find_service_fn(f"{domain}_{verb}")`, so a `name` that differs from its `tool` still routes. It then goes out over RPC with `as_` attached.
+- A service verb resolves back to its internal function through `_find_service_fn(f"{tool}_{verb}")`, so a `name` that differs from its `tool` still routes. It then goes out over RPC with `as_` attached.
 
 The collapse is additive. Reverting the proxy's `?view=domains` request undoes it.
 
-**CAUTION** A domain's verbs must be unique. Folding warns and keeps the first. Keep a new `"tool"` override in real `<domain>_<verb>` form. A bare single-token override becomes its own one-verb domain. A two-word service name splits at its first underscore: `claude-science` projecting `claude_science_status` lands as domain `claude`, verb `science_status`. Such a service must pick a one-token domain, for example `science_status`.
+**CAUTION** A tool's verbs must be unique. Folding warns and keeps the first. A bare single-token published name becomes its own one-verb tool, so keep every `"tool"` in real `<tool>_<verb>` form.
+
+### Discovery and strict arguments
+
+An agent learns the surface in one call and corrects a wrong call in one more.
+
+- **Ranked describe.** `awm(verb="describe")` returns the most used verbs (40 by default), each with a one-line summary and its required arguments, plus one line per tool. It lists the best verb of every local tool first, so a tool nobody has used still appears. `usage.py` keeps the tally: daily buckets over a rolling 60 days, flushed to `<AWM_DIR>/gateway/usage.json`. The first run seeds it from `usage_seed.txt`, so the ranking works before the gateway has seen traffic. `describe` on any other tool lists all its visible verbs and takes `verbs` as a list.
+- **Strict arguments.** `_check_arguments` refuses an argument the verb's `params` do not declare and answers with the verb's schema. `_check_envelope` does the same for a key beside `verb`, `args` and `peer`, which would otherwise drop silently. Names that start with an underscore belong to the gateway. A verb with no `params` accepts anything, because no schema is not a promise of no arguments. Declare `params` on every new verb.
+- **Provider metadata.** Each tool's `peer` argument carries the nodes that serve it as an enum and names the default in its description (`_peer_phrase`, from `peer_catalog.resolve`). A call with no `peer` to a tool exactly one node serves routes there. The hidden `awm providers` (CLI: `awm peer providers`) keeps the lookup for operators. A peer's `describe` is not listed twice, and a peer-only tool keeps its description on every node.
+
+**CAUTION** Tool schemas freeze when a session starts, so the `peer` enum is as of launch. The enums are discovery, not enforcement: dispatch validates against the live catalog or the target peer.
 
 ### Tiers
 
-A service folder's `service.toml` may set `tier = "core"`. Any other service is discoverable. Gateway-native `services` and `peer` are core by name (`catalog._NATIVE_CORE_DOMAINS`). A domain that only a peer provides is always discoverable. The tier decides only what the MCP list advertises. It never decides whether a service runs, and `profiles` never decides the tier.
+A service folder's `service.toml` sets `tier = "on"` (the default) or `tier = "off"`. An off tool is absent from every MCP listing and from `describe`, and its service still runs and answers on the CLI and over HTTP. The legacy values `core` and `more` read as on. The tier decides only what MCP advertises. It never decides whether a service runs, and `profiles` never decides the tier.
 
-A call `more(domain, verb, args, peer)` reaches a discoverable domain. Each MCP proxy rewrites it to the ordinary call for the real domain (`mcp_more.rewrite_call`) before it leaves the proxy. The gateway therefore stamps the caller and applies every gate against the true domain and verb. A `more` call that reaches the gateway with a domain skipped that rewrite and is refused. Keep the rewrite in `mcp_more.py`, the one place both proxies share.
+Every on tool is top-level, so no index hides a verb, and each tool's own `peer` metadata answers where it runs. Hide a verb with `surfaces`, and switch off a tool with its tier.
 
 **CAUTION** `service.toml` is also the profile gate. `discovery._read_profiles` must treat a file with no `profiles` key as baseline, enabled everywhere. Reading the absence as "gated off" would switch off every service that carries only a `tier`.
 
@@ -125,21 +151,36 @@ Both proxies share `mcp_http` so they cannot drift. The `AWM_MCP_SDK=1` rollback
 
 ### Verb gating
 
-Three gates decide who may call a verb. They share one declaration. Each manifest verb states an `effect`, and a read verb may add a `category` (`journals`, `kb`). A verb with no effect counts as `write`, so a new verb stays closed until its author opens it. A native gateway op never carries a category.
+Three gates decide who may call a verb. They share one declaration. Each manifest verb states an `effect`, and a read verb may add a `category`: an archive source name such as `journals`, or `archive`. A verb with no effect counts as `write`, so a new verb stays closed until its author opens it. A native gateway op never carries a category.
 
-1. **Foreign gate.** `catalog.dispatch` sends a caller stamped `peer:<node>` to `_dispatch_foreign` unless the peer book calls the node domestic. The caller runs a verb only if the verb is `read` and its category is in the peer record's `grants`. Every other case raises the error an unknown tool raises, which the edge returns as 404. This covers `providersOf`, any `peer` argument (no onward hop through this node) and a service's own `PermissionError` (`_refusal_as_unknown`). A refusal then reveals nothing about what exists. `/tools` and `describe` show the same cut catalog. The gate reads the peer book on every call.
+1. **Foreign gate.** `catalog.dispatch` sends a caller stamped `peer:<node>` to `_dispatch_foreign` unless the peer book calls the node domestic. The caller runs a verb only if the verb is `read` and its category is in the peer record's `grants`. A verb in the `archive` category (`awm.config.effects.ARCHIVE_CATEGORY`, declared by `search`'s read verbs) opens to a caller that holds at least one grant. The gateway then passes the caller's sorted grant list to the service as `args["_grants"]`. `ControlChannel.call` sets it and a caller never can, and it is `None` for a domestic or local caller, which the service reads as every source. Every other case raises the error an unknown tool raises, which the edge returns as 404. This covers every gateway-native verb, any `peer` argument (no onward hop through this node) and a service's own `PermissionError` (`_refusal_as_unknown`). A refusal then reveals nothing about what exists. `/tools` and `describe` show the same cut catalog. The gate reads the peer book on every call.
 2. **Edge path list.** `httpsfront/policy.py` `FOREIGN_PATHS` lets a foreign node reach `/tools` and `/invoke` and nothing else. The edge does not repeat the verb check. Add a path to that set only when the foreign gate covers it. `hub/proxy.py` refuses a foreign caller on every `/svc` path as a backstop.
-3. **Mode gate.** A session that `cx start` launched in a restricted mode may call only the verbs `awm.config.modes` lists for that mode. A policy is either an `Allow` list of exact verbs or a `ByEffect` rule. The gate runs in `gateway/server.py` on `/invoke` and on `/svc/<svc>/fn/<fn>`, and it closes every other `/svc` path to the session. A restricted session may not name a `peer`. A request that carries `X-Awm-As` came through the edge, so the mode gate skips it.
+3. **Mode gate.** A session that `reflection start_other` launched in a restricted mode may call only the verbs `awm.config.modes` lists for that mode. A policy is either an `Allow` list of exact verbs or a `ByEffect` rule. The gate runs in `gateway/server.py` on `/invoke` and on `/svc/<svc>/fn/<fn>`, and it closes every other `/svc` path to the session. A restricted session may not name a `peer`. A request that carries `X-Awm-As` came through the edge, so the mode gate skips it.
 
 The mode gate finds the caller through its pid: `X-Awm-Session-Pid` (set by `awm-mcp`, a stdio child of the session) or `X-Awm-Caller-Pid` (a hook). `claudedaemon.sessionmode.mode_of` reads the mode from disk, and the gateway caches the answer for 5 seconds. The answer is a mode string, `None` (positively not cx-started) or `"unknown"`. Treat `unknown` as the most restricted mode, which may compact the session and nothing else. Any failure to read a record is `unknown`, never `None`.
 
-**CAUTION** The mode gate is a guardrail on the agent-facing doors, not a trust boundary. The loopback gateway is open, and a request with no pid header carries no mode. The gate holds only while a restricted session cannot make a raw HTTP request. Its launch tool list holds no Bash or WebFetch, and no policy admits the `rlm` browser.
+**CAUTION** The mode gate is a guardrail on the agent-facing doors, not a trust boundary. The loopback gateway is open, and a request with no pid header carries no mode. The gate holds only while a restricted session cannot make a raw HTTP request. Its launch tool list holds no Bash or WebFetch, and no policy admits the `browser` or `factorio` tools.
 
 **CAUTION** The gate cannot cover Claude's built-in tools. The representative keeps `SendMessage` and `ListAgents`, and both reach every session on the shared Claude daemon. Its instructions limit `SendMessage` to hand-offs.
 
 ### The gateway's own control plane
 
-The gateway declares its status, restart and mcp-sync ops, hub list and deregister, and service lifecycle once, as `GATEWAY_OPERATIONS` in `gateway_ops.py`. Three generators in `operations.py` project them: `operations_to_mcp_tools` onto MCP, `register_fastapi_routes` onto HTTP and `register_cli_commands` onto the CLI. Add a new control op as one `Operation`. Never hand-write a CLI command, an HTTP route and an MCP tool separately.
+The gateway declares its native ops once, as `GATEWAY_OPERATIONS` in `gateway_ops.py`: status, restart, mcp-sync, the registry list and deregister, the service lifecycle, config, provider lookup and the peer book. Three generators in `operations.py` project them: `operations_to_mcp_tools` onto MCP, `register_fastapi_routes` onto HTTP and `register_cli_commands` onto the CLI. Add a new control op as one `Operation`. Never hand-write a CLI command, an HTTP route and an MCP tool separately.
+
+Native ops publish into two tools. `awm` carries the core infrastructure API, with auth's verbs, and `awm status` folds gateway, service health, auth rotation, node role and the compute watchdog into one answer. `operations` carries the peer book as `peer_*`. An op's CLI group (`gateway`, `services`, `peer`) is independent of its tool, so `awm services list` and the `awm` tool's `services_list` are the same op.
+
+### The search archive
+
+`search` owns the `search` tool and the archive: a registry of plug-ins over one hybrid index. Agents get one ranked answer over everything the swarm knows, locally and across peers, and a new source joins without a change to `search`. `awm/services/search/INSTALL.md` § *Joining the archive* is the contract a plug-in meets. This section holds the reasons.
+
+- **Plug-ins.** A service joins with one `[[archive]]` table per source in its `service.toml`. The `name` is also the federation grant, and the `mode` is `index` or `live`. The gateway lists the tables as `ServiceRecord.archive`, shown under `archive` in each `awm registry_list` entry, and `search` reads them there.
+- **index mode.** The service's hidden `<tool>_export` verb pages `{documents, next_cursor, done, ids}` in ascending key order. `ids` is the full key set and appears only on the last page. `search` drops stored documents whose key is missing from it. A push topic, when the table names one, schedules a debounced full pass, and an hourly pass runs regardless.
+- **live mode.** The table names a query verb that `search` calls at query time. A source marked `optin` runs only when a caller names it. `transcripts` is the live source.
+- **One corpus.** Every document sits under one source type with a `source:id` key, and a side table holds source, project, scope, kind and ts for filtering. The engine normalises scores per call, so separate corpora would not rank against each other.
+- **Frozen sources.** A source whose service stops registering keeps its last documents, marked frozen, and a sweep never reads an absent service as "every document deleted". This is how `writing` and `notes` stay searchable once their services are off.
+- **Merge.** Archive, live and peer lists fuse by reciprocal rank fusion. Scores from different lists do not compare, so only rank counts. Each hit carries its `origin` node and swarm.
+
+**CAUTION** An export verb that cannot read its store must raise. An empty `ids` from a broken store deletes that source's documents from the index.
 
 ### Concurrency
 
@@ -261,11 +302,11 @@ There is one hub origin per node: the gateway process. Its port depends on conte
 
 The CLI targets `BASE_URL`, built from `AWM_PORT` (default `7819`, prod). `AWM_HUB_URL` goes to services and the CLI ignores it. `awm dev shadow --port` (default `7821`) picks the hub to shadow, so a shadow cannot land on prod by accident.
 
-Start a sandbox with the `awm dev start` CLI, not the `dev_*` MCP tools.
+Start a sandbox with the `awm dev start` CLI. The `dev` tool is off MCP.
 
 - `start` always runs `awm/gateway/dev/run.sh` locally.
 - `status`, `stop`, `restart` and `seed` route to prod's `/svc/dev`. They fall back to the local `run.sh` when prod's base answers `{"inert": true}`.
-- The `dev_*` MCP tools hit prod's base with no local fallback. They return `inert` until a sandbox is up.
+- A direct `dev_*` call over HTTP hits prod's base with no local fallback. It returns `inert` until a sandbox is up.
 
 A running sandbox's `dev` service overlays `/svc/dev` on prod, and `awm dev status` then routes to your worktree.
 
@@ -301,7 +342,7 @@ All are unauthenticated. The gateway binds loopback only.
 
 ## Data-layer internals
 
-`awm.scopes.data_dvc` wires DVC into scopes. `PROTOCOLS.md` § *Data* and `AGENTS.md` § *Data* cover usage. `provision_scope_data` is the only entry point, and it alone decides between DVC wiring and the legacy shared symlink.
+`awm.dvc.data_dvc` wires DVC into scopes. The `dvc` service owns it and `scopes` imports it for provisioning. `PROTOCOLS.md` § *Data* and `AGENTS.md` § *Data* cover usage. `provision_scope_data` is the only entry point, and it alone decides between DVC wiring and the legacy shared symlink.
 
 awm wires and DVC operates. Wiring is the cache path, the merge driver, the hooks and the mount list. `dvc add`, `dvc checkout`, `git commit` and `git merge` run unwrapped.
 
@@ -309,9 +350,9 @@ awm wires and DVC operates. Wiring is the cache path, the merge driver, the hook
 - **The cache path goes in `config.local`, absolute.** A tracked relative path resolves against a different base in a non-scope checkout, and DVC then starts a second cache there without an error. `config.local` is untracked, so it is per-machine.
 - **`cache.type = hardlink,symlink`.** There is one physical copy per machine. A materialised file is a hardlink to the cache object. Nothing here ever runs `chmod +w` on a file, because the write bit belongs to an inode every scope and every commit reads. `chmod_dirs_writable` touches directories only, as the rmtree fallback.
 - **Hooks go in the common git dir, by hand.** `dvc install` writes to `<root>/.git/hooks`, and in a secondary worktree `.git` is a file. Every awm scope is a secondary worktree. A post-commit hook exists beside post-merge because a conflicted merge fires no post-merge hook, and that is when a human has just hand-edited a pin. Both hooks are shared across worktrees, so their `[ -d .dvc ] || exit 0` guard is load-bearing.
-- **git ignores a hook's exit status.** A failing `dvc checkout` removes the old files before it finds it cannot install the new ones, and it cannot fail the merge. It leaves a sentinel that `data_status` and provisioning report.
+- **git ignores a hook's exit status.** A failing `dvc checkout` removes the old files before it finds it cannot install the new ones, and it cannot fail the merge. It leaves a sentinel that `dvc scope_status` and provisioning report.
 - **An absent mount list means everything. An empty one means nothing.** Treating them alike pulls every cold chunk in the project onto disk.
-- **`gc` never runs `dvc gc`.** `dvc gc -p` holds the repo lock of every listed worktree for its whole run and re-walks the shared history once per worktree. One dry run locked ~100 worktrees for eight hours. `data_gc` reads the pins itself, once per bare repo, and sweeps `files/md5` with no repo lock.
+- **The `gc` verb never runs `dvc gc`.** `dvc gc -p` holds the repo lock of every listed worktree for its whole run and re-walks the shared history once per worktree. One dry run locked ~100 worktrees for eight hours. `dvc gc` reads the pins itself, once per bare repo, and sweeps `files/md5` with no repo lock.
 - **CAUTION** The grace window is the only race guard. `dvc add` writes cache objects before git can see any pin for them, so an unreferenced object younger than `GC_GRACE_DAYS` survives. Shortening the window shortens the time an unstaged pin is safe.
 - **A missing `.dir` manifest blocks gc.** Its children cannot be told apart from garbage. Restore it from the archive, or name it in `accept_missing`. Every wired project must be named too: in `projects` to keep its data, in `exclude` to drop it.
 - **Teardown guards uncommitted work, not content.** Deleting a worktree unlinks names, never bytes. Only uncommitted work dies, and `git status` covers data and code at once.
@@ -357,7 +398,7 @@ Visit `http://127.0.0.1:7821/ui/<name>/`. Ctrl-C pops the overlay and dev's base
 
 ## Federation
 
-Read `FEDERATION.md` before you touch anything cross-node. The loopback gateway stays open and unauthenticated. A peer's services are reached directly on that peer's `httpsfront` edge over CA-verified TLS, with a node-signed token. The gateway is a directory (`peer_resolve`, `peer_providers`), not a router. A call that belongs to a peer comes back as the peer's address for the caller to dial.
+Read `FEDERATION.md` before you touch anything cross-node. The loopback gateway stays open and unauthenticated. A peer's services are reached directly on that peer's `httpsfront` edge over CA-verified TLS, with a node-signed token. The gateway is a directory (`operations peer_resolve`, `awm providers`), not a router. A call that belongs to a peer comes back as the peer's address for the caller to dial.
 
 - This is not the retired v0 federation (cr-sqlite replication, leader election, a `peers` registry). The git history of its deletion is not a guide to the current system.
 - The gateway trusts `X-Awm-As` because the edge strips every inbound caller header (`X-Awm-As`, `X-Awm-Caller-Pid`, `X-Awm-Session-Pid`, `X-Awm-Peer-Redirect`) and stamps its own. A new edge mount must do the same. The board mount strips every `X-Awm-*` header and removes a mesh credential (a node token or the legacy bearer) before the request reaches the board. The board authenticates its own party bearer and must never hold a credential that is live elsewhere.
@@ -370,18 +411,19 @@ What is singular is the resource, not always the service:
 
 ## File map
 
-When you need something not mapped here, query the `graphify` domain (`find`, `refs`, `query`, `affected`) before an Explore agent. It indexes the deployed tree, so it lags uncommitted edits. Paths are under `awm/gateway/awm/gateway/`.
+When you need something not mapped here, query the `graphify` tool (`find`, `refs`, `query`, `affected`) before an Explore agent. It indexes the deployed tree, so it lags uncommitted edits. Paths are under `awm/gateway/awm/gateway/`.
 
 - **Service discovery** — `hub/discovery.py`.
 - **Registry and kinds** — `hub/registry.py`: one `_stacks` dict per prefix, `replace_overlays`, `register_page`.
 - **RPC layer** — `hub/rpc.py`: `ControlChannel` per service, the `_pending` call table, subscribers, sessions, bridge ids.
 - **Service translator and bridge** — `hub/proxy.py`: `proxy_service_http`, `open_session_via_http`, `proxy_session_ws`, `proxy_service_emit_ws`.
 - **Supervisor and journal** — `hub/supervisor.py`: `reconcile_journaled_services`, `bootstrap`, `spawn_service`, `kill_pid_group`, `supervise_disconnect`. State is at `<AWM_DIR>/state/services.json`.
-- **Catalog** — `catalog.py`: `_tool_name`, `list_tools` and `dispatch` for the expanded surface, `list_domain_tools`, `_describe_domain` and `_dispatch_domain` for the collapsed one. The foreign gate (`foreign_grants`, `_dispatch_foreign`) and the tier split (`_tier_split`, `_more_tool`) live here. `mcp_more.py` holds the `more` rewrite, and `hub/discovery.py` reads `tier`.
+- **Catalog** — `catalog.py`: `_tool_name`, `list_tools` and `dispatch` for the expanded surface, `list_domain_tools`, `_describe_domain` and `_dispatch_domain` for the collapsed one. `describe_overview` builds the ranked describe, and `_peer_phrase` builds the `peer` metadata. The foreign gate (`foreign_grants`, `_dispatch_foreign`) lives here. `surface.py` holds the one-tool rule, `aliases.py` the old-name table and `usage.py` the 60-day tally. `hub/discovery.py` reads `tool`, `tier` and `[[archive]]` from `service.toml`.
 - **Mode gate** — `server.py` (`_caller_mode`, `_call_refusal`, `_door_refusal`) applies the policies in `awm/service_components/config/awm/config/modes.py`. `awm/service_components/claudedaemon/awm/claudedaemon/sessionmode.py` answers `mode_of`.
 - **Federation directory** — `peers.py` maps a name to its peer record (edge address, relation, swarm, role, pinned key, grants) and owns the writes. `awm.config.peerbook` is the one reader. `peer_catalog.py` maps a name to the domains of its domestic peers, holds the default-provider rules and raises `PeerRedirect` instead of relaying. `peer_files.py` turns `files[]` a peer returned into local copies over the peer's `/files` mount. It is its own module because both MCP proxies must call it, or the rollback proxy hands back paths that exist only on the peer.
 - **MCP proxies** — `mcp_server.py` picks `mcp_stdio.py` (default) or `mcp_server_sdk.py` (`AWM_MCP_SDK=1`). `mcp_http.py` holds the timeout ladder both share.
 - **Gateway control ops** — `gateway_ops.py`, generated through `operations.py`.
+- **Search archive** — `awm/services/search/`. `registry.py` reads the plug-in tables, `index.py` and `store.py` hold the corpus, `merge.py` fuses and `federation.py` fans out to peers.
 - **CLI** — `cli.py`. The `gateway` and `services` groups are generated from `GATEWAY_OPERATIONS`. `awm dev shadow` (search `dev_app`) and the page-shadow helpers (`_shadow_page_target`, `_read_prefix_txt`, `_post_page_register`) live there.
 - **Frontend** — `awm/vite.config.ts`, `awm/scripts/build.sh`, `awm/package.json`.
 

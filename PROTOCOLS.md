@@ -28,10 +28,10 @@ Nothing enumerable goes here, with one exception: a table that records a decisio
 
 ## Scope lifecycle
 
-1. **Create.** `scope(verb="create")` makes a git worktree on `feat/<scope>` with `.awm/` metadata.
+1. **Create.** `scope(verb="create")` makes a git worktree on `feat/<scope>` with `.awm/` metadata. It refuses an unknown project. Pass `new_project=true` to create the project first, with `clone_url` or `fork_url` to start from a remote. Omit `scope` to create the project alone.
 2. **Start.** The agent runs the startup ritual in `AGENTS.md`.
 3. **Work.** Code goes in the worktree. Data goes in `data/`.
-4. **Debrief.** The agent runs the `debrief` skill. It posts the session trace as `kind=journal`.
+4. **Debrief.** The agent runs the `debrief` skill. It posts the session trace with `journal(verb="post")` as `kind=journal`.
 5. **Complete.** `scope(verb="complete")` updates the status and optionally merges the branch.
 
 `awm scope heal` repairs scopes. It is idempotent. Run it with `--dry-run` first to preview. It keeps scope-local metadata inside `.awm/` only.
@@ -61,7 +61,7 @@ A standing `feat-*` scope may own the cross-service wiring for one feature famil
 
 ## Hubs and peripherals
 
-A hub scope integrates a set of peripheral scopes with two local git operations. **Gather** merges each peripheral into the hub. **Scatter** merges the hub back out. Both are stateless and take the peripheral list explicitly, so this table is the convention they read. Use the `scatter-gather` skill or `scope(verb="gather"|"scatter")`.
+A hub scope integrates a set of peripheral scopes with two local git operations. **Gather** merges each peripheral into the hub. **Scatter** merges the hub back out. Both are stateless and take the peripheral list explicitly, so this table is the convention they read. Use the `scatter-gather` skill or `scope(verb="git_gather"|"git_scatter")`.
 
 | Hub | Branch | Peripherals |
 |-----|--------|-------------|
@@ -87,7 +87,7 @@ Shared data never goes in `userdata`. `userroot.users()` treats every subdirecto
 
 ## Data
 
-`AGENTS.md` § *Data* has the rules every agent needs. The verbs are on the `scope` and `dvc` domains. Call `describe` for them.
+`AGENTS.md` § *Data* has the rules every agent needs. The data verbs are on the `dvc` tool: `mount`, `gc` and `scope_status` for a scope's wiring, beside its transfer and backup verbs. Call `dvc(verb="describe")` for them.
 
 Delete superseded data. An old version stays reachable from the commit that pinned it, so two live copies are never needed.
 
@@ -123,9 +123,9 @@ Archive a retired project. Never delete it.
 8. Run `chmod -R a-w` on it.
 9. Run `scope complete` on each of its scopes, without cleanup, so the worktrees stay on disk as a read-only record.
 
-**CAUTION** The shared cache does not know a project is archived. `data_gc` keeps only what the named projects pin, so a gc that omits the archived project collects its objects. Treat unmigrated chunks as gone.
+**CAUTION** The shared cache does not know a project is archived. `dvc gc` keeps only what the named projects pin, so a gc that omits the archived project collects its objects. Treat unmigrated chunks as gone.
 
-`project search` lists an archived project twice: under its database name with zero active scopes, and under its new directory name. This is expected. `active_only` drops both.
+`scope search` with no `project` lists an archived project twice: under its database name with zero active scopes, and under its new directory name. This is expected.
 
 ## Pushing to a peer
 
@@ -150,14 +150,15 @@ Nothing in the workspace consumes a submodule. If one must, two facts apply that
 
 ## CLI
 
-The CLI mirrors the whole expanded tool surface. It generates one `awm <domain> <verb>` command per registered tool from the same live catalog as the MCP surface. Run `awm <domain> --help` for a domain's verbs and `awm <domain> <verb> --help` for one verb's parameters.
+The CLI mirrors the whole expanded tool surface, hidden verbs included. It generates one `awm <tool> <verb>` command per registered verb from the same live catalog as the MCP surface. Run `awm <tool> --help` for a tool's verbs and `awm <tool> <verb> --help` for one verb's parameters.
 
 | Command | Purpose |
 |---|---|
 | `awm gateway init / status / serve / stop / restart` | Gateway lifecycle |
-| `awm project create <name>` | Create a project |
-| `awm scope create / list / complete` | Scope worktree management |
+| `awm scope create --project <name> --new-project` | Create a project |
+| `awm scope create / search / complete` | Scope worktree management. `search` with no project lists every project |
 | `awm scope heal [--dry-run]` | Idempotent repair |
-| `awm scope data-status / data-mount / data-gc` | A scope's data view, what materialises, cache reclaim |
+| `awm dvc scope-status / mount / gc` | A scope's data view, what materialises, cache reclaim |
 | `awm dvc sync / pull / coverage` | Push the cache off-site, restore one scope, audit what is uncovered |
+| `awm journal post / fetch / render` | Scope posts and goals, and the `.awm/history.md` render |
 | `awm gateway register / list / deregister` | External hub registrations |
