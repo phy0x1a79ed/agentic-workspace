@@ -9,7 +9,7 @@ Surface split (enforced by the gateway via the per-function ``surfaces`` field):
 - **read** verbs (``search``/``get``/``stats``/``vocab``/``feed``) project onto
   MCP + CLI + HTTP — any agent can search the corpus to match the author's voice.
 - **write / maintenance** verbs (``add``/``retag``/``remove``/``link_dup``/
-  ``unlink_dup``/``import``/``embed``/``dedup``) declare ``surfaces: [cli, http]``
+  ``unlink_dup``/``import``/``embed``/``dedup``/``export``) declare ``surfaces: [cli, http]``
   so they are reachable from the host ``awm`` CLI (and loopback HTTP) but never
   advertised to spawned agents on the MCP surface. This is a surface gate, not an
   auth boundary — the loopback control plane is unauthenticated by design.
@@ -26,7 +26,7 @@ from typing import Any
 
 from awm.gatewayclient import ServiceAdapter, spawn_supervised
 
-from awm.writing import corpus, dao, index
+from awm.writing import corpus, dao, export, index
 
 log = logging.getLogger("awm.writing.hub_adapter")
 
@@ -186,6 +186,21 @@ API_MANIFEST: dict[str, Any] = {
             "description": "Content-based duplicate detection; pass apply to mark clusters.",
             "params": [{"name": "apply", "type": "boolean"}],
         },
+        {
+            "name": "export",
+            "effect": "read",
+            "tool": "writing_export",
+            "surfaces": _CLI_HTTP,
+            "description": "Page the non-duplicate samples as search documents for the archive's "
+                           "`writing` source. The last page also returns `ids`, every "
+                           "document id. Local callers only.",
+            "params": [
+                {"name": "cursor", "type": "string",
+                  "description": "The previous page's next_cursor. Omit to start a pass."},
+                {"name": "limit", "type": "integer",
+                  "description": "Documents per page, 1-1000. Default 200."},
+            ],
+        },
     ],
     "emitters": [],
     "sessions": [],
@@ -326,6 +341,14 @@ def _handle_embed(args: dict) -> dict:
         conn.close()
 
 
+def _handle_export(args: dict) -> dict:
+    conn = dao.connect()
+    try:
+        return export.export_page(conn, args.get("cursor") or None, args.get("limit"))
+    finally:
+        conn.close()
+
+
 def _handle_dedup(args: dict) -> dict:
     conn = dao.connect()
     try:
@@ -348,6 +371,7 @@ HANDLERS = {
     "import": _handle_import,
     "embed": _handle_embed,
     "dedup": _handle_dedup,
+    "export": _handle_export,
 }
 
 

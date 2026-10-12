@@ -1,0 +1,7 @@
+tool = "writing"
+tier = "on"
+
+[[archive]]
+name = "writing"
+mode = "index"
+export = "writing_export"

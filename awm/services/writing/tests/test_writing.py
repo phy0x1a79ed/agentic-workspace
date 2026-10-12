@@ -53,7 +53,7 @@ def test_manifest_surface_split():
     fns = {f["name"]: f for f in API_MANIFEST["functions"]}
     reads = {"search", "get", "stats", "vocab", "feed"}
     writes = {"add", "retag", "remove", "link_dup", "unlink_dup",
-              "import", "embed", "dedup"}
+              "import", "embed", "dedup", "export"}
     assert reads | writes == set(fns)
     # read verbs omit surfaces (default all three); write verbs are cli/http only
     for name in reads:
@@ -247,3 +247,55 @@ def test_keyword_search_tolerates_punctuation(conn):
 
     corpus.add(conn, text="Notes on a-b testing and the c statistic.", name="ab")
     assert corpus.search(conn, query='a-b "c')["count"] == 1
+
+
+# ---------------------------------------------------------------------------
+# export — the archive's page of documents
+# ---------------------------------------------------------------------------
+
+
+def _samples(conn, n=5):
+    from awm.writing import corpus
+    return [corpus.add(conn, text=f"sample number {i} about rivers", name=f"River {i}",
+                       type="creative-personal")["id"] for i in range(n)]
+
+
+def test_export_pages_in_id_order_and_ends_with_every_id(conn):
+    from awm.writing import export
+    ids = sorted(_samples(conn))
+    seen, cursor = [], None
+    while True:
+        page = export.export_page(conn, cursor, 2)
+        seen += [d["id"] for d in page["documents"]]
+        if page["done"]:
+            assert page["ids"] == ids and page["next_cursor"] is None
+            break
+        assert "ids" not in page and page["next_cursor"] == page["documents"][-1]["id"]
+        cursor = page["next_cursor"]
+    assert seen == ids
+
+
+def test_export_leaves_out_duplicates_and_shapes_documents(conn):
+    from awm.writing import corpus, export
+    ids = sorted(_samples(conn, 3))
+    corpus.link_dup(conn, ids[0], [ids[1]])
+    page = export.export_page(conn)
+    assert page["ids"] == [i for i in ids if i != ids[1]]
+    doc = page["documents"][0]
+    assert set(doc) == {"id", "title", "text", "ts", "kind"}
+    assert doc["kind"] == "creative-personal" and doc["text"].startswith("sample number")
+
+
+def test_export_raises_on_an_unreadable_store(conn):
+    from awm.writing import export
+    conn.execute("DROP TABLE samples")
+    with pytest.raises(Exception):
+        export.export_page(conn)
+
+
+def test_the_archive_table_names_the_export_verb():
+    import tomllib
+    from pathlib import Path
+    import awm.writing
+    data = tomllib.loads((Path(awm.writing.__path__[0]).parents[1] / "service.toml").read_text())
+    assert data["archive"] == [{"name": "writing", "mode": "index", "export": "writing_export"}]
