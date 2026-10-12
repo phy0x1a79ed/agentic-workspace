@@ -13,6 +13,9 @@ HOOK_VERBS = {f"operations.{v}" for v in (
     "task_claim", "request_human")}
 
 
+SEARCH_VERBS = {f"search.{v}" for v in ("query", "get", "sources", "status")}
+
+
 def allowed(mode):
     return {f"{d}.{v}" for d, v in MODES[mode].pairs}
 
@@ -25,7 +28,7 @@ def test_the_representative_allowlist_is_exactly_its_verbs():
         "operations.status", "operations.queue_list", "operations.queue_get",
         "operations.queue_assign", *HOOK_VERBS,
         "journal.fetch", "journal.goal_read", "journal.goal_history",
-        "scope.search", "scope.resolve",
+        "scope.search", "scope.resolve", *SEARCH_VERBS,
     }
 
 
@@ -35,7 +38,7 @@ def test_the_secretary_allowlist_is_exactly_its_verbs():
         "operations.board_list", "operations.board_get",
         "operations.status", "operations.queue_list", "operations.queue_get", *HOOK_VERBS,
         "reflection.compact", "reflection.whoami", "journal.fetch", "journal.goal_read",
-        "journal.goal_history", "scope.search", "scope.resolve",
+        "journal.goal_history", "scope.search", "scope.resolve", *SEARCH_VERBS,
     }
 
 
@@ -218,3 +221,21 @@ def test_reserved_names_and_modes():
 
 def test_only_the_representative_delegates():
     assert {"representative"} == set(modes.DELEGATING_MODES)
+
+
+def test_search_reads_reach_every_restricted_mode_but_unknown_and_reindex_none():
+    for mode in ("representative", "secretary", "delegate"):
+        for verb in SEARCH_VERBS:
+            domain, name = verb.split(".")
+            assert refusal(mode, domain, name, effect="read") is None, (mode, verb)
+        assert refusal(mode, "search", "reindex", effect="write") is not None
+    assert SEARCH_VERBS <= {f"{d}.{v}" for d, v in MODES["delegate"].pairs}
+    for verb in SEARCH_VERBS:
+        domain, name = verb.split(".")
+        assert refusal(modes.UNKNOWN, domain, name, effect="read") is not None
+
+
+def test_a_delegate_reaches_search_even_when_a_verb_declares_no_effect():
+    assert delegate("search", "query", None) is None
+    assert delegate("search", "reindex", None) is not None
+    assert delegate("search", "query", "read", peer="capella") is not None

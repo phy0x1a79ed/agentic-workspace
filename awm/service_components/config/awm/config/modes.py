@@ -120,9 +120,13 @@ _REPORTING = _pairs("operations", "hook_plan", "hook_plan_approved", "hook_todos
 #: The card ledger, which only a triage session may read.
 _CARDS = _pairs("operations", "queue_list", "queue_get", "queue_assign", "status")
 
+#: The archive search's read verbs. `reindex` rebuilds the index and is not one.
+_SEARCH_READS = _pairs("search", "query", "get", "sources", "status")
+
 #: Pure reads of the scope channel.
 _SCOPE_READS = (_pairs("journal", "fetch", "goal_read", "goal_history")
-                | _pairs("scope", "search", "resolve"))
+                | _pairs("scope", "search", "resolve")
+                | _SEARCH_READS)
 
 MODES: dict[str, Policy] = {
     # Triage only: read cards, start or list workers, record the hand-off, and
@@ -156,7 +160,7 @@ MODES: dict[str, Policy] = {
         denied_domains=frozenset({"browser", "factorio"}),
         denied_pairs=_pairs("operations", "party_list") | _CARDS,
         pairs=(_pairs("operations", "board_get", "board_list", "board_complete", "board_fail")
-               | _REFLECTION | _REPORTING),
+               | _REFLECTION | _REPORTING | _SEARCH_READS),
         when={("operations", "board_post"): is_reply},
     ),
     # A session whose mode could not be established gets the least that keeps
