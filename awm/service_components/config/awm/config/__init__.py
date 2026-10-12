@@ -79,13 +79,6 @@ DATA_DIR = WORKSPACE_ROOT / "data"
 SERVICES_DIR = AWM_DIR / "services"
 
 
-# The skills catalog is a plain top-level dir of reference ``.md`` files
-# (``<workspace_root>/skills/``) — the scopes service symlinks ``.awm/skills`` to
-# it and reads its ``*.template`` files. The skills *service* (the
-# ``skill_search`` / ``skill_get`` MCP tools + embeddings search) is retired; the
-# files are read-only reference now, owned by no service.
-SKILLS_DIR = WORKSPACE_ROOT / "skills"
-
 GITHUB_USER = os.environ.get("AWM_GITHUB_USER", "phy0x1a79ed")
 
 # ---------------------------------------------------------------------------

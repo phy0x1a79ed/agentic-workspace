@@ -25,8 +25,6 @@ def awm_workspace(tmp_path, monkeypatch):
     awm_dir.mkdir()
     projects_dir = workspace / "projects"
     projects_dir.mkdir()
-    skills_dir = workspace / "skills"
-    skills_dir.mkdir()
     data_dir = workspace / "data"
     data_dir.mkdir()
 
@@ -50,7 +48,6 @@ def awm_workspace(tmp_path, monkeypatch):
     monkeypatch.setattr(cfg, "LOG_FILE", awm_dir / "awm.log")
     monkeypatch.setattr(cfg, "PROJECTS_DIR", projects_dir)
     monkeypatch.setattr(cfg, "DATA_DIR", data_dir)
-    monkeypatch.setattr(cfg, "SKILLS_DIR", skills_dir)
     # SERVICES_DIR is a module constant frozen at import (= AWM_DIR / "services"),
     # so patching AWM_DIR alone leaves it pointing at the REAL workspace. The
     # service-enable state (`discovery.is_enabled` → SERVICES_DIR/enabled.json)
@@ -88,7 +85,6 @@ def awm_workspace(tmp_path, monkeypatch):
         "workspace": workspace,
         "awm_dir": awm_dir,
         "projects_dir": projects_dir,
-        "skills_dir": skills_dir,
         "data_dir": data_dir,
     }
 

@@ -100,7 +100,6 @@ changing any of them.
 | Service | Owns (v1 tables) |
 |---|---|
 | **scopes** | projects, users, agents, agent identity layer, session_logs, messages, rooms, guest_list, room_transcripts (+ embeddings for post/scope/project) |
-| **skills** | embeddings (skill) only — catalog is file-based |
 | **discord** | discord_operators |
 | **config** | config (KV) — already wired by T1 |
 
@@ -254,25 +253,6 @@ SELECT room_id, guest_kind, guest_ref, display_name, subscriptions FROM guest_li
 
 -- room_transcripts: author is a polymorphic ref (resolve per top note)
 SELECT id, room_id, author, kind, body, meta, ts FROM room_transcripts;
-```
-
----
-
-# skills
-
-The skill catalog is **file-based** (`skills/awm/`, `skills/tools/`); skills
-owns no relational state in the legacy DB beyond its embeddings rows. v1 DB only
-needs the `embeddings` table.
-
-## v1 schema (skills.db)
-
-Just the `embeddings` table (see top), `source_type='skill'`.
-
-## Legacy `state.db` shapes skills SELECTs when seeding
-
-```sql
-SELECT source_type, source_id, chunk_text, embedding, updated_at
-  FROM embeddings WHERE source_type = 'skill';
 ```
 
 ---

@@ -39,6 +39,6 @@ markers = [
     "mcp: mcp server / exports / cli context emit",
     "sessions: session log / history",
     "agent: agent instances / vagrant sessions",
-    "misc: outliers (skills, locks, voice config, ssh tunnel)",
+    "misc: outliers (locks, voice config, ssh tunnel)",
     "integration: cross-component integration tests",
 ]

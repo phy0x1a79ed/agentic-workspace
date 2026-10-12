@@ -4,11 +4,6 @@ A "scope" is represented by a row in the ``agents`` table
 (status ∈ allocated|active|retired) within the scopes service's own DB.
 All SQL goes through ScopesDAO.
 
-Cross-service: ``scopes._default_context`` previously called
-``awm.services.skills.find_by_name`` — that import is replaced by a
-graceful fallback hint (skills service is out-of-process; calling it via
-gatewayclient is non-essential for context.md generation).
-
 A scope IS the channel: history.md is rendered from ``scope_posts`` with
 ``kind='journal'`` (in-process via ``awm.scopes.channel``), and the vagrant
 session helper subscribes the user to the scope's channel — there is no
@@ -30,7 +25,6 @@ from awm.config import (
     WORKSPACE_ROOT,
     PROJECTS_DIR,
     DATA_DIR,
-    SKILLS_DIR,
     GITHUB_USER,
     VAGRANT_PROJECT,
 )
@@ -348,8 +342,7 @@ def _neutralise_title(text: str) -> str:
 # how many project-wide entries share the rest of the file. The floor is what
 # stops a busy project from crowding a scope out of its own history.
 _OWN_JOURNAL_FLOOR = 10
-_PROJECT_JOURNAL_WINDOW = 50
-_PER_SKILL_CAP = 10
+_PROJECT_JOURNAL_WINDOW = 15
 
 
 def _generate_history_md(project: str, scope: str) -> str:
@@ -449,19 +442,10 @@ def _generate_history_md(project: str, scope: str) -> str:
         sections.append("\n".join(lines))
 
     if others:
-        by_skill: dict[str, list] = {}
-        for row in others:
-            meta, _ = _parse(row)
-            key = meta.get("skill_path") or "(freeform)"
-            by_skill.setdefault(key, []).append(row)
-        shown = 0
         lines = ["## Sibling Scopes' Journal\n"]
-        for skill_key, entries in by_skill.items():
-            lines.append(f"### Skill: {skill_key}\n")
-            for row in entries[:_PER_SKILL_CAP]:
-                shown += 1
-                lines.extend(_entry(row, tag_scope=True))
-        tail = _omitted(shown, others_total)
+        for row in others:
+            lines.extend(_entry(row, tag_scope=True))
+        tail = _omitted(len(others), others_total)
         if tail:
             lines.append(tail)
         sections.append("\n".join(lines))
@@ -647,7 +631,7 @@ def _heal_worktree(worktree_dir: Path, *, project: str, scope: str, dry_run: boo
     actions: dict[str, str | None] = {
         "import_line": None, "agents_md": None,
         "claude_md": None, "context_md": None,
-        "opencode_config": None, "data": None,
+        "opencode_config": None, "data": None, "skills_link": None,
     }
 
     agents_path = worktree_dir / "AGENTS.md"
@@ -685,6 +669,12 @@ def _heal_worktree(worktree_dir: Path, *, project: str, scope: str, dry_run: boo
                 claude_path.unlink()
 
     awm_dir = worktree_dir / ".awm"
+    skills_link = awm_dir / "skills"
+    if skills_link.is_symlink():
+        actions["skills_link"] = "deleted:symlink"
+        if not dry_run:
+            skills_link.unlink()
+
     context_path = awm_dir / "context.md"
     if not context_path.exists():
         actions["context_md"] = "created"
@@ -903,11 +893,6 @@ def _scaffold_awm_dir(
     data_report = data_dvc.provision_scope_data(project, scope, awm_dir)
     if data_report.get("mode") == "unknown":
         log.warning("scope %s/%s: %s", project, scope, data_report.get("detail"))
-
-    skills_link = awm_dir / "skills"
-    if skills_link.is_symlink() or skills_link.exists():
-        skills_link.unlink()
-    skills_link.symlink_to(SKILLS_DIR)
 
     context_content = context or _default_context(project, scope)
     (awm_dir / "context.md").write_text(context_content)

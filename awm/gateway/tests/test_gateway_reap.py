@@ -92,7 +92,7 @@ async def test_reap_kills_only_matching_origin_orphans(monkeypatch):
          "hub_url": "http://127.0.0.1:7819/"},   # prod orphan → reap
         {"pid": 1002, "cmdline": "python -m awm.tts.hub_adapter",
          "hub_url": "http://127.0.0.1:7821/"},   # dev hub child → keep
-        {"pid": 1003, "cmdline": "python -m awm.skills.hub_adapter",
+        {"pid": 1003, "cmdline": "python -m awm.notes.hub_adapter",
          "hub_url": ""},                          # no hub url → keep
     ])
     out = await go._op_services_reap(go.ReapRequest(dry_run=False))

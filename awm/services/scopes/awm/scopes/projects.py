@@ -162,7 +162,7 @@ def create_project(req: ProjectCreateRequest) -> ProjectCreateResponse:
             )
 
     # Scaffold the initial default-branch worktree exactly as a scope would:
-    # .awm/ metadata + data/skills symlinks + agents DB row, so the project is
+    # .awm/ metadata + data symlink + agents DB row, so the project is
     # immediately usable and visible to scope_search without a scope_repair.
     _scaffold_awm_dir(
         req.name, default_branch, worktree_dir,

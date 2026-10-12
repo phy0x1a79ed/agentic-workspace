@@ -46,8 +46,6 @@ def scopes_workspace(tmp_path, monkeypatch):
     services_dir.mkdir()
     projects_dir = workspace / "projects"
     projects_dir.mkdir()
-    skills_dir = workspace / "skills"
-    skills_dir.mkdir()
     data_dir = workspace / "data"
     data_dir.mkdir()
 
@@ -58,7 +56,6 @@ def scopes_workspace(tmp_path, monkeypatch):
     monkeypatch.setattr(cfg, "AWM_DIR", awm_dir)
     monkeypatch.setattr(cfg, "PROJECTS_DIR", projects_dir)
     monkeypatch.setattr(cfg, "DATA_DIR", data_dir)
-    monkeypatch.setattr(cfg, "SKILLS_DIR", skills_dir)
 
     # The key patch: databases.service_db_path() uses this module-level var.
     import awm.persistence.databases as pdbs
@@ -70,7 +67,6 @@ def scopes_workspace(tmp_path, monkeypatch):
         ("PROJECTS_DIR", projects_dir),
         ("WORKSPACE_ROOT", workspace),
         ("DATA_DIR", data_dir),
-        ("SKILLS_DIR", skills_dir),
     ]:
         if hasattr(_scopes, attr):
             monkeypatch.setattr(_scopes, attr, val)
@@ -90,7 +86,6 @@ def scopes_workspace(tmp_path, monkeypatch):
         "awm_dir": awm_dir,
         "services_dir": services_dir,
         "projects_dir": projects_dir,
-        "skills_dir": skills_dir,
         "data_dir": data_dir,
     }
     # Queued index writes resolve the DB path when they run: drain them while
