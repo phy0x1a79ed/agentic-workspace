@@ -95,8 +95,9 @@ def test_envelope_constant_not_mutated_across_domains(patched_registry):
 
 def test_native_domains_present(patched_registry):
     tools = {t.name: t for t in catalog.list_domain_tools()}
-    # gateway-native ops fold by cli_group → gateway / services domains
-    assert "gateway" in tools and "services" in tools
+    # gateway-native ops fold by tool: the awm tool, plus the peer book in operations
+    assert "awm" in tools and "operations" in tools
+    assert not {"gateway", "services", "peer", "config"} & set(tools)
 
 
 def test_domain_count_is_small(patched_registry):
@@ -131,9 +132,9 @@ def test_describe_unknown_domain_or_verb(patched_registry):
 
 
 def test_native_describe(patched_registry):
-    out = catalog._describe_domain("gateway")
+    out = catalog._describe_domain("awm")
     verbs = {v["verb"] for v in out["verbs"]}
-    assert "status" in verbs  # awm_status → gateway/status
+    assert "status" in verbs  # awm_status → awm/status
 
 
 # ---------------------------------------------------------------------------
@@ -296,16 +297,16 @@ async def test_domain_name_without_verb_is_not_hijacked(monkeypatch, patched_reg
 #
 # Everything else the domain surface says is generated — the name and the verb
 # list — so a service could describe what it can DO and never how it is meant to
-# be used. That gap has teeth: `2fa` shows ten capable-looking verbs and no hint
+# be used. That gap has teeth: `duo` shows ten capable-looking verbs and no hint
 # that ssh(verb=connect) already arms the approver, and calling them by hand
 # spends Duo budget the fleet arbiter is not counting.
 
 
 def _blurbed(monkeypatch, blurb):
     rec = ServiceRecord(
-        name="2fa", prefix="/svc/2fa", kind="service", service_id="sid-2fa",
+        name="duo", prefix="/svc/duo", kind="service", service_id="sid-duo",
         api={"description": blurb,
-             "functions": [{"name": "ping", "tool": "2fa_ping",
+             "functions": [{"name": "ping", "tool": "duo_ping",
                             "description": "Probe Duo.", "params": []}]},
     )
     monkeypatch.setattr(catalog, "get_registry", lambda: _StubRegistry([rec]))
@@ -313,44 +314,44 @@ def _blurbed(monkeypatch, blurb):
 
 def test_manifest_description_leads_the_domain_tool(monkeypatch):
     _blurbed(monkeypatch, "Use ssh(verb=connect); it arms this for you.")
-    tool = {t.name: t for t in catalog.list_domain_tools()}["2fa"]
+    tool = {t.name: t for t in catalog.list_domain_tools()}["duo"]
     assert tool.description.startswith("Use ssh(verb=connect); it arms this for you.")
     # The generated mechanics survive, after the prose — an agent that has
     # already picked a verb has read the guidance too late.
-    assert "Verbs: ping" in tool.description
+    assert "- ping(): Probe Duo." in tool.description
 
 
 def test_manifest_description_reaches_the_describe_verb(monkeypatch):
     _blurbed(monkeypatch, "Use ssh(verb=connect); it arms this for you.")
-    out = catalog._describe_domain("2fa")
+    out = catalog._describe_domain("duo")
     assert out["description"] == "Use ssh(verb=connect); it arms this for you."
     assert [v["verb"] for v in out["verbs"]] == ["ping"]
 
 
 def test_a_service_without_the_key_is_unchanged(monkeypatch, patched_registry):
     tool = {t.name: t for t in catalog.list_domain_tools()}["scope"]
-    assert tool.description.startswith("Generic 'scope' domain tool.")
+    assert tool.description.startswith("The 'scope' tool.")
     assert "description" not in catalog._describe_domain("scope")
 
 
 def test_a_blank_description_is_not_a_description(monkeypatch):
     _blurbed(monkeypatch, "   ")
-    tool = {t.name: t for t in catalog.list_domain_tools()}["2fa"]
-    assert tool.description.startswith("Generic '2fa' domain tool.")
+    tool = {t.name: t for t in catalog.list_domain_tools()}["duo"]
+    assert tool.description.startswith("The 'duo' tool.")
 
 
 def test_a_cli_only_verb_carries_no_blurb_onto_the_mcp_surface(monkeypatch):
     """A service whose only MCP-visible verb is filtered out has no MCP domain,
     so its prose must not conjure one."""
     rec = ServiceRecord(
-        name="2fa", prefix="/svc/2fa", kind="service", service_id="sid-2fa",
+        name="duo", prefix="/svc/duo", kind="service", service_id="sid-duo",
         api={"description": "Operator surface.",
-             "functions": [{"name": "burst", "tool": "2fa_burst",
+             "functions": [{"name": "burst", "tool": "duo_burst",
                             "surfaces": ["cli", "http"],
                             "description": "Arm.", "params": []}]},
     )
     monkeypatch.setattr(catalog, "get_registry", lambda: _StubRegistry([rec]))
-    assert "2fa" not in {t.name for t in catalog.list_domain_tools()}
+    assert "duo" not in {t.name for t in catalog.list_domain_tools()}
 
 
 def test_a_multi_domain_service_blurbs_every_domain_it_projects(monkeypatch):

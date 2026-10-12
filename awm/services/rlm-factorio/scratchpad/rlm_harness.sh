@@ -221,7 +221,7 @@ say "seating three players in one world"
 # its caller: nothing else in this script has an identity to send.
 S1="$(curl -s --max-time 900 -X POST "$HUB/invoke" \
         -H 'content-type: application/json' -H 'X-Awm-As: unit:agent-alpha' \
-        -d "{\"name\":\"rlm_factorio_join\",\"args\":{\"session_id\":\"$SID\"}}" \
+        -d "{\"name\":\"factorio_join\",\"args\":{\"session_id\":\"$SID\"}}" \
      | python3 -c 'import sys,json
 r = json.load(sys.stdin)["result"]
 print((json.loads(r) if isinstance(r, str) else r)["seat_id"])' 2>/dev/null)"

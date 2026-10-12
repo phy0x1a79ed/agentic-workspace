@@ -44,6 +44,9 @@ log = logging.getLogger("awm.trilium.hub_adapter")
 
 CHILD = server.CHILD
 
+# Operator verbs keep working on the CLI and over HTTP but are not agent tools.
+_CLI_HTTP = ["cli", "http"]
+
 #: Every function carries an explicit `tool` name under a `trilium_` prefix,
 #: which is what decides the domain this service appears as: the gateway folds
 #: the MCP surface by splitting the projected name on its **first** underscore.
@@ -67,6 +70,7 @@ API_MANIFEST: dict[str, Any] = {
             "name": "start",
             "effect": "write",
             "tool": "trilium_start",
+            "surfaces": _CLI_HTTP,
             "description": (
                 "Start the vault's server if it is not running. Operator only: "
                 "the supervision loop already does this within seconds."
@@ -78,6 +82,7 @@ API_MANIFEST: dict[str, Any] = {
             "name": "stop",
             "effect": "write",
             "tool": "trilium_stop",
+            "surfaces": _CLI_HTTP,
             "description": (
                 "Stop the vault's server. Operator only — this takes the "
                 "knowledge base away from everyone using it."
@@ -89,6 +94,7 @@ API_MANIFEST: dict[str, Any] = {
             "name": "restart",
             "effect": "write",
             "tool": "trilium_restart",
+            "surfaces": _CLI_HTTP,
             "description": "Stop then start the vault's server. Operator only.",
             "params": [],
             "timeout": 300,
@@ -107,6 +113,7 @@ API_MANIFEST: dict[str, Any] = {
             "name": "provision",
             "effect": "write",
             "tool": "trilium_provision",
+            "surfaces": _CLI_HTTP,
             "description": (
                 "Create the vault's database if it has none. Idempotent, and "
                 "the supervision loop does it unprompted — this verb is for "
@@ -118,6 +125,7 @@ API_MANIFEST: dict[str, Any] = {
             "name": "snapshot",
             "effect": "write",
             "tool": "trilium_snapshot",
+            "surfaces": _CLI_HTTP,
             "description": (
                 "Ask Trilium for a consistent database copy, move it into the "
                 "DVC chunk under a name that is never reused, and commit the "
@@ -138,6 +146,7 @@ API_MANIFEST: dict[str, Any] = {
             "name": "snapshots",
             "effect": "read",
             "tool": "trilium_snapshots",
+            "surfaces": _CLI_HTTP,
             "description": (
                 "Every database copy the vault has, newest first: the pinned "
                 "snapshots and Trilium's own rolling rotation, kept apart "
@@ -149,6 +158,7 @@ API_MANIFEST: dict[str, Any] = {
             "name": "restore",
             "effect": "write",
             "tool": "trilium_restore",
+            "surfaces": _CLI_HTTP,
             "description": (
                 "Replace the whole vault with a snapshot, moving the database "
                 "it replaced into live/superseded/. Whole-vault, never one "
@@ -167,6 +177,7 @@ API_MANIFEST: dict[str, Any] = {
             "name": "export",
             "effect": "write",
             "tool": "trilium_export",
+            "surfaces": _CLI_HTTP,
             "description": (
                 "Export the vault as markdown into notes/ and commit it. A "
                 "derived, lossy view for reading and diffing — recovery is a "
@@ -184,6 +195,7 @@ API_MANIFEST: dict[str, Any] = {
             "name": "logs",
             "effect": "read",
             "tool": "trilium_logs",
+            "surfaces": _CLI_HTTP,
             "description": (
                 "Tail the vault server's log. Operator only: it carries "
                 "absolute paths and stack traces."
@@ -464,6 +476,7 @@ API_MANIFEST: dict[str, Any] = {
             "name": "slice_expose",
             "effect": "secret",
             "tool": "trilium_slice_expose",
+            "surfaces": _CLI_HTTP,
             "description": (
                 "Mint a link that opens one note and its descendants to "
                 "somebody with no awm account. Sets #sliced on the note so a "
@@ -489,6 +502,7 @@ API_MANIFEST: dict[str, Any] = {
             "name": "slice_list",
             "effect": "secret",
             "tool": "trilium_slice_list",
+            "surfaces": _CLI_HTTP,
             "description": (
                 "Every slice ever minted, newest first -- active and revoked "
                 "alike. Operator only."
@@ -502,6 +516,7 @@ API_MANIFEST: dict[str, Any] = {
             "name": "slice_revoke",
             "effect": "write",
             "tool": "trilium_slice_revoke",
+            "surfaces": _CLI_HTTP,
             "description": (
                 "Revoke a slice token; a later slice_resolve of it answers "
                 "'no such slice'. Clears #sliced from the note once no other "
@@ -516,6 +531,7 @@ API_MANIFEST: dict[str, Any] = {
             "name": "slice_resolve",
             "effect": "secret",
             "tool": "trilium_slice_resolve",
+            "surfaces": _CLI_HTTP,
             "description": (
                 "What a slice token opens: the note, whether the visitor may "
                 "write, and the visitor name if the token is bound to one. An "

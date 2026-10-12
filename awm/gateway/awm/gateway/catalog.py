@@ -5,7 +5,8 @@ re-exposes (MCP / CLI / HTTP) is assembled here from two inputs and rendered to
 all three surfaces by the (unchanged) ``operations.py`` compiler:
 
 1. **Native ops** — a static table of operations the gateway owns itself
-   (``awm_status`` / ``awm_restart`` / ``awm_mcp_sync``). Dispatched to local
+   (``awm_status``, ``awm_services_*``, ``operations_peer_*``, ...), published
+   as verbs of the ``awm`` and ``operations`` tools. Dispatched to local
    in-process callables.
 2. **Registered-service ops** — read live from the hub registry. Each service
    that has opened its control WS and sent a ``ready`` frame carries an ``api``
@@ -75,8 +76,8 @@ from typing import Any
 from mcp.types import Tool
 from starlette.concurrency import run_in_threadpool
 
-from awm.config import caller_peer, peer_record, verb_category, verb_effect
-from awm.gateway import mcp_more, peer_catalog
+from awm.config import ARCHIVE_CATEGORY, caller_peer, peer_record, verb_category, verb_effect
+from awm.gateway import aliases, peer_catalog, surface, usage
 from awm.gateway.gateway_ops import GATEWAY_OPERATIONS, bound_caller
 from awm.gateway.hub import discovery, rpc
 from awm.gateway.hub.registry import ServiceRecord, get_registry
@@ -120,10 +121,14 @@ def _serialize(obj: Any) -> str:
 # ---------------------------------------------------------------------------
 
 # MCP-surface gateway tools, keyed by name for dispatch + uniqueness reservation.
+# A native verb hidden from MCP (no "mcp" surface) still runs by its flat name
+# over HTTP, so the dispatch table holds every op with an agent or HTTP surface.
 _GATEWAY_MCP_TOOLS: list[Tool] = operations_to_mcp_tools(GATEWAY_OPERATIONS)
 _GATEWAY_OPS_BY_NAME = {
-    op.name: op for op in GATEWAY_OPERATIONS if "mcp" in op.surfaces
+    op.name: op for op in GATEWAY_OPERATIONS if op.surfaces & {"mcp", "http"}
 }
+
+usage.set_renames(aliases.usage_renames())
 
 
 # ---------------------------------------------------------------------------
@@ -131,36 +136,31 @@ _GATEWAY_OPS_BY_NAME = {
 # ---------------------------------------------------------------------------
 
 
-def _fn_on_surface(fn: dict, surface: str) -> bool:
-    """Whether a manifest function is projected onto ``surface`` ("mcp"/"cli"/"http").
+def _fn_on_surface(fn: dict, where: str) -> bool:
+    """Whether a manifest function is projected onto ``where`` ("mcp"/"cli"/"http").
 
-    Honors the documented per-function ``"surfaces"`` field (see the module
-    docstring's registration contract). A function that omits ``surfaces`` (as
-    every current service does) defaults to all three, so this is a pure no-op
-    for the existing tree; a function declaring e.g. ``["cli", "http"]`` is kept
-    off the MCP surface — the mechanism behind CLI-only write verbs. Only the
-    per-domain MCP projection consults this; ``list_tools()`` stays unfiltered so
-    the CLI generator and flat ``/invoke`` by-name dispatch keep every verb."""
+    Honors the per-function ``"surfaces"`` field (see the module docstring's
+    registration contract). A function that omits ``surfaces`` is on all three;
+    one declaring ``["cli", "http"]`` is hidden from MCP but still runs from the
+    CLI and over HTTP. Only the per-tool MCP projection consults this;
+    ``list_tools()`` stays unfiltered so the CLI generator and flat ``/invoke``
+    by-name dispatch keep every verb."""
     surfaces = fn.get("surfaces")
     if not surfaces:
         return True
-    return surface in surfaces
+    return where in surfaces
 
 
 def _tool_name(rec: ServiceRecord, fn: dict) -> str:
-    """MCP tool name for a service function.
+    """The published name of a service function: its manifest ``"tool"`` key, else
+    ``{service}_{name}``.
 
-    A manifest function may carry an explicit ``"tool"`` key to choose its
-    exact MCP-surface name — this decouples the projected tool label from the
-    internal op ``name`` used for service↔service RPC dispatch, so the frozen
-    ``IDENTITY_CONTRACT.md`` names (``resolveScope`` …) keep dispatching while
-    the surface reads cleanly (``scope_resolve``). With no override the name
-    falls back to ``{service}_{fn}``.
-
-    Overrides drop the automatic global-uniqueness the ``{service}_{fn}`` form
-    gave us (service names are unique); :func:`list_tools` enforces uniqueness
-    by warn-and-skip, so override names MUST be globally unique."""
-    return fn.get("tool") or f"{rec.name}_{fn['name']}"
+    ``name`` stays the service-internal handle that ``/svc/<service>/fn/<name>``
+    dispatches on, while the published name is what every surface shows. Under the
+    registration rule (see ``surface``) it is ``<tool>_<verb>``, where ``<tool>``
+    is the service's ``service.toml`` ``tool``. :func:`list_tools` enforces global
+    uniqueness by warn-and-skip, so two services must not publish one name."""
+    return surface.published_name(rec.name, fn)
 
 
 def _fn_to_tool(rec: ServiceRecord, fn: dict) -> Tool:
@@ -278,9 +278,14 @@ def _fn_policy(fn: dict) -> tuple[str, str | None]:
 def _allowed(effect: Any, category: Any, grants: frozenset[str]) -> bool:
     """Whether a verb declaring ``effect``/``category`` is open to a caller holding
     ``grants``. Anything but strings is refused, so one malformed manifest entry
-    cannot raise inside the gate."""
-    return (isinstance(effect, str) and effect == "read"
-            and isinstance(category, str) and category in grants)
+    cannot raise inside the gate. A verb in the ``archive`` category answers for
+    itself by the grants it is handed (see :func:`_rpc_call`), so any caller
+    holding a grant may reach it."""
+    if not (isinstance(effect, str) and effect == "read" and isinstance(category, str)):
+        return False
+    if category == ARCHIVE_CATEGORY:
+        return bool(grants)
+    return category in grants
 
 
 def _flat_entries() -> dict[str, dict[str, Any]]:
@@ -337,85 +342,102 @@ def _fn_timeout(rec: ServiceRecord, internal_name: str) -> float | None:
     return None
 
 
-async def _rpc_call(rec: ServiceRecord, fn: str, args: dict, as_: str | None) -> Any:
-    """RPC a service function over its control WS, applying its manifest timeout."""
+async def _rpc_call(rec: ServiceRecord, fn: str, args: dict, as_: str | None,
+                    grants: frozenset[str] | None = None) -> Any:
+    """RPC a service function over its control WS, applying its manifest timeout.
+
+    ``grants`` is a foreign caller's read grants; the service sees them as
+    ``args["_grants"]`` (see :meth:`rpc.ControlChannel.call`)."""
     ch = rpc.get_control(rec.service_id)
     if ch is None:
         raise RuntimeError(f"service {rec.name!r} control channel not open")
+    extra: dict[str, Any] = {"grants": grants} if grants is not None else {}
     timeout = _fn_timeout(rec, fn)
     if timeout is not None:
-        return await ch.call(fn, args, as_=as_, timeout=timeout)
-    return await ch.call(fn, args, as_=as_)
+        return await ch.call(fn, args, as_=as_, timeout=timeout, **extra)
+    return await ch.call(fn, args, as_=as_, **extra)
 
 
 # ---------------------------------------------------------------------------
-# Per-domain projection (the collapsed MCP read surface) — T1
+# Per-domain projection (the collapsed MCP read surface)
 # ---------------------------------------------------------------------------
 # The expanded ``list_tools()`` projection above stays exactly as-is (the CLI
 # generator and the flat ``/invoke`` dispatch both depend on it). This second,
-# *parallel* projection folds that same surface by **domain** — the projected
-# tool name split on the first underscore (``scope_create`` → domain ``scope`` /
-# verb ``create``). One service can yield several domains (scopes → scope /
-# project / ref); gateway-native ops group by their ``cli_group`` (``gateway`` /
-# ``services``) with the verb being their ``cli_command``. The MCP stdio proxy
-# requests this view, so a non-deferring client carries a few dozen generic tools
-# instead of hundreds of verb-tools; verbs + their full param schemas are learned
-# on demand via the reserved ``describe`` verb.
+# *parallel* projection folds that same surface by **tool**: each service
+# publishes under the ``tool`` its ``service.toml`` names, and a published name is
+# ``<tool>_<verb>`` (see ``surface``). Gateway-native ops group by their ``tool``
+# and ``verb`` (their CLI group and command, when those are not set). The MCP
+# stdio proxy requests this view, so a client carries a few dozen generic tools instead of
+# hundreds of verb-tools; verbs and their full param schemas come from the
+# ``describe`` verb.
 #
 # ``?view=domains&peers=1`` widens the same projection to the **fleet**: still one
-# tool per domain name, but a domain only a peer runs appears too, and the
-# envelope's ``peer`` key chooses the node. That replaced merging each peer's whole
-# catalog under ``<domain>@<peer>`` names, which multiplied the tool count by the
-# number of peers joined while adding no capability at all. Which node a call lands
-# on by default is ``peer_catalog``'s decision, not this module's.
+# tool per name, but a tool only a peer runs appears too, and the envelope's
+# ``peer`` key chooses the node. Which node a call lands on by default is
+# ``peer_catalog``'s decision, not this module's.
+#
+# A tool is off the MCP surface when its service's ``tier`` is ``off``, and a verb
+# is when its manifest entry omits ``mcp`` from ``surfaces``. Both stay on the
+# flat projection, so the CLI and HTTP still reach them.
 
 _DESCRIBE_VERB = "describe"
 
-#: The reserved top-level tool that reports where a domain can run. Not a domain
-#: verb: folding it into the domain scheme would yield the junk single-verb shape
-#: ``providersOf(verb="providersOf")``, so it is emitted directly and dispatched
-#: ahead of the domain branch — the federation analogue of the reserved
-#: ``describe`` verb.
-_PROVIDERS_TOOL = "providersOf"
+#: Verbs ``awm describe`` lists when it is given no limit.
+DESCRIBE_LIMIT = 40
 
-#: The reserved call-through tool for discoverable domains (see ``mcp_more``).
-_MORE_TOOL = mcp_more.MORE_TOOL
+#: The tool whose ``describe`` is the fleet overview rather than its own schemas.
+OVERVIEW_TOOL = "awm"
 
-#: Gateway-native domains that are core. They have no service folder to carry a
-#: ``tier`` key, so they are named here; ``gateway`` and ``config`` stay
-#: discoverable.
-_NATIVE_CORE_DOMAINS = frozenset({"services", "peer"})
+_ENVELOPE_KEYS = frozenset({"verb", "args", "peer"})
+_VERB_LINE_CHARS = 100
 
-# The minimal envelope every domain tool advertises (discovery-only — the rich
-# per-verb schema is fetched via ``describe``, never inlined here).
+# The envelope every tool advertises. The rich per-verb schema comes from
+# ``describe``; the ``verb`` and ``peer`` enums are stamped per tool.
 _DOMAIN_INPUT_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
         "verb": {
             "type": "string",
-            "description": "The operation to run within this domain. Use "
-                           "verb='describe' (optionally args={verb:<name>}) to "
-                           "list the domain's verbs and their parameter schemas.",
+            "description": "The operation to run. verb='describe' (optionally "
+                           "args={verbs:[<name>, ...]}) returns parameter "
+                           "schemas.",
         },
         "args": {
             "type": "object",
-            "description": "Arguments for the chosen verb (see describe).",
+            "description": "Arguments for the chosen verb. An unknown argument "
+                           "is an error that returns the verb's schema.",
         },
         "peer": {
             "type": "string",
-            "description": "Optional. Run this verb on a specific fleet node "
-                           "instead of the tool's default provider (usually this "
-                           "node; a singleton's owner for a singleton). "
-                           "providersOf(tool=<domain>) lists the valid values "
-                           "and which one is the default.",
+            "description": "Optional. The fleet node to run this verb on.",
         },
     },
     "required": ["verb"],
 }
 
 
+class ArgumentError(ValueError):
+    """A call named an argument its verb does not declare. ``payload`` is the
+    structured error body, schema included."""
+
+    def __init__(self, message: str, payload: dict[str, Any]) -> None:
+        super().__init__(message)
+        self.payload = payload
+
+
+def _split_name(rec: ServiceRecord, fn: dict) -> tuple[str, str]:
+    """``(tool, verb)`` a manifest function is published as."""
+    tool, verb = surface.split_published(rec.name, _tool_name(rec, fn))
+    return tool, verb or tool
+
+
+def _mcp_visible(rec: ServiceRecord, fn: dict) -> bool:
+    return (_fn_on_surface(fn, "mcp")
+            and discovery.service_tier(rec.name) != discovery.TIER_OFF)
+
+
 def _domain_catalog() -> dict[str, list[dict[str, Any]]]:
-    """Fold the live (native + service) tool surface into ``{domain: [verb…]}``.
+    """Fold the live (native + service) tool surface into ``{tool: [verb…]}``.
 
     Each verb entry is ``{"verb": str, "tool": Tool}`` — the ``Tool`` carries the
     full per-verb description + ``inputSchema`` (byte-identical to the expanded
@@ -424,8 +446,8 @@ def _domain_catalog() -> dict[str, list[dict[str, Any]]]:
     mirroring ``list_tools``'s duplicate handling). Each entry also carries the
     verb's declared ``effect`` and ``category`` (which the foreign-caller gate
     reads) and the ``op`` or ``rec``/``fn`` it resolves to, so dispatch runs
-    exactly the entry that was approved. A native op never has a category. Sync over a GIL-safe registry snapshot — same contract as
-    ``list_tools``."""
+    exactly the entry that was approved. A native op never has a category. Sync
+    over a GIL-safe registry snapshot — same contract as ``list_tools``."""
     domains: dict[str, list[dict[str, Any]]] = {}
     seen: set[tuple[str, str]] = set()
 
@@ -442,24 +464,19 @@ def _domain_catalog() -> dict[str, list[dict[str, Any]]]:
             {"verb": verb, "tool": tool, "effect": effect, "category": category,
              "op": op, "rec": rec, "fn": fn})
 
-    # Native gateway control ops: domain = cli_group, verb = cli_command.
     for op in GATEWAY_OPERATIONS:
         if "mcp" not in op.surfaces:
             continue
-        _add(op.cli_group, op.cli_command, _to_mcp_tool(op), origin="gateway-native",
+        _add(op.mcp_tool, op.mcp_verb, _to_mcp_tool(op), origin="gateway-native",
              effect=op.effect, category=None, op=op)
 
-    # Registered services: domain/verb from the projected tool name.
     for rec in get_registry().service_records():
         for fn in (rec.api or {}).get("functions", []) or []:
             if not (isinstance(fn, dict) and fn.get("name")):
                 continue
-            if not _fn_on_surface(fn, "mcp"):
-                continue  # CLI/HTTP-only verb — kept off the agent-facing MCP surface
-            tname = _tool_name(rec, fn)
-            domain, _, verb = tname.partition("_")
-            if not verb:  # no underscore → single-verb domain named after itself
-                verb = domain
+            if not _mcp_visible(rec, fn):
+                continue
+            domain, verb = _split_name(rec, fn)
             effect, category = _fn_policy(fn)
             _add(domain, verb, _fn_to_tool(rec, fn), origin=f"service {rec.name!r}",
                  effect=effect, category=category, rec=rec, fn=fn["name"])
@@ -468,25 +485,13 @@ def _domain_catalog() -> dict[str, list[dict[str, Any]]]:
 
 
 def _domain_blurbs() -> dict[str, str]:
-    """``{domain: prose}`` from each service's optional manifest ``description``.
+    """``{tool: prose}`` from each service's optional manifest ``description``.
 
-    Everything else the surface shows about a domain is generated — the name and
-    the verb list — so a service had no way to say how it is meant to be USED,
-    only what it can do. That gap is not cosmetic: an agent reading `2fa` sees
-    ten capable-looking verbs and no hint that `ssh(verb=connect)` already arms
-    the approver for it, and calling them by hand spends Duo budget the fleet
-    arbiter is not counting.
-
-    The key is additive. A manifest without it is unchanged, and the gateway
-    reads no other top-level manifest key for presentation.
-
-    A service projecting several domains (scopes → scope / project / ref) gets
-    its blurb on every one of them. That is deterministic where picking one
-    would be arbitrary — and a service whose domains want different prose should
-    say it per verb, which is what ``description`` on a function is for. A
-    domain with no MCP-visible verb gets nothing, since it has no tool to
-    describe.
-    """
+    Everything else the surface shows about a tool is generated, so a service had
+    no way to say how it is meant to be USED, only what it can do. The key is
+    additive: a manifest without it is unchanged. A service publishing under
+    several tools gets its blurb on each; a tool with no MCP-visible verb gets
+    nothing, since it has no tool to describe."""
     out: dict[str, str] = {}
     for rec in get_registry().service_records():
         api = rec.api or {}
@@ -496,25 +501,57 @@ def _domain_blurbs() -> dict[str, str]:
         for fn in api.get("functions", []) or []:
             if not (isinstance(fn, dict) and fn.get("name")):
                 continue
-            if not _fn_on_surface(fn, "mcp"):
+            if not _mcp_visible(rec, fn):
                 continue
-            out.setdefault(_tool_name(rec, fn).partition("_")[0], blurb.strip())
+            out.setdefault(_split_name(rec, fn)[0], blurb.strip())
     return out
 
 
-def _domain_envelope(verb_names: list[str], *, with_peer: bool = True) -> dict[str, Any]:
-    """The ``{verb, args, peer}`` envelope schema, with ``verb`` enumerated.
+def _peer_phrase(res: dict[str, Any] | None) -> tuple[str, list[str] | None, bool]:
+    """``(description, enum, required)`` for a tool's ``peer`` argument. ``res``
+    is the tool's provider resolution; ``None`` means a node-local view."""
+    if res is None:
+        return ("Optional. The fleet node to run this verb on; default is this "
+                "node.", None, False)
+    valid = [p["peer"] for p in res["providers"]]
+    listing = f" Valid: {', '.join(valid)} ('{peer_catalog.LOCAL}' is this node)."
+    reason = res["reason"]
+    if reason == peer_catalog.REASON_SINGLETON:
+        return (f"Optional. Default and only valid node: {res['default']} "
+                f"(a fleet singleton).", valid, False)
+    if reason == peer_catalog.REASON_LOCAL:
+        return (f"Optional. Default: {peer_catalog.LOCAL} (this node)." + listing,
+                valid, False)
+    if reason == peer_catalog.REASON_SOLE_PEER:
+        return (f"Optional. Default: {res['default']}, the only node serving it."
+                + listing, valid, False)
+    return ("Required: this node does not serve it and several nodes do." + listing,
+            valid, True)
+
+
+def _domain_envelope(verb_names: list[str], *, with_peer: bool = True,
+                     res: dict[str, Any] | None = None) -> dict[str, Any]:
+    """The ``{verb, args, peer}`` envelope schema, with ``verb`` enumerated and,
+    given the tool's provider resolution ``res``, ``peer`` enumerated.
 
     Deep-copied — a shallow copy shares the nested ``properties`` dict, so
-    stamping the enum would mutate the module constant for every later domain.
+    stamping the enum would mutate the module constant for every later tool.
 
-    The enum is discovery, not enforcement: dispatch validates a verb against the
+    The enums are discovery, not enforcement: dispatch validates a verb against the
     live catalog (locally) or lets the target peer validate its own, so a snapshot
-    that is a couple of minutes stale can never block a call that would work.
+    that is a couple of minutes stale can never block a call that would work. The
+    ``peer`` enum is as of the session's launch.
     """
     schema = copy.deepcopy(_DOMAIN_INPUT_SCHEMA)
     if not with_peer:
         del schema["properties"]["peer"]
+    else:
+        text, enum, required = _peer_phrase(res)
+        schema["properties"]["peer"]["description"] = text
+        if enum:
+            schema["properties"]["peer"]["enum"] = enum
+        if required:
+            schema["required"] = ["verb", "peer"]
     if verb_names:
         schema["properties"]["verb"]["enum"] = [*verb_names, _DESCRIBE_VERB]
     return schema
@@ -522,49 +559,20 @@ def _domain_envelope(verb_names: list[str], *, with_peer: bool = True) -> dict[s
 
 def _local_domain_verbs(
         catalog: dict[str, list[dict[str, Any]]]) -> dict[str, list[str]]:
-    """``{domain: [verb…]}`` for this node — the shape ``peer_catalog`` reasons
+    """``{tool: [verb…]}`` for this node — the shape ``peer_catalog`` reasons
     over, so it never has to import this module back."""
     return {domain: [v["verb"] for v in verbs] for domain, verbs in catalog.items()}
 
 
-def _providers_tool() -> Tool:
-    """The reserved top-level ``providersOf`` tool (see ``_PROVIDERS_TOOL``)."""
-    return Tool(
-        name=_PROVIDERS_TOOL,
-        description=(
-            "Which fleet nodes can serve a given awm MCP tool, and which one it "
-            "goes to by default. Pass the tool/domain name, e.g. "
-            "providersOf(tool='2fa'). Use it before setting peer= on a domain "
-            "call: an ordinary domain defaults to this node, a singleton has "
-            "exactly one valid provider, and a domain no local service provides "
-            "may require peer= explicitly."
-        ),
-        inputSchema={
-            "type": "object",
-            "properties": {
-                "tool": {"type": "string",
-                         "description": "Domain/tool name to look up. Omit for "
-                                        "the whole fleet map."},
-                "refresh": {"type": "boolean",
-                            "description": "Force a fresh sweep of every peer "
-                                           "instead of reading the cached one.",
-                            "default": False},
-            },
-        },
-    )
-
-
 async def _providers_of(tool: str | None = None,
                         refresh: bool = False) -> dict[str, Any]:
-    """Answer ``providersOf`` — where a tool can run, and where it goes by default.
+    """Where a tool can run, and where it goes by default.
 
-    Shared by the reserved MCP tool and the ``peer providers`` Operation (so
-    ``awm peer providers`` and the HTTP route can never drift from what the agent
-    sees). ``refresh`` forces a synchronous peer sweep; without it this reads the
-    background snapshot and never touches the network. Omit ``tool`` for the whole
-    fleet map.
+    Backs the ``peer providers`` Operation. ``refresh`` forces a synchronous peer
+    sweep; without it this reads the background snapshot and never touches the
+    network. Omit ``tool`` for the whole fleet map.
 
-    An unreachable peer is reported as unreachable with its last-known domains,
+    An unreachable peer is reported as unreachable with its last-known tools,
     never dropped: "mira does not have this" and "mira is asleep" are different
     answers and conflating them is what makes a discovery tool useless.
     """
@@ -582,47 +590,6 @@ async def _providers_of(tool: str | None = None,
     }
 
 
-#: Domains an UNREGISTERED service folder provides, where they differ from the
-#: folder name. A registered service names its own domains in its manifest; this
-#: table is only the fallback for a folder whose service is down, profile-gated
-#: off, or run only by a peer. A new core folder whose domains differ from its
-#: name must be added here, or its domain stays discoverable while it is down.
-_FOLDER_DOMAINS: dict[str, tuple[str, ...]] = {
-    "scopes": ("scope", "project", "ref"),
-    "rlm-browser": ("rlm",),
-}
-
-
-def _core_domains() -> set[str]:
-    """Domains this node declares core.
-
-    Read from the ``service.toml`` files on disk, not from what is running, so a
-    core domain stays listed when its local service is down, gated off by profile
-    or served only by a peer. Per core folder: the domains its registered service
-    projects, else the fallback in ``_FOLDER_DOMAINS`` (default: the folder name).
-    Plus the gateway-native core set. A domain no local folder declares core is
-    never in this set, whatever a peer calls it. A core domain nothing serves
-    anywhere is in the set but never reaches a listing, which walks the fleet's
-    domains."""
-    core = set(_NATIVE_CORE_DOMAINS)
-    registered: dict[str, list[ServiceRecord]] = {}
-    for rec in get_registry().service_records():
-        registered.setdefault(rec.name, []).append(rec)
-    for folder in discovery.core_services():
-        recs = registered.get(folder)
-        if not recs:
-            core.update(_FOLDER_DOMAINS.get(folder, (folder,)))
-            continue
-        for rec in recs:
-            for fn in (rec.api or {}).get("functions", []) or []:
-                if not (isinstance(fn, dict) and fn.get("name")):
-                    continue
-                if not _fn_on_surface(fn, "mcp"):
-                    continue
-                core.add(_tool_name(rec, fn).partition("_")[0])
-    return core
-
-
 def _one_line(text: str, limit: int = 110) -> str:
     """First sentence of ``text`` on one line, capped at ``limit`` characters."""
     flat = " ".join(text.split())
@@ -631,218 +598,28 @@ def _one_line(text: str, limit: int = 110) -> str:
     return flat if len(flat) <= limit else flat[: limit - 1].rstrip() + "…"
 
 
-def _node_phrase(res: dict[str, Any]) -> str:
-    """Where a domain runs by default, in a few words."""
-    reason = res["reason"]
-    others = [p["peer"] for p in res["providers"] if p["peer"] != res["default"]]
-    if reason == peer_catalog.REASON_LOCAL:
-        return "this node" + (f", also {', '.join(others)}" if others else "")
-    if reason == peer_catalog.REASON_SINGLETON:
-        return f"{res['default']} (singleton)"
-    if reason == peer_catalog.REASON_SOLE_PEER:
-        return str(res["default"])
-    if reason == peer_catalog.REASON_AMBIGUOUS:
-        return "peer= required: " + ", ".join(p["peer"] for p in res["providers"])
-    return "unknown"
+def _required(tool: Tool) -> list[str]:
+    return list((tool.inputSchema or {}).get("required") or [])
 
 
-#: Ceiling on the ``more`` tool description, which every session pays for in
-#: full. The complete index is always one ``more()`` call away.
-_MORE_DESCRIPTION_CAP = 1500
-_MORE_OVERFLOW = "… call more() with no domain for the full list"
-_COMPACT_VERBS = 5
-_COMPACT_BLURB = 80
+def _verb_line(entry: dict[str, Any]) -> str:
+    required = ", ".join(_required(entry["tool"]))
+    return (f"- {entry['verb']}({required}): "
+            f"{_one_line(entry['tool'].description or '', _VERB_LINE_CHARS)}")
 
 
-def _discoverable_line(res: dict[str, Any], blurb: str | None, *,
-                       compact: bool = False) -> str:
-    """One index line. Full form: name, the service's own blurb (else all its verb
-    names), node. Compact form, for the tool description: name plus the blurb or
-    at most five verbs, and the node only when it is not this one."""
-    verbs = _advertised_verbs(res)
-    if blurb:
-        what = _one_line(blurb, _COMPACT_BLURB if compact else 110)
-    elif compact:
-        what = ", ".join(verbs[:_COMPACT_VERBS]) + (
-            ", …" if len(verbs) > _COMPACT_VERBS else "")
-        what = what or "no verbs known"
-    else:
-        what = "verbs: " + (", ".join(verbs) if verbs else "none known")
-    line = f"- {res['tool']}: {what}"
-    if not compact:
-        return f"{line} [{_node_phrase(res)}]"
-    if res["reason"] == peer_catalog.REASON_LOCAL:
-        return line
-    return f"{line} [{_node_phrase(res)}]"
-
-
-def _more_tool(hidden: list[tuple[dict[str, Any], str | None]]) -> Tool:
-    """The ``more`` call-through tool; its description is a bounded index of the
-    discoverable domains, cut with a pointer to the full list when it overflows."""
-    head = (
-        "Reach an awm domain that is not listed as its own tool. "
-        "more(domain, verb, args, peer) runs that domain's verb exactly as "
-        "calling the domain directly would; verb='describe' returns the "
-        "domain's verb schemas; more() with no domain lists them all. "
-        "Discoverable domains:")
-    description = head
-    if not hidden:
-        description += "\n(none)"
-    for i, (res, blurb) in enumerate(hidden):
-        line = _discoverable_line(res, blurb, compact=True)
-        # Keep room for the overflow pointer unless this is the last line.
-        reserve = 0 if i == len(hidden) - 1 else len(_MORE_OVERFLOW) + 1
-        if len(description) + 1 + len(line) + reserve > _MORE_DESCRIPTION_CAP:
-            description += "\n" + _MORE_OVERFLOW
-            break
-        description += "\n" + line
-    return Tool(
-        name=_MORE_TOOL,
-        description=description,
-        inputSchema={
-            "type": "object",
-            "properties": {
-                "domain": {"type": "string",
-                           "description": "The discoverable domain to call. "
-                                          "Omit to list the domains."},
-                "verb": {"type": "string",
-                         "description": "The verb to run in that domain, or "
-                                        "'describe' for its schemas."},
-                "args": {"type": "object",
-                         "description": "Arguments for the verb (see describe)."},
-                "peer": {"type": "string",
-                         "description": "Optional. Run on a specific fleet node; "
-                                        "providersOf(tool=<domain>) lists them."},
-            },
-        },
-        # A router: the target verb's own effect applies when it is invoked.
-        **{"_meta": {"effect": "read"}},
-    )
-
-
-def _tier_split(local_verbs: dict[str, list[str]],
-                snap: dict[str, dict[str, Any]],
-                blurbs: dict[str, str]
-                ) -> tuple[list[dict[str, Any]],
-                           list[tuple[dict[str, Any], str | None]]]:
-    """Fleet domains split by tier: ``(core resolutions, [(discoverable
-    resolution, blurb)])``.
-
-    A domain is core only if a local service folder declares it. Everything else
-    the fleet can reach, a peer-only domain included, is discoverable. The walk is
-    over domains something serves, so a core domain nothing serves is omitted."""
-    core = _core_domains()
-    shown: list[dict[str, Any]] = []
-    hidden: list[tuple[dict[str, Any], str | None]] = []
-    for domain in peer_catalog.fleet_domains(local_verbs, snap):
-        res = peer_catalog.resolve(domain, local_verbs, snap)
-        if domain in core:
-            shown.append(res)
-        else:
-            hidden.append((res, blurbs.get(domain)))
-    return shown, hidden
-
-
-def _more_index(args: dict[str, Any]) -> str:
-    """Answer ``more`` with no domain: the discoverable domains, one line each.
-
-    A call that does name a domain never reaches the gateway as ``more`` — the MCP
-    proxies rewrite it to the direct call, so the caller stamp and the gates see
-    the true domain and verb. Reaching here with one means a caller skipped the
-    rewrite, and running it unstamped would bypass those gates."""
-    domain = args.get("domain")
-    if domain not in (None, ""):
-        if mcp_more.is_plain_domain(domain):
-            raise ValueError(
-                f"'{_MORE_TOOL}' with a domain is rewritten by the MCP proxy; "
-                f"call {domain!r} directly with {{verb, args, peer}}")
-        # Not a bare domain name (``kb@mira``, a path): the proxy refuses to
-        # rewrite it, and it is no more a domain than any other unknown name.
-        raise ValueError(f"Unknown tool: {domain}")
-    domains = _domain_catalog()
-    local_verbs = _local_domain_verbs(domains)
-    _, hidden = _tier_split(local_verbs, peer_catalog.snapshot(), _domain_blurbs())
-    lines = [_discoverable_line(res, blurb) for res, blurb in hidden]
-    return "\n".join(lines) if lines else "No discoverable domains."
-
-
-def list_domain_tools(*, peers: bool = False, tiers: bool = False,
-                      grants: frozenset[str] | None = None) -> list[Tool]:
-    """Project the collapsed per-domain MCP surface — one ``Tool`` per domain,
-    each advertising the ``{verb, args, peer}`` envelope with ``verb`` enumerated.
-
-    With ``peers=False`` (the default) this is **this node's** domains only, which
-    is what a peer's edge serves when another node reads our catalog — the local
-    view has to stay local or the fleet would advertise transitive peers nobody
-    can dial.
-
-    With ``peers=True`` (what the MCP proxy requests) the surface is the
-    fleet-wide *union*: still one tool per domain name, but a domain only a peer
-    runs appears too, each tool's description saying where it runs by default and
-    where else it can be sent. That is the whole point — before this, a peer's
-    catalog was merged under ``<domain>@<peer>`` names and two peers tripled the
-    tool count for no new capability. The reserved ``providersOf`` tool is
-    appended so the peer options are discoverable without listing them per tool.
-
-    ``tiers=True`` (only with ``peers=True``) narrows that fleet surface to the
-    **core** domains, ``providersOf`` and the ``more`` call-through tool, whose
-    description indexes every other fleet domain. The filter lives here, after
-    the fleet union and never in ``_domain_catalog``: dispatch, ``describe``,
-    ``providersOf`` and the peers' own sweeps of our local view all read the
-    unfiltered catalog, so a discoverable domain stays fully callable.
-
-    ``grants`` (a foreign caller's read grants, see :func:`foreign_grants`) wins
-    over ``peers`` and ``tiers``: the caller sees this node's domains only, cut to
-    the verbs it may call, with no ``peer`` routing and no ``providersOf``.
-    """
-    catalog = _domain_catalog()
-    if grants is not None:
-        blurbs = _domain_blurbs()
-        verbs_by_domain = _local_domain_verbs(_foreign_catalog(catalog, grants))
-        return [Tool(name=domain,
-                     description=_local_domain_description(
-                         domain, verbs, blurbs.get(domain)),
-                     inputSchema=_domain_envelope(verbs, with_peer=False))
-                for domain, verbs in verbs_by_domain.items()]
-    local_verbs = _local_domain_verbs(catalog)
-    # A blurb is only ever this node's. A domain some peer provides is described
-    # by that peer's own catalog, which we do not hold — and inventing one here
-    # would put words in another node's mouth.
-    blurbs = _domain_blurbs()
-
-    if not peers:
-        return [Tool(name=domain,
-                     description=_local_domain_description(
-                         domain, verbs, blurbs.get(domain)),
-                     inputSchema=_domain_envelope(verbs))
-                for domain, verbs in local_verbs.items()]
-
-    snap = peer_catalog.snapshot()
-    hidden: list[tuple[dict[str, Any], str | None]] = []
-    if tiers:
-        shown, hidden = _tier_split(local_verbs, snap, blurbs)
-    else:
-        shown = [peer_catalog.resolve(domain, local_verbs, snap)
-                 for domain in peer_catalog.fleet_domains(local_verbs, snap)]
-    out: list[Tool] = []
-    for res in shown:
-        out.append(Tool(name=res["tool"],
-                        description=_fleet_domain_description(
-                            res, blurbs.get(res["tool"])),
-                        inputSchema=_domain_envelope(_advertised_verbs(res))))
-    out.append(_providers_tool())
-    if tiers:
-        out.append(_more_tool(hidden))
-    return out
-
-
-def _local_domain_description(domain: str, verb_names: list[str],
+def _local_domain_description(domain: str, entries: list[dict[str, Any]],
                               blurb: str | None = None) -> str:
-    return _with_blurb(
-        f"Generic '{domain}' domain tool. Verbs: {', '.join(verb_names)}. "
-        f"Call with {{verb, args}}; verb='describe' (optionally "
-        f"args={{verb:<name>}}) returns full parameter schemas.",
-        blurb)
+    """A tool's description: the service's own prose first, then one line per
+    verb with its required arguments."""
+    return _with_blurb(_generated_description(domain, entries), blurb)
+
+
+def _generated_description(domain: str, entries: list[dict[str, Any]]) -> str:
+    lines = "\n".join(_verb_line(e) for e in entries)
+    return (f"The '{domain}' tool. Call with {{verb, args}}; verb='describe' "
+            f"(optionally args={{verbs:[<name>, ...]}}) returns full parameter "
+            f"schemas. Verbs, with required arguments:\n{lines}")
 
 
 def _with_blurb(generated: str, blurb: str | None) -> str:
@@ -855,7 +632,7 @@ def _with_blurb(generated: str, blurb: str | None) -> str:
 
 
 def _advertised_verbs(res: dict[str, Any]) -> list[str]:
-    """Verbs to enumerate for a fleet domain: the default provider's, exactly.
+    """Verbs to enumerate for a fleet tool: the default provider's, exactly.
 
     With no default (several peers, no local) there is nothing authoritative to
     show, so take the union of the candidates — a superset is harmless (dispatch
@@ -875,24 +652,30 @@ def _advertised_verbs(res: dict[str, Any]) -> list[str]:
 
 
 def _fleet_domain_description(res: dict[str, Any],
+                              entries: list[dict[str, Any]] | None,
                               blurb: str | None = None) -> str:
-    """One domain's description in the fleet-wide view — where it runs, and where
-    else it may be sent. Says it in prose because this is what the model reads to
-    decide whether it needs ``peer`` at all."""
+    """One tool's description in the fleet-wide view — what it does, and where it
+    runs. A tool this node serves is described from the local catalog; one only a
+    peer serves carries that peer's own description."""
     domain = res["tool"]
-    verbs = _advertised_verbs(res)
+    if entries:
+        head = _local_domain_description(domain, entries, blurb)
+    else:
+        carried = peer_catalog.description_for(res)
+        if carried:
+            head = carried
+        else:
+            head = _with_blurb(
+                f"The '{domain}' tool. Call with {{verb, args}}; verb='describe' "
+                f"returns full parameter schemas. Verbs: "
+                f"{', '.join(_advertised_verbs(res))}.", blurb)
     others = [p["peer"] for p in res["providers"] if p["peer"] != res["default"]]
-    head = (
-        f"Generic '{domain}' domain tool. Verbs: {', '.join(verbs)}. "
-        f"Call with {{verb, args}}; verb='describe' (optionally "
-        f"args={{verb:<name>}}) returns full parameter schemas."
-    )
     reason = res["reason"]
     if reason == peer_catalog.REASON_SINGLETON:
         tail = (f" Fleet singleton owned by '{res['default']}' — every call "
                 f"routes there and peer= cannot redirect it.")
     elif reason == peer_catalog.REASON_LOCAL:
-        tail = (f" Runs on this node by default"
+        tail = (" Runs on this node by default"
                 + (f"; also on {', '.join(others)} via peer=<name>." if others
                    else "."))
     elif reason == peer_catalog.REASON_SOLE_PEER:
@@ -904,66 +687,238 @@ def _fleet_domain_description(res: dict[str, Any],
                 f"peer=<name>; there is no default.")
     else:
         tail = ""
-    return _with_blurb(head + tail, blurb)
+    return head + tail
 
 
-def _describe_domain(domain: str, verb: str | None = None,
+def list_domain_tools(*, peers: bool = False,
+                      grants: frozenset[str] | None = None) -> list[Tool]:
+    """Project the collapsed MCP surface — one ``Tool`` per tool name, each
+    advertising the ``{verb, args, peer}`` envelope with ``verb`` enumerated.
+
+    With ``peers=False`` (the default) this is **this node's** tools only, which
+    is what a peer's edge serves when another node reads our catalog — the local
+    view has to stay local or the fleet would advertise transitive peers nobody
+    can dial.
+
+    With ``peers=True`` (what the MCP proxy requests) the surface is the
+    fleet-wide *union*: still one tool per name, but a tool only a peer runs
+    appears too, each description saying where it runs by default and each
+    ``peer`` argument enumerating the nodes that serve it. Every tool is
+    top-level; nothing is held back behind an index.
+
+    ``grants`` (a foreign caller's read grants, see :func:`foreign_grants`) wins
+    over ``peers``: the caller sees this node's tools only, cut to the verbs it
+    may call, with no ``peer`` routing.
+    """
+    catalog = _domain_catalog()
+    blurbs = _domain_blurbs()
+    if grants is not None:
+        cut = _foreign_catalog(catalog, grants)
+        return [Tool(name=domain,
+                     description=_local_domain_description(
+                         domain, entries, blurbs.get(domain)),
+                     inputSchema=_domain_envelope(
+                         [e["verb"] for e in entries], with_peer=False))
+                for domain, entries in cut.items()]
+    local_verbs = _local_domain_verbs(catalog)
+
+    if not peers:
+        return [Tool(name=domain,
+                     description=_local_domain_description(
+                         domain, entries, blurbs.get(domain)),
+                     inputSchema=_domain_envelope([e["verb"] for e in entries]))
+                for domain, entries in catalog.items()]
+
+    snap = peer_catalog.snapshot()
+    out: list[Tool] = []
+    for domain in peer_catalog.fleet_domains(local_verbs, snap):
+        res = peer_catalog.resolve(domain, local_verbs, snap)
+        out.append(Tool(
+            name=domain,
+            description=_fleet_domain_description(
+                res, catalog.get(domain), blurbs.get(domain)),
+            inputSchema=_domain_envelope(_advertised_verbs(res), res=res)))
+    return out
+
+
+def _describe_domain(domain: str, verbs: list[str] | str | None = None,
                      catalog: dict[str, list[dict[str, Any]]] | None = None) -> dict:
     """Answer ``verb='describe'`` from the catalog alone (no service round-trip).
 
     Returns ``{domain, description?, verbs:[{verb, description, params}]}`` where
-    ``params`` is the verb's full ``inputSchema`` — the same schema the expanded
-    per-verb tool advertised. ``verb`` narrows to a single entry. The top-level
-    ``description`` is the service's own manifest prose about how the domain is
-    meant to be used, present only when the service supplies one."""
+    ``params`` is the verb's full ``inputSchema``. ``verbs`` (a list, or one name)
+    narrows the answer; none lists every visible verb. The top-level
+    ``description`` is the service's own manifest prose, present only when the
+    service supplies one."""
     cat = catalog if catalog is not None else _domain_catalog()
-    verbs = cat.get(domain)
-    if verbs is None:
+    entries = cat.get(domain)
+    if entries is None:
         raise ValueError(f"Unknown domain: {domain}")
-    items = [v for v in verbs if verb is None or v["verb"] == verb]
-    if verb is not None and not items:
-        raise ValueError(f"Unknown verb {verb!r} for domain {domain!r}")
+    wanted = [verbs] if isinstance(verbs, str) else verbs
+    if wanted:
+        if not all(isinstance(v, str) for v in wanted):
+            raise ValueError("'verbs' must be a list of verb names")
+        unknown = [v for v in wanted if all(e["verb"] != v for e in entries)]
+        if unknown:
+            raise ValueError(f"Unknown verb(s) {unknown!r} for domain {domain!r}")
+        entries = [e for e in entries if e["verb"] in wanted]
     blurb = _domain_blurbs().get(domain)
     return {
         "domain": domain,
         **({"description": blurb} if blurb else {}),
         "verbs": [
-            {"verb": v["verb"], "description": v["tool"].description,
-             "params": v["tool"].inputSchema}
-            for v in items
+            {"verb": e["verb"], "description": e["tool"].description,
+             "params": e["tool"].inputSchema}
+            for e in entries
         ],
     }
 
 
+def describe_overview(limit: int = DESCRIBE_LIMIT,
+                      catalog: dict[str, list[dict[str, Any]]] | None = None) -> dict:
+    """The one-call overview behind ``awm describe``: the ``limit`` most used
+    verbs of the last 60 days, each with a one-line summary and its required
+    arguments, plus one line for every tool in the fleet.
+
+    The best verb of every local tool is always listed, so a tool nobody has used
+    still shows up and the list can run past ``limit`` when there are more tools.
+    A tool only a peer serves appears in ``tools`` alone: its verbs' summaries
+    live on that node."""
+    cat = catalog if catalog is not None else _domain_catalog()
+    counts = usage.totals(resolve=aliases.renamed_pair)
+    rows = [(domain, e) for domain, entries in cat.items() for e in entries]
+    scored = sorted(rows, key=lambda r: -counts.get((r[0], r[1]["verb"]), 0))
+    chosen: list[tuple[str, dict[str, Any]]] = []
+    covered: set[str] = set()
+    for row in scored:
+        if row[0] not in covered:
+            covered.add(row[0])
+            chosen.append(row)
+    taken = {id(r[1]) for r in chosen}
+    for row in scored:
+        if len(chosen) >= limit:
+            break
+        if id(row[1]) not in taken:
+            chosen.append(row)
+    chosen.sort(key=lambda r: -counts.get((r[0], r[1]["verb"]), 0))
+
+    local_verbs = _local_domain_verbs(cat)
+    snap = peer_catalog.snapshot()
+    blurbs = _domain_blurbs()
+    tools = []
+    for domain in peer_catalog.fleet_domains(local_verbs, snap):
+        res = peer_catalog.resolve(domain, local_verbs, snap)
+        summary = blurbs.get(domain) or peer_catalog.description_for(res) or ""
+        tools.append({"tool": domain, "summary": _one_line(summary),
+                      "node": res["default"], "verbs": len(_advertised_verbs(res))})
+    return {
+        "verbs": [{"tool": d, "verb": e["verb"],
+                   "summary": _one_line(e["tool"].description or ""),
+                   "required": _required(e["tool"]),
+                   "uses": counts.get((d, e["verb"]), 0)} for d, e in chosen],
+        "tools": tools,
+        "omitted": max(0, len(rows) - len(chosen)),
+        "next": "describe(tool=<name>) lists every verb of one tool, "
+                "optionally narrowed with verbs=[...]",
+    }
+
+
+def _answer_describe(name: str, inner: dict, catalog: dict) -> dict:
+    """``describe`` on tool ``name``. On the ``awm`` tool with no ``tool``
+    argument it is the ranked overview of the whole surface (``limit`` caps it);
+    given ``tool`` it describes that tool; elsewhere it describes ``name``."""
+    verbs = inner.get("verbs") or inner.get("verb")
+    if name != OVERVIEW_TOOL:
+        return _describe_domain(name, verbs, catalog)
+    target = inner.get("tool")
+    if target:
+        if not isinstance(target, str):
+            raise ValueError("'tool' must be a tool name")
+        return _describe_domain(target, verbs, catalog)
+    limit = inner.get("limit", DESCRIBE_LIMIT)
+    if not isinstance(limit, int) or isinstance(limit, bool) or limit < 1:
+        raise ValueError("'limit' must be a positive integer")
+    return describe_overview(limit, catalog)
+
+
 def _find_native_op(domain: str, verb: str):
-    """Locate the MCP-surface gateway-native Operation for a domain/verb pair
-    (domain = ``cli_group``, verb = ``cli_command``), else ``None``."""
+    """Locate the MCP-surface gateway-native Operation for a tool/verb pair, else
+    ``None``."""
     for op in GATEWAY_OPERATIONS:
-        if "mcp" in op.surfaces and op.cli_group == domain and op.cli_command == verb:
+        if "mcp" in op.surfaces and op.mcp_tool == domain and op.mcp_verb == verb:
             return op
     return None
 
 
+def _spec_of(rec: ServiceRecord, fn: str) -> dict | None:
+    for spec in (rec.api or {}).get("functions", []) or []:
+        if isinstance(spec, dict) and spec.get("name") == fn:
+            return spec
+    return None
+
+
+def _check_arguments(rec: ServiceRecord, fn: str, args: dict) -> None:
+    """Refuse an argument the verb does not declare, answering with its schema.
+
+    Names starting with an underscore are the gateway's own (``_caller_pid``). A
+    verb whose manifest entry declares no ``params`` accepts anything: absence of
+    a schema is not a promise of no arguments."""
+    spec = _spec_of(rec, fn)
+    if spec is None or spec.get("params") is None:
+        return
+    declared = {p.get("name") for p in spec["params"] if isinstance(p, dict)}
+    unknown = sorted(k for k in args if k not in declared
+                     and not (isinstance(k, str) and k.startswith("_")))
+    if not unknown:
+        return
+    published = _tool_name(rec, spec)
+    schema = _fn_to_tool(rec, spec).inputSchema
+    raise ArgumentError(
+        f"unknown argument(s) {unknown} for {published}",
+        {"error_class": "UnknownArgument", "tool": published,
+         "error": f"unknown argument(s) {unknown} for {published}; the verb takes "
+                  f"{sorted(n for n in declared if n)}",
+         "unknown": unknown, "schema": schema})
+
+
+def _check_envelope(name: str, args: dict, entry: dict[str, Any] | None) -> None:
+    """Refuse a key beside ``verb``, ``args`` and ``peer`` in a tool call: a verb
+    argument put at the top level would otherwise be dropped without a word."""
+    extra = sorted(k for k in args
+                   if k not in _ENVELOPE_KEYS
+                   and not (isinstance(k, str) and k.startswith("_")))
+    if not extra:
+        return
+    schema = entry["tool"].inputSchema if entry else _DOMAIN_INPUT_SCHEMA
+    raise ArgumentError(
+        f"unknown key(s) {extra} in a call to {name!r}",
+        {"error_class": "UnknownArgument", "tool": name, "unknown": extra,
+         "error": f"unknown key(s) {extra} in a call to {name!r}; a tool takes "
+                  f"{{verb, args, peer}}, and a verb's arguments go inside args",
+         "schema": schema})
+
+
 async def _dispatch_domain(name: str, args: dict, as_: str | None,
                            catalog: dict[str, list[dict[str, Any]]],
-                           *, local_only: bool = False) -> str:
-    """Dispatch a collapsed per-domain tool call (``{verb, args, peer}``).
+                           *, local_only: bool = False,
+                           grants: frozenset[str] | None = None) -> str:
+    """Dispatch a collapsed per-tool call (``{verb, args, peer}``).
 
     Routing comes first: the envelope's optional ``peer`` (or, absent one, the
-    domain's default provider — this node for an ordinary domain, the owner for a
-    declared singleton) decides *where* the verb runs. A peer target raises
-    :class:`peer_catalog.PeerRedirect` carrying that peer's edge address, for the
-    caller to dial directly — the gateway resolves and never relays, so no peer
-    bytes traverse it. An unhonourable request raises ``ValueError`` naming the
-    valid providers rather than quietly running here, which would be exactly the
-    half-route failure the default-provider model exists to prevent.
+    tool's default provider — this node for an ordinary tool, the owner for a
+    declared singleton, the one serving node when only one serves it) decides
+    *where* the verb runs. A peer target raises :class:`peer_catalog.PeerRedirect`
+    carrying that peer's edge address, for the caller to dial directly — the
+    gateway resolves and never relays, so no peer bytes traverse it. An
+    unhonourable request raises ``ValueError`` naming the valid providers rather
+    than quietly running here, which would be exactly the half-route failure the
+    default-provider model exists to prevent.
 
     Then, locally: ``verb='describe'`` is answered from the catalog. A native verb
     routes through its Operation (same handler as the HTTP route + CLI command); a
     service verb is resolved back to its internal function via the existing
-    ``_find_service_fn`` reverse lookup (so a name≠tool divergence like
-    ``scope_refresh`` → internal ``awm_refresh`` still routes) and RPC'd with the
-    ``as_`` placement identity threaded exactly as the flat path does.
+    ``_find_service_fn`` reverse lookup and RPC'd with the ``as_`` placement
+    identity threaded exactly as the flat path does.
 
     ``local_only`` (a foreign caller, whose ``catalog`` is already cut to the verbs
     it may call) skips the routing step: the verb runs here or not at all."""
@@ -981,20 +936,24 @@ async def _dispatch_domain(name: str, args: dict, as_: str | None,
         if target != peer_catalog.LOCAL:
             raise peer_catalog.PeerRedirect(target, name, verb)
 
+    entry = next((v for v in catalog.get(name, []) if v["verb"] == verb), None)
+    _check_envelope(name, args, entry)
+
     if verb == _DESCRIBE_VERB:
-        return _serialize(_describe_domain(name, inner.get("verb"), catalog))
+        return _serialize(_answer_describe(name, inner, catalog))
 
     # Enforce the surface gate on dispatch, not just listing: a verb absent from
-    # the (surface-filtered, and for a foreign caller grant-cut) domain catalog is
+    # the (surface-filtered, and for a foreign caller grant-cut) catalog is
     # unknown here even if a matching function exists. What runs is the catalog
     # entry itself, never a second lookup that could land on another function.
-    entry = next((v for v in catalog.get(name, []) if v["verb"] == verb), None)
     if entry is None:
         raise ValueError(f"Unknown verb {verb!r} for domain {name!r}")
-    return await _run_entry(entry, inner, as_)
+    usage.record(name, entry["verb"])
+    return await _run_entry(entry, inner, as_, grants)
 
 
-async def _run_entry(entry: dict[str, Any], args: dict, as_: str | None) -> str:
+async def _run_entry(entry: dict[str, Any], args: dict, as_: str | None,
+                     grants: frozenset[str] | None = None) -> str:
     """Run the native op or service function a catalog entry resolved to."""
     op = entry.get("op")
     if op is not None:
@@ -1002,7 +961,45 @@ async def _run_entry(entry: dict[str, Any], args: dict, as_: str | None) -> str:
             if inspect.iscoroutinefunction(op.service_func):
                 return _serialize(await _call_service(op, args))
             return _serialize(await run_in_threadpool(_call_service, op, args))
-    return _serialize(await _rpc_call(entry["rec"], entry["fn"], args, as_))
+    _check_arguments(entry["rec"], entry["fn"], args)
+    return _serialize(await _rpc_call(entry["rec"], entry["fn"], args, as_, grants))
+
+
+def published_name_of(service: str, fn: str) -> str:
+    """The flat name the registered ``service``'s internal function ``fn`` is
+    published as; ``<service>_<fn>`` when it is not registered."""
+    for rec in get_registry().service_records():
+        if rec.name != service:
+            continue
+        for spec in (rec.api or {}).get("functions", []) or []:
+            if isinstance(spec, dict) and spec.get("name") == fn:
+                return _tool_name(rec, spec)
+    return f"{service}_{fn}"
+
+
+def _flat_names() -> set[str]:
+    """Every flat name the catalog can run: native ops and published service
+    functions, hidden ones included."""
+    names = set(_GATEWAY_OPS_BY_NAME)
+    for rec in get_registry().service_records():
+        for fn in (rec.api or {}).get("functions", []) or []:
+            if isinstance(fn, dict) and fn.get("name"):
+                names.add(_tool_name(rec, fn))
+    return names
+
+
+def resolve_alias(name: str, args: dict) -> tuple[str, dict]:
+    """The call a request becomes once an old name is replaced by its successor.
+
+    Idempotent, and the identity for a name that is registered or has no row, or
+    whose successor is absent."""
+    if not isinstance(name, str) or not isinstance(args, dict):
+        return name, args
+
+    def visible(tool: str, verb: str) -> bool:
+        return any(e["verb"] == verb for e in _domain_catalog().get(tool, []))
+
+    return aliases.resolve(name, args, flat_names=_flat_names, visible=visible)
 
 
 async def dispatch(name: str, args: dict, as_: str | None = None) -> str:
@@ -1012,36 +1009,34 @@ async def dispatch(name: str, args: dict, as_: str | None = None) -> str:
     that backs the HTTP route + CLI command): async ones are awaited on the
     server loop, sync ones run in a threadpool. Service ops are awaited over the
     service's control WS. See the module concurrency note. Raises ``ValueError``
-    for an unknown tool (→ 404) and ``RuntimeError`` when a service's control
-    channel is not open (→ 500), matching ``/invoke``'s existing exception→HTTP
+    for an unknown tool (→ 404), :class:`ArgumentError` for an argument the verb
+    does not declare (→ 400) and ``RuntimeError`` when a service's control
+    channel is not open (→ 500), matching ``/invoke``'s exception→HTTP
     translation.
 
-    Collapsed per-domain calls (the ``GET /tools?view=domains`` surface) arrive
-    here too: a payload whose ``name`` is a known domain and whose ``args``
-    carries a ``verb`` is routed to :func:`_dispatch_domain` *ahead* of the flat
-    branches. The ``"verb" in args`` guard keeps a future flat tool literally
-    named like a domain from being hijacked, and the flat branches below stay
-    intact so the CLI's by-name ``/invoke`` posts keep working.
+    Collapsed per-tool calls (the ``GET /tools?view=domains`` surface) arrive here
+    too: a payload whose ``name`` is a known tool and whose ``args`` carries a
+    ``verb`` is routed to :func:`_dispatch_domain` *ahead* of the flat branches.
+    The ``"verb" in args`` guard keeps a future flat tool literally named like a
+    tool from being hijacked, and the flat branches below stay intact so the CLI's
+    by-name ``/invoke`` posts keep working.
 
-    A domain **no local service provides** but a peer does routes here too, so a
-    peer-only domain (``hpcllm``, ``orch``, …) is callable by its plain name
-    rather than needing the ``<domain>@<peer>`` twin the surface used to carry.
-    ``providersOf`` is checked first: it is a reserved top-level tool, not a
-    domain verb.
+    A tool **no local service provides** but a peer does routes here too, so a
+    peer-only tool (``hpcllm``, ``orch``, …) is callable by its plain name
+    rather than needing a ``<tool>@<peer>`` twin.
 
     A foreign caller (``X-Awm-As`` naming a peer the book does not call domestic)
     goes through :func:`_dispatch_foreign` instead, which runs only the ``read``
     verbs in the categories its record grants.
+
+    A name that an earlier release published (see :mod:`aliases`) is rewritten to
+    its successor first, so the gates below judge the verb that will run.
     """
     args = args or {}
+    name, args = resolve_alias(name, args)
     grants = foreign_grants(as_)
     if grants is not None:
         return await _dispatch_foreign(name, args, as_, grants)
-    if name == _PROVIDERS_TOOL:
-        return _serialize(await _providers_of(
-            args.get("tool"), bool(args.get("refresh"))))
-    if name == _MORE_TOOL:
-        return _serialize(_more_index(args))
     if "verb" in args:
         domains = _domain_catalog()
         if name in domains or name in peer_catalog.fleet_domains(
@@ -1059,15 +1054,10 @@ async def _dispatch_flat(name: str, args: dict, as_: str | None) -> str:
     rec, fn = _find_service_fn(name)
     if rec is None or fn is None:
         raise ValueError(f"Unknown tool: {name}")
+    spec = _spec_of(rec, fn)
+    if spec is not None:
+        usage.record(*_split_name(rec, spec))
     return await _run_entry({"rec": rec, "fn": fn}, args, as_)
-
-
-def _foreign_more_index(domains: dict[str, list[dict[str, Any]]]) -> str:
-    """``more`` with no domain, for a foreign caller: the domains it may call and
-    only those verbs."""
-    lines = [f"- {domain}: verbs: {', '.join(v['verb'] for v in verbs)}"
-             for domain, verbs in sorted(domains.items())]
-    return "\n".join(lines) if lines else "No discoverable domains."
 
 
 async def _dispatch_foreign(name: str, args: dict, as_: str | None,
@@ -1076,27 +1066,20 @@ async def _dispatch_foreign(name: str, args: dict, as_: str | None,
 
     Every refusal is ``Unknown tool`` (→ 404), the answer for a name that does not
     exist, so the caller learns nothing about the verbs it may not call. The call
-    always runs on this node: ``providersOf`` and any ``peer`` argument are
-    refused, because a foreign node gets no onward hops through us. The
-    ``describe`` verb and ``more`` see the same cut catalog as ``/tools``."""
+    always runs on this node: any ``peer`` argument is refused, because a foreign
+    node gets no onward hops through us. The ``describe`` verb sees the same cut
+    catalog as ``/tools``."""
     if not isinstance(name, str) or not isinstance(args, dict):
         raise ValueError(f"Unknown tool: {name}")
-    if name == _PROVIDERS_TOOL or _has_peer_arg(args):
+    if _has_peer_arg(args):
         raise ValueError(f"Unknown tool: {name}")
     domains = _foreign_catalog(_domain_catalog(), grants)
-    if name == _MORE_TOOL:
-        domain = args.get("domain")
-        if domain in (None, ""):
-            return _foreign_more_index(domains)
-        if not mcp_more.is_plain_domain(domain):
-            raise ValueError(f"Unknown tool: {domain}")
-        rewritten, forwarded = mcp_more.rewrite_call(name, args)
-        return await _dispatch_foreign(rewritten, forwarded, as_, grants)
     if "verb" in args and name in domains:
         if not isinstance(args["verb"], str):
             raise ValueError(f"Unknown tool: {name}")
         try:
-            return await _dispatch_domain(name, args, as_, domains, local_only=True)
+            return await _dispatch_domain(name, args, as_, domains, local_only=True,
+                                          grants=grants)
         except rpc.RpcError as exc:
             raise _refusal_as_unknown(
                 exc, f"Unknown verb {args['verb']!r} for domain {name!r}") from None
@@ -1104,7 +1087,7 @@ async def _dispatch_foreign(name: str, args: dict, as_: str | None,
     if entry is None or not _allowed(entry["effect"], entry["category"], grants):
         raise ValueError(f"Unknown tool: {name}")
     try:
-        return await _run_entry(entry, args, as_)
+        return await _run_entry(entry, args, as_, grants)
     except rpc.RpcError as exc:
         raise _refusal_as_unknown(exc, f"Unknown tool: {name}") from None
 

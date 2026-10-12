@@ -149,21 +149,20 @@ async def test_reap_dry_run_lists_without_killing(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_reap_operation_registered_on_all_surfaces():
-    op = next(o for o in go.GATEWAY_OPERATIONS if o.name == "services_reap")
-    assert op.surfaces == frozenset({"cli", "mcp", "http"})
+def test_reap_operation_is_a_hidden_verb_on_cli_and_http():
+    op = next(o for o in go.GATEWAY_OPERATIONS if o.name == "awm_services_reap")
+    assert op.surfaces == frozenset({"cli", "http"})
     assert op.cli_group == "services" and op.cli_command == "reap"
+    assert (op.mcp_tool, op.mcp_verb) == ("awm", "services_reap")
     assert op.http_method == "POST" and op.http_path == "/hub/services/reap"
     assert op.request_model is go.ReapRequest
 
 
-def test_reap_projects_to_mcp_tool():
-    from awm.gateway.operations import operations_to_mcp_tools
+def test_reap_schema_takes_dry_run():
+    from awm.gateway.operations import _to_mcp_tool
 
-    tools = {t.name: t for t in operations_to_mcp_tools(go.GATEWAY_OPERATIONS)}
-    assert "services_reap" in tools
-    props = tools["services_reap"].inputSchema["properties"]
-    assert props["dry_run"]["type"] == "boolean"
+    op = next(o for o in go.GATEWAY_OPERATIONS if o.name == "awm_services_reap")
+    assert _to_mcp_tool(op).inputSchema["properties"]["dry_run"]["type"] == "boolean"
 
 
 # ---------------------------------------------------------------------------

@@ -401,6 +401,9 @@ async def _h_bucket_search(args: dict) -> dict:
             "count": len(entries)}
 
 
+# Operator verbs keep working on the CLI and over HTTP but are not agent tools.
+_CLI_HTTP = ["cli", "http"]
+
 API_MANIFEST: dict[str, Any] = {
     "functions": [
         {
@@ -504,6 +507,7 @@ API_MANIFEST: dict[str, Any] = {
             "name": "add_operator",
             "effect": "write",
             "tool": "social_operator_add",
+            "surfaces": _CLI_HTTP,
             "description": "Whitelist a platform user and map them to an awm_user.",
             "params": [
                 {"name": "platform", "type": "string", "required": True},
@@ -515,6 +519,7 @@ API_MANIFEST: dict[str, Any] = {
             "name": "remove_operator",
             "effect": "write",
             "tool": "social_operator_remove",
+            "surfaces": _CLI_HTTP,
             "description": "Remove a platform user from the whitelist.",
             "params": [
                 {"name": "platform", "type": "string", "required": True},
@@ -607,6 +612,7 @@ API_MANIFEST: dict[str, Any] = {
             "name": "emit_probe",
             "effect": "queue",
             "tool": "social_emit_probe",
+            "surfaces": _CLI_HTTP,
             "description": "Emit a synthetic, inert `command` event carrying "
                            "only `nonce`, so a subscriber can prove on demand "
                            "that it can still receive. Opens no window, arms "

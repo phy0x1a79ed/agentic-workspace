@@ -125,6 +125,28 @@ def _check_grant(value: str) -> str:
     return value
 
 
+def grantable_sources() -> list[str]:
+    """Archive source names a peer can be granted: every ``[[archive]]`` table a
+    service folder declares or a registered service carries, plus the grants
+    peers on the previous release already hold."""
+    from awm.gateway.hub import discovery
+    from awm.gateway.hub.registry import get_registry
+
+    names = set(peerbook.LEGACY_GRANTS) | set(discovery.archive_sources())
+    for rec in get_registry().service_records():
+        names.update(t["name"] for t in rec.archive if isinstance(t, dict) and t.get("name"))
+    return sorted(names)
+
+
+def _check_source(value: str) -> str:
+    value = _check_grant(value)
+    sources = grantable_sources()
+    if value not in sources:
+        raise ValueError(
+            f"grant {value!r}: expected an archive source ({', '.join(sources)})")
+    return value
+
+
 def _check_name(name: str) -> str:
     name = (name or "").strip()
     if not name:
@@ -245,13 +267,14 @@ def update(
 
 
 def grant(name: str, category: str) -> tuple[dict[str, Any], str | None]:
-    """Add a read ``category`` to a peer's grants. Returns ``(record, warning)``.
+    """Add a read ``category`` (an archive source name) to a peer's grants.
+    Returns ``(record, warning)``.
 
     The warning is set for a domestic peer: domestic peers are trusted by
     relation, so the grant is stored but changes nothing.
     """
     name = (name or "").strip()
-    category = _check_grant(category)
+    category = _check_source(category)
     with _locked_book() as peers:
         record = _stored(peers, name)
         if category not in record["grants"]:

@@ -123,7 +123,7 @@ def test_option_required_optional_and_array_fidelity():
 
 
 def test_required_param_after_optional_builds_valid_signature():
-    # A tool may declare a required field LAST, after optional ones — scope_post
+    # A tool may declare a required field LAST, after optional ones — journal_post
     # puts the required `body` after optional kind/meta/to_scope so a serialization
     # bleed has no trailing param to corrupt. inspect.Signature forbids a no-default
     # param after a defaulted one, so the generator must sort required-first rather
@@ -131,7 +131,7 @@ def test_required_param_after_optional_builds_valid_signature():
     # manifest once took down the entire CLI.
     tools = [
         {
-            "name": "scope_post",
+            "name": "journal_post",
             "description": "Post to a scope",
             "inputSchema": {
                 "type": "object",
@@ -152,7 +152,7 @@ def test_required_param_after_optional_builds_valid_signature():
     groups = register_service_cli_commands(
         app, tools, api_func=lambda *a, **k: None, exclude_names=set()
     )
-    post = next(c for c in groups["scope"].registered_commands if c.name == "post")
+    post = next(c for c in groups["journal"].registered_commands if c.name == "post")
     params = list(inspect.signature(post.callback).parameters.values())
     # Every no-default (required) param precedes every defaulted (optional) one.
     seen_default = False

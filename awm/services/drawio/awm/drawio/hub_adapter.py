@@ -600,6 +600,7 @@ API_MANIFEST: dict[str, Any] = {
             "name": "status_service",
             "effect": "read",
             "tool": "drawio_service_status",
+            "surfaces": _CLI_HTTP,
             "description": (
                 "Service health: store location, diagram and checkout counts, "
                 "open editor tabs, and whether the web-client mount is up."

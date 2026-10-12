@@ -11,7 +11,8 @@ from pathlib import Path
 
 import pytest
 
-from awm.config import EFFECTS, GRANT_CATEGORIES
+from awm.config import ARCHIVE_CATEGORY, EFFECTS, LEGACY_GRANTS
+from awm.gateway.hub import discovery
 
 pytestmark = [pytest.mark.unit]
 
@@ -40,6 +41,7 @@ def _function_entries(tree: ast.AST) -> list[dict]:
             if (isinstance(name, str) and "type" not in keys
                     and ("params" in keys or "description" in keys or len(keys) == 1)):
                 entries.append({"name": name,
+                                "tool": _literal(keys.get("tool")),
                                 "effect": _literal(keys.get("effect")),
                                 "category": _literal(keys.get("category")),
                                 "line": node.lineno})
@@ -84,9 +86,15 @@ def test_declared_effects_are_valid():
     assert not bad, bad
 
 
+def _archive_sources() -> set[str]:
+    return {t["name"] for folder in SERVICES.iterdir() if folder.is_dir()
+            for t in discovery.read_archive(folder)}
+
+
 def test_declared_categories_are_grantable():
+    grantable = _archive_sources() | set(LEGACY_GRANTS) | {ARCHIVE_CATEGORY}
     bad = [(e["file"], e["name"], e["category"]) for es in MANIFESTS.values()
-           for e in es if e["category"] is not None and e["category"] not in GRANT_CATEGORIES]
+           for e in es if e["category"] is not None and e["category"] not in grantable]
     assert not bad, bad
 
 
@@ -109,10 +117,11 @@ def test_kb_reads_carry_the_kb_category():
     assert kb["start"]["category"] is None
 
 
-def test_no_category_outside_kb_and_scopes():
+def test_no_category_outside_the_archive_services():
     """Any other read verb stays unreachable by a grant until a category is added."""
     leaked = [(svc, e["name"]) for svc, es in MANIFESTS.items()
-              if svc not in ("kb", "scopes") for e in es if e["category"] is not None]
+              if svc not in ("kb", "scopes", "journal", "search")
+              for e in es if e["category"] is not None]
     assert not leaked, leaked
 
 
@@ -131,6 +140,7 @@ def test_relabelled_verbs_are_write():
 def test_gateway_native_reads():
     from awm.gateway.gateway_ops import GATEWAY_OPERATIONS
     reads = {op.name for op in GATEWAY_OPERATIONS if op.effect == "read"}
-    assert reads == {"awm_status", "gateway_list", "services_list", "peer_list",
-                     "peer_resolve", "peer_providers", "config_contracts"}
+    assert reads == {"awm_status", "awm_registry_list", "awm_services_list",
+                     "operations_peer_list", "operations_peer_resolve",
+                     "awm_providers", "awm_config_contracts"}
     assert all(op.category is None for op in GATEWAY_OPERATIONS)

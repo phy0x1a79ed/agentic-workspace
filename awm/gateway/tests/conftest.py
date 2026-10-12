@@ -108,3 +108,16 @@ def domestic_peers(tmp_path, monkeypatch):
         for name in ("altair", "mira", "cosmos", "capella", "fir")}))
     monkeypatch.setattr(peerbook, "peers_file", lambda: path)
     return path
+
+
+@pytest.fixture(autouse=True)
+def _isolated_usage_tally(tmp_path, monkeypatch):
+    """Keep the dispatch tally off the real workspace: tests dispatch freely."""
+    from awm.gateway import usage
+
+    usage._reset_for_tests()
+    monkeypatch.setattr(usage, "storage_path",
+                        lambda: tmp_path / "usage-tally" / "usage.json")
+    monkeypatch.setattr(usage, "SEED_PATH", tmp_path / "no-seed.txt")
+    yield
+    usage._reset_for_tests()

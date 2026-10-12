@@ -185,7 +185,7 @@ def _origin_override(app) -> str | None:
 
 #: Headers the gateway reads as *who is calling* or *which session this is*.
 #: Only a local process may set the pid pair and the redirect flag; a caller
-#: that crossed the edge could otherwise point reflection or `cx start`'s parent
+#: that crossed the edge could otherwise point reflection or `start_other`'s parent
 #: stamp at any local session. Dropped, never forwarded, case-insensitively.
 _CALLER_HEADERS = frozenset({
     "x-awm-as", "x-awm-caller-pid", "x-awm-session-pid", "x-awm-peer-redirect"})

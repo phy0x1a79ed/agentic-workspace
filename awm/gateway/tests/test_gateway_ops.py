@@ -103,19 +103,40 @@ def test_delete_with_optional_query_param():
 # ---------------------------------------------------------------------------
 
 
-def test_frozen_mcp_names_present():
+_VISIBLE = {
+    "awm_status", "awm_registry_list", "awm_services_list", "awm_services_start",
+    "awm_services_stop", "awm_services_restart", "awm_config_contracts",
+    "operations_peer_list", "operations_peer_resolve",
+}
+_HIDDEN = {
+    "awm_restart", "awm_mcp_sync", "awm_registry_deregister", "awm_services_reap",
+    "awm_services_enable", "awm_services_disable", "awm_providers", "awm_config_set",
+    "operations_peer_join", "operations_peer_add", "operations_peer_set",
+    "operations_peer_grant", "operations_peer_revoke", "operations_peer_forget",
+}
+
+
+def test_the_native_verbs_published_to_mcp_are_exactly_the_visible_ones():
     names = {t.name for t in operations_to_mcp_tools(GATEWAY_OPERATIONS)}
-    # Frozen, preserved names:
-    assert {"awm_status", "awm_restart", "awm_mcp_sync"} <= names
-    # Newly-exposed control ops:
-    assert {"gateway_list", "gateway_deregister",
-            "services_list", "services_start", "services_stop",
-            "services_restart", "services_enable", "services_disable"} <= names
+    assert names == _VISIBLE
+
+
+def test_every_native_op_is_a_verb_of_awm_or_operations():
+    by_name = {op.name: op for op in GATEWAY_OPERATIONS}
+    assert set(by_name) == _VISIBLE | _HIDDEN
+    for name, op in by_name.items():
+        assert op.mcp_tool in {"awm", "operations"}
+        assert name == f"{op.mcp_tool}_{op.mcp_verb}"
+        assert ("mcp" in op.surfaces) == (name in _VISIBLE)
+        assert {"http"} <= op.surfaces, "a hidden verb still answers over HTTP"
+    assert {op.name for op in GATEWAY_OPERATIONS if op.mcp_tool == "operations"} == {
+        f"operations_peer_{v}" for v in
+        ("join", "add", "set", "grant", "revoke", "list", "resolve", "forget")}
 
 
 def test_services_op_schema_requires_name():
     tools = {t.name: t for t in operations_to_mcp_tools(GATEWAY_OPERATIONS)}
-    schema = tools["services_stop"].inputSchema
+    schema = tools["awm_services_stop"].inputSchema
     assert schema["properties"]["name"]["type"] == "string"
     assert schema["required"] == ["name"]
 
@@ -135,7 +156,7 @@ def test_cli_groups_and_commands_generated():
 
     app = typer.Typer()
     groups = register_cli_commands(app, GATEWAY_OPERATIONS, api_func=lambda *a, **k: None)
-    assert set(groups) == {"gateway", "services", "peer", "config"}
+    assert set(groups) == {"gateway", "services", "peer", "config"}, "the CLI groups keep their names"
     gw = {c.name for c in groups["gateway"].registered_commands}
     sv = {c.name for c in groups["services"].registered_commands}
     cf = {c.name for c in groups["config"].registered_commands}
@@ -229,8 +250,149 @@ def test_dispatch_async_services_list(client):
     from awm.gateway import catalog
 
     async def _go():
-        return await catalog.dispatch("services_list", {})
+        return await catalog.dispatch("awm_services_list", {})
 
     import anyio
     payload = json.loads(anyio.run(_go))
     assert "services" in payload
+
+
+def test_a_hidden_native_verb_still_runs_by_its_flat_name_but_not_as_a_domain_verb():
+    import anyio
+
+    from awm.gateway import catalog
+
+    async def flat():
+        return await catalog.dispatch("awm_registry_deregister", {"name": "nope"})
+
+    async def domain():
+        return await catalog.dispatch("awm", {"verb": "registry_deregister",
+                                              "args": {"name": "nope"}})
+
+    with pytest.raises(FileNotFoundError):
+        anyio.run(flat)
+    with pytest.raises(ValueError, match="Unknown verb"):
+        anyio.run(domain)
+
+
+def test_the_old_native_names_still_reach_the_new_ones():
+    import json
+
+    import anyio
+
+    from awm.gateway import catalog
+
+    async def _go():
+        return [await catalog.dispatch("services_list", {}),
+                await catalog.dispatch("gateway", {"verb": "status"})]
+
+    listing, status = anyio.run(_go)
+    assert "services" in json.loads(listing) and json.loads(status)["status"] == "ok"
+
+
+# ---------------------------------------------------------------------------
+# awm status — one call for the node
+# ---------------------------------------------------------------------------
+
+
+class _Reading:
+    def __init__(self, answers):
+        self.answers = answers
+        self.asked = []
+
+    async def __call__(self, service, fn):
+        self.asked.append((service, fn))
+        return self.answers.get(service)
+
+
+async def test_status_adds_services_auth_node_role_and_compute(monkeypatch):
+    from awm.gateway import gateway_ops as go
+
+    async def listing():
+        return {"services": [
+            {"name": "scopes", "enabled": True, "running": True, "status": "ready", "pid": 1},
+            {"name": "kb", "enabled": True, "running": False, "status": "stopped", "pid": None},
+            {"name": "dev", "enabled": False, "running": False, "status": "stopped", "pid": None},
+            {"name": "ssh", "enabled": True, "running": True, "status": "starting", "pid": 2}]}
+
+    reading = _Reading({"auth": {"valid_generations": 2},
+                        "compute": {"armed": "shadow"}})
+    monkeypatch.setattr(go, "_op_services_list", listing)
+    monkeypatch.setattr(go, "_service_reading", reading)
+    monkeypatch.setenv("AWM_NODE_ROLE", "station")
+    out = await go._op_status()
+    assert out["status"] == "ok" and out["core_pid"] and "workspace_root" in out
+    assert out["services"] == {"scopes": "ready", "kb": "stopped", "dev": "stopped",
+                               "ssh": "starting"}
+    assert out["services_down"] == ["kb", "ssh"], "a disabled service is not down"
+    assert out["auth"] == {"valid_generations": 2}
+    assert out["compute"] == {"armed": "shadow"}
+    assert out["node_role"] == "station" and out["swarm"]
+    assert sorted(reading.asked) == [("auth", "status"), ("compute", "status")]
+
+
+async def test_status_survives_a_service_that_is_down_or_slow(monkeypatch):
+    import asyncio
+
+    from awm.gateway import gateway_ops as go
+    from awm.gateway.hub import rpc
+    from awm.gateway.hub.registry import ServiceRecord
+
+    async def listing():
+        return {"services": []}
+
+    class Stub:
+        def __init__(self, recs):
+            self.recs = recs
+
+        def get_by_name(self, kind, name):
+            return self.recs.get(name)
+
+    class Slow:
+        async def call(self, fn, args, timeout=None):
+            raise asyncio.TimeoutError
+
+    class Broken:
+        async def call(self, fn, args, timeout=None):
+            raise RuntimeError("boom")
+
+    recs = {"auth": ServiceRecord(name="auth", prefix="/svc/auth", kind="service",
+                                  service_id="sid-auth"),
+            "compute": ServiceRecord(name="compute", prefix="/svc/compute", kind="service",
+                                     service_id="sid-compute")}
+    channels = {"sid-auth": Slow(), "sid-compute": Broken()}
+    monkeypatch.setattr(go, "_op_services_list", listing)
+    monkeypatch.setattr("awm.gateway.hub.registry.get_registry", lambda: Stub(recs))
+    monkeypatch.setattr(rpc, "get_control", lambda sid: channels.get(sid))
+    out = await go._op_status()
+    assert out["status"] == "ok"
+    assert out["auth"] == {"error": "TimeoutError"}
+    assert out["compute"] == {"error": "boom"}
+    monkeypatch.setattr("awm.gateway.hub.registry.get_registry", lambda: Stub({}))
+    assert (await go._op_status())["auth"] is None
+
+
+async def test_registry_list_shows_each_services_archive_tables(monkeypatch):
+    from awm.gateway import gateway_ops as go
+    from awm.gateway.hub import lease, registry
+    from awm.gateway.hub.registry import ServiceRecord
+
+    plugged = ServiceRecord(name="journal", prefix="/svc/journal", kind="service",
+                            archive=[{"name": "journals", "mode": "index", "topic": "posts"}])
+    plain = ServiceRecord(name="ssh", prefix="/svc/ssh", kind="service")
+    page = ServiceRecord(name="home", prefix="/ui/home", kind="page", static_dir="/x")
+
+    class Reg:
+        async def list(self):
+            return [plugged, plain, page]
+
+    class Leases:
+        def is_held(self, sid):
+            return False
+
+    monkeypatch.setattr(registry, "get_registry", lambda: Reg())
+    monkeypatch.setattr(lease, "get_lease_manager", lambda: Leases())
+    rows = {r["name"]: r for r in (await go._op_gateway_list())["services"]}
+    assert rows["journal"]["archive"] == [{"name": "journals", "mode": "index", "topic": "posts"}]
+    assert rows["ssh"]["archive"] == []
+    assert "archive" not in rows["home"]

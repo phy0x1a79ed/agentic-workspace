@@ -1,8 +1,8 @@
 """Session modes and the verbs each may call.
 
-`cx start` declares a mode for a session it creates. The gateway looks the
-calling session's mode up and refuses any call the mode's policy does not admit
-(`refusal`). A mode that is not listed in `MODES`, such as the default `worker`,
+`reflection start_other` declares a mode for a session it creates. The gateway
+looks the calling session's mode up and refuses any call the mode's policy does
+not admit (`refusal`). A mode that is not listed in `MODES`, such as the default `worker`,
 is unrestricted.
 
 A policy is one of two shapes, and both admit only what they name or declare:
@@ -102,7 +102,7 @@ Policy = Allow | ByEffect
 
 
 def is_reply(call_args: CallArgs) -> bool:
-    """Whether a `board post` is a message card answering another card."""
+    """Whether a `board_post` is a message card answering another card."""
     reply_to = call_args.get("reply_to")
     return call_args.get("kind") == "message" and isinstance(reply_to, str) and bool(reply_to)
 
@@ -114,24 +114,27 @@ _REFLECTION = _pairs("reflection", "compact", "whoami")
 
 #: What every session reports through: hooks fire these for it, and it claims
 #: its task and asks a human through them.
-_REPORTING = _pairs("reporting", "hook_plan", "hook_plan_approved", "hook_todos",
-                    "hook_prompt", "claim_task", "request_human_user",
-                    "request_human_review")
+_REPORTING = _pairs("operations", "hook_plan", "hook_plan_approved", "hook_todos",
+                    "hook_prompt", "hook_session_clear", "task_claim", "request_human")
 
 #: The card ledger, which only a triage session may read.
-_CARDS = _pairs("reporting", "card_list", "card_get", "card_assign", "status")
+_CARDS = _pairs("operations", "queue_list", "queue_get", "queue_assign", "status")
+
+#: The archive search's read verbs. `reindex` rebuilds the index and is not one.
+_SEARCH_READS = _pairs("search", "query", "get", "sources", "status")
 
 #: Pure reads of the scope channel.
-_SCOPE_READS = (_pairs("scope", "fetch", "search", "goal_read", "goal_history", "resolve")
-                | _pairs("project", "search"))
+_SCOPE_READS = (_pairs("journal", "fetch", "goal_read", "goal_history")
+                | _pairs("scope", "search", "resolve")
+                | _SEARCH_READS)
 
 MODES: dict[str, Policy] = {
     # Triage only: read cards, start or list workers, record the hand-off, and
     # fail a card it refuses. It never does a card's work and never claims,
     # completes or posts a card: the front door claims, a delegate finishes.
     REPRESENTATIVE: Allow(
-        _pairs("board", "list", "get", "fail")
-        | _pairs("cx", "start", "list")
+        _pairs("operations", "board_list", "board_get", "board_fail")
+        | _pairs("reflection", "start_other", "list_other")
         | _CARDS
         | _REPORTING
         | _REFLECTION
@@ -140,9 +143,9 @@ MODES: dict[str, Policy] = {
     # Tony's assistant over Remote Control: starts, names, lists and stops
     # agents. It never touches the board except to read it.
     SECRETARY: Allow(
-        _pairs("cx", "start", "list", "stop")
-        | _pairs("board", "list", "get")
-        | _pairs("reporting", "status", "card_list", "card_get")
+        _pairs("reflection", "start_other", "list_other", "stop_other")
+        | _pairs("operations", "board_list", "board_get")
+        | _pairs("operations", "status", "queue_list", "queue_get")
         | _REPORTING
         | _REFLECTION
         | _SCOPE_READS
@@ -150,14 +153,15 @@ MODES: dict[str, Policy] = {
     # The worker a restricted session starts for a card. It reads what the
     # node declares readable and finishes its card on the board, and it posts a
     # message card only as a reply. It starts nothing, writes no scope, queue or
-    # setting, and has no browser: `rlm` can drive a loopback browser to the
+    # setting, and has no browser: `browser` can drive a loopback browser to the
     # gateway's HTTP door, past this gate.
     DELEGATE: ByEffect(
         effects=frozenset({"read"}),
-        denied_domains=frozenset({"rlm"}),
-        denied_pairs=_pairs("board", "party_list") | _CARDS,
-        pairs=_pairs("board", "get", "list", "complete", "fail") | _REFLECTION | _REPORTING,
-        when={("board", "post"): is_reply},
+        denied_domains=frozenset({"browser", "factorio"}),
+        denied_pairs=_pairs("operations", "party_list") | _CARDS,
+        pairs=(_pairs("operations", "board_get", "board_list", "board_complete", "board_fail")
+               | _REFLECTION | _REPORTING | _SEARCH_READS),
+        when={("operations", "board_post"): is_reply},
     ),
     # A session whose mode could not be established gets the least that keeps
     # it alive: it can compact itself and nothing else.

@@ -19,8 +19,9 @@ import awm.config as _config
 
 RELATIONS = ("domestic", "foreign")
 ROLES = ("fleet", "station")
-# Read categories implemented so far; the reader never validates grants against it.
-GRANT_CATEGORIES = ("journals", "kb")
+#: Grants the book already holds for peers on the previous release. They name
+#: archive sources, and stay grantable whether or not a service declares them.
+LEGACY_GRANTS = ("journals", "kb")
 
 NODE_ROLE_ENV = "AWM_NODE_ROLE"
 NODE_SWARM_ENV = "AWM_SWARM"

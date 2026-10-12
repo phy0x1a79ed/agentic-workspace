@@ -70,12 +70,16 @@ class ServiceRecord:
     # in its `ready` frame (functions/emitters/sessions). The control WS
     # state lives on the rpc.py ControlChannel keyed by service_id.
     api: dict[str, Any] = field(default_factory=dict)
+    # The ``[[archive]]`` tables of the service's ``service.toml``: the search
+    # sources it plugs in, read when the service reaches ``ready``.
+    archive: list[dict[str, Any]] = field(default_factory=list)
     start_cmd: list[str] = field(default_factory=list)
     cwd: str = ""
 
     # Lifecycle bookkeeping for kind="service". ``backend_status`` mirrors
     # the ready state the client surface gates on.
-    backend_status: str = "starting"                # starting | ready | down
+    backend_status: str = "starting"                # starting | ready | down | refused
+    refusal: str = ""                               # why a refused manifest was refused
     backend_pid: int | None = None
 
     teardown: Callable[[], Awaitable[None]] | None = field(

@@ -255,9 +255,14 @@ def load_env_file(path: Path = ENV_FILE) -> int:
 # Federation reader contracts (re-exported; defined in submodules)
 # ---------------------------------------------------------------------------
 
-from awm.config.effects import EFFECTS, verb_category, verb_effect  # noqa: E402,F401
+from awm.config.effects import (  # noqa: E402,F401
+    ARCHIVE_CATEGORY,
+    EFFECTS,
+    verb_category,
+    verb_effect,
+)
 from awm.config.peerbook import (  # noqa: E402,F401
-    GRANT_CATEGORIES,
+    LEGACY_GRANTS,
     RELATIONS,
     ROLES,
     caller_peer,

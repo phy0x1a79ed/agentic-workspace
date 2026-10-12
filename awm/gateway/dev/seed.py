@@ -3,8 +3,8 @@
 Hits the running gateway over HTTP on loopback (no auth). No ``awm.*``
 imports, no service-level shortcuts — everything goes through the gateway's
 generic ``POST /invoke {name, args}`` RPC surface, calling the scopes
-service's tools (``project_create``, ``scope_create``,
-``scope_post``/``scope_fetch``). Requires the ``scopes``
+service's tools (``project_create``, ``scope_create``) and the journal
+service's (``journal_post``/``journal_fetch``). Requires the ``scopes``
 feature service to be registered (``dev/run.sh start`` waits for that).
 
 Idempotent: project/scope creation returns 409 (FileExistsError) when the
@@ -114,13 +114,13 @@ def main() -> int:
 
     # A scope IS the channel — seed a couple of demo posts on demo/alpha's
     # channel via the scope-channel tools (no separate rooms anymore).
-    existing = _invoke("scope_fetch", {"project": "demo", "scope": "alpha", "limit": 1})
+    existing = _invoke("journal_fetch", {"project": "demo", "scope": "alpha", "limit": 1})
     if existing.get("total", 0) == 0:
         for body in (
             "hello from the seeder — this is a fake channel post",
             "subscribe to demo/alpha in the UI to see this",
         ):
-            _invoke("scope_post", {
+            _invoke("journal_post", {
                 "project": "demo", "scope": "alpha",
                 "author": "user:dev", "body": body, "kind": "message",
             })
