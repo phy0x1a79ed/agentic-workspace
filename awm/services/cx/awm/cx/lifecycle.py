@@ -203,7 +203,7 @@ def _apply_caller_policy(args: dict[str, Any], spec: dict[str, Any]) -> bool:
     - may not ask for a reserved name or mode: only the front door starts the
       representative and the secretary, and only cx assigns `delegate`;
     - in an unknown mode may start nothing;
-    - in a gated mode (`modes.MODES`) gets a delegate. It may name the project,
+    - in a delegating mode (`modes.DELEGATING_MODES`) gets a delegate. It may name the project,
       scope, prompt, name, an allowlisted model and the effort, and nothing
       else, and the scope must already exist. cx fixes the rest.
 
@@ -212,14 +212,15 @@ def _apply_caller_policy(args: dict[str, Any], spec: dict[str, Any]) -> bool:
     caller_pid = args.get("_caller_pid")
     if caller_pid is None:
         return False
-    if spec["mode"] in modes.RESERVED_MODES or spec["name"] in modes.RESERVED_NAMES:
+    role = spec["name"].partition(" - ")[0]
+    if spec["mode"] in modes.RESERVED_MODES or role in modes.RESERVED_NAMES:
         raise Refused(f"only the front door may start a session named or moded "
                       f"{sorted(modes.RESERVED_NAMES | modes.RESERVED_MODES)}")
     mode = mode_of(caller_pid)
     if mode == UNKNOWN:
         raise Refused("the caller's mode could not be determined, so it may not "
                       "start sessions")
-    if not modes.is_restricted(mode):
+    if mode not in modes.DELEGATING_MODES:
         return False
     given = [k for k in CHILD_OVERRIDES if args.get(k) not in (None, "", [])]
     if given:
@@ -331,6 +332,9 @@ def build_flags(spec: dict[str, Any]) -> list[str]:
              else config.skip_permission_flags())
     if spec["restricted"]:
         flags.append("--restricted")
+        settings = config.restricted_settings()
+        if settings.exists():
+            flags.append(f"--settings={settings}")
     if spec["tools"]:
         flags.append("--tools=" + ",".join(spec["tools"]))
     if spec["strict_mcp"]:
@@ -664,7 +668,7 @@ def _job_row(s: sessions.Session, rec: dict[str, Any] | None,
         "job": s.short, "tmux": None, "name": s.name, "node": node,
         "project": rec.get("project", project), "scope": rec.get("scope", scope),
         "cwd": s.cwd,
-        "state": (state or "unknown") if sessions.is_alive(s) else "gone",
+        "state": (state or "unknown") if sessions.is_alive(s) or state == "stopped" else "gone",
         "needs": record.get("needs"), "detail": _clip(record.get("detail")),
         "attach": f"claude attach {s.short}",
         "parent": rec.get("parent"), "caller": rec.get("caller"),

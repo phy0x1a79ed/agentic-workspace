@@ -51,11 +51,12 @@ API_MANIFEST: dict[str, Any] = {
                 "Claude Code daemon runs, when the worktree is untrusted, or "
                 "when a live session already holds the name. The session "
                 "defaults to skip-permissions, opus and high effort. "
-                "A caller in a gated mode (the representative, the secretary) "
+                "A caller in a delegating mode (the representative) "
                 "may set only project, scope, prompt, name, model and effort: "
-                "cx starts a delegate with a fixed tool set, the scope must "
-                "already exist, and the name and mode of the representative "
-                "and secretary are reserved."
+                "cx starts a delegate with a fixed tool set and the scope must "
+                "already exist. A secretary caller starts an ordinary worker. "
+                "The name and mode of the representative and secretary are "
+                "reserved, and so is the role prefix of `<role> - <node>`."
             ),
             "params": [
                 {"name": "project", "type": "string", "required": True,

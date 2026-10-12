@@ -71,6 +71,11 @@ def skip_permission_flags() -> list[str]:
     return ["--dangerously-skip-permissions", "--allow-dangerously-skip-permissions"]
 
 
+def restricted_settings() -> Path:
+    env = os.environ.get("AWM_CX_RESTRICTED_SETTINGS")
+    return Path(env) if env else Path.home() / ".claude" / "hooks" / "awm-reporting-settings.json"
+
+
 def seed_env() -> dict[str, str]:
     return {"ANTHROPIC_MODEL": default_model()}
 

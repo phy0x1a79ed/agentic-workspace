@@ -647,9 +647,8 @@ def allowed_list(flags):
     return next(f for f in flags if f.startswith("--allowedTools=")).split("=", 1)[1].split(",")
 
 
-@pytest.mark.parametrize("caller_mode", ["representative", "secretary", "delegate"])
-def test_a_gated_caller_gets_a_delegate_with_a_fixed_policy(home, launched, caller_mode):
-    parent_session(home, mode=caller_mode)
+def test_a_gated_caller_gets_a_delegate_with_a_fixed_policy(home, launched):
+    parent_session(home, mode="representative")
     ok = start({**BASE, "model": "opus", "effort": "high", "prompt": "do it",
                 "_caller_pid": os.getpid()})
     assert ok["ok"] and ok["mode"] == "delegate" and ok["parent"] == PARENT_JOB
@@ -665,6 +664,34 @@ def test_a_gated_caller_gets_a_delegate_with_a_fixed_policy(home, launched, call
     assert "mcp__awm__*" in allowed and "Bash" not in allowed.split(",")
     assert not any(f.startswith(("--remote-control", "--dangerously")) for f in flags)
     assert "--model=opus" in flags and "--effort=high" in flags
+
+
+def test_a_secretary_caller_gets_a_top_level_worker(home, launched):
+    parent_session(home, mode="secretary")
+    ok = start({**BASE, "prompt": "do it", "_caller_pid": os.getpid()})
+    assert ok["ok"] and ok["mode"] == "worker" and ok["parent"] == PARENT_JOB
+    flags = launched[0]["flags"]
+    assert "--dangerously-skip-permissions" in flags
+    assert not any(f.startswith(("--restricted", "--strict-mcp", "--tools", "--settings"))
+                   for f in flags)
+
+
+def test_a_restricted_start_omits_the_settings_when_the_file_is_missing(
+        home, launched, monkeypatch, tmp_path):
+    monkeypatch.setenv("AWM_CX_RESTRICTED_SETTINGS", str(tmp_path / "missing.json"))
+    parent_session(home, mode="representative")
+    start({**BASE, "_caller_pid": os.getpid()})
+    assert not any(f.startswith("--settings") for f in launched[0]["flags"])
+
+
+def test_a_restricted_start_passes_the_reporting_settings(
+        home, launched, monkeypatch, tmp_path):
+    settings = tmp_path / "reporting-settings.json"
+    settings.write_text("{}")
+    monkeypatch.setenv("AWM_CX_RESTRICTED_SETTINGS", str(settings))
+    parent_session(home, mode="representative")
+    start({**BASE, "_caller_pid": os.getpid()})
+    assert f"--settings={settings}" in launched[0]["flags"]
 
 
 def test_the_delegate_loads_only_the_awm_server_from_the_workspace_config(home, launched):
@@ -696,7 +723,7 @@ def test_a_gated_caller_may_not_create_a_scope(home, launched, monkeypatch):
         raise AssertionError("created a scope")
 
     monkeypatch.setattr(lifecycle, "create_scope", boom)
-    parent_session(home, mode="secretary")
+    parent_session(home, mode="representative")
     out = start({"project": "awm", "scope": "nowhere", "_caller_pid": os.getpid()})
     assert out["ok"] is False and "may not create scopes" in out["reason"]
     assert launched == []
@@ -721,7 +748,9 @@ def test_the_front_door_with_no_session_may_start_the_reserved_sessions(home, la
 @pytest.mark.parametrize("caller_mode", [None, "worker", "other"])
 @pytest.mark.parametrize("ask", [{"mode": "representative"}, {"mode": "secretary"},
                                  {"mode": "delegate"}, {"name": "representative"},
-                                 {"name": "secretary"}])
+                                 {"name": "secretary"},
+                                 {"name": "representative - altair"},
+                                 {"name": "secretary - capella"}])
 def test_a_session_may_not_start_a_reserved_name_or_mode(home, launched, caller_mode, ask):
     parent_session(home, mode=caller_mode)
     out = start({**BASE, "_caller_pid": os.getpid(), **ask})
@@ -1101,6 +1130,20 @@ def test_list_carries_needs_and_detail_from_the_job_record(home, monkeypatch):
     row = next(r for r in lifecycle.collect() if r["job"] == PARENT_JOB)
     assert row["state"] == "blocked" and row["needs"] == "login required \u2014 run /login"
     assert row["detail"] == "d" * 200
+
+
+@pytest.mark.parametrize("recorded,reported", [("stopped", "stopped"), ("working", "gone")])
+def test_a_dead_job_reports_stopped_only_when_it_recorded_stopped(
+        home, monkeypatch, recorded, reported):
+    from awm.cx import lifecycle
+
+    monkeypatch.setattr(lifecycle, "_tmux_panes", dict)
+    home.add(PARENT_JOB, "<warm saiga>", os.getpid(), state=recorded)
+    workers = home.workers()
+    workers[PARENT_JOB]["replProcStart"] = "1"
+    home.set_workers(workers)
+    row = next(r for r in lifecycle.collect() if r["job"] == PARENT_JOB)
+    assert row["state"] == reported
 
 
 def test_list_filters_by_project_and_scope(home, launched, monkeypatch):
