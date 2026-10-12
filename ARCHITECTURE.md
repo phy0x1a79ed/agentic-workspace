@@ -75,7 +75,7 @@ A service declares its API as a serializable `ready.api` manifest with `function
 
 #### One tool per service
 
-A service publishes under one tool. Its `service.toml` names the tool with `tool` (default: the folder name), and every function it registers is published as `<tool>_<verb>`. Before this rule a tool took its name from each function's prefix, so one service could publish several tools and a hand-kept table papered over the mismatch. Now the service record decides.
+A service publishes under one tool. Its `service.toml` names the tool with `tool` (default: the folder name), and every function it registers is published as `<tool>_<verb>`. A tool never takes its name from a function's prefix, so one service cannot publish several tools and no hand-kept table has to paper over a mismatch.
 
 - **Enforcement.** `surface.check_registration` runs when a service registers (`api/hub.py`). It refuses a function not named `<tool>_<verb>` and a verb that another service already holds in the same tool, and it names every offender. A refused service registers nothing and is not respawned. `gateway/tests/test_tool_rule.py` applies the rule to every manifest in the tree, and `LEGACY_ALLOWLIST` is empty. Keep it empty.
 - **Shared tools.** Two services may share a tool. `reflection` serves the `reflection` and `cx` services, `operations` serves `reporting`, `board` and the gateway's native peer book, and `awm` serves the gateway's native ops and `auth`. The `scopes` service keeps worktree lifecycle and `dvc` owns the data verbs (`mount`, `gc`, `scope_status`). `scopes` imports `awm.dvc.data_dvc` for provisioning.
@@ -90,11 +90,11 @@ A manifest function may carry these keys:
 - `"timeout"` sets the verb's budget. See § *The timeout ladder*.
 - `"effect"` (`read`, `queue`, `write` or `secret`) and `"category"` feed the gates in § *Verb gating*. An omitted effect means `write`.
 
+A manifest may also carry a top-level `"description"`. `_domain_blurbs` puts it before the generated domain description and adds it to the `describe` reply. It is the only guidance an agent reads before it chooses a verb. `2fa` uses it to send callers to `ssh(verb=connect)`. It applies to this node only, because a peer's blurb lives in the peer's catalog.
+
 #### Old names
 
 `aliases.py` maps each renamed verb's old name to its successor for HTTP and peer callers, so a peer on the previous release and an old hook script keep working for one release. A row may also rename or drop an argument and inject one (`project_create` becomes `scope create` with `new_project`). A row fires only when the old name no longer registers and its target does, so a live verb is never shadowed. A verb removed with no successor has no row and fails as an unknown tool. MCP lists only the new names. The mode gate checks after alias resolution.
-
-A manifest may also carry a top-level `"description"`. `_domain_blurbs` puts it before the generated domain description and adds it to the `describe` reply. It is the only guidance an agent reads before it chooses a verb. `2fa` uses it to send callers to `ssh(verb=connect)`. It applies to this node only, because a peer's blurb lives in the peer's catalog.
 
 ### Expanded and collapsed projections
 
@@ -177,7 +177,7 @@ Native ops publish into two tools. `awm` carries the core infrastructure API, wi
 - **index mode.** The service's hidden `<tool>_export` verb pages `{documents, next_cursor, done, ids}` in ascending key order. `ids` is the full key set and appears only on the last page. `search` drops stored documents whose key is missing from it. A push topic, when the table names one, schedules a debounced full pass, and an hourly pass runs regardless.
 - **live mode.** The table names a query verb that `search` calls at query time. A source marked `optin` runs only when a caller names it. `transcripts` is the live source.
 - **One corpus.** Every document sits under one source type with a `source:id` key, and a side table holds source, project, scope, kind and ts for filtering. The engine normalises scores per call, so separate corpora would not rank against each other.
-- **Frozen sources.** A source whose service stops registering keeps its last documents, marked frozen, and a sweep never reads an absent service as "every document deleted". This is how `writing` and `notes` stay searchable once their services are off.
+- **Frozen sources.** A source whose service stops registering keeps its last documents, marked frozen, and a sweep never reads an absent service as "every document deleted". This is how `writing` and `notes` stay searchable once their services are disabled.
 - **Merge.** Archive, live and peer lists fuse by reciprocal rank fusion. Scores from different lists do not compare, so only rank counts. Each hit carries its `origin` node and swarm.
 
 **CAUTION** An export verb that cannot read its store must raise. An empty `ids` from a broken store deletes that source's documents from the index.
