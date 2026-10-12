@@ -49,13 +49,13 @@ def test_start_on_a_station_logs_a_refusal_and_builds_nothing(monkeypatch, caplo
     assert "not running" in caplog.text
 
 
-def test_start_with_the_flag_off_runs_only_the_reconcile_loop(monkeypatch):
+def test_start_with_the_flag_off_runs_no_front_door_tasks(monkeypatch):
     monkeypatch.setenv("AWM_FRONT_DOOR", "0")
     monkeypatch.setattr(hub_adapter, "RUNTIME", None)
     spawned = []
     monkeypatch.setattr(hub_adapter, "spawn_supervised", lambda name, *a: spawned.append(name))
     hub_adapter._on_start()
-    assert spawned == ["reporting-reconcile"]
+    assert spawned == ["reporting-reconcile", "reporting-journals"]
     assert hub_adapter.RUNTIME is not None and not hub_adapter.RUNTIME.door
 
 

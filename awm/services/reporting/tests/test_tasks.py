@@ -13,6 +13,7 @@ from stubs import FakeTrilium, make_board
 pytestmark = [pytest.mark.unit, pytest.mark.smoke]
 
 BG = {"pid": 100, "kind": "bg", "jobId": "job00001", "sessionId": "sess-1", "cwd": "/nowhere", "procStart": "1"}
+SCOPE_DIR = "projects/awm/feat/x"
 TTY = {"pid": 200, "kind": "interactive", "sessionId": "sess-2", "cwd": "/nowhere", "procStart": "77"}
 
 
@@ -28,7 +29,13 @@ class Env:
         self.alive = {200: True}
         self.tasks = Tasks(self.ledger, SwarmBoard(self.tri), node="altair",
                            resolve=self.records.get, job_state=lambda job: self.job, dm=self._dm,
-                           alive=lambda pid, start: self.alive.get(pid, False))
+                           alive=lambda pid, start: self.alive.get(pid, False), fetch=self._fetch)
+        self.posts: list[dict] = []
+        self.fetches: list[dict] = []
+
+    async def _fetch(self, service, fn, args, timeout=0):
+        self.fetches.append(args)
+        return {"posts": list(self.posts)}
 
     async def _dm(self, text):
         if self.dm_error:
@@ -396,3 +403,61 @@ async def test_no_reminder_when_the_card_was_unblocked_or_not_urgent(env, monkey
     env.ledger.update(env.task()["id"], blocked_at=1.0)
     await env.tasks.sweep([row("working")])
     assert len(env.dms) == 1
+
+
+# -- journals ------------------------------------------------------------------
+
+
+def post(pid="p1", scope="feat/x", ts=None, **over):
+    import time
+
+    return {"id": pid, "project": "awm", "scope": scope, "kind": "journal", "body": "did the thing",
+            "ts": (ts or time.time() + 5) * 1000, "meta": {}, **over}
+
+
+async def in_scope(env, tmp_path):
+    env.records[100]["cwd"] = str(tmp_path / SCOPE_DIR)
+    (tmp_path / SCOPE_DIR).mkdir(parents=True)
+    await env.call("hook_plan_approved", plan_text="p")
+    assert (env.task()["project"], env.task()["scope"]) == ("awm", "feat/x")
+
+
+def journal_of(env):
+    return env.tri.notes[env.tri.kids(env.task()["note_id"])[0]]["content"].split("## Journal")[1]
+
+
+async def test_a_journal_post_from_the_tasks_scope_lands_in_its_journal_section(env, tmp_path):
+    await in_scope(env, tmp_path)
+    await env.tasks.on_post({"project": "awm", "scope": "feat/x", "post": post(meta={"title": "Session 1"})})
+    assert "Session 1" in journal_of(env) and "did the thing" in journal_of(env)
+
+
+async def test_posts_from_other_scopes_other_kinds_or_before_the_task_are_ignored(env, tmp_path):
+    await in_scope(env, tmp_path)
+    for p in (post("a", scope="feat/y"), post("b", kind="message"), post("c", ts=1.0), post("d", body=" ")):
+        await env.tasks.on_post({"post": p})
+    assert journal_of(env).strip() == "(none)"
+
+
+async def test_the_same_post_twice_is_appended_once(env, tmp_path):
+    await in_scope(env, tmp_path)
+    for _ in range(2):
+        await env.tasks.on_post({"post": post()})
+    assert journal_of(env).count("did the thing") == 1
+
+
+async def test_the_catch_up_finds_a_post_the_subscription_missed_and_runs_on_a_timer(env, tmp_path):
+    await in_scope(env, tmp_path)
+    env.posts = [post("old", ts=1.0), post("new")]
+    await env.tasks.sweep([row("working")])
+    assert journal_of(env).count("did the thing") == 1
+    assert env.fetches == [{"project": "awm", "scope": "feat/x", "kind": "journal", "limit": 50, "order": "desc"}]
+    await env.tasks.sweep([row("working")])
+    assert len(env.fetches) == 1
+
+
+async def test_a_post_for_a_closed_task_is_not_appended(env, tmp_path):
+    await in_scope(env, tmp_path)
+    await env.tasks.sweep([row("stopped")])
+    await env.tasks.on_post({"post": post()})
+    assert env.ledger.events(env.task()["id"], "journal") == []

@@ -72,7 +72,8 @@ class Tasks:
                  resolve: Callable[[int], dict | None] = roster.session_by_pid,
                  job_state: Callable[[str], dict] = _job_state,
                  dm: Callable[[str], Awaitable[None]] = _send_dm,
-                 alive: Callable[[int, str], bool] = lambda pid, start: roster.proc_start(pid) == start) -> None:
+                 alive: Callable[[int, str], bool] = lambda pid, start: roster.proc_start(pid) == start,
+                 fetch: Callable[..., Awaitable[Any]] = gatewayclient.call) -> None:
         self.ledger = ledger
         self.board = board
         self.node = node or node_name()
@@ -80,6 +81,9 @@ class Tasks:
         self._job_state = job_state
         self._dm = dm
         self._alive = alive
+        self._fetch = fetch
+        self._caught_up = 0.0
+        self.subscription: gatewayclient.SupervisedSubscription | None = None
         self._missing: dict[int, int] = {}
         self.lock = asyncio.Lock()
 
@@ -305,6 +309,7 @@ class Tasks:
             for task in self.ledger.open(self.node):
                 await self._ending(task, jobs.get(task["key"]))
             await self._board()
+            await self._catch_up()
             for task in self.ledger.open(self.node):
                 if (task["state"] == BLOCKED and task["urgent"] and not task["reminded"]
                         and time.time() - (task["blocked_at"] or 0) >= config.remind_s()
@@ -354,3 +359,48 @@ class Tasks:
         for task in self.ledger.closed(self.node):
             if task["dirty"]:
                 await self.sync(task["id"])
+
+    # -- journals ------------------------------------------------------------
+
+    async def subscribe(self) -> None:
+        """Append each journal post to the Journal section of the open tasks in its scope. Never returns."""
+        self.subscription = gatewayclient.SupervisedSubscription(
+            "reporting/scopes.posts", lambda: gatewayclient.subscribe("scopes", "posts"), self.on_post)
+        await self.subscription.run()
+
+    async def on_post(self, event: Any) -> None:
+        post = event.get("post") if isinstance(event, dict) else None
+        if isinstance(post, dict):
+            async with self.lock:
+                await self._journal(post)
+
+    async def _journal(self, post: dict) -> None:
+        body = str(post.get("body") or "").strip()
+        if post.get("kind") != "journal" or not body:
+            return
+        meta = post.get("meta") if isinstance(post.get("meta"), dict) else {}
+        title = str(meta.get("title") or "").strip()
+        for task in self.ledger.open(self.node):
+            if ((task["project"], task["scope"]) == (post.get("project"), post.get("scope"))
+                    and (post.get("ts") or 0) / 1000.0 >= task["started"]
+                    and self.ledger.event(task["id"], "journal", f"{title}\n\n{body}" if title else body,
+                                          ref=str(post["id"]))):
+                self.ledger.update(task["id"], dirty=1)
+                await self.sync(task["id"])
+
+    async def _catch_up(self) -> None:
+        """Read the recent journal of every open task's scope, for posts the subscription missed."""
+        if time.time() - self._caught_up < config.catchup_interval_s():
+            return
+        self._caught_up = time.time()
+        for project, scope in {(t["project"], t["scope"]) for t in self.ledger.open(self.node)
+                               if t["project"] and t["scope"]}:
+            try:
+                reply = await self._fetch("scopes", "scope_fetch", {
+                    "project": project, "scope": scope, "kind": "journal", "limit": 50,
+                    "order": "desc"}, timeout=60.0)
+            except Exception as exc:  # noqa: BLE001 — the next catch-up carries it
+                log.warning("reporting: journal catch-up for %s/%s failed: %s", project, scope, exc)
+                continue
+            for post in reversed((reply or {}).get("posts") or []):
+                await self._journal(post)

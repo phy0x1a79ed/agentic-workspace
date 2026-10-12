@@ -276,6 +276,7 @@ class Runtime:
 
     def spawn(self) -> None:
         spawn_supervised("reporting-reconcile", self.loop.run)
+        spawn_supervised("reporting-journals", self.tasks.subscribe)
         if not self.door:
             return
         spawn_supervised("reporting-notify", self.notifier.run)
