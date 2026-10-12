@@ -7,3 +7,5 @@
 # list`. The gate is how a node volunteers, not how the fleet elects one:
 # deployments are per-node and wholly independent, sharing no state.
 profiles = ["claude-science"]
+tool = "science"
+tier = "on"

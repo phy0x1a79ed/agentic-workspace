@@ -35,7 +35,7 @@ from typing import Any
 
 from awm.gatewayclient import ServiceAdapter, spawn_supervised
 
-from awm.claude_science import api, daemon, front, mcp_bridge
+from awm.claude_science import api, conversations, daemon, front, mcp_bridge
 
 log = logging.getLogger("awm.claude_science.hub_adapter")
 
@@ -45,19 +45,17 @@ SUPERVISOR = daemon.Supervisor(
 )
 
 
-#: Every function carries an explicit ``tool`` name under a ``science_`` prefix,
-#: which is what decides the domain this service appears as: the gateway folds
-#: the MCP surface by splitting the projected name on its **first** underscore.
-#: The obvious ``claude_science_status`` therefore lands as domain ``claude`` /
-#: verb ``science_status`` — one token, or the service's name gets cut in half.
-#: So the surface is ``awm science status`` and ``mcp__awm__science
-#: {verb:"status"}``, while the internal ``name`` stays short for RPC dispatch.
+#: Every function is named ``science_<verb>``: the service is ``claude-science``
+#: but the tool is ``science``, and the first-underscore fold would otherwise cut
+#: the service name in half (``claude_science_status`` -> domain ``claude``). The
+#: explicit ``tool`` repeats the name so a gateway that still projects it keeps
+#: the same surface. Daemon-lifecycle verbs are hidden from MCP with ``surfaces``.
 API_MANIFEST: dict[str, Any] = {
     "functions": [
         {
-            "name": "status",
-            "effect": "read",
+            "name": "science_status",
             "tool": "science_status",
+            "effect": "read",
             "description": (
                 "Report the Claude Science workbench: whether the daemon is "
                 "running and at what pid/version/port, whether this service "
@@ -69,9 +67,10 @@ API_MANIFEST: dict[str, Any] = {
             "params": [],
         },
         {
-            "name": "start",
-            "effect": "write",
+            "name": "science_start",
             "tool": "science_start",
+            "effect": "write",
+            "surfaces": ["cli", "http"],
             "description": (
                 "Adopt the running workbench daemon, or launch one detached if "
                 "none is running. Idempotent. The daemon deliberately outlives "
@@ -81,9 +80,10 @@ API_MANIFEST: dict[str, Any] = {
             "timeout": 180,
         },
         {
-            "name": "stop",
-            "effect": "write",
+            "name": "science_stop",
             "tool": "science_stop",
+            "effect": "write",
+            "surfaces": ["cli", "http"],
             "description": (
                 "Stop the workbench daemon through its own socket, ending live "
                 "conversations. Idempotent. Stopping the *service* does not do "
@@ -93,9 +93,10 @@ API_MANIFEST: dict[str, Any] = {
             "timeout": 180,
         },
         {
-            "name": "restart",
-            "effect": "write",
+            "name": "science_restart",
             "tool": "science_restart",
+            "effect": "write",
+            "surfaces": ["cli", "http"],
             "description": (
                 "Stop the workbench daemon and start it again — e.g. to pick up "
                 "an update that has been staged. Interrupts live conversations."
@@ -104,9 +105,10 @@ API_MANIFEST: dict[str, Any] = {
             "timeout": 300,
         },
         {
-            "name": "logs",
-            "effect": "read",
+            "name": "science_logs",
             "tool": "science_logs",
+            "effect": "read",
+            "surfaces": ["cli", "http"],
             "description": "Tail the workbench daemon's log.",
             "params": [
                 {"name": "tail", "type": "number",
@@ -114,9 +116,9 @@ API_MANIFEST: dict[str, Any] = {
             ],
         },
         {
-            "name": "url",
-            "effect": "secret",
+            "name": "science_url",
             "tool": "science_url",
+            "effect": "secret",
             "description": (
                 "Mint a fresh single-use sign-in link for the workbench, valid "
                 "about three minutes. The loopback form the binary prints — "
@@ -126,9 +128,9 @@ API_MANIFEST: dict[str, Any] = {
             "params": [],
         },
         {
-            "name": "signin_url",
-            "effect": "secret",
+            "name": "science_signin_url",
             "tool": "science_signin_url",
+            "effect": "secret",
             "description": (
                 "The mesh URL that signs a browser into the workbench in one "
                 "click. Behind awm's edge session, so it is only usable by "
@@ -137,9 +139,9 @@ API_MANIFEST: dict[str, Any] = {
             "params": [],
         },
         {
-            "name": "connector",
-            "effect": "write",
+            "name": "science_connector",
             "tool": "science_connector",
+            "effect": "write",
             "description": (
                 "The workbench's local (stdio) MCP servers. With no arguments, "
                 "list them and say whether each one actually connects. Given a "
@@ -169,9 +171,9 @@ API_MANIFEST: dict[str, Any] = {
             "timeout": 180,
         },
         {
-            "name": "grants",
-            "effect": "write",
+            "name": "science_grants",
             "tool": "science_grants",
+            "effect": "write",
             "description": (
                 "The host directories Claude may read or write inside the "
                 "workbench's sandbox. With no arguments, list them. Given a "
@@ -187,9 +189,57 @@ API_MANIFEST: dict[str, Any] = {
             "timeout": 120,
         },
         {
-            "name": "update_check",
+            "name": "science_message",
+            "tool": "science_message",
+            "effect": "write",
+            "description": (
+                "Send a message into a running Claude Science conversation, as "
+                "the user's next turn. Names a conversation by id, id prefix or "
+                "name; with none, the most recently updated one. A busy "
+                "conversation queues it. Refused while the conversation awaits "
+                "an approval or an answer. Returns a cursor: read from it to "
+                "get the reply."
+            ),
+            "params": [
+                {"name": "text", "type": "string", "required": True,
+                 "description": "The message to send."},
+                {"name": "conversation", "type": "string",
+                 "description": "Conversation id, id prefix or name. Omit for "
+                                "the latest."},
+            ],
+            "timeout": 120,
+        },
+        {
+            "name": "science_read",
+            "tool": "science_read",
             "effect": "read",
+            "description": (
+                "Read a Claude Science conversation's transcript from a cursor. "
+                "Returns the messages with text, the conversation's status "
+                "('processing' means a reply is still coming) and the next "
+                "cursor to pass as since. With no since, returns the tail."
+            ),
+            "params": [
+                {"name": "conversation", "type": "string",
+                 "description": "Conversation id, id prefix or name. Omit for "
+                                "the latest."},
+                {"name": "since", "type": "number",
+                 "description": "Cursor from a previous read: the index of the "
+                                "first message to return. Omit for the tail."},
+                {"name": "limit", "type": "number",
+                 "description": "Most messages to fetch (default 20 for the "
+                                "tail, 200 from a cursor)."},
+                {"name": "include_tools", "type": "boolean",
+                 "description": "Keep messages that carry no text, such as "
+                                "tool results. Default false."},
+            ],
+            "timeout": 120,
+        },
+        {
+            "name": "science_update_check",
             "tool": "science_update_check",
+            "effect": "read",
+            "surfaces": ["cli", "http"],
             "description": (
                 "Ask the binary whether a newer build is available. Reports "
                 "only; installing is a deliberate act (`claude-science update`)."
@@ -307,21 +357,57 @@ async def _h_grants(args: dict) -> dict:
     return await asyncio.to_thread(_grants, args)
 
 
+def _message(args: dict) -> dict:
+    """Post into a conversation. Runs on a worker thread."""
+    text = (args.get("text") or "").strip()
+    if not text:
+        raise ValueError("text is required")
+    with api.connect(SUPERVISOR.login_url()) as owner:
+        target = conversations.resolve_conversation(
+            owner, args.get("conversation"))
+        sent = conversations.post_message(owner, target["id"], text)
+        return {"conversation": conversations.summary(target), **sent}
+
+
+def _read(args: dict) -> dict:
+    """Read a conversation's transcript. Runs on a worker thread."""
+    since = args.get("since")
+    limit = args.get("limit")
+    with api.connect(SUPERVISOR.login_url()) as owner:
+        target = conversations.resolve_conversation(
+            owner, args.get("conversation"))
+        return conversations.read_messages(
+            owner, target["id"],
+            since=None if since is None else int(since),
+            limit=None if limit is None else int(limit),
+            include_tools=bool(args.get("include_tools")))
+
+
+async def _h_message(args: dict) -> dict:
+    return await asyncio.to_thread(_message, args)
+
+
+async def _h_read(args: dict) -> dict:
+    return await asyncio.to_thread(_read, args)
+
+
 async def _h_update_check(args: dict) -> dict:
     return await asyncio.to_thread(SUPERVISOR.update_check)
 
 
 HANDLERS = {
-    "status": _h_status,
-    "start": _h_start,
-    "stop": _h_stop,
-    "restart": _h_restart,
-    "logs": _h_logs,
-    "url": _h_url,
-    "signin_url": _h_signin_url,
-    "connector": _h_connector,
-    "grants": _h_grants,
-    "update_check": _h_update_check,
+    "science_status": _h_status,
+    "science_start": _h_start,
+    "science_stop": _h_stop,
+    "science_restart": _h_restart,
+    "science_logs": _h_logs,
+    "science_url": _h_url,
+    "science_signin_url": _h_signin_url,
+    "science_connector": _h_connector,
+    "science_grants": _h_grants,
+    "science_message": _h_message,
+    "science_read": _h_read,
+    "science_update_check": _h_update_check,
 }
 
 
