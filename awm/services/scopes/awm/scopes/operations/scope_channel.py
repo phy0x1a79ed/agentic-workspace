@@ -1,79 +1,12 @@
-"""Scope-channel operation definitions for the gateway manifest.
+"""The federation-wide journal search entry, until the search service replaces it.
 
-A scope IS the channel. These replace the old room_*, inbox_*, and session_*
-families with one small surface:
-  - ``scope_post``        — append a post (message / journal / system).
-  - ``scope_fetch``       — fetch/search a scope's posts (the search/fetch
-                            pattern; ``query`` → hybrid search, ``kind`` filter).
-  - ``scope_archive_search`` — journal search across this node and every peer.
-  - ``scope_subscribe``   — enroll a guest (scope or user) as a subscriber.
-  - ``scope_unsubscribe`` — remove a subscriber.
+Posts, goals and subscribers moved to the journal service; this verb still fans
+out over the peer book and asks the local journal over the gateway.
 """
 
-from awm.scopes import archive, channel
-
+from awm.scopes import archive
 
 SCOPE_CHANNEL_MANIFEST_FUNCTIONS = [
-    {
-        "name": "scope_post",
-        "tool": "scope_post",
-        "effect": "write",
-        "description": (
-            "Post to a scope's channel. kind ∈ message|journal|system. "
-            "Journal entries are the scope's own debrief; structured fields go in meta. "
-            "Pass all structured params (kind, meta, to_scope) BEFORE the free-text "
-            "body, which must be the LAST argument — see the body param note."
-        ),
-        # body is declared LAST on purpose. The harness serializes a tool call as
-        # ordered <parameter> blocks; a long multi-line value can bleed past its
-        # closing tag and swallow any parameter emitted AFTER it. Keeping the one
-        # long free-text field terminal means a bleed has no trailing param to
-        # corrupt (kind/meta survive). A sibling op (scope_create) put
-        # their free-text field last for the same reason. Do not move body up.
-        "params": [
-            {"name": "project", "type": "string", "required": True},
-            {"name": "scope", "type": "string", "required": True},
-            {"name": "author", "type": "string", "required": True},
-            {"name": "kind", "type": "string", "required": False},
-            {"name": "meta", "type": "object", "required": False},
-            {"name": "to_scope", "type": "string", "required": False},
-            {"name": "body", "type": "string", "required": True,
-             "description": "Free-text post content. Pass this argument LAST — "
-                            "emit every other parameter before it."},
-        ],
-    },
-    {
-        "name": "scope_fetch",
-        "tool": "scope_fetch",
-        "effect": "read",
-        "category": "journals",
-        "description": (
-            "Fetch or search a scope's posts — messages and journal entries. "
-            "Pass scope for one channel; add query to rank posts by relevance "
-            "(meaning and keywords over each post's full text, best first, each "
-            "hit with match.snippet — a limit of ~10 is plenty; the reply's "
-            "`semantic` says which index ranked them: kb, local, or none for a "
-            "substring match); omit scope to "
-            "search across scopes; kind filters (e.g. "
-            "kind='journal' for session logs / debrief entries); post_id fetches "
-            "one. For the most recent / last N entries pass order='desc' with "
-            "limit (e.g. last 5 awm session logs: project='awm', kind='journal', "
-            "limit=5, order='desc')."
-        ),
-        "params": [
-            {"name": "project", "type": "string", "required": False},
-            {"name": "scope", "type": "string", "required": False},
-            {"name": "kind", "type": "string", "required": False},
-            {"name": "query", "type": "string", "required": False},
-            {"name": "author", "type": "string", "required": False},
-            {"name": "post_id", "type": "string", "required": False},
-            {"name": "limit", "type": "integer", "required": False},
-            {"name": "offset", "type": "integer", "required": False},
-            {"name": "before_ts", "type": "string", "required": False},
-            {"name": "order", "type": "string", "required": False,
-             "description": "'asc' (oldest-first) or 'desc' (newest-first). Use 'desc' with limit for the last N."},
-        ],
-    },
     {
         "name": "scope_archive_search",
         "tool": "scope_archive_search",
@@ -97,107 +30,8 @@ SCOPE_CHANNEL_MANIFEST_FUNCTIONS = [
         ],
         "timeout": 30.0,
     },
-    {
-        "name": "scope_subscribe",
-        "tool": "scope_subscribe",
-        "effect": "write",
-        "description": "Subscribe a guest (another scope 'project/scope', or 'user:<name>') to a scope's channel.",
-        "params": [
-            {"name": "project", "type": "string", "required": True},
-            {"name": "scope", "type": "string", "required": True},
-            {"name": "guest", "type": "string", "required": True},
-            {"name": "display_name", "type": "string", "required": False},
-        ],
-    },
-    {
-        "name": "scope_unsubscribe",
-        "tool": "scope_unsubscribe",
-        "effect": "write",
-        "description": "Remove a guest from a scope's channel.",
-        "params": [
-            {"name": "project", "type": "string", "required": True},
-            {"name": "scope", "type": "string", "required": True},
-            {"name": "guest", "type": "string", "required": True},
-        ],
-    },
 ]
 
-
-def _handle_scope_post(args: dict, as_: str | None = None) -> dict:
-    post = channel.post(
-        args["project"], args["scope"],
-        author=args["author"], body=args["body"],
-        kind=args.get("kind", "message"),
-        meta=args.get("meta"),
-        to_scope=args.get("to_scope"),
-        origin=channel.edge_origin(as_),
-    )
-    # A journal post is a scope's debrief entry; refresh its indexes so the next
-    # session sees it without a manual scope_refresh. Best-effort: a refresh
-    # failure (e.g. scope dir absent in tests) must never fail the post.
-    if args.get("kind") == "journal":
-        try:
-            from awm.scopes import scopes
-            scopes.awm_refresh(args["project"], args["scope"])
-        except Exception:
-            pass
-    return {"post": post.to_dict()}
-
-
-def _handle_scope_fetch(args: dict, as_: str | None = None) -> dict:
-    # The verb's category grants journals; a foreign caller sees no other kind.
-    foreign = channel.is_foreign(as_)
-    kind = args.get("kind")
-    if foreign:
-        if kind and kind != "journal":
-            raise PermissionError("peers may read journal posts only")
-        kind = "journal"
-    post_id = args.get("post_id")
-    if post_id:
-        p = channel.get_post(post_id)
-        if p is not None and foreign and p.kind != "journal":
-            p = None  # answer as for a post that does not exist, so ids cannot be probed
-        return {"posts": [p.to_dict()] if p else [], "total": 1 if p else 0}
-    common = dict(
-        project=args.get("project"),
-        scope=args.get("scope"),
-        kind=kind,
-        author=args.get("author"),
-        limit=int(args.get("limit", 50)),
-        offset=int(args.get("offset", 0)),
-        before_ts=args.get("before_ts"),
-        order=args.get("order"),
-    )
-    degraded = semantic = None
-    if args.get("query"):
-        posts, degraded, semantic = channel.search(query=args["query"], **common)
-    else:
-        posts = channel.fetch(**common)
-    out = {"posts": [p.to_dict() for p in posts], "total": len(posts)}
-    if semantic:
-        out["semantic"] = semantic
-    if degraded:
-        out["degraded"] = degraded
-    return out
-
-
-def _handle_scope_subscribe(args: dict) -> dict:
-    sub = channel.subscribe(
-        args["project"], args["scope"], args["guest"],
-        display_name=args.get("display_name"),
-    )
-    return {"subscriber": sub.to_dict()}
-
-
-def _handle_scope_unsubscribe(args: dict) -> dict:
-    removed = channel.unsubscribe(args["project"], args["scope"], args["guest"])
-    return {"removed": removed}
-
-
 SCOPE_CHANNEL_HANDLERS = {
-    "scope_post": _handle_scope_post,
-    "scope_fetch": _handle_scope_fetch,
     "scope_archive_search": archive.archive_search,
-    "scope_subscribe": _handle_scope_subscribe,
-    "scope_unsubscribe": _handle_scope_unsubscribe,
 }

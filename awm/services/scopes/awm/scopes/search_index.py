@@ -1,15 +1,14 @@
-"""The scopes service's search index: posts, scopes and projects in the retrieval engine.
+"""The scopes service's search index: scopes and projects in the retrieval engine.
 
-Writes go through one background worker, so a post returns without waiting
+Writes go through one background worker, so a scope write returns without waiting
 for its embedding and the model is never loaded twice. A supervised backfill
-walks the tables at startup and every few hours, because rows written by a
-seed or an older release never passed through the post hook.
+walks the tables at startup and every few hours. Posts and goals live in the
+journal service; a scope's goals are read from it over the gateway.
 """
 
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime, timezone
@@ -21,7 +20,6 @@ from awm.persistence.databases import get_connection, get_connection_at, service
 
 log = logging.getLogger("awm.scopes.search_index")
 
-INDEXED_KINDS = ("journal", "message", "goal", "debrief", "note")
 BACKFILL_EVERY_S = 6 * 3600
 _README_CHARS = 2000
 _README_CHECKOUTS = ("release", "main", "dev")
@@ -48,24 +46,23 @@ def _read(path: Path, limit: int | None = None) -> str:
 # ---------------------------------------------------------------------------
 
 
-def post_document(row) -> engine.Document:
+def _scope_objectives(project: str, scope: str) -> list[str]:
+    """The scope-level goals in force, from the journal service; none when it cannot answer."""
     try:
-        meta = json.loads(row["meta"] or "{}")
-    except (TypeError, ValueError):
-        meta = {}
-    title = meta.get("title") if isinstance(meta, dict) else ""
-    return engine.Document(
-        row["id"], row["body"] or "", title=str(title or ""),
-        context=f"{row['owner_project']}/{row['owner_scope']}", date=_date(row["ts"]))
+        from awm.gatewayclient import call_sync
+        res = call_sync("journal", "goal_read",
+                        {"project": project, "scope": scope, "levels": ["scope"]}, timeout=5.0)
+        return [g["objective"] for g in res.get("goals", [])]
+    except Exception:  # noqa: BLE001 — a scope is still indexed by its context.md alone
+        return []
 
 
 def scope_document(project: str, scope: str, worktree: str | None,
                    created_at: int | None) -> engine.Document:
     """The scope's goals in force and its ``.awm/context.md``."""
-    from awm.scopes import goals
     from awm.scopes.scopes import _resolve_worktree
 
-    objectives = [g.objective for g in goals.read_goals(project, scope, levels=["scope"])]
+    objectives = _scope_objectives(project, scope)
     context = _read(_resolve_worktree(project, scope, worktree) / ".awm" / "context.md")
     body = "\n\n".join(x for x in (*objectives, context) if x.strip())
     return engine.Document(f"{project}/{scope}", body, title=f"{project}/{scope}",
@@ -84,13 +81,6 @@ def project_document(name: str, scopes: Iterable[str]) -> engine.Document:
     names = sorted(set(scopes))
     body = "\n\n".join(x for x in (f"Scopes: {', '.join(names)}" if names else "", readme) if x)
     return engine.Document(name, body, title=name)
-
-
-def _post_docs(conn) -> list[engine.Document]:
-    marks = ",".join("?" * len(INDEXED_KINDS))
-    return [post_document(r) for r in conn.execute(
-        f"SELECT id, owner_project, owner_scope, body, meta, ts FROM scope_posts"
-        f" WHERE kind IN ({marks}) AND body != ''", INDEXED_KINDS)]
 
 
 def _scope_rows(conn, project: str | None = None, scope: str | None = None):
@@ -140,16 +130,6 @@ def _run(db: Path, fn, *args) -> None:
         conn.close()
 
 
-def _index_post(conn, post_id: str) -> None:
-    row = conn.execute(
-        "SELECT id, owner_project, owner_scope, kind, body, meta, ts FROM scope_posts WHERE id=?",
-        (post_id,)).fetchone()
-    if row is None or row["kind"] not in INDEXED_KINDS or not row["body"]:
-        engine.delete_document(conn, "post", post_id)
-    else:
-        engine.index_document(conn, "post", post_document(row))
-
-
 def _index_scope(conn, project: str, scope: str) -> None:
     rows = list(_scope_rows(conn, project, scope))
     if not rows:
@@ -169,10 +149,6 @@ def _index_project(conn, name: str) -> None:
 
 # Each job binds the DB when it is queued, not when it runs, so a write can
 # never land in whatever database the process points at later.
-def index_post(post_id: str) -> Future:
-    return _worker.submit(_run, service_db_path("scopes"), _index_post, post_id)
-
-
 def index_scope(project: str, scope: str) -> Future:
     return _worker.submit(_run, service_db_path("scopes"), _index_scope, project, scope)
 
@@ -201,14 +177,13 @@ def ensure_schema() -> None:
 
 def reindex(*, force: bool = False, dry_run: bool = False,
             db: Path | None = None) -> dict[str, Any]:
-    """Bring posts, scopes and projects in line with the tables; returns counts per type."""
+    """Bring scopes and projects in line with the tables; returns counts per type."""
     conn = get_connection_at(db or service_db_path("scopes"))
     try:
         engine.ensure_schema(conn)
         return {
             st: engine.reindex(conn, st, docs(conn), force=force, prune=True, dry_run=dry_run)
-            for st, docs in (("post", _post_docs), ("scope", _scope_docs),
-                             ("project", _project_docs))
+            for st, docs in (("scope", _scope_docs), ("project", _project_docs))
         }
     finally:
         conn.close()

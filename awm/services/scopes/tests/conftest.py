@@ -25,10 +25,17 @@ def stub_embedder():
 
 
 @pytest.fixture(autouse=True)
-def no_kb_recall(monkeypatch):
-    """Keep searches on the local index: the kb leg would otherwise call whatever gateway AWM_HUB_URL names."""
-    from awm.scopes import channel
-    monkeypatch.setattr(channel, "KB_RECALL", False)
+def stub_journal_service(monkeypatch):
+    """The journal service answers every call; no test reaches a real gateway."""
+    def call_sync(service, fn, args=None, **kw):
+        assert service == "journal", (service, fn)
+        if fn == "render":
+            return {"content": f"# Project History: {args['project']}\n"}
+        if fn == "goal_read":
+            return {"goals": [], "total": 0}
+        return {}
+
+    monkeypatch.setattr("awm.gatewayclient.call_sync", call_sync)
 
 
 @pytest.fixture()

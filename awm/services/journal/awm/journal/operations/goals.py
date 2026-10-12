@@ -1,28 +1,26 @@
 """Goal operation definitions for the gateway manifest.
 
-Goals ride the scope post log as ``kind='goal'`` — see :mod:`awm.scopes.goals`
-for the model. Four verbs, named onto the existing ``scope`` domain — the MCP
-projection splits a tool name on its first underscore, so ``scope_goal_read``
-reaches the model as ``scope(verb="goal_read", …)`` rather than minting a
-``goal`` domain of its own:
+Goals ride the scope post log as ``kind='goal'`` — see :mod:`awm.journal.goals`
+for the model. Four verbs, published as ``journal_goal_<verb>`` and reached as
+``journal(verb="goal_<verb>", …)``:
 
-  - ``scope_goal_set``     — record a goal, or a revision that supersedes one.
-  - ``scope_goal_retire``  — append a tombstone retiring a goal.
-  - ``scope_goal_read``    — everything in force at a scope, broad to specific,
-                             rendered with the comparison instruction attached.
-  - ``scope_goal_history`` — the full chain of restatements behind one goal.
+  - ``goal_set``     — record a goal, or a revision that supersedes one.
+  - ``goal_retire``  — append a tombstone retiring a goal.
+  - ``goal_read``    — everything in force at a scope, broad to specific,
+                       rendered with the comparison instruction attached.
+  - ``goal_history`` — the full chain of restatements behind one goal.
 
 There is no delete verb and no edit-in-place. The post log has no mutation path
 and goals do not add one.
 """
 
-from awm.scopes import channel, goals
+from awm.journal import channel, goals
 
 
 GOAL_MANIFEST_FUNCTIONS = [
     {
-        "name": "scope_goal_set",
-        "tool": "scope_goal_set",
+        "name": "goal_set",
+        "tool": "journal_goal_set",
         "effect": "write",
         "description": (
             "Record what the user is actually after, at the altitude they said "
@@ -39,7 +37,7 @@ GOAL_MANIFEST_FUNCTIONS = [
             "all structured params BEFORE the free-text objective, which must be "
             "the LAST argument."
         ),
-        # objective is declared LAST for the same reason scope_post's body is:
+        # objective is declared LAST for the same reason journal_post's body is:
         # a long free-text value can bleed past its closing tag and swallow any
         # parameter serialized after it. Do not move it up.
         "params": [
@@ -63,8 +61,8 @@ GOAL_MANIFEST_FUNCTIONS = [
         ],
     },
     {
-        "name": "scope_goal_retire",
-        "tool": "scope_goal_retire",
+        "name": "goal_retire",
+        "tool": "journal_goal_retire",
         "effect": "write",
         "description": (
             "Retire a goal by appending a tombstone. Nothing is deleted — the "
@@ -78,8 +76,8 @@ GOAL_MANIFEST_FUNCTIONS = [
         ],
     },
     {
-        "name": "scope_goal_read",
-        "tool": "scope_goal_read",
+        "name": "goal_read",
+        "tool": "journal_goal_read",
         "effect": "read",
         "description": (
             "Every goal in force at a scope — the workspace frame, the project's "
@@ -97,8 +95,8 @@ GOAL_MANIFEST_FUNCTIONS = [
         ],
     },
     {
-        "name": "scope_goal_history",
-        "tool": "scope_goal_history",
+        "name": "goal_history",
+        "tool": "journal_goal_history",
         "effect": "read",
         "description": (
             "The full chain of restatements a goal belongs to, oldest first — "
@@ -162,8 +160,8 @@ def _handle_goal_history(args: dict, as_: str | None = None) -> dict:
 
 
 GOAL_HANDLERS = {
-    "scope_goal_set": _handle_goal_set,
-    "scope_goal_retire": _handle_goal_retire,
-    "scope_goal_read": _handle_goal_read,
-    "scope_goal_history": _handle_goal_history,
+    "goal_set": _handle_goal_set,
+    "goal_retire": _handle_goal_retire,
+    "goal_read": _handle_goal_read,
+    "goal_history": _handle_goal_history,
 }
