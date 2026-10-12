@@ -146,14 +146,17 @@ arguments.
   ```
   { "project": str, "scope": str,
     "branch"?: str, "worktree"?: str, "agent_cli"?: str,
-    "status"?: str, "is_vagrant"?: bool, "display_name"?: str }
+    "status"?: str, "is_vagrant"?: bool, "display_name"?: str,
+    "new_project"?: bool }
   ```
   Defaults follow `ensure_agent`: `branch` defaults to `feat/<scope>`,
   `agent_cli` to `"claude"`, `status` to `"allocated"`, `is_vagrant` to
-  `false`, `display_name` to the `scope`. Requires the project to exist
-  already (call `ensureProject` first); a missing project is an error
-  (`ensure_agent` raises `KeyError`, which the implementation should surface as
-  a non-2xx so the caller sees a `GatewayCallError`).
+  `false`, `display_name` to the `scope`, `new_project` to `false`. Requires the
+  project to exist already (call `ensureProject` first); a missing project is
+  an error that names `new_project` (a `KeyError`, which the implementation
+  surfaces as a non-2xx so the caller sees a `GatewayCallError`). With
+  `new_project` true the project row is registered first, as `ensureProject`
+  would.
 - **returns:** `{ "project": str, "scope": str }` — the agent's natural key.
   No `agent_id`. Idempotent: an already-live scope for the same name returns
   the existing one.

@@ -38,7 +38,7 @@ in a `degraded` block.
 
 ## Optional dependency: `dvc`
 
-The data layer (`awm.scopes.data_dvc`) shells out to the `dvc` **binary**. It is
+The data layer (`awm.dvc.data_dvc`) shells out to the `dvc` **binary**. It is
 deliberately optional: without it every data path falls back to the shared
 symlink rather than failing, so the service starts and scopes are created either
 way — they just don't get versioned, isolated data.

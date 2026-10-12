@@ -20,19 +20,32 @@ SCOPE_MANIFEST_FUNCTIONS = [
             "Create a new scope (worktree + .awm/ metadata) for a project. "
             "The new branch defaults to feat/<scope>; pass branch_name to name "
             "it explicitly (e.g. a plain branch like 'release' or 'dev'). "
+            "An unknown project is refused unless new_project=true, which first "
+            "creates the project (bare repo, main checkout, data dirs; clone_url "
+            "or fork_url to start from a remote); omit scope then to create the "
+            "project alone. "
             "Example: project='awm', scope='svc-diplomacy' creates "
             "projects/awm/svc-diplomacy on branch feat/svc-diplomacy."
         ),
         "params": [
             {"name": "project", "type": "string", "required": True,
-             "description": "Name of an existing project, the directory under "
-                            "projects/ (e.g. 'awm'). Not the workspace or the MCP namespace."},
-            {"name": "scope", "type": "string", "required": True,
+             "description": "Name of the project, the directory under projects/ "
+                            "(e.g. 'awm'); it must exist unless new_project is true. "
+                            "Not the workspace or the MCP namespace."},
+            {"name": "scope", "type": "string", "required": False,
              "description": "Name for the new scope, unique within the project "
-                            "(e.g. 'svc-diplomacy'). Becomes the worktree directory name."},
+                            "(e.g. 'svc-diplomacy'). Becomes the worktree directory name. "
+                            "Required, except with new_project to create the project alone."},
             {"name": "from_branch", "type": "string", "required": False},
             {"name": "branch_name", "type": "string", "required": False},
             {"name": "context", "type": "string", "required": False},
+            {"name": "new_project", "type": "boolean", "required": False,
+             "description": "Create the project first when it does not exist. "
+                            "Default false: an unknown project is an error."},
+            {"name": "clone_url", "type": "string", "required": False,
+             "description": "With new_project: clone this remote as the project's bare repo."},
+            {"name": "fork_url", "type": "string", "required": False,
+             "description": "With new_project: fork this GitHub repo and clone the fork."},
         ],
         # a cold `dvc checkout` of everything the base branch pins.
         "timeout": 1800.0,
@@ -43,15 +56,21 @@ SCOPE_MANIFEST_FUNCTIONS = [
         "effect": "read",
         "description": (
             "Search scopes: name matches first, then scopes ranked by the "
-            "meaning of their goals and context. "
-            "Defaults to status='active'; pass status='all' for the full history."
+            "meaning of their goals and context. Each project's main checkout "
+            "is a scope named for its default branch. "
+            "Defaults to status='active'; pass status='all' for the full history. "
+            "With no project, the reply also lists every project, matched and "
+            "ranked by the same query, with its scope counts per status."
         ),
         "params": [
             {"name": "query", "type": "string", "required": False},
             {"name": "status", "type": "string", "required": False},
-            {"name": "project", "type": "string", "required": False},
+            {"name": "project", "type": "string", "required": False,
+             "description": "Only this project's scopes. Omit to search every project "
+                            "and list the projects."},
             {"name": "limit", "type": "integer", "required": False},
-            {"name": "offset", "type": "integer", "required": False},
+            {"name": "offset", "type": "integer", "required": False,
+             "description": "Skips scopes only; the project list is never paged."},
         ],
     },
     {
@@ -59,9 +78,10 @@ SCOPE_MANIFEST_FUNCTIONS = [
         "tool": "scope_reindex",
         "effect": "write",
         "description": (
-            "Bring the search index of posts, scopes and projects in line with "
-            "the tables: embeds what is missing, changed or made by another "
+            "Bring the scopes service's search index of scopes and projects in line "
+            "with the tables: embeds what is missing, changed or made by another "
             "model, and drops what no longer exists. Returns counts per type. "
+            "Posts are indexed by journal_reindex. "
             "dry_run reports without writing; force re-embeds everything."
         ),
         "params": [
@@ -145,7 +165,7 @@ SCOPE_MANIFEST_FUNCTIONS = [
     },
     {
         "name": "scope_gather",
-        "tool": "scope_gather",
+        "tool": "scope_git_gather",
         "effect": "write",
         "description": (
             "Fan-in: merge each peripheral scope's branch into a hub scope's "
@@ -166,7 +186,7 @@ SCOPE_MANIFEST_FUNCTIONS = [
     },
     {
         "name": "scope_scatter",
-        "tool": "scope_scatter",
+        "tool": "scope_git_scatter",
         "effect": "write",
         "description": (
             "Fan-out: merge a hub scope's branch into each peripheral scope's "
@@ -185,26 +205,19 @@ SCOPE_MANIFEST_FUNCTIONS = [
         # each merge fires a post-merge `dvc checkout`.
         "timeout": 900.0,
     },
-    {
-        "name": "awm_refresh",
-        "tool": "scope_refresh",
-        "effect": "write",
-        "description": "Re-generate .awm/history.md for a scope.",
-        "params": [
-            {"name": "project", "type": "string", "required": True},
-            {"name": "scope", "type": "string", "required": True},
-        ],
-    },
 ]
 
 
 def _handle_scope_create(args: dict) -> dict:
     req = ScopeCreateRequest(
         project=args["project"],
-        scope=args["scope"],
+        scope=args.get("scope"),
         from_branch=args.get("from_branch"),
         branch_name=args.get("branch_name"),
         context=args.get("context"),
+        new_project=bool(args.get("new_project", False)),
+        clone_url=args.get("clone_url"),
+        fork_url=args.get("fork_url"),
     )
     result = scopes.create_scope(req)
     return result.model_dump()
@@ -218,7 +231,8 @@ def _handle_scope_search(args: dict) -> dict:
         limit=int(args.get("limit", 50)),
         offset=int(args.get("offset", 0)),
     )
-    return result.model_dump(exclude={"degraded"} if result.degraded is None else None)
+    unset = {k for k in ("degraded", "projects") if getattr(result, k) is None}
+    return result.model_dump(exclude=unset or None)
 
 
 def _handle_scope_complete(args: dict) -> dict:
@@ -283,10 +297,6 @@ def _handle_scope_reindex(args: dict) -> dict:
                                     dry_run=bool(args.get("dry_run", False)))
 
 
-def _handle_awm_refresh(args: dict) -> dict:
-    return scopes.awm_refresh(args["project"], args["scope"])
-
-
 SCOPE_HANDLERS = {
     "scope_create": _handle_scope_create,
     "scope_search": _handle_scope_search,
@@ -298,5 +308,4 @@ SCOPE_HANDLERS = {
     "scope_sync": _handle_scope_sync,
     "scope_gather": _handle_scope_gather,
     "scope_scatter": _handle_scope_scatter,
-    "awm_refresh": _handle_awm_refresh,
 }

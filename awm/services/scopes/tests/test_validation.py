@@ -101,13 +101,3 @@ class TestApplyAtEntryPoints:
             scopes.delete_scope("proj/sub", "scope")
         with pytest.raises(ValueError):
             scopes.delete_scope("proj", "../scope")
-
-    def test_refresh_history(self, scopes_workspace):
-        with pytest.raises(ValueError):
-            scopes.refresh_history("proj/sub", "scope")
-        with pytest.raises(ValueError):
-            scopes.refresh_history("proj", "scope/")
-
-    def test_awm_refresh(self, scopes_workspace):
-        with pytest.raises(ValueError):
-            scopes.awm_refresh("proj", "/nested/scope")

@@ -1,4 +1,4 @@
-"""Scope CRUD — create, complete, delete, list, refresh (v1 modular).
+"""Scope CRUD — create, complete, delete, search, heal (v1 modular).
 
 A "scope" is represented by a row in the ``agents`` table
 (status ∈ allocated|active|retired) within the scopes service's own DB.
@@ -47,6 +47,7 @@ from awm.scopes.identity import (
     retire_agent,
 )
 from awm.scopes.models import (
+    ProjectCreateRequest,
     ScopeCreateRequest,
     ScopeUpdateRequest,
     ScopeSyncRequest,
@@ -293,14 +294,14 @@ def _default_context(project: str, scope: str) -> str:
     return (
         f"# {project}/{scope}\n\n"
         f"## Startup\n\n"
-        f"1. `scope(verb=\"refresh\", args={{project:\"{project}\", scope:\"{scope}\"}})`\n"
+        f"1. `journal(verb=\"render\", args={{project:\"{project}\", scope:\"{scope}\"}})`\n"
         f"2. Read `.awm/history.md` — session history, open issues, resolved items.\n"
-        f"3. `scope(verb=\"fetch\", args={{scope:\"{scope}\", kind:\"message\"}})`\n\n"
+        f"3. `journal(verb=\"fetch\", args={{scope:\"{scope}\", kind:\"message\"}})`\n\n"
         f"## This scope\n\n"
         f"_Why this scope exists._\n\n"
         f"## Working here\n\n"
         f"The current directory is the git worktree. Data is at `data/`. Do not edit "
-        f"`.awm/history.md` — use the `scope` verbs.\n\n"
+        f"`.awm/history.md` — use the `journal` verbs.\n\n"
         f"Workspace rules — data versioning, environments, the git model — are in "
         f"the workspace `AGENTS.md` and are not repeated here.\n\n"
         f"## Debrief\n\n"
@@ -347,30 +348,6 @@ def _generate_history_md(project: str, scope: str) -> str:
         timeout=60.0,
     )
     return reply["content"]
-
-
-def refresh_history(project: str, scope: str) -> str:
-    validate_name(project, kind="project name")
-    validate_scope_name(scope)
-    repo_dir = PROJECTS_DIR / project / scope
-    awm_dir = _get_awm_dir(repo_dir)
-    content = _generate_history_md(project, scope)
-    awm_dir.mkdir(parents=True, exist_ok=True)
-    (awm_dir / "history.md").write_text(content)
-    # Retired generated files — removed on refresh so existing scopes self-clean.
-    (awm_dir / "knowledge.md").unlink(missing_ok=True)
-    (awm_dir / "artifacts.md").unlink(missing_ok=True)
-    return content
-
-
-def awm_refresh(project: str, scope: str) -> dict:
-    validate_name(project, kind="project name")
-    validate_scope_name(scope)
-    h = refresh_history(project, scope)
-    return {
-        "message": f"Refreshed .awm/ for {project}/{scope}",
-        "history_lines": len(h.splitlines()),
-    }
 
 
 def ensure_vagrant_repo() -> Path:
@@ -722,7 +699,7 @@ def _ensure_awm_gitignored(repo_dir: Path) -> None:
     tracked file.
 
     awm's own project repos gitignore ``.awm/`` already, but a freshly cloned
-    third-party repo (e.g. via ``project_create --clone``) does not — so the
+    third-party repo (e.g. one cloned by ``scope_create`` with ``new_project``) does not — so the
     scaffolded ``.awm/`` would show up as untracked and leave the worktree
     "dirty". Appending ``.awm/`` to the repo's common ``info/exclude`` (shared
     by every worktree, never committed) fixes that cleanly. No-op when git
@@ -788,7 +765,7 @@ def _scaffold_awm_dir(
     (awm_dir / "context.md").write_text(context_content)
     try:
         (awm_dir / "history.md").write_text(_generate_history_md(project, scope))
-    except Exception as exc:  # noqa: BLE001 — a scope is still usable; `scope refresh` renders it later
+    except Exception as exc:  # noqa: BLE001 — a scope is still usable; `journal render` renders it later
         log.warning("scope %s/%s: history.md not rendered: %s", project, scope, exc)
     _write_scope_opencode_config(awm_dir)
 
@@ -813,9 +790,18 @@ def _scaffold_awm_dir(
 
 
 def create_scope(req: ScopeCreateRequest) -> ScopeActionResponse:
-    """Create a new scope: git worktree + .awm/ metadata + agents row."""
+    """Create a new scope: git worktree + .awm/ metadata + agents row.
+
+    With ``new_project`` the project is created first when it does not exist,
+    and ``scope`` may then be omitted to create the project alone.
+    """
     validate_name(req.project, kind="project name")
-    validate_scope_name(req.scope)
+    if req.scope is None:
+        if not req.new_project:
+            raise ValueError("scope is required; omit it only with new_project=true, "
+                             "to create the project alone")
+    else:
+        validate_scope_name(req.scope)
     bare_dir = PROJECTS_DIR / req.project / ".bare"
     if not bare_dir.exists():
         if req.project == VAGRANT_PROJECT:
@@ -823,7 +809,22 @@ def create_scope(req: ScopeCreateRequest) -> ScopeActionResponse:
                 f"Vagrant-scopes repo not initialized at {bare_dir}. "
                 f"Run `awm vagrant-init` first."
             )
-        raise FileNotFoundError(f"Project '{req.project}' not found (expected {bare_dir})")
+        if not req.new_project:
+            raise FileNotFoundError(
+                f"Project '{req.project}' not found (expected {bare_dir}). "
+                f"Pass new_project=true to create it."
+            )
+        from awm.scopes import projects
+        created = projects.create_project(ProjectCreateRequest(
+            name=req.project, clone_url=req.clone_url, fork_url=req.fork_url))
+        if req.scope is None:
+            main = Path(created.worktree_dir)
+            return ScopeActionResponse(
+                project=req.project, scope=main.name, status="active", session=1,
+                message=f"Created project at projects/{req.project} "
+                        f"(main checkout {main.name}, .awm/ initialized)")
+    elif req.scope is None:
+        raise FileExistsError(f"Project '{req.project}' already exists at {bare_dir}")
 
     from_branch = req.from_branch or detect_default_branch(bare_dir)
     repo_dir = PROJECTS_DIR / req.project / req.scope
@@ -1296,6 +1297,42 @@ _SCOPE_ROW_SQL = (
 )
 
 
+def _head_branch(bare: Path) -> str | None:
+    """The branch the bare repo's HEAD names, read from the file without spawning git."""
+    try:
+        head = (bare / "HEAD").read_text().strip()
+    except OSError:
+        return None
+    return head.removeprefix("ref: refs/heads/") if head.startswith("ref: refs/heads/") else None
+
+
+def main_checkouts(project: str | None = None) -> dict[str, ScopeInfo]:
+    """Each project's main checkout, keyed by project, where no agents row names it.
+
+    The main checkout is the worktree of the bare repo's default branch. A
+    project made by ``create_project`` has a row for it; one set up by hand has
+    none, and without this it would be missing from every listing.
+    """
+    names = [project] if project else sorted(
+        b.parent.name for b in PROJECTS_DIR.glob("*/.bare") if b.is_dir())
+    rows = ScopesDAO().query_all(
+        "SELECT p.name AS project, a.scope FROM agents a JOIN projects p ON p.id = a.project_id")
+    named = {(r["project"], r["scope"]) for r in rows}
+    found: dict[str, ScopeInfo] = {}
+    for name in names:
+        bare = PROJECTS_DIR / name / ".bare"
+        if not bare.is_dir():
+            continue
+        branch = _head_branch(bare)
+        if branch is None:
+            continue
+        worktree = PROJECTS_DIR / name / branch
+        if worktree.is_dir() and (name, branch) not in named:
+            found[name] = ScopeInfo(project=name, scope=branch, status="active", branch=branch,
+                                    worktree=str(worktree), repo_path=str(worktree), session=1)
+    return found
+
+
 def search_scopes(
     query: str | None = None,
     status: str = "active",
@@ -1306,7 +1343,10 @@ def search_scopes(
     """Search scopes. Defaults to status='active'.
 
     With a ``query``, scopes whose name contains it come first, then the rest
-    ranked by relevance of their goals and ``context.md``.
+    ranked by relevance of their goals and ``context.md``. A project's main
+    checkout counts as an active scope named for its default branch. With no
+    ``project`` the reply also lists every project (see
+    :func:`awm.scopes.projects.search_projects`).
     """
     where, params = "", []
     if status and status != "all":
@@ -1328,31 +1368,39 @@ def search_scopes(
     if query:
         name_sql += " AND a.scope LIKE ?"
         name_params.append(f"%{query}%")
-    rows = dao.query_all(_SCOPE_ROW_SQL + name_sql + " ORDER BY p.name, a.scope LIMIT ? OFFSET ?",
-                         [*name_params, limit, offset])
-    merged = [_v37_render_scope(r, session=r["session"] or 1) for r in rows]
-    if not query:
-        return ScopeListResponse(scopes=merged, total=len(merged))
-
-    seen = {f"{s.project}/{s.scope}" for s in merged}
+    rows = dao.query_all(_SCOPE_ROW_SQL + name_sql + " ORDER BY p.name, a.scope", name_params)
+    found = [_v37_render_scope(r, session=r["session"] or 1) for r in rows]
+    if status in (None, "", "all", "active"):
+        found += [m for m in main_checkouts(project).values()
+                  if not query or query.lower() in m.scope.lower()]
+    merged = sorted(found, key=lambda s: (s.project, s.scope))[offset:offset + limit]
     degraded = None
-    try:
-        res = search_index.search(
-            "scope", query, params=params, limit=offset + limit,
-            allowed="SELECT p.name || '/' || a.scope FROM agents a"
-                    " JOIN projects p ON p.id = a.project_id WHERE 1=1" + where)
-        degraded = res.degraded
-        for h in res.hits[offset:]:
-            if len(merged) >= limit:
-                break
-            if h["source_id"] in seen:
-                continue
-            proj, scp = h["source_id"].split("/", 1)
-            row = dao.query_one(
-                _SCOPE_ROW_SQL + " AND p.name = ? AND a.scope = ?" + where
-                + " ORDER BY a.created_at DESC", [proj, scp, *params])
-            if row is not None:
-                merged.append(_v37_render_scope(row, session=row["session"] or 1))
-    except Exception as exc:  # noqa: BLE001 — reported, then answered by name match
-        degraded = {"semantic": "error", "error": repr(exc)[:300], "fallback": "keyword"}
-    return ScopeListResponse(scopes=merged, total=len(merged), degraded=degraded)
+    if query:
+        seen = {f"{s.project}/{s.scope}" for s in merged}
+        try:
+            res = search_index.search(
+                "scope", query, params=params, limit=offset + limit,
+                allowed="SELECT p.name || '/' || a.scope FROM agents a"
+                        " JOIN projects p ON p.id = a.project_id WHERE 1=1" + where)
+            degraded = res.degraded
+            for h in res.hits[offset:]:
+                if len(merged) >= limit:
+                    break
+                if h["source_id"] in seen:
+                    continue
+                proj, scp = h["source_id"].split("/", 1)
+                row = dao.query_one(
+                    _SCOPE_ROW_SQL + " AND p.name = ? AND a.scope = ?" + where
+                    + " ORDER BY a.created_at DESC", [proj, scp, *params])
+                if row is not None:
+                    merged.append(_v37_render_scope(row, session=row["session"] or 1))
+        except Exception as exc:  # noqa: BLE001 — reported, then answered by name match
+            degraded = {"semantic": "error", "error": repr(exc)[:300], "fallback": "keyword"}
+
+    listing = None
+    if not project:
+        from awm.scopes import projects as projects_mod
+        listing = projects_mod.search_projects(query=query, limit=limit)
+        degraded = degraded or listing.degraded
+    return ScopeListResponse(scopes=merged, total=len(merged), degraded=degraded,
+                             projects=listing.projects if listing else None)
