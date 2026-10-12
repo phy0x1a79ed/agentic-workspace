@@ -33,7 +33,7 @@ SearchFn = Callable[[str, str, dict], list[str]]
 
 # service -> (tool name, argument builder, result list key)
 _LIVE = {
-    "post": ("scope_fetch", lambda q, f, k: {"query": q, "limit": k, **f}, "posts"),
+    "post": ("journal_fetch", lambda q, f, k: {"query": q, "limit": k, **f}, "posts"),
     "scope": ("scope_search", lambda q, f, k: {"query": q, "limit": k, **f}, "scopes"),
     "project": ("project_search", lambda q, f, k: {"query": q, "limit": k, **f}, "projects"),
     "note": ("notes_search", lambda q, f, k: {"semantic": q, "k": k, **f}, "results"),
