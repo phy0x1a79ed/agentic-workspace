@@ -35,7 +35,8 @@ from awm.config import (
     VAGRANT_PROJECT,
 )
 from awm.scopes.git_utils import run_git, detect_default_branch
-from awm.scopes import data_dvc, search_index
+from awm.dvc import data_dvc
+from awm.scopes import search_index
 from awm.scopes.dao import ScopesDAO
 from awm.scopes.identity import (
     agent_id_for_scope,
@@ -1353,99 +1354,6 @@ def scatter_scope(project: str, hub: str, peripherals: list[str],
         results=results, summary=_summarize(results),
         data_results=None, data_summary=None,
     )
-
-
-# ---------------------------------------------------------------------------
-# Data surface
-# ---------------------------------------------------------------------------
-
-def _scope_worktree(project: str, scope: str) -> Path:
-    rec = agent_record_for_scope(project, scope, active_only=False)
-    return _resolve_worktree(project, scope, rec["worktree"] if rec else None)
-
-
-def data_status(project: str, scope: str) -> dict:
-    """Report a scope's data view: mode, the commit that pins it, and drift.
-
-    Three verbs remain — this, ``data_mount``, ``data_gc`` — and the shrinkage is
-    the result rather than a casualty of it. Snapshotting was ``git commit`` on a
-    second history; promoting was a push into a canonical data branch; converting
-    a project turned a directory into a repo. With the pin living in the code
-    repo, the first two *are* ``git commit`` and ``git merge``, and the third is
-    ``dvc add`` on whatever you want tracked. Thin wrappers around git would only
-    re-create the two-lever confusion this replaced.
-    """
-    validate_name(project, kind="project name")
-    validate_scope_name(scope)
-    return data_dvc.data_status(project, scope, _scope_worktree(project, scope))
-
-
-def _dvc_wired_projects() -> set[str]:
-    """Every project whose objects may live in the shared cache.
-
-    Wired means the common git config carries awm's merge driver, or any
-    worktree tracks a ``.dvc/config``. A project whose worktrees cannot be
-    enumerated counts as wired: the caller then has to name it either way.
-    """
-    wired: set[str] = set()
-    for bare in sorted(PROJECTS_DIR.glob("*/.bare")):
-        project = bare.parent.name
-        r = run_git(["git", "-C", str(bare), "config", "--get", "merge.dvc.driver"])
-        if r.returncode == 0 and r.stdout.strip():
-            wired.add(project)
-            continue
-        try:
-            worktrees = _project_worktrees(project)
-        except (FileNotFoundError, RuntimeError):
-            wired.add(project)
-            continue
-        if any(data_dvc.is_dvc_repo(wt) for wt in worktrees):
-            wired.add(project)
-    return wired
-
-
-def data_gc(projects: list[str], dry_run: bool = True,
-            keep: str = "all-commits", exclude: list[str] | None = None,
-            accept_missing: list[str] | None = None) -> dict:
-    """Reclaim cache objects no listed project references. Dry by default.
-
-    Every DVC-wired project must appear in ``projects`` (its data survives) or
-    in ``exclude`` (its data is dropped on purpose). See
-    ``data_dvc.collect_garbage``.
-    """
-    listed: list[data_dvc.GcProject] = []
-    for proj in projects:
-        validate_name(proj, kind="project name")
-        listed.append(data_dvc.GcProject(
-            proj, PROJECTS_DIR / proj / ".bare", sorted(_project_worktrees(proj))))
-    for proj in exclude or []:
-        validate_name(proj, kind="project name")
-    return data_dvc.collect_garbage(
-        listed, wired=_dvc_wired_projects(), exclude=exclude,
-        accept_missing=accept_missing, dry_run=dry_run, keep=keep)
-
-
-def data_mount(project: str, scope: str, chunks: list[str] | None = None) -> dict:
-    """Choose which chunks this scope materialises on disk.
-
-    Mounting is deliberately **not** a property of the commit. Every chunk the
-    branch pins stays pinned, hashed and backed up regardless of this setting —
-    the list only decides what costs inodes and checkout time *here*. That is
-    what lets a figure scope pin a 30 GB cold archive it never reads while a
-    sibling working on it has it materialised, from the same commit.
-
-    Passing no chunks clears the list, which means "materialise everything".
-    """
-    validate_name(project, kind="project name")
-    validate_scope_name(scope)
-    worktree = _scope_worktree(project, scope)
-    awm_dir = worktree / ".awm"
-    if chunks:
-        data_dvc.write_mounts(awm_dir, chunks)
-    else:
-        (awm_dir / data_dvc.MOUNTS_FILE).unlink(missing_ok=True)
-    report = data_dvc.provision_scope_data(project, scope, awm_dir)
-    return {"project": project, "scope": scope, **report}
 
 
 def delete_scope(project: str, scope: str, force: bool = False) -> ScopeActionResponse:

@@ -186,69 +186,6 @@ SCOPE_MANIFEST_FUNCTIONS = [
         "timeout": 900.0,
     },
     {
-        "name": "scope_data_status",
-        "tool": "scope_data_status",
-        "effect": "read",
-        "description": (
-            "Report a scope's data view: mode (dvc | legacy shared symlink | "
-            "missing), the commit that pins the data, which chunks it pins, "
-            "which of those are materialised on disk, and whether the workspace "
-            "still matches the pins. There is no separate data branch to drift "
-            "— the code revision IS the data revision."
-        ),
-        "params": [
-            {"name": "project", "type": "string", "required": True},
-            {"name": "scope", "type": "string", "required": True},
-        ],
-        # `dvc status` walks every pin.
-        "timeout": 300.0,
-    },
-    {
-        "name": "scope_data_mount",
-        "tool": "scope_data_mount",
-        "effect": "write",
-        "description": (
-            "Choose which data chunks this scope materialises on disk, e.g. "
-            "['data/pipeline/model']. Every chunk the branch pins stays pinned, "
-            "hashed and backed up regardless — this only decides what costs "
-            "inodes and checkout time here, so a scope can pin a 30 GB archive "
-            "it never reads. Pass no chunks to materialise everything. "
-            "To COMMIT data, use ordinary git: `dvc add <path>` then commit the "
-            "generated .dvc pin alongside your code."
-        ),
-        "params": [
-            {"name": "project", "type": "string", "required": True},
-            {"name": "scope", "type": "string", "required": True},
-            {"name": "chunks", "type": "array", "required": False},
-        ],
-        # changing the mount list re-checks-out.
-        "timeout": 900.0,
-    },
-    {
-        "name": "scope_data_gc",
-        "tool": "scope_data_gc",
-        "effect": "write",
-        "description": (
-            "Reclaim shared-cache space by deleting objects no listed project "
-            "references. DRY RUN BY DEFAULT — pass dry_run=false to delete. "
-            "The cache is shared workspace-wide: name every DVC-wired project "
-            "either in projects (its data survives) or in exclude (its data is "
-            "dropped on purpose), or the call is refused. Keeps every output "
-            "pinned by any commit, staged index or worktree file, plus any "
-            "object touched within the grace window. Refuses while a pinned "
-            ".dir manifest is missing from the cache, unless its id is in "
-            "accept_missing. Takes no repo locks; only one gc runs at a time."
-        ),
-        "params": [
-            {"name": "projects", "type": "array", "required": True},
-            {"name": "exclude", "type": "array", "required": False},
-            {"name": "accept_missing", "type": "array", "required": False},
-            {"name": "dry_run", "type": "boolean", "required": False},
-            {"name": "keep", "type": "string", "required": False},
-        ],
-        "timeout": 600.0,
-    },
-    {
         "name": "awm_refresh",
         "tool": "scope_refresh",
         "effect": "write",
@@ -310,24 +247,6 @@ def _handle_scope_heal(args: dict) -> dict:
             "dry_run": bool(args.get("dry_run", False))}
 
 
-def _handle_scope_data_status(args: dict) -> dict:
-    return scopes.data_status(args["project"], args["scope"])
-
-
-def _handle_data_gc(args: dict) -> dict:
-    return scopes.data_gc(
-        args["projects"],
-        dry_run=bool(args.get("dry_run", True)),
-        keep=args.get("keep", "all-commits"),
-        exclude=args.get("exclude"),
-        accept_missing=args.get("accept_missing"),
-    )
-
-
-def _handle_scope_data_mount(args: dict) -> dict:
-    return scopes.data_mount(args["project"], args["scope"], args.get("chunks"))
-
-
 def _handle_scope_repair(args: dict) -> dict:
     result = scopes.repair_scope(args["project"], args["scope"])
     return result.model_dump()
@@ -376,9 +295,6 @@ SCOPE_HANDLERS = {
     "scope_delete": _handle_scope_delete,
     "scope_heal": _handle_scope_heal,
     "scope_repair": _handle_scope_repair,
-    "scope_data_status": _handle_scope_data_status,
-    "scope_data_mount": _handle_scope_data_mount,
-    "scope_data_gc": _handle_data_gc,
     "scope_sync": _handle_scope_sync,
     "scope_gather": _handle_scope_gather,
     "scope_scatter": _handle_scope_scatter,
