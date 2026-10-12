@@ -37,27 +37,42 @@ cold() {
 # terminal to attach to. Either way the pool has nothing to offer.
 [ $# -eq 0 ] && [ -t 0 ] && [ -t 1 ] || cold "$@"
 
-claim() {
-  local dir body line resp=""
+# The previous release's name for the claim, tried only when the gateway does
+# not know the current one. Drop it a release after the rename.
+CX_FN=reflection_claim_other
+CX_FN_OLD=claim
+
+post_claim() {
+  local fn=$1 dir body line resp=""
   dir=${PWD//\\/\\\\}
   dir=${dir//\"/\\\"}
   body="{\"cwd\":\"$dir\"}"
   # Grouped so the redirection failure is reported into /dev/null. Bash
   # writes a bare `exec 3<>... : Connection refused` to the shell's own
   # stderr otherwise, and a refused gateway must be silent.
-  { exec 3<>"/dev/tcp/127.0.0.1/$CX_PORT"; } 2>/dev/null || return 1
-  printf 'POST /svc/cx/fn/claim HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s' \
-    "${#body}" "$body" >&3 2>/dev/null || { exec 3<&-; return 1; }
+  { exec 3<>"/dev/tcp/127.0.0.1/$CX_PORT"; } 2>/dev/null || return 2
+  printf 'POST /svc/cx/fn/%s HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s' \
+    "$fn" "${#body}" "$body" >&3 2>/dev/null || { exec 3<&-; return 2; }
   # The first read waits out the claim itself; the rest are already in flight.
-  IFS= read -r -t "$CX_WAIT" -u 3 line || { exec 3<&-; return 1; }
+  IFS= read -r -t "$CX_WAIT" -u 3 line || { exec 3<&-; return 2; }
   resp=$line
   while IFS= read -r -t 1 -u 3 line; do resp+=$line; done
   # The body is the last line and carries no newline, so the read that consumed
   # it reported failure. Dropping `line` here drops the whole answer.
   resp+=$line
   exec 3<&- 3>&-
-  [[ $resp =~ \"session\"[[:space:]]*:[[:space:]]*\"([A-Za-z0-9]+)\" ]] || return 1
+  [[ $resp =~ \"session\"[[:space:]]*: ]] || return 1
+  [[ $resp =~ \"session\"[[:space:]]*:[[:space:]]*\"([A-Za-z0-9]+)\" ]] || return 0
   printf '%s\n' "${BASH_REMATCH[1]}"
+}
+
+# Status 1 means the gateway answered without a session field, which is how an
+# unknown function reads, so the old name gets one try. Status 2 is a gateway
+# that is down or silent, where a second try would only wait again.
+claim() {
+  local out
+  out=$(post_claim "$CX_FN"); [ $? -eq 1 ] && out=$(post_claim "$CX_FN_OLD")
+  printf '%s\n' "$out"
 }
 
 id=$(claim) && [ -n "$id" ] && exec "$CX_CLAUDE" attach "$id"

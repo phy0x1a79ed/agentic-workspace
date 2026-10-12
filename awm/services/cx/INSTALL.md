@@ -39,26 +39,27 @@ and this service into the `awm` env. Override the env with `AWM_ENV=<name>`.
 `service.toml` gates discovery on the `cx` profile, so the service does not
 start on a node that has not asked for it. An explicit `awm services enable cx`
 overrides the gate and is the intended way to turn it on. The same file sets
-`tier = "core"`, so the `cx` domain is on the default MCP list wherever the
-service runs.
+`tool = "reflection"` and `tier = "on"`, so the verbs sit in the `reflection`
+tool wherever the service runs. The pool verbs (`claim_other`, `seed_other`,
+`remove_other`) are hidden from MCP and answer on the CLI and HTTP.
 
-A station (`AWM_NODE_ROLE=station`) runs no sessions. `start` and seeding refuse there, and
+A station (`AWM_NODE_ROLE=station`) runs no sessions. `start_other` and seeding refuse there, and
 the gateway logs a warning at boot if a station enables this service.
 
 ## Operate
 
-    awm cx list              # every session on this node, and the pool summary
-    awm cx start --help      # start a named session in a scope's worktree
-    awm cx stop --help       # stop a session that start created
-    awm cx remove            # what the pool may delete, and why. Deletes nothing
-    awm cx remove --apply    # delete it
-    awm cx seed              # start one warm session now, or say why it is refused
+    awm reflection list_other           # every session on this node, and the pool summary
+    awm reflection start_other --help   # start a named session in a scope's worktree
+    awm reflection stop_other --help    # stop a session that start_other created
+    awm reflection remove_other         # what the pool may delete, and why. Deletes nothing
+    awm reflection remove_other --apply # delete it
+    awm reflection seed_other           # start one warm session now, or say why it is refused
 
-A dead job reads `stopped` in `list` when `claude stop` ended it, and `gone`
+A dead job reads `stopped` in `list_other` when `claude stop` ended it, and `gone`
 when it died. **CAUTION** `reporting` reads this difference: `stopped` closes the
 session's task as done, and `gone` leaves it on the board, flagged as ended.
 
-`list` derives the pool summary from the live session records. There is no
+`list_other` derives the pool summary from the live session records. There is no
 stored pointer to "the current session", because a stored pointer is a second
 thing that has to agree with the records and it is the half that goes stale.
 
@@ -67,7 +68,7 @@ stops the pool without stopping the service. `AWM_CX_LOOP=0` stops the reconcile
 loop alone. `AWM_CX_ROTATE_AGE_S` sets the age at which a session is replaced.
 `AWM_CX_PREFIX`, `AWM_CX_SEED_DIR`, `AWM_CX_MODEL`, `AWM_CX_EFFORT` and
 `AWM_CX_CLAUDE` shape what is seeded. `AWM_CX_PROJECTS` sets the root of the
-scope worktrees that `start` uses, and `AWM_CX_MCP_SOURCE` names the MCP config a
+scope worktrees that `start_other` uses, and `AWM_CX_MCP_SOURCE` names the MCP config a
 strict session copies. See `awm/cx/config.py`.
 
 `AWM_CX_CLAIMED_PREFIX` is the one knob the hook reads too, from its own copy of
@@ -78,14 +79,14 @@ sessions the service renames. A test asserts the two agree.
 
 ### Sessions started for other agents
 
-`start` creates a named background session in a scope's worktree and returns its
+`start_other` creates a named background session in a scope's worktree and returns its
 job id and the `claude attach` command. It creates the worktree through the
 `scopes` service when the caller may and the worktree is absent. A session
 defaults to skip-permissions, `opus` and high effort. The model is a
 `--model` flag, because the flag wins over `ANTHROPIC_MODEL` where the two
 disagree.
 
-`start` refuses when any of these holds:
+`start_other` refuses when any of these holds:
 
 1. The node is a station.
 2. The caller is a peer that is not a verified, domestic node.
@@ -93,10 +94,10 @@ disagree.
 4. The claude workspace-trust check fails (see *A directory must be trusted*).
 5. A live session already holds the name.
 
-`stop` ends only a session that `start` created, and it keeps the conversation.
+`stop_other` ends only a session that `start_other` created, and it keeps the conversation.
 It finds such a session by its lineage record. A session that cx started may
 stop only the jobs it started itself. An operator, a service or a session that
-cx did not start may stop any job `start` created.
+cx did not start may stop any job `start_other` created.
 
 A lineage record is one JSON file per started session, under `starts/` in cx's
 state directory. It holds the name, scope, parent, caller and mode. `parent`
@@ -251,7 +252,7 @@ move, a trusted ancestor counts. An untrusted target is refused in milliseconds
 and the caller launches cold, where the user answers the trust prompt
 themselves.
 
-`start` applies a stricter rule, because `claude --bg` does. Inside a git
+`start_other` applies a stricter rule, because `claude --bg` does. Inside a git
 repository the repository's own trust entry is required, and a trusted parent
 such as the home directory does not count. A scope worktree belongs to a bare
 clone, so the entry is the project's `.bare` directory. A start that fails the
@@ -304,7 +305,7 @@ then happens inside a service that is already warm, which keeps a Python
 interpreter start off the path of every launch.
 
 The timeouts have to agree with each other. `MOVE_TIMEOUT_S` in `awm/cx/claim.py`
-is how long a move may take, the manifest's `claim` timeout must exceed it, and
+is how long a move may take, the manifest's `reflection_claim_other` timeout must exceed it, and
 `CX_WAIT` in `bin/cx` must exceed that. A budget below the one beneath it aborts
 a claim that was about to succeed, and the session is spent for nothing. A test
 asserts the ladder.

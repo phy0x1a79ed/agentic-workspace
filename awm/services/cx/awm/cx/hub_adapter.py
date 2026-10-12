@@ -1,16 +1,18 @@
 """Hub adapter for the `cx` service — Claude Code sessions on this node.
 
-`start`, `list` and `stop` are the session lifecycle other agents use. The rest
+`start_other`, `list_other` and `stop_other` are the session lifecycle other
+agents use; they sit in the `reflection` tool beside the verbs that act on the
+calling session. The rest
 of the service is the warm start: it keeps one background Claude Code session
 idling so that `cx` in a terminal attaches to a renderer that has already
 started, instead of paying a cold launch. The session is seeded in a neutral
 directory and moved to the caller's directory at claim time, so the pool is not
 keyed by directory and the first `cx` in a project is as fast as the hundredth.
 
-Every function carries an explicit ``tool`` name under a ``cx_`` prefix, which
-is what decides the domain: the gateway folds the MCP surface by splitting the
-projected name on its first underscore. So the surface is ``awm cx list`` and
-``mcp__awm__cx {verb:"list"}``.
+Every function is named ``reflection_<verb>``, matching the service's
+``tool = "reflection"``. So the surface is ``awm reflection list_other`` and
+``mcp__awm__reflection {verb:"list_other"}``. The pool verbs are hidden from
+MCP.
 
 Run via ``run.sh`` (which the gateway spawns and respawns):
     python -m awm.cx.hub_adapter
@@ -32,17 +34,18 @@ LOOP = reconcile.Loop()
 
 API_MANIFEST: dict[str, Any] = {
     "description": (
-        "Claude Code sessions on this node. `start` creates a named background "
-        "session in a scope's worktree, `list` shows every session with its "
-        "lineage, and `stop` ends one that `start` created. The service also "
-        "keeps one warm session idling so the `cx` command in a terminal "
-        "attaches to an already-painted renderer; `claim`, `seed` and `remove` "
-        "operate that pool, and `cx` itself is the everyday surface."
+        "Claude Code sessions on this node. `start_other` creates a named "
+        "background session in a scope's worktree, `list_other` shows every "
+        "session with its lineage, and `stop_other` ends one that "
+        "`start_other` created. The service also keeps one warm session idling "
+        "so the `cx` command in a terminal attaches to an already-painted "
+        "renderer; `claim_other`, `seed_other` and `remove_other` operate that "
+        "pool, and `cx` itself is the everyday surface."
     ),
     "functions": [
         {
-            "name": "start",
-            "tool": "cx_start",
+            "name": "reflection_start_other",
+            "tool": "reflection_start_other",
             "description": (
                 "Start a named background Claude Code session in a scope's "
                 "worktree, creating the worktree if it is absent, and return "
@@ -100,8 +103,8 @@ API_MANIFEST: dict[str, Any] = {
             "effect": "write",
         },
         {
-            "name": "list",
-            "tool": "cx_list",
+            "name": "reflection_list_other",
+            "tool": "reflection_list_other",
             "description": (
                 "List the sessions on this node: background jobs with their "
                 "state, parent, caller and mode, interactive terminal sessions "
@@ -119,23 +122,24 @@ API_MANIFEST: dict[str, Any] = {
             "effect": "read",
         },
         {
-            "name": "stop",
-            "tool": "cx_stop",
+            "name": "reflection_stop_other",
+            "tool": "reflection_stop_other",
             "description": (
-                "Stop a session that `start` created. The conversation is "
+                "Stop a session that `start_other` created. The conversation is "
                 "kept and `claude attach <job>` reopens it. Refuses a job "
-                "that `start` did not create."
+                "that `start_other` did not create."
             ),
             "params": [
                 {"name": "job", "type": "string", "required": True,
-                 "description": "The job id `start` returned."},
+                 "description": "The job id `start_other` returned."},
             ],
             "timeout": 30,
             "effect": "write",
         },
         {
-            "name": "claim",
-            "tool": "cx_claim",
+            "name": "reflection_claim_other",
+            "tool": "reflection_claim_other",
+            "surfaces": ["cli", "http"],
             "description": (
                 "Take the warm session, move it to `cwd`, and return its id for "
                 "`claude attach`. An empty id means there was nothing warm, "
@@ -150,8 +154,9 @@ API_MANIFEST: dict[str, Any] = {
             "effect": "write",
         },
         {
-            "name": "seed",
-            "tool": "cx_seed",
+            "name": "reflection_seed_other",
+            "tool": "reflection_seed_other",
+            "surfaces": ["cli", "http"],
             "description": (
                 "Start one warm session now and return its id. Refuses, with "
                 "the reason, when no Claude Code daemon is already running: "
@@ -165,8 +170,9 @@ API_MANIFEST: dict[str, Any] = {
             "effect": "write",
         },
         {
-            "name": "remove",
-            "tool": "cx_remove",
+            "name": "reflection_remove_other",
+            "tool": "reflection_remove_other",
+            "surfaces": ["cli", "http"],
             "description": (
                 "List the sessions this service may delete, with the reason "
                 "each one qualifies. Deletes nothing unless `apply` is true. "
@@ -245,12 +251,12 @@ async def _stop(args: dict[str, Any], as_: str | None = None) -> dict[str, Any]:
 
 
 HANDLERS: dict[str, Any] = {
-    "start": _start,
-    "list": _list,
-    "stop": _stop,
-    "claim": _claim,
-    "seed": _seed,
-    "remove": _remove,
+    "reflection_start_other": _start,
+    "reflection_list_other": _list,
+    "reflection_stop_other": _stop,
+    "reflection_claim_other": _claim,
+    "reflection_seed_other": _seed,
+    "reflection_remove_other": _remove,
 }
 
 

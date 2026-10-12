@@ -19,16 +19,43 @@ def manifest():
     return API_MANIFEST
 
 
-def test_every_function_projects_into_a_single_domain():
+SERVICE_TOML = Path(__file__).resolve().parents[1] / "service.toml"
+HIDDEN = {"reflection_claim_other", "reflection_seed_other", "reflection_remove_other"}
+
+
+def test_every_function_projects_into_the_reflection_tool():
     for fn in manifest()["functions"]:
         domain, _, verb = fn["tool"].partition("_")
-        assert domain == "cx", (fn["name"], fn["tool"])
-        assert verb, fn["tool"]
+        assert domain == "reflection", (fn["name"], fn["tool"])
+        assert verb.endswith("_other"), fn["tool"]
 
 
-def test_the_projected_verb_matches_the_internal_name():
+def test_the_projected_name_matches_the_internal_name():
     for fn in manifest()["functions"]:
-        assert fn["tool"] == f"cx_{fn['name']}", fn
+        assert fn["tool"] == fn["name"], fn
+
+
+def test_the_service_joins_the_reflection_tool_and_is_on():
+    import tomllib
+
+    cfg = tomllib.loads(SERVICE_TOML.read_text())
+    assert cfg["tool"] == "reflection"
+    assert cfg["tier"] == "on"
+    assert cfg["profiles"] == ["cx"]
+
+
+def test_the_pool_verbs_leave_mcp_and_the_lifecycle_verbs_stay():
+    for fn in manifest()["functions"]:
+        if fn["name"] in HIDDEN:
+            assert fn["surfaces"] == ["cli", "http"], fn["name"]
+        else:
+            assert "surfaces" not in fn, fn["name"]
+
+
+def test_no_verb_collides_with_the_calling_sessions_own():
+    own = {"compact", "mode", "message_self", "pending", "whoami"}
+    for fn in manifest()["functions"]:
+        assert fn["name"].removeprefix("reflection_") not in own
 
 
 def test_every_declared_function_has_a_handler():
@@ -40,7 +67,7 @@ def test_every_declared_function_has_a_handler():
 def test_a_claim_answers_faster_than_the_client_would_wait():
     """The default thirty-second ceiling is far too long to sit in front of a
     terminal, and the manifest budget is the only one the gateway enforces."""
-    claim = next(f for f in manifest()["functions"] if f["name"] == "claim")
+    claim = next(f for f in manifest()["functions"] if f["name"] == "reflection_claim_other")
     assert claim["timeout"] <= 15
 
 
@@ -49,13 +76,19 @@ def test_the_claim_budget_covers_a_move_that_is_merely_slow():
     about to succeed, and the session would be spent for nothing."""
     from awm.cx import claim as claim_mod
 
-    claim = next(f for f in manifest()["functions"] if f["name"] == "claim")
+    claim = next(f for f in manifest()["functions"] if f["name"] == "reflection_claim_other")
     assert claim["timeout"] > claim_mod.MOVE_TIMEOUT_S
+
+
+def test_the_shell_half_posts_to_the_current_name_and_falls_back_to_the_old():
+    src = BIN.read_text()
+    assert "CX_FN=reflection_claim_other" in src
+    assert "CX_FN_OLD=claim" in src
 
 
 def test_the_shell_half_waits_out_the_service_budget():
     """Cutting the read off early turns a slow warm start into a cold one."""
-    claim = next(f for f in manifest()["functions"] if f["name"] == "claim")
+    claim = next(f for f in manifest()["functions"] if f["name"] == "reflection_claim_other")
     src = BIN.read_text()
     wait = int(src.split("CX_WAIT=${CX_WAIT:-")[1].split("}")[0])
     assert wait >= claim["timeout"]
