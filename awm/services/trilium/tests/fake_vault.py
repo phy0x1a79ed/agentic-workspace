@@ -76,6 +76,15 @@ class FakeVault:
             stack += self.notes[nid]["children"]
         return out
 
+    def ancestors(self, note_id: str) -> set[str]:
+        out, stack = set(), list(self.notes[note_id]["parents"])
+        while stack:
+            nid = stack.pop()
+            if nid not in out:
+                out.add(nid)
+                stack += self.notes[nid]["parents"]
+        return out
+
     # -- the transport -------------------------------------------------------
 
     def request(self, method: str, url: str, **kw) -> httpx.Response:
@@ -147,7 +156,9 @@ class FakeVault:
                 "parentBranchIds": [f"{p}_{note_id}" for p in note["parents"]],
                 "attributes": [self._attribute_pojo(a) for a, v
                                in self.attributes.items()
-                               if v["noteId"] == note_id]}
+                               if v["noteId"] == note_id
+                               or v["isInheritable"]
+                               and v["noteId"] in self.ancestors(note_id)]}
 
     def _search(self, params: dict, req) -> httpx.Response:
         """Only the one query shape this service builds: `#name`, optionally
