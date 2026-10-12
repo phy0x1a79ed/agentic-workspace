@@ -209,8 +209,9 @@ class Etapi:
     # `type` is never inferred.
 
     def attributes(self, note_id: str) -> list[dict]:
-        """Every attribute owned by this note, as ETAPI reports them on the
-        note itself — there is no list endpoint of its own."""
+        """Every attribute that applies to this note, owned or inherited, as ETAPI
+        reports them on the note itself — there is no list endpoint of its own.
+        Compare `noteId` to tell the two apart."""
         return self.note(note_id).get("attributes") or []
 
     def create_attribute(self, *, note_id: str, type: str, name: str,

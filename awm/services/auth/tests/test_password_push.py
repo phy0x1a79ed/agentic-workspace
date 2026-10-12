@@ -27,6 +27,7 @@ def pushed(monkeypatch):
 
     class _S:
         push_enabled = True
+        push_discord = True
         validity_hours = 24.0
         mint_cadence_hours = 12.0
         discord_account = "discord-bot"
@@ -122,6 +123,35 @@ async def test_the_message_still_works_with_no_edge_url(pushed, monkeypatch):
     assert "__auth/link" not in text
 
 
+async def test_the_default_push_goes_to_the_ops_note(pushed, monkeypatch):
+    from awm.auth import service
+
+    monkeypatch.setattr(service, "_settings", lambda: type(
+        "_Ops", (), {"push_enabled": True, "push_discord": False,
+                  "validity_hours": 24.0})())
+    await service._push_password_to_discord(PASSWORD, 0.0)
+    assert len(pushed) == 1
+    sent = pushed[0]
+    assert (sent["service"], sent["fn"]) == ("reporting", "ops_post")
+    assert sent["args"]["kind"] == "password"
+    assert sent["args"]["node"] == "altair"
+    assert "altair" in sent["args"]["title"]
+    assert PASSWORD in sent["args"]["body"]
+
+
+async def test_the_ops_push_follows_the_reporting_peer(pushed, monkeypatch):
+    from awm.auth import service
+    import awm.gatewayclient as gc
+
+    monkeypatch.setattr(service, "_settings", lambda: type(
+        "_Ops", (), {"push_enabled": True, "push_discord": False,
+                  "validity_hours": 24.0})())
+    monkeypatch.setattr(gc, "peer_env", lambda var: {
+        "AWM_REPORTING_PEER": "altair"}.get(var))
+    await service._push_password_to_discord(PASSWORD, 0.0)
+    assert pushed[0]["peer"] == "altair"
+
+
 async def test_push_disabled_sends_nothing(pushed, monkeypatch):
     from awm.auth import service
 
@@ -182,6 +212,7 @@ def test_autologin_link_shape(monkeypatch):
 
 class _RetrySettings:
     push_enabled = True
+    push_discord = True
     validity_hours = 24.0
     discord_account = "discord-bot"
     discord_channel = "dm:188743359983124480"

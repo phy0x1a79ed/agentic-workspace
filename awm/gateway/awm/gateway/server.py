@@ -475,6 +475,10 @@ def list_tools_endpoint(request: Request, view: str | None = None, peers: int = 
 _CALLER_STAMPED: dict[str, frozenset[str] | None] = {
     "reflection": None,
     "cx": frozenset({"start", "stop"}),
+    "reporting": None,
+    "trilium": frozenset({
+        "note_upsert", "note_create", "note_update", "note_place", "note_delete",
+        "note_move", "note_clone", "attr_set", "attr_delete", "attachment_put"}),
 }
 
 
@@ -511,7 +515,8 @@ def _stamp_caller(name: str, args: dict, pid_header: str | None,
     of whether it is hosted in a tmux pane or as a background job. The stamped
     calls (`_CALLER_STAMPED`) are every `reflection` verb, which injects into the
     caller's own prompt, and `cx` `start` and `stop`, which record the caller as
-    the new session's parent. Their contract with the model requires zero
+    the new session's parent, every `reporting` verb, and the `trilium` write
+    verbs, which the write gate checks. Their contract with the model requires zero
     awareness of any of this: calls arrive carrying nothing about who is making
     them, and this is the one place identity is attached before dispatch.
 
@@ -541,6 +546,7 @@ def _stamp_caller(name: str, args: dict, pid_header: str | None,
     inner = _stamped_bag(name, args)
     if inner is None:
         return
+    inner.pop("_caller", None)
     if as_:
         pid_header = descendant_header = None
     if pid_header and pid_header.isdigit():

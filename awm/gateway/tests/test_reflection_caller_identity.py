@@ -443,3 +443,19 @@ def test_descendant_header_does_not_touch_other_domains(resolves):
     _stamp_caller("scope_refresh", flat, None, "910")
     assert "_caller_pid" not in flat
     assert resolves == []
+
+
+def test_reporting_and_trilium_writes_are_stamped_and_the_body_caller_dropped():
+    reporting = {"verb": "claim_task", "args": {"_caller": "x", "_caller_pid": 9}}
+    _stamp_caller("reporting", reporting, "2488")
+    assert reporting["args"] == {"_caller_pid": 2488}
+
+    flat = {"_caller": "x", "_caller_pid": 9}
+    _stamp_caller("trilium_note_update", flat, None)
+    assert flat == {}
+
+
+def test_trilium_reads_are_not_stamped():
+    args = {"verb": "note_get", "args": {"_caller_pid": 9}}
+    _stamp_caller("trilium", args, "2488")
+    assert args["args"] == {"_caller_pid": 9}

@@ -29,6 +29,7 @@ import base64
 import json
 import logging
 import mimetypes
+import os
 import time
 import urllib.parse
 from pathlib import Path
@@ -558,6 +559,39 @@ def _operator_only(as_: str | None, verb: str) -> None:
             f"run `awm trilium {verb}` on the host")
 
 
+async def _agent_gate(args: dict, verb: str, *note_ids: str) -> None:
+    """Refuse a session's write to a note that is not labelled for agents.
+
+    The gateway stamps `_caller_pid` only on a call from a session, so a call
+    without one is the host or a service and passes. `AWM_TRILIUM_AGENT_GATE`
+    is `off`, `log` (the default: record the refusal, let the write through) or
+    `enforce`. A note needs an effective `#agentWritable`, and an effective
+    `#agentManaged` refuses even under a writable subtree.
+    """
+    mode = os.environ.get("AWM_TRILIUM_AGENT_GATE", "log").strip().lower()
+    if mode == "off" or not args.get("_caller_pid"):
+        return
+
+    def _refusals() -> list[str]:
+        out = []
+        for note_id in note_ids:
+            labels = {a.get("name") for a in etapi.client().attributes(note_id)
+                      if a.get("type") == "label"}
+            if "agentManaged" in labels:
+                out.append(f"note {note_id} has #agentManaged: only the "
+                           f"reporting service writes it")
+            elif "agentWritable" not in labels:
+                out.append(f"note {note_id} has no effective #agentWritable label")
+        return out
+    refused = await asyncio.to_thread(_refusals)
+    if not refused:
+        return
+    message = f"{verb} refused for a session: {'; '.join(refused)}"
+    if mode == "enforce":
+        raise PermissionError(message)
+    log.warning("trilium agent gate (log mode, write allowed): %s", message)
+
+
 # -- handlers ---------------------------------------------------------------
 #
 # Every handler hops to a worker thread: they spawn processes, signal groups
@@ -677,6 +711,7 @@ async def _h_export(args: dict, as_: str | None = None) -> dict:
 
 async def _h_note_upsert(args: dict, as_: str | None = None) -> dict:
     _operator_only(as_, "note_upsert")
+    await _agent_gate(args, "note_upsert", (args.get("parent") or "").strip() or "root")
     title = (args.get("title") or "").strip()
     if not title:
         raise ValueError("title is required, and is matched exactly")
@@ -782,6 +817,7 @@ async def _h_note_search(args: dict, as_: str | None = None) -> dict:
 
 async def _h_note_create(args: dict, as_: str | None = None) -> dict:
     _operator_only(as_, "note_create")
+    await _agent_gate(args, "note_create", (args.get("parent") or "").strip() or "root")
     title = (args.get("title") or "").strip()
     if not title:
         raise ValueError("title is required")
@@ -811,6 +847,7 @@ async def _h_note_create(args: dict, as_: str | None = None) -> dict:
 async def _h_note_update(args: dict, as_: str | None = None) -> dict:
     _operator_only(as_, "note_update")
     note_id = _note_id(args)
+    await _agent_gate(args, "note_update", note_id)
     fields = {k: args[k] for k in ("title", "type", "mime")
               if args.get(k) not in (None, "")}
     content = args.get("content")
@@ -860,6 +897,7 @@ async def _h_note_place(args: dict, as_: str | None = None) -> dict:
         raise ValueError(
             "parents is required and may not be empty: a note with no branch "
             "is a deleted note, and note_delete at least says so")
+    await _agent_gate(args, "note_place", note_id, *sorted(wanted))
 
     def _write() -> dict:
         c = etapi.client()
@@ -879,6 +917,7 @@ async def _h_note_place(args: dict, as_: str | None = None) -> dict:
 async def _h_note_delete(args: dict, as_: str | None = None) -> dict:
     _operator_only(as_, "note_delete")
     note_id = _note_id(args)
+    await _agent_gate(args, "note_delete", note_id)
     if note_id == "root":
         raise ValueError(
             "root is the vault. Deleting it is `restore` from a snapshot, "
@@ -892,13 +931,15 @@ async def _h_note_delete(args: dict, as_: str | None = None) -> dict:
 
 async def _h_note_move(args: dict, as_: str | None = None) -> dict:
     _operator_only(as_, "note_move")
-    return await asyncio.to_thread(
-        etapi.client().move_note, _note_id(args), _note_id(args, "parent"))
+    note_id, parent = _note_id(args), _note_id(args, "parent")
+    await _agent_gate(args, "note_move", note_id, parent)
+    return await asyncio.to_thread(etapi.client().move_note, note_id, parent)
 
 
 async def _h_note_clone(args: dict, as_: str | None = None) -> dict:
     _operator_only(as_, "note_clone")
     note_id, parent = _note_id(args), _note_id(args, "parent")
+    await _agent_gate(args, "note_clone", note_id, parent)
 
     def _write() -> dict:
         made = etapi.client().put_branch(note_id, parent)
@@ -925,6 +966,7 @@ async def _h_attrs_get(args: dict, as_: str | None = None) -> dict:
 async def _h_attr_set(args: dict, as_: str | None = None) -> dict:
     _operator_only(as_, "attr_set")
     note_id = _note_id(args)
+    await _agent_gate(args, "attr_set", note_id)
     name = (args.get("name") or "").strip().lstrip("#~")
     if not name:
         raise ValueError("name is required")
@@ -938,6 +980,7 @@ async def _h_attr_set(args: dict, as_: str | None = None) -> dict:
 async def _h_attr_delete(args: dict, as_: str | None = None) -> dict:
     _operator_only(as_, "attr_delete")
     note_id = _note_id(args)
+    await _agent_gate(args, "attr_delete", note_id)
     name = (args.get("name") or "").strip().lstrip("#~")
     if not name:
         raise ValueError("name is required")
@@ -953,6 +996,7 @@ async def _h_attr_delete(args: dict, as_: str | None = None) -> dict:
 async def _h_attachment_put(args: dict, as_: str | None = None) -> dict:
     _operator_only(as_, "attachment_put")
     note_id = _note_id(args)
+    await _agent_gate(args, "attachment_put", note_id)
     path = (args.get("path") or "").strip()
     b64 = args.get("content_b64")
     if bool(path) == bool(b64):
