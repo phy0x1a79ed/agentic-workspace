@@ -102,6 +102,17 @@ async def test_sessions_the_daemon_retired_are_removed_when_their_replacement_st
     assert sorted(fake.released) == ["old00001", "sec00001"]
 
 
+async def test_a_stopped_session_cx_no_longer_lists_is_removed_when_replaced(queue):
+    queue.record_session("representative", "stop0001")
+    queue.record_session("representative", "long0001")
+    queue.record_session("secretary", "sec00001")
+    cx = FakeCx([session_row("secretary", job="sec00001")])
+    fake = FakePins()
+    fake.forgotten.add("long0001")
+    await loop(cx, queue, fake).tick()
+    assert fake.released == ["stop0001"] and len(fake.pinned) == 1
+
+
 async def test_a_failed_session_that_is_replaced_is_removed(queue):
     queue.record_session("representative", "bad00001")
     queue.record_session("secretary", "sec00001")

@@ -68,6 +68,11 @@ def _edit(job: str, pinned: bool, path: Path | None = None) -> None:
 
 
 class Pins:
+    @staticmethod
+    def known(job: str) -> bool:
+        """True while the daemon still keeps a record of the job."""
+        return (roster.claude_home() / "jobs" / job).is_dir()
+
     async def pin(self, job: str) -> None:
         await self._try(asyncio.to_thread(_edit, job, True), f"pin {job}")
 

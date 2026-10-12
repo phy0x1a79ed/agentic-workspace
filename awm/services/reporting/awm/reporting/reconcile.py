@@ -251,9 +251,12 @@ class Loop:
                    f"{reply.get('reason') or reply.get('error') or reply!r}")
 
     async def _retire(self, role: str, rows: list[dict], new: str | None, stopped: str | None) -> None:
-        """Remove the sessions the new one replaces: the one just stopped and those the daemon retired."""
-        old = {r["job"] for r in rows if r.get("job") in self.queue.session_jobs(role)
-               and r.get("state") == sessions.GONE}
+        """Remove the sessions the new one replaces: every one the door started that is no longer live.
+
+        `claude stop` leaves a job that cx no longer lists, so absence counts as not live.
+        """
+        live = {r.get("job") for r in rows if r.get("state") not in (sessions.GONE, sessions.STOPPED)}
+        old = {job for job in self.queue.session_jobs(role) - live if self._pins.known(job)}
         for job in (old | {stopped}) - {new, None}:
             await self._pins.release(job)
 

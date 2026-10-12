@@ -30,9 +30,13 @@ class FakePins:
     def __init__(self) -> None:
         self.pinned: list[str] = []
         self.released: list[str] = []
+        self.forgotten: set[str] = set()
 
     async def pin(self, job: str) -> None:
         self.pinned.append(job)
+
+    def known(self, job: str) -> bool:
+        return job not in self.forgotten
 
     async def release(self, job: str) -> None:
         self.released.append(job)
