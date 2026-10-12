@@ -123,12 +123,18 @@ def test_a_respawn_does_not_clash_with_itself(services_root):
     surface.check_registration("a", api, [("a", api)])
 
 
-def test_a_legacy_service_is_not_checked(services_root):
-    surface.check_registration("scopes", {"functions": [_fn("x", "whatever_x")]}, [])
+def test_the_allowlist_is_empty():
+    assert surface.LEGACY_ALLOWLIST == frozenset()
 
 
-def test_a_legacy_service_keeps_the_prefix_projection(services_root):
-    assert surface.split_published("scopes", "scope_create") == ("scope", "create")
+def test_a_legacy_service_is_not_checked(services_root, monkeypatch):
+    monkeypatch.setattr(surface, "LEGACY_ALLOWLIST", frozenset({"oldsvc"}))
+    surface.check_registration("oldsvc", {"functions": [_fn("x", "whatever_x")]}, [])
+
+
+def test_a_legacy_service_keeps_the_prefix_projection(services_root, monkeypatch):
+    monkeypatch.setattr(surface, "LEGACY_ALLOWLIST", frozenset({"oldsvc"}))
+    assert surface.split_published("oldsvc", "old_create") == ("old", "create")
     _folder(services_root, "newsvc", 'tool = "news"\n')
     assert surface.split_published("newsvc", "news_get_all") == ("news", "get_all")
 

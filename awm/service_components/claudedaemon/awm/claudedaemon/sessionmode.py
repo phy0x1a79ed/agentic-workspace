@@ -1,6 +1,6 @@
 """Which restricted mode, if any, a Claude Code session was started in.
 
-`cx start` declares a mode for each session it creates and writes it to a
+`reflection start_other` (the cx service) declares a mode for each session it creates and writes it to a
 lineage record under cx's state directory. The gateway gates a calling session
 by that mode, and cx gates what a session may start or stop by it, so both read
 the answer from here. Everything is read from files on disk (Claude Code's

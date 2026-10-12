@@ -3,7 +3,8 @@
 A peer on the previous release, an old hook script and any caller of the HTTP
 ``/invoke`` door name verbs as they were published before the one-service-one-tool
 surface. Each row maps an old ``(tool, verb)`` to the verb that replaced it, with
-arguments the new verb needs and the old one implied. MCP lists only the new names.
+arguments the new verb needs and the old one implied, and old argument names the
+new verb spells differently or no longer takes. MCP lists only the new names.
 
 A row fires only when the old name is no longer registered and its target is, so
 a live verb is never shadowed and a target that is absent (its branch not yet
@@ -22,8 +23,9 @@ Pair = tuple[str, str]
 @dataclass(frozen=True)
 class Alias:
     """``old_tool``/``old_verb`` is the pair a domain call named; ``old_flat`` the
-    flat name when it is not ``<old_tool>_<old_verb>``. ``inject`` is merged over
-    the call's arguments."""
+    flat name when it is not ``<old_tool>_<old_verb>``. ``rename`` maps an old
+    argument name to its new one, or to ``None`` to drop it. ``inject`` is merged
+    over the call's arguments after that."""
 
     old_tool: str
     old_verb: str
@@ -31,6 +33,7 @@ class Alias:
     new_verb: str
     inject: Mapping[str, Any] = field(default_factory=dict)
     old_flat: str | None = None
+    rename: Mapping[str, str | None] = field(default_factory=dict)
 
     @property
     def flat_old(self) -> str:
@@ -40,13 +43,26 @@ class Alias:
     def flat_new(self) -> str:
         return f"{self.new_tool}_{self.new_verb}"
 
+    def rewrite(self, args: Mapping[str, Any]) -> dict:
+        out: dict = {}
+        for key, value in args.items():
+            if key in self.rename:
+                if self.rename[key] is not None:
+                    out[self.rename[key]] = value
+            else:
+                out[key] = value
+        out.update(self.inject)
+        return out
+
 
 def _rows() -> list[Alias]:
     rows: list[Alias] = []
 
     def add(old_tool: str, old_verb: str, new_tool: str, new_verb: str,
-            inject: Mapping[str, Any] | None = None, old_flat: str | None = None) -> None:
-        rows.append(Alias(old_tool, old_verb, new_tool, new_verb, dict(inject or {}), old_flat))
+            inject: Mapping[str, Any] | None = None, old_flat: str | None = None,
+            rename: Mapping[str, str | None] | None = None) -> None:
+        rows.append(Alias(old_tool, old_verb, new_tool, new_verb, dict(inject or {}),
+                          old_flat, dict(rename or {})))
 
     add("reflection", "send", "reflection", "message_self")
     for verb in ("start", "list", "stop", "claim", "seed", "remove"):
@@ -78,8 +94,10 @@ def _rows() -> list[Alias]:
     add("scope", "gather", "scope", "git_gather")
     add("scope", "scatter", "scope", "git_scatter")
     add("scope", "refresh", "journal", "render")
-    add("project", "search", "scope", "search")
-    add("project", "create", "scope", "create", {"new_project": True})
+    add("project", "search", "scope", "search", rename={"active_only": None})
+    add("project", "create", "scope", "create", {"new_project": True},
+        rename={"name": "project"})
+    add("ref", "resolve", "scope", "ref_resolve")
 
     for verb in ("status", "restart"):
         add("gateway", verb, "awm", verb, old_flat=f"awm_{verb}")
@@ -146,8 +164,7 @@ def resolve(name: str, args: dict, *, flat_names: Callable[[], set[str]],
             known = flat_names()
             if alias.flat_new in known:
                 inner = args.get("args")
-                inner = dict(inner) if isinstance(inner, dict) else {}
-                inner.update(alias.inject)
+                inner = alias.rewrite(inner if isinstance(inner, dict) else {})
                 if visible(alias.new_tool, alias.new_verb):
                     return alias.new_tool, {**{k: v for k, v in args.items()
                                                if k not in ("verb", "args")},
@@ -160,4 +177,4 @@ def resolve(name: str, args: dict, *, flat_names: Callable[[], set[str]],
     known = flat_names()
     if name in known or alias.flat_new not in known:
         return name, args
-    return alias.flat_new, {**args, **alias.inject}
+    return alias.flat_new, alias.rewrite(args)

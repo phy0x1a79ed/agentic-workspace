@@ -84,8 +84,7 @@ API_MANIFEST: dict[str, Any] = {
             "effect": "write",
             "tool": "kb_stop",
             "description": (
-                "Stop the kb server and keep it down until `kb start`. scope_fetch falls "
-                "back to its local index meanwhile. Operator only."
+                "Stop the kb server and keep it down until `kb start`. Operator only."
             ),
             "params": [],
             "timeout": 60,

@@ -596,7 +596,7 @@ def catalog_of_services(monkeypatch):
                            _fn("party_add", "secret", tool=ops + "party_add")]),
         _service("journal", [_fn("post", "write"), _fn("fetch", "read")]),
         _service("scope", [_fn("create", "write"), _fn("sync")]),
-        _service("kb", [_fn("search", "read"), _fn("add", "write")]),
+        _service("precedence", [_fn("search", "read"), _fn("add", "write")]),
         _service("cx", [_fn("list", "read", tool="reflection_list_other"),
                         _fn("start", "write", tool="reflection_start_other"),
                         _fn("stop", "write", tool="reflection_stop_other")]),
@@ -617,12 +617,12 @@ def catalog_of_services(monkeypatch):
     return records
 
 
-DELEGATE_ALLOWED = [("reflection", "compact"), ("reflection", "whoami"), ("kb", "search"),
+DELEGATE_ALLOWED = [("reflection", "compact"), ("reflection", "whoami"), ("precedence", "search"),
                     ("reflection", "list_other"), ("journal", "fetch"),
                     ("operations", "board_get"), ("operations", "board_list"),
                     ("operations", "board_complete"), ("operations", "board_fail")]
 DELEGATE_REFUSED = [("journal", "post"), ("scope", "create"), ("scope", "sync"),
-                    ("kb", "add"), ("reflection", "start_other"),
+                    ("precedence", "add"), ("reflection", "start_other"),
                     ("reflection", "stop_other"), ("operations", "queue_list"),
                     ("operations", "queue_assign"), ("browser", "cdp"), ("browser", "open"),
                     ("operations", "board_claim"), ("operations", "party_list"),
@@ -662,7 +662,7 @@ def test_a_delegate_posts_a_reply_message_and_nothing_else(client, dispatched, m
 
 def test_a_delegate_may_not_name_a_peer(client, dispatched, modes, catalog_of_services):
     modes[PID] = "delegate"
-    assert domain_call(client, "kb", "search", peer="capella").status_code == 403
+    assert domain_call(client, "precedence", "search", peer="capella").status_code == 403
 
 
 def test_the_door_judges_a_delegate_by_the_declared_effect(door, modes):

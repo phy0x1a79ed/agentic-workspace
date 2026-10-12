@@ -143,6 +143,18 @@ def test_the_two_request_human_rows_inject_their_kind():
     assert new == {"operations_request_human"}
 
 
+def test_old_project_calls_rename_their_arguments_in_both_shapes():
+    known = lambda: {"scope_create", "scope_search"}
+    hidden = lambda tool, verb: False
+    name, args = aliases.resolve("project_create", {"name": "p", "clone_url": "u"},
+                                 flat_names=known, visible=hidden)
+    assert (name, args) == ("scope_create", {"project": "p", "clone_url": "u",
+                                             "new_project": True})
+    name, args = aliases.resolve("project", {"verb": "search", "args": {"active_only": True}},
+                                 flat_names=known, visible=lambda t, v: t == "scope")
+    assert (name, args) == ("scope", {"verb": "search", "args": {}})
+
+
 def test_no_old_flat_name_is_claimed_twice():
     names = [a.flat_old for a in aliases.ALIASES]
     assert len(names) == len(set(names))

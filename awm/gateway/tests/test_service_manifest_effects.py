@@ -120,7 +120,7 @@ def test_kb_reads_carry_the_kb_category():
 def test_no_category_outside_the_archive_services():
     """Any other read verb stays unreachable by a grant until a category is added."""
     leaked = [(svc, e["name"]) for svc, es in MANIFESTS.items()
-              if svc not in ("kb", "scopes", "journal", "search")
+              if svc not in ("kb", "journal", "search")
               for e in es if e["category"] is not None]
     assert not leaked, leaked
 

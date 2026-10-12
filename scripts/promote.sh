@@ -129,7 +129,7 @@ main() {
     SIRIUS_DEPLOY=$CLOUD/VMs/digital_ocean/sirius/deploy.sh
     [ -x "$SIRIUS_DEPLOY" ] || {
         echo "no cloud checkout at $CLOUD, so sirius cannot be reached from here." >&2
-        echo "  awm project create cloud --clone-url https://github.com/phy0x1a79ed/cloud.git" >&2
+        echo "  awm scope create --project cloud --new-project --clone-url https://github.com/phy0x1a79ed/cloud.git" >&2
         echo "  then: git -C $WSROOT/projects/cloud/.bare worktree add ../dev dev" >&2
         echo "Set AWM_CLOUD_REPO to point elsewhere." >&2
         exit 1

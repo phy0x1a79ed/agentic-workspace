@@ -143,11 +143,9 @@ async def _catalog(client: httpx.AsyncClient) -> list[dict[str, Any]]:
     by_name = {e.get("name"): e for e in (entries or []) if e.get("name")}
 
     # Look each allowlisted pair up by its exact catalog name rather than
-    # parsing names apart. Splitting `<domain>_<verb>` is ambiguous in both
-    # directions — verbs contain underscores (`data_status`) and a hyphenated
-    # domain arrives underscored (`rlm-browser` → `rlm_browser_*`) — so a parse
-    # would either drop real tools or, worse, resolve one domain's name onto
-    # another's. Iterating the allowlist also means an entry for a domain that
+    # parsing names apart. Splitting `<domain>_<verb>` is ambiguous, because
+    # verbs contain underscores (`git_gather`), so a parse would either drop
+    # real tools or, worse, resolve one domain's name onto another's. Iterating the allowlist also means an entry for a domain that
     # is not running is simply absent, not a tool that always errors.
     tools: list[dict[str, Any]] = []
     for domain, verbs in ALLOW.items():

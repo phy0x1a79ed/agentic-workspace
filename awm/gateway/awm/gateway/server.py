@@ -929,7 +929,7 @@ def run_server(foreground: bool = True):
     LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
     # Per-workspace env file: merge $AWM_WORKSPACE/.awm/env into os.environ
     # before the probe and before any subprocess we spawn (notably git
-    # clone over SSH from project_create — inbox #236).
+    # clone over SSH from scope_create — inbox #236).
     from awm.config import load_env_file
     load_env_file()
     # Pre-bind probe: if something is already on (HOST, PORT), figure out

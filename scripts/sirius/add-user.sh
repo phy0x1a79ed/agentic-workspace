@@ -47,8 +47,8 @@ GIT=(git -c user.name=awm -c user.email=awm@localhost)
 step() { echo "== $*"; }
 
 step "project userdata"
-awm project search --query userdata 2>/dev/null | grep -q '"name": "userdata"' \
-    || awm project create --name userdata >/dev/null
+run test -d "$PROJECTS/userdata/.bare" \
+    || awm scope create --project userdata --new-project >/dev/null
 
 step "scope userdata/$NAME"
 awm scope search --project userdata --query "$NAME" 2>/dev/null | grep -q "\"scope\": \"$NAME\"" \

@@ -3,7 +3,7 @@
 Hits the running gateway over HTTP on loopback (no auth). No ``awm.*``
 imports, no service-level shortcuts — everything goes through the gateway's
 generic ``POST /invoke {name, args}`` RPC surface, calling the scopes
-service's tools (``project_create``, ``scope_create``) and the journal
+service's ``scope_create`` (with ``new_project``) and the journal
 service's (``journal_post``/``journal_fetch``). Requires the ``scopes``
 feature service to be registered (``dev/run.sh start`` waits for that).
 
@@ -71,8 +71,7 @@ def _create(tool: str, args: dict, label: str) -> None:
     elif code == 409 or (code == 500 and already):
         # Most create handlers raise FileExistsError -> 409, but a few surface an
         # "already there" condition as a wrapped RpcError -> 500 instead
-        # (project_create: "already exists"; scope_create: "already has an active
-        # session"). Treat any of these as an idempotent skip so re-runs stay safe.
+        # (scope_create: "already has an active session"). Treat any of these as an idempotent skip so re-runs stay safe.
         print(f"[seed] {label} already exists, skipping")
     else:
         raise SystemExit(f"[seed] {label}: {code} {payload}")
@@ -93,7 +92,6 @@ def _invoke(tool: str, args: dict) -> dict:
     return inner or {}
 
 
-PROJECTS = ["demo", "playground"]
 SCOPES = [
     ("demo", "alpha", "First scope. Use the UI to browse history/artifacts."),
     ("demo", "beta", "Second scope under demo."),
@@ -104,12 +102,9 @@ SCOPES = [
 def main() -> int:
     _assert_sandbox()
 
-    for name in PROJECTS:
-        _create("project_create", {"name": name}, f"project {name!r}")
-
     for project, scope, ctx in SCOPES:
         _create("scope_create",
-                {"project": project, "scope": scope, "context": ctx},
+                {"project": project, "scope": scope, "context": ctx, "new_project": True},
                 f"scope {project}/{scope}")
 
     # A scope IS the channel — seed a couple of demo posts on demo/alpha's

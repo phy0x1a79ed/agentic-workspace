@@ -14,13 +14,9 @@ from typing import Any, Iterable
 
 from awm.gateway.hub import discovery
 
-#: Services exempt from the ``<tool>_<verb>`` rule until integration converts
-#: them; integration empties this set. Their tool is the prefix of each
-#: published name, as before.
-LEGACY_ALLOWLIST: frozenset[str] = frozenset({
-    "scopes", "cx", "reporting", "board", "claude-science", "kb", "dvc",
-    "reflection", "transcripts", "precedence", "writing", "notes",
-})
+#: Services exempt from the ``<tool>_<verb>`` rule while a branch converts
+#: them. Their tool is the prefix of each published name.
+LEGACY_ALLOWLIST: frozenset[str] = frozenset()
 
 #: Identity RPCs whose published names are frozen by IDENTITY_CONTRACT.md.
 FROZEN_RPCS: frozenset[str] = frozenset({

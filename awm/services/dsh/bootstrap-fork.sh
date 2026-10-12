@@ -50,7 +50,7 @@ if [ -d "$BARE" ]; then
     echo "Project '$PROJECT' exists at $BARE."
 else
     echo "Forking $UPSTREAM_URL …"
-    awm_cli project create --name "$PROJECT" --fork-url "$UPSTREAM_URL"
+    awm_cli scope create --project "$PROJECT" --new-project --fork-url "$UPSTREAM_URL"
 fi
 
 git -C "$BARE" fetch --tags --quiet origin
@@ -73,7 +73,7 @@ for scope in dev release; do
     fi
 done
 
-# `project create` scaffolds a worktree on the default branch. Retire it: a
+# `scope create --new-project` scaffolds a worktree on the default branch. Retire it: a
 # branch we never author in has no use for one, and it would drift.
 #
 # CAUTION: `scope delete` deletes the branch as well as the worktree, and git

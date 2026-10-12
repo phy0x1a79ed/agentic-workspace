@@ -24,7 +24,7 @@ docstring holds the rest.
   repository needs the repository's own entry, which is the `.bare` directory for
   a scope worktree.
 - `sessionmode` answers `mode_of(pid)`, the restricted mode a session was started
-  in. It reads `cx start`'s lineage records from disk, so the gateway gates a
+  in. It reads the lineage records that `reflection start_other` (the cx service) writes from disk, so the gateway gates a
   caller with no call into the `cx` process. The answer is a mode string, `None`
   or `"unknown"`, and a reader treats `"unknown"` as the most restricted mode.
 - `pty`, `lane` and `job` type into a session. `DaemonLane` addresses one
