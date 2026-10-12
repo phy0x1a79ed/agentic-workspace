@@ -7,7 +7,7 @@ model the service is built around, how game calls reach the engine and what they
 cost, how a mod change ships, and how a person joins the world from their own
 Factorio client.
 
-It does not list verbs or their parameters. `rlm(verb="describe")` answers that
+It does not list verbs or their parameters. `awm factorio --help` answers that
 from the running manifest and cannot go stale. What is written here is what
 reading the code will not tell you: why the shape is what it is, and which two
 things must agree.
@@ -285,11 +285,9 @@ portproxy` Windows-to-WSL forward carries TCP only and will not carry the game.
 
 ## Realm-family contract
 
-Verbs are projected into the gateway catalog as `rlm_factorio_<verb>`. On the
-collapsed MCP surface they fold under the shared `rlm` domain tool as
-`factorio_<verb>` — `rlm(verb="factorio_join", args={…})` — while CLI and HTTP
-stay expanded. `rlm(verb="describe")` lists them beside rlm-browser's `browser_*`
-verbs.
+Verbs are projected into the gateway catalog as `factorio_<verb>`. The service is
+`tier = "off"`, so the `factorio` tool is not on the MCP surface. CLI and HTTP
+reach every verb (`awm factorio join`), and `awm factorio --help` lists them.
 
 They group as session lifecycle, seats, perception, world lifecycle, and acting
 as a player. Two things about that surface are worth knowing before reading it:

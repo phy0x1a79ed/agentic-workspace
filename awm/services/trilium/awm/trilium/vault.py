@@ -77,7 +77,7 @@ DVC_TIMEOUT_S = 1800
 # -- git and dvc ------------------------------------------------------------
 #
 # The policy for how awm uses DVC — the shared content-addressed cache, the
-# merge driver, the hooks — lives in `awm/scopes/data_dvc.py` and is not
+# merge driver, the hooks — lives in `awm/dvc/data_dvc.py` and is not
 # restated here. This is only the little that a service needs to run the two
 # binaries against one scope worktree.
 
