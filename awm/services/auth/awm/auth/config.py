@@ -91,7 +91,12 @@ class AuthSettings(BaseModel):
     )
     push_enabled: bool = Field(
         default=True,
-        description="Push the day's login password to Discord on each mint.",
+        description="Push the day's login password to the Ops note on each mint.",
+    )
+    push_discord: bool = Field(
+        default=False,
+        description="Send the password push to Discord through social, in "
+                    "place of the reporting service's Ops note.",
     )
     discord_account: str = Field(
         default=_DEFAULT_DISCORD_ACCOUNT,

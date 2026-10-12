@@ -57,7 +57,7 @@ Beside the rotating shared password, static per-user passwords:
     awm auth user-disable --username tony [--disabled false]
     awm auth user-list
 
-`verify` with a `username` mints a session as that user; failures count per username and per client IP and lock the key after `lockout_threshold` attempts for `lockout_minutes`. `AWM_AUTH_PROFILE=public` disables the shared path entirely: no minting, no Discord push, no peer credentials, and a login without a username fails.
+`verify` with a `username` mints a session as that user; failures count per username and per client IP and lock the key after `lockout_threshold` attempts for `lockout_minutes`. `AWM_AUTH_PROFILE=public` disables the shared path entirely: no minting, no password push, no peer credentials, and a login without a username fails.
 
 ## Penpot credentials
 
@@ -92,9 +92,10 @@ password and records the new one, which is the only repair.
 | `max_session_days` | `30` | hard ceiling on total session age |
 | `lockout_threshold` | `6` | failed logins per username / client IP before a lock |
 | `lockout_minutes` | `15` | how long the lock holds |
-| `push_enabled` | `true` | push the login password to Discord on each mint |
-| `discord_account` | `discord-bot` | social account id for the push |
-| `discord_channel` | `dm:188743359983124480` | Discord target: a channel id, or `dm:<user_id>` for the operator's DM with the bot |
+| `push_enabled` | `true` | push the login password on each mint, to the Ops note under AWM through `reporting ops_post` (`AWM_REPORTING_PEER=<peer>` on a node without reporting) |
+| `push_discord` | `false` | send the push to Discord through `social send` in place of the Ops note |
+| `discord_account` | `discord-bot` | social account id for the Discord push |
+| `discord_channel` | `dm:188743359983124480` | Discord push target: a channel id, or `dm:<user_id>` for the operator's DM with the bot |
 
 ## Python dependencies
 
@@ -102,7 +103,7 @@ password and records the new one, which is the only repair.
 |---|---|
 | `awm-config` | paths + the shared `awm.config.tokens` session-token codec |
 | `awm-persistence` | per-service SQLite DB + config contract |
-| `awm-gatewayclient` | ServiceAdapter loop + the Discord push RPC (`social.send`) |
+| `awm-gatewayclient` | ServiceAdapter loop + the push RPC (`reporting.ops_post`, or `social.send` for Discord) |
 | `pydantic` | the config-contract settings model |
 
 ## Security notes
@@ -113,3 +114,7 @@ password and records the new one, which is the only repair.
   caller, and the loopback gateway is never exposed off-host.
 - The signing secret is minted once and never rotated (rotating it would drop
   every live session); the *credentials* rotate instead.
+- The Ops note sits behind the same login the mint grants, so a logged-out
+  operator cannot read it on that node, though a session on another node can.
+  Trilium replicates the note to deneb, so the plaintext password lives in the
+  vault until the 24 h expiry.

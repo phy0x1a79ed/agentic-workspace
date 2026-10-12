@@ -99,6 +99,8 @@ _DUMMY_SALT = secrets.token_hex(16)
 # exports AWM_SOCIAL_PEER=<peer> so the daily password push routes to
 # social@<peer>. Unset/empty ⇒ local. Read fresh per push.
 _SOCIAL_PEER_ENV = "AWM_SOCIAL_PEER"
+# A node without a local reporting service exports AWM_REPORTING_PEER=<peer>.
+_REPORTING_PEER_ENV = "AWM_REPORTING_PEER"
 
 # Outcome of the most recent Discord push attempt, surfaced via h_status so an
 # operator can see a failure without grepping logs. In-memory only — a
@@ -313,6 +315,15 @@ async def _push_password_to_discord_attempt(login_password: str) -> None:
         f"`awm auth password`."
     )
     from awm import gatewayclient
+    if not s.push_discord:
+        await gatewayclient.call_maybe_peer(
+            gatewayclient.peer_env(_REPORTING_PEER_ENV),
+            "reporting", "ops_post", {
+                "kind": "password", "node": node,
+                "title": f"{node} login password", "body": text,
+            })
+        log.info("auth: posted %s's login password to the Ops note", node)
+        return
     await gatewayclient.call_maybe_peer(
         gatewayclient.peer_env(_SOCIAL_PEER_ENV),
         "social", "send", {
