@@ -27,7 +27,10 @@ import urllib.request
 HOME = os.path.expanduser("~")
 PLANS_DIR = os.path.join(HOME, ".claude", "plans")
 MARKER_DIR = os.path.join(HOME, ".claude", "awm-reporting")
-NOTE_URL = re.compile(r"https?://\S*trilium\S*#\S+", re.I)
+# The same note URL and claim words the service parses. The vault sits at /trilium/ on
+# a fleet edge and at the root on nexus, so the path names no product.
+NOTE_URL = re.compile(r"https?://[^\s#]+#(?:[\w-]+/)*[\w-]{4,}")
+CLAIM_WORDS = re.compile(r"\b(claim|attach)\b", re.I)
 
 # Fits inside the settings entry's timeout, or Claude Code kills us mid-POST.
 DEADLINE_S = 8.0
@@ -107,7 +110,8 @@ def handle(p: dict) -> None:
 
     if p.get("hook_event_name") == "UserPromptSubmit":
         prompt = p.get("prompt") or ""
-        if NOTE_URL.search(prompt) or os.path.exists(marker(sid)):
+        claims = CLAIM_WORDS.search(prompt) and NOTE_URL.search(prompt)
+        if claims or os.path.exists(marker(sid)):
             report(sid, "hook_prompt", prompt=prompt)
     elif tool in ("Write", "Edit"):
         path = os.path.abspath(str(tool_input.get("file_path") or ""))

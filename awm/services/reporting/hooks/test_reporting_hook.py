@@ -149,6 +149,7 @@ def test_todowrite_carries_the_list_in_its_input(home, gw):
 def test_a_plain_prompt_makes_no_call(home, gw):
     run(home, gw.url, prompt("fix the build"))
     run(home, gw.url, prompt("see https://example.org/page#top"))
+    run(home, gw.url, prompt("read " + URL + " first"))
     assert gw.calls == []
 
 
@@ -156,6 +157,11 @@ def test_a_prompt_with_a_note_url_is_sent(home, gw):
     run(home, gw.url, prompt("claim task " + URL + " please"))
     assert gw.calls[0][2] == {"name": "reporting_hook_prompt",
                               "args": {"session_id": "s1", "prompt": "claim task " + URL + " please"}}
+
+
+def test_a_claim_of_a_nexus_url_without_a_trilium_path_is_sent(home, gw):
+    run(home, gw.url, prompt("attach to https://nexus.example.org/#root/abc/def123456789"))
+    assert len(gw.calls) == 1
 
 
 def test_the_blocked_marker_follows_the_result(home, gw):
