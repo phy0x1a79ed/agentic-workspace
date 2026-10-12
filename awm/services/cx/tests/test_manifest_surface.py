@@ -19,16 +19,43 @@ def manifest():
     return API_MANIFEST
 
 
-def test_every_function_projects_into_a_single_domain():
+SERVICE_TOML = Path(__file__).resolve().parents[1] / "service.toml"
+HIDDEN = {"claim", "seed", "remove"}
+
+
+def test_every_function_projects_into_the_reflection_tool():
     for fn in manifest()["functions"]:
         domain, _, verb = fn["tool"].partition("_")
-        assert domain == "cx", (fn["name"], fn["tool"])
-        assert verb, fn["tool"]
+        assert domain == "reflection", (fn["name"], fn["tool"])
+        assert verb.endswith("_other"), fn["tool"]
 
 
-def test_the_projected_verb_matches_the_internal_name():
+def test_the_published_tool_is_the_reflection_name_of_the_internal_handle():
     for fn in manifest()["functions"]:
-        assert fn["tool"] == f"cx_{fn['name']}", fn
+        assert fn["tool"] == f"reflection_{fn['name']}_other", fn
+
+
+def test_the_service_joins_the_reflection_tool_and_is_on():
+    import tomllib
+
+    cfg = tomllib.loads(SERVICE_TOML.read_text())
+    assert cfg["tool"] == "reflection"
+    assert cfg["tier"] == "on"
+    assert cfg["profiles"] == ["cx"]
+
+
+def test_the_pool_verbs_leave_mcp_and_the_lifecycle_verbs_stay():
+    for fn in manifest()["functions"]:
+        if fn["name"] in HIDDEN:
+            assert fn["surfaces"] == ["cli", "http"], fn["name"]
+        else:
+            assert "surfaces" not in fn, fn["name"]
+
+
+def test_no_verb_collides_with_the_calling_sessions_own():
+    own = {"compact", "mode", "message_self", "pending", "whoami"}
+    for fn in manifest()["functions"]:
+        assert fn["tool"].removeprefix("reflection_") not in own
 
 
 def test_every_declared_function_has_a_handler():
@@ -51,6 +78,10 @@ def test_the_claim_budget_covers_a_move_that_is_merely_slow():
 
     claim = next(f for f in manifest()["functions"] if f["name"] == "claim")
     assert claim["timeout"] > claim_mod.MOVE_TIMEOUT_S
+
+
+def test_the_shell_half_posts_to_the_internal_handle():
+    assert "/svc/cx/fn/claim " in BIN.read_text()
 
 
 def test_the_shell_half_waits_out_the_service_budget():

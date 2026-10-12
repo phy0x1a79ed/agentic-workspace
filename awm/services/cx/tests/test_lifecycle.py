@@ -1191,7 +1191,8 @@ def test_the_manifest_declares_effects_and_drops_status():
     fns = {f["name"]: f for f in API_MANIFEST["functions"]}
     assert {"start", "list", "stop", "claim", "seed", "remove"} == set(fns)
     assert "status" not in fns and "wake" not in fns
-    assert fns["start"]["effect"] == "write" and fns["stop"]["effect"] == "write"
+    assert fns["start"]["effect"] == "write"
+    assert fns["stop"]["effect"] == "write"
     assert fns["list"]["effect"] == "read"
     assert all(f["effect"] in ("read", "write") for f in fns.values())
     assert "tier" not in str(API_MANIFEST)
