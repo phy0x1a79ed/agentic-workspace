@@ -1,42 +1,119 @@
-"""Markdown for the generated notes: a task's Record and a node's Ledger."""
+"""The generated notes: a task's card body (HTML for a Trilium text note) and a node's Ledger (Markdown)."""
 
 from __future__ import annotations
 
+import html
 import time
+
+from markdown_it import MarkdownIt
 
 from awm.reporting.ledger import COLUMNS, DONE
 
-_CHECK = {"completed": "x", "in_progress": "~"}
+TITLE_CHARS = 80
+
+_MD = MarkdownIt("commonmark", {"html": False}).enable(["table", "strikethrough"])
 
 
 def _at(epoch: float | None) -> str:
     return time.strftime("%Y-%m-%d %H:%M", time.gmtime(epoch)) + "Z" if epoch else ""
 
 
+def cut_at_word(text: str, limit: int = TITLE_CHARS) -> str:
+    """``text`` cut to ``limit`` characters at a word boundary when it has one."""
+    text = text.strip()
+    if len(text) <= limit:
+        return text
+    head = text[:limit]
+    if text[limit] == " ":
+        return head.rstrip()
+    return head.rsplit(" ", 1)[0].rstrip() if " " in head else head
+
+
+def plan_title(plan_text: str) -> str:
+    """The text of the plan's first ``#`` heading, or an empty string."""
+    tokens = _MD.parse(plan_text or "")
+    for i, tok in enumerate(tokens):
+        if tok.type == "heading_open" and tok.tag == "h1":
+            return tokens[i + 1].content.strip()
+    return ""
+
+
+def markdown_html(text: str, *, shift: int, floor: int, drop_title: bool = False) -> str:
+    """``text`` as HTML with every heading ``shift`` levels deeper, and none shallower than ``floor``.
+
+    Raw HTML in the text is escaped. ``drop_title`` removes the first ``#`` heading.
+    """
+    tokens = _MD.parse(text or "")
+    if drop_title:
+        for i, tok in enumerate(tokens):
+            if tok.type == "heading_open" and tok.tag == "h1":
+                del tokens[i:i + 3]
+                break
+    for tok in tokens:
+        if tok.type in ("heading_open", "heading_close"):
+            tok.tag = f"h{min(max(int(tok.tag[1]) + shift, floor), 6)}"
+    return _MD.renderer.render(tokens, _MD.options, {}).strip()
+
+
+def _esc(value: object) -> str:
+    return html.escape(str(value), quote=True)
+
+
 def _line(label: str, value: object) -> list[str]:
-    return [f"- {label}: {value}"] if value else []
+    return [f"<li><strong>{label}:</strong> {_esc(value)}</li>"] if value else []
+
+
+def _block(summary: str, body: str) -> str:
+    return f'<details class="trilium-collapsible"><summary>{_esc(summary)}</summary>\n{body}\n</details>'
+
+
+def _checklist(live: list[dict]) -> str:
+    items = []
+    for item in live:
+        subject = _esc(item["subject"])
+        if item["status"] == "in_progress":
+            subject = f"<strong>{subject}</strong> (in progress)"
+        checked = ' checked="checked"' if item["status"] == "completed" else ""
+        items.append(f'<li><label class="todo-list__label"><input type="checkbox" disabled="disabled"{checked}>'
+                     f'<span class="todo-list__label__description">{subject}</span></label></li>')
+    return '<ul class="todo-list">\n' + "\n".join(items) + "\n</ul>"
 
 
 def render_record(task: dict, live: list[dict], removed: list[dict], events: list[dict]) -> str:
+    """The card body: a status block, then Plan, Todo, Journal and Removed as closed collapsibles."""
     where = "/".join(p for p in (task.get("project"), task.get("scope")) if p)
-    meta = [
-        *_line("peer", task["node"]), *_line("job", task["key"] if task["kind"] == "bg" else ""),
-        *_line("session", task.get("session_id")), *_line("scope", where),
-        *_line("model", task.get("model")), *_line("effort", task.get("effort")),
-        *_line("state", COLUMNS.get(task["state"], task["state"])),
-        *_line("waiting on", task.get("reason") if task["state"] in ("blocked", "review") else ""),
-        *_line("ended", "the session died without a stop; resumable" if task.get("ended") else ""),
-        *_line("started", _at(task["started"])), *_line("closed", _at(task.get("closed"))),
+    status = [
+        *_line("State", COLUMNS.get(task["state"], task["state"])),
+        *_line("Scope", where), *_line("Peer", task["node"]),
+        *_line("Job", task["key"] if task["kind"] == "bg" else ""),
+        *_line("Session", task.get("session_id")),
+        *_line("Model", task.get("model")), *_line("Effort", task.get("effort")),
+        *_line("Waiting on", task.get("reason") if task["state"] in ("blocked", "review") else ""),
+        *_line("Ended", "the session died without a stop; resumable" if task.get("ended") else ""),
+        *_line("Started", _at(task["started"])), *_line("Closed", _at(task.get("closed"))),
     ]
-    todo = [f"- [{_CHECK.get(i['status'], ' ')}] {i['subject']}" for i in live] or ["(none)"]
-    out = ["## Metadata", "", *meta, "", "## Plan", "", task.get("plan") or "(none)", "",
-           "## Todo", "", *todo]
-    if removed:
-        out += ["", "### Removed", "", *[f"- {i['subject']} (removed {_at(i['removed_at'])})" for i in removed]]
+    done = sum(1 for i in live if i["status"] == "completed")
+    active = sum(1 for i in live if i["status"] == "in_progress")
+    if live:
+        todo_head = f"Todo — {done}/{len(live)} done" + (f", {active} active" if active else "")
+        todo_body = _checklist(live)
+    else:
+        todo_head, todo_body = "Todo — none", "<p>(none)</p>"
     posts = [e for e in events if e["kind"] == "journal"]
-    out += ["", "## Journal", ""]
-    out += [f"### {_at(e['at'])}\n\n{e['detail']}\n" for e in posts] or ["(none)"]
-    return "\n".join(out).rstrip() + "\n"
+    entries = "\n".join(f"<h4>{_esc(_at(e['at']))}</h4>\n" + markdown_html(e["detail"], shift=4, floor=5)
+                        for e in posts)
+    gone = "\n".join(["<ul>", *[f"<li>{_esc(i['subject'])} (removed {_esc(_at(i['removed_at']))})</li>"
+                                for i in removed], "</ul>"])
+    plan = markdown_html(task.get("plan") or "", shift=1, floor=3, drop_title=True)
+    parts = [
+        "<ul>\n" + "\n".join(status) + "\n</ul>",
+        _block("Plan", plan or "<p>(none)</p>"),
+        _block(todo_head, todo_body),
+        _block(f"Journal — {len(posts)} {'entry' if len(posts) == 1 else 'entries'}",
+               entries or "<p>(none)</p>"),
+        _block(f"Removed — {len(removed)}", gone if removed else "<p>(none)</p>"),
+    ]
+    return "\n<hr>\n".join(parts) + "\n"
 
 
 def render_ledger(node: str, tasks: list[dict]) -> str:

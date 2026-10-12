@@ -207,6 +207,7 @@ class FakeTrilium:
             raise RuntimeError(f"404 {note_id}")
         n = self.notes[note_id]
         out = {"noteId": note_id, "title": n["title"], "parentNoteIds": self.parents(note_id),
+               "utcDateModified": n.get("modified", "2026-01-02 03:04:05.678Z"),
                "attributes": [{"name": k, "value": v, "type": "label"} for k, v in n["labels"].items()]}
         if content:
             out["content"] = n.get("content", "")
@@ -218,12 +219,16 @@ class FakeTrilium:
                                     mime=mime), "created": True}
 
     def _note_update(self, note_id: str, content: str | None = None, title: str | None = None,
-                     labels: dict | None = None) -> dict:
+                     labels: dict | None = None, type: str | None = None, mime: str | None = None) -> dict:
         n = self.notes[note_id]
         if content is not None:
             n["content"] = content
         if title is not None:
             n["title"] = title
+        if type is not None:
+            n["type"] = type
+        if mime is not None:
+            n["mime"] = mime
         n["labels"].update(labels or {})
         return {"note_id": note_id}
 

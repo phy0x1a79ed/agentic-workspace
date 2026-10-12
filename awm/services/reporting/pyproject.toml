@@ -14,6 +14,7 @@ dependencies = [
     "awm-board",
     "awm-claudedaemon",
     "httpx",
+    "markdown-it-py",
 ]
 
 [project.optional-dependencies]
