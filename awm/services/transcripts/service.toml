@@ -1,0 +1,8 @@
+tool = "transcripts"
+tier = "off"
+
+[[archive]]
+name = "transcripts"
+mode = "live"
+query = "transcripts_query"
+optin = true
