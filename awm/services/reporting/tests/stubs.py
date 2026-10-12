@@ -199,6 +199,7 @@ class FakeTrilium:
 
     def _note_children(self, note_id: str) -> dict:
         return {"children": [{"note_id": i, "title": self.notes[i]["title"], "type": self.notes[i].get("type"),
+                              "labels": sorted(self.notes[i]["labels"]),
                               "child_count": len(self.kids(i))} for i in self.kids(note_id)]}
 
     def _note_get(self, note_id: str, content: bool = True) -> dict:
@@ -226,9 +227,12 @@ class FakeTrilium:
         n["labels"].update(labels or {})
         return {"note_id": note_id}
 
-    def _note_place(self, note_id: str, parents: list[str]) -> dict:
-        self.notes[note_id]["parents"] = list(parents)
-        return {"note_id": note_id, "parents": parents}
+    def _note_place(self, note_id: str, parents: list[str], remove: list[str] | None = None) -> dict:
+        current = self.parents(note_id)
+        drop = set(current) - set(parents) if remove is None else set(remove) - set(parents)
+        self.notes[note_id]["parents"] = [p for p in current if p not in drop] + \
+            [p for p in parents if p not in current]
+        return {"note_id": note_id, "parents": self.notes[note_id]["parents"]}
 
     def _note_delete(self, note_id: str) -> dict:
         del self.notes[note_id]

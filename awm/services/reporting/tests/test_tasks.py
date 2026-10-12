@@ -344,6 +344,8 @@ async def test_a_card_tony_removes_from_the_board_is_recorded_as_cancelled(env):
     task = await started(env)
     env.tri.notes[task["note_id"]]["parents"] = ["root"]
     await env.tasks.sweep([row("working")])
+    assert env.task()["state"] != "cancelled"
+    await env.tasks.sweep([row("working")])
     assert env.task()["state"] == "cancelled" and env.ledger.open() == []
     content = env.tri.notes[env.tri.kids(env.ids["Ledger"])[0]]["content"]
     assert "cancelled" in content

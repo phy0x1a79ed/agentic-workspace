@@ -81,6 +81,7 @@ class Tasks:
         self._job_state = job_state
         self._dm = dm
         self._alive = alive
+        self._unseen: set[int] = set()
         self._fetch = fetch
         self._caught_up = 0.0
         self.subscription: gatewayclient.SupervisedSubscription | None = None
@@ -268,9 +269,10 @@ class Tasks:
             raise ValueError("reason is required")
         urgent = args.get("urgent") is True
         task = await self._task(who, BLOCKED)
+        already_urgent = task["state"] == BLOCKED and bool(task.get("urgent"))
         out = await self._set(task, BLOCKED, "blocked", reason, reason=reason, urgent=int(urgent),
                               blocked_at=time.time(), reminded=0)
-        if urgent:
+        if urgent and not already_urgent:
             out["notified"] = await self._notify(self.ledger.get(task["id"]), reminder=False)
         return out
 
@@ -347,8 +349,13 @@ class Tasks:
         state_of = {name: state for state, name in COLUMNS.items()}
         for task in self.ledger.open(self.node):
             column = snap.get(task["note_id"]) if snap is not None else None
+            if column is not None:
+                self._unseen.discard(task["id"])
             if snap is not None and task["note_id"] and not task["dirty"] and column != task["shown"]:
-                if column is None:
+                if column is None and task["id"] not in self._unseen:
+                    self._unseen.add(task["id"])  # one sweep can read mid-drag; cancel on the second
+                elif column is None:
+                    self._unseen.discard(task["id"])
                     self.ledger.update(task["id"], dirty=1)
                     self.ledger.close(task["id"], CANCELLED)
                 else:

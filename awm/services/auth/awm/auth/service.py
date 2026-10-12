@@ -316,12 +316,14 @@ async def _push_password_to_discord_attempt(login_password: str) -> None:
     )
     from awm import gatewayclient
     if not s.push_discord:
-        await gatewayclient.call_maybe_peer(
+        result = await gatewayclient.call_maybe_peer(
             gatewayclient.peer_env(_REPORTING_PEER_ENV),
             "reporting", "ops_post", {
                 "kind": "password", "node": node,
                 "title": f"{node} login password", "body": text,
             })
+        if not (isinstance(result, dict) and result.get("ok")):
+            raise RuntimeError(f"reporting ops_post refused the password: {result!r}")
         log.info("auth: posted %s's login password to the Ops note", node)
         return
     await gatewayclient.call_maybe_peer(

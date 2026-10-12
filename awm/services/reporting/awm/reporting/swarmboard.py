@@ -119,10 +119,11 @@ class SwarmBoard:
             raise BoardError(f"{note_id} is part of the board, not a card")
         note = await self._call("note_get", note_id=note_id, content=False)
         parents = set(note.get("parentNoteIds") or [])
-        wanted = (parents - set(lay.columns.values())) | {into or lay.columns[column]}
-        if wanted == parents:
+        target = into or lay.columns[column]
+        stale = (parents & set(lay.columns.values())) - {target}
+        if target in parents and not stale:
             return False
-        await self._call("note_place", note_id=note_id, parents=sorted(wanted))
+        await self._call("note_place", note_id=note_id, parents=[target], remove=sorted(stale))
         return True
 
     async def create_card(self, title: str, column: str) -> str:
@@ -139,7 +140,7 @@ class SwarmBoard:
     async def upsert_markdown(self, parent: str, title: str, content: str) -> str:
         """The child of ``parent`` called ``title``, made or rewritten as a managed Markdown note."""
         for kid in await self._children(parent):
-            if kid.get("title") == title:
+            if kid.get("title") == title and "agentManaged" in (kid.get("labels") or []):
                 await self._call("note_update", note_id=kid["note_id"], content=content)
                 return kid["note_id"]
         made = await self._call("note_create", title=title, content=content, parent=parent,

@@ -26,6 +26,7 @@ START_TIMEOUT_S = 240.0
 LIST_TIMEOUT_S = 30.0
 STOP_TIMEOUT_S = 60.0
 GONE = "gone"
+STOPPED = "stopped"
 #: Job states (`cx list` `state`) that can mean the session cannot work. Claude
 #: Code sets them from an API error and also from the session's own last line
 #: ("failed: ...", "blocked: ...", a closing question), so the `needs` text
@@ -80,7 +81,7 @@ class Cx:
 
 
 def _live_with_mode(rows: list[dict], mode: str) -> list[dict]:
-    return [r for r in rows if r.get("mode") == mode and r.get("state") != GONE]
+    return [r for r in rows if r.get("mode") == mode and r.get("state") not in (GONE, STOPPED)]
 
 
 def holders(rows: list[dict], mode: str, jobs: set[str]) -> list[dict]:
@@ -171,5 +172,5 @@ def assess(rows: list[dict], mode: str, jobs: set[str]) -> Health:
     if mine:
         found = [classify(r) for r in mine]
         return next((h for h in found if h.alive), found[0])
-    gone = [r for r in rows if r.get("job") in jobs and r.get("state") == GONE]
+    gone = [r for r in rows if r.get("job") in jobs and r.get("state") in (GONE, STOPPED)]
     return Health("exited", "", gone[-1].get("job")) if gone else Health("missing")

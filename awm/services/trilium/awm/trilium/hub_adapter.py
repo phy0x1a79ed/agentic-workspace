@@ -325,13 +325,17 @@ API_MANIFEST: dict[str, Any] = {
                 "Make a note's parents exactly this set — one call for what "
                 "would otherwise be a move, several clones and an unplace. "
                 "The note is shown under each and nowhere else; it is one "
-                "note in several places, never a copy. Operator only."
+                "note in several places, never a copy. With `remove`, add "
+                "`parents` and take the note out of only those in `remove`, "
+                "leaving every other parent alone. Operator only."
             ),
             "params": [
                 {"name": "note_id", "type": "string", "required": True,
                  "description": "The note to place."},
                 {"name": "parents", "type": "array", "required": True,
                  "description": "Every parent it should appear under."},
+                {"name": "remove", "type": "array", "required": False,
+                 "description": "Parents to take it out of; the rest stay."},
             ],
         },
         {
@@ -790,6 +794,8 @@ async def _h_note_children(args: dict, as_: str | None = None) -> dict:
         return {"parent": note_id, "count": len(kids), "children": [
             {"note_id": k.get("noteId"), "title": k.get("title"),
              "type": k.get("type"),
+             "labels": sorted(a.get("name") for a in k.get("attributes") or []
+                              if a.get("type") == "label"),
              "child_count": len(k.get("childNoteIds") or [])}
             for k in kids]}
     return await asyncio.to_thread(_read)
@@ -897,20 +903,25 @@ async def _h_note_place(args: dict, as_: str | None = None) -> dict:
         raise ValueError(
             "parents is required and may not be empty: a note with no branch "
             "is a deleted note, and note_delete at least says so")
-    await _agent_gate(args, "note_place", note_id, *sorted(wanted))
+    remove = args.get("remove")
+    if isinstance(remove, str):
+        remove = [p.strip() for p in remove.split(",") if p.strip()]
+    remove = None if remove is None else {str(p).strip() for p in remove} - wanted
+    await _agent_gate(args, "note_place", note_id, *sorted(wanted | (remove or set())))
 
     def _write() -> dict:
         c = etapi.client()
         current = set(c.note(note_id).get("parentNoteIds") or [])
+        drop = current - wanted if remove is None else current & remove
         # Added before removed, always: a note's last branch takes the note
         # with it, so unplacing first would delete what this is placing.
         for parent in sorted(wanted - current):
             c.put_branch(note_id, parent)
-        for parent in sorted(current - wanted):
+        for parent in sorted(drop):
             c.delete_branch(c.branch_id(note_id, parent))
-        return {"note_id": note_id, "parents": sorted(wanted),
+        return {"note_id": note_id, "parents": sorted((current | wanted) - drop),
                 "added": sorted(wanted - current),
-                "removed": sorted(current - wanted)}
+                "removed": sorted(drop)}
     return await asyncio.to_thread(_write)
 
 
