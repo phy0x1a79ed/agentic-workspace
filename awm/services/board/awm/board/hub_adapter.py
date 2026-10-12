@@ -1,4 +1,4 @@
-"""Hub adapter for the board service: the ``board`` MCP domain.
+"""Hub adapter for the board service: the card and party verbs of the ``operations`` tool.
 
 One folder, two roles, chosen by ``AWM_BOARD_ROLE``:
 
@@ -63,7 +63,7 @@ API_MANIFEST: dict[str, Any] = {
     "functions": [
         {
             "name": "post",
-            "tool": "board_post",
+            "tool": "operations_board_post",
             "effect": "queue",
             "description": (
                 "Post a card to a swarm, or to `open` for any swarm to claim. "
@@ -81,7 +81,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "claim",
-            "tool": "board_claim",
+            "tool": "operations_board_claim",
             "effect": "queue",
             "description": "Claim a request card. Answers a conflict when another party already holds it.",
             "params": [_param("card_id", "string", "The card's id.", True)],
@@ -89,7 +89,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "complete",
-            "tool": "board_complete",
+            "tool": "operations_board_complete",
             "effect": "queue",
             "description": "Finish a card you claimed, with its result.",
             "params": [
@@ -100,7 +100,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "fail",
-            "tool": "board_fail",
+            "tool": "operations_board_fail",
             "effect": "queue",
             "description": "Give up on a card you claimed, with the reason.",
             "params": [
@@ -111,7 +111,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "get",
-            "tool": "board_get",
+            "tool": "operations_board_get",
             "effect": "read",
             "description": "Read one card you may see.",
             "params": [_param("card_id", "string", "The card's id.", True)],
@@ -119,7 +119,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "list",
-            "tool": "board_list",
+            "tool": "operations_board_list",
             "effect": "read",
             "description": "List the cards you may see, narrowed by any of the filters.",
             "params": [
@@ -136,7 +136,8 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "party_add",
-            "tool": "board_party_add",
+            "tool": "operations_party_add",
+            "surfaces": ["cli", "http"],
             "effect": "secret",
             "description": (
                 "Host only. Mint a party and its bearer token. The token is "
@@ -150,14 +151,16 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "party_revoke",
-            "tool": "board_party_revoke",
+            "tool": "operations_party_revoke",
+            "surfaces": ["cli", "http"],
             "effect": "write",
             "description": "Host only. Revoke a party. Its token stops working at once.",
-            "params": [_param("party_id", "string", "The party's id, from party_list.", True)],
+            "params": [_param("party_id", "string", "The party's id, from operations_party_list.", True)],
         },
         {
             "name": "party_list",
-            "tool": "board_party_list",
+            "tool": "operations_party_list",
+            "surfaces": ["cli", "http"],
             "effect": "read",
             "description": "Host only. List the parties. Tokens are never shown.",
             "params": [],

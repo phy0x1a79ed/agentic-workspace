@@ -24,6 +24,7 @@ EFFECTS = {
     "get": "read", "list": "read",
     "party_add": "secret", "party_revoke": "write", "party_list": "read",
 }
+HIDDEN = {"party_add", "party_revoke", "party_list"}
 
 
 def functions() -> dict[str, dict]:
@@ -38,11 +39,26 @@ def test_every_verb_declares_the_effect_the_plan_gives_it():
         assert verb_effect(declared[name]) == effect
 
 
-def test_tool_names_fold_into_one_board_domain_and_every_verb_has_a_handler():
+def test_every_verb_publishes_under_the_operations_tool_and_has_a_handler():
     for name, spec in functions().items():
-        assert spec["tool"] == f"board_{name}"
-        assert spec["tool"].split("_", 1)[0] == "board"
+        expected = f"operations_{name}" if name.startswith("party_") else f"operations_board_{name}"
+        assert spec["tool"] == expected
         assert name in hub_adapter.HANDLERS
+    assert set(hub_adapter.HANDLERS) == set(EFFECTS)
+
+
+def test_only_the_party_verbs_leave_the_mcp_surface():
+    hidden = {name for name, spec in functions().items() if spec.get("surfaces") == ["cli", "http"]}
+    assert hidden == HIDDEN
+    assert all("surfaces" not in spec for name, spec in functions().items() if name not in HIDDEN)
+
+
+def test_the_manifest_declares_the_operations_tool_switched_on():
+    import tomllib
+
+    manifest = tomllib.loads((Path(__file__).parent.parent / "service.toml").read_text())
+    assert manifest["tool"] == "operations"
+    assert manifest["tier"] == "on"
 
 
 def test_required_params_are_declared_where_a_handler_indexes_them():
