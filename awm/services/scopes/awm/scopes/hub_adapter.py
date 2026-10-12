@@ -6,10 +6,8 @@ loop (register → ready → serve → reconnect).
 
 The four **identity RPCs** — ``resolveScope``, ``resolveRef``,
 ``ensureProject``, ``ensureScope`` — are exposed in ``functions[]`` of the
-ready manifest, alongside the scope CRUD ops, the unified scope-channel ops
-(``scope_post`` / ``scope_fetch`` / ``scope_subscribe`` / ``scope_unsubscribe``
-— a scope IS the channel; messages and journals are posts differentiated by
-``kind``), and the project ops.
+ready manifest, alongside the scope CRUD ops and the project ops. Posts, goals
+and the history render live in the journal service.
 
 Run via ``start.sh`` (which the hub spawns and respawns):
     python -m awm.scopes.hub_adapter
@@ -22,7 +20,6 @@ import logging
 from typing import Any
 
 from awm.gatewayclient import ServiceAdapter, spawn_supervised
-from awm.scopes import channel
 from awm.scopes import dao, search_index
 from awm.scopes.identity import (
     agent_id_for_scope,
@@ -41,7 +38,6 @@ from awm.scopes.operations.scope_channel import (
     SCOPE_CHANNEL_HANDLERS,
 )
 from awm.scopes.operations.projects import PROJECT_MANIFEST_FUNCTIONS, PROJECT_HANDLERS
-from awm.scopes.operations.goals import GOAL_MANIFEST_FUNCTIONS, GOAL_HANDLERS
 
 log = logging.getLogger("awm.scopes.hub_adapter")
 
@@ -225,19 +221,9 @@ API_MANIFEST: dict[str, Any] = {
         _IDENTITY_FUNCTIONS
         + SCOPE_MANIFEST_FUNCTIONS
         + SCOPE_CHANNEL_MANIFEST_FUNCTIONS
-        + GOAL_MANIFEST_FUNCTIONS
         + PROJECT_MANIFEST_FUNCTIONS
     ),
-    "emitters": [
-        {
-            "topic": "posts",
-            "description": (
-                "Fires once per new scope-channel post. Payload "
-                "{project, scope, post}; subscribers filter by (project, "
-                "scope)."
-            ),
-        },
-    ],
+    "emitters": [],
     "sessions": [],
 }
 
@@ -252,7 +238,6 @@ HANDLERS: dict[str, Any] = {
     **_IDENTITY_HANDLERS,
     **SCOPE_HANDLERS,
     **SCOPE_CHANNEL_HANDLERS,
-    **GOAL_HANDLERS,
     **PROJECT_HANDLERS,
 }
 
@@ -273,18 +258,9 @@ async def main() -> None:
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
-    adapter = ServiceAdapter(
+    await ServiceAdapter(
         "scopes", API_MANIFEST, HANDLERS, on_start=_on_start,
-    )
-    # Wire the `posts` emitter: `channel.post()` runs in a worker thread, so the
-    # registered callable hands the async emit to this event loop thread-safely.
-    loop = asyncio.get_running_loop()
-
-    def _emit_posts(payload: dict[str, Any]) -> None:
-        asyncio.run_coroutine_threadsafe(adapter.emit("posts", payload), loop)
-
-    channel.set_emitter(_emit_posts)
-    await adapter.run()
+    ).run()
 
 
 if __name__ == "__main__":

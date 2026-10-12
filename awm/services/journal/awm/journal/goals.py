@@ -10,7 +10,7 @@ user's own words, so a later session retrieves it instead of re-eliciting it.
   ``project``    → ``('', 'project:<name>')``
   ``scope``      → ``(<project>, <scope>)``
 
-which is the same non-literal-channel addressing :mod:`awm.scopes.seed` already
+which is the same non-literal-channel addressing the scopes seed already
 maps refs onto. Reading at a scope unions all three and returns them broad to
 specific — the general frame first, the current campaign last.
 
@@ -33,8 +33,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from awm.scopes import channel
-from awm.scopes.dao import ScopesDAO
+from awm.journal import channel
+from awm.journal.dao import JournalDAO
 
 GOAL_KIND = "goal"
 
@@ -161,7 +161,7 @@ def _row_to_goal(row) -> Goal:
 def _fetch_channel(owner_project: str, owner_scope: str) -> list[Goal]:
     """Every goal-kind post on one channel, oldest first. No limit by design —
     see the module docstring on why this path must not truncate."""
-    rows = ScopesDAO().query_all(
+    rows = JournalDAO().query_all(
         "SELECT * FROM scope_posts WHERE owner_project=? AND owner_scope=? "
         "AND kind=? ORDER BY ts ASC, id ASC",
         (owner_project, owner_scope, GOAL_KIND),
@@ -238,7 +238,7 @@ def set_goal(*, objective: str, author: str, level: str | None = None,
 def retire_goal(goal_id: str, *, author: str, reason: str = "",
                 origin: str | None = None) -> Goal:
     """Append a tombstone retiring ``goal_id``. Nothing is deleted; the retired
-    goal stays readable through :func:`history` and a raw ``scope_fetch``."""
+    goal stays readable through :func:`history` and a raw ``journal_fetch``."""
     target = get_goal(goal_id)
     if target is None:
         raise GoalError(f"no goal {goal_id!r} to retire")
