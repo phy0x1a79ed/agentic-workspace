@@ -33,7 +33,7 @@ log = logging.getLogger("awm.reporting.tasks")
 NOTE_URL = re.compile(r"https?://[^\s#]+#(?:[\w-]+/)*([\w-]{4,})")
 CLAIM_WORDS = re.compile(r"\b(claim|attach)\b", re.I)
 JOURNAL_SERVICE = "journal"
-JOURNAL_FETCH = "journal_fetch"
+JOURNAL_FETCH = "fetch"
 JOURNAL_TOPIC = "posts"
 
 
