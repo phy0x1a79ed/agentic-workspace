@@ -18,15 +18,8 @@ from awm.gateway.hub import discovery
 #: them; integration empties this set. Their tool is the prefix of each
 #: published name, as before.
 LEGACY_ALLOWLIST: frozenset[str] = frozenset({
-    # converted by the other wave-1 and wave-2 branches
     "scopes", "cx", "reporting", "board", "claude-science", "kb", "dvc",
     "reflection", "transcripts", "precedence", "writing", "notes",
-    # converted by the second half of the tool-surface branch
-    "auth", "rlm-browser", "ssh", "trilium", "graphify", "drawio", "social",
-    "tether", "hermes", "rlm-factorio",
-    "2fa", "compute", "dev", "dsh", "events", "fileviewer", "hpcllm",
-    "httpsfront", "mic", "penpot", "penpot-plugins", "penpot-view", "stt",
-    "tts", "virtmic", "vpn", "zotero",
 })
 
 #: Identity RPCs whose published names are frozen by IDENTITY_CONTRACT.md.

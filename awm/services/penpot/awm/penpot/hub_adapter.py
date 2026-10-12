@@ -35,11 +35,9 @@ log = logging.getLogger("awm.penpot.hub_adapter")
 
 STACK = stack.STACK
 
-#: Every function carries an explicit `tool` name under a `penpot_` prefix,
-#: which is what decides the domain this service appears as: the gateway
-#: folds the MCP surface by splitting the projected name on its **first**
-#: underscore. So the surface is `awm penpot status` and
-#: `mcp__awm__penpot {verb:"status"}`.
+#: Every function carries an explicit `tool` name under a `penpot_` prefix, the
+#: tool its service.toml names. The tool is off the MCP surface; the verbs answer
+#: on the CLI (`awm penpot status`) and over HTTP.
 API_MANIFEST: dict[str, Any] = {
     "functions": [
         {

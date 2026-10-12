@@ -13,7 +13,8 @@ Verbs:
   - ``node_key``        this node's public key and fingerprint.
   - ``sign_peer_token`` a five-minute token proving this node to another node.
   - ``rotate``          force a mint now (ops/testing).
-  - ``status``          rotation state summary, incl. last push outcome.
+  - ``status``          rotation state summary, incl. last push outcome (the
+                        gateway's ``awm status`` embeds it).
   - ``user_add`` / ``user_passwd`` / ``user_disable`` / ``user_list``
                         static per-user accounts (CLI/HTTP only).
   - ``penpot_record`` / ``penpot_session`` / ``penpot_rotate`` / ``penpot_list``
@@ -36,13 +37,16 @@ from awm.auth.config import CONTRACT
 log = logging.getLogger("awm.auth.hub_adapter")
 
 
-# Credential-bearing and admin verbs stay off the agent MCP surface.
+# Credential-bearing and admin verbs stay off the agent MCP surface. auth shares
+# the awm tool with the gateway; `awm status` carries its rotation state, so only
+# `node_key` is agent-facing.
 _CLI_HTTP = ["cli", "http"]
 
 API_MANIFEST: dict[str, Any] = {
     "functions": [
         {
             "name": "password",
+            "tool": "awm_password",
             "effect": "secret",
             "surfaces": _CLI_HTTP,
             "description": "Get the current day's awm login password and its "
@@ -51,6 +55,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "peer_credential",
+            "tool": "awm_peer_credential",
             "effect": "secret",
             "surfaces": _CLI_HTTP,
             "description": "Get the current peer credential and the path of the "
@@ -59,7 +64,9 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "verify",
+            "tool": "awm_verify",
             "effect": "secret",
+            "surfaces": _CLI_HTTP,
             "description": "Validate a login (per-user password when username "
                            "is given, else the shared password); on success "
                            "return a signed session token for the edge to set "
@@ -73,6 +80,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "edge_material",
+            "tool": "awm_edge_material",
             "effect": "secret",
             "surfaces": _CLI_HTTP,
             "description": "Signing secret + currently-valid peer credentials + "
@@ -83,6 +91,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "node_key",
+            "tool": "awm_node_key",
             "effect": "read",
             "description": "This node's ed25519 public key and its fingerprint, "
                            "to hand to a peer that will verify this node's "
@@ -91,6 +100,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "sign_peer_token",
+            "tool": "awm_sign_peer_token",
             "effect": "secret",
             "surfaces": _CLI_HTTP,
             "description": "Sign a five-minute token that proves this node's "
@@ -99,6 +109,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "rotate",
+            "tool": "awm_rotate",
             "effect": "secret",
             "surfaces": _CLI_HTTP,
             "description": "Force minting a fresh credential pair now.",
@@ -106,7 +117,9 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "status",
+            "tool": "awm_auth_status",
             "effect": "read",
+            "surfaces": _CLI_HTTP,
             "description": "Report rotation state: valid generations, latest "
                            "window, cadence, the last Discord push attempt's "
                            "outcome, and the peer-cred file path.",
@@ -114,6 +127,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "user_add",
+            "tool": "awm_user_add",
             "effect": "secret",
             "surfaces": _CLI_HTTP,
             "description": "Create a user account. The password is generated "
@@ -122,6 +136,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "user_passwd",
+            "tool": "awm_user_passwd",
             "effect": "secret",
             "surfaces": _CLI_HTTP,
             "description": "Reset a user's password to a fresh generated one, "
@@ -130,6 +145,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "user_disable",
+            "tool": "awm_user_disable",
             "effect": "write",
             "surfaces": _CLI_HTTP,
             "description": "Disable (default) or re-enable a user account.",
@@ -140,6 +156,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "user_list",
+            "tool": "awm_user_list",
             "effect": "read",
             "surfaces": _CLI_HTTP,
             "description": "List user accounts (no secrets).",
@@ -147,6 +164,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "penpot_record",
+            "tool": "awm_penpot_record",
             "effect": "secret",
             "surfaces": _CLI_HTTP,
             "description": "Record the Penpot credential awm holds on a user's "
@@ -161,6 +179,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "penpot_session",
+            "tool": "awm_penpot_session",
             "effect": "secret",
             "surfaces": _CLI_HTTP,
             "description": "Log in to Penpot as a named user and return the "
@@ -176,6 +195,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "penpot_rotate",
+            "tool": "awm_penpot_rotate",
             "effect": "secret",
             "surfaces": _CLI_HTTP,
             "description": "Replace the stored Penpot password for one user, "
@@ -184,6 +204,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "penpot_list",
+            "tool": "awm_penpot_list",
             "effect": "read",
             "surfaces": _CLI_HTTP,
             "description": "List the recorded Penpot credentials (no secrets).",

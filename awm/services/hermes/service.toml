@@ -8,3 +8,6 @@
 # The gate is how a node volunteers, not how the fleet elects one: deployments
 # are per-node and wholly independent, sharing no state.
 profiles = ["hermes"]
+
+# Off the MCP surface: hermes has no agent-facing tool.
+tier = "off"

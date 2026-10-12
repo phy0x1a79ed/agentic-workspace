@@ -1,0 +1,4 @@
+# Off the MCP surface: the service runs and answers on the CLI and over HTTP, but
+# agents get no tool for it.
+tool = "penpot-plugins"
+tier = "off"

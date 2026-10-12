@@ -1,2 +1,2 @@
-# Core tier: listed on the agent-facing MCP surface.
-tier = "core"
+# On the agent-facing MCP surface, under the tool named after this folder.
+tier = "on"

@@ -12,6 +12,9 @@ log = logging.getLogger("awm.ssh.hub_adapter")
 
 svc = SSHService()
 
+# Test verbs keep working on the CLI and over HTTP but are not agent tools.
+_CLI_HTTP = ["cli", "http"]
+
 API_MANIFEST: dict[str, Any] = {
     "description": (
         "SSH to the managed HPC hosts, and the only sanctioned way to reach "
@@ -84,6 +87,7 @@ API_MANIFEST: dict[str, Any] = {
             "name": "notify_test",
             "effect": "write",
             "tool": "ssh_notify_test",
+            "surfaces": _CLI_HTTP,
             "description": (
                 "Fire the Discord lock-alert wire on demand to confirm the ssh "
                 "service can reach the operator BEFORE a real lockout depends on "
@@ -101,6 +105,7 @@ API_MANIFEST: dict[str, Any] = {
             "name": "receive_test",
             "effect": "write",
             "tool": "ssh_receive_test",
+            "surfaces": _CLI_HTTP,
             "description": (
                 "The inbound twin of notify_test: prove this service can still "
                 "HEAR an operator /approve. Asks social to emit a synthetic, "

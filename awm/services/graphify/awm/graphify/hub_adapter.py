@@ -46,12 +46,16 @@ _TARGET_PARAM = {
     "description": "Source tree to index (default: the awm tree this service runs in).",
 }
 
+# Operator verbs keep working on the CLI and over HTTP but are not agent tools.
+_CLI_HTTP = ["cli", "http"]
+
 API_MANIFEST: dict[str, Any] = {
     "functions": [
         {
             "name": "build",
             "effect": "write",
             "tool": "graphify_build",
+            "surfaces": _CLI_HTTP,
             "description": (
                 "Build or refresh the knowledge graph of the awm source tree "
                 "(AST-only, local, no API key). Incremental across runs. Returns "

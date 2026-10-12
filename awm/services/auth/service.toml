@@ -1,0 +1,3 @@
+# auth publishes into the awm tool, beside the gateway's own verbs.
+tool = "awm"
+tier = "on"

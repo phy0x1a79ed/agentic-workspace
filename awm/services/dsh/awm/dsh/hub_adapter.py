@@ -32,10 +32,9 @@ log = logging.getLogger("awm.dsh.hub_adapter")
 
 SUPERVISOR = harness.Supervisor()
 
-#: Every function carries an explicit ``tool`` name under a ``dsh_`` prefix,
-#: which is what decides the domain this service appears as: the gateway folds
-#: the MCP surface by splitting the projected name on its **first** underscore.
-#: So the surface is ``awm dsh status`` and ``mcp__awm__dsh {verb:"status"}``.
+#: Every function carries an explicit ``tool`` name under a ``dsh_`` prefix, the
+#: tool its service.toml names. The tool is off the MCP surface; the verbs answer
+#: on the CLI (``awm dsh status``) and over HTTP.
 API_MANIFEST: dict[str, Any] = {
     "functions": [
         {
