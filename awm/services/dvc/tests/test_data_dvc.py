@@ -24,7 +24,8 @@ from pathlib import Path
 import pytest
 import yaml
 
-from awm.scopes import data_dvc as dd
+from awm.dvc import data_dvc as dd
+from awm.dvc import scopedata
 
 needs_dvc = pytest.mark.skipif(not dd.dvc_available(), reason="dvc not installed")
 
@@ -39,14 +40,14 @@ def _git(repo: Path, *args: str) -> str:
 
 
 @pytest.fixture()
-def dvc_project(scopes_workspace, tmp_path):
+def dvc_project(dvc_workspace, tmp_path):
     """A bare repo + one worktree, DVC-initialised against a shared cache.
 
     Deliberately the real awm layout — a *secondary* worktree off a bare repo,
     where `.git` is a file rather than a directory — because that is the shape
     every hook and cache-path claim here depends on.
     """
-    ws = scopes_workspace["workspace"]
+    ws = dvc_workspace["workspace"]
     projects = ws / "projects"
     bare = projects / "p" / ".bare"
     bare.parent.mkdir(parents=True, exist_ok=True)
@@ -77,9 +78,9 @@ def dvc_project(scopes_workspace, tmp_path):
 # ---------------------------------------------------------------------------
 
 class TestDegradation:
-    def test_unconverted_project_keeps_the_shared_symlink(self, scopes_workspace):
+    def test_unconverted_project_keeps_the_shared_symlink(self, dvc_workspace):
         """No `.dvc/` in the checkout means nothing changes for that project."""
-        ws = scopes_workspace["workspace"]
+        ws = dvc_workspace["workspace"]
         wt = ws / "projects" / "plain" / "main"
         (wt / ".awm").mkdir(parents=True)
         rep = dd.provision_scope_data("plain", "main", wt / ".awm")
@@ -88,17 +89,17 @@ class TestDegradation:
         assert Path(os.readlink(str(wt / ".awm" / "data"))) == ws / "data" / "plain"
 
     def test_missing_dvc_binary_degrades_rather_than_failing(
-        self, scopes_workspace, monkeypatch):
+        self, dvc_workspace, monkeypatch):
         """Scope creation must never break because a tool is absent."""
         monkeypatch.setattr(dd, "dvc_available", lambda: False)
-        ws = scopes_workspace["workspace"]
+        ws = dvc_workspace["workspace"]
         wt = ws / "projects" / "p" / "s"
         (wt / ".awm").mkdir(parents=True)
         rep = dd.provision_scope_data("p", "s", wt / ".awm")
         assert rep["mode"] == "symlink"
         assert "dvc not found" in rep["detail"]
 
-    def test_relative_awm_dir_is_refused_not_normalised(self, scopes_workspace):
+    def test_relative_awm_dir_is_refused_not_normalised(self, dvc_workspace):
         """There is no correct anchor to normalise against, only a wrong one."""
         rep = dd.provision_scope_data("p", "s", Path(".awm"))
         assert rep["mode"] == "unknown"
@@ -540,8 +541,7 @@ class TestGcSweep:
         assert rep["result"] == "refused" and "runs" in rep["detail"]
 
     def test_data_gc_finds_the_wired_project(self, gc_layout):
-        from awm.scopes import scopes
-        assert scopes.data_gc([])["result"] == "refused"
-        rep = scopes.data_gc(["p"])
+        assert scopedata.gc([])["result"] == "refused"
+        rep = scopedata.gc(["p"])
         assert rep["result"] == "ok", rep
         assert rep["projects"]["p"]["worktrees"] == 2
