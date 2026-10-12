@@ -37,14 +37,6 @@ async def recall(body: dict, *, timeout: float = 600) -> dict:
     return await _req("POST", "/recall", json=body, timeout=timeout)
 
 
-async def upsert(posts: list[dict]) -> dict:
-    return await _req("POST", "/posts/upsert", json={"posts": posts}, timeout=120)
-
-
-async def sweep(ids: list[str], *, full: bool = True) -> dict:
-    return await _req("POST", "/posts/sweep", json={"ids": ids, "full": full}, timeout=120)
-
-
 async def zotero_sync() -> dict:
     return await _req("POST", "/zotero/sync")
 

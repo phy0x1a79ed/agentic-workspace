@@ -1,10 +1,10 @@
 # kb
 
-The workspace knowledgebase as an awm service. It supervises the kb server from `projects/kb`, feeds it this node's scope posts, and relays its recall as `kb_<verb>` tools. `scope_fetch(query=...)` ranks with it once it holds every post.
+The paper knowledgebase as an awm service. It supervises the kb server from `projects/kb`, relays its opt-in Cognee recall as `kb_<verb>` tools, and feeds the Zotero library to the `search` service as the archive source `kb`. The tool is off the agent surface (`tier = "off"`): agents find papers through `search query`.
 
 ## Purpose & Contents
 
-This file holds the contract between awm and the kb server: what the child runs under, which keys it gets, where its store lives, what makes `scope_fetch` trust it, what a foreign peer may recall, and what must stay in step with the scopes service. How the server works, and why it uses Cognee the way it does, is in `projects/kb`'s `AGENTS.md`.
+This file holds the contract between awm and the kb server: what the child runs under, which keys it gets, where its store lives, what the archive source `kb` serves, and what a foreign peer may recall. How the server works, and why it uses Cognee the way it does, is in `projects/kb`'s `AGENTS.md`.
 
 ## The child
 
@@ -36,24 +36,14 @@ The store is `live/` in the kb checkout (`KB_LIVE`), beside the code that writes
 
 `kb snapshot` pauses ingest, stops the server, copies `live/` to `data/store/` and runs `dvc add` on the copy. Committing the pin is left to the caller. The copy skips the embedding model cache, which re-downloads.
 
-## The completeness gate
+## The archive source
 
-`scope_fetch` with a query calls `kb recall` with `require_complete`. kb refuses until its last full sweep listed every post and every post is ingested. Any refusal, error or 5 s timeout sends the search to the scopes service's own index. A kb that is new, ingesting, stopped or absent therefore never narrows what a search can find. The reply's `semantic` field says which index answered.
+`service.toml` declares one `[[archive]]` table named `kb`, in index mode, exported by the hidden `kb_export`. The name is also the federation grant, so a peer's `kb` grant keeps its meaning. Posts are not in this source: the `journal` service owns them and `search` indexes them from there.
 
-Searches filtered by author or time stay on the local index, because kb cannot filter on them. `SCOPES_KB_RECALL=0` keeps every search local.
+`kb_export` reads the Zotero mirror (`KB_ZOTERO_LIBRARY`) itself, never the kb server, so the source stays current while the server is down or ingesting. It pages the mirror in key order, keyed on the last key sent. `cursor` is the previous page's `next_cursor`. `limit` is the page size, default 200, at most 1000. Each document is `id` (the Zotero key), `title`, `text`, `ts`, `kind` (`paper`) and, when the item has one, `url`. `ts` is the publication year's first day, else the mirror's pull time. `text` matches what the kb server indexes. The last page sets `done` and also returns `ids`, every key in the library, so `search` can drop papers Zotero deleted. A missing mirror raises, and never reports an empty id set. A foreign caller is refused.
 
-A new post makes kb incomplete until it is ingested, about a minute. Searches meanwhile answer locally.
-
-## The feed
-
-Two paths keep kb current. The `posts` subscription forwards each new post. The sweep pages every post through `scope_fetch` at start and hourly, and sooner after a forward fails. It upserts them and sends kb the full id set, so kb forgets deleted posts.
-
-**CAUTION** `feed.KINDS` must equal the scopes service's `search_index.INDEXED_KINDS`. If kb holds fewer kinds, `scope_fetch` routed to kb silently finds less than the local index would.
-
-Journals are per-node, so the feed and the gate use the local gateway, never a peer's kb.
+**CAUTION** The documents are metadata and abstracts, with no PDF text, because no node holds a `ZOTERO_API_KEY`. The key changes what the kb server's own recall reads. It does not change this export.
 
 ## A foreign peer's recall
 
-A foreign peer holding the `kb` grant may call `status` and `recall`, both declared `read` with category `kb` (`FEDERATION.md` § *The foreign gate*). `status` returns counts and nothing else. `recall` accepts the hybrid, vector and lexical modes only. Those modes rank rows from kb's own store and honour `sources`. The `graph` and `answer` modes run Cognee with access control off, where `datasets` does not scope, and `answer` spends LLM budget on the caller's behalf. A refused mode raises `PermissionError`, which the gateway returns as the same 404 an unknown tool gets.
-
-Posts are journal content. A foreign peer without the `journals` grant gets papers only, whatever `sources` it names.
+A foreign peer holding the `kb` grant may call `status` and `recall`, both declared `read` with category `kb` (`FEDERATION.md` § *The foreign gate*). `status` returns counts and nothing else. `recall` always reads papers, and accepts the hybrid, vector and lexical modes only. Those modes rank rows from kb's own store. The `graph` and `answer` modes run Cognee with access control off, where `datasets` does not scope, and `answer` spends LLM budget on the caller's behalf. A refused mode raises `PermissionError`, which the gateway returns as the same 404 an unknown tool gets.

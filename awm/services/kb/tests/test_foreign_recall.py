@@ -1,4 +1,4 @@
-"""A foreign peer reads scope-post text through kb only with `journals` on top of `kb`."""
+"""Which recall modes a foreign peer may use, and that recall never reads posts."""
 
 import pytest
 
@@ -34,27 +34,12 @@ async def recall(as_, **args):
     return await hub_adapter.HANDLERS["recall"]({"query": "q", **args}, as_=as_)
 
 
-@pytest.mark.parametrize("sources", [None, ["posts", "papers"]])
-async def test_foreign_with_kb_only_loses_posts(seen, sources):
-    await recall("peer:kbonly", **({"sources": sources} if sources else {}))
+@pytest.mark.parametrize("as_", [None, "peer:dom", "peer:kbonly", "peer:kbj", "peer:stranger"])
+async def test_recall_reads_papers_only_whatever_the_caller_names(seen, as_):
+    await recall(as_, sources=["posts", "papers"])
     assert seen[-1]["sources"] == ["papers"]
-
-
-async def test_foreign_with_kb_only_asking_for_posts_gets_nothing(seen):
-    out = await recall("peer:kbonly", sources=["posts"])
-    assert out["hits"] == [] and seen == []
-
-
-async def test_unknown_peer_is_foreign(seen):
-    await recall("peer:stranger", sources=["posts", "papers"])
+    await recall(as_)
     assert seen[-1]["sources"] == ["papers"]
-
-
-async def test_foreign_with_journals_keeps_posts(seen):
-    await recall("peer:kbj", sources=["posts", "papers"])
-    assert seen[-1]["sources"] == ["posts", "papers"]
-    await recall("peer:kbj")
-    assert "sources" not in seen[-1]
 
 
 @pytest.mark.parametrize("peer", ["peer:kbonly", "peer:kbj", "peer:stranger"])
@@ -69,7 +54,7 @@ async def test_foreign_refused_graph_answer_and_search_type(seen, peer, extra):
 @pytest.mark.parametrize("mode", ["hybrid", "vector", "lexical"])
 async def test_foreign_plain_modes_pass(seen, mode):
     await recall("peer:kbonly", mode=mode)
-    assert seen[-1]["mode"] == mode and seen[-1]["sources"] == ["papers"]
+    assert seen[-1]["mode"] == mode
 
 
 @pytest.mark.parametrize("extra", [{"mode": "graph"}, {"mode": "answer"}, {"search_type": "CHUNKS"}])
@@ -101,11 +86,3 @@ async def test_foreign_status_hides_a_failure(monkeypatch):
     monkeypatch.setattr(hub_adapter.client, "status", down)
     monkeypatch.setattr(hub_adapter.config, "peer_relation", lambda n: "foreign")
     assert await hub_adapter.HANDLERS["status"]({}, as_="peer:x") == {"kb": {"error": "unavailable"}}
-
-
-@pytest.mark.parametrize("as_", [None, "peer:dom", "peer", "user:someone"])
-async def test_domestic_and_non_peer_callers_unchanged(seen, as_):
-    await recall(as_, sources=["posts"])
-    assert seen[-1]["sources"] == ["posts"]
-    await recall(as_)
-    assert "sources" not in seen[-1]

@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "awm-kb"
 version = "0.1.0"
 requires-python = ">=3.11"
-description = "AWM kb service: supervise the kb server (Cognee, in its own env), feed it this node's scope posts, and relay its recall."
+description = "AWM kb service: supervise the kb server (Cognee, in its own env), relay its recall, and export papers to the search archive."
 dependencies = [
     "awm-config",
     "awm-gatewayclient",
