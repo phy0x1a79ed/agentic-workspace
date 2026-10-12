@@ -119,7 +119,8 @@ def handle(p: dict) -> None:
             report(sid, "hook_plan_approved", plan_text=response["plan"])
     elif tool in ("TaskCreate", "TaskUpdate", "TodoWrite"):
         items = todowrite_items(tool_input.get("todos")) if tool == "TodoWrite" else task_items(sid)
-        if items:
+        # An empty list is a wipe only when the event is a deletion; a cleared list is not.
+        if items or tool_input.get("status") == "deleted":
             report(sid, "hook_todos", items=items)
 
 

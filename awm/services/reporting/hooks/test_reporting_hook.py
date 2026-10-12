@@ -124,10 +124,16 @@ def test_the_task_list_id_override_is_honoured(home, gw):
     assert len(gw.calls) == 1
 
 
-def test_an_empty_or_missing_task_directory_sends_nothing(home, gw):
-    run(home, gw.url, post("TaskUpdate", tool_input={}))
+def test_deleting_the_last_task_sends_an_empty_list(home, gw):
     (home / ".claude" / "tasks" / "s1").mkdir(parents=True)
-    run(home, gw.url, post("TaskUpdate", tool_input={}))
+    run(home, gw.url, post("TaskUpdate", tool_input={"taskId": "1", "status": "deleted"}))
+    assert gw.calls[0][2] == {"name": "reporting_hook_todos", "args": {"session_id": "s1", "items": []}}
+
+
+def test_a_cleared_list_sends_nothing(home, gw):
+    run(home, gw.url, post("TaskUpdate", tool_input={"taskId": "1", "status": "completed"}))
+    (home / ".claude" / "tasks" / "s1").mkdir(parents=True)
+    run(home, gw.url, post("TaskUpdate", tool_input={"taskId": "1", "status": "completed"}))
     run(home, gw.url, post("TodoWrite", tool_input={"todos": []}))
     assert gw.calls == []
 
