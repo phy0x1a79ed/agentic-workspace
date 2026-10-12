@@ -1,8 +1,9 @@
-"""Hub adapter for the kb service: one semantic recall over this node's journals and the Zotero library.
+"""Hub adapter for the kb service: opt-in Cognee recall over the Zotero library, and the papers feed for `search`.
 
-The search itself runs in the kb server, a process from the `kb` project in its
-own env (see `server`). This adapter supervises it, feeds it this node's scope
-posts (see `feed`), and relays its routes as `kb_<verb>` tools.
+The recall itself runs in the kb server, a process from the `kb` project in its
+own env (see `server`). This adapter supervises it, relays its routes as
+`kb_<verb>` tools, and pages the library's papers to the search service as
+`kb_export` (see `papers`).
 
 **Who may call what.** Lifecycle and write verbs are operator-only, enforced by
 `_operator_only` the way the trilium service does: the edge always stamps
@@ -24,8 +25,7 @@ from typing import Any
 from awm import config
 from awm.gatewayclient import ServiceAdapter, spawn_supervised
 
-from awm.kb import client, instances, server
-from awm.kb.feed import FEED
+from awm.kb import client, instances, papers, server
 
 log = logging.getLogger("awm.kb.hub_adapter")
 
@@ -34,10 +34,9 @@ _tasks: set[asyncio.Task] = set()
 
 API_MANIFEST: dict[str, Any] = {
     "description": (
-        "Semantic recall over this node's scope posts and the Zotero library (papers, with "
-        "PDF full text where a PDF is stored). `scope_fetch(query=...)` already routes to "
-        "kb once kb holds every post, so use `kb recall` for papers, or for "
-        "mode=answer, which joins a journal to a paper in one LLM-written answer."
+        "Opt-in Cognee recall over the Zotero library (papers, with PDF full text where a PDF "
+        "is stored). `search query` covers papers by default; use `kb recall` for mode=graph "
+        "or mode=answer, which write one LLM answer from the top chunks."
     ),
     "functions": [
         {
@@ -46,9 +45,8 @@ API_MANIFEST: dict[str, Any] = {
             "category": "kb",
             "tool": "kb_status",
             "description": (
-                "Whether the kb server is up, how many posts and papers it holds, its ingest "
-                "queue, whether it holds every post (`posts_complete`, the gate scope_fetch "
-                "uses), and the feed's last sweep."
+                "Whether the kb server is up, how many papers it holds, and its ingest queue "
+                "and last Zotero sync."
             ),
             "params": [],
         },
@@ -58,23 +56,15 @@ API_MANIFEST: dict[str, Any] = {
             "category": "kb",
             "tool": "kb_recall",
             "description": (
-                "Ranked hits for a query, each with its source: a post id with project and "
-                "scope, or a Zotero key with title, year and DOI. mode=hybrid (default) "
-                "combines meaning and keywords and makes no LLM call. mode=answer writes "
+                "Ranked paper hits for a query, each with its Zotero key, title, year and DOI. "
+                "mode=hybrid (default) combines meaning and keywords and makes no LLM call. mode=answer writes "
                 "one answer from the top chunks and costs about $0.001."
             ),
             "params": [
                 {"name": "query", "type": "string", "required": True, "description": "What to find."},
                 {"name": "mode", "type": "string",
                  "description": "hybrid (default), vector, lexical, graph or answer."},
-                {"name": "sources", "type": "array", "items": {"type": "string"},
-                 "description": "posts and/or papers. Default both."},
-                {"name": "project", "type": "string", "description": "Only posts of this project."},
-                {"name": "scope", "type": "string", "description": "Only posts of this scope."},
-                {"name": "kind", "type": "string", "description": "Only posts of this kind."},
                 {"name": "limit", "type": "integer", "description": "Maximum hits, 1-100. Default 10."},
-                {"name": "require_complete", "type": "boolean",
-                 "description": "Refuse unless kb holds every post. Default false."},
                 {"name": "search_type", "type": "string",
                  "description": "For graph or answer mode: a Cognee search type. Default "
                                 "RAG_COMPLETION for answer, GRAPH_COMPLETION for graph."},
@@ -116,17 +106,6 @@ API_MANIFEST: dict[str, Any] = {
             "params": [{"name": "tail", "type": "integer", "description": "Lines from the end. Default 200."}],
         },
         {
-            "name": "sweep",
-            "effect": "write",
-            "tool": "kb_sweep",
-            "description": (
-                "Send kb every post on this node now, and have it forget deleted ones. "
-                "Runs hourly on its own. Operator only."
-            ),
-            "params": [],
-            "timeout": 600,
-        },
-        {
             "name": "sync",
             "effect": "write",
             "tool": "kb_sync",
@@ -148,6 +127,24 @@ API_MANIFEST: dict[str, Any] = {
             "params": [],
             "timeout": 1800,
         },
+        {
+            "name": "export",
+            "effect": "read",
+            "category": "kb",
+            "tool": "kb_export",
+            "surfaces": ["cli", "http"],
+            "description": (
+                "Page the Zotero library as search documents (id, title, text, ts, kind, url) for "
+                "the archive's `kb` source. The last page also returns `ids`, every paper id. "
+                "Local callers only."
+            ),
+            "params": [
+                {"name": "cursor", "type": "string",
+                 "description": "The previous page's next_cursor. Omit to start a pass."},
+                {"name": "limit", "type": "integer",
+                 "description": f"Documents per page, 1-{papers.PAGE_MAX}. Default {papers.PAGE_DEFAULT}."},
+            ],
+        },
     ],
     "emitters": [],
     "sessions": [],
@@ -166,7 +163,7 @@ async def _h_status(args: dict, as_: str | None = None) -> dict:
             return {"kb": {"counts": (await client.status()).get("counts")}}
         except Exception:  # noqa: BLE001 — a foreign caller gets no detail
             return {"kb": {"error": "unavailable"}}
-    out: dict[str, Any] = {"server": await asyncio.to_thread(CHILD.snapshot), "feed": FEED.snapshot()}
+    out: dict[str, Any] = {"server": await asyncio.to_thread(CHILD.snapshot)}
     if out["server"]["listening"]:
         try:
             out["kb"] = await client.status()
@@ -186,26 +183,19 @@ def _foreign(as_: str | None) -> bool:
     return node is not None and config.peer_relation(node) != "domestic"
 
 
-def _posts_readable(as_: str | None) -> bool:
-    """Whether this caller may read scope-post text through kb.
-
-    Posts are journal content, so a foreign peer needs the `journals` grant on top of `kb`.
-    """
-    if not _foreign(as_):
-        return True
-    return "journals" in ((config.peer_record(config.caller_peer(as_)) or {}).get("grants") or [])
-
-
 async def _h_recall(args: dict, as_: str | None = None) -> dict:
-    body = {k: args[k] for k in ("query", "mode", "sources", "project", "scope", "kind", "limit",
-                                 "require_complete", "search_type") if args.get(k) is not None}
+    body = {k: args[k] for k in ("query", "mode", "limit", "search_type") if args.get(k) is not None}
+    body["sources"] = ["papers"]
     if _foreign(as_) and (body.get("mode", "hybrid") not in _PLAIN_MODES or "search_type" in body):
         raise PermissionError("a foreign peer may use only the hybrid, vector and lexical modes")
-    if not _posts_readable(as_):
-        body["sources"] = [s for s in (body.get("sources") or ["posts", "papers"]) if s != "posts"]
-        if not body["sources"]:
-            return {"hits": [], "note": "posts need the journals grant"}
     return await client.recall(body)
+
+
+async def _h_export(args: dict, as_: str | None = None) -> dict:
+    if _foreign(as_):
+        raise PermissionError("export is for the local search service")
+    return await asyncio.to_thread(papers.export_page, instances.ZOTERO_LIBRARY,
+                                   args.get("cursor"), args.get("limit"))
 
 
 async def _h_start(args: dict, as_: str | None = None) -> dict:
@@ -227,11 +217,6 @@ async def _h_logs(args: dict, as_: str | None = None) -> dict:
     _operator_only(as_, "logs")
     tail = int(args.get("tail") or 200)
     return {"tail": tail, "log": await asyncio.to_thread(CHILD.logs, tail)}
-
-
-async def _h_sweep(args: dict, as_: str | None = None) -> dict:
-    _operator_only(as_, "sweep")
-    return await FEED.sweep()
 
 
 async def _h_sync(args: dict, as_: str | None = None) -> dict:
@@ -283,11 +268,11 @@ async def _h_snapshot(args: dict, as_: str | None = None) -> dict:
 HANDLERS = {
     "status": _h_status,
     "recall": _h_recall,
+    "export": _h_export,
     "start": _h_start,
     "stop": _h_stop,
     "restart": _h_restart,
     "logs": _h_logs,
-    "sweep": _h_sweep,
     "sync": _h_sync,
     "snapshot": _h_snapshot,
 }
@@ -322,8 +307,6 @@ async def _on_start() -> None:
         return
     _tasks.add(asyncio.get_running_loop().create_task(_initial_start()))
     spawn_supervised("kb:health", _health_loop)
-    spawn_supervised("kb:feed", FEED.subscribe)
-    spawn_supervised("kb:sweep", FEED.loop)
 
 
 async def main() -> None:
