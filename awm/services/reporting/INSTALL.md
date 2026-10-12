@@ -68,7 +68,7 @@ note into Proposed first.
   private "Ops" book carry the same labels.
 - The record is HTML. A status block comes first (state, scope, peer, job,
   waiting-on reason, started, closed). Plan, Todo, Journal and Removed follow as
-  closed `trilium-collapsible` blocks, split by rules. A summary is plain text
+  closed `trilium-collapsible` blocks, split by rules; Removed appears only once an item has been removed. A summary is plain text
   and carries a count, as in "Todo — 3/7 done, 1 active". The plan converts
   with `markdown-it-py`, which escapes raw HTML: its first `#` heading is
   dropped and the rest starts at `<h3>`. A journal entry is an `<h4>` and its
@@ -77,7 +77,7 @@ note into Proposed first.
   ticked box. An active item is an empty box with a bold subject and "(in
   progress)", because neither Markdown nor Trilium draws a half-state.
 - An owned card is titled by the plan's `#` heading, else the job's name when
-  `nameSource` is `auto` and the name does not start with `claimed `, else the
+  `nameSource` is `auto` or `user` and the name does not start with `claimed `, else the
   intent's first line cut at a word boundary to 80 characters. Every sync
   recomputes it, because Claude Code names a session after its first turn. A
   claimed card keeps Tony's title.
@@ -199,8 +199,8 @@ it from a session on another node.
 `operations convert` is hidden and runs once per node, from the rollout
 runbook. It re-renders the node's open cards in the current shape, deletes an
 owned card's Record child, adds the labels, retitles, and stamps each Ops notice
-that has no `#changed` label from the note's Trilium modified time. Run it with
-`--dry-run` first: it lists every action and writes nothing.
+that has no `#changed` label from the note's Trilium modified time. It defaults to a dry run that
+lists every action and writes nothing. Pass `dry_run: false` to write.
 
 ## Install
 

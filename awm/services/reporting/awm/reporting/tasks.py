@@ -140,13 +140,13 @@ class Tasks:
         return self._pick_title(who.kind, who.key, plan_text)
 
     def _pick_title(self, kind: str, key: str, plan_text: str, fallback: str = "") -> str:
-        """The plan's ``#`` heading, else the job's auto name, else its intent's first line, cut to a word."""
+        """The plan's ``#`` heading, else the job's name, else its intent's first line, cut to a word."""
         heading = plan_title(plan_text)
         if heading:
             return cut_at_word(heading, TITLE_CHARS)
         state = self._job_state(key) if kind == "bg" else {}
         name = str(state.get("name") or "").strip()
-        if name and state.get("nameSource") == "auto" and not name.startswith("claimed "):
+        if name and state.get("nameSource") in ("auto", "user") and not name.startswith("claimed "):
             return cut_at_word(name, TITLE_CHARS)
         intent = next((ln.strip() for ln in str(state.get("intent") or "").splitlines() if ln.strip()), "")
         return cut_at_word(intent, TITLE_CHARS) if intent else fallback or f"session {key}"
@@ -363,7 +363,7 @@ class Tasks:
 
     # -- conversion ----------------------------------------------------------
 
-    async def convert(self, dry_run: bool = False) -> dict:
+    async def convert(self, dry_run: bool = True) -> dict:
         """Bring this node's open cards to the current shape and stamp the Ops notices that lack a time."""
         async with self.lock:
             cards = []

@@ -53,7 +53,7 @@ def test_the_body_is_a_status_block_then_four_closed_collapsibles_split_by_rules
     html = render("## A", live=[todo("completed"), todo("in_progress", item_id="2"), todo("pending", item_id="3")],
                   removed=[{"subject": "gone", "removed_at": 1e9}],
                   events=[{"kind": "journal", "at": 1e9, "detail": "Session 1\n\nwork"}], state="blocked", reason="login")
-    assert html.count('<details class="trilium-collapsible">') == 4 and "open" not in re.findall(r"<details[^>]*>", html)[0]
+    assert html.count('<details class="trilium-collapsible">') == 4 and "open" not in "".join(re.findall(r"<details[^>]*>", html))
     summaries = re.findall(r"<summary>(.*?)</summary>", html)
     assert summaries == ["Plan", "Todo — 1/3 done, 1 active", "Journal — 1 entry", "Removed — 1"]
     assert html.startswith("<ul>") and html.count("<hr>") == 4
@@ -79,9 +79,10 @@ def test_a_pending_item_is_an_empty_box_a_completed_one_ticked_and_an_active_one
     assert "[~]" not in html and '<ul class="todo-list">' in html
 
 
-def test_empty_sections_say_none():
+def test_empty_sections_say_none_and_removed_is_left_out_until_something_is_removed():
     html = render()
-    assert html.count("<p>(none)</p>") == 4
+    assert html.count("<p>(none)</p>") == 3 and "Removed" not in html
+    assert html.count("<hr>") == 3 and html.count("<details") == 3
     assert "Todo — none" in html and "Journal — 0 entries" in html
 
 
@@ -106,7 +107,7 @@ async def test_the_title_prefers_the_plans_heading_then_the_auto_name_then_the_i
 
 @pytest.mark.parametrize("job,want", [
     ({"intent": "Fix the thing\nmore", "name": "claimed otter", "nameSource": "auto"}, "Fix the thing"),
-    ({"intent": "Fix the thing", "name": "mine", "nameSource": "user"}, "Fix the thing"),
+    ({"intent": "Fix the thing", "name": "claimed mine", "nameSource": "user"}, "Fix the thing"),
     ({"intent": "w " * 60, "name": "", "nameSource": "auto"}, ("w " * 40).strip()),
     ({}, "session job00001"),
 ])
@@ -114,6 +115,15 @@ async def test_the_title_falls_back_to_the_intent_cut_at_80_characters(env, job,
     env.job = job
     await env.call("hook_plan_approved", plan_text="p")
     assert env.task()["title"] == want[:80].rstrip()
+
+
+async def test_a_user_given_name_titles_the_card(env):
+    env.job = {"intent": "Fix the thing", "name": "msm writing", "nameSource": "user"}
+    await env.call("hook_plan_approved", plan_text="p")
+    assert env.task()["title"] == "msm writing"
+    env.job = {"intent": "Fix the thing", "name": "msm writing", "nameSource": "other"}
+    await env.call("hook_todos", items=items(("1", "a", "pending")))
+    assert env.task()["title"] == "Fix the thing"
 
 
 async def test_sync_retitles_an_owned_card_when_a_better_name_appears_and_leaves_a_claimed_one(env):
@@ -231,7 +241,10 @@ async def test_convert_rerenders_open_cards_drops_owned_records_and_stamps_ops(e
     assert "changed" not in env.tri.notes[legacy]["labels"]
     assert {n: v.get("content") for n, v in env.tri.notes.items()} == before
 
-    done = await env.tasks.convert()
+    assert (await env.tasks.convert())["dry_run"] is True
+    assert env.tri.notes[owned["note_id"]]["content"] == "" and stale in env.tri.notes
+
+    done = await env.tasks.convert(dry_run=False)
     assert done["dry_run"] is False
     card = env.tri.notes[owned["note_id"]]
     assert "<details" in card["content"] and card["title"] == "Title"
@@ -239,7 +252,7 @@ async def test_convert_rerenders_open_cards_drops_owned_records_and_stamps_ops(e
     assert env.tri.notes[claimed_rec]["type"] == "text" and "<details" in env.tri.notes[claimed_rec]["content"]
     assert env.tri.notes[note]["content"] == "body" and env.tri.notes[note]["title"] == "Tony's task"
     assert env.tri.notes[legacy]["labels"]["changed"] and env.tri.notes[legacy]["content"].startswith("Changed: ")
-    again = await env.tasks.convert()
+    again = await env.tasks.convert(dry_run=False)
     assert again["ops"] == []
 
 

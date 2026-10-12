@@ -80,7 +80,7 @@ def _checklist(live: list[dict]) -> str:
 
 
 def render_record(task: dict, live: list[dict], removed: list[dict], events: list[dict]) -> str:
-    """The card body: a status block, then Plan, Todo, Journal and Removed as closed collapsibles."""
+    """The card body: a status block, then Plan, Todo, Journal and, once an item is removed, Removed as closed collapsibles."""
     where = "/".join(p for p in (task.get("project"), task.get("scope")) if p)
     status = [
         *_line("State", COLUMNS.get(task["state"], task["state"])),
@@ -111,8 +111,9 @@ def render_record(task: dict, live: list[dict], removed: list[dict], events: lis
         _block(todo_head, todo_body),
         _block(f"Journal — {len(posts)} {'entry' if len(posts) == 1 else 'entries'}",
                entries or "<p>(none)</p>"),
-        _block(f"Removed — {len(removed)}", gone if removed else "<p>(none)</p>"),
     ]
+    if removed:
+        parts.append(_block(f"Removed — {len(removed)}", gone))
     return "\n<hr>\n".join(parts) + "\n"
 
 

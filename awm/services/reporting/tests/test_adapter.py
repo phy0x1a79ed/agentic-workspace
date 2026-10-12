@@ -73,6 +73,20 @@ def test_hook_ops_and_operator_verbs_leave_mcp_and_the_rest_stay():
     assert all("surfaces" not in spec for name, spec in functions().items() if name not in HIDDEN)
 
 
+async def test_convert_writes_only_when_dry_run_is_explicitly_false(monkeypatch):
+    seen = []
+
+    async def convert(dry_run):
+        seen.append(dry_run)
+        return {"ok": True}
+
+    monkeypatch.setattr(hub_adapter, "RUNTIME", SimpleNamespace(tasks=SimpleNamespace(convert=convert)))
+    for args in ({}, {"dry_run": True}, {"dry_run": None}, {"dry_run": "false"}, {"dry_run": False}):
+        await hub_adapter.convert(args)
+    assert seen == [True, True, True, True, False]
+    assert (await hub_adapter.convert({"dry_run": False}, as_="peer:x"))["ok"] is False
+
+
 def test_request_human_takes_a_kind_and_old_arguments_still_pick_one():
     params = {p["name"]: p for p in functions()["request_human"]["params"]}
     assert set(params) == {"kind", "reason", "urgent", "summary"}

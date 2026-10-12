@@ -280,10 +280,10 @@ API_MANIFEST: dict[str, Any] = {
                 "Re-render this node's open cards in the current shape, delete "
                 "an owned card's Record child, add labels, retitle, and stamp "
                 "the Ops notices that lack a change time from each note's "
-                "Trilium modified time. `dry_run` reports the actions and "
-                "writes nothing."
+                "Trilium modified time. It reports the actions and writes nothing "
+                "unless `dry_run` is false."
             ),
-            "params": [_param("dry_run", "boolean", "List what would change and change nothing. Default false.")],
+            "params": [_param("dry_run", "boolean", "Default true: list what would change and write nothing. Pass false to write.")],
             "timeout": 300,
         },
     ],
@@ -499,7 +499,7 @@ async def convert(args: dict, as_: str | None = None) -> dict:
     if RUNTIME is None:
         return {"ok": False, "error": "reporting is not running on this node"}
     try:
-        return await RUNTIME.tasks.convert(dry_run=args.get("dry_run") is True)
+        return await RUNTIME.tasks.convert(dry_run=args.get("dry_run") is not False)
     except BoardError as exc:
         return {"ok": False, "error": str(exc)}
 
