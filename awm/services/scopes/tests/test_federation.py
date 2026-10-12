@@ -25,8 +25,7 @@ def test_every_scopes_verb_declares_an_effect():
     assert missing == []
 
 
-READS = {"scope_search", "scope_data_status", "project_search", "resolveScope", "resolveRef",
-         "scope_archive_search"}
+READS = {"scope_search", "project_search", "resolveScope", "resolveRef", "scope_archive_search"}
 JOURNAL_READS = {"scope_archive_search"}
 
 

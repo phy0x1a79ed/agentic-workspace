@@ -71,7 +71,7 @@ import yaml
 
 from awm import config as _config
 
-log = logging.getLogger("awm.scopes.data_dvc")
+log = logging.getLogger("awm.dvc.data_dvc")
 
 # The data folder inside a project repo. Tracked, first-class, same name in
 # every project — scripts hardcode `<repo>/data/...` and that is the point.
