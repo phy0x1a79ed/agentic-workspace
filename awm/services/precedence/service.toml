@@ -1,2 +1,7 @@
-# Core tier: listed on the agent-facing MCP surface.
-tier = "core"
+tool = "precedence"
+tier = "on"
+
+[[archive]]
+name = "precedence"
+mode = "index"
+export = "precedence_export"
