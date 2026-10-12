@@ -22,7 +22,7 @@ from awm.scopes.models import (
     ProjectCreateRequest, ProjectCreateResponse,
     ProjectListInfo, ProjectListResponse, ProjectScopeCounts,
 )
-from awm.scopes.scopes import _scaffold_awm_dir
+from awm.scopes.scopes import _scaffold_awm_dir, main_checkouts
 from awm.scopes._validation import validate_name
 
 
@@ -186,7 +186,10 @@ def search_projects(
     limit: int = 50,
     offset: int = 0,
 ) -> ProjectListResponse:
-    """Search projects from the agents table + on-disk project dirs."""
+    """List projects from the agents table and the on-disk project dirs, with scope counts.
+
+    A project's main checkout counts as one active scope.
+    """
     dao = ScopesDAO()
     rows = dao.query_all(
         "SELECT p.name AS project, a.status, COUNT(*) AS n "
@@ -206,6 +209,9 @@ def search_projects(
         for child in sorted(PROJECTS_DIR.iterdir()):
             if child.is_dir() and (child / ".bare").is_dir():
                 by_project.setdefault(child.name, ProjectScopeCounts())
+
+    for name in main_checkouts():
+        by_project.setdefault(name, ProjectScopeCounts()).active += 1
 
     items = [
         ProjectListInfo(name=n, scope_counts=c)

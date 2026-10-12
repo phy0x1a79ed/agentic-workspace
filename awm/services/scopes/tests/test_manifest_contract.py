@@ -8,9 +8,9 @@ implementing it was deleted: the manifest still offered it and the handler still
 forwarded it to a signature that no longer had it.
 
 Two different keys are in play and they are easy to confuse. Dispatch looks a
-handler up by the entry's **name**; the CLI and MCP surfaces split a **tool**
-into ``<domain>_<verb>``. They are usually equal, and ``awm_refresh`` /
-``scope_refresh`` is the deliberate exception.
+handler up by the entry's **name**; the CLI and MCP surfaces publish the
+entry's **tool**, ``scope_<verb>``. They are usually equal, and ``scope_gather``
+published as ``scope_git_gather`` is the deliberate exception.
 """
 
 from __future__ import annotations
@@ -42,7 +42,34 @@ def test_a_tool_name_carries_its_domain_prefix():
     — the prefix is the only thing that routes it.
     """
     for f in SCOPE_MANIFEST_FUNCTIONS:
-        assert f["tool"].startswith(("scope_", "awm_", "project_")), f["tool"]
+        assert f["tool"].startswith("scope_"), f["tool"]
+
+
+def test_the_service_publishes_exactly_the_scope_tool_verbs():
+    from awm.scopes.hub_adapter import API_MANIFEST
+    published = {f["tool"]: f for f in API_MANIFEST["functions"]}
+    visible = {n for n, f in published.items() if "surfaces" not in f}
+    assert visible == {
+        "scope_resolve", "scope_ensure", "scope_create", "scope_search", "scope_complete",
+        "scope_delete", "scope_heal", "scope_repair", "scope_sync",
+        "scope_git_gather", "scope_git_scatter",
+    }
+    hidden = {n for n, f in published.items() if f.get("surfaces") == ["cli", "http"]}
+    assert hidden == {"scope_ref_resolve", "scope_reindex", "project_ensure"}
+
+
+def test_the_identity_rpcs_keep_their_internal_names():
+    from awm.scopes.hub_adapter import API_MANIFEST, HANDLERS
+    names = {f["name"] for f in API_MANIFEST["functions"]}
+    assert {"resolveScope", "resolveRef", "ensureProject", "ensureScope"} <= names
+    assert {"resolveScope", "resolveRef", "ensureProject", "ensureScope"} <= set(HANDLERS)
+
+
+def test_the_removed_verbs_are_gone():
+    from awm.scopes.hub_adapter import API_MANIFEST, HANDLERS
+    gone = {"project_create", "project_search", "scope_archive_search", "awm_refresh", "scope_refresh"}
+    assert not gone & {f["tool"] for f in API_MANIFEST["functions"]}
+    assert not gone & set(HANDLERS)
 
 
 @pytest.mark.parametrize("verb,func", [

@@ -6,8 +6,8 @@ loop (register → ready → serve → reconnect).
 
 The four **identity RPCs** — ``resolveScope``, ``resolveRef``,
 ``ensureProject``, ``ensureScope`` — are exposed in ``functions[]`` of the
-ready manifest, alongside the scope CRUD ops and the project ops. Posts, goals
-and the history render live in the journal service.
+ready manifest, alongside the scope ops. Everything is published under the
+``scope`` tool; posts, goals and the history render live in the journal service.
 
 Run via ``start.sh`` (which the hub spawns and respawns):
     python -m awm.scopes.hub_adapter
@@ -19,6 +19,7 @@ import asyncio
 import logging
 from typing import Any
 
+from awm.config import PROJECTS_DIR
 from awm.gatewayclient import ServiceAdapter, spawn_supervised
 from awm.scopes import dao, search_index
 from awm.scopes.identity import (
@@ -26,6 +27,7 @@ from awm.scopes.identity import (
     agent_record_for_scope,
     ensure_agent,
     ensure_project,
+    project_id_for_name,
     project_scope_for_agent,
     resolve_ref,
     user_id_for_username,
@@ -33,11 +35,6 @@ from awm.scopes.identity import (
     SYSTEM_REF,
 )
 from awm.scopes.operations.scopes import SCOPE_MANIFEST_FUNCTIONS, SCOPE_HANDLERS
-from awm.scopes.operations.scope_channel import (
-    SCOPE_CHANNEL_MANIFEST_FUNCTIONS,
-    SCOPE_CHANNEL_HANDLERS,
-)
-from awm.scopes.operations.projects import PROJECT_MANIFEST_FUNCTIONS, PROJECT_HANDLERS
 
 log = logging.getLogger("awm.scopes.hub_adapter")
 
@@ -134,11 +131,16 @@ def _handle_ensure_scope(args: dict[str, Any]) -> dict[str, Any]:
     """ensureScope(project, scope, ...) → {project, scope}.
 
     Idempotent get-or-create of an agent/scope under an existing project.
-    Raises KeyError (→ 500 → GatewayCallError at caller) if the project does
-    not exist — callers must call ensureProject first.
+    An unknown project raises (→ 500 → GatewayCallError at caller) unless
+    ``new_project`` is true, which registers the project row first.
     """
     project: str = args["project"]
     scope: str = args["scope"]
+    if not project_id_for_name(project):
+        if not args.get("new_project"):
+            raise KeyError(
+                f"project {project!r} not found — pass new_project=true to create it")
+        ensure_project(project, repo_path=str(PROJECTS_DIR / project / ".bare"))
     # Optional fields mirror ensure_agent kwargs.
     ensure_agent(
         project,
@@ -174,7 +176,7 @@ _IDENTITY_FUNCTIONS = [
     },
     {
         "name": "resolveRef",
-        "tool": "ref_resolve",
+        "tool": "scope_ref_resolve",
         "effect": "read",
         "description": (
             "Resolve a literal author/recipient string to its natural-key "
@@ -183,6 +185,7 @@ _IDENTITY_FUNCTIONS = [
         "params": [
             {"name": "literal", "type": "string", "required": True},
         ],
+        "surfaces": ["cli", "http"],
     },
     {
         "name": "ensureProject",
@@ -194,14 +197,16 @@ _IDENTITY_FUNCTIONS = [
             {"name": "repo_path", "type": "string", "required": False},
             {"name": "url", "type": "string", "required": False},
         ],
+        "surfaces": ["cli", "http"],
     },
     {
         "name": "ensureScope",
         "tool": "scope_ensure",
         "effect": "write",
         "description": (
-            "Idempotent get-or-create of an agent/scope under an existing "
-            "project. Returns {project, scope}."
+            "Idempotent get-or-create of an agent/scope record. An unknown "
+            "project is refused unless new_project=true, which registers the "
+            "project too. Returns {project, scope}."
         ),
         "params": [
             {"name": "project", "type": "string", "required": True},
@@ -212,6 +217,9 @@ _IDENTITY_FUNCTIONS = [
             {"name": "status", "type": "string", "required": False},
             {"name": "is_vagrant", "type": "boolean", "required": False},
             {"name": "display_name", "type": "string", "required": False},
+            {"name": "new_project", "type": "boolean", "required": False,
+             "description": "Register the project when it does not exist. "
+                            "Default false: an unknown project is an error."},
         ],
     },
 ]
@@ -220,8 +228,6 @@ API_MANIFEST: dict[str, Any] = {
     "functions": (
         _IDENTITY_FUNCTIONS
         + SCOPE_MANIFEST_FUNCTIONS
-        + SCOPE_CHANNEL_MANIFEST_FUNCTIONS
-        + PROJECT_MANIFEST_FUNCTIONS
     ),
     "emitters": [],
     "sessions": [],
@@ -237,8 +243,6 @@ _IDENTITY_HANDLERS: dict[str, Any] = {
 HANDLERS: dict[str, Any] = {
     **_IDENTITY_HANDLERS,
     **SCOPE_HANDLERS,
-    **SCOPE_CHANNEL_HANDLERS,
-    **PROJECT_HANDLERS,
 }
 
 

@@ -33,10 +33,15 @@ class ProjectCreateResponse(BaseModel):
 
 class ScopeCreateRequest(BaseModel):
     project: str
-    scope: str
+    scope: str | None = None
     from_branch: str | None = None
     branch_name: str | None = None
     context: str | None = None
+    # Create the project first when it does not exist; clone_url / fork_url
+    # choose where a new project starts from.
+    new_project: bool = False
+    clone_url: str | None = None
+    fork_url: str | None = None
 
 
 class ScopeUpdateRequest(BaseModel):
@@ -85,10 +90,32 @@ class ScopeInfo(BaseModel):
 
 
 
+# ---------------------------------------------------------------------------
+# Projects (the scope_search project listing)
+# ---------------------------------------------------------------------------
+
+class ProjectScopeCounts(BaseModel):
+    active: int = 0
+    completed: int = 0
+    deleted: int = 0
+
+
+class ProjectListInfo(BaseModel):
+    name: str
+    scope_counts: ProjectScopeCounts
+
+
+class ProjectListResponse(BaseModel):
+    projects: list[ProjectListInfo]
+    degraded: dict | None = None
+
+
 class ScopeListResponse(BaseModel):
     scopes: list[ScopeInfo]
     total: int
     degraded: dict | None = None
+    # Present only when the search named no project.
+    projects: list[ProjectListInfo] | None = None
 
 
 class ScopeActionResponse(BaseModel):
@@ -124,23 +151,3 @@ class ScopeSubscriberInfo(BaseModel):
     guest_ref: str         # 'project/scope' or 'user:<name>'
     display_name: str
     joined_at: str
-
-
-# ---------------------------------------------------------------------------
-# Projects (control-center surface — list)
-# ---------------------------------------------------------------------------
-
-class ProjectScopeCounts(BaseModel):
-    active: int = 0
-    completed: int = 0
-    deleted: int = 0
-
-
-class ProjectListInfo(BaseModel):
-    name: str
-    scope_counts: ProjectScopeCounts
-
-
-class ProjectListResponse(BaseModel):
-    projects: list[ProjectListInfo]
-    degraded: dict | None = None
