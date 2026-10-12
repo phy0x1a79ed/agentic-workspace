@@ -31,42 +31,42 @@ projects/<project>/
 
 Find projects and scopes live. A list in a doc goes stale within days.
 
-- `project(verb="search")` lists every project.
+- `scope(verb="search")` with no `project` lists every project.
 - `scope(verb="search", args={project:<p>})` lists a project's scopes, branches and worktrees.
 
 ## Startup ritual
 
 Run this at session start. Run it again any time to refresh.
 
-1. Run `scope(verb="refresh", args={project:<p>, scope:<s>})`. It renders `.awm/history.md` from the database.
+1. Run `journal(verb="render", args={project:<p>, scope:<s>})`. It renders `.awm/history.md` from the journal.
 2. Read `.awm/context.md`. It states why this scope exists.
 3. Read `.awm/history.md`.
-4. Run `scope(verb="fetch", args={scope:<s>, kind:"message"})` for messages addressed to you.
-5. Run `scope(verb="goal_read", args={project:<p>, scope:<s>})` for the goal in force. Read it again before you propose a deliverable. The `goal-alignment` skill sets or revises it.
+4. Run `journal(verb="fetch", args={scope:<s>, kind:"message"})` for messages addressed to you.
+5. Run `journal(verb="goal_read", args={project:<p>, scope:<s>})` for the goal in force. Read it again before you propose a deliverable. The `goal-alignment` skill sets or revises it.
 
-Never edit `.awm/history.md` by hand. Use the `scope` verbs.
+Never edit `.awm/history.md` by hand. Use the `journal` verbs.
 
 ## MCP tools
 
-The `awm-mcp` server is registered in `<workspace>/.mcp.json`. Its surface comes live from the running feature services, collapsed to one tool per domain: `scope`, `project`, `cx`, `services`, and others. Call each with `{ "verb": "<name>", "args": { … } }`.
+The `awm-mcp` server is registered in `<workspace>/.mcp.json`. Its surface comes live from the running feature services: sixteen top-level tools, such as `scope`, `journal`, `search` and `awm`. Call each with `{ "verb": "<name>", "args": { … } }`.
 
 Discover the catalog. Do not memorize it.
 
-1. The domain tools your client exposes are the core catalog. A client that defers schemas shows a domain as a bare name. Load it with `ToolSearch`, or run `services(verb="list")`.
-2. Reach every other domain with `more(domain="<domain>", verb="<name>", args={…})`. Run `more()` with no domain to list them.
-3. Call a domain with `verb="describe"` for its verbs and parameter schemas. Add `args={"verb":"<name>"}` for one verb.
-4. Add the optional `peer` key to run a verb on another node. `providersOf(tool="<domain>")` lists the valid values, which are domestic nodes only. A wrong `peer` is refused, never run locally.
+1. Run `awm(verb="describe")`. One call returns the most used verbs, each with a summary and its required arguments, and one line for every tool. A client that defers schemas shows a tool as a bare name. Load it with `ToolSearch` first.
+2. Run `<tool>(verb="describe")` for all of that tool's verbs and parameter schemas. Add `args={"verbs":["<name>"]}` for some of them. An unknown argument to a verb returns an error that carries its schema.
+3. Add the optional `peer` key to run a verb on another node. Its enum lists the valid nodes and its description names the default. A tool that one node serves routes there with no `peer`. A wrong `peer` is refused, never run locally.
 
 Check for a tool before you hand a task to the user. Sending a message, approving a login, capturing audio and restarting a VPN each look like human jobs, and each has a domain. A restricted session's mode limits which verbs it may call, and the server rejects the rest.
 
-Four domains change how you work:
+Five tools change how you work:
 
+- `search` — one ranked search over journals, precedence decisions, papers and other archives, on this node and its peers. Query it before you ask what the swarm already knows. Read a whole hit with `get`.
 - `graphify` — an AST graph of the awm source tree. Query it before you start an Explore agent on "where is X, what calls Y, what does changing Z affect" in awm. It indexes the deployed tree. Use Explore for uncommitted code and for other projects.
 - `precedence` — an archive of past user decisions on preferences. Search it before you ask the user a preference question. Add to it when the user makes or overrides such a decision.
 - `reflection` — acts on your own session. `reflection(verb="compact", args={followup:"<next task>"})` queues a compaction after this turn, then sends the follow-up prompt. A full context is a seam to cross, not a reason to stop.
-- `reporting` — keeps your task on Tony's Swarm board. When you need Tony in a background session, call `request_human_user` instead of `AskUserQuestion`, because nobody watches that terminal.
+- `operations` — keeps your task on Tony's Swarm board. When you need Tony in a background session, call `operations(verb="request_human", args={kind:"blocked", reason:<why>})` instead of `AskUserQuestion`, because nobody watches that terminal. Call it with `kind:"review"` when the work is ready to look at.
 
-The CLI (`awm <domain> <verb>`) and HTTP (`POST /invoke`) surfaces keep one command per verb. Only the MCP surface collapses.
+The CLI (`awm <tool> <verb>`) and HTTP (`POST /invoke`) surfaces keep one command per verb, hidden verbs included. Only the MCP surface collapses.
 
 ## Git
 
@@ -84,7 +84,7 @@ A commit versions the code and the data it was built against together. A DVC-bac
 - To take a sibling's data, merge their branch. A post-merge hook checks the files out.
 - Write outputs to `data/`. Never modify files under a project's `raw/`.
 - **WARNING** Materialised files are read-only hardlinks into the shared cache. An in-place edit corrupts that object for every scope and every commit that pins it. Write a new file, or run `dvc unprotect <path>` first.
-- **WARNING** Never run a bare `dvc gc`. It collects against one worktree's view of a cache the whole workspace shares. Use `scope(verb="data_gc")`, which makes you name what to keep.
+- **WARNING** Never run a bare `dvc gc`. It collects against one worktree's view of a cache the whole workspace shares. Use `dvc(verb="gc")`, which makes you name what to keep.
 
 A project without a tracked `.dvc/config` keeps a shared, unversioned `.awm/data` symlink to `data/<project>/`. `PROTOCOLS.md` § *Data* covers the rest.
 
