@@ -45,6 +45,7 @@ class SwarmBoard:
     def __init__(self, call: Call | None = None) -> None:
         self._raw = call or _gateway
         self._layout: Layout | None = None
+        self._awm: str | None = None
 
     async def _call(self, fn: str, **args: Any) -> dict:
         try:
@@ -99,11 +100,14 @@ class SwarmBoard:
         return {"board": lay.board, "ledger": lay.ledger, "columns": lay.columns, "created": not hits}
 
     async def _awm_note(self) -> str:
+        if self._awm:
+            return self._awm
         hits = (await self._call("note_search", query="note.title = AWM", limit=10)).get("results") or []
         roots = [h["noteId"] for h in hits if "root" in (h.get("parentNoteIds") or [])]
         if len(roots) != 1:
             raise BoardError(f"{len(roots)} AWM notes sit under the root; pass parent")
-        return roots[0]
+        self._awm = roots[0]
+        return self._awm
 
     async def move(self, note_id: str, column: str | None = None, *, into: str | None = None) -> bool:
         """Show the card under ``column`` (or the note ``into``) and under no other swarm column.
@@ -150,3 +154,8 @@ class SwarmBoard:
 
     async def title_of(self, note_id: str) -> str:
         return (await self._call("note_get", note_id=note_id, content=False)).get("title") or ""
+
+    async def post_ops(self, kind: str, node: str, title: str, body: str) -> str:
+        """Upsert the one managed note for this kind and node in the private Ops book under AWM."""
+        ops = await self._child(await self._awm_note(), "Ops", type="book")
+        return await self.upsert_markdown(ops, f"{kind} - {node}", f"## {title}\n\n{body}\n")

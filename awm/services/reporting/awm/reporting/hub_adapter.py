@@ -19,6 +19,7 @@ import asyncio
 import logging
 from typing import Any
 
+from awm.config import caller_peer, peer_relation
 from awm.gatewayclient import ServiceAdapter, spawn_supervised
 
 from awm.reporting import DOMAIN, STATUSES, config
@@ -60,7 +61,9 @@ API_MANIFEST: dict[str, Any] = {
             "effect": "read",
             "description": (
                 "Whether the front door is enabled on this node and why not, "
-                "the node's role and swarm, the board cursor, the card counts "
+                "the node's role and swarm, `tasks` (this node's open tasks, how "
+                "many wait for the Swarm board, and the journal subscription), "
+                "the board cursor, the card counts "
                 "by status, and whether the representative and the secretary "
                 "are alive. `sessions` gives each one's `alive`, `state` "
                 "(running, waiting, blocked, failed, exited, missing, unknown) "
@@ -220,6 +223,24 @@ API_MANIFEST: dict[str, Any] = {
             "params": [_param("summary", "string", "What was done and where to look, in a few sentences.", True)],
         },
         {
+            "name": "ops_post",
+            "tool": "reporting_ops_post",
+            "effect": "write",
+            "description": (
+                "Write an operations notice, such as a login password minted on "
+                "a node, to the private Ops book under the AWM note. One note "
+                "holds the latest notice per kind and node, and a new one "
+                "replaces it. For services and domestic peers; agents have no "
+                "use for it."
+            ),
+            "params": [
+                _param("kind", "string", "The notice kind, such as `password`.", True),
+                _param("node", "string", "The node the notice is about.", True),
+                _param("title", "string", "A one-line heading.", True),
+                _param("body", "string", "The notice text.", True),
+            ],
+        },
+        {
             "name": "board_ensure",
             "tool": "reporting_board_ensure",
             "effect": "write",
@@ -315,6 +336,8 @@ async def status(args: dict, as_: str | None = None) -> dict:
         "secretary_alive": None,
         "sessions": None,
     }
+    if RUNTIME is not None:
+        out["tasks"] = await asyncio.to_thread(_task_state, RUNTIME)
     if why is not None or RUNTIME is None:
         return out
     out["cursor"] = RUNTIME.queue.cursor()
@@ -326,6 +349,13 @@ async def status(args: dict, as_: str | None = None) -> dict:
     out["board"] = _board_state(RUNTIME)
     out["reconcile"] = RUNTIME.loop.status()
     return out
+
+
+def _task_state(runtime: Any) -> dict:
+    sub = runtime.tasks.subscription
+    open_tasks = runtime.tasks.ledger.open(runtime.tasks.node)
+    return {"open": len(open_tasks), "unsynced": sum(1 for t in open_tasks if t["dirty"]),
+            "journals": sub.health() if sub else None}
 
 
 def _board_state(runtime: Any) -> str | None:
@@ -412,6 +442,24 @@ def _task_verb(name: str) -> Any:
     return verb
 
 
+async def ops_post(args: dict, as_: str | None = None) -> dict:
+    if as_ is not None:
+        node = caller_peer(as_)
+        if node is None or peer_relation(node) != "domestic":
+            return {"ok": False, "error": "ops_post takes only this node's services and domestic peers"}
+    if RUNTIME is None:
+        return {"ok": False, "error": "reporting is not running on this node"}
+    fields = {k: args.get(k) for k in ("kind", "node", "title", "body")}
+    if not all(isinstance(v, str) and v.strip() for v in fields.values()):
+        return {"ok": False, "error": "kind, node, title and body are required"}
+    if not all(len(fields[k]) <= MAX_AGENT_LEN and fields[k].isprintable() for k in ("kind", "node", "title")):
+        return {"ok": False, "error": "kind, node and title must be short printable text"}
+    try:
+        return {"ok": True, "note_id": await RUNTIME.board.post_ops(**fields)}
+    except BoardError as exc:
+        return {"ok": False, "error": str(exc)}
+
+
 HANDLERS: dict[str, Any] = {
     **{name: _task_verb(name) for name in TASK_VERBS},
     "status": status,
@@ -419,6 +467,7 @@ HANDLERS: dict[str, Any] = {
     "card_get": get,
     "card_assign": assign,
     "board_ensure": board_ensure,
+    "ops_post": ops_post,
 }
 
 

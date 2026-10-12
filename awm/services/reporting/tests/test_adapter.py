@@ -8,6 +8,7 @@ import pytest
 
 from awm.config import verb_effect
 from awm.reporting import hub_adapter
+from awm.reporting.ledger import Ledger
 from awm.reporting.reconcile import Loop
 
 from stubs import FakeCx, make_card, personas, session_row
@@ -15,7 +16,7 @@ from stubs import FakeCx, make_card, personas, session_row
 pytestmark = [pytest.mark.unit, pytest.mark.smoke]
 
 EFFECTS = {"status": "read", "card_list": "read", "card_get": "read", "card_assign": "write",
-           "board_ensure": "write", **dict.fromkeys(hub_adapter.TASK_VERBS, "write")}
+           "board_ensure": "write", "ops_post": "write", **dict.fromkeys(hub_adapter.TASK_VERBS, "write")}
 
 
 def functions() -> dict[str, dict]:
@@ -27,6 +28,7 @@ def runtime(monkeypatch, queue):
     cx = FakeCx([session_row("representative", job="r1")])
     queue.record_session("representative", "r1")
     rt = SimpleNamespace(queue=queue, loop=Loop(queue, cx=cx, personas=personas()),
+                         tasks=SimpleNamespace(node="altair", subscription=None, ledger=Ledger(queue.path)),
                          subscriber=SimpleNamespace(last_error=None, attached=True),
                          board_problem=None)
     monkeypatch.setattr(hub_adapter, "RUNTIME", rt)
@@ -196,3 +198,51 @@ async def test_board_ensure_is_an_operator_verb_and_reports_a_missing_awm_note(m
     out = await hub_adapter.board_ensure({})
     assert out["ok"] is True and set(out["columns"]) == {
         "Proposed", "Planned", "Active", "Blocked", "Pending review"}
+
+
+async def test_ops_post_keeps_one_managed_note_per_kind_and_node_under_a_private_ops_book(monkeypatch):
+    from awm.reporting.swarmboard import SwarmBoard
+    from stubs import FakeTrilium
+
+    tri = FakeTrilium()
+    awm = tri.add("AWM", type="book")
+    monkeypatch.setattr(hub_adapter, "RUNTIME", SimpleNamespace(board=SwarmBoard(tri)))
+    args = {"kind": "password", "node": "altair", "title": "Login password", "body": "hunter2"}
+    first = await hub_adapter.ops_post(args)
+    again = await hub_adapter.ops_post({**args, "body": "correct horse"})
+    other = await hub_adapter.ops_post({**args, "node": "capella"})
+    assert first["note_id"] == again["note_id"] != other["note_id"]
+    note = tri.notes[first["note_id"]]
+    assert note["title"] == "password - altair" and "correct horse" in note["content"] and "hunter2" not in note["content"]
+    assert set(note["labels"]) == {"agentManaged", "readOnly"}
+    ops = tri.parents(first["note_id"])[0]
+    assert tri.notes[ops]["title"] == "Ops" and tri.parents(ops) == [awm] and tri.notes[ops]["labels"] == {}
+
+
+async def test_ops_post_refuses_bad_arguments_and_foreign_or_edge_callers(monkeypatch):
+    from awm.reporting.swarmboard import SwarmBoard
+    from stubs import FakeTrilium
+
+    tri = FakeTrilium()
+    tri.add("AWM", type="book")
+    monkeypatch.setattr(hub_adapter, "RUNTIME", SimpleNamespace(board=SwarmBoard(tri)))
+    good = {"kind": "password", "node": "altair", "title": "t", "body": "b"}
+    assert (await hub_adapter.ops_post({**good, "body": " "}))["ok"] is False
+    assert (await hub_adapter.ops_post({**good, "kind": "two\nlines"}))["ok"] is False
+    assert (await hub_adapter.ops_post(good, as_="user:tony"))["ok"] is False
+    monkeypatch.setattr(hub_adapter, "caller_peer", lambda as_: "mira")
+    monkeypatch.setattr(hub_adapter, "peer_relation", lambda node: "foreign")
+    assert (await hub_adapter.ops_post(good, as_="peer:mira"))["ok"] is False
+    monkeypatch.setattr(hub_adapter, "peer_relation", lambda node: "domestic")
+    assert (await hub_adapter.ops_post(good, as_="peer:mira"))["ok"] is True
+
+
+async def test_status_reports_the_task_part_even_with_the_front_door_off(monkeypatch, queue):
+    monkeypatch.setenv("AWM_FRONT_DOOR", "0")
+    ledger = Ledger(queue.path)
+    task, _ = ledger.ensure("altair", "j", "bg")
+    ledger.update(task["id"], dirty=1)
+    monkeypatch.setattr(hub_adapter, "RUNTIME", SimpleNamespace(
+        queue=queue, tasks=SimpleNamespace(node="altair", subscription=None, ledger=ledger)))
+    out = await hub_adapter.status({})
+    assert out["enabled"] is False and out["tasks"] == {"open": 1, "unsynced": 1, "journals": None}
