@@ -33,8 +33,8 @@ def _projects_dir() -> Path:
     return _config.PROJECTS_DIR
 
 
-def project_worktrees(project: str) -> list[Path]:
-    """Every worktree of a project's bare repo, at whatever depth.
+def _worktree_entries(project: str) -> list[tuple[Path, str | None]]:
+    """Every worktree of a project's bare repo, with its checked-out branch.
 
     Enumerated from git, not by globbing: a nested scope such as ``fabfos/dev``
     sits two levels down, and a worktree missing from this list is a worktree
@@ -49,23 +49,54 @@ def project_worktrees(project: str) -> list[Path]:
         raise RuntimeError(
             f"Could not enumerate worktrees of '{project}': {(r.stderr or '').strip()}"
         )
-    out: list[Path] = []
+    out: list[tuple[Path, str | None]] = []
     path: Path | None = None
+    branch: str | None = None
     for line in r.stdout.splitlines():
         if line.startswith("worktree "):
-            path = Path(line[len("worktree "):])
+            path, branch = Path(line[len("worktree "):]), None
+        elif line.startswith("branch "):
+            branch = line[len("branch "):].removeprefix("refs/heads/")
         elif line.strip() == "bare":
             path = None
         elif not line.strip() and path is not None:
-            out.append(path)
+            out.append((path, branch))
             path = None
     if path is not None:
-        out.append(path)
+        out.append((path, branch))
     return out
 
 
+def project_worktrees(project: str) -> list[Path]:
+    """Every worktree of a project's bare repo, at whatever depth."""
+    return [path for path, _ in _worktree_entries(project)]
+
+
 def _scope_worktree(project: str, scope: str) -> Path:
-    return _projects_dir() / project / scope
+    """The scope's worktree, confirmed against the bare repo's own worktree list.
+
+    The path comes from the workspace layout; git is the authority on whether
+    it is a worktree of this project. Anything else raises naming the path,
+    because acting on a wrong directory reads as "this scope has no data".
+    """
+    derived = _projects_dir() / project / scope
+    if not derived.is_dir():
+        raise FileNotFoundError(
+            f"No worktree directory for scope '{project}/{scope}' at {derived}")
+    registered = {path.resolve(): branch for path, branch in _worktree_entries(project)}
+    if derived.resolve() not in registered:
+        raise ValueError(
+            f"{derived} is not a worktree of project '{project}''s bare repo "
+            f"(registered: {sorted(str(p) for p in registered)})")
+    if registered[derived.resolve()] is None:
+        raise ValueError(
+            f"{derived} has no branch checked out (detached HEAD), so it is not "
+            f"a scope worktree")
+    return derived
+
+
+def _unresolved_worktrees(worktrees: list[Path]) -> list[str]:
+    return [str(wt) for wt in worktrees if not wt.is_dir() or not (wt / ".git").exists()]
 
 
 def _dvc_wired_projects() -> set[str]:
@@ -129,8 +160,16 @@ def gc(projects: list[str], dry_run: bool = True,
     listed: list[data_dvc.GcProject] = []
     for proj in projects:
         _check_name(proj, "project name")
+        worktrees = sorted(project_worktrees(proj))
+        unresolved = _unresolved_worktrees(worktrees)
+        if unresolved:
+            return {"result": "refused", "detail":
+                    f"project '{proj}' has worktrees that cannot be read: "
+                    f"{unresolved}. Their pins would fall out of the keep-set and "
+                    f"their objects would be collected. Run `scope heal` or "
+                    f"`git worktree prune` on the project, then retry."}
         listed.append(data_dvc.GcProject(
-            proj, _projects_dir() / proj / ".bare", sorted(project_worktrees(proj))))
+            proj, _projects_dir() / proj / ".bare", worktrees))
     for proj in exclude or []:
         _check_name(proj, "project name")
     return data_dvc.collect_garbage(

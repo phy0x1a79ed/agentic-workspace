@@ -91,3 +91,40 @@ def test_scope_status_of_a_plain_nested_scope_reports_missing(project):
 
 def test_gc_with_nothing_listed_is_refused_not_run(project):
     assert scopedata.gc([])["result"] == "refused"
+
+
+def test_a_scope_with_no_worktree_directory_raises_naming_the_path(project):
+    with pytest.raises(FileNotFoundError, match="projects/p/ghost"):
+        scopedata.scope_status("p", "ghost")
+    with pytest.raises(FileNotFoundError, match="projects/p/ghost"):
+        scopedata.mount("p", "ghost", ["data/x"])
+
+
+def test_a_directory_that_is_not_a_registered_worktree_raises(project):
+    (project / "stray").mkdir()
+    with pytest.raises(ValueError, match="stray"):
+        scopedata.scope_status("p", "stray")
+    assert not (project / "stray" / ".awm").exists()
+
+
+def test_mount_does_not_write_into_an_unregistered_directory(project):
+    (project / "stray").mkdir()
+    with pytest.raises(ValueError, match="stray"):
+        scopedata.mount("p", "stray", ["data/x"])
+    assert not (project / "stray" / ".awm").exists()
+
+
+def test_a_detached_worktree_is_not_taken_for_a_scope(project):
+    _git("-C", str(project / "a"), "checkout", "-q", "--detach")
+    with pytest.raises(ValueError, match="detached"):
+        scopedata.scope_status("p", "a")
+
+
+def test_gc_refuses_the_whole_collection_when_a_worktree_is_gone(project):
+    import shutil
+
+    shutil.rmtree(project / "fab" / "dev")
+    rep = scopedata.gc(["p"])
+    assert rep["result"] == "refused"
+    assert str(project / "fab" / "dev") in rep["detail"]
+    assert "deleted_anything" not in rep
