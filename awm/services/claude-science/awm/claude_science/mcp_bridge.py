@@ -71,12 +71,12 @@ PROTOCOL_VERSION = "2025-06-18"
 #:   services / gateway control — can stop the very service serving this
 #:   compute                    — schedules jobs on shared machines
 DEFAULT_ALLOWLIST: dict[str, tuple[str, ...]] = {
-    "scope": ("search", "resolve", "data_status", "fetch"),
-    "project": ("search",),
-    "notes": ("list", "get", "search"),
+    "scope": ("search", "resolve"),
+    "journal": ("fetch",),
+    "search": ("query", "get"),
     "drawio": ("list", "info", "read", "cells", "export", "url", "view_url"),
     "graphify": ("find", "refs", "query", "path", "affected"),
-    "dvc": ("coverage",),
+    "dvc": ("coverage", "scope_status"),
     "precedence": ("search",),
 }
 

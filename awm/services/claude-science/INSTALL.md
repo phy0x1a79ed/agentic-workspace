@@ -108,12 +108,65 @@ a node that deploys the tree without running the service still mounts the panel
 — and it will be dead, because the page calls the local `/svc/claude-science`
 with no peer selector.
 
-**The verb surface is `science`, not `claude-science`.** The gateway folds the
-MCP surface by splitting a projected tool name on its *first* underscore, so
-`claude_science_status` would land as domain `claude`, verb `science_status` —
-the service's name cut in half. The manifest therefore projects `science_*`:
-`awm science status`, `mcp__awm__science {verb:"status"}`. The service, the
-prefix and the folder keep the full name.
+**The verb surface is `science`, not `claude-science`.** `service.toml` sets
+`tool = "science"`, and every manifest entry publishes a `tool` of
+`science_<verb>` while its `name` stays the short service-internal handle
+(`/svc/claude-science/fn/status`): the gateway folds a published name by
+splitting on its *first* underscore, so `claude_science_status` would land as
+domain `claude`. The
+surface is `awm science status`, `mcp__awm__science {verb:"status"}`. The
+service, the prefix and the folder keep the full name.
+
+Five verbs are daemon plumbing and are off MCP (`surfaces: ["cli", "http"]`):
+`start`, `stop`, `restart`, `logs` and `update_check`. They still answer on the
+CLI and over HTTP. An agent sees `status`, `url`, `signin_url`, `connector`,
+`grants`, `message` and `read`. The service is `tier = "on"`.
+
+## Talking to a conversation
+
+`science message` posts a user turn into a running conversation and
+`science read` returns its transcript from a cursor. awm initiates both: the
+workbench's sandbox cannot reach awm (see below), so nothing can push replies
+back, and a caller polls with `read`.
+
+A conversation is a *root frame*. Both verbs name one by id, id prefix, name or
+unique part of a name, and default to the most recently updated visible
+conversation. An ambiguous reference is refused with its candidates.
+
+```
+awm science message --text "rerun it with the stricter filter" --conversation "pipeline"
+# -> {"conversation": {...}, "result": {"status": "accepted"}, "cursor": 68}
+awm science read --conversation "pipeline" --since 68
+# -> {"messages": [{"index": 68, "role": "user", ...}, ...], "cursor": 71,
+#     "conversation": {"status": "processing"}, "more": false}
+```
+
+`cursor` is a position in the append-only transcript. `message` returns the
+length before the send, so a read from it yields the sent turn and what follows.
+`conversation.status` of `processing` means a reply is still coming. A read with
+no `since` returns the tail. Messages with no text (tool results, tool-only
+turns) are dropped unless `include_tools=true`; the cursor still counts them.
+
+The routes were read out of the 0.1.x binary and authenticate as the owner
+bearer from `api.py`. Reading was checked with live GETs; posting was not.
+
+| Method | Path | Auth | Used for | Checked live |
+|---|---|---|---|---|
+| GET | `/api/frames?root_only=true&limit=N` | owner bearer | list conversations, newest `updated_at` first | yes |
+| GET | `/api/frames/:id?shallow=true` | owner bearer | a conversation's `status` and name | yes |
+| GET | `/api/frames/:id/messages?from=I&limit=N` | owner bearer | transcript page, with `from` and `total` | yes |
+| POST | `/api/frames/:id/message` | owner bearer | send a turn: `{"input_data": {"request": "<text>"}}` | no |
+
+The transcript page counts from 0; `from` past the end clamps to `total`, and an
+omitted `from` with a `limit` returns the tail. The post route queues the turn
+when the frame is `processing`, dispatches it when `completed`, and answers 4xx
+with a `detail` when the frame is awaiting an approval or answer
+(`awaiting_user_response`, `awaiting_plan_approval`), `cancelled` or `failed`.
+Those stay the user's to clear in the workbench. The body shape comes from the
+handler in the binary: `input_data` keys that start with an underscore are
+dropped, so there is no idempotency key, and a retried `message` sends twice.
+Re-check the post against a scratch conversation on a new build before relying
+on it.
 
 ## Install
 
@@ -282,7 +335,7 @@ call `ssh`, `compute`, `social` and gateway control, and the mode gate for
 `cx`-started sessions documents itself as *not* a trust boundary. So the bridge ships an
 explicit `{domain: verbs}` list, enforced on `tools/call` and not merely on
 `tools/list` (hiding a tool is not refusing it). It defaults to read/query verbs
-of `scope`, `project`, `notes`, `drawio`, `graphify`, `dvc`,
+of `scope`, `journal`, `search`, `drawio`, `graphify`, `dvc` and
 `precedence`. Widen it in `CLAUDE_SCIENCE_MCP_ALLOW`, deliberately.
 
 ## Host file access

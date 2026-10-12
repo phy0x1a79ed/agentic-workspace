@@ -35,7 +35,7 @@ from typing import Any
 
 from awm.gatewayclient import ServiceAdapter, spawn_supervised
 
-from awm.claude_science import api, daemon, front, mcp_bridge
+from awm.claude_science import api, conversations, daemon, front, mcp_bridge
 
 log = logging.getLogger("awm.claude_science.hub_adapter")
 
@@ -45,19 +45,18 @@ SUPERVISOR = daemon.Supervisor(
 )
 
 
-#: Every function carries an explicit ``tool`` name under a ``science_`` prefix,
-#: which is what decides the domain this service appears as: the gateway folds
-#: the MCP surface by splitting the projected name on its **first** underscore.
-#: The obvious ``claude_science_status`` therefore lands as domain ``claude`` /
-#: verb ``science_status`` — one token, or the service's name gets cut in half.
-#: So the surface is ``awm science status`` and ``mcp__awm__science
-#: {verb:"status"}``, while the internal ``name`` stays short for RPC dispatch.
+#: ``name`` is the service-internal handle (``/svc/claude-science/fn/<name>``);
+#: ``tool`` is the published name, ``science_<verb>``. The service is
+#: ``claude-science`` but the tool is ``science``: the first-underscore fold
+#: would otherwise cut the service name in half (``claude_science_status`` ->
+#: domain ``claude``). Daemon-lifecycle verbs are hidden from MCP with
+#: ``surfaces``.
 API_MANIFEST: dict[str, Any] = {
     "functions": [
         {
             "name": "status",
-            "effect": "read",
             "tool": "science_status",
+            "effect": "read",
             "description": (
                 "Report the Claude Science workbench: whether the daemon is "
                 "running and at what pid/version/port, whether this service "
@@ -70,8 +69,9 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "start",
-            "effect": "write",
             "tool": "science_start",
+            "effect": "write",
+            "surfaces": ["cli", "http"],
             "description": (
                 "Adopt the running workbench daemon, or launch one detached if "
                 "none is running. Idempotent. The daemon deliberately outlives "
@@ -82,8 +82,9 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "stop",
-            "effect": "write",
             "tool": "science_stop",
+            "effect": "write",
+            "surfaces": ["cli", "http"],
             "description": (
                 "Stop the workbench daemon through its own socket, ending live "
                 "conversations. Idempotent. Stopping the *service* does not do "
@@ -94,8 +95,9 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "restart",
-            "effect": "write",
             "tool": "science_restart",
+            "effect": "write",
+            "surfaces": ["cli", "http"],
             "description": (
                 "Stop the workbench daemon and start it again — e.g. to pick up "
                 "an update that has been staged. Interrupts live conversations."
@@ -105,8 +107,9 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "logs",
-            "effect": "read",
             "tool": "science_logs",
+            "effect": "read",
+            "surfaces": ["cli", "http"],
             "description": "Tail the workbench daemon's log.",
             "params": [
                 {"name": "tail", "type": "number",
@@ -115,8 +118,8 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "url",
-            "effect": "secret",
             "tool": "science_url",
+            "effect": "secret",
             "description": (
                 "Mint a fresh single-use sign-in link for the workbench, valid "
                 "about three minutes. The loopback form the binary prints — "
@@ -127,8 +130,8 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "signin_url",
-            "effect": "secret",
             "tool": "science_signin_url",
+            "effect": "secret",
             "description": (
                 "The mesh URL that signs a browser into the workbench in one "
                 "click. Behind awm's edge session, so it is only usable by "
@@ -138,8 +141,8 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "connector",
-            "effect": "write",
             "tool": "science_connector",
+            "effect": "write",
             "description": (
                 "The workbench's local (stdio) MCP servers. With no arguments, "
                 "list them and say whether each one actually connects. Given a "
@@ -170,8 +173,8 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "grants",
-            "effect": "write",
             "tool": "science_grants",
+            "effect": "write",
             "description": (
                 "The host directories Claude may read or write inside the "
                 "workbench's sandbox. With no arguments, list them. Given a "
@@ -187,9 +190,57 @@ API_MANIFEST: dict[str, Any] = {
             "timeout": 120,
         },
         {
-            "name": "update_check",
+            "name": "message",
+            "tool": "science_message",
+            "effect": "write",
+            "description": (
+                "Send a message into a running Claude Science conversation, as "
+                "the user's next turn. Names a conversation by id, id prefix or "
+                "name; with none, the most recently updated one. A busy "
+                "conversation queues it. Refused while the conversation awaits "
+                "an approval or an answer. Returns a cursor: read from it to "
+                "get the reply."
+            ),
+            "params": [
+                {"name": "text", "type": "string", "required": True,
+                 "description": "The message to send."},
+                {"name": "conversation", "type": "string",
+                 "description": "Conversation id, id prefix or name. Omit for "
+                                "the latest."},
+            ],
+            "timeout": 120,
+        },
+        {
+            "name": "read",
+            "tool": "science_read",
             "effect": "read",
+            "description": (
+                "Read a Claude Science conversation's transcript from a cursor. "
+                "Returns the messages with text, the conversation's status "
+                "('processing' means a reply is still coming) and the next "
+                "cursor to pass as since. With no since, returns the tail."
+            ),
+            "params": [
+                {"name": "conversation", "type": "string",
+                 "description": "Conversation id, id prefix or name. Omit for "
+                                "the latest."},
+                {"name": "since", "type": "number",
+                 "description": "Cursor from a previous read: the index of the "
+                                "first message to return. Omit for the tail."},
+                {"name": "limit", "type": "number",
+                 "description": "Most messages to fetch (default 20 for the "
+                                "tail, 200 from a cursor)."},
+                {"name": "include_tools", "type": "boolean",
+                 "description": "Keep messages that carry no text, such as "
+                                "tool results. Default false."},
+            ],
+            "timeout": 120,
+        },
+        {
+            "name": "update_check",
             "tool": "science_update_check",
+            "effect": "read",
+            "surfaces": ["cli", "http"],
             "description": (
                 "Ask the binary whether a newer build is available. Reports "
                 "only; installing is a deliberate act (`claude-science update`)."
@@ -307,6 +358,40 @@ async def _h_grants(args: dict) -> dict:
     return await asyncio.to_thread(_grants, args)
 
 
+def _message(args: dict) -> dict:
+    """Post into a conversation. Runs on a worker thread."""
+    text = (args.get("text") or "").strip()
+    if not text:
+        raise ValueError("text is required")
+    with api.connect(SUPERVISOR.login_url()) as owner:
+        target = conversations.resolve_conversation(
+            owner, args.get("conversation"))
+        sent = conversations.post_message(owner, target["id"], text)
+        return {"conversation": conversations.summary(target), **sent}
+
+
+def _read(args: dict) -> dict:
+    """Read a conversation's transcript. Runs on a worker thread."""
+    since = args.get("since")
+    limit = args.get("limit")
+    with api.connect(SUPERVISOR.login_url()) as owner:
+        target = conversations.resolve_conversation(
+            owner, args.get("conversation"))
+        return conversations.read_messages(
+            owner, target["id"],
+            since=None if since is None else int(since),
+            limit=None if limit is None else int(limit),
+            include_tools=bool(args.get("include_tools")))
+
+
+async def _h_message(args: dict) -> dict:
+    return await asyncio.to_thread(_message, args)
+
+
+async def _h_read(args: dict) -> dict:
+    return await asyncio.to_thread(_read, args)
+
+
 async def _h_update_check(args: dict) -> dict:
     return await asyncio.to_thread(SUPERVISOR.update_check)
 
@@ -321,6 +406,8 @@ HANDLERS = {
     "signin_url": _h_signin_url,
     "connector": _h_connector,
     "grants": _h_grants,
+    "message": _h_message,
+    "read": _h_read,
     "update_check": _h_update_check,
 }
 
