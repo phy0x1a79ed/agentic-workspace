@@ -9,6 +9,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent))
 
+from awm.reporting import reconcile  # noqa: E402
 from awm.reporting.store import Queue  # noqa: E402
 
 
@@ -23,6 +24,25 @@ def door_env(monkeypatch, tmp_path):
     monkeypatch.setenv("AWM_CX_PROJECTS", str(tmp_path / "projects"))
     for name in ("AWM_BOARD_URL", "AWM_BOARD_TOKEN"):
         monkeypatch.delenv(name, raising=False)
+
+
+class FakePins:
+    def __init__(self) -> None:
+        self.pinned: list[str] = []
+        self.released: list[str] = []
+
+    async def pin(self, job: str) -> None:
+        self.pinned.append(job)
+
+    async def release(self, job: str) -> None:
+        self.released.append(job)
+
+
+@pytest.fixture(autouse=True)
+def no_live_claude(monkeypatch, tmp_path):
+    """Nothing here may pin, remove or read a real Claude Code job."""
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude"))
+    monkeypatch.setattr(reconcile, "Pins", FakePins)
 
 
 @pytest.fixture

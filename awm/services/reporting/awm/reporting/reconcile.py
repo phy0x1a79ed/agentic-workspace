@@ -42,6 +42,7 @@ from typing import Any, Awaitable, Callable
 from awm import gatewayclient
 
 from awm.reporting import config, sessions
+from awm.reporting.pins import Pins
 from awm.reporting.store import Queue
 
 log = logging.getLogger("awm.reporting.reconcile")
@@ -60,13 +61,15 @@ class Loop:
                  interval_s: float | None = None,
                  on_started: Callable[[str], None] | None = None,
                  on_rows: Callable[[list[dict]], Awaitable[None]] | None = None,
-                 scope_call: Callable[..., Any] | None = None) -> None:
+                 scope_call: Callable[..., Any] | None = None,
+                 pins: Any = None) -> None:
         self.queue = queue
         self.cx = cx or sessions.Cx()
         self._on_started = on_started or (lambda role: None)
         self._on_rows = on_rows
         self._scope_call = scope_call or gatewayclient.call
         self._personas = personas
+        self._pins = pins or Pins()
         self._interval_s = interval_s
         self._lock_fd: int | None = None
         self._last_tick: float | None = None
@@ -194,7 +197,7 @@ class Loop:
             self._note(f"spec:{role}", f"{role}: {problem}")
             return
         jobs = self.queue.session_jobs(role)
-        adopted = self._adopt(role, spec, rows, jobs)
+        adopted = await self._adopt(role, spec, rows, jobs)
         if adopted:
             jobs = self.queue.session_jobs(role)
         for stranger in sessions.strangers(rows, spec["mode"], jobs):
@@ -235,6 +238,8 @@ class Loop:
             self.jobs[role] = reply.get("job") or ""
             if reply.get("job"):
                 self.queue.record_session(role, reply["job"])
+                await self._pins.pin(reply["job"])
+            await self._retire(role, rows, reply.get("job"), stopped)
             log.info("reporting: started the %s as %s", role, reply.get("job"))
             self._on_started(role)
             return
@@ -244,6 +249,13 @@ class Loop:
         self._next_try[role] = time.time() + wait
         self._note(f"start:{role}", f"{role}: cx would not start it: "
                    f"{reply.get('reason') or reply.get('error') or reply!r}")
+
+    async def _retire(self, role: str, rows: list[dict], new: str | None, stopped: str | None) -> None:
+        """Remove the sessions the new one replaces: the one just stopped and those the daemon retired."""
+        old = {r["job"] for r in rows if r.get("job") in self.queue.session_jobs(role)
+               and r.get("state") == sessions.GONE}
+        for job in (old | {stopped}) - {new, None}:
+            await self._pins.release(job)
 
     async def _stop_failed(self, role: str, health: sessions.Health) -> str | None:
         """Stop the door's failed session so a new one can start. Returns its job, or None to wait.
@@ -289,7 +301,7 @@ class Loop:
             log.info("reporting: the %s (%s) can work again", role, health.job)
             self._on_started(role)
 
-    def _adopt(self, role: str, spec: dict, rows: list[dict], jobs: set[str]) -> bool:
+    async def _adopt(self, role: str, spec: dict, rows: list[dict], jobs: set[str]) -> bool:
         """Record a session of this role that the door started but never recorded.
 
         A `cx start` that timed out or failed after the job launched leaves a
@@ -303,6 +315,7 @@ class Loop:
             if (row.get("name") == spec.get("name") and row.get("job")
                     and row.get("caller") is not None and row.get("parent") is None):
                 self.queue.record_session(role, row["job"])
+                await self._pins.pin(row["job"])
                 log.info("reporting: adopted %s as the %s; its start outlived the call", row["job"], role)
                 found = True
         if found:

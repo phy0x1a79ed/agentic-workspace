@@ -40,8 +40,8 @@ def test_nothing_that_writes_or_runs_is_available(name, spec):
 
 
 @pytest.mark.parametrize("name,spec", BOTH)
-def test_sonnet_with_remote_control_on(name, spec):
-    assert spec["model"] == "sonnet"
+def test_opus_at_medium_effort_with_remote_control_on(name, spec):
+    assert (spec["model"], spec["effort"]) == ("opus", "medium")
     assert spec["remote_control"] is True
 
 
@@ -79,8 +79,16 @@ def test_the_session_holds_an_explicit_tool_list_and_nothing_else(name, spec):
 
 
 @pytest.mark.parametrize("name,spec", BOTH)
-def test_the_session_is_restricted_with_only_the_awm_server(name, spec):
-    assert spec["restricted"] is True and spec["strict_mcp"] is True
+def test_only_the_representative_is_restricted_and_both_hold_only_the_awm_server(name, spec):
+    assert spec.get("restricted", False) is (name == "representative")
+    assert spec["strict_mcp"] is True
+
+
+def test_the_names_are_role_dash_node_and_the_secretary_passes_a_claim_on(monkeypatch):
+    monkeypatch.setenv("AWM_NODE_NAME", "capella")
+    assert personas.build_representative()["name"] == "representative - capella"
+    assert personas.build_secretary()["name"] == "secretary - capella"
+    assert 'begins "claim task <url>"' in personas.build_secretary()["prompt"]
 
 
 def test_the_representative_may_start_a_subagent_and_send_messages():
@@ -103,7 +111,7 @@ def test_model_and_effort_are_config(monkeypatch):
     monkeypatch.setenv("AWM_REPRESENTATIVE_EFFORT", "high")
     spec = personas.build_representative()
     assert (spec["model"], spec["effort"]) == ("haiku", "high")
-    assert personas.build_secretary()["model"] == "sonnet"
+    assert personas.build_secretary()["model"] == "opus"
 
 
 def test_the_representative_instructions_carry_the_rules():
