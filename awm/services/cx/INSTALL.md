@@ -21,7 +21,7 @@ Both halves go on a node together. A node with the service and no command gains
 nothing. A node with the command and no service launches cold, correctly and
 silently.
 
-    scripts/deploy-hook.sh                   # the naming hook, on every node
+    ../../scripts/deploy-hooks.sh             # every awm hook, on every node
     bash install.sh                          # the service, into the awm env
     ln -sf "$PWD/bin/cx" ~/.local/bin/cx     # the command, on PATH
     awm services enable cx                   # this service is profile-gated off
@@ -30,7 +30,7 @@ silently.
 A node running the service without it names every session it hands out
 `claimed <noun>` and never takes that name off, which reads as deliberate and is
 worse than the name it replaced. A node with the hook and no service has nothing
-named `claimed ` to act on. `scripts/deploy-hook.sh --check` reports drift and
+named `claimed ` to act on. `../../scripts/deploy-hooks.sh --check` reports drift and
 writes nothing; a second run is a no-op.
 
 `install.sh` editable-installs the `gatewayclient` and `claudedaemon` components

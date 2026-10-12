@@ -79,8 +79,8 @@ def domain_call(client, domain, verb, inner=None, *, peer=None, headers=HEAD):
 
 REP_ALLOWED = [
     ("board", "list"), ("board", "get"), ("board", "fail"), ("cx", "start"),
-    ("cx", "list"), ("reflection", "compact"), ("door", "status"), ("door", "list"),
-    ("door", "get"), ("door", "assign"), ("scope", "fetch"), ("scope", "search"),
+    ("cx", "list"), ("reflection", "compact"), ("reporting", "status"), ("reporting", "card_list"),
+    ("reporting", "card_get"), ("reporting", "card_assign"), ("scope", "fetch"), ("scope", "search"),
     ("scope", "goal_read"),
 ]
 REP_REFUSED = [
@@ -88,7 +88,7 @@ REP_REFUSED = [
     ("ssh", "connect"), ("social", "send"), ("scope", "post"), ("scope", "create"),
     ("scope", "delete"), ("scope", "goal_set"), ("board", "party_add"),
     ("board", "party_list"), ("reflection", "send"), ("reflection", "mode"),
-    ("door", "purge"), ("spawn", "start"), ("gateway", "restart"),
+    ("reporting", "ops_post"), ("spawn", "start"), ("gateway", "restart"),
     ("board", "post"), ("board", "claim"), ("board", "complete"), ("scope", "refresh"),
 ]
 
@@ -111,10 +111,10 @@ def test_representative_is_refused_everything_else(client, dispatched, modes, do
 
 
 SECRETARY_ALLOWED = [("cx", "start"), ("cx", "list"), ("cx", "stop"), ("board", "list"),
-                     ("board", "get"), ("door", "status"), ("door", "list"),
-                     ("door", "get"), ("reflection", "compact"), ("scope", "fetch")]
+                     ("board", "get"), ("reporting", "status"), ("reporting", "card_list"),
+                     ("reporting", "card_get"), ("reflection", "compact"), ("scope", "fetch")]
 SECRETARY_REFUSED = [("board", "post"), ("board", "claim"), ("board", "complete"),
-                     ("board", "fail"), ("door", "assign"), ("cx", "claim"),
+                     ("board", "fail"), ("reporting", "card_assign"), ("cx", "claim"),
                      ("scope", "post"), ("reflection", "send")]
 
 
@@ -585,7 +585,7 @@ def catalog_of_services(monkeypatch):
                            _fn("sync")]),
         _service("kb", [_fn("search", "read"), _fn("add", "write")]),
         _service("cx", [_fn("list", "read"), _fn("start", "write"), _fn("stop", "write")]),
-        _service("door", [_fn("list", "read"), _fn("assign", "write")]),
+        _service("reporting", [_fn("card_list", "read"), _fn("card_assign", "write")]),
         _service("rlm-browser", [_fn("cdp", "read", tool="rlm_browser_cdp"),
                                  _fn("open", "write", tool="rlm_browser_open")]),
         _service("reflection", [_fn("compact"), _fn("send")]),
@@ -603,8 +603,8 @@ def catalog_of_services(monkeypatch):
 DELEGATE_ALLOWED = [("reflection", "compact"), ("reflection", "whoami"), ("kb", "search"), ("cx", "list"), ("scope", "fetch"), ("board", "get"),
                     ("board", "list"), ("board", "complete"), ("board", "fail")]
 DELEGATE_REFUSED = [("scope", "post"), ("scope", "create"), ("scope", "sync"),
-                    ("kb", "add"), ("cx", "start"), ("cx", "stop"), ("door", "list"),
-                    ("door", "assign"), ("rlm", "browser_cdp"), ("rlm", "browser_open"),
+                    ("kb", "add"), ("cx", "start"), ("cx", "stop"), ("reporting", "card_list"),
+                    ("reporting", "card_assign"), ("rlm", "browser_cdp"), ("rlm", "browser_open"),
                     ("board", "claim"), ("board", "party_list"), ("board", "party_add"),
                     ("reflection", "send"), ("reflection", "mode"), ("auth", "token"),
                     ("nowhere", "verb")]
@@ -653,7 +653,7 @@ def test_the_door_judges_a_delegate_by_the_declared_effect(door, modes):
     assert door(kb, "odd").status_code == 403
     rlm = _service("rlm-browser", [_fn("cdp", "read", tool="rlm_browser_cdp")])
     assert door(rlm, "cdp").status_code == 403
-    assert door(_service("door", [_fn("list", "read")]), "list").status_code == 403
+    assert door(_service("reporting", [_fn("card_list", "read")]), "card_list").status_code == 403
 
 
 def test_the_door_refuses_a_delegate_post_it_cannot_inspect(door, modes):
