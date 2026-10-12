@@ -13,7 +13,7 @@ Follow this protocol when:
 
 - An agent hit an error following a skill (tool not found, invalid field, wrong argument shape)
 - You notice a skill references a tool or field you can't find in the code
-- Past journals tagged with this skill (a `scope_post kind=journal` with `meta.skill_path=...`) reveal a recurring friction point
+- Past journals tagged with this skill (a `journal_post kind=journal` with `meta.skill_path=...`) reveal a recurring friction point
 - A new capability needs to be exposed through an existing skill
 
 ## Steps
@@ -42,7 +42,7 @@ Note every tool call, every field name, and every example in the skill body. The
 Past journals that followed the skill carry `meta.skill_path`. Use them to see what agents actually ran into:
 
 ```
-scope_fetch project=<project> scope=<scope> kind=journal order=desc limit=20
+journal_fetch project=<project> scope=<scope> kind=journal order=desc limit=20
 ```
 
 Then filter the returned entries client-side for `meta.skill_path == "<file_path>"` and read the bodies of the relevant ones. The **Issues** / **Gotchas** bullets and the outcome paragraph are where drift and friction show up. (To search across scopes, add a `query` and drop `scope`.)
@@ -51,7 +51,7 @@ If this is a workspace-level skill with no obvious project/scope, skip this step
 
 ### 3. Verify every tool call against the live tool surface
 
-awm is a modular gateway: every operation is **projected from a feature service's `ready.api` manifest**, not hand-registered in one dispatch file. An operation exists if some service under `awm/services/<svc>/` declares the underlying function in its manifest and the gateway projects it. Note the MCP surface is **collapsed by domain** — an agent sees one generic `{verb, args}` tool per domain (`scope`, `cx`, `rlm`, …) and learns a domain's verbs via its reserved `describe` verb — while the CLI/HTTP surfaces and the **default** `GET /tools` stay **expanded** (one `<domain>_<verb>` entry per op). For skill verification, the expanded list is exactly what you want.
+awm is a modular gateway: every operation is **projected from a feature service's `ready.api` manifest**, not hand-registered in one dispatch file. An operation exists if some service under `awm/services/<svc>/` declares the underlying function in its manifest and the gateway projects it. Note the MCP surface is **collapsed by domain** — an agent sees one generic `{verb, args}` tool per service tool (`scope`, `journal`, `reflection`, …) and learns a domain's verbs via its reserved `describe` verb — while the CLI/HTTP surfaces and the **default** `GET /tools` stay **expanded** (one `<domain>_<verb>` entry per op). For skill verification, the expanded list is exactly what you want.
 
 Two cheap ways to confirm a tool is live:
 
@@ -69,11 +69,11 @@ Two cheap ways to confirm a tool is live:
   Grep pattern="\"<fn>\"|name=\"<fn>\"" path=awm/services
   ```
 
-  The projected op name is `<service>_<fn>` by default, overridable by a `"tool"` key on the manifest function (see `awm/gateway/awm/gateway/catalog.py::_tool_name`). So an op surfacing as `scope_post` may be op `post` on the `scopes` service with a `tool="scope_post"` override. On the collapsed MCP surface that's the `scope` domain tool with verb `post` (`scope(verb="post", args={…})`); on CLI/HTTP it stays expanded (`awm scope post` / `POST /invoke {name:"scope_post"}`).
+  The projected op name is the manifest function's `"tool"` key, else `<service>_<fn>` (see `awm/gateway/awm/gateway/catalog.py::_tool_name`), and the registration rule makes it `<tool>_<verb>` for the service's `service.toml` `tool`. So an op surfacing as `journal_post` is op `post` on the `journal` service. On the collapsed MCP surface that's the `journal` tool with verb `post` (`journal(verb="post", args={…})`); on CLI/HTTP it stays expanded (`awm journal post` / `POST /invoke {name:"journal_post"}`).
 
 **If a tool the skill calls has no match, it's a ghost.** Decide whether to:
 
-- **Drop the call** (the concept was folded into another tool — e.g. the old `room_*`/`inbox_*`/`session_*` families collapsed into `scope_post`/`scope_fetch`/`scope_subscribe` on the `scopes` service).
+- **Drop the call** (the concept was folded into another tool — e.g. the old `room_*`/`inbox_*`/`session_*` families collapsed into `journal_post`/`journal_fetch`/`journal_subscribe` on the `journal` service).
 - **Replace it** with the tool that now covers the same ground.
 - **Add it** as a new manifest function on the owning service (see step 5).
 
@@ -84,7 +84,7 @@ For each argument the skill passes to a tool, find the owning service under `awm
 Common drift patterns:
 
 - Skill uses a pre-rename field name (e.g. `task` where the model is now `scope`).
-- Skill passes a key (`outcome="success"`) that is actually a nested `meta` field on `scope_post`, not a top-level parameter.
+- Skill passes a key (`outcome="success"`) that is actually a nested `meta` field on `journal_post`, not a top-level parameter.
 - Skill uses a CLI flag name where an MCP-style call would use the parameter name. Both can be valid — check the operation's `Param(...)` for the `cli_name` vs `name` split.
 
 Every field the skill references must map to a `Param` in the owning service's operation registry or a column on its DAO.
@@ -106,7 +106,7 @@ Only after the code is green should you rewrite the skill to use the new field.
 Edit the file at the absolute path resolved in step 1 (via `Glob pattern="**/skills/<file_path>"`). Guidelines:
 
 - **Show, don't describe.** A concrete command with realistic argument values beats a prose description every time. Include at least one worked example per step.
-- **Distinguish free-form from structured fields.** If a tool has both (e.g. `scope_post` has a free-form `body` string plus a structured `meta` JSON object carrying `title` / `outcome` / `skill_path`), call it out explicitly with a per-field definition. Don't let agents guess which is which.
+- **Distinguish free-form from structured fields.** If a tool has both (e.g. `journal_post` has a free-form `body` string plus a structured `meta` JSON object carrying `title` / `outcome` / `skill_path`), call it out explicitly with a per-field definition. Don't let agents guess which is which.
 - **Drop ghost concepts.** If a convention isn't backed by code (version numbers, changelog sections, outcome enums), cut it — or back it with real code in step 5.
 - **Keep `{placeholder}` names aligned with the live schema.** If the tool's field is `scope`, write `{scope}`, not `{task}`.
 - **Trim aggressively.** Every line in a skill is an instruction an agent will try to execute. Redundant steps create drift.

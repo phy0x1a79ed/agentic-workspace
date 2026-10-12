@@ -36,7 +36,7 @@ gh pr create --title "feat: <description>" --body "Summary of changes"
 
 ## Upstream sync (forks)
 
-Upstream remote is set up automatically on `awm project create --fork`. To manually refresh:
+Upstream remote is set up automatically on `awm scope create --new-project --fork-url`. To manually refresh:
 
 ```bash
 cd projects/<project>/main/

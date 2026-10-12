@@ -10,8 +10,8 @@ description: Create a scope, work in its worktree, and complete it
 ## Create
 
 ```bash
-awm scope create <project> <scope>                     # branch from default
-awm scope create <project> <scope> --from <branch>     # branch from non-default
+awm scope create --project <project> --scope <scope>                          # branch from default
+awm scope create --project <project> --scope <scope> --from-branch <branch>   # branch from non-default
 ```
 
 This creates branch `feat/<scope>`, worktree at `projects/<project>/<scope>/`, and a `.awm/` metadata directory inside the worktree. Status starts as `active`.
@@ -28,7 +28,7 @@ Data is versioned by the commit that versions the code: `data/<chunk>` holds the
 files and the tracked `data/<chunk>.dvc` pin records them, so `dvc add` plus an
 ordinary commit is the whole save-and-publish story. Projects that have not been
 converted keep a plain `.awm/data` symlink to `data/<project>/`, shared by every
-scope. `scope_data_status project=<p> scope=<s>` reports which. See
+scope. `dvc scope-status --project <p> --scope <s>` reports which. See
 `AGENTS.md` § *Data*.
 
 For end-of-session logging, run the native `debrief` skill (`~/.claude/skills/debrief/`).
@@ -36,17 +36,17 @@ For end-of-session logging, run the native `debrief` skill (`~/.claude/skills/de
 ## List
 
 ```bash
-awm scope list                                          # active only
-awm scope list --status all                             # include completed
-awm scope list --project <project>                      # filter by project
-awm scope list --status completed --project <project>
+awm scope search                                          # active only, and every project
+awm scope search --status all                             # include completed
+awm scope search --project <project>                      # filter by project
+awm scope search --status completed --project <project>
 ```
 
 ## Complete
 
 ```bash
-awm scope complete <project> <scope>             # mark completed, keep branch
-awm scope complete <project> <scope> --merge     # merge feat/<scope> into default + push
+awm scope complete --project <project> --scope <scope>             # mark completed, keep branch
+awm scope complete --project <project> --scope <scope> --merge     # merge feat/<scope> into default + push
 ```
 
 Sets status to `completed` in the AWM DB. With `--merge`, merges and pushes the feature branch.
