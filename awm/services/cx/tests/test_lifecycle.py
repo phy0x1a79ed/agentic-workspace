@@ -563,7 +563,7 @@ def stops(monkeypatch):
 def test_stop_refuses_a_job_without_lineage(home, stops):
     home.add("cccccccc", "hand started", os.getpid())
     out = stop({"job": "cccccccc"})
-    assert out["ok"] is False and "not started by cx" in out["reason"]
+    assert out["ok"] is False and "not started by reflection start_other" in out["reason"]
     assert stops == []
 
 

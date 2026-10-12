@@ -590,7 +590,7 @@ async def stop(args: dict[str, Any], as_: str | None = None) -> dict[str, Any]:
         reason = "job must be a job id"
     rec = None if reason else read_lineage(job)
     if not reason and rec is None:
-        reason = f"job {job} was not started by cx start, so cx will not stop it"
+        reason = f"job {job} was not started by reflection start_other, so it will not be stopped"
     if not reason:
         reason = _stop_caller_refusal(args.get("_caller_pid"), rec)
     if reason:

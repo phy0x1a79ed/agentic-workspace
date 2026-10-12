@@ -182,7 +182,7 @@ def descriptor(profile: str, *, status: str, exit_ip: str = "") -> dict:
         + ("is UP. " if status == "up" else f"is {status}. ")
         + f"Route a process through it two ways: (1) netns attach — "
         f"`docker run {attach} <image> …` (or `network_mode: \"container:{name}\"` "
-        f"in compose), e.g. rlm_browser.acquire{{game, opts:{{vpn:'{profile}'}}}}; "
+        f"in compose), e.g. browser acquire{{game, opts:{{vpn:'{profile}'}}}}; "
         f"(2) SSH ProxyJump/-W through the bounce sshd at localhost:{port} "
         f"(user root, key {key}) — e.g. `ssh -W host:port -i {key} -p {port} root@localhost`."
     )

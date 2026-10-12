@@ -89,7 +89,7 @@ def _project_worktrees(project: str) -> list[Path]:
     """Every worktree of a project's bare repo, at whatever depth.
 
     Enumerated from git, not by globbing ``projects/<project>/*``: a nested scope
-    such as ``fabfos/dev`` sits two levels down, and for ``data_gc`` a worktree
+    such as ``fabfos/dev`` sits two levels down, and for ``dvc gc`` a worktree
     missing from this list is a worktree whose pinned objects fall out of the
     keep-set — i.e. get collected. Raises rather than degrading to a short list,
     for that same reason.

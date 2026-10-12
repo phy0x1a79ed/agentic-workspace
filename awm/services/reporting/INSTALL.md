@@ -137,19 +137,19 @@ calling session is refused.
 
 ## How the front door keeps its sessions
 
-Each tick calls the cx service's `list`, published as `reflection list_other`. A session counts as the representative or the
-secretary only if the front door started it (it records the job id `cx start`
+Each tick calls `reflection list_other`. A session counts as the representative or the
+secretary only if the front door started it (it records the job id `reflection start_other`
 returns, in the database) and it carries the role's `mode` label. A
 renamed session still counts. Another session carrying the label is logged and
 ignored. If the queue database is lost, a surviving session is no longer
 recognised, and the replacement start is refused while it still holds the name. A missing role is started with the launch config in
 `personas.py`, which always passes an explicit `permission`. The front door never
-renames or takes a session. When `cx list` fails the tick does nothing.
+renames or takes a session. When `reflection list_other` fails the tick does nothing.
 
 A session counts as alive only when it can work. `operations status` gives each role
 `sessions.<role>` with `alive`, `state` and `reason`. `representative_alive` and
 `secretary_alive` stay. The state comes from the `state`, `needs` and `detail`
-fields of the role's `cx list` row. Claude Code sets `blocked` and `failed` from
+fields of the role's `reflection list_other` row. Claude Code sets `blocked` and `failed` from
 API errors and also from the session's own last line, so the `needs` text decides
 which kind it is.
 

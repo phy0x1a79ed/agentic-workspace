@@ -5,7 +5,7 @@
 #
 # Run on altair from any awm scope worktree. Every stage is gated on the one
 # before and idempotent, so a re-run with nothing new reports no changes:
-#   1. merge <feat> into projects/awm/dev (the dev hub; `scope gather`
+#   1. merge <feat> into projects/awm/dev (the dev hub; `scope git_gather`
 #      refuses it because its branch is the flat `dev`)
 #   2. the full test suite in the dev worktree
 #   3. release in the local bare fast-forwards to origin/release (another
