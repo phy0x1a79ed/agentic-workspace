@@ -40,7 +40,7 @@ def test_a_guard_refusal_is_logged_too_but_only_at_info(caplog):
     refusal = {"ok": False, "refused": True, "reason": "'/clear' irreversibly …"}
 
     with caplog.at_level(logging.INFO, logger="awm.reflection.hub_adapter"):
-        res = _run("send", lambda _a: refusal, {"_caller_pid": 7})
+        res = _run("message_self", lambda _a: refusal, {"_caller_pid": 7})
 
     assert res is refusal, "the result the caller sees must not change"
     levels = {r.levelno for r in caplog.records}
@@ -48,11 +48,11 @@ def test_a_guard_refusal_is_logged_too_but_only_at_info(caplog):
 
 
 def test_the_callers_own_prompt_text_is_never_logged(caplog):
-    # `send`'s `text` is whatever the calling session is about to type into
+    # `message_self`'s `text` is whatever the calling session is about to type into
     # itself. It has no business in a service log.
     secret = "some private prompt content"
     with caplog.at_level(logging.INFO, logger="awm.reflection.hub_adapter"):
-        _run("send", lambda _a: {"ok": False, "reason": "nope"},
+        _run("message_self", lambda _a: {"ok": False, "reason": "nope"},
              {"_caller_pid": 7, "text": secret})
 
     assert not any(secret in r.getMessage() for r in caplog.records)
@@ -68,7 +68,7 @@ def test_a_successful_call_is_left_alone(caplog):
 def test_every_verb_goes_through_the_seam():
     # A handler wired in later without the wrapper would be silently exempt from
     # all of the above, which is exactly how the gap opened the first time.
-    assert set(hub_adapter.HANDLERS) == {"send", "compact", "mode", "pending",
+    assert set(hub_adapter.HANDLERS) == {"message_self", "compact", "mode", "pending",
                                          "whoami"}
     for verb, handler in hub_adapter.HANDLERS.items():
         assert handler.__qualname__.startswith("_guarded."), verb
