@@ -59,11 +59,12 @@ Discover the catalog. Do not memorize it.
 
 Check for a tool before you hand a task to the user. Sending a message, approving a login, capturing audio and restarting a VPN each look like human jobs, and each has a domain. A restricted session's mode limits which verbs it may call, and the server rejects the rest.
 
-Three domains change how you work:
+Four domains change how you work:
 
 - `graphify` — an AST graph of the awm source tree. Query it before you start an Explore agent on "where is X, what calls Y, what does changing Z affect" in awm. It indexes the deployed tree. Use Explore for uncommitted code and for other projects.
 - `precedence` — an archive of past user decisions on preferences. Search it before you ask the user a preference question. Add to it when the user makes or overrides such a decision.
 - `reflection` — acts on your own session. `reflection(verb="compact", args={followup:"<next task>"})` queues a compaction after this turn, then sends the follow-up prompt. A full context is a seam to cross, not a reason to stop.
+- `reporting` — keeps your task on Tony's Swarm board. When you need Tony in a background session, call `request_human_user` instead of `AskUserQuestion`, because nobody watches that terminal.
 
 The CLI (`awm <domain> <verb>`) and HTTP (`POST /invoke`) surfaces keep one command per verb. Only the MCP surface collapses.
 

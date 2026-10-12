@@ -15,7 +15,7 @@ What it does:
 - Signs **sliding session tokens** (HMAC-SHA256 with a long-lived secret); the
   edge verifies + refreshes cookies offline using material from `edge_material`.
 - Pushes the day's **login password** (never the peer credential) to the
-  operator's Discord DM on each mint, best-effort.
+  Ops note under AWM on each mint, best-effort.
 - Mirrors the current peer credential to a file (`$AWM_DIR/services/auth/
   peer_cred.current`) that `$AWM_PEER_CRED` points to, for the SSH peer-auth
   channel (`ssh <peer> 'cat "$AWM_PEER_CRED"'`). That bearer is the legacy

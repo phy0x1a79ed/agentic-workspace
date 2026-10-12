@@ -54,6 +54,10 @@ the gateway logs a warning at boot if a station enables this service.
     awm cx remove --apply    # delete it
     awm cx seed              # start one warm session now, or say why it is refused
 
+A dead job reads `stopped` in `list` when `claude stop` ended it, and `gone`
+when it died. **CAUTION** `reporting` reads this difference: `stopped` closes the
+session's task as done, and `gone` leaves it on the board, flagged as ended.
+
 `list` derives the pool summary from the live session records. There is no
 stored pointer to "the current session", because a stored pointer is a second
 thing that has to agree with the records and it is the half that goes stale.
@@ -105,8 +109,9 @@ the late job, or drops the record after five minutes.
 
 The representative runs in a delegating mode (`modes.DELEGATING_MODES`). A card
 must not talk it into starting a session stronger than itself, so cx ignores
-what such a caller asks for. The secretary is restricted but not delegating: it
-starts ordinary top-level workers with skip-permissions and the user's settings. It accepts `project`, `scope`, `prompt`,
+what such a caller asks for. The secretary is not delegating, so the sessions it
+starts are ordinary top-level workers with skip-permissions and the user's
+settings. A delegating caller may pass `project`, `scope`, `prompt`,
 `name`, `effort` and a model from an allowlist. It refuses `permission`, `mode`,
 `remote_control` and the tool and confinement arguments. It starts a `delegate`
 with a fixed policy:

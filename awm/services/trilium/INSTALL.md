@@ -17,9 +17,9 @@ This file holds the decisions a reader cannot recover from the code: why the
 vault is a second upstream on an existing listener rather than a mount or a host
 of its own, why it has no password, why the verbs that write notes are refused to
 anyone who arrives through the edge, how a public slice opens one subtree to
-somebody with no account, why the kanban board is Trilium's rather than this
+somebody with no account, which notes an agent session may write, why the kanban board is Trilium's rather than this
 service's, why the document is replicated over an ssh forward rather than over
-the edge, why exactly one node may run a service that writes into the vault, why
+the edge, why exactly one node may run a service that writes into the vault and when several may, why
 there are four kinds of database copy and only two of them survive a deletion,
 why a node that serves the tarball gets a directory where a node that builds the
 fork gets a checkout, and what a shared origin costs.
@@ -248,6 +248,12 @@ had just written. This is the least obvious consequence of sharing the document
 and the easiest to trip over, because installing the mirror on a second node
 looks like the obvious next step.
 
+`reporting` runs on every fleet node and is the one exception, because each copy
+writes only notes no other copy writes: its own cards, its own Ledger note and
+its own Ops notes. The shared notes, the board and its books, come from one
+`board_ensure` run. A node that made a shared note on its own would race another
+node into a duplicate, as two Ops books once showed.
+
 WARNING: **a replica follows a deletion.** Within a minute of a note being
 deleted anywhere it is gone everywhere. Replication is not backup, which is why
 the snapshot schedule exists and is not optional.
@@ -290,6 +296,9 @@ absorbed here so that every caller does not meet them separately:
 - **A note's parent is a branch, not a field.** `note_place` sets the whole
   parent set in one call, and always adds before it removes: a note's last
   branch takes the note with it, so unplacing first deletes what you are moving.
+  With `remove` it drops only the branches named there. That is how `reporting`
+  moves a card between columns and leaves a clone of it on Tony's board alone.
+  `note_move` drops every other parent.
 - **An attachment's bytes do not travel in its JSON.** The create body's
   `content` is validated as a string. The row is made empty and the bytes are
   PUT after it as `application/octet-stream`, which is what makes express hand
@@ -307,6 +316,36 @@ has no object type: `--labels '{"status": "To do"}'`.
 CAUTION: `note_upsert` is keyed on `(parent, exact title)`. Using it where a
 title can repeat is how one person's writing gets overwritten. Key on a label
 instead, the way the Zotero mirror keys on `#zoteroKey`.
+
+## Which notes an agent session may write
+
+Every session on the host is an operator to the verbs above, so the write gate
+narrows what a session may change. It acts only on a call that carries a
+session's caller pid, which the gateway stamps. A call from a service or from the
+host's shell passes. Reads are never gated.
+
+| Effective label | Who writes |
+|---|---|
+| none | Tony only |
+| `#agentWritable` | agents and Tony |
+| `#agentManaged` | the `reporting` service only. It also sets `#readOnly`, so the GUI shows the note read-only |
+
+Labels count when inherited, so label a subtree once with an inheritable
+`#agentWritable`. `#agentManaged` refuses a session even under a writable
+subtree. Create checks the parent. Clone, move and place check the note and every
+parent they add or remove.
+
+**CAUTION** A clone inherits from every parent it has. Cloning one of Tony's
+notes under a writable subtree would make it writable everywhere it appears. That
+is why clone checks the source note too.
+
+`AWM_TRILIUM_AGENT_GATE` is `off`, `log` or `enforce`, default `log`. Log mode
+writes each refusal as a warning to the gateway log, naming the note and the
+missing label, and lets the write through. Read those warnings to find the
+workflows that write today. Label their subtrees. Then set `enforce`.
+
+The gate is a guardrail, not a trust boundary. A session with a shell can call
+the loopback gateway without the pid header, as with the mode gate.
 
 ## A public slice of the vault
 

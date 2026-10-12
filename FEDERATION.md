@@ -67,7 +67,8 @@ demand; there is no single identity brain (per-node state, cross-reads on demand
 | foreign gate | gateway (`awm/gateway/awm/gateway/catalog.py`) | which verbs a foreign caller may run |
 | cross-peer calls | `gatewayclient.call_peer` + the `awm-mcp` proxy | reach a peer's edge directly (client-side federation) |
 | board | `awm/services/board/` | the swarms' shared cards, stored in the Trilium vault |
-| front door | `awm/services/representative/` (domain `door`) | queues the swarm's cards and keeps the representative alive |
+| front door | `awm/services/reporting/` where `AWM_FRONT_DOOR=1` | queues the swarm's cards and keeps the representative alive |
+| task reporting | `awm/services/reporting/` on every fleet node | each node's task ledger, shown on the Swarm board in the shared vault |
 
 ## Authentication
 
@@ -128,7 +129,7 @@ Each peer book entry (`<AWM_DIR>/state/peers.json`) holds the edge URL, the ssh 
 
 Two environment variables describe this node itself:
 
-- `AWM_NODE_ROLE` is `fleet` (default) or `station`. A station hosts services for others and runs no agent sessions. `cx start` and the front door refuse on a station, and the gateway logs a warning at boot when a station has `cx` enabled. Any other value is an error.
+- `AWM_NODE_ROLE` is `fleet` (default) or `station`. A station hosts services for others and runs no agent sessions. `cx start` and `reporting` refuse on a station, and the gateway logs a warning at boot when a station has `cx` enabled. Any other value is an error.
 - `AWM_SWARM` names this node's swarm (default `tony`). The front door claims cards for it, and archive hits carry it as `origin_swarm`.
 
 Manage entries with `awm peer add|set|grant|revoke|list|resolve|forget` or the `peer` domain, which carries the same verbs. The peer-book writes close to a caller with a peer stamp. Each write refuses `peer` and `peer:<node>` on every door, the HTTP routes included. A domestic peer is refused as much as a foreign one. The refusal is a `PermissionError`, which `/invoke` and the routes answer with 403. A foreign caller never reaches it, because the foreign gate answers 404 first. The operator CLI, a local agent and a person signed in at the edge (`user:<sub>`, including `user:operator`) pass. The writes also declare `effect = write`, so a restricted session cannot run them. **CAUTION** Domestic trust is full trust. A domestic peer can start a session here with `cx start`, and that session's agent carries a local stamp. Mark a node domestic only if you control it.
@@ -173,14 +174,14 @@ The board is the swarms' shared place to post requests and messages. Every party
 
 ## The front door
 
-The front door is how a swarm receives a request durably. The `door` service (`awm/services/representative/`) runs only when `AWM_FRONT_DOOR=1` on a fleet node. It subscribes to the board and claims request cards addressed to `node_swarm()`. It queues a message card without claiming it. It writes each card to a SQLite queue before it saves its stream cursor, and it catches up from `GET /board/cards` after a gap. It keeps two sessions alive through `cx start`: the representative and the secretary.
+The front door is how a swarm receives a request durably. The `reporting` service runs it only when `AWM_FRONT_DOOR=1` on a fleet node. It subscribes to the board and claims request cards addressed to `node_swarm()`. It queues a message card without claiming it. It writes each card to a SQLite queue before it saves its stream cursor, and it catches up from `GET /board/cards` after a gap. It keeps two sessions alive through `cx start`: the representative and the secretary.
 
-The representative reads the queue through `door`, chooses a domestic agent, hands it the card and records the hand-off. It never claims, completes or posts a card, and it never does a card's work. The agent that takes the card finishes it on the board. `skills/awm/board-card.md` fixes that convention.
+The representative reads the queue through the `reporting` card verbs, chooses a domestic agent, hands it the card and records the hand-off. It never claims, completes or posts a card, and it never does a card's work. The agent that takes the card finishes it on the board. `skills/awm/board-card.md` fixes that convention.
 
 - **Containment.** Cards come from other parties, so the representative reads them as data. It holds no file or shell tools. The mode gate (`ARCHITECTURE.md` § *Verb gating*) limits its awm verbs. Any session it starts is a delegate: no Bash, no `SendMessage` or `ListAgents`, file tools confined to the scope, and only the awm MCP server. Delegates work in scope `awm/door-work` unless the card names an existing scope.
 - **Messaging.** Agents on one node message each other with Claude's `SendMessage`. Swarms message each other through the board. `scope post` stays passive mail that wakes no one.
+  **CAUTION** Claude Code holds a message to a session in another permission mode until that session's user approves it. A background session such as the secretary then waits on the approval prompt and does nothing else.
 - **One door per swarm.** This is a deployment rule. Set `AWM_FRONT_DOOR=1` on one node per `AWM_SWARM`. Nothing in code stops a second door.
-- **Known limit.** The gate cannot cover built-in tools. The representative's `ListAgents` and `SendMessage` reach every session on the shared Claude daemon, so its instructions limit `SendMessage` to hand-offs.
 
 ## The legacy bearer over SSH
 

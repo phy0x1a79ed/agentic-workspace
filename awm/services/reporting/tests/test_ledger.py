@@ -1,14 +1,13 @@
-"""The task ledger and the door-database migration."""
+"""The task ledger and its in-place schema upgrade."""
 
 from __future__ import annotations
 
-import shutil
 import sqlite3
 from pathlib import Path
 
 import pytest
 
-from awm.reporting import ledger, migrate
+from awm.reporting import ledger
 from awm.reporting.ledger import Ledger
 from awm.reporting.store import Queue
 
@@ -143,22 +142,3 @@ def test_a_v1_database_migrates_in_place_to_the_task_schema(tmp_path):
     assert q.get("c1")["status"] == "done" and q.cursor() == 41
     task, made = Ledger(tmp_path / "old.db").ensure("altair", "j", "bg")
     assert made and task["id"] == 1
-
-
-def test_migrate_copies_the_door_database_and_leaves_the_source_alone(tmp_path):
-    (tmp_path / "door").mkdir()
-    make_v1(tmp_path / "door" / "door.db")
-    src, dst = tmp_path / "door" / "door.db", tmp_path / "reporting" / "reporting.db"
-    before = src.read_bytes()
-    migrate.migrate(src, dst)
-    assert src.read_bytes() == before
-    q = Queue(dst)
-    assert q.session_jobs("representative") == {"abc"} and q.cursor() == 41
-    assert Ledger(dst).open() == []
-
-
-def test_migrate_never_overwrites_a_destination(tmp_path):
-    make_v1(tmp_path / "old.db")
-    shutil.copy(tmp_path / "old.db", tmp_path / "new.db")
-    with pytest.raises(FileExistsError):
-        migrate.migrate(tmp_path / "old.db", tmp_path / "new.db")

@@ -32,7 +32,7 @@ Each feature service owns its own SQLite DB. There is no shared `state.db`. Serv
 
 ### claudedaemon
 
-`awm.claudedaemon` is everything awm knows about Claude Code's background sessions. It reads the daemon roster and the per-job and per-process records (`roster`), launches a session (`launch`), checks directory trust (`trust`), types a line into a session over the daemon's PTY socket (`pty`, `lane`, `job`) and answers which restricted mode a session runs in (`sessionmode`). It decides nothing about whose session a caller may reach. `cx`, `reflection`, `transcripts`, the front door and the gateway each import it and each make that decision for themselves.
+`awm.claudedaemon` is everything awm knows about Claude Code's background sessions. It reads the daemon roster and the per-job and per-process records (`roster`), launches a session (`launch`), checks directory trust (`trust`), types a line into a session over the daemon's PTY socket (`pty`, `lane`, `job`) and answers which restricted mode a session runs in (`sessionmode`). It decides nothing about whose session a caller may reach. `cx`, `reflection`, `transcripts`, `reporting` and the gateway each import it and each make that decision for themselves.
 
 **CAUTION** `sessionmode` is the one reader of `cx start`'s lineage records. The gateway gate and `cx` both call it, so the writer and the reader resolve the same directory from the same environment variables. A second copy of that resolution reads no record for any session and answers "not restricted".
 
@@ -135,7 +135,7 @@ The mode gate finds the caller through its pid: `X-Awm-Session-Pid` (set by `awm
 
 **CAUTION** The mode gate is a guardrail on the agent-facing doors, not a trust boundary. The loopback gateway is open, and a request with no pid header carries no mode. The gate holds only while a restricted session cannot make a raw HTTP request. Its launch tool list holds no Bash or WebFetch, and no policy admits the `rlm` browser.
 
-**CAUTION** The gate cannot cover Claude's built-in tools. The representative keeps `SendMessage` and `ListAgents`, and both reach every session on the shared Claude daemon. Its instructions limit `SendMessage` to hand-offs. One front door per swarm is a deployment rule, and nothing in code enforces it.
+**CAUTION** The gate cannot cover Claude's built-in tools. The representative keeps `SendMessage` and `ListAgents`, and both reach every session on the shared Claude daemon. Its instructions limit `SendMessage` to hand-offs.
 
 ### The gateway's own control plane
 

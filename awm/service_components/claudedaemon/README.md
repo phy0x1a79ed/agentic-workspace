@@ -35,7 +35,7 @@ docstring holds the rest.
 The component owns no state, supervises nothing, and has no third-party
 dependencies. It is imported source with no `install.sh`, installed by name from
 `awm/gateway/install.sh`. The consumers are `cx`, `reflection`, `transcripts`,
-the front door (`representative`) and the gateway.
+`reporting` and the gateway.
 
 ## What stayed with the callers
 
