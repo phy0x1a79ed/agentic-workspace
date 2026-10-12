@@ -40,6 +40,7 @@ def _function_entries(tree: ast.AST) -> list[dict]:
             if (isinstance(name, str) and "type" not in keys
                     and ("params" in keys or "description" in keys or len(keys) == 1)):
                 entries.append({"name": name,
+                                "tool": _literal(keys.get("tool")),
                                 "effect": _literal(keys.get("effect")),
                                 "category": _literal(keys.get("category")),
                                 "line": node.lineno})

@@ -54,12 +54,12 @@ def _decode(raw: str) -> Key | None:
     return (tool, verb) if tool and verb else None
 
 
-def read_seed(path: Path = SEED_PATH) -> dict[str, int]:
+def read_seed(path: Path | None = None) -> dict[str, int]:
     """Parse a seed file. A malformed line is skipped, and so is ``describe``,
     which says nothing about which verbs matter."""
     out: dict[str, int] = {}
     try:
-        lines = path.read_text(encoding="utf-8").splitlines()
+        lines = (path or SEED_PATH).read_text(encoding="utf-8").splitlines()
     except OSError:
         return out
     for line in lines:
