@@ -27,7 +27,7 @@ class Gateway:
             def do_POST(self):
                 body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
                 outer.calls.append((self.path, self.headers.get("X-Awm-Caller-Pid"), body))
-                data = json.dumps({"result": outer.reply}).encode()
+                data = json.dumps({"result": json.dumps(outer.reply)}).encode()
                 self.send_response(200)
                 self.end_headers()
                 self.wfile.write(data)

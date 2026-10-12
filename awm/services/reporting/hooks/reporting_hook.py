@@ -48,6 +48,8 @@ def call(verb: str, **args) -> dict:
             req = urllib.request.Request(url, data=body, method="POST", headers=headers)
             with urllib.request.urlopen(req, timeout=max(1.0, deadline - time.monotonic())) as resp:
                 result = json.loads(resp.read().decode() or "{}").get("result")
+            if isinstance(result, str):  # /invoke carries the verb's result as JSON text
+                result = json.loads(result)
             return result if isinstance(result, dict) else {}
         except urllib.error.HTTPError:
             return {}
