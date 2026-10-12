@@ -370,3 +370,29 @@ async def test_status_survives_a_service_that_is_down_or_slow(monkeypatch):
     assert out["compute"] == {"error": "boom"}
     monkeypatch.setattr("awm.gateway.hub.registry.get_registry", lambda: Stub({}))
     assert (await go._op_status())["auth"] is None
+
+
+async def test_registry_list_shows_each_services_archive_tables(monkeypatch):
+    from awm.gateway import gateway_ops as go
+    from awm.gateway.hub import lease, registry
+    from awm.gateway.hub.registry import ServiceRecord
+
+    plugged = ServiceRecord(name="journal", prefix="/svc/journal", kind="service",
+                            archive=[{"name": "journals", "mode": "index", "topic": "posts"}])
+    plain = ServiceRecord(name="ssh", prefix="/svc/ssh", kind="service")
+    page = ServiceRecord(name="home", prefix="/ui/home", kind="page", static_dir="/x")
+
+    class Reg:
+        async def list(self):
+            return [plugged, plain, page]
+
+    class Leases:
+        def is_held(self, sid):
+            return False
+
+    monkeypatch.setattr(registry, "get_registry", lambda: Reg())
+    monkeypatch.setattr(lease, "get_lease_manager", lambda: Leases())
+    rows = {r["name"]: r for r in (await go._op_gateway_list())["services"]}
+    assert rows["journal"]["archive"] == [{"name": "journals", "mode": "index", "topic": "posts"}]
+    assert rows["ssh"]["archive"] == []
+    assert "archive" not in rows["home"]

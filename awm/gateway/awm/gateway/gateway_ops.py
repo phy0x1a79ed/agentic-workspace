@@ -205,6 +205,7 @@ async def _op_gateway_list() -> dict[str, Any]:
             entry["dir"] = rec.static_dir
         elif rec.kind == "service":
             entry["api"] = rec.api
+            entry["archive"] = list(rec.archive)
             if rec.refusal:
                 entry["refusal"] = rec.refusal
         out.append(entry)
