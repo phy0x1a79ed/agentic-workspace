@@ -154,12 +154,14 @@ def test_the_secretary_instructions_cover_its_job_and_its_limits():
 def test_every_allowed_verb_in_the_instructions_is_on_the_allowlist():
     """The prompts name verbs; the gate must admit each one a prompt asks for."""
     rep = {f"{d}.{v}" for d, v in modes.MODES[modes.REPRESENTATIVE].pairs}
-    for verb in ("reporting.card_list", "reporting.card_get", "reporting.card_assign", "cx.start", "cx.list",
-                 "board.fail", "reflection.compact", "scope.search"):
+    for verb in ("operations.queue_list", "operations.queue_get", "operations.queue_assign",
+                 "reflection.start_other", "reflection.list_other", "operations.board_fail",
+                 "reflection.compact", "scope.search"):
         assert verb in rep
     sec = {f"{d}.{v}" for d, v in modes.MODES[modes.SECRETARY].pairs}
-    for verb in ("cx.start", "cx.list", "cx.stop", "reporting.status", "reporting.card_list", "reporting.card_get",
-                 "board.list", "board.get", "scope.search", "scope.fetch"):
+    for verb in ("reflection.start_other", "reflection.list_other", "reflection.stop_other",
+                 "operations.status", "operations.queue_list", "operations.queue_get",
+                 "operations.board_list", "operations.board_get", "scope.search", "journal.fetch"):
         assert verb in sec
 
 
