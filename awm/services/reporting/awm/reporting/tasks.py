@@ -67,9 +67,11 @@ def _flag(flags: list, name: str) -> str | None:
 
 async def _send_dm(text: str) -> None:
     account, channel = config.dm_target()
-    await gatewayclient.call_maybe_peer(
+    result = await gatewayclient.call_maybe_peer(
         gatewayclient.peer_env("AWM_SOCIAL_PEER"), "social", "send",
         {"account": account, "channel": channel, "text": text})
+    if isinstance(result, dict) and result.get("ok") is False:
+        raise RuntimeError(f"social send refused: {result.get('error') or result}")
 
 
 class Tasks:
