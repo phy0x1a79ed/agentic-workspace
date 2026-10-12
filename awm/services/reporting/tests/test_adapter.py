@@ -14,7 +14,8 @@ from stubs import FakeCx, make_card, personas, session_row
 
 pytestmark = [pytest.mark.unit, pytest.mark.smoke]
 
-EFFECTS = {"status": "read", "card_list": "read", "card_get": "read", "card_assign": "write"}
+EFFECTS = {"status": "read", "card_list": "read", "card_get": "read", "card_assign": "write",
+           "board_ensure": "write"}
 
 
 def functions() -> dict[str, dict]:
@@ -181,3 +182,17 @@ async def test_status_reports_a_session_waiting_on_the_next_prompt_as_alive(runt
     assert out["representative_alive"] is True
     assert out["sessions"]["representative"] == {
         "alive": True, "state": "waiting", "reason": "rate limited \u2014 wait and retry", "job": "r1"}
+
+
+async def test_board_ensure_is_an_operator_verb_and_reports_a_missing_awm_note(monkeypatch):
+    from awm.reporting.swarmboard import SwarmBoard
+    from stubs import FakeTrilium
+
+    tri = FakeTrilium()
+    monkeypatch.setattr(hub_adapter, "RUNTIME", SimpleNamespace(board=SwarmBoard(tri)))
+    assert (await hub_adapter.board_ensure({}, as_="someone"))["ok"] is False
+    assert "AWM" in (await hub_adapter.board_ensure({}))["error"]
+    tri.add("AWM", type="book")
+    out = await hub_adapter.board_ensure({})
+    assert out["ok"] is True and set(out["columns"]) == {
+        "Proposed", "Planned", "Active", "Blocked", "Pending review"}

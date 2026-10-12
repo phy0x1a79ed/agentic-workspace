@@ -26,6 +26,7 @@ from awm.reporting.notify import Notifier
 from awm.reporting.reconcile import Loop
 from awm.reporting.store import Queue
 from awm.reporting.subscriber import Subscriber
+from awm.reporting.swarmboard import BoardError, SwarmBoard
 
 log = logging.getLogger("awm.reporting.hub_adapter")
 
@@ -106,6 +107,19 @@ API_MANIFEST: dict[str, Any] = {
                 _param("agent", "string", "The agent or session the card was handed to.", True),
             ],
         },
+        {
+            "name": "board_ensure",
+            "tool": "reporting_board_ensure",
+            "effect": "write",
+            "description": (
+                "Make the Swarm board under the AWM note: its five columns "
+                "(Proposed, Planned, Active, Blocked, Pending review) and its "
+                "Ledger note. Idempotent. Operator only; run it once, on any "
+                "node, after the first deploy."
+            ),
+            "params": [_param("parent", "string", "The note to make the board under. Default: the one AWM note under the root.")],
+            "timeout": 120,
+        },
     ],
     "emitters": [],
     "sessions": [],
@@ -123,6 +137,7 @@ class Runtime:
                                  retry_s=config.notify_retry_s(),
                                  reannounce_s=config.reannounce_s())
         self.loop = Loop(self.queue, on_started=self._started)
+        self.board = SwarmBoard()
         self.subscriber: Subscriber | None = None
         self.board_problem: str | None = None
         target = config.board_target()
@@ -259,11 +274,23 @@ async def assign(args: dict, as_: str | None = None) -> dict:
     return {"ok": True, "card": card}
 
 
+async def board_ensure(args: dict, as_: str | None = None) -> dict:
+    if as_ is not None:
+        return {"ok": False, "error": "board_ensure is an operator verb"}
+    if RUNTIME is None:
+        return {"ok": False, "error": "reporting is not running on this node"}
+    try:
+        return {"ok": True, **await RUNTIME.board.ensure(args.get("parent") or None)}
+    except BoardError as exc:
+        return {"ok": False, "error": str(exc)}
+
+
 HANDLERS: dict[str, Any] = {
     "status": status,
     "card_list": list_cards,
     "card_get": get,
     "card_assign": assign,
+    "board_ensure": board_ensure,
 }
 
 

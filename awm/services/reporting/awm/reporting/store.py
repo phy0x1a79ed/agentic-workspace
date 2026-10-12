@@ -62,7 +62,6 @@ CREATE TABLE IF NOT EXISTS tasks (
     effort     TEXT,
     state      TEXT NOT NULL,
     note_id    TEXT,
-    record_id  TEXT,
     plan       TEXT NOT NULL DEFAULT '',
     reason     TEXT NOT NULL DEFAULT '',
     urgent     INTEGER NOT NULL DEFAULT 0,

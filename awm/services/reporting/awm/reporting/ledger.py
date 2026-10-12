@@ -17,12 +17,14 @@ from awm.reporting.store import Db
 
 PROPOSED, PLANNED, ACTIVE, BLOCKED, REVIEW = "proposed", "planned", "active", "blocked", "review"
 DONE, CANCELLED = "done", "cancelled"
-OPEN = (PLANNED, ACTIVE, BLOCKED, REVIEW)
+OPEN = (PROPOSED, PLANNED, ACTIVE, BLOCKED, REVIEW)
 CLOSED = (DONE, CANCELLED)
+COLUMNS = {PROPOSED: "Proposed", PLANNED: "Planned", ACTIVE: "Active",
+           BLOCKED: "Blocked", REVIEW: "Pending review"}
 
 _FIELDS = frozenset({
     "session_id", "title", "project", "scope", "model", "effort", "state", "note_id",
-    "record_id", "plan", "reason", "urgent", "blocked_at", "reminded", "ended", "closed"})
+    "plan", "reason", "urgent", "blocked_at", "reminded", "ended", "closed"})
 
 
 class Ledger(Db):

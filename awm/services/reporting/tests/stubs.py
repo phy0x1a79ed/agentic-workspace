@@ -154,3 +154,91 @@ def session_row(mode: str, job: str = "abc12345", state: str = "idle", name: str
     """A cx list row. A hand-started session has no lineage, so no caller."""
     return {"job": job, "name": name or mode, "mode": mode, "state": state,
             "caller": caller, "parent": parent, "needs": needs, "detail": detail}
+
+
+class FakeTrilium:
+    """The trilium note verbs the reporting service calls, over an in-memory tree."""
+
+    def __init__(self) -> None:
+        self.notes: dict[str, dict] = {"root": {"title": "root", "parents": [], "labels": {}}}
+        self.calls: list[tuple[str, dict]] = []
+        self.fail: Exception | None = None
+        self._n = 0
+
+    def add(self, title: str, parent: str = "root", *, type: str = "text", content: str = "",
+            labels: dict | None = None, mime: str | None = None) -> str:
+        self._n += 1
+        note_id = f"n{self._n:011d}"
+        self.notes[note_id] = {"title": title, "parents": [parent], "type": type, "content": content,
+                               "mime": mime, "labels": dict(labels or {})}
+        return note_id
+
+    def kids(self, parent: str) -> list[str]:
+        return [i for i, n in self.notes.items() if parent in n["parents"]]
+
+    def parents(self, note_id: str) -> list[str]:
+        return list(self.notes[note_id]["parents"])
+
+    async def __call__(self, fn: str, **args) -> dict:
+        self.calls.append((fn, args))
+        if self.fail is not None:
+            raise self.fail
+        return getattr(self, f"_{fn}")(**args)
+
+    def writes(self) -> list[str]:
+        return [fn for fn, _ in self.calls if fn not in ("note_get", "note_children", "note_search")]
+
+    def _note_search(self, query: str, limit: int = 50, ancestor: str | None = None) -> dict:
+        if query.startswith("#"):
+            hits = [i for i, n in self.notes.items() if query[1:] in n["labels"]]
+        else:
+            title = query.split("=", 1)[1].strip()
+            hits = [i for i, n in self.notes.items() if n["title"] == title]
+        return {"results": [{"noteId": i, "title": self.notes[i]["title"],
+                             "parentNoteIds": self.parents(i)} for i in hits[:limit]]}
+
+    def _note_children(self, note_id: str) -> dict:
+        return {"children": [{"note_id": i, "title": self.notes[i]["title"], "type": self.notes[i].get("type"),
+                              "child_count": len(self.kids(i))} for i in self.kids(note_id)]}
+
+    def _note_get(self, note_id: str, content: bool = True) -> dict:
+        if note_id not in self.notes:
+            raise RuntimeError(f"404 {note_id}")
+        n = self.notes[note_id]
+        out = {"noteId": note_id, "title": n["title"], "parentNoteIds": self.parents(note_id),
+               "attributes": [{"name": k, "value": v, "type": "label"} for k, v in n["labels"].items()]}
+        if content:
+            out["content"] = n.get("content", "")
+        return out
+
+    def _note_create(self, title: str, parent: str = "root", type: str = "text", content: str = "",
+                     mime: str | None = None, labels: dict | None = None, relations: dict | None = None) -> dict:
+        return {"note_id": self.add(title, parent, type=type, content=content, labels={**(labels or {})},
+                                    mime=mime), "created": True}
+
+    def _note_update(self, note_id: str, content: str | None = None, title: str | None = None,
+                     labels: dict | None = None) -> dict:
+        n = self.notes[note_id]
+        if content is not None:
+            n["content"] = content
+        if title is not None:
+            n["title"] = title
+        n["labels"].update(labels or {})
+        return {"note_id": note_id}
+
+    def _note_place(self, note_id: str, parents: list[str]) -> dict:
+        self.notes[note_id]["parents"] = list(parents)
+        return {"note_id": note_id, "parents": parents}
+
+    def _note_delete(self, note_id: str) -> dict:
+        del self.notes[note_id]
+        return {"note_id": note_id, "deleted": True}
+
+
+def make_board(tri: FakeTrilium) -> dict[str, str]:
+    """A Swarm board as `board_ensure` leaves it. Returns column title -> note id, plus board and Ledger."""
+    awm = tri.add("AWM", type="book")
+    board = tri.add("Swarm board", awm, type="book", labels={"swarmBoard": ""})
+    out = {t: tri.add(t, board, type="book") for t in ("Proposed", "Planned", "Active", "Blocked",
+                                                         "Pending review", "Ledger")}
+    return {**out, "board": board, "awm": awm}
