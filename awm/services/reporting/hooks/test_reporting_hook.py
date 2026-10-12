@@ -69,8 +69,28 @@ def prompt(text):
     return {"session_id": "s1", "hook_event_name": "UserPromptSubmit", "prompt": text}
 
 
+def start(source):
+    return {"session_id": "s2", "hook_event_name": "SessionStart", "source": source}
+
+
 def marker(home):
     return home / ".claude" / "awm-reporting" / "s1.blocked"
+
+
+def test_a_clear_files_the_task_away_and_other_session_starts_are_ignored(home, gw):
+    for source in ("startup", "resume", "compact"):
+        run(home, gw.url, start(source))
+    assert gw.calls == []
+    run(home, gw.url, start("clear"))
+    assert [c[2] for c in gw.calls] == [{"name": "operations_hook_session_clear", "args": {}}]
+    assert gw.calls[0][1].isdigit()
+
+
+def test_the_settings_fragment_runs_the_hook_on_clear_only():
+    fragment = json.loads((HERE / "awm-reporting-settings.json").read_text())
+    (entry,) = fragment["hooks"]["SessionStart"]
+    assert entry["matcher"] == "clear"
+    assert "awm-reporting-hook.py" in entry["hooks"][0]["command"]
 
 
 def test_a_plan_write_sends_the_file_text(home, gw):
@@ -80,7 +100,7 @@ def test_a_plan_write_sends_the_file_text(home, gw):
         run(home, gw.url, post(tool, tool_input={"file_path": str(plan)}))
     path, pid, body = gw.calls[0]
     assert path == "/invoke" and pid.isdigit()
-    assert body == {"name": "reporting_hook_plan",
+    assert body == {"name": "operations_hook_plan",
                     "args": {"session_id": "s1", "plan_path": str(plan), "plan_text": "# plan"}}
     assert len(gw.calls) == 2
 
@@ -99,7 +119,7 @@ def test_an_approved_plan_is_sent_and_a_bare_response_is_not(home, gw):
     run(home, gw.url, post("ExitPlanMode", tool_response={"status": "denied"}))
     run(home, gw.url, post("ExitPlanMode", tool_response={"plan": "# sub"}, agent_id="sub1"))
     assert [c[2] for c in gw.calls] == [
-        {"name": "reporting_hook_plan_approved", "args": {"session_id": "s1", "plan_text": "# approved"}}]
+        {"name": "operations_hook_plan_approved", "args": {"session_id": "s1", "plan_text": "# approved"}}]
 
 
 def test_task_events_send_the_whole_list_from_disk(home, gw):
@@ -111,7 +131,7 @@ def test_task_events_send_the_whole_list_from_disk(home, gw):
     (d / "bad.json").write_text("{")
     run(home, gw.url, post("TaskUpdate", tool_input={"taskId": "2", "status": "completed"}))
     args = gw.calls[0][2]["args"]
-    assert gw.calls[0][2]["name"] == "reporting_hook_todos"
+    assert gw.calls[0][2]["name"] == "operations_hook_todos"
     assert [i["id"] for i in args["items"]] == [str(n) for n in range(1, 13)]
     assert args["items"][0] == {"id": "1", "subject": "T1.1", "status": "completed"}
 
@@ -127,7 +147,7 @@ def test_the_task_list_id_override_is_honoured(home, gw):
 def test_deleting_the_last_task_sends_an_empty_list(home, gw):
     (home / ".claude" / "tasks" / "s1").mkdir(parents=True)
     run(home, gw.url, post("TaskUpdate", tool_input={"taskId": "1", "status": "deleted"}))
-    assert gw.calls[0][2] == {"name": "reporting_hook_todos", "args": {"session_id": "s1", "items": []}}
+    assert gw.calls[0][2] == {"name": "operations_hook_todos", "args": {"session_id": "s1", "items": []}}
 
 
 def test_a_cleared_list_sends_nothing(home, gw):
@@ -155,7 +175,7 @@ def test_a_plain_prompt_makes_no_call(home, gw):
 
 def test_a_prompt_with_a_note_url_is_sent(home, gw):
     run(home, gw.url, prompt("claim task " + URL + " please"))
-    assert gw.calls[0][2] == {"name": "reporting_hook_prompt",
+    assert gw.calls[0][2] == {"name": "operations_hook_prompt",
                               "args": {"session_id": "s1", "prompt": "claim task " + URL + " please"}}
 
 
@@ -216,4 +236,4 @@ def test_the_installer_deploys_idempotently(tmp_path):
     assert reporting["hooks"][0]["command"] == f"python3 -S {tmp_path}/.claude/hooks/awm-reporting-hook.py 2>/dev/null || true"
     assert {"hooks": [{"command": "other"}]} in settings["hooks"]["PostToolUse"]
     standalone = json.loads((claude / "hooks" / "awm-reporting-settings.json").read_text())
-    assert set(standalone["hooks"]) == {"PostToolUse", "UserPromptSubmit"}
+    assert set(standalone["hooks"]) == {"PostToolUse", "UserPromptSubmit", "SessionStart"}

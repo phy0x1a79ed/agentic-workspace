@@ -70,6 +70,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     blocked_at REAL,
     reminded   INTEGER NOT NULL DEFAULT 0,
     ended      INTEGER NOT NULL DEFAULT 0,
+    owned      INTEGER NOT NULL DEFAULT 0,
     started    REAL NOT NULL,
     updated    REAL NOT NULL,
     closed     REAL,
@@ -100,7 +101,15 @@ CREATE TABLE IF NOT EXISTS todos (
 );
 """
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
+
+_TASKS_SCHEMA_V2 = _TASKS_SCHEMA.replace("    owned      INTEGER NOT NULL DEFAULT 0,\n", "")
+
+_OWNED_MIGRATION = """
+ALTER TABLE tasks ADD COLUMN owned INTEGER NOT NULL DEFAULT 0;
+UPDATE tasks SET owned = 1 WHERE NOT EXISTS (
+    SELECT 1 FROM task_events WHERE task_events.task_id = tasks.id AND task_events.kind = 'claimed');
+"""
 
 _URGENT_FIRST = "CASE priority WHEN 'urgent' THEN 0 WHEN 'normal' THEN 1 ELSE 2 END"
 _CURSOR = "cursor"
@@ -115,7 +124,7 @@ class Db:
         self.path = Path(path)
         databases.init_db_at(self.path, _QUEUE_SCHEMA + _TASKS_SCHEMA,
                              schema_version=SCHEMA_VERSION,
-                             migrations={(1, 2): _TASKS_SCHEMA})
+                             migrations={(1, 2): _TASKS_SCHEMA_V2, (2, 3): _OWNED_MIGRATION})
 
     def _conn(self) -> sqlite3.Connection:
         return databases.get_connection_at(self.path)

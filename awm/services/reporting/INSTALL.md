@@ -4,9 +4,10 @@
 
 This file is the operator's contract for the `reporting` service: what it is,
 where it runs, the board it keeps, the hooks that drive it, the environment it
-reads, and how to test it. It does not hold the verb list (`awm reporting
+reads, and how to test it. It does not hold the verb list (`awm operations
 --help` renders it from the live manifest) or the personas' instructions
-(`awm/reporting/personas.py`).
+(`awm/reporting/personas.py`). The service publishes into the shared
+`operations` tool beside `board` and the gateway's peer book.
 
 ## What this is
 
@@ -15,8 +16,8 @@ Two parts in one service.
 **Task reporting** runs on every fleet node. Each node keeps a SQLite ledger of
 the tasks its sessions work on and shows them on the Swarm board in Trilium. The
 ledger is the source of truth and the board only displays it. Claude Code hooks
-and three agent verbs (`claim_task`, `request_human_user`,
-`request_human_review`) drive it. The reconcile loop closes a task when its
+and two agent verbs (`task_claim` and `request_human`, whose `kind` is `blocked`
+or `review`) drive it. The reconcile loop closes a task when its
 session ends, and journal posts from a task's scope append to its card.
 
 **The front door** runs only where `AWM_FRONT_DOOR=1`. It listens to the
@@ -39,7 +40,7 @@ whichever claims first, and each starts its own representative.
 
 ## The Swarm board
 
-Run `reporting board_ensure` once, on any node. It makes "Swarm board" under the
+Run `operations board_ensure` once, on any node. It makes "Swarm board" under the
 AWM note, with the columns Proposed, Planned, Active, Blocked and Pending review
 and a "Ledger" note. It also makes the private "Ops" book under AWM, labelled
 `#swarmOps`. Every node finds the board and the book by their labels and refuses
@@ -49,7 +50,7 @@ into Proposed.
 The board makes every child book a column, so the Ledger shows as a sixth
 column. Label the Ledger note `#archived` to hide it.
 
-A session claims a card in either of two ways. It calls `claim_task(url)`. Or a
+A session claims a card in either of two ways. It calls `task_claim(url)`. Or a
 prompt to it holds "claim" or "attach" plus a Trilium note URL, which the prompt
 hook turns into the same claim with no tool call. The secretary starts a session
 with "claim task <url>" in the first prompt. A URL outside the board clones that
@@ -58,10 +59,28 @@ note into Proposed first.
 - A card is a note under a column. A move adds the new column branch and removes
   only the old one, so a clone on Tony's own board stays. The service never calls
   `note_move`.
-- A card's body is Tony's and is never written. The service writes only a
-  Markdown child called "Record" (Metadata, Plan, Todo with a Removed
-  subsection, Journal), the per-node notes under "Ledger", and the notes under
-  the private "Ops" book. All of them carry `#agentManaged` and `#readOnly`.
+- A card is one of two kinds, recorded in the ledger's `owned` column. The
+  service makes an **owned** card when a session has no task to claim: a text
+  note labelled `#agentManaged` and `#readOnly`, whose body is the record. A
+  **claimed** card is Tony's own note. Its body stays his and is never written;
+  the record goes in a text child called "Record" with the same two labels. The
+  per-node notes under "Ledger" are Markdown children, and the notes under the
+  private "Ops" book carry the same labels.
+- The record is HTML. A status block comes first (state, scope, peer, job,
+  waiting-on reason, started, closed). Plan, Todo, Journal and Removed follow as
+  closed `trilium-collapsible` blocks, split by rules; Removed appears only once an item has been removed. A summary is plain text
+  and carries a count, as in "Todo — 3/7 done, 1 active". The plan converts
+  with `markdown-it-py`, which escapes raw HTML: its first `#` heading is
+  dropped and the rest starts at `<h3>`. A journal entry is an `<h4>` and its
+  body starts at `<h5>`.
+- The Todo shows a pending item as an empty box and a completed item as a
+  ticked box. An active item is an empty box with a bold subject and "(in
+  progress)", because neither Markdown nor Trilium draws a half-state.
+- An owned card is titled by the plan's `#` heading, else the job's name when
+  `nameSource` is `auto` or `user` and the name does not start with `claimed `, else the
+  intent's first line cut at a word boundary to 80 characters. Every sync
+  recomputes it, because Claude Code names a session after its first turn. A
+  claimed card keeps Tony's title.
 - A node writes only the cards of its own tasks. Trilium resolves conflicts per
   note, last write wins, and syncs to deneb about every 60 s.
 - A card that Tony deletes from the board closes its task as cancelled. A card
@@ -71,11 +90,17 @@ note into Proposed first.
 
 ## Hooks
 
-Claude Code hooks report plans, plan approval, todos and prompts to the local
-`reporting`. Install them on every fleet node with `awm/scripts/deploy-hooks.sh`.
+Claude Code hooks report plans, plan approval, todos, prompts and `/clear` to the
+local `reporting`. Install them on every fleet node with `awm/scripts/deploy-hooks.sh`.
 Run it with `--check` to report drift. A restricted session ignores user settings,
 so cx passes it the hook fragment `~/.claude/hooks/awm-reporting-settings.json`
 through `--settings`.
+
+A `SessionStart` hook on source `clear` calls `hook_session_clear`, which files
+the session's open task under the key `<job>/<old session id>`. The next plan in
+that job then opens a card of its own, and the sweep closes the filed task. The
+hook ignores `compact` and `resume`, which also fire `SessionStart`. A task
+lookup is by exact key, never by prefix.
 
 The prompt hook runs on every prompt and calls the gateway only for a claim or
 when the session's task is Blocked. `reporting` writes the marker
@@ -112,7 +137,7 @@ calling session is refused.
 
 ## How the front door keeps its sessions
 
-Each tick calls `cx list`. A session counts as the representative or the
+Each tick calls the cx service's `list`, published as `reflection list_other`. A session counts as the representative or the
 secretary only if the front door started it (it records the job id `cx start`
 returns, in the database) and it carries the role's `mode` label. A
 renamed session still counts. Another session carrying the label is logged and
@@ -121,7 +146,7 @@ recognised, and the replacement start is refused while it still holds the name. 
 `personas.py`, which always passes an explicit `permission`. The front door never
 renames or takes a session. When `cx list` fails the tick does nothing.
 
-A session counts as alive only when it can work. `reporting status` gives each role
+A session counts as alive only when it can work. `operations status` gives each role
 `sessions.<role>` with `alive`, `state` and `reason`. `representative_alive` and
 `secretary_alive` stay. The state comes from the `state`, `needs` and `detail`
 fields of the role's `cx list` row. Claude Code sets `blocked` and `failed` from
@@ -144,7 +169,7 @@ the life of the process, so a second copy of the service reconciles nothing.
 
 When cards arrive, the front door types one line into the representative's session
 over the Claude Code daemon's PTY socket (`awm.claudedaemon.job`): "N new
-cards, run reporting card_list". The line never carries card text. A session at a modal
+cards, run operations queue_list". The line never carries card text. A session at a modal
 prompt, or in any status other than idle or busy, is skipped and retried. A
 card that stays queued is announced again after `AWM_REPORTING_REANNOUNCE_MIN`.
 
@@ -163,9 +188,19 @@ only the job record, never a worktree that Claude Code did not create.
 
 `ops_post(kind, node, title, body)` keeps the latest notice per kind and node as
 one managed note in the `#swarmOps` book. Services and domestic peers call it.
+Each note opens with "Changed: <ISO 8601 time with the node's UTC offset>" and
+carries the same time in a `#changed` label, and a replacement updates both.
 `auth` posts each password mint there instead of to Discord. The note sits
 behind the same Trilium login that the mint grants, so a logged-out Tony reads
 it from a session on another node.
+
+## Converting existing cards
+
+`operations convert` is hidden and runs once per node, from the rollout
+runbook. It re-renders the node's open cards in the current shape, deletes an
+owned card's Record child, adds the labels, retitles, and stamps each Ops notice
+that has no `#changed` label from the note's Trilium modified time. It defaults to a dry run that
+lists every action and writes nothing. Pass `dry_run: false` to write.
 
 ## Install
 

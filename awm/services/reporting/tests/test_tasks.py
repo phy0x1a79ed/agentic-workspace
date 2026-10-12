@@ -49,6 +49,9 @@ class Env:
     def task(self, key="job00001"):
         return self.ledger.find("altair", key)
 
+    def body(self, task=None):
+        return self.tri.notes[(task or self.task())["note_id"]]["content"]
+
     def column(self, note_id):
         cols = {v: k for k, v in self.ids.items()}
         return sorted(cols[p] for p in self.tri.parents(note_id) if p in cols)
@@ -80,14 +83,16 @@ async def test_session_id_is_a_check_and_never_the_key(env):
 
 
 async def test_a_plan_from_an_untracked_session_makes_a_planned_card_with_the_intent(env):
-    out = await env.call("hook_plan", plan_path="/p/plan.md", plan_text="# The plan\n\nstep one")
+    env.job = {"intent": "Fix the thing\nmore", "respawnFlags": ["--model", "opus", "--effort=high"]}
+    out = await env.call("hook_plan", plan_path="/p/plan.md", plan_text="step one")
     task = env.task()
-    assert out["state"] == "planned" and task["title"] == "Fix the thing"
+    assert out["state"] == "planned" and task["title"] == "Fix the thing" and task["owned"] == 1
     assert (task["model"], task["effort"]) == ("opus", "high")
     assert env.column(task["note_id"]) == ["Planned"]
-    record = env.tri.notes[env.tri.kids(task["note_id"])[0]]
-    assert record["title"] == "Record" and "step one" in record["content"] and "altair" in record["content"]
-    assert env.tri.notes[task["note_id"]]["content"] == ""
+    card = env.tri.notes[task["note_id"]]
+    assert "step one" in card["content"] and "altair" in card["content"]
+    assert card["type"] == "text" and card["labels"] == {"agentManaged": "", "readOnly": ""}
+    assert env.tri.kids(task["note_id"]) == []
 
 
 async def test_the_plan_title_is_used_when_the_session_has_no_intent(env):
@@ -100,8 +105,8 @@ async def test_a_second_plan_write_updates_the_same_record(env):
     await env.call("hook_plan", plan_text="v1")
     await env.call("hook_plan", plan_text="v2")
     card = env.task()["note_id"]
-    assert len(env.tri.kids(card)) == 1
-    assert "v2" in env.tri.notes[env.tri.kids(card)[0]]["content"]
+    assert env.tri.kids(card) == []
+    assert "v2" in env.tri.notes[card]["content"] and "v1" not in env.tri.notes[card]["content"]
     assert len(env.ledger.open()) == 1
 
 
@@ -182,9 +187,11 @@ async def test_todos_rewrite_the_section_and_a_removed_item_stays_under_removed(
     await env.call("hook_plan", plan_text="p")
     await env.call("hook_todos", items=items(("1", "alpha", "pending"), ("2", "beta", "pending"), ("3", "gamma", "pending")))
     await env.call("hook_todos", items=items(("1", "alpha", "completed"), ("3", "gamma", "pending")))
-    content = env.tri.notes[env.tri.kids(env.task()["note_id"])[0]]["content"]
-    todo = content.split("## Todo")[1].split("## Journal")[0]
-    assert "[x] alpha" in todo and "[ ] gamma" in todo and "beta" in todo.split("### Removed")[1]
+    content = env.body()
+    todo = content.split("<summary>Todo")[1].split("<summary>Journal")[0]
+    assert '<input type="checkbox" disabled="disabled" checked="checked"><span class="todo-list__label__description">alpha' in todo
+    assert '<input type="checkbox" disabled="disabled"><span class="todo-list__label__description">gamma' in todo
+    assert "Todo — 1/2 done" in content and "beta" in content.split("<summary>Removed")[1]
 
 
 async def test_the_last_task_deleted_removes_every_open_item(env):
@@ -202,16 +209,16 @@ async def test_todos_from_an_untracked_session_make_no_card(env):
 
 async def test_a_non_urgent_request_blocks_the_card_and_sends_nothing(env):
     await env.call("hook_plan_approved", plan_text="p")
-    out = await env.call("request_human_user", reason="need the Globus login", urgent=False)
+    out = await env.call("request_human", reason="need the Globus login", urgent=False)
     assert out["blocked"] is True and env.column(env.task()["note_id"]) == ["Blocked"]
     assert env.dms == []
-    rec = env.tri.notes[env.tri.kids(env.task()["note_id"])[0]]["content"]
+    rec = env.body()
     assert "need the Globus login" in rec
 
 
 async def test_an_urgent_request_sends_one_message_with_the_link_and_the_attach_command(env, monkeypatch):
     monkeypatch.setenv("AWM_REPORTING_TRILIUM_URL", "https://vault.example/trilium")
-    out = await env.call("request_human_user", reason="login expired", urgent=True)
+    out = await env.call("request_human", reason="login expired", urgent=True)
     assert out["notified"] is True and len(env.dms) == 1
     text = env.dms[0]
     note = env.task()["note_id"]
@@ -221,16 +228,16 @@ async def test_an_urgent_request_sends_one_message_with_the_link_and_the_attach_
 
 async def test_a_failed_message_still_blocks_the_card(env):
     env.dm_error = RuntimeError("social down")
-    out = await env.call("request_human_user", reason="x", urgent=True)
+    out = await env.call("request_human", reason="x", urgent=True)
     assert out["ok"] and out["blocked"] and out["notified"] is False
 
 
 async def test_a_request_needs_a_reason(env):
-    assert (await env.call("request_human_user", reason=" "))["ok"] is False
+    assert (await env.call("request_human", reason=" "))["ok"] is False
 
 
 async def test_the_next_prompt_moves_a_blocked_card_back_to_active(env):
-    await env.call("request_human_user", reason="x", urgent=False)
+    await env.call("request_human", reason="x", urgent=False)
     assert any(tasks.blocked_marker(sid).exists() for sid in env.ledger.aliases(env.task()["id"]))
     out = await env.call("hook_prompt", prompt="here is the login")
     task = env.task()
@@ -241,9 +248,9 @@ async def test_the_next_prompt_moves_a_blocked_card_back_to_active(env):
 
 async def test_a_review_request_moves_the_card_to_pending_review(env):
     await env.call("hook_plan_approved", plan_text="p")
-    out = await env.call("request_human_review", summary="done; see data/out")
+    out = await env.call("request_human", kind="review", summary="done; see data/out")
     assert out["state"] == "review" and env.column(env.task()["note_id"]) == ["Pending review"]
-    assert (await env.call("request_human_review", summary=""))["ok"] is False
+    assert (await env.call("request_human", kind="review", summary=""))["ok"] is False
 
 
 async def test_an_interactive_session_is_keyed_by_pid_and_start_time(env):
@@ -275,7 +282,7 @@ async def test_a_move_never_calls_note_move(env):
     note, _ = env.tonys_note()
     await env.call("claim_task", url=URL.format(note))
     await env.call("hook_plan_approved", plan_text="p")
-    await env.call("request_human_review", summary="s")
+    await env.call("request_human", kind="review", summary="s")
     assert "note_move" not in [fn for fn, _ in env.tri.calls]
 
 
@@ -308,7 +315,7 @@ async def test_a_job_that_died_without_a_stop_stays_on_the_board_flagged_and_res
     task = await started(env)
     await env.tasks.sweep([row("gone")])
     assert env.task()["ended"] == 1 and env.column(task["note_id"]) == ["Active"]
-    assert "died without a stop" in env.tri.notes[env.tri.kids(task["note_id"])[0]]["content"]
+    assert "died without a stop" in env.body(task)
     await env.tasks.sweep([row("gone")])
     assert [e["kind"] for e in env.ledger.events(task["id"])].count("ended") == 1
     await env.tasks.sweep([row("working")])
@@ -373,7 +380,7 @@ async def test_a_sweep_retries_what_the_board_refused(env):
     env.tri.fail = None
     await env.tasks.sweep([row("working")])
     assert env.task()["dirty"] == 0
-    assert "alpha" in env.tri.notes[env.tri.kids(task["note_id"])[0]]["content"]
+    assert "alpha" in env.body(task)
 
 
 async def test_a_close_the_board_refused_is_filed_once_the_board_is_back(env):
@@ -388,7 +395,7 @@ async def test_a_close_the_board_refused_is_filed_once_the_board_is_back(env):
 
 async def test_a_blocked_urgent_task_gets_one_reminder_after_the_delay(env, monkeypatch):
     monkeypatch.setenv("AWM_REPORTING_REMIND_S", "60")
-    await env.call("request_human_user", reason="login", urgent=True)
+    await env.call("request_human", reason="login", urgent=True)
     await env.tasks.sweep([row("working")])
     assert len(env.dms) == 1
     env.ledger.update(env.task()["id"], blocked_at=env.task()["blocked_at"] - 120)
@@ -399,10 +406,10 @@ async def test_a_blocked_urgent_task_gets_one_reminder_after_the_delay(env, monk
 
 async def test_no_reminder_when_the_card_was_unblocked_or_not_urgent(env, monkeypatch):
     monkeypatch.setenv("AWM_REPORTING_REMIND_S", "60")
-    await env.call("request_human_user", reason="a", urgent=False)
+    await env.call("request_human", reason="a", urgent=False)
     env.ledger.update(env.task()["id"], blocked_at=1.0)
     await env.tasks.sweep([row("working")])
-    await env.call("request_human_user", reason="b", urgent=True)
+    await env.call("request_human", reason="b", urgent=True)
     await env.call("hook_prompt", prompt="ok")
     env.ledger.update(env.task()["id"], blocked_at=1.0)
     await env.tasks.sweep([row("working")])
@@ -429,7 +436,7 @@ async def in_scope(env, tmp_path):
 
 
 def journal_of(env):
-    return env.tri.notes[env.tri.kids(env.task()["note_id"])[0]]["content"].split("## Journal")[1]
+    return env.body().split("<summary>Journal")[1].split("<summary>Removed")[0]
 
 
 async def test_a_journal_post_from_the_tasks_scope_lands_in_its_journal_section(env, tmp_path):
@@ -442,7 +449,7 @@ async def test_posts_from_other_scopes_other_kinds_or_before_the_task_are_ignore
     await in_scope(env, tmp_path)
     for p in (post("a", scope="feat/y"), post("b", kind="message"), post("c", ts=1.0), post("d", body=" ")):
         await env.tasks.on_post({"post": p})
-    assert journal_of(env).strip() == "(none)"
+    assert "<p>(none)</p>" in journal_of(env) and "<h4>" not in journal_of(env)
 
 
 async def test_the_same_post_twice_is_appended_once(env, tmp_path):

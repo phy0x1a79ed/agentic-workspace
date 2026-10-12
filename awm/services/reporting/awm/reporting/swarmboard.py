@@ -2,15 +2,17 @@
 
 The ledger is the source of truth and the board only displays it. A card is a
 note under a column book note. A move adds the new column branch and removes
-only the old one, so a clone on Tony's own board survives. Generated text goes
-in Markdown child notes labelled ``#agentManaged`` and ``#readOnly``; a card's
-own body is Tony's and is never written.
+only the old one, so a clone on Tony's own board survives. A card the service
+made is a text note labelled ``#agentManaged`` and ``#readOnly`` whose body is
+the record. A card claimed from Tony's own note keeps its body as his and gets
+the record in a ``Record`` child; the ledger notes are Markdown children.
 """
 
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable
 
 from awm import gatewayclient
@@ -23,6 +25,9 @@ BOARD_LABEL = "swarmBoard"
 OPS_LABEL = "swarmOps"
 LEDGER = "Ledger"
 MARKDOWN = "text/x-markdown"
+HTML = "text/html"
+RECORD = "Record"
+CHANGED = "changed"
 MANAGED = {"agentManaged": "", "readOnly": ""}
 Call = Callable[..., Awaitable[dict]]
 
@@ -36,6 +41,28 @@ class Layout:
     board: str
     ledger: str
     columns: dict[str, str]
+
+
+def local_stamp(utc: str | None = None) -> str:
+    """Now, or the Trilium UTC time ``utc``, as ISO 8601 in this node's zone with its UTC offset."""
+    when = datetime.now(timezone.utc)
+    for form in ("%Y-%m-%d %H:%M:%S.%f%z", "%Y-%m-%d %H:%M:%S%z"):
+        try:
+            when = datetime.strptime((utc or "").strip().replace("Z", "+0000"), form)
+            break
+        except ValueError:
+            continue
+    return when.astimezone().isoformat(timespec="seconds")
+
+
+def ops_body(stamp: str, title: str | None, body: str) -> str:
+    """An Ops notice: the change time on top, then the notice. ``title`` None keeps ``body`` as it is."""
+    if title is not None:
+        return f"Changed: {stamp}\n\n## {title}\n\n{body}\n"
+    lines = body.splitlines()
+    if lines and lines[0].startswith("Changed: "):
+        lines = lines[1:]
+    return f"Changed: {stamp}\n\n" + "\n".join(lines).lstrip("\n") + "\n"
 
 
 async def _gateway(fn: str, **args: Any) -> dict:
@@ -72,12 +99,12 @@ class SwarmBoard:
             return self._layout
         hits = (await self._call("note_search", query=f"#{BOARD_LABEL}", limit=5)).get("results") or []
         if len(hits) != 1:
-            raise BoardError(f"{len(hits)} notes carry #{BOARD_LABEL}; run reporting board_ensure")
+            raise BoardError(f"{len(hits)} notes carry #{BOARD_LABEL}; run operations board_ensure")
         board = hits[0]["noteId"]
         kids = {k["title"]: k["note_id"] for k in await self._children(board)}
         missing = [t for t in (*COLUMNS.values(), LEDGER) if t not in kids]
         if missing:
-            raise BoardError(f"the Swarm board lacks {', '.join(missing)}; run reporting board_ensure")
+            raise BoardError(f"the Swarm board lacks {', '.join(missing)}; run operations board_ensure")
         self._layout = Layout(board, kids[LEDGER], {t: kids[t] for t in COLUMNS.values()})
         return self._layout
 
@@ -140,8 +167,9 @@ class SwarmBoard:
         return True
 
     async def create_card(self, title: str, column: str) -> str:
+        """A managed text note in ``column``, for a task that has no card yet."""
         lay = await self.layout()
-        made = await self._call("note_create", title=title, parent=lay.columns[column])
+        made = await self._call("note_create", title=title, parent=lay.columns[column], labels=MANAGED)
         return made["note_id"]
 
     async def snapshot(self) -> dict[str, str]:
@@ -150,18 +178,46 @@ class SwarmBoard:
         return {kid["note_id"]: name for name, col in lay.columns.items()
                 for kid in await self._children(col)}
 
-    async def upsert_markdown(self, parent: str, title: str, content: str) -> str:
+    async def upsert_markdown(self, parent: str, title: str, content: str,
+                              labels: dict[str, str] | None = None) -> str:
         """The child of ``parent`` called ``title``, made or rewritten as a managed Markdown note."""
         for kid in await self._children(parent):
             if kid.get("title") == title and "agentManaged" in (kid.get("labels") or []):
-                await self._call("note_update", note_id=kid["note_id"], content=content)
+                await self._call("note_update", note_id=kid["note_id"], content=content,
+                                 **({"labels": labels} if labels else {}))
                 return kid["note_id"]
         made = await self._call("note_create", title=title, content=content, parent=parent,
-                                type="code", mime=MARKDOWN, labels=MANAGED)
+                                type="code", mime=MARKDOWN, labels={**MANAGED, **(labels or {})})
         return made["note_id"]
 
-    async def write_record(self, card: str, content: str) -> str:
-        return await self.upsert_markdown(card, "Record", content)
+    async def write_card(self, card: str, html: str, title: str | None = None) -> None:
+        """Rewrite the body, and the title when given, of a card the service made."""
+        fields: dict[str, Any] = {"content": html, "labels": MANAGED}
+        if title:
+            fields["title"] = title
+        await self._call("note_update", note_id=card, **fields)
+
+    async def write_record(self, card: str, html: str) -> str:
+        """The managed HTML ``Record`` child of a claimed card, made or rewritten."""
+        for kid in await self._records(card):
+            await self._call("note_update", note_id=kid["note_id"], content=html, type="text", mime=HTML,
+                             labels=MANAGED)
+            return kid["note_id"]
+        made = await self._call("note_create", title=RECORD, content=html, parent=card, type="text",
+                                labels=MANAGED)
+        return made["note_id"]
+
+    async def _records(self, card: str) -> list[dict]:
+        return [kid for kid in await self._children(card)
+                if kid.get("title") == RECORD and "agentManaged" in (kid.get("labels") or [])]
+
+    async def drop_records(self, card: str, *, dry_run: bool = False) -> list[str]:
+        """Delete the managed ``Record`` children of a card the service made. Returns their ids."""
+        ids = [kid["note_id"] for kid in await self._records(card)]
+        if not dry_run:
+            for note_id in ids:
+                await self._call("note_delete", note_id=note_id)
+        return ids
 
     async def write_ledger(self, node: str, content: str) -> str:
         return await self.upsert_markdown((await self.layout()).ledger, node, content)
@@ -171,7 +227,27 @@ class SwarmBoard:
 
     async def post_ops(self, kind: str, node: str, title: str, body: str) -> str:
         """Upsert the one managed note for this kind and node in the private Ops book under AWM."""
+        ops = await self._ops()
+        stamp = local_stamp()
+        return await self.upsert_markdown(ops, f"{kind} - {node}", ops_body(stamp, title, body),
+                                          labels={CHANGED: stamp})
+
+    async def _ops(self) -> str:
         ops = await self._find_ops()
         if ops is None:
-            raise BoardError(f"no note carries #{OPS_LABEL}; run reporting board_ensure")
-        return await self.upsert_markdown(ops, f"{kind} - {node}", f"## {title}\n\n{body}\n")
+            raise BoardError(f"no note carries #{OPS_LABEL}; run operations board_ensure")
+        return ops
+
+    async def stamp_ops(self, *, dry_run: bool = False) -> list[dict]:
+        """Give each Ops notice with no change stamp one from its Trilium modified time."""
+        out = []
+        for kid in await self._children(await self._ops()):
+            if CHANGED in (kid.get("labels") or []):
+                continue
+            note = await self._call("note_get", note_id=kid["note_id"])
+            stamp = local_stamp(note.get("utcDateModified"))
+            out.append({"note_id": kid["note_id"], "title": kid.get("title"), "changed": stamp})
+            if not dry_run:
+                await self._call("note_update", note_id=kid["note_id"], labels={CHANGED: stamp},
+                                 content=ops_body(stamp, None, note.get("content") or ""))
+        return out

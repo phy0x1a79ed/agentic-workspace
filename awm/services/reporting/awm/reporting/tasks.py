@@ -24,7 +24,7 @@ from awm.config import node_name
 from awm.reporting import config
 from awm.reporting.ledger import (ACTIVE, BLOCKED, CANCELLED, CLOSED, COLUMNS, DONE, OPEN, PLANNED,
                                   PROPOSED, REVIEW, Ledger)
-from awm.reporting.record import render_ledger, render_record
+from awm.reporting.record import TITLE_CHARS, cut_at_word, plan_title, render_ledger, render_record
 from awm.reporting.swarmboard import BoardError, SwarmBoard
 
 log = logging.getLogger("awm.reporting.tasks")
@@ -32,7 +32,9 @@ log = logging.getLogger("awm.reporting.tasks")
 #: A Trilium note URL: the note is the last segment of the fragment.
 NOTE_URL = re.compile(r"https?://[^\s#]+#(?:[\w-]+/)*([\w-]{4,})")
 CLAIM_WORDS = re.compile(r"\b(claim|attach)\b", re.I)
-TITLE_CHARS = 120
+JOURNAL_SERVICE = "journal"
+JOURNAL_FETCH = "fetch"
+JOURNAL_TOPIC = "posts"
 
 
 @dataclass(frozen=True)
@@ -45,7 +47,7 @@ class Who:
 
 
 def _posted_at(post: dict) -> float:
-    """A scopes post's time in epoch seconds. Scopes sends ISO text; older posts carried ms."""
+    """A journal post's time in epoch seconds. Posts carry ISO text; older ones carried ms."""
     ts = post.get("ts")
     if isinstance(ts, (int, float)):
         return ts / 1000.0
@@ -135,13 +137,25 @@ class Tasks:
     # -- tracking ------------------------------------------------------------
 
     def _intent(self, who: Who, plan_text: str = "") -> str:
-        first = ""
-        if who.kind == "bg":
-            first = str(self._job_state(who.key).get("intent") or "")
-        if not first.strip():
-            first = next((m[2:] for m in plan_text.splitlines() if m.startswith("# ")), "")
-        first = next((ln.strip() for ln in first.splitlines() if ln.strip()), "")
-        return first[:TITLE_CHARS] or f"session {who.key}"
+        return self._pick_title(who.kind, who.key, plan_text)
+
+    def _pick_title(self, kind: str, key: str, plan_text: str, fallback: str = "") -> str:
+        """The plan's ``#`` heading, else the job's name, else its intent's first line, cut to a word."""
+        heading = plan_title(plan_text)
+        if heading:
+            return cut_at_word(heading, TITLE_CHARS)
+        state = self._job_state(key) if kind == "bg" else {}
+        name = str(state.get("name") or "").strip()
+        if name and state.get("nameSource") in ("auto", "user") and not name.startswith("claimed "):
+            return cut_at_word(name, TITLE_CHARS)
+        intent = next((ln.strip() for ln in str(state.get("intent") or "").splitlines() if ln.strip()), "")
+        return cut_at_word(intent, TITLE_CHARS) if intent else fallback or f"session {key}"
+
+    def _title_of(self, task: dict) -> str:
+        """What an owned card should be called now. A rekeyed task keeps the title it had."""
+        rekeyed = "/" in task["key"]
+        return self._pick_title(task["kind"], task["key"], task["plan"],
+                                fallback=task["title"] if rekeyed else "")
 
     def _touch(self, task: dict, who: Who) -> None:
         if who.session_id and who.session_id != task["session_id"]:
@@ -166,7 +180,8 @@ class Tasks:
         task, _ = self.ledger.ensure(
             self.node, who.key, who.kind, state=state, pid=who.pid, session_id=who.session_id,
             project=project, scope=scope, model=_flag(flags, "--model"), effort=_flag(flags, "--effort"))
-        self.ledger.update(task["id"], title=title, note_id=card, shown=COLUMNS[state], dirty=1)
+        self.ledger.update(task["id"], title=title, note_id=card, shown=COLUMNS[state], dirty=1,
+                           owned=int(note_id is None))
         self.ledger.alias(task["id"], who.session_id)
         self.ledger.event(task["id"], "created", title)
         return self.ledger.get(task["id"])
@@ -178,6 +193,21 @@ class Tasks:
         live, removed = self.ledger.todos(task["id"])
         return render_record(task, live, removed, self.ledger.events(task["id"], "journal"))
 
+    async def _write_card(self, task: dict, *, dry_run: bool = False) -> list[str]:
+        """Put the record on the board: in an owned card's own body, else in the claimed card's Record child."""
+        html = self._record(task)
+        if not task["owned"]:
+            if not dry_run:
+                await self.board.write_record(task["note_id"], html)
+            return ["rewrite Record child"]
+        title = self._title_of(task)
+        acts = ["rewrite body"] + ([f"retitle to {title!r}"] if title != task["title"] else [])
+        if not dry_run:
+            await self.board.write_card(task["note_id"], html, title)
+            if title != task["title"]:
+                self.ledger.update(task["id"], title=title)
+        return acts
+
     async def sync(self, task_id: int) -> bool:
         """Bring the board in line with the ledger for one task. False when the board refused."""
         task = self.ledger.get(task_id)
@@ -188,7 +218,7 @@ class Tasks:
                 await self.board.write_ledger(self.node, render_ledger(self.node, self.ledger.closed(self.node)))
                 self.ledger.update(task_id, dirty=0)
                 return True
-            await self.board.write_record(task["note_id"], self._record(task))
+            await self._write_card(task)
             if task["state"] in CLOSED:
                 node_note = await self.board.write_ledger(
                     self.node, render_ledger(self.node, self.ledger.closed(self.node)))
@@ -254,6 +284,21 @@ class Tasks:
             return await self._set(task, ACTIVE, "unblocked", reason="", urgent=0)
         return self._result(task["id"])
 
+    async def hook_session_clear(self, who: Who, args: dict) -> dict:
+        """The conversation was cleared: file the open task under ``<job>/<old session id>``.
+
+        The next plan in this job then opens a card of its own. The old task
+        closes through the sweep, which no longer finds its key among the jobs.
+        """
+        task = self.ledger.find(self.node, who.key)
+        if task is None or task["state"] not in OPEN:
+            return {"ok": True, "tracked": False, "blocked": False}
+        old = task["session_id"] or f"task{task['id']}"
+        self.ledger.rekey(task["id"], f"{task['key']}/{old}")
+        self.ledger.event(task["id"], "cleared", old)
+        blocked_marker(old).unlink(missing_ok=True)
+        return {"ok": True, "tracked": True, "task": task["id"], "blocked": False}
+
     # -- agent verbs ---------------------------------------------------------
 
     async def claim_task(self, who: Who, args: dict) -> dict:
@@ -277,12 +322,22 @@ class Tasks:
         if task is None:
             task = await self._open(who, PLANNED, title=title, note_id=note_id)
         else:
-            self.ledger.update(task["id"], title=title, note_id=note_id, state=PLANNED, dirty=1)
+            self.ledger.update(task["id"], title=title, note_id=note_id, state=PLANNED, dirty=1, owned=0)
         self.ledger.event(task["id"], "claimed", note_id)
         await self.sync(task["id"])
         return self._result(task["id"])
 
-    async def request_human_user(self, who: Who, args: dict) -> dict:
+    async def request_human(self, who: Who, args: dict) -> dict:
+        kind = str(args.get("kind") or "").strip()
+        if not kind:
+            kind = "review" if args.get("summary") and not args.get("reason") else "blocked"
+        if kind == "blocked":
+            return await self._blocked(who, args)
+        if kind == "review":
+            return await self._review(who, args)
+        raise ValueError("kind must be blocked or review")
+
+    async def _blocked(self, who: Who, args: dict) -> dict:
         reason = str(args.get("reason") or "").strip()
         if not reason:
             raise ValueError("reason is required")
@@ -299,12 +354,29 @@ class Tasks:
             out["notified"] = await self._notify(self.ledger.get(task["id"]), reminder=False)
         return out
 
-    async def request_human_review(self, who: Who, args: dict) -> dict:
-        summary = str(args.get("summary") or "").strip()
+    async def _review(self, who: Who, args: dict) -> dict:
+        summary = str(args.get("summary") or args.get("reason") or "").strip()
         if not summary:
             raise ValueError("summary is required")
         task = await self._task(who, REVIEW)
         return await self._set(task, REVIEW, "review", summary, reason=summary, urgent=0)
+
+    # -- conversion ----------------------------------------------------------
+
+    async def convert(self, dry_run: bool = True) -> dict:
+        """Bring this node's open cards to the current shape and stamp the Ops notices that lack a time."""
+        async with self.lock:
+            cards = []
+            for task in self.ledger.open(self.node):
+                if not task["note_id"]:
+                    continue
+                actions = await self._write_card(task, dry_run=dry_run)
+                if task["owned"]:
+                    dropped = await self.board.drop_records(task["note_id"], dry_run=dry_run)
+                    actions += [f"delete Record child {note_id}" for note_id in dropped]
+                cards.append({"task": task["id"], "card": task["note_id"], "actions": actions})
+            ops = await self.board.stamp_ops(dry_run=dry_run)
+        return {"ok": True, "dry_run": dry_run, "cards": cards, "ops": ops}
 
     # -- telling Tony --------------------------------------------------------
 
@@ -326,7 +398,7 @@ class Tasks:
     async def sweep(self, rows: list[dict]) -> None:
         """One pass over this node's tasks: close the ended, follow Tony's board edits, retry the board.
 
-        ``rows`` are the local ``cx list`` rows. A background job with no row on
+        ``rows`` are the local ``reflection list_other`` rows. A background job with no row on
         two passes in a row was removed, and counts as stopped.
         """
         async with self.lock:
@@ -395,7 +467,8 @@ class Tasks:
     async def subscribe(self) -> None:
         """Append each journal post to the Journal section of the open tasks in its scope. Never returns."""
         self.subscription = gatewayclient.SupervisedSubscription(
-            "reporting/scopes.posts", lambda: gatewayclient.subscribe("scopes", "posts"), self.on_post)
+            f"reporting/{JOURNAL_SERVICE}.{JOURNAL_TOPIC}",
+            lambda: gatewayclient.subscribe(JOURNAL_SERVICE, JOURNAL_TOPIC), self.on_post)
         await self.subscription.run()
 
     async def on_post(self, event: Any) -> None:
@@ -426,7 +499,7 @@ class Tasks:
         for project, scope in {(t["project"], t["scope"]) for t in self.ledger.open(self.node)
                                if t["project"] and t["scope"]}:
             try:
-                reply = await self._fetch("scopes", "scope_fetch", {
+                reply = await self._fetch(JOURNAL_SERVICE, JOURNAL_FETCH, {
                     "project": project, "scope": scope, "kind": "journal", "limit": 50,
                     "order": "desc"}, timeout=60.0)
             except Exception as exc:  # noqa: BLE001 — the next catch-up carries it

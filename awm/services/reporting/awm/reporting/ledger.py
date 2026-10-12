@@ -24,7 +24,7 @@ COLUMNS = {PROPOSED: "Proposed", PLANNED: "Planned", ACTIVE: "Active",
 
 _FIELDS = frozenset({
     "session_id", "title", "project", "scope", "model", "effort", "state", "note_id", "shown", "dirty",
-    "plan", "reason", "urgent", "blocked_at", "reminded", "ended", "closed"})
+    "plan", "reason", "urgent", "blocked_at", "reminded", "ended", "closed", "owned"})
 
 
 class Ledger(Db):
@@ -82,6 +82,10 @@ class Ledger(Db):
         with self._tx() as conn:
             conn.execute(f"UPDATE tasks SET {marks}{', ' if marks else ''}updated=? WHERE id=?",
                          (*fields.values(), time.time(), task_id))
+
+    def rekey(self, task_id: int, key: str) -> None:
+        with self._tx() as conn:
+            conn.execute("UPDATE tasks SET key=?, updated=? WHERE id=?", (key, time.time(), task_id))
 
     def open(self, node: str | None = None) -> list[dict]:
         marks = ",".join("?" for _ in OPEN)

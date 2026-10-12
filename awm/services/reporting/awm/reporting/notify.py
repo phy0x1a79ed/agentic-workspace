@@ -6,8 +6,8 @@ holds the representative's job id, so it addresses the session straight from
 the roster instead of resolving a caller.
 
 The line never carries card text. Card titles and bodies come from other
-swarms, and the representative reads them through `reporting card_list` as data. A
-burst of arrivals becomes one line: "N new cards, run reporting card_list".
+swarms, and the representative reads them through `operations queue_list` as data. A
+burst of arrivals becomes one line: "N new cards, run operations queue_list".
 """
 
 from __future__ import annotations
@@ -32,7 +32,7 @@ def wake_text(new: int, urgent: int, waiting: int = 0) -> str:
         parts.append(f"{new} new {noun}" + (f" ({urgent} urgent)" if urgent else ""))
     if waiting:
         parts.append(f"{waiting} still waiting")
-    return ", ".join(parts) + ", run reporting card_list"
+    return ", ".join(parts) + ", run operations queue_list"
 
 
 def _send_line(job: str, text: str) -> None:

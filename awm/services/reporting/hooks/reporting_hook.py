@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """Claude Code hook: report a session's plan, todos and prompts to the local `reporting` service.
 
+A SessionStart on source ``clear`` tells the service to file the session's task away,
+so the next plan opens a new card. ``compact`` and ``resume`` also fire SessionStart
+and are ignored.
+
 Pure stdlib, runs under ``python3 -S``, writes nothing to stdout (a UserPromptSubmit
 hook's stdout becomes model context) and exits 0 on every path.
 
@@ -40,7 +44,7 @@ RETRY_GAP_S = 1.0
 def call(verb: str, **args) -> dict:
     """Retry only refused connections: that is the gateway restarting."""
     url = (os.environ.get("AWM_HUB_URL") or "http://127.0.0.1:7819").rstrip("/") + "/invoke"
-    body = json.dumps({"name": "reporting_" + verb, "args": args}).encode()
+    body = json.dumps({"name": "operations_" + verb, "args": args}).encode()
     headers = {"Content-Type": "application/json", "X-Awm-Caller-Pid": str(os.getpid())}
     deadline = time.monotonic() + DEADLINE_S
     while True:
@@ -110,7 +114,10 @@ def handle(p: dict) -> None:
     tool = p.get("tool_name")
     tool_input = p.get("tool_input") if isinstance(p.get("tool_input"), dict) else {}
 
-    if p.get("hook_event_name") == "UserPromptSubmit":
+    if p.get("hook_event_name") == "SessionStart":
+        if p.get("source") == "clear":
+            call("hook_session_clear")
+    elif p.get("hook_event_name") == "UserPromptSubmit":
         prompt = p.get("prompt") or ""
         claims = CLAIM_WORDS.search(prompt) and NOTE_URL.search(prompt)
         if claims or os.path.exists(marker(sid)):

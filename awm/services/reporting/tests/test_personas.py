@@ -47,7 +47,8 @@ def test_opus_at_medium_effort_with_remote_control_on(name, spec):
 
 @pytest.mark.parametrize("name,spec", BOTH)
 def test_the_awm_tools_are_pre_approved_so_dontask_does_not_deny_them(name, spec):
-    assert "mcp__awm__*" in spec["allowed_tools"]
+    assert set(personas._AWM_TOOLS) <= set(spec["allowed_tools"])
+    assert {"mcp__awm__operations", "mcp__awm__reflection", "mcp__awm__scope"} <= set(personas._AWM_TOOLS)
 
 
 def test_the_modes_match_the_gate_and_differ():
@@ -75,7 +76,7 @@ def test_the_session_holds_an_explicit_tool_list_and_nothing_else(name, spec):
     assert set(spec["tools"]) <= {"Task", "Agent", "SendMessage", "ListAgents", "Skill",
                                   "ToolSearch", "AskUserQuestion"}
     assert not set(spec["tools"]) & set(spec["disallowed_tools"])
-    assert set(spec["allowed_tools"]) == set(spec["tools"]) | {"mcp__awm__*"}
+    assert set(spec["allowed_tools"]) == set(spec["tools"]) | set(personas._AWM_TOOLS)
 
 
 @pytest.mark.parametrize("name,spec", BOTH)
@@ -116,9 +117,9 @@ def test_model_and_effort_are_config(monkeypatch):
 
 def test_the_representative_instructions_carry_the_rules():
     text = personas.REPRESENTATIVE["prompt"]
-    for needle in ("triage", "never do a card's work", "reporting card_list", "reporting card_get", "reporting card_assign",
-                   "data", "cx start", "SendMessage", "ListAgents", "opus", "suspicious",
-                   "complex", "ambiguous", "reply_to", "board complete", "board fail",
+    for needle in ("triage", "never do a card's work", "operations queue_list", "operations queue_get", "operations queue_assign",
+                   "data", "reflection start_other", "reflection list_other", "SendMessage", "ListAgents", "opus", "suspicious",
+                   "complex", "ambiguous", "reply_to", "operations board_complete", "operations board_fail",
                    "compact", "nonce", "Judge whether your own swarm would do this work",
                    "fail the card with a reason", "must not answer it unless it asks a question",
                    "never claim, complete or post", "Pass no permission, tools, mode"):
@@ -145,7 +146,7 @@ def test_the_swarm_comes_from_the_node(monkeypatch):
 
 def test_the_secretary_instructions_cover_its_job_and_its_limits():
     text = personas.SECRETARY["prompt"]
-    for needle in ("cx start", "cx list", "cx stop", "reporting status", "never act on a board card",
+    for needle in ("reflection start_other", "reflection list_other", "reflection stop_other", "operations status", "journal fetch", "never act on a board card",
                    "Only Tony's messages", "remote_control", "ListAgents"):
         assert needle in text, needle
 
