@@ -37,7 +37,7 @@ import importlib
 import logging
 import os
 import time
-from typing import Any, Callable
+from typing import Any, Awaitable, Callable
 
 from awm import gatewayclient
 
@@ -59,10 +59,12 @@ class Loop:
     def __init__(self, queue: Queue, cx: Any = None, personas: Any = None,
                  interval_s: float | None = None,
                  on_started: Callable[[str], None] | None = None,
+                 on_rows: Callable[[list[dict]], Awaitable[None]] | None = None,
                  scope_call: Callable[..., Any] | None = None) -> None:
         self.queue = queue
         self.cx = cx or sessions.Cx()
         self._on_started = on_started or (lambda role: None)
+        self._on_rows = on_rows
         self._scope_call = scope_call or gatewayclient.call
         self._personas = personas
         self._interval_s = interval_s
@@ -148,6 +150,13 @@ class Loop:
         except sessions.CxUnavailable as exc:
             self._note("cx", f"not reconciling: {exc}")
             return
+        if self._on_rows is not None:
+            try:
+                await self._on_rows(rows)
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 — the roles still need their tick
+                log.exception("reporting: task sweep failed")
         if door:
             for role in ROLES:
                 await self._ensure(role, rows)

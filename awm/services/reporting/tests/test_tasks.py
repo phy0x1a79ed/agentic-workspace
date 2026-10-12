@@ -25,8 +25,10 @@ class Env:
         self.dm_error: Exception | None = None
         self.job = {"intent": "Fix the thing\nmore", "respawnFlags": ["--model", "opus", "--effort=high"]}
         self.ledger = Ledger(tmp_path / "reporting.db")
+        self.alive = {200: True}
         self.tasks = Tasks(self.ledger, SwarmBoard(self.tri), node="altair",
-                           resolve=self.records.get, job_state=lambda job: self.job, dm=self._dm)
+                           resolve=self.records.get, job_state=lambda job: self.job, dm=self._dm,
+                           alive=lambda pid, start: self.alive.get(pid, False))
 
     async def _dm(self, text):
         if self.dm_error:
@@ -266,3 +268,131 @@ async def test_a_move_never_calls_note_move(env):
     await env.call("hook_plan_approved", plan_text="p")
     await env.call("request_human_review", summary="s")
     assert "note_move" not in [fn for fn, _ in env.tri.calls]
+
+
+# -- the watcher ---------------------------------------------------------------
+
+
+def row(state, job="job00001"):
+    return {"job": job, "state": state}
+
+
+async def started(env):
+    await env.call("hook_plan_approved", plan_text="p")
+    return env.task()
+
+
+async def test_a_stopped_job_closes_its_task_as_done_and_files_the_card_in_the_ledger(env):
+    note, tonys = env.tonys_note()
+    await env.call("claim_task", url=URL.format(note))
+    await env.tasks.sweep([row("stopped")])
+    task = env.task()
+    assert task["state"] == "done" and task["closed"] and env.ledger.open() == []
+    ledger_note = env.tri.kids(env.ids["Ledger"])[0]
+    assert env.tri.notes[ledger_note]["title"] == "altair" and "Tony's task" in env.tri.notes[ledger_note]["content"]
+    assert set(env.tri.notes[ledger_note]["labels"]) == {"agentManaged", "readOnly"}
+    assert sorted(env.tri.parents(note)) == sorted([tonys, ledger_note])
+    assert env.tri.kids(note) and note in env.tri.notes
+
+
+async def test_a_job_that_died_without_a_stop_stays_on_the_board_flagged_and_resumes(env):
+    task = await started(env)
+    await env.tasks.sweep([row("gone")])
+    assert env.task()["ended"] == 1 and env.column(task["note_id"]) == ["Active"]
+    assert "died without a stop" in env.tri.notes[env.tri.kids(task["note_id"])[0]]["content"]
+    await env.tasks.sweep([row("gone")])
+    assert [e["kind"] for e in env.ledger.events(task["id"])].count("ended") == 1
+    await env.tasks.sweep([row("working")])
+    assert env.task()["ended"] == 0 and env.task()["state"] == "active"
+
+
+async def test_an_idle_session_waiting_on_slurm_stays_active(env):
+    await started(env)
+    for state in ("idle", "working", "blocked", "done"):
+        await env.tasks.sweep([row(state)])
+    assert env.task()["state"] == "active"
+
+
+async def test_a_job_with_no_row_closes_only_on_the_second_sweep(env):
+    await started(env)
+    await env.tasks.sweep([])
+    assert env.task()["state"] == "active"
+    await env.tasks.sweep([row("working")])
+    await env.tasks.sweep([])
+    assert env.task()["state"] == "active"
+    await env.tasks.sweep([])
+    assert env.task()["state"] == "done"
+
+
+async def test_an_interactive_session_that_exits_closes_its_task(env):
+    await env.call("hook_plan", pid=200, plan_text="# Mine\n\nx")
+    await env.tasks.sweep([])
+    assert env.task("200:77")["state"] == "planned"
+    env.alive[200] = False
+    await env.tasks.sweep([])
+    assert env.task("200:77")["state"] == "done"
+
+
+async def test_a_card_tony_removes_from_the_board_is_recorded_as_cancelled(env):
+    task = await started(env)
+    env.tri.notes[task["note_id"]]["parents"] = ["root"]
+    await env.tasks.sweep([row("working")])
+    assert env.task()["state"] == "cancelled" and env.ledger.open() == []
+    content = env.tri.notes[env.tri.kids(env.ids["Ledger"])[0]]["content"]
+    assert "cancelled" in content
+
+
+async def test_a_column_drag_by_tony_is_an_event_and_is_not_moved_back(env):
+    task = await started(env)
+    env.tri.notes[task["note_id"]]["parents"] = [env.ids["Pending review"]]
+    await env.tasks.sweep([row("working")])
+    after = env.task()
+    assert after["state"] == "review" and env.column(task["note_id"]) == ["Pending review"]
+    assert ("dragged", "Active -> Pending review") in [(e["kind"], e["detail"]) for e in env.ledger.events(task["id"])]
+    await env.tasks.sweep([row("working")])
+    assert [e["kind"] for e in env.ledger.events(task["id"])].count("dragged") == 1
+
+
+async def test_a_sweep_retries_what_the_board_refused(env):
+    task = await started(env)
+    env.tri.fail = RuntimeError("down")
+    await env.call("hook_todos", items=items(("1", "alpha", "pending")))
+    await env.tasks.sweep([row("working")])
+    assert env.task()["dirty"] == 1 and env.task()["state"] == "active"
+    env.tri.fail = None
+    await env.tasks.sweep([row("working")])
+    assert env.task()["dirty"] == 0
+    assert "alpha" in env.tri.notes[env.tri.kids(task["note_id"])[0]]["content"]
+
+
+async def test_a_close_the_board_refused_is_filed_once_the_board_is_back(env):
+    task = await started(env)
+    env.tri.fail = RuntimeError("down")
+    await env.tasks.sweep([row("stopped")])
+    assert env.task()["state"] == "done" and env.task()["dirty"] == 1
+    env.tri.fail = None
+    await env.tasks.sweep([])
+    assert env.task()["dirty"] == 0 and env.column(task["note_id"]) == []
+
+
+async def test_a_blocked_urgent_task_gets_one_reminder_after_the_delay(env, monkeypatch):
+    monkeypatch.setenv("AWM_REPORTING_REMIND_S", "60")
+    await env.call("request_human_user", reason="login", urgent=True)
+    await env.tasks.sweep([row("working")])
+    assert len(env.dms) == 1
+    env.ledger.update(env.task()["id"], blocked_at=env.task()["blocked_at"] - 120)
+    await env.tasks.sweep([row("working")])
+    await env.tasks.sweep([row("working")])
+    assert len(env.dms) == 2 and env.dms[1].startswith("Still waiting")
+
+
+async def test_no_reminder_when_the_card_was_unblocked_or_not_urgent(env, monkeypatch):
+    monkeypatch.setenv("AWM_REPORTING_REMIND_S", "60")
+    await env.call("request_human_user", reason="a", urgent=False)
+    env.ledger.update(env.task()["id"], blocked_at=1.0)
+    await env.tasks.sweep([row("working")])
+    await env.call("request_human_user", reason="b", urgent=True)
+    await env.call("hook_prompt", prompt="ok")
+    env.ledger.update(env.task()["id"], blocked_at=1.0)
+    await env.tasks.sweep([row("working")])
+    assert len(env.dms) == 1

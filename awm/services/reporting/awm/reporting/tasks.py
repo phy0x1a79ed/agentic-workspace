@@ -71,13 +71,16 @@ class Tasks:
     def __init__(self, ledger: Ledger, board: SwarmBoard, *, node: str | None = None,
                  resolve: Callable[[int], dict | None] = roster.session_by_pid,
                  job_state: Callable[[str], dict] = _job_state,
-                 dm: Callable[[str], Awaitable[None]] = _send_dm) -> None:
+                 dm: Callable[[str], Awaitable[None]] = _send_dm,
+                 alive: Callable[[int, str], bool] = lambda pid, start: roster.proc_start(pid) == start) -> None:
         self.ledger = ledger
         self.board = board
         self.node = node or node_name()
         self._resolve = resolve
         self._job_state = job_state
         self._dm = dm
+        self._alive = alive
+        self._missing: dict[int, int] = {}
         self.lock = asyncio.Lock()
 
     # -- entry ---------------------------------------------------------------
@@ -288,3 +291,66 @@ class Tasks:
             log.warning("reporting: could not DM Tony about task %s: %s", task["id"], exc)
             return False
         return True
+
+    # -- the watcher ---------------------------------------------------------
+
+    async def sweep(self, rows: list[dict]) -> None:
+        """One pass over this node's tasks: close the ended, follow Tony's board edits, retry the board.
+
+        ``rows`` are the local ``cx list`` rows. A background job with no row on
+        two passes in a row was removed, and counts as stopped.
+        """
+        async with self.lock:
+            jobs = {r.get("job"): r for r in rows}
+            for task in self.ledger.open(self.node):
+                await self._ending(task, jobs.get(task["key"]))
+            await self._board()
+            for task in self.ledger.open(self.node):
+                if (task["state"] == BLOCKED and task["urgent"] and not task["reminded"]
+                        and time.time() - (task["blocked_at"] or 0) >= config.remind_s()
+                        and await self._notify(task, reminder=True)):
+                    self.ledger.update(task["id"], reminded=1)
+
+    async def _ending(self, task: dict, row: dict | None) -> None:
+        if task["kind"] == "bg":
+            if row is None:
+                self._missing[task["id"]] = self._missing.get(task["id"], 0) + 1
+                if self._missing[task["id"]] < 2:
+                    return
+            self._missing.pop(task["id"], None)
+            state = row.get("state") if row else None
+            if state == "gone":
+                if not task["ended"]:
+                    self.ledger.update(task["id"], ended=1, dirty=1)
+                    self.ledger.event(task["id"], "ended", "the session died without a stop")
+                return
+            if state not in (None, "stopped"):
+                if task["ended"]:
+                    self.ledger.update(task["id"], ended=0, dirty=1)
+                    self.ledger.event(task["id"], "resumed")
+                return
+        elif self._alive(task["pid"], task["key"].split(":", 1)[1]):
+            return
+        await self.close(task)
+
+    async def _board(self) -> None:
+        try:
+            snap = await self.board.snapshot()
+        except BoardError as exc:
+            log.warning("reporting: cannot read the Swarm board: %s", exc)
+            snap = None
+        state_of = {name: state for state, name in COLUMNS.items()}
+        for task in self.ledger.open(self.node):
+            column = snap.get(task["note_id"]) if snap is not None else None
+            if snap is not None and task["note_id"] and not task["dirty"] and column != task["shown"]:
+                if column is None:
+                    self.ledger.update(task["id"], dirty=1)
+                    self.ledger.close(task["id"], CANCELLED)
+                else:
+                    self.ledger.event(task["id"], "dragged", f"{task['shown']} -> {column}")
+                    self.ledger.update(task["id"], state=state_of[column], shown=column, dirty=1)
+            if self.ledger.get(task["id"])["dirty"]:
+                await self.sync(task["id"])
+        for task in self.ledger.closed(self.node):
+            if task["dirty"]:
+                await self.sync(task["id"])

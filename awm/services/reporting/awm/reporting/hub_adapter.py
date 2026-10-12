@@ -248,9 +248,9 @@ class Runtime:
                                  batch_s=config.notify_batch_s(),
                                  retry_s=config.notify_retry_s(),
                                  reannounce_s=config.reannounce_s())
-        self.loop = Loop(self.queue, on_started=self._started)
         self.board = SwarmBoard()
         self.tasks = Tasks(Ledger(config.db_path()), self.board)
+        self.loop = Loop(self.queue, on_started=self._started, on_rows=self.tasks.sweep)
         self.subscriber: Subscriber | None = None
         self.board_problem: str | None = None
         target = config.board_target()
