@@ -1,10 +1,10 @@
-"""The queue: one SQLite file holding the cards, the stream cursor and the
-sessions the door started.
+"""The queue: the cards, the stream cursor and the sessions the door started.
 
-All of it lives in one database so a card write and a cursor write can never
-disagree about which file survived. The subscriber saves the cursor only after
-the card write has committed; a crash between the two replays an event the
-queue absorbs, because every write is keyed by card id.
+It shares one SQLite file with the task ledger (`awm.reporting.ledger`) so a
+card write and a cursor write can never disagree about which file survived. The
+subscriber saves the cursor only after the card write has committed; a crash
+between the two replays an event the queue absorbs, because every write is
+keyed by card id.
 """
 
 from __future__ import annotations
@@ -16,9 +16,9 @@ from typing import Any
 
 from awm.persistence import databases
 
-from awm.representative import ACTIVE, ASSIGNED, CLAIMING, DONE, QUEUED, STATUSES, TERMINAL
+from awm.reporting import ACTIVE, ASSIGNED, CLAIMING, DONE, QUEUED, STATUSES, TERMINAL
 
-_SCHEMA = """
+_QUEUE_SCHEMA = """
 CREATE TABLE IF NOT EXISTS cards (
     card_id      TEXT PRIMARY KEY,
     kind         TEXT NOT NULL,
@@ -47,21 +47,82 @@ CREATE TABLE IF NOT EXISTS sessions (
 );
 """
 
+_TASKS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS tasks (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    node       TEXT NOT NULL,
+    key        TEXT NOT NULL,
+    kind       TEXT NOT NULL,
+    pid        INTEGER,
+    session_id TEXT NOT NULL DEFAULT '',
+    title      TEXT NOT NULL DEFAULT '',
+    project    TEXT,
+    scope      TEXT,
+    model      TEXT,
+    effort     TEXT,
+    state      TEXT NOT NULL,
+    note_id    TEXT,
+    shown      TEXT,
+    dirty      INTEGER NOT NULL DEFAULT 0,
+    plan       TEXT NOT NULL DEFAULT '',
+    reason     TEXT NOT NULL DEFAULT '',
+    urgent     INTEGER NOT NULL DEFAULT 0,
+    blocked_at REAL,
+    reminded   INTEGER NOT NULL DEFAULT 0,
+    ended      INTEGER NOT NULL DEFAULT 0,
+    started    REAL NOT NULL,
+    updated    REAL NOT NULL,
+    closed     REAL,
+    UNIQUE (node, key)
+);
+CREATE TABLE IF NOT EXISTS task_aliases (
+    task_id    INTEGER NOT NULL REFERENCES tasks (id),
+    session_id TEXT NOT NULL,
+    PRIMARY KEY (task_id, session_id)
+);
+CREATE TABLE IF NOT EXISTS task_events (
+    id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id INTEGER NOT NULL REFERENCES tasks (id),
+    at      REAL NOT NULL,
+    kind    TEXT NOT NULL,
+    detail  TEXT NOT NULL DEFAULT '',
+    ref     TEXT,
+    UNIQUE (task_id, ref)
+);
+CREATE TABLE IF NOT EXISTS todos (
+    task_id    INTEGER NOT NULL REFERENCES tasks (id),
+    item_id    TEXT NOT NULL,
+    subject    TEXT NOT NULL,
+    status     TEXT NOT NULL,
+    first_seen REAL NOT NULL,
+    removed_at REAL,
+    PRIMARY KEY (task_id, item_id)
+);
+"""
+
+SCHEMA_VERSION = 2
+
 _URGENT_FIRST = "CASE priority WHEN 'urgent' THEN 0 WHEN 'normal' THEN 1 ELSE 2 END"
 _CURSOR = "cursor"
 MAX_LIST = 200
 MESSAGE = "message"
 
 
-class Queue:
-    """The door's durable state."""
+class Db:
+    """The service's one SQLite file, opened at the current schema version."""
 
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
-        databases.init_db_at(self.path, _SCHEMA, schema_version=1)
+        databases.init_db_at(self.path, _QUEUE_SCHEMA + _TASKS_SCHEMA,
+                             schema_version=SCHEMA_VERSION,
+                             migrations={(1, 2): _TASKS_SCHEMA})
 
     def _conn(self) -> sqlite3.Connection:
         return databases.get_connection_at(self.path)
+
+
+class Queue(Db):
+    """The door's durable state."""
 
     # -- cards ---------------------------------------------------------------
 

@@ -20,7 +20,7 @@ from typing import Any, Callable
 
 from awm import gatewayclient
 
-log = logging.getLogger("awm.representative.sessions")
+log = logging.getLogger("awm.reporting.sessions")
 
 START_TIMEOUT_S = 240.0
 LIST_TIMEOUT_S = 30.0

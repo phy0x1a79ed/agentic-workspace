@@ -7,7 +7,7 @@ import time
 
 import pytest
 
-from awm.representative import reconcile
+from awm.reporting import reconcile
 
 from stubs import FakeCx, personas, session_row
 
@@ -47,14 +47,14 @@ async def test_a_second_tick_does_not_start_a_second_one(queue):
 async def test_the_job_ids_it_starts_are_recorded_and_survive_a_restart(queue, tmp_path):
     import os
 
-    from awm.representative.store import Queue
+    from awm.reporting.store import Queue
 
     cx = FakeCx()
     first = loop_for(cx, queue)
     await first.tick()
     assert queue.session_jobs("representative") == {cx.rows[0]["job"]}
     os.close(first._lock_fd)  # the old process died, and the kernel dropped its lock
-    second = loop_for(cx, Queue(tmp_path / "door.db"))
+    second = loop_for(cx, Queue(tmp_path / "reporting.db"))
     await second.tick()
     assert second.status()["holds_lock"] is True
     assert len(cx.started) == 2  # the restarted door recognises its own sessions
@@ -336,12 +336,12 @@ async def test_no_scope_is_created_while_the_door_is_off(queue, tmp_path, monkey
 
 
 def test_the_real_personas_default_to_awm_door_work(monkeypatch):
-    from awm.representative import personas as real
+    from awm.reporting import personas as real
 
-    monkeypatch.delenv("AWM_DOOR_WORK_PROJECT", raising=False)
-    monkeypatch.delenv("AWM_DOOR_WORK_SCOPE", raising=False)
+    monkeypatch.delenv("AWM_REPORTING_WORK_PROJECT", raising=False)
+    monkeypatch.delenv("AWM_REPORTING_WORK_SCOPE", raising=False)
     assert real.work_where() == ("awm", "door-work")
-    monkeypatch.setenv("AWM_DOOR_WORK_SCOPE", "elsewhere")
+    monkeypatch.setenv("AWM_REPORTING_WORK_SCOPE", "elsewhere")
     assert real.work_where() == ("awm", "elsewhere")
 
 
@@ -390,7 +390,7 @@ async def test_a_changed_block_is_warned_about_again_and_recovery_wakes_the_role
     levels = [(r.levelname, r.getMessage()) for r in caplog.records if "representative" in r.getMessage()]
     assert [lv for lv, _ in levels].count("WARNING") == 2
     assert "usage limit reached" in levels[1][1]
-    assert levels[-1] == ("INFO", "door: the representative (abc12345) can work again")
+    assert levels[-1] == ("INFO", "reporting: the representative (abc12345) can work again")
     assert woke == ["representative"]  # once, so queued cards are announced again at once
     assert (await loop.health())["representative"]["state"] == "running"
     assert cx.started == [] and cx.stopped == []

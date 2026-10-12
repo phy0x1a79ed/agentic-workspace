@@ -32,10 +32,10 @@ import httpx
 
 from awm.board.client import RESYNC, BoardConflict, BoardError, BoardRefused
 
-from awm.representative import CLAIMING, DONE, FAILED, GONE, TERMINAL
-from awm.representative.store import Queue
+from awm.reporting import CLAIMING, DONE, FAILED, GONE, TERMINAL
+from awm.reporting.store import Queue
 
-log = logging.getLogger("awm.representative.subscriber")
+log = logging.getLogger("awm.reporting.subscriber")
 
 POSTED = "card.posted"
 MOVED = "card.moved"
@@ -72,7 +72,7 @@ class Subscriber:
 
     def _queued(self, card: dict, *, reopen: bool = False) -> None:
         if self.queue.enqueue(card, reopen=reopen):
-            log.info("door: queued %r card %s (%r)", card.get("kind"), card["id"],
+            log.info("reporting: queued %r card %s (%r)", card.get("kind"), card["id"],
                      card.get("priority"))
             self._on_queued()
 
@@ -92,11 +92,11 @@ class Subscriber:
         try:
             claimed = await self.client.claim(card["id"])
         except BoardConflict:
-            log.info("door: card %s is held by someone else; skipped", card["id"])
+            log.info("reporting: card %s is held by someone else; skipped", card["id"])
             self._unmark(card, marked)
             return False
         except BoardRefused:
-            log.info("door: the board will not let this swarm claim %s; skipped", card["id"])
+            log.info("reporting: the board will not let this swarm claim %s; skipped", card["id"])
             self._unmark(card, marked)
             return False
         merged = {**card, **(claimed if isinstance(claimed, dict) else {})}
@@ -118,20 +118,20 @@ class Subscriber:
         """
         status = self.queue.status_of(card["id"])
         if status == CLAIMING or (authoritative and status in TERMINAL):
-            log.info("door: adopting card %s, claimed before the queue write landed", card["id"])
+            log.info("reporting: adopting card %s, claimed before the queue write landed", card["id"])
             self._queued(card, reopen=True)
 
     async def _apply(self, type_: str, card: dict) -> None:
         if card.get("recipient") != self.swarm:
             if self.queue.has(card["id"]) and self.queue.mark(card["id"], GONE):
-                log.info("door: card %s was re-addressed away from this swarm", card["id"])
+                log.info("reporting: card %s was re-addressed away from this swarm", card["id"])
             return
         status = card.get("status")
         if status == "posted" and type_ in (POSTED, MOVED):
             await self._intake(card, claim_known=type_ == MOVED, reopen=type_ == MOVED)
         elif status in (DONE, FAILED):
             if self.queue.mark(card["id"], status):
-                log.info("door: card %s is %s on the board", card["id"], status)
+                log.info("reporting: card %s is %s on the board", card["id"], status)
         elif (status == "in_progress" and card.get("kind") == "request"
               and card.get("claimant") == self.swarm):
             self._adopt(card, authoritative=False)
@@ -146,7 +146,7 @@ class Subscriber:
             except (BoardError, httpx.HTTPError) as exc:
                 # Retrying the same event would fail the same way for ever. The
                 # card keeps its `claiming` mark and the next catch-up takes it.
-                log.warning("door: event %s on card %s failed (%s); left for the catch-up",
+                log.warning("reporting: event %s on card %s failed (%s); left for the catch-up",
                             event_id, card.get("id"), exc)
                 self.last_error = f"event {event_id} failed: {exc}"
                 self._kick.set()
@@ -168,7 +168,7 @@ class Subscriber:
             out.extend(cards)
             if len(cards) < PAGE:
                 return out
-        log.warning("door: stopped reading %s after %d cards", filters, len(out))
+        log.warning("reporting: stopped reading %s after %d cards", filters, len(out))
         return out
 
     async def _catch_up(self) -> int:
@@ -178,7 +178,7 @@ class Subscriber:
                 await self._intake(card, claim_known=True)
             except BoardError as exc:
                 failed += 1
-                log.warning("door: could not take card %s in catch-up: %s", card["id"], exc)
+                log.warning("reporting: could not take card %s in catch-up: %s", card["id"], exc)
         for card in await self._all(recipient=self.swarm, kind="request",
                                     status="in_progress", claimant=self.swarm):
             self._adopt(card, authoritative=True)
@@ -190,15 +190,15 @@ class Subscriber:
                 current = await self.client.get(card_id)
             except BoardRefused:
                 if self.queue.mark(card_id, GONE):
-                    log.info("door: card %s is no longer on the board", card_id)
+                    log.info("reporting: card %s is no longer on the board", card_id)
                 continue
             except BoardError as exc:
                 failed += 1
-                log.warning("door: could not re-read card %s: %s", card_id, exc)
+                log.warning("reporting: could not re-read card %s: %s", card_id, exc)
                 continue
             if current.get("recipient") != self.swarm:
                 if self.queue.mark(card_id, GONE):
-                    log.info("door: card %s was re-addressed away from this swarm", card_id)
+                    log.info("reporting: card %s was re-addressed away from this swarm", card_id)
             elif current.get("status") in (DONE, FAILED):
                 self.queue.mark(card_id, current["status"])
         return failed
@@ -246,22 +246,22 @@ class Subscriber:
                     raise
                 except Exception as exc:  # noqa: BLE001 — the stream starts whatever the catch-up did
                     self.last_error = f"catch-up failed: {exc}"
-                    log.warning("door: catch-up failed (%s); starting the stream anyway", exc)
+                    log.warning("reporting: catch-up failed (%s); starting the stream anyway", exc)
                 await self.consume()
                 failures += 1
             except asyncio.CancelledError:
                 raise
             except BoardRefused as exc:
                 self.last_error = f"the board refused this swarm's token: {exc}"
-                log.error("door: %s", self.last_error)
+                log.error("reporting: %s", self.last_error)
                 delay = REFUSED_DELAY_S
             except (BoardError, OSError, asyncio.TimeoutError) as exc:
                 self.last_error = str(exc)
-                log.warning("door: board subscription failed (%s); restarting", exc)
+                log.warning("reporting: board subscription failed (%s); restarting", exc)
                 failures += 1
             except Exception as exc:  # noqa: BLE001 — the door must outlive a bad card
                 self.last_error = repr(exc)
-                log.exception("door: subscriber failed; restarting")
+                log.exception("reporting: subscriber failed; restarting")
                 failures += 1
             if self._progress:
                 failures = 0
@@ -283,11 +283,11 @@ class Subscriber:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001
-                log.warning("door: periodic catch-up failed: %s", exc)
+                log.warning("reporting: periodic catch-up failed: %s", exc)
 
     async def run(self) -> None:
         """Subscribe forever. Never returns, never raises."""
-        periodic = asyncio.create_task(self._periodic(), name="door-catchup")
+        periodic = asyncio.create_task(self._periodic(), name="reporting-catchup")
         try:
             await self._stream_loop()
         finally:

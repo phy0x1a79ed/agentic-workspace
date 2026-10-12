@@ -1,4 +1,4 @@
-"""The door's switches and paths, all read from the environment at call time."""
+"""The reporting service's switches and paths, all read from the environment at call time."""
 
 from __future__ import annotations
 
@@ -18,11 +18,8 @@ def flag_on() -> bool:
     return (os.environ.get("AWM_FRONT_DOOR") or "").strip() == "1"
 
 
-def refusal() -> str | None:
-    """Why this process must not run the door, or None if it may.
-
-    A station is refused first, so its status says so whatever the flag holds.
-    """
+def task_refusal() -> str | None:
+    """Why this process must not track tasks, or None if it may. Every fleet node may."""
     from awm.config import node_role
 
     try:
@@ -30,7 +27,15 @@ def refusal() -> str | None:
     except ValueError as exc:
         return f"the node role is invalid: {exc}"
     if role == "station":
-        return "this node is a station; a station cannot run a front door"
+        return "this node is a station; a station tracks no tasks"
+    return None
+
+
+def refusal() -> str | None:
+    """Why this process must not run the front door, or None if it may."""
+    why = task_refusal()
+    if why is not None:
+        return why
     if not flag_on():
         return "the front door is switched off (AWM_FRONT_DOOR is not 1)"
     return None
@@ -52,18 +57,18 @@ def swarm() -> str:
 
 
 def db_path() -> Path:
-    """The queue's database: ``AWM_DOOR_DB``, else the standard service path."""
-    override = os.environ.get("AWM_DOOR_DB")
+    """The ledger's database: ``AWM_REPORTING_DB``, else the standard service path."""
+    override = os.environ.get("AWM_REPORTING_DB")
     if override:
         return Path(override)
     from awm.persistence.databases import service_db_path
 
-    return service_db_path("door")
+    return service_db_path("reporting")
 
 
 def state_dir() -> Path:
-    """Where the reconcile lock lives: ``AWM_DOOR_STATE``, else beside the queue."""
-    override = os.environ.get("AWM_DOOR_STATE")
+    """Where the reconcile lock lives: ``AWM_REPORTING_STATE``, else beside the database."""
+    override = os.environ.get("AWM_REPORTING_STATE")
     if override:
         return Path(override)
     return db_path().parent
@@ -81,22 +86,22 @@ def board_target() -> tuple[str, str] | str:
 
 
 def reconcile_interval_s() -> float:
-    return _float("AWM_DOOR_INTERVAL_S", 60.0)
+    return _float("AWM_REPORTING_INTERVAL_S", 60.0)
 
 
 def catchup_interval_s() -> float:
     """How often the board is re-read to close a gap the stream cannot replay."""
-    return _float("AWM_DOOR_CATCHUP_S", 300.0)
+    return _float("AWM_REPORTING_CATCHUP_S", 300.0)
 
 
 def notify_batch_s() -> float:
     """How long a new card waits for others before the representative is told."""
-    return _float("AWM_DOOR_NOTIFY_BATCH_S", 5.0)
+    return _float("AWM_REPORTING_NOTIFY_BATCH_S", 5.0)
 
 
 def notify_retry_s() -> float:
     """How long to wait before telling the representative again after a failure."""
-    return _float("AWM_DOOR_NOTIFY_RETRY_S", 30.0)
+    return _float("AWM_REPORTING_NOTIFY_RETRY_S", 30.0)
 
 
 def message_backlog_s() -> float:
@@ -105,15 +110,15 @@ def message_backlog_s() -> float:
     A message card stays ``posted`` for ever, so without a window the first
     catch-up would queue every message the swarm was ever sent.
     """
-    return _float("AWM_DOOR_MESSAGE_BACKLOG_S", 3 * 86400.0)
+    return _float("AWM_REPORTING_MESSAGE_BACKLOG_S", 3 * 86400.0)
 
 
 def reannounce_s() -> float:
     """How long a card may sit queued before the representative is told about it again.
 
-    ``AWM_DOOR_REANNOUNCE_MIN`` is in minutes; the default is 10.
+    ``AWM_REPORTING_REANNOUNCE_MIN`` is in minutes; the default is 10.
     """
-    return _float("AWM_DOOR_REANNOUNCE_MIN", 10.0) * 60.0
+    return _float("AWM_REPORTING_REANNOUNCE_MIN", 10.0) * 60.0
 
 
 def projects_dir() -> Path:
@@ -124,3 +129,36 @@ def projects_dir() -> Path:
     from awm import config as awm_config
 
     return awm_config.canonical_workspace() / "projects"
+
+
+def project_scope(cwd: str | None) -> tuple[str | None, str | None]:
+    """Project and scope from a directory under the projects tree, else None."""
+    if not cwd:
+        return None, None
+    try:
+        parts = Path(cwd).resolve().relative_to(projects_dir().resolve()).parts
+    except (ValueError, OSError):
+        return None, None
+    return (parts[0], "/".join(parts[1:]) or None) if parts else (None, None)
+
+
+def remind_s() -> float:
+    """How long a task stays blocked on an urgent request before Tony is reminded once."""
+    return _float("AWM_REPORTING_REMIND_S", 3600.0)
+
+
+def dm_target() -> tuple[str, str]:
+    """The social account and channel that carry an urgent request to Tony."""
+    return (os.environ.get("AWM_REPORTING_DM_ACCOUNT") or "discord-bot",
+            os.environ.get("AWM_REPORTING_DM_CHANNEL") or "dm:188743359983124480")
+
+
+def trilium_url() -> str | None:
+    """Where Tony opens a Trilium note from, up to the ``#``, or None when no edge is known."""
+    override = (os.environ.get("AWM_REPORTING_TRILIUM_URL") or "").strip()
+    if override:
+        return override.rstrip("/")
+    from awm.config import edge_url
+
+    edge = edge_url()
+    return f"{edge}/trilium" if edge else None

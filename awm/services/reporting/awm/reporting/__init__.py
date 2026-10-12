@@ -1,17 +1,18 @@
-"""representative — the swarm's front door.
+"""reporting — the swarm's task ledger and front door.
 
-The door listens to the federation board for cards addressed to this swarm,
-queues them in SQLite, wakes the representative session, and keeps one
-representative and one secretary session alive. It never acts on a card
-itself: the representative triages and the domestic agent that takes a card
-completes it on the board.
+Every fleet node tracks the tasks its sessions work on in a SQLite ledger and
+shows them on the Swarm board in Trilium. The node that sets ``AWM_FRONT_DOOR=1``
+also listens to the federation board for cards addressed to this swarm, queues
+them, wakes the representative session, and keeps one representative and one
+secretary session alive. It never acts on a card itself: the representative
+triages and the domestic agent that takes a card completes it on the board.
 
 Exactly one node per swarm sets ``AWM_FRONT_DOOR=1``. Nothing in code prevents
 a second.
 """
 
-#: The gateway domain. A one-token name, so the projected tool is ``door_<verb>``.
-DOMAIN = "door"
+#: The gateway domain. A one-token name, so the projected tool is ``reporting_<verb>``.
+DOMAIN = "reporting"
 
 #: Card statuses in the queue.
 #:

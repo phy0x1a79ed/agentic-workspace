@@ -6,8 +6,8 @@ holds the representative's job id, so it addresses the session straight from
 the roster instead of resolving a caller.
 
 The line never carries card text. Card titles and bodies come from other
-swarms, and the representative reads them through `door list` as data. A
-burst of arrivals becomes one line: "N new cards, run door list".
+swarms, and the representative reads them through `reporting card_list` as data. A
+burst of arrivals becomes one line: "N new cards, run reporting card_list".
 """
 
 from __future__ import annotations
@@ -17,9 +17,9 @@ import logging
 import time
 from typing import Awaitable, Callable
 
-from awm.representative.store import Queue
+from awm.reporting.store import Queue
 
-log = logging.getLogger("awm.representative.notify")
+log = logging.getLogger("awm.reporting.notify")
 
 QUIET_S = 600.0
 
@@ -32,7 +32,7 @@ def wake_text(new: int, urgent: int, waiting: int = 0) -> str:
         parts.append(f"{new} new {noun}" + (f" ({urgent} urgent)" if urgent else ""))
     if waiting:
         parts.append(f"{waiting} still waiting")
-    return ", ".join(parts) + ", run door list"
+    return ", ".join(parts) + ", run reporting card_list"
 
 
 def _send_line(job: str, text: str) -> None:
@@ -85,7 +85,7 @@ class Notifier:
             return False
         self.queue.mark_announced([c for c, _, _ in pending])
         self.last_sent = text
-        log.info("door: woke the representative (%s): %s", job, text)
+        log.info("reporting: woke the representative (%s): %s", job, text)
         return True
 
     async def run(self) -> None:
@@ -102,11 +102,11 @@ class Notifier:
             except asyncio.CancelledError:
                 raise
             except Exception:  # noqa: BLE001
-                log.exception("door: notifier failed")
+                log.exception("reporting: notifier failed")
 
     def _note(self, message: str) -> None:
         last = self._last_note
         if last and last[0] == message and time.time() - last[1] < QUIET_S:
             return
-        log.info("door: %s", message)
+        log.info("reporting: %s", message)
         self._last_note = (message, time.time())

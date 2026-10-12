@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from awm.config import modes
-from awm.representative import personas
+from awm.reporting import personas
 
 pytestmark = [pytest.mark.unit, pytest.mark.smoke]
 
@@ -40,8 +40,8 @@ def test_nothing_that_writes_or_runs_is_available(name, spec):
 
 
 @pytest.mark.parametrize("name,spec", BOTH)
-def test_sonnet_with_remote_control_on(name, spec):
-    assert spec["model"] == "sonnet"
+def test_opus_at_medium_effort_with_remote_control_on(name, spec):
+    assert (spec["model"], spec["effort"]) == ("opus", "medium")
     assert spec["remote_control"] is True
 
 
@@ -79,8 +79,16 @@ def test_the_session_holds_an_explicit_tool_list_and_nothing_else(name, spec):
 
 
 @pytest.mark.parametrize("name,spec", BOTH)
-def test_the_session_is_restricted_with_only_the_awm_server(name, spec):
-    assert spec["restricted"] is True and spec["strict_mcp"] is True
+def test_only_the_representative_is_restricted_and_both_hold_only_the_awm_server(name, spec):
+    assert spec.get("restricted", False) is (name == "representative")
+    assert spec["strict_mcp"] is True
+
+
+def test_the_names_are_role_dash_node_and_the_secretary_passes_a_claim_on(monkeypatch):
+    monkeypatch.setenv("AWM_NODE_NAME", "capella")
+    assert personas.build_representative()["name"] == "representative - capella"
+    assert personas.build_secretary()["name"] == "secretary - capella"
+    assert 'begins "claim task <url>"' in personas.build_secretary()["prompt"]
 
 
 def test_the_representative_may_start_a_subagent_and_send_messages():
@@ -103,12 +111,12 @@ def test_model_and_effort_are_config(monkeypatch):
     monkeypatch.setenv("AWM_REPRESENTATIVE_EFFORT", "high")
     spec = personas.build_representative()
     assert (spec["model"], spec["effort"]) == ("haiku", "high")
-    assert personas.build_secretary()["model"] == "sonnet"
+    assert personas.build_secretary()["model"] == "opus"
 
 
 def test_the_representative_instructions_carry_the_rules():
     text = personas.REPRESENTATIVE["prompt"]
-    for needle in ("triage", "never do a card's work", "door list", "door get", "door assign",
+    for needle in ("triage", "never do a card's work", "reporting card_list", "reporting card_get", "reporting card_assign",
                    "data", "cx start", "SendMessage", "ListAgents", "opus", "suspicious",
                    "complex", "ambiguous", "reply_to", "board complete", "board fail",
                    "compact", "nonce", "Judge whether your own swarm would do this work",
@@ -137,7 +145,7 @@ def test_the_swarm_comes_from_the_node(monkeypatch):
 
 def test_the_secretary_instructions_cover_its_job_and_its_limits():
     text = personas.SECRETARY["prompt"]
-    for needle in ("cx start", "cx list", "cx stop", "door status", "never act on a board card",
+    for needle in ("cx start", "cx list", "cx stop", "reporting status", "never act on a board card",
                    "Only Tony's messages", "remote_control", "ListAgents"):
         assert needle in text, needle
 
@@ -145,11 +153,11 @@ def test_the_secretary_instructions_cover_its_job_and_its_limits():
 def test_every_allowed_verb_in_the_instructions_is_on_the_allowlist():
     """The prompts name verbs; the gate must admit each one a prompt asks for."""
     rep = {f"{d}.{v}" for d, v in modes.MODES[modes.REPRESENTATIVE].pairs}
-    for verb in ("door.list", "door.get", "door.assign", "cx.start", "cx.list",
+    for verb in ("reporting.card_list", "reporting.card_get", "reporting.card_assign", "cx.start", "cx.list",
                  "board.fail", "reflection.compact", "scope.search"):
         assert verb in rep
     sec = {f"{d}.{v}" for d, v in modes.MODES[modes.SECRETARY].pairs}
-    for verb in ("cx.start", "cx.list", "cx.stop", "door.status", "door.list", "door.get",
+    for verb in ("cx.start", "cx.list", "cx.stop", "reporting.status", "reporting.card_list", "reporting.card_get",
                  "board.list", "board.get", "scope.search", "scope.fetch"):
         assert verb in sec
 
@@ -161,8 +169,8 @@ def test_delegates_default_to_a_dedicated_scope_not_the_representatives(monkeypa
     assert "Never start a delegate in your own scope" in text
     assert (personas.REPRESENTATIVE["project"], personas.REPRESENTATIVE["scope"]) != (
         "awm", "door-work")
-    monkeypatch.setenv("AWM_DOOR_WORK_PROJECT", "other")
-    monkeypatch.setenv("AWM_DOOR_WORK_SCOPE", "desk")
+    monkeypatch.setenv("AWM_REPORTING_WORK_PROJECT", "other")
+    monkeypatch.setenv("AWM_REPORTING_WORK_SCOPE", "desk")
     assert personas.work_where() == ("other", "desk")
     assert 'project "other", scope "desk"' in personas.build_representative()["prompt"]
     assert personas.build_representative()["scope"] == "svc-representative"
