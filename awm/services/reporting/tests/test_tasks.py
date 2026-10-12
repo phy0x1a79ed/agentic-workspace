@@ -6,6 +6,7 @@ import pytest
 
 from awm.reporting.ledger import Ledger
 from awm.reporting.swarmboard import SwarmBoard
+from awm.reporting import tasks
 from awm.reporting.tasks import Tasks
 
 from stubs import FakeTrilium, make_board
@@ -230,6 +231,7 @@ async def test_a_request_needs_a_reason(env):
 
 async def test_the_next_prompt_moves_a_blocked_card_back_to_active(env):
     await env.call("request_human_user", reason="x", urgent=False)
+    assert any(tasks.blocked_marker(sid).exists() for sid in env.ledger.aliases(env.task()["id"]))
     out = await env.call("hook_prompt", prompt="here is the login")
     task = env.task()
     assert out["blocked"] is False and task["state"] == "active" and task["reason"] == ""

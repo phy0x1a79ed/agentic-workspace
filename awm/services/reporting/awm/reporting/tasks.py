@@ -43,6 +43,11 @@ class Who:
     cwd: str | None
 
 
+def blocked_marker(session_id: str):
+    """The file the prompt hook checks to send the next prompt; the hook deletes it on unblock."""
+    return roster.claude_home() / "awm-reporting" / f"{session_id}.blocked"
+
+
 def _job_state(job: str) -> dict:
     try:
         data = json.loads((roster.default_jobs_dir() / job / "state.json").read_text())
@@ -272,6 +277,10 @@ class Tasks:
         already_urgent = task["state"] == BLOCKED and bool(task.get("urgent"))
         out = await self._set(task, BLOCKED, "blocked", reason, reason=reason, urgent=int(urgent),
                               blocked_at=time.time(), reminded=0)
+        if who.session_id:
+            marker = blocked_marker(who.session_id)
+            marker.parent.mkdir(parents=True, exist_ok=True)
+            marker.touch()
         if urgent and not already_urgent:
             out["notified"] = await self._notify(self.ledger.get(task["id"]), reminder=False)
         return out
