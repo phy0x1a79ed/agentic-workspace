@@ -370,6 +370,9 @@ _DESCRIBE_VERB = "describe"
 #: Verbs ``awm describe`` lists when it is given no limit.
 DESCRIBE_LIMIT = 40
 
+#: The tool whose ``describe`` is the fleet overview rather than its own schemas.
+OVERVIEW_TOOL = "awm"
+
 _ENVELOPE_KEYS = frozenset({"verb", "args", "peer"})
 _VERB_LINE_CHARS = 100
 
@@ -805,6 +808,24 @@ def describe_overview(limit: int = DESCRIBE_LIMIT,
     }
 
 
+def _answer_describe(name: str, inner: dict, catalog: dict) -> dict:
+    """``describe`` on tool ``name``. On the ``awm`` tool with no ``tool``
+    argument it is the ranked overview of the whole surface (``limit`` caps it);
+    given ``tool`` it describes that tool; elsewhere it describes ``name``."""
+    verbs = inner.get("verbs") or inner.get("verb")
+    if name != OVERVIEW_TOOL:
+        return _describe_domain(name, verbs, catalog)
+    target = inner.get("tool")
+    if target:
+        if not isinstance(target, str):
+            raise ValueError("'tool' must be a tool name")
+        return _describe_domain(target, verbs, catalog)
+    limit = inner.get("limit", DESCRIBE_LIMIT)
+    if not isinstance(limit, int) or isinstance(limit, bool) or limit < 1:
+        raise ValueError("'limit' must be a positive integer")
+    return describe_overview(limit, catalog)
+
+
 def _find_native_op(domain: str, verb: str):
     """Locate the MCP-surface gateway-native Operation for a domain/verb pair
     (domain = ``cli_group``, verb = ``cli_command``), else ``None``."""
@@ -903,8 +924,7 @@ async def _dispatch_domain(name: str, args: dict, as_: str | None,
     _check_envelope(name, args, entry)
 
     if verb == _DESCRIBE_VERB:
-        return _serialize(_describe_domain(
-            name, inner.get("verbs") or inner.get("verb"), catalog))
+        return _serialize(_answer_describe(name, inner, catalog))
 
     # Enforce the surface gate on dispatch, not just listing: a verb absent from
     # the (surface-filtered, and for a foreign caller grant-cut) catalog is

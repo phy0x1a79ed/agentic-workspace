@@ -349,3 +349,18 @@ def test_the_cli_groups_by_tool_for_a_renamed_and_an_unrenamed_service(world):
     assert {"get", "list", "purge"} <= commands["news"]
     assert "ask" in commands["hidden"]
     assert "search" in commands["scope"]
+
+
+async def test_describe_on_the_awm_tool_is_the_overview_and_takes_a_tool(world):
+    mine = _services_only(catalog._domain_catalog())
+    mine["awm"] = [dict(mine["news"][0], verb="status")]
+    out = json.loads(await catalog._dispatch_domain(
+        "awm", {"verb": "describe", "args": {"limit": 2}}, None, mine))
+    assert "verbs" in out and "tools" in out
+    one = json.loads(await catalog._dispatch_domain(
+        "awm", {"verb": "describe", "args": {"tool": "news", "verbs": ["get"]}},
+        None, mine))
+    assert one["domain"] == "news" and [v["verb"] for v in one["verbs"]] == ["get"]
+    with pytest.raises(ValueError, match="positive integer"):
+        await catalog._dispatch_domain(
+            "awm", {"verb": "describe", "args": {"limit": 0}}, None, mine)
