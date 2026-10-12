@@ -17,7 +17,7 @@ moment to `/compact`).
 
 **Follow-up prompt (kept alive).** A bare slash command runs at end-of-turn and
 then leaves the session idle with nothing to do — for an autonomous agent that is
-death. So whenever `send` submits a slash command it also promises a **follow-up
+death. So whenever `message_self` submits a slash command it also promises a **follow-up
 prompt** (default `"Continue with what you were doing."`, override with
 `followup`), giving the session a real turn once the command completes. Plain
 prompts are their own turn and get no follow-up.
@@ -68,7 +68,7 @@ then 120 seconds, sized against that measurement. Waiting itself stays unbounded
 `/config`, `/permissions`, `/agents`, …, and bare `/model`). These *swallow*
 pasted input — a follow-up Enter doesn't escape them and for a navigable list it
 drills deeper — so they would freeze the session (only a hand-typed Esc recovers).
-`send` **refuses** them outright (this cannot be overridden by `confirm`). Run
+`message_self` **refuses** them outright (this cannot be overridden by `confirm`). Run
 them by hand. `/model opus` (with an argument) acts directly and is allowed.
 A modal that is *already* open when a send arrives is a different problem, and
 the record catches that one — see *How a send is confirmed* above.
@@ -162,10 +162,10 @@ No auth — the registration handshake carries no token.
 
 Five verbs, all on MCP + CLI + HTTP, none of which takes a target:
 
-- `reflection_send` — type any text/slash command into your own prompt and submit
+- `reflection_message_self` — type any text/slash command into your own prompt and submit
   it. Destructive commands (`/clear`, `/quit`, `/exit`) require `confirm=true`;
   modal commands (`/mcp`, `/status`, bare `/model`, …) are refused.
-- `reflection_compact` — sugar for `send "/compact"`.
+- `reflection_compact` — sugar for `message_self "/compact"`.
 - `reflection_mode` — put your own session back into bypass-permissions mode.
 - `reflection_pending` — list the deferred resumes still owed, node-wide. The
   one verb that is not caller-scoped, because its whole job is to make a *lost*
@@ -175,7 +175,7 @@ Five verbs, all on MCP + CLI + HTTP, none of which takes a target:
 The normal call carries nothing agent-specific, on either hosting kind:
 
     reflection(verb="compact")
-    reflection(verb="send", args={text: "/model opus"})
+    reflection(verb="message_self", args={text: "/model opus"})
 
 The guard tables live in `guards.py` rather than in either backend, because what
 may be injected is a property of the agent TUI and not of the transport — it

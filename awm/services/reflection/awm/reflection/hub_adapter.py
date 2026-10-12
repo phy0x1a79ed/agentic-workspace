@@ -7,8 +7,8 @@ reconnect). The service owns no database, so there is no ``on_start``.
 Surface: every verb projects onto MCP + CLI + HTTP — the MCP surface is the whole
 point (an agent calls ``reflection(verb="compact")`` on itself, with no arguments).
 
-- ``send``    — type any text/slash command into your own prompt and submit it.
-- ``compact`` — sugar for ``send`` with ``text="/compact"``.
+- ``message_self`` — type any text/slash command into your own prompt and submit it.
+- ``compact`` — sugar for ``message_self`` with ``text="/compact"``.
 - ``mode``    — put your own session back into bypass-permissions mode.
 
 Reflection acts on the caller and on nobody else, so nothing here takes a target.
@@ -51,9 +51,9 @@ log = logging.getLogger("awm.reflection.hub_adapter")
 API_MANIFEST: dict[str, Any] = {
     "functions": [
         {
-            "name": "send",
+            "name": "message_self",
             "effect": "write",
-            "tool": "reflection_send",
+            "tool": "reflection_message_self",
             "description": (
                 "Type a command/text into YOUR OWN prompt and submit it (no Escape, "
                 "so it QUEUES behind the current turn). Use for self-directed slash "
@@ -218,7 +218,7 @@ def _guarded(verb: str, fn):
                         verb, _caller_pid(args), exc)
             return {"ok": False, "error": str(exc)}
         if not result.get("ok"):
-            # Never log the rest of `args`: for `send`, `text` is the caller's
+            # Never log the rest of `args`: for `message_self`, `text` is the caller's
             # own prompt content.
             log.info("reflection: %s refused for caller pid %s: %s", verb,
                      _caller_pid(args),
@@ -227,7 +227,7 @@ def _guarded(verb: str, fn):
     return run
 
 
-def _handle_send(args: dict) -> dict:
+def _handle_message_self(args: dict) -> dict:
     return inject.send(
         args["text"],
         caller_pid=_caller_pid(args),
@@ -274,7 +274,7 @@ def _handle_pending(args: dict) -> dict:
 
 
 HANDLERS = {verb: _guarded(verb, fn) for verb, fn in {
-    "send": _handle_send,
+    "message_self": _handle_message_self,
     "compact": _handle_compact,
     "mode": _handle_mode,
     "pending": _handle_pending,
