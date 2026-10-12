@@ -38,7 +38,7 @@ CID="$(docker compose -p rlm-factorio ps -q factorio)"
 
 # Copy the seed in as a named save, then load it via the realm verb:
 docker cp seeds/railworld-rich.zip "$CID:/factorio/saves/railworld.zip"
-#   then:  rlm_factorio_world_load { session_id, name: "railworld" }
+#   then:  factorio_world_load { session_id, name: "railworld" }
 # or against the supervisor control surface directly:
 #   curl -X POST http://127.0.0.1:12142/load -d '{"name":"railworld"}'
 ```
