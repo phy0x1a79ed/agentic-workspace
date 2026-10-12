@@ -45,15 +45,16 @@ SUPERVISOR = daemon.Supervisor(
 )
 
 
-#: Every function is named ``science_<verb>``: the service is ``claude-science``
-#: but the tool is ``science``, and the first-underscore fold would otherwise cut
-#: the service name in half (``claude_science_status`` -> domain ``claude``). The
-#: explicit ``tool`` repeats the name so a gateway that still projects it keeps
-#: the same surface. Daemon-lifecycle verbs are hidden from MCP with ``surfaces``.
+#: ``name`` is the service-internal handle (``/svc/claude-science/fn/<name>``);
+#: ``tool`` is the published name, ``science_<verb>``. The service is
+#: ``claude-science`` but the tool is ``science``: the first-underscore fold
+#: would otherwise cut the service name in half (``claude_science_status`` ->
+#: domain ``claude``). Daemon-lifecycle verbs are hidden from MCP with
+#: ``surfaces``.
 API_MANIFEST: dict[str, Any] = {
     "functions": [
         {
-            "name": "science_status",
+            "name": "status",
             "tool": "science_status",
             "effect": "read",
             "description": (
@@ -67,7 +68,7 @@ API_MANIFEST: dict[str, Any] = {
             "params": [],
         },
         {
-            "name": "science_start",
+            "name": "start",
             "tool": "science_start",
             "effect": "write",
             "surfaces": ["cli", "http"],
@@ -80,7 +81,7 @@ API_MANIFEST: dict[str, Any] = {
             "timeout": 180,
         },
         {
-            "name": "science_stop",
+            "name": "stop",
             "tool": "science_stop",
             "effect": "write",
             "surfaces": ["cli", "http"],
@@ -93,7 +94,7 @@ API_MANIFEST: dict[str, Any] = {
             "timeout": 180,
         },
         {
-            "name": "science_restart",
+            "name": "restart",
             "tool": "science_restart",
             "effect": "write",
             "surfaces": ["cli", "http"],
@@ -105,7 +106,7 @@ API_MANIFEST: dict[str, Any] = {
             "timeout": 300,
         },
         {
-            "name": "science_logs",
+            "name": "logs",
             "tool": "science_logs",
             "effect": "read",
             "surfaces": ["cli", "http"],
@@ -116,7 +117,7 @@ API_MANIFEST: dict[str, Any] = {
             ],
         },
         {
-            "name": "science_url",
+            "name": "url",
             "tool": "science_url",
             "effect": "secret",
             "description": (
@@ -128,7 +129,7 @@ API_MANIFEST: dict[str, Any] = {
             "params": [],
         },
         {
-            "name": "science_signin_url",
+            "name": "signin_url",
             "tool": "science_signin_url",
             "effect": "secret",
             "description": (
@@ -139,7 +140,7 @@ API_MANIFEST: dict[str, Any] = {
             "params": [],
         },
         {
-            "name": "science_connector",
+            "name": "connector",
             "tool": "science_connector",
             "effect": "write",
             "description": (
@@ -171,7 +172,7 @@ API_MANIFEST: dict[str, Any] = {
             "timeout": 180,
         },
         {
-            "name": "science_grants",
+            "name": "grants",
             "tool": "science_grants",
             "effect": "write",
             "description": (
@@ -189,7 +190,7 @@ API_MANIFEST: dict[str, Any] = {
             "timeout": 120,
         },
         {
-            "name": "science_message",
+            "name": "message",
             "tool": "science_message",
             "effect": "write",
             "description": (
@@ -210,7 +211,7 @@ API_MANIFEST: dict[str, Any] = {
             "timeout": 120,
         },
         {
-            "name": "science_read",
+            "name": "read",
             "tool": "science_read",
             "effect": "read",
             "description": (
@@ -236,7 +237,7 @@ API_MANIFEST: dict[str, Any] = {
             "timeout": 120,
         },
         {
-            "name": "science_update_check",
+            "name": "update_check",
             "tool": "science_update_check",
             "effect": "read",
             "surfaces": ["cli", "http"],
@@ -396,18 +397,18 @@ async def _h_update_check(args: dict) -> dict:
 
 
 HANDLERS = {
-    "science_status": _h_status,
-    "science_start": _h_start,
-    "science_stop": _h_stop,
-    "science_restart": _h_restart,
-    "science_logs": _h_logs,
-    "science_url": _h_url,
-    "science_signin_url": _h_signin_url,
-    "science_connector": _h_connector,
-    "science_grants": _h_grants,
-    "science_message": _h_message,
-    "science_read": _h_read,
-    "science_update_check": _h_update_check,
+    "status": _h_status,
+    "start": _h_start,
+    "stop": _h_stop,
+    "restart": _h_restart,
+    "logs": _h_logs,
+    "url": _h_url,
+    "signin_url": _h_signin_url,
+    "connector": _h_connector,
+    "grants": _h_grants,
+    "message": _h_message,
+    "read": _h_read,
+    "update_check": _h_update_check,
 }
 
 

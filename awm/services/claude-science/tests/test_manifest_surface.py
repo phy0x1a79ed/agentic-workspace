@@ -22,14 +22,12 @@ pytestmark = [pytest.mark.unit, pytest.mark.smoke]
 FUNCTIONS = API_MANIFEST["functions"]
 
 
-def test_every_function_is_named_for_the_science_tool():
-    """The tool is `science`, not the service's `claude-science`: a function
-    named after the service would fold into domain `claude`."""
+def test_every_function_publishes_a_science_tool_over_its_short_name():
+    """The tool is `science`, not the service's `claude-science`: a published
+    name built from the service would fold into domain `claude`. `name` stays
+    the service-internal handle behind `/svc/claude-science/fn/<name>`."""
     for fn in FUNCTIONS:
-        tool, _, verb = fn["name"].partition("_")
-        assert tool == "science", fn["name"]
-        assert verb, fn["name"]
-        assert fn["tool"] == fn["name"], fn
+        assert fn["tool"] == f"science_{fn['name']}", fn
 
 
 def test_service_toml_declares_the_tool_and_tier():
@@ -40,11 +38,11 @@ def test_service_toml_declares_the_tool_and_tier():
 
 def test_only_the_daemon_verbs_are_hidden_from_mcp():
     """Hidden verbs keep answering on the CLI and over HTTP."""
-    hidden = {fn["name"] for fn in FUNCTIONS
+    hidden = {fn["tool"] for fn in FUNCTIONS
               if fn.get("surfaces") == ["cli", "http"]}
     assert hidden == {"science_start", "science_stop", "science_restart",
                       "science_logs", "science_update_check"}
-    visible = {fn["name"] for fn in FUNCTIONS} - hidden
+    visible = {fn["tool"] for fn in FUNCTIONS} - hidden
     assert visible == {"science_status", "science_url", "science_signin_url",
                        "science_connector", "science_grants",
                        "science_message", "science_read"}
@@ -58,8 +56,7 @@ def test_the_destructive_verbs_carry_a_timeout():
     """They shell out to a binary that stops and starts a daemon holding a
     ~6 GB environment; the default 30s client ceiling would abort mid-stop and
     leave the socket and owner lock behind."""
-    slow = {"science_start", "science_stop", "science_restart",
-            "science_update_check"}
+    slow = {"start", "stop", "restart", "update_check"}
     for fn in FUNCTIONS:
         if fn["name"] in slow:
             assert fn.get("timeout", 0) >= 180, fn["name"]

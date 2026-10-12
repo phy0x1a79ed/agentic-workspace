@@ -75,6 +75,19 @@ def test_the_default_allowlist_excludes_the_dangerous_domains():
         assert domain not in mcp_bridge.DEFAULT_ALLOWLIST, domain
 
 
+def test_the_default_allowlist_is_the_post_plan_read_surface():
+    assert mcp_bridge.DEFAULT_ALLOWLIST == {
+        "scope": ("search", "resolve"),
+        "journal": ("fetch",),
+        "search": ("query", "get"),
+        "drawio": ("list", "info", "read", "cells", "export", "url",
+                   "view_url"),
+        "graphify": ("find", "refs", "query", "path", "affected"),
+        "dvc": ("coverage", "scope_status"),
+        "precedence": ("search",),
+    }
+
+
 def test_no_write_shaped_verb_is_allowlisted_by_default():
     forbidden = {"create", "delete", "complete", "post", "update", "remove",
                  "write", "merge", "scatter", "gather", "restore", "import"}
@@ -137,17 +150,17 @@ def test_tools_list_returns_only_allowlisted_pairs():
 
 
 def test_listing_survives_a_verb_whose_name_contains_an_underscore():
-    """`scope_data_status` must resolve to (scope, data_status), not (scope,
-    data) — the reason the catalog is indexed by exact name rather than split."""
+    """`dvc_scope_status` must resolve to (dvc, scope_status), not (dvc,
+    scope) — the reason the catalog is indexed by exact name rather than split."""
     async def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={"tools": [
-            {"name": "scope_data_status", "description": "data view"},
+            {"name": "dvc_scope_status", "description": "data view"},
         ]})
 
     reply = _call({"jsonrpc": "2.0", "id": 7, "method": "tools/list"}, handler)
     names = [t["name"] for t in reply["result"]["tools"]]
-    assert mcp_bridge.tool_name("scope", "data_status") in names
-    assert mcp_bridge.split_tool(names[0]) == ("scope", "data_status")
+    assert mcp_bridge.tool_name("dvc", "scope_status") in names
+    assert mcp_bridge.split_tool(names[0]) == ("dvc", "scope_status")
 
 
 def test_an_allowlisted_domain_that_is_not_running_is_simply_absent():

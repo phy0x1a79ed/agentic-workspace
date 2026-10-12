@@ -109,9 +109,11 @@ a node that deploys the tree without running the service still mounts the panel
 with no peer selector.
 
 **The verb surface is `science`, not `claude-science`.** `service.toml` sets
-`tool = "science"`, and every function the manifest registers is named
-`science_<verb>`: the gateway folds a name by splitting on its *first*
-underscore, so `claude_science_status` would land as domain `claude`. The
+`tool = "science"`, and every manifest entry publishes a `tool` of
+`science_<verb>` while its `name` stays the short service-internal handle
+(`/svc/claude-science/fn/status`): the gateway folds a published name by
+splitting on its *first* underscore, so `claude_science_status` would land as
+domain `claude`. The
 surface is `awm science status`, `mcp__awm__science {verb:"status"}`. The
 service, the prefix and the folder keep the full name.
 
@@ -333,7 +335,7 @@ call `ssh`, `compute`, `social` and gateway control, and the mode gate for
 `cx`-started sessions documents itself as *not* a trust boundary. So the bridge ships an
 explicit `{domain: verbs}` list, enforced on `tools/call` and not merely on
 `tools/list` (hiding a tool is not refusing it). It defaults to read/query verbs
-of `scope`, `project`, `notes`, `drawio`, `graphify`, `dvc`,
+of `scope`, `journal`, `search`, `drawio`, `graphify`, `dvc` and
 `precedence`. Widen it in `CLAUDE_SCIENCE_MCP_ALLOW`, deliberately.
 
 ## Host file access
