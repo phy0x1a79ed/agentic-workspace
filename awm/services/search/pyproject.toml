@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "awm-search"
+version = "0.1.0"
+requires-python = ">=3.11"
+description = "AWM search service: one ranked search over the archive's plug-in sources, live sources and peer nodes."
+dependencies = [
+    "awm-config",
+    "awm-persistence",
+    "awm-gatewayclient",
+    "httpx",
+]
+
+# PEP 420 namespace package: no top-level awm/__init__.py; the namespace dir is awm/search/.
+[tool.setuptools.packages.find]
+include = ["awm.search*"]
+namespaces = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+markers = [
+    "smoke: fast unit + tiny in-process tests; target <30s, run on every dev iteration",
+    "search: the registry, the index, the merge and the federation",
+    "integration: cross-component integration tests",
+]
