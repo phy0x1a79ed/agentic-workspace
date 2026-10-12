@@ -19,10 +19,7 @@ The tree is a set of pip dists under `awm/` that merge into the PEP 420 `awm` na
 - **Frontend source** — `awm/ui_components/` and `awm/pages/`. See § *Frontend*.
 - **Feature services** — `awm/services/<name>/`, each with its own dist, DB and `run.sh`. `awm services list` reports the live set. Each folder's `INSTALL.md` is its contract.
 
-Two facts about services are not visible in the directory:
-
-- `skills` is retired. The rest of its catalog is reference-only on disk.
-- `compute` acts on processes it does not own. It kills and renices agent-launched jobs. Add anything new that agents launch and must keep (a long-lived server, a tunnel, an MCP shim) to its `PROTECTED` list.
+**CAUTION** `compute` acts on processes it does not own. It kills and renices agent-launched jobs. Add anything new that agents launch and must keep (a long-lived server, a tunnel, an MCP shim) to its `PROTECTED` list.
 
 The `awm/gateway/awm/gateway/` nesting is intentional. It is a PEP 420 layout that lets several uninstalled worktrees each shadow `awm.gateway` through `PYTHONPATH`. Do not flatten it.
 
@@ -40,7 +37,7 @@ Each feature service owns its own SQLite DB. There is no shared `state.db`. Serv
 
 There are no `rooms`, `messages` or `session_logs` tables. One `scope_posts` table (kind `message`, `journal`, `system`, …) and `scope_subscribers`, addressed by `(project, scope)`, carry everything. A non-agent inbox (`user:`, `project:`, `workspace`) is a non-literal channel with `owner_project=''`. The surface is `scope_post`, `scope_fetch`, `scope_subscribe`, `scope_unsubscribe` and `scope_archive_search`, in `awm/services/scopes/awm/scopes/channel.py`, `archive.py` and `operations/scope_channel.py`.
 
-A post is passive mail. It starts no session and wakes no one. Agents on one node message each other with Claude's `SendMessage`, and swarms message each other through the board (`skills/awm/board-card.md`). Only a deliberate post, such as a debrief, enters the channel.
+A post is passive mail. It starts no session and wakes no one. Agents on one node message each other with Claude's `SendMessage`, and swarms message each other through the board (`FEDERATION.md` § *The front door*). Only a deliberate post, such as a debrief, enters the channel.
 
 A post that arrives through the edge takes its author from the edge's `X-Awm-As` stamp, never from the `author` argument. The claimed author moves to `meta.claimed_author`. A caller with no stamp may not send an author of the form `peer:…`.
 
