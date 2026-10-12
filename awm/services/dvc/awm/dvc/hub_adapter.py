@@ -14,6 +14,8 @@ Three jobs, one config:
   - ``status`` / ``resolve`` / ``pull`` / ``push`` — the hash-selective inverse,
     moving only the objects one scope actually pins.
   - ``coverage`` — what the two remotes between them do *not* hold.
+  - ``scope_status`` / ``mount`` / ``gc`` — a scope's DVC wiring and the
+    shared cache's garbage collection, via :mod:`awm.dvc.scopedata`.
 
 The two scheduled backups run inside this process: ``on_start`` attaches
 :class:`awm.dvc.scheduler.Scheduler` under ``spawn_supervised``, and ``jobs`` /
@@ -43,7 +45,7 @@ from typing import Any
 from awm.gatewayclient import ServiceAdapter, spawn_supervised
 
 from awm.dvc import coverage as coveragemod
-from awm.dvc import cron, jobs, runs, transfer
+from awm.dvc import cron, jobs, runs, scopedata, transfer
 from awm.dvc.config import load as load_config
 from awm.dvc.globus import task_status, wait
 from awm.dvc.scheduler import Scheduler
@@ -66,6 +68,10 @@ _SCOPE_PARAM = {
         "(e.g. 'projects/fabfos/dev')."
     ),
 }
+
+_PROJECT_PARAM = {"name": "project", "type": "string", "required": True}
+
+_SCOPE_NAME_PARAM = {"name": "scope", "type": "string", "required": True}
 
 _DRY_RUN_PARAM = {
     "name": "dry_run",
@@ -282,6 +288,66 @@ API_MANIFEST: dict[str, Any] = {
             "timeout": 30.0,
             "surfaces": _CLI_HTTP,
         },
+        {
+            "name": "scope_status",
+            "effect": "read",
+            "tool": "dvc_scope_status",
+            "description": (
+                "Report a scope's data view: mode (dvc | legacy shared symlink | "
+                "missing), the commit that pins the data, which chunks it pins, "
+                "which of those are materialised on disk, and whether the workspace "
+                "still matches the pins. There is no separate data branch to drift "
+                "— the code revision IS the data revision."
+            ),
+            "params": [_PROJECT_PARAM, _SCOPE_NAME_PARAM],
+            # `dvc status` walks every pin.
+            "timeout": 300.0,
+        },
+        {
+            "name": "mount",
+            "effect": "write",
+            "tool": "dvc_mount",
+            "description": (
+                "Choose which data chunks this scope materialises on disk, e.g. "
+                "['data/pipeline/model']. Every chunk the branch pins stays pinned, "
+                "hashed and backed up regardless — this only decides what costs "
+                "inodes and checkout time here, so a scope can pin a 30 GB archive "
+                "it never reads. Pass no chunks to materialise everything. "
+                "To COMMIT data, use ordinary git: `dvc add <path>` then commit the "
+                "generated .dvc pin alongside your code."
+            ),
+            "params": [
+                _PROJECT_PARAM,
+                _SCOPE_NAME_PARAM,
+                {"name": "chunks", "type": "array", "required": False},
+            ],
+            # changing the mount list re-checks-out.
+            "timeout": 900.0,
+        },
+        {
+            "name": "gc",
+            "effect": "write",
+            "tool": "dvc_gc",
+            "description": (
+                "Reclaim shared-cache space by deleting objects no listed project "
+                "references. DRY RUN BY DEFAULT — pass dry_run=false to delete. "
+                "The cache is shared workspace-wide: name every DVC-wired project "
+                "either in projects (its data survives) or in exclude (its data is "
+                "dropped on purpose), or the call is refused. Keeps every output "
+                "pinned by any commit, staged index or worktree file, plus any "
+                "object touched within the grace window. Refuses while a pinned "
+                ".dir manifest is missing from the cache, unless its id is in "
+                "accept_missing. Takes no repo locks; only one gc runs at a time."
+            ),
+            "params": [
+                {"name": "projects", "type": "array", "required": True},
+                {"name": "exclude", "type": "array", "required": False},
+                {"name": "accept_missing", "type": "array", "required": False},
+                {"name": "dry_run", "type": "boolean", "required": False},
+                {"name": "keep", "type": "string", "required": False},
+            ],
+            "timeout": 600.0,
+        },
     ],
     "emitters": [
         {
@@ -410,6 +476,15 @@ HANDLERS = {
     "runs":     _runs,
     "run":      _run,
     "schedule": _schedule,
+    "scope_status": lambda a: scopedata.scope_status(a["project"], a["scope"]),
+    "mount":   lambda a: scopedata.mount(a["project"], a["scope"], a.get("chunks")),
+    "gc":      lambda a: scopedata.gc(
+                   a["projects"],
+                   dry_run=bool(a.get("dry_run", True)),
+                   keep=a.get("keep", "all-commits"),
+                   exclude=a.get("exclude"),
+                   accept_missing=a.get("accept_missing"),
+               ),
 }
 
 
