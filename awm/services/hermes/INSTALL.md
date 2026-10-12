@@ -240,7 +240,7 @@ a curl cannot reach.
 
 ## Not done here
 
-**Hermes is not a session harness.** `cx start` launches Claude Code sessions
+**Hermes is not a session harness.** `reflection start_other` launches Claude Code sessions
 only. Config parity is what "mirrors opencode" meant, and a Hermes launcher is a
 separate piece of work.
 
