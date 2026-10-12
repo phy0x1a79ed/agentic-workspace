@@ -14,6 +14,7 @@ import logging
 import re
 import time
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, Awaitable, Callable
 
 from awm import gatewayclient
@@ -41,6 +42,17 @@ class Who:
     pid: int
     session_id: str
     cwd: str | None
+
+
+def _posted_at(post: dict) -> float:
+    """A scopes post's time in epoch seconds. Scopes sends ISO text; older posts carried ms."""
+    ts = post.get("ts")
+    if isinstance(ts, (int, float)):
+        return ts / 1000.0
+    try:
+        return datetime.fromisoformat(str(ts)).timestamp()
+    except ValueError:
+        return 0.0
 
 
 def blocked_marker(session_id: str):
@@ -400,7 +412,7 @@ class Tasks:
         title = str(meta.get("title") or "").strip()
         for task in self.ledger.open(self.node):
             if ((task["project"], task["scope"]) == (post.get("project"), post.get("scope"))
-                    and (post.get("ts") or 0) / 1000.0 >= task["started"]
+                    and _posted_at(post) >= task["started"]
                     and self.ledger.event(task["id"], "journal", f"{title}\n\n{body}" if title else body,
                                           ref=str(post["id"]))):
                 self.ledger.update(task["id"], dirty=1)

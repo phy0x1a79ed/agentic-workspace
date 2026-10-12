@@ -414,9 +414,11 @@ async def test_no_reminder_when_the_card_was_unblocked_or_not_urgent(env, monkey
 
 def post(pid="p1", scope="feat/x", ts=None, **over):
     import time
+    from datetime import datetime, timezone
 
+    iso = datetime.fromtimestamp(ts or time.time() + 5, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     return {"id": pid, "project": "awm", "scope": scope, "kind": "journal", "body": "did the thing",
-            "ts": (ts or time.time() + 5) * 1000, "meta": {}, **over}
+            "ts": iso, "meta": {}, **over}
 
 
 async def in_scope(env, tmp_path):
