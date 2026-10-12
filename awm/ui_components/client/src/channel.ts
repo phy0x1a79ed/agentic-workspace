@@ -7,9 +7,9 @@
  * Everything rides `svc()` / `apiFetch`, the same `/svc/<name>` surface every
  * other service call uses.
  *
- * Backend ops (over /svc/scopes/fn/*):
- *   scope_fetch(project, scope, kind?, limit?, order?, before_ts?)
- *   scope_post(project, scope, author, body, kind?, meta?, to_scope?)
+ * Backend ops (over /svc/journal/fn/*):
+ *   fetch(project, scope, kind?, limit?, order?, before_ts?)
+ *   post(project, scope, author, body, kind?, meta?, to_scope?)
  */
 
 import { svc } from './svc';
@@ -54,8 +54,8 @@ export async function fetchScope(
   scope: string,
   opts: FetchOpts = {},
 ): Promise<ScopePost[]> {
-  const { posts } = await svc('scopes').fn<{ posts: ScopePost[]; total: number }>(
-    'scope_fetch',
+  const { posts } = await svc('journal').fn<{ posts: ScopePost[]; total: number }>(
+    'fetch',
     { project, scope, order: 'asc', ...opts },
   );
   return posts ?? [];
@@ -76,7 +76,7 @@ export async function postToScope(
   body: string,
   opts: PostOpts = {},
 ): Promise<ScopePost> {
-  const { post } = await svc('scopes').fn<{ post: ScopePost }>('scope_post', {
+  const { post } = await svc('journal').fn<{ post: ScopePost }>('post', {
     project,
     scope,
     author: opts.author ?? awmAs(),
