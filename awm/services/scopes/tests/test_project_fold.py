@@ -134,6 +134,12 @@ class TestMainCheckout:
 
 
 class TestProjectListing:
+    def test_a_scope_limit_never_shortens_the_project_list(self, seeded_scopes, hand_made_project):
+        every = {p.name for p in scopes.search_scopes(status="all").projects}
+        limited = scopes.search_scopes(status="all", limit=1)
+        assert len(limited.scopes) == 1
+        assert {p.name for p in limited.projects} == every and len(every) > 1
+
     def test_no_project_lists_every_project_with_counts_and_its_main_checkout(
             self, seeded_scopes, hand_made_project):
         found = scopes.search_scopes(status="all")

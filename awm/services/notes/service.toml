@@ -1,5 +1,5 @@
 tool = "notes"
-tier = "on"
+tier = "off"
 
 [[archive]]
 name = "notes"

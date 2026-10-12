@@ -1,5 +1,5 @@
 tool = "writing"
-tier = "on"
+tier = "off"
 
 [[archive]]
 name = "writing"

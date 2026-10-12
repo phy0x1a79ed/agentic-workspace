@@ -64,7 +64,7 @@ def _manifests() -> dict[str, list[dict]]:
     for path in (sorted(SERVICES.glob("*/awm/*/hub_adapter.py"))
                  + sorted(SERVICES.glob("*/awm/*/service.py"))
                  + sorted(SERVICES.glob("*/awm/*/operations.py"))
-                 + sorted(SERVICES.glob("scopes/awm/scopes/operations/*.py"))):
+                 + sorted(SERVICES.glob("*/awm/*/operations/*.py"))):
         entries = _function_entries(ast.parse(path.read_text()))
         if entries:
             found.setdefault(path.parts[len(SERVICES.parts)], []).extend(

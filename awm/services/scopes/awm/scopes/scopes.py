@@ -331,20 +331,11 @@ def _generate_history_md(project: str, scope: str) -> str:
     """The scope's ``history.md`` text, rendered by the journal service."""
     from awm.gatewayclient import call_sync
 
-    # 'allocated' is how every scope is born and nothing promotes it to
-    # 'active', so filtering on 'active' alone named ~1 sibling in 23. Every
-    # other live-scope predicate in this service uses the pair; this was the
-    # sole outlier.
-    siblings = ScopesDAO().query_all(
-        "SELECT a.scope FROM agents a "
-        "JOIN projects p ON p.id = a.project_id "
-        "WHERE p.name=? AND a.scope!=? AND a.status IN ('allocated','active')",
-        (project, scope),
-    )
+    live = search_scopes(project=project, status="active", limit=1000).scopes
     reply = call_sync(
         "journal", "render",
         {"project": project, "scope": scope, "write": False,
-         "siblings": [r["scope"] for r in siblings]},
+         "siblings": [s.scope for s in live if s.scope != scope]},
         timeout=60.0,
     )
     return reply["content"]
@@ -1400,7 +1391,7 @@ def search_scopes(
     listing = None
     if not project:
         from awm.scopes import projects as projects_mod
-        listing = projects_mod.search_projects(query=query, limit=limit)
+        listing = projects_mod.search_projects(query=query, limit=limit if query else None)
         degraded = degraded or listing.degraded
     return ScopeListResponse(scopes=merged, total=len(merged), degraded=degraded,
                              projects=listing.projects if listing else None)

@@ -183,12 +183,13 @@ def create_project(req: ProjectCreateRequest) -> ProjectCreateResponse:
 def search_projects(
     query: str | None = None,
     active_only: bool = False,
-    limit: int = 50,
+    limit: int | None = 50,
     offset: int = 0,
 ) -> ProjectListResponse:
     """List projects from the agents table and the on-disk project dirs, with scope counts.
 
-    A project's main checkout counts as one active scope.
+    A project's main checkout counts as one active scope. ``limit=None`` lists
+    every project when there is no query.
     """
     dao = ScopesDAO()
     rows = dao.query_all(
@@ -221,7 +222,8 @@ def search_projects(
     if active_only:
         items = [p for p in items if p.scope_counts.active > 0]
     if not query:
-        return ProjectListResponse(projects=items[offset:offset + limit])
+        end = None if limit is None else offset + limit
+        return ProjectListResponse(projects=items[offset:end])
 
     q = query.lower()
     merged = [p for p in items if q in p.name.lower()][offset:offset + limit]
