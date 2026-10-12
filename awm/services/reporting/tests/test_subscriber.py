@@ -9,7 +9,7 @@ import httpx
 import pytest
 
 from awm.board.client import RESYNC, BoardClient, BoardError
-from awm.representative.subscriber import Subscriber
+from awm.reporting.subscriber import Subscriber
 
 from stubs import FakeBoard, make_card
 
@@ -255,7 +255,7 @@ async def test_a_claim_that_dies_in_transit_leaves_the_mark_for_recovery(queue):
 
 
 async def test_catch_up_pages_so_cards_past_the_first_page_are_not_missed(queue, monkeypatch):
-    monkeypatch.setattr("awm.representative.subscriber.PAGE", 3)
+    monkeypatch.setattr("awm.reporting.subscriber.PAGE", 3)
     sub, board, _ = build(queue)
     posted = [board.add(make_card()) for _ in range(8)]
     messages = [board.add(make_card(kind="message")) for _ in range(7)]
@@ -286,7 +286,7 @@ async def test_one_card_failing_in_a_catch_up_does_not_stop_the_others(queue):
 
 
 async def test_a_failing_catch_up_still_lets_the_stream_start(queue, monkeypatch):
-    monkeypatch.setattr("awm.representative.subscriber.RESTART_DELAY_S", 0.01)
+    monkeypatch.setattr("awm.reporting.subscriber.RESTART_DELAY_S", 0.01)
     sub, board, _ = build(queue)
     card = board.add(make_card())
     board.post_event("card.posted", card)
@@ -312,7 +312,7 @@ async def test_repeated_failures_back_off_instead_of_spinning(queue, monkeypatch
             raise asyncio.CancelledError
         await real_sleep(0)
 
-    monkeypatch.setattr("awm.representative.subscriber.asyncio.sleep", fake_sleep)
+    monkeypatch.setattr("awm.reporting.subscriber.asyncio.sleep", fake_sleep)
     sub, board, _ = build(queue)
     board.list_error = BoardError(503, "down")
 
@@ -395,7 +395,7 @@ async def test_a_catch_up_queues_only_recent_messages(queue):
 
 
 async def test_run_survives_a_failing_stream_and_retries(queue, monkeypatch):
-    monkeypatch.setattr("awm.representative.subscriber.RESTART_DELAY_S", 0.01)
+    monkeypatch.setattr("awm.reporting.subscriber.RESTART_DELAY_S", 0.01)
     sub, board, _ = build(queue)
     card = board.add(make_card())
     board.post_event("card.posted", card)
@@ -474,7 +474,7 @@ async def test_a_network_error_on_a_claim_is_handled_the_same_way(queue):
 
 
 async def test_a_failed_event_asks_for_a_prompt_catch_up(queue, monkeypatch):
-    monkeypatch.setattr("awm.representative.subscriber.KICK_DELAY_S", 0.01)
+    monkeypatch.setattr("awm.reporting.subscriber.KICK_DELAY_S", 0.01)
     sub, board, _ = build(queue, catchup_s=3600.0)
     card = board.add(make_card())
     board.post_event("card.posted", card)

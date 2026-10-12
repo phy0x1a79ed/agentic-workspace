@@ -1,11 +1,11 @@
-# Installing the `door` service
+# Installing the `reporting` service
 
 ## Purpose & Contents
 
-This file is the operator's contract for the `door` service: what it is, when
+This file is the operator's contract for the `reporting` service: what it is, when
 it runs, the environment it reads, and how to test it. It does not hold the verb
-list (`awm door --help` renders it from the live manifest) or the
-representative's instructions (`awm/representative/personas.py`).
+list (`awm reporting --help` renders it from the live manifest) or the
+representative's instructions (`awm/reporting/personas.py`).
 
 ## What this is
 
@@ -34,15 +34,15 @@ first, and each door starts its own representative.
 | `AWM_FRONT_DOOR` | `1` enables the door |
 | `AWM_SWARM` | this swarm's name. The door claims cards addressed to it (default `tony`) |
 | `AWM_BOARD_URL`, `AWM_BOARD_TOKEN` | the board's door and this swarm's party token. Without them the door still keeps its sessions alive and queues nothing |
-| `AWM_DOOR_DB` | the queue file (default: the standard service state path, `<workspace>/.awm/services/door/door.db`) |
-| `AWM_DOOR_STATE` | where the reconcile lock lives (default: beside the queue) |
-| `AWM_DOOR_INTERVAL_S` | seconds between reconcile ticks (default 60) |
-| `AWM_DOOR_CATCHUP_S` | seconds between board catch-up reads (default 300) |
-| `AWM_DOOR_NOTIFY_BATCH_S` | seconds a new card waits for others before the representative is woken (default 5) |
-| `AWM_DOOR_NOTIFY_RETRY_S` | seconds before a failed wake is retried (default 30) |
-| `AWM_DOOR_REANNOUNCE_MIN` | minutes a card may stay queued before the representative is told again, "N still waiting" (default 10) |
-| `AWM_DOOR_WORK_PROJECT`, `AWM_DOOR_WORK_SCOPE` | where delegates start when a card names no scope (default `awm`, `door-work`). The door creates the scope with `scope_create` on a tick when its worktree is missing, and retries on the next tick after a failure |
-| `AWM_DOOR_MESSAGE_BACKLOG_S` | how old a message card may be and still be queued by a catch-up (default 3 days) |
+| `AWM_REPORTING_DB` | the queue file (default: the standard service state path, `<workspace>/.awm/services/reporting/reporting.db`) |
+| `AWM_REPORTING_STATE` | where the reconcile lock lives (default: beside the queue) |
+| `AWM_REPORTING_INTERVAL_S` | seconds between reconcile ticks (default 60) |
+| `AWM_REPORTING_CATCHUP_S` | seconds between board catch-up reads (default 300) |
+| `AWM_REPORTING_NOTIFY_BATCH_S` | seconds a new card waits for others before the representative is woken (default 5) |
+| `AWM_REPORTING_NOTIFY_RETRY_S` | seconds before a failed wake is retried (default 30) |
+| `AWM_REPORTING_REANNOUNCE_MIN` | minutes a card may stay queued before the representative is told again, "N still waiting" (default 10) |
+| `AWM_REPORTING_WORK_PROJECT`, `AWM_REPORTING_WORK_SCOPE` | where delegates start when a card names no scope (default `awm`, `door-work`). The door creates the scope with `scope_create` on a tick when its worktree is missing, and retries on the next tick after a failure |
+| `AWM_REPORTING_MESSAGE_BACKLOG_S` | how old a message card may be and still be queued by a catch-up (default 3 days) |
 
 ## How it keeps its sessions
 
@@ -55,7 +55,7 @@ recognised, and the replacement start is refused while it still holds the name. 
 `personas.py`, which always passes an explicit `permission`. The door never
 renames or takes a session. When `cx list` fails the tick does nothing.
 
-A session counts as alive only when it can work. `door status` gives each role
+A session counts as alive only when it can work. `reporting status` gives each role
 `sessions.<role>` with `alive`, `state` and `reason`. `representative_alive` and
 `secretary_alive` stay. The state comes from the `state`, `needs` and `detail`
 fields of the role's `cx list` row. Claude Code sets `blocked` and `failed` from
@@ -78,9 +78,9 @@ the life of the process, so a second copy of the service reconciles nothing.
 
 When cards arrive, the door types one line into the representative's session
 over the Claude Code daemon's PTY socket (`awm.claudedaemon.job`): "N new
-cards, run door list". The line never carries card text. A session at a modal
+cards, run reporting card_list". The line never carries card text. A session at a modal
 prompt, or in any status other than idle or busy, is skipped and retried. A
-card that stays queued is announced again after `AWM_DOOR_REANNOUNCE_MIN`.
+card that stays queued is announced again after `AWM_REPORTING_REANNOUNCE_MIN`.
 
 ## Install
 
@@ -91,8 +91,8 @@ into the `awm` env and writes the gitignored `.runtime-env` sidecar.
 
 ## Tests
 
-    PYTHONPATH=awm/services/representative:awm/services/board:awm/service_components/config:awm/service_components/persistence:awm/service_components/gatewayclient:awm/service_components/claudedaemon \
-      mamba run -n awm python -m pytest -p no:cacheprovider awm/services/representative/tests
+    PYTHONPATH=awm/services/reporting:awm/services/board:awm/service_components/config:awm/service_components/persistence:awm/service_components/gatewayclient:awm/service_components/claudedaemon \
+      mamba run -n awm python -m pytest -p no:cacheprovider awm/services/reporting/tests
 
 The `awm` env's editable installs point at the deployed tree, so the explicit
 `PYTHONPATH` is what makes the run use this checkout. The board is on the path

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from awm.representative.store import Queue
+from awm.reporting.store import Queue
 
 from stubs import make_card
 
@@ -36,8 +36,8 @@ def test_a_redelivery_keeps_the_arrival_time_and_the_assignment(queue):
 
 def test_the_queue_survives_a_restart(tmp_path):
     card = make_card(priority="urgent")
-    Queue(tmp_path / "door.db").enqueue(card)
-    reopened = Queue(tmp_path / "door.db")
+    Queue(tmp_path / "reporting.db").enqueue(card)
+    reopened = Queue(tmp_path / "reporting.db")
     got = reopened.get(card["id"])
     assert (got["priority"], got["status"]) == ("urgent", "queued")
     assert got["arrival_at"].endswith("Z")
@@ -189,10 +189,10 @@ def test_assigned_cards_are_not_announced_again(queue):
 
 
 def test_the_sessions_the_door_started_are_recorded_per_role(tmp_path):
-    q = Queue(tmp_path / "door.db")
+    q = Queue(tmp_path / "reporting.db")
     q.record_session("representative", "aaaa1111")
     q.record_session("representative", "aaaa1111")
     q.record_session("secretary", "bbbb2222")
-    assert Queue(tmp_path / "door.db").session_jobs("representative") == {"aaaa1111"}
+    assert Queue(tmp_path / "reporting.db").session_jobs("representative") == {"aaaa1111"}
     assert q.session_jobs("secretary") == {"bbbb2222"}
     assert q.session_jobs("other") == set()

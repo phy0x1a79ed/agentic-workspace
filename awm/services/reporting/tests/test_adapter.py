@@ -1,4 +1,4 @@
-"""The door domain: its declared surface and what each verb does."""
+"""The reporting domain: its declared surface and what each verb does."""
 
 from __future__ import annotations
 
@@ -7,14 +7,14 @@ from types import SimpleNamespace
 import pytest
 
 from awm.config import verb_effect
-from awm.representative import hub_adapter
-from awm.representative.reconcile import Loop
+from awm.reporting import hub_adapter
+from awm.reporting.reconcile import Loop
 
 from stubs import FakeCx, make_card, personas, session_row
 
 pytestmark = [pytest.mark.unit, pytest.mark.smoke]
 
-EFFECTS = {"status": "read", "list": "read", "get": "read", "assign": "write"}
+EFFECTS = {"status": "read", "card_list": "read", "card_get": "read", "card_assign": "write"}
 
 
 def functions() -> dict[str, dict]:
@@ -40,16 +40,16 @@ def test_every_verb_declares_its_effect():
         assert verb_effect(declared[name]) == effect
 
 
-def test_tool_names_fold_into_one_door_domain_and_every_verb_has_a_handler():
+def test_tool_names_fold_into_one_reporting_domain_and_every_verb_has_a_handler():
     for name, spec in functions().items():
-        assert spec["tool"] == f"door_{name}"
+        assert spec["tool"] == f"reporting_{name}"
         assert name in hub_adapter.HANDLERS
     assert set(hub_adapter.HANDLERS) == set(functions())
 
 
 def test_required_params_match_what_the_handlers_index():
-    assert [p["name"] for p in functions()["get"]["params"] if p.get("required")] == ["card_id"]
-    assert {p["name"] for p in functions()["assign"]["params"] if p.get("required")} == {"card_id", "agent"}
+    assert [p["name"] for p in functions()["card_get"]["params"] if p.get("required")] == ["card_id"]
+    assert {p["name"] for p in functions()["card_assign"]["params"] if p.get("required")} == {"card_id", "agent"}
 
 
 async def test_status_when_off_says_why_and_touches_nothing(monkeypatch):

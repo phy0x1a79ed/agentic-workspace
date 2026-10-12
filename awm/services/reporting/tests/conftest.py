@@ -9,7 +9,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from awm.representative.store import Queue  # noqa: E402
+from awm.reporting.store import Queue  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -18,8 +18,8 @@ def door_env(monkeypatch, tmp_path):
     monkeypatch.setenv("AWM_FRONT_DOOR", "1")
     monkeypatch.setenv("AWM_NODE_ROLE", "fleet")
     monkeypatch.setenv("AWM_SWARM", "tony")
-    monkeypatch.setenv("AWM_DOOR_DB", str(tmp_path / "door.db"))
-    monkeypatch.setenv("AWM_DOOR_STATE", str(tmp_path / "state"))
+    monkeypatch.setenv("AWM_REPORTING_DB", str(tmp_path / "reporting.db"))
+    monkeypatch.setenv("AWM_REPORTING_STATE", str(tmp_path / "state"))
     monkeypatch.setenv("AWM_CX_PROJECTS", str(tmp_path / "projects"))
     for name in ("AWM_BOARD_URL", "AWM_BOARD_TOKEN"):
         monkeypatch.delenv(name, raising=False)
@@ -27,4 +27,4 @@ def door_env(monkeypatch, tmp_path):
 
 @pytest.fixture
 def queue(tmp_path):
-    return Queue(tmp_path / "door.db")
+    return Queue(tmp_path / "reporting.db")

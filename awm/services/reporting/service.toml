@@ -1,0 +1,4 @@
+# Discoverable tier: the reporting domain is reached through the `more` tool, not
+# listed on the default MCP surface. The service starts everywhere and does
+# nothing on a station, and runs the front door only where AWM_FRONT_DOOR=1.
+tier = "discoverable"

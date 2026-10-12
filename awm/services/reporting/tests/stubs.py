@@ -5,7 +5,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from awm.board.client import BoardConflict, BoardRefused
-from awm.representative.sessions import CxUnavailable
+from awm.reporting.sessions import CxUnavailable
 
 _N = 0
 

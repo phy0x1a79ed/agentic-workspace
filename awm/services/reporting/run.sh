@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# run.sh — self-contained entry point for the door service (the swarm's front door).
+# run.sh — self-contained entry point for the reporting service.
 #
 # The gateway discovers this service by scanning awm/services/* for run.sh, and
 # starts (and respawns) it by executing `bash run.sh`, injecting AWM_HUB_URL /
@@ -13,7 +13,7 @@
 #     respawn us under systemd's minimal PATH (no `mamba`).
 set -euo pipefail
 cd "$(dirname "$0")"
-MODULE="awm.representative.hub_adapter"
+MODULE="awm.reporting.hub_adapter"
 
 if [ -n "${DEV_PYTHONPATH:-}" ]; then
     exec env PYTHONPATH="$DEV_PYTHONPATH" \

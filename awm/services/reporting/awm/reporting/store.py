@@ -16,7 +16,7 @@ from typing import Any
 
 from awm.persistence import databases
 
-from awm.representative import ACTIVE, ASSIGNED, CLAIMING, DONE, QUEUED, STATUSES, TERMINAL
+from awm.reporting import ACTIVE, ASSIGNED, CLAIMING, DONE, QUEUED, STATUSES, TERMINAL
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS cards (

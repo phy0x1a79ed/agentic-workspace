@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from awm.config import modes
-from awm.representative import personas
+from awm.reporting import personas
 
 pytestmark = [pytest.mark.unit, pytest.mark.smoke]
 
@@ -108,7 +108,7 @@ def test_model_and_effort_are_config(monkeypatch):
 
 def test_the_representative_instructions_carry_the_rules():
     text = personas.REPRESENTATIVE["prompt"]
-    for needle in ("triage", "never do a card's work", "door list", "door get", "door assign",
+    for needle in ("triage", "never do a card's work", "reporting card_list", "reporting card_get", "reporting card_assign",
                    "data", "cx start", "SendMessage", "ListAgents", "opus", "suspicious",
                    "complex", "ambiguous", "reply_to", "board complete", "board fail",
                    "compact", "nonce", "Judge whether your own swarm would do this work",
@@ -137,7 +137,7 @@ def test_the_swarm_comes_from_the_node(monkeypatch):
 
 def test_the_secretary_instructions_cover_its_job_and_its_limits():
     text = personas.SECRETARY["prompt"]
-    for needle in ("cx start", "cx list", "cx stop", "door status", "never act on a board card",
+    for needle in ("cx start", "cx list", "cx stop", "reporting status", "never act on a board card",
                    "Only Tony's messages", "remote_control", "ListAgents"):
         assert needle in text, needle
 
@@ -145,11 +145,11 @@ def test_the_secretary_instructions_cover_its_job_and_its_limits():
 def test_every_allowed_verb_in_the_instructions_is_on_the_allowlist():
     """The prompts name verbs; the gate must admit each one a prompt asks for."""
     rep = {f"{d}.{v}" for d, v in modes.MODES[modes.REPRESENTATIVE].pairs}
-    for verb in ("door.list", "door.get", "door.assign", "cx.start", "cx.list",
+    for verb in ("reporting.card_list", "reporting.card_get", "reporting.card_assign", "cx.start", "cx.list",
                  "board.fail", "reflection.compact", "scope.search"):
         assert verb in rep
     sec = {f"{d}.{v}" for d, v in modes.MODES[modes.SECRETARY].pairs}
-    for verb in ("cx.start", "cx.list", "cx.stop", "door.status", "door.list", "door.get",
+    for verb in ("cx.start", "cx.list", "cx.stop", "reporting.status", "reporting.card_list", "reporting.card_get",
                  "board.list", "board.get", "scope.search", "scope.fetch"):
         assert verb in sec
 
@@ -161,8 +161,8 @@ def test_delegates_default_to_a_dedicated_scope_not_the_representatives(monkeypa
     assert "Never start a delegate in your own scope" in text
     assert (personas.REPRESENTATIVE["project"], personas.REPRESENTATIVE["scope"]) != (
         "awm", "door-work")
-    monkeypatch.setenv("AWM_DOOR_WORK_PROJECT", "other")
-    monkeypatch.setenv("AWM_DOOR_WORK_SCOPE", "desk")
+    monkeypatch.setenv("AWM_REPORTING_WORK_PROJECT", "other")
+    monkeypatch.setenv("AWM_REPORTING_WORK_SCOPE", "desk")
     assert personas.work_where() == ("other", "desk")
     assert 'project "other", scope "desk"' in personas.build_representative()["prompt"]
     assert personas.build_representative()["scope"] == "svc-representative"

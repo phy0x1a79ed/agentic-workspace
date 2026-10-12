@@ -1,4 +1,4 @@
-"""The enable gate: the door runs only on a fleet node with AWM_FRONT_DOOR=1."""
+"""The enable gate: the front door runs only on a fleet node with AWM_FRONT_DOOR=1."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import logging
 
 import pytest
 
-from awm.representative import config, hub_adapter, reconcile
+from awm.reporting import config, hub_adapter, reconcile
 
 from stubs import FakeCx, personas
 
@@ -36,10 +36,8 @@ def test_a_bad_role_refuses_instead_of_running(monkeypatch):
     assert "invalid" in config.refusal()
 
 
-@pytest.mark.parametrize("env", [{"AWM_NODE_ROLE": "station"}, {"AWM_FRONT_DOOR": "0"}])
-def test_start_logs_a_refusal_and_builds_nothing(monkeypatch, caplog, tmp_path, env):
-    for k, v in env.items():
-        monkeypatch.setenv(k, v)
+def test_start_on_a_station_logs_a_refusal_and_builds_nothing(monkeypatch, caplog, tmp_path):
+    monkeypatch.setenv("AWM_NODE_ROLE", "station")
     monkeypatch.setattr(hub_adapter, "RUNTIME", None)
     spawned = []
     monkeypatch.setattr(hub_adapter, "spawn_supervised", lambda *a, **k: spawned.append(a))
@@ -47,8 +45,18 @@ def test_start_logs_a_refusal_and_builds_nothing(monkeypatch, caplog, tmp_path, 
         hub_adapter._on_start()
     assert hub_adapter.RUNTIME is None
     assert spawned == []
-    assert not (tmp_path / "door.db").exists()
+    assert not (tmp_path / "reporting.db").exists()
     assert "not running" in caplog.text
+
+
+def test_start_with_the_flag_off_runs_only_the_reconcile_loop(monkeypatch):
+    monkeypatch.setenv("AWM_FRONT_DOOR", "0")
+    monkeypatch.setattr(hub_adapter, "RUNTIME", None)
+    spawned = []
+    monkeypatch.setattr(hub_adapter, "spawn_supervised", lambda name, *a: spawned.append(name))
+    hub_adapter._on_start()
+    assert spawned == ["reporting-reconcile"]
+    assert hub_adapter.RUNTIME is not None and not hub_adapter.RUNTIME.door
 
 
 async def test_the_reconcile_loop_starts_nothing_on_a_station(monkeypatch, queue):
@@ -72,6 +80,6 @@ def test_the_swarm_comes_from_the_node_and_not_a_constant(monkeypatch):
 
 
 def test_the_queue_path_defaults_to_the_service_state_path(monkeypatch):
-    monkeypatch.delenv("AWM_DOOR_DB")
-    assert config.db_path().name == "door.db"
-    assert config.db_path().parent.name == "door"
+    monkeypatch.delenv("AWM_REPORTING_DB")
+    assert config.db_path().name == "reporting.db"
+    assert config.db_path().parent.name == "reporting"
