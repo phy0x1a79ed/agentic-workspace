@@ -27,12 +27,12 @@ def _write_book(tmp_path, book):
 
 def test_reexports():
     for name in ("node_role", "node_swarm", "peer_record", "peer_relation",
-                 "caller_peer", "RELATIONS", "ROLES", "GRANT_CATEGORIES",
-                 "EFFECTS", "verb_effect", "verb_category"):
+                 "caller_peer", "RELATIONS", "ROLES", "LEGACY_GRANTS",
+                 "ARCHIVE_CATEGORY", "EFFECTS", "verb_effect", "verb_category"):
         assert hasattr(config, name)
     assert config.RELATIONS == ("domestic", "foreign")
     assert config.ROLES == ("fleet", "station")
-    assert config.GRANT_CATEGORIES == ("journals", "kb")
+    assert config.LEGACY_GRANTS == ("journals", "kb")
 
 
 def test_node_role_default_and_values(monkeypatch):

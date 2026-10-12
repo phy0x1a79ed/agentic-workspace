@@ -7,6 +7,11 @@ from typing import Any
 EFFECTS = ("read", "queue", "write", "secret")
 DEFAULT_EFFECT = "write"
 
+#: The grant category of a read verb that filters its answer by the caller's grants
+#: itself (``search query``). The gateway lets any foreign caller holding a grant
+#: reach it and hands the service the grant list.
+ARCHIVE_CATEGORY = "archive"
+
 
 def check_effect(effect: str, *, where: str = "verb") -> str:
     if effect not in EFFECTS:
