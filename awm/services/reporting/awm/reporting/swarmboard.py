@@ -20,6 +20,7 @@ from awm.reporting.ledger import COLUMNS
 log = logging.getLogger("awm.reporting.swarmboard")
 
 BOARD_LABEL = "swarmBoard"
+OPS_LABEL = "swarmOps"
 LEDGER = "Ledger"
 MARKDOWN = "text/x-markdown"
 MANAGED = {"agentManaged": "", "readOnly": ""}
@@ -95,9 +96,21 @@ class SwarmBoard:
         for title in COLUMNS.values():
             await self._child(board, title, type="book")
         await self._child(board, LEDGER, type="book")
+        ops = await self._find_ops()
+        if ops is None:
+            ops = await self._child(parent or await self._awm_note(), "Ops", type="book")
+            await self._call("note_update", note_id=ops, labels={OPS_LABEL: ""})
         self._layout = None
         lay = await self.layout()
-        return {"board": lay.board, "ledger": lay.ledger, "columns": lay.columns, "created": not hits}
+        return {"board": lay.board, "ledger": lay.ledger, "columns": lay.columns, "ops": ops,
+                "created": not hits}
+
+    async def _find_ops(self) -> str | None:
+        """The one Ops book, found by label so that two nodes never each make their own."""
+        hits = (await self._call("note_search", query=f"#{OPS_LABEL}", limit=5)).get("results") or []
+        if len(hits) > 1:
+            raise BoardError(f"{len(hits)} notes carry #{OPS_LABEL}")
+        return hits[0]["noteId"] if hits else None
 
     async def _awm_note(self) -> str:
         if self._awm:
@@ -158,5 +171,7 @@ class SwarmBoard:
 
     async def post_ops(self, kind: str, node: str, title: str, body: str) -> str:
         """Upsert the one managed note for this kind and node in the private Ops book under AWM."""
-        ops = await self._child(await self._awm_note(), "Ops", type="book")
+        ops = await self._find_ops()
+        if ops is None:
+            raise BoardError(f"no note carries #{OPS_LABEL}; run reporting board_ensure")
         return await self.upsert_markdown(ops, f"{kind} - {node}", f"## {title}\n\n{body}\n")

@@ -208,6 +208,8 @@ async def test_ops_post_keeps_one_managed_note_per_kind_and_node_under_a_private
     awm = tri.add("AWM", type="book")
     monkeypatch.setattr(hub_adapter, "RUNTIME", SimpleNamespace(board=SwarmBoard(tri)))
     args = {"kind": "password", "node": "altair", "title": "Login password", "body": "hunter2"}
+    assert (await hub_adapter.ops_post(args))["ok"] is False
+    await hub_adapter.RUNTIME.board.ensure()
     first = await hub_adapter.ops_post(args)
     again = await hub_adapter.ops_post({**args, "body": "correct horse"})
     other = await hub_adapter.ops_post({**args, "node": "capella"})
@@ -216,7 +218,7 @@ async def test_ops_post_keeps_one_managed_note_per_kind_and_node_under_a_private
     assert note["title"] == "password - altair" and "correct horse" in note["content"] and "hunter2" not in note["content"]
     assert set(note["labels"]) == {"agentManaged", "readOnly"}
     ops = tri.parents(first["note_id"])[0]
-    assert tri.notes[ops]["title"] == "Ops" and tri.parents(ops) == [awm] and tri.notes[ops]["labels"] == {}
+    assert tri.notes[ops]["title"] == "Ops" and tri.parents(ops) == [awm] and tri.notes[ops]["labels"] == {"swarmOps": ""}
 
 
 async def test_ops_post_refuses_bad_arguments_and_foreign_or_edge_callers(monkeypatch):
@@ -226,6 +228,7 @@ async def test_ops_post_refuses_bad_arguments_and_foreign_or_edge_callers(monkey
     tri = FakeTrilium()
     tri.add("AWM", type="book")
     monkeypatch.setattr(hub_adapter, "RUNTIME", SimpleNamespace(board=SwarmBoard(tri)))
+    await hub_adapter.RUNTIME.board.ensure()
     good = {"kind": "password", "node": "altair", "title": "t", "body": "b"}
     assert (await hub_adapter.ops_post({**good, "body": " "}))["ok"] is False
     assert (await hub_adapter.ops_post({**good, "kind": "two\nlines"}))["ok"] is False
