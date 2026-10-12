@@ -32,6 +32,9 @@ SECRETARY = "secretary"
 #: assigns it, and it is never a mode a caller may ask for.
 DELEGATE = "delegate"
 
+#: Modes whose sessions start only delegates.
+DELEGATING_MODES = frozenset({REPRESENTATIVE})
+
 #: What `mode_of` answers when it cannot establish a mode. The most restricted
 #: mode, so an unreadable record never reads as "unrestricted".
 UNKNOWN = "unknown"
@@ -109,6 +112,15 @@ def is_reply(call_args: CallArgs) -> bool:
 #: which changes the session's permission mode, is deliberately absent.
 _REFLECTION = _pairs("reflection", "compact", "whoami")
 
+#: What every session reports through: hooks fire these for it, and it claims
+#: its task and asks a human through them.
+_REPORTING = _pairs("reporting", "hook_plan", "hook_plan_approved", "hook_todos",
+                    "hook_prompt", "claim_task", "request_human_user",
+                    "request_human_review")
+
+#: The card ledger, which only a triage session may read.
+_CARDS = _pairs("reporting", "card_list", "card_get", "card_assign", "status")
+
 #: Pure reads of the scope channel.
 _SCOPE_READS = (_pairs("scope", "fetch", "search", "goal_read", "goal_history", "resolve")
                 | _pairs("project", "search"))
@@ -120,7 +132,8 @@ MODES: dict[str, Policy] = {
     REPRESENTATIVE: Allow(
         _pairs("board", "list", "get", "fail")
         | _pairs("cx", "start", "list")
-        | _pairs("door", "status", "list", "get", "assign")
+        | _CARDS
+        | _REPORTING
         | _REFLECTION
         | _SCOPE_READS
     ),
@@ -129,7 +142,8 @@ MODES: dict[str, Policy] = {
     SECRETARY: Allow(
         _pairs("cx", "start", "list", "stop")
         | _pairs("board", "list", "get")
-        | _pairs("door", "status", "list", "get")
+        | _pairs("reporting", "status", "card_list", "card_get")
+        | _REPORTING
         | _REFLECTION
         | _SCOPE_READS
     ),
@@ -140,9 +154,9 @@ MODES: dict[str, Policy] = {
     # gateway's HTTP door, past this gate.
     DELEGATE: ByEffect(
         effects=frozenset({"read"}),
-        denied_domains=frozenset({"rlm", "door"}),
-        denied_pairs=_pairs("board", "party_list"),
-        pairs=_pairs("board", "get", "list", "complete", "fail") | _REFLECTION,
+        denied_domains=frozenset({"rlm"}),
+        denied_pairs=_pairs("board", "party_list") | _CARDS,
+        pairs=_pairs("board", "get", "list", "complete", "fail") | _REFLECTION | _REPORTING,
         when={("board", "post"): is_reply},
     ),
     # A session whose mode could not be established gets the least that keeps

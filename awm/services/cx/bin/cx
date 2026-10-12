@@ -17,8 +17,8 @@
 # `cx` must never leave you without a session, so nothing here is fatal.
 
 CX_CLAUDE=${CX_CLAUDE:-$(command -v claude 2>/dev/null || echo "$HOME/.local/bin/claude")}
-CX_MODEL=${CX_MODEL:-'sonnet[1m]'}
-CX_EFFORT=${CX_EFFORT:-medium}
+CX_MODEL=${CX_MODEL:-opus}
+CX_EFFORT=${CX_EFFORT:-high}
 CX_PORT=${AWM_PORT:-7819}
 # A claim answers in about a fifth of a second on an idle box and a few seconds
 # on a loaded one. This has to sit above the service's own nine-second budget so

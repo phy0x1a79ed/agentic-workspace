@@ -8,6 +8,11 @@ from awm.config import modes
 from awm.config.modes import MODES, refusal
 
 
+HOOK_VERBS = {f"reporting.{v}" for v in (
+    "hook_plan", "hook_plan_approved", "hook_todos", "hook_prompt", "claim_task",
+    "request_human_user", "request_human_review")}
+
+
 def allowed(mode):
     return {f"{d}.{v}" for d, v in MODES[mode].pairs}
 
@@ -16,7 +21,8 @@ def test_the_representative_allowlist_is_exactly_its_verbs():
     assert allowed("representative") == {
         "board.list", "board.get", "board.fail", "cx.start", "cx.list",
         "reflection.compact", "reflection.whoami",
-        "door.status", "door.list", "door.get", "door.assign",
+        "reporting.status", "reporting.card_list", "reporting.card_get",
+        "reporting.card_assign", *HOOK_VERBS,
         "scope.fetch", "scope.search", "scope.goal_read", "scope.goal_history",
         "scope.resolve", "project.search",
     }
@@ -25,8 +31,8 @@ def test_the_representative_allowlist_is_exactly_its_verbs():
 def test_the_secretary_allowlist_is_exactly_its_verbs():
     assert allowed("secretary") == {
         "cx.start", "cx.list", "cx.stop", "board.list", "board.get",
-        "door.status", "door.list", "door.get", "reflection.compact",
-        "reflection.whoami", "scope.fetch", "scope.search", "scope.goal_read",
+        "reporting.status", "reporting.card_list", "reporting.card_get", *HOOK_VERBS,
+        "reflection.compact", "reflection.whoami", "scope.fetch", "scope.search", "scope.goal_read",
         "scope.goal_history", "scope.resolve", "project.search",
     }
 
@@ -52,7 +58,7 @@ def test_no_allow_mode_can_change_its_own_permission_mode_or_send_text():
 
 
 def test_the_secretary_never_writes_to_the_board_or_the_queue():
-    writes = {"board.post", "board.claim", "board.complete", "board.fail", "door.assign"}
+    writes = {"board.post", "board.claim", "board.complete", "board.fail", "reporting.card_assign"}
     assert not writes & allowed("secretary")
 
 
@@ -126,10 +132,22 @@ def test_the_whole_rlm_domain_is_refused_whatever_it_declares(verb):
         assert delegate("rlm", verb, effect) is not None
 
 
-def test_the_door_is_refused_even_though_its_verbs_are_reads():
-    for verb in ("status", "list", "get"):
-        assert delegate("door", verb, "read") is not None
-    assert delegate("door", "assign", "write") is not None
+def test_the_card_ledger_is_refused_even_though_its_verbs_are_reads():
+    for verb in ("status", "card_list", "card_get"):
+        assert delegate("reporting", verb, "read") is not None
+    assert delegate("reporting", "card_assign", "write") is not None
+    assert delegate("reporting", "ops_post", "write") is not None
+    assert delegate("reporting", "board_ensure", "write") is not None
+
+
+def test_every_mode_but_unknown_may_report():
+    for mode in ("representative", "secretary", "delegate"):
+        for verb in HOOK_VERBS:
+            domain, name = verb.split(".")
+            assert refusal(mode, domain, name, effect="write") is None, (mode, verb)
+    for verb in HOOK_VERBS:
+        domain, name = verb.split(".")
+        assert refusal(modes.UNKNOWN, domain, name, effect="write") is not None
 
 
 def test_a_delegate_finishes_a_card_and_reads_the_board():
@@ -170,7 +188,6 @@ def test_a_delegate_may_describe_every_domain_but_the_denied_ones():
     assert refusal("delegate", "board", "describe") is None
     assert refusal("delegate", "cx", "describe") is None
     assert refusal("delegate", "rlm", "describe") is not None
-    assert refusal("delegate", "door", "describe") is not None
 
 
 def test_the_effect_policy_admits_and_denies_as_declared():
@@ -189,3 +206,7 @@ def test_the_effect_policy_admits_and_denies_as_declared():
 def test_reserved_names_and_modes():
     assert {"representative", "secretary", "delegate"} == set(modes.RESERVED_MODES)
     assert {"representative", "secretary"} == set(modes.RESERVED_NAMES)
+
+
+def test_only_the_representative_delegates():
+    assert {"representative"} == set(modes.DELEGATING_MODES)

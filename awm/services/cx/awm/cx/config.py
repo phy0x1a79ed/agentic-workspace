@@ -60,15 +60,20 @@ def seed_dir() -> Path:
 
 
 def default_model() -> str:
-    return os.environ.get("AWM_CX_MODEL") or "sonnet[1m]"
+    return os.environ.get("AWM_CX_MODEL") or "opus"
 
 
 def default_effort() -> str:
-    return os.environ.get("AWM_CX_EFFORT") or "medium"
+    return os.environ.get("AWM_CX_EFFORT") or "high"
 
 
 def skip_permission_flags() -> list[str]:
     return ["--dangerously-skip-permissions", "--allow-dangerously-skip-permissions"]
+
+
+def restricted_settings() -> Path:
+    env = os.environ.get("AWM_CX_RESTRICTED_SETTINGS")
+    return Path(env) if env else Path.home() / ".claude" / "hooks" / "awm-reporting-settings.json"
 
 
 def seed_env() -> dict[str, str]:

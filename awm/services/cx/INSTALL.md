@@ -42,7 +42,7 @@ overrides the gate and is the intended way to turn it on. The same file sets
 `tier = "core"`, so the `cx` domain is on the default MCP list wherever the
 service runs.
 
-A station (`AWM_NODE_ROLE=station`) runs no sessions. `start` refuses there, and
+A station (`AWM_NODE_ROLE=station`) runs no sessions. `start` and seeding refuse there, and
 the gateway logs a warning at boot if a station enables this service.
 
 ## Operate
@@ -77,7 +77,7 @@ sessions the service renames. A test asserts the two agree.
 `start` creates a named background session in a scope's worktree and returns its
 job id and the `claude attach` command. It creates the worktree through the
 `scopes` service when the caller may and the worktree is absent. A session
-defaults to skip-permissions, `sonnet[1m]` and medium effort. The model is a
+defaults to skip-permissions, `opus` and high effort. The model is a
 `--model` flag, because the flag wins over `ANTHROPIC_MODEL` where the two
 disagree.
 
@@ -101,11 +101,12 @@ model supplies. A pending record goes to disk before the launch, so a launch
 that outlives its timeout still has a declared mode. The reconcile loop adopts
 the late job, or drops the record after five minutes.
 
-#### A caller in a restricted mode starts a delegate
+#### A caller in a delegating mode starts a delegate
 
-The representative and the secretary run in restricted modes (`awm.config.modes`).
-A card must not talk either into starting a session stronger than itself, so cx
-ignores what such a caller asks for. It accepts `project`, `scope`, `prompt`,
+The representative runs in a delegating mode (`modes.DELEGATING_MODES`). A card
+must not talk it into starting a session stronger than itself, so cx ignores
+what such a caller asks for. The secretary is restricted but not delegating: it
+starts ordinary top-level workers with skip-permissions and the user's settings. It accepts `project`, `scope`, `prompt`,
 `name`, `effort` and a model from an allowlist. It refuses `permission`, `mode`,
 `remote_control` and the tool and confinement arguments. It starts a `delegate`
 with a fixed policy:
@@ -115,12 +116,15 @@ with a fixed policy:
 - A fixed built-in tool list with no Bash, and `SendMessage` and `ListAgents`
   disallowed, so a card cannot reach another session through it.
 - `--restricted`, which confines the file tools to the worktree and ignores user
-  settings.
+  settings. A restricted session also gets `--settings` with the reporting hook
+  fragment, from `AWM_CX_RESTRICTED_SETTINGS` (default
+  `~/.claude/hooks/awm-reporting-settings.json`), so its hooks fire. cx omits
+  the flag when the file is absent on the node.
 - A strict MCP config that holds only the awm server, copied from the workspace
   `.mcp.json`.
 
 The scope must already exist for such a caller. The names `representative` and
-`secretary` and the modes `representative`, `secretary` and `delegate` are
+`secretary`, including as the role prefix of `<role> - <node>`, and the modes `representative`, `secretary` and `delegate` are
 reserved. A session that asks for one is refused. Only a caller with no session
 pid (the front door service or an operator) may use them. A caller whose mode cannot be read starts
 nothing.

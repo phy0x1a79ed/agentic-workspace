@@ -14,7 +14,7 @@ import random
 
 from awm.claudedaemon import launch
 from awm.claudedaemon.launch import LAUNCH_TIMEOUT_S, POLL_S, Refused  # noqa: F401
-from awm.cx import config, sessions
+from awm.cx import config, lifecycle, sessions
 
 log = logging.getLogger("awm.cx.seed")
 
@@ -34,7 +34,7 @@ def precondition() -> str | None:
     """Why seeding must not happen right now, or None if it may."""
     if config.want() == 0:
         return "the pool is switched off (AWM_CX_WANT=0)"
-    refusal = launch.daemon_refusal(config.roster_path())
+    refusal = lifecycle.station_refusal() or launch.daemon_refusal(config.roster_path())
     if refusal:
         return refusal
     if sessions.binary_version() is None:

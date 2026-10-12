@@ -195,6 +195,13 @@ def test_seeding_is_refused_when_no_daemon_is_running(box, monkeypatch, tmp_path
     assert "no claude code daemon" in (seed.precondition() or "")
 
 
+def test_seeding_is_refused_on_a_station(box, monkeypatch):
+    from awm.cx import seed
+
+    monkeypatch.setenv("AWM_NODE_ROLE", "station")
+    assert "station" in (seed.precondition() or "")
+
+
 def test_seeding_is_refused_beside_a_claude_md(box, monkeypatch, tmp_path):
     """A moved session carries the origin's CLAUDE.md into someone's project."""
     from awm.cx import seed
