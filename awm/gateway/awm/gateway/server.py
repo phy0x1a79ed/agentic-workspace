@@ -69,6 +69,12 @@ def _pid_alive(pid: int | None) -> bool:
     return True
 
 
+def _pid_gone(pid: int) -> bool:
+    """True once ``pid`` has exited, reaping it first if it is our child."""
+    from awm.gateway.hub import supervisor
+    return supervisor._try_reap(pid) or not _pid_alive(pid)
+
+
 # ---------------------------------------------------------------------------
 # Background tasks
 # ---------------------------------------------------------------------------
@@ -136,44 +142,51 @@ async def _drain_services() -> None:
             if ch is not None:
                 ch.enqueue({"kind": "shutdown"})
         if live:
-            print(f"[awm] shutdown: signalled {len(live)} service(s); waiting")
+            log.info("shutdown: signalled %d service(s); waiting", len(live))
 
-        # 2. Wait for them to drop their leases (exit), up to a grace window.
+        # 2. Wait, up to a grace window, for each signalled service to drop its
+        #    lease AND for its process to be gone. The lease drops when the
+        #    control WS closes, a beat before the process finishes exiting, and
+        #    an exited child stays a zombie (still answering kill(pid, 0)) until
+        #    we reap it — so judging liveness without a reap blames every
+        #    service that obeyed the frame.
+        journal = {
+            name: entry for name, entry in
+            supervisor.load_service_journal().items()
+            if isinstance(entry, dict) and entry.get("last_pid")
+        }
+        signalled = {r.service_id for r in live}
+        awaited = [e["last_pid"] for e in journal.values()
+                   if e.get("service_id") in signalled]
         _grace_deadline = time.monotonic() + _GRACE_DEADLINE_S
         while time.monotonic() < _grace_deadline:
-            if not any(lm.is_held(r.service_id) for r in live):
+            awaited = [pid for pid in awaited if not _pid_gone(pid)]
+            if not awaited and not any(lm.is_held(s) for s in signalled):
                 break
             await asyncio.sleep(0.2)
 
-        # 3. Force-kill any straggler that did NOT stand down. A service that
-        #    obeyed the in-band frame has exited — its lease dropped and its
-        #    process is gone — so it is left untouched (the frame did the work).
-        #    A straggler is one still holding its lease (ignored the frame) OR
-        #    whose process is still alive while its lease is already gone. The
-        #    latter is the backstop path: when the signal override could not
-        #    install, uvicorn closes the control WSs (releasing leases) before
-        #    this runs, so lease-held alone would miss live orphans — the
-        #    pid-alive check catches them. Force-kill is the backstop here, not
-        #    the primary mechanism.
-        journal = supervisor.load_service_journal()
-        for name, entry in journal.items():
-            if not isinstance(entry, dict):
-                continue
-            sid = entry.get("service_id")
-            pid = entry.get("last_pid")
-            if not pid:
-                continue
-            held = bool(sid) and lm.is_held(sid)
-            if held or _pid_alive(pid):
-                print(f"[awm] shutdown: {name} did not stand down; "
-                      f"force-killing pid={pid}")
-                supervisor.kill_pid_group(pid)
+        # 3. Force-kill the stragglers: a service still holding its lease (it
+        #    ignored the frame), or one whose process outlived the reap. The
+        #    second catches live orphans on the backstop path, where uvicorn
+        #    closed the control WSs (releasing leases) before this ran.
+        stragglers = [
+            (name, entry["last_pid"]) for name, entry in journal.items()
+            if (entry.get("service_id") and lm.is_held(entry["service_id"]))
+            or not _pid_gone(entry["last_pid"])
+        ]
+        for name, pid in stragglers:
+            log.warning("shutdown: %s did not stand down; force-killing pid=%s",
+                        name, pid)
+            supervisor.kill_pid_group(pid)
+        if journal:
+            log.info("shutdown: %d service(s) stood down, %d force-killed",
+                     len(journal) - len(stragglers), len(stragglers))
 
         # 4. Clear the journal so the next boot bootstraps a clean set instead
         #    of waiting out reconcile's window against dead PIDs.
         supervisor.write_service_journal({})
     except Exception as exc:  # noqa: BLE001 — teardown must never wedge exit
-        print(f"[awm] graceful service shutdown skipped: {exc}")
+        log.warning("graceful service shutdown skipped: %s", exc)
 
 
 # ---------------------------------------------------------------------------
