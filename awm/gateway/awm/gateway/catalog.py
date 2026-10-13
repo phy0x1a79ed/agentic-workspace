@@ -433,6 +433,10 @@ def _domain_catalog() -> dict[str, list[dict[str, Any]]]:
              effect: str, category: str | None, op: Any = None,
              rec: ServiceRecord | None = None, fn: str | None = None) -> None:
         key = (domain, verb)
+        if not (domain and verb):
+            log.warning(
+                "unnamed domain verb %r/%r from %s — skipping", domain, verb, origin)
+            return
         if key in seen:
             log.warning(
                 "duplicate domain verb %s/%s from %s — skipping", domain, verb, origin)

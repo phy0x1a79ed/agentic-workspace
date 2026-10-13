@@ -223,6 +223,22 @@ def test_duplicate_verb_first_wins(monkeypatch):
     assert len(rows) == 1 and rows[0]["description"] == "A wins."
 
 
+def test_nameless_domain_or_verb_never_reaches_the_surface(monkeypatch):
+    """A tool name with a leading underscore folds to an empty domain. The
+    catalog drops it rather than offering a nameless tool. A single-verb
+    domain (no underscore) still folds to itself."""
+    rec = _rec("odd", "/svc/odd", [
+        {"name": "hidden", "tool": "_hidden", "description": "x", "params": []},
+        {"name": "solo", "tool": "solo", "description": "x", "params": []},
+    ], "sid-odd")
+    monkeypatch.setattr(catalog, "get_registry", lambda: _StubRegistry([rec]))
+    names = [t.name for t in catalog.list_domain_tools()]
+    assert all(names)
+    assert "solo" in names and "odd" not in names
+    assert all(v["verb"] for verbs in catalog._domain_catalog().values()
+               for v in verbs)
+
+
 # ---------------------------------------------------------------------------
 # Dispatch
 # ---------------------------------------------------------------------------
