@@ -915,9 +915,8 @@ def _describe_domain(domain: str, verb: str | None = None,
                      catalog: dict[str, list[dict[str, Any]]] | None = None) -> dict:
     """Answer ``verb='describe'`` from the catalog alone (no service round-trip).
 
-    Returns ``{domain, description?, verbs:[{verb, description, params}]}`` where
-    ``params`` is the verb's full ``inputSchema`` — the same schema the expanded
-    per-verb tool advertised. ``verb`` narrows to a single entry. The top-level
+    Returns ``{domain, description?, verbs:[...]}``, each verb trimmed by
+    :func:`_describe_verb`. ``verb`` narrows to a single entry. The top-level
     ``description`` is the service's own manifest prose about how the domain is
     meant to be used, present only when the service supplies one."""
     cat = catalog if catalog is not None else _domain_catalog()
