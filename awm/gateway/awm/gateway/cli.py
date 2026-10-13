@@ -649,14 +649,6 @@ def services_start(
         typer.echo(json.dumps(_services_action(n, "start")))
 
 
-def _service_prefix(name: str) -> str:
-    r = _local_api("GET", "/hub/services")
-    for row in r.json().get("services", []) if r.status_code == 200 else []:
-        if row.get("name") == name and row.get("kind") == "service":
-            return row["prefix"]
-    return f"/svc/{name}"
-
-
 @services_app.command("listen")
 def services_listen(
     service: str = typer.Argument(..., help="Service whose topic to follow"),
@@ -664,6 +656,8 @@ def services_listen(
     match: str = typer.Option(
         "", "--match",
         help="Comma-separated event `type` prefixes to print (default: all)"),
+    peer: Optional[str] = typer.Option(
+        None, "--peer", help="Follow the topic on this domestic peer instead"),
 ):
     """Print one compact JSON line per event a service emits, until stopped.
 
@@ -672,17 +666,27 @@ def services_listen(
     does, since frames sent while it was away are lost. Read those from the
     service's backlog verb."""
     import asyncio as _asyncio
+    import functools as _functools
 
+    from awm import gatewayclient
     from awm.gateway import emit_listen
 
     _require_server()
-    url = f"{BASE_URL.replace('http://', 'ws://')}{_service_prefix(service)}/emit/{topic}"
+    os.environ.setdefault("AWM_HUB_URL", BASE_URL)
+    if peer:
+        stream = _functools.partial(gatewayclient.subscribe_peer, peer, service, topic)
+    else:
+        stream = _functools.partial(gatewayclient.subscribe, service, topic)
 
     def _write(line: str) -> None:
         print(line, flush=True)
 
     try:
-        _asyncio.run(emit_listen.listen(url, match.split(","), _write))
+        _asyncio.run(emit_listen.listen(stream, match.split(","), _write,
+                                        fatal=(gatewayclient.PeerError,)))
+    except gatewayclient.PeerError as exc:
+        typer.echo(f"listen: {exc}", err=True)
+        raise typer.Exit(1)
     except KeyboardInterrupt:
         pass
 
