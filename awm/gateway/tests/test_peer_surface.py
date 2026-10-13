@@ -196,6 +196,21 @@ def test_unreachable_peer_is_reported_not_dropped(local_registry, snap, no_homes
     assert peer_catalog.choose_target("scope", "altair", _local(), snap) == "altair"
 
 
+async def test_providers_of_names_nodes_and_lists_verbs_on_request(
+        local_registry, snap, no_homes, monkeypatch):
+    monkeypatch.setattr(peer_catalog, "snapshot", lambda: snap)
+    short = await catalog._providers_of("scope")
+    assert short["providers"] == [
+        {"peer": "local", "reachable": True},
+        {"peer": "altair", "reachable": False, "error": "ssh: timed out"},
+        {"peer": "mira", "reachable": True},
+    ]
+    full = await catalog._providers_of("scope", verbs=True)
+    assert full["providers"][2]["verbs"] == ["search", "create"]
+    fleet = await catalog._providers_of()
+    assert all("verbs" not in p for t in fleet["tools"] for p in t["providers"])
+
+
 def test_a_peer_never_overrides_a_local_verb_set(local_registry, snap, no_homes):
     """The advertised verbs come from the DEFAULT provider, not a merge — mira's
     ``scope`` may carry verbs this node's release does not."""

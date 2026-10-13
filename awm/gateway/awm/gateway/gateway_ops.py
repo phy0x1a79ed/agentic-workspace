@@ -782,8 +782,8 @@ def _op_peer_forget(name: str) -> dict[str, Any]:
     return {"forgot": entry}
 
 
-async def _op_peer_providers(tool: str | None = None,
-                             refresh: bool = False) -> dict[str, Any]:
+async def _op_peer_providers(tool: str | None = None, refresh: bool = False,
+                             verbs: bool = False) -> dict[str, Any]:
     """Which fleet nodes can serve an MCP tool, and which one it defaults to.
 
     The companion of the address book: ``peer_resolve`` says *where a node is*,
@@ -796,7 +796,7 @@ async def _op_peer_providers(tool: str | None = None,
     """
     from awm.gateway import catalog
 
-    return await catalog._providers_of(tool, refresh)
+    return await catalog._providers_of(tool, refresh, verbs)
 
 
 # ---------------------------------------------------------------------------
@@ -1192,6 +1192,9 @@ GATEWAY_OPERATIONS: list[Operation] = [
                   cli_name="--refresh",
                   description="Sweep every peer now instead of reading the "
                               "background snapshot."),
+            Param(name="verbs", type="boolean", required=False, default=False,
+                  cli_name="--verbs",
+                  description="Also list each provider's verbs."),
         ],
         surfaces=_CLI,
         effect="read",

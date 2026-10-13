@@ -553,20 +553,33 @@ def _providers_tool() -> Tool:
                             "description": "Force a fresh sweep of every peer "
                                            "instead of reading the cached one.",
                             "default": False},
+                "verbs": {"type": "boolean",
+                          "description": "Also list each provider's verbs.",
+                          "default": False},
             },
         },
     )
 
 
-async def _providers_of(tool: str | None = None,
-                        refresh: bool = False) -> dict[str, Any]:
+def _without_verbs(res: dict[str, Any]) -> dict[str, Any]:
+    """``res`` with each provider cut to its name, reachability and any error."""
+    providers = [
+        {k: v for k, v in p.items() if k != "verbs" and not (k == "error" and v is None)}
+        for p in res["providers"]
+    ]
+    return {**res, "providers": providers}
+
+
+async def _providers_of(tool: str | None = None, refresh: bool = False,
+                        verbs: bool = False) -> dict[str, Any]:
     """Answer ``providersOf`` — where a tool can run, and where it goes by default.
 
     Shared by the reserved MCP tool and the ``peer providers`` Operation (so
     ``awm peer providers`` and the HTTP route can never drift from what the agent
     sees). ``refresh`` forces a synchronous peer sweep; without it this reads the
     background snapshot and never touches the network. Omit ``tool`` for the whole
-    fleet map.
+    fleet map. ``verbs`` adds each provider's verb list, which costs a few KB per
+    domain and answers a question ``<domain>(verb="describe")`` answers better.
 
     An unreachable peer is reported as unreachable with its last-known domains,
     never dropped: "mira does not have this" and "mira is asleep" are different
@@ -577,11 +590,12 @@ async def _providers_of(tool: str | None = None,
     snap = peer_catalog.snapshot()
     local = _local_domain_verbs(_domain_catalog())
     swept = peer_catalog.swept_at()
+    shape = (lambda res: res) if verbs else _without_verbs
     if tool:
-        return {**peer_catalog.resolve(tool, local, snap), "swept_at": swept}
+        return {**shape(peer_catalog.resolve(tool, local, snap)), "swept_at": swept}
     return {
         "swept_at": swept,
-        "tools": [peer_catalog.resolve(d, local, snap)
+        "tools": [shape(peer_catalog.resolve(d, local, snap))
                   for d in peer_catalog.fleet_domains(local, snap)],
     }
 
@@ -1085,7 +1099,7 @@ async def dispatch(name: str, args: dict, as_: str | None = None) -> str:
         return await _dispatch_foreign(name, args, as_, grants)
     if name == _PROVIDERS_TOOL:
         return _serialize(await _providers_of(
-            args.get("tool"), bool(args.get("refresh"))))
+            args.get("tool"), bool(args.get("refresh")), bool(args.get("verbs"))))
     if name == _MORE_TOOL:
         return _serialize(_more_index(args))
     if "verb" in args:
