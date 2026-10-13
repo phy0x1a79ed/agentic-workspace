@@ -1,6 +1,6 @@
 """Tests for the scopes-dist Pydantic models (split out of the monolith's
 ``unit/test_models.py``; the gateway envelope StatusResponse moved to the
-gateway dist and SkillInfo to the skills dist)."""
+gateway dist)."""
 
 from __future__ import annotations
 

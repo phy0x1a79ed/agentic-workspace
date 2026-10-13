@@ -34,8 +34,7 @@ def _neutralise_title(text: str) -> str:
 # how many project-wide entries share the rest of the file. The floor is what
 # stops a busy project from crowding a scope out of its own history.
 _OWN_JOURNAL_FLOOR = 10
-_PROJECT_JOURNAL_WINDOW = 50
-_PER_SKILL_CAP = 10
+_PROJECT_JOURNAL_WINDOW = 15
 
 
 def generate_history_md(project: str, scope: str) -> str:
@@ -117,19 +116,10 @@ def generate_history_md(project: str, scope: str) -> str:
         sections.append("\n".join(lines))
 
     if others:
-        by_skill: dict[str, list] = {}
-        for row in others:
-            meta, _ = _parse(row)
-            key = meta.get("skill_path") or "(freeform)"
-            by_skill.setdefault(key, []).append(row)
-        shown = 0
         lines = ["## Sibling Scopes' Journal\n"]
-        for skill_key, entries in by_skill.items():
-            lines.append(f"### Skill: {skill_key}\n")
-            for row in entries[:_PER_SKILL_CAP]:
-                shown += 1
-                lines.extend(_entry(row, tag_scope=True))
-        tail = _omitted(shown, others_total)
+        for row in others:
+            lines.extend(_entry(row, tag_scope=True))
+        tail = _omitted(len(others), others_total)
         if tail:
             lines.append(tail)
         sections.append("\n".join(lines))

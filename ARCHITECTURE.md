@@ -19,10 +19,7 @@ The tree is a set of pip dists under `awm/` that merge into the PEP 420 `awm` na
 - **Frontend source** — `awm/ui_components/` and `awm/pages/`. See § *Frontend*.
 - **Feature services** — `awm/services/<name>/`, each with its own dist, DB and `run.sh`. `awm services list` reports the live set. Each folder's `INSTALL.md` is its contract.
 
-Two facts about services are not visible in the directory:
-
-- `skills` is retired. The rest of its catalog is reference-only on disk.
-- `compute` acts on processes it does not own. It kills and renices agent-launched jobs. Add anything new that agents launch and must keep (a long-lived server, a tunnel, an MCP shim) to its `PROTECTED` list.
+**CAUTION** `compute` acts on processes it does not own. It kills and renices agent-launched jobs. Add anything new that agents launch and must keep (a long-lived server, a tunnel, an MCP shim) to its `PROTECTED` list.
 
 The `awm/gateway/awm/gateway/` nesting is intentional. It is a PEP 420 layout that lets several uninstalled worktrees each shadow `awm.gateway` through `PYTHONPATH`. Do not flatten it.
 
@@ -42,7 +39,7 @@ The `journal` service owns every post and goal, in its own database. It split ou
 
 `journal` validates a literal scope through the `resolveScope` RPC to `scopes`, and an unreachable `scopes` never blocks a post. `journal render` writes a scope's `.awm/history.md`, and `scope heal` calls it over the gateway. The service publishes the `posts` topic with payload `{project, scope, post}`. `awm/services/journal/INSTALL.md` covers the first-start copy of the old tables out of the `scopes` database.
 
-A post is passive mail. It starts no session and wakes no one. Agents on one node message each other with Claude's `SendMessage`, and swarms message each other through the board (`skills/awm/board-card.md`). Only a deliberate post, such as a debrief, enters the channel.
+A post is passive mail. It starts no session and wakes no one. Agents on one node message each other with Claude's `SendMessage`, and swarms message each other through the board (`FEDERATION.md` § *The front door*). Only a deliberate post, such as a debrief, enters the channel.
 
 A post that arrives through the edge takes its author from the edge's `X-Awm-As` stamp, never from the `author` argument. The claimed author moves to `meta.claimed_author`. A caller with no stamp may not send an author of the form `peer:…`.
 

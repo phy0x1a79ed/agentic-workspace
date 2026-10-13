@@ -4,11 +4,6 @@ A "scope" is represented by a row in the ``agents`` table
 (status ∈ allocated|active|retired) within the scopes service's own DB.
 All SQL goes through ScopesDAO.
 
-Cross-service: ``scopes._default_context`` previously called
-``awm.services.skills.find_by_name`` — that import is replaced by a
-graceful fallback hint (skills service is out-of-process; calling it via
-gatewayclient is non-essential for context.md generation).
-
 A scope IS the channel, held by the journal service: history.md is rendered
 there from the scope's journal posts (``journal_render``), and the vagrant
 session helper subscribes the user to the scope's channel.
@@ -28,7 +23,6 @@ from awm.config import (
     WORKSPACE_ROOT,
     PROJECTS_DIR,
     DATA_DIR,
-    SKILLS_DIR,
     GITHUB_USER,
     VAGRANT_PROJECT,
 )
@@ -485,7 +479,7 @@ def _heal_worktree(worktree_dir: Path, *, project: str, scope: str, dry_run: boo
     actions: dict[str, str | None] = {
         "import_line": None, "agents_md": None,
         "claude_md": None, "context_md": None,
-        "opencode_config": None, "data": None,
+        "opencode_config": None, "data": None, "skills_link": None,
     }
 
     agents_path = worktree_dir / "AGENTS.md"
@@ -523,6 +517,12 @@ def _heal_worktree(worktree_dir: Path, *, project: str, scope: str, dry_run: boo
                 claude_path.unlink()
 
     awm_dir = worktree_dir / ".awm"
+    skills_link = awm_dir / "skills"
+    if skills_link.is_symlink():
+        actions["skills_link"] = "deleted:symlink"
+        if not dry_run:
+            skills_link.unlink()
+
     context_path = awm_dir / "context.md"
     if not context_path.exists():
         actions["context_md"] = "created"
@@ -741,11 +741,6 @@ def _scaffold_awm_dir(
     data_report = data_dvc.provision_scope_data(project, scope, awm_dir)
     if data_report.get("mode") == "unknown":
         log.warning("scope %s/%s: %s", project, scope, data_report.get("detail"))
-
-    skills_link = awm_dir / "skills"
-    if skills_link.is_symlink() or skills_link.exists():
-        skills_link.unlink()
-    skills_link.symlink_to(SKILLS_DIR)
 
     context_content = context or _default_context(project, scope)
     (awm_dir / "context.md").write_text(context_content)

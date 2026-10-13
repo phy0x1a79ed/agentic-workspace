@@ -62,7 +62,7 @@ class TestCreateProjectClone:
         assert (awm_dir / "context.md").exists()
         assert (awm_dir / "history.md").exists()
         assert (awm_dir / "data").is_symlink()
-        assert (awm_dir / "skills").is_symlink()
+        assert not (awm_dir / "skills").exists()
 
         # Project is visible without a scope_repair.
         from awm.scopes import projects as p

@@ -1,6 +1,6 @@
 # Agentic Workspace Manager (AWM)
 
-*Human setup + usage guide for awm. Agents operating in this workspace load [`AGENTS.md`](AGENTS.md) at session start via the harness's native mechanism (see the `harness-setup` writeup on disk at `.awm/skills/awm/harness-setup.md`) — not this file. **Do not merge this README into AGENTS.md, PROTOCOLS.md or ARCHITECTURE.md** — their audience is agents; this one's audience is humans installing, networking, and operating the system.*
+*Human setup + usage guide for awm. Agents operating in this workspace load [`AGENTS.md`](AGENTS.md) at session start via the harness's native mechanism (see § Harness Integration) — not this file. **Do not merge this README into AGENTS.md, PROTOCOLS.md or ARCHITECTURE.md** — their audience is agents; this one's audience is humans installing, networking, and operating the system.*
 
 A lightweight Python service + CLI for coordinating multiple AI agents working in parallel on shared resources. Provides project/scope management, the journal (per-scope posts, goals and history), one ranked search over what the swarm knows, background Claude Code sessions (`reflection start_other`), cross-node federation, and an MCP server for direct tool use by Claude Code / OpenCode / other MCP clients.
 
@@ -46,11 +46,55 @@ env with `AWM_ENV`.
 
 ## Harness Integration
 
-AWM drives **Claude Code** and **OpenCode** as first-class harnesses. The `harness-setup` writeup (on disk at `.awm/skills/awm/harness-setup.md` inside any scope) covers:
+AWM drives Claude Code and OpenCode. Each harness loads three context tiers: the workspace `AGENTS.md`, the repo `AGENTS.md` at the scope worktree root, and the scope brief `.awm/context.md`.
 
-- How Claude Code and OpenCode each pick up the 3-tier orientation (workspace `AGENTS.md` + repo `AGENTS.md` + scope `.awm/context.md`) — CC loads both `AGENTS.md` tiers by its native walk-up and Reads `.awm/context.md` at the workspace startup ritual; OC walks the repo `AGENTS.md` natively and loads the other two through the per-scope `mcp-opencode.json` `instructions` array.
-- The MCP exporter framework that fans `<workspace>/.mcp.json` out to backend-specific configs (`spawn-mcp.json` for claude, `mcp-opencode.json` for opencode) — registered services are advertised even when their upstream is down.
-- Healing existing scopes that pre-date the wiring: `awm scope heal`.
+- **Claude Code** loads both `AGENTS.md` tiers by its native walk-up from the cwd. The startup ritual in `AGENTS.md` has the agent read `.awm/context.md`. A `reflection start_other` session loads context the same way.
+- **OpenCode** walks up for `AGENTS.md` only as far as the worktree root, so it finds the repo tier alone. `awm scope create` writes `<scope>/.awm/mcp-opencode.json`, whose `instructions` array loads the workspace `AGENTS.md` and `.awm/context.md`. awm does not start OpenCode sessions.
+
+`<workspace>/.mcp.json` is the MCP registry. The gateway fans it out to `.awm/spawn-mcp.json` for claude and `.awm/mcp-opencode.json` for opencode, at startup and on `awm gateway mcp-sync`. Every registered server is advertised even when its upstream is down.
+
+### Set up Claude Code
+
+1. Put the `claude` CLI on `PATH`.
+2. Remove any `hooks.SessionStart` context hook from `~/.claude/settings.json`. Context loading uses no hook.
+
+**CAUTION** Claude Code truncates SessionStart hook output at about 10K characters and drops the middle without a warning. A context hook loses orientation text for any scope with a long brief.
+
+### Set up OpenCode
+
+1. Put the `opencode` CLI on `PATH`.
+2. Register the awm MCP proxy in `~/.config/opencode/opencode.jsonc`:
+
+   ```jsonc
+   {
+     "mcp": {
+       "awm": {
+         "type": "local",
+         "enabled": true,
+         "command": ["/home/<you>/lib/miniforge3/envs/awm/bin/awm-mcp"],
+         "environment": { "AWM_WORKSPACE": "/home/<you>/agentic_workspace" }
+       }
+     }
+   }
+   ```
+
+3. Symlink `~/.config/opencode/AGENTS.md` to `~/.claude/CLAUDE.md`. Both harnesses then share one set of global rules.
+4. Launch `opencode` in a scope with `OPENCODE_CONFIG=<scope>/.awm/mcp-opencode.json`.
+
+**CAUTION** Do not add the repo `AGENTS.md` to the `instructions` array. OpenCode's walk-up already loads it, so a second entry injects it twice.
+
+### Verify the setup
+
+```bash
+jq '.hooks.SessionStart // "absent"' ~/.claude/settings.json   # expect "absent"
+awm gateway mcp-sync
+ls <workspace>/.awm/spawn-mcp.json <workspace>/.awm/mcp-opencode.json
+jq .instructions <scope>/.awm/mcp-opencode.json                 # expect the workspace AGENTS.md and .awm/context.md
+cd <scope> && claude -p "List the AGENTS.md files loaded into your context, by absolute path."
+cd <scope> && opencode run "list your loaded instructions"
+```
+
+Run `awm scope heal` to bring scopes that predate this wiring to the current shape. Add `--dry-run` to preview the changes.
 
 ## Authoring a service
 

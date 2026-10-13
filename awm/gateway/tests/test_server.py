@@ -1,7 +1,7 @@
 """Tests for awm.gateway.server — the de-DB'd routing layer.
 
 Ported from the monolith's ``auth/test_server.py``. The feature-route
-tests (``/skills/search``, ``/scopes/search``, ``/sessions/search``) were
+tests (``/scopes/search``, ``/sessions/search``) were
 dropped: those surfaces are no longer served in-process by the gateway —
 they are projected from registered feature services, which aren't running
 under a bare ``TestClient``. What remains is the gateway's own contract:

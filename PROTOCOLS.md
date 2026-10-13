@@ -17,14 +17,11 @@ Nothing enumerable goes here, with one exception: a table that records a decisio
 | `ARCHITECTURE.md` | awm internals |
 | `README.md` | Human setup and usage |
 | `awm/` | The awm package tree |
-| `skills/` | Reference procedures, read-only |
 | `data/` | The shared DVC cache and legacy per-project data |
 | `projects/` | Project bare repos and their scope worktrees |
 | `tasks/` | DAG node execution sandboxes, gitignored |
 | `.awm/` | Workspace runtime state |
 | `.mcp.json` | The canonical MCP server registry |
-
-`skills/` is reference-only. The skills service is retired. The end-of-session `debrief` is a native Claude Code skill.
 
 ## Scope lifecycle
 

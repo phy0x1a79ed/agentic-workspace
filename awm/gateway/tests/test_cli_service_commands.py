@@ -39,8 +39,8 @@ _TOOLS = [
         },
     },
     {
-        "name": "skill_search",
-        "description": "Search skills",
+        "name": "note_search",
+        "description": "Search notes",
         "inputSchema": {
             "type": "object",
             "properties": {"query": {"type": "string"}},
@@ -83,10 +83,10 @@ def _make_app():
 
 def test_groups_and_commands_generated():
     _, groups = _make_app()
-    assert set(groups) == {"scope", "skill"}
+    assert set(groups) == {"scope", "note"}
     scope_cmds = {c.name for c in groups["scope"].registered_commands}
     assert scope_cmds == {"create", "refresh"}
-    assert {c.name for c in groups["skill"].registered_commands} == {"search"}
+    assert {c.name for c in groups["note"].registered_commands} == {"search"}
 
 
 def test_excluded_and_ungroupable_names_skipped():
@@ -213,7 +213,7 @@ def test_dispatch_error_exits_nonzero():
     groups = register_service_cli_commands(
         app, _TOOLS, api_func=api, exclude_names=_EXCLUDE
     )
-    search = next(c for c in groups["skill"].registered_commands if c.name == "search")
+    search = next(c for c in groups["note"].registered_commands if c.name == "search")
 
     with pytest.raises(typer.Exit) as ei:
         search.callback(query="x")

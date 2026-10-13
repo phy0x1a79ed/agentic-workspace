@@ -25,7 +25,6 @@ projects/<project>/
       context.md          # this scope's brief
       history.md          # generated session log
       data -> ../data     # compat symlink. The real data/ is repo content
-      skills -> <workspace>/skills/
     data/                 # versioned data, see § Data
 ```
 
@@ -102,5 +101,3 @@ awm itself uses the `awm` env.
 ## Ending a session
 
 Run the `debrief` skill. It corrects docs the work made wrong, commits code and data pins, and journals the session.
-
-Check `.awm/skills/` for a procedure before you improvise an unfamiliar workflow. Read `.awm/skills/awm/board-card.md` before you act on a federation board card.
