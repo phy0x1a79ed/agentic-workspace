@@ -100,18 +100,19 @@ def _book_writer_only(verb: str) -> None:
 
 
 def _op_status() -> dict[str, Any]:
-    """Gateway-native status: workspace root, core process info, uptime.
+    """Gateway-native status: where it listens, workspace root, core process info, uptime.
 
     Identical payload on all three surfaces (CLI ``awm gateway status``, HTTP
     ``GET /status``, MCP ``awm_status``). ``active_scopes`` stays 0 until a
     scopes service registers — kept for shape stability and the
     ``_process_utils.probe_existing_awm`` health check."""
-    from awm.config import WORKSPACE_ROOT
+    from awm.config import BASE_URL, WORKSPACE_ROOT
     from awm.gateway import catalog
 
     uptime = catalog.core_uptime()
     return {
         "status": "ok",
+        "base_url": BASE_URL,
         "workspace_root": str(WORKSPACE_ROOT),
         "active_scopes": 0,
         "core_pid": os.getpid(),
@@ -922,7 +923,7 @@ GATEWAY_OPERATIONS: list[Operation] = [
     # --- gateway lifecycle / lease ----------------------------------------
     Operation(
         name="awm_status",
-        description="Get AWM gateway status: workspace root, core process info, uptime.",
+        description="Get AWM gateway status: base URL, workspace root, core process info, uptime.",
         service_func=_op_status,
         http_method="GET", http_path="/status",
         cli_group="gateway", cli_command="status",
