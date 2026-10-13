@@ -649,6 +649,44 @@ def services_start(
         typer.echo(json.dumps(_services_action(n, "start")))
 
 
+def _service_prefix(name: str) -> str:
+    r = _local_api("GET", "/hub/services")
+    for row in r.json().get("services", []) if r.status_code == 200 else []:
+        if row.get("name") == name and row.get("kind") == "service":
+            return row["prefix"]
+    return f"/svc/{name}"
+
+
+@services_app.command("listen")
+def services_listen(
+    service: str = typer.Argument(..., help="Service whose topic to follow"),
+    topic: str = typer.Argument(..., help="Emit topic, such as `session`"),
+    match: str = typer.Option(
+        "", "--match",
+        help="Comma-separated event `type` prefixes to print (default: all)"),
+):
+    """Print one compact JSON line per event a service emits, until stopped.
+
+    Built to run under a background watcher, so each line wakes an agent. It
+    reconnects on its own and prints {"type":"listen.reconnected"} when it
+    does, since frames sent while it was away are lost. Read those from the
+    service's backlog verb."""
+    import asyncio as _asyncio
+
+    from awm.gateway import emit_listen
+
+    _require_server()
+    url = f"{BASE_URL.replace('http://', 'ws://')}{_service_prefix(service)}/emit/{topic}"
+
+    def _write(line: str) -> None:
+        print(line, flush=True)
+
+    try:
+        _asyncio.run(emit_listen.listen(url, match.split(","), _write))
+    except KeyboardInterrupt:
+        pass
+
+
 # `services stop / restart / enable / disable` are generated from
 # GATEWAY_OPERATIONS (see gateway_ops.py) — no hand-rolled commands here.
 
