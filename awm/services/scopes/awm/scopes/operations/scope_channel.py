@@ -56,9 +56,9 @@ SCOPE_CHANNEL_MANIFEST_FUNCTIONS = [
             "substring match); omit scope to "
             "search across scopes; kind filters (e.g. "
             "kind='journal' for session logs / debrief entries); post_id fetches "
-            "one. For the most recent / last N entries pass order='desc' with "
-            "limit (e.g. last 5 awm session logs: project='awm', kind='journal', "
-            "limit=5, order='desc')."
+            "one. Without a query, kind='journal' reads newest-first "
+            "(e.g. last 5 awm session logs: project='awm', kind='journal', "
+            "limit=5)."
         ),
         "params": [
             {"name": "project", "type": "string", "required": False},
@@ -71,7 +71,7 @@ SCOPE_CHANNEL_MANIFEST_FUNCTIONS = [
             {"name": "offset", "type": "integer", "required": False},
             {"name": "before_ts", "type": "string", "required": False},
             {"name": "order", "type": "string", "required": False,
-             "description": "'asc' (oldest-first) or 'desc' (newest-first). Use 'desc' with limit for the last N."},
+             "description": "'asc' (oldest-first) or 'desc' (newest-first). Default: 'desc' for kind='journal', else 'asc' within one scope."},
         ],
     },
     {
@@ -166,7 +166,8 @@ def _handle_scope_fetch(args: dict, as_: str | None = None) -> dict:
         limit=int(args.get("limit", 50)),
         offset=int(args.get("offset", 0)),
         before_ts=args.get("before_ts"),
-        order=args.get("order"),
+        order=args.get("order") or (
+            "desc" if kind == "journal" and not args.get("query") else None),
     )
     degraded = semantic = None
     if args.get("query"):

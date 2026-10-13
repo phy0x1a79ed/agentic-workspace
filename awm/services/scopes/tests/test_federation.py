@@ -107,6 +107,18 @@ def test_a_foreign_fetch_returns_journals_only(scopes_workspace, peer_book):
     assert len(_fetch(None)["posts"]) == 2
 
 
+def test_a_journal_fetch_reads_newest_first_and_messages_oldest_first(scopes_workspace):
+    import time
+    for body in ("first", "second"):
+        _post(None, author="agent:awm/dev", body=body, kind="journal")
+        _post(None, author="agent:awm/dev", body=body, kind="message")
+        time.sleep(0.005)
+    bodies = lambda **a: [p["body"] for p in _fetch(None, **a)["posts"]]
+    assert bodies(kind="journal") == ["second", "first"]
+    assert bodies(kind="journal", order="asc") == ["first", "second"]
+    assert bodies(kind="message") == ["first", "second"]
+
+
 @pytest.mark.parametrize("kind", ["message", "goal", "system"])
 def test_a_foreign_fetch_of_another_kind_is_refused(scopes_workspace, peer_book, kind):
     with pytest.raises(PermissionError):
