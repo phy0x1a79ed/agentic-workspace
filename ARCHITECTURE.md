@@ -202,6 +202,8 @@ The gateway installs a loop-level signal override at lifespan startup, before uv
 
 A second signal force-exits. If the `Server` cannot be captured (TestClient, a non-main thread), the gateway falls back to a flag-only wrapper and drains from the lifespan-shutdown backstop. Force-kill is the backstop, not the mechanism. It fires only for a straggler whose lease is still held after about 8s, or whose process lives after its lease is gone.
 
+**CAUTION** A service is the gateway's child, so after it exits it stays a zombie until the gateway reaps it, and `os.kill(pid, 0)` still succeeds on a zombie. The drain reaps with `supervisor._try_reap` before it asks whether a pid is alive. A bare liveness probe counts every exited service as a straggler and logs a force-kill for each one.
+
 ### Crash respawn
 
 An unexpected control-WS disconnect schedules a watchdog through `supervisor.schedule_disconnect_watchdog`:

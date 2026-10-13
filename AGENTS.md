@@ -54,7 +54,7 @@ Discover the catalog. Do not memorize it.
 
 1. The domain tools your client exposes are the core catalog. A client that defers schemas shows a domain as a bare name. Load it with `ToolSearch`, or run `services(verb="list")`.
 2. Reach every other domain with `more(domain="<domain>", verb="<name>", args={…})`. Run `more()` with no domain to list them.
-3. Call a domain with `verb="describe"` for its verbs and parameter schemas. Add `args={"verb":"<name>"}` for one verb.
+3. Call a domain with `verb="describe"` for its verbs, their params and which params are required. A param lists its `type` only when it is not a string. Add `args={"verb":"<name>"}` for one verb.
 4. Add the optional `peer` key to run a verb on another node. `providersOf(tool="<domain>")` lists the valid values, which are domestic nodes only. A wrong `peer` is refused, never run locally.
 
 Check for a tool before you hand a task to the user. Sending a message, approving a login, capturing audio and restarting a VPN each look like human jobs, and each has a domain. A restricted session's mode limits which verbs it may call, and the server rejects the rest.
