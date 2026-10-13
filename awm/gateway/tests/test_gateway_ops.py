@@ -194,6 +194,7 @@ def test_status_route_generated_with_rich_payload(client):
     assert isinstance(data["active_scopes"], int)
     # rich fields the generated route now also carries:
     assert "core_pid" in data and "core_python" in data
+    assert data["base_url"].startswith("http://")
 
 
 def test_hub_services_route_generated(client):

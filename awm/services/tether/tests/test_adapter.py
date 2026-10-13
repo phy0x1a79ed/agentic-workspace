@@ -91,3 +91,21 @@ async def test_the_relay_host_refuses_the_verbs_that_mint_sessions(monkeypatch):
 
     assert answer["ok"] is False
     assert "operator" in answer["error"]
+    assert "listen" not in answer
+
+
+async def test_an_invite_tells_the_operator_how_to_hear_the_owner(monkeypatch):
+    """The operator only hears the owner between turns if something wakes it,
+    so the answer that opens the session names the watcher to start."""
+    monkeypatch.setattr(paths, "ROLE", paths.OPERATOR)
+
+    async def minted(verb, args, timeout):
+        return {"ok": True, "slot": "amber", "words": "amber fox kettle"}
+
+    monkeypatch.setattr(hub_adapter.control, "call", minted)
+
+    answer = await hub_adapter.HANDLERS["invite"]({})
+
+    assert answer["slot"] == "amber"
+    assert answer["listen"]["command"].startswith("awm services listen tether session")
+    assert "task." not in answer["listen"]["command"]

@@ -52,7 +52,7 @@ The `awm-mcp` server is registered in `<workspace>/.mcp.json`. Its surface comes
 Discover the catalog. Do not memorize it.
 
 1. Run `awm(verb="describe")`. One call returns the most used verbs, each with a summary and its required arguments, and one line for every tool. A client that defers schemas shows a tool as a bare name. Load it with `ToolSearch` first.
-2. Run `<tool>(verb="describe")` for all of that tool's verbs and parameter schemas. Add `args={"verbs":["<name>"]}` for some of them. An unknown argument to a verb returns an error that carries its schema.
+2. Run `<tool>(verb="describe")` for all of that tool's verbs, their params and which params are required. A param lists its `type` only when it is not a string. Add `args={"verbs":["<name>"]}` for some of them. An unknown argument to a verb returns an error that carries its schema.
 3. Add the optional `peer` key to run a verb on another node. Its enum lists the valid nodes and its description names the default. A tool that one node serves routes there with no `peer`. A wrong `peer` is refused, never run locally.
 
 Check for a tool before you hand a task to the user. Sending a message, approving a login, capturing audio and restarting a VPN each look like human jobs, and each has a domain. A restricted session's mode limits which verbs it may call, and the server rejects the rest.

@@ -9,10 +9,10 @@ everything that arrives on it does three things:
 3. it is kept in a bounded ring, so a caller that was not watching can ask what
    happened.
 
-Those are not three mechanisms. They are one, and the reason is the CLI. No
-service in this workspace pairs a topic with a stream a terminal can follow,
-because topics exist to feed live pages while agents and the command line read
-state back through ordinary verbs. So ``drain`` reads the ring, the log is what
+Those are not three mechanisms. They are one, and the reason is the CLI. A
+topic only rings a bell: a live page, or ``awm services listen`` waking an
+agent. Agents and the command line read state back through ordinary verbs, and
+a reconnecting listener can miss frames. So ``drain`` reads the ring, the log is what
 makes the ring's contents worth keeping, and the topic is the fast path for
 anyone able to hold a socket open. The log a person asked for and the push path
 they asked for turn out to be the same thing seen from two sides.

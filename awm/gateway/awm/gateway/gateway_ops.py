@@ -103,20 +103,22 @@ def _book_writer_only(verb: str) -> None:
 
 
 async def _op_status() -> dict[str, Any]:
-    """The node's status in one call: the gateway process, every service's state,
-    auth's credential rotation, the node role and the compute watchdog.
+    """The node's status in one call: the gateway process and its base URL,
+    every service's state, auth's credential rotation, the node role and the
+    compute watchdog.
 
     The first keys are what ``GET /status`` has always answered (the startup
     probe reads them), so the payload only grows. ``active_scopes`` stays 0 until
     a scopes service registers, for shape stability. A service that is down or
     slow reads as absent or as an error in its own section; it never fails the
     call."""
-    from awm.config import WORKSPACE_ROOT
+    from awm.config import BASE_URL, WORKSPACE_ROOT
     from awm.gateway import catalog
 
     uptime = catalog.core_uptime()
     status: dict[str, Any] = {
         "status": "ok",
+        "base_url": BASE_URL,
         "workspace_root": str(WORKSPACE_ROOT),
         "active_scopes": 0,
         "core_pid": os.getpid(),
@@ -828,8 +830,8 @@ def _op_peer_forget(name: str) -> dict[str, Any]:
     return {"forgot": entry}
 
 
-async def _op_peer_providers(tool: str | None = None,
-                             refresh: bool = False) -> dict[str, Any]:
+async def _op_peer_providers(tool: str | None = None, refresh: bool = False,
+                             verbs: bool = False) -> dict[str, Any]:
     """Which fleet nodes can serve an MCP tool, and which one it defaults to.
 
     The companion of the address book: ``peer_resolve`` says *where a node is*,
@@ -842,7 +844,7 @@ async def _op_peer_providers(tool: str | None = None,
     """
     from awm.gateway import catalog
 
-    return await catalog._providers_of(tool, refresh)
+    return await catalog._providers_of(tool, refresh, verbs)
 
 
 # ---------------------------------------------------------------------------
@@ -969,7 +971,7 @@ GATEWAY_OPERATIONS: list[Operation] = [
     Operation(
         name="awm_status",
         tool="awm", verb="status",
-        description="This node's status in one call: gateway, every service's state, "
+        description="This node's status in one call: gateway and its base URL, every service's state, "
                     "auth rotation, node role and the compute watchdog.",
         service_func=_op_status,
         http_method="GET", http_path="/status",
@@ -1258,6 +1260,9 @@ GATEWAY_OPERATIONS: list[Operation] = [
                   cli_name="--refresh",
                   description="Sweep every peer now instead of reading the "
                               "background snapshot."),
+            Param(name="verbs", type="boolean", required=False, default=False,
+                  cli_name="--verbs",
+                  description="Also list each provider's verbs."),
         ],
         surfaces=_CLI_HTTP,
         effect="read",

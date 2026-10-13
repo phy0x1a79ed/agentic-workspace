@@ -203,3 +203,64 @@ async def test_drain_skips_overlay(monkeypatch):
     disconnect.set()
     await asyncio.sleep(0)
     hold_task.cancel()
+
+
+def _spawn_child(*argv: str):
+    import subprocess
+    return subprocess.Popen(list(argv), start_new_session=True)
+
+
+def _is_zombie(pid: int) -> bool:
+    try:
+        with open(f"/proc/{pid}/stat") as fh:
+            return fh.read().rsplit(")", 1)[1].split()[0] == "Z"
+    except FileNotFoundError:
+        return False
+
+
+async def _drain_with_obedient_service(monkeypatch, pid: int):
+    """Drain one live service at ``pid`` that drops its lease on the frame,
+    with the real liveness check. Returns the kill_pid_group mock."""
+    kill = MagicMock()
+    monkeypatch.setattr(supervisor, "kill_pid_group", kill)
+    rec, ch, disconnect, hold_task = await _make_live_service("tts", pid=pid)
+    orig_enqueue = ch.enqueue
+
+    def _obey(env):
+        disconnect.set()
+        orig_enqueue(env)
+
+    monkeypatch.setattr(ch, "enqueue", _obey)
+    await srv._drain_services()
+    hold_task.cancel()
+    return kill
+
+
+async def test_drain_reaps_zombie_instead_of_killing(monkeypatch):
+    """A service that exited but was never reaped is a zombie: kill(pid, 0)
+    still succeeds. The drain must reap it, not blame and force-kill it."""
+    proc = _spawn_child("true")
+    for _ in range(100):
+        if _is_zombie(proc.pid):
+            break
+        await asyncio.sleep(0.02)
+    assert _is_zombie(proc.pid)
+
+    kill = await _drain_with_obedient_service(monkeypatch, proc.pid)
+
+    kill.assert_not_called()
+    assert not _is_zombie(proc.pid)  # reaped by the drain
+    proc.returncode = 0
+
+
+async def test_drain_waits_for_exit_after_lease_drop(monkeypatch):
+    """The lease drops a beat before the process finishes exiting. A service
+    that exits inside the grace window is not a straggler."""
+    monkeypatch.setattr(srv, "_GRACE_DEADLINE_S", 3.0)
+    proc = _spawn_child("sleep", "0.4")
+
+    kill = await _drain_with_obedient_service(monkeypatch, proc.pid)
+
+    kill.assert_not_called()
+    assert not srv._pid_alive(proc.pid)
+    proc.returncode = 0
