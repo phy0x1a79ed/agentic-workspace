@@ -177,7 +177,7 @@ class TestHistoryTitleNeutralise:
             meta={},  # no title — the swallowed-meta failure shape
             body="Did the thing\nacross lines\n</invoke>",
         )
-        md = generate_history_md("awm", "dev", [])
+        md = generate_history_md("awm", "dev")
         assert "</invoke>" not in md
         # the body-derived title is single-lined into the journal heading
         assert "Did the thing across lines" in md
@@ -203,7 +203,7 @@ class TestHistoryRender:
         self._journal("mine", "MY-OWN-ENTRY")
         for i in range(60):
             self._journal(f"sib{i}", f"sibling entry {i}")
-        md = generate_history_md("awm", "mine", [])
+        md = generate_history_md("awm", "mine")
         assert "MY-OWN-ENTRY" in md
         assert "This Scope's Journal" in md
 
@@ -212,33 +212,32 @@ class TestHistoryRender:
         from awm.journal.render import generate_history_md
         for i in range(60):
             self._journal(f"sib{i}", f"sibling entry {i}")
-        md = generate_history_md("awm", "mine", [])
+        md = generate_history_md("awm", "mine")
         assert "not shown" in md
 
     def test_no_omitted_line_when_nothing_was_omitted(self, journal_workspace):
         """Absent when everything fits — the marker has to mean something."""
         from awm.journal.render import generate_history_md
         self._journal("mine", "only entry")
-        md = generate_history_md("awm", "mine", [])
+        md = generate_history_md("awm", "mine")
         assert "not shown" not in md
 
-    def test_siblings_are_listed_as_given(self, journal_workspace):
+    def test_lists_no_sibling_scopes(self, journal_workspace):
         from awm.journal.render import generate_history_md
-        md = generate_history_md("awm", "mine", ["sib-allocated", "sib-two"])
-        assert "## Active Sibling Scopes" in md
-        assert md.index("sib-allocated") < md.index("sib-two")
+        self._journal("sib", "sibling entry")
+        assert "Active Sibling Scopes" not in generate_history_md("awm", "mine")
 
     def test_render_writes_the_scopes_history_file(self, journal_workspace):
         from awm.journal import render
         self._journal("mine", "WRITTEN-ENTRY")
-        out = render.render("awm", "mine", [])
+        out = render.render("awm", "mine")
         path = journal_workspace["projects_dir"] / "awm" / "mine" / ".awm" / "history.md"
         assert out["path"] == str(path)
         assert path.read_text() == out["content"] and "WRITTEN-ENTRY" in out["content"]
 
     def test_render_without_write_leaves_the_file_alone(self, journal_workspace):
         from awm.journal import render
-        out = render.render("awm", "mine", [], write=False)
+        out = render.render("awm", "mine", write=False)
         assert not (journal_workspace["projects_dir"] / "awm" / "mine").exists()
         assert out["written"] is False
 
@@ -246,4 +245,4 @@ class TestHistoryRender:
     def test_render_refuses_a_path_escape(self, journal_workspace, project, scope):
         from awm.journal import render
         with pytest.raises(ValueError):
-            render.render(project, scope, [])
+            render.render(project, scope)

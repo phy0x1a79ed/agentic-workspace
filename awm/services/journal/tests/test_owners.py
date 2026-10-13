@@ -66,9 +66,3 @@ def test_goals_on_an_unknown_scope_are_refused_too(journal_workspace, real_owner
     _gateway(monkeypatch, {"exists": False})
     with pytest.raises(ValueError):
         goals.set_goal(objective="x", author="user:tony", level="scope", project="awm", scope="nope")
-
-
-def test_siblings_exclude_the_scope_itself(real_owners, monkeypatch):
-    calls = _gateway(monkeypatch, {"scopes": [{"scope": "dev"}, {"scope": "a"}, {"scope": "mine"}]})
-    assert real_owners.scope_siblings("awm", "mine") == ["dev", "a"]
-    assert calls[0][:2] == ("scopes", "scope_search")

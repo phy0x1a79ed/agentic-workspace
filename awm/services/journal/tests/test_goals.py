@@ -305,10 +305,10 @@ class TestJournalsUnaffected:
         from awm.journal.render import generate_history_md
         channel.post("awm", "dev", author="agent:awm/dev", kind="journal",
                      meta={"title": "A real session"}, body="did the thing")
-        before = generate_history_md("awm", "dev", [])
+        before = generate_history_md("awm", "dev")
         goals.set_goal(objective="GOAL-SHOULD-NOT-RENDER", author=USER,
                        level="scope", project="awm", scope="dev")
-        after = generate_history_md("awm", "dev", [])
+        after = generate_history_md("awm", "dev")
         assert after == before
         assert "GOAL-SHOULD-NOT-RENDER" not in after
 

@@ -18,11 +18,10 @@ def stub_embedder():
 
 @pytest.fixture(autouse=True)
 def no_scopes_service(monkeypatch):
-    """Every scope exists and none has siblings: no test reaches a gateway."""
+    """Every scope exists: no test reaches a gateway."""
     from awm.journal import owners
     owners._known.clear()
     monkeypatch.setattr(owners, "require_scope", lambda project, scope: None)
-    monkeypatch.setattr(owners, "scope_siblings", lambda project, scope: [])
 
 
 @pytest.fixture()

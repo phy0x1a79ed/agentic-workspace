@@ -96,5 +96,5 @@ class TestReadSideResilience:
         from awm.journal.render import generate_history_md
         self._insert_double_encoded(journal_conn, "proj-a", "scope-1")
         # Before the fix this raised 'str' object has no attribute 'get'.
-        content = generate_history_md("proj-a", "scope-1", [])
+        content = generate_history_md("proj-a", "scope-1")
         assert "Project setup with dev and factorio scopes" in content

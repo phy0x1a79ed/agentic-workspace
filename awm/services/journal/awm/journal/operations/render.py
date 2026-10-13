@@ -1,6 +1,6 @@
 """History-render and index-maintenance operation definitions for the gateway manifest."""
 
-from awm.journal import export, owners, render, search_index
+from awm.journal import export, render, search_index
 
 _CLI_HTTP = ["cli", "http"]
 
@@ -12,15 +12,11 @@ RENDER_MANIFEST_FUNCTIONS = [
         "description": (
             "Render a scope's .awm/history.md from the journal: its own latest "
             "entries first, then its project's. Returns the text and the path "
-            "written. Pass siblings (the project's other live scopes) to list "
-            "them; omit it and the scopes service is asked. write=false returns "
-            "the text without storing it."
+            "written. write=false returns the text without storing it."
         ),
         "params": [
             {"name": "project", "type": "string", "required": True},
             {"name": "scope", "type": "string", "required": True},
-            {"name": "siblings", "type": "array", "required": False,
-             "description": "Names of the project's other live scopes, in listing order."},
             {"name": "write", "type": "boolean", "required": False,
              "description": "Store the render at the scope's .awm/history.md. Default true."},
         ],
@@ -61,16 +57,8 @@ RENDER_MANIFEST_FUNCTIONS = [
 
 def _handle_render(args: dict) -> dict:
     project, scope = args["project"], args["scope"]
-    siblings = args.get("siblings")
-    if siblings is None:
-        try:
-            siblings = owners.scope_siblings(project, scope)
-        except Exception:  # noqa: BLE001 — a render without the siblings section beats none
-            siblings = []
-    elif isinstance(siblings, str):
-        siblings = [x.strip() for x in siblings.split(",") if x.strip()]
     write = args.get("write")
-    return render.render(project, scope, list(siblings),
+    return render.render(project, scope,
                          write=True if write is None else write in (True, "true", "True", "1", 1))
 
 

@@ -46,8 +46,7 @@ Each function publishes as `journal_<verb>`:
 - `post`, `fetch`, `subscribe`, `unsubscribe` — the channel.
 - `goal_set`, `goal_retire`, `goal_read`, `goal_history` — goals, by supersede and
   tombstone only.
-- `render` — writes a scope's `.awm/history.md`. Pass `siblings` (the project's other
-  live scopes) or the scopes service is asked. `write=false` returns the text only.
+- `render` — writes a scope's `.awm/history.md`. `write=false` returns the text only.
 - `export`, `reindex` — CLI and HTTP only. `export` pages the indexed posts for the
   search archive; `reindex` rebuilds the post index.
 

@@ -19,14 +19,6 @@ TIMEOUT_S = 5.0
 _known: dict[tuple[str, str], float] = {}
 
 
-def scope_siblings(project: str, scope: str) -> list[str]:
-    """The project's other live scopes, by name, as the scopes service lists them."""
-    from awm.gatewayclient import call_sync
-    res = call_sync("scopes", "scope_search",
-                    {"project": project, "status": "active", "limit": 1000}, timeout=TIMEOUT_S)
-    return [s["scope"] for s in res.get("scopes", []) if s.get("scope") != scope]
-
-
 def require_scope(project: str, scope: str) -> None:
     """Raise ``ValueError`` when ``project/scope`` is a literal owner that does not exist.
 

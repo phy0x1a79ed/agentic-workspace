@@ -112,12 +112,11 @@ def _handle_post(args: dict, as_: str | None = None) -> dict:
         origin=channel.edge_origin(as_),
     )
     # A journal post is a scope's debrief entry; re-render its history.md so the
-    # next session sees it. Best-effort: a render failure (scopes service down,
-    # scope dir absent) must never fail the post.
+    # next session sees it. Best-effort: a render failure (scope dir absent)
+    # must never fail the post.
     if args.get("kind") == "journal" and args["project"]:
         try:
-            render.render(args["project"], args["scope"],
-                          owners.scope_siblings(args["project"], args["scope"]))
+            render.render(args["project"], args["scope"])
         except Exception as exc:  # noqa: BLE001
             log.info("history.md not refreshed for %s/%s: %s", args["project"], args["scope"], exc)
     return {"post": post.to_dict()}

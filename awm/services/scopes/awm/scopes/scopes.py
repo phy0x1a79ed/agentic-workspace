@@ -331,13 +331,8 @@ def _generate_history_md(project: str, scope: str) -> str:
     """The scope's ``history.md`` text, rendered by the journal service."""
     from awm.gatewayclient import call_sync
 
-    live = search_scopes(project=project, status="active", limit=1000).scopes
-    reply = call_sync(
-        "journal", "render",
-        {"project": project, "scope": scope, "write": False,
-         "siblings": [s.scope for s in live if s.scope != scope]},
-        timeout=60.0,
-    )
+    reply = call_sync("journal", "render",
+                      {"project": project, "scope": scope, "write": False}, timeout=60.0)
     return reply["content"]
 
 

@@ -121,12 +121,7 @@ class TestSchemaMigrationV3:
 
 
 class TestHistoryHandoff:
-    def test_siblings_use_the_live_status_pair(self, scopes_workspace, monkeypatch):
-        """Scopes are born 'allocated' and nothing promotes them to 'active'.
-
-        Filtering on 'active' alone named 1 sibling in 23 on the real workspace.
-        Every other live-scope predicate in the service uses the pair.
-        """
+    def test_history_is_rendered_by_the_journal(self, scopes_workspace, monkeypatch):
         from awm.scopes import scopes as sc
         from awm.scopes.identity import ensure_agent
         sent = {}
@@ -140,5 +135,5 @@ class TestHistoryHandoff:
         ensure_agent("awm", "sib-allocated", status="allocated")
         assert sc._generate_history_md("awm", "mine") == "rendered"
         assert (sent["service"], sent["fn"]) == ("journal", "render")
-        assert sent["args"]["siblings"] == ["sib-allocated"]
+        assert "siblings" not in sent["args"]
         assert sent["args"]["write"] is False
