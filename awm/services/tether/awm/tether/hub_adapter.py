@@ -62,7 +62,9 @@ API_MANIFEST: dict[str, Any] = {
         "they run one line and answer a prompt before anything connects. They "
         "watch everything you do and either side can cut it. Nothing is "
         "installed on their machine. Both sides keep a record of what was "
-        "done, which the owner is shown and agrees to before anything runs."
+        "done, which the owner is shown and agrees to before anything runs. "
+        "To hear the owner between turns, run the `listen.command` that "
+        "`invite` returns under a background watcher such as Monitor."
     ),
     "functions": [
         {
@@ -366,6 +368,26 @@ def _forward(verb: str, timeout: float):
     return handler
 
 
+#: What an operator runs to be woken when the owner speaks or the session
+#: changes phase. Leaves out ``task.output``, whose chunks would flood a watcher.
+LISTEN = {
+    "command": "awm services listen tether session --match owner.,session.",
+    "then": "Run the command under a background watcher, such as Monitor, for "
+            "the life of the session. Each line it prints is a doorbell, not "
+            "the record: call `drain` with `types: owner.` to read what the "
+            "owner said, then answer with `send`. A `listen.reconnected` line "
+            "means events may have been missed, so call `drain`. Stop the "
+            "watcher when the session ends.",
+}
+
+
+async def invite(args: dict) -> dict:
+    answer = await _forward("invite", 60)(args)
+    if isinstance(answer, dict) and answer.get("ok") is not False and "error" not in answer:
+        answer = {**answer, "listen": LISTEN}
+    return answer
+
+
 async def status(args: dict) -> dict:
     """What this host knows, then what its daemon knows.
 
@@ -516,6 +538,7 @@ HANDLERS: dict[str, Any] = {
     fn["name"]: _forward(fn["name"], float(fn.get("timeout", 30)))
     for fn in API_MANIFEST["functions"]
 }
+HANDLERS["invite"] = invite
 HANDLERS["status"] = status
 HANDLERS["logs"] = logs
 HANDLERS["drain"] = drain
