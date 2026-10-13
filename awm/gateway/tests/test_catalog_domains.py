@@ -146,11 +146,15 @@ def test_describe_trims_a_manifest_verb_to_what_a_caller_needs(monkeypatch):
 def test_describe_trims_a_pydantic_native_verb():
     """Native ops carry pydantic schemas: titles, optional-string anyOf
     branches and null defaults all drop out."""
-    out = catalog._describe_domain("peer", "set")["verbs"][0]
+    from awm.gateway.gateway_ops import GATEWAY_OPERATIONS
+    ops = {op.name: op for op in GATEWAY_OPERATIONS}
+    out = catalog._describe_verb(
+        "peer_set", catalog._to_mcp_tool(ops["operations_peer_set"]))
     assert out["required"] == ["name"]
     assert out["params"]["name"] == {}
     assert out["params"]["relation"] == {}
-    reap = catalog._describe_domain("services", "reap")["verbs"][0]
+    reap = catalog._describe_verb(
+        "services_reap", catalog._to_mcp_tool(ops["awm_services_reap"]))
     assert reap["params"] == {"dry_run": {"type": "boolean", "default": False}}
 
 
@@ -190,18 +194,18 @@ def test_native_describe(patched_registry):
 @pytest.fixture()
 def surfaced_rec():
     """A service whose write verb is declared CLI/HTTP-only via ``surfaces``."""
-    return _rec("writing", "/svc/writing", [
-        {"name": "search", "tool": "writing_search",
+    return _rec("corpus", "/svc/corpus", [
+        {"name": "search", "tool": "corpus_search",
          "description": "Search the corpus.", "params": []},
-        {"name": "add", "tool": "writing_add",
+        {"name": "add", "tool": "corpus_add",
          "description": "Add a sample.", "surfaces": ["cli", "http"],
          "params": [{"name": "text", "type": "string", "required": True}]},
-    ], "sid-writing")
+    ], "sid-corpus")
 
 
 def test_cli_only_verb_absent_from_domain_surface(monkeypatch, surfaced_rec):
     monkeypatch.setattr(catalog, "get_registry", lambda: _StubRegistry([surfaced_rec]))
-    out = catalog._describe_domain("writing")
+    out = catalog._describe_domain("corpus")
     verbs = {v["verb"] for v in out["verbs"]}
     assert "search" in verbs  # read verb projected to MCP
     assert "add" not in verbs  # write verb hidden from MCP
@@ -211,7 +215,7 @@ def test_cli_only_verb_present_in_expanded_list_tools(monkeypatch, surfaced_rec)
     monkeypatch.setattr(catalog, "get_registry", lambda: _StubRegistry([surfaced_rec]))
     names = {t.name for t in catalog.list_tools()}
     # both verbs stay on the expanded surface the CLI generator + flat /invoke read
-    assert {"writing_search", "writing_add"} <= names
+    assert {"corpus_search", "corpus_add"} <= names
 
 
 async def test_cli_only_verb_rejected_via_mcp_domain_dispatch(monkeypatch, surfaced_rec):
@@ -241,11 +245,11 @@ async def test_manifest_timeout_threaded_to_rpc(monkeypatch):
 
 
 async def test_cli_only_verb_still_dispatches_flat_by_name(monkeypatch, surfaced_rec):
-    # the CLI's flat /invoke {name:"writing_add"} path stays functional
+    # the CLI's flat /invoke {name:"corpus_add"} path stays functional
     monkeypatch.setattr(catalog, "get_registry", lambda: _StubRegistry([surfaced_rec]))
     ch = _FakeChannel()
     monkeypatch.setattr(catalog.rpc, "get_control", lambda sid: ch)
-    raw = await catalog.dispatch("writing_add", {"text": "hello"})
+    raw = await catalog.dispatch("corpus_add", {"text": "hello"})
     out = json.loads(raw)
     assert out["fn"] == "add" and out["args"] == {"text": "hello"}
 
