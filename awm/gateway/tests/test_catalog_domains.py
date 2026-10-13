@@ -113,9 +113,53 @@ def test_describe_lists_verbs_with_schemas(patched_registry):
     out = catalog._describe_domain("scope")
     verbs = {v["verb"]: v for v in out["verbs"]}
     assert {"search", "refresh"} <= set(verbs)
-    # full param schema is carried through, identical to the expanded tool
-    assert verbs["search"]["params"]["properties"]["q"]["type"] == "string"
-    assert verbs["search"]["params"]["required"] == ["q"]
+    assert verbs["search"]["params"] == {"q": {}}
+    assert verbs["search"]["required"] == ["q"]
+
+
+def test_describe_trims_a_manifest_verb_to_what_a_caller_needs(monkeypatch):
+    rec = _rec("jobs", "/svc/jobs", [
+        {"name": "run", "tool": "jobs_run", "description": "Run a job.",
+         "params": [
+             {"name": "count", "type": "integer", "required": True,
+              "description": "How many."},
+             {"name": "tags", "type": "array"},
+             {"name": "label", "type": "string", "default": "x"},
+         ]},
+        {"name": "ping", "tool": "jobs_ping", "description": "", "params": []},
+    ], "sid-jobs")
+    monkeypatch.setattr(catalog, "get_registry", lambda: _StubRegistry([rec]))
+    verbs = {v["verb"]: v for v in catalog._describe_domain("jobs")["verbs"]}
+    assert verbs["run"] == {
+        "verb": "run", "description": "Run a job.",
+        "params": {
+            "count": {"type": "integer", "description": "How many."},
+            "tags": {"type": "array[string]"},
+            "label": {"default": "x"},
+        },
+        "required": ["count"],
+    }
+    assert verbs["ping"] == {"verb": "ping"}
+
+
+def test_describe_trims_a_pydantic_native_verb():
+    """Native ops carry pydantic schemas: titles, optional-string anyOf
+    branches and null defaults all drop out."""
+    out = catalog._describe_domain("peer", "set")["verbs"][0]
+    assert out["required"] == ["name"]
+    assert out["params"]["name"] == {}
+    assert out["params"]["relation"] == {}
+    reap = catalog._describe_domain("services", "reap")["verbs"][0]
+    assert reap["params"] == {"dry_run": {"type": "boolean", "default": False}}
+
+
+def test_param_type_keeps_enums_and_non_null_unions():
+    assert catalog._describe_param(
+        {"anyOf": [{"enum": ["a", "b"], "type": "string"}, {"type": "null"}]}
+    ) == {"enum": ["a", "b"]}
+    assert catalog._param_type({"type": ["integer", "null"]}) == "integer"
+    assert catalog._param_type(
+        {"anyOf": [{"type": "integer"}, {"type": "string"}]}) == "integer|string"
 
 
 def test_describe_narrows_to_one_verb(patched_registry):

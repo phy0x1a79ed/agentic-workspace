@@ -931,12 +931,55 @@ def _describe_domain(domain: str, verb: str | None = None,
     return {
         "domain": domain,
         **({"description": blurb} if blurb else {}),
-        "verbs": [
-            {"verb": v["verb"], "description": v["tool"].description,
-             "params": v["tool"].inputSchema}
-            for v in items
-        ],
+        "verbs": [_describe_verb(v["verb"], v["tool"]) for v in items],
     }
+
+
+def _describe_verb(verb: str, tool: Tool) -> dict[str, Any]:
+    """One verb as a caller needs it: params keyed by name, ``type`` only when
+    it is not a plain string, and the required names. Empty keys are left out."""
+    schema = tool.inputSchema or {}
+    params = {name: _describe_param(prop)
+              for name, prop in (schema.get("properties") or {}).items()}
+    required = list(schema.get("required") or [])
+    return {
+        "verb": verb,
+        **({"description": tool.description} if tool.description else {}),
+        **({"params": params} if params else {}),
+        **({"required": required} if required else {}),
+    }
+
+
+def _describe_param(prop: dict[str, Any]) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    kind = _param_type(prop)
+    if kind != "string":
+        out["type"] = kind
+    if prop.get("description"):
+        out["description"] = prop["description"]
+    enum = prop.get("enum") or next(
+        (b["enum"] for b in prop.get("anyOf") or [] if b.get("enum")), None)
+    if enum:
+        out["enum"] = enum
+    if prop.get("default") is not None:
+        out["default"] = prop["default"]
+    return out
+
+
+def _param_type(prop: dict[str, Any]) -> str:
+    """A compact type name. Null branches drop out, so an optional string
+    (``["string", "null"]`` or a pydantic ``anyOf``) reads as ``string``."""
+    if "$ref" in prop:
+        return prop["$ref"].rsplit("/", 1)[-1]
+    branches = prop.get("anyOf") or prop.get("oneOf")
+    if branches:
+        kinds = [_param_type(b) for b in branches if b.get("type") != "null"]
+    else:
+        raw = prop.get("type", "string")
+        kinds = [k for k in (raw if isinstance(raw, list) else [raw]) if k != "null"]
+        kinds = [f"array[{_param_type(prop.get('items') or {})}]" if k == "array"
+                 else k for k in kinds]
+    return "|".join(dict.fromkeys(kinds)) or "string"
 
 
 def _find_native_op(domain: str, verb: str):
