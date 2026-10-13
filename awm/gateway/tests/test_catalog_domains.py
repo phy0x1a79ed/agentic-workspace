@@ -389,14 +389,14 @@ def test_manifest_description_reaches_the_describe_verb(monkeypatch):
 
 def test_a_service_without_the_key_is_unchanged(monkeypatch, patched_registry):
     tool = {t.name: t for t in catalog.list_domain_tools()}["scope"]
-    assert tool.description.startswith("Generic 'scope' domain tool.")
+    assert tool.description.startswith("Verbs: ")
     assert "description" not in catalog._describe_domain("scope")
 
 
 def test_a_blank_description_is_not_a_description(monkeypatch):
     _blurbed(monkeypatch, "   ")
     tool = {t.name: t for t in catalog.list_domain_tools()}["2fa"]
-    assert tool.description.startswith("Generic '2fa' domain tool.")
+    assert tool.description.startswith("Verbs: ")
 
 
 def test_a_cli_only_verb_carries_no_blurb_onto_the_mcp_surface(monkeypatch):

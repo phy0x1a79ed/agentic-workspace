@@ -819,7 +819,7 @@ def list_domain_tools(*, peers: bool = False, tiers: bool = False,
         verbs_by_domain = _local_domain_verbs(_foreign_catalog(catalog, grants))
         return [Tool(name=domain,
                      description=_local_domain_description(
-                         domain, verbs, blurbs.get(domain)),
+                         verbs, blurbs.get(domain)),
                      inputSchema=_domain_envelope(verbs, with_peer=False))
                 for domain, verbs in verbs_by_domain.items()]
     local_verbs = _local_domain_verbs(catalog)
@@ -831,7 +831,7 @@ def list_domain_tools(*, peers: bool = False, tiers: bool = False,
     if not peers:
         return [Tool(name=domain,
                      description=_local_domain_description(
-                         domain, verbs, blurbs.get(domain)),
+                         verbs, blurbs.get(domain)),
                      inputSchema=_domain_envelope(verbs))
                 for domain, verbs in local_verbs.items()]
 
@@ -854,10 +854,10 @@ def list_domain_tools(*, peers: bool = False, tiers: bool = False,
     return out
 
 
-def _local_domain_description(domain: str, verb_names: list[str],
+def _local_domain_description(verb_names: list[str],
                               blurb: str | None = None) -> str:
     return _with_blurb(
-        f"Generic '{domain}' domain tool. Verbs: {', '.join(verb_names)}. "
+        f"Verbs: {', '.join(verb_names)}. "
         f"Call with {{verb, args}}; verb='describe' (optionally "
         f"args={{verb:<name>}}) returns full parameter schemas.",
         blurb)
@@ -901,7 +901,7 @@ def _fleet_domain_description(res: dict[str, Any],
     verbs = _advertised_verbs(res)
     others = [p["peer"] for p in res["providers"] if p["peer"] != res["default"]]
     head = (
-        f"Generic '{domain}' domain tool. Verbs: {', '.join(verbs)}. "
+        f"Verbs: {', '.join(verbs)}. "
         f"Call with {{verb, args}}; verb='describe' (optionally "
         f"args={{verb:<name>}}) returns full parameter schemas."
     )
