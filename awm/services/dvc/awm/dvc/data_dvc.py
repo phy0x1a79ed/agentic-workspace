@@ -371,6 +371,22 @@ def cache_dir() -> Path:
     return _config.DATA_DIR / CACHE_DIRNAME
 
 
+TMPFS = Path("/dev/shm")
+
+
+def site_cache_dir() -> Path | None:
+    """Where DVC keeps its per-worktree index, or ``None`` for DVC's default.
+
+    DVC rebuilds that SQLite index for every new worktree and commits it row by
+    row. On a busy disk each commit waits on a journal flush, which made one
+    68-pin checkout take 400 s against 2 s on tmpfs. The index is rebuildable,
+    so losing it on reboot costs one rebuild.
+    """
+    if not TMPFS.is_dir() or not os.access(TMPFS, os.W_OK):
+        return None
+    return TMPFS / f"awm-dvc-{os.getuid()}"
+
+
 def legacy_data_dir(project: str) -> Path:
     """``<workspace>/data/<project>`` — the pre-DVC shared directory.
 
@@ -674,6 +690,9 @@ def ensure_cache_config(repo_dir: Path) -> None:
         "[cache]\n"
         f"    dir = {cache}\n"
     )
+    site = site_cache_dir()
+    if site is not None:
+        body += f"[core]\n    site_cache_dir = {site}\n"
     if not local.exists() or local.read_text() != body:
         local.write_text(body)
 

@@ -362,6 +362,19 @@ class TestWiring:
         # DVC gitignores config.local itself, which is why it is the right home.
         assert _git(wt, "check-ignore", ".dvc/config.local").strip() != ""
 
+    def test_site_cache_goes_to_tmpfs_when_there_is_one(self, dvc_project, tmp_path, monkeypatch):
+        """DVC's per-worktree index commits row by row, so a busy disk stalls a fresh checkout."""
+        wt = dvc_project["worktree"]
+        monkeypatch.setattr(dd, "TMPFS", tmp_path / "shm")
+        dd.ensure_cache_config(wt)
+        assert "site_cache_dir" not in (wt / ".dvc" / "config.local").read_text()
+
+        (tmp_path / "shm").mkdir()
+        dd.ensure_cache_config(wt)
+        site = dd.site_cache_dir()
+        assert site.parent == tmp_path / "shm"
+        assert dd._dvc(wt, "config", "core.site_cache_dir").stdout.strip() == str(site)
+
 
 def _scope(dvc_project, name: str, branch: str | None = None) -> Path:
     wt = dvc_project["workspace"] / "projects" / "p" / name
