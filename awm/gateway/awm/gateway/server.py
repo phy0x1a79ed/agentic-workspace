@@ -725,6 +725,30 @@ def _door_refusal(mode: str | None, rec: Any, rel: str) -> str | None:
                                  effect=effect, call_args=None)
 
 
+_DISCONNECT_POLL_S = 1.0
+
+
+async def _dispatch_while_connected(request: Request, call):
+    """Await ``call``, cancelling it when the HTTP client goes away.
+
+    Cancelling the dispatch reaches the service as a ``cancel`` frame, which
+    kills the subprocesses the call started.
+    """
+    task = asyncio.ensure_future(call)
+    try:
+        while True:
+            done, _ = await asyncio.wait({task}, timeout=_DISCONNECT_POLL_S)
+            if done:
+                return task.result()
+            if await request.is_disconnected():
+                log.info("/invoke: client disconnected; cancelling the call")
+                task.cancel()
+                raise HTTPException(499, "client disconnected")
+    finally:
+        if not task.done():
+            task.cancel()
+
+
 @app.post("/invoke")
 async def invoke_tool(payload: dict, request: Request):
     """Dispatch an MCP-style tool call by name through the catalog. Async so
@@ -756,7 +780,8 @@ async def invoke_tool(payload: dict, request: Request):
     # An edge-stamped caller with a non-object `args` carries no session to gate
     # or stamp, and the catalog's own gate answers it (404 for a foreign node).
     try:
-        result = await catalog.dispatch(name, args, as_=as_)
+        result = await _dispatch_while_connected(
+            request, catalog.dispatch(name, args, as_=as_))
     except peer_catalog.PeerRedirect as e:
         if session_modes.is_restricted(mode):
             # A gated session may not run a verb on another node, whether it

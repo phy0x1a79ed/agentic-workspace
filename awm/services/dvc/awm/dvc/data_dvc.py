@@ -70,6 +70,7 @@ from pathlib import Path
 import yaml
 
 from awm import config as _config
+from awm.gatewayclient import cancel
 
 log = logging.getLogger("awm.dvc.data_dvc")
 
@@ -158,13 +159,14 @@ _CHECKOUT_SH = """\
 DVC={dvc_bin}
 SENTINEL=".awm/{failed_file}"
 MOUNTS=".awm/{mounts_file}"
+SHARED="data/{shared_file}"
 # Hooks live in the COMMON git dir, so they fire in every worktree of the
 # project -- including the ones whose branch predates the conversion and has no
 # `.dvc/` at all. There, `dvc checkout` exits 253 ("not inside of a DVC
 # repository") and we would cry wolf on every merge. Not converted, nothing to
 # do.
 [ -d .dvc ] || exit 0
-rm -f "$SENTINEL"
+[ "${{LINKS_ONLY:-0}}" = 1 ] || rm -f "$SENTINEL"
 targets=()
 have_list=0
 if [ -f "$MOUNTS" ]; then
@@ -178,11 +180,58 @@ fi
 # nothing means "materialise nothing". Collapsing those two would turn an
 # opted-out scope into one that checks out every cold chunk in the project.
 if [ "$have_list" = 1 ] && [ "${{#targets[@]}}" -eq 0 ]; then exit 0; fi
-# NOT --quiet: the sentinel exists to say WHY the checkout failed, and --quiet
-# silences the very message it is supposed to record, leaving an empty file.
-if ! out=$("$DVC" checkout "${{targets[@]}}" 2>&1); then
+# A shared chunk is a symlink into the project's store, repointed here to the
+# copy for its new md5. Building a missing copy is provisioning's job. A real
+# tree at a shared path is a private copy and checks out like any chunk.
+missing=()
+common=$(cd "$(git rev-parse --git-common-dir)" && pwd)
+if [ -f "$SHARED" ] && [ "${{common##*/}}" = .bare ]; then
+  store="${{common%/*}}/data"
+  if [ "$have_list" = 0 ]; then
+    have_list=1
+    while IFS= read -r pin; do targets+=("${{pin%.dvc}}"); done < <(git ls-files '*.dvc')
+  fi
+  while IFS= read -r c; do
+    c="${{c#data/}}"; c="${{c%/}}"
+    case "$c" in ''|'#'*) continue ;; esac
+    [ -f "data/$c.dvc" ] || continue
+    if [ -d "data/$c" ] && [ ! -L "data/$c" ]; then continue; fi
+    keep=(); inview=0
+    for t in "${{targets[@]}}"; do
+      if [ "${{t%/}}" = "data/$c" ]; then inview=1; else keep+=("$t"); fi
+    done
+    targets=("${{keep[@]}}")
+    [ "$inview" = 1 ] || continue
+    md5=$(grep -m1 -oE 'md5: [0-9a-f]{{32}}' "data/$c.dvc" | cut -c6-)
+    if [ -n "$md5" ] && [ -d "$store/$c/$md5" ]; then
+      dir=$(dirname "data/$c")
+      mkdir -p "$dir"
+      ln -sfn "$(realpath -ms --relative-to="$PWD/$dir" "$store/$c/$md5")" "data/$c"
+    else
+      # Never leave a link to another md5: a bare `dvc checkout` would write
+      # this pin's content through it, into a copy other scopes read.
+      [ -L "data/$c" ] && rm -f "data/$c"
+      missing+=("data/$c@$md5")
+    fi
+  done < "$SHARED"
+fi
+out=""
+failed=0
+if [ "${{LINKS_ONLY:-0}}" = 1 ]; then
+  :
+elif [ "$have_list" = 0 ] || [ "${{#targets[@]}}" -gt 0 ]; then
+  # NOT --quiet: the sentinel exists to say WHY the checkout failed, and --quiet
+  # silences the very message it is supposed to record, leaving an empty file.
+  out=$("$DVC" checkout "${{targets[@]}}" 2>&1) || failed=1
+fi
+if [ "${{#missing[@]}}" -gt 0 ]; then
+  failed=1
+  out="$out
+no shared copy on this node for: ${{missing[*]}}. Run 'scope heal' to build it."
+fi
+if [ "$failed" = 1 ]; then
   mkdir -p .awm
-  {{ echo "dvc checkout FAILED after $1"; echo "$out"; }} > "$SENTINEL"
+  {{ echo "dvc checkout FAILED after $1"; echo "$out"; }} >> "$SENTINEL"
   echo "!! awm: dvc checkout failed -- your data does NOT match this commit." >&2
   echo "!! $out" >&2
   echo "!! recorded in $SENTINEL; run 'dvc checkout' after restoring the cache." >&2
@@ -212,6 +261,15 @@ _POST_COMMIT_HOOK = """\
 # post-merge hook -- so catch merge commits here. Non-merge commits no-op.
 [ "$(git rev-list --parents -n 1 HEAD | wc -w)" -ge 3 ] || exit 0
 """ + _CHECKOUT_SH.replace('$1', 'a conflicted merge')
+
+# A branch switch moves pins with no merge, so it repoints shared links too. It
+# runs no `dvc checkout`: switching branches has never moved private data.
+_POST_CHECKOUT_HOOK = """\
+#!/usr/bin/env bash
+# AWM-managed. Repoint shared-chunk links after a branch switch.
+[ "$3" = 1 ] || exit 0
+LINKS_ONLY=1
+""" + _CHECKOUT_SH.replace('$1', 'a branch switch')
 
 _AWM_HOOK_MARKER = "# AWM-managed."
 
@@ -280,20 +338,14 @@ def _env() -> dict:
 
 
 def _git(repo: Path, *args: str, timeout: int | None = None) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        ["git", "-C", str(repo), *args],
-        capture_output=True, text=True, env=_env(), timeout=timeout,
-    )
+    return cancel.run(["git", "-C", str(repo), *args], env=_env(), timeout=timeout)
 
 
 def _dvc(repo: Path, *args: str, timeout: int | None = None) -> subprocess.CompletedProcess:
     binp = dvc_bin()
     if not binp:
         return subprocess.CompletedProcess([], 127, "", "dvc not found")
-    return subprocess.run(
-        [binp, *args], cwd=str(repo),
-        capture_output=True, text=True, env=_env(), timeout=timeout,
-    )
+    return cancel.run([binp, *args], cwd=str(repo), env=_env(), timeout=timeout)
 
 
 def _out(r: subprocess.CompletedProcess) -> str:
@@ -363,6 +415,171 @@ def chunk_pins(repo_dir: Path) -> list[str]:
     if r.returncode != 0:
         return []
     return sorted(ln for ln in (r.stdout or "").splitlines() if ln.strip())
+
+
+# ---------------------------------------------------------------------------
+# Shared chunks
+# ---------------------------------------------------------------------------
+
+# A big reference chunk costs one hardlink per file in every scope that checks
+# it out, about 200 files/s. A chunk listed in this tracked file is instead
+# materialised once per node per pin md5, under the project directory, and each
+# scope holds one symlink to it. The pin itself stays in the commit unchanged,
+# so the commit still names its data exactly.
+SHARED_DECLARATION = ".awm-shared"
+SHARED_STORE_DIRNAME = DATA_SUBDIR
+
+
+def shared_store_root(repo_dir: Path) -> Path | None:
+    """``projects/<project>/data``, or None when the repo is not an awm bare-repo layout."""
+    common = _common_git_dir(repo_dir)
+    if common is None or common.name != ".bare":
+        return None
+    return common.parent / SHARED_STORE_DIRNAME
+
+
+def pin_md5(pin: Path) -> str | None:
+    try:
+        outs = (yaml.safe_load(pin.read_text()) or {}).get("outs") or []
+    except (OSError, yaml.YAMLError):
+        return None
+    md5 = outs[0].get("md5") if len(outs) == 1 else None
+    return md5.removesuffix(".dir") if isinstance(md5, str) and md5 else None
+
+
+def shared_chunks(repo_dir: Path) -> dict[str, str]:
+    """The chunks this checkout declares shared, as ``{data/<chunk>: md5}``.
+
+    Entries are relative to ``data/``. An entry with no tracked pin, or a pin
+    with no single hashed output, is skipped: it has nothing to share.
+    """
+    decl = data_dir(repo_dir) / SHARED_DECLARATION
+    if not decl.is_file():
+        return {}
+    tracked = set(chunk_pins(repo_dir))
+    out: dict[str, str] = {}
+    for line in decl.read_text().splitlines():
+        rel = line.strip().removeprefix(f"{DATA_SUBDIR}/").strip("/")
+        if not rel or rel.startswith("#") or ".." in rel.split("/"):
+            continue
+        target = f"{DATA_SUBDIR}/{rel}"
+        if f"{target}.dvc" not in tracked:
+            continue
+        md5 = pin_md5(repo_dir / f"{target}.dvc")
+        if md5:
+            out[target] = md5
+    return out
+
+
+def _shared_copy(store_root: Path, target: str, md5: str) -> Path:
+    return store_root / target.removeprefix(f"{DATA_SUBDIR}/") / md5
+
+
+def _relative_link_target(link: Path, dest: Path) -> str:
+    return os.path.relpath(dest, link.parent)
+
+
+def _links_to(link: Path, copy: Path) -> bool:
+    return copy.is_dir() and link.resolve() == copy.resolve()
+
+
+def _remove_tree(path: Path) -> None:
+    """Unlink a materialised tree. Never chmods a file: see ``chmod_dirs_writable``."""
+    chmod_dirs_writable(path)
+    shutil.rmtree(path)
+
+
+def _seal_dirs(copy: Path) -> None:
+    """Make a shared copy's directories read-only. Files are cache inodes and stay untouched.
+
+    A scope whose pin has moved off its link's md5 would otherwise let a bare
+    ``dvc checkout`` rewrite the shared copy, through the link, for every scope
+    on that md5. Sealed, the checkout fails instead.
+    """
+    for root, dirs, _files in os.walk(copy):
+        for name in dirs:
+            p = Path(root) / name
+            p.chmod(p.stat().st_mode & ~0o222)
+    copy.chmod(copy.stat().st_mode & ~0o222)
+
+
+def _reprotect_files(copy: Path) -> None:
+    """Clear write bits a failed ``dvc checkout`` set on a shared copy's files.
+
+    DVC answers a refused unlink by making the file writable and retrying, and
+    that file is a cache object. Removing write bits is always safe.
+    """
+    for root, _dirs, files in os.walk(copy):
+        for name in files:
+            p = Path(root) / name
+            mode = p.lstat().st_mode
+            if stat.S_ISREG(mode) and mode & 0o222:
+                p.chmod(mode & ~0o222)
+
+
+def _tree_matches_pin(repo_dir: Path, target: str) -> bool:
+    return _dvc(repo_dir, "status", "--quiet", target, timeout=None).returncode == 0
+
+
+def _link_shared_chunk(repo_dir: Path, store_root: Path, target: str, md5: str) -> str:
+    """Make ``<repo>/<target>`` a symlink to the node's shared copy of ``md5``.
+
+    Builds the shared copy on first use: ``dvc checkout`` the chunk here once,
+    then rename the linked tree into the store. A clean private tree already in
+    place is adopted the same way, or removed when the copy exists. A modified
+    one is left alone.
+    """
+    path = repo_dir / target
+    copy = _shared_copy(store_root, target, md5)
+    link_to = _relative_link_target(path, copy)
+
+    if path.is_symlink():
+        if _links_to(path, copy):
+            _reprotect_files(copy)
+            return "linked"
+        path.unlink()
+    elif path.exists():
+        if not _tree_matches_pin(repo_dir, target):
+            return "private:modified"
+        if copy.is_dir():
+            _remove_tree(path)
+
+    copy.parent.mkdir(parents=True, exist_ok=True)
+    with open(copy.parent / f".{md5}.lock", "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if not copy.is_dir():
+            if not path.exists():
+                co = _dvc(repo_dir, "checkout", "--quiet", target, timeout=None)
+                if co.returncode != 0:
+                    return f"missing-copy: {_out(co)[-300:]}"
+            try:
+                os.rename(path, copy)
+            except OSError as exc:
+                return f"private: could not move into {copy}: {exc}"
+            _seal_dirs(copy)
+        elif path.is_dir() and not path.is_symlink():
+            _remove_tree(path)
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.symlink_to(link_to)
+    return "linked"
+
+
+def shared_link_state(repo_dir: Path, store_root: Path, target: str, md5: str) -> str:
+    """``linked``, ``stale-link``, ``missing-copy``, ``private`` or ``absent``, without hashing."""
+    path = repo_dir / target
+    copy = _shared_copy(store_root, target, md5)
+    if path.is_symlink():
+        if _links_to(path, copy):
+            return "linked"
+        return "stale-link" if copy.is_dir() else "missing-copy"
+    if path.exists():
+        return "private"
+    return "absent" if copy.is_dir() else "missing-copy"
+
+
+def _in_view(target: str, mounts: list[str] | None) -> bool:
+    return mounts is None or target in {m.rstrip("/") for m in mounts}
 
 
 # ---------------------------------------------------------------------------
@@ -525,9 +742,10 @@ def ensure_repo_wiring(repo_dir: Path) -> dict:
     hooks = common / "hooks"
     hooks.mkdir(parents=True, exist_ok=True)
     fmt = {"dvc_bin": binp, "mounts_file": MOUNTS_FILE,
-           "failed_file": CHECKOUT_FAILED_FILE}
+           "failed_file": CHECKOUT_FAILED_FILE, "shared_file": SHARED_DECLARATION}
     for name, template in (("post-merge", _POST_MERGE_HOOK),
-                           ("post-commit", _POST_COMMIT_HOOK)):
+                           ("post-commit", _POST_COMMIT_HOOK),
+                           ("post-checkout", _POST_CHECKOUT_HOOK)):
         hook = hooks / name
         body = template.format(**fmt)
         if hook.exists():
@@ -671,6 +889,8 @@ def provision_scope_data(project: str, scope: str, awm_dir: Path) -> dict:
     report["chunks"] = len(pins)
     mounts = read_mounts(awm_dir)
     report["mounts"] = mounts if mounts is not None else "all"
+    store_root = shared_store_root(repo_dir)
+    shared = shared_chunks(repo_dir) if store_root else {}
     # Materialise only what this scope mounts. A bare `dvc checkout` would
     # materialise EVERY pin -- there is no "pinned but not materialised" flag in
     # DVC -- which on scadc means dragging ~65 GB of cold chunks and ~122k
@@ -678,20 +898,36 @@ def provision_scope_data(project: str, scope: str, awm_dir: Path) -> dict:
     #
     # `mounts is None` (no list) means everything; an empty list means nothing.
     # Those must not collapse, or opting out of every chunk would opt you in.
-    if pins and mounts != []:
-        co = _dvc(repo_dir, "checkout", "--quiet", *(mounts or []), timeout=None)
+    #
+    # Shared chunks never go through the per-scope checkout, so once a project
+    # declares any, the target list is always explicit.
+    targets = mounts
+    if shared and mounts != []:
+        base = mounts if mounts is not None else [p.removesuffix(".dvc") for p in pins]
+        targets = [t for t in base if t.rstrip("/") not in shared]
+    if pins and targets != [] and mounts != []:
+        co = _dvc(repo_dir, "checkout", "--quiet", *(targets or []), timeout=None)
         report["checkout"] = "ok" if co.returncode == 0 else "partial"
         if co.returncode != 0:
             report["checkout_detail"] = _out(co)[-400:]
     else:
         report["checkout"] = "skipped"
 
+    if shared:
+        report["shared"] = {
+            t: _link_shared_chunk(repo_dir, store_root, t, md5)
+            for t, md5 in shared.items() if _in_view(t, mounts)
+        }
+
     # A sentinel left by the hook means a previous merge advanced a pin whose
     # content the cache could not supply -- and that `dvc checkout` deleted the
     # old files on its way to failing. Surface it every time until it clears.
     sentinel = awm_dir / CHECKOUT_FAILED_FILE
     if sentinel.exists():
-        if report.get("checkout") == "ok":
+        checked_out = report["checkout"] == "ok" or (shared and report["checkout"] == "skipped")
+        linked = all(v == "linked" or v.startswith("private")
+                     for v in report.get("shared", {}).values())
+        if checked_out and linked:
             sentinel.unlink()
         else:
             report["stale_checkout"] = sentinel.read_text()[-400:]
@@ -837,16 +1073,27 @@ def data_status(project: str, scope: str, worktree: Path) -> dict:
     sentinel = awm_dir / CHECKOUT_FAILED_FILE
     if sentinel.exists():
         out["checkout_failed"] = sentinel.read_text()[-600:]
-    if dvc_available():
+    store_root = shared_store_root(repo_dir)
+    shared = shared_chunks(repo_dir) if store_root else {}
+    targets: list[str] = []
+    if shared:
+        out["shared"] = {t: shared_link_state(repo_dir, store_root, t, md5)
+                         for t, md5 in shared.items()}
+        # A shared copy is checked once, when it is built. Hashing it from
+        # every scope would cost what sharing it saves.
+        targets = [p.removesuffix(".dvc") for p in pins
+                   if p.removesuffix(".dvc") not in shared
+                   or out["shared"][p.removesuffix(".dvc")] == "private"]
+    if dvc_available() and (targets or not shared):
         # Workspace-vs-pin, not branch-vs-branch. Empty output means the
         # materialised files are exactly what this commit says they are.
-        st = _dvc(repo_dir, "status", "--quiet")
+        st = _dvc(repo_dir, "status", "--quiet", *targets)
         out["in_sync"] = st.returncode == 0
         if st.returncode != 0:
             out["drift"] = _out(st)[-600:]
         # A pin whose content is absent from the cache is the one genuinely
         # broken state, and it is worth naming separately from ordinary drift.
-        missing = _dvc(repo_dir, "data", "status", "--granular", "--json")
+        missing = _dvc(repo_dir, "data", "status", "--granular", "--json", *targets)
         if missing.returncode == 0 and missing.stdout:
             out["data_status"] = missing.stdout.strip()[:2000]
     return out

@@ -12,9 +12,8 @@ produced that one string.
    ``TimeoutError`` from the response phase is an ``OSError``, so the catch-all
    swallowed it into the connect-phase retry loop — which had long since expired,
    hence "10.0s" for a request that waited 60.
-3. The core never learns the client left: ``/invoke`` has no disconnect
-   awareness and ``ControlChannel.call`` enqueues onto the service's control WS
-   before it awaits. So the operation always ran to completion.
+3. The core never learned the client left, so the operation always ran to
+   completion. A disconnect now cancels the call; see the cancel test below.
 
 The two proxies had also drifted: the SDK one omitted ``httpx.ReadTimeout`` from
 its retry tuple entirely, so the same failure escaped its helper and surfaced as
@@ -162,6 +161,30 @@ class TestStdioProxy:
         assert env["error_class"] == "CoreNoReply"
         assert env["tool"] == "scope" and env["verb"] == "create"
         assert env["error"], "never an empty message"
+
+
+    def test_a_cancelled_request_stops_waiting_and_gets_no_reply(
+            self, silent_core, monkeypatch):
+        """``notifications/cancelled`` closes the socket the core is answering on."""
+        from awm.gateway import mcp_stdio
+        monkeypatch.setattr(mcp_stdio.config, "BASE_URL", silent_core)
+        monkeypatch.setattr(mcp_stdio, "_ensure_core_running", lambda: None)
+        sent = []
+        monkeypatch.setattr(mcp_stdio, "_send", sent.append)
+
+        call = threading.Thread(target=mcp_stdio._dispatch, args=({
+            "jsonrpc": "2.0", "id": 5, "method": "tools/call",
+            "params": {"name": "scope", "arguments": {"verb": "create"}}},))
+        call.start()
+        deadline = time.monotonic() + 5
+        while 5 not in mcp_stdio._inflight and time.monotonic() < deadline:
+            time.sleep(0.02)
+        mcp_stdio._dispatch({"jsonrpc": "2.0", "method": "notifications/cancelled",
+                             "params": {"requestId": 5}})
+        call.join(5)
+        assert not call.is_alive(), "the request must stop waiting on the core"
+        assert sent == [], "MCP: a cancelled request gets no response"
+        assert mcp_stdio._inflight == {} and mcp_stdio._cancelled == set()
 
 
 class TestSdkProxyAgrees:

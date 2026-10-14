@@ -189,6 +189,12 @@ class ControlChannel:
         self.enqueue(env)
         try:
             return await asyncio.wait_for(fut, timeout=timeout)
+        except asyncio.CancelledError:
+            # The caller went away. A timeout is not a cancel: work that
+            # outlives its RPC budget still finishes in the service.
+            if fut.cancelled() or not fut.done():
+                self.enqueue({"kind": "cancel", "id": call_id})
+            raise
         finally:
             self._pending.pop(call_id, None)
 

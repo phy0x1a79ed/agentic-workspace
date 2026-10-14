@@ -201,10 +201,21 @@ def test_the_document_excludes_the_cache_the_checkouts_and_the_junk(tmp_path, mo
     assert f"{ws}/.awm/" in srcs
     assert counts == {
         "dvc_outputs": 1,
+        "shared_stores": 0,
         "shared_cache": 1,
         "regenerable_dirs": 1,
         "total": 3,
     }
+
+
+def test_the_shared_chunk_store_is_excluded_like_a_checkout(tmp_path, monkeypatch):
+    ws = _workspace(tmp_path, monkeypatch)
+    (ws / "projects" / "p" / ".bare").mkdir()
+    touch(ws / "projects" / "p" / "data" / "ref" / "abc123" / "big.hmm")
+
+    items, counts = backup.build_items(cfg_for())
+    assert not any("/projects/p/data" in s for s in sources(items))
+    assert counts["shared_stores"] == 1
 
 
 def test_no_destination_escapes_the_workspace_root(tmp_path, monkeypatch):

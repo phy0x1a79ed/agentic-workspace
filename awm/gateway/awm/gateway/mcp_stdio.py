@@ -37,9 +37,11 @@ instead of a jsonschema one.
 
 from __future__ import annotations
 
+import http.client
 import json
 import os
 import signal
+import socket
 import subprocess
 import sys
 import threading
@@ -62,6 +64,59 @@ SERVER_VERSION = "0.1.0"
 SUPPORTED_PROTOCOLS = ("2025-06-18", "2025-03-26", "2024-11-05")
 
 _stdout_lock = threading.Lock()
+
+# A cancelled request has its socket to the core shut down, which the core
+# reads as a client disconnect and turns into a cancel of the service call.
+_inflight_lock = threading.Lock()
+_inflight: dict[Any, socket.socket] = {}
+_cancelled: set = set()
+_request_ctx = threading.local()
+
+
+class RequestCancelled(Exception):
+    """The client sent ``notifications/cancelled`` for this request."""
+
+
+class _TrackedHTTPConnection(http.client.HTTPConnection):
+    def connect(self) -> None:
+        super().connect()
+        req_id = getattr(_request_ctx, "req_id", None)
+        if req_id is None:
+            return
+        with _inflight_lock:
+            _inflight[req_id] = self.sock
+            cancelled = req_id in _cancelled
+        if cancelled:
+            _shut(self.sock)
+
+
+class _TrackedHTTPHandler(urllib.request.HTTPHandler):
+    def http_open(self, req):
+        return self.do_open(_TrackedHTTPConnection, req)
+
+
+_opener = urllib.request.build_opener(_TrackedHTTPHandler)
+
+
+def _shut(sock: socket.socket) -> None:
+    try:
+        sock.shutdown(socket.SHUT_RDWR)
+    except OSError:
+        pass
+
+
+def _cancel_request(req_id) -> None:
+    with _inflight_lock:
+        _cancelled.add(req_id)
+        sock = _inflight.get(req_id)
+    if sock is not None:
+        _shut(sock)
+
+
+def _is_cancelled() -> bool:
+    req_id = getattr(_request_ctx, "req_id", None)
+    with _inflight_lock:
+        return req_id is not None and req_id in _cancelled
 
 
 # ---------------------------------------------------------------------------
@@ -148,16 +203,24 @@ def _request_with_retry(
     while time.monotonic() < deadline:
         req = urllib.request.Request(url, data=body, headers=hdrs, method=method)
         try:
-            with urllib.request.urlopen(req, timeout=read_timeout) as r:
+            with _opener.open(req, timeout=read_timeout) as r:
                 return json.loads(r.read().decode("utf-8"))
         except urllib.error.HTTPError as e:
             raise _HTTPStatusError(e.code, e.read().decode("utf-8", "replace")) from e
         except TimeoutError as e:
+            if _is_cancelled():
+                raise RequestCancelled() from e
             # Response phase: delivered, unanswered. Never retried, and no
             # start attempt — the core is demonstrably up, it took the request.
             raise mcp_http.CoreNoReply(
                 time.monotonic() - started, path) from e
+        except http.client.HTTPException as e:
+            if _is_cancelled():
+                raise RequestCancelled() from e
+            raise
         except (urllib.error.URLError, ConnectionError, OSError) as e:
+            if _is_cancelled():
+                raise RequestCancelled() from e
             last_err = e
             if first_attempt:
                 _ensure_core_running()
@@ -317,6 +380,8 @@ def _handle_tools_call(params: dict) -> dict:
             detail = e.body or str(e)
         text = json.dumps(detail) if isinstance(detail, dict) else json.dumps({"error": detail})
         return {"content": [{"type": "text", "text": text}], "isError": False}
+    except RequestCancelled:
+        raise
     except mcp_http.CoreNoReply as e:
         # Delivered but unanswered. Composed here because this is where the tool
         # and verb are known; the helper only knows it waited.
@@ -336,8 +401,11 @@ def _dispatch(msg: dict) -> None:
     # A notification (no id) is never answered — replying to one is a protocol
     # violation that some clients treat as a fatal stream error.
     if req_id is None:
+        if method == "notifications/cancelled" and params.get("requestId") is not None:
+            _cancel_request(params["requestId"])
         return
 
+    _request_ctx.req_id = req_id
     try:
         if method == "initialize":
             _reply(req_id, _handle_initialize(params))
@@ -351,8 +419,15 @@ def _dispatch(msg: dict) -> None:
             # Matches the SDK's behaviour for a server that registers no
             # resource/prompt handlers: probes get method-not-found, not a hang.
             _error(req_id, -32601, "Method not found")
+    except RequestCancelled:
+        # MCP: a cancelled request gets no response.
+        pass
     except Exception as e:
         _error(req_id, -32603, str(e))
+    finally:
+        with _inflight_lock:
+            _inflight.pop(req_id, None)
+            _cancelled.discard(req_id)
 
 
 # ---------------------------------------------------------------------------

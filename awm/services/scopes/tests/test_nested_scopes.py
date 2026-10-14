@@ -170,3 +170,47 @@ class TestContainerDirectoryIsNotAScope:
         (stale / "leftover.txt").write_text("x")
         _cleanup_worktree(project / ".bare", stale, "feat/stale")
         assert not stale.exists()
+
+
+class TestCreateRollsBack:
+    """A create that fails or is cancelled after ``worktree add`` leaves nothing."""
+
+    def _create(self, scope: str):
+        from awm.scopes.models import ScopeCreateRequest
+        from awm.scopes import scopes as mod
+        return mod.create_scope(ScopeCreateRequest(
+            project="metasmith", scope=scope, from_branch="main"))
+
+    def _assert_gone(self, project, scope: str):
+        from awm.scopes.identity import agent_id_for_scope
+        assert not (project / scope).exists()
+        branches = _git(project / ".bare", "branch", "--list", f"feat/{scope}").stdout
+        assert branches.strip() == ""
+        assert agent_id_for_scope("metasmith", scope) is None
+
+    def test_a_failure_after_the_agents_row_rolls_everything_back(self, project, monkeypatch):
+        from awm.scopes import scopes as mod
+
+        def boom(*a, **k):
+            raise RuntimeError("index down")
+        monkeypatch.setattr(mod.search_index, "index_scope", boom)
+        with pytest.raises(RuntimeError, match="index down"):
+            self._create("engine/tmp")
+        self._assert_gone(project, "engine/tmp")
+        assert (project / "engine" / "dev" / ".git").exists(), \
+            "rollback must not touch a sibling in the same group"
+
+    def test_a_cancelled_checkout_rolls_back(self, project, monkeypatch):
+        from awm.gatewayclient import cancel
+        from awm.scopes import scopes as mod
+
+        def cancelled(*a, **k):
+            raise cancel.Cancelled("call cancelled by the caller")
+        monkeypatch.setattr(mod.data_dvc, "provision_scope_data", cancelled)
+        with pytest.raises(cancel.Cancelled):
+            self._create("tmp")
+        self._assert_gone(project, "tmp")
+
+    def test_the_shared_store_name_is_reserved(self, project):
+        with pytest.raises(ValueError, match="reserved"):
+            self._create("data/x")

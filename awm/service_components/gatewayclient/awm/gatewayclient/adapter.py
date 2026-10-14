@@ -59,6 +59,8 @@ import httpx
 import websockets
 from websockets.exceptions import ConnectionClosed, InvalidStatus
 
+from awm.gatewayclient import cancel
+
 log = logging.getLogger("awm.gatewayclient.adapter")
 
 # How long (seconds) the run loop keeps retrying after losing the control WS
@@ -190,6 +192,8 @@ class ServiceAdapter:
         # adapter driven directly (tests, an embedding harness) has no init to
         # wait for, and must not block on a gate nobody will ever open.
         self._init_started = False
+        # In-flight calls by id, so a ``cancel`` frame can reach them.
+        self._calls: dict[Any, tuple[asyncio.Task, cancel.CancelToken]] = {}
 
     # -- initialisation gate -----------------------------------------------
 
@@ -343,7 +347,13 @@ class ServiceAdapter:
                             continue
                         kind = env.get("kind")
                         if kind == "call":
-                            asyncio.create_task(self._handle_call(ws, env))
+                            token = cancel.CancelToken()
+                            task = asyncio.create_task(
+                                self._handle_call(ws, env, token))
+                            if env.get("id") is not None:
+                                self._calls[env["id"]] = (task, token)
+                        elif kind == "cancel":
+                            self._cancel_call(env.get("id"))
                         elif kind == "notify":
                             asyncio.create_task(self._handle_notify(env))
                         elif kind == "session.open":
@@ -395,7 +405,21 @@ class ServiceAdapter:
                     f"control WS upgrade rejected ({status_code})") from exc
             raise
 
-    async def _handle_call(self, ws: Any, env: dict[str, Any]) -> None:
+    def _cancel_call(self, call_id: Any) -> None:
+        """Trip the call's token and cancel its task. An unknown id is a no-op."""
+        entry = self._calls.pop(call_id, None)
+        if entry is None:
+            return
+        task, token = entry
+        log.info("%s: call %s cancelled by the caller", self.name, call_id)
+        token.cancel()
+        task.cancel()
+
+    async def _handle_call(self, ws: Any, env: dict[str, Any],
+                           token: cancel.CancelToken | None = None) -> None:
+        # Bound in this task's context, which ``asyncio.to_thread`` copies into
+        # the worker thread that runs a sync handler.
+        cancel.activate(token)
         try:
             result = await self._dispatch(
                 env.get("fn"), env.get("args"), env.get("as"))
@@ -403,6 +427,8 @@ class ServiceAdapter:
                 "kind": "reply", "id": env.get("id"),
                 "ok": True, "result": result,
             }))
+        except asyncio.CancelledError:
+            return
         except Exception as exc:  # report the error back to the caller
             log.warning("%s: call %s failed: %s",
                         self.name, env.get("fn"), exc)
@@ -411,6 +437,10 @@ class ServiceAdapter:
                 "ok": False, "error": str(exc),
                 "error_class": type(exc).__name__,
             }))
+        finally:
+            entry = self._calls.get(env.get("id"))
+            if entry is not None and entry[0] is asyncio.current_task():
+                del self._calls[env.get("id")]
 
     async def _handle_notify(self, env: dict[str, Any]) -> None:
         try:

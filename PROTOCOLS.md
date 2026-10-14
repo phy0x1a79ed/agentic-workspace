@@ -48,7 +48,7 @@ Scopes older than this convention keep their flat names.
 
 A scope name may contain `/` when one project holds several products. A nested name has three consequences:
 
-- Pass `branch_name` at create time. The branch takes the scope's name, not `feat/<scope>`.
+- The branch defaults to `feat/<group>/<scope>`. A group's hub passes `branch_name` so its branch is the scope name, such as `engine/dev`.
 - Git stores refs as paths. A nested branch forbids a bare branch with its first segment, and the reverse. `scope_create` refuses the collision.
 - A project name never nests. A slash in a project name puts a second `.bare` one level down.
 
@@ -89,6 +89,14 @@ Shared data never goes in `userdata`. `userroot.users()` treats every subdirecto
 Delete superseded data. An old version stays reachable from the commit that pinned it, so two live copies are never needed.
 
 A project without a tracked `.dvc/config` keeps the legacy `.awm/data` symlink. Nothing migrates it. A project gets wired the first time a scope is created or healed after its checkout tracks a `.dvc/config`.
+
+### Shared chunks
+
+A large reference chunk that scopes read but rarely re-pin can be shared. List its path, relative to `data/`, in the tracked `data/.awm-shared`. Each scope then holds one symlink to a copy in `projects/<project>/data/<chunk>/<md5>/`, built once per node per pin. `metasmith` is the worked example.
+
+- After a sync that moves a shared pin, run `scope heal` when `dvc scope_status` reports `missing-copy`. It builds the copy for the new md5.
+- **WARNING** Never run `dvc checkout` on a shared chunk whose link and pin disagree. DVC writes through the link into the copy every other scope reads. Run `scope heal` instead.
+- To re-pin a shared chunk, delete its link. Run `dvc checkout data/<chunk>` for a private copy. Edit, then `dvc add` and commit. The next `scope heal` moves the new version into the store.
 
 ### Off-site backup
 

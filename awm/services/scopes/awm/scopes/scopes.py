@@ -28,6 +28,7 @@ from awm.config import (
 )
 from awm.scopes.git_utils import run_git, detect_default_branch
 from awm.dvc import data_dvc
+from awm.gatewayclient import cancel
 from awm.scopes import search_index
 from awm.scopes.dao import ScopesDAO
 from awm.scopes.identity import (
@@ -770,6 +771,21 @@ def _scaffold_awm_dir(
     return context_content
 
 
+def _roll_back_create(bare_dir: Path, repo_dir: Path, branch: str,
+                      project: str, scope: str) -> None:
+    try:
+        _cleanup_worktree(bare_dir, repo_dir, branch,
+                          project=project, scope=scope, force=True)
+    except Exception as exc:  # noqa: BLE001 — the original failure is the one to report
+        log.error("scope %s/%s: rollback left the worktree: %s", project, scope, exc)
+    aid = agent_id_for_scope(project, scope, active_only=True)
+    if aid:
+        with ScopesDAO().transaction() as conn:
+            ScopesDAO(conn=conn).execute("DELETE FROM agents WHERE id=?", (aid,))
+    log.warning("scope %s/%s: create failed; worktree and branch rolled back",
+                project, scope)
+
+
 def create_scope(req: ScopeCreateRequest) -> ScopeActionResponse:
     """Create a new scope: git worktree + .awm/ metadata + agents row.
 
@@ -783,6 +799,10 @@ def create_scope(req: ScopeCreateRequest) -> ScopeActionResponse:
                              "to create the project alone")
     else:
         validate_scope_name(req.scope)
+        if req.scope.split("/", 1)[0] == data_dvc.SHARED_STORE_DIRNAME:
+            raise ValueError(
+                f"'{data_dvc.SHARED_STORE_DIRNAME}' is reserved at the top of a project "
+                f"for its shared data store; pick another scope name")
     bare_dir = PROJECTS_DIR / req.project / ".bare"
     if not bare_dir.exists():
         if req.project == VAGRANT_PROJECT:
@@ -835,17 +855,23 @@ def create_scope(req: ScopeCreateRequest) -> ScopeActionResponse:
         _cleanup_worktree(bare_dir, repo_dir, feature_branch,
                           project=req.project, scope=req.scope)
 
-    r = run_git(["git", "-C", str(bare_dir), "worktree", "add",
-                 str(repo_dir), "-b", feature_branch, from_branch])
-    if r.returncode != 0:
-        raise RuntimeError(f"Failed to create worktree: {r.stderr}")
-
-    _scaffold_awm_dir(
-        req.project, req.scope, repo_dir,
-        branch=feature_branch,
-        context=req.context,
-        is_vagrant=(req.project == VAGRANT_PROJECT),
-    )
+    # Everything from here on is undone if it fails or the caller cancels:
+    # the branch is new (checked above) and the directory was cleared.
+    try:
+        r = run_git(["git", "-C", str(bare_dir), "worktree", "add",
+                     str(repo_dir), "-b", feature_branch, from_branch])
+        if r.returncode != 0:
+            raise RuntimeError(f"Failed to create worktree: {r.stderr}")
+        _scaffold_awm_dir(
+            req.project, req.scope, repo_dir,
+            branch=feature_branch,
+            context=req.context,
+            is_vagrant=(req.project == VAGRANT_PROJECT),
+        )
+    except BaseException:
+        with cancel.shielded():
+            _roll_back_create(bare_dir, repo_dir, feature_branch, req.project, req.scope)
+        raise
 
     return ScopeActionResponse(
         project=req.project,

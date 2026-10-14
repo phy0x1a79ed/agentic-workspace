@@ -5,10 +5,12 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
+from awm.gatewayclient import cancel
+
 
 def run_git(cmd: list[str], **kw) -> subprocess.CompletedProcess:
-    """Run a command, capturing output as text."""
-    return subprocess.run(cmd, capture_output=True, text=True, **kw)
+    """Run a command, capturing output as text. A cancelled call kills it."""
+    return cancel.run(cmd, **kw)
 
 
 def detect_default_branch(bare_dir: Path) -> str:

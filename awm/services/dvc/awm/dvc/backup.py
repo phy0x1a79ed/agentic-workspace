@@ -97,6 +97,19 @@ def dvc_output_paths(root: Path) -> list[str]:
     return sorted(out)
 
 
+def shared_store_paths(root: Path) -> list[str]:
+    """Each project's shared-chunk store, ``projects/<p>/data``.
+
+    Its files are hardlinks into the cache, like a checkout's, but no pin names
+    the store, so ``dvc_output_paths`` cannot see it.
+    """
+    return sorted(
+        os.path.normpath(str(bare.parent / "data"))
+        for bare in (root / "projects").glob("*/.bare")
+        if (bare.parent / "data").is_dir()
+    )
+
+
 def regenerable_paths(
     root: Path, *, names: frozenset[str] = REGENERABLE_DIRS, skip: list[str] | None = None
 ) -> list[str]:
@@ -210,12 +223,14 @@ def build_items(cfg: ChinookConfig) -> tuple[list[dict], dict[str, int]]:
     in a thread.
     """
     outs = dvc_output_paths(WORKSPACE_ROOT)
+    stores = shared_store_paths(WORKSPACE_ROOT)
     cache = os.path.normpath(str(SHARED_CACHE))
-    regen = regenerable_paths(WORKSPACE_ROOT, skip=[*outs, cache])
-    excluded = [*outs, cache, *regen]
+    regen = regenerable_paths(WORKSPACE_ROOT, skip=[*outs, *stores, cache])
+    excluded = [*outs, *stores, cache, *regen]
     items = partition(str(WORKSPACE_ROOT), excluded, destination_root(cfg))
     counts = {
         "dvc_outputs": len(outs),
+        "shared_stores": len(stores),
         "shared_cache": 1,
         "regenerable_dirs": len(regen),
         "total": len(excluded),

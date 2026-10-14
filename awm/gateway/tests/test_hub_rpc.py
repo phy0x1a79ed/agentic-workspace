@@ -94,6 +94,20 @@ class TestCallReply:
             with pytest.raises(asyncio.TimeoutError):
                 await ch.call("slow", None, timeout=0.05)
             assert ch._pending == {}
+            env = await ch.next_outbound()
+            assert env["kind"] == "call"
+            assert ch._send_queue.empty(), "a timeout is not a cancel"
+        _run(go())
+
+    def test_a_cancelled_call_tells_the_service(self, ch):
+        async def go():
+            task = asyncio.create_task(ch.call("slow", None))
+            env = await ch.next_outbound()
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            assert await ch.next_outbound() == {"kind": "cancel", "id": env["id"]}
+            assert ch._pending == {}
         _run(go())
 
     def test_reply_for_unknown_id_is_dropped(self, ch):

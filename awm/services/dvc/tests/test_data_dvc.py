@@ -363,6 +363,219 @@ class TestWiring:
         assert _git(wt, "check-ignore", ".dvc/config.local").strip() != ""
 
 
+def _scope(dvc_project, name: str, branch: str | None = None) -> Path:
+    wt = dvc_project["workspace"] / "projects" / "p" / name
+    _sh("git", "-C", str(dvc_project["bare"]), "worktree", "add", "-q", str(wt),
+        "-b", branch or f"feat/{name}", "main")
+    _git(wt, "config", "user.email", "t@t"); _git(wt, "config", "user.name", "t")
+    (wt / ".awm").mkdir(parents=True, exist_ok=True)
+    return wt
+
+
+@pytest.fixture()
+def shared_project(dvc_project):
+    """main pins a big chunk declared shared and a small one that is not."""
+    wt = dvc_project["worktree"]
+    (wt / ".awm").mkdir(exist_ok=True)
+    dd.provision_scope_data("p", "main", wt / ".awm")
+    for chunk in ("ref/big", "small"):
+        (wt / "data" / chunk).mkdir(parents=True)
+        (wt / "data" / chunk / "f.txt").write_text(f"{chunk} v1\n")
+        _sh(dd.dvc_bin(), "add", f"data/{chunk}", "-q", cwd=str(wt))
+    (wt / "data" / dd.SHARED_DECLARATION).write_text("# shared\nref/big\n")
+    _git(wt, "add", "-A"); _git(wt, "commit", "-q", "-m", "chunks")
+    yield dvc_project
+    dd.chmod_dirs_writable(_store(dvc_project))
+
+
+def _drop_link(wt: Path) -> None:
+    """The post-checkout hook links a new worktree when a shared copy exists."""
+    big = wt / "data" / "ref" / "big"
+    if big.is_symlink():
+        big.unlink()
+
+
+def _store(dvc_project) -> Path:
+    return dvc_project["workspace"] / "projects" / "p" / "data"
+
+
+@needs_dvc
+class TestSharedChunks:
+    def test_scopes_link_one_shared_copy(self, shared_project):
+        a = _scope(shared_project, "a")
+        b = _scope(shared_project, "g/b")
+        ra = dd.provision_scope_data("p", "a", a / ".awm")
+        rb = dd.provision_scope_data("p", "g/b", b / ".awm")
+
+        md5 = dd.pin_md5(a / "data" / "ref" / "big.dvc")
+        copy = _store(shared_project) / "ref" / "big" / md5
+        assert ra["shared"] == {"data/ref/big": "linked"} == rb["shared"]
+        for wt in (a, b):
+            assert (wt / "data" / "ref" / "big").is_symlink()
+            assert (wt / "data" / "ref" / "big").resolve() == copy.resolve()
+            assert (wt / "data" / "small" / "f.txt").is_file()
+            assert not (wt / "data" / "small").is_symlink()
+        assert ((a / "data/ref/big/f.txt").stat().st_ino
+                == (b / "data/ref/big/f.txt").stat().st_ino)
+
+    def test_no_declaration_keeps_private_checkouts(self, dvc_project):
+        wt = dvc_project["worktree"]
+        (wt / ".awm").mkdir(exist_ok=True)
+        dd.provision_scope_data("p", "main", wt / ".awm")
+        (wt / "data" / "c").mkdir(parents=True)
+        (wt / "data" / "c" / "f.txt").write_text("v1\n")
+        _sh(dd.dvc_bin(), "add", "data/c", "-q", cwd=str(wt))
+        _git(wt, "add", "-A"); _git(wt, "commit", "-q", "-m", "chunk")
+        s = _scope(dvc_project, "s")
+        rep = dd.provision_scope_data("p", "s", s / ".awm")
+        assert "shared" not in rep
+        assert not (s / "data" / "c").is_symlink()
+        assert not _store(dvc_project).exists()
+
+    def test_a_mount_list_can_leave_a_shared_chunk_out(self, shared_project):
+        s = _scope(shared_project, "s")
+        dd.write_mounts(s / ".awm", ["data/small"])
+        rep = dd.provision_scope_data("p", "s", s / ".awm")
+        assert rep["shared"] == {}
+        assert not (s / "data" / "ref" / "big").exists()
+        assert (s / "data" / "small" / "f.txt").is_file()
+
+    def test_a_merge_repoints_the_link_or_leaves_the_sentinel(self, shared_project):
+        a = _scope(shared_project, "a")
+        b = _scope(shared_project, "b")
+        dd.provision_scope_data("p", "a", a / ".awm")
+        dd.provision_scope_data("p", "b", b / ".awm")
+
+        # b re-pins the shared chunk from a private tree.
+        (b / "data" / "ref" / "big").unlink()
+        _sh(dd.dvc_bin(), "checkout", "-q", "data/ref/big", cwd=str(b))
+        _sh(dd.dvc_bin(), "unprotect", "data/ref/big", "-q", cwd=str(b))
+        (b / "data" / "ref" / "big" / "g.txt").write_text("v2\n")
+        _sh(dd.dvc_bin(), "add", "data/ref/big", "-q", cwd=str(b))
+        _git(b, "add", "-A"); _git(b, "commit", "-q", "-m", "v2")
+
+        _git(a, "merge", "--no-edit", "feat/b")
+        big = a / "data" / "ref" / "big"
+        assert not big.exists() and not big.is_symlink(), \
+            "no copy for the new md5: drop the link, never build a real tree"
+        assert "no shared copy" in (a / ".awm" / dd.CHECKOUT_FAILED_FILE).read_text()
+
+        rep = dd.provision_scope_data("p", "b", b / ".awm")
+        assert rep["shared"] == {"data/ref/big": "linked"}, "b's clean tree is adopted"
+        md5 = dd.pin_md5(b / "data" / "ref" / "big.dvc")
+        assert (_store(shared_project) / "ref" / "big" / md5 / "g.txt").is_file()
+
+        rep = dd.provision_scope_data("p", "a", a / ".awm")
+        assert rep["shared"] == {"data/ref/big": "linked"}
+        assert (big / "g.txt").is_file()
+        assert not (a / ".awm" / dd.CHECKOUT_FAILED_FILE).exists()
+
+    def test_a_merge_repoints_to_an_existing_copy(self, shared_project):
+        a = _scope(shared_project, "a")
+        dd.provision_scope_data("p", "a", a / ".awm")
+        b = _scope(shared_project, "b")
+        dd.provision_scope_data("p", "b", b / ".awm")
+        (b / "data" / "ref" / "big").unlink()
+        _sh(dd.dvc_bin(), "checkout", "-q", "data/ref/big", cwd=str(b))
+        _sh(dd.dvc_bin(), "unprotect", "data/ref/big", "-q", cwd=str(b))
+        (b / "data" / "ref" / "big" / "g.txt").write_text("v2\n")
+        _sh(dd.dvc_bin(), "add", "data/ref/big", "-q", cwd=str(b))
+        _git(b, "add", "-A"); _git(b, "commit", "-q", "-m", "v2")
+        dd.provision_scope_data("p", "b", b / ".awm")
+
+        _git(a, "merge", "--no-edit", "feat/b")
+        assert (a / "data" / "ref" / "big").is_symlink()
+        assert (a / "data" / "ref" / "big" / "g.txt").is_file()
+        assert not (a / ".awm" / dd.CHECKOUT_FAILED_FILE).exists()
+
+    def test_data_status_reports_links_without_hashing_them(self, shared_project):
+        a = _scope(shared_project, "a")
+        dd.provision_scope_data("p", "a", a / ".awm")
+        st = dd.data_status("p", "a", a)
+        assert st["shared"] == {"data/ref/big": "linked"}
+        assert st["in_sync"] is True
+
+    def test_heal_replaces_a_clean_private_copy_and_keeps_a_modified_one(self, shared_project):
+        a = _scope(shared_project, "a")
+        b = _scope(shared_project, "b")
+        dd.provision_scope_data("p", "a", a / ".awm")
+        # b predates the declaration: a private, clean tree.
+        _drop_link(b)
+        dd.ensure_cache_config(b)
+        _sh(dd.dvc_bin(), "checkout", "-q", "data/ref/big", cwd=str(b))
+        assert (b / "data/ref/big/f.txt").is_file()
+        assert not (b / "data" / "ref" / "big").is_symlink()
+        rep = dd.provision_scope_data("p", "b", b / ".awm")
+        assert rep["shared"] == {"data/ref/big": "linked"}
+        assert (b / "data" / "ref" / "big").is_symlink()
+
+        c = _scope(shared_project, "c")
+        _drop_link(c)
+        dd.ensure_cache_config(c)
+        _sh(dd.dvc_bin(), "checkout", "-q", "data/ref/big", cwd=str(c))
+        _sh(dd.dvc_bin(), "unprotect", "data/ref/big", "-q", cwd=str(c))
+        (c / "data" / "ref" / "big" / "f.txt").write_text("local edit\n")
+        rep = dd.provision_scope_data("p", "c", c / ".awm")
+        assert rep["shared"] == {"data/ref/big": "private:modified"}
+        assert (c / "data" / "ref" / "big" / "f.txt").read_text() == "local edit\n"
+
+    def test_heal_adopts_a_clean_private_copy_when_no_shared_copy_exists(self, shared_project):
+        b = _scope(shared_project, "b")
+        dd.ensure_cache_config(b)
+        _sh(dd.dvc_bin(), "checkout", "-q", "data/ref/big", cwd=str(b))
+        ino = (b / "data/ref/big/f.txt").stat().st_ino
+        rep = dd.provision_scope_data("p", "b", b / ".awm")
+        assert rep["shared"] == {"data/ref/big": "linked"}
+        md5 = dd.pin_md5(b / "data" / "ref" / "big.dvc")
+        moved = _store(shared_project) / "ref" / "big" / md5 / "f.txt"
+        assert moved.stat().st_ino == ino, "adopted by rename, not re-linked"
+
+    def test_a_bare_dvc_checkout_never_empties_a_shared_copy(self, shared_project):
+        """The hook never runs one, but a person might, over a link to another md5."""
+        a = _scope(shared_project, "a")
+        dd.provision_scope_data("p", "a", a / ".awm")
+        v1 = dd.pin_md5(a / "data" / "ref" / "big.dvc")
+        b = _scope(shared_project, "b")
+        dd.provision_scope_data("p", "b", b / ".awm")
+        (b / "data" / "ref" / "big").unlink()
+        _sh(dd.dvc_bin(), "checkout", "-q", "data/ref/big", cwd=str(b))
+        _sh(dd.dvc_bin(), "unprotect", "data/ref/big", "-q", cwd=str(b))
+        (b / "data" / "ref" / "big" / "g.txt").write_text("v2\n")
+        _sh(dd.dvc_bin(), "add", "data/ref/big", "-q", cwd=str(b))
+        _git(b, "add", "-A"); _git(b, "commit", "-q", "-m", "v2")
+        dd.provision_scope_data("p", "b", b / ".awm")
+        v2 = dd.pin_md5(b / "data" / "ref" / "big.dvc")
+
+        _git(a, "merge", "--no-edit", "feat/b")
+        _git(a, "checkout", "HEAD~1", "--", "data/ref/big.dvc")
+        _sh(dd.dvc_bin(), "checkout", "-f", cwd=str(a))
+
+        store = _store(shared_project) / "ref" / "big"
+        assert (store / v1 / "f.txt").read_text() == "ref/big v1\n"
+        assert (store / v2 / "f.txt").read_text() == "ref/big v1\n"
+        assert (store / v2 / "g.txt").read_text() == "v2\n"
+
+        # DVC answers the refused unlink by making the cache object writable.
+        dd.provision_scope_data("p", "b", b / ".awm")
+        assert not os.access(store / v2 / "g.txt", os.W_OK), "heal re-protects it"
+
+        # A branch switch repoints the link with no merge involved.
+        _git(a, "checkout", "-q", "--", "data/ref/big.dvc")
+        assert (a / "data" / "ref" / "big").resolve() == (store / v2).resolve()
+        _git(a, "checkout", "-q", "-b", "sw", "main")
+        assert (a / "data" / "ref" / "big").resolve() == (store / v1).resolve()
+
+    def test_deleting_a_scope_leaves_the_shared_copy(self, shared_project):
+        import shutil
+        a = _scope(shared_project, "a")
+        dd.provision_scope_data("p", "a", a / ".awm")
+        copy = (a / "data" / "ref" / "big").resolve()
+        dd.chmod_dirs_writable(a)
+        shutil.rmtree(a)
+        assert (copy / "f.txt").read_text() == "ref/big v1\n"
+        assert not os.access(copy / "f.txt", os.W_OK), "cache objects stay read-only"
+
+
 # ---------------------------------------------------------------------------
 # Garbage collection
 # ---------------------------------------------------------------------------

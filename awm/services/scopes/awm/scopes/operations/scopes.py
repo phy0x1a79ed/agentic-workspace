@@ -24,8 +24,14 @@ SCOPE_MANIFEST_FUNCTIONS = [
             "creates the project (bare repo, main checkout, data dirs; clone_url "
             "or fork_url to start from a remote); omit scope then to create the "
             "project alone. "
-            "Example: project='awm', scope='svc-diplomacy' creates "
-            "projects/awm/svc-diplomacy on branch feat/svc-diplomacy."
+            "A '/' in scope groups it: the worktree lands in that group's "
+            "directory and the branch under feat/<group>/. Projects grouped by "
+            "component (check scope search) expect a grouped name. "
+            "Examples: project='awm', scope='svc-diplomacy' creates "
+            "projects/awm/svc-diplomacy on branch feat/svc-diplomacy; "
+            "project='metasmith', scope='engine/presentation' creates "
+            "projects/metasmith/engine/presentation on branch "
+            "feat/engine/presentation."
         ),
         "params": [
             {"name": "project", "type": "string", "required": True,
@@ -34,7 +40,8 @@ SCOPE_MANIFEST_FUNCTIONS = [
                             "Not the workspace or the MCP namespace."},
             {"name": "scope", "type": "string", "required": False,
              "description": "Name for the new scope, unique within the project "
-                            "(e.g. 'svc-diplomacy'). Becomes the worktree directory name. "
+                            "(e.g. 'svc-diplomacy', or 'engine/presentation' to place it in "
+                            "the engine group). Becomes the worktree path under the project. "
                             "Required, except with new_project to create the project alone."},
             {"name": "from_branch", "type": "string", "required": False},
             {"name": "branch_name", "type": "string", "required": False},
