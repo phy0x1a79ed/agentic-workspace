@@ -20,6 +20,7 @@ from typing import Any
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
+from starlette.datastructures import Headers
 
 from awm.config import (
     HOST,
@@ -403,18 +404,34 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="AWM", version=__version__, lifespan=lifespan)
 
 
-@app.middleware("http")
-async def track_activity(request, call_next):
-    global _last_request_time
-    _last_request_time = time.time()
-    return await call_next(request)
+# Plain ASGI, not @app.middleware("http"): BaseHTTPMiddleware wraps `receive`
+# and never delivers the client's disconnect, which /invoke needs to cancel.
+class _TrackActivity:
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http":
+            global _last_request_time
+            _last_request_time = time.time()
+        await self.app(scope, receive, send)
 
 
-@app.middleware("http")
-async def bind_caller_stamp(request, call_next):
+class _BindCallerStamp:
     """Let the generated control-plane routes see the edge's ``X-Awm-As``."""
-    with bound_caller(request.headers.get("X-Awm-As")):
-        return await call_next(request)
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+        with bound_caller(Headers(scope=scope).get("X-Awm-As")):
+            await self.app(scope, receive, send)
+
+
+app.add_middleware(_TrackActivity)
+app.add_middleware(_BindCallerStamp)
 
 
 @app.exception_handler(PermissionError)

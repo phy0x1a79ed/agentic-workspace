@@ -53,3 +53,10 @@ def test_a_connected_client_gets_the_result(monkeypatch):
     req = _Request(gone_after=10**6)
     assert asyncio.run(server._dispatch_while_connected(req, slow())) == {"ok": 1}
     assert req.polls >= 1
+
+
+def test_no_middleware_hides_the_disconnect():
+    """BaseHTTPMiddleware wraps `receive` and never passes the disconnect on."""
+    from starlette.middleware.base import BaseHTTPMiddleware
+
+    assert not [m for m in server.app.user_middleware if m.cls is BaseHTTPMiddleware]
