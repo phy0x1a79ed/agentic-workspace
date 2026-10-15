@@ -87,8 +87,8 @@ class Commands:
     # -- /reject ---------------------------------------------------------------
 
     async def _reject(self, event: dict) -> str:
-        ref = str(event.get("ref") or "").strip()
-        reason = str(event.get("reason") or "").strip() or DEFAULT_REASON
+        ref, _, extra = str(event.get("ref") or "").strip().partition(" ")
+        reason = str(event.get("reason") or "").strip() or extra.strip() or DEFAULT_REASON
         if not ref:
             return "usage: /reject <ref> [reason]"
         try:
