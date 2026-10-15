@@ -37,6 +37,7 @@ from awm.reflection import (
     pending,
     permission_mode,
     session_target,
+    settings_guard,
     watcher,
 )
 
@@ -269,19 +270,44 @@ def _slash(job: Optional[str], caller_pid: Any, text: str, what: str, *,
     if refused:
         return refused
     inline = answers is not None and not t.is_self and _between_turns(t)
+    guard = _DefaultsGuard(answers)
     out = _command(t, text, what=what, change=change)
     if answers is None or not out.get("ok") or not out.get("submitted"):
         return out
     kind, value = answers
     if inline:
-        return _with_dialog(out, _answer_switch_confirm(
-            t, kind, value, MODAL_WAIT_S, POLL_S))
-    _answer_later(t, kind, value, change, spawn)
+        dialog = _answer_switch_confirm(t, kind, value, MODAL_WAIT_S, POLL_S,
+                                        before_press=guard.refresh)
+        return _with_dialog(out, {**dialog, **guard.restore()})
+    _answer_later(t, kind, value, change, spawn, guard)
     return {**out, "switch_dialog": {
         "ok": True, "answered": False, "pending": True,
         "detail": "the command runs when the turn ends, and the service then "
                   "answers Claude Code's confirm dialog"
                   + ("; a follow-up prompt reports the result" if t.is_self else "")}}
+
+
+class _DefaultsGuard:
+    """Holds the user's saved defaults while `/effort` or `/model` runs.
+
+    Both save their value as the default for new sessions; see
+    :mod:`settings_guard`. ``/effort max`` saves nothing, so it needs no guard.
+    """
+
+    def __init__(self, answers: Optional[tuple[str, str]]) -> None:
+        self.on = answers is not None and answers != ("effort", "max")
+        self.snap = settings_guard.snapshot() if self.on else None
+
+    def refresh(self) -> None:
+        """Re-read the defaults; the dialog can open long after the command went in."""
+        if self.on:
+            self.snap = settings_guard.snapshot() or self.snap
+
+    def restore(self) -> dict:
+        if not self.on:
+            return {}
+        out = settings_guard.restore(self.snap, sleep=_sleep, clock=_clock)
+        return {"defaults_restored": out["restored"]} if out["restored"] else {}
 
 
 def _with_dialog(out: dict, dialog: dict) -> dict:
@@ -304,13 +330,15 @@ def _promise_gone(pid: int, change: pending.Change) -> Callable[[], bool]:
 
 
 def _answer_later(t: Target, kind: str, value: str,
-                  change: Optional[pending.Change], spawn) -> None:
+                  change: Optional[pending.Change], spawn,
+                  guard: Optional["_DefaultsGuard"] = None) -> None:
     """Answer the confirm dialog from a detached thread, then record how it ended."""
     def finish() -> None:
         give_up = _promise_gone(t.pid, change) if change else None
         try:
-            out = _answer_switch_confirm(t, kind, value, SELF_MODAL_WAIT_S,
-                                         SELF_POLL_S, give_up=give_up)
+            out = _answer_switch_confirm(
+                t, kind, value, SELF_MODAL_WAIT_S, SELF_POLL_S, give_up=give_up,
+                before_press=guard.refresh if guard else None)
         except Exception as exc:  # noqa: BLE001 - runs detached
             log.warning("reflection: answering the %s dialog of %s failed: %s",
                         kind, t.label, exc)
@@ -322,6 +350,12 @@ def _answer_later(t: Target, kind: str, value: str,
             pending.settle(t.pid, change.key,
                            pending.APPLIED if out["ok"] else pending.FAILED,
                            out.get("reason", ""))
+        if guard:
+            try:
+                guard.restore()
+            except Exception as exc:  # noqa: BLE001 - runs detached
+                log.warning("reflection: could not restore the defaults after "
+                            "%s: %s", kind, exc)
 
     spawn(finish)
 
@@ -720,14 +754,17 @@ def _read_switch_dialog(kind: str, value: str, dialog: str) -> tuple[str, str]:
 
 def _answer_switch_confirm(t: Target, kind: str, value: str, wait_s: float,
                            poll_s: float, *,
-                           give_up: Optional[Callable[[], bool]] = None) -> dict:
+                           give_up: Optional[Callable[[], bool]] = None,
+                           before_press: Optional[Callable[[], None]] = None
+                           ) -> dict:
     """Answer Claude Code's "Change effort level?" / "Switch model?" dialog.
 
     Presses Enter only with the cursor on "Yes, switch to <value>". The cursor on
     "No" closes the dialog with Escape. A dialog a PreModelSwitch hook raised is
     left alone: that is the user's own gate. No dialog within ``wait_s`` is
     success, since a conversation without output switches without asking;
-    ``give_up`` ends the wait early with that same answer. Returns ``ok``,
+    ``give_up`` ends the wait early with that same answer, and ``before_press`` runs
+    just before Enter. Returns ``ok``,
     ``answered`` and a ``detail`` or ``reason``.
     """
     title = SWITCH_TITLES[kind]
@@ -737,11 +774,13 @@ def _answer_switch_confirm(t: Target, kind: str, value: str, wait_s: float,
         wrong_since: Optional[float] = None
         verdict, picked = "", ""
         while True:
-            screen = guards.plain_screen(sess.read())
+            screen = guards.current_screen(sess.read())
             at = screen.lower().rfind(title)
             verdict, picked = (_read_switch_dialog(kind, value, screen[at:])
                                if at >= 0 else ("", ""))
             if verdict == "enter":
+                if before_press:
+                    before_press()
                 sess.press("Enter")
                 _sleep(KEY_SETTLE_S)
                 return {"ok": True, "answered": True, "dialog": True,
