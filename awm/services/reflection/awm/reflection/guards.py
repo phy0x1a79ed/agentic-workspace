@@ -10,6 +10,8 @@ from __future__ import annotations
 import re
 from typing import Optional
 
+from awm.reflection import termscreen
+
 # Slash commands that irreversibly discard context / end the session. Refused
 # unless the caller passes confirm=true.
 DESTRUCTIVE = {"/clear", "/quit", "/exit"}
@@ -126,7 +128,17 @@ def plain_screen(screen: str) -> str:
     return _ANSI.sub("", _CSI_MOVE.sub("\n", screen))
 
 
+def current_screen(screen: str) -> str:
+    """The text a terminal would show after ``screen``, a pty stream or a capture.
+
+    A capture is already a screen. A stream has escape sequences in it, and holds
+    every dialog that has opened and closed since the connection began, so it is
+    replayed onto a grid first and only what is left on that grid counts.
+    """
+    return termscreen.render(screen) if "\x1b" in screen else screen
+
+
 def modal_on_screen(screen: str) -> Optional[str]:
     """The marker that shows a modal or permission prompt on ``screen``, or None."""
-    tail = plain_screen(screen)[-_SCREEN_TAIL_CHARS:].lower()
+    tail = current_screen(screen)[-_SCREEN_TAIL_CHARS:].lower()
     return next((m for m in _MODAL_MARKERS if m in tail), None)
