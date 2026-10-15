@@ -40,6 +40,14 @@ ZOTERO_LIBRARY = Path(os.environ.get("KB_ZOTERO_LIBRARY")
                       or (WORKSPACE_ROOT / "projects" / "trilium" / "release" / "data"
                           / "vault" / "zotero" / "library.json"))
 
+#: The paper fast layer: the base kb's `kb.fastlayer` builds from semdb and ships here, and the
+#: delta this service fills from Zotero.
+PAPERS_BASE = Path(os.environ.get("KB_PAPERS_BASE") or (STATE_DIR / "papers.db"))
+PAPERS_DELTA = Path(os.environ.get("KB_PAPERS_DELTA") or (STATE_DIR / "papers_delta.db"))
+ZOTERO_POLL_S = float(os.environ.get("KB_ZOTERO_POLL_S", "300"))
+#: The node whose zotero service holds the library mirror; `local` for this one.
+ZOTERO_PEER = os.environ.get("KB_ZOTERO_PEER", "mira")
+
 #: opencode's credential store, where the OpenRouter key lives on every node.
 AUTH_JSON = Path(os.environ.get("KB_AUTH_JSON")
                  or (Path.home() / ".local" / "share" / "opencode" / "auth.json"))

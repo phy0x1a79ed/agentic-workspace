@@ -23,13 +23,15 @@ import time
 from typing import Any
 
 from awm import config
+from awm import gatewayclient
 from awm.gatewayclient import ServiceAdapter, spawn_supervised
 
-from awm.kb import client, instances, papers, server
+from awm.kb import client, fastlayer, instances, papers, server
 
 log = logging.getLogger("awm.kb.hub_adapter")
 
 CHILD = server.CHILD
+PAPERS = fastlayer.FastLayer(instances.PAPERS_BASE, instances.PAPERS_DELTA)
 _tasks: set[asyncio.Task] = set()
 
 API_MANIFEST: dict[str, Any] = {
@@ -127,6 +129,31 @@ API_MANIFEST: dict[str, Any] = {
             "timeout": 1800,
         },
         {
+            "name": "query",
+            "effect": "read",
+            "category": "kb",
+            "tool": "kb_query",
+            "surfaces": ["cli", "http"],
+            "description": (
+                "Papers for the archive's live `kb` source, in search's sections: `exact` holds "
+                "papers whose title, abstract or body holds the query literally, then papers "
+                "matching its words. Each hit quotes its passages with their zone, section and "
+                "offsets. `search query` calls it; call that instead."
+            ),
+            "params": [
+                {"name": "query", "type": "string", "required": True, "description": "What to find."},
+                {"name": "limit", "type": "integer", "description": "Maximum hits per section. Default 10."},
+                {"name": "passages", "type": "integer", "description": "Passages per hit. Default 1."},
+                {"name": "kind", "type": "string",
+                 "description": "Comma-separated kinds; papers answer only when it names paper."},
+                {"name": "project", "type": "string", "description": "Papers have none, so any value answers nothing."},
+                {"name": "scope", "type": "string", "description": "Papers have none, so any value answers nothing."},
+                {"name": "after", "type": "string", "description": "Only papers from this ISO 8601 date on."},
+                {"name": "before", "type": "string", "description": "Only papers before this ISO 8601 date."},
+            ],
+            "timeout": 30,
+        },
+        {
             "name": "export",
             "effect": "read",
             "category": "kb",
@@ -195,6 +222,14 @@ async def _h_export(args: dict, as_: str | None = None) -> dict:
         raise PermissionError("export is for the local search service")
     return await asyncio.to_thread(papers.export_page, instances.ZOTERO_LIBRARY,
                                    args.get("cursor"), args.get("limit"))
+
+
+async def _h_query(args: dict, as_: str | None = None) -> dict:
+    limit = max(1, min(int(args.get("limit") or 10), 100))
+    per_hit = max(1, min(int(args.get("passages") or 1), 10))
+    filters = fastlayer.Filters.from_args(args)
+    exact = await asyncio.to_thread(PAPERS.exact, str(args.get("query") or ""), filters, limit, per_hit)
+    return {"exact": exact, "related": [], "graph": []}
 
 
 async def _h_start(args: dict, as_: str | None = None) -> dict:
@@ -267,6 +302,7 @@ async def _h_snapshot(args: dict, as_: str | None = None) -> dict:
 HANDLERS = {
     "status": _h_status,
     "recall": _h_recall,
+    "query": _h_query,
     "export": _h_export,
     "start": _h_start,
     "stop": _h_stop,
@@ -291,6 +327,46 @@ async def _health_loop() -> None:
             log.exception("kb: supervision pass failed")
 
 
+async def _zotero_page(args: dict[str, Any]) -> dict[str, Any]:
+    peer = instances.ZOTERO_PEER
+    if peer in ("", "local", config.node_name()):
+        return await gatewayclient.call("zotero", "items", args, timeout=60)
+    reply = await gatewayclient.invoke_peer(peer, "zotero_items", args, timeout=60)
+    return reply["result"] if isinstance(reply, dict) and "items" not in reply and "result" in reply else reply
+
+
+async def zotero_poll() -> dict[str, Any]:
+    """Take every library item that moved since the delta's cursor; store the cursor once all are in."""
+    since = await asyncio.to_thread(PAPERS.cursor)
+    totals = {"mapped": 0, "held": 0}
+    offset: int | None = 0
+    while offset is not None:
+        page = await _zotero_page({"since": since, "offset": offset, "limit": 200})
+        offset = page.get("next")
+        done = await asyncio.to_thread(PAPERS.take_items, page.get("items") or [],
+                                       page.get("versions") if offset is None else None)
+        totals = {k: totals[k] + done[k] for k in totals}
+    return totals
+
+
+async def _papers_loop() -> None:
+    """Keep the delta current: poll Zotero, and re-map held items whenever a new base ships. Never exits."""
+    shipped = None
+    while True:
+        try:
+            stamp = instances.PAPERS_BASE.stat().st_mtime if instances.PAPERS_BASE.exists() else None
+            if stamp != shipped:
+                log.info("kb: papers base %s: %s", "shipped" if stamp else "absent",
+                         await asyncio.to_thread(PAPERS.remap))
+                shipped = stamp
+            moved = await zotero_poll()
+            if any(moved.values()):
+                log.info("kb: zotero items taken: %s", moved)
+        except Exception as exc:  # noqa: BLE001 — mira away is ordinary; retry next round
+            log.warning("kb: papers delta round failed: %s", repr(exc)[:300])
+        await asyncio.sleep(instances.ZOTERO_POLL_S)
+
+
 async def _initial_start() -> None:
     try:
         res = await asyncio.to_thread(CHILD.start)
@@ -301,6 +377,7 @@ async def _initial_start() -> None:
 
 async def _on_start() -> None:
     """Start the server in the background and the loops beside it. Nothing here blocks or raises."""
+    spawn_supervised("kb:papers", _papers_loop)
     if not instances.has_server():
         log.warning("kb: no kb server in %s — set KB_CHECKOUT; registering anyway", instances.CHECKOUT)
         return
