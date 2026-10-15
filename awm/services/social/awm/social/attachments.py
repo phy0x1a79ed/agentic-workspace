@@ -16,7 +16,12 @@ import tempfile
 _SAFE = re.compile(r"[^A-Za-z0-9._-]+")
 
 
-def _safe_name(name: str, idx: int) -> str:
+def sink_dir() -> str:
+    """A fresh temp dir (outside AWM_DIR) for one call's downloaded files."""
+    return tempfile.mkdtemp(prefix="awm-social-")
+
+
+def safe_name(name: str, idx: int = 0) -> str:
     """A filesystem-safe, non-empty basename for one attachment.
 
     Strips any directory components (a platform-supplied name is untrusted) and
@@ -39,11 +44,11 @@ def write_attachments(
     """
     if not files:
         return []
-    out_dir = tempfile.mkdtemp(prefix="awm-social-")
+    out_dir = sink_dir()
     used: set[str] = set()
     out: list[dict] = []
     for idx, (filename, mime, data) in enumerate(files):
-        name = _safe_name(filename, idx)
+        name = safe_name(filename, idx)
         candidate = name
         n = 1
         while candidate in used:

@@ -9,6 +9,8 @@
     F.nodes = {};
     F.calls = [];
     F.auth = 'ok';         // 'ok' | 'redirect' | '403'
+    F.range = 'value';     // who honours Range: 'value' ($value) | 'download' | 'none'
+    F.uploads = {};        // upload id -> {path, data: Uint8Array}
     F.seq = 0;
     for (const lib of (spec.libraries || ['/teams/x/Docs'])) F.addFolder(lib);
     for (const [p, text] of Object.entries(spec.files || {})) F.addFile(p, text);
@@ -24,7 +26,7 @@
     const segs = p.split('/').filter(Boolean);
     const bytes = typeof data === 'string' ? new TextEncoder().encode(data) : data;
     F.nodes[p] = {kind: 'file', name: segs[segs.length - 1], uid: F.uid(), data: bytes,
-                  modified: '2026-01-01T00:00:00Z'};
+                  modified: '2026-01-01T00:00:00Z', etag: '"{' + F.uid() + '},1"'};
   };
   F.parent = function (p) { const s = p.split('/').filter(Boolean); s.pop(); return '/' + s.join('/'); };
   F.children = function (p) {
@@ -39,7 +41,7 @@
   F.fileJson = function (p) {
     const n = F.nodes[p];
     return {Name: n.name, ServerRelativeUrl: p, UniqueId: n.uid,
-            Length: String(n.data.length), TimeLastModified: n.modified};
+            Length: String(n.data.length), TimeLastModified: n.modified, ETag: n.etag};
   };
   F.lit = function (s) { return decodeURIComponent(s).replace(/''/g, "'"); };
   F.json = function (obj, status) {
@@ -50,9 +52,32 @@
     return F.json({'odata.error': {code: '-2130575338, Microsoft.SharePoint.SPException',
       message: {value: msg || 'The file does not exist.'}}}, 404);
   };
+  F.concat = function (a, b) {
+    const out = new Uint8Array(a.length + b.length);
+    out.set(a, 0); out.set(b, a.length);
+    return out;
+  };
+  F.bytes = function (body) { return body ? new Uint8Array(body) : new Uint8Array(0); };
+  // Serve n.data, honouring a Range header only when allowed.
+  F.serve = function (n, opts, honour) {
+    const range = honour && opts.headers && opts.headers['Range'];
+    const m = range && range.match(/^bytes=(\d+)-(\d+)$/);
+    if (!m) return new Response(n.data, {status: 200,
+      headers: {'Content-Type': 'application/octet-stream'}});
+    const a = Number(m[1]), b = Math.min(Number(m[2]), n.data.length - 1);
+    return new Response(n.data.slice(a, b + 1), {status: 206,
+      headers: {'Content-Type': 'application/octet-stream'}});
+  };
   F.handle = async function (url, opts) {
     const method = (opts && opts.method) || 'GET';
     const body = opts && opts.body;
+    const dl = url.indexOf('/_layouts/15/download.aspx?SourceUrl=');
+    if (dl >= 0) {
+      F.calls.push(method + ' download.aspx');
+      const n = F.nodes[decodeURIComponent(url.slice(dl + 37))];
+      if (!n || n.kind !== 'file') return F.notFound();
+      return F.serve(n, opts, F.range === 'download');
+    }
     const at = url.indexOf('/_api');
     const web = url.slice(location.origin.length, at);
     const rest = url.slice(at + 5);
@@ -99,8 +124,26 @@
       const n = F.nodes[p];
       if (!n || n.kind !== 'file') return F.notFound();
       if (tail === '') return F.json(F.fileJson(p));
-      if (tail === '/$value')
-        return new Response(n.data, {status: 200, headers: {'Content-Type': 'application/octet-stream'}});
+      if (tail === '/$value') return F.serve(n, opts, F.range === 'value');
+      const up = tail.match(/^\/(StartUpload|ContinueUpload|FinishUpload|CancelUpload)\(uploadId=guid'([^']+)'(?:,fileOffset=(\d+))?\)$/);
+      if (up && method === 'POST') {
+        const [, op, id, off] = up;
+        if (op === 'StartUpload') {
+          F.uploads[id] = {path: p, data: F.bytes(body)};
+          return F.json({value: String(F.uploads[id].data.length)});
+        }
+        const u = F.uploads[id];
+        if (!u || u.path !== p) return F.json({error: 'no such upload session'}, 400);
+        if (op === 'CancelUpload') { delete F.uploads[id]; return F.json({}); }
+        if (Number(off) !== u.data.length)
+          return F.json({error: 'offset ' + off + ' != ' + u.data.length}, 400);
+        u.data = F.concat(u.data, F.bytes(body));
+        if (op === 'ContinueUpload') return F.json({value: String(u.data.length)});
+        delete F.uploads[id];
+        n.data = u.data;
+        n.etag = '"{' + F.uid() + '},2"';
+        return F.json(F.fileJson(p));
+      }
       if (tail === '/recycle()' && method === 'POST') { delete F.nodes[p]; return F.json({value: 'x'}); }
     }
     return F.json({error: 'fake SharePoint has no route for ' + method + ' ' + rest}, 400);

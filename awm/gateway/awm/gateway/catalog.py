@@ -34,7 +34,12 @@ serializable shape of an ``operations.Operation`` (minus the Python callable)::
       "surfaces": ["mcp", "cli", "http"],
       "http": {"method", "path"}?,          # optional; gateway derives a default
       "cli":  {"group", "command"}?,         # optional; gateway derives a default
-      "no_response": false }
+      "no_response": false,
+      "timeout": <seconds>?,
+      "returns_files": false }              # result's files[].path go back to a peer caller
+
+A param may carry ``"file": "in"``: its value is a local path that a caller on
+another node sends along with the call (see :mod:`awm.gateway.filehop`).
 
 plus ``emitters: [{topic, transport}]`` (events the service publishes) and
 ``subscriptions: [{service, topic}]`` (events it consumes).
@@ -75,7 +80,7 @@ from typing import Any
 from mcp.types import Tool
 from starlette.concurrency import run_in_threadpool
 
-from awm.gateway import peer_catalog
+from awm.gateway import filehop, peer_catalog
 from awm.gateway.gateway_ops import GATEWAY_OPERATIONS
 from awm.gateway.hub import rpc
 from awm.gateway.hub.registry import ServiceRecord, get_registry
@@ -174,12 +179,18 @@ def _fn_to_tool(rec: ServiceRecord, fn: dict) -> Tool:
             prop["default"] = p["default"]
         if prop["type"] == "array":
             prop["items"] = {"type": "string"}
+        if p.get("file") == "in":
+            prop[filehop.FILE_KEY] = "in"
         props[p["name"]] = prop
         if p.get("required"):
             required.append(p["name"])
     schema: dict[str, Any] = {"type": "object", "properties": props}
     if required:
         schema["required"] = required
+    if fn.get("returns_files"):
+        schema[filehop.RETURNS_KEY] = True
+    if fn.get("timeout"):
+        schema[filehop.TIMEOUT_KEY] = float(fn["timeout"])
     return Tool(
         name=_tool_name(rec, fn),
         description=fn.get("description", ""),
@@ -545,6 +556,20 @@ def _describe_domain(domain: str, verb: str | None = None,
             for v in items
         ],
     }
+
+
+def call_spec(name: str, args: dict) -> dict[str, Any]:
+    """The file-hop spec (:func:`filehop.spec_from_schema`) of the verb a call
+    names, domain-shaped or flat. Empty when the name is unknown here."""
+    schema = None
+    verb = args.get("verb") if isinstance(args, dict) else None
+    if verb:
+        for v in _domain_catalog().get(name, []):
+            if v["verb"] == verb:
+                schema = v["tool"].inputSchema
+    else:
+        schema = next((t.inputSchema for t in list_tools() if t.name == name), None)
+    return filehop.spec_from_schema(schema)
 
 
 def _find_native_op(domain: str, verb: str):

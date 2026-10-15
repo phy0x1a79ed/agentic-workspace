@@ -19,7 +19,10 @@ relative, entries elsewhere absolute.
 The daemon codes each failure (``code`` in the JSON body) and the bucket raises
 the matching builtin: ``FileNotFoundError``, ``NotADirectoryError``,
 ``IsADirectoryError``, ``FileExistsError``, ``PermissionError`` or
-``ValueError``. Bytes cross the JSON hop as base64. The daemon serves a
+``ValueError``. Bytes cross the JSON hop as base64, one :data:`CHUNK` per
+request in either direction, so a file never sits whole in memory here or in
+the page. An upload over one chunk runs as a SharePoint upload session whose id
+and offset this side owns, so the daemon keeps no state. The daemon serves a
 self-signed cert, so TLS verification defaults off.
 """
 
@@ -27,7 +30,10 @@ from __future__ import annotations
 
 import base64
 import logging
+import os
+import uuid
 
+from awm.social.attachments import safe_name
 from awm.social.buckets.base import Bucket, Bucket_Account, Entry
 
 log = logging.getLogger("awm.social.buckets.onedrive")
@@ -36,6 +42,11 @@ log = logging.getLogger("awm.social.buckets.onedrive")
 _FS_NAME = "onedrive"
 
 _MANAGED_PATHS = ("teams", "sites", "personal")
+
+#: Bytes per transfer request. The daemon's request cap and CDP budget assume it.
+CHUNK = 8 * 1024 * 1024
+#: Seconds for one chunk round-trip; the daemon gives SharePoint 180 of them.
+_CHUNK_TIMEOUT_S = 240
 
 _CODE_ERRORS: dict[str, type[Exception]] = {
     "ENOENT": FileNotFoundError,
@@ -122,11 +133,12 @@ class OneDriveBucket(Bucket):
             return cls(f"bucket {self.account.name!r}: {msg}")
         return RuntimeError(f"mira {route} -> {status}: {msg}")
 
-    async def _get(self, route: str, **params) -> dict:
-        return await self._request("GET", route, params=params)
+    async def _get(self, route: str, timeout: float = 120, **params) -> dict:
+        return await self._request("GET", route, params=params, timeout=timeout)
 
     async def _post(self, route: str, body: dict) -> dict:
-        return await self._request("POST", route, body=body, timeout=300)
+        return await self._request("POST", route, body=body,
+                                   timeout=_CHUNK_TIMEOUT_S)
 
     # -- mapping ------------------------------------------------------------
 
@@ -167,27 +179,89 @@ class OneDriveBucket(Bucket):
         resp = await self._post(f"/v1/fs/{_FS_NAME}/mkdir", {"path": self._abs(path)})
         return self._entry(resp.get("entry", {}), fallback_path=path.strip("/"))
 
-    async def get(self, path: str) -> tuple[str, str, bytes]:
-        resp = await self._get(f"/v1/fs/{_FS_NAME}/get", path=self._abs(path))
-        return (
-            resp.get("filename", "") or (path.strip("/").rsplit("/", 1)[-1]),
-            resp.get("mime", "") or "application/octet-stream",
-            base64.b64decode(resp.get("b64", "") or ""),
-        )
+    async def get(self, path: str, dest_dir: str) -> dict:
+        src = self._abs(path)
+        offset, first, local, fh = 0, None, "", None
+        try:
+            while True:
+                resp = await self._get(f"/v1/fs/{_FS_NAME}/get",
+                                       timeout=_CHUNK_TIMEOUT_S, path=src,
+                                       offset=offset, length=CHUNK)
+                if first is None:
+                    first = resp
+                    name = resp.get("filename") or path.strip("/").rsplit("/", 1)[-1]
+                    local = os.path.join(dest_dir, safe_name(name))
+                    fh = open(local, "wb")
+                elif resp.get("etag") != first.get("etag"):
+                    raise RuntimeError(
+                        f"bucket {self.account.name!r}: {path} changed during download")
+                data = base64.b64decode(resp.get("b64", "") or "")
+                fh.write(data)
+                offset += len(data)
+                if not data or offset >= int(first.get("size") or 0):
+                    break
+        except BaseException:
+            if fh is not None:
+                fh.close()
+                os.remove(local)
+            raise
+        fh.close()
+        return {
+            "filename": first.get("filename") or os.path.basename(local),
+            "mime": first.get("mime") or "application/octet-stream",
+            "size": offset,
+            "path": local,
+        }
 
     async def put(
-        self, path: str, data: bytes, *, mime: str | None = None,
+        self, path: str, src: str, *, mime: str | None = None,
         parents: bool = False,
     ) -> Entry:
-        body = {
-            "path": self._abs(path),
-            "b64": base64.b64encode(data).decode("ascii"),
-            "parents": bool(parents),
-        }
-        if mime:
-            body["mime"] = mime
-        resp = await self._post(f"/v1/fs/{_FS_NAME}/put", body)
+        target = self._abs(path)
+        size = os.path.getsize(src)
+        with open(src, "rb") as fh:
+            if size <= CHUNK:
+                body = {
+                    "path": target,
+                    "b64": base64.b64encode(fh.read()).decode("ascii"),
+                    "parents": bool(parents),
+                }
+                if mime:
+                    body["mime"] = mime
+                resp = await self._post(f"/v1/fs/{_FS_NAME}/put", body)
+            else:
+                resp = await self._upload(fh, target, size, bool(parents))
         return self._entry(resp.get("entry", {}), fallback_path=path.strip("/"))
+
+    async def _upload(self, fh, target: str, size: int, parents: bool) -> dict:
+        route = f"/v1/fs/{_FS_NAME}/upload"
+        upload_id = str(uuid.uuid4())
+        offset = 0
+        try:
+            while True:
+                data = fh.read(CHUNK)
+                final = offset + len(data) >= size
+                resp = await self._post(route, {
+                    "path": target, "upload_id": upload_id, "offset": offset,
+                    "final": final, "parents": parents,
+                    "b64": base64.b64encode(data).decode("ascii"),
+                })
+                if final:
+                    return resp
+                offset += len(data)
+                if int(resp.get("offset", offset)) != offset:
+                    raise RuntimeError(
+                        f"bucket {self.account.name!r}: SharePoint is at byte "
+                        f"{resp.get('offset')} of {target}, expected {offset}")
+        except BaseException:
+            if offset:
+                try:
+                    await self._post(route, {"path": target,
+                                             "upload_id": upload_id,
+                                             "cancel": True})
+                except Exception:  # noqa: BLE001
+                    log.warning("could not cancel upload %s of %s", upload_id, target)
+            raise
 
     async def rm(self, path: str) -> None:
         await self._post(f"/v1/fs/{_FS_NAME}/rm", {"path": self._abs(path)})

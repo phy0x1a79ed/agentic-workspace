@@ -171,3 +171,74 @@ class TestRm:
     def test_rm_refuses_a_library(self, sp):
         with pytest.raises(ValueError):
             sp.call("rm", D)
+
+
+def _b64(data: bytes) -> str:
+    return base64.b64encode(data).decode()
+
+
+UID = "0f8fad5b-d9cb-469f-a165-70867728950e"
+
+
+class TestChunkedUpload:
+    def test_three_chunks_assemble_one_file(self, sp):
+        sp.reset(folders=[f"{D}/up"])
+        path = f"{D}/up/big.bin"
+        assert sp.call("upload", path, UID, 0, False, _b64(b"aaaa"), False) == {"offset": 4}
+        assert sp.call("upload", path, UID, 4, False, _b64(b"bbb"), False) == {"offset": 7}
+        out = sp.call("upload", path, UID, 7, True, _b64(b"cc"), False)
+        assert out["entry"]["size"] == 9 and out["entry"]["path"] == path
+        got = sp.call("get", path, 0, None)
+        assert base64.b64decode(got["b64"]) == b"aaaabbbcc"
+
+    def test_first_chunk_creates_parents(self, sp):
+        path = f"{D}/new/deep/big.bin"
+        sp.call("upload", path, UID, 0, False, _b64(b"aa"), True)
+        assert sp.nodes()[f"{D}/new/deep"] == "folder"
+
+    def test_single_final_chunk_is_a_plain_put(self, sp):
+        out = sp.call("upload", f"{D}/one.bin", UID, 0, True, _b64(b"xyz"), False)
+        assert out["entry"]["size"] == 3
+        assert not any("StartUpload" in c for c in sp.page.evaluate("window.__fakeSP.calls"))
+
+    def test_wrong_offset_fails_and_cancels(self, sp):
+        path = f"{D}/big.bin"
+        sp.call("upload", path, UID, 0, False, _b64(b"aaaa"), False)
+        with pytest.raises(Exception, match="offset"):
+            sp.call("upload", path, UID, 9, False, _b64(b"b"), False)
+        assert sp.page.evaluate("Object.keys(window.__fakeSP.uploads).length") == 0
+
+    def test_bad_upload_id_is_einval(self, sp):
+        with pytest.raises(ValueError, match="GUID"):
+            sp.call("upload", f"{D}/big.bin", "x'); evil('", 0, False, _b64(b"a"), False)
+
+
+class TestRangedGet:
+    DATA = bytes(range(256)) * 4
+
+    def _read(self, sp, path, step):
+        out, offset = b"", 0
+        while True:
+            got = sp.call("get", path, offset, step)
+            chunk = base64.b64decode(got["b64"])
+            out += chunk
+            offset += len(chunk)
+            if not chunk or offset >= got["size"]:
+                return out, got
+
+    @pytest.mark.parametrize("mode,expect_call", [
+        ("value", "$value"), ("download", "download.aspx"), ("none", "$value")])
+    def test_chunked_read_round_trips(self, sp, mode, expect_call):
+        sp.reset(files={f"{D}/r.bin": ""})
+        sp.page.evaluate(
+            f"window.__fakeSP.nodes[{json.dumps(D + '/r.bin')}].data = "
+            f"new Uint8Array({json.dumps(list(self.DATA))})")
+        sp.set("range", mode)
+        out, got = self._read(sp, f"{D}/r.bin", 300)
+        assert out == self.DATA and got["size"] == len(self.DATA) and got["etag"]
+        assert any(expect_call in c for c in sp.page.evaluate("window.__fakeSP.calls"))
+
+    def test_offset_past_end_is_empty(self, sp):
+        sp.reset(files={f"{D}/a.txt": "hi"})
+        got = sp.call("get", f"{D}/a.txt", 10, 5)
+        assert got["b64"] == "" and got["size"] == 2

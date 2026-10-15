@@ -356,9 +356,16 @@ class _FakeStorage:
         self.calls.append(("stat", path))
         return {"name": "a.txt", "path": path, "is_dir": False}
 
-    async def get(self, path):
-        self.calls.append(("get", path))
+    async def get(self, path, offset=0, length=None):
+        self.calls.append(("get", path, offset, length))
         return {"filename": "a.txt", "mime": "text/plain", "b64": "aGk="}
+
+    async def upload(self, path, upload_id, offset, final, b64, parents=False):
+        self.calls.append(("upload", path, upload_id, offset, final, b64, parents))
+        return {"entry": {"path": path}} if final else {"offset": offset + 3}
+
+    async def upload_cancel(self, path, upload_id):
+        self.calls.append(("cancel", path, upload_id))
 
     async def put(self, path, b64, mime=None, parents=False):
         self.calls.append(("put", path, b64, mime, parents))
@@ -408,7 +415,45 @@ class TestFsRoutes:
         api, fake = _api_with_storage()
         resp = await api._h_fs_get(_FsReq("onedrive", {"path": "/r/a.txt"}))
         assert _payload(resp)["b64"] == "aGk="
-        assert fake.calls[-1] == ("get", "/r/a.txt")
+        assert fake.calls[-1] == ("get", "/r/a.txt", 0, None)
+
+    async def test_get_threads_range(self):
+        api, fake = _api_with_storage()
+        await api._h_fs_get(_FsReq(
+            "onedrive", {"path": "/r/a.txt", "offset": "8", "length": "4"}))
+        assert fake.calls[-1] == ("get", "/r/a.txt", 8, 4)
+        resp = await api._h_fs_get(_FsReq(
+            "onedrive", {"path": "/r/a.txt", "offset": "x"}))
+        assert resp.status == 400
+
+    async def test_upload_chunk_and_final(self):
+        api, fake = _api_with_storage()
+        resp = await api._h_fs_upload(_FsReq("onedrive", body={
+            "path": "/r/big", "upload_id": "u", "offset": 0, "b64": "AAAA",
+            "parents": True}))
+        assert _payload(resp) == {"offset": 3}
+        assert fake.calls[-1] == ("upload", "/r/big", "u", 0, False, "AAAA", True)
+        resp = await api._h_fs_upload(_FsReq("onedrive", body={
+            "path": "/r/big", "upload_id": "u", "offset": 3, "final": True,
+            "b64": "AA=="}))
+        assert _payload(resp)["entry"]["path"] == "/r/big"
+
+    async def test_upload_cancel_and_validation(self):
+        api, fake = _api_with_storage()
+        resp = await api._h_fs_upload(_FsReq("onedrive", body={
+            "path": "/r/big", "upload_id": "u", "cancel": True}))
+        assert _payload(resp)["ok"] and fake.calls[-1] == ("cancel", "/r/big", "u")
+        resp = await api._h_fs_upload(_FsReq("onedrive", body={"path": "/r/big"}))
+        assert resp.status == 400
+        resp = await api._h_fs_upload(_FsReq("onedrive", body={
+            "path": "/r/big", "upload_id": "u"}))
+        assert resp.status == 400
+
+    def test_request_cap_fits_a_chunk(self):
+        from mira_api.server import MAX_REQUEST_BYTES
+        api, _ = _api_with_storage()
+        assert api.build_app()._client_max_size == MAX_REQUEST_BYTES
+        assert MAX_REQUEST_BYTES > (8 * 1024 * 1024) * 4 // 3 + 4096
 
     async def test_put(self):
         api, fake = _api_with_storage()

@@ -20,6 +20,17 @@ import pytest
 pytestmark = [pytest.mark.unit, pytest.mark.smoke]
 
 
+def _src(tmp_path, data: bytes, name: str = "src.bin") -> str:
+    p = tmp_path / name
+    p.write_bytes(data)
+    return str(p)
+
+
+def _got(info: dict) -> bytes:
+    with open(info["path"], "rb") as fh:
+        return fh.read()
+
+
 # --------------------------------------------------------------------------- #
 # registry / build                                                            #
 # --------------------------------------------------------------------------- #
@@ -156,10 +167,12 @@ def fake_google_http(monkeypatch):
     pkg = types.ModuleType("googleapiclient")
     http = types.ModuleType("googleapiclient.http")
 
-    class MediaInMemoryUpload:
-        def __init__(self, data, mimetype=None, resumable=False):
-            self._data = data
+    class MediaFileUpload:
+        def __init__(self, filename, mimetype=None, resumable=False):
+            with open(filename, "rb") as fh:
+                self._data = fh.read()
             self.mimetype = mimetype
+            self.resumable = resumable
 
     class MediaIoBaseDownload:
         def __init__(self, buf, request):
@@ -170,7 +183,7 @@ def fake_google_http(monkeypatch):
             self._buf.write(self._data)
             return (None, True)
 
-    http.MediaInMemoryUpload = MediaInMemoryUpload
+    http.MediaFileUpload = MediaFileUpload
     http.MediaIoBaseDownload = MediaIoBaseDownload
     pkg.http = http
     monkeypatch.setitem(sys.modules, "googleapiclient", pkg)
@@ -235,46 +248,50 @@ class TestGoogleDrive:
         e = await b.stat("docs/note.txt")     # two match; first wins, no raise
         assert e.name == "note.txt"
 
-    async def test_get_downloads_bytes(self, fake_google_http):
+    async def test_get_downloads_bytes(self, fake_google_http, tmp_path):
         b = _gdrive(self._tree())
-        name, mime, data = await b.get("docs/note.txt")
-        assert name == "note.txt" and mime == "text/plain" and data == b"hello"
+        info = await b.get("docs/note.txt", str(tmp_path))
+        assert info["filename"] == "note.txt" and info["mime"] == "text/plain"
+        assert _got(info) == b"hello" and info["size"] == 5
+        assert info["path"] == str(tmp_path / "note.txt")
 
-    async def test_get_exports_google_doc(self, fake_google_http):
+    async def test_get_exports_google_doc(self, fake_google_http, tmp_path):
         nodes = self._tree()
         nodes["g1"] = {"name": "plan", "parent": "root", "content": b"DOC",
                        "mimeType": "application/vnd.google-apps.document"}
         b = _gdrive(nodes)
-        name, mime, data = await b.get("plan")
-        assert name == "plan.pdf" and mime == "application/pdf"
-        assert data == b"EXPORTED:DOC"
+        info = await b.get("plan", str(tmp_path))
+        assert info["filename"] == "plan.pdf" and info["mime"] == "application/pdf"
+        assert _got(info) == b"EXPORTED:DOC"
 
-    async def test_get_on_folder_raises(self, fake_google_http):
+    async def test_get_on_folder_raises(self, fake_google_http, tmp_path):
         b = _gdrive(self._tree())
         with pytest.raises(IsADirectoryError):
-            await b.get("docs")
+            await b.get("docs", str(tmp_path))
 
-    async def test_put_creates_new_file(self, fake_google_http):
+    async def test_put_creates_new_file(self, fake_google_http, tmp_path):
         b = _gdrive(self._tree())
-        e = await b.put("docs/fresh.txt", b"data", mime="text/plain")
+        e = await b.put("docs/fresh.txt", _src(tmp_path, b"data"), mime="text/plain")
         assert e.name == "fresh.txt" and e.path == "docs/fresh.txt"
         # visible on a re-list
         assert "fresh.txt" in {x.name for x in await b.ls("docs")}
 
-    async def test_put_into_missing_folder_needs_parents(self, fake_google_http):
+    async def test_put_into_missing_folder_needs_parents(self, fake_google_http, tmp_path):
         b = _gdrive(self._tree())
+        src = _src(tmp_path, b"x")
         with pytest.raises(FileNotFoundError):
-            await b.put("new/deep/f.txt", b"x")
-        e = await b.put("new/deep/f.txt", b"x", parents=True)
+            await b.put("new/deep/f.txt", src)
+        e = await b.put("new/deep/f.txt", src, parents=True)
         assert e.path == "new/deep/f.txt"
         assert "f.txt" in {x.name for x in await b.ls("new/deep")}
 
-    async def test_put_overwrites_existing(self, fake_google_http):
+    async def test_put_overwrites_existing(self, fake_google_http, tmp_path):
         b = _gdrive(self._tree())
-        e = await b.put("docs/note.txt", b"replaced")
+        e = await b.put("docs/note.txt", _src(tmp_path, b"replaced"))
         assert e.id == "f1"          # same node updated, not a new one
-        _n, _m, data = await b.get("docs/note.txt")
-        assert data == b"replaced"
+        out = tmp_path / "out"
+        out.mkdir()
+        assert _got(await b.get("docs/note.txt", str(out))) == b"replaced"
 
     async def test_rm_deletes(self):
         b = _gdrive(self._tree())
@@ -311,6 +328,10 @@ class _StubFsDaemon:
         self.search_query = None
         self.rm_path = None
         self.mkdir_path = None
+        self.chunks = []          # upload bodies, in order
+        self.cancelled = []       # upload ids
+        self.fail_upload_at = None  # offset whose chunk answers 502
+        self.etag_flip_at = None    # offset from which get reports a new etag
         self.fail = None          # (status, code, message) for the next call
         self._runner = None
         self.base = ""
@@ -324,6 +345,7 @@ class _StubFsDaemon:
         app.router.add_get("/v1/fs/{name}/get", self._get)
         app.router.add_get("/v1/fs/{name}/search", self._search)
         app.router.add_post("/v1/fs/{name}/put", self._put)
+        app.router.add_post("/v1/fs/{name}/upload", self._upload)
         app.router.add_post("/v1/fs/{name}/rm", self._rm)
         self._runner = web.AppRunner(app)
         await self._runner.setup()
@@ -365,8 +387,35 @@ class _StubFsDaemon:
 
     async def _get(self, request):
         from aiohttp import web
-        self.calls.append(("get", request.query.get("path")))
-        return web.json_response(self.get_file)
+        q = request.query
+        self.calls.append(("get", q.get("path"), int(q["offset"]), int(q["length"])))
+        failure = self._failure()
+        if failure:
+            return failure
+        data = self.get_file["data"]
+        offset, length = int(q["offset"]), int(q["length"])
+        flipped = self.etag_flip_at is not None and offset >= self.etag_flip_at
+        return web.json_response({
+            "filename": self.get_file["filename"], "mime": self.get_file["mime"],
+            "size": len(data), "offset": offset,
+            "etag": "v2" if flipped else "v1",
+            "b64": base64.b64encode(data[offset:offset + length]).decode()})
+
+    async def _upload(self, request):
+        from aiohttp import web
+        body = await request.json()
+        if body.get("cancel"):
+            self.cancelled.append(body["upload_id"])
+            return web.json_response({"ok": True})
+        self.chunks.append(body)
+        if body["offset"] == self.fail_upload_at:
+            return web.json_response({"error": "boom", "code": "EUPSTREAM"}, status=502)
+        n = body["offset"] + len(base64.b64decode(body["b64"]))
+        if body["final"]:
+            return web.json_response({"entry": {
+                "name": body["path"].rsplit("/", 1)[-1], "path": body["path"],
+                "is_dir": False, "size": n}})
+        return web.json_response({"offset": n})
 
     async def _search(self, request):
         from aiohttp import web
@@ -432,21 +481,95 @@ class TestOneDrive:
         finally:
             await b.close()
 
-    async def test_get_decodes_base64(self, fs_daemon):
-        fs_daemon.get_file = {"filename": "a.txt", "mime": "text/plain",
-                              "b64": base64.b64encode(b"hello").decode()}
+    async def test_get_writes_file(self, fs_daemon, tmp_path):
+        fs_daemon.get_file = {"filename": "a.txt", "mime": "text/plain", "data": b"hello"}
         b = _onedrive(fs_daemon)
         try:
-            name, mime, data = await b.get("a.txt")
-            assert fs_daemon.calls[-1] == ("get", "/teams/x/Docs/a.txt")
-            assert (name, mime, data) == ("a.txt", "text/plain", b"hello")
+            info = await b.get("a.txt", str(tmp_path))
+            assert fs_daemon.calls[-1][:2] == ("get", "/teams/x/Docs/a.txt")
+            assert (info["filename"], info["mime"], info["size"]) == ("a.txt", "text/plain", 5)
+            assert _got(info) == b"hello"
         finally:
             await b.close()
 
-    async def test_put_sends_base64_and_abs_path(self, fs_daemon):
+    async def test_get_reads_in_chunks(self, fs_daemon, tmp_path, monkeypatch):
+        import awm.social.buckets.onedrive_bucket as od
+        monkeypatch.setattr(od, "CHUNK", 4)
+        fs_daemon.get_file = {"filename": "b.bin", "mime": "", "data": b"0123456789"}
         b = _onedrive(fs_daemon)
         try:
-            e = await b.put("dir/up.bin", b"\x00\x01\x02", mime="application/octet-stream")
+            info = await b.get("b.bin", str(tmp_path))
+            assert _got(info) == b"0123456789" and info["size"] == 10
+            assert [c[2:] for c in fs_daemon.calls] == [(0, 4), (4, 4), (8, 4)]
+        finally:
+            await b.close()
+
+    async def test_get_empty_file(self, fs_daemon, tmp_path):
+        fs_daemon.get_file = {"filename": "e", "mime": "", "data": b""}
+        b = _onedrive(fs_daemon)
+        try:
+            info = await b.get("e", str(tmp_path))
+            assert info["size"] == 0 and _got(info) == b""
+        finally:
+            await b.close()
+
+    async def test_get_aborts_when_file_changes(self, fs_daemon, tmp_path, monkeypatch):
+        import awm.social.buckets.onedrive_bucket as od
+        monkeypatch.setattr(od, "CHUNK", 4)
+        fs_daemon.get_file = {"filename": "b.bin", "mime": "", "data": b"0123456789"}
+        fs_daemon.etag_flip_at = 4
+        b = _onedrive(fs_daemon)
+        try:
+            with pytest.raises(RuntimeError, match="changed during download"):
+                await b.get("b.bin", str(tmp_path))
+            assert list(tmp_path.iterdir()) == []  # partial file removed
+        finally:
+            await b.close()
+
+    async def test_get_missing_leaves_nothing(self, fs_daemon, tmp_path):
+        fs_daemon.fail = (404, "ENOENT", "/teams/x/Docs/nope: not found")
+        b = _onedrive(fs_daemon)
+        try:
+            with pytest.raises(FileNotFoundError):
+                await b.get("nope", str(tmp_path))
+            assert list(tmp_path.iterdir()) == []
+        finally:
+            await b.close()
+
+    async def test_put_large_file_uploads_in_chunks(self, fs_daemon, tmp_path, monkeypatch):
+        import awm.social.buckets.onedrive_bucket as od
+        monkeypatch.setattr(od, "CHUNK", 4)
+        b = _onedrive(fs_daemon)
+        try:
+            e = await b.put("big.bin", _src(tmp_path, b"0123456789"), parents=True)
+            assert e.path == "big.bin" and e.size == 10
+            assert [(c["offset"], c["final"]) for c in fs_daemon.chunks] == [
+                (0, False), (4, False), (8, True)]
+            assert len({c["upload_id"] for c in fs_daemon.chunks}) == 1
+            assert all(c["path"] == "/teams/x/Docs/big.bin" and c["parents"]
+                       for c in fs_daemon.chunks)
+            assert b"".join(base64.b64decode(c["b64"]) for c in fs_daemon.chunks) == b"0123456789"
+            assert fs_daemon.put_received is None  # never the one-shot route
+        finally:
+            await b.close()
+
+    async def test_put_failed_chunk_cancels_session(self, fs_daemon, tmp_path, monkeypatch):
+        import awm.social.buckets.onedrive_bucket as od
+        monkeypatch.setattr(od, "CHUNK", 4)
+        fs_daemon.fail_upload_at = 4
+        b = _onedrive(fs_daemon)
+        try:
+            with pytest.raises(RuntimeError, match="boom"):
+                await b.put("big.bin", _src(tmp_path, b"0123456789"))
+            assert fs_daemon.cancelled == [fs_daemon.chunks[0]["upload_id"]]
+        finally:
+            await b.close()
+
+    async def test_put_sends_base64_and_abs_path(self, fs_daemon, tmp_path):
+        b = _onedrive(fs_daemon)
+        try:
+            e = await b.put("dir/up.bin", _src(tmp_path, b"\x00\x01\x02"),
+                            mime="application/octet-stream")
             assert fs_daemon.put_received == (
                 "/teams/x/Docs/dir/up.bin", b"\x00\x01\x02", "application/octet-stream")
             assert e.path == "dir/up.bin" and e.size == 3
@@ -461,12 +584,13 @@ class TestOneDrive:
         finally:
             await b.close()
 
-    async def test_put_threads_parents(self, fs_daemon):
+    async def test_put_threads_parents(self, fs_daemon, tmp_path):
         b = _onedrive(fs_daemon)
+        src = _src(tmp_path, b"x")
         try:
-            await b.put("a/b.bin", b"x", parents=True)
+            await b.put("a/b.bin", src, parents=True)
             assert fs_daemon.put_parents is True
-            await b.put("a/b.bin", b"x")
+            await b.put("a/b.bin", src)
             assert fs_daemon.put_parents is False
         finally:
             await b.close()
@@ -565,12 +689,20 @@ class _FakeBucket:
         self.calls.append(("ls", path))
         return [Entry(name="a.txt", path="a.txt", size=2)]
 
-    async def get(self, path):
+    async def get(self, path, dest_dir):
+        import os
         self.calls.append(("get", path))
-        return ("a.txt", "text/plain", b"hi")
+        if path == "boom":
+            raise FileNotFoundError(path)
+        local = os.path.join(dest_dir, "a.txt")
+        with open(local, "wb") as fh:
+            fh.write(b"hi")
+        return {"filename": "a.txt", "mime": "text/plain", "size": 2, "path": local}
 
-    async def put(self, path, data, *, mime=None, parents=False):
+    async def put(self, path, src, *, mime=None, parents=False):
         from awm.social.buckets.base import Entry
+        with open(src, "rb") as fh:
+            data = fh.read()
         self.calls.append(("put", path, data, mime, parents))
         return Entry(name="a.txt", path=path, size=len(data))
 
@@ -645,7 +777,25 @@ class TestBucketHandlers:
         assert os.path.isfile(path)
         with open(path, "rb") as fh:
             assert fh.read() == b"hi"
+        assert out["dir"] == os.path.dirname(path)
         os.remove(path)
+        os.rmdir(out["dir"])
+
+    async def test_h_bucket_get_failure_removes_temp_dir(self, wired_buckets, monkeypatch):
+        import tempfile
+        hub, _ = wired_buckets
+        made = []
+        monkeypatch.setattr(hub, "sink_dir", lambda: made.append(tempfile.mkdtemp()) or made[-1])
+        with pytest.raises(FileNotFoundError):
+            await hub._h_bucket_get({"bucket": "b", "path": "boom"})
+        import os
+        assert made and not os.path.exists(made[0])
+
+    async def test_h_bucket_put_missing_src(self, wired_buckets, tmp_path):
+        hub, _ = wired_buckets
+        with pytest.raises(FileNotFoundError, match="no local file"):
+            await hub._h_bucket_put(
+                {"bucket": "b", "path": "x", "src": str(tmp_path / "nope")})
 
     async def test_h_bucket_put_reads_src(self, wired_buckets, tmp_path):
         hub, fake = wired_buckets

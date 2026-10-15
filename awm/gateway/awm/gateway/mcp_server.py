@@ -6,7 +6,9 @@ the long-running ``awm gateway serve`` core (managed by systemd).
 
 Design invariant — the proxy is **stateless**. It holds no application data
 (tool definitions, schemas, models, service objects). The only things imported
-from the ``awm`` package are static configuration constants. Tool metadata is
+from the ``awm`` package are static configuration constants and the stdlib-only
+:mod:`awm.gateway.filehop` codec. The one exception is a short-lived cache of a
+peer verb's file-hop spec, which decides whether a call carries files. Tool metadata is
 fetched fresh from the core on every ``list_tools`` call, so adding or
 removing a tool and restarting only the core is enough — the proxy picks up
 the new surface on the next request without needing Claude Code to restart.
@@ -25,8 +27,10 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import shutil
 import signal
 import subprocess
+import tempfile
 import time
 from typing import Any
 
@@ -36,9 +40,14 @@ from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 
 from awm import config
+from awm.gateway import filehop
 from awm.gateway._path import resolve_bin
 
 server = Server("awm")
+
+#: Read budget for a local ``/invoke``. The gateway enforces each verb's own
+#: manifest timeout, so this only has to outlast the longest one.
+_LOCAL_INVOKE_TIMEOUT_S = 3660.0
 
 
 # ---------------------------------------------------------------------------
@@ -113,7 +122,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         headers["X-Awm-Peer-Redirect"] = "1"
         data = await _request_with_retry(
             "POST", "/invoke", json_body={"name": name, "args": arguments},
-            headers=headers,
+            headers=headers, timeout=_LOCAL_INVOKE_TIMEOUT_S,
         )
         redirect = data.get("peer_redirect")
         if redirect:
@@ -153,6 +162,7 @@ async def _request_with_retry(
     max_wait: float = 10.0,
     headers: dict[str, str] | None = None,
     params: dict[str, str] | None = None,
+    timeout: float = 60.0,
 ) -> dict[str, Any]:
     """Make an HTTP request to the local awm daemon, reconnecting across
     restarts.
@@ -164,7 +174,9 @@ async def _request_with_retry(
     deadline = time.monotonic() + max_wait
     last_err: Exception | None = None
     first_attempt = True
-    async with httpx.AsyncClient(base_url=config.BASE_URL, timeout=60.0) as client:
+    async with httpx.AsyncClient(
+            base_url=config.BASE_URL,
+            timeout=httpx.Timeout(timeout, connect=5.0)) as client:
         while time.monotonic() < deadline:
             try:
                 r = await client.request(method, path, json=json_body,
@@ -186,6 +198,11 @@ async def _request_with_retry(
 # Cross-peer federation (client-side, no relay)
 # ---------------------------------------------------------------------------
 
+#: Seconds a peer verb's file-hop spec stays cached in this proxy.
+_SPEC_TTL_S = 600.0
+_spec_cache: dict[tuple[str, str, str], tuple[float, dict[str, Any]]] = {}
+
+
 async def _peer_invoke(peer_name: str, base_name: str, arguments: dict,
                        as_: str | None,
                        entry: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -195,30 +212,134 @@ async def _peer_invoke(peer_name: str, base_name: str, arguments: dict,
     ``entry`` is the peer's already-resolved ``{edge_url, ssh_alias}`` — a
     redirect carries it, so following one costs no second lookup. Absent (the
     legacy ``@peer`` path) it is resolved from the local gateway's book.
+
+    A verb whose far-side schema marks file params or file results
+    (:mod:`awm.gateway.filehop`) travels as one tar stream instead of JSON: the
+    local files go up with the call, and the result's files come back to a
+    local temp dir with their paths rewritten.
     """
     from awm import gatewayclient
 
     if entry is None or not entry.get("edge_url"):
         entry = await asyncio.to_thread(gatewayclient.resolve_peer, peer_name)
-    edge = entry["edge_url"].rstrip("/")
-    alias = entry.get("ssh_alias") or peer_name
-    ca = gatewayclient._peer_ca()
-    resp = None
-    for attempt in (0, 1):
+    peer = _Peer(entry["edge_url"].rstrip("/"), entry.get("ssh_alias") or peer_name,
+                 gatewayclient._peer_ca(), as_)
+    call = {"name": base_name, "args": arguments}
+    verb = arguments.get("verb")
+    spec = None
+    if isinstance(verb, str) and verb != "describe":
+        spec = await _peer_spec(peer, base_name, verb)
+    if not spec:
+        return await peer.post_json(call, 60.0)
+    timeout = float(spec.get("timeout") or 0) + 60.0
+    files = filehop.local_files(call, spec["file_params"])
+    if not files and not spec["returns_files"]:
+        return await peer.post_json(call, timeout)
+    return await peer.post_files(call, files, spec["returns_files"], timeout)
+
+
+async def _peer_spec(peer: "_Peer", tool: str, verb: str) -> dict[str, Any] | None:
+    """The far verb's file-hop spec, from its ``describe``; None when it has no
+    file params and no file results, or the peer cannot say."""
+    key = (peer.edge, tool, verb)
+    hit = _spec_cache.get(key)
+    if hit and time.monotonic() - hit[0] < _SPEC_TTL_S:
+        return hit[1] or None
+    spec: dict[str, Any] = {}
+    try:
+        data = await peer.post_json(
+            {"name": tool, "args": {"verb": "describe", "args": {"verb": verb}}}, 30.0)
+        verbs = json.loads(data["result"]).get("verbs") or []
+        found = filehop.spec_from_schema(verbs[0].get("params") if verbs else None)
+        if found["file_params"] or found["returns_files"]:
+            spec = found
+    except Exception:  # noqa: BLE001 — an older or unreachable peer: plain JSON
+        return None
+    _spec_cache[key] = (time.monotonic(), spec)
+    return spec or None
+
+
+class _Peer:
+    """One peer edge, dialled with a bearer that is re-fetched once on a 401."""
+
+    def __init__(self, edge: str, alias: str, ca: Any, as_: str | None) -> None:
+        self.edge, self.alias, self.ca, self.as_ = edge, alias, ca, as_
+
+    async def _headers(self, attempt: int) -> dict[str, str]:
+        from awm import gatewayclient
+
         bearer = await asyncio.to_thread(
-            lambda: gatewayclient.fetch_peer_cred(alias, force=(attempt == 1)))
+            lambda: gatewayclient.fetch_peer_cred(self.alias, force=(attempt == 1)))
         headers = {"Authorization": f"Bearer {bearer}"}
-        if as_:
-            headers["X-Awm-As"] = as_
-        async with httpx.AsyncClient(timeout=60.0, verify=ca) as cli:
-            resp = await cli.post(f"{edge}/invoke",
-                                  json={"name": base_name, "args": arguments},
-                                  headers=headers)
-        if resp.status_code == 401 and attempt == 0:
-            continue
-        break
-    resp.raise_for_status()
-    return resp.json()
+        if self.as_:
+            headers["X-Awm-As"] = self.as_
+        return headers
+
+    async def post_json(self, call: dict, timeout: float) -> dict[str, Any]:
+        resp = None
+        for attempt in (0, 1):
+            headers = await self._headers(attempt)
+            async with httpx.AsyncClient(timeout=timeout, verify=self.ca) as cli:
+                resp = await cli.post(f"{self.edge}/invoke", json=call, headers=headers)
+            if resp.status_code == 401 and attempt == 0:
+                continue
+            break
+        resp.raise_for_status()
+        return resp.json()
+
+    async def post_files(self, call: dict, files: dict[str, str],
+                         returns_files: bool, timeout: float) -> dict[str, Any]:
+        body = await asyncio.to_thread(filehop.pack_call, call, files)
+        try:
+            size = os.fstat(body.fileno()).st_size
+            for attempt in (0, 1):
+                headers = await self._headers(attempt)
+                headers["Content-Type"] = filehop.CONTENT_TYPE
+                headers["Content-Length"] = str(size)
+                if returns_files:
+                    headers[filehop.RETURN_FILES_HEADER] = "1"
+                await asyncio.to_thread(body.seek, 0)
+                async with httpx.AsyncClient(
+                        timeout=httpx.Timeout(timeout, connect=15.0), verify=self.ca) as cli:
+                    async with cli.stream("POST", f"{self.edge}/invoke",
+                                          content=_read_chunks(body),
+                                          headers=headers) as resp:
+                        if resp.status_code == 401 and attempt == 0:
+                            continue
+                        if resp.headers.get("content-type", "").startswith(
+                                filehop.CONTENT_TYPE) and resp.status_code == 200:
+                            return {"result": await _receive_result(resp)}
+                        await resp.aread()
+                        resp.raise_for_status()
+                        return resp.json()
+            raise RuntimeError("unreachable")
+        finally:
+            body.close()
+
+
+async def _read_chunks(fh, size: int = 1 << 20):
+    while True:
+        block = await asyncio.to_thread(fh.read, size)
+        if not block:
+            return
+        yield block
+
+
+async def _receive_result(resp: httpx.Response) -> str:
+    """Spool a files response to disk, then unpack it into a fresh temp dir."""
+    dest = tempfile.mkdtemp(prefix="awm-peer-")
+    tar_path = os.path.join(dest, ".result.tar")
+    try:
+        with open(tar_path, "wb") as fh:
+            async for chunk in resp.aiter_bytes():
+                await asyncio.to_thread(fh.write, chunk)
+        return await asyncio.to_thread(filehop.unpack_result, tar_path, dest)
+    except BaseException:
+        shutil.rmtree(dest, ignore_errors=True)
+        raise
+    finally:
+        if os.path.exists(tar_path):
+            os.remove(tar_path)
 
 
 def _ensure_core_running() -> None:

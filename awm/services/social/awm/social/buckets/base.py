@@ -99,21 +99,22 @@ class Bucket(ABC):
         """Return the :class:`Entry` for one file/folder at ``path``."""
 
     @abstractmethod
-    async def get(self, path: str) -> tuple[str, str, bytes]:
-        """Download one file → ``(filename, mime, bytes)``.
+    async def get(self, path: str, dest_dir: str) -> dict:
+        """Download one file into ``dest_dir`` →
+        ``{filename, mime, size, path}``, ``path`` being the local file.
 
-        The adapter writes the bytes to a temp dir (reusing the attachment
-        sink); the backend itself never touches local disk.
+        The backend streams to disk, so a file never has to fit in memory.
         """
 
     @abstractmethod
     async def put(
-        self, path: str, data: bytes, *, mime: str | None = None,
+        self, path: str, src: str, *, mime: str | None = None,
         parents: bool = False,
     ) -> Entry:
-        """Upload ``data`` to ``path`` (creating or overwriting), returning the
-        resulting :class:`Entry`. ``parents`` creates missing folders above
-        ``path``. Without it a missing parent is ``FileNotFoundError``."""
+        """Upload the local file ``src`` to ``path`` (creating or
+        overwriting), returning the resulting :class:`Entry`. ``parents``
+        creates missing folders above ``path``. Without it a missing parent is
+        ``FileNotFoundError``."""
 
     @abstractmethod
     async def rm(self, path: str) -> None:

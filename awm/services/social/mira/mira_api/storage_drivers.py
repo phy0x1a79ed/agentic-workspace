@@ -34,6 +34,9 @@ from mira_api.cdp import CDPPage
 
 log = logging.getLogger("mira_api.storage_drivers")
 
+#: CDP evaluate budget for one transfer call (a chunk to or from SharePoint).
+TRANSFER_TIMEOUT_S = 180.0
+
 
 def _call(helper: str, *args: Any) -> str:
     """Build a JS expression invoking a window.__awmMira helper with JSON args."""
@@ -103,10 +106,11 @@ class StorageDriver(ABC):
     def _page_for(self, path: str | None) -> Any:
         return self.page
 
-    async def _run(self, helper: str, *args: Any, path: str | None = None) -> Any:
+    async def _run(self, helper: str, *args: Any, path: str | None = None,
+                   **eval_kw: Any) -> Any:
         expr = self.PRELUDE + "\n" + _call(helper, *args)
         try:
-            return await self._page_for(path).evaluate_json(expr)
+            return await self._page_for(path).evaluate_json(expr, **eval_kw)
         except Exception as exc:  # noqa: BLE001
             mapped = classify(exc)
             if mapped is exc:
@@ -120,8 +124,11 @@ class StorageDriver(ABC):
     async def stat(self, path: str) -> dict: ...
 
     @abstractmethod
-    async def get(self, path: str) -> dict:
-        """Download one file → ``{filename, mime, b64}`` (base64 over the hop)."""
+    async def get(self, path: str, offset: int = 0,
+                  length: int | None = None) -> dict:
+        """Download bytes ``[offset, offset+length)`` of one file →
+        ``{filename, mime, size, offset, etag, b64}``. ``length`` None reads to
+        the end. ``size`` is the whole file's."""
 
     @abstractmethod
     async def put(self, path: str, b64: str, mime: str | None = None,
@@ -133,6 +140,16 @@ class StorageDriver(ABC):
 
     @abstractmethod
     async def rm(self, path: str) -> None: ...
+
+    async def upload(self, path: str, upload_id: str, offset: int, final: bool,
+                     b64: str, parents: bool = False) -> dict:
+        """Send one chunk of a chunked upload → ``{offset}``, or ``{entry}`` on
+        the final chunk. The caller owns ``upload_id`` and ``offset``."""
+        raise NotImplementedError(
+            f"{self.name} storage driver does not support chunked upload")
+
+    async def upload_cancel(self, path: str, upload_id: str) -> None:
+        """Abandon a chunked upload (best effort)."""
 
     async def mkdir(self, path: str) -> dict:
         """Create the folder at ``path`` and any missing parents → entry dict.
@@ -154,9 +171,9 @@ class StorageDriver(ABC):
 
 ONEDRIVE_PRELUDE = r"""
 window.__awmMira = window.__awmMira || {};
-if (!window.__awmMira.onedrive || window.__awmMira.onedrive._v !== 2) {
+if (!window.__awmMira.onedrive || window.__awmMira.onedrive._v !== 3) {
   const O = {};
-  O._v = 2;  // bump when changing helpers so a long-lived page self-upgrades
+  O._v = 3;  // bump when changing helpers so a long-lived page self-upgrades
   O._b64 = function (buf) {
     const bytes = new Uint8Array(buf);
     let bin = '';
@@ -289,17 +306,60 @@ if (!window.__awmMira.onedrive || window.__awmMira.onedrive._v !== 2) {
     if (d) return O._folderEntry(d);
     throw O._err('ENOENT', path + ': not found');
   };
-  O.get = async function (path) {
+  // How this tenant serves a byte range: '$value' honours Range, else
+  // download.aspx does, else the whole body is fetched and sliced.
+  O._rangeMode = null;
+  O._range = async function (path, start, end) {
+    const hdr = {'Range': 'bytes=' + start + '-' + (end - 1)};
+    const dl = location.origin + O._webBase(path).split('/').map(encodeURIComponent).join('/') +
+      '/_layouts/15/download.aspx?SourceUrl=' + encodeURIComponent(path);
+    if (O._rangeMode === null || O._rangeMode === 'value') {
+      const r = await O._fetch(O._fileUrl(path) + '/$value', {headers: hdr});
+      if (!r.ok) throw await O._fail(r, 'get', path);
+      if (r.status === 206) { O._rangeMode = 'value'; return r; }
+      if (O._rangeMode === null) {
+        const d = await O._fetch(dl, {headers: hdr});
+        if (d.status === 206) { O._rangeMode = 'download'; return d; }
+        O._rangeMode = 'slice';
+      }
+      return {sliced: true, r: r};
+    }
+    if (O._rangeMode === 'download') {
+      const r = await O._fetch(dl, {headers: hdr});
+      if (r.status === 206) return r;
+      if (!r.ok) throw await O._fail(r, 'get', path);
+      return {sliced: true, r: r};
+    }
+    const r = await O._fetch(O._fileUrl(path) + '/$value', {});
+    if (!r.ok) throw await O._fail(r, 'get', path);
+    return {sliced: true, r: r};
+  };
+  // Bytes [offset, offset+length) of a file; length null reads to the end.
+  // etag lets a chunked reader notice the file changing under it.
+  O.get = async function (path, offset, length) {
     const f = await O._file(path);
     if (!f) {
       if (await O._folder(path)) throw O._err('EISDIR', path + ' is a folder');
       throw O._err('ENOENT', path + ': not found');
     }
-    const r = await O._fetch(O._fileUrl(path) + '/$value', {});
-    if (!r.ok) throw await O._fail(r, 'get', path);
-    const buf = await r.arrayBuffer();
-    return {filename: f.Name || O._segs(path).pop() || 'file',
-            mime: r.headers.get('Content-Type') || '', b64: O._b64(buf)};
+    const size = Number(f.Length || 0) || 0;
+    const start = Math.min(Math.max(Number(offset) || 0, 0), size);
+    const end = length == null ? size : Math.min(size, start + Number(length));
+    let buf = new ArrayBuffer(0), mime = '';
+    if (start === 0 && end === size) {
+      const r = await O._fetch(O._fileUrl(path) + '/$value', {});
+      if (!r.ok) throw await O._fail(r, 'get', path);
+      mime = r.headers.get('Content-Type') || '';
+      buf = await r.arrayBuffer();
+    } else if (end > start) {
+      const got = await O._range(path, start, end);
+      const r = got.sliced ? got.r : got;
+      mime = r.headers.get('Content-Type') || '';
+      buf = await r.arrayBuffer();
+      if (got.sliced) buf = buf.slice(start, end);
+    }
+    return {filename: f.Name || O._segs(path).pop() || 'file', mime: mime,
+            size: size, offset: start, etag: f.ETag || '', b64: O._b64(buf)};
   };
   O.mkdir = async function (path) {
     const segs = O._segs(path);
@@ -338,6 +398,44 @@ if (!window.__awmMira.onedrive || window.__awmMira.onedrive._v !== 2) {
       throw O._err('ENOENT', 'parent folder ' + parent +
         ' does not exist (pass parents:true to create it)');
     throw e;
+  };
+  O._guid = function (id) {
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(id)))
+      throw O._err('EINVAL', 'upload_id must be a GUID: ' + id);
+    return "uploadId=guid'" + id + "'";
+  };
+  // One chunk of a chunked upload; the caller owns upload_id and offset, so the
+  // daemon keeps no state. Offset 0 creates the file empty and starts the
+  // session, a final chunk finishes it. A one-chunk file is a plain put.
+  O.upload = async function (path, uploadId, offset, final, b64, parents) {
+    offset = Number(offset) || 0;
+    if (offset === 0 && final) return {entry: await O.put(path, b64, null, parents)};
+    const g = O._guid(uploadId);
+    const fu = O._fileUrl(path);
+    let url;
+    if (offset === 0) {
+      await O.put(path, '', null, parents);
+      url = fu + '/StartUpload(' + g + ')';
+    } else if (final) url = fu + '/FinishUpload(' + g + ',fileOffset=' + offset + ')';
+    else url = fu + '/ContinueUpload(' + g + ',fileOffset=' + offset + ')';
+    const digest = await O._digest(path);
+    const r = await O._post(url, digest, O._unb64(b64));
+    if (!r.ok) {
+      const e = await O._fail(r, 'upload', path);
+      await O.uploadCancel(path, uploadId);
+      throw e;
+    }
+    const j = await r.json();
+    if (final) return {entry: O._fileEntry(j)};
+    return {offset: Number(j.value !== undefined ? j.value : j)};
+  };
+  // Best effort: an abandoned session otherwise holds the file locked until it expires.
+  O.uploadCancel = async function (path, uploadId) {
+    try {
+      const digest = await O._digest(path);
+      const r = await O._post(O._fileUrl(path) + '/CancelUpload(' + O._guid(uploadId) + ')', digest);
+      return {ok: r.ok};
+    } catch (e) { return {ok: false}; }
   };
   O.rm = async function (path) {
     if (O._segs(path).length <= O._libDepth(path))
@@ -428,14 +526,28 @@ class OneDriveDriver(StorageDriver):
         res = await self._run("window.__awmMira.onedrive.stat", path, path=path)
         return res or {}
 
-    async def get(self, path: str) -> dict:
-        res = await self._run("window.__awmMira.onedrive.get", path, path=path)
+    async def get(self, path: str, offset: int = 0,
+                  length: int | None = None) -> dict:
+        res = await self._run("window.__awmMira.onedrive.get", path, offset,
+                              length, path=path, timeout=TRANSFER_TIMEOUT_S)
         return res or {}
+
+    async def upload(self, path: str, upload_id: str, offset: int, final: bool,
+                     b64: str, parents: bool = False) -> dict:
+        res = await self._run("window.__awmMira.onedrive.upload", path,
+                              upload_id, offset, bool(final), b64, bool(parents),
+                              path=path, timeout=TRANSFER_TIMEOUT_S, retry=False)
+        return res or {}
+
+    async def upload_cancel(self, path: str, upload_id: str) -> None:
+        await self._run("window.__awmMira.onedrive.uploadCancel", path,
+                        upload_id, path=path)
 
     async def put(self, path: str, b64: str, mime: str | None = None,
                   parents: bool = False) -> dict:
         res = await self._run("window.__awmMira.onedrive.put", path, b64, mime,
-                              bool(parents), path=path)
+                              bool(parents), path=path,
+                              timeout=TRANSFER_TIMEOUT_S, retry=False)
         return res or {}
 
     async def mkdir(self, path: str) -> dict:

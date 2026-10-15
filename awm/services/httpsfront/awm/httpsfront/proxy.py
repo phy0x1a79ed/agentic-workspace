@@ -196,6 +196,15 @@ async def _root(request: Request) -> Response:
     return resp
 
 
+def _body(request: Request):
+    """Stream a request body upstream rather than holding it whole: a peer's
+    file-hop call can carry gigabytes. A request with no body stays empty, never
+    a chunked stream, so a bodyless GET is framed as one."""
+    has_body = (request.headers.get("content-length") not in (None, "", "0")
+                or "chunked" in request.headers.get("transfer-encoding", "").lower())
+    return request.stream() if has_body else b""
+
+
 async def _http_proxy(request: Request) -> Response:
     app = request.app
     ok, refreshed = await _authenticate(request)
@@ -205,9 +214,9 @@ async def _http_proxy(request: Request) -> Response:
     url = app.state.http_up + request.url.path
     if request.url.query:
         url += "?" + request.url.query
-    body = await request.body()
     upstream_req = client.build_request(
-        request.method, url, headers=_req_headers(request), content=body,
+        request.method, url, headers=_req_headers(request),
+        content=_body(request),
     )
     try:
         resp = await client.send(upstream_req, stream=True)

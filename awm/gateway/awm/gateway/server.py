@@ -11,11 +11,18 @@ register into the catalog/hub. See `catalog.py` for the registration contract.
 from __future__ import annotations
 
 import asyncio
+import os
+import shutil
+import tarfile
+import tempfile
 import time
 from contextlib import asynccontextmanager
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request
+from starlette.background import BackgroundTask
+from starlette.concurrency import run_in_threadpool
+from starlette.responses import StreamingResponse
 
 from awm.config import (
     HOST,
@@ -25,7 +32,7 @@ from awm.config import (
     WORKSPACE_ROOT,
     IDLE_SHUTDOWN_SECONDS,
 )
-from awm.gateway import catalog, peer_catalog
+from awm.gateway import catalog, filehop, peer_catalog
 from awm.gateway.gateway_ops import GATEWAY_OPERATIONS
 from awm.gateway.operations import register_fastapi_routes
 
@@ -463,13 +470,50 @@ def _stamp_reflection_caller(name: str, args: dict, pid_header: str | None) -> N
         inner.pop("_caller_pid", None)
 
 
+async def _receive_files(request: Request, spool: str) -> dict:
+    """Spool a :mod:`filehop` tar body and unpack it → the call it carries."""
+    body = os.path.join(spool, ".body.tar")
+    with open(body, "wb") as fh:
+        async for chunk in request.stream():
+            fh.write(chunk)
+    try:
+        return await run_in_threadpool(filehop.unpack_call, body, spool)
+    finally:
+        os.remove(body)
+
+
 @app.post("/invoke")
-async def invoke_tool(payload: dict, request: Request):
+async def invoke_tool(request: Request):
     """Dispatch an MCP-style tool call by name through the catalog. Async so
     service ops can be awaited over their control WS on the server loop (no
     second event loop — see catalog.py concurrency note). The MCP proxy
     forwards here over HTTP so the core can restart without tearing down the
-    stdio pipe Claude Code has open."""
+    stdio pipe Claude Code has open.
+
+    The body is JSON, or a :mod:`awm.gateway.filehop` tar carrying the call
+    plus the caller's file arguments, which are spooled to a temp dir for the
+    duration of the call."""
+    ctype = request.headers.get("content-type", "").split(";")[0].strip()
+    if ctype != filehop.CONTENT_TYPE:
+        try:
+            payload = await request.json()
+        except ValueError:
+            raise HTTPException(422, "body must be a JSON object")
+        if not isinstance(payload, dict):
+            raise HTTPException(422, "body must be a JSON object")
+        return await _invoke(payload, request)
+    spool = tempfile.mkdtemp(prefix="awm-hop-")
+    try:
+        try:
+            payload = await _receive_files(request, spool)
+        except (OSError, ValueError, KeyError, tarfile.TarError) as e:
+            raise HTTPException(400, f"bad file-hop body: {e}")
+        return await _invoke(payload, request)
+    finally:
+        await run_in_threadpool(shutil.rmtree, spool, True)
+
+
+async def _invoke(payload: dict, request: Request):
     name = payload.get("name")
     args = payload.get("args", {}) or {}
     if not name:
@@ -513,6 +557,13 @@ async def invoke_tool(payload: dict, request: Request):
             status_code=500,
             detail={"error_class": type(e).__name__, "error": str(e), "tool": name},
         )
+    if request.headers.get(filehop.RETURN_FILES_HEADER) and isinstance(result, str):
+        if catalog.call_spec(name, args)["returns_files"]:
+            paths = [p for p in filehop.result_paths(result) if os.path.exists(p)]
+            return StreamingResponse(
+                filehop.iter_result(result, paths),
+                media_type=filehop.CONTENT_TYPE,
+                background=BackgroundTask(filehop.remove_sent, paths))
     return {"result": result}
 
 

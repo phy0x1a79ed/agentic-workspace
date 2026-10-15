@@ -24,7 +24,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 
+from awm.social.attachments import safe_name
 from awm.social.buckets.base import Bucket, Bucket_Account, Entry
 
 log = logging.getLogger("awm.social.buckets.gdrive")
@@ -177,9 +179,8 @@ class GoogleDriveBucket(Bucket):
     async def stat(self, path: str) -> Entry:
         return self._entry(await self._resolve(path), path.strip("/"))
 
-    async def get(self, path: str) -> tuple[str, str, bytes]:
+    async def get(self, path: str, dest_dir: str) -> dict:
         from googleapiclient.http import MediaIoBaseDownload  # lazy
-        import io
 
         meta = await self._resolve(path)
         if meta.get("mimeType") == _FOLDER_MIME:
@@ -201,22 +202,29 @@ class GoogleDriveBucket(Bucket):
                 fileId=meta["id"], supportsAllDrives=True)
             mime = src_mime
 
-        def _download() -> bytes:
-            buf = io.BytesIO()
-            dl = MediaIoBaseDownload(buf, req)
-            done = False
-            while not done:
-                _status, done = dl.next_chunk()
-            return buf.getvalue()
+        local = os.path.join(dest_dir, safe_name(name))
 
-        data = await asyncio.to_thread(_download)
-        return name, mime, data
+        def _download() -> int:
+            try:
+                with open(local, "wb") as fh:
+                    dl = MediaIoBaseDownload(fh, req)
+                    done = False
+                    while not done:
+                        _status, done = dl.next_chunk()
+                    return fh.tell()
+            except BaseException:
+                os.remove(local)
+                raise
+
+        size = await asyncio.to_thread(_download)
+        return {"filename": name, "mime": mime or "application/octet-stream",
+                "size": size, "path": local}
 
     async def put(
-        self, path: str, data: bytes, *, mime: str | None = None,
+        self, path: str, src: str, *, mime: str | None = None,
         parents: bool = False,
     ) -> Entry:
-        from googleapiclient.http import MediaInMemoryUpload  # lazy
+        from googleapiclient.http import MediaFileUpload  # lazy
 
         segs = _split(path)
         if not segs:
@@ -230,8 +238,8 @@ class GoogleDriveBucket(Bucket):
         else:
             parent = self._root_id
         svc = await self._service()
-        media = MediaInMemoryUpload(
-            data, mimetype=mime or "application/octet-stream", resumable=False)
+        media = MediaFileUpload(
+            src, mimetype=mime or "application/octet-stream", resumable=True)
 
         # Overwrite an existing same-named file in the parent; else create.
         existing = [c for c in await self._children(parent)

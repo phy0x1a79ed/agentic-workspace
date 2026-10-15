@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import shutil
 from typing import Any
 
 from awm import config
@@ -28,7 +29,7 @@ from awm.gatewayclient import ServiceAdapter
 from awm.social import buckets as buckets_mod
 from awm.social import config as social_config
 from awm.social import connectors
-from awm.social.attachments import write_attachments
+from awm.social.attachments import sink_dir, write_attachments
 from awm.social.dao import SocialDAO, init as dao_init
 
 log = logging.getLogger("awm.social.hub_adapter")
@@ -383,25 +384,28 @@ async def _h_bucket_mkdir(args: dict) -> dict:
 
 
 async def _h_bucket_get(args: dict) -> dict:
-    """Download one file to a system temp dir (outside AWM_DIR) and return its
-    path — reuses the attachment sink so large files never inline into the RPC."""
-    filename, mime, data = await _bucket(args["bucket"]).get(args["path"])
-    written = write_attachments([(filename, mime, data)])
-    out_dir = os.path.dirname(written[0]["path"]) if written else ""
-    return {"files": written, "count": len(written), "dir": out_dir}
+    """Download one file to a fresh system temp dir (outside AWM_DIR) and
+    return its path, so large files never inline into the RPC."""
+    out_dir = sink_dir()
+    try:
+        written = await _bucket(args["bucket"]).get(args["path"], out_dir)
+    except BaseException:
+        shutil.rmtree(out_dir, ignore_errors=True)
+        raise
+    return {"files": [written], "count": 1, "dir": out_dir}
 
 
 async def _h_bucket_put(args: dict) -> dict:
     """Upload a local file's bytes to ``path`` in the bucket (create/overwrite).
 
-    The source is a local filesystem path (``src``) the service reads — bytes are
-    never inlined into the RPC payload.
+    The source is a local filesystem path (``src``) the bucket streams from —
+    bytes are never inlined into the RPC payload.
     """
     src = args["src"]
-    with open(src, "rb") as fh:
-        data = fh.read()
+    if not os.path.isfile(src):
+        raise FileNotFoundError(f"bucket_put: no local file {src!r}")
     entry = await _bucket(args["bucket"]).put(
-        args["path"], data, mime=args.get("mime") or None,
+        args["path"], src, mime=args.get("mime") or None,
         parents=bool(args.get("parents")))
     return {"entry": _entry_to_dict(entry)}
 
@@ -464,9 +468,11 @@ API_MANIFEST: dict[str, Any] = {
             "name": "download_attachments",
             "tool": "social_download_attachments",
             "description": "Download a message's attachments to a system temp dir "
-                           "(outside the awm workspace). Re-fetches the message "
-                           "live, returns the absolute file paths + metadata. "
+                           "(outside the awm workspace) on the calling node. "
+                           "Re-fetches the message live, returns the absolute "
+                           "file paths + metadata. "
                            "`idx` optionally selects a single attachment.",
+            "returns_files": True,
             "timeout": 300,
             "params": [
                 {"name": "account", "type": "string", "required": True},
@@ -589,10 +595,12 @@ API_MANIFEST: dict[str, Any] = {
             "name": "bucket_get",
             "tool": "social_bucket_get",
             "description": "Download one file from a bucket to a system temp dir "
-                           "(outside the awm workspace) and return its absolute "
-                           "path + metadata. Google-native docs are exported "
+                           "(outside the awm workspace) on the calling node and "
+                           "return its absolute path + metadata. Any size; it "
+                           "streams in chunks. Google-native docs are exported "
                            "(Docs→pdf, Sheets→csv).",
-            "timeout": 300,
+            "returns_files": True,
+            "timeout": 3600,
             "params": [
                 {"name": "bucket", "type": "string", "required": True},
                 {"name": "path", "type": "string", "required": True},
@@ -601,16 +609,19 @@ API_MANIFEST: dict[str, Any] = {
         {
             "name": "bucket_put",
             "tool": "social_bucket_put",
-            "description": "Upload a local file (`src` = a filesystem path) to "
-                           "`path` in a bucket, creating or overwriting it. "
+            "description": "Upload a local file (`src` = a path on the calling "
+                           "node; it travels with the call) to `path` in a "
+                           "bucket, creating or overwriting it. Any size; it "
+                           "streams in chunks. "
                            "`parents=true` creates missing folders above `path`; "
                            "without it a missing folder is a not-found error. "
                            "Returns the resulting entry.",
-            "timeout": 300,
+            "timeout": 3600,
             "params": [
                 {"name": "bucket", "type": "string", "required": True},
                 {"name": "path", "type": "string", "required": True},
-                {"name": "src", "type": "string", "required": True},
+                {"name": "src", "type": "string", "required": True,
+                 "file": "in"},
                 {"name": "mime", "type": "string", "required": False},
                 {"name": "parents", "type": "boolean", "required": False},
             ],

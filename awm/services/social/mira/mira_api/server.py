@@ -17,7 +17,7 @@ Runs ON mira. Exposes a clean per-platform API over the awm-network so the awm
     POST /v1/{platform}/send  {channel,text,thread?}
     POST /v1/{platform}/open_dm  {user}  → resolve a user (id/name) to a DM channel
     GET  /v1/events                      → WS; pushes inbound {type:"message", …}
-    GET  /v1/fs/{name}/ls|stat|get|search, POST /v1/fs/{name}/put|mkdir|rm
+    GET  /v1/fs/{name}/ls|stat|get|search, POST /v1/fs/{name}/put|upload|mkdir|rm
                                          → cloud file store (OneDrive/SharePoint)
 
 A file-store failure carries ``{error, code}``: 404 ENOENT, 409 ENOTDIR/EISDIR/
@@ -46,6 +46,8 @@ from mira_api.cdp import CDPPage
 log = logging.getLogger("mira_api.server")
 
 DEFAULT_POLL_INTERVAL_S = 15.0
+#: One upload chunk (8 MiB, base64 in JSON) plus headroom. aiohttp's default is 1 MiB.
+MAX_REQUEST_BYTES = 16 * 1024 * 1024
 WATCH_HISTORY_LIMIT = 50
 
 
@@ -94,7 +96,8 @@ class MiraAPI:
     # -- setup --------------------------------------------------------------
 
     def build_app(self) -> web.Application:
-        app = web.Application(middlewares=[self._auth_mw])
+        app = web.Application(middlewares=[self._auth_mw],
+                              client_max_size=MAX_REQUEST_BYTES)
         app.router.add_get("/v1/health", self._h_health)
         app.router.add_get("/v1/events", self._h_events)
         app.router.add_get("/v1/{platform}/identity", self._h_identity)
@@ -110,6 +113,7 @@ class MiraAPI:
         app.router.add_get("/v1/fs/{name}/get", self._h_fs_get)
         app.router.add_get("/v1/fs/{name}/search", self._h_fs_search)
         app.router.add_post("/v1/fs/{name}/put", self._h_fs_put)
+        app.router.add_post("/v1/fs/{name}/upload", self._h_fs_upload)
         app.router.add_post("/v1/fs/{name}/mkdir", self._h_fs_mkdir)
         app.router.add_post("/v1/fs/{name}/rm", self._h_fs_rm)
         app.on_startup.append(self._on_startup)
@@ -311,7 +315,14 @@ class MiraAPI:
         if not path:
             return web.json_response({"error": "path is required"}, status=400)
         try:
-            return web.json_response(await s.get(path))
+            offset = int(request.query.get("offset", "0") or 0)
+            length = request.query.get("length")
+            length = int(length) if length not in (None, "") else None
+        except ValueError:
+            return web.json_response(
+                {"error": "offset and length must be integers"}, status=400)
+        try:
+            return web.json_response(await s.get(path, offset, length))
         except Exception as exc:  # noqa: BLE001
             return _fs_error(exc)
 
@@ -329,6 +340,29 @@ class MiraAPI:
             entry = await s.put(path, b64, body.get("mime"),
                                 bool(body.get("parents")))
             return web.json_response({"entry": entry})
+        except Exception as exc:  # noqa: BLE001
+            return _fs_error(exc)
+
+    async def _h_fs_upload(self, request: web.Request) -> web.Response:
+        """One chunk of a chunked upload, or ``cancel: true`` to abandon one."""
+        s = self._storage_driver(request)
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001
+            return web.json_response({"error": "invalid JSON body"}, status=400)
+        path, upload_id = body.get("path"), body.get("upload_id")
+        if not path or not upload_id:
+            return web.json_response(
+                {"error": "path and upload_id are required"}, status=400)
+        try:
+            if body.get("cancel"):
+                await s.upload_cancel(path, upload_id)
+                return web.json_response({"ok": True})
+            if body.get("b64") is None:
+                return web.json_response({"error": "b64 is required"}, status=400)
+            return web.json_response(await s.upload(
+                path, upload_id, int(body.get("offset") or 0),
+                bool(body.get("final")), body["b64"], bool(body.get("parents"))))
         except Exception as exc:  # noqa: BLE001
             return _fs_error(exc)
 
