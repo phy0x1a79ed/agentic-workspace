@@ -56,7 +56,13 @@ def get_connection(service: str) -> sqlite3.Connection:
     journal, a 5s busy timeout, foreign keys ON, and ``sqlite3.Row`` rows.
     Keyed by service name — every service gets a distinct DB file.
     """
-    path = service_db_path(service)
+    return get_connection_at(service_db_path(service))
+
+
+def get_connection_at(path: Path) -> sqlite3.Connection:
+    """The same connection setup for a DB at an explicit path — a service that
+    keeps one DB per user opens its per-user files through here."""
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(path), timeout=30)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=5000")
@@ -127,7 +133,19 @@ def init_service_db(
     A ``schema_version`` (version INTEGER) table is managed here; the service
     need not declare it in ``schema_sql``.
     """
-    conn = get_connection(service)
+    init_db_at(service_db_path(service), schema_sql,
+               schema_version=schema_version, migrations=migrations)
+
+
+def init_db_at(
+    path: Path,
+    schema_sql: str,
+    *,
+    schema_version: int,
+    migrations: dict[tuple[int, int], str] | None = None,
+) -> None:
+    """``init_service_db`` for a DB at an explicit path."""
+    conn = get_connection_at(path)
     try:
         row = None
         try:

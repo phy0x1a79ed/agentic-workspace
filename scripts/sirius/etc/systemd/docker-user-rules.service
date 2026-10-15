@@ -1,0 +1,12 @@
+[Unit]
+Description=Reapply DOCKER-USER firewall lockdown (blocks off-host access to docker-published ports)
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/docker-user-iptables.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "awm-reporting"
+version = "0.1.0"
+requires-python = ">=3.11"
+description = "AWM task reporting: a per-node task ledger shown on the Swarm board, plus the front door that queues the federation board's cards and keeps a representative and a secretary session alive."
+dependencies = [
+    "awm-config",
+    "awm-gatewayclient",
+    "awm-persistence",
+    "awm-board",
+    "awm-claudedaemon",
+    "httpx",
+    "markdown-it-py",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest",
+    "pytest-asyncio",
+]
+
+# PEP 420 namespace package: no top-level awm/__init__.py; the namespace dir is awm/reporting/.
+[tool.setuptools.packages.find]
+include = ["awm.reporting*"]
+namespaces = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+markers = [
+    "smoke: fast unit tests; target <30s",
+    "unit: pure unit tests, no network or subprocesses",
+]

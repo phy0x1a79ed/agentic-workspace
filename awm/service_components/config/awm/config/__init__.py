@@ -37,13 +37,11 @@ WORKSPACE_ROOT = find_workspace_root()
 # DBs live. For a normal (native) service the local root IS the canonical
 # workspace, so the two coincide and nothing changes. A shadow overlay is the
 # exception: it runs with an ISOLATED local root (so its per-service DBs never
-# collide with the idle base it shadows — the agents boot-reconcile closes every
-# open instance row), yet its placed agents must still operate in the REAL
-# workspace. The hub therefore reports its canonical workspace to every service
+# collide with the idle base it shadows), yet the work it drives must still
+# operate in the REAL workspace. The hub therefore reports its canonical workspace to every service
 # on register (``ServiceRegisterResponse.canonical_workspace``); the gatewayclient
 # adapter calls :func:`set_canonical_workspace` with it. A service that resolves
-# where agents work (the agents service's spawned MCP env, etc.) reads
-# :func:`canonical_workspace`; its DB paths stay on the local ``WORKSPACE_ROOT``.
+# where the real workspace is reads :func:`canonical_workspace`; its DB paths stay on the local ``WORKSPACE_ROOT``.
 # Until a register handshake binds it, canonical defaults to the local root, so
 # tests and never-registered processes are unaffected.
 _CANONICAL_WORKSPACE: Path = WORKSPACE_ROOT
@@ -77,20 +75,9 @@ LOG_FILE = AWM_DIR / "awm.log"
 ENV_FILE = AWM_DIR / "env"
 
 PROJECTS_DIR = WORKSPACE_ROOT / "projects"
-# Per-task workspace units (the DAG-node execution sandbox the workspace service
-# provisions) live at this top-level dir — the node-side analog of PROJECTS_DIR.
-# Gitignored; one subdir per unit slug.
-TASKS_DIR = WORKSPACE_ROOT / "tasks"
 DATA_DIR = WORKSPACE_ROOT / "data"
 SERVICES_DIR = AWM_DIR / "services"
 
-
-# The skills catalog is a plain top-level dir of reference ``.md`` files
-# (``<workspace_root>/skills/``) — the scopes service symlinks ``.awm/skills`` to
-# it and reads its ``*.template`` files. The skills *service* (the
-# ``skill_search`` / ``skill_get`` MCP tools + embeddings search) is retired; the
-# files are read-only reference now, owned by no service.
-SKILLS_DIR = WORKSPACE_ROOT / "skills"
 
 GITHUB_USER = os.environ.get("AWM_GITHUB_USER", "phy0x1a79ed")
 
@@ -184,6 +171,27 @@ HOST = "127.0.0.1"
 PORT = int(os.environ.get("AWM_PORT", "7819"))
 BASE_URL = f"http://{HOST}:{PORT}"
 
+# The shared Trilium vault's loopback port. Named here rather than in either
+# service because two processes have to agree on it and neither owns it: the
+# trilium supervisor binds it, and the edge proxies to it. One definition means
+# there is no RPC to make, no table to cache, and nothing to go stale.
+VAULT_PORT = int(os.environ.get("AWM_VAULT_PORT", "12511"))
+VAULT_URL = f"http://{HOST}:{VAULT_PORT}"
+
+# Penpot's frontend nginx port, on the local production stack. Named here for
+# the same reason as VAULT_PORT: two processes have to agree on it and
+# neither owns it — the penpot service's stack supervisor publishes it, and
+# httpsfront proxies to it.
+PENPOT_PORT = int(os.environ.get("AWM_PENPOT_PORT", "9001"))
+PENPOT_URL = f"http://{HOST}:{PENPOT_PORT}"
+
+# The tether relay's loopback port, on the public host. Named here for the same
+# reason again: the relay binds it and the edge proxies to it, and neither owns
+# it. The relay reads the same variable itself, so this constant and that binary
+# agree by reading one name rather than by two defaults that happen to match.
+TETHER_PORT = int(os.environ.get("AWM_TETHER_PORT", "12520"))
+TETHER_URL = f"http://{HOST}:{TETHER_PORT}"
+
 IDLE_SHUTDOWN_SECONDS = int(os.environ.get("AWM_IDLE_SHUTDOWN", "1800"))  # 30 min
 
 ACCESS_LOG = AWM_DIR / "access.log"
@@ -234,3 +242,27 @@ def load_env_file(path: Path = ENV_FILE) -> int:
     if applied:
         log.info("loaded %d env vars from %s", applied, path)
     return applied
+
+
+# ---------------------------------------------------------------------------
+# Federation reader contracts (re-exported; defined in submodules)
+# ---------------------------------------------------------------------------
+
+from awm.config.effects import (  # noqa: E402,F401
+    ARCHIVE_CATEGORY,
+    EFFECTS,
+    verb_category,
+    verb_effect,
+)
+from awm.config.peerbook import (  # noqa: E402,F401
+    LEGACY_GRANTS,
+    RELATIONS,
+    ROLES,
+    caller_peer,
+    list_records,
+    load_book,
+    node_role,
+    node_swarm,
+    peer_record,
+    peer_relation,
+)

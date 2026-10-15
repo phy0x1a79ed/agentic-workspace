@@ -338,7 +338,9 @@ def deploy(
 
     expected_services = sorted(s.name for s in discovery.discover_services()
                                if s.enabled)
-    expected_pages = sorted(plan.page_sigs)  # buildable → servable after build
+    # buildable → servable after build, unless the page is switched off
+    expected_pages = sorted(p for p in plan.page_sigs
+                            if discovery.is_page_enabled(p))
 
     # --- print the plan ---
     typer.echo(f"deploy target: {root}")
@@ -478,6 +480,12 @@ def gateway_register(
         "app", "--mount-id",
         help="DOM id of the mount node in the auto-shell.",
     ),
+    strip_prefix: bool = typer.Option(
+        False, "--strip-prefix",
+        help="With --url: forward the path with --prefix removed and send "
+             "X-Forwarded-Prefix. Use for an upstream that serves at the root "
+             "and rebases its own links from that header.",
+    ),
 ):
     """Register a service and hold a WS lease until interrupted.
 
@@ -503,6 +511,9 @@ def gateway_register(
     if url and (entry or css or mount_id != "app"):
         typer.echo("--entry/--css/--mount-id only apply with --dir", err=True)
         raise typer.Exit(2)
+    if strip_prefix and not url:
+        typer.echo("--strip-prefix only applies with --url", err=True)
+        raise typer.Exit(2)
 
     if dir:
         from pathlib import Path as _Path
@@ -519,8 +530,9 @@ def gateway_register(
         }
         summary = f"dir={dir_abs}"
     else:
-        payload = {"name": name, "prefix": prefix, "url": url}
-        summary = f"url={url}"
+        payload = {"name": name, "prefix": prefix, "url": url,
+                   "strip_prefix": strip_prefix}
+        summary = f"url={url}" + (" (prefix stripped)" if strip_prefix else "")
 
     try:
         r = httpx.post(f"{BASE_URL}/hub/register", json=payload, timeout=10)
@@ -635,6 +647,48 @@ def services_start(
         raise typer.Exit(1)
     for n in names:
         typer.echo(json.dumps(_services_action(n, "start")))
+
+
+@services_app.command("listen")
+def services_listen(
+    service: str = typer.Argument(..., help="Service whose topic to follow"),
+    topic: str = typer.Argument(..., help="Emit topic, such as `session`"),
+    match: str = typer.Option(
+        "", "--match",
+        help="Comma-separated event `type` prefixes to print (default: all)"),
+    peer: Optional[str] = typer.Option(
+        None, "--peer", help="Follow the topic on this domestic peer instead"),
+):
+    """Print one compact JSON line per event a service emits, until stopped.
+
+    Built to run under a background watcher, so each line wakes an agent. It
+    reconnects on its own and prints {"type":"listen.reconnected"} when it
+    does, since frames sent while it was away are lost. Read those from the
+    service's backlog verb."""
+    import asyncio as _asyncio
+    import functools as _functools
+
+    from awm import gatewayclient
+    from awm.gateway import emit_listen
+
+    _require_server()
+    os.environ.setdefault("AWM_HUB_URL", BASE_URL)
+    if peer:
+        stream = _functools.partial(gatewayclient.subscribe_peer, peer, service, topic)
+    else:
+        stream = _functools.partial(gatewayclient.subscribe, service, topic)
+
+    def _write(line: str) -> None:
+        print(line, flush=True)
+
+    try:
+        _asyncio.run(emit_listen.listen(stream, match.split(","), _write,
+                                        fatal=(gatewayclient.PeerError,)))
+    except gatewayclient.PeerError as exc:
+        typer.echo(f"listen: {exc}", err=True)
+        raise typer.Exit(1)
+    except KeyboardInterrupt:
+        pass
 
 
 # `services stop / restart / enable / disable` are generated from
@@ -900,9 +954,9 @@ def dev_shadow(
         ...,
         help="One or more targets to bring up on the hub in ONE process. Each is "
              "either 'pages/<name>' (a built page from awm/pages/<name>/dist) or a "
-             "path to a service folder / its run.sh (e.g. awm/services/agents). "
-             "Example: awm dev shadow --port 7821 pages/agent awm/services/agents "
-             "awm/services/tts awm/services/stt",
+             "path to a service folder / its run.sh (e.g. awm/services/stt). "
+             "Example: awm dev shadow --port 7821 pages/stt awm/services/stt "
+             "awm/services/tts",
     ),
     port: int = typer.Option(
         7821, "--port", "-p",
@@ -913,17 +967,6 @@ def dev_shadow(
     name: Optional[str] = typer.Option(
         None, "--name",
         help="Override the overlay/base name (single target only).",
-    ),
-    placement_harness: Optional[str] = typer.Option(
-        None, "--placement-harness",
-        help="Override the agent harness for task placements spawned by a "
-             "shadowed agents service (sets AWM_PLACEMENT_HARNESS; default "
-             "opencode). e.g. 'claude'.",
-    ),
-    placement_model: Optional[str] = typer.Option(
-        None, "--placement-model",
-        help="Pin the model for task placements (sets AWM_PLACEMENT_MODEL); "
-             "None → the harness's own default (DSv4-free for opencode).",
     ),
 ):
     """Bring our worktree's pages + services up on a running hub (default: dev :7821).
@@ -972,11 +1015,7 @@ def dev_shadow(
             if lease:
                 leases.append(lease)
         else:
-            svc = _shadow_service_target(
-                target, name, service_bases,
-                placement_harness=placement_harness,
-                placement_model=placement_model,
-            )
+            svc = _shadow_service_target(target, name, service_bases)
             if svc:
                 spawned.append(svc)
 
@@ -1082,9 +1121,8 @@ def _shadow_isolated_workspace(service_dir: pathlib.Path) -> pathlib.Path:
     A single ``<worktree>/.awm-shadow`` shared by every service brought up in one
     ``awm dev shadow`` run. It exists so an overlay NEVER inherits the calling
     shell's ``AWM_WORKSPACE`` (the footgun: that misroutes the overlay's per-service
-    DBs) and never shares the idle base's DBs (the agents boot-reconcile closes
-    every open instance row — corrupting the base). The CANONICAL workspace, where
-    agents actually do their work, is learned from the hub on register (T1); this
+    DBs) and never shares the idle base's DBs. The CANONICAL workspace is learned
+    from the hub on register (T1); this
     root only has to be private + writable. Derived from the worktree holding the
     service code (its git toplevel), not from ``WORKSPACE_ROOT`` — which may itself
     be the inherited (wrong) shell value."""
@@ -1100,8 +1138,6 @@ def _shadow_isolated_workspace(service_dir: pathlib.Path) -> pathlib.Path:
 
 def _shadow_service_target(
     target: str, override_name: Optional[str], service_bases: set[str],
-    *, placement_harness: Optional[str] = None,
-    placement_model: Optional[str] = None,
 ) -> Optional[tuple[str, int]]:
     """Exec a service folder's ``run.sh`` against the hub with this worktree's code.
 
@@ -1129,22 +1165,16 @@ def _shadow_service_target(
     env = os.environ.copy()
     env["AWM_HUB_URL"] = BASE_URL
     # Pin AWM_PORT to the shadow hub's port too, so anything this service spawns
-    # (e.g. a shadowed `agents` service's child agents, whose awm-mcp reads
+    # (e.g. a shadowed service's child processes, which read
     # config.PORT) targets THIS sandbox — not prod :7819, the import-time default.
     _port = urlsplit(BASE_URL).port
     if _port:
         env["AWM_PORT"] = str(_port)
     # ISOLATE the local workspace: never inherit the calling shell's
     # AWM_WORKSPACE (it would misroute this overlay's per-service DBs and could
-    # corrupt the idle base it shadows). The canonical workspace — where agents
-    # actually work — is sent back by the hub on register (T1), so the local
+    # corrupt the idle base it shadows). The canonical workspace is sent back by the hub on register (T1), so the local
     # root only needs to be private + writable. Repeat trials: rm -rf the dir.
     env["AWM_WORKSPACE"] = str(_shadow_isolated_workspace(service_dir))
-    # Optional per-run placement overrides for a shadowed agents service.
-    if placement_harness:
-        env["AWM_PLACEMENT_HARNESS"] = placement_harness
-    if placement_model:
-        env["AWM_PLACEMENT_MODEL"] = placement_model
     env.setdefault("AWM_ENV", "awm")
     if is_overlay:
         env["AWM_SERVICE_NAME"] = f"{base_name}-shadow"

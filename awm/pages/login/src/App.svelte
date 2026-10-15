@@ -12,7 +12,7 @@
       try {
         await whoami();
         signedIn = true;
-        setTimeout(() => location.replace('/ui/agent'), 400);
+        setTimeout(() => location.replace('/ui/dashboard/'), 400);
         return;
       } catch (_) {
         // not signed in (AuthError) or network blip (HttpError/TypeError)

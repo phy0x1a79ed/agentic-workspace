@@ -1,0 +1,11 @@
+{
+  "name": "Penpot View Link",
+  "description": "Copy a /penpot-view render URL for any board on the current page.",
+  "version": 2,
+  "code": "plugin.js",
+  "icon": "icon.png",
+  "permissions": [
+    "content:read",
+    "clipboard:write"
+  ]
+}

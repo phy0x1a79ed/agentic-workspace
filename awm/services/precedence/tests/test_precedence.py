@@ -1,9 +1,7 @@
 """Tests for awm.precedence — decision-archive search + reputation + curation.
 
-The embedding-backed paths (add/embed/fielded semantic) require the workspace
-embedding stack (sentence-transformers + sqlite-vec); those tests skip if it's
-absent. The manifest surface split, the pure usefulness math, tag/keyword paths,
-votes, notes, and the supersede lifecycle run without any model.
+The embedding-backed paths (add/embed/fielded semantic) run through the shared
+engine with the stub model from ``conftest.py``; they need only numpy.
 """
 
 from __future__ import annotations
@@ -15,10 +13,7 @@ import pytest
 
 pytestmark = [pytest.mark.precedence]
 
-_HAS_EMBED = (
-    importlib.util.find_spec("sentence_transformers") is not None
-    and importlib.util.find_spec("sqlite_vec") is not None
-)
+_HAS_EMBED = importlib.util.find_spec("numpy") is not None  # the stub embedder needs only numpy
 needs_embed = pytest.mark.skipif(not _HAS_EMBED, reason="embedding stack not installed")
 
 
@@ -58,7 +53,7 @@ def test_manifest_surface_split():
 
     fns = {f["name"]: f for f in API_MANIFEST["functions"]}
     reads = {"search", "get", "stats", "add", "note", "vote"}
-    curation = {"edit", "supersede", "remove", "merge", "import", "embed"}
+    curation = {"edit", "supersede", "remove", "merge", "import", "embed", "export"}
     assert reads | curation == set(fns)
     # read/contribute verbs omit surfaces (default all three)
     for name in reads:
@@ -284,3 +279,161 @@ def test_merge_folds_dups(conn):
     assert len(store.get(conn, a["id"])["notes"]) == 1
     with pytest.raises(ValueError):
         store.get(conn, b["id"])  # gone
+
+
+# ---------------------------------------------------------------------------
+# Degrading honestly when the embedding stack is absent
+#
+# Precedence degrades loudest of the three services: semantic recall *is* its
+# product, so a `count: 0` here would read as "no such precedent has ever been
+# set". These run without the stack, which is what the `needs_embed` tests above
+# can never observe.
+# ---------------------------------------------------------------------------
+
+
+def _unavailable(*a, **k):
+    from awm.precedence.index import EmbeddingsUnavailable
+    raise EmbeddingsUnavailable("sentence-transformers: not installed")
+
+
+def _seed(conn, monkeypatch):
+    from awm.precedence import index, store
+    monkeypatch.setattr(index, "embed_decision", _unavailable)
+    return store.add(conn, context="deploying a fix to the fleet",
+                     question="merge to release or cherry-pick?",
+                     decision="merge to release and push origin")
+
+
+def test_add_lands_without_the_stack_and_leaves_the_stamp_stale(conn, monkeypatch):
+    d = _seed(conn, monkeypatch)
+    assert d["embedding_deferred"] is True
+    row = conn.execute("SELECT content_hash, embedded_hash FROM decisions WHERE id=?",
+                       (d["id"],)).fetchone()
+    assert row["embedded_hash"] != row["content_hash"]
+
+
+def test_search_degrades_to_listing_not_to_empty(conn, monkeypatch):
+    from awm.precedence import index, store
+    _seed(conn, monkeypatch)
+    monkeypatch.setattr(index, "search_field", _unavailable)
+
+    res = store.search(conn, context="rolling something out across machines")
+    assert res["degraded"]["semantic"] == "unavailable"
+    assert res["degraded"]["fallback"] == "listing"
+    assert "precedence/install.sh" in res["degraded"]["fix"]
+    assert res["count"] >= 1, "a missing dependency must not read as an empty archive"
+
+    # Listing-mode hits were not shown because they were relevant, so they must
+    # not accrue impressions — one node's outage would skew the whole archive's
+    # explore/exploit term.
+    assert conn.execute("SELECT MAX(seen_count) FROM decisions").fetchone()[0] == 0
+
+    # A keyword leg still ranks, and says so.
+    kw = store.search(conn, context="anything", keyword="release")
+    assert kw["degraded"]["fallback"] == "keyword"
+    assert kw["count"] >= 1
+
+
+def test_embed_refuses_rather_than_reporting_zero(conn, monkeypatch):
+    from awm.precedence import index, store
+
+    monkeypatch.setattr(index, "probe",
+                        lambda: {"available": False, "missing": ["sqlite_vec"]})
+    with pytest.raises(index.EmbeddingsUnavailable):
+        store.embed(conn)
+
+
+def test_filters_select_candidates_before_the_semantic_cut(conn):
+    from awm.precedence import config, store
+
+    for i in range(config.SEMANTIC_LIMIT + 20):
+        store.add(conn, context=f"choosing a database engine for service {i}",
+                  question="which database engine", decision=f"use engine {i}")
+    rare = store.add(conn, context="picking storage for a tiny tool",
+                     question="which database engine", decision="sqlite", tag=["scope:tiny"])
+    res = store.search(conn, question="which database engine", tag=["scope:tiny"])
+    assert [r["id"] for r in res["results"]] == [rare["id"]]
+
+
+def test_keyword_with_fts_syntax_errors_matches_words(conn):
+    from awm.precedence import store
+
+    store.add(conn, context="a-b rollout", question="ship it?", decision="ship behind a flag")
+    assert store.search(conn, keyword='a-b "rollout')["count"] == 1
+
+
+# ---------------------------------------------------------------------------
+# export — the archive's page of documents
+# ---------------------------------------------------------------------------
+
+
+def _decisions(conn, n=5):
+    from awm.precedence import store
+    return [store.add(conn, context=f"situation {i}", question=f"question {i}?",
+                      decision=f"decide {i}", tag=["t"], created="2026-01-1%d" % i)["id"]
+            for i in range(n)]
+
+
+def test_export_pages_active_decisions_in_id_order(conn):
+    from awm.precedence import export, store
+    ids = sorted(_decisions(conn))
+    store.supersede(conn, ids[0])
+    seen, cursor, pages = [], None, 0
+    while True:
+        page = export.export_page(conn, cursor, 2)
+        pages += 1
+        seen += [d["id"] for d in page["documents"]]
+        if page["done"]:
+            assert page["ids"] == ids[1:] and page["next_cursor"] is None
+            break
+        assert "ids" not in page and page["next_cursor"] == page["documents"][-1]["id"]
+        cursor = page["next_cursor"]
+    assert seen == ids[1:] and pages == 2
+
+
+def test_export_document_shape(conn):
+    from awm.precedence import export, store
+    did = store.add(conn, context="the kitchen", question="which sink?", decision="the deep one",
+                    tag=["home"], created="2026-03-04")["id"]
+    store.note(conn, did, body="the sink was replaced", kind="context-change")
+    (doc,) = export.export_page(conn)["documents"]
+    assert set(doc) == {"id", "title", "text", "ts", "kind"}
+    assert doc["title"] == "which sink?" and doc["kind"] == "decision"
+    assert doc["ts"] == "2026-03-04T00:00:00+00:00"
+    assert "Decision: the deep one" in doc["text"] and "Tags: home" in doc["text"]
+    assert "Note (context-change): the sink was replaced" in doc["text"]
+
+
+def test_export_is_not_a_sighting(conn):
+    from awm.precedence import export, store
+    did = _decisions(conn, 1)[0]
+    export.export_page(conn)
+    assert store.get(conn, did)["seen_count"] == 0
+    store.search(conn, decision="decide 0")
+    assert store.get(conn, did)["seen_count"] == 1
+    export.export_page(conn)
+    assert store.get(conn, did)["seen_count"] == 1
+
+
+def test_export_limit_is_clamped(conn):
+    from awm.precedence import export
+    _decisions(conn, 3)
+    assert len(export.export_page(conn, None, 0)["documents"]) == 1
+    assert len(export.export_page(conn, None, 5000)["documents"]) == 3
+
+
+def test_export_raises_on_an_unreadable_store(conn):
+    from awm.precedence import export
+    conn.execute("DROP TABLE decisions")
+    with pytest.raises(Exception):
+        export.export_page(conn)
+
+
+def test_the_archive_table_names_the_export_verb():
+    import tomllib
+    from pathlib import Path
+    import awm.precedence
+    toml = Path(awm.precedence.__path__[0]).parents[1] / "service.toml"
+    data = tomllib.loads(toml.read_text())
+    assert data["tool"] == "precedence"
+    assert data["archive"] == [{"name": "precedence", "mode": "index", "export": "precedence_export"}]

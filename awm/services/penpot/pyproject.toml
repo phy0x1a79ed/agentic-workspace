@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "awm-penpot"
+version = "0.1.0"
+requires-python = ">=3.11"
+description = "AWM penpot service: supervise the Penpot docker-compose stack (up/down/health), reported as awm services list; this service carries no HTTP or WebSocket traffic itself."
+dependencies = [
+    "awm-config",
+    "awm-gatewayclient",
+    # Deliberately NOT awm-httpsfront. The edge proxies /penpot; this service
+    # only supervises the stack it points at — same split Trilium keeps
+    # between its server.py and the edge that routes to it.
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest",
+]
+
+# PEP 420 namespace package: no top-level awm/__init__.py; the namespace dir is awm/penpot/.
+[tool.setuptools.packages.find]
+include = ["awm.penpot*"]
+namespaces = true
+
+[tool.pytest.ini_options]
+markers = [
+    "smoke: fast unit tests; target <30s",
+    "unit: pure unit tests, no network or subprocesses",
+]

@@ -1,0 +1,11 @@
+{
+  "name": "Penpot View Refresh",
+  "description": "Link a shape to a /penpot-view render URL and refresh its fill image from it on demand.",
+  "version": 2,
+  "code": "plugin.js",
+  "icon": "icon.png",
+  "permissions": [
+    "content:read",
+    "content:write"
+  ]
+}

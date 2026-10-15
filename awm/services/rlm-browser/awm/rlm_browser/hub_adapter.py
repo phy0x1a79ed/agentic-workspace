@@ -3,7 +3,7 @@
 Boots rlm-browser as a gateway-registered process: stands up its own DB, then
 runs the shared :class:`awm.gatewayclient.ServiceAdapter` loop (register → ready
 → serve → reconnect). The functions below are exposed over the control WS and
-projected into the gateway catalog as ``rlm_browser_<verb>`` tools.
+projected into the gateway catalog as ``browser_<verb>`` tools.
 
 Contract shape — *relay + live introspection*, deliberately NOT a hand-authored
 browser command set:
@@ -34,11 +34,20 @@ import asyncio
 import logging
 from typing import Any
 
+from awm import gatewayclient
 from awm.gatewayclient import ServiceAdapter
 from awm.rlm_browser import dao
-from awm.rlm_browser.browser import BrowserManager
+from awm.rlm_browser.browser import BrowserManager, _norm_mode
 
 log = logging.getLogger("awm.rlm_browser.hub_adapter")
+
+# `attached` mode drives one real, already-logged-in Chrome — a physical
+# singleton reachable only from whichever node it actually runs on. A node
+# that borrows it (no real Chrome of its own to attach to) sets this to the
+# owning peer's name; the owning node leaves it unset so its own calls stay
+# local. Mirrors AWM_TWOFA_PEER / AWM_SOCIAL_PEER / AWM_SSH_SLOT_PEER
+# (see FEDERATION.md § Singletons vs per-node services).
+_ATTACH_PEER_ENV = "AWM_RLM_BROWSER_ATTACH_PEER"
 
 
 def _mode_from_args(a: dict) -> str | None:
@@ -55,7 +64,8 @@ API_MANIFEST: dict[str, Any] = {
         # ---- lifecycle ----
         {
             "name": "acquire",
-            "tool": "rlm_browser_acquire",
+            "effect": "write",
+            "tool": "browser_acquire",
             "description": (
                 "Acquire a browser realm session for a game; returns "
                 "{session_id, mode, backend}. mode (default 'headless') is one "
@@ -75,7 +85,8 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "release",
-            "tool": "rlm_browser_release",
+            "effect": "write",
+            "tool": "browser_release",
             "description": "Release a session: tear its Chrome down and drop the row.",
             "params": [
                 {"name": "session_id", "type": "string", "required": True},
@@ -83,7 +94,8 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "reset",
-            "tool": "rlm_browser_reset",
+            "effect": "write",
+            "tool": "browser_reset",
             "description": (
                 "Reset a session in place: close every tab, keep the browser + "
                 "slot, open one fresh blank tab."
@@ -94,7 +106,8 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "status",
-            "tool": "rlm_browser_status",
+            "effect": "read",
+            "tool": "browser_status",
             "description": (
                 "Status of one session (pass session_id) or all (omit it). "
                 "Returns {sessions: [{session_id, game, mode, backend, egress, "
@@ -107,7 +120,8 @@ API_MANIFEST: dict[str, Any] = {
         # ---- tabs ----
         {
             "name": "tab_open",
-            "tool": "rlm_browser_tab_open",
+            "effect": "write",
+            "tool": "browser_tab_open",
             "description": "Open a new tab (optionally at url). Returns {tab_id}.",
             "params": [
                 {"name": "session_id", "type": "string", "required": True},
@@ -116,7 +130,8 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "tab_close",
-            "tool": "rlm_browser_tab_close",
+            "effect": "write",
+            "tool": "browser_tab_close",
             "description": "Close a tab by tab_id.",
             "params": [
                 {"name": "session_id", "type": "string", "required": True},
@@ -125,7 +140,8 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "tab_list",
-            "tool": "rlm_browser_tab_list",
+            "effect": "read",
+            "tool": "browser_tab_list",
             "description": "List the session's live tabs. Returns {tabs: [...]}.",
             "params": [
                 {"name": "session_id", "type": "string", "required": True},
@@ -133,7 +149,8 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "tab_activate",
-            "tool": "rlm_browser_tab_activate",
+            "effect": "write",
+            "tool": "browser_tab_activate",
             "description": "Bring a tab to the foreground by tab_id.",
             "params": [
                 {"name": "session_id", "type": "string", "required": True},
@@ -143,7 +160,8 @@ API_MANIFEST: dict[str, Any] = {
         # ---- perceive (conveniences over CDP) ----
         {
             "name": "observe",
-            "tool": "rlm_browser_observe",
+            "effect": "write",
+            "tool": "browser_observe",
             "description": (
                 "Read a tab's RENDERED page (post-JS DOM). Returns "
                 "{tab_id, html, url, title}. Omit tab_id for the active page."
@@ -155,7 +173,8 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "screenshot",
-            "tool": "rlm_browser_screenshot",
+            "effect": "read",
+            "tool": "browser_screenshot",
             "description": (
                 "Capture a PNG of a tab. Returns {tab_id, image (base64), "
                 "format}. full_page=true captures beyond the viewport."
@@ -169,7 +188,8 @@ API_MANIFEST: dict[str, Any] = {
         # ---- engine relay (THE full act set) ----
         {
             "name": "cdp",
-            "tool": "rlm_browser_cdp",
+            "effect": "write",
+            "tool": "browser_cdp",
             "description": (
                 "Relay an arbitrary Chrome DevTools Protocol method to the "
                 "engine and return {result}. This single verb IS the full act "
@@ -189,7 +209,8 @@ API_MANIFEST: dict[str, Any] = {
         # ---- discovery (live, from the engine) ----
         {
             "name": "commands",
-            "tool": "rlm_browser_commands",
+            "effect": "write",
+            "tool": "browser_commands",
             "description": (
                 "Return the running Chrome's LIVE CDP protocol descriptor "
                 "(/json/protocol): every domain/method/param available through "
@@ -235,46 +256,95 @@ def _build() -> tuple[ServiceAdapter, BrowserManager]:
     # ``inspect.iscoroutinefunction`` and awaits these directly on its loop —
     # a lambda would not register as a coroutine fn and would needlessly hop a
     # worker thread just to build the coroutine.
+    async def _forward(peer: str, fn: str, a: dict) -> Any:
+        return await gatewayclient.call_maybe_peer(peer, "rlm-browser", fn, a)
+
     async def acquire(a):
+        mode = _norm_mode(_mode_from_args(a))
+        if mode == "attached":
+            peer = gatewayclient.peer_env(_ATTACH_PEER_ENV)
+            if peer:
+                result = await _forward(peer, "acquire", a)
+                mgr.note_forwarded(result["session_id"], peer)
+                return result
         return await mgr.acquire(
             a["game"], mode=_mode_from_args(a), opts=a.get("opts"))
 
     async def release(a):
+        peer = mgr.forwarded_peer(a["session_id"])
+        if peer:
+            result = await _forward(peer, "release", a)
+            mgr.forget_forwarded(a["session_id"])
+            return result
         return await mgr.release(a["session_id"])
 
     async def reset(a):
+        peer = mgr.forwarded_peer(a["session_id"])
+        if peer:
+            return await _forward(peer, "reset", a)
         return await mgr.reset(a["session_id"])
 
     async def status(a):
-        return await mgr.status(a.get("session_id"))
+        session_id = a.get("session_id")
+        peer = mgr.forwarded_peer(session_id) if session_id else None
+        if peer:
+            return await _forward(peer, "status", a)
+        # A bare status() (no session_id) stays local-only — it will not
+        # merge in sessions this node has forwarded elsewhere.
+        return await mgr.status(session_id)
 
     async def tab_open(a):
+        peer = mgr.forwarded_peer(a["session_id"])
+        if peer:
+            return await _forward(peer, "tab_open", a)
         return await mgr.tab_open(a["session_id"], a.get("url"))
 
     async def tab_close(a):
+        peer = mgr.forwarded_peer(a["session_id"])
+        if peer:
+            return await _forward(peer, "tab_close", a)
         return await mgr.tab_close(a["session_id"], a["tab_id"])
 
     async def tab_list(a):
+        peer = mgr.forwarded_peer(a["session_id"])
+        if peer:
+            return await _forward(peer, "tab_list", a)
         return await mgr.tab_list(a["session_id"])
 
     async def tab_activate(a):
+        peer = mgr.forwarded_peer(a["session_id"])
+        if peer:
+            return await _forward(peer, "tab_activate", a)
         return await mgr.tab_activate(a["session_id"], a["tab_id"])
 
     async def observe(a):
+        peer = mgr.forwarded_peer(a["session_id"])
+        if peer:
+            return await _forward(peer, "observe", a)
         return await mgr.observe(a["session_id"], a.get("tab_id"))
 
     async def screenshot(a):
+        peer = mgr.forwarded_peer(a["session_id"])
+        if peer:
+            return await _forward(peer, "screenshot", a)
         return await mgr.screenshot(
             a["session_id"], a.get("tab_id"),
             full_page=bool(a.get("full_page", False)))
 
     async def cdp(a):
+        peer = mgr.forwarded_peer(a["session_id"])
+        if peer:
+            return await _forward(peer, "cdp", a)
         return await mgr.cdp(
             a["session_id"], a["method"], tab_id=a.get("tab_id"),
             params=a.get("params"))
 
     async def commands(a):
-        return await mgr.commands(a.get("session_id"))
+        session_id = a.get("session_id")
+        peer = mgr.forwarded_peer(session_id) if session_id else None
+        if peer:
+            return await _forward(peer, "commands", a)
+        return await mgr.commands(session_id)
 
     handlers = {
         "acquire": acquire, "release": release, "reset": reset,

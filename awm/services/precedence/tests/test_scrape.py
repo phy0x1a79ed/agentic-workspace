@@ -1,6 +1,6 @@
 """Tests for awm.precedence.scrape — the T2 seeding scrapers.
 
-Pure functions over on-disk memory files and a tiny throwaway scopes.db; no
+Pure functions over on-disk memory files and a tiny throwaway journal.db; no
 embedding model or service DB needed, so nothing here skips.
 """
 
@@ -69,14 +69,14 @@ def test_scrape_memories_splits_why_and_how(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# scopes.db scrapers (operator posts + journal decisions)
+# journal.db scrapers (operator posts + journal decisions)
 # ---------------------------------------------------------------------------
 
 
 @pytest.fixture
-def scopes_db(tmp_path):
+def journal_db(tmp_path):
     """A minimal scope_posts table with operator posts + a journal post."""
-    path = tmp_path / "scopes.db"
+    path = tmp_path / "journal.db"
     conn = sqlite3.connect(str(path))
     conn.execute(
         "CREATE TABLE scope_posts (id TEXT PRIMARY KEY, owner_project TEXT, "
@@ -105,8 +105,8 @@ def scopes_db(tmp_path):
     return path
 
 
-def test_scrape_operator_posts_gates_noise(scopes_db):
-    out = scrape.scrape_operator_posts(scopes_db)
+def test_scrape_operator_posts_gates_noise(journal_db):
+    out = scrape.scrape_operator_posts(journal_db)
     # only the real steering post survives (noise, slash, _unowned, too-short dropped)
     assert len(out) == 1
     e = out[0]
@@ -117,8 +117,8 @@ def test_scrape_operator_posts_gates_noise(scopes_db):
     assert e["created"] == "2026-05-22"
 
 
-def test_scrape_journal_user_marked_only(scopes_db):
-    marked = scrape.scrape_journal_decisions(scopes_db, user_marked_only=True)
+def test_scrape_journal_user_marked_only(journal_db):
+    marked = scrape.scrape_journal_decisions(journal_db, user_marked_only=True)
     assert len(marked) == 1
     e = marked[0]
     assert e["source"] == "journal"
@@ -130,23 +130,23 @@ def test_scrape_journal_user_marked_only(scopes_db):
     assert "lower confidence" in e["notes"][0]["body"].lower()
 
     # without the gate, the internal (non-user) decision is included too
-    allj = scrape.scrape_journal_decisions(scopes_db, user_marked_only=False)
+    allj = scrape.scrape_journal_decisions(journal_db, user_marked_only=False)
     assert len(allj) == 2
     # limit caps the output
-    assert len(scrape.scrape_journal_decisions(scopes_db, user_marked_only=False, limit=1)) == 1
+    assert len(scrape.scrape_journal_decisions(journal_db, user_marked_only=False, limit=1)) == 1
 
 
-def test_build_candidates_combines_sources(tmp_path, scopes_db):
+def test_build_candidates_combines_sources(tmp_path, journal_db):
     _write_feedback(tmp_path, "feedback_x.md", (
         "---\nname: x\ndescription: d\n---\n\nrule\n\n"
         "**Why:** w\n\n**How to apply:** h\n"
     ))
-    manifest = scrape.build_candidates(memory_dir=tmp_path, scopes_db=scopes_db)
+    manifest = scrape.build_candidates(memory_dir=tmp_path, journal_db=journal_db)
     sources = {d["source"] for d in manifest["decisions"]}
     assert sources == {"memory", "scope_post", "journal"}
     # toggles drop a source entirely
     only_mem = scrape.build_candidates(
-        memory_dir=tmp_path, scopes_db=scopes_db,
+        memory_dir=tmp_path, journal_db=journal_db,
         include_operator=False, include_journal=False,
     )
     assert {d["source"] for d in only_mem["decisions"]} == {"memory"}

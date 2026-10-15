@@ -80,16 +80,16 @@ def test_service_without_install_sh_not_counted(tmp_path):
 
 
 def test_page_signature_content_sensitive(tmp_path):
-    root = _make_tree(tmp_path / "a", pages={"fleet": {"src": {"App.svelte": "v1"}}})
-    p = root / "pages" / "fleet"
+    root = _make_tree(tmp_path / "a", pages={"dsh": {"src": {"App.svelte": "v1"}}})
+    p = root / "pages" / "dsh"
     before = deploy.page_signature(p)
     (p / "src" / "App.svelte").write_text("v2")
     assert deploy.page_signature(p) != before
 
 
 def test_page_signature_ignores_dist(tmp_path):
-    root = _make_tree(tmp_path / "a", pages={"fleet": {"src": {"App.svelte": "v1"}}})
-    p = root / "pages" / "fleet"
+    root = _make_tree(tmp_path / "a", pages={"dsh": {"src": {"App.svelte": "v1"}}})
+    p = root / "pages" / "dsh"
     before = deploy.page_signature(p)
     (p / "dist").mkdir()
     (p / "dist" / "index.html").write_text("<html>built</html>")
@@ -98,11 +98,11 @@ def test_page_signature_ignores_dist(tmp_path):
 
 
 def test_page_signatures_only_buildable(tmp_path):
-    root = _make_tree(tmp_path / "a", pages={"fleet": {}})
+    root = _make_tree(tmp_path / "a", pages={"dsh": {}})
     # A source-only dir with no index.html is not buildable → not signed.
     (root / "pages" / "placeholder").mkdir()
     sigs = deploy.page_signatures(root)
-    assert set(sigs) == {"fleet"}
+    assert set(sigs) == {"dsh"}
 
 
 # ---------------------------------------------------------------------------
@@ -111,9 +111,9 @@ def test_page_signatures_only_buildable(tmp_path):
 
 def test_manifest_roundtrip(tmp_path):
     assert deploy.load_manifest(tmp_path) == {}
-    deploy.save_manifest(tmp_path, {"dist_sig": "abc", "page_sigs": {"fleet": "x"}})
+    deploy.save_manifest(tmp_path, {"dist_sig": "abc", "page_sigs": {"dsh": "x"}})
     assert deploy.load_manifest(tmp_path) == {"dist_sig": "abc",
-                                              "page_sigs": {"fleet": "x"}}
+                                              "page_sigs": {"dsh": "x"}}
 
 
 def test_manifest_corrupt_returns_empty(tmp_path):
@@ -127,17 +127,17 @@ def test_manifest_corrupt_returns_empty(tmp_path):
 # ---------------------------------------------------------------------------
 
 def test_plan_no_prior_manifest_installs_and_builds(tmp_path):
-    root = _make_tree(tmp_path / "a", pages={"fleet": {"src": {"a": "1"}}})
+    root = _make_tree(tmp_path / "a", pages={"dsh": {"src": {"a": "1"}}})
     awm_dir = tmp_path / "awm_dir"
     awm_dir.mkdir()
     plan = deploy.plan_deploy(root, awm_dir)
     assert plan.do_install and "no prior" in plan.install_reason
-    assert plan.do_build and plan.changed_pages == ["fleet"]
+    assert plan.do_build and plan.changed_pages == ["dsh"]
     assert plan.do_reap
 
 
 def test_plan_unchanged_skips_install_and_build(tmp_path):
-    root = _make_tree(tmp_path / "a", pages={"fleet": {"src": {"a": "1"}}})
+    root = _make_tree(tmp_path / "a", pages={"dsh": {"src": {"a": "1"}}})
     awm_dir = tmp_path / "awm_dir"
     awm_dir.mkdir()
     # Record the current signatures as the last successful deploy.
@@ -150,7 +150,7 @@ def test_plan_unchanged_skips_install_and_build(tmp_path):
 
 
 def test_plan_new_service_triggers_install_only(tmp_path):
-    root = _make_tree(tmp_path / "a", pages={"fleet": {"src": {"a": "1"}}})
+    root = _make_tree(tmp_path / "a", pages={"dsh": {"src": {"a": "1"}}})
     awm_dir = tmp_path / "awm_dir"
     awm_dir.mkdir()
     deploy.save_manifest(awm_dir, deploy.plan_deploy(root, awm_dir).next_manifest())
@@ -165,30 +165,30 @@ def test_plan_new_service_triggers_install_only(tmp_path):
 
 def test_plan_page_change_triggers_build_only(tmp_path):
     root = _make_tree(tmp_path / "a",
-                      pages={"fleet": {"src": {"a": "1"}}, "notes": {"src": {"b": "1"}}})
+                      pages={"dsh": {"src": {"a": "1"}}, "notes": {"src": {"b": "1"}}})
     awm_dir = tmp_path / "awm_dir"
     awm_dir.mkdir()
     deploy.save_manifest(awm_dir, deploy.plan_deploy(root, awm_dir).next_manifest())
 
-    (root / "pages" / "fleet" / "src" / "a").write_text("2")
+    (root / "pages" / "dsh" / "src" / "a").write_text("2")
     plan = deploy.plan_deploy(root, awm_dir)
     assert not plan.do_install
-    assert plan.do_build and plan.changed_pages == ["fleet"]  # only fleet, not notes
+    assert plan.do_build and plan.changed_pages == ["dsh"]  # only dsh, not notes
 
 
 def test_plan_force_does_everything(tmp_path):
-    root = _make_tree(tmp_path / "a", pages={"fleet": {"src": {"a": "1"}}})
+    root = _make_tree(tmp_path / "a", pages={"dsh": {"src": {"a": "1"}}})
     awm_dir = tmp_path / "awm_dir"
     awm_dir.mkdir()
     deploy.save_manifest(awm_dir, deploy.plan_deploy(root, awm_dir).next_manifest())
 
     plan = deploy.plan_deploy(root, awm_dir, force=True)
     assert plan.do_install and "forced" in plan.install_reason
-    assert plan.do_build and plan.changed_pages == ["fleet"]
+    assert plan.do_build and plan.changed_pages == ["dsh"]
 
 
 def test_plan_flags_veto(tmp_path):
-    root = _make_tree(tmp_path / "a", pages={"fleet": {"src": {"a": "1"}}})
+    root = _make_tree(tmp_path / "a", pages={"dsh": {"src": {"a": "1"}}})
     awm_dir = tmp_path / "awm_dir"
     awm_dir.mkdir()
     plan = deploy.plan_deploy(root, awm_dir, no_install=True, no_build=True,
@@ -203,22 +203,22 @@ def test_plan_flags_veto(tmp_path):
 # ---------------------------------------------------------------------------
 
 def test_missing_when_registry_empty():
-    m = deploy.missing_from_listing([], ["agents", "tts"], ["fleet"])
-    assert m == {"services": ["agents", "tts"], "pages": ["fleet"]}
+    m = deploy.missing_from_listing([], ["stt", "tts"], ["dsh"])
+    assert m == {"services": ["stt", "tts"], "pages": ["dsh"]}
 
 
 def test_present_services_and_pages_not_missing():
     listing = [
-        {"name": "agents", "backend_status": "ready", "prefix": "/svc/agents"},
+        {"name": "stt", "backend_status": "ready", "prefix": "/svc/stt"},
         {"name": "tts", "backend_status": "starting", "prefix": "/svc/tts"},
-        {"name": "fleet", "backend_status": "ready", "prefix": "/ui/fleet",
+        {"name": "dsh", "backend_status": "ready", "prefix": "/ui/dsh",
          "kind": "page"},
     ]
-    m = deploy.missing_from_listing(listing, ["agents", "tts"], ["fleet"])
+    m = deploy.missing_from_listing(listing, ["stt", "tts"], ["dsh"])
     assert m == {"services": [], "pages": []}
 
 
 def test_service_present_but_dead_status_counts_missing():
-    listing = [{"name": "agents", "backend_status": "dead", "prefix": "/svc/agents"}]
-    m = deploy.missing_from_listing(listing, ["agents"], [])
-    assert m == {"services": ["agents"], "pages": []}
+    listing = [{"name": "stt", "backend_status": "dead", "prefix": "/svc/stt"}]
+    m = deploy.missing_from_listing(listing, ["stt"], [])
+    assert m == {"services": ["stt"], "pages": []}

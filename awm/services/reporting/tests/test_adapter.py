@@ -1,0 +1,295 @@
+"""The reporting domain: its declared surface and what each verb does."""
+
+from __future__ import annotations
+
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+from awm.config import verb_effect
+from awm.reporting import hub_adapter
+from awm.reporting.ledger import Ledger
+from awm.reporting.reconcile import Loop
+
+from stubs import FakeCx, make_card, personas, session_row
+
+pytestmark = [pytest.mark.unit, pytest.mark.smoke]
+
+EFFECTS = {"status": "read", "card_list": "read", "card_get": "read", "card_assign": "write",
+           "board_ensure": "write", "ops_post": "write", "convert": "write", **dict.fromkeys(hub_adapter.TASK_VERBS, "write")}
+
+
+def functions() -> dict[str, dict]:
+    return {f["name"]: f for f in hub_adapter.API_MANIFEST["functions"]}
+
+
+@pytest.fixture
+def runtime(monkeypatch, queue):
+    cx = FakeCx([session_row("representative", job="r1")])
+    queue.record_session("representative", "r1")
+    rt = SimpleNamespace(queue=queue, loop=Loop(queue, cx=cx, personas=personas()),
+                         tasks=SimpleNamespace(node="altair", subscription=None, ledger=Ledger(queue.path)),
+                         subscriber=SimpleNamespace(last_error=None, attached=True),
+                         board_problem=None)
+    monkeypatch.setattr(hub_adapter, "RUNTIME", rt)
+    return rt
+
+
+def test_every_verb_declares_its_effect():
+    declared = functions()
+    assert set(declared) == set(EFFECTS)
+    for name, effect in EFFECTS.items():
+        assert "effect" in declared[name], f"{name} declares no effect"
+        assert verb_effect(declared[name]) == effect
+
+
+PUBLISHED = {
+    "status": "operations_status", "card_list": "operations_queue_list", "card_get": "operations_queue_get",
+    "card_assign": "operations_queue_assign", "claim_task": "operations_task_claim",
+    "request_human": "operations_request_human", "hook_plan": "operations_hook_plan",
+    "hook_plan_approved": "operations_hook_plan_approved", "hook_todos": "operations_hook_todos",
+    "hook_prompt": "operations_hook_prompt", "hook_session_clear": "operations_hook_session_clear",
+    "ops_post": "operations_ops_post", "board_ensure": "operations_board_ensure",
+    "convert": "operations_convert",
+}
+HIDDEN = {"hook_plan", "hook_plan_approved", "hook_todos", "hook_prompt", "hook_session_clear", "ops_post",
+          "board_ensure", "convert"}
+
+
+def test_the_verbs_publish_into_the_operations_tool_and_every_one_has_a_handler():
+    assert {name: spec["tool"] for name, spec in functions().items()} == PUBLISHED
+    assert set(hub_adapter.HANDLERS) == set(functions())
+
+
+def test_the_manifest_opts_into_the_operations_tool():
+    toml = (Path(hub_adapter.__file__).parents[2] / "service.toml").read_text()
+    assert 'tool = "operations"' in toml and 'tier = "on"' in toml
+
+
+def test_hook_ops_and_operator_verbs_leave_mcp_and_the_rest_stay():
+    hidden = {name for name, spec in functions().items() if spec.get("surfaces") == ["cli", "http"]}
+    assert hidden == HIDDEN
+    assert all("surfaces" not in spec for name, spec in functions().items() if name not in HIDDEN)
+
+
+async def test_convert_writes_only_when_dry_run_is_explicitly_false(monkeypatch):
+    seen = []
+
+    async def convert(dry_run):
+        seen.append(dry_run)
+        return {"ok": True}
+
+    monkeypatch.setattr(hub_adapter, "RUNTIME", SimpleNamespace(tasks=SimpleNamespace(convert=convert)))
+    for args in ({}, {"dry_run": True}, {"dry_run": None}, {"dry_run": "false"}, {"dry_run": False}):
+        await hub_adapter.convert(args)
+    assert seen == [True, True, True, True, False]
+    assert (await hub_adapter.convert({"dry_run": False}, as_="peer:x"))["ok"] is False
+
+
+def test_request_human_takes_a_kind_and_old_arguments_still_pick_one():
+    params = {p["name"]: p for p in functions()["request_human"]["params"]}
+    assert set(params) == {"kind", "reason", "urgent", "summary"}
+    assert not any(p.get("required") for p in params.values())
+
+
+def test_required_params_match_what_the_handlers_index():
+    assert [p["name"] for p in functions()["card_get"]["params"] if p.get("required")] == ["card_id"]
+    assert {p["name"] for p in functions()["card_assign"]["params"] if p.get("required")} == {"card_id", "agent"}
+
+
+async def test_status_when_off_says_why_and_touches_nothing(monkeypatch):
+    monkeypatch.setattr(hub_adapter, "RUNTIME", None)
+    monkeypatch.setenv("AWM_NODE_ROLE", "station")
+    out = await hub_adapter.status({})
+    assert out["enabled"] is False
+    assert "station" in out["reason"]
+    assert out["role"] == "station"
+    assert out["counts"] is None
+
+
+async def test_status_reports_counts_cursor_and_liveness(runtime, queue):
+    queue.enqueue(make_card())
+    queue.set_cursor(12)
+    out = await hub_adapter.status({})
+    assert out["enabled"] is True
+    assert (out["role"], out["swarm"], out["cursor"]) == ("fleet", "tony", 12)
+    assert out["counts"]["queued"] == 1
+    assert out["representative_alive"] is True
+    assert out["secretary_alive"] is False
+    assert out["board"] == "connected"
+    assert out["sessions"]["representative"] == {"alive": True, "state": "running", "reason": "", "job": "r1"}
+    assert out["sessions"]["secretary"]["state"] == "missing"
+
+
+async def test_status_shows_a_login_block_as_not_alive_with_the_reason(runtime):
+    runtime.loop.cx.rows[0].update(state="blocked", needs="login required \u2014 run /login")
+    out = await hub_adapter.status({})
+    assert out["representative_alive"] is False
+    assert out["sessions"]["representative"] == {
+        "alive": False, "state": "blocked", "reason": "auth_required", "job": "r1"}
+
+
+async def test_status_when_cx_cannot_answer_says_unknown(runtime):
+    runtime.loop.cx.unavailable = True
+    out = await hub_adapter.status({})
+    assert out["representative_alive"] is None
+    assert out["sessions"]["representative"]["state"] == "unknown"
+
+
+async def test_status_says_connecting_until_the_stream_is_attached(runtime):
+    runtime.subscriber.attached = False
+    assert (await hub_adapter.status({}))["board"] == "connecting"
+    runtime.subscriber.last_error = "board answered 502"
+    assert "502" in (await hub_adapter.status({}))["board"]
+    runtime.subscriber = None
+    runtime.board_problem = "AWM_BOARD_URL is not set on this node"
+    assert "AWM_BOARD_URL" in (await hub_adapter.status({}))["board"]
+
+
+async def test_list_cuts_long_bodies_and_get_returns_them_whole(runtime, queue):
+    long_card = make_card(body="x" * 1200, reply_to="a" * 32)
+    queue.enqueue(long_card)
+    listed = (await hub_adapter.list_cards({}))["cards"][0]
+    assert len(listed["body"]) == hub_adapter.LIST_BODY_CHARS
+    assert listed["body_len"] == 1200
+    assert listed["reply_to"] == "a" * 32
+    got = (await hub_adapter.get({"card_id": long_card["id"]}))["card"]
+    assert len(got["body"]) == 1200
+    assert got["body_len"] == 1200 and got["reply_to"] == "a" * 32
+
+
+async def test_assigning_a_message_finishes_it(runtime, queue):
+    message = make_card(kind="message")
+    queue.enqueue(message)
+    out = await hub_adapter.assign({"card_id": message["id"], "agent": "worker-1"})
+    assert out["card"]["status"] == "done"
+
+
+async def test_list_and_get_read_the_queue(runtime, queue):
+    a, b = make_card(), make_card(priority="urgent")
+    queue.enqueue(a)
+    queue.enqueue(b)
+    out = await hub_adapter.list_cards({})
+    assert [c["card_id"] for c in out["cards"]] == [b["id"], a["id"]]
+    assert (await hub_adapter.list_cards({"limit": 1}))["cards"][0]["card_id"] == b["id"]
+    assert (await hub_adapter.list_cards({"status": "done"}))["cards"] == []
+    got = await hub_adapter.get({"card_id": a["id"]})
+    assert got["card"]["body"] == "do the thing"
+    assert (await hub_adapter.get({"card_id": "0" * 32}))["ok"] is False
+    assert (await hub_adapter.list_cards({"status": "nonsense"}))["ok"] is False
+    assert (await hub_adapter.list_cards({"limit": "many"}))["ok"] is False
+
+
+async def test_the_read_verbs_do_not_change_the_queue(runtime, queue):
+    card = make_card()
+    queue.enqueue(card)
+    before = queue.get(card["id"])
+    await hub_adapter.list_cards({})
+    await hub_adapter.get({"card_id": card["id"]})
+    await hub_adapter.status({})
+    assert queue.get(card["id"]) == before
+
+
+async def test_assign_records_the_target_and_marks_the_card_assigned(runtime, queue):
+    card = make_card()
+    queue.enqueue(card)
+    out = await hub_adapter.assign({"card_id": card["id"], "agent": " worker-3 "})
+    assert out["ok"] is True
+    assert (out["card"]["status"], out["card"]["assigned_to"]) == ("assigned", "worker-3")
+    assert queue.get(card["id"])["assigned_to"] == "worker-3"
+
+
+async def test_assign_refuses_bad_input_and_finished_cards(runtime, queue):
+    card = make_card()
+    queue.enqueue(card)
+    for args in ({}, {"card_id": card["id"]}, {"card_id": card["id"], "agent": "  "},
+                 {"card_id": card["id"], "agent": "x" * 500},
+                 {"card_id": card["id"], "agent": "two\nlines"},
+                 {"card_id": "0" * 32, "agent": "a"}):
+        assert (await hub_adapter.assign(args))["ok"] is False, args
+    queue.mark(card["id"], "done")
+    assert (await hub_adapter.assign({"card_id": card["id"], "agent": "a"}))["ok"] is False
+    assert queue.get(card["id"])["status"] == "done"
+
+
+async def test_the_queue_verbs_refuse_while_the_door_is_off(monkeypatch):
+    monkeypatch.setattr(hub_adapter, "RUNTIME", None)
+    monkeypatch.setenv("AWM_FRONT_DOOR", "0")
+    for call in (hub_adapter.list_cards({}), hub_adapter.get({"card_id": "a"}),
+                 hub_adapter.assign({"card_id": "a", "agent": "b"})):
+        assert (await call)["ok"] is False
+
+
+async def test_status_reports_a_session_waiting_on_the_next_prompt_as_alive(runtime):
+    runtime.loop.cx.rows[0].update(state="blocked", needs="rate limited \u2014 wait and retry")
+    out = await hub_adapter.status({})
+    assert out["representative_alive"] is True
+    assert out["sessions"]["representative"] == {
+        "alive": True, "state": "waiting", "reason": "rate limited \u2014 wait and retry", "job": "r1"}
+
+
+async def test_board_ensure_is_an_operator_verb_and_reports_a_missing_awm_note(monkeypatch):
+    from awm.reporting.swarmboard import SwarmBoard
+    from stubs import FakeTrilium
+
+    tri = FakeTrilium()
+    monkeypatch.setattr(hub_adapter, "RUNTIME", SimpleNamespace(board=SwarmBoard(tri)))
+    assert (await hub_adapter.board_ensure({}, as_="someone"))["ok"] is False
+    assert "AWM" in (await hub_adapter.board_ensure({}))["error"]
+    tri.add("AWM", type="book")
+    out = await hub_adapter.board_ensure({})
+    assert out["ok"] is True and set(out["columns"]) == {
+        "Proposed", "Planned", "Active", "Blocked", "Pending review"}
+
+
+async def test_ops_post_keeps_one_managed_note_per_kind_and_node_under_a_private_ops_book(monkeypatch):
+    from awm.reporting.swarmboard import SwarmBoard
+    from stubs import FakeTrilium
+
+    tri = FakeTrilium()
+    awm = tri.add("AWM", type="book")
+    monkeypatch.setattr(hub_adapter, "RUNTIME", SimpleNamespace(board=SwarmBoard(tri)))
+    args = {"kind": "password", "node": "altair", "title": "Login password", "body": "hunter2"}
+    assert (await hub_adapter.ops_post(args))["ok"] is False
+    await hub_adapter.RUNTIME.board.ensure()
+    first = await hub_adapter.ops_post(args)
+    again = await hub_adapter.ops_post({**args, "body": "correct horse"})
+    other = await hub_adapter.ops_post({**args, "node": "capella"})
+    assert first["note_id"] == again["note_id"] != other["note_id"]
+    note = tri.notes[first["note_id"]]
+    assert note["title"] == "password - altair" and "correct horse" in note["content"] and "hunter2" not in note["content"]
+    assert set(note["labels"]) == {"agentManaged", "readOnly", "changed"}
+    assert note["content"].startswith(f"Changed: {note['labels']['changed']}\n\n## Login password")
+    ops = tri.parents(first["note_id"])[0]
+    assert tri.notes[ops]["title"] == "Ops" and tri.parents(ops) == [awm] and tri.notes[ops]["labels"] == {"swarmOps": ""}
+
+
+async def test_ops_post_refuses_bad_arguments_and_foreign_or_edge_callers(monkeypatch):
+    from awm.reporting.swarmboard import SwarmBoard
+    from stubs import FakeTrilium
+
+    tri = FakeTrilium()
+    tri.add("AWM", type="book")
+    monkeypatch.setattr(hub_adapter, "RUNTIME", SimpleNamespace(board=SwarmBoard(tri)))
+    await hub_adapter.RUNTIME.board.ensure()
+    good = {"kind": "password", "node": "altair", "title": "t", "body": "b"}
+    assert (await hub_adapter.ops_post({**good, "body": " "}))["ok"] is False
+    assert (await hub_adapter.ops_post({**good, "kind": "two\nlines"}))["ok"] is False
+    assert (await hub_adapter.ops_post(good, as_="user:tony"))["ok"] is False
+    monkeypatch.setattr(hub_adapter, "caller_peer", lambda as_: "mira")
+    monkeypatch.setattr(hub_adapter, "peer_relation", lambda node: "foreign")
+    assert (await hub_adapter.ops_post(good, as_="peer:mira"))["ok"] is False
+    monkeypatch.setattr(hub_adapter, "peer_relation", lambda node: "domestic")
+    assert (await hub_adapter.ops_post(good, as_="peer:mira"))["ok"] is True
+
+
+async def test_status_reports_the_task_part_even_with_the_front_door_off(monkeypatch, queue):
+    monkeypatch.setenv("AWM_FRONT_DOOR", "0")
+    ledger = Ledger(queue.path)
+    task, _ = ledger.ensure("altair", "j", "bg")
+    ledger.update(task["id"], dirty=1)
+    monkeypatch.setattr(hub_adapter, "RUNTIME", SimpleNamespace(
+        queue=queue, tasks=SimpleNamespace(node="altair", subscription=None, ledger=ledger)))
+    out = await hub_adapter.status({})
+    assert out["enabled"] is False and out["tasks"] == {"open": 1, "unsynced": 1, "journals": None}

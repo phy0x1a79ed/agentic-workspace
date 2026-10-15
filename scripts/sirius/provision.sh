@@ -1,0 +1,409 @@
+#!/usr/bin/env bash
+# Provision sirius (the nexus.tony-xy-liu.com origin). Run as root, from a
+# copy of scripts/sirius/ on the box:
+#
+#   provision.sh <dev-user-pubkey-file>
+#
+# Idempotent: every step checks before it changes, so a re-run on a finished
+# box is a no-op. Steps, in order:
+#   1. dev user (key-only login, passwordless sudo)
+#   2. sshd lock-down — only when invoked through the dev user's own sudo,
+#      which is the proof that the dev login works
+#   3. dist-upgrade, unattended security updates, swap
+#   4. ufw (22 open, 80/443 from Cloudflare only) + fail2ban sshd jail
+#   5. app user, install root, /etc/awm, nginx vhost
+# The nexus TLS vhost is installed only once /etc/awm/origin.pem exists.
+# Until then nginx serves the placeholder on :80.
+set -euo pipefail
+
+DEV_USER=${DEV_USER:-tony}
+APP_USER=awm
+INSTALL_ROOT=/opt/awm
+STATE_ROOT=/var/lib/awm
+HERE="$(cd "$(dirname "$0")" && pwd)"
+ETC="$HERE/etc"
+
+[ "$(id -u)" -eq 0 ] || { echo "run as root" >&2; exit 1; }
+[ $# -ge 1 ] && [ -r "$1" ] || { echo "usage: $0 <dev-user-pubkey-file>" >&2; exit 1; }
+PUBKEY_FILE="$1"
+
+step() { echo; echo "== $*"; }
+changed=0
+note() { changed=1; echo "   + $*"; }
+
+# install <src> <dst> <mode> [owner]; returns 0 when it changed the file.
+put() {
+    local src=$1 dst=$2 mode=$3 owner=${4:-root:root}
+    if [ -f "$dst" ] && cmp -s "$src" "$dst" \
+        && [ "$(stat -c '%a %U:%G' "$dst")" = "$mode $owner" ]; then
+        return 1
+    fi
+    install -D -m "$mode" -o "${owner%%:*}" -g "${owner##*:}" "$src" "$dst"
+    note "installed $dst"
+}
+
+# ---------------------------------------------------------------- 1. dev user
+step "dev user $DEV_USER"
+if ! id "$DEV_USER" >/dev/null 2>&1; then
+    adduser --disabled-password --gecos "" "$DEV_USER"
+    note "created $DEV_USER"
+fi
+id -nG "$DEV_USER" | tr ' ' '\n' | grep -qx sudo || { usermod -aG sudo "$DEV_USER"; note "added to sudo"; }
+SSH_DIR="/home/$DEV_USER/.ssh"
+install -d -m 700 -o "$DEV_USER" -g "$DEV_USER" "$SSH_DIR"
+if ! grep -qxF "$(cat "$PUBKEY_FILE")" "$SSH_DIR/authorized_keys" 2>/dev/null; then
+    cat "$PUBKEY_FILE" >> "$SSH_DIR/authorized_keys"
+    note "authorized key"
+fi
+chown "$DEV_USER:$DEV_USER" "$SSH_DIR/authorized_keys"; chmod 600 "$SSH_DIR/authorized_keys"
+SUDOERS_LINE="$DEV_USER ALL=(ALL) NOPASSWD:ALL"
+if [ "$(cat /etc/sudoers.d/$DEV_USER 2>/dev/null)" != "$SUDOERS_LINE" ]; then
+    echo "$SUDOERS_LINE" > "/etc/sudoers.d/$DEV_USER.tmp"
+    visudo -cf "/etc/sudoers.d/$DEV_USER.tmp" >/dev/null
+    install -m 440 "/etc/sudoers.d/$DEV_USER.tmp" "/etc/sudoers.d/$DEV_USER"
+    rm -f "/etc/sudoers.d/$DEV_USER.tmp"
+    note "sudoers"
+fi
+put "$ETC/profile.d/awm.sh" /etc/profile.d/awm.sh 644 || true
+grep -qx 'AWM_WORKSPACE=/opt/awm' /etc/environment || { echo 'AWM_WORKSPACE=/opt/awm' >> /etc/environment; note "AWM_WORKSPACE in /etc/environment (ssh command shells)"; }
+
+# ------------------------------------------------------------------- 2. sshd
+step "sshd"
+if [ "${SUDO_USER:-}" = "$DEV_USER" ]; then
+    if put "$ETC/ssh/90-hardening.conf" /etc/ssh/sshd_config.d/90-hardening.conf 644; then
+        sshd -t
+        systemctl reload ssh
+        note "sshd reloaded: root login off, AllowUsers $DEV_USER"
+    fi
+    if [ -f /etc/sudoers.d/90-cloud-init-users ]; then
+        rm -f /etc/sudoers.d/90-cloud-init-users; note "removed cloud-init sudoers"
+    fi
+else
+    echo "   SKIPPED: sshd stays open. Log in as $DEV_USER and re-run via sudo to lock it."
+fi
+
+# --------------------------------------------------------------- 3. packages
+step "packages"
+export DEBIAN_FRONTEND=noninteractive
+apt-get -qq update
+if [ "$(apt-get -s dist-upgrade | grep -c '^Inst ')" -gt 0 ]; then
+    apt-get -y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold dist-upgrade
+    note "dist-upgrade"
+fi
+for p in ufw fail2ban unattended-upgrades nginx curl git; do
+    dpkg -s "$p" >/dev/null 2>&1 || { apt-get -y install "$p"; note "installed $p"; }
+done
+put "$ETC/apt/52unattended-upgrades-sirius" /etc/apt/apt.conf.d/52unattended-upgrades-sirius 644 || true
+systemctl is-enabled -q unattended-upgrades || { systemctl enable -q unattended-upgrades; note "unattended-upgrades enabled"; }
+
+if [ ! -f /swapfile ]; then
+    fallocate -l 2G /swapfile; chmod 600 /swapfile; mkswap -q /swapfile
+    note "swapfile"
+fi
+grep -q '^/swapfile' /etc/fstab || { echo '/swapfile none swap sw 0 0' >> /etc/fstab; note "fstab swap"; }
+swapon --show | grep -q /swapfile || swapon /swapfile
+[ "$(cat /etc/sysctl.d/90-swappiness.conf 2>/dev/null)" = "vm.swappiness=10" ] \
+    || { echo "vm.swappiness=10" > /etc/sysctl.d/90-swappiness.conf; sysctl -q vm.swappiness=10; note "swappiness"; }
+
+# --------------------------------------------------------- 4. firewall + jail
+step "cloudflare ranges"
+CF_V4=$(curl -fsS --max-time 20 https://www.cloudflare.com/ips-v4)
+[ -n "$CF_V4" ] || { echo "empty Cloudflare list" >&2; exit 1; }
+tmp=$(mktemp)
+{
+    echo "# generated by scripts/sirius/provision.sh from https://www.cloudflare.com/ips-v4"
+    for cidr in $CF_V4; do echo "set_real_ip_from $cidr;"; done
+    echo "real_ip_header CF-Connecting-IP;"
+} > "$tmp"
+put "$tmp" /etc/nginx/snippets/cloudflare-real-ip.conf 644 || true
+rm -f "$tmp"
+
+step "ufw"
+ufw status verbose | grep -q 'Default: deny (incoming)' || { ufw --force default deny incoming >/dev/null; note "default deny"; }
+ufw status verbose | grep -q 'allow (outgoing)' || { ufw --force default allow outgoing >/dev/null; note "default allow out"; }
+rules=$(ufw status | sed 1,4d)
+echo "$rules" | grep -q '^22/tcp *ALLOW *Anywhere' || { ufw allow 22/tcp >/dev/null; note "allow 22"; }
+for cidr in $CF_V4; do
+    echo "$rules" | grep -q "^80,443/tcp *ALLOW *$cidr" \
+        || { ufw allow from "$cidr" to any port 80,443 proto tcp >/dev/null; note "allow 80,443 from $cidr"; }
+done
+ufw status | grep -q '^Status: active' || { ufw --force enable >/dev/null; note "ufw enabled"; }
+
+step "fail2ban"
+put "$ETC/fail2ban/sshd.local" /etc/fail2ban/jail.d/sshd.local 644 && systemctl restart fail2ban || true
+systemctl is-enabled -q fail2ban || { systemctl enable -q --now fail2ban; note "fail2ban enabled"; }
+
+# ------------------------------------------------- 5. app user + install root
+step "app user $APP_USER"
+if ! id "$APP_USER" >/dev/null 2>&1; then
+    adduser --system --group --home "$STATE_ROOT" --shell /usr/sbin/nologin "$APP_USER"
+    note "created $APP_USER"
+fi
+install -d -m 750 -o "$APP_USER" -g "$APP_USER" "$STATE_ROOT" "$STATE_ROOT/state" "$STATE_ROOT/config" "$STATE_ROOT/data" "$STATE_ROOT/projects" "$STATE_ROOT/tasks" "$STATE_ROOT/main"
+install -d -m 755 -o "$DEV_USER" -g "$APP_USER" "$INSTALL_ROOT" /opt/miniforge3
+install -d -m 750 -o root -g "$APP_USER" /etc/awm
+if [ ! -d "$INSTALL_ROOT/.git" ]; then
+    sudo -u "$DEV_USER" git -C "$INSTALL_ROOT" init -q
+    sudo -u "$DEV_USER" git -C "$INSTALL_ROOT" config receive.denyCurrentBranch updateInstead
+    note "init $INSTALL_ROOT (push into it from a dev box: see deploy.sh)"
+fi
+if [ ! -f /etc/awm/env ]; then
+    cat > /etc/awm/env <<'ENV'
+# Read by awm.service (EnvironmentFile). Secrets and per-box settings only.
+ENV
+    chmod 640 /etc/awm/env; chown "root:$APP_USER" /etc/awm/env
+    note "/etc/awm/env"
+fi
+# The public profile: every line is added once and never rewritten, so a
+# hand edit on the box survives a re-run.
+while IFS= read -r line; do
+    key=${line%%=*}
+    grep -q "^$key=" /etc/awm/env || { echo "$line" >> /etc/awm/env; note "/etc/awm/env: $key"; }
+done <<'ENV'
+FILEVIEWER_MOUNT_ROOT=/var/lib/awm
+AWM_EDGE_PROFILE=public
+AWM_EDGE_TLS=0
+AWM_HTTPS_PORT=8444
+AWM_AUTH_PROFILE=public
+AWM_USER_ROOT_STRICT=1
+AWM_DVC_BIN=/opt/miniforge3/envs/dvc/bin/dvc
+PENPOT_BASE_URL=http://127.0.0.1:9001
+PENPOT_EXPORTER_URL=http://127.0.0.1:9001
+PENPOT_PUBLIC_URI=https://nexus.tony-xy-liu.com/penpot
+PENPOT_INTERNAL_URI=http://penpot-frontend-internal:8080
+AWM_EDGE_PENPOT=1
+AWM_PENPOT_ROTATION_HOUR=4
+ZOTERO_MAY_CREATE_ROOT=0
+ZOTERO_SYNC_ENABLED=1
+AWM_TETHER_ROLE=relay
+AWM_TETHER_PORT=12520
+AWM_TETHER_BIN=/var/lib/awm/state/services/tether/bin
+AWM_TETHER_ASSETS=/var/lib/awm/state/services/tether/assets
+AWM_EDGE_TETHER=1
+ENV
+# The zotero keys are what a public box is. It cannot reach the Zotero desktop
+# -- that machine is on the private overlay and this one is not -- so it only
+# ever writes the vault from a bundle another node ships in. Creation is off
+# because the mirror goes under whichever note carries #zoteroLibrary: on a
+# vault somebody uses, refusing to find that note is better than building a
+# library at the top of their tree.
+# PENPOT_INTERNAL_URI is not a second spelling of PENPOT_PUBLIC_URI and the
+# two must not be collapsed. The public one is what the backend and the
+# frontend stamp on browser-bound URLs, and penpot-view strips its /penpot
+# mount off them. The internal one is the origin the exporter's own browser
+# rendered against, and penpot-view accepts it only as a recognition token --
+# it rebases every URL onto PENPOT_BASE_URL before a socket opens, because
+# that hostname does not resolve on the host at all. It has to match the
+# exporter's PENPOT_PUBLIC_URI in the compose overlay byte for byte;
+# `awm penpot-view status` prints both so the comparison is one command.
+#
+# The loop is add-once *per key*, not per file, so a key added to that block
+# does reach a box whose /etc/awm/env already exists -- as long as no line
+# already starts with that key. What it will never do is *change* a value
+# somebody set, which is the point: a hand edit on the box survives a re-run.
+# So to move the rotation hour on a provisioned box, edit the line, do not
+# expect this script to.
+#
+# /etc/awm/penpot.env below is the sharper case and does not work this way at
+# all: it is written once, as a whole, and never revisited. A key added there
+# has to be appended by hand:
+#
+#     printf 'KEY=value\n' | sudo tee -a /etc/awm/penpot.env
+#     sudo systemctl restart penpot-stack
+
+# AWM_TETHER_PORT is in that block even though both sides already default to
+# it, because the two sides are two languages: awm.config carries one default
+# and the Rust relay carries another, and two defaults that happen to agree are
+# a pair that can stop agreeing. Naming it is what makes the relay bind the
+# port the edge proxies to, rather than what makes it 12520.
+#
+# The relay's bearer is not in that block, because the block is in git. It is
+# the whole of "only an operator may open a session", so the relay refuses to
+# start without one -- which is why it is minted here rather than left for
+# somebody to remember. The operator's node needs the SAME value in its own
+# workspace env file, and moving it there is a deliberate manual step: nothing
+# here copies a secret off this box. See scripts/sirius/README.md.
+if ! grep -q '^AWM_TETHER_ISSUE_TOKEN=' /etc/awm/env; then
+    printf 'AWM_TETHER_ISSUE_TOKEN=%s\n' "$(openssl rand -hex 32)" >> /etc/awm/env
+    note "/etc/awm/env: AWM_TETHER_ISSUE_TOKEN (generated — the operator's node needs the same value)"
+fi
+# Where the relay binary and the downloads it serves live. Under the service's
+# own state rather than inside the checkout: a deploy cleans untracked files,
+# and a built artifact in the tree would not survive one.
+install -d -m 750 -o "$APP_USER" -g "$APP_USER" \
+    "$STATE_ROOT/state/services/tether" \
+    "$STATE_ROOT/state/services/tether/bin" \
+    "$STATE_ROOT/state/services/tether/assets" \
+    "$STATE_ROOT/state/services/tether/assets/bin"
+
+# ------------------------------------------------------------------ 6. docker
+# Docker CE from Docker's own apt repo, not Ubuntu's docker.io: the compose
+# *plugin* is what everything here invokes (`docker compose`, not
+# `docker-compose`), and docker.io ships neither it nor a current engine.
+step "docker"
+if [ ! -f /etc/apt/keyrings/docker.asc ]; then
+    install -d -m 755 /etc/apt/keyrings
+    curl -fsSL --max-time 30 https://download.docker.com/linux/ubuntu/gpg \
+        -o /etc/apt/keyrings/docker.asc
+    chmod a+r /etc/apt/keyrings/docker.asc
+    note "docker apt key"
+fi
+DOCKER_LIST="deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable"
+if [ "$(cat /etc/apt/sources.list.d/docker.list 2>/dev/null)" != "$DOCKER_LIST" ]; then
+    echo "$DOCKER_LIST" > /etc/apt/sources.list.d/docker.list
+    apt-get -qq update
+    note "docker apt source"
+fi
+for p in docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin; do
+    dpkg -s "$p" >/dev/null 2>&1 || { apt-get -y install "$p"; note "installed $p"; }
+done
+systemctl is-enabled -q docker || { systemctl enable -q --now docker; note "docker enabled"; }
+
+# Docker's DNAT is consulted before ufw's filter rules, so a container
+# published on a bare `-p 9001:8080` (which binds 0.0.0.0) is reachable from
+# the internet while `ufw status` still shows only 22/80/443. Two things hold
+# that line and both are needed: every published port is written
+# `127.0.0.1:...` in the compose override, and this chain drops anything
+# arriving on an external interface as a backstop.
+#
+# Reapplied by a unit rather than restored by netfilter-persistent: netfilter
+# is empty after boot, and a snapshot restore can carry stale copies of
+# Docker's own generated chains from before dockerd regenerated them. Do NOT
+# add netfilter-persistent alongside this -- two writers on one chain with no
+# ordering against dockerd is worse than the problem it solves.
+put "$ETC/docker/docker-user-iptables.sh" /usr/local/sbin/docker-user-iptables.sh 755 || true
+if put "$ETC/systemd/docker-user-rules.service" \
+       /etc/systemd/system/docker-user-rules.service 644; then
+    systemctl daemon-reload
+fi
+systemctl is-enabled -q docker-user-rules || {
+    systemctl enable -q --now docker-user-rules; note "docker-user-rules enabled"; }
+systemctl is-active -q docker-user-rules || systemctl start docker-user-rules
+
+# ------------------------------------------------------------------ 7. penpot
+# The container stack is systemd's, not the awm gateway's. Docker socket
+# access is root-equivalent whoever holds it, and this box's whole shape is an
+# app user that cannot write the code it runs -- so nobody is put in the
+# `docker` group, and only `penpot-view` (a plain HTTP client, no
+# orchestration) is installed as an awm service. Same split the vault already
+# uses, where the lifecycle verbs are refused through the edge and run here.
+step "penpot stack"
+PENPOT_COMPOSE="docker compose -p awm-penpot \
+    -f /etc/awm/penpot/docker-compose.yml \
+    -f /etc/awm/penpot/docker-compose.sirius.yml"
+install -d -m 755 /etc/awm/penpot
+# `if put` rather than `put || true`: the return value is the whole point
+# here. A corrected overlay on disk changes nothing by itself -- the running
+# containers keep the environment they were created with -- so the signal is
+# what the reconcile below is driven by. Throwing it away is how a fixed
+# compose file came to sit on this box beside the containers it was meant to
+# correct.
+compose_changed=0
+if put "$ETC/penpot/docker-compose.yml" \
+       /etc/awm/penpot/docker-compose.yml 644; then compose_changed=1; fi
+if put "$ETC/penpot/docker-compose.sirius.yml" \
+       /etc/awm/penpot/docker-compose.sirius.yml 644; then compose_changed=1; fi
+
+# Penpot's own secret. Generated on the box and never rewritten -- the same
+# add-once rule /etc/awm/env follows, so a re-run cannot invalidate every live
+# Penpot session by minting a new one.
+if [ ! -f /etc/awm/penpot.env ]; then
+    { printf 'PENPOT_SECRET_KEY=%s\n' "$(openssl rand -hex 32)"
+      printf 'PENPOT_PUBLIC_URI=https://nexus.tony-xy-liu.com/penpot\n'
+      printf 'PENPOT_VERSION=2.16\n'; } > /etc/awm/penpot.env
+    chmod 640 /etc/awm/penpot.env; chown "root:$APP_USER" /etc/awm/penpot.env
+    note "/etc/awm/penpot.env"
+fi
+
+# `if put` rather than `put && ...`: put returns 1 when the file is already
+# correct, which under `set -e` would abort the re-run this script promises is
+# a no-op.
+if put "$ETC/systemd/penpot-stack.service" \
+       /etc/systemd/system/penpot-stack.service 644; then
+    systemctl daemon-reload
+fi
+systemctl is-enabled -q penpot-stack || { systemctl enable -q penpot-stack; note "penpot-stack enabled"; }
+systemctl is-active -q penpot-stack || { systemctl start penpot-stack; note "penpot-stack started"; }
+
+# The overlay moved, so the containers created from the old one have to be
+# replaced. `up -d` recreates only the services whose config hash changed;
+# `systemctl restart` would take the whole stack down and cold-start six
+# containers on two cores. The same command the unit's ExecStart runs, with
+# the unit's EnvironmentFile sourced into a subshell -- compose interpolates
+# PENPOT_VERSION and PENPOT_PUBLIC_URI out of it, and refuses without them.
+if [ "$compose_changed" -eq 1 ]; then
+    ( set -a; . /etc/awm/penpot.env; set +a
+      $PENPOT_COMPOSE up -d --remove-orphans )
+    note "penpot stack reconciled with the overlay"
+fi
+
+# penpot-view's own account is deliberately outside the nightly rotation that
+# replaces every *person's* Penpot password. Its credential lives in
+# /etc/awm/env, which is root-owned and which the app user cannot write, so the
+# auth service could change the password in Penpot and then be unable to record
+# what it changed it to -- wedging the render service permanently. Bringing it
+# in is a separate decision (it needs a writable home for the credential
+# first), not a side effect of this one.
+#
+# penpot-view does not merely serve Penpot's content -- it logs in to fetch
+# it, so it needs a Penpot account of its own. Locally that account is a demo
+# user, which is exactly the thing `enable-demo-users` must not ship for; so
+# without this step the render service has no way to authenticate on this box
+# and every diagram in every note is blank.
+#
+# Driven over the backend's PREPL, which `enable-prepl-server` turns on and
+# which binds container-localhost only (prepl-host defaults to "localhost" in
+# backend/src/app/main.clj), so this opens no network port. Add-once, like
+# every other credential here.
+if ! grep -q '^PENPOT_SERVICE_USERNAME=' /etc/awm/env; then
+    step "penpot service account"
+    # Wait for the backend's PREPL, not merely for the container to accept an
+    # exec. `docker exec` succeeds as soon as the container is running, while
+    # manage.py needs a backend that has finished its migrations and opened
+    # 6063 -- minutes apart on two cores. Waiting on the container alone is
+    # what made this step fail on the first run, with `[Errno 111] Connection
+    # refused` and a stack that was in fact perfectly healthy a minute later.
+    # `search-profile` on an address nobody has exits 0 once the PREPL answers.
+    for _ in $(seq 1 90); do
+        $PENPOT_COMPOSE exec -T penpot-backend python3 manage.py search-profile \
+            -e readiness-probe@invalid >/dev/null 2>&1 && break
+        sleep 5
+    done
+    PENPOT_SVC_USER="penpot-view@nexus.tony-xy-liu.com"
+    PENPOT_SVC_PASS="$(openssl rand -hex 24)"
+    if $PENPOT_COMPOSE exec -T penpot-backend \
+            python3 manage.py create-profile \
+            -e "$PENPOT_SVC_USER" -n "awm render service" \
+            -p "$PENPOT_SVC_PASS" --skip-tutorial --skip-walkthrough; then
+        printf 'PENPOT_SERVICE_USERNAME=%s\n' "$PENPOT_SVC_USER" >> /etc/awm/env
+        printf 'PENPOT_SERVICE_PASSWORD=%s\n' "$PENPOT_SVC_PASS" >> /etc/awm/env
+        note "penpot service account $PENPOT_SVC_USER"
+    else
+        echo "  !! create-profile failed -- penpot-view will not render." >&2
+        echo "     Re-run this script once the stack is healthy." >&2
+    fi
+fi
+
+step "nginx"
+install -d -m 755 /var/www/nexus
+put "$ETC/nginx/index.html" /var/www/nexus/index.html 644 || true
+put "$ETC/nginx/awm-proxy.conf" /etc/nginx/snippets/awm-proxy.conf 644 || true
+if [ -f /etc/awm/origin.pem ] && [ -f /etc/awm/origin.key ]; then
+    put "$ETC/nginx/nexus.conf" /etc/nginx/sites-available/nexus.conf 644 || true
+else
+    echo "   no /etc/awm/origin.{pem,key}: installing the :80 placeholder vhost only"
+    tmp=$(mktemp)
+    printf 'server {\n    listen 80 default_server;\n    server_name _;\n    root /var/www/nexus;\n    index index.html;\n}\n' > "$tmp"
+    put "$tmp" /etc/nginx/sites-available/nexus.conf 644 || true
+    rm -f "$tmp"
+fi
+[ -e /etc/nginx/sites-enabled/default ] && { rm -f /etc/nginx/sites-enabled/default; note "removed default vhost"; }
+[ "$(readlink /etc/nginx/sites-enabled/nexus.conf 2>/dev/null)" = /etc/nginx/sites-available/nexus.conf ] \
+    || { ln -sfn /etc/nginx/sites-available/nexus.conf /etc/nginx/sites-enabled/nexus.conf; note "enabled nexus vhost"; }
+nginx -t -q
+systemctl reload nginx
+
+echo
+[ -f /var/run/reboot-required ] && echo "REBOOT REQUIRED: $(cat /var/run/reboot-required.pkgs 2>/dev/null | tr '\n' ' ')"
+[ "$changed" -eq 1 ] && echo "provision: changed" || echo "provision: no changes"
+exit 0

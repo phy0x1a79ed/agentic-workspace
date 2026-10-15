@@ -27,10 +27,19 @@ sets it in its gitignored dev ``.env``, prod sets none). Resolution precedence:
 1. an explicit ``enabled.json`` entry always wins (both true and false — the
    operator's word, e.g. prod's deliberately-live rlm-browser);
 2. else a marked service is enabled iff its profiles intersect the active set;
-3. else (no marker — every pre-existing service) enabled.
+3. else (no ``profiles`` key — every pre-existing service, and a ``service.toml``
+   that carries only other keys such as ``tier``) enabled everywhere, the
+   *baseline*.
 
 A corrupt marker reads as marked-but-unmatched (disabled + logged), never
 fail-open.
+
+Tool, tier and archive: the same ``service.toml`` may carry ``tool`` (the MCP
+tool the service publishes under; the folder name when absent), ``tier``
+(``"on"``, or ``"off"`` to keep the tool off the MCP surface; anything else reads
+as ``"on"``) and ``[[archive]]`` tables (the search sources the service plugs
+in). All are independent of ``profiles`` and never affect whether the service
+runs.
 """
 
 from __future__ import annotations
@@ -134,31 +143,142 @@ PROFILE_MARKER = "service.toml"
 
 def active_profiles() -> set[str]:
     """The running gateway's profile set, from the ``AWM_PROFILES`` env
-    (comma list; unset ⇒ empty ⇒ only unmarked/core services bootstrap)."""
+    (comma list; unset ⇒ empty ⇒ only unmarked baseline services bootstrap)."""
     raw = os.environ.get("AWM_PROFILES") or ""
     return {p.strip() for p in raw.split(",") if p.strip()}
 
 
 def _read_profiles(folder: Path) -> list[str] | None:
     """The service's committed profile marker: the ``profiles`` list from
-    ``service.toml``. ``None`` = no marker (core, enabled everywhere). A
-    corrupt/malformed marker returns ``[]`` — marked-but-unmatched (disabled),
-    never fail-open."""
+    ``service.toml``. ``None`` = not profile-gated (baseline, enabled
+    everywhere): no file, or a file with no ``profiles`` key. A file that does
+    not parse, or whose ``profiles`` is not a list, returns ``[]`` —
+    marked-but-unmatched (disabled), never fail-open."""
     path = folder / PROFILE_MARKER
     if not path.is_file():
         return None
     try:
         data = tomllib.loads(path.read_text(encoding="utf-8"))
-    except (OSError, tomllib.TOMLDecodeError) as exc:
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
         log.warning("could not parse %s: %s — treating as profile-gated off",
                     path, exc)
         return []
-    profiles = data.get("profiles")
+    if "profiles" not in data:
+        return None
+    profiles = data["profiles"]
     if not isinstance(profiles, list):
-        log.warning("%s has no valid 'profiles' list — treating as "
+        log.warning("%s has an invalid 'profiles' value — treating as "
                     "profile-gated off", path)
         return []
     return [str(p).strip() for p in profiles if str(p).strip()]
+
+
+# ---------------------------------------------------------------------------
+# Tool and tier (committed service.toml ``tool`` and ``tier`` keys)
+# ---------------------------------------------------------------------------
+
+TIER_ON = "on"
+TIER_OFF = "off"
+
+# (path, mtime_ns, size) -> parsed service.toml. /tools is fetched on every
+# client tool-list, so a service.toml is re-read only when it changes.
+_manifest_cache: dict[tuple[str, int, int], dict] = {}
+
+
+def _read_manifest(folder: Path) -> dict:
+    """The parsed ``service.toml`` of ``folder``; empty when it is missing or does
+    not parse."""
+    path = folder / PROFILE_MARKER
+    try:
+        st = path.stat()
+    except OSError:
+        return {}
+    key = (str(path), st.st_mtime_ns, st.st_size)
+    cached = _manifest_cache.get(key)
+    if cached is not None:
+        return cached
+    try:
+        data = tomllib.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
+        log.warning("could not read %s: %s — defaults", path, exc)
+        data = {}
+    _manifest_cache[key] = data
+    return data
+
+
+def _read_surface(folder: Path) -> tuple[str | None, str]:
+    data = _read_manifest(folder)
+    tool: str | None = None
+    tier = TIER_ON
+    value = data.get("tool")
+    if isinstance(value, str) and value.strip():
+        tool = value.strip()
+    value = data.get("tier")
+    if isinstance(value, str) and value.strip().lower() == TIER_OFF:
+        tier = TIER_OFF
+    return tool, tier
+
+
+def read_tier(folder: Path) -> str:
+    """The service folder's tier: ``"off"`` only when ``service.toml`` says
+    ``tier = "off"``. Anything else, the legacy ``core`` and ``more`` included,
+    a missing file or a file that does not parse, is ``"on"``: a broken manifest
+    never switches a tool off."""
+    return _read_surface(folder)[1]
+
+
+def read_tool(folder: Path, default: str | None = None) -> str:
+    """The tool the service folder publishes under: the ``tool`` key of its
+    ``service.toml``, else ``default``, else the folder name."""
+    return _read_surface(folder)[0] or default or folder.name
+
+
+def read_archive(folder: Path) -> list[dict]:
+    """The ``[[archive]]`` tables of the service folder's ``service.toml``: one
+    ``{name, mode, ...}`` dict per search source it plugs in. A table without a
+    string ``name`` is dropped."""
+    tables = _read_manifest(folder).get("archive")
+    if not isinstance(tables, list):
+        return []
+    return [dict(t) for t in tables
+            if isinstance(t, dict) and isinstance(t.get("name"), str) and t["name"].strip()]
+
+
+def service_archive(name: str) -> list[dict]:
+    """Archive tables of the service folder called ``name`` under the services root."""
+    if not name or name != Path(name).name or name.startswith("."):
+        return []
+    return read_archive(services_root() / name)
+
+
+def archive_sources() -> list[str]:
+    """Every archive source name any discovered service declares, in folder order."""
+    root = services_root()
+    if not root.is_dir():
+        return []
+    seen: list[str] = []
+    for entry in sorted(root.iterdir()):
+        if not entry.is_dir() or entry.name.startswith((".", "_")):
+            continue
+        for table in read_archive(entry):
+            if table["name"] not in seen:
+                seen.append(table["name"])
+    return seen
+
+
+def service_tier(name: str) -> str:
+    """Tier of the service folder called ``name`` under the services root."""
+    if not name or name != Path(name).name or name.startswith("."):
+        return TIER_ON
+    return read_tier(services_root() / name)
+
+
+def service_tool(name: str) -> str:
+    """Tool of the service folder called ``name``; ``name`` itself when it is not
+    a folder under the services root."""
+    if not name or name != Path(name).name or name.startswith("."):
+        return name
+    return read_tool(services_root() / name, name)
 
 
 def _resolve_enabled(name: str, folder: Path,
@@ -288,25 +408,42 @@ class PageSpec:
     dist_dir: str
 
 
-def discover_pages() -> list[PageSpec]:
+def is_page_enabled(name: str, enabled_map: dict[str, bool] | None = None) -> bool:
+    """A page follows an explicit ``enabled.json`` entry under its own name,
+    else its same-named service's verdict, else it is enabled."""
+    if enabled_map is None:
+        enabled_map = load_enabled()
+    if name in enabled_map:
+        return enabled_map[name]
+    folder = services_root() / name
+    if (folder / RUN_SCRIPT).is_file():
+        return _resolve_enabled(name, folder, enabled_map)
+    return True
+
+
+def discover_pages(*, include_disabled: bool = False) -> list[PageSpec]:
     """Scan the pages root for bundles with a built ``dist/``.
 
     A page is *servable* iff its ``dist/`` exists — source-only pages (no
     ``dist/`` yet, or a page still mid-build) are skipped. This mirrors how
     ``build.sh`` keys on ``index.html`` for *buildable*: a page can be
-    buildable-but-not-yet-servable, which is the correct skip here. Returned
-    sorted by name.
+    buildable-but-not-yet-servable, which is the correct skip here. Disabled
+    pages (see ``is_page_enabled``) are skipped unless ``include_disabled``.
+    Returned sorted by name.
     """
     root = pages_root()
     if not root.is_dir():
         log.warning("pages root %s does not exist", root)
         return []
+    enabled_map = load_enabled()
     specs: list[PageSpec] = []
     for entry in sorted(root.iterdir()):
         if not entry.is_dir() or entry.name.startswith((".", "_")):
             continue
         dist = entry / "dist"
         if not dist.is_dir():
+            continue
+        if not include_disabled and not is_page_enabled(entry.name, enabled_map):
             continue
         specs.append(PageSpec(
             name=entry.name,
@@ -316,10 +453,10 @@ def discover_pages() -> list[PageSpec]:
     return specs
 
 
-def discover_page(name: str) -> PageSpec | None:
+def discover_page(name: str, *, include_disabled: bool = False) -> PageSpec | None:
     """Return the spec for one page bundle, or ``None`` if it has no built
-    ``dist/``."""
-    for spec in discover_pages():
+    ``dist/`` (or is disabled, unless ``include_disabled``)."""
+    for spec in discover_pages(include_disabled=include_disabled):
         if spec.name == name:
             return spec
     return None

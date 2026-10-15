@@ -1,0 +1,3 @@
+name: Plan First
+description: Standard preset's full capability set, plus a phased plan-mode workflow (parallel explore/plan subagents, an incrementally written plan file, and a todo handoff on approval).
+order: 5

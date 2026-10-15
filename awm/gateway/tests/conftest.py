@@ -25,8 +25,6 @@ def awm_workspace(tmp_path, monkeypatch):
     awm_dir.mkdir()
     projects_dir = workspace / "projects"
     projects_dir.mkdir()
-    skills_dir = workspace / "skills"
-    skills_dir.mkdir()
     data_dir = workspace / "data"
     data_dir.mkdir()
 
@@ -50,7 +48,6 @@ def awm_workspace(tmp_path, monkeypatch):
     monkeypatch.setattr(cfg, "LOG_FILE", awm_dir / "awm.log")
     monkeypatch.setattr(cfg, "PROJECTS_DIR", projects_dir)
     monkeypatch.setattr(cfg, "DATA_DIR", data_dir)
-    monkeypatch.setattr(cfg, "SKILLS_DIR", skills_dir)
     # SERVICES_DIR is a module constant frozen at import (= AWM_DIR / "services"),
     # so patching AWM_DIR alone leaves it pointing at the REAL workspace. The
     # service-enable state (`discovery.is_enabled` → SERVICES_DIR/enabled.json)
@@ -88,6 +85,35 @@ def awm_workspace(tmp_path, monkeypatch):
         "workspace": workspace,
         "awm_dir": awm_dir,
         "projects_dir": projects_dir,
-        "skills_dir": skills_dir,
         "data_dir": data_dir,
     }
+
+
+@pytest.fixture()
+def domestic_peers(tmp_path, monkeypatch):
+    """A peer book listing the peers the hand-built snapshots in the surface tests
+    name, all domestic. The provider directory keeps only peers the book calls
+    domestic, so a snapshot naming a peer the book lacks reads as empty."""
+    import json
+
+    import awm.config.peerbook as peerbook
+
+    path = tmp_path / "domestic-peers.json"
+    path.write_text(json.dumps({
+        name: {"edge_url": f"https://{name}:12100", "relation": "domestic"}
+        for name in ("altair", "mira", "cosmos", "capella", "fir")}))
+    monkeypatch.setattr(peerbook, "peers_file", lambda: path)
+    return path
+
+
+@pytest.fixture(autouse=True)
+def _isolated_usage_tally(tmp_path, monkeypatch):
+    """Keep the dispatch tally off the real workspace: tests dispatch freely."""
+    from awm.gateway import usage
+
+    usage._reset_for_tests()
+    monkeypatch.setattr(usage, "storage_path",
+                        lambda: tmp_path / "usage-tally" / "usage.json")
+    monkeypatch.setattr(usage, "SEED_PATH", tmp_path / "no-seed.txt")
+    yield
+    usage._reset_for_tests()

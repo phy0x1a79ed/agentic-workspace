@@ -4,24 +4,29 @@ This is the gateway's HTTP surface. It exposes only what the gateway owns
 itself — the daemon lifecycle (`/status`, `/restart`), the generic tool
 dispatch the MCP proxy rides (`/tools`, `/invoke`, both backed by the live
 `catalog`), and the hub control plane + routing middleware. Feature surfaces
-(scopes, artifacts, …) are NOT baked in here — they arrive as services
+(scopes, social, …) are NOT baked in here — they arrive as services
 register into the catalog/hub. See `catalog.py` for the registration contract.
 """
 
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import shutil
 import tarfile
 import tempfile
 import time
+from collections.abc import Callable
 from contextlib import asynccontextmanager
+from typing import Any
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
 from starlette.background import BackgroundTask
 from starlette.concurrency import run_in_threadpool
+from starlette.datastructures import Headers
 from starlette.responses import StreamingResponse
 
 from awm.config import (
@@ -32,11 +37,14 @@ from awm.config import (
     WORKSPACE_ROOT,
     IDLE_SHUTDOWN_SECONDS,
 )
-from awm.gateway import catalog, filehop, peer_catalog
-from awm.gateway.gateway_ops import GATEWAY_OPERATIONS
+from awm.config import modes as session_modes
+from awm.gateway import catalog, filehop, mcp_caller, peer_catalog
+from awm.gateway.gateway_ops import GATEWAY_OPERATIONS, bound_caller
 from awm.gateway.operations import register_fastapi_routes
 
 __version__ = "0.1.0"
+
+log = logging.getLogger("awm.gateway.server")
 
 # ---------------------------------------------------------------------------
 # Idle shutdown state
@@ -67,6 +75,12 @@ def _pid_alive(pid: int | None) -> bool:
     except OSError:
         return False
     return True
+
+
+def _pid_gone(pid: int) -> bool:
+    """True once ``pid`` has exited, reaping it first if it is our child."""
+    from awm.gateway.hub import supervisor
+    return supervisor._try_reap(pid) or not _pid_alive(pid)
 
 
 # ---------------------------------------------------------------------------
@@ -136,44 +150,51 @@ async def _drain_services() -> None:
             if ch is not None:
                 ch.enqueue({"kind": "shutdown"})
         if live:
-            print(f"[awm] shutdown: signalled {len(live)} service(s); waiting")
+            log.info("shutdown: signalled %d service(s); waiting", len(live))
 
-        # 2. Wait for them to drop their leases (exit), up to a grace window.
+        # 2. Wait, up to a grace window, for each signalled service to drop its
+        #    lease AND for its process to be gone. The lease drops when the
+        #    control WS closes, a beat before the process finishes exiting, and
+        #    an exited child stays a zombie (still answering kill(pid, 0)) until
+        #    we reap it — so judging liveness without a reap blames every
+        #    service that obeyed the frame.
+        journal = {
+            name: entry for name, entry in
+            supervisor.load_service_journal().items()
+            if isinstance(entry, dict) and entry.get("last_pid")
+        }
+        signalled = {r.service_id for r in live}
+        awaited = [e["last_pid"] for e in journal.values()
+                   if e.get("service_id") in signalled]
         _grace_deadline = time.monotonic() + _GRACE_DEADLINE_S
         while time.monotonic() < _grace_deadline:
-            if not any(lm.is_held(r.service_id) for r in live):
+            awaited = [pid for pid in awaited if not _pid_gone(pid)]
+            if not awaited and not any(lm.is_held(s) for s in signalled):
                 break
             await asyncio.sleep(0.2)
 
-        # 3. Force-kill any straggler that did NOT stand down. A service that
-        #    obeyed the in-band frame has exited — its lease dropped and its
-        #    process is gone — so it is left untouched (the frame did the work).
-        #    A straggler is one still holding its lease (ignored the frame) OR
-        #    whose process is still alive while its lease is already gone. The
-        #    latter is the backstop path: when the signal override could not
-        #    install, uvicorn closes the control WSs (releasing leases) before
-        #    this runs, so lease-held alone would miss live orphans — the
-        #    pid-alive check catches them. Force-kill is the backstop here, not
-        #    the primary mechanism.
-        journal = supervisor.load_service_journal()
-        for name, entry in journal.items():
-            if not isinstance(entry, dict):
-                continue
-            sid = entry.get("service_id")
-            pid = entry.get("last_pid")
-            if not pid:
-                continue
-            held = bool(sid) and lm.is_held(sid)
-            if held or _pid_alive(pid):
-                print(f"[awm] shutdown: {name} did not stand down; "
-                      f"force-killing pid={pid}")
-                supervisor.kill_pid_group(pid)
+        # 3. Force-kill the stragglers: a service still holding its lease (it
+        #    ignored the frame), or one whose process outlived the reap. The
+        #    second catches live orphans on the backstop path, where uvicorn
+        #    closed the control WSs (releasing leases) before this ran.
+        stragglers = [
+            (name, entry["last_pid"]) for name, entry in journal.items()
+            if (entry.get("service_id") and lm.is_held(entry["service_id"]))
+            or not _pid_gone(entry["last_pid"])
+        ]
+        for name, pid in stragglers:
+            log.warning("shutdown: %s did not stand down; force-killing pid=%s",
+                        name, pid)
+            supervisor.kill_pid_group(pid)
+        if journal:
+            log.info("shutdown: %d service(s) stood down, %d force-killed",
+                     len(journal) - len(stragglers), len(stragglers))
 
         # 4. Clear the journal so the next boot bootstraps a clean set instead
         #    of waiting out reconcile's window against dead PIDs.
         supervisor.write_service_journal({})
     except Exception as exc:  # noqa: BLE001 — teardown must never wedge exit
-        print(f"[awm] graceful service shutdown skipped: {exc}")
+        log.warning("graceful service shutdown skipped: %s", exc)
 
 
 # ---------------------------------------------------------------------------
@@ -192,6 +213,15 @@ async def lifespan(app: FastAPI):
     import os
     PID_FILE.parent.mkdir(parents=True, exist_ok=True)
     PID_FILE.write_text(str(os.getpid()))
+
+    # The session mode gate reads cx's lineage records. A missing directory is
+    # not an error for the reader, but creating it here keeps the question from
+    # arising before the first `start_other`.
+    try:
+        from awm.claudedaemon import sessionmode
+        sessionmode.starts_dir().mkdir(parents=True, exist_ok=True)
+    except Exception as exc:  # noqa: BLE001 — the gate fails closed on its own
+        log.warning("could not create cx's lineage directory: %s", exc)
 
     # Own SIGTERM / SIGINT at the event-loop level so we can DRAIN our services
     # in-band before uvicorn tears their control WSs down.
@@ -309,6 +339,8 @@ async def lifespan(app: FastAPI):
             reconcile_journaled_services,
             self_heal_loop,
         )
+        from awm.gateway.peers import warn_station_fleet_services
+        warn_station_fleet_services()
         await reconcile_journaled_services()
         await bootstrap_discovered_services()
         # 2b. Register discovered page bundles (/ui/<name>). Pages hold no
@@ -329,7 +361,7 @@ async def lifespan(app: FastAPI):
         #      peer_catalog.refresh_loop — which peer provides which MCP domain.
         #        A sweep costs an ssh plus a TLS round trip to a host that may be
         #        asleep, so it is kept off the request path entirely: `/tools` and
-        #        providersOf read whatever this last produced.
+        #        the tool descriptions read whatever this last produced.
         from awm.gatewayclient import spawn_supervised
 
         from awm.gateway.gateway_ops import reap_loop
@@ -379,11 +411,39 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="AWM", version=__version__, lifespan=lifespan)
 
 
-@app.middleware("http")
-async def track_activity(request, call_next):
-    global _last_request_time
-    _last_request_time = time.time()
-    return await call_next(request)
+# Plain ASGI, not @app.middleware("http"): BaseHTTPMiddleware wraps `receive`
+# and never delivers the client's disconnect, which /invoke needs to cancel.
+class _TrackActivity:
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http":
+            global _last_request_time
+            _last_request_time = time.time()
+        await self.app(scope, receive, send)
+
+
+class _BindCallerStamp:
+    """Let the generated control-plane routes see the edge's ``X-Awm-As``."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+        with bound_caller(Headers(scope=scope).get("X-Awm-As")):
+            await self.app(scope, receive, send)
+
+
+app.add_middleware(_TrackActivity)
+app.add_middleware(_BindCallerStamp)
+
+
+@app.exception_handler(PermissionError)
+async def _refuse_permission(request, exc):
+    return JSONResponse({"detail": str(exc)}, status_code=403)
 
 
 # ---------------------------------------------------------------------------
@@ -404,7 +464,7 @@ register_fastapi_routes(app, GATEWAY_OPERATIONS)
 # ---------------------------------------------------------------------------
 
 @app.get("/tools")
-def list_tools_endpoint(view: str | None = None, peers: int = 0):
+def list_tools_endpoint(request: Request, view: str | None = None, peers: int = 0):
     """Return the current MCP tool definitions from the live catalog.
 
     The thin stdio proxy fetches this on every `list_tools` call instead of
@@ -424,48 +484,134 @@ def list_tools_endpoint(view: str | None = None, peers: int = 0):
     fleet would advertise transitive peers this node cannot dial), and no existing
     consumer of the plain view changes shape. Still sync: the peer data comes from
     a background snapshot, so this route never waits on a peer even cold.
+
+    A foreign caller (the edge stamps ``X-Awm-As: peer:<node>``) sees only the
+    domains and verbs it may call, whichever view it asks for; ``peers`` is
+    ignored for it.
     """
+    grants = catalog.foreign_grants(request.headers.get("X-Awm-As"))
     if view == "domains":
-        tools = catalog.list_domain_tools(peers=bool(peers))
+        tools = catalog.list_domain_tools(
+            peers=bool(peers), grants=grants)
     else:
-        tools = catalog.list_tools()
+        tools = catalog.list_tools(grants=grants)
     return {"tools": [t.model_dump(by_alias=True) for t in tools]}
 
 
-# The expanded surface names a verb `<domain>_<verb>`, and service names cannot
-# contain an underscore, so this prefix is exactly reflection's verbs — including
-# ones added later, which a hand-maintained list would silently miss.
-_REFLECTION_FLAT_PREFIX = "reflection_"
+# The expanded surface names a verb `<tool>_<verb>`, and tool names cannot
+# contain an underscore, so the tool is exactly the text before the first one.
+#
+# The tools whose calls are stamped with the caller's pid, and the verbs of each
+# that are. `None` means every verb, including ones added later, which a
+# hand-maintained list would silently miss. A tool gets a narrow list when only
+# some of its verbs act on, or on behalf of, the calling session. The keys are
+# published tool names: a service is stamped under the tool it publishes into
+# (cx's `start_other` and `stop_other` record the caller as parent, and are
+# `reflection` verbs), never under its folder name.
+_CALLER_STAMPED: dict[str, frozenset[str] | None] = {
+    "reflection": None,
+    "operations": None,
+    "trilium": frozenset({
+        "note_upsert", "note_create", "note_update", "note_place", "note_delete",
+        "note_move", "note_clone", "attr_set", "attr_delete", "attachment_put"}),
+}
 
 
-def _stamp_reflection_caller(name: str, args: dict, pid_header: str | None) -> None:
-    """Stamp the calling session's own pid onto a reflection call.
+# The stamped verbs that need the caller's own session record on the node that
+# serves them: they inject into the session, or act as the session on the task
+# ledger. The rest of `_CALLER_STAMPED` uses the pid as a label (`start_other`'s
+# parent) or as a gate input (`stop_other`, trilium writes), and a peer reads the
+# missing pid as "an operator", so those stay routable. A session-bound verb
+# forwarded to a peer arrives with no pid and fails there with a misleading
+# "no calling session", so `/invoke` refuses it first.
+_SESSION_BOUND: dict[str, frozenset[str]] = {
+    "reflection": frozenset({"message_self", "compact", "mode", "whoami"}),
+    "operations": frozenset({
+        "hook_plan", "hook_plan_approved", "hook_todos", "hook_prompt",
+        "hook_session_clear", "task_claim", "request_human"}),
+}
+
+
+def _session_bound_refusal(redirect: peer_catalog.PeerRedirect) -> str | None:
+    """Why this redirected call must not leave the node, or None if it may."""
+    if redirect.verb not in _SESSION_BOUND.get(redirect.tool, ()):
+        return None
+    return (f"{redirect.tool}.{redirect.verb} acts on your own session on this node, "
+            f"so it cannot run on peer {redirect.peer!r}; call it without peer")
+
+
+def _stamped_bag(name: str, args: dict) -> dict | None:
+    """The dict that carries `_caller_pid` for this call, or None if it is not stamped.
+
+    Domain shape (``name`` is the domain, the verb is ``args["verb"]``) nests the
+    verb's arguments under ``args["args"]``; flat shape (``<domain>_<verb>``)
+    carries them at the top level. The bag is created when the domain call omits
+    it, so identity still has somewhere to land.
+    """
+    domain, sep, verb = name.partition("_")
+    if domain not in _CALLER_STAMPED:
+        return None
+    verbs = _CALLER_STAMPED[domain]
+    if sep:
+        return args if verbs is None or verb in verbs else None
+    if verbs is not None and args.get("verb") not in verbs:
+        return None
+    inner = args.get("args")
+    if not isinstance(inner, dict):
+        inner = {}
+        args["args"] = inner
+    return inner
+
+
+def _stamp_caller(name: str, args: dict, pid_header: str | None,
+                  descendant_header: str | None = None,
+                  as_: str | None = None) -> None:
+    """Stamp the calling session's own pid onto a call that acts on a session.
 
     `awm-mcp` runs as a stdio child of the session that calls it, so it forwards
     its parent pid as `X-Awm-Session-Pid`; that identifies the caller regardless
-    of whether it is hosted in a tmux pane or as a background job. Reflection is
-    the only domain whose contract with the model requires zero awareness of any
-    of this — calls arrive carrying nothing about who is making them, and this is
-    the one place identity is attached before dispatch.
+    of whether it is hosted in a tmux pane or as a background job. The stamped
+    calls (`_CALLER_STAMPED`) are every `reflection` verb, which injects into the
+    caller's own prompt and, as `start_other` and `stop_other`, records the caller
+    as the parent of the session it starts or stops, every `operations` verb (the
+    reporting ones act for the calling session), and the `trilium` write verbs,
+    which the write gate checks. Their contract with the model requires zero
+    awareness of any of this: calls arrive carrying nothing about who is making
+    them, and this is the one place identity is attached before dispatch.
 
     The value is always *overwritten*, and stripped entirely when no header is
     present, so `_caller_pid` cannot be supplied from the model side. That is the
-    point: reflection injects into the caller's own prompt, so being able to name
-    a different target would turn it into a way to type into other agents.
-    Scoped to reflection only — no other service's args are touched. Mutates
+    point: with reflection, naming a different target would turn it into a way to
+    type into other agents, and with `start_other` it would let a session claim any
+    other session as its parent. No other call's args are touched. Mutates
     ``args`` in place (mirrors how the flat/domain shapes already nest it).
+
+    ``X-Awm-Caller-Pid`` is the opt-in second door, for a caller that is *some
+    descendant* of the session rather than the proxy itself — a Claude Code hook,
+    whose own pid names no session and is refused outright otherwise. That pid is
+    walked to the nearest ancestor holding a session record, exactly as the proxy
+    walks its own. It stays a separate header rather than a widening of the first
+    on purpose: running the walk on ``X-Awm-Session-Pid`` would turn its
+    fail-closed refusal (a pid with no record) into a climb to whatever *ancestor*
+    session exists, which for a nested agent is the parent's prompt. Opt-in keeps
+    the walk to callers that asked for it, and the resolved pid is still only a
+    narrowing step — the receiving service re-reads the record and checks it.
+    ``X-Awm-Session-Pid`` wins when both are present.
+
+    A request that carries ``X-Awm-As`` was forwarded by an edge, so a pid header
+    on it names a process on some other host or in some other context. Both pid headers are ignored then, and the value is
+    stripped like any other call without one.
     """
-    if name == "reflection":
-        inner = args.get("args")
-        if not isinstance(inner, dict):
-            inner = {}
-            args["args"] = inner
-    elif name.startswith(_REFLECTION_FLAT_PREFIX):
-        inner = args
-    else:
+    inner = _stamped_bag(name, args)
+    if inner is None:
         return
+    inner.pop("_caller", None)
+    if as_:
+        pid_header = descendant_header = None
     if pid_header and pid_header.isdigit():
         inner["_caller_pid"] = int(pid_header)
+    elif descendant_header and descendant_header.isdigit():
+        inner["_caller_pid"] = mcp_caller.resolve_caller_pid(int(descendant_header))
     else:
         inner.pop("_caller_pid", None)
 
@@ -480,6 +626,186 @@ async def _receive_files(request: Request, spool: str) -> dict:
         return await run_in_threadpool(filehop.unpack_call, body, spool)
     finally:
         os.remove(body)
+
+
+def _svc_stamp(svc: str, headers: Any, as_: str | None) -> Callable[[str, dict], None]:
+    """The `/svc/<svc>/fn/<fn>` door's caller stamp: the one `/invoke` applies.
+
+    The path names the service's internal function, so the stamp is looked up under
+    the name that function is published as. A `_caller_pid` in a request body is
+    never trusted, whichever door the call came through.
+    """
+    def stamp(fn: str, args: dict) -> None:
+        _stamp_caller(catalog.published_name_of(svc, fn), args,
+                      headers.get("X-Awm-Session-Pid"),
+                      headers.get("X-Awm-Caller-Pid"), as_)
+
+    return stamp
+
+
+# ---------------------------------------------------------------------------
+# Session mode gate
+# ---------------------------------------------------------------------------
+# A session started in a restricted mode (the representative, the secretary)
+# may call only the verbs `awm.config.modes` lists for that mode. The gate runs
+# on both doors a session's calls arrive through, `/invoke` and
+# `/svc/<svc>/fn/<fn>`, before dispatch. The calling session is the one the
+# `X-Awm-Session-Pid` / `X-Awm-Caller-Pid` header names, resolved as
+# `_stamp_caller` resolves it. A request that carries `X-Awm-As` came through an
+# edge, where the pid header is not trusted, and is not
+# gated here: the edge gates it by relation and effect. WebSocket, emit and
+# hub-proxied paths carry no pid header and are ungated. That is safe only while
+# a restricted session cannot make a raw HTTP request: its launch tool list holds
+# no Bash or WebFetch, and its policy refuses every awm verb that could (the
+# `rlm` browser, which can fetch from the loopback gateway, is denied by name).
+#
+# The mode is read from disk by `awm.claudedaemon.sessionmode`, the same module
+# cx uses, so no IPC to the cx process is involved. Any failure to establish a
+# mode is `"unknown"`, which `awm.config.modes` restricts hardest.
+
+_MODE_CACHE_TTL_S: float = 5.0
+_MODE_CACHE_MAX: int = 256
+_mode_cache: dict[int, tuple[float, str | None]] = {}
+
+
+def _mode_of_pid(pid: int) -> str | None:
+    """`mode_of` for a pid, remembered for `_MODE_CACHE_TTL_S` seconds."""
+    now = time.monotonic()
+    hit = _mode_cache.get(pid)
+    if hit is not None and now - hit[0] < _MODE_CACHE_TTL_S:
+        return hit[1]
+    try:
+        from awm.claudedaemon import sessionmode
+        mode = sessionmode.mode_of(pid)
+    except Exception as exc:  # noqa: BLE001 — a failed lookup is a restriction
+        log.warning("mode gate: could not look up the mode of pid %s: %s", pid, exc)
+        mode = session_modes.UNKNOWN
+    if len(_mode_cache) >= _MODE_CACHE_MAX:
+        for stale in [p for p, (at, _) in _mode_cache.items()
+                      if now - at >= _MODE_CACHE_TTL_S]:
+            del _mode_cache[stale]
+        if len(_mode_cache) >= _MODE_CACHE_MAX:
+            _mode_cache.clear()
+    _mode_cache[pid] = (now, mode)
+    return mode
+
+
+def _caller_mode(headers: Any, as_: str | None) -> str | None:
+    """The mode of the session making this request, or None when it has none.
+
+    None means the request is not from a session (no pid header, or an edge
+    request) or is from one that is positively not cx-started.
+    """
+    if as_:
+        return None
+    session = headers.get("X-Awm-Session-Pid")
+    descendant = headers.get("X-Awm-Caller-Pid")
+    raw = session or descendant
+    if not raw:
+        return None
+    try:
+        if not (raw.isascii() and raw.isdigit()):
+            return session_modes.UNKNOWN
+        pid = int(raw)
+        if not session:
+            pid = mcp_caller.resolve_caller_pid(pid)
+    except Exception:  # noqa: BLE001
+        return session_modes.UNKNOWN
+    return _mode_of_pid(pid)
+
+
+def _resolve_call(name: str, args: dict) -> tuple[str | None, str | None, str | None, dict, bool]:
+    """What `catalog.dispatch` would run for this call, as the gate sees it.
+
+    Returns `(domain, verb, effect, call_args, flat)`. The target is the one
+    dispatch resolves, not the one the name suggests: a gateway-native op is
+    judged by its tool and verb however it is named, and the
+    effect is the one the verb declares (None when no verb answers to the call).
+    Dispatch takes the domain shape when the args carry a `verb` and the name is
+    a domain; a name it cannot place is read as a domain too, which only makes
+    the answer stricter.
+    """
+    domains = catalog._domain_catalog()
+    flat_native = catalog._GATEWAY_OPS_BY_NAME.get(name)
+    flat_entry = catalog._flat_entries().get(name)
+    if "verb" in args and (name in domains or (flat_native is None and flat_entry is None)):
+        verb = args.get("verb")
+        inner = args.get("args")
+        entry = next((v for v in domains.get(name, []) if v["verb"] == verb), None)
+        return (name, verb if isinstance(verb, str) else None,
+                entry["effect"] if entry else None,
+                inner if isinstance(inner, dict) else {}, False)
+    if flat_native is not None:
+        return flat_native.mcp_tool, flat_native.mcp_verb, flat_native.effect, args, True
+    domain, sep, verb = name.partition("_")
+    if not sep:
+        return None, None, None, args, True
+    return domain, verb, flat_entry["effect"] if flat_entry else None, args, True
+
+
+def _call_refusal(mode: str | None, name: str, args: Any) -> str | None:
+    """Why a session in `mode` may not make this `/invoke` call, or None.
+
+    The call is judged by what dispatch would run (`_resolve_call`), so naming a
+    gateway-native op by its flat name cannot dodge a policy.
+    """
+    if not session_modes.is_restricted(mode):
+        return None
+    if not isinstance(args, dict):
+        return session_modes.refusal(mode, None, None)
+    domain, verb, effect, call_args, flat = _resolve_call(name, args)
+    if flat and verb == "describe":
+        return f"mode {mode!r} may describe a domain only through its domain call"
+    return session_modes.refusal(mode, domain, verb, args.get("peer"),
+                                 effect=effect, call_args=call_args)
+
+
+def _door_refusal(mode: str | None, rec: Any, rel: str) -> str | None:
+    """Why a session in `mode` may not use this `/svc/<svc>/...` path, or None.
+
+    A function is judged by its tool name (`domain_verb`), which a manifest may
+    set apart from the internal function name the path carries, and by the effect
+    it declares. The body is not read here, so a verb that is allowed only for
+    certain arguments is refused. Every other path under a service (sessions,
+    emit streams) is closed to a restricted mode.
+    """
+    if not session_modes.is_restricted(mode):
+        return None
+    if not rel.startswith("/fn/"):
+        return f"mode {mode!r} may use only a service's functions"
+    fn = rel[len("/fn/"):].split("/")[0]
+    tool, effect = f"{rec.name}_{fn}", None
+    for spec in (getattr(rec, "api", None) or {}).get("functions", []) or []:
+        if isinstance(spec, dict) and spec.get("name") == fn:
+            tool, effect = catalog._tool_name(rec, spec), catalog._fn_policy(spec)[0]
+            break
+    domain, sep, verb = tool.partition("_")
+    return session_modes.refusal(mode, domain if sep else None, verb if sep else None,
+                                 effect=effect, call_args=None)
+
+
+_DISCONNECT_POLL_S = 1.0
+
+
+async def _dispatch_while_connected(request: Request, call):
+    """Await ``call``, cancelling it when the HTTP client goes away.
+
+    Cancelling the dispatch reaches the service as a ``cancel`` frame, which
+    kills the subprocesses the call started.
+    """
+    task = asyncio.ensure_future(call)
+    try:
+        while True:
+            done, _ = await asyncio.wait({task}, timeout=_DISCONNECT_POLL_S)
+            if done:
+                return task.result()
+            if await request.is_disconnected():
+                log.info("/invoke: client disconnected; cancelling the call")
+                task.cancel()
+                raise HTTPException(499, "client disconnected")
+    finally:
+        if not task.done():
+            task.cancel()
 
 
 @app.post("/invoke")
@@ -515,14 +841,42 @@ async def invoke_tool(request: Request):
 
 async def _invoke(payload: dict, request: Request):
     name = payload.get("name")
-    args = payload.get("args", {}) or {}
+    args = payload.get("args")
     if not name:
         raise HTTPException(400, "missing 'name' in payload")
+    if not isinstance(name, str):
+        raise HTTPException(400, "'name' must be a string")
+    if args is None:
+        args = {}
     as_ = request.headers.get("X-Awm-As")
-    _stamp_reflection_caller(name, args, request.headers.get("X-Awm-Session-Pid"))
+    mode = None
+    name, args = catalog.resolve_alias(name, args)
+    if isinstance(args, dict):
+        mode = await asyncio.to_thread(_caller_mode, request.headers, as_)
+        reason = _call_refusal(mode, name, args)
+        if reason:
+            log.info("mode gate: refused %s — %s", name, reason)
+            raise HTTPException(403, reason)
+        _stamp_caller(name, args, request.headers.get("X-Awm-Session-Pid"),
+                      request.headers.get("X-Awm-Caller-Pid"), as_)
+    elif not as_:
+        raise HTTPException(400, "'args' must be an object")
+    # An edge-stamped caller with a non-object `args` carries no session to gate
+    # or stamp, and the catalog's own gate answers it (404 for a foreign node).
     try:
-        result = await catalog.dispatch(name, args, as_=as_)
+        result = await _dispatch_while_connected(
+            request, catalog.dispatch(name, args, as_=as_))
     except peer_catalog.PeerRedirect as e:
+        if session_modes.is_restricted(mode):
+            # A gated session may not run a verb on another node, whether it
+            # named the peer or the domain's default provider is one.
+            log.info("mode gate: refused %s — it resolves to a peer", name)
+            raise HTTPException(403, f"mode {mode!r} may not run a verb on a peer")
+        refusal = _session_bound_refusal(e)
+        if refusal:
+            log.info("refused %s.%s on peer %s: it acts on the caller's own session",
+                     e.tool, e.verb, e.peer)
+            raise HTTPException(400, refusal)
         # The call belongs to a peer. The gateway resolves, never relays — so a
         # caller that told us it can dial a peer edge (only `awm-mcp` does, via
         # this header) gets the address back and makes the call itself, keeping
@@ -533,6 +887,8 @@ async def _invoke(payload: dict, request: Request):
         if request.headers.get("X-Awm-Peer-Redirect"):
             return {"peer_redirect": e.payload()}
         raise HTTPException(421, str(e))
+    except catalog.ArgumentError as e:
+        raise HTTPException(400, e.payload)
     except ValueError as e:
         # Unknown tool name -> 404
         raise HTTPException(404, str(e))
@@ -540,6 +896,8 @@ async def _invoke(payload: dict, request: Request):
         raise HTTPException(404, str(e))
     except FileExistsError as e:
         raise HTTPException(409, str(e))
+    except PermissionError as e:
+        raise HTTPException(403, str(e))
     except RuntimeError as e:
         raise HTTPException(500, str(e))
     except Exception as e:  # noqa: BLE001 — surface anything else with class+message
@@ -559,11 +917,11 @@ async def _invoke(payload: dict, request: Request):
         )
     if request.headers.get(filehop.RETURN_FILES_HEADER) and isinstance(result, str):
         if catalog.call_spec(name, args)["returns_files"]:
-            paths = [p for p in filehop.result_paths(result) if os.path.exists(p)]
+            sent = filehop.result_paths(result)
             return StreamingResponse(
-                filehop.iter_result(result, paths),
+                filehop.iter_result(result, sent),
                 media_type=filehop.CONTENT_TYPE,
-                background=BackgroundTask(filehop.remove_sent, paths))
+                background=BackgroundTask(filehop.remove_sent, [p for _, p in sent]))
     return {"result": result}
 
 
@@ -618,14 +976,15 @@ class HubRoutingMiddleware:
         if rec.kind == "service":
             await self._dispatch_service(scope, receive, send, rec, path)
             return
+        strip = rec.prefix if rec.strip_prefix else ""
         if scope["type"] == "http":
             request = Request(scope, receive=receive)
-            response = await proxy_http(request, rec.url)
+            response = await proxy_http(request, rec.url, prefix=strip)
             await response(scope, receive, send)
         else:
             from fastapi import WebSocket as _WS
             ws = _WS(scope, receive=receive, send=send)
-            await proxy_ws(ws, rec.url)
+            await proxy_ws(ws, rec.url, prefix=strip)
 
     async def _dispatch_service(self, scope, receive, send, rec, path):
         """RPC-WS service routing (kind="service"):
@@ -645,7 +1004,7 @@ class HubRoutingMiddleware:
         )
         from fastapi import WebSocket as _WS
         from starlette.datastructures import Headers
-        from starlette.responses import PlainTextResponse
+        from starlette.responses import JSONResponse, PlainTextResponse
 
         rel = path[len(rec.prefix):]
         # Forward the advisory caller identity (the attaching placement's unit
@@ -653,13 +1012,23 @@ class HubRoutingMiddleware:
         # Headers(scope=...) reads the ASGI header list for both http and
         # websocket scopes — the MCP /invoke path reads the same header. Purely
         # advisory: no bearer, no change to the loopback no-auth model.
-        as_ = Headers(scope=scope).get("X-Awm-As")
+        headers = Headers(scope=scope)
+        as_ = headers.get("X-Awm-As")
+
+        stamp = _svc_stamp(rec.name, headers, as_)
 
         if scope["type"] == "http":
             request = Request(scope, receive=receive)
+            mode = await asyncio.to_thread(_caller_mode, headers, as_)
+            reason = _door_refusal(mode, rec, rel)
+            if reason:
+                log.info("mode gate: refused /svc/%s%s — %s", rec.name, rel, reason)
+                response = JSONResponse({"error": reason}, status_code=403)
+                await response(scope, receive, send)
+                return
             if rel.startswith("/fn/"):
                 response = await proxy_service_http(
-                    request, rec.service_id, as_=as_,
+                    request, rec.service_id, as_=as_, stamp=stamp,
                 )
             elif rel.startswith("/session/") and request.method == "POST":
                 response = await open_session_via_http(
@@ -673,7 +1042,7 @@ class HubRoutingMiddleware:
         ws = _WS(scope, receive=receive, send=send)
         if rel.startswith("/session/"):
             sid = rel[len("/session/"):]
-            await proxy_session_ws(ws, rec.service_id, sid)
+            await proxy_session_ws(ws, rec.service_id, sid, as_=as_)
             return
         if rel.startswith("/emit/"):
             topic = rel[len("/emit/"):]
@@ -694,7 +1063,7 @@ def run_server(foreground: bool = True):
     LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
     # Per-workspace env file: merge $AWM_WORKSPACE/.awm/env into os.environ
     # before the probe and before any subprocess we spawn (notably git
-    # clone over SSH from project_create — inbox #236).
+    # clone over SSH from scope_create — inbox #236).
     from awm.config import load_env_file
     load_env_file()
     # Pre-bind probe: if something is already on (HOST, PORT), figure out

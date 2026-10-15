@@ -37,6 +37,23 @@ from typing import Any
 log = logging.getLogger("awm.hub.rpc")
 
 
+#: The argument a service reads a foreign caller's grants from: the archive
+#: source names its peer-book record grants, sorted. Only the gateway sets it.
+GRANTS_ARG = "_grants"
+
+
+def _with_grants(args: Any, grants: frozenset[str] | None) -> Any:
+    """``args`` carrying ``grants`` under :data:`GRANTS_ARG`. A value the caller put
+    there is dropped first, so a call can name its own grants only through the
+    gateway."""
+    if not isinstance(args, dict) or (grants is None and GRANTS_ARG not in args):
+        return args
+    out = {k: v for k, v in args.items() if k != GRANTS_ARG}
+    if grants is not None:
+        out[GRANTS_ARG] = sorted(grants)
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Per-service state
 # ---------------------------------------------------------------------------
@@ -160,16 +177,24 @@ class ControlChannel:
         *,
         as_: str | None = None,
         timeout: float = 30.0,
+        grants: frozenset[str] | None = None,
     ) -> Any:
         call_id = secrets.token_urlsafe(8)
         fut: asyncio.Future = asyncio.get_running_loop().create_future()
         self._pending[call_id] = _Pending(future=fut, fn=fn)
-        env: dict[str, Any] = {"kind": "call", "id": call_id, "fn": fn, "args": args}
+        env: dict[str, Any] = {"kind": "call", "id": call_id, "fn": fn,
+                               "args": _with_grants(args, grants)}
         if as_ is not None:
             env["as"] = as_
         self.enqueue(env)
         try:
             return await asyncio.wait_for(fut, timeout=timeout)
+        except asyncio.CancelledError:
+            # The caller went away. A timeout is not a cancel: work that
+            # outlives its RPC budget still finishes in the service.
+            if fut.cancelled() or not fut.done():
+                self.enqueue({"kind": "cancel", "id": call_id})
+            raise
         finally:
             self._pending.pop(call_id, None)
 
@@ -180,7 +205,8 @@ class ControlChannel:
         *,
         as_: str | None = None,
     ) -> None:
-        env: dict[str, Any] = {"kind": "notify", "fn": fn, "args": args}
+        env: dict[str, Any] = {"kind": "notify", "fn": fn,
+                               "args": _with_grants(args, None)}
         if as_ is not None:
             env["as"] = as_
         self.enqueue(env)
@@ -195,7 +221,9 @@ class ControlChannel:
             pending.future.set_result(env.get("result"))
         else:
             err = env.get("error") or "service reported error"
-            pending.future.set_exception(RpcError(str(err)))
+            exc = RpcError(str(err))
+            exc.error_class = env.get("error_class")
+            pending.future.set_exception(exc)
 
     # -- Emitters ---------------------------------------------------------
 
@@ -336,7 +364,11 @@ class ControlChannel:
 
 
 class RpcError(Exception):
-    """Service-side error or transport failure during a call/session."""
+    """Service-side error or transport failure during a call/session.
+
+    ``error_class`` is the exception class name the service raised, when it said."""
+
+    error_class: str | None = None
 
 
 # ---------------------------------------------------------------------------

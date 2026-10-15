@@ -12,6 +12,9 @@ import typer
 from fastapi import HTTPException, Query
 from mcp.types import Tool
 
+from awm.config import EFFECTS
+from awm.gateway import mcp_http
+
 
 # ---------------------------------------------------------------------------
 # Dataclasses
@@ -73,7 +76,9 @@ class Operation:
     """A declarative operation definition.
 
     ``surfaces`` controls which generated surfaces are emitted for this
-    operation (subset of ``{"cli", "mcp", "http"}``). ``peer_only=True``
+    operation (subset of ``{"cli", "mcp", "http"}``). ``tool`` and ``verb`` name
+    the operation on the MCP surface when that differs from its CLI group and
+    command (the ``awm`` tool folds several CLI groups). ``peer_only=True``
     short-circuits the surfaces to ``{"http"}`` and tags the route so
     callers / generators know it belongs to the peer-facing API (federation
     receivers — auth is per-peer bearer + ``X-Awm-From``, not operator
@@ -94,6 +99,20 @@ class Operation:
     surfaces: frozenset[str] = field(default_factory=lambda: _DEFAULT_SURFACES)
     peer_only: bool = False
     tags: list[str] = field(default_factory=list)
+    effect: str = "write"
+    category: str | None = None
+    tool: str = ""
+    verb: str = ""
+
+    @property
+    def mcp_tool(self) -> str:
+        """The MCP tool this operation is a verb of: ``tool``, else ``cli_group``."""
+        return self.tool or self.cli_group
+
+    @property
+    def mcp_verb(self) -> str:
+        """The verb it answers to inside that tool: ``verb``, else ``cli_command``."""
+        return self.verb or self.cli_command
 
     def __post_init__(self) -> None:
         if self.peer_only:
@@ -106,6 +125,11 @@ class Operation:
         if unknown:
             raise ValueError(
                 f"Operation {self.name!r}: unknown surfaces {sorted(unknown)}"
+            )
+        if self.effect not in EFFECTS:
+            raise ValueError(
+                f"Operation {self.name!r}: unknown effect {self.effect!r} "
+                f"(expected one of {EFFECTS})"
             )
 
 
@@ -526,7 +550,7 @@ def _make_service_cli_handler(tool: dict, api_func: Callable) -> Callable:
         _invoke_dispatch(tool_name, api_func, kwargs)
 
     # A tool's inputSchema lists params in manifest/display order, which is free
-    # to put a required field last (scope_post deliberately puts `body` last so a
+    # to put a required field last (journal_post deliberately puts `body` last so a
     # serialization bleed has no trailing param to corrupt). But an
     # inspect.Signature forbids a no-default parameter after a defaulted one, so
     # build params then stable-sort required-before-optional. Every field is a
@@ -545,10 +569,13 @@ def _invoke_dispatch(tool_name: str, api_func: Callable, kwargs: dict) -> None:
     """Dispatch a service tool through the by-name ``/invoke`` endpoint — the
     same path the MCP proxy uses — dropping unset (``None``) options."""
     args = {k: v for k, v in kwargs.items() if v is not None}
-    # Generous ceiling (not the default 30s): a service verb may declare a longer
-    # per-function timeout the catalog now honors (bulk re-embed / dedup). A fast
-    # verb still returns immediately; this only bounds a hang.
-    r = api_func("POST", "/invoke", json={"name": tool_name, "args": args}, timeout=600)
+    # Ceiling, not budget: a service verb declares its own per-function timeout
+    # and the catalog enforces it server-side, so this only bounds a hang. It
+    # was 600s, which sits *under* the longest declared budget (3600s) and so
+    # truncated `awm scope create` the same way the MCP proxy did. Shared with
+    # the proxies so the two surfaces cannot drift apart again.
+    r = api_func("POST", "/invoke", json={"name": tool_name, "args": args},
+                 timeout=mcp_http.read_timeout())
     _render_invoke_output(r)
 
 

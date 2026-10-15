@@ -75,15 +75,24 @@ class Service:
     with live browser tabs and therefore has to await them."""
 
     def __init__(self, store: Store, checkouts: Checkouts,
-                 emit: Callable[[str, Any], Awaitable[None]] | None = None):
+                 emit: Callable[[str, Any], Awaitable[None]] | None = None,
+                 user: str | None = None):
         self.store = store
         self.checkouts = checkouts
         self._emit = emit
+        # The owning user of a per-user store; None for the legacy store.
+        # Prefixes the emit topic (the public edge admits a subscriber only to
+        # its own user's topics) and the editor's author handle.
+        self.user = user
         self._leases: dict[str, Lease] = {}
         self._merge_locks: dict[str, asyncio.Lock] = {}
         # save -> {tab_id: last_seen}. Populated by the editor session layer.
         self.live_tabs: dict[str, dict[str, float]] = {}
         self._flush_acks: dict[str, set[str]] = {}
+
+    def topic_of(self, save: str) -> str:
+        """The emit topic editor tabs on ``save`` subscribe to."""
+        return f"drawio:{self.user}:{save}" if self.user else f"drawio:{save}"
 
     # --- diagram surface ---------------------------------------------------
 
@@ -441,7 +450,7 @@ class Service:
         if not tabs or self._emit is None:
             return
         self._flush_acks[save] = set()
-        await self._emit(f"drawio:{save}", {"type": "flush", "reason": "merge"})
+        await self._emit(self.topic_of(save), {"type": "flush", "reason": "merge"})
 
         deadline = time.time() + FLUSH_TIMEOUT_S
         while time.time() < deadline:
@@ -456,7 +465,7 @@ class Service:
         """Tell tabs the diagram moved so they reload without a manual refresh."""
         if self._emit is None or not self.live_tabs.get(save):
             return
-        await self._emit(f"drawio:{save}", {
+        await self._emit(self.topic_of(save), {
             "type": "push", "rev": self.store.head_rev(save),
         })
 
@@ -496,7 +505,8 @@ class Service:
                     "note": "the diagram moved since you loaded it; reconcile "
                             "against the current revision and retry"}
 
-        result = self.store.write(path, xml, author=f"editor:{tab_id}")
+        author = f"user:{self.user}/editor:{tab_id}" if self.user else f"editor:{tab_id}"
+        result = self.store.write(path, xml, author=author)
         result["accepted"] = True
         return result
 

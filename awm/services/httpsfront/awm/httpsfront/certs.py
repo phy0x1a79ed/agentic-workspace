@@ -6,11 +6,15 @@ mints a local root CA (long-lived) and a leaf server cert signed by it (<=397
 days, the mobile cap), with the host's IPs in the SAN set.
 
 **Trust reuse:** the CA lives at ``~/.config/remote-audio/ca`` (override with
-``REMOTE_AUDIO_CA_DIR``) — the SAME root the ``mic`` service and remote-audio
-already use — so a device that already trusts that root needs no new setup. The
-root is never re-minted once it exists; only the leaf rotates. This is a
-copy of ``awm.mic.certs`` so the service is self-contained while sharing the
-trust root.
+``REMOTE_AUDIO_CA_DIR``) — the SAME root remote-audio already uses — so a device
+that already trusts that root needs no new setup. The root is never re-minted
+once it exists; only the leaf rotates.
+
+This is the only copy of this code in awm, and ``tests/test_single_cert_module``
+keeps it that way. ``mic`` carried a near-copy while it ran its own off-host
+listener; the two diverged on the trust-consumer predicate below, and mic — which
+is enabled by default on every node — could win the boot race and put a signing
+key back before this module's guard ever ran.
 
 **Trust consumers:** a fleet node is given ``ca.pem`` and deliberately *not*
 ``ca-key.pem``, so it can verify its peers but cannot mint for the fleet. There

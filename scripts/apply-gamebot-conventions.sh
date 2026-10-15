@@ -3,15 +3,15 @@
 # apply-gamebot-conventions.sh — STAGED cross-scope convention change for the gamebot effort.
 #
 # This script is PREPARED, not yet applied. It makes two edits to SHARED docs:
-#   1. WORKSPACE.md  — adds the `rlm-*` realm-service prefix row to the scope-naming table.
+#   1. PROTOCOLS.md  — adds the `rlm-*` realm-service prefix row to the scope-naming table.
 #   2. WEB_GAMES_ON_AWM.md — appends a dated "deduped scope set" section that supersedes
 #      its original Scope-roadmap + Open-questions (agent-runner -> agents service,
 #      svc-timer -> svc-events, svc-realm-browser -> rlm-browser; composition-first kept).
 #
 # >>> RUN ONLY WHEN OTHER AGENTS ARE PAUSED. <<<
 # Both targets are shared/active files:
-#   - WORKSPACE.md is read by EVERY scope agent from the RELEASE worktree
-#     ($WS_ROOT/WORKSPACE.md). Editing it dirties that worktree; once paused, commit it
+#   - PROTOCOLS.md is the shared copy in the RELEASE worktree
+#     ($WS_ROOT/PROTOCOLS.md). Editing it dirties that worktree; once paused, commit it
 #     on release (or merge feat -> dev -> release) so all scopes pick up the convention.
 #   - WEB_GAMES_ON_AWM.md lives in the game-bot project — commit it there separately.
 #
@@ -25,7 +25,7 @@
 set -euo pipefail
 
 WS_ROOT="${AWM_WORKSPACE_ROOT:-/home/tony/agentic_workspace}"
-WORKSPACE_MD="$WS_ROOT/WORKSPACE.md"
+PROTOCOLS_MD="$WS_ROOT/PROTOCOLS.md"
 SPEC_MD="$WS_ROOT/projects/game-bot/web/WEB_GAMES_ON_AWM.md"
 
 DRY_RUN=0
@@ -33,24 +33,24 @@ DRY_RUN=0
 
 note() { printf '[conventions] %s\n' "$*"; }
 
-# --- 1. WORKSPACE.md: insert the rlm-* row right after the svc-* row -------------
+# --- 1. PROTOCOLS.md: insert the rlm-* row right after the svc-* row -------------
 add_rlm_prefix_row() {
-  [[ -f "$WORKSPACE_MD" ]] || { note "SKIP: $WORKSPACE_MD not found"; return; }
-  if grep -qE '^\| `rlm-\*`' "$WORKSPACE_MD"; then
-    note "WORKSPACE.md: rlm-* row already present — no-op"; return
+  [[ -f "$PROTOCOLS_MD" ]] || { note "SKIP: $PROTOCOLS_MD not found"; return; }
+  if grep -qE '^\| `rlm-\*`' "$PROTOCOLS_MD"; then
+    note "PROTOCOLS.md: rlm-* row already present — no-op"; return
   fi
-  if ! grep -qE '^\| `svc-\*`' "$WORKSPACE_MD"; then
-    note "WARN: svc-* anchor row not found in $WORKSPACE_MD — not editing"; return
+  if ! grep -qE '^\| `svc-\*`' "$PROTOCOLS_MD"; then
+    note "WARN: svc-* anchor row not found in $PROTOCOLS_MD — not editing"; return
   fi
   local row='| `rlm-*`  | realm     | A substrate **realm** service wrapping one execution substrate (browser/android/direct) behind the realm-family contract. Lives in `awm/services/rlm-<type>/`. |'
   if [[ $DRY_RUN == 1 ]]; then
-    note "DRY-RUN: would insert the rlm-* row after the svc-* row in WORKSPACE.md"; return
+    note "DRY-RUN: would insert the rlm-* row after the svc-* row in PROTOCOLS.md"; return
   fi
   awk -v row="$row" '
     { print }
     /^\| `svc-\*`/ && !done { print row; done=1 }
-  ' "$WORKSPACE_MD" > "$WORKSPACE_MD.tmp" && mv "$WORKSPACE_MD.tmp" "$WORKSPACE_MD"
-  note "WORKSPACE.md: inserted rlm-* row"
+  ' "$PROTOCOLS_MD" > "$PROTOCOLS_MD.tmp" && mv "$PROTOCOLS_MD.tmp" "$PROTOCOLS_MD"
+  note "PROTOCOLS.md: inserted rlm-* row"
 }
 
 # --- 2. WEB_GAMES_ON_AWM.md: append the deduped-scope-set update -----------------
@@ -84,4 +84,4 @@ add_rlm_prefix_row
 append_spec_update
 note "done."
 [[ $DRY_RUN == 1 ]] && note "(dry-run — nothing was modified)"
-note "Reminder: commit WORKSPACE.md on release (or merge feat→dev→release) and WEB_GAMES_ON_AWM.md in game-bot — ONLY while agents are paused."
+note "Reminder: commit PROTOCOLS.md on release (or merge feat→dev→release) and WEB_GAMES_ON_AWM.md in game-bot — ONLY while agents are paused."

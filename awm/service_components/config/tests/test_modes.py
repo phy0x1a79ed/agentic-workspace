@@ -1,0 +1,244 @@
+"""The session mode policies and the refusal decision."""
+
+from __future__ import annotations
+
+import pytest
+
+from awm.config import modes
+from awm.config.modes import MODES, refusal
+
+
+HOOK_VERBS = {f"operations.{v}" for v in (
+    "hook_plan", "hook_plan_approved", "hook_todos", "hook_prompt", "hook_session_clear",
+    "task_claim", "request_human")}
+
+
+SEARCH_VERBS = {f"search.{v}" for v in ("query", "get", "sources", "status")}
+
+
+def allowed(mode):
+    return {f"{d}.{v}" for d, v in MODES[mode].pairs}
+
+
+def test_the_representative_allowlist_is_exactly_its_verbs():
+    assert allowed("representative") == {
+        "operations.board_list", "operations.board_get", "operations.board_fail",
+        "operations.board_messages",
+        "reflection.start_other", "reflection.list_other",
+        "reflection.compact", "reflection.whoami",
+        "operations.status", "operations.queue_list", "operations.queue_get",
+        "operations.queue_assign", *HOOK_VERBS,
+        "journal.fetch", "journal.goal_read", "journal.goal_history",
+        "scope.search", "scope.resolve", *SEARCH_VERBS,
+    }
+
+
+def test_the_secretary_allowlist_is_exactly_its_verbs():
+    assert allowed("secretary") == {
+        "reflection.start_other", "reflection.list_other", "reflection.stop_other",
+        "operations.board_list", "operations.board_get", "operations.board_messages",
+        "operations.status", "operations.queue_list", "operations.queue_get", *HOOK_VERBS,
+        "reflection.compact", "reflection.whoami", "journal.fetch", "journal.goal_read",
+        "journal.goal_history", "scope.search", "scope.resolve", *SEARCH_VERBS,
+    }
+
+
+def test_the_representative_never_claims_completes_or_posts():
+    for verb in ("operations.board_post", "operations.board_claim",
+                 "operations.board_complete", "operations.board_message_post",
+                 "journal.render"):
+        assert verb not in allowed("representative")
+        assert verb not in allowed("secretary")
+
+
+def test_the_unknown_mode_admits_only_reflection():
+    assert {d for d, _ in MODES[modes.UNKNOWN].pairs} == {"reflection"}
+    assert "reflection.mode" not in allowed(modes.UNKNOWN)
+
+
+def test_no_allow_mode_can_change_its_own_permission_mode_or_send_text():
+    for mode, policy in MODES.items():
+        if isinstance(policy, modes.Allow):
+            assert "reflection.mode" not in allowed(mode)
+            assert "reflection.message_self" not in allowed(mode)
+        else:
+            assert policy.effects == {"read"}
+
+
+def test_the_secretary_never_writes_to_the_board_or_the_queue():
+    writes = {"operations.board_post", "operations.board_claim",
+              "operations.board_complete", "operations.board_fail",
+              "operations.board_message_post", "operations.queue_assign"}
+    assert not writes & allowed("secretary")
+
+
+def test_only_listed_modes_are_restricted():
+    for mode in ("representative", "secretary", "delegate", "unknown"):
+        assert modes.is_restricted(mode)
+    assert not modes.is_restricted(None)
+    assert not modes.is_restricted("worker")
+
+
+def test_an_unrestricted_mode_has_no_refusal():
+    assert refusal(None, "ssh", "connect") is None
+    assert refusal("worker", "journal", "post", "capella") is None
+
+
+def test_an_allowed_pair_passes_and_others_are_refused():
+    assert refusal("representative", "operations", "board_list") is None
+    assert "operations.party_add" in refusal("representative", "operations", "party_add")
+    assert refusal("secretary", "reflection", "stop_other") is None
+    assert refusal("representative", "reflection", "stop_other") is not None
+
+
+@pytest.mark.parametrize("mode", ["representative", "delegate"])
+@pytest.mark.parametrize("domain,verb", [(None, "list"), ("operations", None), ("", "list"),
+                                         ("operations", ""), ("operations", 3), (4, "list")])
+def test_a_call_without_a_domain_and_verb_is_refused(mode, domain, verb):
+    assert refusal(mode, domain, verb) is not None
+
+
+@pytest.mark.parametrize("mode", ["representative", "delegate", "unknown"])
+def test_a_peer_is_refused_even_for_an_allowed_verb(mode):
+    domain, verb = ("reflection", "compact") if mode == "unknown" else ("operations", "board_list")
+    assert "peer" in refusal(mode, domain, verb, "capella")
+
+
+def test_describe_needs_a_domain_the_mode_can_use():
+    assert refusal("representative", "operations", "describe") is None
+    assert refusal("representative", "ssh", "describe") is not None
+    assert refusal("representative", "operations", "describe", "capella") is not None
+
+
+# --- the delegate: an effect-based mode ---------------------------------------
+
+
+def delegate(domain, verb, effect, call_args=None, peer=None):
+    return refusal("delegate", domain, verb, peer, effect=effect, call_args=call_args)
+
+
+@pytest.mark.parametrize("domain,verb", [("kb", "search"), ("reflection", "list_other"),
+                                         ("journal", "fetch"), ("transcripts", "search")])
+def test_a_delegate_may_call_a_verb_that_declares_read(domain, verb):
+    assert delegate(domain, verb, "read") is None
+
+
+@pytest.mark.parametrize("effect", ["write", "queue", "secret", None])
+@pytest.mark.parametrize("domain,verb", [("journal", "post"), ("reflection", "start_other"),
+                                         ("reflection", "stop_other"),
+                                         ("kb", "add"), ("notes", "write"),
+                                         ("precedence", "record"), ("scope", "sync"),
+                                         ("reflection", "message_self")])
+def test_a_delegate_is_refused_every_other_effect_and_an_undeclared_one(domain, verb, effect):
+    assert delegate(domain, verb, effect) is not None
+
+
+def test_a_secret_effect_is_refused_even_when_a_verb_is_otherwise_a_read():
+    assert delegate("auth", "token", "secret") is not None
+
+
+@pytest.mark.parametrize("verb", ["cdp", "open", "run"])
+@pytest.mark.parametrize("domain", ["browser", "factorio"])
+def test_the_whole_browser_domain_is_refused_whatever_it_declares(domain, verb):
+    for effect in ("read", "write", None):
+        assert delegate(domain, verb, effect) is not None
+
+
+def test_the_card_ledger_is_refused_even_though_its_verbs_are_reads():
+    for verb in ("status", "queue_list", "queue_get"):
+        assert delegate("operations", verb, "read") is not None
+    assert delegate("operations", "queue_assign", "write") is not None
+    assert delegate("operations", "ops_post", "write") is not None
+    assert delegate("operations", "board_ensure", "write") is not None
+
+
+def test_every_mode_but_unknown_may_report():
+    for mode in ("representative", "secretary", "delegate"):
+        for verb in HOOK_VERBS:
+            domain, name = verb.split(".")
+            assert refusal(mode, domain, name, effect="write") is None, (mode, verb)
+    for verb in HOOK_VERBS:
+        domain, name = verb.split(".")
+        assert refusal(modes.UNKNOWN, domain, name, effect="write") is not None
+
+
+def test_a_delegate_finishes_a_card_and_reads_the_board():
+    for verb in ("board_get", "board_list", "board_complete", "board_fail",
+                 "board_message_post", "board_messages"):
+        assert delegate("operations", verb, "queue") is None
+        assert delegate("operations", verb, None) is None
+    assert delegate("operations", "board_claim", "queue") is not None
+    assert delegate("operations", "party_list", "read") is not None
+    assert delegate("operations", "party_add", "secret") is not None
+
+
+def test_a_delegate_may_compact_and_identify_itself_but_not_send_or_change_mode():
+    for verb in ("compact", "whoami"):
+        assert delegate("reflection", verb, None) is None
+        assert delegate("reflection", verb, "write") is None
+    for verb in ("message_self", "mode", "pending"):
+        assert delegate("reflection", verb, None) is not None
+        assert delegate("reflection", verb, "write") is not None
+    assert delegate("reflection", "compact", None, peer="capella") is not None
+
+
+def test_a_delegate_posts_only_a_reply_message():
+    reply = {"kind": "message", "reply_to": "a" * 32, "title": "t", "body": "b"}
+    assert delegate("operations", "board_post", "queue", reply) is None
+    for bad in ({"kind": "request", "reply_to": "a" * 32}, {"kind": "message"},
+                {"kind": "message", "reply_to": ""}, {"kind": "message", "reply_to": 7},
+                {"reply_to": "a" * 32}, {}):
+        assert delegate("operations", "board_post", "queue", bad) is not None, bad
+    assert delegate("operations", "board_post", "queue", None) is not None
+
+
+@pytest.mark.parametrize("domain,verb", [("kb", "search"), ("operations", "board_complete")])
+def test_a_delegate_may_not_name_a_peer(domain, verb):
+    assert "peer" in delegate(domain, verb, "read", peer="capella")
+
+
+def test_a_delegate_may_describe_every_domain_but_the_denied_ones():
+    assert refusal("delegate", "operations", "describe") is None
+    assert refusal("delegate", "reflection", "describe") is None
+    assert refusal("delegate", "browser", "describe") is not None
+    assert refusal("delegate", "factorio", "describe") is not None
+
+
+def test_the_effect_policy_admits_and_denies_as_declared():
+    policy = modes.ByEffect(
+        effects=frozenset({"read"}), denied_domains=frozenset({"a"}),
+        denied_pairs=frozenset({("b", "x")}), pairs=frozenset({("c", "w")}),
+        when={("d", "v"): lambda a: a.get("ok") is True})
+    assert policy.admits("e", "r", "read", None) and not policy.admits("e", "r", "write", None)
+    assert not policy.admits("a", "r", "read", None)
+    assert not policy.admits("b", "x", "read", None) and policy.admits("b", "y", "read", None)
+    assert policy.admits("c", "w", "write", None)
+    assert policy.admits("d", "v", "write", {"ok": True})
+    assert not policy.admits("d", "v", "read", {"ok": False})
+
+
+def test_reserved_names_and_modes():
+    assert {"representative", "secretary", "delegate"} == set(modes.RESERVED_MODES)
+    assert {"representative", "secretary"} == set(modes.RESERVED_NAMES)
+
+
+def test_only_the_representative_delegates():
+    assert {"representative"} == set(modes.DELEGATING_MODES)
+
+
+def test_search_reads_reach_every_restricted_mode_but_unknown_and_reindex_none():
+    for mode in ("representative", "secretary", "delegate"):
+        for verb in SEARCH_VERBS:
+            domain, name = verb.split(".")
+            assert refusal(mode, domain, name, effect="read") is None, (mode, verb)
+        assert refusal(mode, "search", "reindex", effect="write") is not None
+    assert SEARCH_VERBS <= {f"{d}.{v}" for d, v in MODES["delegate"].pairs}
+    for verb in SEARCH_VERBS:
+        domain, name = verb.split(".")
+        assert refusal(modes.UNKNOWN, domain, name, effect="read") is not None
+
+
+def test_a_delegate_reaches_search_even_when_a_verb_declares_no_effect():
+    assert delegate("search", "query", None) is None
+    assert delegate("search", "reindex", None) is not None
+    assert delegate("search", "query", "read", peer="capella") is not None

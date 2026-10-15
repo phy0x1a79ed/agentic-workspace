@@ -116,12 +116,29 @@ class TestCodec:
         assert _tree(p1) == {os.path.join("x", "deep.bin"): b"\x00" * 1000}
         assert out["dir"] == str(dest) and out["count"] == 2
 
+    def test_unsent_file_keeps_its_index_and_loses_its_path(self, tmp_path):
+        b = tmp_path / "b.txt"
+        b.write_bytes(b"second")
+        result = json.dumps({"files": [{"path": "/etc/hostname"},
+                                       {"path": str(tmp_path / "gone.txt")},
+                                       {"path": str(b)}]})
+        sent = filehop.result_paths(result)
+        assert sent == [(2, str(b))]
+        tar_path = tmp_path / "r.tar"
+        tar_path.write_bytes(b"".join(filehop.iter_result(result, sent)))
+        dest = tmp_path / "local"
+        dest.mkdir()
+        out = json.loads(filehop.unpack_result(str(tar_path), str(dest)))["files"]
+        assert out[0]["path"] is None and out[0]["remote_path"] == "/etc/hostname"
+        assert out[1]["path"] is None and "error" in out[1]
+        assert open(out[2]["path"], "rb").read() == b"second"
+
     def test_single_file_result_dir_is_its_folder(self, tmp_path):
         a = tmp_path / "a.txt"
         a.write_bytes(b"x")
         result = json.dumps({"files": [{"path": str(a)}], "dir": str(tmp_path)})
         tar_path = tmp_path / "r.tar"
-        tar_path.write_bytes(b"".join(filehop.iter_result(result, [str(a)])))
+        tar_path.write_bytes(b"".join(filehop.iter_result(result, [(0, str(a))])))
         dest = tmp_path / "local"
         dest.mkdir()
         out = json.loads(filehop.unpack_result(str(tar_path), str(dest)))
@@ -257,95 +274,101 @@ class TestInvoke:
 
 @pytest.fixture()
 def proxy_to(monkeypatch, gateway):
-    """Point awm-mcp's peer client at the gateway app in-process."""
+    """Point the proxies' peer client (``peer_files``) at the gateway app."""
+    from starlette.testclient import TestClient
+
     from awm import gatewayclient
-    from awm.gateway import mcp_server
+    from awm.gateway import peer_files
 
     app = gateway[0]
-    real = httpx.AsyncClient
     sent: list = []
 
-    def client(*a, **kw):
-        kw.pop("verify", None)
-        transport = httpx.ASGITransport(app=app)
+    class Client(TestClient):
+        def __init__(self, *a, **kw):
+            super().__init__(app, base_url="https://mira:1")
 
-        async def record(request):
+        def send(self, request, **kw):
             sent.append(request)
+            return super().send(request, **kw)
 
-        return real(*a, transport=transport, event_hooks={"request": [record]}, **kw)
-
-    monkeypatch.setattr(mcp_server.httpx, "AsyncClient", client)
-    monkeypatch.setattr(gatewayclient, "fetch_peer_cred", lambda alias, force=False: "tok")
+    monkeypatch.setattr(httpx, "Client", Client)
+    monkeypatch.setattr(gatewayclient, "peer_send_sync", lambda peer, entry, send: send("tok"))
     monkeypatch.setattr(gatewayclient, "_peer_ca", lambda: None)
-    mcp_server._spec_cache.clear()
-    return mcp_server, sent, gateway
+    peer_files._spec_cache.clear()
+    return peer_files, sent, gateway
+
+
+_MIRA = {"edge_url": "https://mira:1", "ssh_alias": "mira"}
 
 
 class TestProxy:
-    async def _describe_ok(self, monkeypatch, gateway, schema):
+    def _describe_ok(self, monkeypatch, params, returns_files=False):
         from awm.gateway import catalog
 
         async def dispatch(name, args, as_=None, _orig=catalog.dispatch):
             if args.get("verb") == "describe":
-                return json.dumps({"domain": name, "verbs": [
-                    {"verb": args["args"]["verb"], "params": schema}]})
+                verb = {"verb": args["args"]["verb"], "params": params}
+                if returns_files:
+                    verb["returns_files"] = True
+                return json.dumps({"domain": name, "verbs": [verb]})
             return await _orig(name, args, as_)
         monkeypatch.setattr(catalog, "dispatch", dispatch)
 
-    async def test_put_sends_local_file_in_one_call(self, proxy_to, monkeypatch, tmp_path):
-        mcp_server, sent, gateway = proxy_to
-        await self._describe_ok(monkeypatch, gateway, {"properties": {
-            "src": {"type": "string", filehop.FILE_KEY: "in"}}, filehop.TIMEOUT_KEY: 3600})
+    def test_put_sends_local_file_in_one_call(self, proxy_to, monkeypatch, tmp_path):
+        peer_files, sent, gateway = proxy_to
+        self._describe_ok(monkeypatch, {"src": {"file": "in"}})
         f = tmp_path / "local.bin"
         f.write_bytes(b"from-altair")
-        out = await mcp_server._peer_invoke(
-            "mira", "social", {"verb": "bucket_put", "args": {"src": str(f), "path": "p"}},
-            None, entry={"edge_url": "https://mira:1", "ssh_alias": "mira"})
-        assert "result" in out
+        resp = peer_files.invoke_with_files(
+            "mira", _MIRA, _domain_call(src=str(f), path="p"), None)
+        assert resp.status_code == 200 and "result" in resp.json()
         assert gateway[1][-1]["content"] == b"from-altair"
         assert sent[-1].headers["content-type"] == filehop.CONTENT_TYPE
         assert filehop.RETURN_FILES_HEADER.lower() not in sent[-1].headers
 
-    async def test_get_brings_files_back_local(self, proxy_to, monkeypatch):
-        mcp_server, _sent, gateway = proxy_to
-        await self._describe_ok(monkeypatch, gateway, {"properties": {},
-                                                       filehop.RETURNS_KEY: True})
+    def test_get_brings_files_back_local(self, proxy_to, monkeypatch):
+        peer_files, _sent, gateway = proxy_to
+        self._describe_ok(monkeypatch, {"path": {}}, returns_files=True)
         d = tempfile.mkdtemp(prefix="awm-social-")
         far = os.path.join(d, "far.bin")
         with open(far, "wb") as fh:
             fh.write(b"from-mira")
         gateway[2]["result_files"] = [far]
-        out = await mcp_server._peer_invoke(
-            "mira", "social", {"verb": "bucket_get", "args": {"path": "p"}},
-            None, entry={"edge_url": "https://mira:1", "ssh_alias": "mira"})
-        local = json.loads(out["result"])["files"][0]["path"]
+        resp = peer_files.invoke_with_files(
+            "mira", _MIRA, {"name": "social",
+                            "args": {"verb": "bucket_get", "args": {"path": "p"}}}, None)
+        local = json.loads(resp.json()["result"])["files"][0]["path"]
         assert local != far and open(local, "rb").read() == b"from-mira"
         assert os.path.basename(local) == "far.bin"
         filehop.remove_sent([local])
 
-    async def test_verb_without_files_stays_json(self, proxy_to, monkeypatch):
-        mcp_server, sent, gateway = proxy_to
-        await self._describe_ok(monkeypatch, gateway, {"properties": {
-            "path": {"type": "string"}}})
-        await mcp_server._peer_invoke(
-            "mira", "social", {"verb": "bucket_ls", "args": {"path": "p"}},
-            None, entry={"edge_url": "https://mira:1", "ssh_alias": "mira"})
-        assert sent[-1].headers["content-type"] == "application/json"
+    def test_verb_without_files_is_left_to_plain_json(self, proxy_to, monkeypatch):
+        peer_files, sent, _gateway = proxy_to
+        self._describe_ok(monkeypatch, {"path": {}})
+        call = {"name": "social", "args": {"verb": "bucket_ls", "args": {"path": "p"}}}
+        assert peer_files.invoke_with_files("mira", _MIRA, call, None) is None
         # the spec is cached: a second call does not describe again
         n = len(sent)
-        await mcp_server._peer_invoke(
-            "mira", "social", {"verb": "bucket_ls", "args": {"path": "p"}},
-            None, entry={"edge_url": "https://mira:1", "ssh_alias": "mira"})
-        assert len(sent) == n + 1
+        assert peer_files.invoke_with_files("mira", _MIRA, call, None) is None
+        assert len(sent) == n
 
-    async def test_old_peer_without_markers_gets_plain_json(self, proxy_to, monkeypatch, tmp_path):
-        mcp_server, sent, gateway = proxy_to
-        await self._describe_ok(monkeypatch, gateway, {"properties": {
-            "src": {"type": "string"}}})
+    def test_old_peer_without_markers_is_left_to_plain_json(self, proxy_to, monkeypatch,
+                                                          tmp_path):
+        peer_files, _sent, _gateway = proxy_to
+        self._describe_ok(monkeypatch, {"src": {}})
         f = tmp_path / "local.bin"
         f.write_bytes(b"x")
-        await mcp_server._peer_invoke(
-            "mira", "social", {"verb": "bucket_put", "args": {"src": str(f)}},
-            None, entry={"edge_url": "https://mira:1", "ssh_alias": "mira"})
-        assert sent[-1].headers["content-type"] == "application/json"
-        assert gateway[1][-1]["args"]["args"]["src"] == str(f)
+        assert peer_files.invoke_with_files(
+            "mira", _MIRA, _domain_call(src=str(f)), None) is None
+
+    def test_describe_carries_the_markers(self):
+        from mcp.types import Tool
+
+        from awm.gateway.catalog import _describe_verb
+
+        tool = Tool(name="social_bucket_put", description="", inputSchema={
+            "type": "object", filehop.RETURNS_KEY: True,
+            "properties": {"src": {"type": "string", filehop.FILE_KEY: "in"},
+                           "path": {"type": "string"}}})
+        out = filehop.spec_from_describe(_describe_verb("bucket_put", tool))
+        assert out["file_params"] == ["src"] and out["returns_files"] is True

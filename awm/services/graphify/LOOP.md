@@ -27,7 +27,7 @@ judgment call.
   Keep `.graphifyignore` doc-exclusion + `_LLM_KEY_VARS` stripping intact. Any
   change touching the build path must preserve "build with no API key works".
 - **awm data rules**: raw data immutable; write outputs under `.awm/data/`;
-  never hand-edit `.awm/history.md` or `.awm/artifacts.md`.
+  never hand-edit `.awm/history.md`.
 
 ## Delegate to sonnet subagents (preserve orchestrator context)
 

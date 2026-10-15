@@ -46,11 +46,16 @@ _TARGET_PARAM = {
     "description": "Source tree to index (default: the awm tree this service runs in).",
 }
 
+# Operator verbs keep working on the CLI and over HTTP but are not agent tools.
+_CLI_HTTP = ["cli", "http"]
+
 API_MANIFEST: dict[str, Any] = {
     "functions": [
         {
             "name": "build",
+            "effect": "write",
             "tool": "graphify_build",
+            "surfaces": _CLI_HTTP,
             "description": (
                 "Build or refresh the knowledge graph of the awm source tree "
                 "(AST-only, local, no API key). Incremental across runs. Returns "
@@ -62,6 +67,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "status",
+            "effect": "read",
             "tool": "graphify_status",
             "description": (
                 "Report whether a graph has been built for the target tree, with "
@@ -73,6 +79,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "query",
+            "effect": "read",
             "tool": "graphify_query",
             "description": (
                 "Ask a natural-language question about the codebase; runs a BFS "
@@ -105,6 +112,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "path",
+            "effect": "read",
             "tool": "graphify_path",
             "description": (
                 "Find the shortest path between two node labels in the graph "
@@ -120,6 +128,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "explain",
+            "effect": "read",
             "tool": "graphify_explain",
             "description": (
                 "Plain-language explanation of a node — its type, community, "
@@ -139,6 +148,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "affected",
+            "effect": "read",
             "tool": "graphify_affected",
             "description": (
                 "Transitive impact of changing a node — reverse traversal to "
@@ -170,6 +180,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "find",
+            "effect": "read",
             "tool": "graphify_find",
             "description": (
                 "Search for nodes by label (case-insensitive substring). Returns "
@@ -194,6 +205,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "refs",
+            "effect": "read",
             "tool": "graphify_refs",
             "description": (
                 "Find callers, callees, and importers of a node. "

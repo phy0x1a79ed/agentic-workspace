@@ -19,11 +19,15 @@ from __future__ import annotations
 
 import difflib
 import json
+import logging
+import re
 import sqlite3
 from pathlib import Path
 from typing import Any
 
 from . import config, db, index
+
+log = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -60,8 +64,7 @@ def _meta(conn: sqlite3.Connection, sid: str, *, score: float | None = None,
 # ---------------------------------------------------------------------------
 
 
-def _filtered_ids(
-    conn: sqlite3.Connection,
+def _filter_sql(
     *,
     type: str | None = None,
     tag: list[str] | None = None,
@@ -69,7 +72,8 @@ def _filtered_ids(
     min_words: int | None = None,
     grade: str | None = None,
     include_dups: bool = False,
-) -> list[str]:
+) -> tuple[str, list[Any]]:
+    """The metadata filters as a ``WHERE`` clause over ``samples s``, and its params."""
     where: list[str] = []
     params: list[Any] = []
     if not include_dups:
@@ -92,7 +96,11 @@ def _filtered_ids(
             "EXISTS (SELECT 1 FROM tags t WHERE t.sample_id=s.id AND t.facet=? AND t.value=?)"
         )
         params.extend([facet, value])
-    clause = (" WHERE " + " AND ".join(where)) if where else ""
+    return (" WHERE " + " AND ".join(where)) if where else "", params
+
+
+def _filtered_ids(conn: sqlite3.Connection, **filters: Any) -> list[str]:
+    clause, params = _filter_sql(**filters)
     rows = conn.execute(
         f"SELECT s.id FROM samples s{clause} ORDER BY s.created", params
     ).fetchall()
@@ -100,9 +108,13 @@ def _filtered_ids(
 
 
 def _keyword_ids(conn: sqlite3.Connection, query: str) -> list[str]:
+    """Samples containing every word of ``query``, by BM25; punctuation is inert."""
+    match = " ".join(f'"{t}"' for t in re.findall(r"\w+", query.lower()))
+    if not match:
+        return []
     rows = conn.execute(
         "SELECT sample_id FROM samples_fts WHERE samples_fts MATCH ? ORDER BY rank",
-        (query,),
+        (match,),
     ).fetchall()
     return [r["sample_id"] for r in rows]
 
@@ -123,42 +135,64 @@ def search(
     """Keyword / semantic / hybrid search with AND-ed metadata + tag filters.
 
     - ``query`` only → FTS5 keyword (BM25 rank).
-    - ``semantic`` only → cosine kNN over the corpus embeddings.
-    - both → hybrid: filtered keyword hits first, then a semantic top-up (>0.3).
+    - ``semantic`` only → ranked by meaning and keywords over each sample's full text.
+    - both → hybrid: filtered keyword hits first, then the ``semantic`` ranking.
     - neither → most-recent-first listing.
     Duplicates excluded unless ``include_dups``.
+
+    If the semantic stack isn't installed on this node the semantic leg is
+    dropped and the payload carries a ``degraded`` block: a semantic-only search
+    falls back to keyword over the same string (and to a listing if that finds
+    nothing), so the caller gets real samples plus an explicit "could not rank
+    by meaning" rather than a confident empty result.
     """
-    allowed = _filtered_ids(
-        conn, type=type, tag=tag, after=after, min_words=min_words,
-        grade=grade, include_dups=include_dups,
-    )
+    filters = dict(type=type, tag=tag, after=after, min_words=min_words,
+                   grade=grade, include_dups=include_dups)
+    allowed = _filtered_ids(conn, **filters)
     allowed_set = set(allowed)
+    clause, params = _filter_sql(**filters)
+    allowed_sql = f"SELECT s.id FROM samples s{clause}"
 
     ordered: list[tuple[str, float | None]] = []
+    degraded: dict[str, Any] | None = None
     if query and semantic:
         kw = [i for i in _keyword_ids(conn, query) if i in allowed_set]
         ordered = [(i, None) for i in kw]
         seen = set(kw)
-        for h in index.search_semantic(conn, semantic, limit=200):
-            sid = h["source_id"]
-            if sid in seen or sid not in allowed_set or h["score"] <= 0.3:
-                continue
-            ordered.append((sid, h["score"]))
-            seen.add(sid)
+        try:
+            hits = index.search_semantic(conn, semantic, limit=int(k),
+                                         allowed=allowed_sql, params=tuple(params))
+        except index.EmbeddingsUnavailable:
+            # The keyword leg already produced results; just say the top-up
+            # didn't happen.
+            degraded, hits = index.degraded_marker("writing", fallback="keyword"), []
+        for h in hits:
+            if h["source_id"] not in seen:
+                ordered.append((h["source_id"], h["score"]))
+                seen.add(h["source_id"])
     elif semantic:
-        scored = {h["source_id"]: h["score"]
-                  for h in index.search_semantic(conn, semantic, limit=300)}
-        ranked = sorted(((i, scored[i]) for i in allowed if i in scored),
-                        key=lambda t: t[1], reverse=True)
-        ordered = [(i, s) for i, s in ranked]
+        try:
+            ordered = [(h["source_id"], h["score"]) for h in index.search_semantic(
+                conn, semantic, limit=int(k), allowed=allowed_sql, params=tuple(params))]
+        except index.EmbeddingsUnavailable:
+            ordered = [(i, None) for i in _keyword_ids(conn, semantic) if i in allowed_set]
+            fallback = "keyword"
+            if not ordered:
+                ordered, fallback = [(i, None) for i in allowed[::-1]], "listing"
+            degraded = index.degraded_marker("writing", fallback=fallback)
     elif query:
         ordered = [(i, None) for i in _keyword_ids(conn, query) if i in allowed_set]
     else:
         ordered = [(i, None) for i in allowed[::-1]]  # most recent first
 
     ordered = ordered[: int(k)]
-    return {"count": len(ordered),
-            "results": [_meta(conn, sid, score=score) for sid, score in ordered]}
+    out: dict[str, Any] = {
+        "count": len(ordered),
+        "results": [_meta(conn, sid, score=score) for sid, score in ordered],
+    }
+    if degraded:
+        out["degraded"] = degraded
+    return out
 
 
 def get(conn: sqlite3.Connection, sample_id: str, *, include_text: bool = True) -> dict[str, Any]:
@@ -173,7 +207,8 @@ def stats(conn: sqlite3.Connection) -> dict[str, Any]:
     keepers = [r for r in rows if not r["dup_of"]]
     dups = [r for r in rows if r["dup_of"]]
     emb = conn.execute(
-        "SELECT COUNT(*) FROM embeddings WHERE source_type=?", (config.SOURCE_TYPE,)
+        "SELECT COUNT(DISTINCT source_id) FROM embeddings WHERE source_type=?"
+        " AND embedding IS NOT NULL", (config.SOURCE_TYPE,)
     ).fetchone()[0]
     untagged = conn.execute(
         "SELECT COUNT(*) FROM samples s WHERE NOT EXISTS "
@@ -261,10 +296,22 @@ def add(
     for spec in tag or []:
         facet, _, value = spec.partition(":")
         db.set_tag(conn, sid, facet, value)
-    index.embed_sample(conn, sid, text)
-    conn.execute("UPDATE samples SET embedded_hash=? WHERE id=?", (chash, sid))
+    deferred = False
+    try:
+        index.embed_sample(conn, sid, text)
+    except index.EmbeddingsUnavailable:
+        # The sample itself must land — it is the user's text. ``embedded_hash``
+        # stays stale on purpose, which is exactly what ``embed`` looks for once
+        # the stack is installed.
+        log.warning("writing: embedding unavailable, %s added unindexed", sid)
+        deferred = True
+    else:
+        conn.execute("UPDATE samples SET embedded_hash=? WHERE id=?", (chash, sid))
     conn.commit()
-    return get(conn, sid, include_text=False)
+    out = get(conn, sid, include_text=False)
+    if deferred:
+        out["embedding_deferred"] = True
+    return out
 
 
 def retag(
@@ -399,9 +446,22 @@ def dedup(conn: sqlite3.Connection, *, apply: bool = False) -> dict[str, Any]:
 
 
 def embed(conn: sqlite3.Connection, *, force: bool = False) -> dict[str, Any]:
-    """Embed new/changed samples (or all, with ``force``). Loads the model once."""
+    """Embed new, changed or other-model samples (or all, with ``force``).
+
+    Raises :class:`index.EmbeddingsUnavailable` when the stack is missing rather
+    than reporting ``{"embedded": 0}`` — a backfill that silently does nothing
+    is worse than one that fails, because the caller stops looking.
+    """
+    p = index.probe()
+    if not p["available"]:
+        raise index.EmbeddingsUnavailable(
+            f"cannot embed: missing {', '.join(p['missing'])} — "
+            "run awm/services/writing/install.sh on this node"
+        )
     rows = db.all_samples(conn)
-    todo = [r for r in rows if force or r["embedded_hash"] != r["content_hash"]]
+    outdated = index.not_current(conn)
+    todo = [r for r in rows
+            if force or r["embedded_hash"] != r["content_hash"] or r["id"] in outdated]
     for r in todo:
         text = r["content"] or ""
         index.embed_sample(conn, r["id"], text)
@@ -447,5 +507,12 @@ def import_corpus(conn: sqlite3.Connection, *, corpus_dir: str | None = None) ->
         if prev is None or prev["content_hash"] != chash:
             changed += 1
     conn.commit()
-    embedded = embed(conn)["embedded"]
-    return {"ingested": len(kept), "changed": changed, "embedded": embedded}
+    # The text is the import; embedding is a follow-up. A stackless node still
+    # ingests the corpus and leaves every row stale for a later ``embed``.
+    try:
+        return {"ingested": len(kept), "changed": changed,
+                "embedded": embed(conn)["embedded"]}
+    except index.EmbeddingsUnavailable:
+        log.warning("writing: embedding unavailable, %d samples imported unindexed", len(kept))
+        return {"ingested": len(kept), "changed": changed,
+                "embedded": 0, "embedding_deferred": True}

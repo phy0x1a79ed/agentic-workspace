@@ -13,7 +13,7 @@ Two subcommands:
 
 Usage:
     python -m awm.precedence.seed scrape --out /path/to/candidates.json \\
-        [--memory-dir DIR] [--scopes-db PATH] [--all-journal] [--no-operator]
+        [--memory-dir DIR] [--journal-db PATH] [--all-journal] [--no-operator]
     python -m awm.precedence.seed /path/to/staging.json [--no-embed]
     python -m awm.precedence.seed import /path/to/staging.json [--no-embed]
 """
@@ -31,7 +31,7 @@ DEFAULT_MEMORY_DIR = (
     "/home/tony/.claude/projects/"
     "-home-tony-agentic-workspace-projects-awm--bare/memory"
 )
-DEFAULT_SCOPES_DB = "/home/tony/agentic_workspace/.awm/services/scopes/scopes.db"
+DEFAULT_JOURNAL_DB = "/home/tony/agentic_workspace/.awm/services/journal/journal.db"
 
 
 def run_import(manifest_path: str, *, embed_after: bool = True) -> dict:
@@ -58,11 +58,12 @@ def _opt(argv: list[str], name: str, default: str) -> str:
 
 def _cmd_scrape(argv: list[str]) -> int:
     memory_dir = _opt(argv, "--memory-dir", DEFAULT_MEMORY_DIR)
-    scopes_db = _opt(argv, "--scopes-db", DEFAULT_SCOPES_DB)
+    # --scopes-db is the flag's old name, from before posts moved to the journal service.
+    journal_db = _opt(argv, "--journal-db", _opt(argv, "--scopes-db", DEFAULT_JOURNAL_DB))
     out = _opt(argv, "--out", "")
     manifest = scrape.build_candidates(
         memory_dir=memory_dir,
-        scopes_db=scopes_db,
+        journal_db=journal_db,
         include_operator=not _flag(argv, "--no-operator"),
         include_journal=not _flag(argv, "--no-journal"),
         journal_user_marked_only=not _flag(argv, "--all-journal"),

@@ -9,15 +9,14 @@ requires-python = ">=3.11"
 description = "AWM gateway: the sole interface. Dynamically loads feature modules and re-exposes each as MCP + CLI + HTTP/WS; owns routing, service supervision, daemon lifecycle."
 dependencies = [
     "awm-config",
+    "awm-claudedaemon",
     "awm-persistence",
     "awm-scopes",
-    "awm-agents",
-    "awm-artifacts",
     "fastapi",
     "uvicorn[standard]",
     "typer",
     "httpx",
-    "mcp[cli]",
+    "mcp[cli]<2",
     "pyyaml",
     "websockets",
 ]
@@ -31,6 +30,9 @@ awm-mcp = "awm.gateway.mcp_server:main"
 include = ["awm.gateway*"]
 namespaces = true
 
+[tool.setuptools.package-data]
+"awm.gateway" = ["usage_seed.txt"]
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 markers = [
@@ -43,9 +45,8 @@ markers = [
     "messaging: rooms / messages / posts / control plane",
     "auth: login / exposed app / auth service",
     "mcp: mcp server / exports / cli context emit",
-    "artifacts: artifact registry",
     "sessions: session log / history",
     "agent: agent instances / vagrant sessions",
-    "misc: outliers (skills, locks, voice config, ssh tunnel)",
+    "misc: outliers (locks, voice config, ssh tunnel)",
     "integration: cross-component integration tests",
 ]

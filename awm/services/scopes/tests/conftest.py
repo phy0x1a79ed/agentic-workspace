@@ -13,6 +13,31 @@ from pathlib import Path
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def stub_embedder():
+    """Index and search with a deterministic stub, never the real model."""
+    from awm.persistence import embeddings
+    from awm.persistence.search_testing import StubEmbedder
+    emb = StubEmbedder()
+    embeddings.use_embedder(emb)
+    yield emb
+    embeddings.use_embedder(None)
+
+
+@pytest.fixture(autouse=True)
+def stub_journal_service(monkeypatch):
+    """The journal service answers every call; no test reaches a real gateway."""
+    def call_sync(service, fn, args=None, **kw):
+        assert service == "journal", (service, fn)
+        if fn == "render":
+            return {"content": f"# Project History: {args['project']}\n"}
+        if fn == "goal_read":
+            return {"goals": [], "total": 0}
+        return {}
+
+    monkeypatch.setattr("awm.gatewayclient.call_sync", call_sync)
+
+
 @pytest.fixture()
 def scopes_workspace(tmp_path, monkeypatch):
     """Set up a temporary workspace with all paths redirected for the scopes service.
@@ -28,8 +53,6 @@ def scopes_workspace(tmp_path, monkeypatch):
     services_dir.mkdir()
     projects_dir = workspace / "projects"
     projects_dir.mkdir()
-    skills_dir = workspace / "skills"
-    skills_dir.mkdir()
     data_dir = workspace / "data"
     data_dir.mkdir()
 
@@ -40,7 +63,6 @@ def scopes_workspace(tmp_path, monkeypatch):
     monkeypatch.setattr(cfg, "AWM_DIR", awm_dir)
     monkeypatch.setattr(cfg, "PROJECTS_DIR", projects_dir)
     monkeypatch.setattr(cfg, "DATA_DIR", data_dir)
-    monkeypatch.setattr(cfg, "SKILLS_DIR", skills_dir)
 
     # The key patch: databases.service_db_path() uses this module-level var.
     import awm.persistence.databases as pdbs
@@ -52,7 +74,6 @@ def scopes_workspace(tmp_path, monkeypatch):
         ("PROJECTS_DIR", projects_dir),
         ("WORKSPACE_ROOT", workspace),
         ("DATA_DIR", data_dir),
-        ("SKILLS_DIR", skills_dir),
     ]:
         if hasattr(_scopes, attr):
             monkeypatch.setattr(_scopes, attr, val)
@@ -67,14 +88,17 @@ def scopes_workspace(tmp_path, monkeypatch):
     monkeypatch.setattr(scopes_dao, "_initialized", False)
     scopes_dao.init()
 
-    return {
+    yield {
         "workspace": workspace,
         "awm_dir": awm_dir,
         "services_dir": services_dir,
         "projects_dir": projects_dir,
-        "skills_dir": skills_dir,
         "data_dir": data_dir,
     }
+    # Queued index writes resolve the DB path when they run: drain them while
+    # it still points at this test's workspace.
+    from awm.scopes import search_index
+    search_index.flush()
 
 
 @pytest.fixture()

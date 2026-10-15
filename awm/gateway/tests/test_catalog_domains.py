@@ -95,8 +95,9 @@ def test_envelope_constant_not_mutated_across_domains(patched_registry):
 
 def test_native_domains_present(patched_registry):
     tools = {t.name: t for t in catalog.list_domain_tools()}
-    # gateway-native ops fold by cli_group → gateway / services domains
-    assert "gateway" in tools and "services" in tools
+    # gateway-native ops fold by tool: the awm tool, plus the peer book in operations
+    assert "awm" in tools and "operations" in tools
+    assert not {"gateway", "services", "peer", "config"} & set(tools)
 
 
 def test_domain_count_is_small(patched_registry):
@@ -113,9 +114,57 @@ def test_describe_lists_verbs_with_schemas(patched_registry):
     out = catalog._describe_domain("scope")
     verbs = {v["verb"]: v for v in out["verbs"]}
     assert {"search", "refresh"} <= set(verbs)
-    # full param schema is carried through, identical to the expanded tool
-    assert verbs["search"]["params"]["properties"]["q"]["type"] == "string"
-    assert verbs["search"]["params"]["required"] == ["q"]
+    assert verbs["search"]["params"] == {"q": {}}
+    assert verbs["search"]["required"] == ["q"]
+
+
+def test_describe_trims_a_manifest_verb_to_what_a_caller_needs(monkeypatch):
+    rec = _rec("jobs", "/svc/jobs", [
+        {"name": "run", "tool": "jobs_run", "description": "Run a job.",
+         "params": [
+             {"name": "count", "type": "integer", "required": True,
+              "description": "How many."},
+             {"name": "tags", "type": "array"},
+             {"name": "label", "type": "string", "default": "x"},
+         ]},
+        {"name": "ping", "tool": "jobs_ping", "description": "", "params": []},
+    ], "sid-jobs")
+    monkeypatch.setattr(catalog, "get_registry", lambda: _StubRegistry([rec]))
+    verbs = {v["verb"]: v for v in catalog._describe_domain("jobs")["verbs"]}
+    assert verbs["run"] == {
+        "verb": "run", "description": "Run a job.",
+        "params": {
+            "count": {"type": "integer", "description": "How many."},
+            "tags": {"type": "array[string]"},
+            "label": {"default": "x"},
+        },
+        "required": ["count"],
+    }
+    assert verbs["ping"] == {"verb": "ping"}
+
+
+def test_describe_trims_a_pydantic_native_verb():
+    """Native ops carry pydantic schemas: titles, optional-string anyOf
+    branches and null defaults all drop out."""
+    from awm.gateway.gateway_ops import GATEWAY_OPERATIONS
+    ops = {op.name: op for op in GATEWAY_OPERATIONS}
+    out = catalog._describe_verb(
+        "peer_set", catalog._to_mcp_tool(ops["operations_peer_set"]))
+    assert out["required"] == ["name"]
+    assert out["params"]["name"] == {}
+    assert out["params"]["relation"] == {}
+    reap = catalog._describe_verb(
+        "services_reap", catalog._to_mcp_tool(ops["awm_services_reap"]))
+    assert reap["params"] == {"dry_run": {"type": "boolean", "default": False}}
+
+
+def test_param_type_keeps_enums_and_non_null_unions():
+    assert catalog._describe_param(
+        {"anyOf": [{"enum": ["a", "b"], "type": "string"}, {"type": "null"}]}
+    ) == {"enum": ["a", "b"]}
+    assert catalog._param_type({"type": ["integer", "null"]}) == "integer"
+    assert catalog._param_type(
+        {"anyOf": [{"type": "integer"}, {"type": "string"}]}) == "integer|string"
 
 
 def test_describe_narrows_to_one_verb(patched_registry):
@@ -131,9 +180,9 @@ def test_describe_unknown_domain_or_verb(patched_registry):
 
 
 def test_native_describe(patched_registry):
-    out = catalog._describe_domain("gateway")
+    out = catalog._describe_domain("awm")
     verbs = {v["verb"] for v in out["verbs"]}
-    assert "status" in verbs  # awm_status → gateway/status
+    assert "status" in verbs  # awm_status → awm/status
 
 
 # ---------------------------------------------------------------------------
@@ -145,18 +194,18 @@ def test_native_describe(patched_registry):
 @pytest.fixture()
 def surfaced_rec():
     """A service whose write verb is declared CLI/HTTP-only via ``surfaces``."""
-    return _rec("writing", "/svc/writing", [
-        {"name": "search", "tool": "writing_search",
+    return _rec("corpus", "/svc/corpus", [
+        {"name": "search", "tool": "corpus_search",
          "description": "Search the corpus.", "params": []},
-        {"name": "add", "tool": "writing_add",
+        {"name": "add", "tool": "corpus_add",
          "description": "Add a sample.", "surfaces": ["cli", "http"],
          "params": [{"name": "text", "type": "string", "required": True}]},
-    ], "sid-writing")
+    ], "sid-corpus")
 
 
 def test_cli_only_verb_absent_from_domain_surface(monkeypatch, surfaced_rec):
     monkeypatch.setattr(catalog, "get_registry", lambda: _StubRegistry([surfaced_rec]))
-    out = catalog._describe_domain("writing")
+    out = catalog._describe_domain("corpus")
     verbs = {v["verb"] for v in out["verbs"]}
     assert "search" in verbs  # read verb projected to MCP
     assert "add" not in verbs  # write verb hidden from MCP
@@ -166,7 +215,7 @@ def test_cli_only_verb_present_in_expanded_list_tools(monkeypatch, surfaced_rec)
     monkeypatch.setattr(catalog, "get_registry", lambda: _StubRegistry([surfaced_rec]))
     names = {t.name for t in catalog.list_tools()}
     # both verbs stay on the expanded surface the CLI generator + flat /invoke read
-    assert {"writing_search", "writing_add"} <= names
+    assert {"corpus_search", "corpus_add"} <= names
 
 
 async def test_cli_only_verb_rejected_via_mcp_domain_dispatch(monkeypatch, surfaced_rec):
@@ -196,11 +245,11 @@ async def test_manifest_timeout_threaded_to_rpc(monkeypatch):
 
 
 async def test_cli_only_verb_still_dispatches_flat_by_name(monkeypatch, surfaced_rec):
-    # the CLI's flat /invoke {name:"writing_add"} path stays functional
+    # the CLI's flat /invoke {name:"corpus_add"} path stays functional
     monkeypatch.setattr(catalog, "get_registry", lambda: _StubRegistry([surfaced_rec]))
     ch = _FakeChannel()
     monkeypatch.setattr(catalog.rpc, "get_control", lambda sid: ch)
-    raw = await catalog.dispatch("writing_add", {"text": "hello"})
+    raw = await catalog.dispatch("corpus_add", {"text": "hello"})
     out = json.loads(raw)
     assert out["fn"] == "add" and out["args"] == {"text": "hello"}
 
@@ -221,6 +270,22 @@ def test_duplicate_verb_first_wins(monkeypatch):
     out = catalog._describe_domain("thing")
     rows = [v for v in out["verbs"] if v["verb"] == "go"]
     assert len(rows) == 1 and rows[0]["description"] == "A wins."
+
+
+def test_nameless_domain_or_verb_never_reaches_the_surface(monkeypatch):
+    """A tool name with a leading underscore folds to an empty domain. The
+    catalog drops it rather than offering a nameless tool. A single-verb
+    domain (no underscore) still folds to itself."""
+    rec = _rec("odd", "/svc/odd", [
+        {"name": "hidden", "tool": "_hidden", "description": "x", "params": []},
+        {"name": "solo", "tool": "solo", "description": "x", "params": []},
+    ], "sid-odd")
+    monkeypatch.setattr(catalog, "get_registry", lambda: _StubRegistry([rec]))
+    names = [t.name for t in catalog.list_domain_tools()]
+    assert all(names)
+    assert "solo" in names and "odd" not in names
+    assert all(v["verb"] for verbs in catalog._domain_catalog().values()
+               for v in verbs)
 
 
 # ---------------------------------------------------------------------------
@@ -288,3 +353,85 @@ async def test_domain_name_without_verb_is_not_hijacked(monkeypatch, patched_reg
     monkeypatch.setattr(catalog.rpc, "get_control", lambda sid: _FakeChannel())
     with pytest.raises(ValueError):
         await catalog.dispatch("scope", {"something": 1})
+
+
+# ---------------------------------------------------------------------------
+# Domain-level prose (manifest "description")
+# ---------------------------------------------------------------------------
+#
+# Everything else the domain surface says is generated — the name and the verb
+# list — so a service could describe what it can DO and never how it is meant to
+# be used. That gap has teeth: `duo` shows ten capable-looking verbs and no hint
+# that ssh(verb=connect) already arms the approver, and calling them by hand
+# spends Duo budget the fleet arbiter is not counting.
+
+
+def _blurbed(monkeypatch, blurb):
+    rec = ServiceRecord(
+        name="duo", prefix="/svc/duo", kind="service", service_id="sid-duo",
+        api={"description": blurb,
+             "functions": [{"name": "ping", "tool": "duo_ping",
+                            "description": "Probe Duo.", "params": []}]},
+    )
+    monkeypatch.setattr(catalog, "get_registry", lambda: _StubRegistry([rec]))
+
+
+def test_manifest_description_leads_the_domain_tool(monkeypatch):
+    _blurbed(monkeypatch, "Use ssh(verb=connect); it arms this for you.")
+    tool = {t.name: t for t in catalog.list_domain_tools()}["duo"]
+    assert tool.description.startswith("Use ssh(verb=connect); it arms this for you.")
+    # The generated mechanics survive, after the prose — an agent that has
+    # already picked a verb has read the guidance too late.
+    assert "- ping(): Probe Duo." in tool.description
+
+
+def test_manifest_description_reaches_the_describe_verb(monkeypatch):
+    _blurbed(monkeypatch, "Use ssh(verb=connect); it arms this for you.")
+    out = catalog._describe_domain("duo")
+    assert out["description"] == "Use ssh(verb=connect); it arms this for you."
+    assert [v["verb"] for v in out["verbs"]] == ["ping"]
+
+
+def test_a_service_without_the_key_is_unchanged(monkeypatch, patched_registry):
+    tool = {t.name: t for t in catalog.list_domain_tools()}["scope"]
+    assert tool.description.startswith("The 'scope' tool.")
+    assert "description" not in catalog._describe_domain("scope")
+
+
+def test_a_blank_description_is_not_a_description(monkeypatch):
+    _blurbed(monkeypatch, "   ")
+    tool = {t.name: t for t in catalog.list_domain_tools()}["duo"]
+    assert tool.description.startswith("The 'duo' tool.")
+
+
+def test_a_cli_only_verb_carries_no_blurb_onto_the_mcp_surface(monkeypatch):
+    """A service whose only MCP-visible verb is filtered out has no MCP domain,
+    so its prose must not conjure one."""
+    rec = ServiceRecord(
+        name="duo", prefix="/svc/duo", kind="service", service_id="sid-duo",
+        api={"description": "Operator surface.",
+             "functions": [{"name": "burst", "tool": "duo_burst",
+                            "surfaces": ["cli", "http"],
+                            "description": "Arm.", "params": []}]},
+    )
+    monkeypatch.setattr(catalog, "get_registry", lambda: _StubRegistry([rec]))
+    assert "duo" not in {t.name for t in catalog.list_domain_tools()}
+
+
+def test_a_multi_domain_service_blurbs_every_domain_it_projects(monkeypatch):
+    """Deterministic beats arbitrary: picking one of three would depend on
+    manifest ordering."""
+    rec = ServiceRecord(
+        name="scopes", prefix="/svc/scopes", kind="service", service_id="sid-s",
+        api={"description": "Scope machinery.",
+             "functions": [
+                 {"name": "search", "tool": "scope_search",
+                  "description": "s", "params": []},
+                 {"name": "create_project", "tool": "project_create",
+                  "description": "c", "params": []},
+             ]},
+    )
+    monkeypatch.setattr(catalog, "get_registry", lambda: _StubRegistry([rec]))
+    tools = {t.name: t for t in catalog.list_domain_tools()}
+    assert tools["scope"].description.startswith("Scope machinery.")
+    assert tools["project"].description.startswith("Scope machinery.")

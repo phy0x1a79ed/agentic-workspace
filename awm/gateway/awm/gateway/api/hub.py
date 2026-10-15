@@ -42,7 +42,8 @@ from fastapi import (
 )
 from pydantic import BaseModel, Field, model_validator
 
-from awm.gateway.hub import rpc
+from awm.gateway import surface
+from awm.gateway.hub import discovery, rpc
 from awm.gateway.hub.lease import LeaseAlreadyHeld, get_lease_manager
 from awm.gateway.hub.registry import (
     NoBaseToShadow, PrefixConflict, ServiceRecord, get_registry,
@@ -106,6 +107,12 @@ class RegisterRequest(BaseModel):
     url: str | None = Field(None)
     static: StaticSpec | None = Field(None)
     page: PageSpec | None = Field(None)
+    strip_prefix: bool = Field(
+        False,
+        description="url only: forward the path with `prefix` removed and send "
+                    "`X-Forwarded-Prefix: <prefix>`. For an upstream that serves "
+                    "at the root and rebases its own links from that header.",
+    )
 
     @model_validator(mode="after")
     def _one_of(self) -> "RegisterRequest":
@@ -119,6 +126,8 @@ class RegisterRequest(BaseModel):
             raise ValueError(
                 "exactly one of `url`, `static`, or `page` must be provided"
             )
+        if self.strip_prefix and not self.url:
+            raise ValueError("`strip_prefix` applies only to a `url` registration")
         return self
 
 
@@ -128,6 +137,7 @@ class RegisterResponse(BaseModel):
     prefix: str
     kind: str
     url: str | None = None
+    strip_prefix: bool = False
     static: StaticSpec | None = None
     page: PageSpec | None = None
     lease_ws_path: str
@@ -138,7 +148,10 @@ async def register(req: RegisterRequest) -> RegisterResponse:
     registry = get_registry()
     try:
         if req.url is not None:
-            rec = await registry.register(req.name, req.prefix, req.url)
+            rec = await registry.register(
+                req.name, req.prefix, req.url,
+                strip_prefix=req.strip_prefix,
+            )
         elif req.static is not None:
             resolved = Path(req.static.dir).expanduser().resolve()
             if not resolved.is_dir():
@@ -170,6 +183,7 @@ async def register(req: RegisterRequest) -> RegisterResponse:
         prefix=rec.prefix,
         kind=rec.kind,
         url=rec.url if rec.kind == "url" else None,
+        strip_prefix=rec.strip_prefix,
         static=(
             StaticSpec(
                 dir=rec.static_dir,
@@ -473,11 +487,31 @@ async def service_control(websocket: WebSocket, service_id: str) -> None:
                       rec.name, exc_info=True)
 
 
+def _registration_refusal(service_id: str, api: dict[str, Any]) -> str | None:
+    """Why the manifest a service sent in ``ready`` is refused, or ``None``."""
+    registry = get_registry()
+    rec = registry.get_by_id(service_id)
+    if rec is None:
+        return None
+    others = [(r.name, r.api) for r in registry.service_records()
+              if r.service_id != service_id]
+    try:
+        surface.check_registration(rec.name, api, others)
+    except surface.RegistrationError as exc:
+        return str(exc)
+    return None
+
+
 def _route_inbound(ch: "rpc.ControlChannel", service_id: str,
                    env: dict[str, Any]) -> None:
     kind = env.get("kind")
     if kind == "ready":
-        ch.set_api(env.get("api") or {})
+        api = env.get("api") or {}
+        refusal = _registration_refusal(service_id, api)
+        if refusal:
+            log.error("%s", refusal)
+            api = {}
+        ch.set_api(api)
         # Re-look-up the record fresh by service_id rather than trusting a record
         # captured at WS-accept time: a concurrent reconcile / disconnect-respawn
         # may have replaced the registry record for this service_id in the
@@ -487,7 +521,11 @@ def _route_inbound(ch: "rpc.ControlChannel", service_id: str,
         rec = registry.get_by_id(service_id)
         if rec is not None:
             rec.api = ch.api
-            rec.backend_status = "ready"
+            rec.archive = [] if refusal else discovery.service_archive(rec.name)
+            rec.refusal = refusal or ""
+            rec.backend_status = "refused" if refusal else "ready"
+            if refusal:
+                return
             # Reaching ready is the only honest evidence a respawn worked, so
             # it is what resets the crash-loop budget.
             if not rec.is_overlay:

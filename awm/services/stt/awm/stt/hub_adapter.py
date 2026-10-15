@@ -19,10 +19,8 @@ Sessions:
     browser opens a direct WS that byte-relays through the hub bridge; binary
     PCM frames + JSON control frames in, ``status`` / ``partial`` /
     ``stt_result`` / ``composer`` / ``submit`` frames back. In continuous mode
-    the convo dictation-cleanup inner loop runs (an ``awm.agentcore`` opencode
-    one-shot per silence-cut). This is the only session the service exposes; the
-    mock ``chat`` partner was dropped — the real agent (agents service) replaces
-    it.
+    the convo composer accumulates the raw transcript (no LLM). This is the
+    only session the service exposes; the mock ``chat`` partner was dropped.
 """
 
 from __future__ import annotations
@@ -43,6 +41,7 @@ API_MANIFEST: dict[str, Any] = {
     "functions": [
         {
             "name": "transcribe",
+            "effect": "write",
             "description": (
                 "HTTP-fallback STT: base64 int16 LE 16 kHz mono PCM in, "
                 "transcribed text out."

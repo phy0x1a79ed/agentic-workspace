@@ -23,6 +23,9 @@ _SQUEUE_POLL_INTERVAL = 10.0
 _PROBE_INTERVAL = 5.0
 _PROBE_ATTEMPTS = 60
 _MAX_RETRIES = 3
+#: Consecutive squeue failures before a serve is declared lost. One timed-out
+#: ssh must never be enough -- the job outlives the login node's bad minute.
+_MAX_POLL_FAILURES = 10
 _RETRY_DELAY = 2.0
 
 _PORT_LOCK = asyncio.Lock()
@@ -62,7 +65,7 @@ class ServeRun:
 
     __slots__ = (
         "task", "serve_id", "cfg", "model", "job_id",
-        "node", "local_port", "cancel_event",
+        "node", "local_port", "remote_port", "cancel_event",
     )
 
     def __init__(self, serve_id: str, cfg: ClusterConfig,
@@ -74,6 +77,7 @@ class ServeRun:
         self.job_id = ""
         self.node = ""
         self.local_port = 0
+        self.remote_port = 8000
         self.cancel_event = asyncio.Event()
 
 
@@ -132,7 +136,7 @@ class ServeLifecycle:
         if run.node and run.local_port:
             try:
                 ssh.ssh_cancel_forward(
-                    host, run.local_port, run.node, 8000)
+                    host, run.local_port, run.node, run.remote_port)
             except Exception as e:
                 log.warning("cancel forward for %s failed: %s",
                             serve_id, e)
@@ -254,11 +258,30 @@ class ServeLifecycle:
         ready_emitted = False
         probe_attempts = 0
 
+        poll_failures = 0
         while not run.cancel_event.is_set():
-            rc, out, err = await ssh.ssh_run_async(
-                host, f"squeue -j {job_id} -h -o %T",
-                timeout=15.0,
-            )
+            try:
+                rc, out, err = await ssh.ssh_run_async(
+                    host, f"squeue -j {job_id} -h -o %T",
+                    timeout=15.0,
+                )
+            except Exception as exc:
+                # A 15 s ssh timeout is a statement about the login node, not
+                # about the job. Letting it escape marks a serve that is still
+                # running -- and still answering on its tunnel -- as terminally
+                # errored, which is how two live H100 allocations were written
+                # off while serving requests. Transient until proven otherwise.
+                poll_failures += 1
+                log.warning("squeue poll %d/%d failed for %s: %s",
+                            poll_failures, _MAX_POLL_FAILURES, job_id, exc)
+                if poll_failures >= _MAX_POLL_FAILURES:
+                    raise RuntimeError(
+                        f"squeue unreachable for {job_id} after "
+                        f"{_MAX_POLL_FAILURES} consecutive attempts: {exc}"
+                    ) from exc
+                await asyncio.sleep(_SQUEUE_POLL_INTERVAL)
+                continue
+            poll_failures = 0
 
             if rc != 0:
                 if ("Invalid job id" in err or "does not exist" in err
@@ -293,16 +316,23 @@ class ServeLifecycle:
                     )
 
                     if not tunnel_created:
+                        # The job picks its own free port, because the node may
+                        # be shared with three other GPU jobs. Absent file means
+                        # an older sbatch that still hardcoded 8000.
+                        remote = await ssh.ssh_read_file_async(
+                            host, f"{active_dir}/port")
+                        run.remote_port = int(remote) if remote else 8000
                         local_port = await _assign_port(run.cfg)
                         run.local_port = local_port
                         await asyncio.to_thread(
-                            ssh.ssh_forward, host, local_port, node, 8000,
+                            ssh.ssh_forward, host, local_port, node,
+                            run.remote_port,
                         )
                         tunnel_created = True
                         self._dao.update_status(
                             serve_id, "running",
                             node=node,
-                            api_port=8000,
+                            api_port=run.remote_port,
                             local_port=local_port,
                         )
                         await self._emit_status(
@@ -320,16 +350,28 @@ class ServeLifecycle:
                     host, f"{build_active_dir(run.cfg, serve_id)}/status"
                 )
 
-                if status_val == "loading":
-                    await self._emit_status(
-                        run, "loading",
-                        "Model loading onto GPU",
-                        api_url=f"http://localhost:{run.local_port}",
-                        node=run.node,
-                    )
-                    probe_attempts = 0
-                    await asyncio.sleep(_PROBE_INTERVAL)
-                    continue
+                # The status file is a hint, never the authority. The sbatch
+                # writes "loading" and then execs llama-server, so it has no
+                # chance to write anything afterwards -- and a serve whose
+                # readiness was gated on that file leaving "loading" therefore
+                # never became ready at all, however healthy the endpoint was.
+                # Probe first, and treat the file as colour for the message.
+                if not await _probe_endpoint(run.local_port):
+                    if status_val == "loading":
+                        await self._emit_status(
+                            run, "loading",
+                            "Model loading onto GPU",
+                            api_url=f"http://localhost:{run.local_port}",
+                            node=run.node,
+                        )
+                        probe_attempts += 1
+                        if probe_attempts >= _PROBE_ATTEMPTS:
+                            raise RuntimeError(
+                                f"Server did not become ready after "
+                                f"{_PROBE_ATTEMPTS * _PROBE_INTERVAL:.0f}s"
+                            )
+                        await asyncio.sleep(_PROBE_INTERVAL)
+                        continue
 
                 if await _probe_endpoint(run.local_port):
                     ready_emitted = True
@@ -372,7 +414,8 @@ class ServeLifecycle:
         try:
             if run.node and run.local_port:
                 ssh.ssh_cancel_forward(
-                    run.cfg.ssh_host, run.local_port, run.node, 8000)
+                    run.cfg.ssh_host, run.local_port, run.node,
+                    run.remote_port)
         except Exception as e:
             log.warning("cleanup forward for %s: %s", run.serve_id, e)
         _release_port(run.local_port)

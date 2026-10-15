@@ -150,7 +150,7 @@ with `bash run.sh`, and injects only three env vars (`AWM_HUB_URL`,
 - **netns attach** (browsers, docker'd procs): `docker run --network=container:awm-vpn-ubc <image> …`.
 - **SSH ProxyJump/-W** (reach a host behind the VPN, e.g. sockeye): tunnel through
   the bounce sshd at `localhost:bounce_port` with the `bounce_key` — see § 4a.
-- **A browser session:** `rlm_browser.acquire{game, opts:{vpn:"ubc"}}` — rlm-browser
+- **A browser session:** `browser acquire{game, opts:{vpn:"ubc"}}` — rlm-browser
   brings the exit up via `vpn_up` and launches Chrome with `--network=container:awm-vpn-ubc`.
   Implementing that `opts.vpn` handling is rlm-browser's job; this service ships the
   descriptor + convention. See the scope's `.awm/context.md`.

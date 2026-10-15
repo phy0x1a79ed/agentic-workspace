@@ -53,6 +53,8 @@ def _build_echo_app() -> FastAPI:
             "x_awm_as": req.headers.get("x-awm-as"),
             "authorization": req.headers.get("authorization"),
             "cookie_seen": req.headers.get("cookie"),
+            "transfer_encoding": req.headers.get("transfer-encoding"),
+            "content_length": req.headers.get("content-length"),
         }
 
     @app.get("/demo/path/{name}")
@@ -156,6 +158,43 @@ class TestHttpForwarding:
             assert data["cookie_seen"] is None
             assert data["x_awm_from"] is None
             assert data["x_awm_as"] == "user:operator"
+
+    def test_client_chunked_body_stays_chunked(self, hub_client):
+        """A client that framed its own body as chunked keeps a chunked body
+        upstream. The hub strips ``transfer-encoding`` as hop-by-hop and lets
+        httpx re-derive framing from the stream, which has no length — so the
+        header is regenerated rather than forwarded. See
+        ``proxy._forwards_body``: sized uploads must not be converted to
+        chunked, and chunked uploads must not lose their framing."""
+        def _chunks():
+            yield b"hello "
+            yield b"world"
+
+        with _running_upstream() as port:
+            hub_client.post(
+                "/hub/register",
+                json={"name": "demo", "prefix": "/demo",
+                      "url": f"http://127.0.0.1:{port}"},
+            )
+            r = hub_client.post("/demo/echo", content=_chunks())
+            assert r.status_code == 200, r.text
+            data = r.json()
+            assert data["echoed"] == "hello world"
+            assert data["transfer_encoding"] == "chunked"
+            assert data["content_length"] is None
+
+    def test_sized_body_stays_sized(self, hub_client):
+        with _running_upstream() as port:
+            hub_client.post(
+                "/hub/register",
+                json={"name": "demo", "prefix": "/demo",
+                      "url": f"http://127.0.0.1:{port}"},
+            )
+            r = hub_client.post("/demo/echo", content=b"hello world")
+            assert r.status_code == 200, r.text
+            data = r.json()
+            assert data["content_length"] == "11"
+            assert data["transfer_encoding"] is None
 
     def test_unregistered_path_falls_through(self, hub_client):
         # /status remains served by the in-process router with /demo

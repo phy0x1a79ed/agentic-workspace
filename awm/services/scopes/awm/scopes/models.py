@@ -1,9 +1,7 @@
 """Pydantic request/response models owned by the scopes service.
 
 Covers projects, scopes, and the scope channel (posts/subscribers) —
-everything the scopes service exposes over its API surface. Live
-agent-runtime state (pid/status/model/context) lives with the agents
-service, even when surfaced through a scope-channel view.
+everything the scopes service exposes over its API surface.
 """
 
 from __future__ import annotations
@@ -35,10 +33,15 @@ class ProjectCreateResponse(BaseModel):
 
 class ScopeCreateRequest(BaseModel):
     project: str
-    scope: str
+    scope: str | None = None
     from_branch: str | None = None
     branch_name: str | None = None
     context: str | None = None
+    # Create the project first when it does not exist; clone_url / fork_url
+    # choose where a new project starts from.
+    new_project: bool = False
+    clone_url: str | None = None
+    fork_url: str | None = None
 
 
 class ScopeUpdateRequest(BaseModel):
@@ -48,6 +51,7 @@ class ScopeUpdateRequest(BaseModel):
     # Teardown refuses when the scope's data clone holds content that exists
     # nowhere else; `force` accepts that loss deliberately.
     force: bool = False
+    delete_branch: bool = False
 
 
 class ScopeSyncRequest(BaseModel):
@@ -87,9 +91,32 @@ class ScopeInfo(BaseModel):
 
 
 
+# ---------------------------------------------------------------------------
+# Projects (the scope_search project listing)
+# ---------------------------------------------------------------------------
+
+class ProjectScopeCounts(BaseModel):
+    active: int = 0
+    completed: int = 0
+    deleted: int = 0
+
+
+class ProjectListInfo(BaseModel):
+    name: str
+    scope_counts: ProjectScopeCounts
+
+
+class ProjectListResponse(BaseModel):
+    projects: list[ProjectListInfo]
+    degraded: dict | None = None
+
+
 class ScopeListResponse(BaseModel):
     scopes: list[ScopeInfo]
     total: int
+    degraded: dict | None = None
+    # Present only when the search named no project.
+    projects: list[ProjectListInfo] | None = None
 
 
 class ScopeActionResponse(BaseModel):
@@ -125,22 +152,3 @@ class ScopeSubscriberInfo(BaseModel):
     guest_ref: str         # 'project/scope' or 'user:<name>'
     display_name: str
     joined_at: str
-
-
-# ---------------------------------------------------------------------------
-# Projects (control-center surface — list)
-# ---------------------------------------------------------------------------
-
-class ProjectScopeCounts(BaseModel):
-    active: int = 0
-    completed: int = 0
-    deleted: int = 0
-
-
-class ProjectListInfo(BaseModel):
-    name: str
-    scope_counts: ProjectScopeCounts
-
-
-class ProjectListResponse(BaseModel):
-    projects: list[ProjectListInfo]

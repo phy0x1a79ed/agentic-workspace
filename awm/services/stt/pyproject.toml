@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "awm-stt"
 version = "0.1.0"
 requires-python = ">=3.11"
-description = "AWM stt service: STT-only — faster-whisper transcription, the direct PCM `stream` PTT/continuous session, and the convo dictation-cleanup loop (agentcore opencode one-shot)."
+description = "AWM stt service: STT-only — faster-whisper transcription, the direct PCM `stream` PTT/continuous session, and the raw-transcript convo composer."
 dependencies = [
     "awm-config",
     "awm-persistence",

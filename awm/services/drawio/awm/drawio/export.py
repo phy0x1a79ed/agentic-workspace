@@ -60,7 +60,7 @@ from urllib.parse import quote
 
 import httpx
 
-from . import renderspec
+from . import recolour, renderspec
 
 log = logging.getLogger("awm.drawio.export")
 
@@ -171,7 +171,8 @@ def default_view_resolver():
 
 
 def data_uri(path: Path, *, swaps: tuple[tuple[str, str], ...] = (),
-             budget: "Budget | None" = None) -> str:
+             budget: "Budget | None" = None,
+             problems: list[str] | None = None) -> str:
     """A ``data:`` URI safe to embed in a drawio style string.
 
     Deliberately *not* base64: the ``;base64`` marker contains the character
@@ -179,11 +180,12 @@ def data_uri(path: Path, *, swaps: tuple[tuple[str, str], ...] = (),
     larger on the wire but survives the parser intact, which is the only
     property that matters here.
 
-    Colour swaps are applied **here**, to the text branch, before encoding.
+    Colour swaps are applied **here**, to the decoded bytes, before encoding.
     After encoding a ``#ff00ff`` in an SVG has become ``%23ff00ff``, so a later
     pass would have to match encoded spellings and would risk splicing a ``;``
-    back into a style string. The binary branch is left alone: a masked region
-    inside a PNG cannot be swapped, which is a property of the format.
+    back into a style string. :mod:`awm.drawio.recolour` decides what a swap can
+    reach — vector source, pixels, or nothing — and a swap it could not carry
+    out is appended to ``problems`` rather than dropped.
     """
     raw = path.read_bytes()
     if len(raw) > MAX_INLINE_BYTES:
@@ -194,14 +196,11 @@ def data_uri(path: Path, *, swaps: tuple[tuple[str, str], ...] = (),
     if budget is not None:
         budget.spend_bytes(len(raw))
     mime = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
-    if mime.startswith("text/") or mime in ("image/svg+xml",):
-        text = raw.decode("utf-8", errors="replace")
-        if swaps:
-            text, _ = renderspec.swap_text(text, swaps)
-        payload = quote(text, safe="")
-    else:
-        payload = quote(raw, safe="")
-    return f"data:{mime},{payload}"
+    if swaps:
+        raw, _hits, reported = recolour.swap_bytes(raw, mime, swaps)
+        if reported and problems is not None:
+            problems.extend(f"{path}: {problem}" for problem in reported)
+    return f"data:{mime}," + quote(raw, safe="")
 
 
 def svg_data_uri(data: bytes, *, budget: "Budget | None" = None) -> str:
@@ -255,7 +254,8 @@ def inline_images(xml: str, *, swaps: tuple[tuple[str, str], ...] = (),
         if match.group("file") is not None:
             target = Path(match.group("file"))
             try:
-                return data_uri(target, swaps=swaps, budget=spend)
+                return data_uri(target, swaps=swaps, budget=spend,
+                                problems=problems)
             except (OSError, ExportError) as exc:
                 problems.append(f"{target}: {exc}")
                 return match.group(0)
@@ -353,9 +353,10 @@ def render(xml: str, fmt: str = "pdf", *, inline: bool = True,
     # ValueError subclasses from the spec layer become ExportError here: every
     # caller of this function branches on ExportError, and a raw
     # CompressedDiagram would escape all of them.
+    problems: list[str] = []
     try:
         if swaps:
-            xml, _ = renderspec.swap_document(xml, swaps)
+            xml, _, problems = renderspec.swap_document(xml, swaps)
         if crop and not crop_id:
             xml, crop_id = renderspec.prepare_crop(xml, page, crop)
     except ValueError as exc:
@@ -365,10 +366,10 @@ def render(xml: str, fmt: str = "pdf", *, inline: bool = True,
             f"crop= needs an exact render of one shape, which only the SVG path "
             f"can do; {fmt} goes through the export container")
 
-    problems: list[str] = []
     if inline:
-        xml, problems = inline_images(xml, swaps=swaps, resolver=resolver,
-                                      budget=budget)
+        xml, inlined_problems = inline_images(xml, swaps=swaps,
+                                              resolver=resolver, budget=budget)
+        problems = problems + inlined_problems
 
     if fmt == "svg":
         # SVG does not go through the container at all — it cannot make one.

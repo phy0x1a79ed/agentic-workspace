@@ -77,9 +77,9 @@ async def serve_static(request: Request, rec: ServiceRecord) -> Response:
         if index.is_file() and _is_masked(index, root, rec.deny):
             return PlainTextResponse("not found", status_code=404)
         served_at_root = index.is_file() or rec.entry
-        # Canonical directory URL: a bare prefix (``/ui/agent``) is the
+        # Canonical directory URL: a bare prefix (``/ui/stt``) is the
         # bundle's directory, so redirect it to the trailing-slash form
-        # (``/ui/agent/``) the same way nginx/Apache/GitHub Pages do. Without
+        # (``/ui/stt/``) the same way nginx/Apache/GitHub Pages do. Without
         # this the browser resolves the bundle's relative ``./assets/...`` refs
         # against the parent (``/ui/``) and every asset 404s. Only the prefix
         # root redirects; asset sub-paths stay byte-serves.
@@ -145,12 +145,10 @@ def _is_masked(target: Path, root: Path, deny: tuple[str, ...]) -> bool:
     here, so the mask can't be bypassed by requesting the link's (unmasked) name.
 
     Semantics are gitignore's: a leading ``!`` negates (re-exposes), and **the
-    last matching glob wins**. That gives a broad deny an escape hatch — the
-    canonical case is a content-addressed store living inside an otherwise
-    masked directory (``**/.git/**`` then ``!**/.git/annex/objects/**``, so a
-    git-annex symlink resolves to servable bytes) — while any secret-shaped glob
-    listed *after* the negation still re-masks. Order is therefore meaningful;
-    keep secret patterns last."""
+    last matching glob wins**. That gives a broad deny an escape hatch for a
+    servable subtree inside an otherwise masked directory, while any
+    secret-shaped glob listed *after* the negation still re-masks. Order is
+    therefore meaningful; keep secret patterns last."""
     if not deny:
         return False
     try:

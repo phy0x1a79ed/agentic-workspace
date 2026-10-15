@@ -1,10 +1,10 @@
 # Agentic Workspace Manager (AWM)
 
-*Human setup + usage guide for awm. Agents operating in this workspace load [`WORKSPACE.md`](WORKSPACE.md) at session start via the harness's native mechanism (see the `harness-setup` writeup on disk at `.awm/skills/awm/harness-setup.md`) — not this file. **Do not merge this README into AGENTS.md or WORKSPACE.md** — their audience is agents in scope worktrees; this one's audience is humans installing, networking, and operating the system.*
+*Human setup + usage guide for awm. Agents operating in this workspace load [`AGENTS.md`](AGENTS.md) at session start via the harness's native mechanism (see § Harness Integration) — not this file. **Do not merge this README into AGENTS.md, PROTOCOLS.md or ARCHITECTURE.md** — their audience is agents; this one's audience is humans installing, networking, and operating the system.*
 
-A lightweight Python service + CLI for coordinating multiple AI agents working in parallel on shared resources. Provides project/scope management, a skills catalog, the scope channel (per-scope journal + messages), artifact registration, autonomous agent spawning, and an MCP server for direct tool use by Claude Code / OpenCode / other MCP clients.
+A lightweight Python service + CLI for coordinating multiple AI agents working in parallel on shared resources. Provides project/scope management, the journal (per-scope posts, goals and history), one ranked search over what the swarm knows, background Claude Code sessions (`reflection start_other`), cross-node federation, and an MCP server for direct tool use by Claude Code / OpenCode / other MCP clients.
 
-For agent-facing structural docs (paths, MCP tools, scope lifecycle), see [`WORKSPACE.md`](WORKSPACE.md). For **awm-internal architecture** — modifying the hub, registry, supervisor, RPC layer, manifest generator — see [`AGENTS.md`](AGENTS.md). This README covers install and the *usage* side of the package model (authoring components / services / pages); AGENTS.md covers the *implementation* side.
+For agent orientation (paths, MCP tools, startup), see [`AGENTS.md`](AGENTS.md). For workspace procedures (scope lifecycle, naming, hubs, data, backups), see [`PROTOCOLS.md`](PROTOCOLS.md). For **awm-internal architecture** — modifying the hub, registry, supervisor, RPC layer, manifest generator — see [`ARCHITECTURE.md`](ARCHITECTURE.md). This README covers install and the *usage* side of the package model (authoring components / services / pages); ARCHITECTURE.md covers the *implementation* side.
 
 ## Quick Install
 
@@ -15,6 +15,16 @@ awm/gateway/setup.sh
 This creates an `awm` mamba environment, installs the gateway plus every
 discovered feature service, initializes runtime state, and adds `awm` and
 `awm-mcp` to your PATH.
+
+To run awm as a service account on a shared host, point `AWM_WORKSPACE` at a
+checkout the service account can read, and make the checkout's `.awm/`
+(gitignored) a symlink into a state dir the service account owns. Install
+with `AWM_SERVICES` set to the services the host needs. `setup.sh` refuses
+to run when `AWM_WORKSPACE` names a different checkout, so a second install
+cannot land in a home directory by accident. sirius, the public host behind
+`nexus.tony-xy-liu.com`, is the worked example. Its provisioning lives in its
+own repository, `phy0x1a79ed/cloud`, under `VMs/digital_ocean/sirius/`, because
+none of it is portable and awm installs on many machines.
 
 ## Manual Install
 
@@ -36,12 +46,55 @@ env with `AWM_ENV`.
 
 ## Harness Integration
 
-AWM drives **Claude Code** and **OpenCode** as first-class harnesses. The `harness-setup` writeup (on disk at `.awm/skills/awm/harness-setup.md` inside any scope) covers:
+AWM drives Claude Code and OpenCode. Each harness loads three context tiers: the workspace `AGENTS.md`, the repo `AGENTS.md` at the scope worktree root, and the scope brief `.awm/context.md`.
 
-- How Claude Code and OpenCode each pick up the 3-tier orientation (workspace `WORKSPACE.md` + repo `AGENTS.md` + scope `.awm/context.md`) — CC via instructions in `~/.claude/CLAUDE.md` that direct the agent to Read each tier; OC via native `AGENTS.md` walk-up plus per-scope `mcp-opencode.json` `instructions` array for the other two.
-- The MCP exporter framework that fans `<workspace>/.mcp.json` out to backend-specific configs (`spawn-mcp.json` for claude, `mcp-opencode.json` for opencode) — registered services are advertised even when their upstream is down.
-- Per-session harness selection via the `agent_cli` column on `agent_sessions`.
-- Healing existing scopes that pre-date the wiring: `awm scope heal`.
+- **Claude Code** loads both `AGENTS.md` tiers by its native walk-up from the cwd. The startup ritual in `AGENTS.md` has the agent read `.awm/context.md`. A `reflection start_other` session loads context the same way.
+- **OpenCode** walks up for `AGENTS.md` only as far as the worktree root, so it finds the repo tier alone. `awm scope create` writes `<scope>/.awm/mcp-opencode.json`, whose `instructions` array loads the workspace `AGENTS.md` and `.awm/context.md`. awm does not start OpenCode sessions.
+
+`<workspace>/.mcp.json` is the MCP registry. The gateway fans it out to `.awm/spawn-mcp.json` for claude and `.awm/mcp-opencode.json` for opencode, at startup and on `awm gateway mcp-sync`. Every registered server is advertised even when its upstream is down.
+
+### Set up Claude Code
+
+1. Put the `claude` CLI on `PATH`.
+2. Remove any `hooks.SessionStart` context hook from `~/.claude/settings.json`. Context loading uses no hook.
+
+**CAUTION** Claude Code truncates SessionStart hook output at about 10K characters and drops the middle without a warning. A context hook loses orientation text for any scope with a long brief.
+
+### Set up OpenCode
+
+1. Put the `opencode` CLI on `PATH`.
+2. Register the awm MCP proxy in `~/.config/opencode/opencode.jsonc`:
+
+   ```jsonc
+   {
+     "mcp": {
+       "awm": {
+         "type": "local",
+         "enabled": true,
+         "command": ["/home/<you>/lib/miniforge3/envs/awm/bin/awm-mcp"],
+         "environment": { "AWM_WORKSPACE": "/home/<you>/agentic_workspace" }
+       }
+     }
+   }
+   ```
+
+3. Symlink `~/.config/opencode/AGENTS.md` to `~/.claude/CLAUDE.md`. Both harnesses then share one set of global rules.
+4. Launch `opencode` in a scope with `OPENCODE_CONFIG=<scope>/.awm/mcp-opencode.json`.
+
+**CAUTION** Do not add the repo `AGENTS.md` to the `instructions` array. OpenCode's walk-up already loads it, so a second entry injects it twice.
+
+### Verify the setup
+
+```bash
+jq '.hooks.SessionStart // "absent"' ~/.claude/settings.json   # expect "absent"
+awm gateway mcp-sync
+ls <workspace>/.awm/spawn-mcp.json <workspace>/.awm/mcp-opencode.json
+jq .instructions <scope>/.awm/mcp-opencode.json                 # expect the workspace AGENTS.md and .awm/context.md
+cd <scope> && claude -p "List the AGENTS.md files loaded into your context, by absolute path."
+cd <scope> && opencode run "list your loaded instructions"
+```
+
+Run `awm scope heal` to bring scopes that predate this wiring to the current shape. Add `--dry-run` to preview the changes.
 
 ## Authoring a service
 
@@ -59,6 +112,7 @@ auth — ever.**
 | `run.sh` | **yes**, executable | The *only* thing the gateway ever runs to start the service: `bash run.sh`. Self-contained — it must launch the process with no extra arguments and no inherited assumptions. |
 | `INSTALL.md` | **yes** | Human install notes: deps, env, anything an operator needs. |
 | `install.sh` | optional | Editable-installs the service's deps and writes the `.runtime-env` sidecar (see below). Picked up automatically by the install loop. |
+| `service.toml` | optional | `tool` (the MCP tool the service publishes under, default the folder name), `tier` (`on` or `off`) and `[[archive]]` tables that plug the service into `search`. Every function the service registers is published as `<tool>_<verb>`. |
 
 ### The three injected env vars (and *only* these)
 
@@ -142,8 +196,8 @@ To live-test local changes without evicting the running bases, bring your
 worktree's pages **and** services up against a hub in one command:
 
 ```bash
-awm dev shadow --port 7821 pages/agent \
-  awm/services/agents awm/services/tts awm/services/stt
+awm dev shadow --port 7821 pages/tts \
+  awm/services/tts awm/services/stt
 ```
 
 `--port` selects the hub (**default `7821`, the dev sandbox**) — the CLI
@@ -221,7 +275,7 @@ awm dev shadow --port 7821 pages/<name>   # serve awm/pages/<name>/dist at /ui/<
 ```
 
 Build first — the shadow (and prod) serve the built `dist/` directory, not the
-source. (See `AGENTS.md` § *Frontend component system* for the canonical
+source. (See `ARCHITECTURE.md` § *Frontend* for the canonical
 build/shadow SOP and how resolution works.)
 
 ### Composing components into a page
@@ -296,7 +350,7 @@ Browser-side, the hub exposes:
 - **Shadow can't displace a component.** Edit the component, rebuild the page that imports it, then shadow the page.
 - **`run.sh` must be self-contained.** The gateway runs `bash run.sh` with only the three injected env vars on a minimal systemd `PATH`. A Python `run.sh` that relies on `mamba` being on `PATH` breaks on respawn — source the `.runtime-env` sidecar and exec the baked `AWM_PYTHON` interpreter (see *Authoring a service*).
 
-See `AGENTS.md` for **awm-internal** architecture — the registry overlay, supervisor PID journal, `rpc.py` envelope schemas, and how to modify the hub itself.
+See `ARCHITECTURE.md` for **awm-internal** architecture — the registry overlay, supervisor PID journal, `rpc.py` envelope schemas, and how to modify the hub itself.
 
 ## Server Lifecycle
 
@@ -314,7 +368,7 @@ awm gateway refresh   # restart server to pick up source changes (dev mode)
 
 The server auto-shuts down after 30 minutes of inactivity (configurable via `AWM_IDLE_SHUTDOWN` env var; set to `0` to disable).
 
-`awm <command> --help` lists every subcommand. Beyond the gateway-control groups, the CLI generates an `awm <domain> <verb>` command for every registered feature-service tool (`awm scope create`, `awm agent list`, …) from the same live catalog the MCP surface reads. Note the surfaces are projected differently from one shared catalog: the **CLI and HTTP** stay fully expanded (one `awm <domain> <verb>` command and one `POST /invoke {name:"<domain>_<verb>"}` route per verb), while the **MCP** surface collapses to one generic `{verb,args}` tool per domain (`GET /tools?view=domains`, with a `describe` verb for parameter schemas) to keep the tool count small for agents. So shell usage is unchanged; only what an MCP client sees is collapsed. For agent-facing usage (scopes, the scope channel, artifacts, skills), see `WORKSPACE.md` — those workflows are typically driven from inside an MCP-equipped agent, not the shell.
+`awm <command> --help` lists every subcommand. Beyond the gateway-control groups, the CLI generates an `awm <tool> <verb>` command for every registered feature-service verb (`awm scope create`, `awm reflection list-other`, …) from the same live catalog the MCP surface reads. Note the surfaces are projected differently from one shared catalog: the **CLI and HTTP** stay fully expanded, hidden verbs included (one `awm <tool> <verb>` command and one `POST /invoke {name:"<tool>_<verb>"}` route per verb), while the **MCP** surface collapses to one generic `{verb,args,peer}` tool per service tool (`GET /tools?view=domains`, with a `describe` verb for parameter schemas), all top-level, to keep the tool count small for agents. A service's `service.toml` sets its `tool` and its `tier` (`on` or `off`), and an off tool stays on the CLI and HTTP. So shell usage is unchanged; only what an MCP client sees is collapsed. For agent-facing usage (scopes, the journal), see `AGENTS.md` and `PROTOCOLS.md` — those workflows are typically driven from inside an MCP-equipped agent, not the shell.
 
 ### Per-workspace env file
 
@@ -322,7 +376,7 @@ The server auto-shuts down after 30 minutes of inactivity (configurable via `AWM
 (if present) and merge its `KEY=VAL` lines into the process env before
 doing anything else. Use it to plumb things into the daemon that
 systemd doesn't forward by default — the canonical case is
-`SSH_AUTH_SOCK` so `project_create --clone git@github.com:…` reaches
+`SSH_AUTH_SOCK` so `awm scope create --new-project --clone-url git@github.com:…` reaches
 your user ssh-agent. Format is dumb `KEY=VAL` per line, `#` for
 comments, leading `export ` tolerated, single- or double-quoted values
 are unquoted. Existing env vars are overridden; missing file is a no-op.
@@ -339,61 +393,67 @@ live on your host) to pick up changes.
 
 ## Project data — versioning and concurrency
 
-Project data lives at `<workspace>/data/<project>/` and every scope reaches it
-at `.awm/data/`. Both of those paths are permanent; what changed is what sits
-behind them.
+Data is versioned by the same commit that versions the code. A project opts in
+by being a DVC repo — a tracked `.dvc/config` in its checkout — and from then on:
 
-By default `.awm/data` is a symlink and every scope in a project writes the same
-files — no history, no isolation, and two scopes writing the same path destroy
-each other's work. Converting a project's data to **git-annex** gives it the
-same model code already has from worktrees:
-
-```bash
-awm project data-init <project> --dry-run   # preview: file count, vendored checkouts found
-awm project data-init <project>             # convert (refuses while any scope is active)
-awm scope heal --project <project>          # give existing scopes their clones
+```
+projects/<project>/<scope>/data/<chunk>        the files (hardlinks into the cache)
+projects/<project>/<scope>/data/<chunk>.dvc    the pin — TRACKED, ~110 bytes
+<workspace>/data/.dvc_cache/                   the bytes, once, for every project
 ```
 
-After conversion each scope's `.awm/data` is a clone on its own branch
-`scope/<scope>`, and `<workspace>/data/<project>/` stays a normal checked-out
-working tree on `main` — so every absolute path and symlink that pointed there
-still resolves.
+There is **one lever**. `dvc add data/<chunk>` writes the pin; committing it
+alongside your code records both together. Merging a branch brings its pins with
+it and a post-merge hook checks the files out, so a code merge *is* the data
+promote. Isolation is branch isolation — there is no data branch, no promote
+verb, and no separate `--data` leg on gather/scatter.
 
 ```bash
-awm scope data-status  <project> <scope>    # mode, branch, revision, drift, dirt
-awm scope data-snapshot <project> <scope>   # commit what this scope wrote
-awm scope data-promote  <project> <scope>   # publish into the project's canonical branch
-awm scope gather <project> <hub> --peripherals a --peripherals b --data
+awm scope data-status <project> <scope>              # mode, pinning commit, what is materialised
+awm scope data-mount  <project> <scope> --chunks ... # what materialises on disk here
+awm scope data-gc --projects a --projects b          # reclaim cache space (dry run by default)
 ```
 
-`data-promote` is all-or-nothing. It snapshots, publishes content and the
-location log, reconciles against the canonical branch, then **fast-forwards**
-it — so two scopes promoting at once produce one winner and one clean
-rejection, never a clobber. A content conflict is reported as a conflict and
-rolls back to the exact pre-merge revision; nothing is auto-merged into
-`file.variant-<key>` behind your back.
+awm wires; DVC operates. Wiring is the absolute cache path in the untracked
+`.dvc/config.local`, `cache.type = hardlink,symlink` in the tracked config, the
+`dvc` merge driver and the post-merge/post-commit hooks in the common git dir,
+and the per-scope mount list. Everything else is `dvc add` / `dvc checkout` /
+`git commit` / `git merge`, unwrapped.
 
 Operational notes:
 
-- **Storage.** Content is hardlinked from the canonical store, so N scopes
-  holding the same dataset cost one copy. This requires `data/` and `projects/`
-  on the same filesystem; if they aren't, git-annex silently falls back to real
-  copies.
-- **Read-only files.** Anything above ~100 KB becomes a symlink into the content
-  store and is not writable in place. Small text stays an ordinary git file.
-- **Secrets are excluded, never annexed.** `secrets/` paths, `.env*`,
-  `.credentials.json` and `.nextflow/secrets` are gitignored in the canonical
-  repo, so they are never committed and never reach the off-site mirror. They
-  stay on local disk untouched.
-- **Vendored git checkouts are pinned, not annexed.** Conversion finds nested
-  repos, excludes their trees, and records URL + commit in `VENDORED.tsv`.
-- **git-annex is optional.** It is resolved from `AWM_ANNEX_BIN`, then PATH,
-  then the known mamba envs. When it isn't found every path degrades to the
-  legacy shared symlink rather than failing. `AWM_DATA_ANNEX=0` forces that
-  globally.
-- **Off-site backup.** `awm/gateway/scripts/data-backup.sh` mirrors the whole
-  `data/` tree to Globus nightly. Safe as a dumb mirror because annex objects
-  are content-addressed and never mutated in place.
+- **Storage.** One physical copy per machine. `data/` and `projects/` must be on
+  the same filesystem or the hardlinks degrade to real copies.
+- **Materialised files are read-only** — they share an inode with the cache
+  object every other scope and every historical commit reads through. Write a new
+  file, or `dvc unprotect <path>` first. Never `chmod +w` one.
+- **Never run a bare `dvc gc`.** It collects against one worktree's view of a
+  cache the whole workspace shares. `awm scope data-gc` makes you name every
+  project to keep, defaults to dry-run, and refuses `all-branches`.
+- **Unconverted projects are untouched** and keep the legacy shared symlink at
+  `.awm/data`. Nothing migrates them; a project is wired the first time a scope
+  is created or healed after its checkout carries a tracked `.dvc/config`.
+- **dvc is optional.** It is resolved from `AWM_DVC_BIN`, then PATH, then the
+  known mamba envs; absent, every path degrades to the shared symlink rather than
+  failing. `AWM_DATA_DVC=0` forces that globally.
+
+## Off-site backup
+
+Chinook is the remote for the cache the way GitHub is the remote for the code.
+A daily timer runs `awm-dvc-sync`, which pushes `data/.dvc_cache` to the chinook
+Globus collection and blocks until the transfer reaches a terminal state. It is
+**append-only**: nothing this service does deletes on the remote, which is what
+makes a local `dvc gc` recoverable rather than permanent.
+
+`awm dvc pull --scope <path>` is the selective inverse — it resolves one scope's
+pins to their exact objects and fetches only those, then `dvc checkout`
+materialises them. See `awm/services/dvc/INSTALL.md`.
+
+**What is not backed up.** Only the cache travels. Code is covered by GitHub;
+anything in a worktree that is neither committed-and-pushed nor DVC-pinned —
+scratch directories, run outputs, `.awm/` service state — is covered by nothing,
+deliberately. `awm dvc coverage` lists exactly what that is, per scope, so the
+decision stays visible.
 
 ## Destructive operations
 
@@ -424,9 +484,9 @@ imported source.
         ┌─────────────────┼──────────────────┐
         │                 │                  │
    ┌────▼─────┐     ┌──────▼──────┐    ┌──────▼──────┐
-   │ scopes   │     │ agents      │    │ artifacts / │   …each an out-of-proc
-   │ service  │     │ service     │    │ skills /    │    feature service with
-   │ (+own DB)│     │ (+own DB)   │    │ discord     │    its own DB + run.sh
+   │ scopes   │     │ cx          │    │ dev /       │   …each an out-of-proc
+   │ service  │     │ service     │    │ notes /     │    feature service with
+   │ (+own DB)│     │ (+own DB)   │    │ tether      │    its own DB + run.sh
    └──────────┘     └─────────────┘    └─────────────┘
 ```
 
@@ -442,9 +502,9 @@ awm/                          # nested tree of pip dists (PEP 420 namespace layo
       cli.py                  # Typer CLI
       hub/discovery.py        # filesystem scan of awm/services/* for run.sh
   service_components/         # shared Python imported source (no install.sh)
-    config/  persistence/  gatewayclient/  agentcore/
+    config/  persistence/  gatewayclient/  claudedaemon/
   services/                   # one folder per feature service (discovered)
-    scopes/  agents/  artifacts/  skills/  discord/
+    scopes/  cx/  dev/  tether/
       run.sh                  # the only entry the gateway runs (bash run.sh)
       INSTALL.md  install.sh
   ui_components/<name>/       # shared Svelte libraries, imported as @awm/<name>
@@ -462,7 +522,7 @@ awm/                          # nested tree of pip dists (PEP 420 namespace layo
 ```
 
 For the awm-internal architecture in detail (registry, supervisor, RPC
-envelope layer, manifest generator), see [`AGENTS.md`](AGENTS.md).
+envelope layer, manifest generator), see [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
 ## Troubleshooting
 
@@ -478,4 +538,4 @@ envelope layer, manifest generator), see [`AGENTS.md`](AGENTS.md).
 
 ## What goes in this file
 
-README.md is the human-facing setup + usage guide for awm: how to install it, wire up harness integration, and the *usage* side of the package model — the day-to-day workflows for authoring a service, a page, or a component, controlling and shadowing services, talking to the hub from a page, and operating the server. Agent-facing structural orientation goes in `WORKSPACE.md`; awm-internal architecture and implementation detail go in `AGENTS.md`.
+README.md is the human-facing setup + usage guide for awm: how to install it, wire up harness integration, and the *usage* side of the package model — the day-to-day workflows for authoring a service, a page, or a component, controlling and shadowing services, talking to the hub from a page, and operating the server. Agent orientation goes in `AGENTS.md`; workspace procedures go in `PROTOCOLS.md`; awm-internal architecture and implementation detail go in `ARCHITECTURE.md`.

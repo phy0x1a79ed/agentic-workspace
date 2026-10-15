@@ -62,6 +62,41 @@ RENDER_TIMEOUT_S = 120.0
 #: How long to wait for Chrome to come up and publish its debugging port.
 LAUNCH_TIMEOUT_S = 30.0
 
+#: How the "has it finished drawing?" poll backs off. Tight to begin with — on
+#: a parked tab a small diagram is done in single-digit milliseconds and a fixed
+#: 50 ms interval would be most of the render — then loose, so a large one does
+#: not spend its wait on round trips.
+POLL_START_S = 0.005
+POLL_MAX_S = 0.05
+
+#: Wipe the parked tab back to how it loaded.
+#:
+#: drawio's own ``render`` clears the body before it draws (``export.js``:
+#: ``document.body.innerText = ''``), so what actually has to be undone is what
+#: it leaves *outside* the body: the inline width/height/background it sets on
+#: ``<body>``, and anything it appended to ``<head>`` — a MathJax stylesheet,
+#: the shadow blocker. Both are restored from a snapshot taken before the client
+#: ever ran rather than by enumerating what it might have added, so a client
+#: upgrade that starts leaving something new behind cannot quietly poison the
+#: next render. Returns whether the client is still there to drive.
+_RESET_SCRIPT = """(function(){
+    delete window.__awmGraph;
+    if (window.__awmRealGraph) { window.Graph = window.__awmRealGraph; }
+    document.body.innerText = '';
+    document.body.setAttribute('style', window.__awmBodyStyle);
+    var head = document.head;
+    while (head.childElementCount > window.__awmHeadLength) {
+        head.removeChild(head.lastElementChild);
+    }
+    return typeof render === 'function';
+})()"""
+
+#: Taken once, immediately after the client loads and before it has drawn.
+_SNAPSHOT_SCRIPT = """(function(){
+    window.__awmBodyStyle = document.body.getAttribute('style') || '';
+    window.__awmHeadLength = document.head.childElementCount;
+})()"""
+
 
 class ChromeError(RuntimeError):
     """The browser could not be started, reached, or made to render."""
@@ -228,6 +263,11 @@ class Browser:
         self._proc: subprocess.Popen | None = None
         self._ws_url: str | None = None
         self._profile: Path | None = None
+        #: The parked export tab and the socket driving it. One render's worth
+        #: of setup, kept across all of them.
+        self._tab: _Session | None = None
+        self._ws = None
+        self._tab_url: str | None = None
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -283,6 +323,7 @@ class Browser:
             self._close_locked()
 
     def _close_locked(self) -> None:
+        self._discard_tab()
         if self._proc is not None and self._proc.poll() is None:
             self._proc.terminate()
             try:
@@ -299,6 +340,88 @@ class Browser:
         if self._alive():
             return "running"
         return "stopped" if chrome_binary() else "no-chrome"
+
+    # -- the parked export tab ---------------------------------------------
+    #
+    # Every render used to create a target, navigate it to ``export3.html`` and
+    # throw it away — which meant re-fetching and re-executing drawio's whole
+    # app bundle each time, for a page that then drew for a few milliseconds.
+    # One tab is kept parked on that page instead and reset between renders.
+    #
+    # Reuse is never load-bearing: any anomaly — the tab gone, the reset
+    # failing, the render not answering — discards it and falls back to the
+    # create-navigate-render path, so this can speed the service up but cannot
+    # wedge it into a state only a restart leaves.
+
+    def _discard_tab(self) -> None:
+        """Throw the parked tab away. Never raises — this *is* the fallback."""
+        session, ws = self._tab, self._ws
+        self._tab, self._ws, self._tab_url = None, None, None
+        if session is not None:
+            try:
+                session.send("Target.closeTarget",
+                             {"targetId": session.target_id}, scoped=False)
+            except Exception:  # noqa: BLE001
+                log.debug("could not close the parked tab", exc_info=True)
+        if ws is not None:
+            try:
+                ws.close()
+            except Exception:  # noqa: BLE001
+                log.debug("could not close the parked tab's socket",
+                          exc_info=True)
+
+    def _park(self, url: str) -> _Session:
+        """Create a tab, load drawio's export client into it, and keep it."""
+        ws = ws_connect(self._ws_url, max_size=None,
+                        open_timeout=15)  # type: ignore[arg-type]
+        session = _Session(ws, "", "")
+        try:
+            target = session.send("Target.createTarget", {"url": "about:blank"},
+                                  scoped=False)
+            session.target_id = target["targetId"]
+            attached = session.send(
+                "Target.attachToTarget",
+                {"targetId": session.target_id, "flatten": True}, scoped=False)
+            session.session_id = attached["sessionId"]
+            session.send("Page.enable")
+            session.send("Runtime.enable")
+            session.send("Page.navigate", {"url": url})
+
+            deadline = time.monotonic() + RENDER_TIMEOUT_S
+            while time.monotonic() < deadline:
+                if session.evaluate("typeof render") == "function":
+                    break
+                time.sleep(POLL_MAX_S)
+            else:
+                raise ChromeError(
+                    f"drawio's export client never loaded from {url}; is the "
+                    "gateway's /drawio-app mount up?")
+            session.evaluate(_SNAPSHOT_SCRIPT)
+        except BaseException:
+            try:
+                ws.close()
+            except Exception:  # noqa: BLE001
+                pass
+            raise
+        self._ws, self._tab, self._tab_url = ws, session, url
+        return session
+
+    def _reusable(self, url: str) -> "_Session | None":
+        """The parked tab, wiped back to how it loaded — or ``None`` to rebuild."""
+        session = self._tab
+        if session is None or self._tab_url != url:
+            if session is not None:
+                self._discard_tab()
+            return None
+        try:
+            ready = session.evaluate(_RESET_SCRIPT)
+        except Exception as exc:  # noqa: BLE001 — any anomaly means rebuild
+            log.debug("the parked export tab did not reset (%s)", exc)
+            ready = False
+        if not ready:
+            self._discard_tab()
+            return None
+        return session
 
     # -- rendering ---------------------------------------------------------
 
@@ -323,10 +446,13 @@ class Browser:
             try:
                 return self._render_locked(xml, scale, page, border, transparent,
                                            crop_id)
-            except (ChromeError, OSError) as exc:
+            except Exception as exc:  # noqa: BLE001 — every failure is fatal here
                 # A browser that failed once is suspect — a crashed renderer
                 # would otherwise fail every future publish identically. Drop
-                # it so the next call starts clean.
+                # it so the next call starts clean. Deliberately every
+                # exception, not just ``ChromeError``: the socket outlives a
+                # render now, so a closed connection surfaces as the websocket
+                # library's own error and must not leave a dead browser parked.
                 log.warning("svg render failed (%s); restarting headless chrome",
                             exc)
                 self._close_locked()
@@ -336,43 +462,26 @@ class Browser:
                        border: int, transparent: bool,
                        crop_id: str | None = None) -> str:
         url = export_page_url()
-        with ws_connect(self._ws_url, max_size=None,
-                        open_timeout=15) as ws:  # type: ignore[arg-type]
-            session = _Session(ws, "", "")
-            target = session.send("Target.createTarget", {"url": "about:blank"},
-                                  scoped=False)
-            session.target_id = target["targetId"]
-            attached = session.send(
-                "Target.attachToTarget",
-                {"targetId": session.target_id, "flatten": True}, scoped=False)
-            session.session_id = attached["sessionId"]
+        session = self._reusable(url)
+        if session is not None:
             try:
-                return self._render_in_target(session, url, xml, scale, page,
+                return self._render_in_target(session, xml, scale, page,
                                               border, transparent, crop_id)
-            finally:
-                try:
-                    session.send("Target.closeTarget",
-                                 {"targetId": session.target_id}, scoped=False)
-                except Exception:  # noqa: BLE001
-                    log.warning("could not close the render tab; it will go "
-                                "away with the browser", exc_info=True)
+            except Exception as exc:  # noqa: BLE001 — one retry, then honest
+                # The retry costs a second render of a diagram that may simply
+                # be unrenderable. That is the price of never leaving a wedged
+                # tab in place, and it is paid once.
+                log.warning("the parked export tab failed to render (%s); "
+                            "falling back to a fresh one", exc)
+                self._discard_tab()
+        session = self._park(url)
+        return self._render_in_target(session, xml, scale, page, border,
+                                      transparent, crop_id)
 
-    def _render_in_target(self, session: _Session, url: str, xml: str,
+    def _render_in_target(self, session: _Session, xml: str,
                           scale: float, page: int | None, border: int,
                           transparent: bool, crop_id: str | None = None) -> str:
-        session.send("Page.enable")
-        session.send("Runtime.enable")
-        session.send("Page.navigate", {"url": url})
-
         deadline = time.monotonic() + RENDER_TIMEOUT_S
-        while time.monotonic() < deadline:
-            if session.evaluate("typeof render") == "function":
-                break
-            time.sleep(0.05)
-        else:
-            raise ChromeError(
-                f"drawio's export client never loaded from {url}; is the "
-                "gateway's /drawio-app mount up?")
 
         # Capture the Graph the client is about to build. `render` keeps it in a
         # closure, so the only handle is the constructor it calls — wrap it,
@@ -406,10 +515,12 @@ class Browser:
         session.evaluate(f"(function(){{render({json.dumps(arg)});}})()")
         session.evaluate("window.Graph=window.__awmRealGraph;")
 
+        interval = POLL_START_S
         while time.monotonic() < deadline:
             if session.evaluate("!!document.getElementById('LoadingComplete')"):
                 break
-            time.sleep(0.05)
+            time.sleep(interval)
+            interval = min(interval * 2, POLL_MAX_S)
         else:
             raise ChromeError(
                 "drawio's client did not finish drawing within "

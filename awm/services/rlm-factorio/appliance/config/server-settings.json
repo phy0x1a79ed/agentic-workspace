@@ -37,8 +37,8 @@
 
   "non_blocking_saving": true,
 
-  "minimum_segment_size": 25,
+  "minimum_segment_size": 1000,
   "minimum_segment_size_peer_count": 20,
-  "maximum_segment_size": 100,
+  "maximum_segment_size": 1400,
   "maximum_segment_size_peer_count": 10
 }

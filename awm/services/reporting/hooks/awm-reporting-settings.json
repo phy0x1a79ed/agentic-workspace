@@ -1,0 +1,40 @@
+{
+  "awaySummaryEnabled": false,
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit|ExitPlanMode|TaskCreate|TaskUpdate|TodoWrite",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -S $HOME/.claude/hooks/awm-reporting-hook.py 2>/dev/null || true",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -S $HOME/.claude/hooks/awm-reporting-hook.py 2>/dev/null || true",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "clear",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -S $HOME/.claude/hooks/awm-reporting-hook.py 2>/dev/null || true",
+            "timeout": 15
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -9,7 +9,7 @@ Surface split (enforced by the gateway via the per-function ``surfaces`` field):
 - **read** verbs (``search``/``get``/``stats``/``vocab``/``feed``) project onto
   MCP + CLI + HTTP — any agent can search the corpus to match the author's voice.
 - **write / maintenance** verbs (``add``/``retag``/``remove``/``link_dup``/
-  ``unlink_dup``/``import``/``embed``/``dedup``) declare ``surfaces: [cli, http]``
+  ``unlink_dup``/``import``/``embed``/``dedup``/``export``) declare ``surfaces: [cli, http]``
   so they are reachable from the host ``awm`` CLI (and loopback HTTP) but never
   advertised to spawned agents on the MCP surface. This is a surface gate, not an
   auth boundary — the loopback control plane is unauthenticated by design.
@@ -24,9 +24,9 @@ import asyncio
 import logging
 from typing import Any
 
-from awm.gatewayclient import ServiceAdapter
+from awm.gatewayclient import ServiceAdapter, spawn_supervised
 
-from awm.writing import corpus, dao
+from awm.writing import corpus, dao, export, index
 
 log = logging.getLogger("awm.writing.hub_adapter")
 
@@ -38,6 +38,7 @@ API_MANIFEST: dict[str, Any] = {
         # ---- read (MCP + CLI + HTTP) -------------------------------------
         {
             "name": "search",
+            "effect": "read",
             "tool": "writing_search",
             "description": "Search the writing corpus by keyword (FTS5), semantic "
                            "similarity, or hybrid, with metadata + tag filters.",
@@ -61,6 +62,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "get",
+            "effect": "read",
             "tool": "writing_get",
             "description": "Fetch one sample: metadata, tags, dup status, and full text.",
             "params": [
@@ -71,18 +73,21 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "stats",
+            "effect": "read",
             "tool": "writing_stats",
             "description": "Corpus summary: counts by type/grade, embed coverage, untagged.",
             "params": [],
         },
         {
             "name": "vocab",
+            "effect": "read",
             "tool": "writing_vocab",
             "description": "The closed tag vocabulary (valid form/register/grade values).",
             "params": [],
         },
         {
             "name": "feed",
+            "effect": "read",
             "tool": "writing_feed",
             "description": "Style-reference feed: full-text records for the "
                            "style-grade non-duplicate keepers (filterable) — the "
@@ -99,6 +104,7 @@ API_MANIFEST: dict[str, Any] = {
         # ---- write / maintenance (CLI + HTTP only) -----------------------
         {
             "name": "add",
+            "effect": "write",
             "tool": "writing_add",
             "surfaces": _CLI_HTTP,
             "description": "Add a new sample from inline text (stored in-DB + embedded).",
@@ -111,6 +117,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "retag",
+            "effect": "write",
             "tool": "writing_retag",
             "surfaces": _CLI_HTTP,
             "description": "Add/remove tags on a sample.",
@@ -122,6 +129,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "remove",
+            "effect": "write",
             "tool": "writing_remove",
             "surfaces": _CLI_HTTP,
             "description": "Remove a sample (drops its row, tags, FTS, and embedding).",
@@ -129,6 +137,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "link_dup",
+            "effect": "write",
             "tool": "writing_link_dup",
             "surfaces": _CLI_HTTP,
             "description": "Mark reviewed duplicates against a keeper.",
@@ -140,6 +149,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "unlink_dup",
+            "effect": "write",
             "tool": "writing_unlink_dup",
             "surfaces": _CLI_HTTP,
             "description": "Clear duplicate status on a sample.",
@@ -147,6 +157,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "import",
+            "effect": "write",
             "tool": "writing_import",
             "surfaces": _CLI_HTTP,
             "timeout": 600,
@@ -159,6 +170,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "embed",
+            "effect": "write",
             "tool": "writing_embed",
             "surfaces": _CLI_HTTP,
             "timeout": 600,
@@ -167,11 +179,27 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "dedup",
+            "effect": "write",
             "tool": "writing_dedup",
             "surfaces": _CLI_HTTP,
             "timeout": 300,
             "description": "Content-based duplicate detection; pass apply to mark clusters.",
             "params": [{"name": "apply", "type": "boolean"}],
+        },
+        {
+            "name": "export",
+            "effect": "read",
+            "tool": "writing_export",
+            "surfaces": _CLI_HTTP,
+            "description": "Page the non-duplicate samples as search documents for the archive's "
+                           "`writing` source. The last page also returns `ids`, every "
+                           "document id. Local callers only.",
+            "params": [
+                {"name": "cursor", "type": "string",
+                  "description": "The previous page's next_cursor. Omit to start a pass."},
+                {"name": "limit", "type": "integer",
+                  "description": "Documents per page, 1-1000. Default 200."},
+            ],
         },
     ],
     "emitters": [],
@@ -313,6 +341,14 @@ def _handle_embed(args: dict) -> dict:
         conn.close()
 
 
+def _handle_export(args: dict) -> dict:
+    conn = dao.connect()
+    try:
+        return export.export_page(conn, args.get("cursor") or None, args.get("limit"))
+    finally:
+        conn.close()
+
+
 def _handle_dedup(args: dict) -> dict:
     conn = dao.connect()
     try:
@@ -335,7 +371,39 @@ HANDLERS = {
     "import": _handle_import,
     "embed": _handle_embed,
     "dedup": _handle_dedup,
+    "export": _handle_export,
 }
+
+
+_BACKFILL_EVERY_S = 6 * 3600
+
+
+def _backfill_once() -> None:
+    conn = dao.connect()
+    try:
+        res = corpus.embed(conn)
+        if res["embedded"]:
+            log.info("writing backfill: %s", res)
+    except index.EmbeddingsUnavailable as exc:
+        log.warning("writing backfill skipped: %s", exc)
+    finally:
+        conn.close()
+
+
+async def _backfill_loop() -> None:
+    while True:
+        await asyncio.to_thread(_backfill_once)
+        await asyncio.sleep(_BACKFILL_EVERY_S)
+
+
+async def _on_start() -> None:
+    dao.init()
+    conn = dao.connect()
+    try:
+        index.engine.ensure_schema(conn)
+    finally:
+        conn.close()
+    spawn_supervised("writing:search-backfill", _backfill_loop)
 
 
 async def main() -> None:
@@ -344,7 +412,7 @@ async def main() -> None:
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
     await ServiceAdapter(
-        "writing", API_MANIFEST, HANDLERS, on_start=dao.init,
+        "writing", API_MANIFEST, HANDLERS, on_start=_on_start,
     ).run()
 
 

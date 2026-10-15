@@ -25,6 +25,14 @@ agents can drive the whole workflow. The editor's own plumbing (``editor_save``,
 only — it is a browser protocol, not something an agent should ever call, and
 putting it on the MCP surface would just be a way to corrupt a diagram.
 
+**Per-user stores.** A caller the edge verified as ``user:<name>`` (see
+``awm.config.userroot``) gets a :class:`Service` over ``<user root>/drawio``
+inside the user's scope worktree — the worktree's own git is the history —
+with checkouts under ``SERVICES_DIR/drawio/users/<name>/``. Built lazily,
+kept for the process lifetime. Anything else uses the legacy store. The
+autopublish registry and the view cache stay legacy-only (the view mount
+does resolve a user's store by ``X-Awm-As``).
+
 **Background work.** Three tasks are started here and never awaited: the static
 mount's lease loop, the autopublish debounce loop, and the boot-time autopublish
 reconciliation. Awaiting any of them would stop the adapter serving its control
@@ -39,8 +47,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 from typing import Any
 
+from awm.config import autocommit, userroot
 from awm.gatewayclient import ServiceAdapter
 
 from awm.drawio import chrome, export, mount, store as store_mod
@@ -58,6 +68,9 @@ _CLI_HTTP = ["cli", "http"]
 ADAPTER: ServiceAdapter | None = None
 SERVICE: Service | None = None
 PUBLISHER: AutoPublisher | None = None
+# user -> Service over that user's worktree store.
+_USER_SERVICES: dict[str, Service] = {}
+_USER_LOCK = threading.Lock()
 VIEW: ViewServer | None = None
 
 
@@ -66,6 +79,7 @@ API_MANIFEST: dict[str, Any] = {
         # ---- diagrams -----------------------------------------------------
         {
             "name": "list",
+            "effect": "read",
             "tool": "drawio_list",
             "description": (
                 "List every saved diagram in its folder structure, with page "
@@ -76,6 +90,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "info",
+            "effect": "read",
             "tool": "drawio_info",
             "description": (
                 "One diagram's detail: per-page names and cell counts, current "
@@ -86,6 +101,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "cells",
+            "effect": "read",
             "tool": "drawio_cells",
             "description": (
                 "Inspect a diagram's cells (id, page, kind, label) without "
@@ -105,6 +121,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "read",
+            "effect": "read",
             "tool": "drawio_read",
             "description": (
                 "The raw canonical XML of a diagram, optionally at an older "
@@ -121,12 +138,14 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "create",
+            "effect": "write",
             "tool": "drawio_create",
             "description": "Create a new empty diagram at the given path.",
             "params": [{"name": "save", "type": "string", "required": True}],
         },
         {
             "name": "import",
+            "effect": "write",
             "tool": "drawio_import",
             "description": (
                 "Import an existing .drawio file from the filesystem into the "
@@ -141,6 +160,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "history",
+            "effect": "read",
             "tool": "drawio_history",
             "description": "Revisions of a diagram, newest first, with author and label.",
             "params": [
@@ -150,6 +170,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "diff",
+            "effect": "read",
             "tool": "drawio_diff",
             "description": "Textual diff of a diagram between two revisions.",
             "params": [
@@ -162,6 +183,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "restore",
+            "effect": "write",
             "tool": "drawio_restore",
             "description": (
                 "Restore a diagram to an earlier revision, landed as a NEW "
@@ -176,6 +198,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "check",
+            "effect": "read",
             "tool": "drawio_check",
             "description": (
                 "Verify every /files/... image reference in a diagram actually "
@@ -188,6 +211,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "export",
+            "effect": "write",
             "tool": "drawio_export",
             "description": (
                 "Render a diagram to PDF/PNG/JPG/SVG, once. (For a file that "
@@ -227,6 +251,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "url",
+            "effect": "read",
             "tool": "drawio_url",
             "description": (
                 "The editor URL for a diagram, or for a checkout of one — open "
@@ -241,6 +266,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "view_url",
+            "effect": "read",
             "tool": "drawio_view_url",
             "description": (
                 "The URL that serves one page (or the whole document) as a "
@@ -283,6 +309,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "remove",
+            "effect": "write",
             "tool": "drawio_remove",
             "description": "Delete a diagram (recoverable: its history is kept).",
             "params": [{"name": "save", "type": "string", "required": True}],
@@ -292,6 +319,7 @@ API_MANIFEST: dict[str, Any] = {
         # ---- autopublish links --------------------------------------------
         {
             "name": "autopublish",
+            "effect": "write",
             "tool": "drawio_autopublish",
             "description": (
                 "Keep a file on disk continuously rendered from a diagram. "
@@ -338,6 +366,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "autopublish_list",
+            "effect": "read",
             "tool": "drawio_autopublish_list",
             "description": (
                 "Every autopublish link, optionally just one diagram's. Shows "
@@ -350,6 +379,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "autopublish_stop",
+            "effect": "write",
             "tool": "drawio_autopublish_stop",
             "description": (
                 "Stop an autopublish link. The file it already published is "
@@ -360,6 +390,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "autopublish_now",
+            "effect": "write",
             "tool": "drawio_autopublish_now",
             "description": (
                 "Force autopublish links to re-render right now and report "
@@ -380,6 +411,7 @@ API_MANIFEST: dict[str, Any] = {
         # ---- checkouts ----------------------------------------------------
         {
             "name": "checkout",
+            "effect": "write",
             "tool": "drawio_checkout",
             "description": (
                 "Take a working copy of a diagram and get back a handle. Edit it "
@@ -392,6 +424,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "edit",
+            "effect": "write",
             "tool": "drawio_edit",
             "description": (
                 "Apply editing operations to a checkout. All-or-nothing: if any "
@@ -413,6 +446,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "externalize",
+            "effect": "write",
             "tool": "drawio_externalize",
             "description": (
                 "Rewrite a checkout's embedded image payloads "
@@ -441,6 +475,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "path",
+            "effect": "read",
             "tool": "drawio_path",
             "description": (
                 "The filesystem path of a checkout's file — for looking at it, "
@@ -452,6 +487,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "status",
+            "effect": "read",
             "tool": "drawio_status",
             "description": (
                 "Where a checkout stands: whether it has changes to land "
@@ -462,6 +498,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "update",
+            "effect": "write",
             "tool": "drawio_update",
             "description": (
                 "Pull the live diagram's changes into your checkout. Clean "
@@ -476,6 +513,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "resolve",
+            "effect": "write",
             "tool": "drawio_resolve",
             "description": (
                 "Declare a hand-resolved checkout clean. Refuses while conflict "
@@ -485,6 +523,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "merge",
+            "effect": "write",
             "tool": "drawio_merge",
             "description": (
                 "Land your checkout onto the live diagram as one transaction. "
@@ -503,12 +542,14 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "discard",
+            "effect": "write",
             "tool": "drawio_discard",
             "description": "Throw away a checkout and everything in it.",
             "params": [{"name": "handle", "type": "string", "required": True}],
         },
         {
             "name": "checkouts",
+            "effect": "read",
             "tool": "drawio_checkouts",
             "description": "Every checkout currently open, optionally for one diagram.",
             "params": [{"name": "save", "type": "string"}],
@@ -517,6 +558,7 @@ API_MANIFEST: dict[str, Any] = {
         # ---- editor plumbing (browser only) -------------------------------
         {
             "name": "editor_open",
+            "effect": "write",
             "description": "Editor tab announces it is showing a diagram.",
             "params": [{"name": "save", "type": "string", "required": True},
                        {"name": "tab", "type": "string", "required": True},
@@ -525,6 +567,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "editor_save",
+            "effect": "write",
             "description": (
                 "Editor tab autosave. Carries the revision the tab is based on; "
                 "a stale save is rejected rather than applied."
@@ -539,6 +582,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "editor_flush_ack",
+            "effect": "write",
             "description": "Editor tab confirms it has flushed for a pending merge.",
             "params": [{"name": "save", "type": "string", "required": True},
                        {"name": "tab", "type": "string", "required": True}],
@@ -546,6 +590,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "editor_close",
+            "effect": "write",
             "description": "Editor tab is going away.",
             "params": [{"name": "save", "type": "string", "required": True},
                        {"name": "tab", "type": "string", "required": True}],
@@ -553,7 +598,9 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "status_service",
+            "effect": "read",
             "tool": "drawio_service_status",
+            "surfaces": _CLI_HTTP,
             "description": (
                 "Service health: store location, diagram and checkout counts, "
                 "open editor tabs, and whether the web-client mount is up."
@@ -564,6 +611,7 @@ API_MANIFEST: dict[str, Any] = {
     "emitters": [
         {
             "name": "diagram",
+            "effect": "write",
             "topic": "drawio:<save>",
             "description": (
                 "Live coordination with editor tabs: {'type':'flush'} asks tabs "
@@ -578,16 +626,54 @@ API_MANIFEST: dict[str, Any] = {
 
 # -- handlers ---------------------------------------------------------------
 
+def _user_service(user: str) -> Service:
+    with _USER_LOCK:
+        service = _USER_SERVICES.get(user)
+        if service is None:
+            root = userroot.root_for(user)
+            store = Store(root / "drawio")
+            state = userroot.state_dir("drawio", user)
+            service = Service(store, Checkouts(store, state / "checkouts"),
+                              emit=_emit, user=user)
+            store.subscribe(lambda save, rev: autocommit.pin_figures(root, user))
+            _USER_SERVICES[user] = service
+            log.info("drawio: user store for %s at %s", user, store.root)
+        return service
+
+
 def _svc() -> Service:
+    user = userroot.current()
+    if user:
+        return _user_service(user)
     if SERVICE is None:  # pragma: no cover — set in main() before serving
         raise RuntimeError("drawio service not initialized")
     return SERVICE
 
 
 def _pub() -> AutoPublisher:
+    if userroot.current():
+        raise RuntimeError("autopublish is not available on a per-user store")
     if PUBLISHER is None:  # pragma: no cover — set in main() before serving
         raise RuntimeError("drawio service not initialized")
     return PUBLISHER
+
+
+def _renderer_for(as_: str | None):
+    """The view mount's per-request renderer: a user's store, else legacy."""
+    user = userroot.user_of(as_)
+    if not user:
+        return None
+    try:
+        service = _user_service(user)
+    except userroot.UnknownUser:
+        return None
+    renderer = getattr(service, "_view_renderer", None)
+    if renderer is None:
+        renderer = view_mod.Renderer(
+            service.store, userroot.state_dir("drawio", user) / "viewcache")
+        service.store.subscribe(renderer.prune_for_commit)
+        service._view_renderer = renderer  # type: ignore[attr-defined]
+    return renderer
 
 
 def _author(as_: str | None) -> str:
@@ -610,7 +696,7 @@ def _as_list(value) -> list[str]:
     return [str(part) for part in value]
 
 
-HANDLERS: dict[str, Any] = {
+_HANDLERS: dict[str, Any] = {
     "list": lambda a: _svc().list(),
     "info": lambda a: _svc().info(a["save"]),
     "cells": lambda a: _svc().cells(a["save"], page=a.get("page"),
@@ -667,12 +753,16 @@ HANDLERS: dict[str, Any] = {
     "editor_close": lambda a: _editor_close(a),
     "status_service": lambda a: _status_service(),
 }
+HANDLERS: dict[str, Any] = userroot.wrap_handlers(_HANDLERS)
 
 
 def _editor_open(args: dict) -> dict:
     service = _svc()
-    service.note_tab(store_mod.normalize_save_path(args["save"]), args["tab"])
-    return service.info(args["save"])
+    save = store_mod.normalize_save_path(args["save"])
+    service.note_tab(save, args["tab"])
+    info = service.info(args["save"])
+    info["topic"] = service.topic_of(save)
+    return info
 
 
 def _editor_ack(args: dict) -> dict:
@@ -731,7 +821,7 @@ def _on_start() -> None:
     # The view layer: a URL that returns a page's live SVG. Two commit
     # subscribers — prune the cache a rename/removal orphaned, and tell
     # subscribed consumers the page moved so they re-fetch their placed image.
-    VIEW = ViewServer(store)
+    VIEW = ViewServer(store, renderer_for=_renderer_for)
     store.subscribe(VIEW.renderer.prune_for_commit)
     ViewNotifier(_emit).attach(store)
 

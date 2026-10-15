@@ -68,3 +68,61 @@ def test_installed_webapp_matches_the_patch(name):
         f"webapp/js/{name} differs from patches/{name} — the installed client is "
         "stale or unpatched; re-run install.sh"
     )
+
+
+def test_preconfig_remembers_the_last_seen_view_image():
+    """What paints a placed view before the network answers. Without it a
+    reopened consumer diagram shows empty boxes until every image round-trips —
+    and since nothing here runs a browser, losing it would be silent."""
+    src = (PATCHES / "PreConfig.js").read_text(encoding="utf-8")
+    assert "indexedDB.open(VIEW_DB" in src
+    assert "URL.createObjectURL" in src
+
+
+def test_preconfig_revalidates_rather_than_trusting_the_cache():
+    """A cached image is what is *shown*, never what is believed. The
+    conditional has to be ours: left to the browser, `cache: 'default'` answers
+    200 out of its own copy and the 304 never reaches us."""
+    src = (PATCHES / "PreConfig.js").read_text(encoding="utf-8")
+    assert "'If-None-Match'" in src
+    assert "cache: 'no-store'" in src
+    assert "r.status === 304" in src
+
+
+def test_preconfig_bounds_the_view_store():
+    """The query space is caller-controlled: one diagram cycled through colour
+    variants would grow this without limit."""
+    src = (PATCHES / "PreConfig.js").read_text(encoding="utf-8")
+    assert "VIEW_MAX_ENTRIES" in src and "VIEW_MAX_BYTES" in src
+    assert "function evictViews()" in src
+
+
+def test_preconfig_sends_no_cache_buster():
+    """`rev` is a revision selector on the server, not a spare parameter. The
+    client used to bust its refreshes with `rev=<epoch-ms>`, which 404s — so the
+    refresh that was supposed to fix a stale image did nothing at all, and the
+    stale image stayed. `cache: 'no-store'` is what keeps the browser's own copy
+    out of the way; nothing needs appending to the URL."""
+    src = (PATCHES / "PreConfig.js").read_text(encoding="utf-8")
+    assert "'rev='" not in src and '"rev="' not in src
+    assert "Date.now()" not in src.split("function requestViewImage", 1)[1]
+
+
+def test_preconfig_does_not_read_a_failed_fetch_as_unchanged():
+    """Only a 304 means "unchanged". Any other failure answered as "unchanged"
+    leaves the placement showing the previous render with nothing reported —
+    which is how a stale picture outlives a fixed server."""
+    src = (PATCHES / "PreConfig.js").read_text(encoding="utf-8")
+    body = src.split("function requestViewImage(url) {", 1)[1].split("\n  }", 1)[0]
+    assert "if (r.status === 304) return null;" in body
+    assert "if (!r.ok) throw" in body
+
+
+def test_preconfig_refetches_rather_than_joining_a_stale_inflight_request():
+    """Autosave fires every two seconds. A refresh that joins the fetch already
+    in flight answers with the save before last, so the newest edit never
+    appears."""
+    src = (PATCHES / "PreConfig.js").read_text(encoding="utf-8")
+    body = src.split("function fetchViewImage(url) {", 1)[1].split("\n  }", 1)[0]
+    assert "viewStale[url] = true;" in body
+    assert "delete viewStale[url];" in body

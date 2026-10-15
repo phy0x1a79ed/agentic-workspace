@@ -5,8 +5,8 @@ At scope-create time, `_write_scope_opencode_config` writes
 catalog when present and (b) adds an `instructions` array so opencode
 loads orientation docs natively on startup. The array always contains
 `.awm/context.md` (scope tier) and prepends the absolute path of
-`<WORKSPACE_ROOT>/WORKSPACE.md` (workspace tier) when that file exists.
-The repo tier (AGENTS.md) is omitted — opencode walks AGENTS.md natively
+`<WORKSPACE_ROOT>/AGENTS.md` (workspace tier) when that file exists.
+The repo tier (the scope's own AGENTS.md) is omitted — opencode walks it natively
 from cwd, so listing it would double-inject. The session-launch path in
 `agent_instances.create_session` prefers the per-scope file over the
 workspace fallback.
@@ -85,9 +85,9 @@ class TestWriteScopeOpencodeConfig:
         assert cfg["mcp"] == {}
 
     def test_includes_workspace_md_when_present(self, tmp_path, scopes_workspace):
-        # When the workspace has a WORKSPACE.md file, its absolute path goes
+        # When the workspace has an AGENTS.md file, its absolute path goes
         # into the instructions array (workspace tier) before .awm/context.md.
-        workspace_md = scopes_workspace["workspace"] / "WORKSPACE.md"
+        workspace_md = scopes_workspace["workspace"] / "AGENTS.md"
         workspace_md.write_text("# workspace orientation\n")
         wt = tmp_path / "wt"
         awm = wt / ".awm"

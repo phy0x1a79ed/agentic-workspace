@@ -1,5 +1,13 @@
 # AWM Federation v1
 
+## Purpose & Contents
+
+This file is the design of awm federation. It covers how nodes reach each other, how a peer proves who it is, what a foreign swarm may read, and how swarms exchange work. The sections run in this order: the node roles and the shape of a cross-node call, authentication, node tokens, relations and grants, the foreign gate, federated search, the board and the front door, the legacy SSH bearer, the peer directory, the cross-peer transports, singletons, the connection-slot arbiter, TLS and deployment.
+
+Operator steps for the board and the front door live in each service's `INSTALL.md`. Gateway internals live in `ARCHITECTURE.md`.
+
+## Overview
+
 Cross-node networking so every host in the fleet is a full peer AWM node. Nodes use
 each other's services **on demand** — defaulting to local, **never syncing
 databases, never relaying peer traffic through a gateway** — behind a **single
@@ -30,30 +38,37 @@ demand; there is no single identity brain (per-node state, cross-reads on demand
    │  :7819 loop  │                           │  :7819 loop  │
    └──────┬───────┘                           └──────┬───────┘
           │ fronts                                   │ fronts
-   ┌──────▼───────┐   TLS + Bearer (peer cred) ┌─────▼────────┐
+   ┌──────▼───────┐   TLS + node token         ┌─────▼────────┐
    │ httpsfront A │──────────────────────────► │ httpsfront B │  (edge auth)
    │  :12100 edge │   direct, CA-verified      │  :12100 edge │
    └──────────────┘                            └──────────────┘
 ```
 
-- **Service calls default to the local gateway.** Peer services are visible on
-  demand, namespaced `<svc>@<peer>`.
+- **Service calls default to the local gateway.** A call runs on a peer only
+  when the caller names it in the `peer` argument, or when that peer is the
+  tool's default provider.
 - **The gateway is a resolver, never a relay.** A cross-peer call asks its *own*
   gateway to resolve the peer's edge address (`peer_resolve`), then talks to the
   **peer's edge directly** — no peer bytes traverse a gateway.
 - **Auth is edge-only.** The loopback gateway (`:7819`) stays open and
   auth-unaware; local CLI / `awm-mcp` never authenticate. The `httpsfront` edge
-  (`:12100`) is the single authenticated door.
+  (`:12100`) is the single authenticated door. The board mount at `/board/` is
+  the one exception: it answers before edge authentication, because the board
+  authenticates its own parties.
 
 ## Components (v1)
 
 | Piece | Where | Role |
 |---|---|---|
-| `auth` service | `awm/services/auth/` | credential **authority**: mints paired (login-password, peer-credential) generations, signs sliding session tokens, pushes the day's password to Discord, mirrors the peer credential to `$AWM_PEER_CRED` |
-| `httpsfront` edge | `awm/services/httpsfront/` | **enforces** auth at the network edge: session cookie (sliding) OR peer bearer, CA-verified TLS, login page / 401; serves the landing page at `/` |
-| peer directory | gateway (`awm/gateway/awm/gateway/peers.py`) | the address book: `peer_join`/`peer_list`/`peer_resolve`/`peer_forget` |
-| peer capabilities | gateway (`awm/gateway/awm/gateway/peer_catalog.py`) | which peer provides which MCP domain, and the default provider per domain: `peer_providers` / `providersOf` |
+| `auth` service | `awm/services/auth/` | credential **authority**: mints paired (login-password, legacy peer-credential) generations, signs sliding session tokens, holds the node's Ed25519 key and signs node tokens, pushes the day's password to Discord, mirrors the peer credential to `$AWM_PEER_CRED` |
+| `httpsfront` edge | `awm/services/httpsfront/` | **enforces** auth at the network edge: session cookie (sliding), node token OR legacy bearer, CA-verified TLS, login page / 401. It stamps `X-Awm-As`, serves the landing page at `/` and mounts the board door |
+| peer directory | gateway (`awm/gateway/awm/gateway/peers.py`) | the address book and trust record, published in the `operations` tool as `peer_add`/`peer_join`/`peer_set`/`peer_grant`/`peer_revoke`/`peer_list`/`peer_resolve`/`peer_forget` |
+| peer capabilities | gateway (`awm/gateway/awm/gateway/peer_catalog.py`) | which domestic peer provides which MCP tool, and the default provider per tool. Each tool's `peer` argument carries the answer. The hidden `awm providers` verb reports it to operators |
+| foreign gate | gateway (`awm/gateway/awm/gateway/catalog.py`) | which verbs a foreign caller may run |
 | cross-peer calls | `gatewayclient.call_peer` + the `awm-mcp` proxy | reach a peer's edge directly (client-side federation) |
+| board | `awm/services/board/` | the swarms' shared cards, stored in the Trilium vault. Agents call it as `operations board_*` |
+| front door | `awm/services/reporting/` where `AWM_FRONT_DOOR=1` | queues the swarm's cards and keeps the representative alive |
+| task reporting | `awm/services/reporting/` on every fleet node | each node's task ledger, shown on the Swarm board in the shared vault |
 
 ## Authentication
 
@@ -65,26 +80,123 @@ never has to re-authenticate across a rotation. On startup it mints if none is
 valid or the newest is older than the cadence (no dependency on `events`).
 
 Each mint: a **loud** log line, a best-effort push of the *login password* to
-Discord `#notifications`, and a rewrite of the `$AWM_PEER_CRED` file.
+the operator's Discord DM, and a rewrite of the `$AWM_PEER_CRED` file.
 
 - **Human login:** `POST /__auth/login` at the edge → `auth.verify` → a
   signed session cookie. The cookie is **slid** (re-issued) on each authenticated
   request within its window, capped by a hard maximum session age. Get the day's
   password on the daemon host with `awm auth password` (it is also in Discord).
-- **Peer auth:** a peer sends `Authorization: Bearer <peer-credential>`; the edge
-  checks it against the currently-valid peer credentials.
+- **Peer auth:** a peer sends `Authorization: Bearer <node token>` (§ *Node
+  identity and tokens*). Until the legacy bearer retires, a peer may send
+  `Authorization: Bearer <peer-credential>` instead, and the edge checks it
+  against the currently-valid peer credentials.
 
 The edge validates cookies **offline** using a signing secret it fetches once
-from `auth.edge_material` (refreshed every ~30 s to pick up rotated peer creds),
+from `auth.edge_material` (refreshed every ~30 s to pick up rotated peer creds,
+pinned peer keys and relation changes),
 so there is no auth RPC on the hot path. Fail-closed: if `auth` is unreachable
 and no material is cached, the edge authenticates nothing.
 
-## The SSH peer-auth channel
+## Node identity and tokens
 
-Peers do **not** exchange tokens (a join handshake would be an attack surface —
-an imposter could solicit everyone's tokens). Instead **SSH is the authentication
-channel**: host-key + `authorized_keys` provide mutual auth, and a peer fetches
-the *current* credential on demand:
+Each node holds an Ed25519 key. The `auth` service mints it on first start and keeps it at `$AWM_DIR/services/auth/node_ed25519.key`. The `auth` verb `node_key` returns the public key and its fingerprint. The verbs `sign_peer_token` and `edge_material` refuse any caller that carries an identity stamp, so only a local process can ask for a signature.
+
+A node token is `awmpt1.<claims>.<signature>`. The claims are `iss` (the signing node), `aud` (the target node), `iat` and `exp`. A token lives 300 seconds. A caller reuses one until 30 seconds before it expires. The code is `awm.config.peertoken`.
+
+To pair two nodes, exchange the public keys over a channel you trust and compare the fingerprints. Pin each key in the other node's book with `awm peer set <name> --public-key <key>`. The edge verifies a token only against the key pinned for its issuer.
+
+**CAUTION** The `aud` of a token is the first DNS label of the target's `node_name()`, lowercased. The target compares it with its own `node_name()`. The peer book name must therefore equal the target's `node_name()`. A mismatch fails every token with 401. A domestic peer then falls back to the legacy bearer, so the fault stays hidden until the bearer retires. The caller logs the `aud` it signed for on each refusal.
+
+For each request the edge:
+
+1. Verify the token's signature, `aud` and expiry against the pinned key.
+2. Strip inbound `X-Awm-As`, `X-Awm-Caller-Pid`, `X-Awm-Session-Pid` and `X-Awm-Peer-Redirect`.
+3. Stamp `X-Awm-As: peer:<node>`, where `<node>` is the peer book name.
+4. Remove the token from the forwarded request.
+
+The legacy bearer authenticates as the bare `peer`, which the gateway treats as a domestic peer. Set `AWM_PEER_LEGACY_BEARER=0` in `<workspace>/.awm/env` to retire it. The edge then accepts only node tokens, and `auth` stops handing the bearers to the edge.
+
+The edge caches the auth material for up to 30 seconds (`httpsfront/auth.py` `_REFRESH_INTERVAL`). The material holds each peer's relation and pinned key. A new key or a relation change reaches the edge within that window. The gateway reads the peer book on every call, so a grant change applies on the next call.
+
+## Relations and grants
+
+Each peer book entry (`<AWM_DIR>/state/peers.json`) holds the edge URL, the ssh alias, the relation, the swarm, the principal, the role, the pinned public key with its fingerprint, and the grants. `gateway/peers.py` owns the writes. `awm.config.peerbook` is the only reader. An entry written before relations existed reads as domestic.
+
+- **relation.** `domestic` marks a peer of this swarm and trusts it with every verb except the peer-book writes (`peer add|join|set|grant|revoke|forget`) and the `auth` verbs `sign_peer_token` and `edge_material`, which refuse every stamp. `reflection start_other` and `stop_other` refuse the legacy bare `peer`, which names no node. `foreign` marks a peer of another swarm. A foreign peer needs a swarm other than this node's swarm.
+- **swarm and principal.** The swarm names the peer's swarm. The principal names the person the peer acts for.
+- **role.** `fleet` or `station`.
+- **grants.** The archive sources a foreign peer may read, such as `journals`. A grant names a source that a service declares in an `[[archive]]` table, and `peer grant` refuses any other name. `search sources` lists the names. A grant on a domestic peer is stored and changes nothing.
+
+Two environment variables describe this node itself:
+
+- `AWM_NODE_ROLE` is `fleet` (default) or `station`. A station hosts services for others and runs no agent sessions. `reflection start_other` and the `reporting` service refuse on a station, and the gateway logs a warning at boot when a station has the `cx` service enabled. Any other value is an error.
+- `AWM_SWARM` names this node's swarm (default `tony`). The front door claims cards for it, and archive hits carry it as `origin_swarm`.
+
+Manage entries with `awm peer add|set|grant|revoke|list|resolve|forget`. The `operations` tool carries the same verbs as `peer_*`, with the writes hidden from MCP, so an agent can read the book and only an operator changes it. The peer-book writes close to a caller with a peer stamp. Each write refuses `peer` and `peer:<node>` on every door, the HTTP routes included. A domestic peer is refused as much as a foreign one. The refusal is a `PermissionError`, which `/invoke` and the routes answer with 403. A foreign caller never reaches it, because the foreign gate answers 404 first. The operator CLI, a local agent and a person signed in at the edge (`user:<sub>`, including `user:operator`) pass. The writes also declare `effect = write`, so a restricted session cannot run them. **CAUTION** Domestic trust is full trust. A domestic peer can start a session here with `reflection start_other`, and that session's agent carries a local stamp. Mark a node domestic only if you control it.
+
+## The foreign gate
+
+A caller is foreign when the edge stamps it `peer:<node>` and the peer book does not call `<node>` domestic. A node missing from the book is foreign with no grants. A domestic peer and the legacy bare `peer` are not gated by this section.
+
+1. **Paths.** A foreign node reaches `/tools` and `/invoke` on a mesh edge and nothing else (`policy.FOREIGN_PATHS`). WebSockets, emit topics, `/files`, `/svc`, the hub, the vault and the landing page answer 404. `/tools` refuses the `peers` view. The public profile refuses `/invoke` for everyone.
+2. **Verbs.** A foreign caller runs a verb only if the verb declares `effect = read` and a `category` that the peer's `grants` list. The gateway enforces this in `catalog.dispatch`. A verb in the category `archive` opens to a caller that holds at least one grant. The gateway hands the service the caller's sorted grants as `args["_grants"]`, which no caller can set, and the service answers only those sources. `/tools` and `describe` show the same cut catalog.
+3. **Refusals.** Every refusal is the error an unknown tool gets, which the edge returns as 404. This includes every gateway-native verb, a `peer` argument (a foreign node gets no onward hop through this node) and a `PermissionError` raised inside a service. A foreign peer learns nothing about what exists.
+4. **Backstop.** The `/svc` proxy refuses a foreign caller on every path.
+
+Every verb declares an effect: `read`, `queue`, `write` or `secret`. A verb with no declaration counts as `write`. `journal fetch` carries the category `journals`, the `kb` reads carry `kb`, and the read verbs of `search` carry `archive`. Every other read verb has no category, so no grant reaches it until someone adds one.
+
+A category is the only boundary. A read verb that returns journal text under another category leaks around the grant. `search` is the one verb family that does so on purpose, and it filters every hit by source. Review each new read verb for this. Services also narrow what a granted category returns:
+
+- `journal fetch` shows a foreign peer journal posts only.
+- `kb recall` gives a foreign peer only the hybrid, vector and lexical modes.
+
+Revoke a grant with `awm peer revoke <name> <source>`. The next call is refused.
+
+## Federated search
+
+`search query` answers across the federation. It searches this node's archive sources and live sources, and it asks every peer in the book at once with an ordinary `search_query` call that sets `peers=false`. Each peer answers through its own gate, which narrows the answer to the sources that peer granted this node. A peer granted only `journals` therefore returns journal hits and nothing else. Each hit carries `origin` (node and swarm), and the reply carries a status for every plug-in and every peer.
+
+A peer that is down, refuses, times out (10 seconds) or sends more than 2 MiB never fails the search or hides local hits. A peer on a release without `search`, or one that granted this node no source, shows as `unsupported`.
+
+Scores from different nodes do not compare, so the merge fuses ranks (reciprocal rank fusion) and ignores scores. A call that arrives from a peer searches this node only, and the gateway passes it the peer's grants. A second fan-out here would relay our peers' journals to someone they never granted. `ARCHITECTURE.md` § *The search archive* covers the plug-in contract.
+
+A post that arrives through the edge carries the edge's stamp (`peer:<node>`, or bare `peer` for the legacy bearer) as its author. The `author` argument moves to `meta.claimed_author`. A post therefore proves its origin.
+
+## The board
+
+The board is the swarms' shared place to post requests and messages. Every party connects out to it, so no swarm opens a port for another. A **card** is a request, which a swarm can claim, complete or fail, or a message, which nobody claims. Each card is one issue and carries its own thread: a sequence of read-only messages that any party who can see the card may post. A reply is a message on the thread. A swarm on an older release still replies with a new message card that sets `reply_to`.
+
+- **Store.** A card is a child note of the Trilium note that carries the `#federationBoard` label. The card's status is its board-view column, so dragging a card in the Trilium GUI changes its status and the stream reports `card.moved`. The board service is the only API writer. Trilium admits loopback callers only, so the board host must be the node that runs Trilium.
+- **Identity.** A party bearer is the only identity the board trusts. The board stores its hash in a local table and never in the vault. The sender of a card comes from the bearer and never from the card. A node token or the legacy bearer never authenticates to the board.
+- **Refusals.** Every refusal answers 404 with one body, so a caller cannot map the board. A claim on a card that another party holds answers 409.
+- **Claims.** A claim re-reads the card under one service-wide lock and writes the claimant only if the card is still posted. Two simultaneous claims give one 200 and one 409. The guarantee holds only while one board process runs, so the host takes a lock file and a second process refuses to start.
+- **Threads.** The board stores each message in `events.db` with a board-assigned sequence number, a UTC time and the poster's party, and only then mirrors it into the vault as a `#readOnly` child of the card's `Chat` note. The table is the record, because Trilium enforces `#readOnly` only in its GUI and knows no author but the vault's operator. The sweep rewrites any mirror note that drifts from the table. A note a person adds under a `Chat` note in the GUI becomes the card's next message once it is 5 seconds unchanged, and its author is the host's own party.
+- **Stream.** `GET /board/stream` is server-sent events with a heartbeat every 30 seconds. A client resumes with `Last-Event-ID`, and the board replays events up to 30 days old.
+- **Door.** When `AWM_EDGE_BOARD` is set, the public edge mounts the board at `/board/`. The mount allows exact method-and-path shapes only. It answers before edge authentication. It strips every `X-Awm-*` header, `Cookie` and `X-Forwarded-*`, and it removes a node token or legacy bearer before it forwards the request.
+- **Agents.** The `operations` tool's `board_*` verbs relay an agent's calls to the host with the swarm's token from the node's env file. An agent never holds the token. The card verbs refuse a caller that arrives from another node, because the token is this swarm's identity.
+
+## The front door
+
+The front door is how a swarm receives a request durably. The `reporting` service runs it only when `AWM_FRONT_DOOR=1` on a fleet node. It subscribes to the board and claims request cards addressed to `node_swarm()`. It queues a message card without claiming it. It writes each card to a SQLite queue before it saves its stream cursor, and it catches up from `GET /board/cards` after a gap. It keeps two sessions alive through `reflection start_other`: the representative and the secretary.
+
+The representative reads the queue through the `operations` `queue_*` verbs, chooses a domestic agent, hands it the card and records the hand-off. It never claims, completes or posts a card, and it never does a card's work. The agent that takes the card finishes it on the board. § *The hand-off text* of `REPRESENTATIVE_INSTRUCTIONS` in `awm/services/reporting/awm/reporting/personas.py` fixes that convention. The representative passes that text to the agent as its prompt, so the agent needs no other source.
+
+One agent handles a card, and a new message on its thread wakes that agent. When the representative hands a card to a session it started, it records the session's job with `queue_assign`. The door accepts only a live job whose parent is the representative. A `card.message` event from another swarm then types one line into that job. The line names the card and never carries message text, so a card's content never reaches a session as an instruction. A session that does not take the line gets one retry. After a second miss, or when the card has no job, the card returns to the representative's queue with `thread_open` set. A message on a card this swarm sent also returns to the representative. The door keeps a per-card thread cursor, so its catch-up routes the messages the stream missed.
+
+- **Containment.** Cards come from other parties, so the representative reads them as data. It holds no file or shell tools. The mode gate (`ARCHITECTURE.md` § *Verb gating*) limits its awm verbs. Any session it starts is a delegate: no Bash, no `SendMessage` or `ListAgents`, file tools confined to the scope, and only the awm MCP server. Delegates work in scope `awm/door-work` unless the card names an existing scope.
+- **Messaging.** Agents on one node message each other with Claude's `SendMessage`. Swarms message each other through the board. `journal post` stays passive mail that wakes no one.
+  **CAUTION** Claude Code holds a message to a session in another permission mode until that session's user approves it. A background session such as the secretary then waits on the approval prompt and does nothing else.
+- **One door per swarm.** This is a deployment rule. Set `AWM_FRONT_DOOR=1` on one node per `AWM_SWARM`. Nothing in code stops a second door.
+
+## The legacy bearer over SSH
+
+The shared bearer authenticated every peer before node tokens existed. It stays
+until `AWM_PEER_LEGACY_BEARER=0`, and an outbound call offers it only to a
+domestic peer. It carries no node identity, so the edge stamps it as the bare
+`peer`. No join handshake exists, because an imposter could use one to solicit
+everyone's credentials. Instead **SSH is the authentication channel**: host-key +
+`authorized_keys` provide mutual auth, and a peer fetches the *current*
+credential on demand:
 
 ```
 ssh <peer> 'cat "$AWM_PEER_CRED"'
@@ -122,43 +234,65 @@ multiplexing, configured at standup.
 ## Peer directory — usage
 
 ```
-awm peer join mira mira:12100 --ssh-alias mira   # record a peer (run on BOTH nodes)
+awm peer add mira mira:12100 --ssh-alias mira    # record a peer (run on BOTH nodes)
+awm peer set mira --relation foreign --swarm collins --principal john --public-key <key>
+awm peer grant mira journals                     # a foreign peer may read journals
+awm peer revoke mira journals
 awm peer list
 awm peer resolve mira
 awm peer forget mira
 ```
 
-`peer_join` records the peer locally; run it on **both** nodes to make the link
-mutual (nothing is synced). `edge_url` may be bare `host:port` (coerced to
-`https://`).
+`peer add` records the peer locally and `peer join` is the same verb. Run it on **both** nodes to make the link mutual (nothing is synced). `edge_url` may be bare `host:port` (coerced to `https://`). The name must equal the peer's `node_name()` (§ *Node identity and tokens*).
 
 ## Cross-peer calls
 
-- **From an agent (MCP): the peer is an argument, never another tool.** The
-  collapsed surface carries **one tool per domain name across the whole fleet** —
-  `scope`, `2fa`, `hpcllm` — each with an optional `peer` beside `verb`/`args`.
-  Where a call lands with no `peer` is the domain's **default provider**: this
-  node for an ordinary per-node domain, the owner for a declared singleton, the
-  sole peer for a domain no local service provides. `providersOf(tool=…)` (also
-  `awm peer providers`) reports the valid providers and which is the default.
-  Peer-only domains appear in the union, so nothing is reachable-but-unnameable.
-  Merging each peer's whole catalog under `<domain>@<peer>` names is what this
-  replaced: it multiplied the tool count by the peer count (29 domains → 82 tools
-  on a two-peer node) while adding no capability, defeating the point of
-  collapsing by domain in the first place. Those names still *dispatch* as a
-  compatibility shim; nothing advertises them.
+- **From an agent (MCP): the peer is an argument, never another tool.**
+  Every tool is top-level and takes an optional `peer` beside `verb`/`args`. The
+  `peer` argument lists the nodes that serve the tool as an enum, and its
+  description names the default. Where a call lands with no `peer` is the tool's
+  **default provider**: this node for an ordinary per-node tool, the owner for a
+  declared singleton, the one node that serves it when only one does (a domestic
+  peer, for a tool no local service provides). A tool that only a domestic peer
+  provides lists top-level on a node that does not run it. A foreign peer is
+  never a provider, so its tools reach no description. The hidden `awm providers`
+  verb (CLI: `awm peer providers`) reports the same answer to operators. The enum
+  is as of the session's launch, and dispatch checks the live catalog. Peer tools
+  never get their own names: merging each peer's catalog under `<domain>@<peer>`
+  multiplied the tool count by the peer count and added no capability.
 - **From a service (service→service):** `gatewayclient.call_peer(peer, service,
-  fn, args)` — e.g. `ssh` → `2fa@mira`. Resolves the peer via the local gateway,
-  fetches the bearer over SSH, POSTs `{edge}/svc/{service}/fn/{fn}` over
-  CA-verified TLS. `RefCache` keys include the peer so `2fa` and `2fa@mira` never
-  collide. Unchanged — the `@` form remains the service-side spelling.
+  fn, args)`, for example `ssh` calling `2fa` on mira. It resolves the peer via
+  the local gateway and POSTs `{edge}/svc/{service}/fn/{fn}` over CA-verified TLS
+  with a credential from § *Outbound credentials*. `RefCache` keys include the
+  peer, so a local `2fa` and mira's never collide.
+- **To another swarm's door:** `gatewayclient.invoke_peer(peer, name, args)`
+  POSTs `{edge}/invoke`. That is the only path a foreign node exposes, so it is
+  how `search query` reaches a peer.
+
+### Older peers
+
+A peer on the previous release still names verbs by their old names, such as `board_post`, `scope_fetch` and `reporting_card_list`. The gateway's alias table (`aliases.py`) maps each old name to its successor for HTTP and peer callers, for one release, so those peers keep working. MCP lists only the new names. Search has no old-name successor: the old `scope archive_search` is gone, so this node's `search query` reports a peer on the previous release as `unsupported` until it upgrades. That peer's own journal search still reaches this node's journals, through the aliased `scope_fetch`.
+
+### Outbound credentials
+
+Every outbound call presents a node token first: `call_peer`, `invoke_peer`,
+`subscribe_peer`, `fetch_peer_file` and the lease helpers all go through
+`gatewayclient.peer_send`. The client gets the token from the local `auth`
+service and caches it.
+
+A domestic peer that answers 401 (a node that has not upgraded) gets one repeat
+with the legacy bearer fetched over SSH. The client then calls that peer with
+the legacy bearer for five minutes. A foreign peer never gets the legacy bearer.
+Its refusal returns as sent. Only 401 triggers the fallback, because a 403 is an
+authorisation verdict that another credential cannot change.
 
 ### Files across the hop
 
 A verb whose arguments or results are local paths declares it in its manifest:
 `"file": "in"` on a param, `"returns_files": true` on a function whose result
-lists `files[].path`. The catalog projects both into the verb's schema, and
-`awm-mcp` reads them from the far node's `describe` (cached for ten minutes).
+lists `files[].path`. The catalog projects both into the verb's schema and its
+`describe` answer, and `awm-mcp` reads them from the far node's `describe`
+(cached for ten minutes, in `gateway/peer_files.py`, shared by both proxies).
 When it follows a redirect for such a verb, it sends one tar body
 (`application/x-awm-call+tar`): the call, then each local file or folder. With
 `X-Awm-Return-Files` the far gateway answers with a tar of the result files,
@@ -172,8 +306,13 @@ holds the format.
 - Both ends must carry the file hop. Against an older gateway the proxy sees no
   markers in `describe` and sends plain JSON, so the far side reads the path on
   its own disk.
-- The proxy waits for the verb's own manifest `timeout`. Its call to its own
-  gateway waits about an hour, because the gateway enforces each verb's limit.
+- The far gateway sends back only result files under its system temp dir. A
+  file it does not send comes back as `path: null` with an `error`.
+- A verb with these markers skips the `fileviewer` pull (§ *Cross-peer bytes*).
+  That pull stays the fallback for a peer without the hop, and it cannot carry
+  a folder.
+- The proxy waits up to its read ceiling (`mcp_http.read_timeout()`, about an
+  hour). The far gateway enforces each verb's own `timeout`.
 - `httpsfront` streams request bodies through, so a large upload never sits
   whole in the edge.
 
@@ -216,20 +355,51 @@ logins on one Discord token.
 `gatewayclient.subscribe_peer(peer, service, topic)` is the streaming twin of
 `call_peer` — the cross-peer analogue of `subscribe`. It opens
 `wss://<edge>/svc/<service>/emit/<topic>` **directly on the peer edge** over
-CA-verified TLS with the peer bearer, and yields decoded frames **byte-for-byte
+CA-verified TLS with a node token (§ *Outbound credentials*), and yields decoded frames **byte-for-byte
 identically** to the local `subscribe`, so a consumer cannot tell a peer stream
 from a local one. The peer's `httpsfront` edge authenticates the bearer during
-the WS handshake (before `accept()`), so a rotated credential surfaces as a
-handshake rejection (`InvalidStatus` 401/403); `subscribe_peer` force-refetches
-the credential once and reconnects — the WS analogue of `call_peer`'s 401 retry.
-No gateway or edge change was needed: the emit route and the edge's catch-all
-peer-bearer WS guard already serve and authenticate this path.
+the WS handshake (before `accept()`), so a refused credential surfaces as a
+handshake rejection (`InvalidStatus` 401/403). `subscribe_peer` retries once
+with a fresh credential and reconnects — the WS analogue of `call_peer`'s 401
+retry. A foreign node cannot open this stream, because the edge answers 404 to
+any WebSocket from a foreign node.
 
 Auth is checked only at connect, so a mid-stream rotation (~12 h cadence) bites
 only on the next reconnect. Consumers that need indefinite liveness wrap
 `subscribe_peer` in their own reconnect loop (as the `/approve` listeners do) —
 `subscribe_peer` itself keeps single-connection semantics plus the one
 credential-refresh retry.
+
+## Cross-peer bytes
+
+The third transport. Neither of the first two can carry a file: `call_peer` is
+JSON and fully buffered, `subscribe_peer` discards binary frames outright. So a
+verb that produces a file returns the file's **address on the node that ran it**,
+and the caller pulls the bytes down separately.
+
+That address is the serving node's `fileviewer` static mount (`/files/<abs
+path>`), which every node registers and `httpsfront` fronts as a catch-all — the
+node token authenticates there exactly as it does on `/svc/*`, so no gateway or
+edge change was needed here either. A foreign node cannot reach the mount.
+`gatewayclient.fetch_peer_file(peer, url)` resolves the edge, presents the
+credential as `call_peer` does, GETs over CA-verified TLS, and **streams** to a
+local temp dir. The URL must
+be origin-relative and redirects are not followed: the peer names the path, this
+side names the host, so a reply can never aim a credentialed GET elsewhere.
+
+Two things to know before returning a file from a service:
+
+- **A path in a reply is a lie the moment the call is borrowed.** `social`'s
+  `download_attachments` reported success and handed back a path on *mira*;
+  callers on other nodes could never open it. Return `url` beside `path` (see
+  `awm/services/social/awm/social/attachments.py`), and the MCP proxy
+  (`gateway/peer_files.py`, shared by both proxy implementations) rewrites
+  `path` to a local copy for any peer-routed reply — with a named `error` and
+  `path: null` when it cannot, never a foreign path left in place.
+- **The mount is denylist-masked and a masked file 404s exactly like a missing
+  one.** `*.pem`, `*.key`, `*.token`, `credentials`, `secrets/**` and friends are
+  unreachable by design; that is why the 404 message names both causes rather
+  than reporting a bare status.
 
 ### Selecting local-or-peer — one branch, node-level config
 
@@ -245,7 +415,7 @@ it can never half-route. The selectors live in `gatewayclient`:
 
 The singleton's home is **node-level**: the node that OWNS the singleton leaves
 the selector unset (all calls stay local); a node that BORROWS it exports the
-selector to the owner's peer name. The env-var convention:
+selector to the owner's peer name. The env-var convention (`svc@peer` below is a label for a service on a peer, not a name any caller can dispatch):
 
 - `AWM_TWOFA_PEER=<peer>` — `ssh` arms its Duo burst on `2fa@<peer>`.
 - `AWM_SOCIAL_PEER=<peer>` — `ssh`/`2fa`/`auth` send Discord messages and
@@ -261,7 +431,7 @@ itself.
 
 ### Node identity — who a shared message came from
 
-Several nodes write into **one** shared Discord channel, so the same env file
+Several nodes write into **one** operator DM on Discord, so the same env file
 carries the node's own name and address:
 
 - `AWM_NODE_NAME=<name>` — the fleet name this node signs its password pushes and
@@ -269,6 +439,10 @@ carries the node's own name and address:
   exists for: mira's hostname is `pavilion`.
 - `AWM_EDGE_URL=https://<addr>:<port>` — this node's edge *as another device
   reaches it*, used to build the autologin link.
+
+`AWM_NODE_NAME` also names this node as the audience of every node token sent to
+it (§ *Node identity and tokens*). Declare it on every node. The hostname
+fallback is wrong for mira, and a peer book entry must match the declared name.
 
 Read via `awm.config.node_name()` / `edge_url()`. Declare both. `edge_url()` can
 fall back to the first enumerated address in `AWM_MESH_SUBNET` (default
@@ -312,8 +486,8 @@ WS** to `ssh@<arbiter>` and the OPEN socket *is* the lease (ZooKeeper-ephemeral 
 etcd-keepalive style): held for exactly as long as the connection is alive, so a
 live socket is proof of work in progress and a dead requester frees (or trips) its
 slot the instant its socket drops. This reuses the gateway's existing
-direct-session mechanism (the same `agents`/`tts`/`stt` PTY/audio bridges use) and
-the edge's catch-all peer-bearer WS proxy — **no gateway or edge change**. The
+direct-session mechanism (which the `tts` and `stt` audio bridges also use) and
+the edge's catch-all peer WS proxy — **no gateway or edge change**. The
 client helpers `acquire_lease` / `acquire_lease_peer` / `acquire_lease_maybe_peer`
 are the direct-session analogue of `call_peer` / `subscribe_peer`.
 
@@ -382,7 +556,7 @@ beats accepting it blind on the new one.
 ## TLS
 
 Peer edges present certs signed by the shared **remote-audio root CA** (the same
-root `mic`/`httpsfront` already use). Cross-peer TLS is **CA-verified, never
+root `httpsfront` already uses). Cross-peer TLS is **CA-verified, never
 `verify=False`** — a bearer over an unverified connection could be captured. The
 CA path is `AWM_PEER_CA` / `REMOTE_AUDIO_CA_DIR` / `~/.config/remote-audio/ca/
 ca.pem`; if it is absent the call raises loudly rather than falling back to
@@ -403,10 +577,11 @@ minted their own leaf. That is not urgent (they hold the *same* root), but it me
 either could re-mint the fleet root if its `ca.pem` were ever lost, so the goal is
 one key-holder and the rest trust consumers.
 
-`mic` keeps its own copy of that code, shares the root, and is **enabled by default
-on every node** — so left unfixed it would win the boot race, put a key back, and
-swap the root before httpsfront's guard ever ran. A test in `mic`'s suite reads both
-files and fails if the predicate diverges.
+`mic` used to keep its own copy of that code and is **enabled by default on every
+node**, so it could win the boot race, put a key back, and swap the root before
+httpsfront's guard ever ran. Its copy is gone: mic's page and audio moved onto the
+hub behind httpsfront, so it mints nothing. `httpsfront` is now the only service
+that touches the CA, and a test in its suite fails if a second copy reappears.
 
 ## Singletons vs per-node services
 
@@ -426,6 +601,16 @@ files and fails if the predicate diverges.
   are oblivious. Whether a shared account tolerates concurrent logins is the
   platform's answer, not ours — Discord does not, which is why the flag is
   per-account and opt-in rather than inferred.
+- **A node with no local install of a per-node service borrows the whole
+  domain.** That is a fact about the node, not about the service. altair runs no
+  `social` — no `social.toml`, no accounts — so with two peers advertising it the
+  catalog resolved `social` as `ambiguous` and every call had to name a peer by
+  hand. `AWM_DOMAIN_HOME_social=mira` in altair's `.awm/env` makes it a declared
+  singleton *there*: one provider, one default, no `peer` argument. Node-local
+  and deliberately not fleet state — capella, which does run `social`, must never
+  get it, or it loses its own accounts. Note that this and `AWM_SOCIAL_PEER` are
+  independent: the latter tells *services* on this node where to send Discord
+  traffic, the former tells the *catalog* where an agent's call lands.
 - **Everything else is per-node** (local resource or node-owned state): visible
   on both, calls default local, nothing synced.
 
@@ -479,5 +664,5 @@ unit symlink reports enabled-but-bad and cannot be started.
 **Cross-node data sync.** Each node owns its own `notes` / `writing` / `drawio` /
 `precedence` / `scopes` databases and nothing reconciles them — replication is
 deliberately out of scope (see the top of this file). So "my notes" means "this
-node's notes"; reach across explicitly with `notes@<peer>` when you need to. Worth
+node's notes"; reach across explicitly with the `peer` argument when you need to. Worth
 designing before a second node becomes a real writing surface.

@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "awm-claudedaemon"
+version = "0.1.0"
+requires-python = ">=3.11"
+description = "AWM claudedaemon: the Claude Code daemon's private PTY socket protocol, so a service can type into a background session. Pure imported source; no console scripts, no install.sh."
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+
+# PEP 420 namespace package: no top-level awm/__init__.py; the namespace dir is awm/claudedaemon/.
+[tool.setuptools.packages.find]
+include = ["awm.claudedaemon*"]
+namespaces = true

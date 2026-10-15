@@ -1,4 +1,4 @@
-"""Tests for awm.scopes.projects — clone-mode scaffolding + credential errors.
+"""Tests for awm.scopes.projects — fresh and clone scaffolding + credential errors.
 
 Rewritten after ``_find_template`` (dead code) was removed and
 ``create_project`` gained scope-style ``.awm/`` scaffolding (inbox bug report
@@ -62,7 +62,7 @@ class TestCreateProjectClone:
         assert (awm_dir / "context.md").exists()
         assert (awm_dir / "history.md").exists()
         assert (awm_dir / "data").is_symlink()
-        assert (awm_dir / "skills").is_symlink()
+        assert not (awm_dir / "skills").exists()
 
         # Project is visible without a scope_repair.
         from awm.scopes import projects as p
@@ -78,6 +78,26 @@ class TestCreateProjectClone:
         status = _git(worktree, "status", "--porcelain").stdout.strip()
         assert status == "", f"worktree unexpectedly dirty:\n{status}"
         assert not (worktree / "AGENTS.md").exists()
+
+
+class TestCreateProjectFresh:
+    def test_fresh_creates_bare_repo_with_seed_commit(self, scopes_workspace, monkeypatch):
+        real_which = projects_mod.shutil.which
+        monkeypatch.setattr(projects_mod.shutil, "which",
+                            lambda name: None if name == "gh" else real_which(name))
+        for var in ("GIT_AUTHOR", "GIT_COMMITTER"):
+            monkeypatch.setenv(f"{var}_NAME", "t")
+            monkeypatch.setenv(f"{var}_EMAIL", "t@t")
+
+        result = create_project(ProjectCreateRequest(name="freshproj"))
+        assert result.mode == "fresh"
+
+        projects_dir = scopes_workspace["projects_dir"]
+        bare = projects_dir / "freshproj" / ".bare"
+        log = _git(bare, "log", "--format=%s", "main").stdout.strip()
+        assert log == "Initial commit for freshproj"
+        worktree = projects_dir / "freshproj" / "main"
+        assert (worktree / ".awm" / "context.md").exists()
 
 
 class TestCloneBare:

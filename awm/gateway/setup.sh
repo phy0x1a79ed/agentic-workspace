@@ -5,6 +5,11 @@ set -euo pipefail
 # ROOT it seeds (the .awm/ runtime dir) is the git toplevel, not the gateway dir.
 HERE="$(cd "$(dirname "$0")" && pwd)"
 WORKSPACE_ROOT="$(git -C "$HERE" rev-parse --show-toplevel)"
+if [ -n "${AWM_WORKSPACE:-}" ] && [ "$(cd "$AWM_WORKSPACE" 2>/dev/null && pwd -P)" != "$(cd "$WORKSPACE_ROOT" && pwd -P)" ]; then
+    echo "refusing: AWM_WORKSPACE=$AWM_WORKSPACE but this checkout is $WORKSPACE_ROOT" >&2
+    echo "run setup.sh from the checkout AWM_WORKSPACE names, or unset AWM_WORKSPACE" >&2
+    exit 1
+fi
 
 echo "=== AWM Setup ==="
 
@@ -19,7 +24,7 @@ fi
 
 # 2. Install the modular tree into the env. The gateway is the composition
 # root — its install.sh installs the component libraries (config, persistence,
-# gatewayclient), every feature service (scopes/agents/artifacts/social/...),
+# gatewayclient), every feature service (scopes/social/...),
 # then the gateway itself (which provides the `awm` / `awm-mcp` console scripts).
 echo "Installing awm modular tree (components + feature services + gateway)..."
 AWM_ENV=awm bash "$HERE/install.sh"

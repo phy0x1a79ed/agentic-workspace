@@ -54,36 +54,44 @@ Polymorphic refs (`messages.recipient_id` / `messages.sender_id`,
 
 ## The `embeddings` table is per-service
 
-Any service that does semantic search gets its OWN copy of the tiny embeddings
-table. The DDL is exported as `awm.persistence.embeddings.EMBEDDINGS_DDL` —
-register it alongside that service's own tables in its `init_service_db` call.
-The engine functions (`embed_text`, `upsert_embedding(conn, …)`,
-`semantic_search(conn, …)`, `hybrid_augment(conn, …)`, `delete_embedding(conn,
-…)`) all take the service's own connection. Services known to index today:
-`skills` (skill files), and any of `scopes`/`artifacts` that index sessions /
-scopes / rooms / projects / artifacts (those feature-specific indexers were
-removed from `persistence` and must be reimplemented per-service against the
-owning service's DAO + its own embeddings table).
+A service that searches keeps its own `embeddings` table and its own
+`embeddings_fts` keyword index, in its own DB. The engine
+`awm.persistence.embeddings` owns both tables. `ensure_schema(conn)` creates them,
+and it upgrades the old one-row-per-item table in place. Every entry point calls
+it, so no service carries its own migration.
 
-`embeddings` v1 DDL (identical to legacy — seed is a straight copy):
+Index through `index_document` and `reindex`. Search through `search`. Never
+query the vectors directly. The contract, and why each part exists:
 
-```sql
-CREATE TABLE IF NOT EXISTS embeddings (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    source_type TEXT NOT NULL,
-    source_id TEXT NOT NULL,
-    chunk_text TEXT NOT NULL,
-    embedding BLOB NOT NULL,
-    updated_at TEXT NOT NULL,
-    UNIQUE(source_type, source_id)
-);
-```
+- **One row per chunk, over the whole item.** Structural chunks of at most 128
+  MiniLM tokens cover the full body. A vector of the first slice only missed
+  every detail past it.
+- **A header on every chunk.** Each chunk embeds "title — project/scope · date —
+  section" before its text. A chunk alone often lacks the words that say what
+  it is about.
+- **An item scores as its best chunk (MaxP).**
+- **Filter before ranking.** `search(..., allowed=<SQL returning ids>)` scores
+  only the chunks that pass. A global top-N cut followed by a filter returned
+  nothing for any selective filter.
+- **Keyword and meaning together.** BM25 over the same chunks is fused with
+  cosine by a convex combination (`ALPHA`) after min-max scaling. The query
+  reaches FTS5 as quoted terms, so punctuation cannot raise an error.
+- **Rows record their model and a content hash.** `reindex` re-embeds what is
+  missing, changed, or made by another model, and prunes what no longer exists.
+  Each service runs it at startup and every few hours. Changing `MODEL_NAME` or
+  the chunker therefore re-embeds everything with no manual step.
+- **Degraded, not silent.** Without the semantic stack the engine stores
+  keyword-only rows, and `search` returns a `degraded` block that callers pass
+  through.
 
-Legacy `state.db` rows to seed from: `SELECT source_type, source_id,
-chunk_text, embedding, updated_at FROM embeddings` — but filter by the
-`source_type` the owning service is responsible for (`'skill'` for skills,
-`'session'`/`'scope'`/`'room'`/`'project'` for scopes, `'artifact'` for
-artifacts).
+**CAUTION** The embedder is CPU-bound and loads once per process. Services run
+indexing on one background thread, and bind the DB path when a job is queued. A
+job that reads the path when it runs follows a test's monkeypatch back to the
+production DB.
+
+The choice of model, chunk size and fusion weight came from a labelled query
+set. Re-measure with `awm/services/scopes/scripts/search_eval.py` before
+changing any of them.
 
 ---
 
@@ -91,20 +99,9 @@ artifacts).
 
 | Service | Owns (v1 tables) |
 |---|---|
-| **scopes** | projects, users, agents, agent identity layer, session_logs, messages, rooms, guest_list, room_transcripts (+ embeddings for session/scope/room/project) |
-| **agents** | agent_instances, agent_transcript |
-| **artifacts** | artifacts (+ embeddings for artifact) |
-| **skills** | embeddings (skill) only — catalog is file-based |
+| **scopes** | projects, users, agents, agent identity layer, session_logs, messages, rooms, guest_list, room_transcripts (+ embeddings for post/scope/project) |
 | **discord** | discord_operators |
 | **config** | config (KV) — already wired by T1 |
-
-> Note: in legacy v37, `agent_instances` lived in the same DB as `agents`. The
-> plan assigns `agent_instances` + `agent_transcript` to the **agents** service.
-> Since `agent_instances.agent_id` referenced `agents(id)` (a `scopes`-owned
-> table), that FK crosses the DB boundary and is re-keyed to `project, scope`
-> below. `agent_transcript` has no legacy table (the legacy room/agent
-> transcript was `room_transcripts`, owned by scopes); it is a new agents-owned
-> table — seed source is empty, define fresh.
 
 ---
 
@@ -228,7 +225,7 @@ CREATE INDEX IF NOT EXISTS idx_room_transcripts_room_ts ON room_transcripts(room
 CREATE INDEX IF NOT EXISTS idx_room_transcripts_kind ON room_transcripts(room_id, kind, ts);
 ```
 
-Plus `embeddings` (see top) if scopes indexes sessions/scopes/rooms/projects.
+Plus `embeddings` (see top) for posts, scopes and projects.
 
 ## Legacy `state.db` shapes scopes SELECTs when seeding
 
@@ -256,110 +253,6 @@ SELECT room_id, guest_kind, guest_ref, display_name, subscriptions FROM guest_li
 
 -- room_transcripts: author is a polymorphic ref (resolve per top note)
 SELECT id, room_id, author, kind, body, meta, ts FROM room_transcripts;
-```
-
----
-
-# agents
-
-## v1 schema (agents.db)
-
-```sql
--- agent_instances: legacy agent_id → agents(id) was a scopes-owned FK; drop
--- it and carry (project, scope) inline.
-CREATE TABLE IF NOT EXISTS agent_instances (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    project         TEXT NOT NULL,
-    scope           TEXT NOT NULL,
-    cli_session_id  TEXT,
-    log_path        TEXT,
-    started_at      INTEGER NOT NULL,
-    ended_at        INTEGER,
-    data            TEXT NOT NULL DEFAULT '{}'
-);
-CREATE INDEX IF NOT EXISTS idx_agent_instances_scope_started
-    ON agent_instances(project, scope, started_at DESC);
-CREATE INDEX IF NOT EXISTS idx_agent_instances_open
-    ON agent_instances(project, scope) WHERE ended_at IS NULL;
-
--- agent_transcript: NEW agents-owned table (no legacy source). Define to the
--- agents service's needs; suggested shape mirrors room_transcripts.
-CREATE TABLE IF NOT EXISTS agent_transcript (
-    id          TEXT PRIMARY KEY,
-    project     TEXT NOT NULL,
-    scope       TEXT NOT NULL,
-    kind        TEXT NOT NULL,
-    body        TEXT NOT NULL DEFAULT '',
-    meta        TEXT NOT NULL DEFAULT '{}',
-    ts          INTEGER NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_agent_transcript_scope_ts
-    ON agent_transcript(project, scope, ts);
-```
-
-## Legacy `state.db` shapes agents SELECTs when seeding
-
-```sql
--- agent_instances: legacy agent_id → resolve to (project, scope) via the
--- identity join at the top of this doc.
-SELECT agent_id, cli_session_id, log_path, started_at, ended_at, data
-  FROM agent_instances;
-```
-
-`agent_transcript` has no legacy seed source — start empty.
-
----
-
-# artifacts
-
-## v1 schema (artifacts.db)
-
-```sql
--- agent_id FK dropped; (project, scope) carried inline.
-CREATE TABLE IF NOT EXISTS artifacts (
-    id             INTEGER PRIMARY KEY AUTOINCREMENT,
-    project        TEXT NOT NULL,
-    scope          TEXT NOT NULL,
-    name           TEXT NOT NULL DEFAULT '',
-    artifact_type  TEXT NOT NULL DEFAULT '',
-    path           TEXT NOT NULL DEFAULT '',
-    description    TEXT,
-    format         TEXT,
-    tags           TEXT,
-    status         TEXT NOT NULL DEFAULT 'current',
-    created_at     INTEGER NOT NULL,
-    updated_at     INTEGER NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_artifacts_scope ON artifacts(project, scope, created_at DESC);
-```
-
-Plus `embeddings` (see top), `source_type='artifact'`.
-
-## Legacy `state.db` shapes artifacts SELECTs when seeding
-
-```sql
--- legacy carries agent_id; join to (project, scope)
-SELECT agent_id, name, artifact_type, path, description, format, tags,
-       status, created_at, updated_at FROM artifacts;
-```
-
----
-
-# skills
-
-The skill catalog is **file-based** (`skills/awm/`, `skills/tools/`); skills
-owns no relational state in the legacy DB beyond its embeddings rows. v1 DB only
-needs the `embeddings` table.
-
-## v1 schema (skills.db)
-
-Just the `embeddings` table (see top), `source_type='skill'`.
-
-## Legacy `state.db` shapes skills SELECTs when seeding
-
-```sql
-SELECT source_type, source_id, chunk_text, embedding, updated_at
-  FROM embeddings WHERE source_type = 'skill';
 ```
 
 ---

@@ -30,6 +30,13 @@ per-listing fetch could not promise.
 contain them — mira's book holds ``cosmos``, which this node cannot dial. We would
 advertise providers we cannot reach. Peer chaining is deliberately not a thing.
 
+**Only domestic peers are providers.** The sweep reads a peer only when its book
+relation is ``domestic``, and every reader (``snapshot``, ``resolve``,
+``fleet_domains``, ``declared_homes``) keeps only such peers on read as well, so a
+peer flipped to foreign between sweeps vanishes at once and an unreadable book
+leaves no provider at all. A foreign peer's domains never reach a tool description,
+or a default provider.
+
 **A declared singleton has exactly one provider.** Not "local plus the owner" —
 one. Two nodes both treating themselves as a valid provider for a singular
 external resource is the concrete failure FEDERATION.md documents: two listeners
@@ -50,7 +57,12 @@ domain lives elsewhere":
   fleet-global, not the ``ssh`` service, which every node needs locally.
 
 ``AWM_DOMAIN_HOME_<domain>=<peer>`` declares a future singleton without a code
-change.
+change. A node with no local provider for a domain that two peers both advertise
+resolves it ``ambiguous`` and every call must name a peer by hand, so that escape
+hatch is also the cure for *borrowing* a domain wholesale: altair sets
+``AWM_DOMAIN_HOME_social=mira`` because it has no ``social.toml`` and therefore no
+accounts to lose. The rule above is unchanged — the shape of ``AWM_SOCIAL_PEER``
+still declares nothing; what differs is per-node fact about what is installed.
 """
 
 from __future__ import annotations
@@ -85,9 +97,10 @@ _PEER_FETCH_TIMEOUT_S = 8.0
 #: so the name is claimed explicitly).
 LOCAL = "local"
 
-#: Reserved top-level MCP tool names that are not domains and must never be
-#: treated as routable ones — including when read back off a peer's catalog.
-RESERVED_TOOLS = frozenset({"providersOf"})
+#: Top-level tools a peer on the previous release still lists. They are not
+#: tools of this release and must never become routable ones when read back off
+#: such a peer's catalog.
+_PREVIOUS_RELEASE_TOOLS = frozenset({"providersOf", "more"})
 
 #: Seeded declared homes: domain → the env var naming its owning node. See the
 #: module docstring for why this table has exactly one entry and must not be
@@ -110,9 +123,44 @@ _swept_at: float = 0.0
 _sweep_lock: asyncio.Lock | None = None
 
 
+_relations_cache: tuple[tuple[Any, ...], dict[str, str]] | None = None
+
+
+def _domestic_peers() -> frozenset[str]:
+    """Names the peer book marks ``domestic`` — the only peers that may provide.
+
+    An allowlist: a peer the book does not list, or lists as anything but
+    ``domestic``, is out, and a book that cannot be read leaves nobody in. The
+    book is re-read when its file changes (the key is path, inode, mtime and
+    size), so flipping a peer to foreign takes effect on the next read, not the
+    next sweep."""
+    global _relations_cache
+    from awm.config import peerbook
+
+    path = peerbook.peers_file()
+    try:
+        st = path.stat()
+        key = (str(path), st.st_ino, st.st_mtime_ns, st.st_size)
+    except OSError:
+        key = (str(path),)
+    if _relations_cache is None or _relations_cache[0] != key:
+        relations = {r["name"]: r["relation"] for r in peerbook.list_records()}
+        _relations_cache = (key, relations)
+    return frozenset(n for n, rel in _relations_cache[1].items() if rel == "domestic")
+
+
+def _domestic_only(snap: Mapping[str, dict[str, Any]]) -> Mapping[str, dict[str, Any]]:
+    """``snap`` cut to the peers the book calls domestic."""
+    domestic = _domestic_peers()
+    if all(name in domestic for name in snap):
+        return snap
+    return {name: info for name, info in snap.items() if name in domestic}
+
+
 def snapshot() -> dict[str, dict[str, Any]]:
-    """The last sweep's result. Never blocks, never raises, possibly empty."""
-    return _snapshot
+    """The last sweep's result, domestic peers only. Never blocks, never raises,
+    possibly empty."""
+    return dict(_domestic_only(_snapshot))
 
 
 def swept_at() -> float | None:
@@ -124,8 +172,10 @@ def declared_homes() -> dict[str, str]:
     """Domain → owning peer, for domains declared to be whole-domain singletons.
 
     Read fresh on every call so a change to ``.awm/env`` takes effect on the next
-    gateway restart without a code path caching it into permanence.
+    gateway restart without a code path caching it into permanence. A home owned
+    by a foreign peer is dropped: a foreign peer is never a provider.
     """
+    domestic = _domestic_peers()
     homes: dict[str, str] = {}
     for domain, env in _SEEDED_HOME_ENVS.items():
         owner = (os.environ.get(env) or "").strip()
@@ -138,7 +188,7 @@ def declared_homes() -> dict[str, str]:
         owner = (value or "").strip()
         if domain and owner:
             homes[domain] = owner
-    return homes
+    return {d: o for d, o in homes.items() if o in domestic}
 
 
 # ---------------------------------------------------------------------------
@@ -149,7 +199,8 @@ def declared_homes() -> dict[str, str]:
 def _verbs_from_tool(tool: Mapping[str, Any]) -> list[str]:
     """Verb names for one collapsed domain tool from a peer's ``/tools`` payload.
 
-    Prefers the structured ``inputSchema.properties.verb.enum``. Falls back to
+    The reserved ``describe`` verb is dropped: every tool has it, and this node
+    adds it once itself. Prefers the structured ``inputSchema.properties.verb.enum``. Falls back to
     parsing the ``Verbs: a, b, c.`` clause out of the description, because a peer
     tracking an older ``release`` predates the enum — the fleet is updated node by
     node, so the mixed-version window is real and a peer must not read as
@@ -158,48 +209,58 @@ def _verbs_from_tool(tool: Mapping[str, Any]) -> list[str]:
     schema = tool.get("inputSchema") or {}
     enum = ((schema.get("properties") or {}).get("verb") or {}).get("enum")
     if isinstance(enum, list) and enum:
-        return [str(v) for v in enum]
+        return [str(v) for v in enum if v != "describe"]
     desc = tool.get("description") or ""
     marker = "Verbs:"
     if marker not in desc:
         return []
     tail = desc.split(marker, 1)[1]
     tail = tail.split(".", 1)[0]
-    return [v.strip() for v in tail.split(",") if v.strip()]
+    return [v.strip() for v in tail.split(",") if v.strip() and v.strip() != "describe"]
+
+
+class _Domains(dict):
+    """``{domain: [verbs]}`` that also carries each domain's ``descriptions``."""
+
+    descriptions: dict[str, str]
 
 
 async def _fetch_peer(entry: Mapping[str, Any]) -> dict[str, Any]:
-    """One peer's ``{domain: [verbs]}`` map, read from its own edge.
+    """One peer's ``{domain: [verbs]}`` map, read from its own edge, with the
+    peer's own tool descriptions on its ``descriptions`` attribute.
 
-    CA-verified TLS with a bearer fetched over ssh — the same path
-    ``gatewayclient.call_peer`` uses, and never ``verify=False``: a bearer on an
-    unverified connection could be captured. Raises on any failure; the sweep
-    records that as ``reachable: False`` rather than dropping the peer, so
-    "asleep" stays distinguishable from "doesn't have it".
+    CA-verified TLS with a signed node token, or the ssh-fetched legacy bearer
+    when a domestic peer refuses it — the same path ``gatewayclient.call_peer``
+    uses, and never ``verify=False``: a credential on an unverified connection
+    could be captured. Raises on any failure; the sweep records that as
+    ``reachable: False`` rather than dropping the peer, so "asleep" stays
+    distinguishable from "doesn't have it".
     """
     from awm import gatewayclient
 
     name = entry["name"]
     edge = str(entry["edge_url"]).rstrip("/")
-    alias = entry.get("ssh_alias") or name
-    bearer = await gatewayclient.fetch_peer_cred_async(
-        alias, timeout=_PEER_FETCH_TIMEOUT_S)
     ca = gatewayclient._peer_ca()
-    async with httpx.AsyncClient(timeout=_PEER_FETCH_TIMEOUT_S, verify=ca) as cli:
-        resp = await cli.get(f"{edge}/tools", params={"view": "domains"},
-                             headers={"Authorization": f"Bearer {bearer}"})
-        resp.raise_for_status()
-        payload = resp.json() or {}
-    domains: dict[str, list[str]] = {}
+
+    async def send(bearer: str) -> httpx.Response:
+        async with httpx.AsyncClient(timeout=_PEER_FETCH_TIMEOUT_S, verify=ca) as cli:
+            return await cli.get(f"{edge}/tools", params={"view": "domains"},
+                                 headers={"Authorization": f"Bearer {bearer}"})
+
+    resp = await gatewayclient.peer_send(name, entry, send)
+    resp.raise_for_status()
+    payload = resp.json() or {}
+    domains = _Domains()
+    domains.descriptions = {}
     for tool in payload.get("tools") or []:
         if not isinstance(tool, dict):
             continue
         tname = tool.get("name")
-        # A peer's own reserved top-level tools (providersOf) are not domains and
-        # must not become routable "domains" here.
-        if not tname or not isinstance(tname, str) or tname in RESERVED_TOOLS:
+        if not tname or not isinstance(tname, str) or tname in _PREVIOUS_RELEASE_TOOLS:
             continue
         domains[tname] = _verbs_from_tool(tool)
+        if isinstance(tool.get("description"), str):
+            domains.descriptions[tname] = tool["description"]
     return domains
 
 
@@ -217,12 +278,17 @@ async def sweep() -> dict[str, dict[str, Any]]:
     async with _sweep_lock:
         from awm.gateway import peers
 
-        book = peers.list_all()
+        # A foreign peer is never read: its domains must not reach our tool
+        # descriptions or any default provider.
+        book = [e for e in peers.list_all() if e.get("relation") == "domestic"]
         if not book:
             _snapshot, _swept_at = {}, time.time()
             return _snapshot
+        # Bounded per peer: the lock is held for the whole sweep, so one peer that
+        # never answers must not hold every reader of a fresh snapshot behind it.
         results = await asyncio.gather(
-            *(_fetch_peer(entry) for entry in book), return_exceptions=True)
+            *(asyncio.wait_for(_fetch_peer(entry), _PEER_FETCH_TIMEOUT_S)
+              for entry in book), return_exceptions=True)
         built: dict[str, dict[str, Any]] = {}
         now = time.time()
         for entry, result in zip(book, results):
@@ -230,13 +296,18 @@ async def sweep() -> dict[str, dict[str, Any]]:
             if isinstance(result, BaseException):
                 # Keep the previous domain map so one failed sweep does not make
                 # a peer's tools vanish and reappear; mark it unreachable.
-                previous = (_snapshot.get(name) or {}).get("domains") or {}
-                built[name] = {"domains": previous, "reachable": False,
+                last = _snapshot.get(name) or {}
+                previous = last.get("domains") or {}
+                built[name] = {"domains": previous,
+                               "descriptions": last.get("descriptions") or {},
+                               "reachable": False,
                                "error": f"{type(result).__name__}: {result}",
                                "at": now}
                 log.warning("peer %r catalog unavailable: %s", name, result)
             else:
-                built[name] = {"domains": result, "reachable": True,
+                built[name] = {"domains": dict(result),
+                               "descriptions": dict(getattr(result, "descriptions", {})),
+                               "reachable": True,
                                "error": None, "at": now}
         _snapshot, _swept_at = built, now
         return _snapshot
@@ -304,6 +375,7 @@ class PeerRedirect(Exception):
             "verb": self.verb,
             "edge_url": entry.get("edge_url"),
             "ssh_alias": entry.get("ssh_alias") or self.peer,
+            "relation": entry.get("relation"),
         }
 
 
@@ -329,12 +401,12 @@ def resolve(tool: str, local_domains: Mapping[str, list[str]],
        peer that also has it available as an override.
     3. Otherwise, if exactly **one** peer has it, that peer is the sole provider
        and the default — so a peer-only domain is callable with no ``peer`` at
-       all, which is what keeps today's ``orch``/``artifact`` reachable.
+       all, which is what keeps today's ``orch`` reachable.
     4. Otherwise (several peers, no local, no declared home) there is **no
        default**: the caller must name one. Guessing would silently bind a call
        to whichever node happened to sort first.
     """
-    snap = snapshot() if snap is None else snap
+    snap = snapshot() if snap is None else _domestic_only(snap)
 
     home = declared_homes().get(tool)
     if home:
@@ -377,6 +449,19 @@ def resolve(tool: str, local_domains: Mapping[str, list[str]],
             "providers": []}
 
 
+def description_for(res: Mapping[str, Any],
+                    snap: Mapping[str, dict[str, Any]] | None = None) -> str | None:
+    """The tool description the default provider of ``res`` published, or
+    ``None`` when this node serves it itself or the peer sent none. A tool only a
+    peer runs keeps its description on this node through it."""
+    default = res.get("default")
+    if default in (None, LOCAL):
+        return None
+    snap = snapshot() if snap is None else _domestic_only(snap)
+    text = ((snap.get(default) or {}).get("descriptions") or {}).get(res["tool"])
+    return text if isinstance(text, str) and text.strip() else None
+
+
 def fleet_domains(local_domains: Mapping[str, list[str]],
                   snap: Mapping[str, dict[str, Any]] | None = None) -> list[str]:
     """Every domain name callable from this node — local ∪ every peer's.
@@ -386,7 +471,7 @@ def fleet_domains(local_domains: Mapping[str, list[str]],
     reachable today stops being nameable. A declared singleton's domain is
     included even if this node runs no such service.
     """
-    snap = snapshot() if snap is None else snap
+    snap = snapshot() if snap is None else _domestic_only(snap)
     names = set(local_domains)
     for info in snap.values():
         names.update((info.get("domains") or {}).keys())
@@ -415,8 +500,7 @@ def choose_target(tool: str, requested: str | None,
                 raise ValueError(f"Unknown tool: {tool}")
             raise ValueError(
                 f"{tool!r} has no default provider — it runs on "
-                f"{', '.join(valid)} but not on this node. Pass peer=<name>; "
-                f"providersOf(tool={tool!r}) lists the options.")
+                f"{', '.join(valid)} but not on this node. Pass peer=<name>.")
         return res["default"]
 
     requested = requested.strip()

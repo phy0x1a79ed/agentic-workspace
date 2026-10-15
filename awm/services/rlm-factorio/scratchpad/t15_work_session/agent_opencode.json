@@ -1,0 +1,53 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "model": "openrouter/z-ai/glm-5.3-flash",
+  "small_model": "openrouter/deepseek/deepseek-v4-flash",
+  "provider": {
+    "openrouter": {
+      "models": {
+        "z-ai/glm-5.3-flash": {
+          "options": {
+            "reasoning": {
+              "effort": "high"
+            }
+          }
+        }
+      }
+    }
+  },
+  "mcp": {
+    "awm": {
+      "type": "local",
+      "enabled": true,
+      "command": [
+        "/home/tony/lib/miniforge3/envs/awm/bin/awm-mcp"
+      ],
+      "environment": {
+        "AWM_WORKSPACE": "/home/tony/.claude/jobs/9bf14ee0/tmp/t15rig/ws",
+        "AWM_AS": "agent:mason",
+        "AWM_PORT": "7863"
+      }
+    }
+  },
+  "tools": {
+    "awm_config": false,
+    "awm_gateway": false,
+    "awm_peer": false,
+    "awm_services": false,
+    "awm_providersOf": false,
+    "bash": false,
+    "webfetch": false,
+    "task": false,
+    "patch": false,
+    "glob": false,
+    "grep": false
+  },
+  "instructions": [],
+  "permission": {
+    "read": "allow",
+    "edit": "allow",
+    "external_directory": "allow",
+    "webfetch": "deny",
+    "websearch": "deny"
+  }
+}

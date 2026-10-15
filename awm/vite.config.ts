@@ -40,6 +40,13 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     emptyOutDir: true,
+    // An AudioWorklet module has to be fetched from a real URL: Safari (iOS
+    // especially — the phone the mic page exists for) refuses
+    // `audioWorklet.addModule()` on a `data:` URI. Worklet sources are a few
+    // hundred bytes, so the default inline threshold would otherwise swallow
+    // them, and the dev server never shows it because it serves real URLs.
+    assetsInlineLimit: (filePath) =>
+      filePath.endsWith('worklet.js') ? false : undefined,
     rollupOptions: {
       treeshake: {
         // Treat component source (the barrel .ts and the .svelte modules) as

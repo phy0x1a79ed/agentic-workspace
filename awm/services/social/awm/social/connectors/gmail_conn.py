@@ -51,6 +51,38 @@ POLL_INTERVAL_S = 30.0
 ALL_MAIL = "[Gmail]/All Mail"
 
 
+def _imap_quote(value: str) -> str:
+    """One IMAP quoted-string.
+
+    ``imaplib`` does **no** argument quoting whatsoever — ``IMAP4._command``
+    concatenates its arguments into the command line verbatim — so any value
+    containing a space reaches the server as two arguments. ``[Gmail]/All Mail``
+    is the one that bites: unquoted it makes ``EXAMINE`` unparseable and every
+    ``search`` and ``download_attachments`` on this account fails. Only ``"`` and
+    ``\\`` need escaping inside the quotes (RFC 3501 quoted-specials).
+    """
+    return '"' + str(value).replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def _select_mailbox(m: imaplib.IMAP4, mailbox: str) -> str:
+    """Read-only SELECT of ``mailbox``, falling back to INBOX. Returns the one used.
+
+    The fallback has to be written as an ``except``, not an ``if typ != "OK"``:
+    ``_command_complete`` **raises** ``IMAP4.error`` on a ``BAD``/``NO`` reply
+    instead of returning the status, so a status check beside the call can never
+    fire. Narrowing to INBOX is a real loss of scope for by-Message-ID lookup of
+    archived mail (see :data:`ALL_MAIL`), so it is logged rather than silent.
+    """
+    try:
+        m.select(_imap_quote(mailbox), readonly=True)
+        return mailbox
+    except imaplib.IMAP4.error as exc:
+        log.warning("gmail: cannot select %r (%s) — falling back to INBOX; "
+                    "archived mail will not be visible", mailbox, exc)
+        m.select("INBOX", readonly=True)
+        return "INBOX"
+
+
 def _split_subject(text: str) -> tuple[str, str]:
     """Split an outbound body into (subject, body).
 
@@ -260,12 +292,9 @@ class GmailConnector(Connector):
         """
         m = self._imap_login()
         try:
-            typ, _ = m.select(ALL_MAIL, readonly=True)
-            if typ != "OK":
-                m.select("INBOX", readonly=True)
+            _select_mailbox(m, ALL_MAIL)
             # X-GM-RAW takes one quoted string; escape embedded quotes/backslashes.
-            q = '"' + str(query).replace("\\", "\\\\").replace('"', '\\"') + '"'
-            typ, data = m.uid("search", None, "X-GM-RAW", q)
+            typ, data = m.uid("search", None, "X-GM-RAW", _imap_quote(query))
             if typ != "OK":
                 return []
             uids = sorted(
@@ -293,11 +322,12 @@ class GmailConnector(Connector):
         the mail read)."""
         m = self._imap_login()
         try:
-            typ, _ = m.select(ALL_MAIL, readonly=True)
-            if typ != "OK":
-                m.select("INBOX", readonly=True)
+            _select_mailbox(m, ALL_MAIL)
             raw: bytes | None = None
-            typ, data = m.uid("search", None, "HEADER", "Message-ID", message_id)
+            # Quoted for the same reason as the mailbox: a Message-ID is opaque
+            # text from the wire and imaplib will not quote it for us.
+            typ, data = m.uid("search", None, "HEADER", "Message-ID",
+                              _imap_quote(message_id))
             uids = (data[0].split() if typ == "OK" and data and data[0] else [])
             if uids:
                 target = uids[-1].decode() if isinstance(uids[-1], bytes) else uids[-1]

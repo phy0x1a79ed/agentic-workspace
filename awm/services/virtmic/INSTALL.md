@@ -37,6 +37,14 @@ duplicates a stanza. **If a file does not already exist, it is created with a
 system one rather than layering onto it, so creating a bare file with only our
 settings would silently drop every module the system config loads.
 
+Install PulseAudio **before** first running this service. The `.include` is
+emitted only when the system file is on disk at write time, and the marker then
+stops the file ever being rewritten — so a run on a node with no `pulseaudio`
+package leaves a permanent `default.pa` that loads no modules at all, including
+`module-native-protocol-unix`. The symptom is a daemon that starts clean and a
+`pactl` that hangs until it times out. Repair is by hand: prepend the two
+`.include` lines and restart `pulseaudio.service`.
+
 To uninstall the durability layers, delete the marker-fenced stanzas by hand;
 the service does not remove them.
 

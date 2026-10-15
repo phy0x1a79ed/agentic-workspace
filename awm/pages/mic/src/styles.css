@@ -1,0 +1,52 @@
+/* ============================================================================
+   mic — design system
+
+   Dark-only, full-bleed, one control. The palette is not decoration: green /
+   amber / purple / red ARE the four connection states, and every glow is fitted
+   per state. That is why this page keeps its own tokens instead of adopting the
+   shared design system — there is no "streaming purple" there, so switching
+   would mean re-deciding the state design under cover of a refactor.
+
+   The page-level chrome lives here; everything that reacts to the connection
+   state lives in App.svelte, where the badge, the ring and the button can hang
+   off one shared `data-state` attribute.
+   ============================================================================ */
+
+:root {
+  color-scheme: dark;
+  --mic-bg: #070b12;
+  --mic-panel: #0c131e;
+  --mic-panel2: #0a0f18;
+  --mic-line: rgba(122, 164, 206, 0.14);
+  --mic-line2: rgba(122, 164, 206, 0.30);
+  --mic-text: #dbe6f2;
+  --mic-muted: #6d8198;
+
+  /* the four states */
+  --mic-good: #46e6a3;    /* connected */
+  --mic-amber: #ffb020;   /* connecting */
+  --mic-purple: #a06bff;  /* streaming */
+  --mic-air: #ff3b4e;     /* offline */
+  --mic-cyan: #2fd9f5;    /* accent — brand mark, status line */
+
+  --mic-mono: ui-monospace, "SF Mono", Menlo, monospace;
+  --mic-sans: system-ui, sans-serif;
+}
+
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+
+body {
+  margin: 0;
+  min-height: 100svh;
+  font-family: var(--mic-sans);
+  color: var(--mic-text);
+  background: var(--mic-bg);
+  -webkit-tap-highlight-color: transparent;
+}
+
+#app { display: flex; flex-direction: column; min-height: 100svh; }
+
+@media (prefers-reduced-motion: reduce) {
+  * { animation: none !important; }
+}

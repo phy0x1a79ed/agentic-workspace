@@ -331,7 +331,7 @@ class TestHealWorktree:
         wt = tmp_path / "wt"
         wt.mkdir()
         _git_init_tracked_agents(wt)
-        (scopes_workspace["workspace"] / "WORKSPACE.md").write_text("# orient\n")
+        (scopes_workspace["workspace"] / "AGENTS.md").write_text("# orient\n")
         awm = wt / ".awm"
         awm.mkdir()
         (awm / "mcp-opencode.json").write_text(
@@ -344,7 +344,7 @@ class TestHealWorktree:
         import json
         cfg = json.loads((awm / "mcp-opencode.json").read_text())
         assert cfg["instructions"] == [
-            str(scopes_workspace["workspace"] / "WORKSPACE.md"),
+            str(scopes_workspace["workspace"] / "AGENTS.md"),
             ".awm/context.md",
         ]
 
@@ -352,7 +352,7 @@ class TestHealWorktree:
         wt = tmp_path / "wt"
         wt.mkdir()
         _git_init_tracked_agents(wt)
-        (scopes_workspace["workspace"] / "WORKSPACE.md").write_text("# orient\n")
+        (scopes_workspace["workspace"] / "AGENTS.md").write_text("# orient\n")
 
         actions = _heal_worktree(wt, project="proj-a", scope="s1", dry_run=False)
 
@@ -381,6 +381,28 @@ class TestHealWorktree:
 
         assert actions["context_md"] is None
         assert (wt / ".awm" / "context.md").read_text() == original
+
+    def test_removes_skills_symlink(self, tmp_path):
+        wt = tmp_path / "wt"
+        (wt / ".awm").mkdir(parents=True)
+        (wt / ".awm" / "skills").symlink_to(tmp_path / "skills")
+
+        dry = _heal_worktree(wt, project="proj-a", scope="s1", dry_run=True)
+        assert dry["skills_link"] == "deleted:symlink"
+        assert (wt / ".awm" / "skills").is_symlink()
+
+        actions = _heal_worktree(wt, project="proj-a", scope="s1", dry_run=False)
+        assert actions["skills_link"] == "deleted:symlink"
+        assert not (wt / ".awm" / "skills").is_symlink()
+
+    def test_keeps_a_real_skills_dir(self, tmp_path):
+        wt = tmp_path / "wt"
+        (wt / ".awm" / "skills").mkdir(parents=True)
+
+        actions = _heal_worktree(wt, project="proj-a", scope="s1", dry_run=False)
+
+        assert actions["skills_link"] is None
+        assert (wt / ".awm" / "skills").is_dir()
 
     def test_dry_run_does_not_mutate(self, tmp_path):
         wt = tmp_path / "wt"
@@ -415,7 +437,7 @@ class TestHealWorktree:
         assert second == {
             "import_line": None, "agents_md": None,
             "claude_md": None, "context_md": None,
-            "opencode_config": None, "data": None,
+            "opencode_config": None, "data": None, "skills_link": None,
         }
         assert (wt / "AGENTS.md").read_text() == agents_after
         assert (wt / ".awm" / "context.md").read_text() == ctx_after
@@ -562,5 +584,5 @@ class TestHealScopes:
         assert second[0]["actions"] == {
             "import_line": None, "agents_md": None,
             "claude_md": None, "context_md": None,
-            "opencode_config": None, "data": None,
+            "opencode_config": None, "data": None, "skills_link": None,
         }

@@ -1,0 +1,25 @@
+[Unit]
+Description=awm gateway (nexus origin app)
+After=network.target
+
+[Service]
+Type=simple
+User=awm
+Group=awm
+Environment=AWM_WORKSPACE=/opt/awm
+Environment=AWM_IDLE_SHUTDOWN=0
+Environment=XDG_CONFIG_HOME=/var/lib/awm/config
+Environment=HOME=/var/lib/awm
+EnvironmentFile=-/etc/awm/env
+WorkingDirectory=/opt/awm
+ExecStart=/opt/miniforge3/envs/awm/bin/awm gateway serve
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/awm
+ProtectHome=yes
+
+[Install]
+WantedBy=multi-user.target

@@ -226,12 +226,23 @@ def test_second_auth_rejection_propagates(monkeypatch):
 
     def always_401(url, **kwargs):
         tries.append(1)
-        raise _invalid_status(403)
+        raise _invalid_status(401)
 
     monkeypatch.setattr(websockets, "connect", always_401)
     with pytest.raises(InvalidStatus):
         asyncio.run(_collect(gc.subscribe_peer("mira", "social", "command")))
     assert len(tries) == 2           # tried twice (force-refetch), then gave up
+
+    tries.clear()
+
+    def always_403(url, **kwargs):
+        tries.append(1)
+        raise _invalid_status(403)
+
+    monkeypatch.setattr(websockets, "connect", always_403)
+    with pytest.raises(InvalidStatus):
+        asyncio.run(_collect(gc.subscribe_peer("mira", "social", "command")))
+    assert len(tries) == 1           # a 403 is a verdict, not a stale credential
 
 
 # ---------------------------------------------------------------------------

@@ -1,0 +1,3 @@
+# One tool, on the agent-facing MCP surface.
+tool = "reflection"
+tier = "on"

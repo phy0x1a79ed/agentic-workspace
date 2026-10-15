@@ -12,21 +12,40 @@ log = logging.getLogger("awm.ssh.hub_adapter")
 
 svc = SSHService()
 
+# Test verbs keep working on the CLI and over HTTP but are not agent tools.
+_CLI_HTTP = ["cli", "http"]
+
 API_MANIFEST: dict[str, Any] = {
+    "description": (
+        "SSH to the managed HPC hosts, and the only sanctioned way to reach "
+        "them. `connect` orchestrates the VPN and the Duo approver itself, so "
+        "do NOT call the vpn or 2fa domains around it — they are already armed, "
+        "once, for the single login it is about to make. After connecting, plain "
+        "`ssh <host> <cmd>` multiplexes over the ControlMaster with no new "
+        "authentication. A host reported 'unavailable' is held after an earlier "
+        "failure and only an operator's `/approve <device>` in Discord releases "
+        "it: retrying cannot, and each retry that reaches a login spends an MFA "
+        "attempt against a 10-strike account lockout."
+    ),
     "functions": [
         {
             "name": "connect",
+            "effect": "write",
             "tool": "ssh_connect",
             "description": (
                 "Open a ControlMaster SSH connection to a managed host. "
                 "Idempotent — if already connected it does an auth-free liveness "
                 "check and returns without a new login. Orchestrates VPN + 2FA "
                 "burst automatically for hosts that require them, deduplicating "
-                "concurrent requests into a single attempt. Blocks until the "
-                "ControlMaster socket is live (up to 120s for cold VPN + 2FA), "
-                "then returns success. Returns status 'unavailable' (no login "
-                "attempted) if the host is held by the circuit breaker after a "
-                "prior failure — recovery is via a Discord /approve. Known hosts: "
+                "concurrent requests into a single attempt — you do not need to "
+                "call the vpn or 2fa domains, and doing so spends MFA budget "
+                "this service is accounting for. Blocks until the ControlMaster "
+                "socket is live (up to 120s for cold VPN + 2FA), then returns "
+                "success. Returns status 'unavailable' (no login attempted) if "
+                "the host is held by the circuit breaker after a prior failure — "
+                "recovery is an operator /approve in Discord, never a retry. An "
+                "error saying no MFA attempt was spent is safe to retry. "
+                "Known hosts: "
                 + ", ".join(sorted(KNOWN_HOSTS))
             ),
             "params": [
@@ -36,6 +55,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "disconnect",
+            "effect": "write",
             "tool": "ssh_disconnect",
             "description": (
                 "Close the ControlMaster SSH connection to a host. Does NOT abort "
@@ -50,6 +70,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "status",
+            "effect": "read",
             "tool": "ssh_status",
             "description": (
                 "List all managed hosts and their connection state. Reports an "
@@ -64,7 +85,9 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "notify_test",
+            "effect": "write",
             "tool": "ssh_notify_test",
+            "surfaces": _CLI_HTTP,
             "description": (
                 "Fire the Discord lock-alert wire on demand to confirm the ssh "
                 "service can reach the operator BEFORE a real lockout depends on "
@@ -80,7 +103,9 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "receive_test",
+            "effect": "write",
             "tool": "ssh_receive_test",
+            "surfaces": _CLI_HTTP,
             "description": (
                 "The inbound twin of notify_test: prove this service can still "
                 "HEAR an operator /approve. Asks social to emit a synthetic, "

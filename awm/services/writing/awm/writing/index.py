@@ -1,11 +1,8 @@
-"""Embedding index — thin reuse of the workspace-standard embedding engine.
+"""The writing corpus in the shared retrieval engine (``awm.persistence.embeddings``).
 
-``awm.persistence.embeddings`` is the same module behind the other services'
-semantic search (all-MiniLM-L6-v2, 384-dim, normalized; stored as sqlite-vec
-BLOBs, queried via ``vec_distance_cosine``). We reuse it verbatim so the corpus
-shares the workspace's embedding stack rather than introducing a parallel one.
-The service owns its own ``embeddings`` table (per the per-service DB invariant);
-these helpers namespace corpus rows under ``config.SOURCE_TYPE``.
+The service owns its own ``embeddings`` table (per the per-service DB
+invariant); these helpers namespace corpus rows under ``config.SOURCE_TYPE`` and
+use each sample's name and note as the title its chunks carry.
 """
 
 from __future__ import annotations
@@ -13,52 +10,74 @@ from __future__ import annotations
 import sqlite3
 from typing import Any
 
+from awm.persistence import embeddings as engine
 from awm.persistence.embeddings import (  # noqa: F401  (re-exported)
     EMBEDDINGS_DDL,
-    embed_text,
-    upsert_embedding,
-    delete_embedding,
-    semantic_search,
+    EmbeddingsUnavailable,
+    degraded_marker,
+    probe,
 )
 
 from . import config
 
 
 def embed_sample(conn: sqlite3.Connection, sample_id: str, text: str) -> None:
-    """Embed one sample's text under the corpus source-type namespace."""
-    upsert_embedding(conn, config.SOURCE_TYPE, sample_id, text)
+    """Index one sample; raises :class:`EmbeddingsUnavailable` when only keywords could be stored."""
+    row = conn.execute("SELECT name, note FROM samples WHERE id=?", (sample_id,)).fetchone()
+    title = " — ".join(x for x in (row[0], row[1]) if x) if row else ""
+    doc = engine.Document(sample_id, text, title=title)
+    if engine.index_document(conn, config.SOURCE_TYPE, doc) == "keyword-only":
+        raise EmbeddingsUnavailable(f"{', '.join(probe()['missing'])}: semantic stack missing")
 
 
 def drop_embedding(conn: sqlite3.Connection, sample_id: str) -> None:
-    delete_embedding(conn, config.SOURCE_TYPE, sample_id)
+    engine.delete_document(conn, config.SOURCE_TYPE, sample_id)
 
 
-def search_semantic(conn: sqlite3.Connection, query: str, limit: int = 50) -> list[dict[str, Any]]:
-    """Nearest neighbours within the corpus, by cosine similarity."""
-    return semantic_search(conn, query, source_type=config.SOURCE_TYPE, limit=limit)
+def not_current(conn: sqlite3.Connection) -> set[str]:
+    """Samples whose index rows are missing or were made by another model."""
+    model = engine.get_embedder().name
+    return {r[0] for r in conn.execute(
+        "SELECT id FROM samples WHERE id NOT IN"
+        " (SELECT source_id FROM embeddings WHERE source_type=? AND model=?"
+        "  AND content_hash IS NOT NULL)", (config.SOURCE_TYPE, model))}
+
+
+def search_semantic(conn: sqlite3.Connection, query: str, limit: int = 50, *,
+                    allowed: str | None = None, params: tuple = ()) -> list[dict[str, Any]]:
+    """Ranked ``{source_id, score, snippet}`` among ``allowed`` samples.
+
+    Raises :class:`EmbeddingsUnavailable` without the stack.
+    """
+    res = engine.search(conn, query, source_type=config.SOURCE_TYPE, allowed=allowed,
+                        params=params, limit=limit)
+    if res.degraded:
+        raise EmbeddingsUnavailable(f"{', '.join(res.degraded['missing'])}: semantic stack missing")
+    return res.hits
 
 
 def pairwise_cosine(conn: sqlite3.Connection) -> list[tuple[str, str, float]]:
-    """All sample-pair cosine similarities, descending. Cheap for ~hundreds of rows.
+    """All sample-pair cosine similarities, descending, without running the model.
 
-    Uses sqlite-vec's ``vec_distance_cosine`` over the stored embeddings so we
-    never re-run the model. Returns (id_a, id_b, similarity) with id_a < id_b.
+    A sample's vector is the normalised mean of its chunk vectors. Returns
+    ``(id_a, id_b, similarity)`` with ``id_a < id_b``. Raises
+    :class:`EmbeddingsUnavailable` without the stack.
     """
-    import sqlite_vec
+    import numpy as np
 
-    conn.enable_load_extension(True)
-    sqlite_vec.load(conn)
-    rows = conn.execute(
-        """
-        SELECT a.source_id AS ida, b.source_id AS idb,
-               1.0 - vec_distance_cosine(a.embedding, b.embedding) AS sim
-        FROM embeddings a
-        JOIN embeddings b
-          ON a.source_type = b.source_type
-         AND a.source_id < b.source_id
-        WHERE a.source_type = ?
-        ORDER BY sim DESC
-        """,
-        (config.SOURCE_TYPE,),
-    ).fetchall()
-    return [(r[0], r[1], round(r[2], 4)) for r in rows]
+    model = engine.get_embedder().name
+    chunks: dict[str, list[bytes]] = {}
+    for sid, blob in conn.execute(
+            "SELECT source_id, embedding FROM embeddings WHERE source_type=? AND model=?"
+            " AND embedding IS NOT NULL", (config.SOURCE_TYPE, model)):
+        chunks.setdefault(sid, []).append(blob)
+    ids = sorted(chunks)
+    if len(ids) < 2:
+        return []
+    vecs = np.stack([np.frombuffer(b"".join(chunks[i]), dtype=np.float32)
+                     .reshape(len(chunks[i]), -1).mean(axis=0) for i in ids])
+    vecs /= np.maximum(np.linalg.norm(vecs, axis=1, keepdims=True), 1e-9)
+    sims = vecs @ vecs.T
+    a, b = np.triu_indices(len(ids), k=1)
+    order = np.argsort(-sims[a, b], kind="stable")
+    return [(ids[a[i]], ids[b[i]], round(float(sims[a[i], b[i]]), 4)) for i in order]

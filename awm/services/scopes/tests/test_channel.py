@@ -1,8 +1,4 @@
-"""Scope-channel tests: live post/fetch/subscribe + the legacy seed fold.
-
-A scope IS the channel. These cover the unified surface that replaced the old
-rooms/messages/session_logs trio.
-"""
+"""Scopes-side channel tests: the legacy seed fold, the schema migration, and the history hand-off."""
 from __future__ import annotations
 
 import sqlite3
@@ -11,115 +7,6 @@ import pytest
 
 pytestmark = [pytest.mark.scopes]
 
-
-# ---------------------------------------------------------------------------
-# Live channel ops
-# ---------------------------------------------------------------------------
-
-class TestChannelOps:
-    def test_post_and_fetch(self, scopes_workspace):
-        from awm.scopes import channel
-        channel.post("awm", "dev", author="user:alice", body="hello", kind="message")
-        channel.post("awm", "dev", author="agent:awm/dev", body="hi back", kind="message")
-        posts = channel.fetch(project="awm", scope="dev")
-        assert [p.body for p in posts] == ["hello", "hi back"]  # oldest→newest
-        assert posts[0].author == "user:alice"
-
-    def test_order_desc_gives_last_n(self, scopes_workspace):
-        """order='desc' + limit pulls the most-recent N of a single channel,
-        the 'last 5 session logs' path. Default stays oldest→newest."""
-        from awm.scopes import channel
-        for i in range(5):
-            channel.post("awm", "dev", author="agent:awm/dev",
-                         body=f"entry {i}", kind="journal")
-        # default single-channel order is oldest→newest (unchanged)
-        asc = channel.fetch(project="awm", scope="dev", kind="journal")
-        assert [p.body for p in asc] == [f"entry {i}" for i in range(5)]
-        # order='desc' + limit → the last 2, newest-first
-        last2 = channel.fetch(project="awm", scope="dev", kind="journal",
-                              limit=2, order="desc")
-        assert [p.body for p in last2] == ["entry 4", "entry 3"]
-
-    def test_journal_kind_filter(self, scopes_workspace):
-        from awm.scopes import channel
-        channel.post("awm", "dev", author="agent:awm/dev", body="a message", kind="message")
-        channel.post("awm", "dev", author="agent:awm/dev", body="debrief", kind="journal",
-                     meta={"title": "Did it", "outcome": "success"})
-        journals = channel.fetch(project="awm", scope="dev", kind="journal")
-        assert len(journals) == 1
-        assert journals[0].kind == "journal"
-        assert journals[0].meta["outcome"] == "success"
-
-    def test_search(self, scopes_workspace):
-        from awm.scopes import channel
-        channel.post("awm", "dev", author="user:alice", body="the quick brown fox", kind="message")
-        channel.post("awm", "dev", author="user:alice", body="unrelated", kind="message")
-        hits = channel.fetch(project="awm", scope="dev", query="brown")
-        assert any("brown" in p.body for p in hits)
-
-    def test_get_post(self, scopes_workspace):
-        from awm.scopes import channel
-        p = channel.post("awm", "dev", author="user:alice", body="findme", kind="message")
-        got = channel.get_post(p.id)
-        assert got is not None and got.body == "findme"
-
-    def test_subscribe_unsubscribe(self, scopes_workspace):
-        from awm.scopes import channel
-        channel.subscribe("awm", "dev", "awm/helper")
-        channel.subscribe("awm", "dev", "user:bob")
-        subs = {(s.guest_kind, s.guest_ref) for s in channel.list_subscribers("awm", "dev")}
-        assert ("agent", "awm/helper") in subs
-        assert ("user", "user:bob") in subs
-        assert channel.unsubscribe("awm", "dev", "awm/helper") is True
-        assert channel.unsubscribe("awm", "dev", "awm/helper") is False
-        subs2 = {(s.guest_kind, s.guest_ref) for s in channel.list_subscribers("awm", "dev")}
-        assert ("agent", "awm/helper") not in subs2
-
-    def test_non_literal_channel(self, scopes_workspace):
-        """Posting to a user/project inbox uses owner_project='' (non-literal)."""
-        from awm.scopes import channel
-        channel.post("", "user:alice", author="agent:awm/dev", body="for alice", kind="message")
-        posts = channel.fetch(project="", scope="user:alice")
-        assert [p.body for p in posts] == ["for alice"]
-
-    def test_post_fires_emitter(self, scopes_workspace):
-        """Every post fans out one cross-service `posts` emit (the live
-        subscription the agents service rides instead of a poll)."""
-        from awm.scopes import channel
-        seen: list[dict] = []
-        channel.set_emitter(lambda payload: seen.append(payload))
-        try:
-            channel.post("awm", "dev", author="user:alice",
-                         body="ping", kind="message")
-        finally:
-            channel.set_emitter(None)
-        assert len(seen) == 1
-        ev = seen[0]
-        assert ev["project"] == "awm"
-        assert ev["scope"] == "dev"
-        assert ev["post"]["body"] == "ping"
-        assert ev["post"]["author"] == "user:alice"
-        assert ev["post"]["kind"] == "message"
-
-    def test_emitter_failure_does_not_break_post(self, scopes_workspace):
-        """A throwing emitter never fails the post (best-effort signalling)."""
-        from awm.scopes import channel
-
-        def _boom(_payload):
-            raise RuntimeError("emit down")
-
-        channel.set_emitter(_boom)
-        try:
-            p = channel.post("awm", "dev", author="user:alice",
-                             body="still saved", kind="message")
-        finally:
-            channel.set_emitter(None)
-        assert channel.get_post(p.id) is not None
-
-
-# ---------------------------------------------------------------------------
-# Legacy seed fold
-# ---------------------------------------------------------------------------
 
 def _build_legacy_db(path) -> None:
     db = sqlite3.connect(path)
@@ -233,67 +120,20 @@ class TestSchemaMigrationV3:
         db.close()
 
 
-# ---------------------------------------------------------------------------
-# scope_post input-shape: body must be the terminal parameter so a mangled
-# tool-call serialization can't swallow trailing kind/meta params, and the
-# history.md title fallback must neutralise a malformed/untitled body.
-# ---------------------------------------------------------------------------
+class TestHistoryHandoff:
+    def test_history_is_rendered_by_the_journal(self, scopes_workspace, monkeypatch):
+        from awm.scopes import scopes as sc
+        from awm.scopes.identity import ensure_agent
+        sent = {}
 
-class TestScopePostInputShape:
-    def test_body_is_last_param_in_manifest(self):
-        from awm.scopes.operations.scope_channel import (
-            SCOPE_CHANNEL_MANIFEST_FUNCTIONS,
-        )
-        fn = next(f for f in SCOPE_CHANNEL_MANIFEST_FUNCTIONS
-                  if f["name"] == "scope_post")
-        names = [p["name"] for p in fn["params"]]
-        assert names[-1] == "body", (
-            f"body must be the terminal param to survive a serialization "
-            f"bleed; got order {names}"
-        )
-        # structured params precede the free-text body
-        for p in ("kind", "meta", "to_scope"):
-            assert names.index(p) < names.index("body")
+        def fake_call_sync(service, fn, args=None, **kw):
+            sent.update(service=service, fn=fn, args=args)
+            return {"content": "rendered"}
 
-    def test_projected_tool_schema_lists_body_last(self):
-        """The MCP inputSchema property order mirrors the manifest (catalog.py
-        and operations.py both preserve declared order, no sorting)."""
-        from awm.scopes.operations.scope_channel import (
-            SCOPE_CHANNEL_MANIFEST_FUNCTIONS,
-        )
-        fn = next(f for f in SCOPE_CHANNEL_MANIFEST_FUNCTIONS
-                  if f["name"] == "scope_post")
-        props = {}
-        for p in fn["params"]:
-            props[p["name"]] = {"type": p.get("type", "string")}
-        assert list(props.keys())[-1] == "body"
-
-
-class TestHistoryTitleNeutralise:
-    def test_neutralise_strips_tags_and_newlines(self):
-        from awm.scopes.scopes import _neutralise_title
-        raw = "BUG REPORT\nfoo bar\n</invoke>\n<meta>{...}</meta>"
-        title = _neutralise_title(raw)
-        assert "\n" not in title
-        assert "</invoke>" not in title and "<meta>" not in title
-        assert title.startswith("BUG REPORT foo bar")
-
-    def test_neutralise_truncates_long_text(self):
-        from awm.scopes.scopes import _neutralise_title
-        title = _neutralise_title("x" * 200)
-        assert title.endswith("…") and len(title) == 81
-
-    def test_untitled_journal_renders_clean_title(self, scopes_workspace):
-        """A kind=journal post with no meta.title must not render its raw
-        multi-line / tag-bearing body as the history.md title."""
-        from awm.scopes import channel
-        from awm.scopes.scopes import _generate_history_md
-        channel.post(
-            "awm", "dev", author="agent:awm/dev", kind="journal",
-            meta={},  # no title — the swallowed-meta failure shape
-            body="Did the thing\nacross lines\n</invoke>",
-        )
-        md = _generate_history_md("awm", "dev")
-        assert "</invoke>" not in md
-        # the body-derived title is single-lined into the journal heading
-        assert "Did the thing across lines" in md
+        monkeypatch.setattr("awm.gatewayclient.call_sync", fake_call_sync)
+        sc._ensure_project_row("awm")
+        ensure_agent("awm", "sib-allocated", status="allocated")
+        assert sc._generate_history_md("awm", "mine") == "rendered"
+        assert (sent["service"], sent["fn"]) == ("journal", "render")
+        assert "siblings" not in sent["args"]
+        assert sent["args"]["write"] is False

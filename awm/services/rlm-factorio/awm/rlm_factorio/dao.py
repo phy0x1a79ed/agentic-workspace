@@ -1,5 +1,5 @@
-"""rlm-factorio service data access — the ``rlm_sessions`` table on the service's
-OWN SQLite DB (``AWM_DIR/services/rlm-factorio/rlm-factorio.db``).
+"""rlm-factorio service data access — the ``rlm_sessions`` and ``rlm_seats``
+tables on the service's OWN SQLite DB (``AWM_DIR/services/rlm-factorio/rlm-factorio.db``).
 
 Per the modular invariant there is no shared ``state.db``: this service owns its
 tables and stands them up via ``init_service_db`` at startup. Each row is one
@@ -13,6 +13,15 @@ exactly what ``acquire`` brought up and a respawn can re-adopt it), the
 ``rcon_port`` (always 0 — RCON is container-internal, never published).
 ``current_world`` mirrors the
 supervisor's notion of which named save the live ``_active`` was derived from.
+
+``rlm_seats`` is one row per seat: a real Factorio client container joined to a
+session's world as a real player. A seat binds three things that only this table
+witnesses — an agent (``owner``), a container (``container_name``), and an
+in-game player (``player_name`` / ``player_index``) — which is why seats are
+persisted rather than enumerated from the world the way the browser realm
+enumerates tabs from Chrome. ``player_name`` is assigned by us before the client
+starts (the seat asserts it in its own ``player-data.json``), so the binding is
+made by lookup rather than by guessing which new player appeared.
 """
 
 from __future__ import annotations
@@ -25,7 +34,7 @@ from awm.persistence.dao import BaseDAO
 from awm.persistence.databases import init_service_db
 
 SERVICE = "rlm-factorio"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 # status: acquiring -> ready -> (paused) -> stopped ; error on any failed bring-up.
 SCHEMA_SQL = """\
@@ -42,7 +51,39 @@ CREATE TABLE IF NOT EXISTS rlm_sessions (
     created_at      TEXT NOT NULL DEFAULT '',
     updated_at      TEXT NOT NULL DEFAULT ''
 );
+CREATE TABLE IF NOT EXISTS rlm_seats (
+    seat_id         TEXT NOT NULL PRIMARY KEY,
+    session_id      TEXT NOT NULL,
+    player_name     TEXT NOT NULL DEFAULT '',
+    player_index    INTEGER NOT NULL DEFAULT 0,
+    container_name  TEXT NOT NULL DEFAULT '',
+    status          TEXT NOT NULL DEFAULT 'joining',
+    owner           TEXT NOT NULL DEFAULT '',
+    created_at      TEXT NOT NULL DEFAULT '',
+    updated_at      TEXT NOT NULL DEFAULT '',
+    last_seen_at    TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_rlm_seats_session ON rlm_seats (session_id);
 """
+
+# v1 predates seats; an existing DB gets the table without losing its sessions.
+MIGRATIONS = {
+    (1, 2): """\
+CREATE TABLE IF NOT EXISTS rlm_seats (
+    seat_id         TEXT NOT NULL PRIMARY KEY,
+    session_id      TEXT NOT NULL,
+    player_name     TEXT NOT NULL DEFAULT '',
+    player_index    INTEGER NOT NULL DEFAULT 0,
+    container_name  TEXT NOT NULL DEFAULT '',
+    status          TEXT NOT NULL DEFAULT 'joining',
+    owner           TEXT NOT NULL DEFAULT '',
+    created_at      TEXT NOT NULL DEFAULT '',
+    updated_at      TEXT NOT NULL DEFAULT '',
+    last_seen_at    TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_rlm_seats_session ON rlm_seats (session_id);
+""",
+}
 
 # Column list shared by every read so the row shape is stable across methods.
 _COLS = (
@@ -54,10 +95,11 @@ _initialized = False
 
 
 def init() -> None:
-    """Idempotently create the rlm-factorio service's DB + ``rlm_sessions``."""
+    """Idempotently create the service's DB + ``rlm_sessions`` + ``rlm_seats``."""
     global _initialized
     if not _initialized:
-        init_service_db(SERVICE, SCHEMA_SQL, schema_version=SCHEMA_VERSION)
+        init_service_db(SERVICE, SCHEMA_SQL, schema_version=SCHEMA_VERSION,
+                        migrations=MIGRATIONS)
         _initialized = True
 
 
@@ -70,6 +112,13 @@ _PATCHABLE = {
     "status", "container_name", "compose_project",
     "control_port", "game_port", "rcon_port", "current_world",
 }
+
+_SEAT_COLS = (
+    "seat_id, session_id, player_name, player_index, container_name, "
+    "status, owner, created_at, updated_at, last_seen_at"
+)
+
+_SEAT_PATCHABLE = {"status", "player_index", "container_name", "owner"}
 
 
 class FactorioDAO(BaseDAO):
@@ -148,6 +197,91 @@ class FactorioDAO(BaseDAO):
             params,
         )
         return self.get_session(sid)
+
+
+    # -- seats --------------------------------------------------------------
+
+    def create_seat(
+        self,
+        session_id: str,
+        *,
+        player_name: str = "",
+        container_name: str = "",
+        owner: str = "",
+    ) -> dict:
+        """Mint a seat row (status 'joining') and return it.
+
+        The row exists before the client does, so there is no window in which a
+        connected player has no row to bind to. ``player_name`` defaults to the
+        seat id: the in-game name IS the seat's identity, which is what lets the
+        service resolve ``game.players[name]`` instead of guessing which new
+        player appeared.
+        """
+        seat_id = f"seat-{uuid.uuid4().hex[:8]}"
+        player_name = player_name or seat_id
+        now = _now()
+        self.execute(
+            """\
+            INSERT INTO rlm_seats (
+                seat_id, session_id, player_name, player_index, container_name,
+                status, owner, created_at, updated_at, last_seen_at
+            ) VALUES (?, ?, ?, 0, ?, 'joining', ?, ?, ?, ?)
+            """,
+            (seat_id, str(session_id).strip(), player_name, container_name,
+             owner, now, now, now),
+        )
+        return self.get_seat(seat_id)
+
+    def get_seat(self, seat_id: str) -> dict | None:
+        if not seat_id:
+            return None
+        return self.query_one(
+            f"SELECT {_SEAT_COLS} FROM rlm_seats WHERE seat_id = ?",
+            (str(seat_id).strip(),),
+        )
+
+    def list_seats(self, session_id: str | None = None) -> list[dict]:
+        if session_id:
+            return self.query_all(
+                f"SELECT {_SEAT_COLS} FROM rlm_seats WHERE session_id = ? "
+                "ORDER BY created_at",
+                (str(session_id).strip(),),
+            )
+        return self.query_all(
+            f"SELECT {_SEAT_COLS} FROM rlm_seats ORDER BY created_at")
+
+    def live_seats(self, session_id: str | None = None) -> list[dict]:
+        """Seats not yet released -- the ones that should own a container."""
+        return [r for r in self.list_seats(session_id)
+                if r["status"] not in ("stopped", "error")]
+
+    def set_seat(self, seat_id: str, **fields) -> dict | None:
+        """Patch whitelisted seat columns; also refreshes ``updated_at``."""
+        sid = str(seat_id).strip()
+        bad = set(fields) - _SEAT_PATCHABLE
+        if bad:
+            raise ValueError(f"non-patchable seat fields: {sorted(bad)}")
+        if not fields:
+            return self.get_seat(sid)
+        cols = ", ".join(f"{k} = ?" for k in fields)
+        self.execute(
+            f"UPDATE rlm_seats SET {cols}, updated_at = ? WHERE seat_id = ?",
+            list(fields.values()) + [_now(), sid],
+        )
+        return self.get_seat(sid)
+
+    def touch_seat(self, seat_id: str) -> None:
+        """Refresh a seat's last-seen stamp. Any verb naming the seat is proof
+        its owner is alive, which is what holds the seat against the reaper."""
+        self.execute(
+            "UPDATE rlm_seats SET last_seen_at = ? WHERE seat_id = ?",
+            (_now(), str(seat_id).strip()),
+        )
+
+    def delete_seat(self, seat_id: str) -> bool:
+        rows = self.execute(
+            "DELETE FROM rlm_seats WHERE seat_id = ?", (str(seat_id).strip(),))
+        return rows > 0
 
     def delete_session(self, session_id: str) -> bool:
         """Return True if a row was deleted."""

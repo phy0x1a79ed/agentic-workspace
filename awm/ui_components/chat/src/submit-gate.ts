@@ -11,7 +11,7 @@
  * a future composer change), the chat posts a single turn.
  *
  * It is deliberately framework-free (no Svelte, injectable clock) so it is
- * unit-testable exactly like `TranscriptFold` in `@awm/agent-chat`.
+ * unit-testable.
  */
 
 export interface SubmitGateOpts {

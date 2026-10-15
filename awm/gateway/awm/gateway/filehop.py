@@ -54,6 +54,19 @@ def spec_from_schema(schema: dict[str, Any] | None) -> dict[str, Any]:
     }
 
 
+def spec_from_describe(verb: dict[str, Any] | None) -> dict[str, Any]:
+    """The same spec from one verb of a ``describe`` answer, which names a file
+    param with ``"file": "in"`` and a file-returning verb with ``returns_files``."""
+    verb = verb or {}
+    params = verb.get("params") or {}
+    return {
+        "file_params": [k for k, p in params.items()
+                        if isinstance(p, dict) and p.get("file") == "in"],
+        "returns_files": bool(verb.get("returns_files")),
+        "timeout": None,
+    }
+
+
 def inner_args(call: dict[str, Any]) -> dict[str, Any]:
     """The verb's own args: nested under ``args`` for a domain call, else flat."""
     args = call.setdefault("args", {})
@@ -137,17 +150,21 @@ def unpack_call(tar_path: str, spool: str) -> dict[str, Any]:
 
 # -- response: far gateway streams, caller unpacks ---------------------------
 
-def result_paths(result: str) -> list[str]:
-    """Local paths in a result's ``files[].path``, in order."""
+def result_paths(result: str) -> list[tuple[int, str]]:
+    """``(i, path)`` for each ``files[i].path`` that may go back: it exists and
+    sits under the system temp dir, where every file-returning verb writes."""
     try:
         data = json.loads(result)
     except (TypeError, ValueError):
         return []
     files = data.get("files") if isinstance(data, dict) else None
+    tmp = os.path.realpath(tempfile.gettempdir())
     out = []
-    for f in files or []:
+    for i, f in enumerate(files or []):
         if isinstance(f, dict) and isinstance(f.get("path"), str):
-            out.append(f["path"])
+            real = os.path.realpath(f["path"])
+            if real.startswith(tmp + os.sep) and os.path.exists(real):
+                out.append((i, f["path"]))
     return out
 
 
@@ -179,13 +196,14 @@ def _iter_file(path: str, arcname: str) -> Iterator[bytes]:
     yield _pad(size)
 
 
-def iter_result(result: str, paths: list[str]) -> Iterator[bytes]:
-    """Stream ``result.json`` and each path as a tar, never holding a file whole."""
+def iter_result(result: str, paths: list[tuple[int, str]]) -> Iterator[bytes]:
+    """Stream ``result.json`` and each ``(i, path)`` as ``files/<i>/…`` in a tar,
+    never holding a file whole."""
     data = json.dumps({"result": result}).encode()
     yield _header("result.json", len(data))
     yield data
     yield _pad(len(data))
-    for i, path in enumerate(paths):
+    for i, path in paths:
         arc = f"files/{i}/{os.path.basename(path.rstrip('/'))}"
         if os.path.isdir(path):
             yield _header(arc, 0, tarfile.DIRTYPE, 0o755)
@@ -227,7 +245,8 @@ def remove_sent(paths: list[str]) -> None:
 
 def unpack_result(tar_path: str, dest: str) -> str:
     """Extract a files response into ``dest`` → the result string with every
-    ``files[i].path`` (and ``dir``) rewritten to the local copy."""
+    ``files[i].path`` (and ``dir``) rewritten to the local copy. A file that
+    did not come back gets ``path: null`` and an ``error``, never a far path."""
     with tarfile.open(tar_path, mode="r") as tar:
         member = tar.extractfile("result.json")
         if member is None:
@@ -235,10 +254,15 @@ def unpack_result(tar_path: str, dest: str) -> str:
         result = json.loads(member.read())["result"]
         files = [m for m in tar.getmembers() if m.name.startswith("files/")]
         tar.extractall(dest, members=files, filter="data")
+        sent = {m.name.split("/")[1] for m in files}
     data = json.loads(result)
     local: list[str] = []
     for i, f in enumerate(data.get("files") or []):
         if isinstance(f, dict) and isinstance(f.get("path"), str):
+            if str(i) not in sent:
+                f["remote_path"], f["path"] = f["path"], None
+                f["error"] = "not sent back: missing, or outside the far node's temp dir"
+                continue
             f["path"] = os.path.join(
                 dest, "files", str(i), os.path.basename(f["path"].rstrip("/")))
             local.append(f["path"])

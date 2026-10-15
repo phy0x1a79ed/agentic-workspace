@@ -6,7 +6,7 @@ what was decided), so an autonomous agent can ask "was this decided before?" and
 on the answer instead of guessing or re-asking. It needs the `awm` conda env to
 contain its package plus the shared component libraries it imports (`config`,
 `persistence`, `gatewayclient`). Semantic search reuses the workspace embedding stack
-(`sentence-transformers` + `sqlite-vec`, already in the `awm` env).
+(`sentence-transformers`, already in the `awm` env).
 
 ## Install
 
@@ -45,11 +45,11 @@ into one candidate manifest for review:
     mamba run -n awm python -m awm.precedence.seed scrape --out candidates.json
 
 The sources, in descending signal: **feedback memories** (`feedback_*.md` in the
-auto-memory dir — the user's own corrections), **operator posts** (`scope_posts`
+auto-memory dir — the user's own corrections), **operator posts** (`scope_posts` rows in the journal service's database,
 authored by `user:operator`, behind a light test-noise gate), and **journal
 decisions** (`scope_posts` `kind='journal'`, `meta.decisions[]` — agent-origin, so
 tagged `journal-sourced` + a lower-confidence note; `--all-journal` disables the
-"names the user" filter). Override sources with `--memory-dir` / `--scopes-db`.
+"names the user" filter). Override sources with `--memory-dir` / `--journal-db`.
 
 **2. Curate + import** — review the candidate JSON by hand (drop noise, dedupe, fix
 phrasing, attach `context-change` notes where a premise changed), then load the

@@ -11,7 +11,7 @@ Surface split (enforced by the gateway via the per-function ``surfaces`` field):
   the user's past decisions *and* grow it (add entries, attach change-signal
   notes, vote on usefulness).
 - **curation** verbs (``edit``/``supersede``/``remove``/``merge``/``import``/
-  ``embed``) declare ``surfaces: [cli, http]`` so they are reachable from the host
+  ``embed``/``export``) declare ``surfaces: [cli, http]`` so they are reachable from the host
   ``awm precedence …`` CLI (and loopback HTTP) but never advertised to spawned
   agents on the MCP surface. This is the mechanism that keeps the archive both
   self-growing and clean — it is a surface gate, not an auth boundary (the
@@ -27,9 +27,9 @@ import asyncio
 import logging
 from typing import Any
 
-from awm.gatewayclient import ServiceAdapter
+from awm.gatewayclient import ServiceAdapter, spawn_supervised
 
-from awm.precedence import dao, store
+from awm.precedence import dao, export, index, store
 
 log = logging.getLogger("awm.precedence.hub_adapter")
 
@@ -41,6 +41,7 @@ API_MANIFEST: dict[str, Any] = {
         # ---- read / contribute (MCP + CLI + HTTP) ------------------------
         {
             "name": "search",
+            "effect": "read",
             "tool": "precedence_search",
             "description": "Look up past user-adjustment decisions by meaning. Supply "
                            "any subset of context/question/decision as independent "
@@ -74,6 +75,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "get",
+            "effect": "read",
             "tool": "precedence_get",
             "description": "Fetch one decision: the triple, status, tags, votes, "
                            "seen-count, provenance, and attached notes.",
@@ -83,6 +85,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "stats",
+            "effect": "read",
             "tool": "precedence_stats",
             "description": "Archive summary: counts by status/source, embed coverage, "
                            "notes, total votes.",
@@ -90,6 +93,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "add",
+            "effect": "write",
             "tool": "precedence_add",
             "description": "Add a user-adjustment decision: the free-text triple "
                            "(context, question, decision). Embedded per-field and "
@@ -108,6 +112,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "note",
+            "effect": "write",
             "tool": "precedence_note",
             "description": "Attach a note to a decision — a signal that something "
                            "changed that may affect its outcome (e.g. tooling was built).",
@@ -121,6 +126,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "vote",
+            "effect": "write",
             "tool": "precedence_vote",
             "description": "Up/down vote a decision to indicate how good the entry is; "
                            "feeds the usefulness ranking.",
@@ -133,6 +139,7 @@ API_MANIFEST: dict[str, Any] = {
         # ---- curation (CLI + HTTP only) ----------------------------------
         {
             "name": "edit",
+            "effect": "write",
             "tool": "precedence_edit",
             "surfaces": _CLI_HTTP,
             "description": "Edit a decision's fields/tags (re-embeds if the triple changed).",
@@ -148,6 +155,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "supersede",
+            "effect": "write",
             "tool": "precedence_supersede",
             "surfaces": _CLI_HTTP,
             "description": "Supersede/retire a decision (status flips; optional pointer "
@@ -164,6 +172,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "remove",
+            "effect": "write",
             "tool": "precedence_remove",
             "surfaces": _CLI_HTTP,
             "description": "Hard-delete a decision (row, notes, tags, FTS, embeddings).",
@@ -171,6 +180,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "merge",
+            "effect": "write",
             "tool": "precedence_merge",
             "surfaces": _CLI_HTTP,
             "description": "Absorb duplicate entries into a keeper (folds tags, notes, "
@@ -183,6 +193,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "import",
+            "effect": "write",
             "tool": "precedence_import",
             "surfaces": _CLI_HTTP,
             "timeout": 600,
@@ -197,11 +208,27 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "embed",
+            "effect": "write",
             "tool": "precedence_embed",
             "surfaces": _CLI_HTTP,
             "timeout": 600,
             "description": "Embed new/changed decisions per-field (or all, with force).",
             "params": [{"name": "force", "type": "boolean"}],
+        },
+        {
+            "name": "export",
+            "effect": "read",
+            "tool": "precedence_export",
+            "surfaces": _CLI_HTTP,
+            "description": "Page the active decisions as search documents for the archive's "
+                           "`precedence` source. The last page also returns `ids`, every "
+                           "document id. Local callers only.",
+            "params": [
+                {"name": "cursor", "type": "string",
+                  "description": "The previous page's next_cursor. Omit to start a pass."},
+                {"name": "limit", "type": "integer",
+                  "description": "Documents per page, 1-1000. Default 200."},
+            ],
         },
     ],
     "emitters": [],
@@ -351,6 +378,14 @@ def _handle_import(args: dict) -> dict:
         conn.close()
 
 
+def _handle_export(args: dict) -> dict:
+    conn = dao.connect()
+    try:
+        return export.export_page(conn, args.get("cursor") or None, args.get("limit"))
+    finally:
+        conn.close()
+
+
 def _handle_embed(args: dict) -> dict:
     conn = dao.connect()
     try:
@@ -372,7 +407,39 @@ HANDLERS = {
     "merge": _handle_merge,
     "import": _handle_import,
     "embed": _handle_embed,
+    "export": _handle_export,
 }
+
+
+_BACKFILL_EVERY_S = 6 * 3600
+
+
+def _backfill_once() -> None:
+    conn = dao.connect()
+    try:
+        res = store.embed(conn)
+        if res["embedded"]:
+            log.info("precedence backfill: %s", res)
+    except index.EmbeddingsUnavailable as exc:
+        log.warning("precedence backfill skipped: %s", exc)
+    finally:
+        conn.close()
+
+
+async def _backfill_loop() -> None:
+    while True:
+        await asyncio.to_thread(_backfill_once)
+        await asyncio.sleep(_BACKFILL_EVERY_S)
+
+
+async def _on_start() -> None:
+    dao.init()
+    conn = dao.connect()
+    try:
+        index.engine.ensure_schema(conn)
+    finally:
+        conn.close()
+    spawn_supervised("precedence:search-backfill", _backfill_loop)
 
 
 async def main() -> None:
@@ -381,7 +448,7 @@ async def main() -> None:
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
     await ServiceAdapter(
-        "precedence", API_MANIFEST, HANDLERS, on_start=dao.init,
+        "precedence", API_MANIFEST, HANDLERS, on_start=_on_start,
     ).run()
 
 

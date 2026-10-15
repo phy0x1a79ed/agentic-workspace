@@ -12,10 +12,14 @@ about *absence*: no ``@`` names, and one entry per domain however many peers.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from awm.gateway import catalog, peer_catalog
 from awm.gateway.hub.registry import ServiceRecord
+
+pytestmark = pytest.mark.usefixtures("domestic_peers")
 
 
 # ---------------------------------------------------------------------------
@@ -194,6 +198,21 @@ def test_unreachable_peer_is_reported_not_dropped(local_registry, snap, no_homes
     assert peer_catalog.choose_target("scope", "altair", _local(), snap) == "altair"
 
 
+async def test_providers_of_names_nodes_and_lists_verbs_on_request(
+        local_registry, snap, no_homes, monkeypatch):
+    monkeypatch.setattr(peer_catalog, "snapshot", lambda: snap)
+    short = await catalog._providers_of("scope")
+    assert short["providers"] == [
+        {"peer": "local", "reachable": True},
+        {"peer": "altair", "reachable": False, "error": "ssh: timed out"},
+        {"peer": "mira", "reachable": True},
+    ]
+    full = await catalog._providers_of("scope", verbs=True)
+    assert full["providers"][2]["verbs"] == ["search", "create"]
+    fleet = await catalog._providers_of()
+    assert all("verbs" not in p for t in fleet["tools"] for p in t["providers"])
+
+
 def test_a_peer_never_overrides_a_local_verb_set(local_registry, snap, no_homes):
     """The advertised verbs come from the DEFAULT provider, not a merge — mira's
     ``scope`` may carry verbs this node's release does not."""
@@ -215,7 +234,6 @@ def test_fleet_view_has_one_tool_per_domain_and_no_at_names(
     assert not any("@" in n for n in names), "peer-suffixed twins are gone"
     # peer-only domains are present, so nothing reachable stopped being nameable
     assert {"scope", "2fa", "orch", "hpcllm"} <= set(names)
-    assert catalog._PROVIDERS_TOOL in names
 
 
 def test_fleet_view_is_not_multiplied_by_peer_count(
@@ -236,7 +254,6 @@ def test_default_view_stays_local_only(local_registry, snap, monkeypatch):
     monkeypatch.setattr(peer_catalog, "snapshot", lambda: snap)
     names = {t.name for t in catalog.list_domain_tools()}
     assert "orch" not in names and "hpcllm" not in names
-    assert catalog._PROVIDERS_TOOL not in names
     assert "scope" in names
 
 
@@ -254,9 +271,66 @@ def test_every_fleet_tool_carries_the_peer_key(
         local_registry, snap, twofa_on_mira, monkeypatch):
     monkeypatch.setattr(peer_catalog, "snapshot", lambda: snap)
     for tool in catalog.list_domain_tools(peers=True):
-        if tool.name == catalog._PROVIDERS_TOOL:
-            continue
         assert "peer" in tool.inputSchema["properties"], tool.name
+
+
+def test_peer_argument_enumerates_the_serving_nodes_and_names_the_default(
+        local_registry, snap, twofa_on_mira, monkeypatch):
+    monkeypatch.setattr(peer_catalog, "snapshot", lambda: snap)
+    tools = {t.name: t for t in catalog.list_domain_tools(peers=True)}
+    scope = tools["scope"].inputSchema["properties"]["peer"]
+    assert scope["enum"] == ["local", "altair", "mira"]
+    assert "Default: local" in scope["description"]
+    orch = tools["orch"].inputSchema
+    assert orch["properties"]["peer"]["enum"] == ["mira"]
+    assert "Default: mira" in orch["properties"]["peer"]["description"]
+    assert tools["2fa"].inputSchema["properties"]["peer"]["enum"] == ["mira"]
+    hpc = tools["hpcllm"].inputSchema
+    assert hpc["required"] == ["verb", "peer"]
+    assert hpc["properties"]["peer"]["enum"] == ["altair", "mira"]
+
+
+def test_no_tool_lists_describe_twice(
+        local_registry, snap, twofa_on_mira, monkeypatch):
+    peer_snap = {n: dict(v) for n, v in snap.items()}
+    monkeypatch.setattr(peer_catalog, "snapshot", lambda: peer_snap)
+    for tool in catalog.list_domain_tools(peers=True):
+        enum = tool.inputSchema["properties"]["verb"].get("enum", [])
+        assert enum.count("describe") <= 1, tool.name
+
+
+def test_verbs_read_off_a_peer_never_include_describe():
+    tool = {"name": "scope", "inputSchema": {
+        "properties": {"verb": {"enum": ["a", "b", "describe"]}}}}
+    assert peer_catalog._verbs_from_tool(tool) == ["a", "b"]
+    old = {"name": "scope", "description": "Verbs: a, describe.",
+           "inputSchema": {"properties": {"verb": {"type": "string"}}}}
+    assert peer_catalog._verbs_from_tool(old) == ["a"]
+
+
+def test_a_peer_only_tool_keeps_the_peers_description(
+        local_registry, snap, no_homes, monkeypatch):
+    snap["mira"]["descriptions"] = {"orch": "Runs orchestrations. Verbs:\n- run()."}
+    monkeypatch.setattr(peer_catalog, "snapshot", lambda: snap)
+    tools = {t.name: t for t in catalog.list_domain_tools(peers=True)}
+    assert tools["orch"].description.startswith("Runs orchestrations.")
+    assert "only provider" in tools["orch"].description
+
+
+async def test_sweep_carries_each_peers_tool_descriptions(monkeypatch):
+    monkeypatch.setattr(
+        "awm.gateway.peers.list_all",
+        lambda: [{"name": "mira", "edge_url": "https://mira:12100",
+                  "ssh_alias": "miraz", "relation": "domestic"}])
+
+    async def _ok(entry):
+        domains = peer_catalog._Domains({"orch": ["run"]})
+        domains.descriptions = {"orch": "Runs orchestrations."}
+        return domains
+
+    monkeypatch.setattr(peer_catalog, "_fetch_peer", _ok)
+    snap = await peer_catalog.sweep()
+    assert snap["mira"]["descriptions"] == {"orch": "Runs orchestrations."}
 
 
 # ---------------------------------------------------------------------------
@@ -364,14 +438,14 @@ async def test_flat_dispatch_is_untouched_by_routing(
 
 
 # ---------------------------------------------------------------------------
-# providersOf
+# Where a tool can run
 # ---------------------------------------------------------------------------
 
 
 async def test_providers_of_one_tool(local_registry, snap, twofa_on_mira,
                                      monkeypatch):
     monkeypatch.setattr(peer_catalog, "snapshot", lambda: snap)
-    out = await catalog.dispatch(catalog._PROVIDERS_TOOL, {"tool": "2fa"})
+    out = json.dumps(await catalog._providers_of("2fa"))
     assert '"default": "mira"' in out
     assert '"reason": "declared-singleton"' in out
 
@@ -379,7 +453,7 @@ async def test_providers_of_one_tool(local_registry, snap, twofa_on_mira,
 async def test_providers_of_whole_fleet(local_registry, snap, twofa_on_mira,
                                         monkeypatch):
     monkeypatch.setattr(peer_catalog, "snapshot", lambda: snap)
-    out = await catalog.dispatch(catalog._PROVIDERS_TOOL, {})
+    out = json.dumps(await catalog._providers_of())
     for domain in ("scope", "2fa", "orch", "hpcllm"):
         assert f'"tool": "{domain}"' in out
 
@@ -395,18 +469,10 @@ async def test_providers_of_does_not_sweep_unless_asked(
 
     monkeypatch.setattr(peer_catalog, "snapshot", lambda: snap)
     monkeypatch.setattr(peer_catalog, "sweep", _sweep)
-    await catalog.dispatch(catalog._PROVIDERS_TOOL, {"tool": "scope"})
+    await catalog._providers_of("scope")
     assert not swept
-    await catalog.dispatch(catalog._PROVIDERS_TOOL,
-                           {"tool": "scope", "refresh": True})
+    await catalog._providers_of("scope", refresh=True)
     assert swept
-
-
-def test_providers_of_is_not_folded_into_a_domain(local_registry):
-    """A bare single-token tool name becomes its own junk single-verb domain, so
-    the reserved tool must stay out of the fold."""
-    assert catalog._PROVIDERS_TOOL in peer_catalog.RESERVED_TOOLS
-    assert catalog._PROVIDERS_TOOL not in catalog._domain_catalog()
 
 
 # ---------------------------------------------------------------------------
@@ -444,7 +510,7 @@ async def test_sweep_keeps_last_known_domains_for_a_failed_peer(monkeypatch):
     monkeypatch.setattr(
         "awm.gateway.peers.list_all",
         lambda: [{"name": "mira", "edge_url": "https://mira:12100",
-                  "ssh_alias": "miraz"}])
+                  "ssh_alias": "miraz", "relation": "domestic"}])
 
     async def _ok(entry):
         return {"scope": ["search"]}

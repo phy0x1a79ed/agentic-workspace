@@ -39,8 +39,8 @@ _TOOLS = [
         },
     },
     {
-        "name": "skill_search",
-        "description": "Search skills",
+        "name": "note_search",
+        "description": "Search notes",
         "inputSchema": {
             "type": "object",
             "properties": {"query": {"type": "string"}},
@@ -83,10 +83,10 @@ def _make_app():
 
 def test_groups_and_commands_generated():
     _, groups = _make_app()
-    assert set(groups) == {"scope", "skill"}
+    assert set(groups) == {"scope", "note"}
     scope_cmds = {c.name for c in groups["scope"].registered_commands}
     assert scope_cmds == {"create", "refresh"}
-    assert {c.name for c in groups["skill"].registered_commands} == {"search"}
+    assert {c.name for c in groups["note"].registered_commands} == {"search"}
 
 
 def test_excluded_and_ungroupable_names_skipped():
@@ -123,7 +123,7 @@ def test_option_required_optional_and_array_fidelity():
 
 
 def test_required_param_after_optional_builds_valid_signature():
-    # A tool may declare a required field LAST, after optional ones — scope_post
+    # A tool may declare a required field LAST, after optional ones — journal_post
     # puts the required `body` after optional kind/meta/to_scope so a serialization
     # bleed has no trailing param to corrupt. inspect.Signature forbids a no-default
     # param after a defaulted one, so the generator must sort required-first rather
@@ -131,7 +131,7 @@ def test_required_param_after_optional_builds_valid_signature():
     # manifest once took down the entire CLI.
     tools = [
         {
-            "name": "scope_post",
+            "name": "journal_post",
             "description": "Post to a scope",
             "inputSchema": {
                 "type": "object",
@@ -152,7 +152,7 @@ def test_required_param_after_optional_builds_valid_signature():
     groups = register_service_cli_commands(
         app, tools, api_func=lambda *a, **k: None, exclude_names=set()
     )
-    post = next(c for c in groups["scope"].registered_commands if c.name == "post")
+    post = next(c for c in groups["journal"].registered_commands if c.name == "post")
     params = list(inspect.signature(post.callback).parameters.values())
     # Every no-default (required) param precedes every defaulted (optional) one.
     seen_default = False
@@ -192,7 +192,14 @@ def test_dispatch_posts_name_and_args_to_invoke(capsys):
     # Invoke the generated handler directly (None options are dropped).
     create.callback(project="demo", scope="s1", guests=None)
 
-    assert calls == [("POST", "/invoke", {"json": {"name": "scope_create", "args": {"project": "demo", "scope": "s1"}}, "timeout": 600})]
+    # The ceiling is asserted against the shared constant, not a literal: it is
+    # a backstop that must stay above the largest per-function budget a manifest
+    # declares, and pinning the number here is how the two drift apart.
+    from awm.gateway import mcp_http
+    assert calls == [("POST", "/invoke", {
+        "json": {"name": "scope_create", "args": {"project": "demo", "scope": "s1"}},
+        "timeout": mcp_http.read_timeout()})]
+    assert mcp_http.read_timeout() > 3600.0
     # The `result` string is JSON → pretty-printed.
     out = capsys.readouterr().out
     assert '"ok": true' in out
@@ -206,7 +213,7 @@ def test_dispatch_error_exits_nonzero():
     groups = register_service_cli_commands(
         app, _TOOLS, api_func=api, exclude_names=_EXCLUDE
     )
-    search = next(c for c in groups["skill"].registered_commands if c.name == "search")
+    search = next(c for c in groups["note"].registered_commands if c.name == "search")
 
     with pytest.raises(typer.Exit) as ei:
         search.callback(query="x")

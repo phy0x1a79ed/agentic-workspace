@@ -2,7 +2,7 @@
   // ─────────────────────────────────────────────────────────────────────
   // Dashboard shell — mobile-first, tabbed, LAYOUT ONLY.
   //
-  // Four sections (Overview / Projects / Agents / Settings) swapped by a
+  // Three sections (Overview / Projects / Settings) swapped by a
   // hash-driven tab bar. The bar sits at the bottom on phones (thumb reach)
   // and promotes to the top on wide screens. No router dependency; one
   // kind=page bundle served at /ui/dashboard/.
@@ -14,14 +14,12 @@
   import { onMount } from 'svelte';
   import Overview from './views/Overview.svelte';
   import Projects from './views/Projects.svelte';
-  import Agents from './views/Agents.svelte';
   import Settings from './views/Settings.svelte';
 
-  type View = 'overview' | 'projects' | 'agents' | 'settings';
+  type View = 'overview' | 'projects' | 'settings';
   const TABS: { id: View; label: string; glyph: string }[] = [
     { id: 'overview', label: 'overview', glyph: '▤' },
     { id: 'projects', label: 'projects', glyph: '▦' },
-    { id: 'agents', label: 'agents', glyph: '@' },
     { id: 'settings', label: 'settings', glyph: '=' }
   ];
 
@@ -70,8 +68,6 @@
       <Overview onopenproject={openProject} />
     {:else if view === 'projects'}
       <Projects {requestedProject} />
-    {:else if view === 'agents'}
-      <Agents />
     {:else if view === 'settings'}
       <Settings />
     {/if}

@@ -372,15 +372,15 @@ class TestResolveIdentity:
         discovered cwd/start_cmd — retiring the manual ``rm services.json``."""
         monkeypatch.setattr(supervisor, "_RECONNECT_WINDOW_S", 0.2)
         svc_root = tmp_path / "svcs"
-        folder = _make_service_folder(svc_root, "agents")
+        folder = _make_service_folder(svc_root, "stt")
         monkeypatch.setenv("AWM_SERVICES_DIR", str(svc_root))
         monkeypatch.setattr(supervisor, "spawn_service",
                             lambda name, cmd, cwd, env: 5151)
         monkeypatch.setattr(supervisor, "kill_pid_group", MagicMock())
 
-        supervisor.update_service_journal_entry("agents", {
+        supervisor.update_service_journal_entry("stt", {
             "service_id": "svc-a",
-            "prefix": "/svc/agents",
+            "prefix": "/svc/stt",
             "last_pid": 222,
             "start_cmd": ["stale.sh"],
             "cwd": "/wrong/tree",
@@ -390,9 +390,9 @@ class TestResolveIdentity:
             supervisor.reconcile_journaled_services())
 
         state = supervisor.load_service_journal()
-        assert state["agents"]["last_pid"] == 5151
-        assert state["agents"]["start_cmd"] == ["bash", "run.sh"]
-        assert state["agents"]["cwd"] == str(folder)
+        assert state["stt"]["last_pid"] == 5151
+        assert state["stt"]["start_cmd"] == ["bash", "run.sh"]
+        assert state["stt"]["cwd"] == str(folder)
 
 
 # ---------------------------------------------------------------------------
@@ -403,7 +403,7 @@ class TestResolveIdentity:
 class TestBootstrapPages:
     def test_pages_registered_from_filesystem(self, tmp_path, monkeypatch):
         pages_root = tmp_path / "pages"
-        _make_built_page(pages_root, "fleet")
+        _make_built_page(pages_root, "dsh")
         _make_built_page(pages_root, "notes", prefix="/ui/notes")
         _make_built_page(pages_root, "sourceonly")  # has dist → servable
         # A page with no dist is skipped.
@@ -414,7 +414,7 @@ class TestBootstrapPages:
         asyncio.new_event_loop().run_until_complete(
             supervisor.bootstrap_discovered_pages())
         reg = get_registry()
-        assert reg.longest_match("/ui/fleet") is not None
+        assert reg.longest_match("/ui/dsh") is not None
         assert reg.longest_match("/ui/notes") is not None
         assert reg.get_by_name("page", "unbuilt") is None
 
@@ -423,7 +423,7 @@ class TestBootstrapPages:
         boot (fresh registry) re-derives it from disk — so /ui/<name> survives
         a gateway restart with no manual re-register."""
         pages_root = tmp_path / "pages"
-        _make_built_page(pages_root, "fleet")
+        _make_built_page(pages_root, "dsh")
         monkeypatch.setenv("AWM_PAGES_DIR", str(pages_root))
 
         from awm.gateway.hub import registry as reg_mod
@@ -431,16 +431,16 @@ class TestBootstrapPages:
         # Boot 1
         asyncio.new_event_loop().run_until_complete(
             supervisor.bootstrap_discovered_pages())
-        assert reg_mod.get_registry().longest_match("/ui/fleet") is not None
+        assert reg_mod.get_registry().longest_match("/ui/dsh") is not None
 
         # Simulate a restart: the in-RAM registry is wiped.
         reg_mod._singleton = reg_mod.Registry()
-        assert reg_mod.get_registry().longest_match("/ui/fleet") is None
+        assert reg_mod.get_registry().longest_match("/ui/dsh") is None
 
         # Boot 2 — the page comes back on its own, no HTTP POST.
         asyncio.new_event_loop().run_until_complete(
             supervisor.bootstrap_discovered_pages())
-        assert reg_mod.get_registry().longest_match("/ui/fleet") is not None
+        assert reg_mod.get_registry().longest_match("/ui/dsh") is not None
 
     def test_prefix_conflict_skips_not_aborts(self, tmp_path, monkeypatch):
         """A page whose prefix is already owned by a different name is logged
@@ -699,7 +699,7 @@ class TestRespawnRefreshesTheRecordPid:
     else ever refreshes it. Left stale it names a corpse, and everything that
     keys off it acts on the wrong process: the orphan reaper protects the dead
     pid and kills the live one, `services stop` SIGTERMs the corpse and leaves
-    the service running. (2026-07-28: the whole fleet died every 120s.)
+    the service running. (2026-07-28: the whole dsh died every 120s.)
     """
 
     def test_record_pid_follows_the_respawn(self, monkeypatch):

@@ -1,7 +1,6 @@
 """Project CRUD — ports new-project.sh (v1 modular).
 
-All SQL goes through ScopesDAO. Embeddings indexing is reimplemented
-against the scopes service's own embeddings table.
+All SQL goes through ScopesDAO; search indexing goes through ``search_index``.
 """
 
 from __future__ import annotations
@@ -17,12 +16,13 @@ from awm.config import (
     VAGRANT_PROJECT,
 )
 from awm.scopes.git_utils import run_git as _run, detect_default_branch as _detect_default_branch
+from awm.scopes import search_index
 from awm.scopes.dao import ScopesDAO
 from awm.scopes.models import (
     ProjectCreateRequest, ProjectCreateResponse,
     ProjectListInfo, ProjectListResponse, ProjectScopeCounts,
 )
-from awm.scopes.scopes import _scaffold_awm_dir
+from awm.scopes.scopes import _scaffold_awm_dir, main_checkouts
 from awm.scopes._validation import validate_name
 
 
@@ -80,21 +80,6 @@ def _clone_bare(url: str, bare_dir: Path) -> None:
     raise RuntimeError(f"git clone of {url!r} failed (exit {r.returncode}): {stderr}")
 
 
-def _index_project(name: str) -> None:
-    """Upsert a project embedding in the scopes DB. Silently no-ops on failure."""
-    try:
-        from awm.persistence.embeddings import upsert_embedding
-        from awm.persistence.databases import get_connection
-        text = name
-        conn = get_connection("scopes")
-        try:
-            upsert_embedding(conn, "project", name, text)
-        finally:
-            conn.close()
-    except Exception:
-        pass
-
-
 def create_project(req: ProjectCreateRequest) -> ProjectCreateResponse:
     """Create a new project with bare repository, worktree, and data dirs."""
     validate_name(req.name, kind="project name")
@@ -116,7 +101,14 @@ def create_project(req: ProjectCreateRequest) -> ProjectCreateResponse:
         mode = "fork"
 
     if mode == "fresh":
-        _run(["git", "init", "--bare", str(bare_dir)], check=True)
+        # `-b main` is load-bearing, not cosmetic. Without it `git init --bare`
+        # takes git's own default (still `master` where init.defaultBranch is
+        # unset), while the seed commit below is pushed to `main` — leaving HEAD
+        # a symref to a branch that does not exist. `detect_default_branch` then
+        # reports `master`, `worktree add` dies with `Not a valid object name:
+        # 'HEAD'`, and project creation fails on a blank repo. It also breaks
+        # `dvc import`, which resolves a source repo through `origin/HEAD`.
+        _run(["git", "init", "--bare", "-b", "main", str(bare_dir)], check=True)
 
         if shutil.which("gh"):
             _run(["gh", "repo", "create", f"{GITHUB_USER}/{req.name}", "--private"],
@@ -170,14 +162,14 @@ def create_project(req: ProjectCreateRequest) -> ProjectCreateResponse:
             )
 
     # Scaffold the initial default-branch worktree exactly as a scope would:
-    # .awm/ metadata + data/skills symlinks + agents DB row, so the project is
+    # .awm/ metadata + data symlink + agents DB row, so the project is
     # immediately usable and visible to scope_search without a scope_repair.
     _scaffold_awm_dir(
         req.name, default_branch, worktree_dir,
         branch=default_branch,
     )
 
-    _index_project(req.name)
+    search_index.index_project(req.name)
 
     return ProjectCreateResponse(
         name=req.name,
@@ -191,10 +183,14 @@ def create_project(req: ProjectCreateRequest) -> ProjectCreateResponse:
 def search_projects(
     query: str | None = None,
     active_only: bool = False,
-    limit: int = 50,
+    limit: int | None = 50,
     offset: int = 0,
 ) -> ProjectListResponse:
-    """Search projects from the agents table + on-disk project dirs."""
+    """List projects from the agents table and the on-disk project dirs, with scope counts.
+
+    A project's main checkout counts as one active scope. ``limit=None`` lists
+    every project when there is no query.
+    """
     dao = ScopesDAO()
     rows = dao.query_all(
         "SELECT p.name AS project, a.status, COUNT(*) AS n "
@@ -215,6 +211,9 @@ def search_projects(
             if child.is_dir() and (child / ".bare").is_dir():
                 by_project.setdefault(child.name, ProjectScopeCounts())
 
+    for name in main_checkouts():
+        by_project.setdefault(name, ProjectScopeCounts()).active += 1
+
     items = [
         ProjectListInfo(name=n, scope_counts=c)
         for n, c in sorted(by_project.items())
@@ -222,37 +221,21 @@ def search_projects(
 
     if active_only:
         items = [p for p in items if p.scope_counts.active > 0]
-    if query:
-        q = query.lower()
-        items = [p for p in items if q in p.name.lower()]
-
-    paged = items[offset:offset + limit]
-
     if not query:
-        return ProjectListResponse(projects=paged)
+        end = None if limit is None else offset + limit
+        return ProjectListResponse(projects=items[offset:end])
 
-    keyword_keys = {p.name for p in paged}
-
-    def _materialize(name: str):
-        if active_only and by_project.get(name, ProjectScopeCounts()).active <= 0:
-            return None
-        if name not in by_project:
-            return None
-        return ProjectListInfo(name=name, scope_counts=by_project[name])
-
+    q = query.lower()
+    merged = [p for p in items if q in p.name.lower()][offset:offset + limit]
+    seen = {p.name for p in merged}
+    eligible = {p.name: p for p in items}
+    degraded = None
     try:
-        from awm.persistence.embeddings import hybrid_augment
-        from awm.persistence.databases import get_connection
-        conn = get_connection("scopes")
-        try:
-            merged = hybrid_augment(
-                conn, query,
-                source_type="project",
-                keyword_hits=paged, keyword_keys=keyword_keys,
-                materialize=_materialize,
-            )
-        finally:
-            conn.close()
-    except Exception:
-        merged = paged
-    return ProjectListResponse(projects=merged)
+        res = search_index.search("project", query, limit=len(eligible) or 1)
+        degraded = res.degraded
+        ranked = [eligible[h["source_id"]] for h in res.hits
+                  if h["source_id"] in eligible and h["source_id"] not in seen]
+        merged += ranked[:max(0, limit - len(merged))]
+    except Exception as exc:  # noqa: BLE001 — reported, then answered by name match
+        degraded = {"semantic": "error", "error": repr(exc)[:300], "fallback": "keyword"}
+    return ProjectListResponse(projects=merged, degraded=degraded)

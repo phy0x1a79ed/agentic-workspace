@@ -59,6 +59,8 @@ import httpx
 import websockets
 from websockets.exceptions import ConnectionClosed, InvalidStatus
 
+from awm.gatewayclient import cancel
+
 log = logging.getLogger("awm.gatewayclient.adapter")
 
 # How long (seconds) the run loop keeps retrying after losing the control WS
@@ -152,7 +154,7 @@ class ServiceAdapter:
         ``call`` / ``notify`` / ``session.open`` envelopes that arrive during
         initialisation wait for it (up to ``AWM_INIT_WAIT_S``) rather than
         being answered against a half-built service, so a caller sees a slow
-        first call instead of an error. See AGENTS.md § *The ready-ASAP
+        first call instead of an error. See ARCHITECTURE.md § *The ready-ASAP
         contract* for why readiness has to be immediate.
     start_cmd:
         Argv the hub uses to respawn the service after a silence eviction.
@@ -190,6 +192,8 @@ class ServiceAdapter:
         # adapter driven directly (tests, an embedding harness) has no init to
         # wait for, and must not block on a gate nobody will ever open.
         self._init_started = False
+        # In-flight calls by id, so a ``cancel`` frame can reach them.
+        self._calls: dict[Any, tuple[asyncio.Task, cancel.CancelToken]] = {}
 
     # -- initialisation gate -----------------------------------------------
 
@@ -260,6 +264,19 @@ class ServiceAdapter:
 
     # -- dispatch ----------------------------------------------------------
 
+    def _missing_required_params(self, fn: str, args: dict[str, Any]) -> list[str]:
+        """Manifest-declared ``required: True`` params absent from ``args``.
+
+        The single choke point every call/notify passes through, so this one
+        check replaces a bare ``KeyError`` inside ~190 handlers across every
+        service with a clear, named usage error before the handler ever runs.
+        """
+        for entry in self.manifest.get("functions", []) or []:
+            if entry.get("name") == fn:
+                return [p["name"] for p in entry.get("params", []) or []
+                        if p.get("required") and p["name"] not in args]
+        return []
+
     async def _dispatch(self, fn: str | None, args: Any, as_: str | None) -> Any:
         handler = self.handlers.get(fn or "")
         if handler is None:
@@ -268,6 +285,10 @@ class ServiceAdapter:
         # ready before running it, so a call can legitimately land first.
         await self._await_init(f"call {fn!r}")
         args = args or {}
+        missing = self._missing_required_params(fn or "", args)
+        if missing:
+            raise ValueError(
+                f"{fn}: missing required argument(s): {', '.join(missing)}")
         # Pass as_ only if the handler asked for a second positional arg.
         try:
             nparams = len(inspect.signature(handler).parameters)
@@ -326,7 +347,13 @@ class ServiceAdapter:
                             continue
                         kind = env.get("kind")
                         if kind == "call":
-                            asyncio.create_task(self._handle_call(ws, env))
+                            token = cancel.CancelToken()
+                            task = asyncio.create_task(
+                                self._handle_call(ws, env, token))
+                            if env.get("id") is not None:
+                                self._calls[env["id"]] = (task, token)
+                        elif kind == "cancel":
+                            self._cancel_call(env.get("id"))
                         elif kind == "notify":
                             asyncio.create_task(self._handle_notify(env))
                         elif kind == "session.open":
@@ -378,7 +405,21 @@ class ServiceAdapter:
                     f"control WS upgrade rejected ({status_code})") from exc
             raise
 
-    async def _handle_call(self, ws: Any, env: dict[str, Any]) -> None:
+    def _cancel_call(self, call_id: Any) -> None:
+        """Trip the call's token and cancel its task. An unknown id is a no-op."""
+        entry = self._calls.pop(call_id, None)
+        if entry is None:
+            return
+        task, token = entry
+        log.info("%s: call %s cancelled by the caller", self.name, call_id)
+        token.cancel()
+        task.cancel()
+
+    async def _handle_call(self, ws: Any, env: dict[str, Any],
+                           token: cancel.CancelToken | None = None) -> None:
+        # Bound in this task's context, which ``asyncio.to_thread`` copies into
+        # the worker thread that runs a sync handler.
+        cancel.activate(token)
         try:
             result = await self._dispatch(
                 env.get("fn"), env.get("args"), env.get("as"))
@@ -386,13 +427,20 @@ class ServiceAdapter:
                 "kind": "reply", "id": env.get("id"),
                 "ok": True, "result": result,
             }))
+        except asyncio.CancelledError:
+            return
         except Exception as exc:  # report the error back to the caller
             log.warning("%s: call %s failed: %s",
                         self.name, env.get("fn"), exc)
             await ws.send(json.dumps({
                 "kind": "reply", "id": env.get("id"),
                 "ok": False, "error": str(exc),
+                "error_class": type(exc).__name__,
             }))
+        finally:
+            entry = self._calls.get(env.get("id"))
+            if entry is not None and entry[0] is asyncio.current_task():
+                del self._calls[env.get("id")]
 
     async def _handle_notify(self, env: dict[str, Any]) -> None:
         try:
@@ -499,10 +547,15 @@ class ServiceAdapter:
         self_minted = not sid
         # ``state["last_up"]`` tracks the last moment this target's control WS was
         # confirmed up (set in ``_serve`` on each inbound frame, and below on a
-        # clean WS close). Initialised to now so a target that can never reach its
-        # hub still gives up after the deadline rather than spinning. The box is
-        # per-loop so concurrent base + overlay loops keep independent deadlines.
-        state = {"last_up": monotonic()}
+        # clean WS close). ``state["down_since"]`` marks the first failure of the
+        # current outage; the give-up deadline counts from it, not from
+        # ``last_up``, so idle time on a healthy socket (no inbound frames) is
+        # never mistaken for an outage. A frameless reconnect does not advance
+        # ``last_up``, so a flapping gateway still runs the deadline down. The
+        # box is per-loop so concurrent base + overlay loops keep independent
+        # deadlines.
+        state: dict[str, float | None] = {"last_up": monotonic(),
+                                          "down_since": None}
         while True:
             try:
                 if not sid:
@@ -523,7 +576,12 @@ class ServiceAdapter:
                 log.info("%s: giving up: %s", name, exc)
                 return
             except Exception as exc:
-                if monotonic() - state["last_up"] > _RECONNECT_DEADLINE_S:
+                now = monotonic()
+                down_since = state["down_since"]
+                if down_since is None or state["last_up"] > down_since:
+                    # First failure since the link was last confirmed up.
+                    state["down_since"] = down_since = now
+                if now - down_since > _RECONNECT_DEADLINE_S:
                     # The gateway has been unreachable past the deadline — it
                     # is gone for good (hard kill / idle os._exit, where its
                     # lifespan shutdown never ran). Stop rather than spin

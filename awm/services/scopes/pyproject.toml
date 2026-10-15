@@ -6,11 +6,12 @@ build-backend = "setuptools.build_meta"
 name = "awm-scopes"
 version = "0.1.0"
 requires-python = ">=3.11"
-description = "AWM scopes service: identity layer, scope lifecycle, comms, sessions."
+description = "AWM scopes service: identity layer and scope lifecycle."
 dependencies = [
     "awm-config",
     "awm-persistence",
     "awm-gatewayclient",
+    "awm-dvc",
     "fastapi",
     "httpx",
     "pyyaml",
@@ -37,9 +38,8 @@ markers = [
     "messaging: rooms / messages / posts / control plane",
     "auth: login / exposed app / auth service",
     "mcp: mcp server / exports / cli context emit",
-    "artifacts: artifact registry",
     "sessions: session log / history",
     "agent: agent instances / vagrant sessions",
-    "misc: outliers (skills, locks, voice config, ssh tunnel)",
+    "misc: outliers (locks, voice config, ssh tunnel)",
     "integration: cross-component integration tests",
 ]

@@ -1,0 +1,5 @@
+# The reporting service publishes into the shared `operations` tool beside board and the
+# gateway's peer book. It starts everywhere and does nothing on a station, and runs the
+# front door only where AWM_FRONT_DOOR=1.
+tool = "operations"
+tier = "on"

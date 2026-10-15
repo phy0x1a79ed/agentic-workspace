@@ -1,0 +1,11 @@
+{
+ "name": "claimed vole",
+ "intent": "",
+ "needs": "send a prompt to start",
+ "originCwd": "/home/tony/agentic_workspace/projects/awm/svc-cx",
+ "cwd": "/home/tony/agentic_workspace/projects/awm/svc-cx",
+ "firstTerminalAt": null,
+ "createdAt": "2026-09-10T21:13:47.250Z",
+ "state": "working",
+ "nameSource": "user"
+}

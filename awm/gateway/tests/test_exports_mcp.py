@@ -3,7 +3,7 @@
 The framework reads canonical workspace ``.mcp.json`` and fans it out to
 backend-specific config files. ``opencode`` translates the schema for the
 per-scope workspace orientation config. (Spawned agents' own MCP config is
-harness-owned now — synthesized in agentcore at spawn, not exported here.)
+harness-owned now — synthesized at spawn, not exported here.)
 These tests cover the framework's plumbing (register dedup, report shape,
 exporter isolation) and the opencode backend's invariants.
 """

@@ -1,0 +1,522 @@
+"""The queue: the cards, the stream cursor and the sessions the door started.
+
+It shares one SQLite file with the task ledger (`awm.reporting.ledger`) so a
+card write and a cursor write can never disagree about which file survived. The
+subscriber saves the cursor only after the card write has committed; a crash
+between the two replays an event the queue absorbs, because every write is
+keyed by card id.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import sqlite3
+import time
+from pathlib import Path
+from typing import Any
+
+from awm.persistence import databases
+
+from awm.reporting import ACTIVE, ASSIGNED, CLAIMING, DONE, QUEUED, STATUSES, TERMINAL
+
+_QUEUE_SCHEMA = """
+CREATE TABLE IF NOT EXISTS cards (
+    card_id      TEXT PRIMARY KEY,
+    kind         TEXT NOT NULL,
+    priority     TEXT NOT NULL DEFAULT 'normal',
+    title        TEXT NOT NULL,
+    body         TEXT NOT NULL DEFAULT '',
+    sender       TEXT NOT NULL DEFAULT '',
+    reply_to     TEXT,
+    status       TEXT NOT NULL,
+    assigned_to  TEXT,
+    assigned_job TEXT,
+    thread_open  INTEGER NOT NULL DEFAULT 0,
+    arrival      REAL NOT NULL,
+    updated      REAL NOT NULL,
+    notified     INTEGER NOT NULL DEFAULT 0,
+    announced_at REAL
+);
+CREATE INDEX IF NOT EXISTS cards_status ON cards (status, arrival);
+CREATE TABLE IF NOT EXISTS threads (
+    card_id  TEXT PRIMARY KEY,
+    last_seq INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS meta (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS sessions (
+    role    TEXT NOT NULL,
+    job       TEXT NOT NULL,
+    started   REAL NOT NULL,
+    spec_hash TEXT,
+    PRIMARY KEY (role, job)
+);
+"""
+
+_TASKS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS tasks (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    node       TEXT NOT NULL,
+    key        TEXT NOT NULL,
+    kind       TEXT NOT NULL,
+    pid        INTEGER,
+    session_id TEXT NOT NULL DEFAULT '',
+    title      TEXT NOT NULL DEFAULT '',
+    project    TEXT,
+    scope      TEXT,
+    model      TEXT,
+    effort     TEXT,
+    state      TEXT NOT NULL,
+    note_id    TEXT,
+    shown      TEXT,
+    dirty      INTEGER NOT NULL DEFAULT 0,
+    plan       TEXT NOT NULL DEFAULT '',
+    reason     TEXT NOT NULL DEFAULT '',
+    urgent     INTEGER NOT NULL DEFAULT 0,
+    blocked_at REAL,
+    reminded   INTEGER NOT NULL DEFAULT 0,
+    ended      INTEGER NOT NULL DEFAULT 0,
+    owned      INTEGER NOT NULL DEFAULT 0,
+    started    REAL NOT NULL,
+    updated    REAL NOT NULL,
+    closed     REAL,
+    UNIQUE (node, key)
+);
+CREATE TABLE IF NOT EXISTS task_aliases (
+    task_id    INTEGER NOT NULL REFERENCES tasks (id),
+    session_id TEXT NOT NULL,
+    PRIMARY KEY (task_id, session_id)
+);
+CREATE TABLE IF NOT EXISTS task_events (
+    id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id INTEGER NOT NULL REFERENCES tasks (id),
+    at      REAL NOT NULL,
+    kind    TEXT NOT NULL,
+    detail  TEXT NOT NULL DEFAULT '',
+    ref     TEXT,
+    UNIQUE (task_id, ref)
+);
+CREATE TABLE IF NOT EXISTS todos (
+    task_id    INTEGER NOT NULL REFERENCES tasks (id),
+    item_id    TEXT NOT NULL,
+    subject    TEXT NOT NULL,
+    status     TEXT NOT NULL,
+    first_seen REAL NOT NULL,
+    removed_at REAL,
+    PRIMARY KEY (task_id, item_id)
+);
+"""
+
+SCHEMA_VERSION = 5
+
+_THREADS_TABLE = """CREATE TABLE IF NOT EXISTS threads (
+    card_id  TEXT PRIMARY KEY,
+    last_seq INTEGER NOT NULL
+);
+"""
+_QUEUE_SCHEMA_V4 = (_QUEUE_SCHEMA.replace("    assigned_job TEXT,\n    thread_open  INTEGER NOT NULL DEFAULT 0,\n", "")
+                    .replace(_THREADS_TABLE, ""))
+_QUEUE_SCHEMA_V3 = _QUEUE_SCHEMA_V4.replace("    spec_hash TEXT,\n", "")
+_TASKS_SCHEMA_V2 = _TASKS_SCHEMA.replace("    owned      INTEGER NOT NULL DEFAULT 0,\n", "")
+
+_OWNED_MIGRATION = """
+ALTER TABLE tasks ADD COLUMN owned INTEGER NOT NULL DEFAULT 0;
+UPDATE tasks SET owned = 1 WHERE NOT EXISTS (
+    SELECT 1 FROM task_events WHERE task_events.task_id = tasks.id AND task_events.kind = 'claimed');
+"""
+
+_SPEC_HASH_MIGRATION = "ALTER TABLE sessions ADD COLUMN spec_hash TEXT;"
+
+_THREADS_MIGRATION = """
+ALTER TABLE cards ADD COLUMN assigned_job TEXT;
+ALTER TABLE cards ADD COLUMN thread_open INTEGER NOT NULL DEFAULT 0;
+""" + _THREADS_TABLE
+
+_URGENT_FIRST = "CASE priority WHEN 'urgent' THEN 0 WHEN 'normal' THEN 1 ELSE 2 END"
+_CURSOR = "cursor"
+MAX_LIST = 200
+MESSAGE = "message"
+
+
+class Db:
+    """The service's one SQLite file, opened at the current schema version."""
+
+    def __init__(self, path: str | Path) -> None:
+        self.path = Path(path)
+        databases.init_db_at(self.path, _QUEUE_SCHEMA + _TASKS_SCHEMA,
+                             schema_version=SCHEMA_VERSION,
+                             migrations={(1, 2): _TASKS_SCHEMA_V2, (2, 3): _OWNED_MIGRATION,
+                                         (3, 4): _SPEC_HASH_MIGRATION,
+                                         (4, 5): _THREADS_MIGRATION})
+
+    def _conn(self) -> sqlite3.Connection:
+        conn = databases.get_connection_at(self.path)
+        conn.execute("PRAGMA synchronous=NORMAL")
+        return conn
+
+
+class Offloaded:
+    """Runs a `Db`'s methods on a worker thread, as coroutines.
+
+    Every call opens a connection and commits, and on this machine's root disk
+    an fsync can stall for tens of seconds. The service's event loop also
+    answers the gateway's control-WS keepalive pings, so a commit made on the
+    loop gets the lease closed. Code on the loop calls the database through
+    this; the object it wraps stays the one with plain methods.
+    """
+
+    def __init__(self, db: Any) -> None:
+        self._db = db
+
+    def __getattr__(self, name: str) -> Any:
+        method = getattr(self._db, name)
+
+        async def call(*args: Any, **kwargs: Any) -> Any:
+            return await asyncio.to_thread(method, *args, **kwargs)
+
+        return call
+
+
+class Queue(Db):
+    """The door's durable state."""
+
+    # -- cards ---------------------------------------------------------------
+
+    def enqueue(self, card: dict[str, Any], *, reopen: bool = False) -> bool:
+        """Queue a board card, idempotently by card id.
+
+        Returns True when the card was newly queued, left the ``claiming`` mark,
+        or was reopened. A card already in the queue keeps its status and
+        assignment, and its text is refreshed. ``reopen`` puts a finished card
+        back in the queue, which is what a drag back to Posted on the board means.
+        """
+        now = time.time()
+        fields = _fields(card)
+        conn = self._conn()
+        try:
+            with conn:
+                row = conn.execute("SELECT status FROM cards WHERE card_id = ?",
+                                   (card["id"],)).fetchone()
+                if row is None:
+                    conn.execute(
+                        "INSERT INTO cards (card_id, kind, priority, title, body, sender,"
+                        " reply_to, status, arrival, updated) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                        (card["id"], *fields, QUEUED, now, now))
+                    return True
+                conn.execute(
+                    "UPDATE cards SET kind=?, priority=?, title=?, body=?, sender=?, reply_to=?,"
+                    " updated=? WHERE card_id = ?", (*fields, now, card["id"]))
+                if row["status"] == CLAIMING or (reopen and row["status"] in TERMINAL):
+                    conn.execute(
+                        "UPDATE cards SET status=?, assigned_to=NULL, assigned_job=NULL,"
+                        " thread_open=0, notified=0, announced_at=NULL WHERE card_id=?",
+                        (QUEUED, card["id"]))
+                    return True
+                return False
+        finally:
+            conn.close()
+
+    def reopen_thread(self, card: dict[str, Any]) -> None:
+        """Queue a card again because its thread has a message no live agent will hear.
+
+        The card may be one this swarm sent, or one the board shows finished.
+        ``thread_open`` keeps `mark` from closing it before the representative
+        assigns it again.
+        """
+        now = time.time()
+        fields = _fields(card)
+        conn = self._conn()
+        try:
+            with conn:
+                conn.execute(
+                    "INSERT INTO cards (card_id, kind, priority, title, body, sender, reply_to,"
+                    " status, thread_open, arrival, updated) VALUES (?,?,?,?,?,?,?,?,1,?,?)"
+                    " ON CONFLICT(card_id) DO UPDATE SET status=excluded.status, thread_open=1,"
+                    " assigned_to=NULL, assigned_job=NULL, notified=0, announced_at=NULL,"
+                    " updated=excluded.updated",
+                    (card["id"], *fields, QUEUED, now, now))
+        finally:
+            conn.close()
+
+    def begin_claim(self, card: dict[str, Any]) -> bool:
+        """Record that the door is about to claim ``card``. False if the queue already holds it."""
+        now = time.time()
+        conn = self._conn()
+        try:
+            with conn:
+                cur = conn.execute(
+                    "INSERT OR IGNORE INTO cards (card_id, kind, priority, title, body, sender,"
+                    " reply_to, status, arrival, updated) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                    (card["id"], *_fields(card), CLAIMING, now, now))
+                return cur.rowcount > 0
+        finally:
+            conn.close()
+
+    def drop_claim(self, card_id: str) -> None:
+        """Forget a claim attempt the board refused."""
+        conn = self._conn()
+        try:
+            with conn:
+                conn.execute("DELETE FROM cards WHERE card_id=? AND status=?", (card_id, CLAIMING))
+        finally:
+            conn.close()
+
+    def status_of(self, card_id: str) -> str | None:
+        conn = self._conn()
+        try:
+            row = conn.execute("SELECT status FROM cards WHERE card_id = ?", (card_id,)).fetchone()
+        finally:
+            conn.close()
+        return row["status"] if row else None
+
+    def mark(self, card_id: str, status: str) -> bool:
+        """Set a finished status on a card the queue holds. True if it changed.
+
+        ``gone`` applies only to a card still in the door's hands: a card that
+        finished is not made gone by a later re-address.
+        """
+        if status not in TERMINAL:
+            raise ValueError(f"mark takes {TERMINAL}, not {status!r}")
+        guard = " AND thread_open = 0"
+        guard += " AND status IN (?,?,?)" if status == "gone" else " AND status != ?"
+        args: tuple = (status, time.time(), card_id,
+                       *((*ACTIVE, CLAIMING) if status == "gone" else (status,)))
+        conn = self._conn()
+        try:
+            with conn:
+                cur = conn.execute(
+                    f"UPDATE cards SET status=?, updated=? WHERE card_id=?{guard}", args)
+                return cur.rowcount > 0
+        finally:
+            conn.close()
+
+    def assign(self, card_id: str, agent: str,
+               job: str | None = None) -> tuple[dict | None, str | None]:
+        """Record the hand-off target. Returns ``(card, None)`` or ``(None, reason)``.
+
+        A request becomes ``assigned``: the agent completes it on the board. A
+        message is never completed on the board, so handing it off finishes it.
+        ``job`` is the background session that new thread messages wake. It
+        outlives the card's status.
+        """
+        conn = self._conn()
+        try:
+            with conn:
+                row = conn.execute("SELECT status, kind FROM cards WHERE card_id = ?",
+                                   (card_id,)).fetchone()
+                if row is None:
+                    return None, f"no card {card_id} in the queue"
+                if row["status"] not in ACTIVE:
+                    return None, f"card {card_id} is {row['status']}, not open for hand-off"
+                status = DONE if row["kind"] == MESSAGE else ASSIGNED
+                conn.execute(
+                    "UPDATE cards SET status=?, assigned_to=?, assigned_job=?, thread_open=0,"
+                    " updated=? WHERE card_id=?", (status, agent, job, time.time(), card_id))
+        finally:
+            conn.close()
+        return self.get(card_id), None
+
+    def get(self, card_id: str) -> dict | None:
+        conn = self._conn()
+        try:
+            row = conn.execute("SELECT * FROM cards WHERE card_id = ?", (card_id,)).fetchone()
+        finally:
+            conn.close()
+        return _public(row) if row else None
+
+    def list(self, status: str | None = None, limit: int = 50) -> list[dict]:
+        """Cards, urgent first then oldest first. All statuses when ``status`` is None."""
+        if status is not None and status not in STATUSES:
+            raise ValueError(f"status must be one of {STATUSES}")
+        limit = max(1, min(int(limit), MAX_LIST))
+        sql = "SELECT * FROM cards"
+        args: list[Any] = []
+        if status is not None:
+            sql += " WHERE status = ?"
+            args.append(status)
+        sql += f" ORDER BY {_URGENT_FIRST}, arrival, card_id LIMIT ?"
+        args.append(limit)
+        conn = self._conn()
+        try:
+            return [_public(r) for r in conn.execute(sql, args).fetchall()]
+        finally:
+            conn.close()
+
+    def counts(self) -> dict[str, int]:
+        conn = self._conn()
+        try:
+            found = {r["status"]: r["n"] for r in conn.execute(
+                "SELECT status, COUNT(*) AS n FROM cards GROUP BY status")}
+        finally:
+            conn.close()
+        return {s: found.get(s, 0) for s in STATUSES}
+
+    def active_ids(self) -> list[str]:
+        marks = ",".join("?" for _ in ACTIVE)
+        conn = self._conn()
+        try:
+            return [r["card_id"] for r in conn.execute(
+                f"SELECT card_id FROM cards WHERE status IN ({marks}) ORDER BY arrival", ACTIVE)]
+        finally:
+            conn.close()
+
+    def has(self, card_id: str) -> bool:
+        return self.status_of(card_id) is not None
+
+    # -- threads -------------------------------------------------------------
+
+    def thread_seq(self, card_id: str) -> int:
+        """The last message sequence the door routed on ``card_id``. 0 for none."""
+        conn = self._conn()
+        try:
+            row = conn.execute("SELECT last_seq FROM threads WHERE card_id=?", (card_id,)).fetchone()
+        finally:
+            conn.close()
+        return int(row["last_seq"]) if row else 0
+
+    def thread_seqs(self) -> dict[str, int]:
+        conn = self._conn()
+        try:
+            return {r["card_id"]: int(r["last_seq"])
+                    for r in conn.execute("SELECT card_id, last_seq FROM threads")}
+        finally:
+            conn.close()
+
+    def set_thread_seq(self, card_id: str, seq: int) -> None:
+        """Move the card's thread cursor forward. It never moves back."""
+        conn = self._conn()
+        try:
+            with conn:
+                conn.execute("INSERT INTO threads (card_id, last_seq) VALUES (?, ?)"
+                             " ON CONFLICT(card_id) DO UPDATE SET last_seq = excluded.last_seq"
+                             " WHERE excluded.last_seq > threads.last_seq", (card_id, int(seq)))
+        finally:
+            conn.close()
+
+    # -- the wake-up batch ---------------------------------------------------
+
+    def unannounced(self, stale_after_s: float | None = None,
+                    now: float | None = None) -> list[tuple[str, str, bool]]:
+        """Queued cards the representative should hear about: ``(card_id, priority, new)``.
+
+        A card is new until it has been announced once. With ``stale_after_s``
+        a card that stayed queued that long since its last announcement counts
+        again, with ``new`` False.
+        """
+        now = time.time() if now is None else now
+        cutoff = None if stale_after_s is None else now - stale_after_s
+        conn = self._conn()
+        try:
+            rows = conn.execute(
+                "SELECT card_id, priority, notified FROM cards WHERE status=? AND"
+                " (notified=0 OR (? IS NOT NULL AND COALESCE(announced_at, 0) < ?))"
+                " ORDER BY arrival", (QUEUED, cutoff, cutoff)).fetchall()
+        finally:
+            conn.close()
+        return [(r["card_id"], r["priority"], r["notified"] == 0) for r in rows]
+
+    def mark_announced(self, card_ids: list[str], now: float | None = None) -> None:
+        now = time.time() if now is None else now
+        conn = self._conn()
+        try:
+            with conn:
+                conn.executemany("UPDATE cards SET notified=1, announced_at=? WHERE card_id=?",
+                                 [(now, c) for c in card_ids])
+        finally:
+            conn.close()
+
+    def reset_announced(self) -> None:
+        """Forget which queued cards were announced, so a new session hears of all of them."""
+        conn = self._conn()
+        try:
+            with conn:
+                conn.execute("UPDATE cards SET notified=0, announced_at=NULL WHERE status=?",
+                             (QUEUED,))
+        finally:
+            conn.close()
+
+    # -- the stream cursor ---------------------------------------------------
+
+    def cursor(self) -> int | None:
+        conn = self._conn()
+        try:
+            row = conn.execute("SELECT value FROM meta WHERE key=?", (_CURSOR,)).fetchone()
+        finally:
+            conn.close()
+        return int(row["value"]) if row else None
+
+    def set_cursor(self, event_id: int, *, force: bool = False) -> None:
+        """Save the cursor. It only moves forward unless ``force`` says the board's log restarted."""
+        conn = self._conn()
+        try:
+            with conn:
+                row = conn.execute("SELECT value FROM meta WHERE key=?", (_CURSOR,)).fetchone()
+                if row is not None and not force and int(row["value"]) >= event_id:
+                    return
+                conn.execute("INSERT INTO meta (key, value) VALUES (?, ?)"
+                             " ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                             (_CURSOR, str(int(event_id))))
+        finally:
+            conn.close()
+
+    # -- the sessions the door started --------------------------------------
+
+    def record_session(self, role: str, job: str, spec_hash: str | None = None) -> None:
+        conn = self._conn()
+        try:
+            with conn:
+                conn.execute("INSERT OR IGNORE INTO sessions (role, job, started, spec_hash) "
+                             "VALUES (?,?,?,?)", (role, job, time.time(), spec_hash))
+        finally:
+            conn.close()
+
+    def session_spec_hash(self, role: str, job: str) -> str | None:
+        """The launch-config fingerprint the door recorded for ``job``. None for a row from before it did."""
+        conn = self._conn()
+        try:
+            row = conn.execute("SELECT spec_hash FROM sessions WHERE role=? AND job=?",
+                               (role, job)).fetchone()
+            return row["spec_hash"] if row else None
+        finally:
+            conn.close()
+
+    def session_jobs(self, role: str) -> set[str]:
+        conn = self._conn()
+        try:
+            return {r["job"] for r in conn.execute(
+                "SELECT job FROM sessions WHERE role=?", (role,))}
+        finally:
+            conn.close()
+
+
+def _fields(card: dict[str, Any]) -> tuple:
+    return (
+        str(card.get("kind") or "request"),
+        str(card.get("priority") or "normal"),
+        str(card.get("title") or ""),
+        str(card.get("body") or ""),
+        _sender(card),
+        card.get("reply_to") or None,
+    )
+
+
+def _sender(card: dict[str, Any]) -> str:
+    sender = card.get("sender")
+    if isinstance(sender, dict):
+        return str(sender.get("swarm") or "")
+    return str(sender or "")
+
+
+def _iso(epoch: float) -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(epoch))
+
+
+def _public(row: sqlite3.Row) -> dict:
+    out = dict(row)
+    out.pop("notified", None)
+    out.pop("announced_at", None)
+    out["arrival_at"] = _iso(out["arrival"])
+    out["updated_at"] = _iso(out["updated"])
+    return out

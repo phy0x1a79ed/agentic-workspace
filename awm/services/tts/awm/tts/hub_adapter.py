@@ -49,14 +49,17 @@ API_MANIFEST: dict[str, Any] = {
     "functions": [
         {
             "name": "listEngines",
+            "effect": "read",
             "description": "Exposed TTS engines: JSON-Schema + defaults per engine.",
         },
         {
             "name": "listPresets",
+            "effect": "read",
             "description": "Named engine-config presets plus the last-used pointer.",
         },
         {
             "name": "savePreset",
+            "effect": "write",
             "description": "Create or update a named engine-config preset.",
             "params": [
                 {"name": "name", "type": "string", "required": True},
@@ -66,20 +69,24 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "deletePreset",
+            "effect": "write",
             "description": "Delete a named preset (built-ins are refused).",
             "params": [{"name": "name", "type": "string", "required": True}],
         },
         {
             "name": "getAllState",
+            "effect": "read",
             "description": "Return every keyed UI-state value.",
         },
         {
             "name": "getState",
+            "effect": "read",
             "description": "Return one keyed UI-state value.",
             "params": [{"name": "key", "type": "string", "required": True}],
         },
         {
             "name": "setState",
+            "effect": "write",
             "description": "Set one keyed UI-state value.",
             "params": [
                 {"name": "key", "type": "string", "required": True},
@@ -88,6 +95,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "delState",
+            "effect": "write",
             "description": "Delete one keyed UI-state value.",
             "params": [{"name": "key", "type": "string", "required": True}],
         },

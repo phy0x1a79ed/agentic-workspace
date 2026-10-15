@@ -44,8 +44,8 @@
 
   // <Chat> calls this exactly once per user turn (the send-once gate lives in
   // Chat). We just land the user's message as a `you` row — there is no chat
-  // partner (the stt service dropped its mock `chat` function; the agents
-  // service is the real partner). Posted turns feed back into `chatContext`.
+  // partner (the stt service dropped its mock `chat` function). Posted
+  // turns feed back into `chatContext`.
   function onUserMessage(text: string) {
     const t = text.trim();
     if (!t) return;

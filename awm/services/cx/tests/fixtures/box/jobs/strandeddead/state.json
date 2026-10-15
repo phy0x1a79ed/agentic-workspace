@@ -1,0 +1,11 @@
+{
+ "name": "<warm saiga>",
+ "intent": "",
+ "needs": "send a prompt to start",
+ "originCwd": "/home/tony/agentic_workspace/projects",
+ "cwd": "/home/tony/agentic_workspace/projects",
+ "firstTerminalAt": null,
+ "createdAt": "2026-09-10T05:23:12.386Z",
+ "state": "working",
+ "nameSource": "user"
+}
