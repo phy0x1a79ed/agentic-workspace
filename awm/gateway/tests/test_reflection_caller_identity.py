@@ -180,7 +180,7 @@ def test_a_tool_that_shares_a_prefix_with_reflection_is_left_alone():
 ])
 def test_pid_headers_are_ignored_when_the_request_carries_x_awm_as(name, shape):
     if shape == "nested":
-        args = {"verb": "queue_list" if name == "operations" else "compact",
+        args = {"verb": "status" if name == "operations" else "compact",
                 "args": {"_caller_pid": 999}}
         bag = lambda: args["args"]  # noqa: E731
     else:

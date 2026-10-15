@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "awm-reporting"
 version = "0.1.0"
 requires-python = ">=3.11"
-description = "AWM task reporting: a per-node task ledger shown on the Swarm board, plus the front door that queues the federation board's cards and keeps a representative and a secretary session alive."
+description = "AWM task reporting: a per-node task ledger shown on the Swarm board, plus the front door that tells Tony of the federation board's cards, claims them for a session on request, and mirrors their lifecycle."
 dependencies = [
     "awm-config",
     "awm-gatewayclient",
