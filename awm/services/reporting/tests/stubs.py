@@ -1,11 +1,11 @@
-"""Stand-ins for the board, cx and the personas file."""
+"""Stand-ins for the board, the federation gateway verbs, cx and Trilium."""
 
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from types import SimpleNamespace
 
-from awm.board.client import BoardConflict, BoardRefused
+from awm.board.client import BoardRefused
+from awm.reporting.federation import FedError, Federation
 from awm.reporting.sessions import CxUnavailable
 
 _N = 0
@@ -15,25 +15,23 @@ def make_card(**over) -> dict:
     global _N
     _N += 1
     card = {
-        "id": f"{_N:032x}", "kind": "request", "recipient": "tony", "status": "posted",
-        "priority": "normal", "title": f"card {_N}", "body": "do the thing",
-        "sender": {"swarm": "beta", "principal": "op", "party": "p"},
-        "claimant": None, "created_at": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
+        "id": f"{_N:08x}" + "c0de" * 6, "kind": "request", "recipient": "tony", "status": "posted",
+        "state": "proposed", "priority": "normal", "title": f"card {_N}", "body": "do the thing",
+        "sender": {"swarm": "beta", "principal": "op", "party": "p"}, "agent": None,
+        "claimant": None, "owner": None, "project": None, "note_id": None, "last_message": 0,
+        "created_at": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
     }
     card.update(over)
     return card
 
 
 class FakeBoard:
-    """Just enough of BoardClient: claims, reads, and a scripted stream."""
+    """Just enough of BoardClient: reads and a scripted stream. The door never claims."""
 
     def __init__(self, swarm: str = "tony") -> None:
         self.swarm = swarm
         self.cards: dict[str, dict] = {}
         self.events: list[tuple[int, str, dict]] = []
-        self.conflicts: set[str] = set()
-        self.claim_error: Exception | None = None
-        self.claims: list[str] = []
         self.stream_starts: list[int | None] = []
         self.list_calls: list[dict] = []
         self.list_error: Exception | None = None
@@ -45,12 +43,12 @@ class FakeBoard:
         self.cards[card["id"]] = card
         return card
 
-    def say(self, card: dict, body: str = "hello", swarm: str = "beta") -> dict:
+    def say(self, card: dict, body: str = "hello", swarm: str = "beta", agent: str | None = None) -> dict:
         """Add a message to ``card``'s thread. Returns the ``card.message`` event's card."""
         thread = self.threads.setdefault(card["id"], [])
         message = {"card_id": card["id"], "seq": len(thread) + 1, "at": "2026-10-14T12:00:00Z",
                    "sender": {"swarm": swarm, "principal": "op", "party": "p"},
-                   "origin": "api", "body": body}
+                   "origin": "api", "body": body, "agent": agent}
         thread.append(message)
         card["last_message"] = message["seq"]
         return {**card, "message": message}
@@ -67,18 +65,6 @@ class FakeBoard:
         self.events.append((event_id, type_, dict(card)))
         return event_id
 
-    async def claim(self, card_id: str) -> dict:
-        self.claims.append(card_id)
-        if self.claim_error is not None:
-            raise self.claim_error
-        if card_id in self.conflicts:
-            raise BoardConflict(409, "the card is already held")
-        card = self.cards.get(card_id)
-        if card is None:
-            raise BoardRefused(404, "not found")
-        card["status"], card["claimant"] = "in_progress", self.swarm
-        return dict(card)
-
     async def get(self, card_id: str) -> dict:
         if card_id in self.get_errors:
             raise self.get_errors[card_id]
@@ -94,7 +80,7 @@ class FakeBoard:
         out = []
         for card in self.cards.values():
             if any(card.get(k) != v for k, v in filters.items()
-                   if v and k in ("recipient", "kind", "status", "claimant")):
+                   if v and k in ("recipient", "kind", "state", "claimant")):
                 continue
             if filters.get("sender") and card["sender"]["swarm"] != filters["sender"]:
                 continue
@@ -111,37 +97,90 @@ class FakeBoard:
                 yield event
 
 
-REPRESENTATIVE = {
-    "name": "front-door", "mode": "representative", "model": "sonnet[1m]",
-    "permission": "dontAsk", "disallowed_tools": ["Bash", "Edit", "Write"],
-    "remote_control": True, "prompt": "triage", "project": "awm", "scope": "door",
-}
-SECRETARY = {
-    "name": "secretary", "mode": "secretary", "model": "sonnet[1m]",
-    "permission": "dontAsk", "disallowed_tools": ["Bash", "Edit", "Write"],
-    "remote_control": True, "prompt": "assist", "project": "awm", "scope": "door",
-}
+class FakeFed(Federation):
+    """The board's gateway verbs over an in-memory set of cards.
 
+    ``claim`` stamps the owner from the caller pid the way the board would, so a
+    test can check who it acted for. ``fail`` makes the next call to a verb
+    raise, and ``calls`` records every call.
+    """
 
-def personas(**over) -> SimpleNamespace:
-    return SimpleNamespace(**{"REPRESENTATIVE": dict(REPRESENTATIVE),
-                              "SECRETARY": dict(SECRETARY), **over})
+    def __init__(self, swarm: str = "tony", node: str = "altair") -> None:
+        self.swarm, self.node = swarm, node
+        self.db: dict[str, dict] = {}
+        self.calls: list[tuple[str, dict, int | None]] = []
+        self.fail: dict[str, FedError] = {}
+        self.sticky: dict[str, FedError] = {}
+        self.thread: list[tuple[str, str, int | None]] = []
+        self.names: dict[int, str] = {}
+
+    def add(self, card: dict) -> dict:
+        self.db[card["id"]] = card
+        return card
+
+    def verbs(self, fn: str) -> list[dict]:
+        return [a for f, a, _ in self.calls if f == fn]
+
+    async def _call(self, fn: str, args: dict, caller_pid: int | None = None) -> dict:
+        self.calls.append((fn, dict(args), caller_pid))
+        if fn in self.fail:
+            raise self.fail.pop(fn)
+        if fn in self.sticky:
+            raise self.sticky[fn]
+        return getattr(self, f"_{fn}")(args, caller_pid)
+
+    def _card(self, args: dict) -> dict:
+        card = self.db.get(args["card_id"])
+        if card is None:
+            raise FedError(404, "not found")
+        return card
+
+    def _get(self, args, pid):
+        return {"ok": True, "card": dict(self._card(args))}
+
+    def _list(self, args, pid):
+        out = [dict(c) for c in self.db.values()
+               if all(c.get(k) == v for k, v in args.items() if k in ("recipient", "state", "sender"))]
+        start = int(args.get("offset") or 0)
+        return {"ok": True, "cards": out[start:start + int(args.get("limit") or 500)]}
+
+    def _claim(self, args, pid):
+        card = self._card(args)
+        if card["state"] != "proposed" and card.get("claimant") != self.swarm:
+            raise FedError(409, "the card is already held")
+        if card["state"] == "proposed":
+            agent = self.names.get(pid)
+            card.update(state="planned", status="in_progress", claimant=self.swarm,
+                        owner="/".join([self.swarm, self.node] + ([agent] if agent else [])))
+        return {"ok": True, "card": dict(card)}
+
+    def _status(self, args, pid):
+        card = self._card(args)
+        if card.get("claimant") != self.swarm:
+            raise FedError(403, "only the claimant moves a card")
+        card.update(state=args["state"])
+        return {"ok": True, "card": dict(card)}
+
+    def _reject(self, args, pid):
+        card = self._card(args)
+        card.update(state="rejected", status="failed")
+        self.thread.append((card["id"], args["reason"], pid))
+        return {"ok": True, "card": dict(card)}
+
+    def _message_post(self, args, pid):
+        self._card(args)
+        self.thread.append((args["card_id"], args["body"], pid))
+        return {"ok": True, "message": {"seq": len(self.thread), "body": args["body"]}}
 
 
 class FakeCx:
-    """cx as the door sees it: `list` and `start`, with sessions that stay started.
-
-    Rows given up front are sessions somebody else started, unless a test records
-    them in the door's queue.
-    """
+    """cx as the service sees it: `list` and `start`."""
 
     def __init__(self, rows: list[dict] | None = None) -> None:
         self.rows = list(rows or [])
         self.started: list[dict] = []
         self.unavailable = False
-        self.refuse: str | None = None
-        self.refuse_stop: str | None = None
-        self.stopped: list[str] = []
+        self.start_reply: dict | None = None
         self._n = 0
 
     async def list(self) -> list[dict]:
@@ -151,33 +190,13 @@ class FakeCx:
 
     async def start(self, spec: dict) -> dict:
         self.started.append(dict(spec))
-        if self.refuse:
-            return {"ok": False, "reason": self.refuse}
+        if self.start_reply is not None:
+            return self.start_reply
         self._n += 1
         job = f"job{self._n:04d}"
-        self.rows.append({"job": job, "name": spec["name"], "mode": spec["mode"], "state": "idle",
-                          "caller": "local", "parent": None})
-        return {"ok": True, "job": job, "mode": spec["mode"]}
-
-
-    async def stop(self, job: str) -> dict:
-        self.stopped.append(job)
-        if self.refuse_stop:
-            return {"ok": False, "reason": self.refuse_stop}
-        for row in self.rows:
-            if row.get("job") == job:
-                row["state"] = "gone"
-        return {"ok": True, "job": job}
-
-
-def session_row(mode: str, job: str = "abc12345", state: str = "idle", name: str | None = None,
-                caller: str | None = None, parent: str | None = None,
-                needs: str | None = None, detail: str | None = None,
-                tempo: str | None = None) -> dict:
-    """A cx list row. A hand-started session has no lineage, so no caller."""
-    return {"job": job, "name": name or mode, "mode": mode, "state": state,
-            "caller": caller, "parent": parent, "needs": needs, "detail": detail,
-            "tempo": tempo}
+        self.rows.append({"job": job, "name": spec["name"], "state": "idle",
+                          "project": spec["project"], "scope": spec["scope"]})
+        return {"ok": True, "job": job, "link": f"https://claude.ai/code/session_{job}"}
 
 
 class FakeTrilium:
@@ -232,7 +251,8 @@ class FakeTrilium:
         n = self.notes[note_id]
         out = {"noteId": note_id, "title": n["title"], "parentNoteIds": self.parents(note_id),
                "utcDateModified": n.get("modified", "2026-01-02 03:04:05.678Z"),
-               "attributes": [{"name": k, "value": v, "type": "label"} for k, v in n["labels"].items()]}
+               "attributes": [{"name": k, "value": v, "type": "label", "noteId": note_id}
+                              for k, v in n["labels"].items()]}
         if content:
             out["content"] = n.get("content", "")
         return out
@@ -263,6 +283,10 @@ class FakeTrilium:
             [p for p in parents if p not in current]
         return {"note_id": note_id, "parents": self.notes[note_id]["parents"]}
 
+    def _attr_set(self, note_id: str, name: str, value: str = "", inheritable: bool = False) -> dict:
+        self.notes[note_id]["labels"][name] = value
+        return {"note_id": note_id}
+
     def _note_delete(self, note_id: str) -> dict:
         del self.notes[note_id]
         return {"note_id": note_id, "deleted": True}
@@ -273,5 +297,5 @@ def make_board(tri: FakeTrilium) -> dict[str, str]:
     awm = tri.add("AWM", type="book")
     board = tri.add("Swarm board", awm, type="book", labels={"swarmBoard": ""})
     out = {t: tri.add(t, board, type="book") for t in ("Proposed", "Planned", "Active", "Blocked",
-                                                         "Pending review", "Ledger")}
+                                                         "Pending review", "Done", "Rejected", "Ledger")}
     return {**out, "board": board, "awm": awm}

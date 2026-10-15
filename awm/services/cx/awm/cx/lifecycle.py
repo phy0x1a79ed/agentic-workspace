@@ -38,7 +38,7 @@ from typing import Any
 
 from awm import gatewayclient
 from awm.claudedaemon import launch, roster, sessionmode
-from awm.config import caller_peer, modes, node_name, node_role, peer_relation
+from awm.config import caller_peer, node_name, node_role, peer_relation
 
 from awm.cx import config, sessions, trust
 
@@ -52,20 +52,16 @@ EFFORTS = ("low", "medium", "high", "xhigh", "max")
 #: other session is a plain worker.
 DEFAULT_MODE = "worker"
 
-#: What a caller in a gated mode may ask for. Everything else about the session
-#: it starts is cx's choice (`_child_spec`), so a card cannot talk the
-#: representative into starting a stronger session than a delegate.
-CHILD_FREE_ARGS = frozenset({"project", "scope", "prompt", "name", "model", "effort"})
-CHILD_OVERRIDES = ("permission", "allowed_tools", "disallowed_tools", "tools",
-                   "remote_control", "mode", "restricted", "strict_mcp")
-CHILD_MODELS = frozenset({"sonnet", "opus", "haiku", "sonnet[1m]", "opus[1m]"})
-
 UNKNOWN = sessionmode.UNKNOWN
 
 #: Re-exported: the gateway reads the same answer through `claudedaemon`.
 mode_of = sessionmode.mode_of
 
 STOP_TIMEOUT_S = 20.0
+#: How long a start that asked for Remote Control waits for the bridge id to
+#: appear in the job record, and how often it looks.
+LINK_WAIT_S = 8.0
+LINK_POLL_S = 0.5
 SCOPE_CREATE_TIMEOUT_S = 1700.0
 #: A lineage record younger than this is never pruned, so a record written the
 #: instant a job registers cannot be collected before the roster shows it.
@@ -143,13 +139,13 @@ async def _start(args: dict[str, Any], as_: str | None) -> dict[str, Any]:
         raise Refused(reason)
     spec = _parse(args)
     ensure_starts_dir()
-    confined = _apply_caller_policy(args, spec)
+    _refuse_unknown_caller(args)
     if spec["strict_mcp"]:
         spec["mcp_config"] = str(_write_mcp_config())
     if sessions.daemon_pid() is None:
         raise Refused("no claude code daemon is running — a session started now "
                       "would land inside awm's control group")
-    cwd = await _resolve_worktree(spec["project"], spec["scope"], create=not confined)
+    cwd = await _resolve_worktree(spec["project"], spec["scope"])
     untrusted = await asyncio.to_thread(trust.start_refusal, cwd)
     if untrusted:
         raise Refused(untrusted)
@@ -191,46 +187,43 @@ async def _start(args: dict[str, Any], as_: str | None) -> dict[str, Any]:
     return {"ok": True, "job": session.short, "name": spec["name"],
             "node": node_name(), "project": spec["project"], "scope": spec["scope"],
             "cwd": str(cwd), "attach": f"claude attach {session.short}",
-            "parent": parent, "mode": spec["mode"]}
+            "parent": parent, "mode": spec["mode"],
+            **await _started_link(session.short, bool(spec["remote_control"]))}
 
 
-def _apply_caller_policy(args: dict[str, Any], spec: dict[str, Any]) -> bool:
-    """Hold the new session to what its caller is allowed to start.
+async def _started_link(job: str, remote_control: bool) -> dict[str, Any]:
+    """The `link` fields of a start result.
+
+    Remote Control is off unless the caller asked for it, so most starts answer
+    `link: None` at once. One that asked waits a bounded time for the bridge id
+    and says why when it has not appeared, because the connection can finish
+    after the start has returned.
+    """
+    if not remote_control:
+        return {"link": None}
+    deadline = time.monotonic() + LINK_WAIT_S
+    while True:
+        link = roster.bridge_link(roster.job_bridge_id(job, config.jobs_dir()))
+        if link:
+            return {"link": link}
+        if time.monotonic() >= deadline:
+            return {"link": None,
+                    "link_reason": (f"Remote Control had not connected after "
+                                    f"{LINK_WAIT_S:g}s; `reflection link` with "
+                                    f"job {job} returns the link once it has")}
+        await asyncio.sleep(LINK_POLL_S)
+
+
+def _refuse_unknown_caller(args: dict[str, Any]) -> None:
+    """Refuse a caller whose mode cannot be established: it may start nothing.
 
     No `_caller_pid` means an operator or a service (the front door), which
-    carries no mode and may ask for anything. A session caller:
-
-    - may not ask for a reserved name or mode: only the front door starts the
-      representative and the secretary, and only cx assigns `delegate`;
-    - in an unknown mode may start nothing;
-    - in a delegating mode (`modes.DELEGATING_MODES`) gets a delegate. It may name the project,
-      scope, prompt, name, an allowlisted model and the effort, and nothing
-      else, and the scope must already exist. cx fixes the rest.
-
-    Returns whether the new session is confined to an existing scope.
+    carries no mode.
     """
     caller_pid = args.get("_caller_pid")
-    if caller_pid is None:
-        return False
-    role = spec["name"].partition(" - ")[0]
-    if spec["mode"] in modes.RESERVED_MODES or role in modes.RESERVED_NAMES:
-        raise Refused(f"only the front door may start a session named or moded "
-                      f"{sorted(modes.RESERVED_NAMES | modes.RESERVED_MODES)}")
-    mode = mode_of(caller_pid)
-    if mode == UNKNOWN:
+    if caller_pid is not None and mode_of(caller_pid) == UNKNOWN:
         raise Refused("the caller's mode could not be determined, so it may not "
                       "start sessions")
-    if mode not in modes.DELEGATING_MODES:
-        return False
-    given = [k for k in CHILD_OVERRIDES if args.get(k) not in (None, "", [])]
-    if given:
-        raise Refused(f"a session in mode {mode!r} may not set {', '.join(given)}; "
-                      "cx starts its sessions as delegates")
-    if spec["model"] not in CHILD_MODELS and args.get("model"):
-        raise Refused(f"a session in mode {mode!r} may use only the models "
-                      f"{', '.join(sorted(CHILD_MODELS))}")
-    spec.update(config.child_policy())
-    return True
 
 
 def _parse(args: dict[str, Any]) -> dict[str, Any]:
@@ -326,10 +319,17 @@ def build_flags(spec: dict[str, Any]) -> list[str]:
     The `=` form keeps a value that starts with `-` from being read as a flag.
     The model is a flag, not `ANTHROPIC_MODEL`: the flag wins where the two
     disagree, and it is the only per-session setting that is stated in the
-    session's own launch record.
+    session's own launch record. A named mode still keeps bypass in the mode
+    cycle, so a plan-mode start returns to bypass on approval. `--restricted`
+    refuses bypass, so a restricted start names its mode alone.
     """
-    flags = ([f"--permission-mode={spec['permission']}"] if spec["permission"]
-             else config.skip_permission_flags())
+    if not spec["permission"]:
+        flags = config.skip_permission_flags()
+    elif spec["restricted"]:
+        flags = [f"--permission-mode={spec['permission']}"]
+    else:
+        flags = [f"--permission-mode={spec['permission']}",
+                 "--allow-dangerously-skip-permissions"]
     if spec["restricted"]:
         flags.append("--restricted")
         settings = config.restricted_settings()
@@ -365,20 +365,14 @@ def _write_mcp_config() -> Path:
     return path
 
 
-async def _resolve_worktree(project: str, scope: str, *, create: bool = True) -> Path:
-    """The scope's worktree, created through the scopes service when absent.
-
-    A caller that may not create scopes (`create=False`) gets a refusal instead.
-    """
+async def _resolve_worktree(project: str, scope: str) -> Path:
+    """The scope's worktree, created through the scopes service when absent."""
     root = config.projects_dir()
     cwd = root / project / scope
     if not cwd.resolve().is_relative_to(root.resolve()):
         raise Refused("the scope resolves outside the projects directory")
     if cwd.is_dir():
         return cwd
-    if not create:
-        raise Refused(f"scope {project}/{scope} does not exist, and this caller "
-                      "may not create scopes")
     try:
         await create_scope(project, scope)
     except Exception as exc:  # noqa: BLE001 — any failure is the reason
@@ -673,7 +667,8 @@ def _job_row(s: sessions.Session, rec: dict[str, Any] | None,
         "tempo": record.get("tempo"),
         "attach": f"claude attach {s.short}",
         "parent": rec.get("parent"), "caller": rec.get("caller"),
-        "mode": rec.get("mode"), "remote_control": rec.get("remote_control"),
+        "mode": rec.get("mode"), "remote_control": s.remote_control,
+        "remote_control_label": rec.get("remote_control"), "link": s.link,
         "started_at": rec.get("started_at") or _iso_ms(s.started_at_ms),
         "pool": sessions.is_ours(s) or sessions.was_ours(s),
     }
@@ -687,13 +682,16 @@ def _interactive_row(rec: dict[str, Any], panes: dict[int, str],
                      node: str) -> dict[str, Any]:
     project, scope = _project_scope(rec.get("cwd"))
     tmux = _tmux_session_of(int(rec["pid"]), panes)
+    bridge = rec.get("bridgeSessionId") or None
     return {
         "job": None, "tmux": tmux, "name": rec.get("name"), "node": node,
         "project": project, "scope": scope, "cwd": rec.get("cwd"),
         "state": rec.get("status") or "unknown",
         "needs": None, "detail": None, "tempo": None,
         "attach": f"tmux attach -t {tmux}" if tmux else None,
-        "parent": None, "caller": None, "mode": None, "remote_control": None,
+        "parent": None, "caller": None, "mode": None,
+        "remote_control": bool(bridge), "remote_control_label": None,
+        "link": roster.bridge_link(bridge),
         "started_at": _iso_ms(rec.get("startedAt")), "pool": False,
     }
 

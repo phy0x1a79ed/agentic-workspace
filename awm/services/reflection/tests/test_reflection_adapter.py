@@ -68,8 +68,9 @@ def test_a_successful_call_is_left_alone(caplog):
 def test_every_verb_goes_through_the_seam():
     # A handler wired in later without the wrapper would be silently exempt from
     # all of the above, which is exactly how the gap opened the first time.
-    assert set(hub_adapter.HANDLERS) == {"message_self", "compact", "mode", "pending",
-                                         "whoami"}
+    assert set(hub_adapter.HANDLERS) == {
+        "message_self", "compact", "mode", "pending", "whoami", "remote_control",
+        "model", "effort", "rename", "interrupt", "stop", "link", "message"}
     for verb, handler in hub_adapter.HANDLERS.items():
         assert handler.__qualname__.startswith("_guarded."), verb
 

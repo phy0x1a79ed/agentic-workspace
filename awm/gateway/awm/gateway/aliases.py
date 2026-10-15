@@ -74,8 +74,6 @@ def _rows() -> list[Alias]:
         add("board", f"party_{verb}", "operations", f"party_{verb}")
 
     add("reporting", "status", "operations", "status")
-    for verb in ("list", "get", "assign"):
-        add("reporting", f"card_{verb}", "operations", f"queue_{verb}")
     add("reporting", "claim_task", "operations", "task_claim")
     for verb in ("plan", "plan_approved", "todos", "prompt"):
         add("reporting", f"hook_{verb}", "operations", f"hook_{verb}")

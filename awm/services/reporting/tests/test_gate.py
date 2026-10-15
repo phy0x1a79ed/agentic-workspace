@@ -8,7 +8,7 @@ import pytest
 
 from awm.reporting import config, hub_adapter, reconcile
 
-from stubs import FakeCx, personas
+from stubs import FakeCx
 
 pytestmark = [pytest.mark.unit, pytest.mark.smoke]
 
@@ -59,18 +59,38 @@ async def test_start_with_the_flag_off_runs_no_front_door_tasks(monkeypatch):
     assert hub_adapter.RUNTIME is not None and not hub_adapter.RUNTIME.door
 
 
-async def test_the_reconcile_loop_starts_nothing_on_a_station(monkeypatch, queue):
+async def test_start_with_the_flag_on_follows_the_board_and_the_commands(monkeypatch):
+    monkeypatch.setenv("AWM_BOARD_URL", "http://board.example")
+    monkeypatch.setenv("AWM_BOARD_TOKEN", "tok")
+    monkeypatch.setattr(hub_adapter, "RUNTIME", None)
+    spawned = []
+    monkeypatch.setattr(hub_adapter, "spawn_supervised", lambda name, *a: spawned.append(name))
+    await hub_adapter._on_start()
+    assert spawned == ["reporting-reconcile", "reporting-journals", "reporting-commands",
+                       "reporting-subscribe"]
+    assert hub_adapter.RUNTIME.door
+
+
+async def test_the_sweep_ticker_sweeps_nothing_on_a_station(monkeypatch):
     monkeypatch.setenv("AWM_NODE_ROLE", "station")
-    cx = FakeCx()
-    await reconcile.Loop(queue, cx=cx, personas=personas()).tick()
-    assert cx.started == []
+    seen = []
+
+    async def on_rows(rows):
+        seen.append(rows)
+
+    await reconcile.Loop(FakeCx([{"job": "j"}]), on_rows=on_rows).tick()
+    assert seen == []
 
 
-async def test_the_reconcile_loop_starts_nothing_with_the_flag_off(monkeypatch, queue):
+async def test_the_sweep_ticker_runs_on_a_node_with_the_flag_off(monkeypatch):
     monkeypatch.setenv("AWM_FRONT_DOOR", "0")
-    cx = FakeCx()
-    await reconcile.Loop(queue, cx=cx, personas=personas()).tick()
-    assert cx.started == []
+    seen = []
+
+    async def on_rows(rows):
+        seen.append(rows)
+
+    await reconcile.Loop(FakeCx([{"job": "j"}]), on_rows=on_rows).tick()
+    assert seen == [[{"job": "j"}]]
 
 
 def test_the_swarm_comes_from_the_node_and_not_a_constant(monkeypatch):

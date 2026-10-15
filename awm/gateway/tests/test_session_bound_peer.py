@@ -91,3 +91,7 @@ def test_every_session_bound_verb_is_a_stamped_one():
     for tool, verbs in server._SESSION_BOUND.items():
         stamped = server._CALLER_STAMPED[tool]
         assert stamped is None or verbs <= stamped
+
+
+def test_the_reporting_verbs_that_act_on_a_session_are_session_bound():
+    assert {"task_claim", "board_watch", "board_unwatch"} <= server._SESSION_BOUND["operations"]

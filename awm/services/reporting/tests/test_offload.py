@@ -8,7 +8,6 @@ import time
 import pytest
 
 from awm.reporting import hub_adapter
-from awm.reporting.notify import Notifier
 from awm.reporting.store import Db, Offloaded
 from awm.reporting.subscriber import Subscriber
 
@@ -75,27 +74,27 @@ async def test_a_task_verb_and_a_sweep_leave_the_loop_free(tmp_path, slow_disk):
     assert env.task()["state"] == "planned"
 
 
-async def test_the_notifier_leaves_the_loop_free(queue, slow_disk):
-    queue.enqueue(make_card())
-    sent = []
-
-    async def find():
-        return "r1"
-
-    notifier = Notifier(queue, find, send=lambda job, text: sent.append(text))
-    assert await worst_gap_during(notifier.flush()) < MAX_GAP_S
-    assert sent
-
-
 async def test_the_subscriber_leaves_the_loop_free(queue, slow_disk):
-    class Board:
-        async def claim(self, card_id):
-            return {}
+    told = []
 
-    sub = Subscriber(queue, Board(), "tony")
+    async def dm(text):
+        told.append(text)
+
+    sub = Subscriber(queue, object(), "tony", dm=dm)
     card = make_card()
-    assert await worst_gap_during(sub._intake(card, claim_known=False)) < MAX_GAP_S
-    assert queue.has(card["id"])
+    assert await worst_gap_during(sub._intake(card)) < MAX_GAP_S
+    assert queue.has(card["id"]) and len(told) == 1
+
+
+async def test_a_claim_and_a_watch_leave_the_loop_free(tmp_path, slow_disk):
+    env = Env(tmp_path)
+    card = env.federation_card()
+
+    async def work():
+        assert (await env.call("claim_task", ref=card["id"][:8]))["ok"]
+        assert (await env.call("board_watch", card_id=card["id"]))["ok"]
+
+    assert await worst_gap_during(work()) < MAX_GAP_S
 
 
 async def test_opening_the_database_at_start_leaves_the_loop_free(monkeypatch, slow_disk):

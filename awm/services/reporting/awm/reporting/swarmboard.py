@@ -17,7 +17,7 @@ from typing import Any, Awaitable, Callable
 
 from awm import gatewayclient
 
-from awm.reporting.ledger import COLUMNS
+from awm.reporting.ledger import COLUMNS, DONE, REJECTED
 
 log = logging.getLogger("awm.reporting.swarmboard")
 
@@ -29,6 +29,11 @@ HTML = "text/html"
 RECORD = "Record"
 CHANGED = "changed"
 MANAGED = {"agentManaged": "", "readOnly": ""}
+ARCHIVED = "archived"
+#: The labels a federation card carries, offered as promoted chips on the board root.
+CHIPS = {"cardFrom": "From", "cardTo": "To", "project": "Project", "owner": "Owner"}
+#: Columns a board made before they existed lacks. The layout makes them on first use.
+LATE_COLUMNS = (COLUMNS[DONE], COLUMNS[REJECTED])
 Call = Callable[..., Awaitable[dict]]
 
 
@@ -74,6 +79,7 @@ class SwarmBoard:
         self._raw = call or _gateway
         self._layout: Layout | None = None
         self._awm: str | None = None
+        self._chips = False
 
     async def _call(self, fn: str, **args: Any) -> dict:
         try:
@@ -103,10 +109,37 @@ class SwarmBoard:
         board = hits[0]["noteId"]
         kids = {k["title"]: k["note_id"] for k in await self._children(board)}
         missing = [t for t in (*COLUMNS.values(), LEDGER) if t not in kids]
+        for title in [t for t in missing if t in LATE_COLUMNS]:
+            kids[title] = (await self._call("note_create", title=title, parent=board, type="book"))["note_id"]
+            missing.remove(title)
         if missing:
             raise BoardError(f"the Swarm board lacks {', '.join(missing)}; run operations board_ensure")
-        self._layout = Layout(board, kids[LEDGER], {t: kids[t] for t in COLUMNS.values()})
-        return self._layout
+        layout = Layout(board, kids[LEDGER], {t: kids[t] for t in COLUMNS.values()})
+        self._layout = layout
+        if not self._chips:
+            await self._define_chips(board)
+            self._layout = layout
+        return layout
+
+    async def _define_chips(self, board: str) -> None:
+        """Offer From, To, Project and Owner as promoted chips on every card under the board.
+
+        A failure here only costs the chips, so it is logged and tried again on
+        the next layout read.
+        """
+        try:
+            note = await self._call("note_get", note_id=board, content=False)
+            held = {a.get("name") for a in note.get("attributes") or []
+                    if a.get("noteId") in (None, board)}
+            for label, caption in CHIPS.items():
+                if f"label:{label}" not in held:
+                    await self._call("attr_set", note_id=board, name=f"label:{label}",
+                                     value=f"promoted,single,text,alias={caption}",
+                                     inheritable=True)
+        except BoardError as exc:
+            log.warning("reporting: could not define the card chips: %s", exc)
+            return
+        self._chips = True
 
     async def ensure(self, parent: str | None = None) -> dict:
         """Make the board, its columns and its Ledger note if they are missing."""
@@ -123,6 +156,7 @@ class SwarmBoard:
         for title in COLUMNS.values():
             await self._child(board, title, type="book")
         await self._child(board, LEDGER, type="book")
+        self._chips = False
         ops = await self._find_ops()
         if ops is None:
             ops = await self._child(parent or await self._awm_note(), "Ops", type="book")
@@ -171,6 +205,20 @@ class SwarmBoard:
         lay = await self.layout()
         made = await self._call("note_create", title=title, parent=lay.columns[column], labels=MANAGED)
         return made["note_id"]
+
+    async def carry_labels(self, note_id: str, labels: dict[str, str | None]) -> bool:
+        """Set the labels a card should show as chips, where the note lacks them. True if any was written."""
+        note = await self._call("note_get", note_id=note_id, content=False)
+        have = {a.get("name"): a.get("value") or "" for a in note.get("attributes") or []
+                if a.get("type", "label") == "label" and a.get("noteId") in (None, note_id)}
+        missing = {k: v for k, v in labels.items() if v and have.get(k) != v}
+        if missing:
+            await self._call("note_update", note_id=note_id, labels=missing)
+        return bool(missing)
+
+    async def archive(self, note_id: str) -> None:
+        """Hide a finished card from the board without deleting it."""
+        await self._call("note_update", note_id=note_id, labels={ARCHIVED: ""})
 
     async def snapshot(self) -> dict[str, str]:
         """Every card on the board and the column it is in. Any failed read raises."""

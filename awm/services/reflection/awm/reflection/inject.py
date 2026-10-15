@@ -457,7 +457,7 @@ def _default_spawn(fn: Callable[[], None]) -> Any:
 
 def send(text: str, *, caller_pid: Optional[int], enter: bool = True,
          delay_ms: int = 0, confirm: bool = False,
-         followup: Optional[str] = None,
+         followup: Optional[str] = None, allow_modal: bool = False,
          spawn: Callable[[Callable[[], None]], Any] = _default_spawn,
          **kw) -> dict:
     """Inject ``text`` into the calling session, whatever is hosting it."""
@@ -472,7 +472,7 @@ def send(text: str, *, caller_pid: Optional[int], enter: bool = True,
     # after the log line, which made the log claim a refused `/clear` had gone
     # in — and on the one path where someone is trying to find out why a command
     # did not run, a log that overstates what happened is worse than no log.
-    refused = guards.refusal(text, confirm=confirm)
+    refused = guards.refusal(text, confirm=confirm, allow_modal=allow_modal)
     if refused is not None:
         return refused
 

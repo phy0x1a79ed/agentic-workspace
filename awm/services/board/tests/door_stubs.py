@@ -105,10 +105,12 @@ class StubBoard:
         self.threads: dict[str, list[dict]] = {}
         self._lock = threading.Lock()
 
-    def post(self, party, *, kind, recipient, title, body, priority="normal", reply_to=None):
+    def post(self, party, *, kind, recipient, title, body, priority="normal", reply_to=None,
+             project=None, agent=None):
         if kind not in ("request", "message"):
             raise ValueError(f"bad kind {kind!r}")
         self.last_post_party = party
+        self.last_post_extra = {"project": project, "agent": agent}
         card = {
             "id": uuid.uuid4().hex,  # the real store mints 32 hex digits
             "kind": kind,
@@ -117,6 +119,10 @@ class StubBoard:
             "claimant": None,
             "priority": priority,
             "status": "posted",
+            "state": "proposed",
+            "agent": agent,
+            "project": project,
+            "owner": None,
             "title": title,
             "body": body,
             "reply_to": reply_to,
@@ -133,7 +139,8 @@ class StubBoard:
             raise NotFound(card_id)
         return card
 
-    def claim(self, party, card_id):
+    def claim(self, party, card_id, agent=None, node=None):
+        self.last_claim_extra = {"agent": agent, "node": node}
         with self._lock:
             card = self._seen(party, card_id)
             if card["recipient"] not in (party["swarm"], "open"):
@@ -141,7 +148,7 @@ class StubBoard:
             if card["status"] != "posted":
                 raise Conflict("the card is already held")
             time.sleep(self.claim_delay)
-            card.update(claimant=party["swarm"], status="in_progress")
+            card.update(claimant=party["swarm"], status="in_progress", state="planned")
             snapshot = dict(card)
         self.events.append("card.claimed", snapshot)
         return snapshot
@@ -151,7 +158,8 @@ class StubBoard:
             card = self._seen(party, card_id)
             if card["claimant"] != party["swarm"]:
                 raise Forbidden("only the claimant finishes a card")
-            card.update(status=status, result=text)
+            card.update(status=status, state="done" if status == "done" else "rejected",
+                        result=text)
             snapshot = dict(card)
         self.events.append(event, snapshot)
         return snapshot
@@ -161,6 +169,35 @@ class StubBoard:
 
     def fail(self, party, card_id, reason):
         return self._finish(party, card_id, reason, "failed", "card.failed")
+
+    def set_status(self, party, card_id, state):
+        with self._lock:
+            card = self._seen(party, card_id)
+            if card["claimant"] != party["swarm"]:
+                raise Forbidden("only the claimant moves a card")
+            if state not in ("planned", "active", "blocked", "review", "done"):
+                raise ValueError(f"bad state {state!r}")
+            card.update(state=state, status="done" if state == "done" else "in_progress")
+            snapshot = dict(card)
+        self.events.append("card.moved", snapshot)
+        return snapshot
+
+    def reject(self, party, card_id, reason, agent=None):
+        with self._lock:
+            card = self._seen(party, card_id)
+            if party["swarm"] != card["recipient"]:
+                raise Forbidden("not the recipient")
+            if not isinstance(reason, str) or not reason.strip():
+                raise ValueError("reason must be non-empty text")
+            card.update(state="rejected", status="failed")
+            snapshot = dict(card)
+        self.events.append("card.moved", snapshot)
+        self.last_reject_extra = {"agent": agent}
+        return {**snapshot, "message": {"body": reason, "agent": agent}}
+
+    def card_events(self, party, card_id, since=None, limit=None):
+        self._seen(party, card_id)
+        return [e for e in self.events.since(int(since or 0), party) if e["card"]["id"] == card_id]
 
     def get(self, party, card_id):
         with self._lock:
@@ -179,7 +216,7 @@ class StubBoard:
             raise ValueError("bad paging")
         return out[offset:offset + limit]
 
-    def message(self, party, card_id, body):
+    def message(self, party, card_id, body, agent=None):
         if not isinstance(body, str) or not body.strip():
             raise ValueError("body must be non-empty text")
         with self._lock:
@@ -188,7 +225,7 @@ class StubBoard:
             message = {"card_id": card_id, "seq": len(thread) + 1, "at": "now",
                        "sender": {"swarm": party["swarm"], "principal": party["principal"],
                                   "party": party["party_id"]},
-                       "origin": "api", "body": body}
+                       "origin": "api", "body": body, "agent": agent}
             thread.append(message)
         return dict(message)
 

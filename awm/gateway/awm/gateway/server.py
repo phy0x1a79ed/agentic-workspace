@@ -528,7 +528,7 @@ _SESSION_BOUND: dict[str, frozenset[str]] = {
     "reflection": frozenset({"message_self", "compact", "mode", "whoami"}),
     "operations": frozenset({
         "hook_plan", "hook_plan_approved", "hook_todos", "hook_prompt",
-        "hook_session_clear", "task_claim", "request_human"}),
+        "hook_session_clear", "task_claim", "request_human", "board_watch", "board_unwatch"}),
 }
 
 
@@ -646,7 +646,7 @@ def _svc_stamp(svc: str, headers: Any, as_: str | None) -> Callable[[str, dict],
 # ---------------------------------------------------------------------------
 # Session mode gate
 # ---------------------------------------------------------------------------
-# A session started in a restricted mode (the representative, the secretary)
+# A session started in a restricted mode (`awm.config.modes.MODES`)
 # may call only the verbs `awm.config.modes` lists for that mode. The gate runs
 # on both doors a session's calls arrive through, `/invoke` and
 # `/svc/<svc>/fn/<fn>`, before dispatch. The calling session is the one the

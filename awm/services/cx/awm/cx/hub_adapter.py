@@ -55,12 +55,7 @@ API_MANIFEST: dict[str, Any] = {
                 "Claude Code daemon runs, when the worktree is untrusted, or "
                 "when a live session already holds the name. The session "
                 "defaults to skip-permissions, opus and high effort. "
-                "A caller in a delegating mode (the representative) "
-                "may set only project, scope, prompt, name, model and effort: "
-                "cx starts a delegate with a fixed tool set and the scope must "
-                "already exist. A secretary caller starts an ordinary worker. "
-                "The name and mode of the representative and secretary are "
-                "reserved, and so is the role prefix of `<role> - <node>`."
+                "Every caller gets the same session, whoever it is."
             ),
             "params": [
                 {"name": "project", "type": "string", "required": True,
@@ -78,7 +73,10 @@ API_MANIFEST: dict[str, Any] = {
                 {"name": "permission", "type": "string",
                  "description": "A permission mode (plan, acceptEdits, auto, "
                                 "manual, dontAsk, bypassPermissions). Omitted "
-                                "means skip-permissions."},
+                                "means skip-permissions. The session starts in "
+                                "this mode and can always switch to bypass, so "
+                                "a plan-mode start runs in bypass once its plan "
+                                "is approved."},
                 {"name": "mode", "type": "string",
                  "description": "A label recorded with the session, which a "
                                 "gateway gate can key on. Defaults to worker."},
@@ -98,7 +96,10 @@ API_MANIFEST: dict[str, Any] = {
                  "description": "Load only the awm MCP server, from the "
                                 "workspace config."},
                 {"name": "remote_control", "type": "boolean",
-                 "description": "Enable Remote Control, named for the session."},
+                 "description": "Enable Remote Control, named for the session. "
+                                "Off unless true. The result's `link` is the "
+                                "claude.ai link, null with a `link_reason` if "
+                                "it has not connected within a few seconds."},
             ],
             "timeout": 1800,
             "effect": "write",
@@ -109,7 +110,9 @@ API_MANIFEST: dict[str, Any] = {
             "description": (
                 "List the sessions on this node: background jobs with their "
                 "state, parent, caller and mode, interactive terminal sessions "
-                "with a `tmux attach` command, and the warm pool. Read this to "
+                "with a `tmux attach` command, and the warm pool. Each row's "
+                "`remote_control` is whether Remote Control is on now and `link` "
+                "is its claude.ai link. Read this to "
                 "see what is running; the pool summary says whether a Claude "
                 "Code daemon runs at all, the binary version the pool seeds "
                 "against and when the reconcile loop last ticked."

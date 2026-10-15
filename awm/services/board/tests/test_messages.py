@@ -26,7 +26,8 @@ def test_a_message_gets_the_next_sequence_and_the_poster_from_the_party(board, t
     assert first["sender"] == {"swarm": "collins", "principal": "john",
                                "party": collins["party_id"]}
     assert first["origin"] == "api" and first["at"].endswith("+00:00")
-    assert set(first) == {"card_id", "seq", "at", "sender", "origin", "body"}
+    assert set(first) == {"card_id", "seq", "at", "sender", "origin", "body", "agent"}
+    assert first["agent"] is None
 
 
 def test_messages_read_in_sequence_order_after_a_cursor(board, tony, collins):
@@ -71,7 +72,7 @@ def test_each_message_is_a_read_only_note_under_the_cards_chat(board, trilium, t
     assert owned and owned[0]["isInheritable"]
     msgs = sorted(trilium.children(chat), key=lambda n: trilium.label(n, "msgSeq"))
     assert [trilium.notes[n]["content"] for n in msgs] == ["on it", "thanks"]
-    assert trilium.notes[msgs[0]]["title"] == "1 · collins"
+    assert trilium.notes[msgs[0]]["title"] == "1 · collins/john"
     assert trilium.label(msgs[0], "msgSeq") == "00000001"
     assert trilium.label(msgs[0], "msgFrom") == "john@collins"
     assert trilium.label(msgs[0], "readOnly") == ""
@@ -151,7 +152,7 @@ def test_a_note_a_person_adds_under_the_chat_becomes_the_next_message(
     assert second["sender"] == {"swarm": "tony", "principal": "agent", "party": tony["party_id"]}
     assert trilium.label(note, "msgSeq") == "00000002"
     assert trilium.label(note, "readOnly") == ""
-    assert trilium.notes[note]["title"] == "2 · tony"
+    assert trilium.notes[note]["title"] == "2 · tony/agent"
     assert events.since(0, {"swarm": "collins"})[-1]["card"]["message"]["seq"] == 2
     gui_board.sweep()
     assert len(gui_board.messages(collins, card["id"])) == 2
@@ -200,7 +201,7 @@ def test_an_edited_message_note_changes_nothing_and_is_put_back(board, trilium, 
     assert board.messages(tony, card["id"])[0]["body"] == "the original"
     board.sweep()
     assert trilium.notes[note]["content"] == "the original"
-    assert trilium.notes[note]["title"] == "1 · tony"
+    assert trilium.notes[note]["title"] == "1 · tony/agent"
     assert trilium.label(note, "msgFrom") == "agent@tony"
 
 
@@ -233,3 +234,29 @@ def test_checking_untouched_notes_writes_nothing(board, trilium, tony):
     trilium.calls.clear()
     board.sweep()
     assert not [fn for fn, _ in trilium.calls if fn in ("note_update", "note_create")]
+
+
+def test_a_message_records_the_agent_that_wrote_it_and_the_mirror_shows_it(board, trilium, events, tony, collins):
+    card = ask(board, tony)
+    sent = board.message(collins, card["id"], "on it", agent="  worker \n one ")
+    assert sent["agent"] == "worker one"
+    assert board.messages(tony, card["id"])[0]["agent"] == "worker one"
+    (note,) = trilium.children(chat_of(trilium, card["id"]))
+    assert trilium.notes[note]["title"] == "1 · collins/john · worker one"
+    assert trilium.label(note, "msgAgent") == "worker one"
+    (event,) = [e for e in events.since(0, {"swarm": "tony"}) if e["type"] == "card.message"]
+    assert event["card"]["message"]["agent"] == "worker one"
+    board.sweep()
+    assert trilium.notes[note]["title"] == "1 · collins/john · worker one"
+
+
+@pytest.mark.parametrize("junk", [None, "", "   ", 7, ["a"], {"a": 1}])
+def test_a_missing_or_unusable_agent_is_none_and_never_an_error(board, tony, junk):
+    card = ask(board, tony)
+    assert board.message(tony, card["id"], "hi", agent=junk)["agent"] is None
+
+
+def test_an_agent_name_is_one_short_line(board, tony):
+    card = ask(board, tony)
+    sent = board.message(tony, card["id"], "hi", agent="x" * 300 + "\x00\x1b[31m")
+    assert len(sent["agent"]) <= 100 and "\x1b" not in sent["agent"]

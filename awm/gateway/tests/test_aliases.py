@@ -63,7 +63,7 @@ def world(monkeypatch, awm_workspace):
              send="reflection_message_self"),
         _rec("reporting",
              request_human="operations_request_human",
-             card_list=("operations_queue_list", {"effect": "read"}),
+             status=("operations_status", {"effect": "read"}),
              hook_plan=("operations_hook_plan", _HIDDEN)),
         _rec("board", post=("operations_board_post", {"effect": "queue"}),
              list=("operations_board_list", {"effect": "read"})),
@@ -103,8 +103,6 @@ def test_the_published_renames_are_in_the_table():
         ("board_party_add", "operations_party_add"),
         ("board_party_list", "operations_party_list"),
         ("reporting_status", "operations_status"),
-        ("reporting_card_list", "operations_queue_list"),
-        ("reporting_card_assign", "operations_queue_assign"),
         ("reporting_claim_task", "operations_task_claim"),
         ("reporting_hook_plan_approved", "operations_hook_plan_approved"),
         ("reporting_ops_post", "operations_ops_post"),
@@ -260,26 +258,44 @@ def test_resolution_is_idempotent_and_ignores_malformed_calls():
 # -- session modes and the stamp judge the call after the rewrite ---------------
 
 
+@pytest.fixture()
+def test_modes(monkeypatch):
+    from awm.config import modes
+
+    def pairs(*items):
+        return frozenset(tuple(i.split(".")) for i in items)
+
+    monkeypatch.setitem(modes.MODES, "fixed", modes.Allow(pairs(
+        "reflection.list_other", "operations.board_list", "journal.fetch",
+        "operations.request_human")))
+    monkeypatch.setitem(modes.MODES, "fixed2", modes.Allow(pairs("reflection.stop_other")))
+    monkeypatch.setitem(modes.MODES, "reader", modes.ByEffect(
+        effects=frozenset({"read"}), denied_domains=frozenset(), denied_pairs=frozenset(),
+        pairs=frozenset(),
+        when={("operations", "board_post"): lambda a: a.get("kind") == "message"
+              and bool(a.get("reply_to"))}))
+
+
 @pytest.mark.parametrize("mode,old,verb_args,status", [
-    ("representative", "cx_stop", {}, 403),
-    ("representative", "cx_list", {}, 200),
-    ("representative", "board_post", {}, 403),
-    ("representative", "board_list", {}, 200),
-    ("representative", "scope_post", {}, 403),
-    ("representative", "scope_fetch", {}, 200),
-    ("representative", "reporting_request_human_user", {}, 200),
-    ("secretary", "cx_stop", {}, 200),
-    ("secretary", "reflection_send", {}, 403),
-    ("delegate", "board_post", {}, 403),
-    ("delegate", "board_post", {"kind": "message", "reply_to": "a" * 32}, 200),
+    ("fixed", "cx_stop", {}, 403),
+    ("fixed", "cx_list", {}, 200),
+    ("fixed", "board_post", {}, 403),
+    ("fixed", "board_list", {}, 200),
+    ("fixed", "scope_post", {}, 403),
+    ("fixed", "scope_fetch", {}, 200),
+    ("fixed", "reporting_request_human_user", {}, 200),
+    ("fixed2", "cx_stop", {}, 200),
+    ("fixed2", "reflection_send", {}, 403),
+    ("reader", "board_post", {}, 403),
+    ("reader", "board_post", {"kind": "message", "reply_to": "a" * 32}, 200),
 ])
-def test_the_mode_gate_sees_the_successor(client, world, mode, old, verb_args, status):
+def test_the_mode_gate_sees_the_successor(client, world, test_modes, mode, old, verb_args, status):
     world.mode["value"] = mode
     assert _invoke(client, old, verb_args).status_code == status
 
 
-def test_the_old_name_in_a_domain_call_is_gated_by_its_successor(client, world):
-    world.mode["value"] = "representative"
+def test_the_old_name_in_a_domain_call_is_gated_by_its_successor(client, world, test_modes):
+    world.mode["value"] = "fixed"
     assert _invoke(client, "cx", {"verb": "stop"}).status_code == 403
     assert _invoke(client, "cx", {"verb": "list"}).status_code == 200
 

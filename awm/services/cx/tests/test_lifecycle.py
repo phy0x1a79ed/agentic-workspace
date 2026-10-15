@@ -15,6 +15,8 @@ import time
 
 import pytest
 
+from awm.cx import config
+
 PARENT_JOB = "aaaaaaaa"
 CHILD_JOB = "bbbbbbbb"
 
@@ -98,6 +100,20 @@ def home(tmp_path, monkeypatch):
     return h
 
 
+@pytest.fixture(autouse=True)
+def no_link_wait(monkeypatch):
+    from awm.cx import lifecycle
+
+    monkeypatch.setattr(lifecycle, "LINK_WAIT_S", 0.0)
+
+
+def set_bridge(home, short, bridge):
+    path = home.jobs / short / "state.json"
+    rec = json.loads(path.read_text())
+    rec["bridgeSessionId"] = bridge
+    path.write_text(json.dumps(rec))
+
+
 @pytest.fixture
 def launched(home, monkeypatch):
     """Replace the shared launcher with one that records its call and registers
@@ -176,6 +192,7 @@ def test_start_returns_the_contract_and_writes_lineage(home, launched):
         "ok": True, "job": CHILD_JOB, "name": "demo", "node": "testnode",
         "project": "awm", "scope": "demo", "cwd": str(home.projects / "awm" / "demo"),
         "attach": f"claude attach {CHILD_JOB}", "parent": PARENT_JOB, "mode": "rep",
+        "link": None,
     }
     from awm.cx import lifecycle
 
@@ -226,17 +243,30 @@ def test_arguments_override_the_defaults_in_equals_form(home, launched):
            "remote_control": True})
     call = launched[0]
     assert call["name"] == "worker one"
-    assert call["flags"] == ["--permission-mode=plan", "--disallowedTools=Write,Edit",
+    assert call["flags"] == ["--permission-mode=plan", "--allow-dangerously-skip-permissions",
+                             "--disallowedTools=Write,Edit",
                              "--remote-control=worker-one", "--effort=high",
                              "--model=opus"]
+
+
+@pytest.mark.parametrize("permission, head", [
+    (None, ["--dangerously-skip-permissions", "--allow-dangerously-skip-permissions"]),
+    ("plan", ["--permission-mode=plan", "--allow-dangerously-skip-permissions"]),
+    ("dontAsk", ["--permission-mode=dontAsk", "--allow-dangerously-skip-permissions"]),
+    ("bypassPermissions", ["--permission-mode=bypassPermissions",
+                           "--allow-dangerously-skip-permissions"]),
+])
+def test_bypass_stays_in_the_mode_cycle_for_every_start(home, launched, permission, head):
+    start({**BASE, **({"permission": permission} if permission else {})})
+    assert launched[0]["flags"][:2] == head
 
 
 def test_allowed_tools_become_one_equals_form_flag(home, launched):
     start({**BASE, "permission": "dontAsk", "disallowed_tools": ["Bash"],
            "allowed_tools": ["mcp__awm__*", "SendMessage"], "remote_control": "rc1"})
     flags = launched[0]["flags"]
-    assert flags == ["--permission-mode=dontAsk", "--disallowedTools=Bash",
-                     "--allowedTools=mcp__awm__*,SendMessage", "--remote-control=rc1",
+    assert flags == ["--permission-mode=dontAsk", "--allow-dangerously-skip-permissions",
+                     "--disallowedTools=Bash", "--allowedTools=mcp__awm__*,SendMessage", "--remote-control=rc1",
                      "--effort=high", "--model=opus"]
     assert "--allowedTools" not in flags
 
@@ -404,6 +434,39 @@ def test_remote_control_cannot_inject_flags(home, launched, rc):
     if rc in ("", " "):
         return  # an empty value is "off" or refused; either way nothing is injected
     assert out["ok"] is False and launched == []
+
+
+def test_a_start_leaves_remote_control_off_and_has_no_link(home, launched):
+    out = start(BASE)
+    assert out["link"] is None and "link_reason" not in out
+    assert not any(f.startswith("--remote-control") for f in launched[0]["flags"])
+
+
+def test_a_start_with_remote_control_returns_the_link_once_the_bridge_appears(
+        home, launched, monkeypatch):
+    from awm.cx import lifecycle
+
+    real = lifecycle.roster.job_bridge_id
+    monkeypatch.setattr(lifecycle, "LINK_WAIT_S", 5.0)
+    monkeypatch.setattr(lifecycle, "LINK_POLL_S", 0.01)
+    polls = []
+
+    def appears_on_third_look(short, jobs):
+        polls.append(short)
+        if len(polls) == 3:
+            set_bridge(home, short, "cse_01Link")
+        return real(short, jobs)
+
+    monkeypatch.setattr(lifecycle.roster, "job_bridge_id", appears_on_third_look)
+    out = start({**BASE, "remote_control": True})
+    assert out["link"] == "https://claude.ai/code/session_01Link"
+    assert len(polls) == 3 and "link_reason" not in out
+
+
+def test_a_start_with_remote_control_says_why_there_is_no_link_yet(home, launched):
+    out = start({**BASE, "remote_control": True})
+    assert out["ok"] and out["link"] is None
+    assert CHILD_JOB in out["link_reason"]
 
 
 def test_remote_control_accepts_a_plain_label(home, launched):
@@ -643,60 +706,57 @@ def test_stop_never_deletes_the_conversation():
 # --- the caller's mode gates what it may start -------------------------------
 
 
-def allowed_list(flags):
-    return next(f for f in flags if f.startswith("--allowedTools=")).split("=", 1)[1].split(",")
+def test_every_caller_gets_the_same_plain_worker(home, launched):
+    for mode in ("representative", "secretary", "delegate", "worker", None):
+        launched.clear()
+        parent_session(home, mode=mode)
+        ok = start({**BASE, "name": f"w-{mode}", "prompt": "do it", "model": "opus", "effort": "high",
+                    "_caller_pid": os.getpid()})
+        assert ok["ok"] and ok["mode"] == "worker" and ok["parent"] == PARENT_JOB, mode
+        flags = launched[0]["flags"]
+        assert "--dangerously-skip-permissions" in flags and "--allow-dangerously-skip-permissions" in flags
+        assert not any(f.startswith(("--restricted", "--strict-mcp", "--tools", "--settings",
+                                     "--remote-control")) for f in flags)
+        assert "--model=opus" in flags and "--effort=high" in flags
+        for f in os.listdir(config.starts_dir()):
+            os.unlink(config.starts_dir() / f)
+        home.set_workers({})
 
 
-def test_a_gated_caller_gets_a_delegate_with_a_fixed_policy(home, launched):
-    parent_session(home, mode="representative")
-    ok = start({**BASE, "model": "opus", "effort": "high", "prompt": "do it",
+def test_a_caller_may_ask_for_the_options_the_verb_declares(home, launched):
+    parent_session(home, mode="worker")
+    ok = start({**BASE, "permission": "plan", "allowed_tools": ["Bash"], "disallowed_tools": ["Read"],
+                "tools": ["Bash", "Read"], "remote_control": True, "mode": "mine",
                 "_caller_pid": os.getpid()})
-    assert ok["ok"] and ok["mode"] == "delegate" and ok["parent"] == PARENT_JOB
     flags = launched[0]["flags"]
-    assert "--permission-mode=dontAsk" in flags and "--restricted" in flags
-    assert "--strict-mcp-config" in flags
-    tools = next(f for f in flags if f.startswith("--tools="))
-    assert "Bash" not in tools.split("=", 1)[1].split(",")
-    assert "Edit" in tools and "Task" in tools
-    assert "SendMessage" not in tools and "ListAgents" not in tools
-    assert not any(t in allowed_list(flags) for t in ("SendMessage", "ListAgents"))
-    allowed = next(f for f in flags if f.startswith("--allowedTools="))
-    assert "mcp__awm__*" in allowed and "Bash" not in allowed.split(",")
-    assert not any(f.startswith(("--remote-control", "--dangerously")) for f in flags)
-    assert "--model=opus" in flags and "--effort=high" in flags
-
-
-def test_a_secretary_caller_gets_a_top_level_worker(home, launched):
-    parent_session(home, mode="secretary")
-    ok = start({**BASE, "prompt": "do it", "_caller_pid": os.getpid()})
-    assert ok["ok"] and ok["mode"] == "worker" and ok["parent"] == PARENT_JOB
-    flags = launched[0]["flags"]
-    assert "--dangerously-skip-permissions" in flags
-    assert not any(f.startswith(("--restricted", "--strict-mcp", "--tools", "--settings"))
-                   for f in flags)
+    assert ok["ok"] and ok["mode"] == "mine"
+    assert "--permission-mode=plan" in flags and "--allow-dangerously-skip-permissions" in flags
+    assert "--tools=Bash,Read" in flags and "--allowedTools=Bash" in flags
+    assert "--disallowedTools=Read" in flags and any(f.startswith("--remote-control=") for f in flags)
 
 
 def test_a_restricted_start_omits_the_settings_when_the_file_is_missing(
         home, launched, monkeypatch, tmp_path):
     monkeypatch.setenv("AWM_CX_RESTRICTED_SETTINGS", str(tmp_path / "missing.json"))
-    parent_session(home, mode="representative")
-    start({**BASE, "_caller_pid": os.getpid()})
-    assert not any(f.startswith("--settings") for f in launched[0]["flags"])
+    start({**BASE, "restricted": True, "permission": "dontAsk"})
+    flags = launched[0]["flags"]
+    assert "--restricted" in flags and "--permission-mode=dontAsk" in flags
+    assert not any(f.startswith("--settings") for f in flags)
 
 
-def test_a_restricted_start_passes_the_reporting_settings(
+def test_a_restricted_start_passes_the_reporting_settings_and_cannot_offer_bypass(
         home, launched, monkeypatch, tmp_path):
     settings = tmp_path / "reporting-settings.json"
     settings.write_text("{}")
     monkeypatch.setenv("AWM_CX_RESTRICTED_SETTINGS", str(settings))
-    parent_session(home, mode="representative")
-    start({**BASE, "_caller_pid": os.getpid()})
-    assert f"--settings={settings}" in launched[0]["flags"]
+    start({**BASE, "restricted": True, "permission": "dontAsk"})
+    flags = launched[0]["flags"]
+    assert f"--settings={settings}" in flags
+    assert "--allow-dangerously-skip-permissions" not in flags, "the CLI refuses bypass under --restricted"
 
 
-def test_the_delegate_loads_only_the_awm_server_from_the_workspace_config(home, launched):
-    parent_session(home, mode="representative")
-    start({**BASE, "_caller_pid": os.getpid()})
+def test_a_strict_start_loads_only_the_awm_server_from_the_workspace_config(home, launched):
+    start({**BASE, "strict_mcp": True})
     flags = launched[0]["flags"]
     path = next(f for f in flags if f.startswith("--mcp-config=")).split("=", 1)[1]
     assert json.loads(open(path).read()) == {"mcpServers": {"awm": {
@@ -704,58 +764,36 @@ def test_the_delegate_loads_only_the_awm_server_from_the_workspace_config(home, 
         "env": {"AWM_WORKSPACE": "/ws"}}}}
 
 
-@pytest.mark.parametrize("override", [
-    {"permission": "bypassPermissions"}, {"permission": "plan"},
-    {"allowed_tools": ["Bash"]}, {"disallowed_tools": ["Read"]}, {"tools": ["Bash"]},
-    {"remote_control": True}, {"remote_control": "x"}, {"mode": "worker"},
-    {"restricted": False}, {"strict_mcp": False}, {"model": "opus-evil"},
-])
-def test_a_gated_caller_may_not_override_the_policy(home, launched, override):
-    parent_session(home, mode="representative")
-    out = start({**BASE, "_caller_pid": os.getpid(), **override})
-    assert out["ok"] is False and launched == []
-
-
-def test_a_gated_caller_may_not_create_a_scope(home, launched, monkeypatch):
-    from awm.cx import lifecycle
-
-    async def boom(*a, **k):
-        raise AssertionError("created a scope")
-
-    monkeypatch.setattr(lifecycle, "create_scope", boom)
-    parent_session(home, mode="representative")
-    out = start({"project": "awm", "scope": "nowhere", "_caller_pid": os.getpid()})
-    assert out["ok"] is False and "may not create scopes" in out["reason"]
-    assert launched == []
-
-
-def test_a_missing_awm_mcp_server_refuses_a_delegate(home, launched):
-    parent_session(home, mode="representative")
+def test_a_missing_awm_mcp_server_refuses_a_strict_start(home, launched):
     home.mcp_source.write_text(json.dumps({"mcpServers": {}}))
-    out = start({**BASE, "_caller_pid": os.getpid()})
+    out = start({**BASE, "strict_mcp": True})
     assert out["ok"] is False and "awm server" in out["reason"]
 
 
-def test_the_front_door_with_no_session_may_start_the_reserved_sessions(home, launched):
-    out = start({**BASE, "name": "representative", "mode": "representative",
-                 "permission": "dontAsk", "tools": ["SendMessage"],
-                 "restricted": True, "strict_mcp": True})
-    assert out["ok"] and out["mode"] == "representative"
-    flags = launched[0]["flags"]
-    assert "--tools=SendMessage" in flags and "--restricted" in flags
+def test_a_caller_may_create_the_scope_it_starts_in(home, launched, monkeypatch):
+    from awm.cx import lifecycle
+
+    made = []
+
+    async def create(project, scope):
+        made.append((project, scope))
+        (config.projects_dir() / project / scope).mkdir(parents=True)
+
+    monkeypatch.setattr(lifecycle, "create_scope", create)
+    parent_session(home, mode="worker")
+    out = start({"project": "awm", "scope": "nowhere", "_caller_pid": os.getpid()})
+    assert out["ok"] and made == [("awm", "nowhere")]
 
 
-@pytest.mark.parametrize("caller_mode", [None, "worker", "other"])
-@pytest.mark.parametrize("ask", [{"mode": "representative"}, {"mode": "secretary"},
-                                 {"mode": "delegate"}, {"name": "representative"},
-                                 {"name": "secretary"},
-                                 {"name": "representative - altair"},
-                                 {"name": "secretary - capella"}])
-def test_a_session_may_not_start_a_reserved_name_or_mode(home, launched, caller_mode, ask):
-    parent_session(home, mode=caller_mode)
-    out = start({**BASE, "_caller_pid": os.getpid(), **ask})
-    assert out["ok"] is False and "front door" in out["reason"]
-    assert launched == []
+def test_the_old_persona_names_and_modes_are_plain_labels(home, launched):
+    parent_session(home, mode="worker")
+    for ask in ({"mode": "representative"}, {"name": "secretary"}, {"name": "representative - altair"}):
+        for f in os.listdir(config.starts_dir()):
+            os.unlink(config.starts_dir() / f)
+        home.set_workers({})
+        parent_session(home, mode="worker")
+        out = start({**BASE, "_caller_pid": os.getpid(), **ask})
+        assert out["ok"] is True, ask
 
 
 def test_a_worker_or_unmoded_caller_may_start_any_other_mode(home, launched):
@@ -1116,6 +1154,34 @@ def test_list_merges_roster_lineage_and_interactive_sessions(home, launched, mon
     assert tmux["attach"] == "tmux attach -t main" and tmux["job"] is None
     assert tmux["name"] == "dev" and tmux["scope"] == "demo"
     assert list(rows) == [PARENT_JOB, "main", CHILD_JOB], "oldest first"
+
+
+def test_list_reports_the_live_remote_control_state_and_link(home, launched, monkeypatch):
+    from awm.cx import lifecycle
+
+    monkeypatch.setattr(lifecycle, "_tmux_panes", dict)
+    start({**BASE, "remote_control": "rc1"})
+    row = next(r for r in lifecycle.collect() if r["job"] == CHILD_JOB)
+    assert row["remote_control"] is False and row["link"] is None
+    assert row["remote_control_label"] == "rc1", "the launch label is kept apart"
+    set_bridge(home, CHILD_JOB, "cse_01AbC")
+    row = next(r for r in lifecycle.collect() if r["job"] == CHILD_JOB)
+    assert row["remote_control"] is True
+    assert row["link"] == "https://claude.ai/code/session_01AbC"
+
+
+def test_an_interactive_row_takes_its_link_from_the_session_record(home, monkeypatch):
+    from awm.cx import lifecycle
+
+    me = os.getpid()
+    home.record(me, "interactive", name="dev")
+    path = home.sessions / f"{me}.json"
+    rec = json.loads(path.read_text())
+    path.write_text(json.dumps({**rec, "bridgeSessionId": "cse_01Zz"}))
+    monkeypatch.setattr(lifecycle, "_tmux_panes", dict)
+    row = next(r for r in lifecycle.collect() if r["name"] == "dev")
+    assert row["remote_control"] is True
+    assert row["link"] == "https://claude.ai/code/session_01Zz"
 
 
 def test_list_carries_needs_and_detail_from_the_job_record(home, monkeypatch):

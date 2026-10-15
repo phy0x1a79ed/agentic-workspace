@@ -32,10 +32,12 @@ def test_a_label_that_is_not_a_bare_name_is_refused(trilium):
         Vault(trilium, board_label="x or #y")
 
 
-def test_create_makes_a_direct_child_carrying_the_labels(trilium, board_note, vault):
-    rec = vault.create("T", "the body", {"cardId": ID, "status": "Posted"}, {})
-    assert trilium.notes[rec["note_id"]]["parentNoteIds"] == [board_note]
-    assert rec["labels"] == {"cardId": ID, "status": "Posted"}
+def test_create_makes_a_child_of_the_state_folder_carrying_the_labels(trilium, board_note, vault):
+    rec = vault.create("T", "the body", {"cardId": ID, "cardTo": "x"}, {})
+    assert trilium.notes[rec["note_id"]]["parentNoteIds"] == [trilium.column("proposed")]
+    assert trilium.notes[trilium.column("proposed")]["parentNoteIds"] == [board_note]
+    assert rec["labels"] == {"cardId": ID, "cardTo": "x"} and rec["state"] == "proposed"
+    assert vault.create("U", "", {"cardId": "b" * 32}, {}, "review")["state"] == "review"
     assert rec["content"] == "the body"
     assert vault.read(ID)["note_id"] == rec["note_id"]
 
@@ -67,7 +69,7 @@ def test_unknown_or_malformed_ids_read_as_absent(vault):
     assert vault.read("x or #cardId") is None
 
 
-def test_notes_that_are_not_direct_children_are_not_cards(trilium, board_note, vault):
+def test_notes_that_are_not_in_a_column_or_under_the_board_are_not_cards(trilium, board_note, vault):
     other = trilium.add_note("elsewhere")
     trilium.add_note("stray", other, labels={"cardId": ID})
     nested = trilium.add_note("nested", board_note)
@@ -95,10 +97,35 @@ def test_list_returns_every_card_without_bodies_unless_asked(vault):
 
 
 def test_update_changes_labels_and_content(trilium, vault):
-    rec = vault.create("t", "old", {"cardId": ID, "status": "Posted"}, {})
-    vault.update(rec["note_id"], labels={"status": "Done"}, content="new")
+    rec = vault.create("t", "old", {"cardId": ID, "cardTo": "x"}, {})
+    vault.update(rec["note_id"], labels={"cardTo": "y"}, content="new")
     fresh = vault.read(ID)
-    assert fresh["labels"]["status"] == "Done" and fresh["content"] == "new"
+    assert fresh["labels"]["cardTo"] == "y" and fresh["content"] == "new"
+
+
+def test_place_moves_a_card_between_folders_and_drops_an_old_status_label(trilium, vault):
+    rec = vault.create("t", "", {"cardId": ID}, {})
+    trilium.set_attr(rec["note_id"], "status", "Posted")
+    vault.place(vault.read(ID), "blocked")
+    assert trilium.state_of(ID) == "blocked" and trilium.label(rec["note_id"], "status") is None
+    assert vault.read(ID)["state"] == "blocked"
+
+
+def test_reading_makes_no_folder_and_a_write_makes_them_all(trilium, board_note, vault):
+    assert vault.list() == [] and vault.read(ID) is None
+    assert trilium.columns() == []
+    vault.ensure_columns()
+    vault.ensure_columns()
+    assert trilium.columns() == ["proposed", "planned", "active", "blocked", "review",
+                                 "done", "rejected"]
+
+
+def test_an_archived_card_is_hidden_from_the_list_and_still_readable(trilium, vault):
+    rec = vault.create("t", "", {"cardId": ID}, {})
+    vault.update(rec["note_id"], labels={"archived": ""})
+    assert vault.list() == []
+    fresh = Vault(trilium, board_label="federationBoard")
+    assert fresh.read(ID)["note_id"] == rec["note_id"]
 
 
 def test_a_transport_failure_is_a_vault_error(board_note):

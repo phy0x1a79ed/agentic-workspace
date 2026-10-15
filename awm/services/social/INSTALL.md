@@ -248,16 +248,30 @@ Under a shadow `AWM_WORKSPACE` is rewritten to a sandbox dir, so point the
 service at a real `social.toml` with **`AWM_SOCIAL_CONFIG=/abs/path/social.toml`**
 (the parallel of the 2fa service's `AWM_2FA_DIR`).
 
-## Discord slash command (`/approve`)
+## Discord slash commands
 
-The Discord connector registers one application command, `/approve [device]`,
-usable only as a **DM to the bot** (`interaction.guild is None`; guild-channel
-invocations are rejected). It's synced as a *global* command in `on_ready` —
-global is the only kind that appears in a DM. On invocation the connector acks
-within Discord's 3s deadline and emits a normalised event on the `command`
-emitter topic (`/svc/social/emit/command`) with `{command, device, account,
-channel_id, …}`. The service does nothing with `approve` itself — the **`2fa`**
-service subscribes to that topic and arms a Duo approval burst (see its INSTALL).
+The Discord connector registers three application commands. Each works only as
+a **DM to the bot**, and only for a sender in the `social_operators` table.
+
+| Command | Consumer |
+|---|---|
+| `/approve [device]` | `2fa` and `ssh` arm a Duo approval burst (see their INSTALL) |
+| `/reject <ref> [reason]` | `reporting` rejects the federation card |
+| `/new-agent [project] [scope] [name] [prompt]` | `reporting` starts a session with Remote Control on and answers with its link |
+
+The commands sync as *global* commands in `on_ready`, because global is the
+only kind that appears in a DM. On invocation the connector checks the sender,
+acks within Discord's 3s deadline and emits a normalised event on the `command`
+emitter topic (`/svc/social/emit/command`) with `{command, account,
+channel_id, operator, …}`. The service does nothing with a command itself.
+
+A guild invocation, or a sender absent from the operators table, gets an
+ephemeral refusal and emits nothing. Add an operator on the node that owns the
+bot account with `social add_operator platform=discord
+platform_user_id=<discord id> awm_user=<name>`.
+
+**WARNING** Add the operators before you deploy this gate. Until then every
+command, `/approve` included, is refused.
 
 Prereqs: a `[account.*]` with `platform = "discord"` and a bot token whose app
 was invited with the `applications.commands` scope. New slash commands can take
