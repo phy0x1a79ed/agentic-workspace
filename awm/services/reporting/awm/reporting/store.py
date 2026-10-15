@@ -29,12 +29,18 @@ CREATE TABLE IF NOT EXISTS cards (
     reply_to     TEXT,
     status       TEXT NOT NULL,
     assigned_to  TEXT,
+    assigned_job TEXT,
+    thread_open  INTEGER NOT NULL DEFAULT 0,
     arrival      REAL NOT NULL,
     updated      REAL NOT NULL,
     notified     INTEGER NOT NULL DEFAULT 0,
     announced_at REAL
 );
 CREATE INDEX IF NOT EXISTS cards_status ON cards (status, arrival);
+CREATE TABLE IF NOT EXISTS threads (
+    card_id  TEXT PRIMARY KEY,
+    last_seq INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS meta (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -102,9 +108,16 @@ CREATE TABLE IF NOT EXISTS todos (
 );
 """
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
-_QUEUE_SCHEMA_V3 = _QUEUE_SCHEMA.replace("    spec_hash TEXT,\n", "")
+_THREADS_TABLE = """CREATE TABLE IF NOT EXISTS threads (
+    card_id  TEXT PRIMARY KEY,
+    last_seq INTEGER NOT NULL
+);
+"""
+_QUEUE_SCHEMA_V4 = (_QUEUE_SCHEMA.replace("    assigned_job TEXT,\n    thread_open  INTEGER NOT NULL DEFAULT 0,\n", "")
+                    .replace(_THREADS_TABLE, ""))
+_QUEUE_SCHEMA_V3 = _QUEUE_SCHEMA_V4.replace("    spec_hash TEXT,\n", "")
 _TASKS_SCHEMA_V2 = _TASKS_SCHEMA.replace("    owned      INTEGER NOT NULL DEFAULT 0,\n", "")
 
 _OWNED_MIGRATION = """
@@ -114,6 +127,11 @@ UPDATE tasks SET owned = 1 WHERE NOT EXISTS (
 """
 
 _SPEC_HASH_MIGRATION = "ALTER TABLE sessions ADD COLUMN spec_hash TEXT;"
+
+_THREADS_MIGRATION = """
+ALTER TABLE cards ADD COLUMN assigned_job TEXT;
+ALTER TABLE cards ADD COLUMN thread_open INTEGER NOT NULL DEFAULT 0;
+""" + _THREADS_TABLE
 
 _URGENT_FIRST = "CASE priority WHEN 'urgent' THEN 0 WHEN 'normal' THEN 1 ELSE 2 END"
 _CURSOR = "cursor"
@@ -129,7 +147,8 @@ class Db:
         databases.init_db_at(self.path, _QUEUE_SCHEMA + _TASKS_SCHEMA,
                              schema_version=SCHEMA_VERSION,
                              migrations={(1, 2): _TASKS_SCHEMA_V2, (2, 3): _OWNED_MIGRATION,
-                                         (3, 4): _SPEC_HASH_MIGRATION})
+                                         (3, 4): _SPEC_HASH_MIGRATION,
+                                         (4, 5): _THREADS_MIGRATION})
 
     def _conn(self) -> sqlite3.Connection:
         return databases.get_connection_at(self.path)
@@ -166,10 +185,33 @@ class Queue(Db):
                     " updated=? WHERE card_id = ?", (*fields, now, card["id"]))
                 if row["status"] == CLAIMING or (reopen and row["status"] in TERMINAL):
                     conn.execute(
-                        "UPDATE cards SET status=?, assigned_to=NULL, notified=0,"
-                        " announced_at=NULL WHERE card_id=?", (QUEUED, card["id"]))
+                        "UPDATE cards SET status=?, assigned_to=NULL, assigned_job=NULL,"
+                        " thread_open=0, notified=0, announced_at=NULL WHERE card_id=?",
+                        (QUEUED, card["id"]))
                     return True
                 return False
+        finally:
+            conn.close()
+
+    def reopen_thread(self, card: dict[str, Any]) -> None:
+        """Queue a card again because its thread has a message no live agent will hear.
+
+        The card may be one this swarm sent, or one the board shows finished.
+        ``thread_open`` keeps `mark` from closing it before the representative
+        assigns it again.
+        """
+        now = time.time()
+        fields = _fields(card)
+        conn = self._conn()
+        try:
+            with conn:
+                conn.execute(
+                    "INSERT INTO cards (card_id, kind, priority, title, body, sender, reply_to,"
+                    " status, thread_open, arrival, updated) VALUES (?,?,?,?,?,?,?,?,1,?,?)"
+                    " ON CONFLICT(card_id) DO UPDATE SET status=excluded.status, thread_open=1,"
+                    " assigned_to=NULL, assigned_job=NULL, notified=0, announced_at=NULL,"
+                    " updated=excluded.updated",
+                    (card["id"], *fields, QUEUED, now, now))
         finally:
             conn.close()
 
@@ -212,7 +254,8 @@ class Queue(Db):
         """
         if status not in TERMINAL:
             raise ValueError(f"mark takes {TERMINAL}, not {status!r}")
-        guard = " AND status IN (?,?,?)" if status == "gone" else " AND status != ?"
+        guard = " AND thread_open = 0"
+        guard += " AND status IN (?,?,?)" if status == "gone" else " AND status != ?"
         args: tuple = (status, time.time(), card_id,
                        *((*ACTIVE, CLAIMING) if status == "gone" else (status,)))
         conn = self._conn()
@@ -224,11 +267,14 @@ class Queue(Db):
         finally:
             conn.close()
 
-    def assign(self, card_id: str, agent: str) -> tuple[dict | None, str | None]:
+    def assign(self, card_id: str, agent: str,
+               job: str | None = None) -> tuple[dict | None, str | None]:
         """Record the hand-off target. Returns ``(card, None)`` or ``(None, reason)``.
 
         A request becomes ``assigned``: the agent completes it on the board. A
         message is never completed on the board, so handing it off finishes it.
+        ``job`` is the background session that new thread messages wake. It
+        outlives the card's status.
         """
         conn = self._conn()
         try:
@@ -241,8 +287,8 @@ class Queue(Db):
                     return None, f"card {card_id} is {row['status']}, not open for hand-off"
                 status = DONE if row["kind"] == MESSAGE else ASSIGNED
                 conn.execute(
-                    "UPDATE cards SET status=?, assigned_to=?, updated=? WHERE card_id=?",
-                    (status, agent, time.time(), card_id))
+                    "UPDATE cards SET status=?, assigned_to=?, assigned_job=?, thread_open=0,"
+                    " updated=? WHERE card_id=?", (status, agent, job, time.time(), card_id))
         finally:
             conn.close()
         return self.get(card_id), None
@@ -293,6 +339,36 @@ class Queue(Db):
 
     def has(self, card_id: str) -> bool:
         return self.status_of(card_id) is not None
+
+    # -- threads -------------------------------------------------------------
+
+    def thread_seq(self, card_id: str) -> int:
+        """The last message sequence the door routed on ``card_id``. 0 for none."""
+        conn = self._conn()
+        try:
+            row = conn.execute("SELECT last_seq FROM threads WHERE card_id=?", (card_id,)).fetchone()
+        finally:
+            conn.close()
+        return int(row["last_seq"]) if row else 0
+
+    def thread_seqs(self) -> dict[str, int]:
+        conn = self._conn()
+        try:
+            return {r["card_id"]: int(r["last_seq"])
+                    for r in conn.execute("SELECT card_id, last_seq FROM threads")}
+        finally:
+            conn.close()
+
+    def set_thread_seq(self, card_id: str, seq: int) -> None:
+        """Move the card's thread cursor forward. It never moves back."""
+        conn = self._conn()
+        try:
+            with conn:
+                conn.execute("INSERT INTO threads (card_id, last_seq) VALUES (?, ?)"
+                             " ON CONFLICT(card_id) DO UPDATE SET last_seq = excluded.last_seq"
+                             " WHERE excluded.last_seq > threads.last_seq", (card_id, int(seq)))
+        finally:
+            conn.close()
 
     # -- the wake-up batch ---------------------------------------------------
 
