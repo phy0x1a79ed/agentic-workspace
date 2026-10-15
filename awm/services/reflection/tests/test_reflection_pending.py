@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import time
+from dataclasses import replace
 from contextlib import contextmanager
 
 import pytest
@@ -89,11 +90,18 @@ def _outcomes(*sequence):
     return fake
 
 
+PROMISED_AT_MS = int(time.time() * 1000)
+
+
 def _promise(**over) -> pending.Pending:
-    """A promise stamped *now*, for a session that is alive."""
+    """A promise stamped at one fixed moment, for a session that is alive.
+
+    The stamp is what tells a watcher its promise is still the newest, so two
+    calls must agree on it.
+    """
     base = dict(repl_pid=4242, proc_start="999", session_id="sid-1",
                 text="/compact", followup="resume",
-                injected_at_ms=int(time.time() * 1000), name="test",
+                injected_at_ms=PROMISED_AT_MS, name="test",
                 hosting="tmux")
     base.update(over)
     return pending.Pending(**base)
@@ -604,3 +612,168 @@ def test_replay_is_the_same_code_for_both_lanes(monkeypatch):
     pending.record(_promise(repl_pid=2, hosting="background"))
     inject.replay_pending()
     assert sorted(i.hosting for i in armed) == ["background", "tmux"]
+
+
+# ---------------------------------------------------------------------------
+# A resume that says what happened
+# ---------------------------------------------------------------------------
+
+CONTINUE = "Continue with what you were doing."
+EFFORT = pending.Change("effort", "low", "k-effort")
+RENAME = pending.Change("rename", "scout", "k-rename")
+
+
+@pytest.mark.parametrize("changes,link,closing,expected", [
+    ((EFFORT,), None, "",
+     f"The effort change to low succeeded. {CONTINUE}"),
+    ((pending.Change("model", "opus", "k"),), None, "",
+     f"The model change to opus succeeded. {CONTINUE}"),
+    ((RENAME,), None, "", f"The rename to scout succeeded. {CONTINUE}"),
+    ((pending.Change("rc_on", "", "k"),), "https://claude.ai/code/session_01A", "",
+     f"Remote Control is on: https://claude.ai/code/session_01A. {CONTINUE}"),
+    ((pending.Change("rc_on", "", "k"),), None, "",
+     f"Remote Control was turned on; run reflection link to read its link. {CONTINUE}"),
+    ((pending.Change("effort", "low", "k", pending.FAILED, "the cursor was on No"),),
+     None, "",
+     f"The effort change to low did not apply (the cursor was on No). {CONTINUE}"),
+    ((RENAME, EFFORT), None, "",
+     f"The rename to scout and the effort change to low succeeded. {CONTINUE}"),
+    ((RENAME, pending.Change("model", "opus", "k", pending.FAILED, "a hook asked")),
+     None, "",
+     f"The rename to scout succeeded. The model change to opus did not apply "
+     f"(a hook asked). {CONTINUE}"),
+    ((EFFORT,), None, "go on with T3",
+     "The effort change to low succeeded. go on with T3"),
+    ((), None, "", CONTINUE),
+    ((), None, "go on with T3", "go on with T3"),
+])
+def test_the_resume_names_each_change_and_how_it_ended(changes, link, closing, expected):
+    assert pending.render_followup(changes, link, closing) == expected
+
+
+def test_a_settings_command_promises_a_resume_that_names_it(lane):
+    inject.send("/effort low", caller_pid=4242, change=EFFORT, spawn=lambda fn: None)
+    [item] = pending.load_all()
+    assert item.followup == f"The effort change to low succeeded. {CONTINUE}"
+    assert item.changes == (EFFORT,), "the change survives the replay's round trip"
+
+
+def test_compact_and_message_self_keep_the_default_resume(lane):
+    inject.send("/compact", caller_pid=4242, spawn=lambda fn: None)
+    assert [i.followup for i in pending.load_all()] == [CONTINUE]
+
+
+def _resume(item, monkeypatch):
+    monkeypatch.setattr(watcher, "await_completion",
+                        lambda *a, **kw: watcher.SETTLED_OUTCOME)
+    inject._await_and_resume(item, tail=Tail(in_flight=False, landed=None))
+
+
+def test_the_resume_is_worded_from_the_outcome_known_at_delivery(lane, monkeypatch):
+    inject.send("/effort low", caller_pid=4242, change=EFFORT, spawn=lambda fn: None)
+    [item] = pending.load_all()
+    pending.settle(4242, EFFORT.key, pending.FAILED, "the cursor was on No")
+    _resume(item, monkeypatch)
+    assert lane[1:] == [f"The effort change to low did not apply (the cursor was "
+                        f"on No). {CONTINUE}"]
+
+
+def test_an_applied_outcome_reads_as_success(lane, monkeypatch):
+    inject.send("/effort low", caller_pid=4242, change=EFFORT, spawn=lambda fn: None)
+    [item] = pending.load_all()
+    pending.settle(4242, EFFORT.key, pending.APPLIED)
+    _resume(item, monkeypatch)
+    assert lane[1:] == [f"The effort change to low succeeded. {CONTINUE}"]
+
+
+def test_a_replayed_promise_with_no_outcome_falls_back_to_the_plain_change_text(
+        lane, monkeypatch):
+    inject.send("/effort low", caller_pid=4242, change=EFFORT, spawn=lambda fn: None)
+    [replayed] = pending.load_all()
+    assert replayed.changes[0].outcome == ""
+    _resume(replayed, monkeypatch)
+    assert lane[1:] == [f"The effort change to low succeeded. {CONTINUE}"]
+
+
+def test_an_outcome_survives_a_rewrite_by_a_watcher_that_has_not_seen_it(lane):
+    inject.send("/effort low", caller_pid=4242, change=EFFORT, spawn=lambda fn: None)
+    [stale] = pending.load_all()
+    pending.settle(4242, EFFORT.key, pending.FAILED, "no")
+    pending.record(pending.held(stale, "waiting"))
+    [now] = pending.load_all()
+    assert now.changes[0].outcome == pending.FAILED and now.holds == 1
+
+
+def test_settling_a_change_nobody_carries_is_a_no_op(lane):
+    assert pending.settle(4242, "nope", pending.APPLIED) is False
+
+
+# ---------------------------------------------------------------------------
+# One resume per session
+# ---------------------------------------------------------------------------
+
+def _two_self_commands():
+    inject.send("/rename scout", caller_pid=4242, change=RENAME,
+                spawn=lambda fn: None)
+    inject.send("/effort low", caller_pid=4242, change=EFFORT,
+                spawn=lambda fn: None)
+    return pending.read(4242)
+
+
+def _older_than(item, **over):
+    """The first command's promise, as its own watcher still holds it."""
+    return replace(item, injected_at_ms=item.injected_at_ms - 5, **over)
+
+
+MERGED = (f"The rename to scout and the effort change to low succeeded. "
+          f"{CONTINUE}")
+
+
+def test_a_second_self_command_takes_over_the_promise_and_carries_the_first(lane):
+    item = _two_self_commands()
+    assert item.text == "/effort low"
+    assert [c.key for c in item.changes] == [RENAME.key, EFFORT.key]
+    assert item.followup == MERGED
+
+
+def test_two_self_commands_send_exactly_one_resume(lane, monkeypatch):
+    # The observed failure: both watchers delivered, and after the back-off both
+    # delivered again, so the session got four resumes for two commands.
+    newer = _two_self_commands()
+    older = _older_than(newer, text="/rename scout", changes=(RENAME,))
+    tail = Tail(in_flight=False, landed=None)
+    monkeypatch.setattr(watcher, "await_completion",
+                        lambda *a, **kw: watcher.SETTLED_OUTCOME)
+    inject._await_and_resume(older, tail=tail)
+    assert lane[2:] == [], "the older watcher stands down"
+    assert pending.read(4242) is not None, "and leaves the newer promise on disk"
+    inject._await_and_resume(newer, tail=tail)
+    assert lane[2:] == [MERGED]
+
+
+def test_an_older_watcher_that_wakes_after_the_newer_resume_went_in_stays_quiet(
+        lane, monkeypatch):
+    newer = _two_self_commands()
+    tail = Tail(in_flight=False, landed=None)
+    monkeypatch.setattr(watcher, "await_completion",
+                        lambda *a, **kw: watcher.SETTLED_OUTCOME)
+    inject._await_and_resume(newer, tail=tail)
+    assert lane[2:] == [MERGED] and pending.read(4242) is None
+    inject._await_and_resume(_older_than(newer, text="/rename scout"), tail=tail)
+    assert lane[2:] == [MERGED], "no second resume once the first has gone in"
+
+
+def test_the_stand_down_leaves_the_stop_gate_to_the_newer_promise(
+        lane, monkeypatch, _gate_dir):
+    newer = _two_self_commands()
+    monkeypatch.setattr(watcher, "await_completion",
+                        lambda *a, **kw: watcher.SETTLED_OUTCOME)
+    inject._await_and_resume(_older_than(newer), tail=Tail(in_flight=False, landed=None))
+    assert not (_gate_dir / LANE.session_id).exists()
+
+
+def test_a_custom_closing_prompt_is_kept_beside_a_later_settings_change(lane):
+    inject.send("/compact", caller_pid=4242, followup="go on with T3",
+                spawn=lambda fn: None)
+    inject.send("/effort low", caller_pid=4242, change=EFFORT, spawn=lambda fn: None)
+    assert pending.read(4242).followup == "The effort change to low succeeded. go on with T3"
