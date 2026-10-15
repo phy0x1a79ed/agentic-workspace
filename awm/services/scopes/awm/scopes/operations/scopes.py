@@ -20,6 +20,10 @@ SCOPE_MANIFEST_FUNCTIONS = [
             "Create a new scope (worktree + .awm/ metadata) for a project. "
             "The new branch defaults to feat/<scope>; pass branch_name to name "
             "it explicitly (e.g. a plain branch like 'release' or 'dev'). "
+            "A branch that already exists is checked out, not recreated. A branch "
+            "that only a remote carries becomes a local branch tracking that remote. "
+            "When several remotes carry it, create refuses and names each one. "
+            "Pass from_branch='<remote>/<branch>' to pick one. "
             "An unknown project is refused unless new_project=true, which first "
             "creates the project (bare repo, main checkout, data dirs; clone_url "
             "or fork_url to start from a remote); omit scope then to create the "
@@ -43,8 +47,13 @@ SCOPE_MANIFEST_FUNCTIONS = [
                             "(e.g. 'svc-diplomacy', or 'engine/presentation' to place it in "
                             "the engine group). Becomes the worktree path under the project. "
                             "Required, except with new_project to create the project alone."},
-            {"name": "from_branch", "type": "string", "required": False},
-            {"name": "branch_name", "type": "string", "required": False},
+            {"name": "from_branch", "type": "string", "required": False,
+             "description": "Start point of a new branch. Default: the project's "
+                            "default branch. For a branch that already exists, only "
+                            "'<remote>/<branch>' is accepted, and it sets the upstream."},
+            {"name": "branch_name", "type": "string", "required": False,
+             "description": "Branch to check out. Default feat/<scope>. It may "
+                            "already exist locally or on a remote."},
             {"name": "context", "type": "string", "required": False},
             {"name": "new_project", "type": "boolean", "required": False,
              "description": "Create the project first when it does not exist. "
@@ -102,12 +111,19 @@ SCOPE_MANIFEST_FUNCTIONS = [
         "name": "scope_complete",
         "tool": "scope_complete",
         "effect": "write",
-        "description": "Complete (retire) a scope. Optionally merge and clean up the worktree.",
+        "description": (
+            "Complete (retire) a scope. Optionally merge, and remove the worktree "
+            "with cleanup=true. The branch stays unless delete_branch=true, which "
+            "needs cleanup=true. The reply then names the branch and its last SHA."
+        ),
         "params": [
             {"name": "project", "type": "string", "required": True},
             {"name": "scope", "type": "string", "required": True},
             {"name": "merge", "type": "boolean", "required": False},
             {"name": "cleanup", "type": "boolean", "required": False},
+            {"name": "delete_branch", "type": "boolean", "required": False,
+             "description": "Also delete the scope's git branch. Default false: "
+                            "the branch is kept."},
         ],
     },
     {
@@ -115,15 +131,19 @@ SCOPE_MANIFEST_FUNCTIONS = [
         "tool": "scope_delete",
         "effect": "write",
         "description": (
-            "Delete a scope and clean up its worktree and branch. Refuses when "
-            "the worktree has uncommitted changes -- which now covers data as "
-            "well as code, since a data chunk is committed via its .dvc pin; "
-            "pass force=true to discard them."
+            "Delete a scope and remove its worktree. The branch stays unless "
+            "delete_branch=true. The reply then names the branch and its last "
+            "SHA. Refuses when the worktree has uncommitted changes -- which "
+            "covers data as well as code, since a data chunk is committed via "
+            "its .dvc pin; pass force=true to discard them."
         ),
         "params": [
             {"name": "project", "type": "string", "required": True},
             {"name": "scope", "type": "string", "required": True},
             {"name": "force", "type": "boolean", "required": False},
+            {"name": "delete_branch", "type": "boolean", "required": False,
+             "description": "Also delete the scope's git branch. Default false: "
+                            "the branch is kept."},
         ],
         # rmtree over a fully materialised data tree.
         "timeout": 600.0,
@@ -139,7 +159,11 @@ SCOPE_MANIFEST_FUNCTIONS = [
             "and bring the scope's data view to whatever its checkout implies "
             "— installing the DVC merge driver + hooks and materialising the "
             "pinned chunks, or leaving an unconverted project on the legacy "
-            "shared symlink. Pass dry_run=true to preview."
+            "shared symlink. Pass dry_run=true to preview. "
+            "The reply also lists worktrees under projects/<project>/ that no scope "
+            "row names (unregistered_worktrees) and active or allocated rows whose "
+            "worktree is gone (orphaned_rows). Heal never registers or retires a "
+            "row for either list."
         ),
         "params": [
             {"name": "project", "type": "string", "required": False},
@@ -247,6 +271,7 @@ def _handle_scope_complete(args: dict) -> dict:
         action="complete",
         merge=bool(args.get("merge", False)),
         cleanup=bool(args.get("cleanup", False)),
+        delete_branch=bool(args.get("delete_branch", False)),
     )
     result = scopes.update_scope(args["project"], args["scope"], req)
     return result.model_dump()
@@ -255,6 +280,7 @@ def _handle_scope_complete(args: dict) -> dict:
 def _handle_scope_delete(args: dict) -> dict:
     result = scopes.delete_scope(
         args["project"], args["scope"], force=bool(args.get("force", False)),
+        delete_branch=bool(args.get("delete_branch", False)),
     )
     return result.model_dump()
 
@@ -264,8 +290,12 @@ def _handle_scope_heal(args: dict) -> dict:
         project=args.get("project"),
         dry_run=bool(args.get("dry_run", False)),
     )
+    audit = scopes.audit_worktrees(project=args.get("project"))
     return {"scopes": report, "count": len(report),
-            "dry_run": bool(args.get("dry_run", False))}
+            "dry_run": bool(args.get("dry_run", False)),
+            "unregistered_worktrees": audit["unregistered"],
+            "orphaned_rows": audit["orphaned_rows"],
+            "audit_errors": audit["errors"]}
 
 
 def _handle_scope_repair(args: dict) -> dict:

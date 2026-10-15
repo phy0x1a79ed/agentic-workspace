@@ -51,6 +51,7 @@ class ScopeUpdateRequest(BaseModel):
     # Teardown refuses when the scope's data clone holds content that exists
     # nowhere else; `force` accepts that loss deliberately.
     force: bool = False
+    delete_branch: bool = False
 
 
 class ScopeSyncRequest(BaseModel):
