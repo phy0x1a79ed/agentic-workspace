@@ -358,7 +358,13 @@ class HostState:
         self.parties = Parties(directory / "parties.db")
         self.wakeup = Wakeup()
         self.events = NotifyingEvents(Events(directory / "events.db"), self.wakeup)
-        self.board = Board(Vault(), self.events, lock_path=directory / "claim.lock")
+        # The host's own client token names the vault operator's party, which
+        # authors every message typed in the Trilium GUI.
+        gui_party = self.parties.resolve(os.environ.get("AWM_BOARD_TOKEN"))
+        if gui_party is None:
+            log.warning("board: AWM_BOARD_TOKEN names no live party; GUI chat notes stay unsealed")
+        self.board = Board(Vault(), self.events, lock_path=directory / "claim.lock",
+                           gui_party=gui_party)
         self.app = create_app(self.board, self.parties, self.events, wakeup=self.wakeup)
 
 

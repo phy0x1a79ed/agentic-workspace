@@ -131,3 +131,17 @@ def test_a_version_1_log_is_migrated(tmp_path):
     assert migrated.seen_all()["x"]["status"] == "done"
     names = {r[1] for r in sqlite3.connect(path).execute("PRAGMA index_list(events)")}
     assert "events_sender" in names
+    sender = {"swarm": "tony", "principal": "agent", "party": "p"}
+    assert migrated.message_add("x", at="t", sender=sender, origin="api", body="hi")["seq"] == 1
+
+
+def test_message_sequences_count_per_card(events):
+    sender = {"swarm": "tony", "principal": "agent", "party": "p"}
+    seqs = [events.message_add(c, at="t", sender=sender, origin="api", body=c)["seq"]
+            for c in ("a", "a", "b", "a")]
+    assert seqs == [1, 2, 1, 3]
+    assert [m["seq"] for m in events.messages("a", after=1)] == [2, 3]
+    page, cursor = events.message_page(0, 3)
+    assert len(page) == 3 and cursor
+    rest, end = events.message_page(cursor, 3)
+    assert [m["card_id"] for m in rest] == ["a"] and end == 0

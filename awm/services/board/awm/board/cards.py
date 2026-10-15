@@ -42,7 +42,7 @@ from pathlib import Path
 
 from .events import Events
 from .parties import OPEN, Conflict, Forbidden, NotFound, can_see
-from .vault import Vault, VaultError
+from .vault import MESSAGE_SEQ, Vault, VaultError
 
 __all__ = ["Board", "BoardLocked", "Conflict", "Forbidden", "NotFound"]
 
@@ -63,6 +63,16 @@ _MAX_TEXT = 200_000
 
 DEFAULT_LIST_LIMIT = 100
 MAX_LIST_LIMIT = 500
+
+#: The card label holding its newest message's sequence, so a client can tell
+#: it missed messages without listing them.
+LAST_MESSAGE = "cardLastMsg"
+#: Width of the zero-padded `msgSeq` label, so Trilium's text sort is sequence order.
+SEQ_WIDTH = 8
+#: A note a person is still typing is not sealed until it has sat this long unchanged.
+SETTLE_S = 5.0
+#: Message notes each sweep checks against the record. The check cycles through all of them.
+VERIFY_BATCH = 20
 
 _SLUG = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 
@@ -126,6 +136,35 @@ def _split_content(content: str | None) -> tuple[str | None, str | None]:
     return body, (result if marker else None)
 
 
+def _seq(value: str | None) -> int:
+    try:
+        return int(value or 0)
+    except ValueError:
+        return 0
+
+
+def _public(message: dict) -> dict:
+    """A message as callers see it, without the board's mirror bookkeeping."""
+    return {k: v for k, v in message.items() if k != "note_id"}
+
+
+def _mirror_fields(message: dict) -> tuple[str, dict[str, str]]:
+    """The title and labels a message's note carries, all derived from its row."""
+    sender = message["sender"]
+    return (f"{message['seq']} · {sender['swarm']}",
+            {MESSAGE_SEQ: str(message["seq"]).zfill(SEQ_WIDTH), "msgAt": message["at"],
+             "msgFrom": f"{sender['principal']}@{sender['swarm']}", "readOnly": ""})
+
+
+def _age_s(utc_modified: str) -> float:
+    """Seconds since a Trilium ``utcDateModified`` stamp. An unreadable stamp counts as new."""
+    try:
+        then = datetime.strptime(utc_modified.rstrip("Z"), "%Y-%m-%d %H:%M:%S.%f")
+    except ValueError:
+        return 0.0
+    return (datetime.now(timezone.utc) - then.replace(tzinfo=timezone.utc)).total_seconds()
+
+
 def _known_status(column: str) -> str | None:
     """The status a column name stands for, matched case-insensitively, or None for any other column."""
     return _STATUS_OF.get((column or "").strip().lower())
@@ -134,13 +173,19 @@ def _known_status(column: str) -> str | None:
 class Board:
     """The card rules. At most one process holds the lock file."""
 
-    def __init__(self, vault: Vault, events: Events, *, lock_path: str | Path):
+    def __init__(self, vault: Vault, events: Events, *, lock_path: str | Path,
+                 gui_party: dict | None = None):
         self._lock_key, hold = _acquire(Path(lock_path))
         self._guard = hold.guard
         self.vault = vault
         self.events = events
+        #: The author of a message a person types in the Trilium GUI. Only the
+        #: host's operator can open the vault, and it names no other user.
+        #: None leaves such notes unsealed.
+        self.gui_party = gui_party
         #: card id to the {status, recipient, claimant} last recorded for it
         self._seen: dict[str, dict] = events.seen_all()
+        self._verify_cursor = 0
 
     def close(self) -> None:
         """Let go of the lock file. The process exiting does the same."""
@@ -186,6 +231,7 @@ class Board:
             "result": result,
             "created_at": labels.get("cardCreated") or "",
             "updated_at": labels.get("cardUpdated") or "",
+            "last_message": _seq(labels.get(LAST_MESSAGE)),
         }
 
     def _remember(self, card: dict) -> None:
@@ -351,6 +397,64 @@ class Board:
             page.append(self._card(full) if full is not None else card)
         return page
 
+    # -- a card's thread -------------------------------------------------------
+
+    def message(self, party: dict, card_id: str, body: str) -> dict:
+        """Add a message to the card's thread. Anyone who can see the card may post."""
+        self._live(party)
+        if not isinstance(body, str) or not body.strip():
+            raise ValueError("body must be non-empty text")
+        if len(body) > _MAX_TEXT:
+            raise ValueError("body must be text of at most %d characters" % _MAX_TEXT)
+        with self._guard:
+            rec, card = self._fetch(party, card_id)
+            sender = {"swarm": party["swarm"], "principal": party["principal"],
+                      "party": party["party_id"]}
+            return self._add_message(rec, card, sender, "api", body)
+
+    def messages(self, party: dict, card_id: str, *, after: int | None = None,
+                 limit: int | None = None) -> list[dict]:
+        """The card's messages after sequence ``after``, oldest first, from the board's record."""
+        self._live(party)
+        limit = DEFAULT_LIST_LIMIT if limit is None else int(limit)
+        after = 0 if after is None else int(after)
+        if not 1 <= limit <= MAX_LIST_LIMIT or after < 0:
+            raise ValueError(f"limit must be 1 to {MAX_LIST_LIMIT} and after 0 or more")
+        self._fetch(party, card_id)
+        return [_public(m) for m in self.events.messages(card_id, after, limit)]
+
+    def _add_message(self, rec: dict, card: dict, sender: dict, origin: str, body: str,
+                     note_id: str | None = None) -> dict:
+        """Record a message, mirror it into the vault, and log `card.message`.
+
+        The row is written first and is the message. A mirror or label write
+        that fails leaves a row the sweep repairs, so the post still succeeds.
+        A ``note_id`` is a note a person already made, which is stamped in place.
+        """
+        message = self.events.message_add(card["id"], at=_now(), sender=sender,
+                                          origin=origin, body=body, note_id=note_id)
+        try:
+            self._mirror(rec["note_id"], message)
+            self.vault.update(rec["note_id"], labels={LAST_MESSAGE: str(message["seq"])})
+        except VaultError as e:
+            log.warning("message %s on card %s is recorded but not mirrored: %s",
+                        message["seq"], card["id"], e)
+        public = _public(message)
+        card["last_message"] = message["seq"]
+        self.events.append("card.message", {**card, "message": public})
+        return public
+
+    def _mirror(self, card_note: str, message: dict) -> None:
+        """Write the message's note from its row: make it, or put it back as recorded."""
+        title, labels = _mirror_fields(message)
+        if message["note_id"]:
+            self.vault.restore(message["note_id"], title, message["body"], labels)
+            return
+        chat = self.vault.ensure_chat(card_note)
+        note_id = self.vault.create_child(chat, title, message["body"], labels)
+        self.events.message_set_note(message["card_id"], message["seq"], note_id)
+        message["note_id"] = note_id
+
     # -- the watcher -----------------------------------------------------------
 
     def sweep(self) -> list[dict]:
@@ -391,7 +495,56 @@ class Board:
             for card_id in stale:
                 del self._seen[card_id]
             self.events.seen_drop(stale)
+            try:
+                self._seal_gui_messages()
+                self._verify_messages()
+            except VaultError as e:
+                log.warning("message sweep stopped early: %s", e)
         return moved
+
+    def _seal_gui_messages(self) -> None:
+        """Turn each settled note a person added under a card's chat into the card's next message."""
+        if not self.gui_party:
+            return
+        for note in self.vault.unsealed_messages():
+            note_id = note["noteId"]
+            if _age_s(note.get("utcDateModified") or "") < SETTLE_S:
+                continue
+            card_note = next(filter(None, map(self.vault.card_note_of_chat,
+                                              note.get("parentNoteIds") or [])), None)
+            card_id = card_note and self.vault.card_id_for_note(card_note)
+            if not card_id or self.events.message_by_note(note_id):
+                continue
+            rec = self.vault.read(card_id)
+            found = self.vault.message_note(note_id)
+            if rec is None or found is None or not found["content"].strip():
+                continue
+            card = self._card(rec)
+            if not can_see(self.gui_party, card):
+                log.warning("note %s is on card %s, which %s cannot see: left unsealed",
+                            note_id, card_id, self.gui_party["swarm"])
+                continue
+            sender = {"swarm": self.gui_party["swarm"], "principal": self.gui_party["principal"],
+                      "party": self.gui_party["party_id"]}
+            self._add_message(rec, card, sender, "gui", found["content"], note_id=note_id)
+
+    def _verify_messages(self) -> None:
+        """Put the next batch of message notes back as the record has them, and mirror unmirrored ones."""
+        page, self._verify_cursor = self.events.message_page(self._verify_cursor, VERIFY_BATCH)
+        for message in page:
+            title, labels = _mirror_fields(message)
+            if message["note_id"]:
+                found = self.vault.message_note(message["note_id"])
+                if found is not None:
+                    if (found["title"], found["labels"]) == (title, {**found["labels"], **labels}) \
+                            and found["content"] == message["body"]:
+                        continue
+                    self.vault.restore(message["note_id"], title, message["body"], labels)
+                    continue
+                message["note_id"] = None
+            rec = self.vault.read(message["card_id"], content=False)
+            if rec is not None:
+                self._mirror(rec["note_id"], message)
 
     def _record_move(self, card_id: str, previous_status: str) -> dict:
         rec = self.vault.read(card_id)
