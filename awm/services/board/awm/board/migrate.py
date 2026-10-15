@@ -4,7 +4,9 @@
 `archive` files every archived card in the `Archived` folder of its column.
 `threads` folds each chain of reply cards into the thread of the card at its
 root. A reply card that carries `cardThreaded` was posted on the thread too,
-so the plan leaves it out. Both are dry runs until told otherwise, and a second apply changes
+so the plan leaves it out. `homes` moves each archived card that carries
+`cardFolded` from its `Archived` folder under the note of the card it was
+folded into. All are dry runs until told otherwise, and a second apply changes
 nothing.
 
 A thread migration cannot renumber a thread without moving the sequence numbers
@@ -27,7 +29,7 @@ from pathlib import Path
 from .cards import THREADED, Board
 from .names import check_project
 from .states import STATES, TERMINAL
-from .vault import VaultError
+from .vault import FOLDED, VaultError
 
 log = logging.getLogger("awm.board.migrate")
 
@@ -98,6 +100,56 @@ def archive(board: Board, dry_run: bool) -> dict:
         for rec in misfiled:
             board.vault.archive(rec, target[rec["note_id"]])
         return {**report, "moved": len(misfiled)}
+
+
+# -- homes --------------------------------------------------------------------
+
+
+def homes(board: Board, dry_run: bool) -> dict:
+    with board._guard:
+        archived = board.vault.list_archived()
+        by_id = {rec["labels"]["cardId"]: rec for rec in archived}
+        moves: list[tuple[dict, dict]] = []
+        per_home: dict[str, dict] = {}
+        report: Counter = Counter()
+        homed = {rec["labels"]["cardId"] for rec in archived if rec["home_note"]}
+        for rec in archived:
+            card_id, home_id = rec["labels"]["cardId"], rec["labels"].get(FOLDED)
+            if not home_id:
+                report["without_home"] += 1
+                continue
+            home = by_id.get(home_id) or board.vault.read(home_id, content=False)
+            if home is None or home_id == card_id:
+                report["home_missing"] += 1
+                continue
+            slot = per_home.setdefault(home_id, {"title": home["title"], "to_move": 0, "already": 0})
+            if card_id in homed:
+                slot["already"] += 1
+            elif _folds_into(by_id, home_id, card_id):
+                report["cyclic_skipped"] += 1
+            else:
+                slot["to_move"] += 1
+                moves.append((rec, home))
+        out = {"dry_run": dry_run, "cards_to_move": len(moves),
+               "already_homed": sum(h["already"] for h in per_home.values()),
+               "without_home": report["without_home"], "home_missing": report["home_missing"],
+               "cyclic_skipped": report["cyclic_skipped"],
+               "by_home": dict(sorted(per_home.items(), key=lambda kv: -kv[1]["to_move"]))}
+        if dry_run:
+            return out
+        for rec, home in moves:
+            board.vault.file_under(rec, home)
+        return {**out, "moved": len(moves)}
+
+
+def _folds_into(by_id: dict[str, dict], home_id: str, card_id: str) -> bool:
+    """Whether the chain of homes above ``home_id`` leads back to ``card_id``."""
+    seen = {card_id}
+    while home_id and home_id not in seen:
+        seen.add(home_id)
+        home = by_id.get(home_id)
+        home_id = home["labels"].get(FOLDED) if home else None
+    return home_id == card_id
 
 
 # -- threads ------------------------------------------------------------------
@@ -221,7 +273,7 @@ def _apply(board: Board, subject: dict, report: Counter) -> None:
         _fold(board, root_rec, replies, report)
         for rec, card in replies:
             if "archived" not in rec["labels"]:
-                board.vault.archive(rec, card["state"], {"cardFolded": subject["root"]})
+                board.vault.archive(rec, card["state"], {FOLDED: subject["root"]}, home=root_rec)
                 report["replies_archived"] += 1
         root_rec = board.vault.read(subject["root"])
         root = board._card(root_rec)
