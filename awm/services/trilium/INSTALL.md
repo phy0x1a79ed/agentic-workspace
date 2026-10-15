@@ -549,6 +549,17 @@ CAUTION: the board groups its subtree **flattened and recursively**, so a card
 nested two levels down still appears on it. Placement inside the board matters
 less than the label.
 
+A federation card's thread is its `Chat` child note: a `book` with
+`#viewType=chat`, sorted by `#msgSeq`. The fork's chat view draws the children
+as messages and offers no edit control. Its input box adds a plain-text child,
+which shows as sending until the `board` service stamps it with a sequence.
+Neither the `Chat` note nor a message carries `#status` or `cardId`, so no board
+draws them as cards and the board's card search never counts them.
+
+CAUTION: a node that does not run the fork falls back to the grid view for
+`#viewType=chat`. It still lists the messages in sequence order. A text note a
+person adds there is sealed with its HTML as the message body.
+
 ### The two patches we carry
 
 The fork was pristine at `v0.105.0` until this. Both patches are upstream bugs

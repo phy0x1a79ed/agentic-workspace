@@ -22,7 +22,16 @@ DEFAULT_BOARD_LABEL = "federationBoard"
 #: A search over the board returns at most this many cards.
 SEARCH_LIMIT = 10000
 
+#: Labels of a card's chat. None of them may be `cardId` or `status`, or a
+#: message would count as a card in the search and in the board view.
+CHAT_FOLDER = "chatFolder"
+CHAT_MESSAGE = "chatMsg"
+MESSAGE_SEQ = "msgSeq"
+
 _LABEL_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+#: How a read of a deleted note fails, through ETAPI and the gateway alike.
+_MISSING = re.compile(r"\b404\b|NOTE_NOT_FOUND")
 
 
 class VaultError(RuntimeError):
@@ -66,6 +75,7 @@ class Vault:
         self._board_id: str | None = None
         self._note_by_card: dict[str, str] = {}
         self._card_by_note: dict[str, str] = {}
+        self._chat_by_card: dict[str, str] = {}
 
     # -- transport -------------------------------------------------------------
 
@@ -180,6 +190,93 @@ class Vault:
         if content is not None:
             args["content"] = content
         self._call("note_update", **args)
+
+    # -- card chats ------------------------------------------------------------
+
+    def create_child(self, parent: str, title: str, body: str,
+                     labels: dict[str, str]) -> str:
+        """Make a plain-text note under ``parent`` and return its id. It is never a card."""
+        made = self._call("note_create", title=title, content=body, parent=parent,
+                          type="code", mime="text/plain", labels=labels)
+        note_id = made.get("note_id")
+        if not note_id:
+            raise VaultError(f"note_create returned no note id: {made!r}")
+        return note_id
+
+    def restore(self, note_id: str, title: str, body: str, labels: dict[str, str]) -> None:
+        """Put a message note back as recorded. Trilium writes only what differs."""
+        self._call("note_update", note_id=note_id, title=title, content=body, labels=labels)
+
+    def ensure_chat(self, card_note: str) -> str:
+        """The id of the card's `Chat` note, made on first use.
+
+        It is a collection shown in the `chat` view, sorted by message sequence.
+        ``chatFolder`` marks it, and the inheritable ``chatMsg`` marks every note
+        under it, which is how a note a person adds in the GUI is found.
+        """
+        chat = self._chat_by_card.get(card_note)
+        if chat:
+            return chat
+        found = self._call("note_search", query=f"#{CHAT_FOLDER}", ancestor=card_note, limit=5)
+        hits = [n for n in found.get("results") or []
+                if card_note in (n.get("parentNoteIds") or [])]
+        if hits:
+            chat = hits[0]["noteId"]
+            marked = any(a.get("name") == CHAT_MESSAGE and a.get("isInheritable")
+                         for a in _own_attributes(hits[0]))
+        else:
+            made = self._call("note_create", title="Chat", content="", parent=card_note,
+                              type="book", labels={"viewType": "chat", "sorted": MESSAGE_SEQ,
+                                                   CHAT_FOLDER: ""})
+            chat = made.get("note_id")
+            if not chat:
+                raise VaultError(f"note_create returned no note id: {made!r}")
+            marked = False
+        if not marked:
+            self._call("attr_set", note_id=chat, name=CHAT_MESSAGE, value="", inheritable=True)
+        self._chat_by_card[card_note] = chat
+        return chat
+
+    def unsealed_messages(self) -> list[dict]:
+        """Notes under some card's chat that carry no sequence yet: ones a person added in the GUI."""
+        found = self._call("note_search",
+                           query=f"#{CHAT_MESSAGE} #!{CHAT_FOLDER} #!{MESSAGE_SEQ}",
+                           ancestor=self.board_id(), limit=SEARCH_LIMIT)
+        return found.get("results") or []
+
+    def card_note_of_chat(self, chat: str) -> str | None:
+        """The card note a `Chat` note belongs to, or None when ``chat`` is not one."""
+        for card_note, known in self._chat_by_card.items():
+            if known == chat:
+                return card_note
+        try:
+            note = self._call("note_get", note_id=chat, content=False)
+        except VaultError:
+            return None
+        if not any(a.get("name") == CHAT_FOLDER for a in _own_attributes(note)):
+            return None
+        for parent in note.get("parentNoteIds") or []:
+            if self.card_id_for_note(parent):
+                self._chat_by_card[parent] = chat
+                return parent
+        return None
+
+    def message_note(self, note_id: str) -> dict | None:
+        """A message note with its body and own labels, or None when Trilium no longer has it.
+
+        Any other failure raises, so a flaky call never reads as a deletion.
+        """
+        try:
+            note = self._call("note_get", note_id=note_id, content=True)
+        except VaultError as e:
+            if _MISSING.search(str(e)):
+                return None
+            raise
+        labels = {a.get("name"): a.get("value") or "" for a in _own_attributes(note)
+                  if a.get("type") == "label"}
+        return {"note_id": note_id, "title": note.get("title") or "",
+                "content": note.get("content") or "", "labels": labels,
+                "modified": note.get("utcDateModified") or ""}
 
     def card_id_for_note(self, note_id: str) -> str | None:
         """The card id of a note, for resolving a ``~replyTo`` target."""

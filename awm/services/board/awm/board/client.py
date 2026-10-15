@@ -146,6 +146,15 @@ class BoardClient:
             params["offset"] = int(offset)
         return await self._send("GET", "/cards", params=params)
 
+    async def message(self, card_id: str, body: str) -> dict:
+        return await self._send("POST", f"/cards/{card_id}/messages", json={"body": body})
+
+    async def messages(self, card_id: str, *, after: int | None = None,
+                       limit: int | None = None) -> list[dict]:
+        """The card's messages after sequence ``after``, oldest first."""
+        params = {k: int(v) for k, v in (("after", after), ("limit", limit)) if v}
+        return await self._send("GET", f"/cards/{card_id}/messages", params=params)
+
     # -- the stream ----------------------------------------------------------
 
     async def stream(self, last_event_id: int | None = None, *,

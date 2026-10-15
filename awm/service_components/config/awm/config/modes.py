@@ -133,7 +133,7 @@ MODES: dict[str, Policy] = {
     # fail a card it refuses. It never does a card's work and never claims,
     # completes or posts a card: the front door claims, a delegate finishes.
     REPRESENTATIVE: Allow(
-        _pairs("operations", "board_list", "board_get", "board_fail")
+        _pairs("operations", "board_list", "board_get", "board_fail", "board_messages")
         | _pairs("reflection", "start_other", "list_other")
         | _CARDS
         | _REPORTING
@@ -144,22 +144,23 @@ MODES: dict[str, Policy] = {
     # agents. It never touches the board except to read it.
     SECRETARY: Allow(
         _pairs("reflection", "start_other", "list_other", "stop_other")
-        | _pairs("operations", "board_list", "board_get")
+        | _pairs("operations", "board_list", "board_get", "board_messages")
         | _pairs("operations", "status", "queue_list", "queue_get")
         | _REPORTING
         | _REFLECTION
         | _SCOPE_READS
     ),
     # The worker a restricted session starts for a card. It reads what the
-    # node declares readable and finishes its card on the board, and it posts a
-    # message card only as a reply. It starts nothing, writes no scope, queue or
+    # node declares readable, answers on its card's thread and finishes the
+    # card on the board, and it posts a message card only as a reply. It starts nothing, writes no scope, queue or
     # setting, and has no browser: `browser` can drive a loopback browser to the
     # gateway's HTTP door, past this gate.
     DELEGATE: ByEffect(
         effects=frozenset({"read"}),
         denied_domains=frozenset({"browser", "factorio"}),
         denied_pairs=_pairs("operations", "party_list") | _CARDS,
-        pairs=(_pairs("operations", "board_get", "board_list", "board_complete", "board_fail")
+        pairs=(_pairs("operations", "board_get", "board_list", "board_complete", "board_fail",
+                      "board_message_post", "board_messages")
                | _REFLECTION | _REPORTING | _SEARCH_READS),
         when={("operations", "board_post"): is_reply},
     ),

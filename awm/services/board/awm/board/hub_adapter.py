@@ -135,6 +135,32 @@ API_MANIFEST: dict[str, Any] = {
             "timeout": 60,
         },
         {
+            "name": "message_post",
+            "tool": "operations_board_message_post",
+            "effect": "queue",
+            "description": (
+                "Add a message to a card's thread. The message is final once "
+                "sent. The sender is your swarm, set by the board."
+            ),
+            "params": [
+                _param("card_id", "string", "The card's id.", True),
+                _param("body", "string", "The message text.", True),
+            ],
+            "timeout": 60,
+        },
+        {
+            "name": "messages",
+            "tool": "operations_board_messages",
+            "effect": "read",
+            "description": "Read a card's thread, oldest first.",
+            "params": [
+                _param("card_id", "string", "The card's id.", True),
+                _param("after", "integer", "Only messages after this sequence number."),
+                _param("limit", "integer", "At most this many messages (default 100, at most 500)."),
+            ],
+            "timeout": 60,
+        },
+        {
             "name": "party_add",
             "tool": "operations_party_add",
             "surfaces": ["cli", "http"],
@@ -277,6 +303,17 @@ async def list_cards(args: dict, as_: str | None = None) -> dict:
     return {"ok": True, "cards": reply["result"]} if reply.get("ok") else reply
 
 
+async def message_post(args: dict, as_: str | None = None) -> dict:
+    reply = await _relay(lambda c: c.message(args["card_id"], args["body"]), as_)
+    return {"ok": True, "message": reply["result"]} if reply.get("ok") else reply
+
+
+async def messages(args: dict, as_: str | None = None) -> dict:
+    paging = {k: args[k] for k in ("after", "limit") if args.get(k) not in (None, "")}
+    reply = await _relay(lambda c: c.messages(args["card_id"], **paging), as_)
+    return {"ok": True, "messages": reply["result"]} if reply.get("ok") else reply
+
+
 # -- party admin: host only ---------------------------------------------------
 
 
@@ -334,6 +371,8 @@ HANDLERS: dict[str, Any] = {
     "fail": fail,
     "get": get,
     "list": list_cards,
+    "message_post": message_post,
+    "messages": messages,
     "party_add": party_add,
     "party_revoke": party_revoke,
     "party_list": party_list,
@@ -358,7 +397,13 @@ class HostState:
         self.parties = Parties(directory / "parties.db")
         self.wakeup = Wakeup()
         self.events = NotifyingEvents(Events(directory / "events.db"), self.wakeup)
-        self.board = Board(Vault(), self.events, lock_path=directory / "claim.lock")
+        # The host's own client token names the vault operator's party, which
+        # authors every message typed in the Trilium GUI.
+        gui_party = self.parties.resolve(os.environ.get("AWM_BOARD_TOKEN"))
+        if gui_party is None:
+            log.warning("board: AWM_BOARD_TOKEN names no live party; GUI chat notes stay unsealed")
+        self.board = Board(Vault(), self.events, lock_path=directory / "claim.lock",
+                           gui_party=gui_party)
         self.app = create_app(self.board, self.parties, self.events, wakeup=self.wakeup)
 
 

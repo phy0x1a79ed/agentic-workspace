@@ -102,6 +102,7 @@ class StubBoard:
         self.claim_delay = claim_delay
         self.sweeps = 0
         self.last_post_party: dict | None = None
+        self.threads: dict[str, list[dict]] = {}
         self._lock = threading.Lock()
 
     def post(self, party, *, kind, recipient, title, body, priority="normal", reply_to=None):
@@ -177,6 +178,26 @@ class StubBoard:
         if not 1 <= limit <= 500 or offset < 0:
             raise ValueError("bad paging")
         return out[offset:offset + limit]
+
+    def message(self, party, card_id, body):
+        if not isinstance(body, str) or not body.strip():
+            raise ValueError("body must be non-empty text")
+        with self._lock:
+            self._seen(party, card_id)
+            thread = self.threads.setdefault(card_id, [])
+            message = {"card_id": card_id, "seq": len(thread) + 1, "at": "now",
+                       "sender": {"swarm": party["swarm"], "principal": party["principal"],
+                                  "party": party["party_id"]},
+                       "origin": "api", "body": body}
+            thread.append(message)
+        return dict(message)
+
+    def messages(self, party, card_id, *, after=None, limit=None):
+        with self._lock:
+            self._seen(party, card_id)
+            thread = list(self.threads.get(card_id, []))
+        after, limit = int(after or 0), int(limit or 100)
+        return [m for m in thread if m["seq"] > after][:limit]
 
     def sweep(self):
         self.sweeps += 1

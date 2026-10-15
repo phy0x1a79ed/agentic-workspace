@@ -40,6 +40,8 @@ SHAPES = [
     ("POST", f"/board/cards/{CARD}/claim"),
     ("POST", f"/board/cards/{CARD}/complete"),
     ("POST", f"/board/cards/{CARD}/fail"),
+    ("POST", f"/board/cards/{CARD}/messages"),
+    ("GET", f"/board/cards/{CARD}/messages"),
     ("GET", "/board/stream"),
 ]
 
@@ -242,6 +244,7 @@ BAD_PATHS = [
     ("POST", f"/board/cards/{CARD.upper()}/claim"),
     ("POST", f"/board/cards/{CARD}/release"),
     ("POST", f"/board/cards/{CARD}/claim/extra"),
+    ("GET", f"/board/cards/{CARD}/messages/1"),
     ("POST", f"/board/cards/{CARD}/"),
     ("GET", f"/board/cards/{CARD}/claim"),
     ("GET", "/board/cards/%30" + CARD[1:]),
