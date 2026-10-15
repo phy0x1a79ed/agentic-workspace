@@ -25,6 +25,7 @@ from awm.reporting import config
 from awm.reporting.ledger import (ACTIVE, BLOCKED, CANCELLED, CLOSED, COLUMNS, DONE, OPEN, PLANNED,
                                   PROPOSED, REVIEW, Ledger)
 from awm.reporting.record import TITLE_CHARS, cut_at_word, plan_title, render_ledger, render_record
+from awm.reporting.store import Offloaded
 from awm.reporting.swarmboard import BoardError, SwarmBoard
 
 log = logging.getLogger("awm.reporting.tasks")
@@ -62,6 +63,11 @@ def blocked_marker(session_id: str):
     return roster.claude_home() / "awm-reporting" / f"{session_id}.blocked"
 
 
+def _touch_marker(marker) -> None:
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.touch()
+
+
 def _job_state(job: str) -> dict:
     try:
         data = json.loads((roster.default_jobs_dir() / job / "state.json").read_text())
@@ -96,6 +102,7 @@ class Tasks:
                  alive: Callable[[int, str], bool] = lambda pid, start: roster.proc_start(pid) == start,
                  fetch: Callable[..., Awaitable[Any]] = gatewayclient.call) -> None:
         self.ledger = ledger
+        self.db = Offloaded(ledger)
         self.board = board
         self.node = node or node_name()
         self._resolve = resolve
@@ -114,7 +121,7 @@ class Tasks:
     async def call(self, verb: str, args: dict) -> dict:
         args = dict(args)
         pid = args.pop("_caller_pid", None)
-        rec = self._resolve(pid) if isinstance(pid, int) else None
+        rec = await asyncio.to_thread(self._resolve, pid) if isinstance(pid, int) else None
         if not rec:
             return {"ok": False, "error": "no calling session: this verb is for a running Claude Code session"}
         if args.get("session_id") and args["session_id"] != rec.get("sessionId"):
@@ -129,160 +136,161 @@ class Tasks:
         except (BoardError, ValueError) as exc:
             return {"ok": False, "error": str(exc)}
 
-    def _result(self, task_id: int, **extra: Any) -> dict:
-        task = self.ledger.get(task_id)
+    async def _result(self, task_id: int, **extra: Any) -> dict:
+        task = await self.db.get(task_id)
         return {"ok": True, "task": task_id, "state": task["state"], "card": task["note_id"],
                 "blocked": task["state"] == BLOCKED, **extra}
 
     # -- tracking ------------------------------------------------------------
 
-    def _intent(self, who: Who, plan_text: str = "") -> str:
-        return self._pick_title(who.kind, who.key, plan_text)
+    async def _intent(self, who: Who, plan_text: str = "") -> str:
+        return await self._pick_title(who.kind, who.key, plan_text)
 
-    def _pick_title(self, kind: str, key: str, plan_text: str, fallback: str = "") -> str:
+    async def _pick_title(self, kind: str, key: str, plan_text: str, fallback: str = "") -> str:
         """The plan's ``#`` heading, else the job's name, else its intent's first line, cut to a word."""
         heading = plan_title(plan_text)
         if heading:
             return cut_at_word(heading, TITLE_CHARS)
-        state = self._job_state(key) if kind == "bg" else {}
+        state = await asyncio.to_thread(self._job_state, key) if kind == "bg" else {}
         name = str(state.get("name") or "").strip()
         if name and state.get("nameSource") in ("auto", "user") and not name.startswith("claimed "):
             return cut_at_word(name, TITLE_CHARS)
         intent = next((ln.strip() for ln in str(state.get("intent") or "").splitlines() if ln.strip()), "")
         return cut_at_word(intent, TITLE_CHARS) if intent else fallback or f"session {key}"
 
-    def _title_of(self, task: dict) -> str:
+    async def _title_of(self, task: dict) -> str:
         """What an owned card should be called now. A rekeyed task keeps the title it had."""
         rekeyed = "/" in task["key"]
-        return self._pick_title(task["kind"], task["key"], task["plan"],
+        return await self._pick_title(task["kind"], task["key"], task["plan"],
                                 fallback=task["title"] if rekeyed else "")
 
-    def _touch(self, task: dict, who: Who) -> None:
+    async def _touch(self, task: dict, who: Who) -> None:
         if who.session_id and who.session_id != task["session_id"]:
             if task["session_id"]:
-                self.ledger.alias(task["id"], task["session_id"])
-            self.ledger.alias(task["id"], who.session_id)
-            self.ledger.update(task["id"], session_id=who.session_id)
+                await self.db.alias(task["id"], task["session_id"])
+            await self.db.alias(task["id"], who.session_id)
+            await self.db.update(task["id"], session_id=who.session_id)
 
-    def _find(self, who: Who) -> dict | None:
-        task = self.ledger.find(self.node, who.key)
+    async def _find(self, who: Who) -> dict | None:
+        task = await self.db.find(self.node, who.key)
         if task is not None and task["state"] in OPEN:
-            self._touch(task, who)
+            await self._touch(task, who)
             return task
         return None
 
     async def _open(self, who: Who, state: str, *, title: str = "", note_id: str | None = None) -> dict:
         """A task for this session in ``state``, on a card made now unless ``note_id`` names one."""
-        title = title or self._intent(who)
+        title = title or await self._intent(who)
         card = note_id or await self.board.create_card(title, COLUMNS[state])
-        project, scope = config.project_scope(who.cwd)
-        flags = self._job_state(who.key).get("respawnFlags") or [] if who.kind == "bg" else []
-        task, _ = self.ledger.ensure(
+        project, scope = await asyncio.to_thread(config.project_scope, who.cwd)
+        flags = (await asyncio.to_thread(self._job_state, who.key)).get("respawnFlags") or [] if who.kind == "bg" else []
+        task, _ = await self.db.ensure(
             self.node, who.key, who.kind, state=state, pid=who.pid, session_id=who.session_id,
             project=project, scope=scope, model=_flag(flags, "--model"), effort=_flag(flags, "--effort"))
-        self.ledger.update(task["id"], title=title, note_id=card, shown=COLUMNS[state], dirty=1,
-                           owned=int(note_id is None))
-        self.ledger.alias(task["id"], who.session_id)
-        self.ledger.event(task["id"], "created", title)
-        return self.ledger.get(task["id"])
+        await self.db.update(task["id"], title=title, note_id=card, shown=COLUMNS[state], dirty=1,
+                             owned=int(note_id is None))
+        await self.db.alias(task["id"], who.session_id)
+        await self.db.event(task["id"], "created", title)
+        return await self.db.get(task["id"])
 
     async def _task(self, who: Who, state: str) -> dict:
-        return self._find(who) or await self._open(who, state)
+        return await self._find(who) or await self._open(who, state)
 
-    def _record(self, task: dict) -> str:
-        live, removed = self.ledger.todos(task["id"])
-        return render_record(task, live, removed, self.ledger.events(task["id"], "journal"))
+    async def _record(self, task: dict) -> str:
+        live, removed = await self.db.todos(task["id"])
+        return render_record(task, live, removed, await self.db.events(task["id"], "journal"))
 
     async def _write_card(self, task: dict, *, dry_run: bool = False) -> list[str]:
         """Put the record on the board: in an owned card's own body, else in the claimed card's Record child."""
-        html = self._record(task)
+        html = await self._record(task)
         if not task["owned"]:
             if not dry_run:
                 await self.board.write_record(task["note_id"], html)
             return ["rewrite Record child"]
-        title = self._title_of(task)
+        title = await self._title_of(task)
         acts = ["rewrite body"] + ([f"retitle to {title!r}"] if title != task["title"] else [])
         if not dry_run:
             await self.board.write_card(task["note_id"], html, title)
             if title != task["title"]:
-                self.ledger.update(task["id"], title=title)
+                await self.db.update(task["id"], title=title)
         return acts
 
     async def sync(self, task_id: int) -> bool:
         """Bring the board in line with the ledger for one task. False when the board refused."""
-        task = self.ledger.get(task_id)
+        task = await self.db.get(task_id)
         if not task["note_id"]:
             return True
         try:
             if task["state"] == CANCELLED:
-                await self.board.write_ledger(self.node, render_ledger(self.node, self.ledger.closed(self.node)))
-                self.ledger.update(task_id, dirty=0)
+                await self.board.write_ledger(
+                    self.node, render_ledger(self.node, await self.db.closed(self.node)))
+                await self.db.update(task_id, dirty=0)
                 return True
             await self._write_card(task)
             if task["state"] in CLOSED:
                 node_note = await self.board.write_ledger(
-                    self.node, render_ledger(self.node, self.ledger.closed(self.node)))
+                    self.node, render_ledger(self.node, await self.db.closed(self.node)))
                 await self.board.move(task["note_id"], into=node_note)
-                self.ledger.update(task_id, dirty=0, shown=None)
+                await self.db.update(task_id, dirty=0, shown=None)
             else:
                 await self.board.move(task["note_id"], COLUMNS[task["state"]])
-                self.ledger.update(task_id, dirty=0, shown=COLUMNS[task["state"]])
+                await self.db.update(task_id, dirty=0, shown=COLUMNS[task["state"]])
         except BoardError as exc:
             log.warning("reporting: task %s waits for the board: %s", task_id, exc)
             return False
         return True
 
     async def _set(self, task: dict, state: str, event: str, detail: str = "", **fields: Any) -> dict:
-        self.ledger.update(task["id"], state=state, dirty=1, **fields)
-        self.ledger.event(task["id"], event, detail)
+        await self.db.update(task["id"], state=state, dirty=1, **fields)
+        await self.db.event(task["id"], event, detail)
         await self.sync(task["id"])
-        return self._result(task["id"])
+        return await self._result(task["id"])
 
     async def close(self, task: dict, state: str = DONE, **fields: Any) -> None:
-        self.ledger.update(task["id"], dirty=1, **fields)
-        self.ledger.close(task["id"], state)
+        await self.db.update(task["id"], dirty=1, **fields)
+        await self.db.close(task["id"], state)
         await self.sync(task["id"])
 
     # -- hooks ---------------------------------------------------------------
 
     async def hook_plan(self, who: Who, args: dict) -> dict:
         text = str(args.get("plan_text") or "")
-        task = self._find(who)
+        task = await self._find(who)
         if task is None:
-            task = await self._open(who, PLANNED, title=self._intent(who, text))
-        self.ledger.update(task["id"], plan=text, dirty=1)
-        self.ledger.event(task["id"], "plan", str(args.get("plan_path") or ""))
+            task = await self._open(who, PLANNED, title=await self._intent(who, text))
+        await self.db.update(task["id"], plan=text, dirty=1)
+        await self.db.event(task["id"], "plan", str(args.get("plan_path") or ""))
         await self.sync(task["id"])
-        return self._result(task["id"])
+        return await self._result(task["id"])
 
     async def hook_plan_approved(self, who: Who, args: dict) -> dict:
         text = str(args.get("plan_text") or "")
-        task = self._find(who) or await self._open(who, ACTIVE, title=self._intent(who, text))
+        task = await self._find(who) or await self._open(who, ACTIVE, title=await self._intent(who, text))
         return await self._set(task, ACTIVE, "approved", plan=text or task["plan"])
 
     async def hook_todos(self, who: Who, args: dict) -> dict:
         items = args.get("items")
         if not isinstance(items, list):
             raise ValueError("items must be a list")
-        task = self._find(who)
+        task = await self._find(who)
         if task is None:
             return {"ok": True, "tracked": False, "blocked": False}
-        if self.ledger.set_todos(task["id"], [i for i in items if isinstance(i, dict) and "id" in i]):
-            self.ledger.update(task["id"], dirty=1)
+        if await self.db.set_todos(task["id"], [i for i in items if isinstance(i, dict) and "id" in i]):
+            await self.db.update(task["id"], dirty=1)
             await self.sync(task["id"])
-        return self._result(task["id"])
+        return await self._result(task["id"])
 
     async def hook_prompt(self, who: Who, args: dict) -> dict:
         prompt = str(args.get("prompt") or "")
         found = NOTE_URL.search(prompt)
         if found and CLAIM_WORDS.search(prompt):
             return await self._claim(who, found.group(1))
-        task = self._find(who)
+        task = await self._find(who)
         if task is None:
             return {"ok": True, "tracked": False, "blocked": False}
         if task["state"] == BLOCKED:
             return await self._set(task, ACTIVE, "unblocked", reason="", urgent=0)
-        return self._result(task["id"])
+        return await self._result(task["id"])
 
     async def hook_session_clear(self, who: Who, args: dict) -> dict:
         """The conversation was cleared: file the open task under ``<job>/<old session id>``.
@@ -290,13 +298,13 @@ class Tasks:
         The next plan in this job then opens a card of its own. The old task
         closes through the sweep, which no longer finds its key among the jobs.
         """
-        task = self.ledger.find(self.node, who.key)
+        task = await self.db.find(self.node, who.key)
         if task is None or task["state"] not in OPEN:
             return {"ok": True, "tracked": False, "blocked": False}
         old = task["session_id"] or f"task{task['id']}"
-        self.ledger.rekey(task["id"], f"{task['key']}/{old}")
-        self.ledger.event(task["id"], "cleared", old)
-        blocked_marker(old).unlink(missing_ok=True)
+        await self.db.rekey(task["id"], f"{task['key']}/{old}")
+        await self.db.event(task["id"], "cleared", old)
+        await asyncio.to_thread(blocked_marker(old).unlink, missing_ok=True)
         return {"ok": True, "tracked": True, "task": task["id"], "blocked": False}
 
     # -- agent verbs ---------------------------------------------------------
@@ -310,10 +318,10 @@ class Tasks:
         return await self._claim(who, note_id)
 
     async def _claim(self, who: Who, note_id: str) -> dict:
-        task = self._find(who)
+        task = await self._find(who)
         if task is not None and task["note_id"] == note_id:
-            return self._result(task["id"])
-        taken = next((t for t in self.ledger.open(self.node) if t["note_id"] == note_id), None)
+            return await self._result(task["id"])
+        taken = next((t for t in await self.db.open(self.node) if t["note_id"] == note_id), None)
         if taken is not None:
             raise ValueError(f"that task is already claimed here by {taken['key']}")
         await self.board.move(note_id, COLUMNS[PROPOSED])
@@ -322,10 +330,10 @@ class Tasks:
         if task is None:
             task = await self._open(who, PLANNED, title=title, note_id=note_id)
         else:
-            self.ledger.update(task["id"], title=title, note_id=note_id, state=PLANNED, dirty=1, owned=0)
-        self.ledger.event(task["id"], "claimed", note_id)
+            await self.db.update(task["id"], title=title, note_id=note_id, state=PLANNED, dirty=1, owned=0)
+        await self.db.event(task["id"], "claimed", note_id)
         await self.sync(task["id"])
-        return self._result(task["id"])
+        return await self._result(task["id"])
 
     async def request_human(self, who: Who, args: dict) -> dict:
         kind = str(args.get("kind") or "").strip()
@@ -347,11 +355,9 @@ class Tasks:
         out = await self._set(task, BLOCKED, "blocked", reason, reason=reason, urgent=int(urgent),
                               blocked_at=time.time(), reminded=0)
         if who.session_id:
-            marker = blocked_marker(who.session_id)
-            marker.parent.mkdir(parents=True, exist_ok=True)
-            marker.touch()
+            await asyncio.to_thread(_touch_marker, blocked_marker(who.session_id))
         if urgent and not already_urgent:
-            out["notified"] = await self._notify(self.ledger.get(task["id"]), reminder=False)
+            out["notified"] = await self._notify(await self.db.get(task["id"]), reminder=False)
         return out
 
     async def _review(self, who: Who, args: dict) -> dict:
@@ -367,7 +373,7 @@ class Tasks:
         """Bring this node's open cards to the current shape and stamp the Ops notices that lack a time."""
         async with self.lock:
             cards = []
-            for task in self.ledger.open(self.node):
+            for task in await self.db.open(self.node):
                 if not task["note_id"]:
                     continue
                 actions = await self._write_card(task, dry_run=dry_run)
@@ -403,15 +409,15 @@ class Tasks:
         """
         async with self.lock:
             jobs = {r.get("job"): r for r in rows}
-            for task in self.ledger.open(self.node):
+            for task in await self.db.open(self.node):
                 await self._ending(task, jobs.get(task["key"]))
             await self._board()
             await self._catch_up()
-            for task in self.ledger.open(self.node):
+            for task in await self.db.open(self.node):
                 if (task["state"] == BLOCKED and task["urgent"] and not task["reminded"]
                         and time.time() - (task["blocked_at"] or 0) >= config.remind_s()
                         and await self._notify(task, reminder=True)):
-                    self.ledger.update(task["id"], reminded=1)
+                    await self.db.update(task["id"], reminded=1)
 
     async def _ending(self, task: dict, row: dict | None) -> None:
         if task["kind"] == "bg":
@@ -423,15 +429,15 @@ class Tasks:
             state = row.get("state") if row else None
             if state == "gone":
                 if not task["ended"]:
-                    self.ledger.update(task["id"], ended=1, dirty=1)
-                    self.ledger.event(task["id"], "ended", "the session died without a stop")
+                    await self.db.update(task["id"], ended=1, dirty=1)
+                    await self.db.event(task["id"], "ended", "the session died without a stop")
                 return
             if state not in (None, "stopped"):
                 if task["ended"]:
-                    self.ledger.update(task["id"], ended=0, dirty=1)
-                    self.ledger.event(task["id"], "resumed")
+                    await self.db.update(task["id"], ended=0, dirty=1)
+                    await self.db.event(task["id"], "resumed")
                 return
-        elif self._alive(task["pid"], task["key"].split(":", 1)[1]):
+        elif await asyncio.to_thread(self._alive, task["pid"], task["key"].split(":", 1)[1]):
             return
         await self.close(task)
 
@@ -442,7 +448,7 @@ class Tasks:
             log.warning("reporting: cannot read the Swarm board: %s", exc)
             snap = None
         state_of = {name: state for state, name in COLUMNS.items()}
-        for task in self.ledger.open(self.node):
+        for task in await self.db.open(self.node):
             column = snap.get(task["note_id"]) if snap is not None else None
             if column is not None:
                 self._unseen.discard(task["id"])
@@ -451,14 +457,14 @@ class Tasks:
                     self._unseen.add(task["id"])  # one sweep can read mid-drag; cancel on the second
                 elif column is None:
                     self._unseen.discard(task["id"])
-                    self.ledger.update(task["id"], dirty=1)
-                    self.ledger.close(task["id"], CANCELLED)
+                    await self.db.update(task["id"], dirty=1)
+                    await self.db.close(task["id"], CANCELLED)
                 else:
-                    self.ledger.event(task["id"], "dragged", f"{task['shown']} -> {column}")
-                    self.ledger.update(task["id"], state=state_of[column], shown=column, dirty=1)
-            if self.ledger.get(task["id"])["dirty"]:
+                    await self.db.event(task["id"], "dragged", f"{task['shown']} -> {column}")
+                    await self.db.update(task["id"], state=state_of[column], shown=column, dirty=1)
+            if (await self.db.get(task["id"]))["dirty"]:
                 await self.sync(task["id"])
-        for task in self.ledger.closed(self.node):
+        for task in await self.db.closed(self.node):
             if task["dirty"]:
                 await self.sync(task["id"])
 
@@ -483,12 +489,12 @@ class Tasks:
             return
         meta = post.get("meta") if isinstance(post.get("meta"), dict) else {}
         title = str(meta.get("title") or "").strip()
-        for task in self.ledger.open(self.node):
+        for task in await self.db.open(self.node):
             if ((task["project"], task["scope"]) == (post.get("project"), post.get("scope"))
                     and _posted_at(post) >= task["started"]
-                    and self.ledger.event(task["id"], "journal", f"{title}\n\n{body}" if title else body,
-                                          ref=str(post["id"]))):
-                self.ledger.update(task["id"], dirty=1)
+                    and await self.db.event(task["id"], "journal", f"{title}\n\n{body}" if title else body,
+                                            ref=str(post["id"]))):
+                await self.db.update(task["id"], dirty=1)
                 await self.sync(task["id"])
 
     async def _catch_up(self) -> None:
@@ -496,7 +502,7 @@ class Tasks:
         if time.time() - self._caught_up < config.catchup_interval_s():
             return
         self._caught_up = time.time()
-        for project, scope in {(t["project"], t["scope"]) for t in self.ledger.open(self.node)
+        for project, scope in {(t["project"], t["scope"]) for t in await self.db.open(self.node)
                                if t["project"] and t["scope"]}:
             try:
                 reply = await self._fetch(JOURNAL_SERVICE, JOURNAL_FETCH, {
