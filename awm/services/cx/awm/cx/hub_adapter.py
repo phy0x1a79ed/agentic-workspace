@@ -78,7 +78,10 @@ API_MANIFEST: dict[str, Any] = {
                 {"name": "permission", "type": "string",
                  "description": "A permission mode (plan, acceptEdits, auto, "
                                 "manual, dontAsk, bypassPermissions). Omitted "
-                                "means skip-permissions."},
+                                "means skip-permissions. The session starts in "
+                                "this mode and can always switch to bypass, so "
+                                "a plan-mode start runs in bypass once its plan "
+                                "is approved."},
                 {"name": "mode", "type": "string",
                  "description": "A label recorded with the session, which a "
                                 "gateway gate can key on. Defaults to worker."},

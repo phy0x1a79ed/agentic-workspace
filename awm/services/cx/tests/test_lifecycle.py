@@ -226,17 +226,30 @@ def test_arguments_override_the_defaults_in_equals_form(home, launched):
            "remote_control": True})
     call = launched[0]
     assert call["name"] == "worker one"
-    assert call["flags"] == ["--permission-mode=plan", "--disallowedTools=Write,Edit",
+    assert call["flags"] == ["--permission-mode=plan", "--allow-dangerously-skip-permissions",
+                             "--disallowedTools=Write,Edit",
                              "--remote-control=worker-one", "--effort=high",
                              "--model=opus"]
+
+
+@pytest.mark.parametrize("permission, head", [
+    (None, ["--dangerously-skip-permissions", "--allow-dangerously-skip-permissions"]),
+    ("plan", ["--permission-mode=plan", "--allow-dangerously-skip-permissions"]),
+    ("dontAsk", ["--permission-mode=dontAsk", "--allow-dangerously-skip-permissions"]),
+    ("bypassPermissions", ["--permission-mode=bypassPermissions",
+                           "--allow-dangerously-skip-permissions"]),
+])
+def test_bypass_stays_in_the_mode_cycle_for_every_start(home, launched, permission, head):
+    start({**BASE, **({"permission": permission} if permission else {})})
+    assert launched[0]["flags"][:2] == head
 
 
 def test_allowed_tools_become_one_equals_form_flag(home, launched):
     start({**BASE, "permission": "dontAsk", "disallowed_tools": ["Bash"],
            "allowed_tools": ["mcp__awm__*", "SendMessage"], "remote_control": "rc1"})
     flags = launched[0]["flags"]
-    assert flags == ["--permission-mode=dontAsk", "--disallowedTools=Bash",
-                     "--allowedTools=mcp__awm__*,SendMessage", "--remote-control=rc1",
+    assert flags == ["--permission-mode=dontAsk", "--allow-dangerously-skip-permissions",
+                     "--disallowedTools=Bash", "--allowedTools=mcp__awm__*,SendMessage", "--remote-control=rc1",
                      "--effort=high", "--model=opus"]
     assert "--allowedTools" not in flags
 

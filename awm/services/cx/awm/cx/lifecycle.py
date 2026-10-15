@@ -326,10 +326,17 @@ def build_flags(spec: dict[str, Any]) -> list[str]:
     The `=` form keeps a value that starts with `-` from being read as a flag.
     The model is a flag, not `ANTHROPIC_MODEL`: the flag wins where the two
     disagree, and it is the only per-session setting that is stated in the
-    session's own launch record.
+    session's own launch record. A named mode still keeps bypass in the mode
+    cycle, so a plan-mode start returns to bypass on approval. `--restricted`
+    refuses bypass, so a restricted start names its mode alone.
     """
-    flags = ([f"--permission-mode={spec['permission']}"] if spec["permission"]
-             else config.skip_permission_flags())
+    if not spec["permission"]:
+        flags = config.skip_permission_flags()
+    elif spec["restricted"]:
+        flags = [f"--permission-mode={spec['permission']}"]
+    else:
+        flags = [f"--permission-mode={spec['permission']}",
+                 "--allow-dangerously-skip-permissions"]
     if spec["restricted"]:
         flags.append("--restricted")
         settings = config.restricted_settings()
