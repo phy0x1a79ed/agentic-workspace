@@ -122,7 +122,9 @@ def test_the_representative_instructions_carry_the_rules():
                    "complex", "ambiguous", "reply_to", "operations board_complete", "operations board_fail",
                    "compact", "nonce", "Judge whether your own swarm would do this work",
                    "fail the card with a reason", "must not answer it unless it asks a question",
-                   "never claim, complete or post", "Pass no permission, tools, mode"):
+                   "never claim, complete or post", "Pass no permission, tools, mode",
+                   "operations board_messages", "operations board_message_post", "also pass job",
+                   "thread_open", "New message on board card"):
         assert needle in text, needle
     assert "every 10 cards" in text
     assert "${" not in text
@@ -156,8 +158,12 @@ def test_every_allowed_verb_in_the_instructions_is_on_the_allowlist():
     rep = {f"{d}.{v}" for d, v in modes.MODES[modes.REPRESENTATIVE].pairs}
     for verb in ("operations.queue_list", "operations.queue_get", "operations.queue_assign",
                  "reflection.start_other", "reflection.list_other", "operations.board_fail",
-                 "reflection.compact", "scope.search"):
+                 "reflection.compact", "scope.search", "operations.board_messages"):
         assert verb in rep
+    delegate = {f"{d}.{v}" for d, v in modes.MODES[modes.DELEGATE].pairs}
+    for verb in ("operations.board_messages", "operations.board_message_post",
+                 "operations.board_complete", "operations.board_fail"):
+        assert verb in delegate
     sec = {f"{d}.{v}" for d, v in modes.MODES[modes.SECRETARY].pairs}
     for verb in ("reflection.start_other", "reflection.list_other", "reflection.stop_other",
                  "operations.status", "operations.queue_list", "operations.queue_get",
