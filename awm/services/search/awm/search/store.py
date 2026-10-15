@@ -26,7 +26,7 @@ from awm.persistence.databases import get_connection, init_service_db
 from awm.search import passages as cutter
 
 SERVICE = "search"
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 CORPUS = "doc"
 
 _SOURCES = """\
@@ -96,9 +96,28 @@ CREATE TRIGGER IF NOT EXISTS passages_words_ad AFTER DELETE ON passages BEGIN
 END;
 """
 
-SCHEMA_SQL = _SOURCES + "\n".join(_DOCUMENTS) + _TEXT_INDEXES + engine.EMBEDDINGS_DDL
+VERDICTS = ("relevant", "irrelevant")
+SECTIONS = ("exact", "related", "graph")
 
-MIGRATIONS = {(1, 2): "\n".join([
+_JUDGEMENTS = """
+CREATE TABLE IF NOT EXISTS judgements (
+    query       TEXT NOT NULL,
+    source      TEXT NOT NULL,
+    doc_id      TEXT NOT NULL,
+    verdict     TEXT NOT NULL CHECK (verdict IN ('relevant', 'irrelevant')),
+    section     TEXT NOT NULL DEFAULT '',  -- the section a relevant hit must answer in; '' for any
+    collection  TEXT NOT NULL DEFAULT '',  -- the set it was seeded from, or '' for a mark by hand
+    note        TEXT NOT NULL DEFAULT '',
+    judge       TEXT NOT NULL DEFAULT '',  -- the caller who recorded it
+    ts          REAL NOT NULL,
+    PRIMARY KEY (query, source, doc_id)
+);
+CREATE INDEX IF NOT EXISTS idx_judgements_collection ON judgements(collection);
+"""
+
+SCHEMA_SQL = _SOURCES + "\n".join(_DOCUMENTS) + _TEXT_INDEXES + _JUDGEMENTS + engine.EMBEDDINGS_DDL
+
+MIGRATIONS = {(2, 3): _JUDGEMENTS, (1, 2): "\n".join([
     "ALTER TABLE documents RENAME TO documents_v1;",
     "DROP INDEX IF EXISTS idx_documents_source;",
     "DROP INDEX IF EXISTS idx_documents_filter;",
@@ -296,3 +315,32 @@ def drop_documents(conn: sqlite3.Connection, source: str, doc_ids: Iterable[str]
 def get_document(conn: sqlite3.Connection, source: str, doc_id: str) -> dict[str, Any] | None:
     row = conn.execute("SELECT * FROM documents WHERE key=?", (key_of(source, doc_id),)).fetchone()
     return dict(row) if row else None
+
+
+def judge(conn: sqlite3.Connection, row: dict[str, Any]) -> dict[str, Any]:
+    """Record a verdict on one hit for one query, replacing any earlier verdict on the same pair."""
+    row = {"section": "", "collection": "", "note": "", "judge": "", "ts": time.time(), **row}
+    conn.execute(
+        "INSERT INTO judgements (query, source, doc_id, verdict, section, collection, note, judge, ts)"
+        " VALUES (:query, :source, :doc_id, :verdict, :section, :collection, :note, :judge, :ts)"
+        " ON CONFLICT (query, source, doc_id) DO UPDATE SET verdict=excluded.verdict,"
+        " section=excluded.section, collection=excluded.collection, note=excluded.note,"
+        " judge=excluded.judge, ts=excluded.ts", row)
+    conn.commit()
+    return row
+
+
+def unjudge(conn: sqlite3.Connection, query: str, source: str, doc_id: str) -> int:
+    gone = conn.execute("DELETE FROM judgements WHERE query=? AND source=? AND doc_id=?",
+                        (query, source, doc_id)).rowcount
+    conn.commit()
+    return gone
+
+
+def judgements(conn: sqlite3.Connection, collection: str = "", query: str = "") -> list[dict[str, Any]]:
+    sql, params = "SELECT * FROM judgements WHERE 1=1", []
+    if collection:
+        sql, params = sql + " AND collection=?", [*params, collection]
+    if query:
+        sql, params = sql + " AND query=?", [*params, query]
+    return [dict(r) for r in conn.execute(sql + " ORDER BY collection, query, source, doc_id", params)]

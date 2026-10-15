@@ -174,7 +174,7 @@ async def test_a_peer_on_an_older_release_answers_in_related(loaded, peers):
 # -- schema 2 --------------------------------------------------------------
 
 
-def test_a_version_1_database_moves_to_schema_2(tmp_path, monkeypatch):
+def test_a_version_1_database_moves_to_the_current_schema(tmp_path, monkeypatch):
     services_dir = tmp_path / "services"
     (services_dir / "search").mkdir(parents=True)
     import awm.persistence.databases as pdbs
@@ -201,7 +201,8 @@ def test_a_version_1_database_moves_to_schema_2(tmp_path, monkeypatch):
     store.init()
     conn = store.connect()
     try:
-        assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == 2
+        assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == store.SCHEMA_VERSION
+        assert conn.execute("SELECT count(*) FROM judgements").fetchone()[0] == 0
         hit = conn.execute("SELECT d.doc_id FROM documents_exact JOIN documents d ON d.rid = documents_exact.rowid"
                            " WHERE documents_exact MATCH '\"c0ffee42\"'").fetchall()
         assert [r[0] for r in hit] == ["j1"]

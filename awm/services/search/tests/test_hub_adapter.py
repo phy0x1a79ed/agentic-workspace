@@ -27,7 +27,7 @@ def test_reindex_is_hidden_and_closed_to_peers():
 
 
 def test_every_verb_is_published_under_the_search_tool_and_wired():
-    assert set(HANDLERS) == set(FNS) == {"query", "get", "sources", "status", "reindex"}
+    assert set(HANDLERS) == set(FNS) == {"query", "get", "sources", "status", "reindex", "judge", "judgements"}
     for name, fn in FNS.items():
         assert fn["tool"] == f"search_{name}"
 
@@ -40,6 +40,36 @@ def test_the_query_verb_declares_every_key_it_reads_and_every_key_it_sends_a_pee
     sent = parse(full).forwarded()
     assert set(sent) <= declared
     assert {"query", "limit", "peers"} <= set(sent)
+
+
+def test_the_judgement_verbs_are_closed_to_peers():
+    for name in ("judge", "judgements"):
+        assert "category" not in FNS[name], name
+    assert FNS["judgements"]["surfaces"] == ["cli", "http"]
+
+
+async def test_a_verdict_is_recorded_replaced_and_cleared(search_db):
+    mark = {"query": "kitchen sink", "source": "journals", "id": "j1", "verdict": "relevant",
+            "section": "exact", "set": "gold"}
+    await HANDLERS["judge"](mark, "scope:awm/svc-kb")
+    await HANDLERS["judge"]({**mark, "verdict": "irrelevant", "section": ""}, "tony")
+    await HANDLERS["judge"]({**mark, "id": "j2"})
+    rows = (await HANDLERS["judgements"]({"set": "gold"}))["judgements"]
+    assert [(r["doc_id"], r["verdict"], r["section"], r["judge"]) for r in rows] == \
+        [("j1", "irrelevant", "", "tony"), ("j2", "relevant", "exact", "")]
+    assert (await HANDLERS["judge"]({**mark, "verdict": "clear"}))["cleared"] == 1
+    assert [r["doc_id"] for r in (await HANDLERS["judgements"]({}))["judgements"]] == ["j2"]
+    assert (await HANDLERS["judgements"]({"set": "t5"}))["judgements"] == []
+
+
+async def test_a_bad_verdict_or_section_is_refused(search_db):
+    mark = {"query": "q", "source": "journals", "id": "j1", "verdict": "relevant"}
+    with pytest.raises(ValueError, match="verdict"):
+        await HANDLERS["judge"]({**mark, "verdict": "maybe"})
+    with pytest.raises(ValueError, match="section"):
+        await HANDLERS["judge"]({**mark, "section": "abstract"})
+    with pytest.raises(ValueError, match="needs"):
+        await HANDLERS["judge"]({**mark, "id": ""})
 
 
 def test_the_grants_the_gateway_injects_are_not_a_declared_argument():
