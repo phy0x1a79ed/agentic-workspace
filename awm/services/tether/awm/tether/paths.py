@@ -13,22 +13,52 @@ from pathlib import Path
 
 from awm.config import AWM_DIR
 
-#: This service's folder — the one holding run.sh, install.sh and rust/.
+#: This service's folder — the one holding run.sh, install.sh and RELEASE.
 SERVICE_DIR = Path(__file__).resolve().parents[2]
 
-#: Where the built binaries are looked for. Overridable because the public host
-#: has no toolchain: it receives artifacts into its own state directory rather
-#: than having a cargo target tree inside the checkout, which a deploy's clean
-#: of untracked files would delete.
-BIN_DIR = Path(os.environ.get("AWM_TETHER_BIN")
-               or SERVICE_DIR / "rust" / "target" / "release")
-
-#: Per-host state: the daemon's control socket, its log, the build stamp.
+#: Per-host state: the fetched binaries, the daemon's control socket, its log.
 STATE_DIR = AWM_DIR / "services" / "tether"
+
+#: Where this host's binaries live. fetch-release.sh pulls the pinned release
+#: into STATE_DIR/bin on start, outside the checkout a deploy's clean of
+#: untracked files would wipe. AWM_TETHER_BIN overrides it for a developer who
+#: points it at a tether checkout's cargo target dir.
+BIN_DIR = Path(os.environ.get("AWM_TETHER_BIN") or STATE_DIR / "bin")
 
 OPERATOR_BIN = BIN_DIR / "tether-operator"
 RELAY_BIN = BIN_DIR / "tether-relay"
 OWNER_BIN = BIN_DIR / "tether"
+
+#: The release this host is pinned to, versioned with the adapter, and the one
+#: it has actually fetched. fetch-release.sh writes VERSION_FILE last, so a
+#: VERSION that lags RELEASE means the most recent fetch did not complete.
+RELEASE_FILE = SERVICE_DIR / "RELEASE"
+VERSION_FILE = BIN_DIR / "VERSION"
+
+#: What fetch-release.sh wrote about its last run, surfaced in `status` so a
+#: failed fetch is a line on the screen rather than a silently stale binary.
+FETCH_LOG = STATE_DIR / "fetch.log"
+
+#: Set when a developer points BIN_DIR at their own build; the fetch then does
+#: nothing and `status` says the version came from an override, not a release.
+BIN_OVERRIDE = os.environ.get("AWM_TETHER_BIN") or None
+
+
+def _read(path: Path) -> str | None:
+    try:
+        return path.read_text().strip() or None
+    except OSError:
+        return None
+
+
+def pinned_release() -> str | None:
+    """The tag RELEASE pins, versioned with this adapter."""
+    return _read(RELEASE_FILE)
+
+
+def installed_release() -> str | None:
+    """The tag fetch-release.sh last stamped into BIN_DIR, if any."""
+    return _read(VERSION_FILE)
 
 #: The operator daemon's control socket. Local, unauthenticated, and reachable
 #: only by this user: the adapter is the only thing that speaks to it, and a

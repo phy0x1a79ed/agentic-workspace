@@ -105,9 +105,9 @@ class Child:
         binary = paths.role_binary()
         if not binary.is_file():
             self._error = (
-                f"{binary} is not built on this host; run "
-                f"awm/services/tether/install.sh where there is a toolchain, "
-                f"or ship it here with ship-binaries.sh"
+                f"{binary} is not present on this host; fetch-release.sh pulls "
+                f"the binary pinned in RELEASE into {paths.BIN_DIR} on start, so "
+                f"this usually means that fetch failed — see the service log"
             )
             return self.snapshot() | {"action": "not-built"}
 
