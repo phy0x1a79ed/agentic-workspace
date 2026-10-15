@@ -17,7 +17,7 @@ import logging
 import time
 from typing import Awaitable, Callable
 
-from awm.reporting.store import Queue
+from awm.reporting.store import Offloaded, Queue
 
 log = logging.getLogger("awm.reporting.notify")
 
@@ -53,6 +53,7 @@ class Notifier:
                  batch_s: float = 5.0, retry_s: float = 30.0,
                  reannounce_s: float | None = None) -> None:
         self.queue = queue
+        self.db = Offloaded(queue)
         self._find_job = find_job
         self._send = send
         self._batch_s = batch_s
@@ -68,7 +69,7 @@ class Notifier:
 
     async def flush(self) -> bool:
         """Send one line for every card not yet announced. True if nothing is left to send."""
-        pending = self.queue.unannounced(self._reannounce_s)
+        pending = await self.db.unannounced(self._reannounce_s)
         if not pending:
             return True
         job = await self._find_job()
@@ -83,7 +84,7 @@ class Notifier:
         except Exception as exc:  # noqa: BLE001 — a closed PTY or a modal is a retry, not a crash
             self._note(f"could not wake {job}: {exc}")
             return False
-        self.queue.mark_announced([c for c, _, _ in pending])
+        await self.db.mark_announced([c for c, _, _ in pending])
         self.last_sent = text
         log.info("reporting: woke the representative (%s): %s", job, text)
         return True

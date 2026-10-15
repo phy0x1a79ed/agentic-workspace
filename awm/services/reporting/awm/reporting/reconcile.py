@@ -40,6 +40,7 @@ import asyncio
 import fcntl
 import hashlib
 import importlib
+import inspect
 import json
 import logging
 import os
@@ -50,7 +51,7 @@ from awm import gatewayclient
 
 from awm.reporting import config, sessions
 from awm.reporting.pins import Pins
-from awm.reporting.store import Queue
+from awm.reporting.store import Offloaded, Queue
 
 log = logging.getLogger("awm.reporting.reconcile")
 
@@ -81,11 +82,12 @@ def _mid_turn(row: dict) -> bool:
 class Loop:
     def __init__(self, queue: Queue, cx: Any = None, personas: Any = None,
                  interval_s: float | None = None,
-                 on_started: Callable[[str], None] | None = None,
+                 on_started: Callable[[str], Awaitable[None] | None] | None = None,
                  on_rows: Callable[[list[dict]], Awaitable[None]] | None = None,
                  scope_call: Callable[..., Any] | None = None,
                  pins: Any = None) -> None:
         self.queue = queue
+        self.db = Offloaded(queue)
         self.cx = cx or sessions.Cx()
         self._on_started = on_started or (lambda role: None)
         self._on_rows = on_rows
@@ -134,7 +136,7 @@ class Loop:
             return None
         try:
             return sessions.find_job(await self.cx.list(), spec["mode"],
-                                     self.queue.session_jobs("representative"))
+                                     await self.db.session_jobs("representative"))
         except sessions.CxUnavailable:
             return None
 
@@ -151,7 +153,7 @@ class Loop:
             if spec is None:
                 out[role] = {"alive": None, "state": "unknown", "reason": "no launch config", "job": None}
                 continue
-            out[role] = sessions.assess(rows, spec["mode"], self.queue.session_jobs(role)).as_dict()
+            out[role] = sessions.assess(rows, spec["mode"], await self.db.session_jobs(role)).as_dict()
         return out
 
     async def alive(self) -> dict[str, bool | None]:
@@ -165,7 +167,7 @@ class Loop:
         if why is not None:
             self._note("refused", f"not reconciling: {why}")
             return
-        if not self._take_lock():
+        if not await asyncio.to_thread(self._take_lock):
             return
         door = config.refusal() is None
         if door:
@@ -197,7 +199,7 @@ class Loop:
         if where is None:
             return
         project, scope = where()
-        if (config.projects_dir() / project / scope).is_dir():
+        if await asyncio.to_thread((config.projects_dir() / project / scope).is_dir):
             return
         try:
             await self._scope_call("scopes", "scope_create",
@@ -205,7 +207,7 @@ class Loop:
         except Exception as exc:  # noqa: BLE001 — the roles still need their sessions
             self._note("workscope", f"could not create the work scope {project}/{scope}: {exc}")
             return
-        if (config.projects_dir() / project / scope).is_dir():
+        if await asyncio.to_thread((config.projects_dir() / project / scope).is_dir):
             log.info("reporting: created the work scope %s/%s", project, scope)
         else:
             self._note("workscope", f"scope_create answered but {project}/{scope} has no worktree")
@@ -218,23 +220,23 @@ class Loop:
         if problem:
             self._note(f"spec:{role}", f"{role}: {problem}")
             return
-        jobs = self.queue.session_jobs(role)
+        jobs = await self.db.session_jobs(role)
         adopted = await self._adopt(role, spec, rows, jobs)
         if adopted:
-            jobs = self.queue.session_jobs(role)
+            jobs = await self.db.session_jobs(role)
         for stranger in sessions.strangers(rows, spec["mode"], jobs):
             self._note(f"stranger:{stranger.get('job')}",
                        f"{role}: session {stranger.get('job')} carries mode {spec['mode']!r} "
                        "but the door did not start it; ignoring it")
         have = sessions.holders(rows, spec["mode"], jobs)
         health = sessions.assess(rows, spec["mode"], jobs)
-        self._report(role, health)
+        await self._report(role, health)
         stopped: str | None = None
         if have:
             if len(have) > 1:
                 self._note(f"dup:{role}", f"{role}: {len(have)} live sessions carry mode "
                            f"{spec['mode']!r}; the door leaves them alone")
-            if health.alive and self._outdated(role, spec, health.job, rows):
+            if health.alive and await self._outdated(role, spec, health.job, rows):
                 stopped = await self._stop_failed(role, health, "its launch config is outdated")
             if stopped is None:
                 if not health.restartable:
@@ -262,11 +264,11 @@ class Loop:
                 self._next_try.pop(role, None)
             self.jobs[role] = reply.get("job") or ""
             if reply.get("job"):
-                self.queue.record_session(role, reply["job"], spec_hash(spec))
+                await self.db.record_session(role, reply["job"], spec_hash(spec))
                 await self._pins.pin(reply["job"])
             await self._retire(role, rows, reply.get("job"), stopped)
             log.info("reporting: started the %s as %s", role, reply.get("job"))
-            self._on_started(role)
+            await self._started(role)
             return
         failures = self._failures[role] = self._failures.get(role, 0) + 1
         wait = min(MAX_RETRY_S, max(MIN_RETRY_S, (self._interval_s or config.reconcile_interval_s()))
@@ -281,13 +283,14 @@ class Loop:
         `claude stop` leaves a job that cx no longer lists, so absence counts as not live.
         """
         live = {r.get("job") for r in rows if r.get("state") not in (sessions.GONE, sessions.STOPPED)}
-        old = {job for job in self.queue.session_jobs(role) - live if self._pins.known(job)}
+        recorded = await self.db.session_jobs(role)
+        old = {job for job in recorded - live if await asyncio.to_thread(self._pins.known, job)}
         for job in (old | {stopped}) - {new, None}:
             await self._pins.release(job)
 
-    def _outdated(self, role: str, spec: dict, job: str | None, rows: list[dict]) -> bool:
+    async def _outdated(self, role: str, spec: dict, job: str | None, rows: list[dict]) -> bool:
         """Whether ``job`` started from another launch config and sits between turns."""
-        if not job or self.queue.session_spec_hash(role, job) == spec_hash(spec):
+        if not job or await self.db.session_spec_hash(role, job) == spec_hash(spec):
             return False
         row = next((r for r in rows if r.get("job") == job), {})
         if _mid_turn(row):
@@ -328,7 +331,12 @@ class Loop:
             self._restarts.pop(role, None)
             self._restarted_at.pop(role, None)
 
-    def _report(self, role: str, health: sessions.Health) -> None:
+    async def _started(self, role: str) -> None:
+        result = self._on_started(role)
+        if inspect.isawaitable(result):
+            await result
+
+    async def _report(self, role: str, health: sessions.Health) -> None:
         """Log a session that cannot work once per change of state, and wake the role on recovery."""
         seen = (health.job, health.state, health.reason)
         before = self._seen.get(role)
@@ -340,7 +348,7 @@ class Loop:
                         health.reason or "no reason given")
         elif health.alive and before is not None and before[1] in (sessions.BLOCKED, sessions.FAILED):
             log.info("reporting: the %s (%s) can work again", role, health.job)
-            self._on_started(role)
+            await self._started(role)
 
     async def _adopt(self, role: str, spec: dict, rows: list[dict], jobs: set[str]) -> bool:
         """Record a session of this role that the door started but never recorded.
@@ -355,12 +363,12 @@ class Loop:
         for row in sessions.strangers(rows, spec["mode"], jobs):
             if (row.get("name") == spec.get("name") and row.get("job")
                     and row.get("caller") is not None and row.get("parent") is None):
-                self.queue.record_session(role, row["job"], spec_hash(spec))
+                await self.db.record_session(role, row["job"], spec_hash(spec))
                 await self._pins.pin(row["job"])
                 log.info("reporting: adopted %s as the %s; its start outlived the call", row["job"], role)
                 found = True
         if found:
-            self._on_started(role)
+            await self._started(role)
         return found
 
     @staticmethod

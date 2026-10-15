@@ -328,9 +328,9 @@ class Runtime:
     async def _find_representative(self) -> str | None:
         return await self.loop.representative_job()
 
-    def _started(self, role: str) -> None:
+    async def _started(self, role: str) -> None:
         if role == "representative":
-            self.queue.reset_announced()
+            await asyncio.to_thread(self.queue.reset_announced)
             self.notifier.poke()
 
     def spawn(self) -> None:
@@ -378,8 +378,8 @@ async def status(args: dict, as_: str | None = None) -> dict:
         out["tasks"] = await asyncio.to_thread(_task_state, RUNTIME)
     if why is not None or RUNTIME is None:
         return out
-    out["cursor"] = RUNTIME.queue.cursor()
-    out["counts"] = RUNTIME.queue.counts()
+    out["cursor"] = await asyncio.to_thread(RUNTIME.queue.cursor)
+    out["counts"] = await asyncio.to_thread(RUNTIME.queue.counts)
     health = await RUNTIME.loop.health()
     out["sessions"] = health
     out["representative_alive"] = health["representative"]["alive"]
@@ -424,7 +424,8 @@ async def list_cards(args: dict, as_: str | None = None) -> dict:
     except (TypeError, ValueError):
         return {"ok": False, "error": "limit must be a whole number"}
     cards = await asyncio.to_thread(RUNTIME.queue.list, wanted, limit)
-    return {"ok": True, "cards": [_brief(c) for c in cards], "counts": RUNTIME.queue.counts()}
+    counts = await asyncio.to_thread(RUNTIME.queue.counts)
+    return {"ok": True, "cards": [_brief(c) for c in cards], "counts": counts}
 
 
 async def get(args: dict, as_: str | None = None) -> dict:
@@ -548,18 +549,19 @@ HANDLERS: dict[str, Any] = {
 # -- startup -----------------------------------------------------------------
 
 
-def _on_start() -> None:
+async def _on_start() -> None:
     """Open the ledger and spawn the tasks, unless this node is a station.
 
-    Returns ``None`` on purpose: the adapter awaits an awaitable ``on_start``,
-    and a loop that never finishes would hold every call behind it.
+    The adapter runs this on the event loop that answers the gateway's
+    keepalive pings, so the database opens on a thread. It returns once the
+    tasks are spawned: a loop that never finishes would hold every call behind it.
     """
     global RUNTIME
     why = config.task_refusal()
     if why is not None:
         log.warning("reporting: not running — %s", why)
         return
-    RUNTIME = Runtime()
+    RUNTIME = await asyncio.to_thread(Runtime)
     RUNTIME.spawn()
     log.info("reporting: running for swarm %s (front door %s)", config.swarm(),
              "on" if RUNTIME.door else "off")
