@@ -255,6 +255,7 @@ class Board:
             "agent": labels.get("cardAgent") or None,
             "project": labels.get("project") or None,
             "owner": labels.get("owner") or None,
+            "note_id": rec.get("note_id"),
             "created_at": labels.get("cardCreated") or "",
             "updated_at": labels.get("cardUpdated") or "",
             "last_message": _seq(labels.get(LAST_MESSAGE)),

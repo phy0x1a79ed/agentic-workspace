@@ -30,7 +30,7 @@ def test_post_makes_a_card_note_with_the_contract_shape(board, trilium, board_no
     card = request(board, tony, priority="urgent")
     assert set(card) == {"id", "kind", "sender", "recipient", "claimant", "priority",
                          "status", "state", "title", "body", "reply_to", "result",
-                         "agent", "project", "owner",
+                         "agent", "project", "owner", "note_id",
                          "created_at", "updated_at", "last_message"}
     assert card["last_message"] == 0
     assert card["sender"] == {"swarm": "tony", "principal": "agent", "party": tony["party_id"]}
