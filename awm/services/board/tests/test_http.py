@@ -254,8 +254,8 @@ async def test_status_reject_and_events_have_routes_and_hide_refusals_as_404(doo
         assert (await alpha.post(f"{path}/status", json={"state": "done"})).status_code == 404
         assert (await gamma.post(f"{path}/status", json={"state": "done"})).status_code == 404
         assert (await beta.post(f"{path}/status", content=b"nope")).status_code == 400
-        rejected = await beta.post(f"{path}/reject", json={"reason": "no", "agent": "w"})
-        assert rejected.json()["message"] == {"body": "no", "agent": "w"}
+        rejected = await beta.post(f"{path}/reject", json={"reason": "no", "agent": "w", "node": "n"})
+        assert rejected.json()["message"] == {"body": "no", "agent": "w", "node": "n"}
         assert (await alpha.post(f"{path}/reject", json={"reason": "no"})).status_code == 404
         assert (await beta.post(f"{path}/reject", json={"reason": " "})).status_code == 400
         history = await alpha.get(f"{path}/events")
@@ -274,7 +274,9 @@ async def test_a_claim_without_a_body_is_a_claim_that_names_no_agent(door):
 
 async def test_post_and_message_carry_the_project_and_agent_to_the_board(door):
     async with door.client(door.tokens["alpha"]) as alpha:
-        card = (await alpha.post("/board/cards", json={**CARD, "project": "factorio", "agent": "w"})).json()
-        assert (card["project"], card["agent"]) == ("factorio", "w")
-        sent = await alpha.post(f"/board/cards/{card['id']}/messages", json={"body": "hi", "agent": "w"})
-        assert sent.json()["agent"] == "w"
+        card = (await alpha.post("/board/cards", json={**CARD, "project": "factorio", "agent": "w",
+                                                         "node": "n"})).json()
+        assert (card["project"], card["agent"], card["node"]) == ("factorio", "w", "n")
+        sent = await alpha.post(f"/board/cards/{card['id']}/messages", json={"body": "hi", "agent": "w",
+                                                                         "node": "n"})
+        assert (sent.json()["agent"], sent.json()["node"]) == ("w", "n")

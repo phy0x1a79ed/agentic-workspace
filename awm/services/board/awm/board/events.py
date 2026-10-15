@@ -72,6 +72,7 @@ CREATE TABLE IF NOT EXISTS messages (
     body      TEXT NOT NULL,
     note_id   TEXT,
     agent     TEXT,
+    node      TEXT,
     PRIMARY KEY (card_id, seq)
 );
 CREATE UNIQUE INDEX IF NOT EXISTS messages_note ON messages (note_id);
@@ -100,9 +101,10 @@ _MIGRATIONS = {
              "ALTER TABLE last_seen ADD COLUMN claimant TEXT;\n" + _INDEXES),
     (2, 3): _MESSAGES_V3,
     (3, 4): "ALTER TABLE messages ADD COLUMN agent TEXT;\n" + _FOLDED,
+    (4, 5): "ALTER TABLE messages ADD COLUMN node TEXT;",
 }
 
-_MESSAGE_COLUMNS = "card_id, seq, at, swarm, principal, party, origin, body, note_id, agent"
+_MESSAGE_COLUMNS = "card_id, seq, at, swarm, principal, party, origin, body, note_id, agent, node"
 
 
 def _message(row: sqlite3.Row) -> dict:
@@ -110,7 +112,7 @@ def _message(row: sqlite3.Row) -> dict:
             "sender": {"swarm": row["swarm"], "principal": row["principal"],
                        "party": row["party"]},
             "origin": row["origin"], "body": row["body"], "note_id": row["note_id"],
-            "agent": row["agent"]}
+            "agent": row["agent"], "node": row["node"]}
 
 
 class Events:
@@ -118,7 +120,7 @@ class Events:
 
     def __init__(self, path: str | Path):
         self._path = Path(path)
-        databases.init_db_at(self._path, _SCHEMA, schema_version=4, migrations=_MIGRATIONS)
+        databases.init_db_at(self._path, _SCHEMA, schema_version=5, migrations=_MIGRATIONS)
 
     def _conn(self) -> sqlite3.Connection:
         return databases.get_connection_at(self._path)
@@ -246,16 +248,17 @@ class Events:
     # -- card messages ----------------------------------------------------------
 
     def message_add(self, card_id: str, *, at: str, sender: dict, origin: str,
-                    body: str, note_id: str | None = None, agent: str | None = None) -> dict:
+                    body: str, note_id: str | None = None, agent: str | None = None,
+                    node: str | None = None) -> dict:
         """Record a message as the card's next one. The sequence is the order of the thread."""
         conn = self._conn()
         try:
             conn.execute(
                 "INSERT INTO messages (" + _MESSAGE_COLUMNS + ")"
-                " SELECT ?, COALESCE(MAX(seq), 0) + 1, ?, ?, ?, ?, ?, ?, ?, ?"
+                " SELECT ?, COALESCE(MAX(seq), 0) + 1, ?, ?, ?, ?, ?, ?, ?, ?, ?"
                 " FROM messages WHERE card_id = ?",
                 (card_id, at, sender["swarm"], sender["principal"], sender["party"],
-                 origin, body, note_id, agent, card_id))
+                 origin, body, note_id, agent, node, card_id))
             row = conn.execute(
                 "SELECT " + _MESSAGE_COLUMNS + " FROM messages WHERE card_id = ?"
                 " ORDER BY seq DESC LIMIT 1", (card_id,)).fetchone()
@@ -342,9 +345,9 @@ class Events:
                 sender = item["sender"]
                 conn.execute(
                     "INSERT INTO messages (" + _MESSAGE_COLUMNS + ")"
-                    " VALUES (?,?,?,?,?,?,?,?,?,?)",
+                    " VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                     (root_id, seq, item["at"], sender["swarm"], sender["principal"],
-                     sender["party"], "migrated", item["body"], None, None))
+                     sender["party"], "migrated", item["body"], None, None, None))
                 conn.execute("INSERT INTO folded (reply_id, root_id, at) VALUES (?,?,?)",
                              (item["reply_id"], root_id, time.time()))
             conn.commit()
