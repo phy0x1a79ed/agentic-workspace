@@ -192,7 +192,7 @@ def test_start_returns_the_contract_and_writes_lineage(home, launched):
         "ok": True, "job": CHILD_JOB, "name": "demo", "node": "testnode",
         "project": "awm", "scope": "demo", "cwd": str(home.projects / "awm" / "demo"),
         "attach": f"claude attach {CHILD_JOB}", "parent": PARENT_JOB, "mode": "rep",
-        "link": None,
+        "pinned": False, "link": None,
     }
     from awm.cx import lifecycle
 
@@ -1247,6 +1247,77 @@ def test_the_old_launcher_is_gone():
 
     for name in ("launch_argv", "_user_manager_env", "launch_session"):
         assert not hasattr(lifecycle, name), name
+
+
+# --- pins --------------------------------------------------------------------
+
+
+def _pins(home):
+    path = home.jobs / "pins.json"
+    return json.loads(path.read_text()) if path.exists() else []
+
+
+def test_a_pinned_start_pins_the_job_and_lists_it_pinned(home, launched, monkeypatch):
+    from awm.cx import lifecycle
+
+    monkeypatch.setattr(lifecycle, "_tmux_panes", dict)
+    out = start({**BASE, "pin": True})
+    assert out["ok"] and out["pinned"] is True
+    assert _pins(home) == [CHILD_JOB]
+    assert lifecycle.read_lineage(CHILD_JOB)["pinned"] is True
+    row = next(r for r in lifecycle.collect() if r["job"] == CHILD_JOB)
+    assert row["pinned"] is True
+
+
+def test_an_unpinned_start_leaves_the_pins_alone(home, launched):
+    out = start(BASE)
+    assert out["pinned"] is False and _pins(home) == []
+
+
+def test_pin_must_be_a_boolean(home, launched):
+    assert start({**BASE, "pin": "yes"})["ok"] is False
+
+
+def _fake_cli(monkeypatch, ran, rm_code=0):
+    import subprocess
+
+    from awm.cx import lifecycle
+
+    real = lifecycle.cli.stop_and_remove
+
+    def run(argv, **kw):
+        ran.append(argv[1:])
+        code = rm_code if argv[1] == "rm" else 0
+        return subprocess.CompletedProcess(argv, code, b"busy" if code else b"")
+
+    monkeypatch.setattr(lifecycle.cli, "stop_and_remove",
+                        lambda job, **kw: real(job, **{**kw, "run": run}))
+
+
+def test_stopping_a_pinned_job_unpins_and_removes_it(home, launched, monkeypatch):
+    ran: list[list[str]] = []
+    _fake_cli(monkeypatch, ran)
+    start({**BASE, "pin": True})
+    assert stop({"job": CHILD_JOB}) == {"ok": True, "job": CHILD_JOB, "removed": True}
+    assert ran == [["stop", CHILD_JOB], ["rm", CHILD_JOB]]
+    assert _pins(home) == []
+
+
+def test_a_failed_remove_of_a_pinned_job_is_reported(home, launched, monkeypatch):
+    ran: list[list[str]] = []
+    _fake_cli(monkeypatch, ran, rm_code=1)
+    start({**BASE, "pin": True})
+    out = stop({"job": CHILD_JOB})
+    assert out["ok"] is False and out["reason"] == "busy"
+
+
+def test_prune_pins_drops_only_jobs_that_are_gone(home, launched):
+    from awm.cx import lifecycle
+
+    start({**BASE, "pin": True})
+    (home.jobs / "pins.json").write_text(json.dumps([CHILD_JOB, "deadbeef"]))
+    assert lifecycle.prune_pins() == ["deadbeef"]
+    assert _pins(home) == [CHILD_JOB]
 
 
 # --- the manifest ------------------------------------------------------------

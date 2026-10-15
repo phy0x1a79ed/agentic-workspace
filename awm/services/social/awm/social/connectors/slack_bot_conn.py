@@ -171,6 +171,7 @@ class SlackBotConnector(Connector):
             thread_id=m.get("thread_ts", "") or "",
             sender_id=sender,
             sender_name=name,
+            sender_bot=bool(m.get("bot_id")),
             message_id=m.get("ts", ""),
             ts=m.get("ts", ""),
             text=m.get("text", "") or "",

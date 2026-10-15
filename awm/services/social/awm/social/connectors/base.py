@@ -66,7 +66,8 @@ class InboundMessage:
     """A message received from a platform, normalised across connectors.
 
     ``message_id`` is the platform's own id (used for redelivery dedupe);
-    ``ts`` is the platform timestamp string when available.
+    ``ts`` is the platform timestamp string when available. ``sender_bot`` is
+    True when the platform marks the sender as a bot.
     """
 
     account: str
@@ -81,6 +82,7 @@ class InboundMessage:
     ts: str = ""
     attachments: list = field(default_factory=list, compare=False)
     raw: dict = field(default_factory=dict, compare=False)
+    sender_bot: bool = False
 
 
 @dataclass(frozen=True)

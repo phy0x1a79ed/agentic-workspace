@@ -101,6 +101,8 @@ class Loop:
                      item["session"], item["why"])
         for job in lifecycle.adopt_pending():
             log.info("cx: adopted %s for a start that outlived its launch", job)
+        for job in lifecycle.prune_pins():
+            log.info("cx: unpinned %s, whose job is gone", job)
         for job in lifecycle.prune_lineage():
             log.info("cx: dropped the lineage of %s, which was removed",
                      job)
