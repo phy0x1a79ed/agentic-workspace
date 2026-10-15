@@ -368,9 +368,14 @@ async def _h_buckets(args: dict) -> dict:
 
 
 async def _h_bucket_ls(args: dict) -> dict:
-    entries = await _bucket(args["bucket"]).ls(args.get("path", "") or "")
+    b, path = _bucket(args["bucket"]), args.get("path", "") or ""
+    if not args.get("recursive"):
+        entries = await b.ls(path)
+        return {"entries": [_entry_to_dict(e) for e in entries],
+                "count": len(entries)}
+    entries, truncated = await b.walk(path, limit=int(args.get("limit") or 1000))
     return {"entries": [_entry_to_dict(e) for e in entries],
-            "count": len(entries)}
+            "count": len(entries), "truncated": truncated}
 
 
 async def _h_bucket_stat(args: dict) -> dict:
@@ -384,29 +389,42 @@ async def _h_bucket_mkdir(args: dict) -> dict:
 
 
 async def _h_bucket_get(args: dict) -> dict:
-    """Download one file to a fresh system temp dir (outside AWM_DIR) and
-    return its path, so large files never inline into the RPC."""
-    out_dir = sink_dir()
+    """Download one file, or a folder as a tree, to a fresh system temp dir
+    (outside AWM_DIR) and return its path, so bytes never inline into the RPC."""
+    b, out_dir = _bucket(args["bucket"]), sink_dir()
+    failures: list[dict] = []
     try:
-        written = await _bucket(args["bucket"]).get(args["path"], out_dir)
+        try:
+            written = await b.get(args["path"], out_dir)
+        except IsADirectoryError:
+            written = await b.get_tree(args["path"], out_dir,
+                                       limit=int(args.get("limit") or 10000))
+            failures = written.pop("failures")
     except BaseException:
         shutil.rmtree(out_dir, ignore_errors=True)
         raise
-    return {"files": [written], "count": 1, "dir": out_dir}
+    out = {"files": [written], "count": 1, "dir": out_dir}
+    if failures:
+        out["failures"] = failures
+    return out
 
 
 async def _h_bucket_put(args: dict) -> dict:
-    """Upload a local file's bytes to ``path`` in the bucket (create/overwrite).
-
-    The source is a local filesystem path (``src``) the bucket streams from —
-    bytes are never inlined into the RPC payload.
-    """
-    src = args["src"]
+    """Upload a local file, or a folder as a tree, to ``path`` in the bucket
+    (create/overwrite). The bucket streams from ``src``, so bytes never inline
+    into the RPC payload."""
+    src, b = args["src"], _bucket(args["bucket"])
+    parents = bool(args.get("parents"))
+    if os.path.isdir(src):
+        res = await b.put_tree(args["path"], src, parents=parents)
+        out = {"entry": _entry_to_dict(res["entry"]), "count": res["count"]}
+        if res["failures"]:
+            out["failures"] = res["failures"]
+        return out
     if not os.path.isfile(src):
-        raise FileNotFoundError(f"bucket_put: no local file {src!r}")
-    entry = await _bucket(args["bucket"]).put(
-        args["path"], src, mime=args.get("mime") or None,
-        parents=bool(args.get("parents")))
+        raise FileNotFoundError(f"bucket_put: no local file or folder {src!r}")
+    entry = await b.put(args["path"], src, mime=args.get("mime") or None,
+                        parents=parents)
     return {"entry": _entry_to_dict(entry)}
 
 
@@ -576,10 +594,16 @@ API_MANIFEST: dict[str, Any] = {
                            "/sites/<site>/..., /personal/<user>/...) to reach any "
                            "site the session can. A missing path is a not-found "
                            "error, a file is a not-a-folder error. Returns entries "
-                           "with name, path, is_dir, size, mime.",
+                           "with name, path, is_dir, size, mime. "
+                           "`recursive=true` walks the whole tree instead, "
+                           "stopping at `limit` entries (default 1000) and "
+                           "setting `truncated` when more exist.",
+            "timeout": 600,
             "params": [
                 {"name": "bucket", "type": "string", "required": True},
                 {"name": "path", "type": "string", "required": False},
+                {"name": "recursive", "type": "boolean", "required": False},
+                {"name": "limit", "type": "number", "required": False},
             ],
         },
         {
@@ -606,16 +630,21 @@ API_MANIFEST: dict[str, Any] = {
         {
             "name": "bucket_get",
             "tool": "social_bucket_get",
-            "description": "Download one file from a bucket to a system temp dir "
+            "description": "Download a file from a bucket to a system temp dir "
                            "(outside the awm workspace) on the calling node and "
                            "return its absolute path + metadata. Any size; it "
                            "streams in chunks. Google-native docs are exported "
-                           "(Docs→pdf, Sheets→csv).",
+                           "(Docs→pdf, Sheets→csv). A folder downloads as a "
+                           "local folder tree (files[0].is_dir, with `count` "
+                           "files), refusing one over `limit` entries (default "
+                           "10000). Files that fail are listed in `failures` "
+                           "and the rest still download.",
             "returns_files": True,
             "timeout": 3600,
             "params": [
                 {"name": "bucket", "type": "string", "required": True},
                 {"name": "path", "type": "string", "required": True},
+                {"name": "limit", "type": "number", "required": False},
             ],
         },
         {
@@ -624,7 +653,9 @@ API_MANIFEST: dict[str, Any] = {
             "description": "Upload a local file (`src` = a path on the calling "
                            "node; it travels with the call) to `path` in a "
                            "bucket, creating or overwriting it. Any size; it "
-                           "streams in chunks. "
+                           "streams in chunks. A local folder uploads as the "
+                           "folder `path`, its tree inside it; files that fail "
+                           "are listed in `failures` and the rest still upload. "
                            "`parents=true` creates missing folders above `path`; "
                            "without it a missing folder is a not-found error. "
                            "Returns the resulting entry.",

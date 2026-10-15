@@ -187,9 +187,9 @@ class StorageDriver(ABC):
 
 ONEDRIVE_PRELUDE = r"""
 window.__awmMira = window.__awmMira || {};
-if (!window.__awmMira.onedrive || window.__awmMira.onedrive._v !== 4) {
+if (!window.__awmMira.onedrive || window.__awmMira.onedrive._v !== 5) {
   const O = {};
-  O._v = 4;  // bump when changing helpers so a long-lived page self-upgrades
+  O._v = 5;  // bump when changing helpers so a long-lived page self-upgrades
   O._b64 = function (buf) {
     const bytes = new Uint8Array(buf);
     let bin = '';
@@ -307,13 +307,52 @@ if (!window.__awmMira.onedrive || window.__awmMira.onedrive._v !== 4) {
   O.ls = async function (path) {
     if (!(await O._folder(path))) throw await O._missing(path);
     const fu = O._folderUrl(path);
-    const fj = await O._getJson(fu + '/Folders', 'ls', path);
-    const xj = await O._getJson(fu + '/Files', 'ls', path);
+    let fj, xj;
+    try {
+      fj = await O._getJson(fu + '/Folders', 'ls', path);
+      xj = await O._getJson(fu + '/Files', 'ls', path);
+    } catch (e) {
+      if (!O._throttled(e)) throw e;
+      return O._lsPaged(path);
+    }
     const out = [];
     for (const d of (fj.value || []))
       if ((d.Name || '') !== 'Forms') out.push(O._folderEntry(d));
     for (const f of (xj.value || [])) out.push(O._fileEntry(f));
     return out;
+  };
+  // A folder over the list view threshold (5000 items) refuses /Folders and
+  // /Files; the list's paged view still serves it.
+  O._throttled = function (e) {
+    return /SPQueryThrottledException|-2147024860|list view threshold/i.test(String(e && e.message));
+  };
+  O._lsPaged = async function (path) {
+    const lib = '/' + O._segs(path).slice(0, O._libDepth(path)).join('/');
+    const view = "<View><ViewFields><FieldRef Name='FileLeafRef'/><FieldRef Name='FileRef'/>" +
+      "<FieldRef Name='FSObjType'/><FieldRef Name='File_x0020_Size'/><FieldRef Name='Modified'/>" +
+      "<FieldRef Name='UniqueId'/></ViewFields><RowLimit Paged='TRUE'>5000</RowLimit></View>";
+    const digest = await O._digest(path);
+    const dirs = [], files = [];
+    let next = '';
+    do {
+      const url = O._api(path) + "/web/GetList(@l)/RenderListDataAsStream?@l='" + O._lit(lib) + "'" +
+        (next ? '&' + next.replace(/^\?/, '') : '');
+      const r = await O._postJson(url, digest, {parameters: {RenderOptions: 2,
+        FolderServerRelativeUrl: path, ViewXml: view}});
+      if (!r.ok) throw await O._fail(r, 'ls', path);
+      const j = await r.json();
+      for (const row of (j.Row || [])) {
+        const isDir = String(row.FSObjType) === '1';
+        const name = row.FileLeafRef || '';
+        if (isDir && name === 'Forms') continue;
+        (isDir ? dirs : files).push({name: name, path: row.FileRef || '', is_dir: isDir,
+          size: isDir ? 0 : (Number(row.File_x0020_Size || 0) || 0), mime: '',
+          modified: row['Modified.'] || row.Modified || '',
+          id: String(row.UniqueId || '').replace(/[{}]/g, '')});
+      }
+      next = j.NextHref || '';
+    } while (next);
+    return dirs.concat(files);
   };
   O.stat = async function (path) {
     const f = await O._file(path);

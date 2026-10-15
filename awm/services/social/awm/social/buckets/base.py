@@ -25,10 +25,23 @@ Adding a backend = one new module implementing this ABC + one line in
 from __future__ import annotations
 
 import logging
+import os
+import posixpath
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 
 log = logging.getLogger("awm.social.buckets")
+
+
+def _local_segment(name: str) -> str:
+    """A remote name as one local path segment, kept as close to it as the
+    filesystem allows."""
+    seg = (name or "").replace("/", "_").replace("\0", "")
+    return "_" if seg in ("", ".", "..") else seg
+
+
+def _failure(path: str, exc: Exception) -> dict:
+    return {"path": path, "error": f"{type(exc).__name__}: {exc}"}
 
 
 @dataclass(frozen=True)
@@ -142,6 +155,98 @@ class Bucket(ABC):
         """Copy ``src`` to the full path ``dst`` → the new entry, as for
         :meth:`mv`."""
         raise NotImplementedError(f"{self.kind} bucket does not support cp")
+
+    async def walk(self, path: str = "", *, limit: int = 1000
+                   ) -> tuple[list[Entry], bool]:
+        """Every entry below the folder ``path``, breadth first →
+        ``(entries, truncated)``. ``truncated`` is true when more than
+        ``limit`` entries exist."""
+        out: list[Entry] = []
+        queue = [path]
+        while queue:
+            for e in await self.ls(queue.pop(0)):
+                if len(out) >= limit:
+                    return out, True
+                out.append(e)
+                if e.is_dir:
+                    queue.append(e.path)
+        return out, False
+
+    async def get_tree(self, path: str, dest_dir: str, *,
+                       limit: int = 10000) -> dict:
+        """Download the folder ``path`` as a local tree under ``dest_dir`` →
+        ``{filename, mime, size, path, is_dir, count, failures}``, ``path``
+        being the local folder. A file that fails is listed in ``failures``
+        and the rest still download."""
+        root = await self.stat(path)
+        if not root.is_dir:
+            raise NotADirectoryError(f"bucket {self.account.name!r}: {path!r} is a file")
+        entries, truncated = await self.walk(path, limit=limit)
+        if truncated:
+            raise ValueError(
+                f"bucket {self.account.name!r}: {path!r} holds more than "
+                f"{limit} entries (pass a larger limit)")
+        name = root.name or posixpath.basename(path.rstrip("/")) or self.account.name
+        local_root = os.path.join(dest_dir, _local_segment(name))
+        os.makedirs(local_root)
+        prefix = root.path.strip("/")
+        count, size, failures = 0, 0, []
+        for e in entries:
+            rel = e.path.strip("/")
+            if prefix:
+                if not rel.startswith(prefix + "/"):
+                    failures.append(_failure(e.path, ValueError("outside the folder")))
+                    continue
+                rel = rel[len(prefix) + 1:]
+            local = os.path.join(local_root, *map(_local_segment, rel.split("/")))
+            try:
+                if e.is_dir:
+                    os.makedirs(local, exist_ok=True)
+                    continue
+                os.makedirs(os.path.dirname(local), exist_ok=True)
+                info = await self.get(e.path, os.path.dirname(local))
+                if info["path"] != local:
+                    os.replace(info["path"], local)
+                count += 1
+                size += int(info.get("size") or 0)
+            except Exception as exc:  # noqa: BLE001
+                failures.append(_failure(e.path, exc))
+        return {"filename": os.path.basename(local_root), "mime": "inode/directory",
+                "size": size, "path": local_root, "is_dir": True,
+                "count": count, "failures": failures}
+
+    async def put_tree(self, path: str, src_dir: str, *,
+                       parents: bool = False) -> dict:
+        """Upload the local folder ``src_dir`` as the folder ``path`` →
+        ``{entry, count, failures}``. Existing files are overwritten. A file
+        or folder that fails is listed in ``failures`` and the rest still
+        upload."""
+        target = path.rstrip("/")
+        parent = posixpath.dirname(target)
+        if not parents and parent not in ("", "/"):
+            pe = await self.stat(parent)
+            if not pe.is_dir:
+                raise NotADirectoryError(
+                    f"bucket {self.account.name!r}: {parent!r} is a file")
+        root = await self.mkdir(target) if target.strip("/") else await self.stat("")
+        count, failures = 0, []
+        for top, dirs, files in os.walk(src_dir):
+            dirs.sort()
+            rel = os.path.relpath(top, src_dir)
+            remote = target if rel == "." else f"{target}/{rel.replace(os.sep, '/')}"
+            for d in list(dirs):
+                try:
+                    await self.mkdir(f"{remote}/{d}")
+                except Exception as exc:  # noqa: BLE001
+                    failures.append(_failure(f"{remote}/{d}", exc))
+                    dirs.remove(d)
+            for f in sorted(files):
+                try:
+                    await self.put(f"{remote}/{f}", os.path.join(top, f))
+                    count += 1
+                except Exception as exc:  # noqa: BLE001
+                    failures.append(_failure(f"{remote}/{f}", exc))
+        return {"entry": root, "count": count, "failures": failures}
 
     async def probe(self) -> None:
         """Raise unless the store answers for this identity right now."""

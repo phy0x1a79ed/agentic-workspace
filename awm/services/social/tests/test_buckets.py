@@ -375,6 +375,94 @@ class TestGoogleDrive:
 # OneDrive (stub mira daemon)                                                  #
 # --------------------------------------------------------------------------- #
 
+class TestTrees:
+    """walk / get_tree / put_tree live in the Bucket base; Drive exercises them."""
+
+    def _tree(self):
+        return {
+            "d1": {"name": "docs", "mimeType": _F, "parent": "root"},
+            "d2": {"name": "deep dir", "mimeType": _F, "parent": "d1"},
+            "f1": {"name": "note.txt", "mimeType": "text/plain", "parent": "d1",
+                   "size": 5, "content": b"hello"},
+            "f2": {"name": "a b.txt", "mimeType": "text/plain", "parent": "d2",
+                   "size": 2, "content": b"ab"},
+            "f3": {"name": "pic.png", "mimeType": "image/png", "parent": "root",
+                   "size": 3, "content": b"img"},
+        }
+
+    async def test_walk_is_breadth_first_and_bounded(self):
+        b = _gdrive(self._tree())
+        entries, truncated = await b.walk("")
+        assert [e.path for e in entries] == [
+            "docs", "pic.png", "docs/deep dir", "docs/note.txt",
+            "docs/deep dir/a b.txt"]
+        assert truncated is False
+        entries, truncated = await b.walk("", limit=2)
+        assert len(entries) == 2 and truncated is True
+
+    async def test_get_tree_writes_a_faithful_tree(self, fake_google_http, tmp_path):
+        b = _gdrive(self._tree())
+        out = await b.get_tree("docs", str(tmp_path))
+        root = tmp_path / "docs"
+        assert out["path"] == str(root) and out["is_dir"] is True
+        assert out["count"] == 2 and out["size"] == 7 and out["failures"] == []
+        assert (root / "note.txt").read_bytes() == b"hello"
+        assert (root / "deep dir" / "a b.txt").read_bytes() == b"ab"
+
+    async def test_get_tree_reports_failures_and_continues(
+            self, fake_google_http, tmp_path, monkeypatch):
+        b = _gdrive(self._tree())
+        real_get = b.get
+
+        async def flaky(path, dest_dir):
+            if path.endswith("note.txt"):
+                raise PermissionError("denied")
+            return await real_get(path, dest_dir)
+        monkeypatch.setattr(b, "get", flaky)
+        out = await b.get_tree("docs", str(tmp_path))
+        assert out["count"] == 1
+        assert out["failures"] == [
+            {"path": "docs/note.txt", "error": "PermissionError: denied"}]
+
+    async def test_get_tree_refuses_past_limit(self, fake_google_http, tmp_path):
+        b = _gdrive(self._tree())
+        with pytest.raises(ValueError, match="larger limit"):
+            await b.get_tree("docs", str(tmp_path), limit=1)
+
+    async def test_put_tree_uploads_a_tree(self, fake_google_http, tmp_path):
+        b = _gdrive(self._tree())
+        (tmp_path / "up" / "sub").mkdir(parents=True)
+        (tmp_path / "up" / "top.txt").write_bytes(b"t")
+        (tmp_path / "up" / "sub" / "low.txt").write_bytes(b"l")
+        out = await b.put_tree("docs/up", str(tmp_path / "up"))
+        assert out["count"] == 2 and out["failures"] == []
+        assert out["entry"].is_dir
+        assert [e.path for e in (await b.walk("docs/up"))[0]] == [
+            "docs/up/sub", "docs/up/top.txt", "docs/up/sub/low.txt"]
+
+    async def test_put_tree_missing_parent_needs_parents(self, fake_google_http, tmp_path):
+        b = _gdrive(self._tree())
+        (tmp_path / "up").mkdir()
+        with pytest.raises(FileNotFoundError):
+            await b.put_tree("nope/up", str(tmp_path / "up"))
+        out = await b.put_tree("nope/up", str(tmp_path / "up"), parents=True)
+        assert out["entry"].path == "nope/up"
+
+    async def test_hub_moves_folders_both_ways(self, fake_google_http, tmp_path, monkeypatch):
+        import shutil
+        import awm.social.hub_adapter as hub
+        b = _gdrive(self._tree())
+        monkeypatch.setattr(hub, "_buckets", {"g": b})
+        out = await hub._h_bucket_get({"bucket": "g", "path": "docs"})
+        f = out["files"][0]
+        assert f["is_dir"] and f["count"] == 2 and "failures" not in out
+        put = await hub._h_bucket_put({"bucket": "g", "path": "copy", "src": f["path"]})
+        assert put["count"] == 2 and put["entry"]["is_dir"]
+        shutil.rmtree(out["dir"])
+        ls = await hub._h_bucket_ls({"bucket": "g", "path": "copy", "recursive": True})
+        assert ls["count"] == 3 and ls["truncated"] is False
+
+
 class _StubFsDaemon:
     """aiohttp stand-in for the daemon's /v1/fs/onedrive routes."""
 

@@ -122,6 +122,19 @@ class TestListing:
         assert sp.call("stat", name)["path"] == name
 
 
+    def test_ls_past_the_threshold_pages_the_list_view(self, sp):
+        files = {f"{D}/big/f{i:02d}.txt": "x" * i for i in range(7)}
+        sp.reset(folders=[f"{D}/big", f"{D}/big/sub"], files=files)
+        sp.set("threshold", 3)
+        sp.set("pageSize", 3)
+        rows = sp.call("ls", f"{D}/big")
+        assert [r["name"] for r in rows] == ["sub"] + [f"f{i:02d}.txt" for i in range(7)]
+        assert rows[0]["is_dir"] and rows[3]["size"] == 2
+        assert not rows[1]["id"].startswith("{")
+        calls = sp.page.evaluate("window.__fakeSP.calls")
+        assert sum("RenderListDataAsStream" in c for c in calls) == 3
+
+
 class TestMkdirAndPut:
     def test_mkdir_creates_each_level_and_is_idempotent(self, sp):
         e = sp.call("mkdir", f"{D}/a/b/c")

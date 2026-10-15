@@ -12,6 +12,8 @@
     F.range = 'value';     // who honours Range: 'value' ($value) | 'download' | 'none'
     F.uploads = {};        // upload id -> {path, data: Uint8Array}
     F.jobs = {};           // copy job id -> {src, destDir, move, polls}
+    F.threshold = 5000;    // children past which /Folders and /Files refuse
+    F.pageSize = 5000;     // rows per RenderListDataAsStream page
     F.seq = 0;
     for (const lib of (spec.libraries || ['/teams/x/Docs'])) F.addFolder(lib);
     for (const [p, text] of Object.entries(spec.files || {})) F.addFile(p, text);
@@ -144,6 +146,22 @@
       F.relocate(job.src, dst, job.move);
       return F.json({JobState: 0, Logs: [JSON.stringify({Event: 'JobEnd'})]});
     }
+    m = rest.match(/^\/web\/GetList\(@l\)\/RenderListDataAsStream\?@l='((?:[^']|'')*)'(?:&Paged=TRUE&p_ID=(\d+))?$/);
+    if (m && method === 'POST') {
+      const prm = JSON.parse(body).parameters;
+      const folder = prm.FolderServerRelativeUrl;
+      if (!F.nodes[F.lit(m[1])] || !F.nodes[folder]) return F.notFound();
+      const kids = F.children(folder);
+      const start = Number(m[2] || 0);
+      const page = kids.slice(start, start + F.pageSize).map(k => {
+        const n = F.nodes[k];
+        return {FileLeafRef: n.name, FileRef: k, FSObjType: n.kind === 'folder' ? '1' : '0',
+                File_x0020_Size: n.kind === 'file' ? String(n.data.length) : '',
+                'Modified.': n.modified, UniqueId: '{' + n.uid + '}'};
+      });
+      const more = start + F.pageSize < kids.length;
+      return F.json({Row: page, NextHref: more ? '?Paged=TRUE&p_ID=' + (start + F.pageSize) : undefined});
+    }
     m = rest.match(/^\/web\/folders\/AddUsingPath\(decodedurl='((?:[^']|'')*)'\)$/);
     if (m && method === 'POST') {
       const p = F.lit(m[1]);
@@ -158,6 +176,9 @@
       const n = F.nodes[p];
       if (tail === '') return F.json(F.folderJson(p));
       if (!n || n.kind !== 'folder') return F.notFound('folder missing');
+      if ((tail === '/Folders' || tail === '/Files') && F.children(p).length > F.threshold)
+        return F.json({'odata.error': {code: '-2147024860, Microsoft.SharePoint.SPQueryThrottledException',
+          message: {value: 'The attempted operation is prohibited because it exceeds the list view threshold.'}}}, 500);
       if (tail === '/Folders')
         return F.json({value: F.children(p).filter(k => F.nodes[k].kind === 'folder').map(F.folderJson)});
       if (tail === '/Files')
