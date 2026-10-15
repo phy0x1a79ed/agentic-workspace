@@ -11,7 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from awm.reflection import control, guards, inject, session_target
+from awm.reflection import control, guards, inject, pending, session_target
 
 SELF_JOB, OTHER_JOB, DEAD_JOB = "aaaaaaaa", "bbbbbbbb", "cccccccc"
 ME, PARENT = os.getpid(), os.getppid()
@@ -96,6 +96,24 @@ class Screen:
 
 PLAIN = "some output\n? for shortcuts"
 PROMPT = "Do you want to proceed?\n❯ 1. Yes\n  2. No\nEsc to cancel"
+
+
+def switch_dialog(title, offer, cursor=0, note=""):
+    """Claude Code's confirm dialog for a changed effort or model."""
+    options = [f"1. Yes, switch to {offer}", "2. No, go back"]
+    return (f"{title}\n{note}This conversation is cached for the current setting. "
+            f"Switching means the next turn re-reads it uncached.\n"
+            + "\n".join(("❯ " if i == cursor else "  ") + o
+                         for i, o in enumerate(options))
+            + "\nEnter to confirm · Esc to cancel")
+
+
+EFFORT_YES = switch_dialog("Change effort level?", "Low")
+EFFORT_NO = switch_dialog("Change effort level?", "Low", cursor=1)
+MODEL_YES = switch_dialog("Switch model?", "Opus 5.5 (1M context)")
+HOOK_ASKED = switch_dialog(
+    "Switch model?", "Opus 5.5",
+    note="A PreModelSwitch hook asked you to confirm this change.\n")
 OPTIONS = ["Show QR code", "Disconnect this session", "Continue"]
 
 
@@ -122,6 +140,7 @@ def world(home, monkeypatch):
     clock = Clock()
     monkeypatch.setattr(control, "_sleep", clock.sleep)
     monkeypatch.setattr(control, "_clock", clock)
+    monkeypatch.setattr(pending, "PENDING_DIR", home.root / "pending")
     w = SimpleNamespace(home=home, clock=clock, typed=[], sent=[], screen=Screen(PLAIN),
                         status="idle", settled=True, opened=[])
 
@@ -261,7 +280,8 @@ def test_a_bad_argument_types_nothing(world, call):
     assert world.typed == [] and world.sent == [] and world.opened == []
 
 
-@pytest.mark.parametrize("status,screen", [("waiting", PLAIN), ("idle", PROMPT)])
+@pytest.mark.parametrize("status,screen", [
+    ("waiting", PLAIN), ("idle", PROMPT), ("idle", EFFORT_YES), ("idle", MODEL_YES)])
 def test_a_modal_or_prompt_stops_every_typing_verb(world, status, screen):
     world.status, world.screen = status, Screen(screen)
     for out in (control.model("opus", job=OTHER_JOB, caller_pid=ME),
@@ -427,7 +447,7 @@ def test_on_for_the_callers_own_session_queues_and_resumes_with_a_pointer_to_lin
     out = control.remote_control(True, name="me-rc", job=None, caller_pid=ME)
     text, kw = world.sent[0]
     assert text == "/rc me-rc" and kw["allow_modal"] is True
-    assert kw["followup"] == control.SELF_ON_FOLLOWUP and "link" in kw["followup"]
+    assert kw["change"].kind == "rc_on" and kw["followup"] is None
     assert out["link"] is None and "turn ends" in out["link_reason"]
 
 
@@ -546,6 +566,159 @@ def test_off_for_the_callers_own_session_queues_rc_and_finishes_later(connected)
     spawned[0]()
     assert modal.screen.presses == ["Enter"]
     assert connected.typed[-1] == (SELF_JOB, control.SELF_OFF_FOLLOWUP, inject.ATTEMPTS)
+
+
+# --- the effort / model confirm dialog ---------------------------------------
+
+
+@pytest.fixture
+def after_typing(world, monkeypatch):
+    """Show a screen only once the command has been typed; before that it is clear."""
+    original = control._deliver
+
+    def show(screen):
+        shown = Screen(screen)
+
+        def deliver(t, text, **kw):
+            world.screen = shown
+            return original(t, text, **kw)
+
+        monkeypatch.setattr(control, "_deliver", deliver)
+        world.screen = Screen(PLAIN)
+        return shown
+
+    return show
+
+
+def test_an_effort_dialog_with_the_cursor_on_yes_is_answered_with_enter(world, after_typing):
+    shown = after_typing(EFFORT_YES)
+    out = control.effort("low", job=OTHER_JOB, caller_pid=ME)
+    assert out["ok"] and out["switch_dialog"]["answered"] is True
+    assert shown.presses == ["Enter"] and shown.closed
+
+
+def test_a_model_dialog_with_the_cursor_on_yes_is_answered_with_enter(world, after_typing):
+    shown = after_typing(MODEL_YES)
+    out = control.model("opus", job=OTHER_JOB, caller_pid=ME)
+    assert out["ok"] and shown.presses == ["Enter"]
+
+
+def test_an_alias_with_a_context_suffix_still_names_the_offered_model(world, after_typing):
+    shown = after_typing(switch_dialog("Switch model?", "Sonnet 5.5 (1M context)"))
+    assert control.model("sonnet[1m]", job=OTHER_JOB, caller_pid=ME)["ok"]
+    assert shown.presses == ["Enter"]
+
+
+def test_a_dialog_with_the_cursor_on_no_is_closed_with_escape(world, after_typing):
+    shown = after_typing(EFFORT_NO)
+    out = control.effort("low", job=OTHER_JOB, caller_pid=ME)
+    assert out["ok"] is False and "No, go back" in out["reason"]
+    assert shown.presses == ["Escape"]
+
+
+def test_a_dialog_a_hook_raised_is_left_alone(world, after_typing):
+    shown = after_typing(HOOK_ASKED)
+    out = control.model("opus", job=OTHER_JOB, caller_pid=ME)
+    assert out["ok"] is False and "hook" in out["reason"]
+    assert shown.presses == []
+
+
+def test_no_dialog_is_success_because_a_fresh_conversation_does_not_ask(world, after_typing):
+    shown = after_typing(PLAIN)
+    out = control.effort("low", job=OTHER_JOB, caller_pid=ME)
+    assert out["ok"] and out["switch_dialog"]["dialog"] is False
+    assert shown.presses == []
+    assert world.clock.now >= control.MODAL_WAIT_S
+
+
+def test_a_yes_for_another_effort_is_not_taken_for_the_one_asked(world, after_typing):
+    # `high` is a prefix of `xhigh`; the dialog must offer exactly the asked level.
+    shown = after_typing(switch_dialog("Change effort level?", "xhigh"))
+    out = control.effort("high", job=OTHER_JOB, caller_pid=ME)
+    assert out["ok"] is False and "xhigh" in out["reason"]
+    assert shown.presses == ["Escape"], "closed only after the grace, never answered"
+    assert world.clock.now >= control.WRONG_OFFER_GRACE_S
+
+
+def test_a_different_prompt_instead_of_the_dialog_is_not_touched(world, after_typing):
+    shown = after_typing(PROMPT)
+    out = control.effort("low", job=OTHER_JOB, caller_pid=ME)
+    assert out["ok"] is False and "different prompt" in out["reason"]
+    assert shown.presses == []
+
+
+def test_another_job_that_is_mid_turn_is_answered_from_a_thread(world, after_typing):
+    world.settled = False
+    shown = after_typing(EFFORT_YES)
+    spawned = []
+    out = control.effort("low", job=OTHER_JOB, caller_pid=ME, spawn=spawned.append)
+    assert out["ok"] and out["switch_dialog"]["pending"] is True
+    assert shown.presses == [] and len(spawned) == 1
+    spawned[0]()
+    assert shown.presses == ["Enter"]
+
+
+@pytest.fixture
+def own_promise(world):
+    """Write the pending record `send` would have left for the caller's own session."""
+    def make():
+        text, kw = world.sent[-1]
+        pending.record(pending.Pending(
+            repl_pid=ME, proc_start="1", session_id="sid", text=text,
+            followup="x", injected_at_ms=1, changes=(kw["change"],)))
+        return kw["change"]
+    return make
+
+
+def test_the_callers_own_session_is_answered_by_the_spawned_thread(world, own_promise):
+    spawned = []
+    out = control.effort("low", job=None, caller_pid=ME, spawn=spawned.append)
+    assert out["self"] is True and out["switch_dialog"]["pending"] is True
+    change = own_promise()
+    world.screen = Screen(EFFORT_YES)
+    assert world.screen.presses == [] and len(spawned) == 1
+    spawned[0]()
+    assert world.screen.presses == ["Enter"]
+    [settled] = pending.read(ME).changes
+    assert settled.key == change.key and settled.outcome == pending.APPLIED
+
+
+def test_a_refused_dialog_is_written_onto_the_promise_with_its_reason(world, own_promise):
+    spawned = []
+    control.model("opus", job=None, caller_pid=ME, spawn=spawned.append)
+    own_promise()
+    world.screen = Screen(switch_dialog("Switch model?", "Opus 5.5", cursor=1))
+    spawned[0]()
+    assert world.screen.presses == ["Escape"]
+    [settled] = pending.read(ME).changes
+    assert settled.outcome == pending.FAILED and "No, go back" in settled.detail
+
+
+def test_the_thread_stops_waiting_once_the_resume_has_gone_in(world, own_promise):
+    control.effort("low", job=None, caller_pid=ME, spawn=lambda fn: None)
+    change = own_promise()
+    gone = control._promise_gone(ME, change)
+    assert gone() is False
+    pending.clear(ME)
+    assert gone() is True
+
+
+def test_a_promise_that_was_never_written_does_not_end_the_wait(world):
+    gone = control._promise_gone(ME, pending.Change("effort", "low", "k"))
+    assert gone() is False and gone() is False
+
+
+def test_a_rename_asks_no_dialog(world):
+    out = control.rename("new", job=OTHER_JOB, caller_pid=ME)
+    assert out["ok"] and "switch_dialog" not in out and world.screen.presses == []
+
+
+@pytest.mark.parametrize("screen,marker", [
+    ("Change effort level?\nYes, switch to Low", "change effort level?"),
+    ("Switch model?\nYes, switch to Opus", "switch model?")])
+def test_the_switch_dialogs_count_as_a_modal(screen, marker):
+    assert guards.modal_on_screen(screen) == marker
+    assert guards.modal_on_screen("\x1b[1m" + screen + "\x1b[0m") == marker
 
 
 # --- the modal guard ---------------------------------------------------------

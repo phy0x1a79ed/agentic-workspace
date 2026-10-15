@@ -146,8 +146,8 @@ API_MANIFEST: dict[str, Any] = {
                 "selects 'Disconnect this session' in the modal it opens; it is "
                 "refused if the session is mid-turn or the modal is not the "
                 "expected one. Your own session cannot answer in the same turn: "
-                "the command runs when the turn ends and a follow-up prompt "
-                "resumes you."
+                "the command runs when the turn ends and one follow-up prompt "
+                "resumes you, carrying the link when turning on."
             ),
             "timeout": 60,
             "params": [
@@ -167,7 +167,14 @@ API_MANIFEST: dict[str, Any] = {
             "description": (
                 "Switch a session's model: types `/model <model>` and submits "
                 "it. Queues behind a running turn. Refused while a modal or "
-                "permission prompt is showing."
+                "permission prompt is showing. Claude Code asks 'Switch "
+                "model?' when the conversation already has output; this verb "
+                "answers that dialog with 'Yes, switch to <model>' (it closes "
+                "it with Escape if the cursor is on No, and leaves a dialog a "
+                "PreModelSwitch hook raised alone). On your own session the "
+                "command runs when your turn ends, and exactly one follow-up "
+                "prompt then reports whether the change succeeded or did not "
+                "apply."
             ),
             "timeout": 60,
             "params": [
@@ -185,7 +192,14 @@ API_MANIFEST: dict[str, Any] = {
             "description": (
                 "Set a session's effort: types `/effort <level>` and submits "
                 "it. Queues behind a running turn. Refused while a modal or "
-                "permission prompt is showing."
+                "permission prompt is showing. Claude Code asks 'Change "
+                "effort level?' when the conversation already has output; "
+                "this verb answers that dialog with 'Yes, switch to <level>' "
+                "(it closes it with Escape if the cursor is on No, and leaves "
+                "a dialog a PreModelSwitch hook raised alone). On your own "
+                "session the command runs when your turn ends, and exactly "
+                "one follow-up prompt then reports whether the change "
+                "succeeded or did not apply."
             ),
             "timeout": 60,
             "params": [
@@ -203,7 +217,9 @@ API_MANIFEST: dict[str, Any] = {
             "description": (
                 "Rename a session: types `/rename <name>` and submits it. "
                 "Queues behind a running turn. Refused while a modal or "
-                "permission prompt is showing."
+                "permission prompt is showing. On your own session, one "
+                "follow-up prompt reports the rename (and any other "
+                "settings change still owed a report) when it has run."
             ),
             "timeout": 60,
             "params": [
