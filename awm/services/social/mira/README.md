@@ -151,6 +151,12 @@ From the awm host (where this repo lives):
     rsync -a awm/services/social/mira/ mira:awm-social-mira/
     ssh mira 'bash ~/awm-social-mira/install-mira.sh'
 
+**CAUTION** `install-mira.sh` runs `enable --now`, which leaves a running unit
+on its old code. Run `systemctl --user restart awm-mira-api` after a daemon
+change. A new Opera start URL applies only at the next Opera restart, and that
+restart also bounces the Slack and Teams tabs. To add a tab without it, run
+`curl -X PUT 'http://127.0.0.1:9224/json/new?<url>'` on mira.
+
 One-time prereqs (already done on this mira): `sudo snap install opera`,
 `sudo apt-get install -y x11vnc openbox scrot python3.12-venv`,
 `loginctl enable-linger tony`.
