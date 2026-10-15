@@ -510,6 +510,29 @@ _CALLER_STAMPED: dict[str, frozenset[str] | None] = {
 }
 
 
+# The stamped verbs that need the caller's own session record on the node that
+# serves them: they inject into the session, or act as the session on the task
+# ledger. The rest of `_CALLER_STAMPED` uses the pid as a label (`start_other`'s
+# parent) or as a gate input (`stop_other`, trilium writes), and a peer reads the
+# missing pid as "an operator", so those stay routable. A session-bound verb
+# forwarded to a peer arrives with no pid and fails there with a misleading
+# "no calling session", so `/invoke` refuses it first.
+_SESSION_BOUND: dict[str, frozenset[str]] = {
+    "reflection": frozenset({"message_self", "compact", "mode", "whoami"}),
+    "operations": frozenset({
+        "hook_plan", "hook_plan_approved", "hook_todos", "hook_prompt",
+        "hook_session_clear", "task_claim", "request_human"}),
+}
+
+
+def _session_bound_refusal(redirect: peer_catalog.PeerRedirect) -> str | None:
+    """Why this redirected call must not leave the node, or None if it may."""
+    if redirect.verb not in _SESSION_BOUND.get(redirect.tool, ()):
+        return None
+    return (f"{redirect.tool}.{redirect.verb} acts on your own session on this node, "
+            f"so it cannot run on peer {redirect.peer!r}; call it without peer")
+
+
 def _stamped_bag(name: str, args: dict) -> dict | None:
     """The dict that carries `_caller_pid` for this call, or None if it is not stamped.
 
@@ -805,6 +828,11 @@ async def invoke_tool(payload: dict, request: Request):
             # named the peer or the domain's default provider is one.
             log.info("mode gate: refused %s — it resolves to a peer", name)
             raise HTTPException(403, f"mode {mode!r} may not run a verb on a peer")
+        refusal = _session_bound_refusal(e)
+        if refusal:
+            log.info("refused %s.%s on peer %s: it acts on the caller's own session",
+                     e.tool, e.verb, e.peer)
+            raise HTTPException(400, refusal)
         # The call belongs to a peer. The gateway resolves, never relays — so a
         # caller that told us it can dial a peer edge (only `awm-mcp` does, via
         # this header) gets the address back and makes the call itself, keeping
