@@ -99,9 +99,7 @@ class Commands:
 
     async def _new_agent(self, event: dict) -> str:
         project, scope = config.new_agent_target()
-        project = str(event.get("project") or "").strip() or project
-        scope = str(event.get("scope") or "").strip() or scope
-        name = str(event.get("name") or "").strip() or f"agent-{uuid.uuid4().hex[:4]}"
+        name = f"agent-{uuid.uuid4().hex[:4]}"
         prompt = str(event.get("prompt") or "").strip()
         spec = {"project": project, "scope": scope, "name": name, "remote_control": True,
                 **({"prompt": prompt} if prompt else {})}

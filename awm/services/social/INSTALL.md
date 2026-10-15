@@ -257,7 +257,7 @@ a **DM to the bot**, and only for a sender in the `social_operators` table.
 |---|---|
 | `/approve [device]` | `2fa` and `ssh` arm a Duo approval burst (see their INSTALL) |
 | `/reject <ref> [reason]` | `reporting` rejects the federation card |
-| `/new-agent [project] [scope] [name] [prompt]` | `reporting` starts a session with Remote Control on and answers with its link |
+| `/new-agent [prompt]` | `reporting` starts a session with Remote Control on and answers with its link |
 
 The commands sync as *global* commands in `on_ready`, because global is the
 only kind that appears in a DM. On invocation the connector checks the sender,
