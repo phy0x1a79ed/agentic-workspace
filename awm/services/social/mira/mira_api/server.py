@@ -17,6 +17,12 @@ Runs ON mira. Exposes a clean per-platform API over the awm-network so the awm
     POST /v1/{platform}/send  {channel,text,thread?}
     POST /v1/{platform}/open_dm  {user}  → resolve a user (id/name) to a DM channel
     GET  /v1/events                      → WS; pushes inbound {type:"message", …}
+    GET  /v1/fs/{name}/ls|stat|get|search, POST /v1/fs/{name}/put|mkdir|rm
+                                         → cloud file store (OneDrive/SharePoint)
+
+A file-store failure carries ``{error, code}``: 404 ENOENT, 409 ENOTDIR/EISDIR/
+EEXIST, 403 EAUTH (no access, or the session needs re-authentication), 400
+EINVAL, 501 ENOTSUP, and 502 for anything the driver could not classify.
 
 Every route requires ``Authorization: Bearer <token>``. The daemon polls each
 platform on mira (the **inbound watcher**) and pushes new messages to all WS
@@ -41,6 +47,13 @@ log = logging.getLogger("mira_api.server")
 
 DEFAULT_POLL_INTERVAL_S = 15.0
 WATCH_HISTORY_LIMIT = 50
+
+
+def _fs_error(exc: Exception) -> web.Response:
+    status, code = storage_mod.error_status(exc)
+    if status == 502:
+        log.warning("fs upstream error: %s", exc)
+    return web.json_response({"error": str(exc), "code": code}, status=status)
 
 
 class Platform:
@@ -97,6 +110,7 @@ class MiraAPI:
         app.router.add_get("/v1/fs/{name}/get", self._h_fs_get)
         app.router.add_get("/v1/fs/{name}/search", self._h_fs_search)
         app.router.add_post("/v1/fs/{name}/put", self._h_fs_put)
+        app.router.add_post("/v1/fs/{name}/mkdir", self._h_fs_mkdir)
         app.router.add_post("/v1/fs/{name}/rm", self._h_fs_rm)
         app.on_startup.append(self._on_startup)
         app.on_cleanup.append(self._on_cleanup)
@@ -117,9 +131,9 @@ class MiraAPI:
             if scls is None:
                 log.error("unknown storage %r; skipping", name)
                 continue
-            page = CDPPage(self._cdp_http_base, scls.target_needle)
-            self._storage[name] = scls(page)
-            log.info("storage %s initialised (needle %r)", name, scls.target_needle)
+            self._storage[name] = scls.create(self._cdp_http_base)
+            log.info("storage %s initialised (pages %s)", name,
+                     {role: pg.needle for role, pg in self._storage[name].pages().items()})
 
     async def _on_cleanup(self, app: web.Application) -> None:
         for t in self._watchers:
@@ -129,7 +143,8 @@ class MiraAPI:
         for p in self._platforms.values():
             await p.page.close()
         for s in self._storage.values():
-            await s.page.close()
+            for pg in s.pages().values():
+                await pg.close()
 
     # -- auth ---------------------------------------------------------------
 
@@ -165,9 +180,11 @@ class MiraAPI:
                 "target": p.page.target_url, "healthy": healthy,
                 "self_id": p.self_id, "watching": len(p.baseline)}
         for name, s in self._storage.items():
-            healthy = await s.page.healthy()
-            out["storage"][name] = {
-                "target": s.page.target_url, "healthy": healthy}
+            pages = {}
+            for role, pg in s.pages().items():
+                pages[role] = {"target": pg.target_url, "healthy": await pg.healthy()}
+            main = next(iter(pages.values()))
+            out["storage"][name] = {**main, "pages": pages}
         return web.json_response(out)
 
     async def _h_identity(self, request: web.Request) -> web.Response:
@@ -276,7 +293,7 @@ class MiraAPI:
             return web.json_response(
                 {"entries": await s.ls(request.query.get("path", "") or "")})
         except Exception as exc:  # noqa: BLE001
-            return web.json_response({"error": str(exc)}, status=502)
+            return _fs_error(exc)
 
     async def _h_fs_stat(self, request: web.Request) -> web.Response:
         s = self._storage_driver(request)
@@ -286,7 +303,7 @@ class MiraAPI:
         try:
             return web.json_response({"entry": await s.stat(path)})
         except Exception as exc:  # noqa: BLE001
-            return web.json_response({"error": str(exc)}, status=502)
+            return _fs_error(exc)
 
     async def _h_fs_get(self, request: web.Request) -> web.Response:
         s = self._storage_driver(request)
@@ -296,7 +313,7 @@ class MiraAPI:
         try:
             return web.json_response(await s.get(path))
         except Exception as exc:  # noqa: BLE001
-            return web.json_response({"error": str(exc)}, status=502)
+            return _fs_error(exc)
 
     async def _h_fs_put(self, request: web.Request) -> web.Response:
         s = self._storage_driver(request)
@@ -309,10 +326,25 @@ class MiraAPI:
             return web.json_response(
                 {"error": "path and b64 are required"}, status=400)
         try:
-            entry = await s.put(path, b64, body.get("mime"))
+            entry = await s.put(path, b64, body.get("mime"),
+                                bool(body.get("parents")))
             return web.json_response({"entry": entry})
         except Exception as exc:  # noqa: BLE001
-            return web.json_response({"error": str(exc)}, status=502)
+            return _fs_error(exc)
+
+    async def _h_fs_mkdir(self, request: web.Request) -> web.Response:
+        s = self._storage_driver(request)
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001
+            return web.json_response({"error": "invalid JSON body"}, status=400)
+        path = body.get("path")
+        if not path:
+            return web.json_response({"error": "path is required"}, status=400)
+        try:
+            return web.json_response({"entry": await s.mkdir(path)})
+        except Exception as exc:  # noqa: BLE001
+            return _fs_error(exc)
 
     async def _h_fs_rm(self, request: web.Request) -> web.Response:
         s = self._storage_driver(request)
@@ -327,7 +359,7 @@ class MiraAPI:
             await s.rm(path)
             return web.json_response({"ok": True})
         except Exception as exc:  # noqa: BLE001
-            return web.json_response({"error": str(exc)}, status=502)
+            return _fs_error(exc)
 
     async def _h_fs_search(self, request: web.Request) -> web.Response:
         s = self._storage_driver(request)
@@ -338,10 +370,8 @@ class MiraAPI:
         root = request.query.get("root") or None
         try:
             return web.json_response({"entries": await s.search(query, limit, root)})
-        except NotImplementedError as exc:
-            return web.json_response({"error": str(exc)}, status=501)
         except Exception as exc:  # noqa: BLE001
-            return web.json_response({"error": str(exc)}, status=502)
+            return _fs_error(exc)
 
     # -- WebSocket fan-out --------------------------------------------------
 

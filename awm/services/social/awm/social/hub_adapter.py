@@ -334,16 +334,35 @@ def _entry_to_dict(e: buckets_mod.Entry) -> dict:
             "size": e.size, "mime": e.mime, "modified": e.modified, "id": e.id}
 
 
-def _h_buckets(args: dict) -> dict:
-    """List configured buckets with kind + live status."""
+_PROBE_TIMEOUT_S = 20.0
+
+
+async def _probe(name: str) -> str:
+    """Empty when the bucket answers now, else why it does not."""
+    b = _buckets.get(name)
+    if b is None:
+        return "failed to build (see the social service log)"
+    try:
+        await asyncio.wait_for(b.probe(), _PROBE_TIMEOUT_S)
+        return ""
+    except asyncio.TimeoutError:
+        return f"no answer within {_PROBE_TIMEOUT_S:.0f}s"
+    except Exception as exc:  # noqa: BLE001
+        return f"{type(exc).__name__}: {exc}"
+
+
+async def _h_buckets(args: dict) -> dict:
+    """List configured buckets with kind, root, and whether each answers now."""
+    names = list(_bucket_cfgs)
+    reasons = await asyncio.gather(*(_probe(n) for n in names))
     out = []
-    for name, cfg in _bucket_cfgs.items():
-        out.append({
-            "name": name,
-            "kind": cfg.kind,
-            "root": cfg.root,
-            "live": name in _buckets,
-        })
+    for name, reason in zip(names, reasons):
+        cfg = _bucket_cfgs[name]
+        row = {"name": name, "kind": cfg.kind, "root": cfg.root,
+               "live": not reason}
+        if reason:
+            row["error"] = reason
+        out.append(row)
     return {"buckets": out}
 
 
@@ -351,6 +370,16 @@ async def _h_bucket_ls(args: dict) -> dict:
     entries = await _bucket(args["bucket"]).ls(args.get("path", "") or "")
     return {"entries": [_entry_to_dict(e) for e in entries],
             "count": len(entries)}
+
+
+async def _h_bucket_stat(args: dict) -> dict:
+    return {"entry": _entry_to_dict(
+        await _bucket(args["bucket"]).stat(args["path"]))}
+
+
+async def _h_bucket_mkdir(args: dict) -> dict:
+    return {"entry": _entry_to_dict(
+        await _bucket(args["bucket"]).mkdir(args["path"]))}
 
 
 async def _h_bucket_get(args: dict) -> dict:
@@ -372,7 +401,8 @@ async def _h_bucket_put(args: dict) -> dict:
     with open(src, "rb") as fh:
         data = fh.read()
     entry = await _bucket(args["bucket"]).put(
-        args["path"], data, mime=args.get("mime") or None)
+        args["path"], data, mime=args.get("mime") or None,
+        parents=bool(args.get("parents")))
     return {"entry": _entry_to_dict(entry)}
 
 
@@ -383,7 +413,8 @@ async def _h_bucket_rm(args: dict) -> dict:
 
 async def _h_bucket_search(args: dict) -> dict:
     entries = await _bucket(args["bucket"]).search(
-        args["query"], limit=int(args.get("limit", 50)))
+        args["query"], limit=int(args.get("limit", 50)),
+        path=args.get("path", "") or "")
     return {"entries": [_entry_to_dict(e) for e in entries],
             "count": len(entries)}
 
@@ -511,18 +542,47 @@ API_MANIFEST: dict[str, Any] = {
             "name": "buckets",
             "tool": "social_buckets",
             "description": "List configured cloud file-store buckets (Google "
-                           "Drive, OneDrive/SharePoint) with kind, root, and live "
-                           "status.",
+                           "Drive, OneDrive/SharePoint) with kind and root. Each "
+                           "is probed now: `live` is false, with an `error`, when "
+                           "the store does not answer (e.g. a SharePoint session "
+                           "that needs re-authentication on mira).",
+            "timeout": 60,
         },
         {
             "name": "bucket_ls",
             "tool": "social_bucket_ls",
             "description": "List the immediate children of a folder in a bucket. "
                            "`path` is relative to the bucket root (omit for root). "
-                           "Returns entries with name, path, is_dir, size, mime.",
+                           "A OneDrive bucket also takes an absolute "
+                           "server-relative path (/teams/<site>/..., "
+                           "/sites/<site>/..., /personal/<user>/...) to reach any "
+                           "site the session can. A missing path is a not-found "
+                           "error, a file is a not-a-folder error. Returns entries "
+                           "with name, path, is_dir, size, mime.",
             "params": [
                 {"name": "bucket", "type": "string", "required": True},
                 {"name": "path", "type": "string", "required": False},
+            ],
+        },
+        {
+            "name": "bucket_stat",
+            "tool": "social_bucket_stat",
+            "description": "Return the entry for one file or folder in a bucket, "
+                           "or a not-found error. Paths as for bucket_ls.",
+            "params": [
+                {"name": "bucket", "type": "string", "required": True},
+                {"name": "path", "type": "string", "required": True},
+            ],
+        },
+        {
+            "name": "bucket_mkdir",
+            "tool": "social_bucket_mkdir",
+            "description": "Create the folder at `path` in a bucket, with every "
+                           "missing parent. Succeeds on an existing folder. "
+                           "Paths as for bucket_ls.",
+            "params": [
+                {"name": "bucket", "type": "string", "required": True},
+                {"name": "path", "type": "string", "required": True},
             ],
         },
         {
@@ -543,6 +603,8 @@ API_MANIFEST: dict[str, Any] = {
             "tool": "social_bucket_put",
             "description": "Upload a local file (`src` = a filesystem path) to "
                            "`path` in a bucket, creating or overwriting it. "
+                           "`parents=true` creates missing folders above `path`; "
+                           "without it a missing folder is a not-found error. "
                            "Returns the resulting entry.",
             "timeout": 300,
             "params": [
@@ -550,6 +612,7 @@ API_MANIFEST: dict[str, Any] = {
                 {"name": "path", "type": "string", "required": True},
                 {"name": "src", "type": "string", "required": True},
                 {"name": "mime", "type": "string", "required": False},
+                {"name": "parents", "type": "boolean", "required": False},
             ],
         },
         {
@@ -566,11 +629,13 @@ API_MANIFEST: dict[str, Any] = {
             "tool": "social_bucket_search",
             "description": "Search a bucket for files matching `query` (Google "
                            "Drive: name match across the drive; OneDrive: "
-                           "SharePoint search). Returns matching entries.",
+                           "SharePoint search, scoped to the bucket root or to "
+                           "`path`). Returns matching entries.",
             "params": [
                 {"name": "bucket", "type": "string", "required": True},
                 {"name": "query", "type": "string", "required": True},
                 {"name": "limit", "type": "number", "required": False},
+                {"name": "path", "type": "string", "required": False},
             ],
         },
         {
@@ -643,6 +708,8 @@ HANDLERS = {
     "lookup": _h_lookup,
     "buckets": _h_buckets,
     "bucket_ls": _h_bucket_ls,
+    "bucket_stat": _h_bucket_stat,
+    "bucket_mkdir": _h_bucket_mkdir,
     "bucket_get": _h_bucket_get,
     "bucket_put": _h_bucket_put,
     "bucket_rm": _h_bucket_rm,

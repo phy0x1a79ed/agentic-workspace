@@ -261,6 +261,14 @@ class TestGoogleDrive:
         # visible on a re-list
         assert "fresh.txt" in {x.name for x in await b.ls("docs")}
 
+    async def test_put_into_missing_folder_needs_parents(self, fake_google_http):
+        b = _gdrive(self._tree())
+        with pytest.raises(FileNotFoundError):
+            await b.put("new/deep/f.txt", b"x")
+        e = await b.put("new/deep/f.txt", b"x", parents=True)
+        assert e.path == "new/deep/f.txt"
+        assert "f.txt" in {x.name for x in await b.ls("new/deep")}
+
     async def test_put_overwrites_existing(self, fake_google_http):
         b = _gdrive(self._tree())
         e = await b.put("docs/note.txt", b"replaced")
@@ -302,6 +310,8 @@ class _StubFsDaemon:
         self.search_entries = []
         self.search_query = None
         self.rm_path = None
+        self.mkdir_path = None
+        self.fail = None          # (status, code, message) for the next call
         self._runner = None
         self.base = ""
 
@@ -309,6 +319,8 @@ class _StubFsDaemon:
         from aiohttp import web
         app = web.Application()
         app.router.add_get("/v1/fs/{name}/ls", self._ls)
+        app.router.add_get("/v1/fs/{name}/stat", self._stat)
+        app.router.add_post("/v1/fs/{name}/mkdir", self._mkdir)
         app.router.add_get("/v1/fs/{name}/get", self._get)
         app.router.add_get("/v1/fs/{name}/search", self._search)
         app.router.add_post("/v1/fs/{name}/put", self._put)
@@ -323,10 +335,33 @@ class _StubFsDaemon:
         if self._runner:
             await self._runner.cleanup()
 
+    def _failure(self):
+        from aiohttp import web
+        if self.fail is None:
+            return None
+        status, code, msg = self.fail
+        self.fail = None
+        return web.json_response({"error": msg, "code": code}, status=status)
+
     async def _ls(self, request):
         from aiohttp import web
         self.calls.append(("ls", request.query.get("path")))
-        return web.json_response({"entries": self.ls_entries})
+        return self._failure() or web.json_response({"entries": self.ls_entries})
+
+    async def _stat(self, request):
+        from aiohttp import web
+        path = request.query.get("path")
+        self.calls.append(("stat", path))
+        return self._failure() or web.json_response({"entry": {
+            "name": path.rsplit("/", 1)[-1], "path": path, "is_dir": True}})
+
+    async def _mkdir(self, request):
+        from aiohttp import web
+        body = await request.json()
+        self.mkdir_path = body["path"]
+        return self._failure() or web.json_response({"entry": {
+            "name": body["path"].rsplit("/", 1)[-1], "path": body["path"],
+            "is_dir": True}})
 
     async def _get(self, request):
         from aiohttp import web
@@ -343,6 +378,7 @@ class _StubFsDaemon:
         body = await request.json()
         self.put_received = (
             body["path"], base64.b64decode(body["b64"]), body.get("mime"))
+        self.put_parents = body.get("parents")
         return web.json_response({"entry": {
             "name": body["path"].rsplit("/", 1)[-1], "path": body["path"],
             "is_dir": False, "size": len(base64.b64decode(body["b64"]))}})
@@ -425,6 +461,83 @@ class TestOneDrive:
         finally:
             await b.close()
 
+    async def test_put_threads_parents(self, fs_daemon):
+        b = _onedrive(fs_daemon)
+        try:
+            await b.put("a/b.bin", b"x", parents=True)
+            assert fs_daemon.put_parents is True
+            await b.put("a/b.bin", b"x")
+            assert fs_daemon.put_parents is False
+        finally:
+            await b.close()
+
+    async def test_mkdir_sends_abs_path(self, fs_daemon):
+        b = _onedrive(fs_daemon)
+        try:
+            e = await b.mkdir("new/dir")
+            assert fs_daemon.mkdir_path == "/teams/x/Docs/new/dir"
+            assert e.path == "new/dir" and e.is_dir
+        finally:
+            await b.close()
+
+    @pytest.mark.parametrize("status,code,exc", [
+        (404, "ENOENT", FileNotFoundError),
+        (409, "ENOTDIR", NotADirectoryError),
+        (403, "EAUTH", PermissionError),
+        (400, "EINVAL", ValueError),
+        (502, "EUPSTREAM", RuntimeError),
+    ])
+    async def test_coded_errors_map_to_builtins(self, fs_daemon, status, code, exc):
+        fs_daemon.fail = (status, code, "/teams/x/Docs/nope: not found")
+        b = _onedrive(fs_daemon)
+        try:
+            with pytest.raises(exc) as info:
+                await b.ls("nope")
+            if code != "EUPSTREAM":
+                assert "bucket 'o'" in str(info.value)
+            if code == "EAUTH":
+                assert "re-authenticate" in str(info.value)
+        finally:
+            await b.close()
+
+    async def test_absolute_paths_pass_through(self, fs_daemon):
+        b = _onedrive(fs_daemon, root="/teams/x/Docs")
+        try:
+            await b.ls("/teams/x-Compute2/Shared Documents/Outputs")
+            assert fs_daemon.calls[-1] == (
+                "ls", "/teams/x-Compute2/Shared Documents/Outputs")
+            await b.ls("/personal/me_ubc_ca/Documents/")
+            assert fs_daemon.calls[-1] == ("ls", "/personal/me_ubc_ca/Documents")
+            # A leading slash on a non-managed path stays relative to the root.
+            await b.ls("/Outputs")
+            assert fs_daemon.calls[-1] == ("ls", "/teams/x/Docs/Outputs")
+        finally:
+            await b.close()
+
+    async def test_entries_strip_root_by_whole_segment(self, fs_daemon):
+        fs_daemon.ls_entries = [
+            {"name": "a", "path": "/teams/x/Docs/a", "is_dir": True},
+            {"name": "b", "path": "/teams/x/Docs2/b", "is_dir": True},
+            {"name": "c", "path": "/teams/y/Docs/c", "is_dir": True},
+        ]
+        b = _onedrive(fs_daemon, root="/teams/x/Docs")
+        try:
+            got = [e.path for e in await b.ls("")]
+            assert got == ["a", "/teams/x/Docs2/b", "/teams/y/Docs/c"]
+        finally:
+            await b.close()
+
+    async def test_probe_stats_root(self, fs_daemon):
+        b = _onedrive(fs_daemon)
+        try:
+            await b.probe()
+            assert fs_daemon.calls[-1] == ("stat", "/teams/x/Docs")
+            fs_daemon.fail = (403, "EAUTH", "signed out")
+            with pytest.raises(PermissionError):
+                await b.probe()
+        finally:
+            await b.close()
+
     async def test_search_passes_root(self, fs_daemon):
         fs_daemon.search_entries = [
             {"name": "hit.txt", "path": "/teams/x/Docs/hit.txt", "is_dir": False}]
@@ -445,6 +558,7 @@ class TestOneDrive:
 class _FakeBucket:
     def __init__(self):
         self.calls = []
+        self.dead = False
 
     async def ls(self, path=""):
         from awm.social.buckets.base import Entry
@@ -455,17 +569,32 @@ class _FakeBucket:
         self.calls.append(("get", path))
         return ("a.txt", "text/plain", b"hi")
 
-    async def put(self, path, data, *, mime=None):
+    async def put(self, path, data, *, mime=None, parents=False):
         from awm.social.buckets.base import Entry
-        self.calls.append(("put", path, data, mime))
+        self.calls.append(("put", path, data, mime, parents))
         return Entry(name="a.txt", path=path, size=len(data))
+
+    async def stat(self, path):
+        from awm.social.buckets.base import Entry
+        self.calls.append(("stat", path))
+        if self.dead:
+            raise PermissionError("session expired")
+        return Entry(name="", path=path, is_dir=True)
+
+    async def probe(self):
+        await self.stat("")
+
+    async def mkdir(self, path):
+        from awm.social.buckets.base import Entry
+        self.calls.append(("mkdir", path))
+        return Entry(name=path.rsplit("/", 1)[-1], path=path, is_dir=True)
 
     async def rm(self, path):
         self.calls.append(("rm", path))
 
-    async def search(self, query, *, limit=50):
+    async def search(self, query, *, limit=50, path=""):
         from awm.social.buckets.base import Entry
-        self.calls.append(("search", query, limit))
+        self.calls.append(("search", query, limit, path))
         return [Entry(name="a.txt", path="a.txt")]
 
 
@@ -481,11 +610,25 @@ def wired_buckets(monkeypatch):
 
 
 class TestBucketHandlers:
-    def test_h_buckets_lists_config(self, wired_buckets):
+    async def test_h_buckets_lists_config(self, wired_buckets):
         hub, _ = wired_buckets
-        out = hub._h_buckets({})
+        out = await hub._h_buckets({})
         assert out["buckets"] == [
             {"name": "b", "kind": "google_drive", "root": "R", "live": True}]
+
+    async def test_h_buckets_reports_dead_session(self, wired_buckets):
+        hub, fake = wired_buckets
+        fake.dead = True
+        row = (await hub._h_buckets({}))["buckets"][0]
+        assert row["live"] is False
+        assert "PermissionError" in row["error"]
+
+    async def test_h_bucket_stat_and_mkdir(self, wired_buckets):
+        hub, fake = wired_buckets
+        out = await hub._h_bucket_mkdir({"bucket": "b", "path": "a/b"})
+        assert out["entry"]["is_dir"] and fake.calls[-1] == ("mkdir", "a/b")
+        out = await hub._h_bucket_stat({"bucket": "b", "path": "a/b"})
+        assert out["entry"]["path"] == "a/b"
 
     async def test_h_bucket_ls(self, wired_buckets):
         hub, fake = wired_buckets
@@ -511,7 +654,10 @@ class TestBucketHandlers:
         out = await hub._h_bucket_put(
             {"bucket": "b", "path": "dest.txt", "src": str(src)})
         assert out["entry"]["path"] == "dest.txt"
-        assert fake.calls[-1] == ("put", "dest.txt", b"payload", None)
+        assert fake.calls[-1] == ("put", "dest.txt", b"payload", None, False)
+        await hub._h_bucket_put(
+            {"bucket": "b", "path": "d/e.txt", "src": str(src), "parents": True})
+        assert fake.calls[-1][-1] is True
 
     async def test_h_bucket_rm(self, wired_buckets):
         hub, fake = wired_buckets
@@ -521,7 +667,7 @@ class TestBucketHandlers:
     async def test_h_bucket_search(self, wired_buckets):
         hub, fake = wired_buckets
         out = await hub._h_bucket_search({"bucket": "b", "query": "x", "limit": 7})
-        assert out["count"] == 1 and fake.calls[-1] == ("search", "x", 7)
+        assert out["count"] == 1 and fake.calls[-1] == ("search", "x", 7, "")
 
     async def test_unknown_bucket_raises(self, wired_buckets):
         hub, _ = wired_buckets

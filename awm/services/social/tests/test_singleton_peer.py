@@ -166,7 +166,7 @@ class TestForwarding:
             assert inspect.iscoroutinefunction(ha.HANDLERS[name]), name
         # These take no account and must keep running in the worker thread.
         for name in ("list_operators", "add_operator", "remove_operator",
-                     "lookup", "buckets"):
+                     "lookup"):
             assert not inspect.iscoroutinefunction(ha.HANDLERS[name]), name
 
 

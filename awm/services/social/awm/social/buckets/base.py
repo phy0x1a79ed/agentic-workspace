@@ -9,7 +9,12 @@ messaging shape over file storage helped nobody.
 
 Paths are POSIX-style and **relative to the bucket's configured root** (``""``
 or ``"/"`` is the root itself); a backend resolves them to whatever the platform
-addresses by (Drive file ids, SharePoint server-relative urls). Unlike the
+addresses by (Drive file ids, SharePoint server-relative urls). A backend may
+also accept absolute paths of its own (SharePoint's ``/teams/<x>/...``).
+
+Failures use the builtin exceptions: ``FileNotFoundError`` for a missing path,
+``NotADirectoryError``/``IsADirectoryError`` for the wrong kind, and
+``PermissionError`` when the store refuses the identity. Unlike the
 connectors, a bucket is a plain request/response object — there is no live
 socket and no ``start`` loop, so the adapter never schedules a task for it.
 
@@ -103,10 +108,12 @@ class Bucket(ABC):
 
     @abstractmethod
     async def put(
-        self, path: str, data: bytes, *, mime: str | None = None
+        self, path: str, data: bytes, *, mime: str | None = None,
+        parents: bool = False,
     ) -> Entry:
         """Upload ``data`` to ``path`` (creating or overwriting), returning the
-        resulting :class:`Entry`."""
+        resulting :class:`Entry`. ``parents`` creates missing folders above
+        ``path``. Without it a missing parent is ``FileNotFoundError``."""
 
     @abstractmethod
     async def rm(self, path: str) -> None:
@@ -121,8 +128,14 @@ class Bucket(ABC):
         raise NotImplementedError(
             f"{self.kind} bucket does not support mkdir")
 
-    async def search(self, query: str, *, limit: int = 50) -> list[Entry]:
+    async def probe(self) -> None:
+        """Raise unless the store answers for this identity right now."""
+        await self.stat("")
+
+    async def search(self, query: str, *, limit: int = 50,
+                     path: str = "") -> list[Entry]:
         """Search the store for files matching ``query`` → :class:`Entry` list.
+        ``path`` scopes the search to a folder where the backend can.
 
         Non-abstract: a backend with no usable search surface leaves this
         default, which raises and the verb surfaces a clean error.

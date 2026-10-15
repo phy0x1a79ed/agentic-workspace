@@ -346,6 +346,7 @@ def _payload(resp):
 class _FakeStorage:
     def __init__(self):
         self.calls = []
+        self.raise_on_mkdir = None
 
     async def ls(self, path):
         self.calls.append(("ls", path))
@@ -359,9 +360,15 @@ class _FakeStorage:
         self.calls.append(("get", path))
         return {"filename": "a.txt", "mime": "text/plain", "b64": "aGk="}
 
-    async def put(self, path, b64, mime=None):
-        self.calls.append(("put", path, b64, mime))
+    async def put(self, path, b64, mime=None, parents=False):
+        self.calls.append(("put", path, b64, mime, parents))
         return {"name": "a.txt", "path": path, "is_dir": False}
+
+    async def mkdir(self, path):
+        self.calls.append(("mkdir", path))
+        if self.raise_on_mkdir:
+            raise self.raise_on_mkdir
+        return {"name": path.rsplit("/", 1)[-1], "path": path, "is_dir": True}
 
     async def rm(self, path):
         self.calls.append(("rm", path))
@@ -410,7 +417,35 @@ class TestFsRoutes:
                               "mime": "application/octet-stream"}))
         assert resp.status == 200
         assert fake.calls[-1] == ("put", "/r/up.bin", "AAEC",
-                                  "application/octet-stream")
+                                  "application/octet-stream", False)
+
+    async def test_put_threads_parents(self):
+        api, fake = _api_with_storage()
+        await api._h_fs_put(_FsReq(
+            "onedrive", body={"path": "/r/a/b.bin", "b64": "AA==", "parents": True}))
+        assert fake.calls[-1][-1] is True
+
+    async def test_mkdir(self):
+        api, fake = _api_with_storage()
+        resp = await api._h_fs_mkdir(_FsReq("onedrive", body={"path": "/r/a/b"}))
+        assert resp.status == 200
+        assert _payload(resp)["entry"]["is_dir"] is True
+        assert fake.calls[-1] == ("mkdir", "/r/a/b")
+
+    @pytest.mark.parametrize("exc,status,code", [
+        (FileNotFoundError("/r/a: not found"), 404, "ENOENT"),
+        (NotADirectoryError("/r/a is a file"), 409, "ENOTDIR"),
+        (PermissionError("HTTP 403"), 403, "EAUTH"),
+        (ValueError("above a library"), 400, "EINVAL"),
+        (NotImplementedError("nope"), 501, "ENOTSUP"),
+        (RuntimeError("boom"), 502, "EUPSTREAM"),
+    ])
+    async def test_errors_carry_status_and_code(self, exc, status, code):
+        api, fake = _api_with_storage()
+        fake.raise_on_mkdir = exc
+        resp = await api._h_fs_mkdir(_FsReq("onedrive", body={"path": "/r/a"}))
+        assert resp.status == status
+        assert _payload(resp)["code"] == code
 
     async def test_put_requires_path_and_b64(self):
         api, _ = _api_with_storage()
@@ -438,8 +473,9 @@ class TestFsRoutes:
                 return False
 
         api, fake = _api_with_storage()
-        fake.page = _DeadPage()
+        fake.pages = lambda: {"tenant": _DeadPage(), "personal": _DeadPage()}
         resp = await api._h_health(_FsReq("onedrive"))
         body = _payload(resp)
         assert "onedrive" in body["storage"]
         assert body["storage"]["onedrive"]["healthy"] is False
+        assert set(body["storage"]["onedrive"]["pages"]) == {"tenant", "personal"}

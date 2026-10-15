@@ -36,12 +36,14 @@ class CDPPage:
         http_base: str,
         needle: str,
         *,
+        exclude: str = "",
         session: aiohttp.ClientSession | None = None,
         connect_timeout: float = 15.0,
         eval_timeout: float = 30.0,
     ) -> None:
         self._http_base = http_base.rstrip("/")
         self._needle = needle.lower()
+        self._exclude = exclude.lower()
         self._session = session
         self._own_session = session is None
         self._connect_timeout = connect_timeout
@@ -75,7 +77,7 @@ class CDPPage:
                  if t.get("type") == "page" and t.get("webSocketDebuggerUrl")]
         for t in pages:
             hay = (t.get("url", "") + " " + t.get("title", "")).lower()
-            if self._needle in hay:
+            if self._needle in hay and not (self._exclude and self._exclude in hay):
                 self._target_url = t.get("url", "")
                 return t["webSocketDebuggerUrl"]
         raise CDPError(f"no page target matching {self._needle!r} on {self._http_base}")

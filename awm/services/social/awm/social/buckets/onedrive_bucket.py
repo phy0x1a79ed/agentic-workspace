@@ -9,11 +9,18 @@ in-page over CDP (same-origin, the session cookie rides automatically). This
 class is a pure shim — it proxies each op to the daemon's ``/v1/fs/<name>/…``
 routes (mirroring :class:`~awm.social.connectors.mira_conn.MiraConnector`).
 
-The bucket's configured ``root`` (the Hallam Lab folder's server-relative path)
-is prefixed onto every path here, so the daemon driver stays stateless and only
-ever sees absolute server-relative SharePoint urls. Bytes cross the JSON hop as
-base64 (the same convention the Teams/Slack attachment download already uses).
-The daemon serves a self-signed cert, so TLS verification defaults off.
+A relative path is joined onto the configured ``root``. An absolute
+server-relative path (``/teams/<x>/...``, ``/sites/<x>/...``,
+``/personal/<x>/...``) passes through unchanged, so one bucket reaches every
+site the mira session can. SharePoint's own permissions are the boundary: a
+refusal comes back as ``PermissionError``. Entries under the root come back
+relative, entries elsewhere absolute.
+
+The daemon codes each failure (``code`` in the JSON body) and the bucket raises
+the matching builtin: ``FileNotFoundError``, ``NotADirectoryError``,
+``IsADirectoryError``, ``FileExistsError``, ``PermissionError`` or
+``ValueError``. Bytes cross the JSON hop as base64. The daemon serves a
+self-signed cert, so TLS verification defaults off.
 """
 
 from __future__ import annotations
@@ -27,6 +34,26 @@ log = logging.getLogger("awm.social.buckets.onedrive")
 
 # The daemon route segment — one storage "name" per logged-in store.
 _FS_NAME = "onedrive"
+
+_MANAGED_PATHS = ("teams", "sites", "personal")
+
+_CODE_ERRORS: dict[str, type[Exception]] = {
+    "ENOENT": FileNotFoundError,
+    "ENOTDIR": NotADirectoryError,
+    "EISDIR": IsADirectoryError,
+    "EEXIST": FileExistsError,
+    "EAUTH": PermissionError,
+    "EINVAL": ValueError,
+    "ENOTSUP": NotImplementedError,
+}
+
+
+def is_absolute(path: str) -> bool:
+    """True for a server-relative SharePoint path such as ``/teams/<x>/...``."""
+    if not (path or "").startswith("/"):
+        return False
+    first = path.lstrip("/").split("/", 1)[0].lower()
+    return first in _MANAGED_PATHS
 
 
 class OneDriveBucket(Bucket):
@@ -43,8 +70,10 @@ class OneDriveBucket(Bucket):
     # -- path scoping -------------------------------------------------------
 
     def _abs(self, path: str) -> str:
-        """Join the configured root onto a relative bucket path → server-relative
-        SharePoint url. ``""`` resolves to the root itself."""
+        """Bucket path → server-relative SharePoint url. An absolute path passes
+        through; a relative one joins the root (``""`` is the root itself)."""
+        if is_absolute(path):
+            return "/" + path.strip("/")
         rel = (path or "").strip("/")
         if not self._root:
             return "/" + rel if rel else ""
@@ -66,42 +95,53 @@ class OneDriveBucket(Bucket):
                 headers={"Authorization": f"Bearer {self._token}"})
         return self._session
 
-    async def _get(self, route: str, **params) -> dict:
+    async def _request(self, method: str, route: str, *, params=None,
+                       body=None, timeout: float = 120) -> dict:
         import aiohttp
 
         sess = await self._ensure_session()
-        async with sess.get(self._base + route, params=params,
-                            timeout=aiohttp.ClientTimeout(total=120)) as r:
-            data = await r.json()
+        async with sess.request(method, self._base + route, params=params,
+                                json=body,
+                                timeout=aiohttp.ClientTimeout(total=timeout)) as r:
+            try:
+                data = await r.json(content_type=None)
+            except ValueError:
+                data = {"error": (await r.text())[:300]}
             if r.status >= 400:
-                raise RuntimeError(
-                    f"mira GET {route} -> {r.status}: {data.get('error')}")
+                raise self._error(route, r.status, data or {})
             return data
+
+    def _error(self, route: str, status: int, data: dict) -> Exception:
+        msg = data.get("error") or f"HTTP {status}"
+        cls = _CODE_ERRORS.get(data.get("code") or "")
+        if cls is PermissionError:
+            return cls(f"bucket {self.account.name!r}: {msg}. If this is not a "
+                       f"permissions refusal, re-authenticate the SharePoint "
+                       f"session in mira's Opera")
+        if cls is not None:
+            return cls(f"bucket {self.account.name!r}: {msg}")
+        return RuntimeError(f"mira {route} -> {status}: {msg}")
+
+    async def _get(self, route: str, **params) -> dict:
+        return await self._request("GET", route, params=params)
 
     async def _post(self, route: str, body: dict) -> dict:
-        import aiohttp
-
-        sess = await self._ensure_session()
-        async with sess.post(self._base + route, json=body,
-                            timeout=aiohttp.ClientTimeout(total=300)) as r:
-            data = await r.json()
-            if r.status >= 400:
-                raise RuntimeError(
-                    f"mira POST {route} -> {r.status}: {data.get('error')}")
-            return data
+        return await self._request("POST", route, body=body, timeout=300)
 
     # -- mapping ------------------------------------------------------------
 
     def _entry(self, d: dict, fallback_path: str = "") -> Entry:
-        # The daemon returns absolute server-relative paths; strip the root back
-        # off so callers always see paths relative to the bucket.
+        # The daemon returns absolute server-relative paths. Strip the root back
+        # off, by whole segments, so entries under it read relative to the bucket.
         abs_path = d.get("path", "") or ""
         rel = abs_path
-        if self._root and abs_path.startswith(self._root):
-            rel = abs_path[len(self._root):].lstrip("/")
+        if self._root and abs_path == self._root:
+            rel = ""
+        elif self._root and abs_path.startswith(self._root + "/"):
+            rel = abs_path[len(self._root) + 1:]
         return Entry(
             name=d.get("name", "") or "",
-            path=rel or fallback_path,
+            path=rel if abs_path else fallback_path,
             is_dir=bool(d.get("is_dir")),
             size=int(d.get("size", 0) or 0),
             mime=d.get("mime", "") or "",
@@ -120,6 +160,13 @@ class OneDriveBucket(Bucket):
         resp = await self._get(f"/v1/fs/{_FS_NAME}/stat", path=self._abs(path))
         return self._entry(resp.get("entry", {}), fallback_path=path.strip("/"))
 
+    async def probe(self) -> None:
+        await self.stat("")
+
+    async def mkdir(self, path: str) -> Entry:
+        resp = await self._post(f"/v1/fs/{_FS_NAME}/mkdir", {"path": self._abs(path)})
+        return self._entry(resp.get("entry", {}), fallback_path=path.strip("/"))
+
     async def get(self, path: str) -> tuple[str, str, bytes]:
         resp = await self._get(f"/v1/fs/{_FS_NAME}/get", path=self._abs(path))
         return (
@@ -129,11 +176,13 @@ class OneDriveBucket(Bucket):
         )
 
     async def put(
-        self, path: str, data: bytes, *, mime: str | None = None
+        self, path: str, data: bytes, *, mime: str | None = None,
+        parents: bool = False,
     ) -> Entry:
         body = {
             "path": self._abs(path),
             "b64": base64.b64encode(data).decode("ascii"),
+            "parents": bool(parents),
         }
         if mime:
             body["mime"] = mime
@@ -143,10 +192,11 @@ class OneDriveBucket(Bucket):
     async def rm(self, path: str) -> None:
         await self._post(f"/v1/fs/{_FS_NAME}/rm", {"path": self._abs(path)})
 
-    async def search(self, query: str, *, limit: int = 50) -> list[Entry]:
+    async def search(self, query: str, *, limit: int = 50,
+                     path: str = "") -> list[Entry]:
         resp = await self._get(
             f"/v1/fs/{_FS_NAME}/search", query=query, limit=limit,
-            root=self._root)
+            root=self._abs(path))
         return [self._entry(e) for e in resp.get("entries", [])]
 
     async def close(self) -> None:

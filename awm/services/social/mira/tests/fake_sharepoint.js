@@ -1,0 +1,111 @@
+// In-memory stand-in for the slice of the SharePoint REST API the OneDrive
+// prelude calls. Installed over window.fetch in a headless page, so the
+// prelude's real JavaScript runs against it.
+(function () {
+  const F = {};
+  F.reset = function (spec) {
+    spec = spec || {};
+    F.sites = spec.sites || ['/teams/x'];
+    F.nodes = {};
+    F.calls = [];
+    F.auth = 'ok';         // 'ok' | 'redirect' | '403'
+    F.seq = 0;
+    for (const lib of (spec.libraries || ['/teams/x/Docs'])) F.addFolder(lib);
+    for (const [p, text] of Object.entries(spec.files || {})) F.addFile(p, text);
+    for (const p of (spec.folders || [])) F.addFolder(p);
+  };
+  F.uid = function () { F.seq += 1; return 'uid-' + F.seq; };
+  F.addFolder = function (p) {
+    const segs = p.split('/').filter(Boolean);
+    F.nodes[p] = {kind: 'folder', name: segs[segs.length - 1], uid: F.uid(),
+                  modified: '2026-01-01T00:00:00Z'};
+  };
+  F.addFile = function (p, data) {
+    const segs = p.split('/').filter(Boolean);
+    const bytes = typeof data === 'string' ? new TextEncoder().encode(data) : data;
+    F.nodes[p] = {kind: 'file', name: segs[segs.length - 1], uid: F.uid(), data: bytes,
+                  modified: '2026-01-01T00:00:00Z'};
+  };
+  F.parent = function (p) { const s = p.split('/').filter(Boolean); s.pop(); return '/' + s.join('/'); };
+  F.children = function (p) {
+    return Object.keys(F.nodes).filter(k => F.parent(k) === p).sort();
+  };
+  F.folderJson = function (p) {
+    const n = F.nodes[p];
+    if (!n || n.kind !== 'folder') return {Exists: false};
+    return {Exists: true, Name: n.name, ServerRelativeUrl: p, UniqueId: n.uid,
+            TimeLastModified: n.modified, ItemCount: F.children(p).length};
+  };
+  F.fileJson = function (p) {
+    const n = F.nodes[p];
+    return {Name: n.name, ServerRelativeUrl: p, UniqueId: n.uid,
+            Length: String(n.data.length), TimeLastModified: n.modified};
+  };
+  F.lit = function (s) { return decodeURIComponent(s).replace(/''/g, "'"); };
+  F.json = function (obj, status) {
+    return new Response(JSON.stringify(obj), {status: status || 200,
+      headers: {'Content-Type': 'application/json'}});
+  };
+  F.notFound = function (msg) {
+    return F.json({'odata.error': {code: '-2130575338, Microsoft.SharePoint.SPException',
+      message: {value: msg || 'The file does not exist.'}}}, 404);
+  };
+  F.handle = async function (url, opts) {
+    const method = (opts && opts.method) || 'GET';
+    const body = opts && opts.body;
+    const at = url.indexOf('/_api');
+    const web = url.slice(location.origin.length, at);
+    const rest = url.slice(at + 5);
+    F.calls.push(method + ' ' + web + ' ' + rest);
+    if (F.auth === 'redirect')
+      return {ok: false, status: 0, type: 'opaqueredirect', text: async () => ''};
+    if (F.auth === '403') return F.json({error: 'denied'}, 403);
+    if (web && !F.sites.includes(decodeURIComponent(web))) return F.json({error: 'no site'}, 404);
+    if (method === 'POST' && rest === '/contextinfo') return F.json({FormDigestValue: 'digest'});
+    if (method === 'POST' && opts.headers['X-RequestDigest'] !== 'digest')
+      return F.json({error: 'bad digest'}, 403);
+    let m = rest.match(/^\/web\/folders\/AddUsingPath\(decodedurl='((?:[^']|'')*)'\)$/);
+    if (m && method === 'POST') {
+      const p = F.lit(m[1]);
+      if (F.nodes[p]) return F.json({error: 'exists'}, 500);
+      if (!F.nodes[F.parent(p)]) return F.notFound('parent missing');
+      F.addFolder(p);
+      return F.json(F.folderJson(p));
+    }
+    m = rest.match(/^\/web\/GetFolderByServerRelativePath\(decodedurl='((?:[^']|'')*)'\)(.*)$/);
+    if (m) {
+      const p = F.lit(m[1]), tail = m[2];
+      const n = F.nodes[p];
+      if (tail === '') return F.json(F.folderJson(p));
+      if (!n || n.kind !== 'folder') return F.notFound('folder missing');
+      if (tail === '/Folders')
+        return F.json({value: F.children(p).filter(k => F.nodes[k].kind === 'folder').map(F.folderJson)});
+      if (tail === '/Files')
+        return F.json({value: F.children(p).filter(k => F.nodes[k].kind === 'file').map(F.fileJson)});
+      if (tail === '/recycle()' && method === 'POST') {
+        for (const k of Object.keys(F.nodes)) if (k === p || k.startsWith(p + '/')) delete F.nodes[k];
+        return F.json({value: 'recycled'});
+      }
+      const add = tail.match(/^\/Files\/add\(url='((?:[^']|'')*)',overwrite=true\)$/);
+      if (add && method === 'POST') {
+        const fp = p + '/' + F.lit(add[1]);
+        F.addFile(fp, new Uint8Array(body));
+        return F.json(F.fileJson(fp));
+      }
+    }
+    m = rest.match(/^\/web\/GetFileByServerRelativePath\(decodedurl='((?:[^']|'')*)'\)(.*)$/);
+    if (m) {
+      const p = F.lit(m[1]), tail = m[2];
+      const n = F.nodes[p];
+      if (!n || n.kind !== 'file') return F.notFound();
+      if (tail === '') return F.json(F.fileJson(p));
+      if (tail === '/$value')
+        return new Response(n.data, {status: 200, headers: {'Content-Type': 'application/octet-stream'}});
+      if (tail === '/recycle()' && method === 'POST') { delete F.nodes[p]; return F.json({value: 'x'}); }
+    }
+    return F.json({error: 'fake SharePoint has no route for ' + method + ' ' + rest}, 400);
+  };
+  window.__fakeSP = F;
+  window.fetch = (url, opts) => F.handle(String(url), opts || {});
+  F.reset();
+})();

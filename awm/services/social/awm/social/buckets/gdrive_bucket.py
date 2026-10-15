@@ -213,7 +213,8 @@ class GoogleDriveBucket(Bucket):
         return name, mime, data
 
     async def put(
-        self, path: str, data: bytes, *, mime: str | None = None
+        self, path: str, data: bytes, *, mime: str | None = None,
+        parents: bool = False,
     ) -> Entry:
         from googleapiclient.http import MediaInMemoryUpload  # lazy
 
@@ -222,8 +223,12 @@ class GoogleDriveBucket(Bucket):
             raise ValueError("put requires a file path")
         name = segs[-1]
         parent_path = "/".join(segs[:-1])
-        parent = (await self._resolve(parent_path))["id"] if parent_path \
-            else self._root_id
+        if parent_path and parents:
+            parent = (await self.mkdir(parent_path)).id
+        elif parent_path:
+            parent = (await self._resolve(parent_path))["id"]
+        else:
+            parent = self._root_id
         svc = await self._service()
         media = MediaInMemoryUpload(
             data, mimetype=mime or "application/octet-stream", resumable=False)
@@ -275,9 +280,18 @@ class GoogleDriveBucket(Bucket):
             parent = meta["id"]
         return self._entry(meta, "/".join(segs))
 
-    async def search(self, query: str, *, limit: int = 50) -> list[Entry]:
+    async def probe(self) -> None:
+        svc = await self._service()
+        await self._execute(svc.files().get(
+            fileId=self._root_id, fields="id", supportsAllDrives=True))
+
+    async def search(self, query: str, *, limit: int = 50,
+                     path: str = "") -> list[Entry]:
         # Drive query can't express "descendant of <root>", so search spans the
         # whole drive the credential can see (documented in INSTALL.md).
+        if path.strip("/"):
+            raise NotImplementedError(
+                "google_drive search cannot scope to a folder")
         svc = await self._service()
         safe = query.replace("'", "\\'")
         req = svc.files().list(

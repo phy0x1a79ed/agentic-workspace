@@ -35,7 +35,46 @@ class FakePage:
 class TestOneDriveDriver:
     def test_registered(self):
         assert STORAGE_REGISTRY["onedrive"] is OneDriveDriver
-        assert OneDriveDriver.target_needle == "sharepoint.com"
+        assert OneDriveDriver.target_needle == ".sharepoint.com"
+
+    def test_create_builds_tenant_and_personal_pages(self):
+        d = OneDriveDriver.create("http://cdp")
+        assert set(d.pages()) == {"tenant", "personal"}
+        assert d.page.needle == ".sharepoint.com"
+        assert d.personal_page.needle == "-my.sharepoint.com"
+
+    async def test_personal_paths_use_the_personal_page(self):
+        tenant = FakePage({"window.__awmMira.onedrive.ls": [{"name": "t"}]})
+        personal = FakePage({"window.__awmMira.onedrive.ls": [{"name": "p"}]})
+        d = OneDriveDriver(tenant, personal)
+        assert (await d.ls("/personal/me_ubc_ca/Documents"))[0]["name"] == "p"
+        assert (await d.ls("/teams/x/Docs"))[0]["name"] == "t"
+
+    async def test_personal_path_without_page_fails_alone(self):
+        d = OneDriveDriver(FakePage({"window.__awmMira.onedrive.ls": []}))
+        assert await d.ls("/teams/x/Docs") == []
+        with pytest.raises(RuntimeError, match="-my.sharepoint.com"):
+            await d.ls("/personal/me/Documents")
+
+    async def test_coded_js_errors_are_classified(self):
+        from mira_api.cdp import CDPError
+
+        class _Throwing(FakePage):
+            async def evaluate_json(self, expr):
+                raise CDPError("JS error: Error: ENOENT: /teams/x/a: not found\n    at O.ls")
+
+        with pytest.raises(FileNotFoundError, match="^/teams/x/a: not found$"):
+            await OneDriveDriver(_Throwing({})).stat("/teams/x/a")
+
+    async def test_uncoded_errors_pass_through(self):
+        from mira_api.cdp import CDPError
+
+        class _Throwing(FakePage):
+            async def evaluate_json(self, expr):
+                raise CDPError("ls: timed out")
+
+        with pytest.raises(CDPError):
+            await OneDriveDriver(_Throwing({})).ls("/teams/x")
 
     async def test_ls_passthrough_and_path_arg(self):
         page = FakePage({"window.__awmMira.onedrive.ls": [
