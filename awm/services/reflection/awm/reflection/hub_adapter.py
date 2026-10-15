@@ -11,7 +11,12 @@ point (an agent calls ``reflection(verb="compact")`` on itself, with no argument
 - ``compact`` — sugar for ``message_self`` with ``text="/compact"``.
 - ``mode``    — put your own session back into bypass-permissions mode.
 
-Reflection acts on the caller and on nobody else, so nothing here takes a target.
+Those three act on the caller and on nobody else. The session-control verbs
+(``remote_control``, ``model``, ``effort``, ``rename``, ``interrupt``, ``stop``,
+``link``, ``message``; see :mod:`awm.reflection.control`) take an optional ``job``
+that names any other session on this node, and act on the caller's own without
+one. They never reach another node.
+
 This process does not share the caller's environment, but it does not need to:
 the per-session ``awm-mcp`` proxy is a stdio child of the session calling it, so
 the gateway stamps that proxy's parent pid onto the call as the caller's identity
@@ -36,6 +41,7 @@ from awm.gatewayclient import ServiceAdapter
 
 from awm import claudedaemon
 from awm.reflection import (
+    control,
     inject,
     oc_inject,
     oc_session,
@@ -59,7 +65,8 @@ API_MANIFEST: dict[str, Any] = {
                 "so it QUEUES behind the current turn). Use for self-directed slash "
                 "commands like /compact or /model opus. Works the same whether your "
                 "session runs in a terminal or as a background job — you do not need "
-                "to know which, and there is no way to aim this at another session. "
+                "to know which. It types only into your own session; `message` types "
+                "into another. "
                 "A submitted slash command is auto-trailed by a follow-up prompt "
                 "(override with `followup`) so the session has a next turn once "
                 "the command finishes — a bare command would otherwise go idle. "
@@ -126,6 +133,152 @@ API_MANIFEST: dict[str, Any] = {
                  "description": "Refuse unless the resolved session has this "
                                 "sessionId. For hooks, which reach us through an "
                                 "ancestry walk; agents never need it."},
+            ],
+        },
+        {
+            "name": "remote_control",
+            "effect": "write",
+            "tool": "reflection_remote_control",
+            "description": (
+                "Turn Remote Control on or off for a session on this node. On "
+                "types `/rc <name>` and returns the claude.ai link once it "
+                "connects, or link=null with a link_reason. Off types `/rc` and "
+                "selects 'Disconnect this session' in the modal it opens; it is "
+                "refused if the session is mid-turn or the modal is not the "
+                "expected one. Your own session cannot answer in the same turn: "
+                "the command runs when the turn ends and a follow-up prompt "
+                "resumes you."
+            ),
+            "timeout": 60,
+            "params": [
+                {"name": "on", "type": "boolean", "required": True,
+                 "description": "true to turn Remote Control on, false to turn it off."},
+                {"name": "name", "type": "string",
+                 "description": "The Remote Control name when turning on; a plain label."},
+                {"name": "job", "type": "string",
+                 "description": "A job id, or a session name as `list_other` shows "
+                                "it. Omit to act on your own session."},
+            ],
+        },
+        {
+            "name": "model",
+            "effect": "write",
+            "tool": "reflection_model",
+            "description": (
+                "Switch a session's model: types `/model <model>` and submits "
+                "it. Queues behind a running turn. Refused while a modal or "
+                "permission prompt is showing."
+            ),
+            "timeout": 60,
+            "params": [
+                {"name": "model", "type": "string", "required": True,
+                 "description": "A model alias or full name, e.g. opus or sonnet[1m]."},
+                {"name": "job", "type": "string",
+                 "description": "A job id, or a session name as `list_other` shows "
+                                "it. Omit to act on your own session."},
+            ],
+        },
+        {
+            "name": "effort",
+            "effect": "write",
+            "tool": "reflection_effort",
+            "description": (
+                "Set a session's effort: types `/effort <level>` and submits "
+                "it. Queues behind a running turn. Refused while a modal or "
+                "permission prompt is showing."
+            ),
+            "timeout": 60,
+            "params": [
+                {"name": "level", "type": "string", "required": True,
+                 "description": "low, medium, high, xhigh or max."},
+                {"name": "job", "type": "string",
+                 "description": "A job id, or a session name as `list_other` shows "
+                                "it. Omit to act on your own session."},
+            ],
+        },
+        {
+            "name": "rename",
+            "effect": "write",
+            "tool": "reflection_rename",
+            "description": (
+                "Rename a session: types `/rename <name>` and submits it. "
+                "Queues behind a running turn. Refused while a modal or "
+                "permission prompt is showing."
+            ),
+            "timeout": 60,
+            "params": [
+                {"name": "name", "type": "string", "required": True,
+                 "description": "The new name, one short line."},
+                {"name": "job", "type": "string",
+                 "description": "A job id, or a session name as `list_other` shows "
+                                "it. Omit to act on your own session."},
+            ],
+        },
+        {
+            "name": "interrupt",
+            "effect": "write",
+            "tool": "reflection_interrupt",
+            "description": (
+                "Interrupt a session's running turn: presses Escape once, as a "
+                "person would. Refused while a modal or permission prompt is "
+                "showing."
+            ),
+            "timeout": 60,
+            "params": [{"name": "job", "type": "string",
+                 "description": "A job id, or a session name as `list_other` shows "
+                                "it. Omit to act on your own session."}],
+        },
+        {
+            "name": "stop",
+            "effect": "write",
+            "tool": "reflection_stop",
+            "description": (
+                "Stop a background session on this node and remove its job "
+                "(`claude stop`, then `claude rm`). Works on any session, not "
+                "only ones `start_other` created. Your own session is refused "
+                "unless confirm is true, and is then stopped after this call "
+                "returns. A terminal session is refused."
+            ),
+            "timeout": 60,
+            "params": [
+                {"name": "job", "type": "string", "required": True,
+                 "description": "A job id, or a session name as `list_other` shows it."},
+                {"name": "confirm", "type": "boolean",
+                 "description": "Required to stop your own session."},
+            ],
+        },
+        {
+            "name": "link",
+            "effect": "read",
+            "tool": "reflection_link",
+            "description": (
+                "Read a session's claude.ai link and whether Remote Control is "
+                "on, from its record. Types nothing."
+            ),
+            "timeout": 30,
+            "params": [{"name": "job", "type": "string",
+                 "description": "A job id, or a session name as `list_other` shows "
+                                "it. Omit to act on your own session."}],
+        },
+        {
+            "name": "message",
+            "effect": "write",
+            "tool": "reflection_message",
+            "description": (
+                "Type text into another session's prompt and submit it (no "
+                "Escape, so it queues behind its current turn). Same guards as "
+                "`message_self`: destructive commands need confirm, modal "
+                "commands are refused, and so is a session showing a modal or "
+                "permission prompt. No follow-up is added."
+            ),
+            "timeout": 60,
+            "params": [
+                {"name": "job", "type": "string", "required": True,
+                 "description": "A job id, or a session name as `list_other` shows it."},
+                {"name": "text", "type": "string", "required": True,
+                 "description": "The line to type."},
+                {"name": "confirm", "type": "boolean",
+                 "description": "Required to send destructive commands (/clear, /quit, /exit)."},
             ],
         },
         {
@@ -273,10 +426,62 @@ def _handle_pending(args: dict) -> dict:
     ]}
 
 
+def _job(args: dict) -> Any:
+    return args.get("job") or None
+
+
+def _handle_remote_control(args: dict) -> dict:
+    return control.remote_control(
+        _bool(args.get("on")), name=args.get("name") or None, job=_job(args),
+        caller_pid=_caller_pid(args))
+
+
+def _handle_model(args: dict) -> dict:
+    return control.model(args.get("model"), job=_job(args),
+                         caller_pid=_caller_pid(args))
+
+
+def _handle_effort(args: dict) -> dict:
+    return control.effort(args.get("level"), job=_job(args),
+                          caller_pid=_caller_pid(args))
+
+
+def _handle_rename(args: dict) -> dict:
+    return control.rename(args.get("name"), job=_job(args),
+                          caller_pid=_caller_pid(args))
+
+
+def _handle_interrupt(args: dict) -> dict:
+    return control.interrupt(job=_job(args), caller_pid=_caller_pid(args))
+
+
+def _handle_stop(args: dict) -> dict:
+    return control.stop(_job(args), caller_pid=_caller_pid(args),
+                        confirm=_bool(args.get("confirm")))
+
+
+def _handle_link(args: dict) -> dict:
+    return control.link(job=_job(args), caller_pid=_caller_pid(args))
+
+
+def _handle_message(args: dict) -> dict:
+    return control.message(_job(args), args.get("text"),
+                           caller_pid=_caller_pid(args),
+                           confirm=_bool(args.get("confirm")))
+
+
 HANDLERS = {verb: _guarded(verb, fn) for verb, fn in {
     "message_self": _handle_message_self,
     "compact": _handle_compact,
     "mode": _handle_mode,
+    "remote_control": _handle_remote_control,
+    "model": _handle_model,
+    "effort": _handle_effort,
+    "rename": _handle_rename,
+    "interrupt": _handle_interrupt,
+    "stop": _handle_stop,
+    "link": _handle_link,
+    "message": _handle_message,
     "pending": _handle_pending,
     "whoami": _handle_whoami,
 }.items()}

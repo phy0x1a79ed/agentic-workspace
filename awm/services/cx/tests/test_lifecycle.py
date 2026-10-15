@@ -98,6 +98,20 @@ def home(tmp_path, monkeypatch):
     return h
 
 
+@pytest.fixture(autouse=True)
+def no_link_wait(monkeypatch):
+    from awm.cx import lifecycle
+
+    monkeypatch.setattr(lifecycle, "LINK_WAIT_S", 0.0)
+
+
+def set_bridge(home, short, bridge):
+    path = home.jobs / short / "state.json"
+    rec = json.loads(path.read_text())
+    rec["bridgeSessionId"] = bridge
+    path.write_text(json.dumps(rec))
+
+
 @pytest.fixture
 def launched(home, monkeypatch):
     """Replace the shared launcher with one that records its call and registers
@@ -176,6 +190,7 @@ def test_start_returns_the_contract_and_writes_lineage(home, launched):
         "ok": True, "job": CHILD_JOB, "name": "demo", "node": "testnode",
         "project": "awm", "scope": "demo", "cwd": str(home.projects / "awm" / "demo"),
         "attach": f"claude attach {CHILD_JOB}", "parent": PARENT_JOB, "mode": "rep",
+        "link": None,
     }
     from awm.cx import lifecycle
 
@@ -417,6 +432,39 @@ def test_remote_control_cannot_inject_flags(home, launched, rc):
     if rc in ("", " "):
         return  # an empty value is "off" or refused; either way nothing is injected
     assert out["ok"] is False and launched == []
+
+
+def test_a_start_leaves_remote_control_off_and_has_no_link(home, launched):
+    out = start(BASE)
+    assert out["link"] is None and "link_reason" not in out
+    assert not any(f.startswith("--remote-control") for f in launched[0]["flags"])
+
+
+def test_a_start_with_remote_control_returns_the_link_once_the_bridge_appears(
+        home, launched, monkeypatch):
+    from awm.cx import lifecycle
+
+    real = lifecycle.roster.job_bridge_id
+    monkeypatch.setattr(lifecycle, "LINK_WAIT_S", 5.0)
+    monkeypatch.setattr(lifecycle, "LINK_POLL_S", 0.01)
+    polls = []
+
+    def appears_on_third_look(short, jobs):
+        polls.append(short)
+        if len(polls) == 3:
+            set_bridge(home, short, "cse_01Link")
+        return real(short, jobs)
+
+    monkeypatch.setattr(lifecycle.roster, "job_bridge_id", appears_on_third_look)
+    out = start({**BASE, "remote_control": True})
+    assert out["link"] == "https://claude.ai/code/session_01Link"
+    assert len(polls) == 3 and "link_reason" not in out
+
+
+def test_a_start_with_remote_control_says_why_there_is_no_link_yet(home, launched):
+    out = start({**BASE, "remote_control": True})
+    assert out["ok"] and out["link"] is None
+    assert CHILD_JOB in out["link_reason"]
 
 
 def test_remote_control_accepts_a_plain_label(home, launched):
@@ -1129,6 +1177,34 @@ def test_list_merges_roster_lineage_and_interactive_sessions(home, launched, mon
     assert tmux["attach"] == "tmux attach -t main" and tmux["job"] is None
     assert tmux["name"] == "dev" and tmux["scope"] == "demo"
     assert list(rows) == [PARENT_JOB, "main", CHILD_JOB], "oldest first"
+
+
+def test_list_reports_the_live_remote_control_state_and_link(home, launched, monkeypatch):
+    from awm.cx import lifecycle
+
+    monkeypatch.setattr(lifecycle, "_tmux_panes", dict)
+    start({**BASE, "remote_control": "rc1"})
+    row = next(r for r in lifecycle.collect() if r["job"] == CHILD_JOB)
+    assert row["remote_control"] is False and row["link"] is None
+    assert row["remote_control_label"] == "rc1", "the launch label is kept apart"
+    set_bridge(home, CHILD_JOB, "cse_01AbC")
+    row = next(r for r in lifecycle.collect() if r["job"] == CHILD_JOB)
+    assert row["remote_control"] is True
+    assert row["link"] == "https://claude.ai/code/session_01AbC"
+
+
+def test_an_interactive_row_takes_its_link_from_the_session_record(home, monkeypatch):
+    from awm.cx import lifecycle
+
+    me = os.getpid()
+    home.record(me, "interactive", name="dev")
+    path = home.sessions / f"{me}.json"
+    rec = json.loads(path.read_text())
+    path.write_text(json.dumps({**rec, "bridgeSessionId": "cse_01Zz"}))
+    monkeypatch.setattr(lifecycle, "_tmux_panes", dict)
+    row = next(r for r in lifecycle.collect() if r["name"] == "dev")
+    assert row["remote_control"] is True
+    assert row["link"] == "https://claude.ai/code/session_01Zz"
 
 
 def test_list_carries_needs_and_detail_from_the_job_record(home, monkeypatch):

@@ -66,6 +66,10 @@ UNKNOWN = sessionmode.UNKNOWN
 mode_of = sessionmode.mode_of
 
 STOP_TIMEOUT_S = 20.0
+#: How long a start that asked for Remote Control waits for the bridge id to
+#: appear in the job record, and how often it looks.
+LINK_WAIT_S = 8.0
+LINK_POLL_S = 0.5
 SCOPE_CREATE_TIMEOUT_S = 1700.0
 #: A lineage record younger than this is never pruned, so a record written the
 #: instant a job registers cannot be collected before the roster shows it.
@@ -191,7 +195,31 @@ async def _start(args: dict[str, Any], as_: str | None) -> dict[str, Any]:
     return {"ok": True, "job": session.short, "name": spec["name"],
             "node": node_name(), "project": spec["project"], "scope": spec["scope"],
             "cwd": str(cwd), "attach": f"claude attach {session.short}",
-            "parent": parent, "mode": spec["mode"]}
+            "parent": parent, "mode": spec["mode"],
+            **await _started_link(session.short, bool(spec["remote_control"]))}
+
+
+async def _started_link(job: str, remote_control: bool) -> dict[str, Any]:
+    """The `link` fields of a start result.
+
+    Remote Control is off unless the caller asked for it, so most starts answer
+    `link: None` at once. One that asked waits a bounded time for the bridge id
+    and says why when it has not appeared, because the connection can finish
+    after the start has returned.
+    """
+    if not remote_control:
+        return {"link": None}
+    deadline = time.monotonic() + LINK_WAIT_S
+    while True:
+        link = roster.bridge_link(roster.job_bridge_id(job, config.jobs_dir()))
+        if link:
+            return {"link": link}
+        if time.monotonic() >= deadline:
+            return {"link": None,
+                    "link_reason": (f"Remote Control had not connected after "
+                                    f"{LINK_WAIT_S:g}s; `reflection link` with "
+                                    f"job {job} returns the link once it has")}
+        await asyncio.sleep(LINK_POLL_S)
 
 
 def _apply_caller_policy(args: dict[str, Any], spec: dict[str, Any]) -> bool:
@@ -680,7 +708,8 @@ def _job_row(s: sessions.Session, rec: dict[str, Any] | None,
         "tempo": record.get("tempo"),
         "attach": f"claude attach {s.short}",
         "parent": rec.get("parent"), "caller": rec.get("caller"),
-        "mode": rec.get("mode"), "remote_control": rec.get("remote_control"),
+        "mode": rec.get("mode"), "remote_control": s.remote_control,
+        "remote_control_label": rec.get("remote_control"), "link": s.link,
         "started_at": rec.get("started_at") or _iso_ms(s.started_at_ms),
         "pool": sessions.is_ours(s) or sessions.was_ours(s),
     }
@@ -694,13 +723,16 @@ def _interactive_row(rec: dict[str, Any], panes: dict[int, str],
                      node: str) -> dict[str, Any]:
     project, scope = _project_scope(rec.get("cwd"))
     tmux = _tmux_session_of(int(rec["pid"]), panes)
+    bridge = rec.get("bridgeSessionId") or None
     return {
         "job": None, "tmux": tmux, "name": rec.get("name"), "node": node,
         "project": project, "scope": scope, "cwd": rec.get("cwd"),
         "state": rec.get("status") or "unknown",
         "needs": None, "detail": None, "tempo": None,
         "attach": f"tmux attach -t {tmux}" if tmux else None,
-        "parent": None, "caller": None, "mode": None, "remote_control": None,
+        "parent": None, "caller": None, "mode": None,
+        "remote_control": bool(bridge), "remote_control_label": None,
+        "link": roster.bridge_link(bridge),
         "started_at": _iso_ms(rec.get("startedAt")), "pool": False,
     }
 

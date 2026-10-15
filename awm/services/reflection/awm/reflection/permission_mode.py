@@ -62,6 +62,12 @@ _REDRAW_S = 0.35
 _TMUX_SHIFT_TAB = "BTab"
 _RAW_SHIFT_TAB = b"\x1b[Z"
 
+# The other keys a verb may press, by the name it asks for. Escape alone is the
+# interrupt key; Down and Enter walk a modal's list.
+_TMUX_KEYS = {"Escape": "Escape", "Enter": "Enter", "Down": "Down", "Up": "Up"}
+_RAW_KEYS = {"Escape": b"\x1b", "Enter": b"\r", "Down": b"\x1b[B",
+             "Up": b"\x1b[A"}
+
 # How much trailing output to classify. The footer is the last thing drawn, and
 # on the daemon path the stream still has escape sequences in it, so a window is
 # both cheaper and less likely to match stale copy further up.
@@ -132,6 +138,12 @@ class _TmuxSession:
             + ["send-keys", "-t", self._target.pane, _TMUX_SHIFT_TAB],
             runner)
 
+    def press(self, key: str) -> None:
+        runner = self._kw.get("runner", tmux_inject.subprocess.run)
+        tmux_inject._run(
+            tmux_inject._base_argv(self._socket)
+            + ["send-keys", "-t", self._target.pane, _TMUX_KEYS[key]], runner)
+
     def close(self) -> None:
         pass
 
@@ -167,6 +179,9 @@ class _DaemonSession:
     def cycle(self) -> None:
         self._conn.send_keys(_RAW_SHIFT_TAB)
 
+    def press(self, key: str) -> None:
+        self._conn.send_keys(_RAW_KEYS[key])
+
     def close(self) -> None:
         self._conn.close()
 
@@ -178,6 +193,11 @@ def _open(target, *, socket=None, runner=None, opener=None, sleep=time.sleep):
             kw["opener"] = opener
         return _DaemonSession(target, **kw)
     return _TmuxSession(target, socket=socket, runner=runner)
+
+
+def open_session(target, **kw):
+    """Open ``target`` to read its screen and press keys; close it when done."""
+    return _open(target, **kw)
 
 
 def ensure_bypass(*, caller_pid: Optional[int], socket: Optional[str] = None,

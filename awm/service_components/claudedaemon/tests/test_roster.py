@@ -190,3 +190,39 @@ def test_an_unreadable_record_is_not_an_empty_one(home, break_it):
     break_it(home)
     with pytest.raises(roster.Unreadable):
         live_ids(home)
+
+
+# --- Remote Control ----------------------------------------------------------
+
+
+def test_the_app_link_swaps_the_bridge_prefix_for_session():
+    assert (roster.bridge_link("cse_01GVs3xRsnepMP5feSRbjqA8")
+            == "https://claude.ai/code/session_01GVs3xRsnepMP5feSRbjqA8")
+
+
+@pytest.mark.parametrize("bridge", [None, "", "cse_", "session_01A", "01A", 5])
+def test_no_link_without_a_well_formed_bridge_id(bridge):
+    assert roster.bridge_link(bridge) is None
+
+
+def test_a_session_with_a_bridge_id_is_live_and_has_a_link(home):
+    path = write_roster(home, {"on": {"replPid": 7}, "off": {"replPid": 8}})
+    write_job(home, "on", name="a", bridgeSessionId="cse_01X")
+    write_job(home, "off", name="b")
+    by_short = {s.short: s for s in roster.load(path, home / "jobs")}
+    assert by_short["on"].remote_control is True
+    assert by_short["on"].link == "https://claude.ai/code/session_01X"
+    assert by_short["off"].remote_control is False and by_short["off"].link is None
+
+
+def test_a_cleared_bridge_id_reads_as_off(home):
+    write_job(home, "j", name="a", bridgeSessionId="")
+    assert roster.job_bridge_id("j", home / "jobs") is None
+    assert roster.job_bridge_id("missing", home / "jobs") is None
+
+
+def test_an_interactive_session_keeps_its_bridge_id_in_its_session_record(home):
+    record(home, os.getpid(), kind="interactive", procStart=own_start(),
+           bridgeSessionId="cse_01Q")
+    assert roster.pid_bridge_id(os.getpid(), sessions_dir=home / "sessions") == "cse_01Q"
+    assert roster.pid_bridge_id(2**22 + 1, sessions_dir=home / "sessions") is None

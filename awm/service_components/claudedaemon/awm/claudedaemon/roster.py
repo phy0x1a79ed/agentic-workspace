@@ -89,6 +89,32 @@ class Session:
     session_id: str | None
     source: str | None
     seed_name: str | None
+    #: Present once Remote Control has connected, gone once it is turned off.
+    bridge_session_id: str | None = None
+
+    @property
+    def remote_control(self) -> bool:
+        return bool(self.bridge_session_id)
+
+    @property
+    def link(self) -> str | None:
+        return bridge_link(self.bridge_session_id)
+
+
+#: Remote Control names a session `cse_<id>` in the job record and serves it at
+#: the app under `session_<id>`.
+APP_SESSION_URL = "https://claude.ai/code/session_"
+_BRIDGE_PREFIX = "cse_"
+
+
+def bridge_link(bridge_session_id: object) -> str | None:
+    """The app URL of a Remote Control session, or None when there is none."""
+    if not isinstance(bridge_session_id, str):
+        return None
+    if not bridge_session_id.startswith(_BRIDGE_PREFIX):
+        return None
+    ident = bridge_session_id[len(_BRIDGE_PREFIX):]
+    return APP_SESSION_URL + ident if ident else None
 
 
 # --- the process table ------------------------------------------------------
@@ -280,11 +306,18 @@ def build_session(short: str, w: dict, jobs_dir: Path | None = None) -> Session:
         session_id=_as_str(w.get("sessionId")),
         source=_as_str(dispatch.get("source")),
         seed_name=_as_str(seed.get("name")),
+        bridge_session_id=_as_str(st.get("bridgeSessionId") or None),
     )
 
 
 def _as_str(v: object) -> str | None:
     return None if v is None else str(v)
+
+
+def job_bridge_id(short: str, jobs_dir: Path | None = None) -> str | None:
+    """The Remote Control session id in a job's own record, or None when off."""
+    st = read_json((jobs_dir or default_jobs_dir()) / short / "state.json")
+    return _as_str(st.get("bridgeSessionId") or None)
 
 
 def binary_version(claude_bin: str | Path) -> str | None:
@@ -353,6 +386,15 @@ def session_by_pid(pid: int, *, sessions_dir: Path | None = None) -> dict | None
         return read_session_record(pid, sessions_dir=sessions_dir)
     except SessionRecordError:
         return None
+
+
+def pid_bridge_id(pid: int, *, sessions_dir: Path | None = None) -> str | None:
+    """The Remote Control session id in the live session record for ``pid``.
+
+    The only place an interactive session keeps it, since it has no job record.
+    """
+    rec = session_by_pid(pid, sessions_dir=sessions_dir)
+    return _as_str(rec.get("bridgeSessionId") or None) if rec else None
 
 
 def job_of_pid(pid: int, *, sessions_dir: Path | None = None) -> str | None:

@@ -101,7 +101,10 @@ API_MANIFEST: dict[str, Any] = {
                  "description": "Load only the awm MCP server, from the "
                                 "workspace config."},
                 {"name": "remote_control", "type": "boolean",
-                 "description": "Enable Remote Control, named for the session."},
+                 "description": "Enable Remote Control, named for the session. "
+                                "Off unless true. The result's `link` is the "
+                                "claude.ai link, null with a `link_reason` if "
+                                "it has not connected within a few seconds."},
             ],
             "timeout": 1800,
             "effect": "write",
@@ -112,7 +115,9 @@ API_MANIFEST: dict[str, Any] = {
             "description": (
                 "List the sessions on this node: background jobs with their "
                 "state, parent, caller and mode, interactive terminal sessions "
-                "with a `tmux attach` command, and the warm pool. Read this to "
+                "with a `tmux attach` command, and the warm pool. Each row's "
+                "`remote_control` is whether Remote Control is on now and `link` "
+                "is its claude.ai link. Read this to "
                 "see what is running; the pool summary says whether a Claude "
                 "Code daemon runs at all, the binary version the pool seeds "
                 "against and when the reconcile loop last ticked."
