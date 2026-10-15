@@ -148,9 +148,10 @@ It consumes `social`'s `command` topic. `social` drops a command from anyone
 outside its operators table, so a command that arrives here comes from Tony.
 
 - `/reject <ref> [reason]` rejects the card and posts the reason on its thread.
-- `/new-agent [project] [scope] [name] [prompt]` starts a session through cx
-  `start` (the verb behind `reflection start_other`) with Remote Control on, and answers with the
-  session's `https://claude.ai/code/session_…` link.
+- `/new-agent [prompt]` starts a session named `agent-xxxx` through cx `start` (the verb
+  behind `reflection start_other`) with Remote Control on, and answers with the session's
+  `https://claude.ai/code/session_…` link. The prompt tells the agent to rename itself with
+  `reflection rename` once it knows its work.
 
 The reconcile loop holds a non-blocking lock on `<state>/reconcile.lock` for
 the life of the process, so a second copy of the service sweeps nothing.

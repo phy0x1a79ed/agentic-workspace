@@ -100,8 +100,8 @@ async def test_new_agent_starts_a_session_with_remote_control_and_replies_with_i
     await commands.handle(event("new_agent", prompt="hello", reply_to="dm:42"))
     await settle(commands)
     spec = cx.started[0]
-    assert (spec["project"], spec["scope"], spec["remote_control"], spec["prompt"]) == (
-        "awm", "dev", True, "hello")
+    assert (spec["project"], spec["scope"], spec["remote_control"]) == ("awm", "dev", True)
+    assert spec["prompt"].startswith("hello\n\n")
     account, channel, text = replies.sent[0]
     assert (account, channel) == ("discord-bot", "dm:42")
     assert "https://claude.ai/code/session_job0001" in text and spec["name"] in text
@@ -113,12 +113,22 @@ async def test_new_agent_takes_its_project_scope_and_name_from_the_node(parts, m
     await settle(commands)
     spec = cx.started[0]
     assert (spec["project"], spec["scope"], spec["remote_control"]) == ("awm", "dev", True)
-    assert spec["name"].startswith("agent-") and "prompt" not in spec
+    assert spec["name"].startswith("agent-")
+    assert "Wait for Tony's first instruction" in spec["prompt"]
     monkeypatch.setenv("AWM_REPORTING_NEW_AGENT_PROJECT", "cloud")
     monkeypatch.setenv("AWM_REPORTING_NEW_AGENT_SCOPE", "main")
     await commands.handle(event("new_agent"))
     await settle(commands)
     assert (cx.started[1]["project"], cx.started[1]["scope"]) == ("cloud", "main")
+
+
+async def test_a_new_agent_is_told_to_rename_itself_once_it_knows_its_work(parts):
+    commands, _, cx, _ = parts
+    await commands.handle(event("new_agent", prompt="fix the printer"))
+    await settle(commands)
+    spec = cx.started[0]
+    assert spec["name"] in spec["prompt"]
+    assert 'reflection(verb="rename"' in spec["prompt"]
 
 
 async def test_a_link_that_is_not_ready_is_reported_with_the_reason(parts):

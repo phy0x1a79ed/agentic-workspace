@@ -23,6 +23,14 @@ log = logging.getLogger("awm.reporting.commands")
 
 SOCIAL_TOPIC = "command"
 DEFAULT_REASON = "rejected by the recipient"
+RENAME_HINT = ("You were started from Discord as {name}, a placeholder name. Once you know what this "
+               "session is for, rename yourself to a short name for that work (2-4 words) with "
+               "reflection(verb=\"rename\", args={{name: \"<name>\"}}).")
+
+
+def _new_agent_prompt(name: str, prompt: str) -> str:
+    hint = RENAME_HINT.format(name=name)
+    return f"{prompt}\n\n{hint}" if prompt else f"{hint} Wait for Tony's first instruction."
 
 
 class Commands:
@@ -100,9 +108,8 @@ class Commands:
     async def _new_agent(self, event: dict) -> str:
         project, scope = config.new_agent_target()
         name = f"agent-{uuid.uuid4().hex[:4]}"
-        prompt = str(event.get("prompt") or "").strip()
         spec = {"project": project, "scope": scope, "name": name, "remote_control": True,
-                **({"prompt": prompt} if prompt else {})}
+                "prompt": _new_agent_prompt(name, str(event.get("prompt") or "").strip())}
         started = await self.cx.start(spec)
         if not started.get("ok"):
             return f"could not start an agent: {started.get('reason') or started.get('error') or started}"
