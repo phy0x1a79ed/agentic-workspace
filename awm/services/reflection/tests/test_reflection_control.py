@@ -11,7 +11,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from awm.reflection import control, guards, inject, pending, session_target
+from awm.reflection import (control, guards, inject, pending, session_target,
+                            settings_guard)
 
 SELF_JOB, OTHER_JOB, DEAD_JOB = "aaaaaaaa", "bbbbbbbb", "cccccccc"
 ME, PARENT = os.getpid(), os.getppid()
@@ -134,6 +135,16 @@ class Modal:
         self.cursor = (self.cursor + step) % len(self.options)
 
 
+SETTINGS = {
+    "theme": "dark",
+    "model": "opus",
+    "effortLevel": "medium",
+    "modelSettings": {"claude-opus-5-5": {"effortLevel": "high"}},
+    "hooks": {"Stop": []},
+}
+SETTINGS_TEXT = json.dumps(SETTINGS, indent=2) + "\n"
+
+
 @pytest.fixture
 def world(home, monkeypatch):
     """Fakes for the screen, the typing and the clock, with a log of what was typed."""
@@ -141,8 +152,12 @@ def world(home, monkeypatch):
     monkeypatch.setattr(control, "_sleep", clock.sleep)
     monkeypatch.setattr(control, "_clock", clock)
     monkeypatch.setattr(pending, "PENDING_DIR", home.root / "pending")
+    settings = home.root / "claude" / "settings.json"
+    settings.parent.mkdir()
+    settings.write_text(SETTINGS_TEXT)
+    monkeypatch.setattr(settings_guard, "settings_path", lambda: settings)
     w = SimpleNamespace(home=home, clock=clock, typed=[], sent=[], screen=Screen(PLAIN),
-                        status="idle", settled=True, opened=[])
+                        status="idle", settled=True, opened=[], settings=settings)
 
     def open_screen(t):
         w.opened.append(t)
@@ -719,6 +734,179 @@ def test_a_rename_asks_no_dialog(world):
 def test_the_switch_dialogs_count_as_a_modal(screen, marker):
     assert guards.modal_on_screen(screen) == marker
     assert guards.modal_on_screen("\x1b[1m" + screen + "\x1b[0m") == marker
+
+
+# --- the user's saved defaults ------------------------------------------------
+
+
+def cli_saves(world, edit):
+    """What Claude Code does on Enter: rewrite settings.json with ``edit`` applied."""
+    def on_press(key):
+        if key == "Enter":
+            doc = json.loads(world.settings.read_text())
+            edit(doc)
+            world.settings.write_text(json.dumps(doc, indent=2) + "\n")
+    return on_press
+
+
+def save_effort(doc):
+    doc["modelSettings"]["claude-opus-5-5"]["effortLevel"] = "low"
+
+
+def test_effort_puts_the_saved_default_back_after_the_cli_wrote_it(world, after_typing):
+    shown = after_typing(EFFORT_YES)
+    shown.on_press = cli_saves(world, save_effort)
+    out = control.effort("low", job=OTHER_JOB, caller_pid=ME)
+    assert out["ok"] and shown.presses == ["Enter"]
+    assert out["switch_dialog"]["defaults_restored"] == [
+        "modelSettings.claude-opus-5-5.effortLevel"]
+    assert world.settings.read_text() == SETTINGS_TEXT, "byte for byte, formatting too"
+
+
+def test_model_puts_the_saved_default_back_after_the_cli_wrote_it(world, after_typing):
+    shown = after_typing(switch_dialog("Switch model?", "Sonnet 5.5"))
+    shown.on_press = cli_saves(world, lambda doc: doc.update(model="sonnet"))
+    out = control.model("sonnet", job=OTHER_JOB, caller_pid=ME)
+    assert out["ok"] and out["switch_dialog"]["defaults_restored"] == ["model"]
+    assert json.loads(world.settings.read_text())["model"] == "opus"
+
+
+def test_a_change_to_other_keys_made_meanwhile_is_kept(world, after_typing):
+    def edit(doc):
+        save_effort(doc)
+        doc["theme"] = "light"
+        doc["newKey"] = {"a": 1}
+    shown = after_typing(EFFORT_YES)
+    shown.on_press = cli_saves(world, edit)
+    control.effort("low", job=OTHER_JOB, caller_pid=ME)
+    doc = json.loads(world.settings.read_text())
+    assert doc["theme"] == "light" and doc["newKey"] == {"a": 1}
+    assert doc["modelSettings"]["claude-opus-5-5"]["effortLevel"] == "high"
+    assert list(doc) == list(SETTINGS) + ["newKey"], "order kept"
+
+
+def test_a_dialog_that_was_declined_leaves_the_file_alone(world, after_typing):
+    shown = after_typing(EFFORT_NO)
+    shown.on_press = cli_saves(world, save_effort)
+    out = control.effort("low", job=OTHER_JOB, caller_pid=ME)
+    assert out["ok"] is False and shown.presses == ["Escape"]
+    assert world.settings.read_text() == SETTINGS_TEXT
+
+
+def test_effort_max_is_session_only_and_takes_no_guard(world):
+    assert control._DefaultsGuard(("effort", "max")).on is False
+    assert control._DefaultsGuard(("effort", "low")).on is True
+    assert control._DefaultsGuard(("model", "opus")).on is True
+    assert control._DefaultsGuard(None).on is False
+
+
+def test_no_dialog_still_puts_back_what_the_command_saved(world, after_typing):
+    # A conversation without output switches without asking, and still saves.
+    after_typing(PLAIN)
+    original = control._deliver
+
+    def deliver(t, text, **kw):
+        out = original(t, text, **kw)
+        cli_saves(world, save_effort)("Enter")
+        return out
+
+    control._deliver = deliver
+    try:
+        out = control.effort("low", job=OTHER_JOB, caller_pid=ME)
+    finally:
+        control._deliver = original
+    assert out["ok"] and out["switch_dialog"]["dialog"] is False
+    assert world.settings.read_text() == SETTINGS_TEXT
+
+
+def test_the_callers_own_session_snapshots_again_just_before_the_answer(world):
+    spawned = []
+    control.model("sonnet", job=None, caller_pid=ME, spawn=spawned.append)
+    # The user changes their default while the turn is still running.
+    world.settings.write_text(world.settings.read_text().replace('"opus"', '"haiku"'))
+    shown = Screen(switch_dialog("Switch model?", "Sonnet"))
+    shown.on_press = cli_saves(world, lambda doc: doc.update(model="sonnet"))
+    world.screen = shown
+    spawned[0]()
+    assert shown.presses == ["Enter"]
+    assert json.loads(world.settings.read_text())["model"] == "haiku", \
+        "put back to what it was when the dialog opened, not to the stale value"
+
+
+# --- what is on screen now -----------------------------------------------------
+
+ERASE_LINE = "\x1b[2K\x1b[1A"
+
+
+def inline_frame(text):
+    """Ink's way of painting a region: lines, with the cursor left on the last."""
+    return "\r\n".join(text.split("\n"))
+
+
+def inline_close(lines):
+    """Erase the ``lines``-line region above the cursor, as Ink does before a repaint."""
+    return ERASE_LINE * (lines - 1) + "\x1b[2K\x1b[G"
+
+
+COMPOSER = "╭────────────╮\n│ >          │\n╰────────────╯\n  ? for shortcuts"
+DIALOG_LINES = EFFORT_YES.count("\n") + 1
+
+
+def stale_stream():
+    """The stream of a session whose effort dialog was answered a moment ago."""
+    return (inline_frame(COMPOSER) + "\r\n"
+            + inline_close(COMPOSER.count("\n") + 2)
+            + inline_frame(EFFORT_YES)
+            + inline_close(DIALOG_LINES)
+            + "Set effort level to low (saved as your default for new sessions)\r\n"
+            + inline_frame(COMPOSER))
+
+
+def test_a_dialog_that_was_answered_is_not_a_modal(world):
+    stream = stale_stream()
+    assert "Change effort level?" in stream, "the dialog text is still in the stream"
+    assert guards.modal_on_screen(stream) is None
+
+
+def test_a_dialog_still_open_at_the_end_of_the_stream_is_a_modal(world):
+    stream = (inline_frame(COMPOSER) + "\r\n" + inline_close(COMPOSER.count("\n") + 2)
+              + inline_frame(EFFORT_YES))
+    assert guards.modal_on_screen(stream)
+    assert "Change effort level?" in guards.current_screen(stream)
+
+
+def test_a_typing_verb_is_not_refused_after_the_dialog_was_answered(world):
+    world.screen = Screen(stale_stream())
+    out = control.model("sonnet", job=OTHER_JOB, caller_pid=ME)
+    assert out["ok"] and not out.get("refused")
+    assert world.typed == [(OTHER_JOB, "/model sonnet", inject.ATTEMPTS)]
+
+
+def test_the_frame_sequence_dialog_answer_composer_ends_with_no_modal(world):
+    # The three states a session passes through, read as the lane reads them: the
+    # stream only ever grows.
+    composer = inline_frame(COMPOSER) + "\r\n" + inline_close(COMPOSER.count("\n") + 2)
+    opened = composer + inline_frame(EFFORT_YES)
+    answered = opened + inline_close(DIALOG_LINES) + "Set effort level to low\r\n"
+    idle = answered + inline_frame(COMPOSER)
+    seen = [guards.modal_on_screen(s) is not None
+            for s in (composer, opened, answered, idle)]
+    assert seen == [False, True, False, False]
+
+
+def test_a_cursor_addressed_repaint_clears_a_closed_dialog(world):
+    # Fullscreen paints: absolute positions, then blank rows over the old dialog.
+    rows = EFFORT_YES.split("\n")
+    paint = "\x1b[?1049h" + "".join(f"\x1b[{i + 1};1H{r}" for i, r in enumerate(rows))
+    erase = "".join(f"\x1b[{i + 1};1H\x1b[2K" for i in range(len(rows)))
+    assert guards.modal_on_screen(paint)
+    assert guards.modal_on_screen(paint + erase + "\x1b[1;1H> ") is None
+
+
+def test_the_answering_thread_does_not_press_for_a_dialog_that_is_gone(world, after_typing):
+    shown = after_typing(stale_stream())
+    out = control.effort("low", job=OTHER_JOB, caller_pid=ME)
+    assert out["ok"] and shown.presses == []
 
 
 # --- the modal guard ---------------------------------------------------------
