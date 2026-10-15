@@ -66,6 +66,11 @@ class TestUnregisteredWorktrees:
         shutil.rmtree(_by_hand(proj, proj / "pruned", "feat/pruned"))
         assert mod.audit_worktrees(PROJECT)["unregistered"] == []
 
+    def test_the_main_checkout_counts_as_registered(self, proj):
+        _git(proj / ".bare", "worktree", "add", "-q", str(proj / "main"), "main")
+        assert "main" in {s.scope for s in mod.search_scopes(project=PROJECT).scopes}
+        assert mod.audit_worktrees(PROJECT)["unregistered"] == []
+
     def test_a_completed_row_still_registers_its_worktree(self, proj):
         mod.create_scope(ScopeCreateRequest(project=PROJECT, scope="done"))
         mod.update_scope(PROJECT, "done", ScopeUpdateRequest())

@@ -753,7 +753,7 @@ def audit_worktrees(project: str | None = None) -> dict:
     """Mismatches between the scope rows and the worktrees on disk. Reads only.
 
     ``unregistered``: worktrees under ``projects/<p>/`` that no row in any
-    status names. ``orphaned_rows``: allocated or active rows whose worktree
+    status names, other than the main checkout. ``orphaned_rows``: allocated or active rows whose worktree
     directory is gone. A project whose worktrees cannot be listed goes to
     ``errors`` and the pass continues.
     """
@@ -780,6 +780,9 @@ def audit_worktrees(project: str | None = None) -> dict:
         if row["status"] in ("allocated", "active") and not worktree.is_dir():
             orphaned.append({"project": row["project"], "scope": row["scope"],
                              "status": row["status"], "worktree": str(worktree)})
+
+    for name, main in main_checkouts(project).items():
+        registered.setdefault(name, set()).add(Path(main.worktree).resolve())
 
     unregistered: list[dict] = []
     errors: list[dict] = []
