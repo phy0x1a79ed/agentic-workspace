@@ -51,6 +51,15 @@ async def test_a_posted_request_is_queued_as_proposed_and_never_claimed(queue):
     assert "please do it" in text and f"claim task {card['id'][:8]}" in text
 
 
+async def test_a_reply_card_is_left_to_its_thread_message(queue):
+    sub, board, told = build(queue)
+    card = board.add(make_card(kind="message", reply_to="a" * 32))
+    board.post_event("card.posted", card)
+    await sub.consume()
+    await sub.catch_up()
+    assert queue.get(card["id"]) is None and told.texts == []
+
+
 async def test_the_message_carries_the_trilium_link_the_agent_and_the_project(queue, monkeypatch):
     monkeypatch.setenv("AWM_REPORTING_TRILIUM_URL", "https://vault.example/trilium")
     sub, board, told = build(queue)

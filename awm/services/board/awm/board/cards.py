@@ -32,8 +32,12 @@ holds the card, or that it is already finished. A message card is never
 claimable: claiming one raises `Forbidden`, after the visibility and recipient
 checks.
 
-A reply is a message on the thread of the card at the root of its `reply_to`
-chain; it never becomes a card of its own.
+A reply is a message card that sets `reply_to`, as on the previous release,
+and also a message on the thread of the card at the root of its chain. The
+card keeps the old wire working: a peer on that release finds replies by
+listing cards, and its front door takes only Proposed message cards. A reply
+to a swarm in `thread_swarms` reads its replies on the thread, so its card is
+filed straight into Done.
 """
 
 from __future__ import annotations
@@ -71,6 +75,8 @@ MAX_LIST_LIMIT = 500
 #: The card label holding its newest message's sequence, so a client can tell
 #: it missed messages without listing them.
 LAST_MESSAGE = "cardLastMsg"
+#: On a reply card, the root card whose thread already holds the reply.
+THREADED = "cardThreaded"
 #: Width of the zero-padded `msgSeq` label, so Trilium's text sort is sequence order.
 SEQ_WIDTH = 8
 #: A note a person is still typing is not sealed until it has sat this long unchanged.
@@ -190,7 +196,7 @@ class Board:
     """The card rules. At most one process holds the lock file."""
 
     def __init__(self, vault: Vault, events: Events, *, lock_path: str | Path,
-                 gui_party: dict | None = None):
+                 gui_party: dict | None = None, thread_swarms: frozenset[str] = frozenset()):
         self._lock_key, hold = _acquire(Path(lock_path))
         self._guard = hold.guard
         self.vault = vault
@@ -200,6 +206,9 @@ class Board:
         #: is also the board's admin: its swarm may reject any card it sees.
         #: None leaves such notes unsealed.
         self.gui_party = gui_party
+        #: Swarms whose release reads replies on the thread. A reply to one is
+        #: filed in Done instead of Proposed.
+        self.thread_swarms = frozenset(thread_swarms)
         self.archive_after_s = ARCHIVE_AFTER_S
         #: card id to the {status, recipient, claimant} last recorded for it.
         #: `status` holds a state; rows an older release wrote hold a status.
@@ -306,7 +315,7 @@ class Board:
     def post(self, party: dict, *, kind: str, recipient: str, title: str, body: str,
              priority: str = "normal", reply_to: str | None = None,
              project: str | None = None, agent: str | None = None) -> dict:
-        """Post a card to Proposed. A reply posts a message on its root card's thread instead."""
+        """Post a card to Proposed. A reply also posts a message on its root card's thread."""
         self._live(party)
         if kind not in KINDS:
             raise ValueError(f"kind must be one of {KINDS}: {kind!r}")
@@ -329,8 +338,14 @@ class Board:
                              "to tell the body from the result")
         project, agent = check_project(project), clean_agent(agent)
         with self._guard:
+            relations: dict[str, str] = {}
+            root_rec = root = None
             if reply_to:
-                return self._fold_reply(party, reply_to, body.strip() and body or title, agent)
+                parent_rec, parent = self._fetch(party, reply_to)
+                relations["replyTo"] = parent_rec["note_id"]
+                root_rec, root = self._root_of(parent_rec, parent)
+                if not can_see(party, root):
+                    root_rec = root = None
             now = _now()
             labels = {
                 "cardId": uuid.uuid4().hex,
@@ -349,11 +364,20 @@ class Board:
                 labels["cardAgent"] = agent
             if project:
                 labels["project"] = project
-            rec = self.vault.create(title, body, labels, {}, "proposed")
+            if root is not None:
+                labels[THREADED] = root["id"]
+            state = "done" if root is not None and recipient in self.thread_swarms else "proposed"
+            rec = self.vault.create(title, body, labels, relations, state)
             card = self._card(rec)
             self.events.append("card.posted", card)
             self._remember(card)
-            return card
+            if root is None:
+                return card
+            sender = {"swarm": party["swarm"], "principal": party["principal"],
+                      "party": party["party_id"]}
+            message = self._add_message(root_rec, root, sender, "api",
+                                        body.strip() and body or title, agent=agent)
+            return {**card, "folded_into": root["id"], "message": message}
 
     def _root_of(self, rec: dict, card: dict) -> tuple[dict, dict]:
         """The record and card at the root of a `reply_to` chain. A broken link ends the walk."""
@@ -365,23 +389,6 @@ class Board:
             rec, card = parent, self._card(parent)
             seen.add(card["id"])
         return rec, card
-
-    def _fold_reply(self, party: dict, reply_to: str, text: str, agent: str | None) -> dict:
-        """Add a reply to the thread of the root of its chain.
-
-        The answer keeps the shape of a card, the root card, so a client from
-        before threads reads it as it read a reply card. ``reply_to`` echoes
-        what the caller answered, and ``folded_into`` and ``message`` say where
-        the reply went.
-        """
-        parent_rec, parent = self._fetch(party, reply_to)
-        root_rec, root = self._root_of(parent_rec, parent)
-        if not can_see(party, root):
-            raise NotFound(root["id"])
-        sender = {"swarm": party["swarm"], "principal": party["principal"],
-                  "party": party["party_id"]}
-        message = self._add_message(root_rec, root, sender, "api", text, agent=agent)
-        return {**root, "reply_to": reply_to, "folded_into": root["id"], "message": message}
 
     def claim(self, party: dict, card_id: str, *, agent: str | None = None,
               node: str | None = None) -> dict:
