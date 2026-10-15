@@ -19,8 +19,8 @@ def loop_for(cx, queue, **kw):
 
 
 def ours(queue, cx, role, job="abc12345", **row):
-    """A live session of the role that the door itself started."""
-    queue.record_session(role, job)
+    """A live session of the role that the door itself started, from today's launch config."""
+    queue.record_session(role, job, reconcile.spec_hash(getattr(personas(), role.upper())))
     cx.rows.append(session_row(role, job=job, **row))
 
 
@@ -536,3 +536,46 @@ async def test_a_blocked_or_failed_session_the_door_did_not_start_is_never_touch
     await loop_for(cx, queue).tick()
     assert cx.stopped == []
     assert modes_started(cx) == ["representative", "secretary"]
+
+
+@pytest.mark.parametrize("recorded", [None, "0123456789abcdef"])
+async def test_a_session_from_an_outdated_launch_config_is_replaced_once(queue, recorded):
+    cx = FakeCx()
+    queue.record_session("representative", "old00001", recorded)
+    cx.rows.append(session_row("representative", job="old00001"))
+    ours(queue, cx, "secretary", job="sec00001")
+    loop = loop_for(cx, queue)
+    for _ in range(3):
+        await loop.tick()
+    assert cx.stopped == ["old00001"]
+    assert modes_started(cx) == ["representative"]
+    new = loop.jobs["representative"]
+    assert queue.session_spec_hash("representative", new) == reconcile.spec_hash(personas().REPRESENTATIVE)
+
+
+async def test_a_session_from_todays_launch_config_is_left_alone(queue):
+    cx = FakeCx()
+    ours(queue, cx, "representative")
+    ours(queue, cx, "secretary", job="sec00001")
+    loop = loop_for(cx, queue)
+    for _ in range(3):
+        await loop.tick()
+    assert cx.stopped == [] and cx.started == []
+
+
+async def test_an_outdated_session_mid_turn_is_replaced_after_its_turn(queue):
+    cx = FakeCx()
+    queue.record_session("representative", "old00001", None)
+    cx.rows.append(session_row("representative", job="old00001", state="working"))
+    ours(queue, cx, "secretary", job="sec00001")
+    loop = loop_for(cx, queue)
+    await loop.tick()
+    assert cx.stopped == [] and cx.started == []
+    cx.rows[0]["state"] = "idle"
+    await loop.tick()
+    assert cx.stopped == ["old00001"] and modes_started(cx) == ["representative"]
+
+
+def test_the_fingerprint_ignores_key_order():
+    assert reconcile.spec_hash({"a": 1, "b": [2]}) == reconcile.spec_hash({"b": [2], "a": 1})
+    assert reconcile.spec_hash({"a": 1}) != reconcile.spec_hash({"a": 2})

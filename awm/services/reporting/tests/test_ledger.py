@@ -126,7 +126,7 @@ def make_v1(path: Path) -> None:
     from awm.reporting import store
 
     conn = sqlite3.connect(path)
-    conn.executescript(store._QUEUE_SCHEMA + "CREATE TABLE schema_version (version INTEGER NOT NULL);"
+    conn.executescript(store._QUEUE_SCHEMA_V3 + "CREATE TABLE schema_version (version INTEGER NOT NULL);"
                        "INSERT INTO schema_version VALUES (1);")
     conn.execute("INSERT INTO cards (card_id, kind, title, status, arrival, updated)"
                  " VALUES ('c1','request','t','done',1,1)")
