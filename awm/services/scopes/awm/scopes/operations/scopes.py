@@ -102,12 +102,19 @@ SCOPE_MANIFEST_FUNCTIONS = [
         "name": "scope_complete",
         "tool": "scope_complete",
         "effect": "write",
-        "description": "Complete (retire) a scope. Optionally merge and clean up the worktree.",
+        "description": (
+            "Complete (retire) a scope. Optionally merge, and remove the worktree "
+            "with cleanup=true. The branch stays unless delete_branch=true, which "
+            "needs cleanup=true; the reply then names the branch and its last SHA."
+        ),
         "params": [
             {"name": "project", "type": "string", "required": True},
             {"name": "scope", "type": "string", "required": True},
             {"name": "merge", "type": "boolean", "required": False},
             {"name": "cleanup", "type": "boolean", "required": False},
+            {"name": "delete_branch", "type": "boolean", "required": False,
+             "description": "Also delete the scope's git branch. Default false: "
+                            "the branch is kept."},
         ],
     },
     {
@@ -115,15 +122,19 @@ SCOPE_MANIFEST_FUNCTIONS = [
         "tool": "scope_delete",
         "effect": "write",
         "description": (
-            "Delete a scope and clean up its worktree and branch. Refuses when "
-            "the worktree has uncommitted changes -- which now covers data as "
-            "well as code, since a data chunk is committed via its .dvc pin; "
-            "pass force=true to discard them."
+            "Delete a scope and remove its worktree. The branch stays unless "
+            "delete_branch=true; the reply then names the branch and its last "
+            "SHA. Refuses when the worktree has uncommitted changes -- which "
+            "covers data as well as code, since a data chunk is committed via "
+            "its .dvc pin; pass force=true to discard them."
         ),
         "params": [
             {"name": "project", "type": "string", "required": True},
             {"name": "scope", "type": "string", "required": True},
             {"name": "force", "type": "boolean", "required": False},
+            {"name": "delete_branch", "type": "boolean", "required": False,
+             "description": "Also delete the scope's git branch. Default false: "
+                            "the branch is kept."},
         ],
         # rmtree over a fully materialised data tree.
         "timeout": 600.0,
@@ -247,6 +258,7 @@ def _handle_scope_complete(args: dict) -> dict:
         action="complete",
         merge=bool(args.get("merge", False)),
         cleanup=bool(args.get("cleanup", False)),
+        delete_branch=bool(args.get("delete_branch", False)),
     )
     result = scopes.update_scope(args["project"], args["scope"], req)
     return result.model_dump()
@@ -255,6 +267,7 @@ def _handle_scope_complete(args: dict) -> dict:
 def _handle_scope_delete(args: dict) -> dict:
     result = scopes.delete_scope(
         args["project"], args["scope"], force=bool(args.get("force", False)),
+        delete_branch=bool(args.get("delete_branch", False)),
     )
     return result.model_dump()
 
