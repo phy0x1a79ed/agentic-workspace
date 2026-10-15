@@ -25,13 +25,13 @@ Nothing enumerable goes here, with one exception: a table that records a decisio
 
 ## Scope lifecycle
 
-1. **Create.** `scope(verb="create")` makes a git worktree on `feat/<scope>` with `.awm/` metadata. It refuses an unknown project. Pass `new_project=true` to create the project first, with `clone_url` or `fork_url` to start from a remote. Omit `scope` to create the project alone.
+1. **Create.** `scope(verb="create")` makes a git worktree on `feat/<scope>` with `.awm/` metadata. It refuses an unknown project. Pass `new_project=true` to create the project first, with `clone_url` or `fork_url` to start from a remote. Omit `scope` to create the project alone. A branch that already exists is checked out, not recreated. When several remotes carry it, pass `from_branch="<remote>/<branch>"` to pick the upstream.
 2. **Start.** The agent runs the startup ritual in `AGENTS.md`.
 3. **Work.** Code goes in the worktree. Data goes in `data/`.
 4. **Debrief.** The agent runs the `debrief` skill. It posts the session trace with `journal(verb="post")` as `kind=journal`.
-5. **Complete.** `scope(verb="complete")` updates the status and optionally merges the branch.
+5. **Complete.** `scope(verb="complete")` updates the status and optionally merges the branch. `cleanup=true` removes the worktree. The branch stays unless the caller passes `delete_branch=true`. `scope(verb="delete")` follows the same rule.
 
-`awm scope heal` repairs scopes. It is idempotent. Run it with `--dry-run` first to preview. It keeps scope-local metadata inside `.awm/` only.
+`awm scope heal` repairs scopes. It is idempotent. Run it with `--dry-run` first to preview. It keeps scope-local metadata inside `.awm/` only. It also lists worktrees that no scope row names and live rows whose worktree is gone. It registers and retires neither. Register a listed worktree that has `.awm/context.md` with `scope repair`, and one without it with `scope ensure`. Retire a listed row with `scope complete`.
 
 ## Scope naming
 
