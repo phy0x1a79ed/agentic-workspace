@@ -181,7 +181,7 @@ class TestManifest:
         fns = API_MANIFEST["functions"]
         tools = {f.get("tool", f["name"]) for f in fns}
         assert tools == {
-            "social_send", "social_fetch", "social_search",
+            "social_send", "social_fetch", "social_history", "social_search",
             "social_download_attachments", "social_accounts", "social_channels",
             "social_open_dm", "social_operators", "social_operator_add",
             "social_operator_remove", "social_lookup",

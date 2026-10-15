@@ -133,6 +133,10 @@ class Connector(ABC):
     """
 
     platform: str = "base"
+    # True for a connector that keeps a synced local history (a bot, which is
+    # the only reader of its chats). The adapter then injects ``history``.
+    keeps_history: bool = False
+    history = None  # awm.social.history.History, set by the adapter
 
     def __init__(
         self,

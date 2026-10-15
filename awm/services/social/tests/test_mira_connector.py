@@ -53,9 +53,19 @@ class TestBuildRouting:
         from awm.social.connectors.slack_conn import SlackConnector
 
         c = connectors.build(
-            AccountConfig(name="s", platform="slack", token="xoxb-x",
+            AccountConfig(name="s", platform="slack", token="xoxp-x",
                           app_token="xapp-1"), _noop)
         assert isinstance(c, SlackConnector)
+
+    def test_slack_bot_token_routes_to_bot_connector(self):
+        from awm.social import connectors
+        from awm.social.config import AccountConfig
+        from awm.social.connectors.slack_bot_conn import SlackBotConnector
+
+        c = connectors.build(
+            AccountConfig(name="b", platform="slack", token="xoxb-x",
+                          app_token="xapp-1"), _noop)
+        assert isinstance(c, SlackBotConnector) and c.keeps_history
 
 
 # --------------------------------------------------------------------------- #
