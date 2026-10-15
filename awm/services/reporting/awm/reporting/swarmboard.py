@@ -287,10 +287,14 @@ class SwarmBoard:
         return ops
 
     async def stamp_ops(self, *, dry_run: bool = False) -> list[dict]:
-        """Give each Ops notice with no change stamp one from its Trilium modified time."""
+        """Give each managed Ops notice with no change stamp one from its Trilium modified time.
+
+        Tony's own notes in the Ops book are left alone.
+        """
         out = []
         for kid in await self._children(await self._ops()):
-            if CHANGED in (kid.get("labels") or []):
+            labels = kid.get("labels") or []
+            if CHANGED in labels or "agentManaged" not in labels:
                 continue
             note = await self._call("note_get", note_id=kid["note_id"])
             stamp = local_stamp(note.get("utcDateModified"))

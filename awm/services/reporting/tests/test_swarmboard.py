@@ -180,6 +180,15 @@ async def test_stamp_ops_backfills_only_the_notices_without_a_stamp(tri):
     assert await board.stamp_ops() == [] and tri.notes[fresh]["content"].count("Changed:") == 1
 
 
+async def test_stamp_ops_leaves_tonys_own_notes_in_ops_alone(tri):
+    tri.add("AWM", type="book")
+    board = SwarmBoard(tri)
+    ops = (await board.ensure())["ops"]
+    mine = tri.add("Links", ops, type="code", content="# Me\n\nhttps://example.org")
+    assert await board.stamp_ops() == []
+    assert "changed" not in tri.notes[mine]["labels"] and tri.notes[mine]["content"].startswith("# Me")
+
+
 async def test_a_ledger_note_per_node_is_managed(tri):
     ids = make_board(tri)
     board = SwarmBoard(tri)
