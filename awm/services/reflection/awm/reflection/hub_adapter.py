@@ -265,6 +265,11 @@ API_MANIFEST: dict[str, Any] = {
             "effect": "write",
             "tool": "reflection_message",
             "description": (
+                "To talk to another agent, use your harness's own channel "
+                "first: in Claude Code, `SendMessage` to a session that "
+                "`ListAgents` shows, and the reply comes back the same way. Use "
+                "this verb when the harness has no such channel, or to drive "
+                "another session's prompt, such as a slash command. "
                 "Type text into another session's prompt and submit it (no "
                 "Escape, so it queues behind its current turn). Same guards as "
                 "`message_self`: destructive commands need confirm, modal "

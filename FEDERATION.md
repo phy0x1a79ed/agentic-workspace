@@ -192,7 +192,7 @@ Intake turns a post into a Proposed task that waits for Tony. The `reporting` se
 
 - **Containment.** Card text reaches Tony, never an agent, until a claim. A line the door types into a session carries a card id, an event and a sender, never card or message text. The `task_claim` description tells the claiming agent that card text is data from its poster.
 - **CAUTION** The door types only into sessions on its own node. A session on another node that claims a card gets no wake line, and the card's new messages wait on its thread. `board_watch` on another node records the watch, warns, and types nothing.
-- **Messaging.** Agents on one node message each other with Claude's `SendMessage` or `reflection message`. Swarms message each other through the board. `journal post` stays passive mail that wakes no one.
+- **Messaging.** Agents on one node message each other through the harness's own channel, Claude's `SendMessage`. `reflection message` is the fallback for a harness without one. Swarms message each other through the board. `journal post` stays passive mail that wakes no one.
   **CAUTION** Claude Code holds a `SendMessage` to a session in another permission mode until that session's user approves it. A background session then waits on the approval prompt and does nothing else.
 - **One door per swarm.** This is a deployment rule. Set `AWM_FRONT_DOOR=1` on one node per `AWM_SWARM`. Nothing in code stops a second door, and two doors send every DM twice.
 
