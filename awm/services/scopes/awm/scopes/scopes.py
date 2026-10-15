@@ -212,20 +212,29 @@ def _assert_branch_available(bare_dir: Path, branch: str) -> None:
         )
 
 
-def _branch_checkouts(bare_dir: Path) -> dict[str, Path]:
-    """Each local branch that a worktree of ``bare_dir`` has checked out, with that worktree."""
+def _worktree_branches(bare_dir: Path) -> dict[Path, str | None]:
+    """Each worktree of ``bare_dir`` with its checked-out branch, None when detached."""
     r = run_git(["git", "-C", str(bare_dir), "worktree", "list", "--porcelain"])
     if r.returncode != 0:
         raise RuntimeError(
             f"Could not list worktrees of {bare_dir}: {(r.stderr or '').strip()}")
-    out: dict[str, Path] = {}
+    out: dict[Path, str | None] = {}
     path: Path | None = None
     for line in r.stdout.splitlines():
         if line.startswith("worktree "):
             path = Path(line[len("worktree "):])
+            out[path] = None
+        elif line.strip() == "bare" and path is not None:
+            out.pop(path, None)
+            path = None
         elif line.startswith("branch refs/heads/") and path is not None:
-            out[line[len("branch refs/heads/"):]] = path
+            out[path] = line[len("branch refs/heads/"):]
     return out
+
+
+def _branch_checkouts(bare_dir: Path) -> dict[str, Path]:
+    """Each local branch that a worktree of ``bare_dir`` has checked out, with that worktree."""
+    return {b: p for p, b in _worktree_branches(bare_dir).items() if b}
 
 
 def _ref_sha(bare_dir: Path, ref: str) -> str | None:
@@ -738,6 +747,65 @@ def heal_scopes(project: str | None = None, dry_run: bool = False) -> list[dict]
                 "error": f"{type(exc).__name__}: {exc}",
             })
     return report
+
+
+def audit_worktrees(project: str | None = None) -> dict:
+    """Mismatches between the scope rows and the worktrees on disk. Reads only.
+
+    ``unregistered``: worktrees under ``projects/<p>/`` that no row in any
+    status names. ``orphaned_rows``: allocated or active rows whose worktree
+    directory is gone. A project whose worktrees cannot be listed goes to
+    ``errors`` and the pass continues.
+    """
+    if project:
+        projects = [project]
+    else:
+        projects = sorted(d.name for d in PROJECTS_DIR.iterdir()
+                          if (d / ".bare").is_dir()) if PROJECTS_DIR.is_dir() else []
+
+    sql = ("SELECT p.name AS project, a.scope, a.worktree, a.status "
+           "FROM agents a JOIN projects p ON p.id = a.project_id")
+    params: list = []
+    if project:
+        sql += " WHERE p.name=?"
+        params.append(project)
+    rows = ScopesDAO().query_all(sql, params)
+
+    registered: dict[str, set] = {}
+    orphaned: list[dict] = []
+    for row in rows:
+        worktree = _resolve_worktree(row["project"], row["scope"], row["worktree"])
+        names = registered.setdefault(row["project"], set())
+        names.update({row["scope"], worktree.resolve()})
+        if row["status"] in ("allocated", "active") and not worktree.is_dir():
+            orphaned.append({"project": row["project"], "scope": row["scope"],
+                             "status": row["status"], "worktree": str(worktree)})
+
+    unregistered: list[dict] = []
+    errors: list[dict] = []
+    for name in projects:
+        project_dir = PROJECTS_DIR / name
+        try:
+            worktrees = _worktree_branches(project_dir / ".bare")
+        except (OSError, RuntimeError) as exc:
+            errors.append({"project": name, "error": str(exc)})
+            continue
+        known = registered.get(name, set())
+        for path, branch in worktrees.items():
+            try:
+                scope = path.relative_to(project_dir)
+            except ValueError:
+                continue
+            if ".claude" in scope.parts or not path.is_dir():
+                continue
+            if scope.as_posix() in known or path.resolve() in known:
+                continue
+            unregistered.append({
+                "project": name, "scope": scope.as_posix(), "worktree": str(path),
+                "branch": branch,
+                "context_md": (path / ".awm" / "context.md").is_file(),
+            })
+    return {"unregistered": unregistered, "orphaned_rows": orphaned, "errors": errors}
 
 
 def _ensure_awm_gitignored(repo_dir: Path) -> None:
