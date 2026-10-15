@@ -252,14 +252,16 @@
         Title: l.split('/').pop(), ItemCount: F.children(l).length,
         LastItemModifiedDate: '2026-01-01T00:00:00Z', RootFolder: {ServerRelativeUrl: l}}))});
     }
-    m = rest.match(/^\/site\/RecycleBin\?\$top=(\d+)&\$orderby=DeletedDate desc$/);
+    if (/^\/site\/RecycleBin/.test(rest))  // a member is not a site-collection admin
+      return F.json({'odata.error': {message: {value: 'Access is denied.'}}}, 403);
+    m = rest.match(/^\/web\/RecycleBin\?\$top=(\d+)&\$orderby=DeletedDate desc$/);
     if (m && method === 'GET') {
       const site = decodeURIComponent(web);
       return F.json({value: F.bin.filter(b => F.site('/' + b.DirName + '/x') === site)
         .slice().reverse().slice(0, Number(m[1]))
         .map(b => Object.assign({}, b, {saved: undefined}))});
     }
-    m = rest.match(/^\/site\/RecycleBin\('([^']+)'\)\/Restore\(\)$/);
+    m = rest.match(/^\/web\/RecycleBin\('([^']+)'\)\/Restore\(\)$/);
     if (m && method === 'POST') {
       const i = F.bin.findIndex(b => b.Id === m[1]);
       if (i < 0) return F.notFound('no such recycle bin item');

@@ -263,8 +263,9 @@ def unpack_result(tar_path: str, dest: str) -> str:
                 f["remote_path"], f["path"] = f["path"], None
                 f["error"] = "not sent back: missing, or outside the far node's temp dir"
                 continue
-            f["path"] = os.path.join(
+            f["remote_path"], f["path"] = f["path"], os.path.join(
                 dest, "files", str(i), os.path.basename(f["path"].rstrip("/")))
+            f.pop("url", None)  # the far gateway deleted the file once sent
             local.append(f["path"])
     if "dir" in data:
         data["dir"] = os.path.dirname(local[0]) if len(local) == 1 else dest
