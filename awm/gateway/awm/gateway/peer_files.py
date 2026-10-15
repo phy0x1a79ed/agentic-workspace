@@ -22,6 +22,10 @@ Two rules this must never break:
 * **One file's failure must not lose the others.** A masked ``*.pem`` in a
   three-attachment message still leaves two downloadable files.
 
+A verb that declares the file hop (:mod:`awm.gateway.filehop`) does not need
+this pull: :func:`invoke_with_files` sends its local file arguments up with the
+call and takes its result files back in the same response, folders included.
+
 Both ``mcp_stdio`` (the default proxy) and ``mcp_server_sdk`` (the documented
 rollback) import this, so the behaviour cannot go missing on a rollback.
 """
@@ -32,8 +36,12 @@ import asyncio
 import json
 import logging
 import os
+import shutil
 import tempfile
+import time
 from typing import Any
+
+from awm.gateway import filehop
 
 log = logging.getLogger("awm.gateway.peer_files")
 
@@ -118,3 +126,129 @@ async def materialize_async(result_text: Any, peer: str, *,
     """:func:`materialize` off the event loop — it does blocking ssh + I/O."""
     return await asyncio.to_thread(
         materialize, result_text, peer, entry=entry, as_=as_)
+
+
+# -- the one-call file hop (:mod:`awm.gateway.filehop`) -----------------------
+
+#: Seconds a peer verb's file-hop spec stays cached in this proxy.
+_SPEC_TTL_S = 600.0
+_spec_cache: dict[tuple[str, str, str], tuple[float, dict[str, Any]]] = {}
+
+
+def invoke_with_files(peer: str, entry: dict | None, call: dict[str, Any],
+                      as_: str | None = None):
+    """Send ``call`` to ``peer`` as one tar stream when its verb carries files.
+
+    The far verb's ``describe`` says which params are local files to send and
+    whether its result's files come back. Returns the edge's ``httpx.Response``,
+    whose JSON ``result`` already names local paths, or ``None`` when the verb
+    carries nothing and the caller should send plain JSON.
+    """
+    from awm import gatewayclient  # deferred: only this path needs httpx + TLS
+
+    verb = (call.get("args") or {}).get("verb")
+    if not isinstance(verb, str) or verb == "describe":
+        return None
+    if not entry or not entry.get("edge_url"):
+        entry = gatewayclient.resolve_peer(peer)
+    spec = _hop_spec(peer, entry, call["name"], verb, as_)
+    if not spec:
+        return None
+    files = filehop.local_files(call, spec["file_params"])
+    if not files and not spec["returns_files"]:
+        return None
+    return _post_files(peer, entry, call, files, spec["returns_files"], as_)
+
+
+def _hop_spec(peer: str, entry: dict, tool: str, verb: str,
+              as_: str | None) -> dict[str, Any] | None:
+    """The far verb's file-hop spec, or None when it carries no files or the
+    peer cannot say (an older peer then gets plain JSON)."""
+    key = (entry["edge_url"], tool, verb)
+    hit = _spec_cache.get(key)
+    if hit and time.monotonic() - hit[0] < _SPEC_TTL_S:
+        return hit[1] or None
+    import httpx  # noqa: PLC0415
+    from awm import gatewayclient  # noqa: PLC0415
+
+    edge, ca = entry["edge_url"].rstrip("/"), gatewayclient._peer_ca()
+    describe = {"name": tool, "args": {"verb": "describe", "args": {"verb": verb}}}
+
+    def send(bearer: str):
+        with httpx.Client(timeout=httpx.Timeout(30.0, connect=10.0), verify=ca) as cli:
+            return cli.post(f"{edge}/invoke", json=describe,
+                            headers=_headers(bearer, as_))
+
+    try:
+        resp = gatewayclient.peer_send_sync(peer, entry, send)
+        resp.raise_for_status()
+        verbs = json.loads(resp.json()["result"]).get("verbs") or []
+        found = filehop.spec_from_describe(verbs[0] if verbs else None)
+    except Exception as exc:  # noqa: BLE001
+        log.info("no file-hop spec for %s %s on %s: %s", tool, verb, peer, exc)
+        return None
+    spec = found if found["file_params"] or found["returns_files"] else {}
+    _spec_cache[key] = (time.monotonic(), spec)
+    return spec or None
+
+
+def _headers(bearer: str, as_: str | None) -> dict[str, str]:
+    headers = {"Authorization": f"Bearer {bearer}"}
+    if as_:
+        headers["X-Awm-As"] = as_
+    return headers
+
+
+def _post_files(peer: str, entry: dict, call: dict[str, Any],
+                files: dict[str, str], returns_files: bool, as_: str | None):
+    import httpx  # noqa: PLC0415
+    from awm import gatewayclient  # noqa: PLC0415
+    from awm.gateway import mcp_http  # noqa: PLC0415
+
+    edge, ca = entry["edge_url"].rstrip("/"), gatewayclient._peer_ca()
+    timeout = httpx.Timeout(mcp_http.read_timeout(), connect=15.0)
+    body = filehop.pack_call(call, files)
+    size = os.fstat(body.fileno()).st_size
+
+    def send(bearer: str):
+        headers = _headers(bearer, as_)
+        headers["Content-Type"] = filehop.CONTENT_TYPE
+        headers["Content-Length"] = str(size)
+        if returns_files:
+            headers[filehop.RETURN_FILES_HEADER] = "1"
+        body.seek(0)
+        with httpx.Client(timeout=timeout, verify=ca) as cli:
+            with cli.stream("POST", f"{edge}/invoke", content=_chunks(body),
+                            headers=headers) as resp:
+                if resp.status_code == 200 and resp.headers.get(
+                        "content-type", "").startswith(filehop.CONTENT_TYPE):
+                    return httpx.Response(200, json={"result": _receive(resp)})
+                resp.read()
+                return resp
+
+    try:
+        return gatewayclient.peer_send_sync(peer, entry, send)
+    finally:
+        body.close()
+
+
+def _chunks(fh, size: int = 1 << 20):
+    while block := fh.read(size):
+        yield block
+
+
+def _receive(resp) -> str:
+    """Spool a files response to disk, then unpack it into a fresh temp dir."""
+    dest = tempfile.mkdtemp(prefix="awm-peer-")
+    tar_path = os.path.join(dest, ".result.tar")
+    try:
+        with open(tar_path, "wb") as fh:
+            for chunk in resp.iter_bytes():
+                fh.write(chunk)
+        return filehop.unpack_result(tar_path, dest)
+    except BaseException:
+        shutil.rmtree(dest, ignore_errors=True)
+        raise
+    finally:
+        if os.path.exists(tar_path):
+            os.remove(tar_path)

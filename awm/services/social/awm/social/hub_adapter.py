@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import shutil
 from typing import Any
 
 from awm import config
@@ -28,7 +29,7 @@ from awm.gatewayclient import ServiceAdapter
 from awm.social import buckets as buckets_mod
 from awm.social import config as social_config
 from awm.social import connectors
-from awm.social.attachments import write_attachments
+from awm.social.attachments import file_url, sink_dir, write_attachments
 from awm.social.dao import SocialDAO, init as dao_init
 
 log = logging.getLogger("awm.social.hub_adapter")
@@ -346,46 +347,102 @@ def _bucket(name: str) -> buckets_mod.Bucket:
 
 def _entry_to_dict(e: buckets_mod.Entry) -> dict:
     return {"name": e.name, "path": e.path, "is_dir": e.is_dir,
-            "size": e.size, "mime": e.mime, "modified": e.modified, "id": e.id}
+            "size": e.size, "mime": e.mime, "modified": e.modified, "id": e.id,
+            "web_url": e.web_url}
 
 
-def _h_buckets(args: dict) -> dict:
-    """List configured buckets with kind + live status."""
+_PROBE_TIMEOUT_S = 20.0
+
+
+async def _probe(name: str) -> str:
+    """Empty when the bucket answers now, else why it does not."""
+    b = _buckets.get(name)
+    if b is None:
+        return "failed to build (see the social service log)"
+    try:
+        await asyncio.wait_for(b.probe(), _PROBE_TIMEOUT_S)
+        return ""
+    except asyncio.TimeoutError:
+        return f"no answer within {_PROBE_TIMEOUT_S:.0f}s"
+    except Exception as exc:  # noqa: BLE001
+        return f"{type(exc).__name__}: {exc}"
+
+
+async def _h_buckets(args: dict) -> dict:
+    """List configured buckets with kind, root, and whether each answers now."""
+    names = list(_bucket_cfgs)
+    reasons = await asyncio.gather(*(_probe(n) for n in names))
     out = []
-    for name, cfg in _bucket_cfgs.items():
-        out.append({
-            "name": name,
-            "kind": cfg.kind,
-            "root": cfg.root,
-            "live": name in _buckets,
-        })
+    for name, reason in zip(names, reasons):
+        cfg = _bucket_cfgs[name]
+        row = {"name": name, "kind": cfg.kind, "root": cfg.root,
+               "live": not reason}
+        if reason:
+            row["error"] = reason
+        out.append(row)
     return {"buckets": out}
 
 
 async def _h_bucket_ls(args: dict) -> dict:
-    entries = await _bucket(args["bucket"]).ls(args.get("path", "") or "")
+    b, path = _bucket(args["bucket"]), args.get("path", "") or ""
+    if not args.get("recursive"):
+        entries = await b.ls(path)
+        return {"entries": [_entry_to_dict(e) for e in entries],
+                "count": len(entries)}
+    entries, truncated = await b.walk(path, limit=int(args.get("limit") or 1000))
     return {"entries": [_entry_to_dict(e) for e in entries],
-            "count": len(entries)}
+            "count": len(entries), "truncated": truncated}
+
+
+async def _h_bucket_stat(args: dict) -> dict:
+    return {"entry": _entry_to_dict(
+        await _bucket(args["bucket"]).stat(args["path"]))}
+
+
+async def _h_bucket_mkdir(args: dict) -> dict:
+    return {"entry": _entry_to_dict(
+        await _bucket(args["bucket"]).mkdir(args["path"]))}
 
 
 async def _h_bucket_get(args: dict) -> dict:
-    """Download one file to a system temp dir (outside AWM_DIR) and return its
-    path — reuses the attachment sink so large files never inline into the RPC."""
-    filename, mime, data = await _bucket(args["bucket"]).get(args["path"])
-    return _written_reply(write_attachments([(filename, mime, data)]))
+    """Download one file, or a folder as a tree, to a fresh system temp dir
+    (outside AWM_DIR) and return its path, so bytes never inline into the RPC."""
+    b, out_dir = _bucket(args["bucket"]), sink_dir()
+    failures: list[dict] = []
+    try:
+        try:
+            written = await b.get(args["path"], out_dir,
+                                  version=args.get("version") or None)
+            written["url"] = file_url(written["path"])
+        except IsADirectoryError:
+            written = await b.get_tree(args["path"], out_dir,
+                                       limit=int(args.get("limit") or 10000))
+            failures = written.pop("failures")
+    except BaseException:
+        shutil.rmtree(out_dir, ignore_errors=True)
+        raise
+    out = _written_reply([written])
+    if failures:
+        out["failures"] = failures
+    return out
 
 
 async def _h_bucket_put(args: dict) -> dict:
-    """Upload a local file's bytes to ``path`` in the bucket (create/overwrite).
-
-    The source is a local filesystem path (``src``) the service reads — bytes are
-    never inlined into the RPC payload.
-    """
-    src = args["src"]
-    with open(src, "rb") as fh:
-        data = fh.read()
-    entry = await _bucket(args["bucket"]).put(
-        args["path"], data, mime=args.get("mime") or None)
+    """Upload a local file, or a folder as a tree, to ``path`` in the bucket
+    (create/overwrite). The bucket streams from ``src``, so bytes never inline
+    into the RPC payload."""
+    src, b = args["src"], _bucket(args["bucket"])
+    parents = bool(args.get("parents"))
+    if os.path.isdir(src):
+        res = await b.put_tree(args["path"], src, parents=parents)
+        out = {"entry": _entry_to_dict(res["entry"]), "count": res["count"]}
+        if res["failures"]:
+            out["failures"] = res["failures"]
+        return out
+    if not os.path.isfile(src):
+        raise FileNotFoundError(f"bucket_put: no local file or folder {src!r}")
+    entry = await b.put(args["path"], src, mime=args.get("mime") or None,
+                        parents=parents)
     return {"entry": _entry_to_dict(entry)}
 
 
@@ -394,9 +451,71 @@ async def _h_bucket_rm(args: dict) -> dict:
     return {"ok": True, "path": args["path"]}
 
 
+async def _h_bucket_mv(args: dict) -> dict:
+    return {"entry": _entry_to_dict(await _bucket(args["bucket"]).mv(
+        args["src"], args["dst"], overwrite=bool(args.get("overwrite")),
+        parents=bool(args.get("parents"))))}
+
+
+async def _h_bucket_cp(args: dict) -> dict:
+    return {"entry": _entry_to_dict(await _bucket(args["bucket"]).cp(
+        args["src"], args["dst"], overwrite=bool(args.get("overwrite")),
+        parents=bool(args.get("parents"))))}
+
+
+async def _h_bucket_versions(args: dict) -> dict:
+    versions = await _bucket(args["bucket"]).versions(args["path"])
+    return {"versions": versions, "count": len(versions)}
+
+
+async def _h_bucket_restore(args: dict) -> dict:
+    """Restore a version, restore a deleted item, or list the recycle bin."""
+    b, path = _bucket(args["bucket"]), args.get("path", "") or ""
+    version = args.get("version") or None
+    if version:
+        return {"entry": _entry_to_dict(await b.restore(path, version=version))}
+    if args.get("recycled"):
+        return {"entry": _entry_to_dict(await b.restore(path))}
+    entries = await b.recycled(path, limit=int(args.get("limit") or 500))
+    return {"recycled": entries, "count": len(entries)}
+
+
+async def _h_bucket_share(args: dict) -> dict:
+    people = args.get("people") or []
+    if isinstance(people, str):
+        people = [p.strip() for p in people.split(",") if p.strip()]
+    return await _bucket(args["bucket"]).share(
+        args["path"], scope=args.get("scope") or "organization",
+        role=args.get("role") or "view", people=people,
+        send_email=bool(args.get("send_email")))
+
+
+async def _h_bucket_shares(args: dict) -> dict:
+    return await _bucket(args["bucket"]).shares(args["path"])
+
+
+async def _h_bucket_unshare(args: dict) -> dict:
+    link, person = args.get("link") or "", args.get("person") or ""
+    if bool(link) == bool(person):
+        raise ValueError("bucket_unshare takes exactly one of link or person")
+    return await _bucket(args["bucket"]).unshare(
+        args["path"], link=link, person=person)
+
+
+async def _h_bucket_resolve(args: dict) -> dict:
+    entry, via = await _bucket(args["bucket"]).resolve(args["url"])
+    return {"entry": _entry_to_dict(entry), "via": via}
+
+
+async def _h_bucket_sites(args: dict) -> dict:
+    entries = await _bucket(args["bucket"]).sites(args.get("site", "") or "")
+    return {"entries": entries, "count": len(entries)}
+
+
 async def _h_bucket_search(args: dict) -> dict:
     entries = await _bucket(args["bucket"]).search(
-        args["query"], limit=int(args.get("limit", 50)))
+        args["query"], limit=int(args.get("limit", 50)),
+        path=args.get("path", "") or "")
     return {"entries": [_entry_to_dict(e) for e in entries],
             "count": len(entries)}
 
@@ -453,9 +572,11 @@ API_MANIFEST: dict[str, Any] = {
             "effect": "write",
             "tool": "social_download_attachments",
             "description": "Download a message's attachments to a system temp dir "
-                           "(outside the awm workspace). Re-fetches the message "
-                           "live, returns the absolute file paths + metadata. "
+                           "(outside the awm workspace) on the calling node. "
+                           "Re-fetches the message live, returns the absolute "
+                           "file paths + metadata. "
                            "`idx` optionally selects a single attachment.",
+            "returns_files": True,
             "timeout": 300,
             "params": [
                 {"name": "account", "type": "string", "required": True},
@@ -541,8 +662,11 @@ API_MANIFEST: dict[str, Any] = {
             "effect": "read",
             "tool": "social_buckets",
             "description": "List configured cloud file-store buckets (Google "
-                           "Drive, OneDrive/SharePoint) with kind, root, and live "
-                           "status.",
+                           "Drive, OneDrive/SharePoint) with kind and root. Each "
+                           "is probed now: `live` is false, with an `error`, when "
+                           "the store does not answer (e.g. a SharePoint session "
+                           "that needs re-authentication on mira).",
+            "timeout": 60,
         },
         {
             "name": "bucket_ls",
@@ -550,39 +674,90 @@ API_MANIFEST: dict[str, Any] = {
             "tool": "social_bucket_ls",
             "description": "List the immediate children of a folder in a bucket. "
                            "`path` is relative to the bucket root (omit for root). "
-                           "Returns entries with name, path, is_dir, size, mime.",
+                           "A OneDrive bucket also takes an absolute "
+                           "server-relative path (/teams/<site>/..., "
+                           "/sites/<site>/..., /personal/<user>/...) to reach any "
+                           "site the session can. A missing path is a not-found "
+                           "error, a file is a not-a-folder error. Returns entries "
+                           "with name, path, is_dir, size, mime, web_url. "
+                           "`recursive=true` walks the whole tree instead, "
+                           "stopping at `limit` entries (default 1000) and "
+                           "setting `truncated` when more exist.",
+            "timeout": 600,
             "params": [
                 {"name": "bucket", "type": "string", "required": True},
                 {"name": "path", "type": "string", "required": False},
+                {"name": "recursive", "type": "boolean", "required": False},
+                {"name": "limit", "type": "number", "required": False},
+            ],
+        },
+        {
+            "name": "bucket_stat",
+            "effect": "read",
+            "tool": "social_bucket_stat",
+            "description": "Return the entry for one file or folder in a bucket, "
+                           "or a not-found error. Paths as for bucket_ls.",
+            "params": [
+                {"name": "bucket", "type": "string", "required": True},
+                {"name": "path", "type": "string", "required": True},
+            ],
+        },
+        {
+            "name": "bucket_mkdir",
+            "effect": "write",
+            "tool": "social_bucket_mkdir",
+            "description": "Create the folder at `path` in a bucket, with every "
+                           "missing parent. Succeeds on an existing folder. "
+                           "Paths as for bucket_ls.",
+            "params": [
+                {"name": "bucket", "type": "string", "required": True},
+                {"name": "path", "type": "string", "required": True},
             ],
         },
         {
             "name": "bucket_get",
             "effect": "write",
             "tool": "social_bucket_get",
-            "description": "Download one file from a bucket to a system temp dir "
-                           "(outside the awm workspace) and return its absolute "
-                           "path + metadata. Google-native docs are exported "
-                           "(Docs→pdf, Sheets→csv).",
-            "timeout": 300,
+            "description": "Download a file from a bucket to a system temp dir "
+                           "(outside the awm workspace) on the calling node and "
+                           "return its absolute path + metadata. Any size; it "
+                           "streams in chunks. Google-native docs are exported "
+                           "(Docs→pdf, Sheets→csv). A folder downloads as a "
+                           "local folder tree (files[0].is_dir, with `count` "
+                           "files), refusing one over `limit` entries (default "
+                           "10000). Files that fail are listed in `failures` "
+                           "and the rest still download. `version` (a label from "
+                           "bucket_versions) reads an older version of a file.",
+            "returns_files": True,
+            "timeout": 3600,
             "params": [
                 {"name": "bucket", "type": "string", "required": True},
                 {"name": "path", "type": "string", "required": True},
+                {"name": "limit", "type": "number", "required": False},
+                {"name": "version", "type": "string", "required": False},
             ],
         },
         {
             "name": "bucket_put",
             "effect": "write",
             "tool": "social_bucket_put",
-            "description": "Upload a local file (`src` = a filesystem path) to "
-                           "`path` in a bucket, creating or overwriting it. "
+            "description": "Upload a local file (`src` = a path on the calling "
+                           "node; it travels with the call) to `path` in a "
+                           "bucket, creating or overwriting it. Any size; it "
+                           "streams in chunks. A local folder uploads as the "
+                           "folder `path`, its tree inside it; files that fail "
+                           "are listed in `failures` and the rest still upload. "
+                           "`parents=true` creates missing folders above `path`; "
+                           "without it a missing folder is a not-found error. "
                            "Returns the resulting entry.",
-            "timeout": 300,
+            "timeout": 3600,
             "params": [
                 {"name": "bucket", "type": "string", "required": True},
                 {"name": "path", "type": "string", "required": True},
-                {"name": "src", "type": "string", "required": True},
+                {"name": "src", "type": "string", "required": True,
+                 "file": "in"},
                 {"name": "mime", "type": "string", "required": False},
+                {"name": "parents", "type": "boolean", "required": False},
             ],
         },
         {
@@ -596,16 +771,170 @@ API_MANIFEST: dict[str, Any] = {
             ],
         },
         {
+            "name": "bucket_mv",
+            "effect": "write",
+            "tool": "social_bucket_mv",
+            "description": "Move or rename the file or folder `src` to `dst` "
+                           "in a bucket. `dst` is the full new path, not a "
+                           "folder to move into. Paths as for bucket_ls, so a "
+                           "OneDrive move may cross sites (the name stays the "
+                           "same across sites). Version history and sharing "
+                           "go with the item. An existing `dst` is an error "
+                           "unless `overwrite=true`, which first sends it to "
+                           "the recycle bin (Drive: trash). `parents=true` "
+                           "creates missing folders above `dst`. Returns the "
+                           "new entry.",
+            "timeout": 3600,
+            "params": [
+                {"name": "bucket", "type": "string", "required": True},
+                {"name": "src", "type": "string", "required": True},
+                {"name": "dst", "type": "string", "required": True},
+                {"name": "overwrite", "type": "boolean", "required": False},
+                {"name": "parents", "type": "boolean", "required": False},
+            ],
+        },
+        {
+            "name": "bucket_cp",
+            "effect": "write",
+            "tool": "social_bucket_cp",
+            "description": "Copy the file or folder `src` to `dst` in a bucket. "
+                           "Arguments and errors as for bucket_mv. Returns the "
+                           "new entry.",
+            "timeout": 3600,
+            "params": [
+                {"name": "bucket", "type": "string", "required": True},
+                {"name": "src", "type": "string", "required": True},
+                {"name": "dst", "type": "string", "required": True},
+                {"name": "overwrite", "type": "boolean", "required": False},
+                {"name": "parents", "type": "boolean", "required": False},
+            ],
+        },
+        {
+            "name": "bucket_sites",
+            "effect": "read",
+            "tool": "social_bucket_sites",
+            "description": "Discover where a OneDrive bucket can reach. Without "
+                           "`site`: the personal OneDrive, the SharePoint sites "
+                           "search finds (minutes behind a new site) and "
+                           "followed sites. With `site` (e.g. /teams/<x>): that "
+                           "site's document libraries. Each entry has name, an "
+                           "absolute path to pass to the other bucket verbs, "
+                           "kind (personal, site, library) and web_url.",
+            "timeout": 120,
+            "params": [
+                {"name": "bucket", "type": "string", "required": True},
+                {"name": "site", "type": "string", "required": False},
+            ],
+        },
+        {
+            "name": "bucket_versions",
+            "effect": "read",
+            "tool": "social_bucket_versions",
+            "description": "List the versions of a file in a OneDrive bucket, "
+                           "newest first: label, size, modified, author, and "
+                           "which one is current. Read one with bucket_get "
+                           "`version`, bring one back with bucket_restore.",
+            "params": [
+                {"name": "bucket", "type": "string", "required": True},
+                {"name": "path", "type": "string", "required": True},
+            ],
+        },
+        {
+            "name": "bucket_restore",
+            "effect": "write",
+            "tool": "social_bucket_restore",
+            "description": "Undo in a OneDrive bucket. With `version`: make that "
+                           "version of the file at `path` current again (the "
+                           "replaced one stays in the history). With "
+                           "`recycled=true`: bring back the item deleted from "
+                           "`path` (a path now occupied is an error). With "
+                           "neither: list the recycle bin at or below `path` "
+                           "(default the bucket root), newest first, up to "
+                           "`limit` (default 500).",
+            "params": [
+                {"name": "bucket", "type": "string", "required": True},
+                {"name": "path", "type": "string", "required": False},
+                {"name": "version", "type": "string", "required": False},
+                {"name": "recycled", "type": "boolean", "required": False},
+                {"name": "limit", "type": "number", "required": False},
+            ],
+        },
+        {
+            "name": "bucket_share",
+            "effect": "write",
+            "tool": "social_bucket_share",
+            "description": "Share a file or folder in a OneDrive bucket. "
+                           "CAUTION: this is outward-facing. Get Tony's explicit "
+                           "confirmation of the item, the audience and the role "
+                           "before you call it. `scope`: organization (a link "
+                           "anyone at UBC can open, the default), people (direct "
+                           "access for the emails in `people`) or anyone (an "
+                           "anonymous link, if the tenant allows it). `role`: "
+                           "view (default) or edit. `send_email` (default "
+                           "false) mails the people. Returns the url.",
+            "params": [
+                {"name": "bucket", "type": "string", "required": True},
+                {"name": "path", "type": "string", "required": True},
+                {"name": "scope", "type": "string", "required": False},
+                {"name": "role", "type": "string", "required": False},
+                {"name": "people", "type": "array", "required": False},
+                {"name": "send_email", "type": "boolean", "required": False},
+            ],
+        },
+        {
+            "name": "bucket_shares",
+            "effect": "read",
+            "tool": "social_bucket_shares",
+            "description": "List the share links on a file or folder in a "
+                           "OneDrive bucket (url, scope, role) and the people "
+                           "with access (name, email, role).",
+            "params": [
+                {"name": "bucket", "type": "string", "required": True},
+                {"name": "path", "type": "string", "required": True},
+            ],
+        },
+        {
+            "name": "bucket_unshare",
+            "effect": "write",
+            "tool": "social_bucket_unshare",
+            "description": "Revoke one share link (`link` = its url or share "
+                           "id, from bucket_shares) or one person's access "
+                           "(`person` = an email) on a file or folder in a "
+                           "OneDrive bucket. Pass exactly one of the two.",
+            "params": [
+                {"name": "bucket", "type": "string", "required": True},
+                {"name": "path", "type": "string", "required": True},
+                {"name": "link", "type": "string", "required": False},
+                {"name": "person", "type": "string", "required": False},
+            ],
+        },
+        {
+            "name": "bucket_resolve",
+            "effect": "read",
+            "tool": "social_bucket_resolve",
+            "description": "Turn a SharePoint/OneDrive share link "
+                           "(https://<tenant>.sharepoint.com/:f:/t/<site>/<token>) "
+                           "into the entry it points at, with a path the other "
+                           "bucket verbs take. Not-found when the session "
+                           "cannot see the item.",
+            "params": [
+                {"name": "bucket", "type": "string", "required": True},
+                {"name": "url", "type": "string", "required": True},
+            ],
+        },
+        {
             "name": "bucket_search",
             "effect": "read",
             "tool": "social_bucket_search",
             "description": "Search a bucket for files matching `query` (Google "
                            "Drive: name match across the drive; OneDrive: "
-                           "SharePoint search). Returns matching entries.",
+                           "SharePoint search, scoped to the bucket root or to "
+                           "`path`). Returns matching entries.",
             "params": [
                 {"name": "bucket", "type": "string", "required": True},
                 {"name": "query", "type": "string", "required": True},
                 {"name": "limit", "type": "number", "required": False},
+                {"name": "path", "type": "string", "required": False},
             ],
         },
         {
@@ -680,9 +1009,20 @@ HANDLERS = {
     "lookup": _h_lookup,
     "buckets": _h_buckets,
     "bucket_ls": _h_bucket_ls,
+    "bucket_stat": _h_bucket_stat,
+    "bucket_mkdir": _h_bucket_mkdir,
     "bucket_get": _h_bucket_get,
     "bucket_put": _h_bucket_put,
     "bucket_rm": _h_bucket_rm,
+    "bucket_mv": _h_bucket_mv,
+    "bucket_cp": _h_bucket_cp,
+    "bucket_sites": _h_bucket_sites,
+    "bucket_versions": _h_bucket_versions,
+    "bucket_restore": _h_bucket_restore,
+    "bucket_share": _h_bucket_share,
+    "bucket_shares": _h_bucket_shares,
+    "bucket_unshare": _h_bucket_unshare,
+    "bucket_resolve": _h_bucket_resolve,
     "bucket_search": _h_bucket_search,
     "emit_probe": _h_emit_probe,
 }

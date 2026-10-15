@@ -122,6 +122,15 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             # ``peer`` is stripped for the same reason — the far side must not
             # re-route what we already routed.
             forwarded = {k: v for k, v in arguments.items() if k != "peer"}
+            from awm.gateway import peer_files
+            hop = await asyncio.to_thread(
+                peer_files.invoke_with_files,
+                redirect["peer"], redirect, {"name": name, "args": forwarded}, as_)
+            if hop is not None:
+                # Files went up with the call and came back to local paths.
+                if hop.status_code >= 400:
+                    hop.raise_for_status()
+                return [TextContent(type="text", text=hop.json()["result"])]
             data = await _peer_invoke(
                 redirect["peer"], name, forwarded, as_, entry=redirect)
             # The call ran elsewhere, so any file it produced is on that node.

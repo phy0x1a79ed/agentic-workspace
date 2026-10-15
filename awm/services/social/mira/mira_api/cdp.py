@@ -36,12 +36,14 @@ class CDPPage:
         http_base: str,
         needle: str,
         *,
+        exclude: str = "",
         session: aiohttp.ClientSession | None = None,
         connect_timeout: float = 15.0,
         eval_timeout: float = 30.0,
     ) -> None:
         self._http_base = http_base.rstrip("/")
         self._needle = needle.lower()
+        self._exclude = exclude.lower()
         self._session = session
         self._own_session = session is None
         self._connect_timeout = connect_timeout
@@ -75,7 +77,7 @@ class CDPPage:
                  if t.get("type") == "page" and t.get("webSocketDebuggerUrl")]
         for t in pages:
             hay = (t.get("url", "") + " " + t.get("title", "")).lower()
-            if self._needle in hay:
+            if self._needle in hay and not (self._exclude and self._exclude in hay):
                 self._target_url = t.get("url", "")
                 return t["webSocketDebuggerUrl"]
         raise CDPError(f"no page target matching {self._needle!r} on {self._http_base}")
@@ -92,7 +94,8 @@ class CDPPage:
         log.info("cdp[%s] connected to %s", self._needle, self._target_url[:80])
         return self._ws
 
-    async def _command(self, method: str, params: dict | None = None) -> dict:
+    async def _command(self, method: str, params: dict | None = None,
+                       timeout: float | None = None) -> dict:
         """Send one CDP command, returning its result (skips interleaved events)."""
         if self._ws is None or self._ws.closed:
             await self._connect()
@@ -101,7 +104,7 @@ class CDPPage:
         mid = self._id
         await self._ws.send_str(json.dumps(
             {"id": mid, "method": method, "params": params or {}}))
-        deadline = asyncio.get_event_loop().time() + self._eval_timeout
+        deadline = asyncio.get_event_loop().time() + (timeout or self._eval_timeout)
         while True:
             remaining = deadline - asyncio.get_event_loop().time()
             if remaining <= 0:
@@ -118,11 +121,13 @@ class CDPPage:
                     raise CDPError(f"{method}: {data['error']}")
                 return data.get("result", {})
 
-    async def evaluate(self, expression: str) -> Any:
+    async def evaluate(self, expression: str, *, timeout: float | None = None,
+                       retry: bool = True) -> Any:
         """Evaluate JS in the page, awaiting promises, returning the JSON value.
 
-        Reconnects once on a transport drop (page reload changes the target).
-        A JS-level exception is raised as :class:`CDPError`.
+        Reconnects and re-runs once on a transport drop or timeout (a page
+        reload changes the target); ``retry=False`` is for expressions that must
+        not run twice. A JS-level exception is raised as :class:`CDPError`.
         """
         async with self._lock:
             for attempt in (1, 2):
@@ -131,10 +136,11 @@ class CDPPage:
                         "expression": expression,
                         "returnByValue": True,
                         "awaitPromise": True,
-                    })
+                    }, timeout=timeout)
                     break
                 except CDPError:
-                    if attempt == 2:
+                    if attempt == 2 or not retry:
+                        await self._close_ws()
                         raise
                     log.info("cdp[%s] reconnecting after transport error", self._needle)
                     await self._close_ws()
@@ -145,13 +151,13 @@ class CDPPage:
                 raise CDPError(f"JS error: {text}")
             return (result.get("result") or {}).get("value")
 
-    async def evaluate_json(self, expression: str) -> Any:
+    async def evaluate_json(self, expression: str, **kw: Any) -> Any:
         """Evaluate an expression expected to return a JSON *string*, and parse it.
 
         Drivers return ``JSON.stringify(...)`` so large/nested results survive
         ``returnByValue`` cleanly; this parses that back to Python.
         """
-        value = await self.evaluate(expression)
+        value = await self.evaluate(expression, **kw)
         if value is None:
             return None
         if isinstance(value, (dict, list)):

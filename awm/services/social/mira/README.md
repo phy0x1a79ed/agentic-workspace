@@ -12,7 +12,7 @@ no UI here.
 |---|---|---|
 | `awm-display` | `Xvfb :20` virtual framebuffer | — |
 | `awm-wm` | `openbox` — maps/focuses windows on `:20` | — |
-| `awm-opera-teams` | Opera (snap): Teams web + Slack-web + SharePoint | 9224 |
+| `awm-opera-teams` | Opera (snap): Teams web + Slack-web + SharePoint + OneDrive | 9224 |
 | `awm-mira-api` | the API daemon — REST + WS, drives both Opera tabs over CDP | **172.16.0.24:7822** |
 | `awm-vnc` | `x11vnc` for the one-time login (**on-demand**, not enabled) | 5920 |
 
@@ -49,12 +49,20 @@ It binds **`172.16.0.24:7822` only** (the awm-network interface — not
     GET  /v1/events                       WS; pushes inbound {type:"message", …}
 
     # cloud file stores (OneDrive/SharePoint), gated by MIRA_STORAGE
-    GET  /v1/fs/{name}/ls?path=            folder children [{name,path,is_dir,size,…}]
-    GET  /v1/fs/{name}/stat?path=          one entry's metadata
-    GET  /v1/fs/{name}/get?path=           one file as {filename,mime,b64}
-    GET  /v1/fs/{name}/search?query=&limit=&root=   SharePoint search (best-effort)
-    POST /v1/fs/{name}/put  {path,b64,mime?}   create/overwrite a file
-    POST /v1/fs/{name}/rm   {path}             recycle a file/folder
+    GET  /v1/fs/{name}/<op>?path=…        reads: ls, stat, get, sites, versions, …
+    POST /v1/fs/{name}/<op>  {path, …}    writes: put, upload, mkdir, mv, share, …
+
+The full `/v1/fs` route list and its error codes are in the module docstring of
+`mira_api/server.py`. A file-store failure is a 404, 409, 403 or 400 with a
+`code`, so the bucket raises the matching Python exception. A 502 means the
+daemon could not classify the failure.
+
+Bytes cross the hop in ranges, never whole. `get` returns one byte range per
+call. `upload` takes one chunk per call, and the caller owns the upload id and
+the offset, so the daemon keeps no upload state. **CAUTION** the daemon's
+request cap (`MAX_REQUEST_BYTES`, 16 MiB) must stay above one base64-encoded
+bucket chunk (`CHUNK` in `onedrive_bucket.py`, 8 MiB). Lower `CHUNK` before you
+lower the cap.
 
 Messages carry an `attachments` array (`idx, filename, mime, size, url, ref`);
 `/download` re-fetches the message in-session and returns the file bytes base64-
@@ -85,17 +93,26 @@ session's own cookies/tokens — the daemon reconstructs nothing on the wire.
   `Authentication: skypetoken=<tok>` (re-bootstraps on 401/403). Graph is
   send-only here (`/me` works but chats need scopes the page's token lacks), so
   the ng.msg chat service is the substrate for list/read/send.
-* **OneDrive / SharePoint** (`storage_drivers.py`, driven on the
-  `*.sharepoint.com` tab) — same-origin calls to the SharePoint REST API with the
-  session cookie. `GetFolderByServerRelativePath(decodedurl='…')/Files`+`/Folders`
-  for `ls`, `GetFileByServerRelativePath('…')/$value` for `get` (base64 over the
-  hop), `…/Files/add(url=,overwrite=true)` for `put`, `…/recycle()` for `rm`;
-  writes carry an `X-RequestDigest` from `_api/contextinfo`. Paths are absolute
-  server-relative urls (the awm-side bucket prefixes its configured `root`); the
-  `_api` web base is derived from the managed-path prefix (`/teams/<x>`,
-  `/sites/<x>`, `/personal/<x>`) so team sites, project sites, and personal
-  OneDrive all resolve. Reachable only with a logged-in `sharepoint.com` tab
-  (SSO carries over from the Teams login in the same Opera profile).
+* **OneDrive / SharePoint** (`storage_drivers.py`) — same-origin calls to the
+  SharePoint REST API with the session cookie. Same-origin fetch reaches only
+  the tab's own host, so the driver holds two pages: the `ubcca.sharepoint.com`
+  tab serves team and project sites, and the `ubcca-my.sharepoint.com` tab
+  serves personal OneDrive (`/personal/...`). A missing `-my` tab fails only
+  personal paths. Paths are absolute server-relative urls. The `_api` web base
+  comes from the managed-path prefix (`/teams/<x>`, `/sites/<x>`,
+  `/personal/<x>`), so one bucket reaches every site the session can.
+  Behaviour the code alone does not show:
+  - A missing folder answers 200 with `Exists: false`, never a 404, so `ls`
+    and `stat` check `Exists` before they trust a listing.
+  - A folder over the list view threshold (5000 items) refuses `/Files` and
+    `/Folders`. `ls` then pages the library's `RenderListDataAsStream` view.
+  - `mv` and `cp` use `SP.MoveCopyUtil` inside one site collection. Across site
+    collections they run a copy job (`CreateCopyJobs`), which keeps version
+    history and sharing but cannot rename, so the name stays the same.
+  - `resolve` asks the v2.0 shares API first. Failing that, it reads the
+    item's UniqueId from the link token: 16 bytes little-endian after a short
+    prefix. The prefix was two bytes in the one decoded sample, so one byte is
+    tried as well.
 
 ### Wire it into `social.toml`
 
@@ -148,8 +165,9 @@ restarts/reboots (`~/snap/slack`, `~/snap/opera`).
     # point any VNC viewer at localhost:5920, then in the Opera window:
     #   - the "Microsoft Teams" tab → sign in (incl. 2FA)
     #   - an "app.slack.com" tab    → sign in to the workspace (incl. 2FA)
-    #   - the "ubcca.sharepoint.com" tab → should SSO in from the Teams login;
-    #     if it lands on a sign-in page, complete it once (OneDrive bucket)
+    #   - the "ubcca.sharepoint.com" and "ubcca-my.sharepoint.com" tabs → should
+    #     SSO in from the Teams login; if one lands on a sign-in page, complete it
+    #     once (OneDrive bucket: sites, and personal OneDrive)
     # openbox has no taskbar: Alt+Tab cycles windows, right-click desktop = menu.
     ssh mira 'systemctl --user stop awm-vnc'     # when done
 

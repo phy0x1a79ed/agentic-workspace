@@ -24,7 +24,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 
+from awm.social.attachments import safe_name
 from awm.social.buckets.base import Bucket, Bucket_Account, Entry
 
 log = logging.getLogger("awm.social.buckets.gdrive")
@@ -108,7 +110,7 @@ class GoogleDriveBucket(Bucket):
             req = svc.files().list(
                 q=f"'{parent_id}' in parents and trashed=false",
                 fields="nextPageToken, files(id, name, mimeType, size, "
-                       "modifiedTime)",
+                       "modifiedTime, webViewLink)",
                 pageSize=1000,
                 pageToken=page,
                 supportsAllDrives=True,
@@ -155,6 +157,7 @@ class GoogleDriveBucket(Bucket):
             size=int(meta.get("size", 0) or 0),
             mime=mime,
             modified=meta.get("modifiedTime", "") or "",
+            web_url=meta.get("webViewLink", "") or "",
             id=meta.get("id", "") or "",
             ref={"id": meta.get("id", "")},
         )
@@ -177,9 +180,12 @@ class GoogleDriveBucket(Bucket):
     async def stat(self, path: str) -> Entry:
         return self._entry(await self._resolve(path), path.strip("/"))
 
-    async def get(self, path: str) -> tuple[str, str, bytes]:
+    async def get(self, path: str, dest_dir: str, *,
+                  version: str | None = None) -> dict:
         from googleapiclient.http import MediaIoBaseDownload  # lazy
-        import io
+
+        if version:
+            raise NotImplementedError("google_drive bucket does not read versions")
 
         meta = await self._resolve(path)
         if meta.get("mimeType") == _FOLDER_MIME:
@@ -201,38 +207,50 @@ class GoogleDriveBucket(Bucket):
                 fileId=meta["id"], supportsAllDrives=True)
             mime = src_mime
 
-        def _download() -> bytes:
-            buf = io.BytesIO()
-            dl = MediaIoBaseDownload(buf, req)
-            done = False
-            while not done:
-                _status, done = dl.next_chunk()
-            return buf.getvalue()
+        local = os.path.join(dest_dir, safe_name(name))
 
-        data = await asyncio.to_thread(_download)
-        return name, mime, data
+        def _download() -> int:
+            try:
+                with open(local, "wb") as fh:
+                    dl = MediaIoBaseDownload(fh, req)
+                    done = False
+                    while not done:
+                        _status, done = dl.next_chunk()
+                    return fh.tell()
+            except BaseException:
+                os.remove(local)
+                raise
+
+        size = await asyncio.to_thread(_download)
+        return {"filename": name, "mime": mime or "application/octet-stream",
+                "size": size, "path": local}
 
     async def put(
-        self, path: str, data: bytes, *, mime: str | None = None
+        self, path: str, src: str, *, mime: str | None = None,
+        parents: bool = False,
     ) -> Entry:
-        from googleapiclient.http import MediaInMemoryUpload  # lazy
+        from googleapiclient.http import MediaFileUpload  # lazy
 
         segs = _split(path)
         if not segs:
             raise ValueError("put requires a file path")
         name = segs[-1]
         parent_path = "/".join(segs[:-1])
-        parent = (await self._resolve(parent_path))["id"] if parent_path \
-            else self._root_id
+        if parent_path and parents:
+            parent = (await self.mkdir(parent_path)).id
+        elif parent_path:
+            parent = (await self._resolve(parent_path))["id"]
+        else:
+            parent = self._root_id
         svc = await self._service()
-        media = MediaInMemoryUpload(
-            data, mimetype=mime or "application/octet-stream", resumable=False)
+        media = MediaFileUpload(
+            src, mimetype=mime or "application/octet-stream", resumable=True)
 
         # Overwrite an existing same-named file in the parent; else create.
         existing = [c for c in await self._children(parent)
                     if c.get("name") == name
                     and c.get("mimeType") != _FOLDER_MIME]
-        fields = "id, name, mimeType, size, modifiedTime"
+        fields = "id, name, mimeType, size, modifiedTime, webViewLink"
         if existing:
             req = svc.files().update(
                 fileId=existing[0]["id"], media_body=media, fields=fields,
@@ -249,6 +267,76 @@ class GoogleDriveBucket(Bucket):
         svc = await self._service()
         await self._execute(
             svc.files().delete(fileId=meta["id"], supportsAllDrives=True))
+
+    async def mv(self, src: str, dst: str, *, overwrite: bool = False,
+                 parents: bool = False) -> Entry:
+        meta, parent, name = await self._prepare_target(
+            "mv", src, dst, overwrite, parents)
+        svc = await self._service()
+        cur = await self._execute(svc.files().get(
+            fileId=meta["id"], fields="parents", supportsAllDrives=True))
+        moved = await self._execute(svc.files().update(
+            fileId=meta["id"], body={"name": name}, addParents=parent,
+            removeParents=",".join(cur.get("parents") or []),
+            fields="id, name, mimeType, size, modifiedTime, webViewLink",
+            supportsAllDrives=True))
+        return self._entry(moved, dst.strip("/"))
+
+    async def cp(self, src: str, dst: str, *, overwrite: bool = False,
+                 parents: bool = False) -> Entry:
+        meta, parent, name = await self._prepare_target(
+            "cp", src, dst, overwrite, parents)
+        return self._entry(await self._copy_tree(meta, parent, name),
+                           dst.strip("/"))
+
+    async def _prepare_target(self, op: str, src: str, dst: str,
+                              overwrite: bool, parents: bool):
+        """Resolve ``src`` and the folder ``dst`` lands in, clearing an
+        existing ``dst`` into the trash when ``overwrite`` → (meta, parent id,
+        new name)."""
+        segs = _split(dst)
+        if not segs or not _split(src):
+            raise ValueError(f"{op} needs a source and a target path")
+        if "/".join(segs).startswith("/".join(_split(src)) + "/"):
+            raise ValueError(f"{op}: cannot {op} {src!r} into itself")
+        meta = await self._resolve(src)
+        name, parent_path = segs[-1], "/".join(segs[:-1])
+        if parent_path and parents:
+            parent = (await self.mkdir(parent_path)).id
+        elif parent_path:
+            pmeta = await self._resolve(parent_path)
+            if pmeta.get("mimeType") != _FOLDER_MIME:
+                raise NotADirectoryError(
+                    f"bucket {self.account.name!r}: {parent_path!r} is a file")
+            parent = pmeta["id"]
+        else:
+            parent = self._root_id
+        taken = [c for c in await self._children(parent)
+                 if c.get("name") == name and c.get("id") != meta.get("id")]
+        if taken and not overwrite:
+            raise FileExistsError(
+                f"bucket {self.account.name!r}: {dst!r} exists "
+                f"(pass overwrite:true to replace it)")
+        svc = await self._service()
+        for c in taken:
+            await self._execute(svc.files().update(
+                fileId=c["id"], body={"trashed": True}, supportsAllDrives=True))
+        return meta, parent, name
+
+    async def _copy_tree(self, meta: dict, parent: str, name: str) -> dict:
+        """Drive copies files only, so a folder is rebuilt level by level."""
+        svc = await self._service()
+        fields = "id, name, mimeType, size, modifiedTime, webViewLink"
+        if meta.get("mimeType") != _FOLDER_MIME:
+            return await self._execute(svc.files().copy(
+                fileId=meta["id"], body={"name": name, "parents": [parent]},
+                fields=fields, supportsAllDrives=True))
+        made = await self._execute(svc.files().create(
+            body={"name": name, "parents": [parent], "mimeType": _FOLDER_MIME},
+            fields=fields, supportsAllDrives=True))
+        for child in await self._children(meta["id"]):
+            await self._copy_tree(child, made["id"], child["name"])
+        return made
 
     async def mkdir(self, path: str) -> Entry:
         segs = _split(path)
@@ -269,20 +357,29 @@ class GoogleDriveBucket(Bucket):
                 req = svc.files().create(
                     body={"name": seg, "parents": [parent],
                           "mimeType": _FOLDER_MIME},
-                    fields="id, name, mimeType, modifiedTime",
+                    fields="id, name, mimeType, modifiedTime, webViewLink",
                     supportsAllDrives=True)
                 meta = await self._execute(req)
             parent = meta["id"]
         return self._entry(meta, "/".join(segs))
 
-    async def search(self, query: str, *, limit: int = 50) -> list[Entry]:
+    async def probe(self) -> None:
+        svc = await self._service()
+        await self._execute(svc.files().get(
+            fileId=self._root_id, fields="id", supportsAllDrives=True))
+
+    async def search(self, query: str, *, limit: int = 50,
+                     path: str = "") -> list[Entry]:
         # Drive query can't express "descendant of <root>", so search spans the
         # whole drive the credential can see (documented in INSTALL.md).
+        if path.strip("/"):
+            raise NotImplementedError(
+                "google_drive search cannot scope to a folder")
         svc = await self._service()
         safe = query.replace("'", "\\'")
         req = svc.files().list(
             q=f"name contains '{safe}' and trashed=false",
-            fields="files(id, name, mimeType, size, modifiedTime)",
+            fields="files(id, name, mimeType, size, modifiedTime, webViewLink)",
             pageSize=max(1, min(int(limit), 1000)),
             supportsAllDrives=True,
             includeItemsFromAllDrives=True,
