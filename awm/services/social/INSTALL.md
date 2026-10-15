@@ -179,9 +179,10 @@ with their holders. A Claude Code background session mounts a seat with
 `social_mount`. Each later message in that seat, from anyone but the bot, is
 typed into the holder's prompt through `reflection message`, one line each:
 
-    slack from <sender>[ ↳<thread ts>]: <text>
+    slack from <sender>[ ↳<thread ts>][ [bot]]: <text>
 
-The line names no channel. The mount reply names the channel and how to answer.
+` [bot]` marks a bot sender, so an agent can tell another swarm's bot from a
+person. The line names no channel. The mount reply names the channel and how to answer.
 Newlines become ` ⏎ `. Text past 1500 characters is cut, and attachments add
 `[+N files]`. A mount replays nothing, so read the backlog with
 `social_history`.
@@ -209,6 +210,51 @@ record.
 `social` entry of `_CALLER_STAMPED` in `server.py` beside it. The owner strips
 `_caller_session` from any call that skips the edge. A proxy started before the deploy sends no
 claim, so restart the session after you deploy.
+
+### Kept seats
+
+A kept seat is a seat whose holder social starts and keeps alive. Declare it
+in the owner's `social.toml`:
+
+    [seat.hallam-general]
+    account = "discord-bot"
+    channel = "1560400515630760049"    # the chat id, as social_seats lists it
+    node    = "altair"                 # where the agent runs: it needs Claude Code
+    scope   = "awm/seat-hallam-general"
+    brief   = """…"""                  # opens the agent's first prompt
+    # model = "opus"   effort = "high"  (optional)
+
+The seat stays an interface: the agent hears the chat only through pushed
+lines and answers with `social_send`. It runs no Monitor. Social reads the
+tables once, at start, so restart social after you edit one. A bad table is
+logged and disables the kept seats only. The accounts keep running.
+
+The keeper runs on the owner every 60 s:
+
+1. It lists `cx` sessions on `node`, locally or through a domestic peer. A
+   node that does not answer skips the tick.
+2. It starts a missing agent with `cx start`, named `seat - <name>`, pinned,
+   with Remote Control on. It writes the mount row itself.
+3. It replaces an agent that exited or failed. Restarts back off from 60 s to
+   15 min, and the count resets after 10 min of health.
+4. It leaves an agent blocked on login or usage for a person, and logs it once.
+5. It recycles an agent whose launch spec changed, once its tempo is idle.
+   A recycle is not a restart.
+
+A `cx stop` of a pinned agent unpins it and removes it with `claude rm`. The
+Claude Code daemon still retires a pinned session under memory pressure. The
+keeper then starts a new one. `social_mount` on a kept seat is refused and
+names the agent. `social_seats` shows each kept seat's job, health and
+restart count.
+
+**CAUTION** Every replacement agent opens on the same brief and reads the
+backlog first. Write the brief so that a second reading of a handled backlog
+posts nothing. A brief that says "announce yourself on start" posts again on
+every restart.
+
+**CAUTION** `cx start` refuses a scope worktree that Claude Code does not
+trust. A scope in a repository that has never run Claude Code is refused on
+every tick. Open one session there by hand first.
 
 ## Cloud-drive buckets (Google Drive, OneDrive/SharePoint)
 

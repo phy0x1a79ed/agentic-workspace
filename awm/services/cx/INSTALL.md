@@ -12,8 +12,8 @@ reasoning that reading the code does not give: who may start a session and what
 a restricted caller gets, where a session's mode lives, why a session is moved
 exactly once, which of two files answers which question about a session, how a
 session comes by its name, why the service refuses to seed or start on a node
-with no daemon, which trust rule applies to a move and to a start, and what the
-pool deliberately does not do. The verb list is in `awm cx --help`.
+with no daemon, which trust rule applies to a move and to a start, why a pinned
+session is removed when it stops, and what the pool deliberately does not do. The verb list is in `awm cx --help`.
 
 ## Install
 
@@ -285,6 +285,19 @@ detach by replacing itself with `claude agents`. That picker does not return on
 its own. Ctrl+Z is the documented way out. An earlier implementation ran a
 watcher beside the attach to signal the picker away, which cost the left-arrow
 route to the agent view; the vendor's behaviour is kept instead.
+
+### A pinned session is removed when it stops
+
+`start` with `pin=true` adds the job to `~/.claude/jobs/pins.json`, and the
+daemon retires a pinned session last. Social's keeper pins every kept-seat
+agent this way. A pin outlives its job unless something drops it, and dead ids
+then pile up in the file. So a `stop` of a pinned job unpins it and runs
+`claude rm`, and each reconcile tick drops the pins whose job directory is gone.
+
+**CAUTION** The Claude CLI edits the same file under a `pins.json.lock`
+directory that it breaks after five seconds. `awm/claudedaemon/pins.py` takes
+that lock the same way. A write that skips the lock races the CLI and loses
+pins.
 
 ### The claim rides the ordinary gateway
 
