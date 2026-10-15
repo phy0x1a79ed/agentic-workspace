@@ -1,6 +1,7 @@
 """One-off migrations of the board's existing cards, run by the host's admin.
 
 `columns` files every card into the column folder for its old `#status`.
+`archive` files every archived card in the `Archived` folder of its column.
 `threads` folds each chain of reply cards into the thread of the card at its
 root. A reply card that carries `cardThreaded` was posted on the thread too,
 so the plan leaves it out. Both are dry runs until told otherwise, and a second apply changes
@@ -74,6 +75,29 @@ def columns(board: Board, dry_run: bool) -> dict:
                     "cardStateAt": rec["labels"].get("cardUpdated") or _now()})
             board.vault.place(rec, target[rec["note_id"]])
         return {**report, "moved": len(legacy)}
+
+
+# -- archive ------------------------------------------------------------------
+
+
+def archive(board: Board, dry_run: bool) -> dict:
+    with board._guard:
+        archived = board.vault.list_archived()
+        misfiled = [rec for rec in archived if not rec["archived_in"]]
+        target = {rec["note_id"]: board._card({**rec, "content": None})["state"]
+                  for rec in misfiled}
+        by_state = Counter(target.values())
+        report = {"dry_run": dry_run,
+                  "folders_to_create": [s for s in STATES if s not in board.vault.archives()],
+                  "already_filed": len(archived) - len(misfiled),
+                  "cards_to_move": len(misfiled),
+                  "by_state": {s: by_state[s] for s in STATES if by_state[s]}}
+        if dry_run:
+            return report
+        board.vault.ensure_columns()
+        for rec in misfiled:
+            board.vault.archive(rec, target[rec["note_id"]])
+        return {**report, "moved": len(misfiled)}
 
 
 # -- threads ------------------------------------------------------------------
@@ -195,10 +219,9 @@ def _apply(board: Board, subject: dict, report: Counter) -> None:
             replies.append((rec, card))
         replies.sort(key=lambda rc: (rc[1]["created_at"], rc[1]["id"]))
         _fold(board, root_rec, replies, report)
-        for rec, _ in replies:
+        for rec, card in replies:
             if "archived" not in rec["labels"]:
-                board.vault.update(rec["note_id"], labels={
-                    "archived": "", "cardFolded": subject["root"]})
+                board.vault.archive(rec, card["state"], {"cardFolded": subject["root"]})
                 report["replies_archived"] += 1
         root_rec = board.vault.read(subject["root"])
         root = board._card(root_rec)
