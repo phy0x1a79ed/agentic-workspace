@@ -36,6 +36,7 @@ it had in fact waited 60 for. Retry the connect phase; never the response phase
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 # The reconnect window, applied to the CONNECT phase only, so a request
 # transparently survives a `systemctl restart` of the core.
@@ -129,3 +130,33 @@ def catalog_no_reply_message(waited_s: float) -> str:
     """Message for a catalog fetch that went unanswered. Safe to retry by hand."""
     return (f"awm core did not answer GET /tools within {waited_s:.0f}s "
             f"(the core is up — it accepted the request — but did not reply)")
+
+
+def scope_of(cwd: Path) -> str:
+    """``project/scope`` for a directory inside a scope worktree (``projects/<project>/<scope>``), else empty."""
+    here = cwd.resolve()
+    for root in (here, *here.parents):
+        if (root / ".git").exists():
+            break
+    else:
+        return ""
+    for projects in root.parents:
+        if projects.name == "projects":
+            rel = root.relative_to(projects).parts
+            return "/".join(rel) if len(rel) >= 2 else ""
+    return ""
+
+
+def with_search_context(name: str, arguments: dict, cwd: str | None = None) -> dict:
+    """A local ``search query`` without a ``context`` gains the calling session's scope.
+
+    The proxy runs in the session's working directory, so the scope is observed here, the
+    way the caller's pid is. A call aimed at a ``peer`` is left alone: that node's search
+    may predate the argument, and its scopes are not ours.
+    """
+    args = arguments.get("args")
+    if name != "search" or arguments.get("verb") != "query" or arguments.get("peer") \
+            or not isinstance(args, dict) or args.get("context"):
+        return arguments
+    context = scope_of(Path(cwd or os.getcwd()))
+    return {**arguments, "args": {**args, "context": context}} if context else arguments

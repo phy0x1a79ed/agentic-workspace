@@ -71,6 +71,10 @@ API_MANIFEST: dict[str, Any] = {
                                 "domestic node. Node names, comma-separated, domestic or foreign, "
                                 "search only those nodes. Add `local` to the names to include "
                                 "this node."},
+                {"name": "context", "type": "string",
+                 "description": "The scope to rank for, as project/scope or a project. It reorders each "
+                                "section by that scope's PageRank and never changes which hits appear. "
+                                "Default: the calling session's scope."},
             ],
         },
         {

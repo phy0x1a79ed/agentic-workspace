@@ -44,6 +44,8 @@ ZOTERO_LIBRARY = Path(os.environ.get("KB_ZOTERO_LIBRARY")
 #: delta this service fills from Zotero.
 PAPERS_BASE = Path(os.environ.get("KB_PAPERS_BASE") or (STATE_DIR / "papers.db"))
 PAPERS_DELTA = Path(os.environ.get("KB_PAPERS_DELTA") or (STATE_DIR / "papers_delta.db"))
+#: The one graph and its PageRank profiles, as the kb project's `kb.graph` builds them.
+GRAPH = Path(os.environ.get("KB_GRAPH") or (STATE_DIR / "graph" / "graph.db"))
 ZOTERO_POLL_S = float(os.environ.get("KB_ZOTERO_POLL_S", "300"))
 #: The node whose zotero service holds the library mirror; `local` for this one.
 ZOTERO_PEER = os.environ.get("KB_ZOTERO_PEER", "mira")

@@ -35,11 +35,12 @@ def test_every_verb_is_published_under_the_search_tool_and_wired():
 def test_the_query_verb_declares_every_key_it_reads_and_every_key_it_sends_a_peer():
     declared = {p["name"] for p in FNS["query"]["params"]}
     full = {"query": "q", "sources": ["a"], "project": "p", "scope": "s", "kind": "k",
-            "after": "2026-01-01", "before": "2026-02-01", "limit": 3, "passages": 1, "peers": "fleet"}
+            "after": "2026-01-01", "before": "2026-02-01", "limit": 3, "passages": 1, "peers": "fleet",
+            "context": "awm/dev"}
     assert set(full) == declared
     sent = parse(full).forwarded()
     assert set(sent) <= declared
-    assert {"query", "limit", "peers"} <= set(sent)
+    assert {"query", "limit", "peers"} <= set(sent) and "context" not in sent
 
 
 def test_the_judgement_verbs_are_closed_to_peers():

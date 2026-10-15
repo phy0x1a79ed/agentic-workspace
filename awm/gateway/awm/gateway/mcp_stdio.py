@@ -353,6 +353,7 @@ def _handle_tools_call(params: dict) -> dict:
         # that talks to peer edges may opt in, so the CLI and web UI keep
         # seeing plain results.
         headers["X-Awm-Peer-Redirect"] = "1"
+        arguments = mcp_http.with_search_context(name, arguments)
         data = _request_with_retry(
             "POST", "/invoke", json_body={"name": name, "args": arguments},
             headers=headers,

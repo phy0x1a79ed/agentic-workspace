@@ -109,6 +109,10 @@ async def test_get_returns_the_stored_document(loaded):
 # -- live sources ----------------------------------------------------------
 
 
+def last_query(gateway):
+    return [args for _, fn, args in gateway.calls if fn == "query"][-1]
+
+
 def transcripts(args):
     return {"hits": [{"id": "s1:7", "title": "awm", "snippet": f"you said {args['query']}",
                       "ts": "2026-06-01T00:00:00+00:00", "project": "awm"}]}
@@ -122,7 +126,7 @@ async def test_a_live_source_runs_only_when_named_if_it_is_opt_in(loaded, gatewa
     named = await loaded.query(parse({"query": "kitchen", "sources": ["transcripts"]}))
     assert ids(named) == [("transcripts", "s1:7")]
     assert named["sources"]["transcripts"] == {"status": "ok", "hits": 1}
-    assert gateway.calls[-1][2]["query"] == "kitchen"
+    assert last_query(gateway)["query"] == "kitchen"
 
 
 async def test_a_live_source_that_is_not_opt_in_joins_the_default_search(loaded, gateway):
@@ -150,8 +154,8 @@ async def test_filters_reach_a_live_source(loaded, gateway):
     gateway.plug_live("web", transcripts)
     await loaded.refresh()
     await loaded.query(parse({"query": "kitchen", "project": "awm", "after": "2026-01-01", "passages": 3}))
-    assert gateway.calls[-1][2] == {"query": "kitchen", "limit": 10, "passages": 3, "project": "awm",
-                                    "after": "2026-01-01"}
+    assert last_query(gateway) == {"query": "kitchen", "limit": 10, "passages": 3, "project": "awm",
+                                   "after": "2026-01-01"}
 
 
 async def test_a_source_that_turns_live_drops_its_indexed_documents(loaded, gateway):
@@ -355,3 +359,36 @@ async def test_get_with_a_node_reads_that_peers_archive(peers):
     got = await federation.fetch(peers, "shaula", "journals", "r3")
     assert got["document"]["origin"] == {"node": "shaula", "swarm": "other"}
     assert peers.calls == [("shaula", "search_get", {"source": "journals", "id": "r3"})]
+
+
+# -- PageRank ----------------------------------------------------------------
+
+
+async def test_kb_ranks_each_section_for_the_context_and_never_changes_its_hits(loaded, gateway):
+    plain = await loaded.query(parse({"query": "kitchen"}))
+    asked = []
+
+    def rank(args):
+        asked.append(args)
+        return {"profile": "scope:awm/dev + project:awm", "scores": [float(i) for i in range(len(args["hits"]))]}
+
+    gateway.handlers[("kb", "rank")] = rank
+    ranked = await loaded.query(parse({"query": "kitchen", "context": "awm/dev"}))
+    assert asked[-1]["context"] == "awm/dev"
+    assert set(asked[-1]["hits"][0]) == {"source", "id", "project", "scope"}
+    assert ranked["rank"] == {"profile": "scope:awm/dev + project:awm"}
+    for section in ("exact", "related", "graph"):
+        assert sorted(h["id"] for h in ranked[section]) == sorted(h["id"] for h in plain[section])
+
+
+async def test_a_failed_rank_leaves_the_answer_in_its_section_order(loaded, gateway):
+    gateway.handlers[("kb", "rank")] = lambda args: RuntimeError("no graph")
+    result = await loaded.query(parse({"query": "kitchen"}))
+    assert "no graph" in result["rank"]["error"] and ids(result)
+
+
+async def test_no_kb_asks_for_no_rank(archive, gateway):
+    gateway.plug("journals", {"j1": doc("Kitchen", "kitchen sink", kind="journal")})
+    await synced(archive, gateway)
+    result = await archive.query(parse({"query": "kitchen"}))
+    assert "rank" not in result and not any(fn == "rank" for _, fn, _ in gateway.calls)

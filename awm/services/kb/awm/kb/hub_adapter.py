@@ -26,12 +26,14 @@ from awm import config
 from awm import gatewayclient
 from awm.gatewayclient import ServiceAdapter, spawn_supervised
 
-from awm.kb import client, fastlayer, instances, papers, server
+from awm.kb import client, fastlayer, graphrank, instances, papers, server
 
 log = logging.getLogger("awm.kb.hub_adapter")
 
 CHILD = server.CHILD
 PAPERS = fastlayer.FastLayer(instances.PAPERS_BASE, instances.PAPERS_DELTA)
+RANKS = graphrank.Ranks(instances.GRAPH)
+MAX_RANKED = 1000
 _tasks: set[asyncio.Task] = set()
 
 API_MANIFEST: dict[str, Any] = {
@@ -154,6 +156,25 @@ API_MANIFEST: dict[str, Any] = {
             "timeout": 30,
         },
         {
+            "name": "rank",
+            "effect": "read",
+            "category": "kb",
+            "tool": "kb_rank",
+            "surfaces": ["cli", "http"],
+            "description": (
+                "PageRank scores for search hits, from the one graph over papers, authors, posts, scopes "
+                "and projects. With a context, the scope's profile blends with its project's. "
+                "`search query` calls it to order each section; domestic callers only."
+            ),
+            "params": [
+                {"name": "hits", "type": "array", "required": True,
+                 "description": "Hits as {source, id, project, scope}; source kb is a paper."},
+                {"name": "context", "type": "string",
+                 "description": "The calling scope as project/scope, or a project. Default: the global rank."},
+            ],
+            "timeout": 10,
+        },
+        {
             "name": "export",
             "effect": "read",
             "category": "kb",
@@ -232,6 +253,16 @@ async def _h_query(args: dict, as_: str | None = None) -> dict:
     return {**found, "graph": []}
 
 
+async def _h_rank(args: dict, as_: str | None = None) -> dict:
+    if _foreign(as_):
+        raise PermissionError("rank is for domestic callers")
+    hits = args.get("hits") or []
+    if not isinstance(hits, list) or len(hits) > MAX_RANKED or \
+            not all(isinstance(h, dict) and h.get("id") for h in hits):
+        raise ValueError(f"hits must be a list of at most {MAX_RANKED} {{source, id}} objects")
+    return await asyncio.to_thread(RANKS.score, hits, str(args.get("context") or ""))
+
+
 async def _h_start(args: dict, as_: str | None = None) -> dict:
     _operator_only(as_, "start")
     return await asyncio.to_thread(CHILD.start)
@@ -303,6 +334,7 @@ HANDLERS = {
     "status": _h_status,
     "recall": _h_recall,
     "query": _h_query,
+    "rank": _h_rank,
     "export": _h_export,
     "start": _h_start,
     "stop": _h_stop,

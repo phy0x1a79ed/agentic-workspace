@@ -34,6 +34,7 @@ SETTLE_S = 5.0
 TICK_S = 15.0
 REGISTRY_TTL_S = 10.0
 LIVE_TIMEOUT_S = 15.0
+RANK_TIMEOUT_S = 3.0
 HOMES_TTL_S = 300.0
 EXPORT_TIMEOUT_S = 120.0
 PAGE = 200
@@ -398,8 +399,37 @@ class Archive:
                     lists.append(result.found)
                     peer_status[result.name] = result.status
 
-        out: dict[str, Any] = {"query": q.text, **merge.fuse_sections(lists, q.limit),
-                               "sources": statuses, "peers": peer_status}
+        fused = merge.fuse_sections(lists, q.limit)
+        rank = await self._rank(fused, q.context)
+        out: dict[str, Any] = {"query": q.text, **fused, "sources": statuses, "peers": peer_status}
+        if rank:
+            out["rank"] = rank
         if degraded:
             out["degraded"] = degraded
         return out
+
+    async def _rank(self, fused: dict[str, list[dict[str, Any]]], context: str) -> dict[str, Any] | None:
+        """Reorder each section in place by kb's PageRank, for ``context`` when one is given."""
+        if not any(s.service == "kb" for s in self.sources.values()):
+            return None
+        every = [h for section in hitshape.SECTIONS for h in fused[section]]
+        if not every:
+            return None
+        args = {"hits": [{k: h.get(k, "") for k in ("source", "id", "project", "scope")} for h in every],
+                "context": context}
+        try:
+            raw = await asyncio.wait_for(self.gateway.call("kb", "rank", args, RANK_TIMEOUT_S),
+                                         timeout=RANK_TIMEOUT_S + 1.0)
+            scores = raw["scores"]
+            if not isinstance(scores, list) or len(scores) != len(every):
+                raise ValueError("kb rank answered a different number of scores")
+        except Exception as exc:  # noqa: BLE001 — unranked sections are still the answer
+            return {"error": _describe(exc)}
+        if raw.get("profile") is None:
+            return None
+        at = 0
+        for section in hitshape.SECTIONS:
+            hits = fused[section]
+            fused[section] = merge.by_rank(hits, scores[at:at + len(hits)])
+            at += len(hits)
+        return {"profile": raw["profile"]}

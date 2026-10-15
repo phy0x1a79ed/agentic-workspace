@@ -111,6 +111,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         # only a caller that talks to peer edges may opt in, so the CLI and the
         # web UI keep seeing plain results and plain errors.
         headers["X-Awm-Peer-Redirect"] = "1"
+        arguments = mcp_http.with_search_context(name, arguments)
         data = await _request_with_retry(
             "POST", "/invoke", json_body={"name": name, "args": arguments},
             headers=headers,
