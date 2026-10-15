@@ -21,7 +21,7 @@ pytestmark = [pytest.mark.unit, pytest.mark.smoke]
 
 EFFECTS = {
     "post": "queue", "claim": "queue", "complete": "queue", "fail": "queue",
-    "get": "read", "list": "read",
+    "get": "read", "list": "read", "message_post": "queue", "messages": "read",
     "party_add": "secret", "party_revoke": "write", "party_list": "read",
 }
 HIDDEN = {"party_add", "party_revoke", "party_list"}
@@ -190,6 +190,18 @@ async def test_list_relays_paging_to_the_host(relay):
     assert (await hub_adapter.list_cards({"limit": 0 or "", "offset": ""}))["ok"] is True
     spec = next(f for f in hub_adapter.API_MANIFEST["functions"] if f["name"] == "list")
     assert {"limit", "offset"} <= {p["name"] for p in spec["params"]}
+
+
+async def test_the_thread_verbs_relay_to_the_host(relay):
+    posted = (await hub_adapter.post({"kind": "request", "recipient": "beta", "title": "t"}))["card"]
+    sent = await hub_adapter.message_post({"card_id": posted["id"], "body": "hello"})
+    assert sent["ok"] and sent["message"]["seq"] == 1
+    assert sent["message"]["sender"]["swarm"] == "alpha"
+    await hub_adapter.message_post({"card_id": posted["id"], "body": "again"})
+    read = await hub_adapter.messages({"card_id": posted["id"], "after": 1})
+    assert [m["body"] for m in read["messages"]] == ["again"]
+    hidden = await hub_adapter.messages({"card_id": "f" * 32})
+    assert hidden["ok"] is False and hidden["status"] == 404
 
 
 async def test_claim_complete_and_fail_relay_with_the_hosts_status(relay, monkeypatch):

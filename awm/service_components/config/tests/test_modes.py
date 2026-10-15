@@ -23,6 +23,7 @@ def allowed(mode):
 def test_the_representative_allowlist_is_exactly_its_verbs():
     assert allowed("representative") == {
         "operations.board_list", "operations.board_get", "operations.board_fail",
+        "operations.board_messages",
         "reflection.start_other", "reflection.list_other",
         "reflection.compact", "reflection.whoami",
         "operations.status", "operations.queue_list", "operations.queue_get",
@@ -35,7 +36,7 @@ def test_the_representative_allowlist_is_exactly_its_verbs():
 def test_the_secretary_allowlist_is_exactly_its_verbs():
     assert allowed("secretary") == {
         "reflection.start_other", "reflection.list_other", "reflection.stop_other",
-        "operations.board_list", "operations.board_get",
+        "operations.board_list", "operations.board_get", "operations.board_messages",
         "operations.status", "operations.queue_list", "operations.queue_get", *HOOK_VERBS,
         "reflection.compact", "reflection.whoami", "journal.fetch", "journal.goal_read",
         "journal.goal_history", "scope.search", "scope.resolve", *SEARCH_VERBS,
@@ -44,7 +45,8 @@ def test_the_secretary_allowlist_is_exactly_its_verbs():
 
 def test_the_representative_never_claims_completes_or_posts():
     for verb in ("operations.board_post", "operations.board_claim",
-                 "operations.board_complete", "journal.render"):
+                 "operations.board_complete", "operations.board_message_post",
+                 "journal.render"):
         assert verb not in allowed("representative")
         assert verb not in allowed("secretary")
 
@@ -66,7 +68,7 @@ def test_no_allow_mode_can_change_its_own_permission_mode_or_send_text():
 def test_the_secretary_never_writes_to_the_board_or_the_queue():
     writes = {"operations.board_post", "operations.board_claim",
               "operations.board_complete", "operations.board_fail",
-              "operations.queue_assign"}
+              "operations.board_message_post", "operations.queue_assign"}
     assert not writes & allowed("secretary")
 
 
@@ -161,7 +163,8 @@ def test_every_mode_but_unknown_may_report():
 
 
 def test_a_delegate_finishes_a_card_and_reads_the_board():
-    for verb in ("board_get", "board_list", "board_complete", "board_fail"):
+    for verb in ("board_get", "board_list", "board_complete", "board_fail",
+                 "board_message_post", "board_messages"):
         assert delegate("operations", verb, "queue") is None
         assert delegate("operations", verb, None) is None
     assert delegate("operations", "board_claim", "queue") is not None

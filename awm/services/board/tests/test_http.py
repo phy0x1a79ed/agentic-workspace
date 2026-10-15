@@ -60,6 +60,8 @@ async def test_a_bad_token_answers_404_on_every_route(door):
         ("POST", f"/board/cards/{card_id}/claim"),
         ("POST", f"/board/cards/{card_id}/complete"),
         ("POST", f"/board/cards/{card_id}/fail"),
+        ("POST", f"/board/cards/{card_id}/messages"),
+        ("GET", f"/board/cards/{card_id}/messages"),
         ("GET", "/board/stream"),
     ]
     for token in ("wrong", "", None):
@@ -101,6 +103,25 @@ async def test_a_swarm_that_may_see_but_not_claim_is_refused_with_404(door):
         card = (await alpha.post("/board/cards", json=CARD)).json()
         # The sender sees its own card but it is addressed to beta.
         assert (await alpha.post(f"/board/cards/{card['id']}/claim")).status_code == 404
+
+
+async def test_a_thread_posts_and_reads_back_after_a_cursor(door):
+    async with door.client(door.tokens["alpha"]) as alpha:
+        card = (await alpha.post("/board/cards", json=CARD)).json()
+        path = f"/board/cards/{card['id']}/messages"
+        forged = {"body": "hello", "sender": {"swarm": "gamma"}}
+        first = await alpha.post(path, json=forged)
+        assert first.status_code == 200
+        assert first.json()["seq"] == 1 and first.json()["sender"]["swarm"] == "alpha"
+    async with door.client(door.tokens["beta"]) as beta:
+        assert (await beta.post(path, json={"body": "hi back"})).json()["seq"] == 2
+        later = await beta.get(path, params={"after": "1"})
+        assert [m["body"] for m in later.json()] == ["hi back"]
+        assert (await beta.post(path, json={"body": ""})).status_code == 400
+        assert (await beta.post(path, content=b"nope")).status_code == 400
+    async with door.client(door.tokens["gamma"]) as gamma:
+        assert (await gamma.get(path)).status_code == 404
+        assert (await gamma.post(path, json={"body": "let me in"})).status_code == 404
 
 
 async def test_the_sender_comes_from_the_bearer_not_the_body(door):
