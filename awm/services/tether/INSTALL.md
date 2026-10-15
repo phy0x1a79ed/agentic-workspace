@@ -2,14 +2,16 @@
 
 ## Purpose & Contents
 
-This file is the operator's contract for the `tether` service: what the folder
-ships, which role a host plays, the environment each role reads, and how a host
-with no toolchain gets its binaries.
+This file is the operator's contract for the awm `tether` service: what the
+folder ships, which role a host plays, the environment each role reads, and how
+a host gets the binaries it supervises.
 
 What belongs here: the two roles, every environment variable and who sets it,
-the install and shipping steps, and the failure each host shows when something
-is missing. What does not belong here: the protocol, which is `PROTOCOL.md`,
-and the verb surface, which `awm tether --help` renders from the live manifest.
+the install step, the release pin, and the failure each host shows when a binary
+is missing. What does not belong here: the Rust source, the build and the
+launchers, which live in the tether repository (`github.com/phy0x1a79ed/tether`);
+the protocol, which is that repository's `PROTOCOL.md`; and the verb surface,
+which `awm tether --help` renders from the live manifest.
 
 ## What this is
 
@@ -18,9 +20,10 @@ A consent-gated remote-assistance session between an **operator** and an
 The operator mints an invite code. The owner reads it into one piped command,
 answers a prompt, and watches the session until either side cuts it.
 
-The folder holds a thin Python adapter, under `rust/` the three binaries that
-do the work, and under `build/` the container that builds them for every
-machine an owner might be sitting at.
+This folder holds a thin Python adapter and a one-line `RELEASE` pin. The three
+binaries that do the work — the operator daemon, the relay, and the owner's
+client — are built and published by the tether repository. Each host fetches the
+version `RELEASE` names from that repository's GitHub release.
 
 ## Two roles, one folder
 
@@ -28,12 +31,13 @@ The same service runs on two kinds of host. `AWM_TETHER_ROLE` decides which.
 
 | Role | Set on | Supervises | Needs |
 |---|---|---|---|
-| `operator` (default) | your own node | `tether-operator`, which mints invites and drives a session | a cargo toolchain, and the relay's bearer |
-| `relay` | the public host | `tether-relay`, which pairs two sockets and reads nothing | shipped binaries, its own bearer, the edge mount |
+| `operator` (default) | your own node | `tether-operator`, which mints invites and drives a session | its fetched binary, and the relay's bearer |
+| `relay` | the public host | `tether-relay`, which pairs two sockets and reads nothing | its fetched binaries, its own bearer, the edge mount |
 
-The public host has no Rust toolchain and is not getting one. It receives built
-artifacts from a build box, which is the same mechanism that serves the owner's
-client, so one script does both.
+Neither host needs a toolchain. Each fetches its role's binaries from the
+GitHub release on every start (see *Fetching the binaries*). The relay also
+takes every client and both launchers, because it serves them as the fallback
+when GitHub cannot be reached.
 
 ## Install
 
@@ -43,52 +47,38 @@ The script editable-installs `gatewayclient` and this service into the `awm`
 env. Override the env with `AWM_ENV=<name>`. It writes a gitignored
 `.runtime-env` sidecar baking `AWM_PYTHON` = the env's absolute interpreter, so
 the gateway can respawn the service under systemd's minimal PATH, where `mamba`
-is absent. It then builds the Rust binaries when `cargo` is present, and says
-so plainly when it is not. A host without a toolchain still installs, and
-reports the missing binaries through `awm tether status`.
+is absent. It then runs `fetch-release.sh` once, so a fresh install comes up
+running rather than waiting for the first restart. A host that cannot reach the
+release still installs, and reports the missing binaries through
+`awm tether status`.
 
-## Building the clients
+## Fetching the binaries
 
-    ./build-clients.sh --image       # once per machine, and on a base bump
-    ./build-clients.sh               # every client, every machine
+`RELEASE` holds one tag, such as `v0.1.0`. It is the single pin that decides
+which tether every node runs.
 
-The owner downloads this binary onto a machine nobody chose in advance, so a
-client built against this box's C library is a client that runs only on
-machines no older than this box. Every client is therefore built in one
-container that pins its toolchains: musl for Linux, which links statically,
-osxcross for the two Apple targets, and mingw-w64 for Windows. The relay binary
-is built the same way, because the box it runs on is not the box it is built
-on.
+`fetch-release.sh` reads `RELEASE`, compares it with the `VERSION` stamp beside
+the installed binaries, and does nothing when they match. On a mismatch it
+downloads `SHA256SUMS` and this host's role from the matching GitHub release,
+verifies every file against `SHA256SUMS`, and swaps the binaries in. `run.sh`
+calls it before the adapter registers, so the version a node runs follows the
+pin with no hand-run step. A deploy that changes `RELEASE` restarts the service,
+and the restart fetches.
 
-`artifacts.sh` is the one table of what is produced. The names in it are
-the names the launchers ask for, so a target is added in one place.
+A failed fetch is not fatal. It leaves the binaries already in place untouched
+and leaves the `VERSION` stamp behind the pin, which `awm tether status` reports
+as a version lag. A GitHub outage never takes the relay down.
 
-The build stages into `dist/`, which is gitignored and never DVC-pinned. A
-pinned binary is checked out read-only, which costs it the executable bit.
+To build the binaries, cut a release, or change the protocol, work in the tether
+repository. awm and tether ship in lockstep — the operator decodes frames the
+clients send — so a protocol change bumps `RELEASE` in the same awm change that
+needs it.
 
-`./build-clients.sh --host` is the inner loop: this machine's toolchain, this
-machine's target, seconds rather than minutes. It marks the stage `local`, and
-`ship-binaries.sh` refuses to ship a stage marked anything but `cross`.
-
-## Shipping binaries to a host that cannot build
-
-    ./ship-binaries.sh [host]        # default: sirius
-
-One trip carries the relay binary the host runs, both launchers, and one client
-per machine an owner might be sitting at. Every artifact passes one gate first:
-magic bytes, a floor on size, the executable bit, and the absence of the
-consent bypass. Read the script's own header for the layout.
-
-**CAUTION** A missing client is visible rather than silent. That owner's
-launcher asks the relay for a name it does not have, and says so.
-
-### The fallback, when the container cannot produce a Mac client
-
-    ./build-macos.sh [host]        # default: sirius
-
-Run on the Mac itself. It builds only the owner's client, passes the same gate,
-and ships into the same assets directory. The Mac needs a checkout of this
-repository and a Rust toolchain, and nothing else.
+**CAUTION** `AWM_TETHER_BIN` points the service at a local build and skips the
+fetch entirely. Set it to a tether checkout's cargo target directory to develop
+against uncommitted binaries. `awm tether status` then reports the build as an
+override rather than a version lag, because there is no pinned version to
+compare.
 
 ## Environment
 
@@ -102,24 +92,20 @@ the public host.
 | `AWM_SERVICE_NAME` | adapter | this service's name (= `tether`) |
 | `AWM_SERVICE_ID` | adapter | assigned on respawn so reconnect targets the same control URL |
 | `AWM_TETHER_ROLE` | adapter | `operator` (default) or `relay` |
-| `AWM_TETHER_BIN` | adapter | where the built binaries live, when not the cargo target tree |
+| `AWM_TETHER_BIN` | adapter, fetch | a local build directory, which overrides the fetch (development only) |
 | `AWM_TETHER_ISSUE_TOKEN` | both roles | the bearer that makes a session operator-only |
 | `AWM_TETHER_PORT` | relay | the loopback port it binds (default 12520) |
-| `AWM_TETHER_ASSETS` | relay | the directory holding both launchers and the client downloads |
+| `AWM_TETHER_ASSETS` | relay, fetch | the directory holding both launchers and the client downloads |
 | `AWM_TETHER_MAX_SESSIONS` | relay | cap on live sessions |
 | `AWM_TETHER_CLIENT_IP_HEADER` | relay | which header carries the owner's address (default `cf-connecting-ip`) |
 | `AWM_EDGE_TETHER` | httpsfront | set `1` to mount the relay at `/tether` on the public edge |
-| `TETHER_BUILD_CACHE` | build-clients.sh | cargo's shared build directory (default `~/.cache/tether`) |
-| `TETHER_DOCKER_DNS` | build-clients.sh | a resolver for the build container, when the default one stalls |
-| `TETHER_SHELL` | owner's client | the shell a task runs in, when the machine's own is somewhere else |
-| `TETHER_RELAY` | owner's launcher and client | the relay to use instead of the public one, for a test relay |
-| `https_proxy`, `all_proxy`, `no_proxy` | owner's client | the egress proxy, read in either case as curl reads it. `user:pass@` is Basic auth. A SOCKS proxy is refused by name |
-| `SSL_CERT_FILE`, `SSL_CERT_DIR` | owner's client | extra CA certificates, for a proxy that re-signs TLS |
-| `TETHER_TRANSPORT` | owner's client | `socket` or `poll` forces one transport. Unset tries the socket first |
-| `TETHER_ASSET` | owner's launcher | forces the download name. Tests only, and named in every refusal it causes |
+| `TETHER_REPO`, `TETHER_GITHUB_BASE` | fetch | override the repository or the release download base, for a mirror or a test |
+| `TETHER_RELEASE_DIR` | fetch | copy the assets from a local directory instead of downloading, for a test with no published release |
 
 The relay's port is declared once in `awm.config`, because two processes must
-agree on it and neither owns it.
+agree on it and neither owns it. The owner's client reads its own environment
+(the shell it runs, a proxy, a test relay); that is documented with the client
+in the tether repository.
 
 **CAUTION** `AWM_TETHER_ISSUE_TOKEN` is the whole of "only an operator may open
 a session". Both hosts need **the same value**. The relay refuses to start
@@ -159,52 +145,20 @@ as events. Read them with `drain`, which with no cursor means "what is new since
 I last asked" and remembers that per caller, or follow them live on the
 service's `session` topic.
 
-That costs a caller two steps where there used to be one, and buys three things
-it could not have before: starting something long without holding a socket open
-for it, more than one task at a time, and a second reader seeing the same
-session as the first. `tether-dev.sh` does the second step for you, which is
-where the convenience belongs — bending the verbs to suit a terminal would have
-cost the rest.
-
 ## The owner's side installs nothing
 
 The owner runs one line and holds no key material:
 
     curl -fsSL https://nexus.tony-xy-liu.com/tether | sh -s acre anchor kettle
 
-Windows has no shell that can run that script, so it has its own launcher at
-its own address:
+Windows has its own launcher at its own address:
 
     & ([scriptblock]::Create((irm https://nexus.tony-xy-liu.com/tether/win))) acre anchor kettle
 
-The launcher fetches the client for that machine, runs it, and stops. It sets
-up no PATH entry, no login item, no launch agent, no service, and no cron. The
-residue is one directory of its own under the temporary directory, holding the
-downloaded client and the record of the session written beside it. The launcher
-prints that directory before running anything, and the consent prompt names the
-record again before the owner answers.
-
-The launcher is POSIX sh, so `sh`, `bash`, `dash` and busybox all run it. It
-checks the download's header and the client's own `--version` against the
-machine it detected, and refuses to run a client built for another one. The
-message names both platforms.
-
-An owner with no terminal, such as an agent in a sandbox, says yes in two runs:
-
-1. The first run shows the full consent prompt. It then prints three words and
-   the exact line to run again, and exits with status 3. The operator keeps the
-   slot and shows the session as `confirming`.
-2. The second run is that line, the code followed by `--agree` and the three
-   words. It works once, within five minutes, for the same code, relay and
-   operator. Any mismatch fails before a session opens and names which part
-   differed.
-
-`--agree` is refused wherever a terminal opens, so the two paths never mix.
-
-Two different claims live here and only the first was ever the promise. **No
-session survives its process**: nothing reconnects, nothing is scheduled,
-nothing starts at boot, and killing the client ends the session at both ends.
-**Both people keep an account of what was done**: the owner's beside their
-client, the operator's under this service's state directory. The second is new
-and is a consent improvement rather than an erosion of the first — the owner
-watched it happen, so a record of it is not a secret being kept from them.
+The launcher fetches the client for that machine from the GitHub release first
+and from the relay only when GitHub is unreachable, verifies the download's
+SHA-256 against a baked value, runs it, and stops. It installs nothing to PATH
+and sets up no autostart. The owner's full client behaviour — the two-run
+consent path for a terminal-less owner, the session record, the portability
+guarantees — is documented in the tether repository's `README.md` and
+`PROTOCOL.md`.
