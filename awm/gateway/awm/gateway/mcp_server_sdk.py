@@ -121,7 +121,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             # own book, and chaining would let two nodes bounce a call forever.
             # ``peer`` is stripped for the same reason — the far side must not
             # re-route what we already routed.
-            forwarded = {k: v for k, v in arguments.items() if k != "peer"}
+            forwarded = mcp_caller.forwarded_args(name, arguments, session_pid)
             from awm.gateway import peer_files
             hop = await asyncio.to_thread(
                 peer_files.invoke_with_files,

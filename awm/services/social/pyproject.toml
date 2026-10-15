@@ -11,7 +11,7 @@ dependencies = [
     "awm-config",
     "awm-persistence",
     "awm-gatewayclient",
-    "discord.py>=2.3",
+    "discord.py>=2.4",
     "slack_sdk>=3.27",
     "aiohttp>=3.9",
     # Google Drive buckets (OAuth2 refresh-token flow). Imported lazily, so the

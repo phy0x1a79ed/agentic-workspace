@@ -192,7 +192,7 @@ class TestManifest:
             "social_bucket_share", "social_bucket_shares",
             "social_bucket_unshare", "social_bucket_resolve",
             "social_bucket_versions", "social_bucket_restore",
-            "social_emit_probe",
+            "social_emit_probe", "social_seats", "social_mount", "social_unmount",
         }
         # Tool names must be globally unique (the catalog warn-and-skips dups).
         tool_names = [f.get("tool", f["name"]) for f in fns]

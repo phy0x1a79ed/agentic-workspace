@@ -37,5 +37,8 @@ class History:
     def synced_ts(self, channel_id: str) -> str | None:
         return self._dao.synced_ts(self.account, channel_id)
 
+    def active_threads(self, channel_id: str, since_ts: str) -> list[str]:
+        return self._dao.active_threads(self.account, channel_id, since_ts)
+
     def set_synced(self, channel_id: str, ts: str, channel_name: str = "") -> None:
         self._dao.set_synced(self.account, channel_id, ts, channel_name)

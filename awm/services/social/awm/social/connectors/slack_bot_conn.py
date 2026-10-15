@@ -13,6 +13,13 @@ fills whatever arrived while the socket was down: at start, after each
 reconnect, every :data:`RESYNC_S`, and on the first message from a chat it has
 not synced yet (which is how a newly joined chat gets its backlog).
 
+Only the sync moves a chat's cursor, and only to the newest top-level message
+it saw: a live event can land before the sync that covers a gap, and must not
+step the cursor over it. Replies carry no cursor of their own. Each sync
+re-reads the replies newer than the cursor on every thread with activity in
+the :data:`THREAD_WINDOW_S` below it, so a reply on an old thread is caught
+unless the thread was quiet for that whole window.
+
 The person's own Slack (session ``xoxc-`` via the mira browser) stays on
 :class:`~awm.social.connectors.slack_conn.SlackConnector`.
 """
@@ -42,6 +49,8 @@ _MAX_BACKOFF_S = 30.0
 RESYNC_S = 600.0
 # How far back the first sync of a chat reaches, in messages.
 BACKFILL_MAX = 1000
+# How far below a chat's cursor a sync looks for threads with new replies.
+THREAD_WINDOW_S = 7 * 86400
 
 
 class SlackApiError(RuntimeError):
@@ -69,6 +78,11 @@ def _attachments_of(m: dict) -> list[Attachment]:
 
 def _looks_like_user_id(s: str) -> bool:
     return bool(s) and s[0] in ("U", "W") and s[1:].isalnum() and s.isupper()
+
+
+def _chat_kind(ch: dict) -> str:
+    return ("dm" if ch.get("is_im") else "group" if ch.get("is_mpim")
+            else "private" if ch.get("is_private") else "channel")
 
 
 def _later(a: str | None, b: str | None) -> str | None:
@@ -181,26 +195,35 @@ class SlackBotConnector(Connector):
             return await self._user_name(ch.get("user", ""))
         return ch.get("name", "")
 
+    async def _sync_replies(self, cid: str, thread_ts: str, since: str | None,
+                            name: str) -> None:
+        for r in await self._paged("conversations.replies", "messages",
+                                   channel=cid, ts=thread_ts, oldest=since):
+            if r.get("ts") != thread_ts and r.get("subtype", "") in _POSTED_SUBTYPES:
+                await self._record(cid, r, name)
+
     async def _sync_channel(self, cid: str, name: str = "") -> None:
         """Pull everything in one chat newer than its cursor, threads included."""
         since = self.history.synced_ts(cid)
+        window = (f"{max(float(since) - THREAD_WINDOW_S, 0.0):.6f}"
+                  if since else None)
         parents = await self._paged(
-            "conversations.history", "messages", channel=cid, oldest=since,
+            "conversations.history", "messages", channel=cid, oldest=window,
             cap=None if since else BACKFILL_MAX)
         newest = since
+        threads: set[str] = set()
         for m in parents:
             if m.get("subtype", "") not in _POSTED_SUBTYPES:
                 continue
-            await self._record(cid, m, name)
-            newest = _later(newest, m.get("ts"))
+            if _later(m.get("ts"), since) != since:
+                await self._record(cid, m, name)
+                newest = _later(newest, m.get("ts"))
             if m.get("reply_count") and _later(m.get("latest_reply"), since) != since:
-                replies = await self._paged(
-                    "conversations.replies", "messages", channel=cid,
-                    ts=m["ts"], oldest=since)
-                for r in replies:
-                    if r.get("ts") != m["ts"]:
-                        await self._record(cid, r, name)
-                        newest = _later(newest, r.get("ts"))
+                threads.add(m["ts"])
+        if window:
+            threads.update(self.history.active_threads(cid, window))
+        for t in sorted(threads, key=float):
+            await self._sync_replies(cid, t, since, name)
         self.history.set_synced(cid, newest or "0", name)
         self._synced.add(cid)
 
@@ -246,11 +269,8 @@ class SlackBotConnector(Connector):
         if subtype not in _POSTED_SUBTYPES:
             return
         msg = await self._record(cid, event)
-        if self.history is not None:
-            if cid in self._synced:
-                self.history.set_synced(cid, msg.ts)
-            else:
-                self._resync.set()  # first sight of this chat: pull its backlog
+        if self.history is not None and cid not in self._synced:
+            self._resync.set()  # first sight of this chat: pull its backlog
         if not self._is_own(event):
             await self.on_message(msg)
 
@@ -348,9 +368,16 @@ class SlackBotConnector(Connector):
         out: list[Channel] = []
         for ch in await self._paged("conversations.list", "channels",
                                     types=types, exclude_archived="true"):
-            kind = ("dm" if ch.get("is_im") else "group" if ch.get("is_mpim")
-                    else "private" if ch.get("is_private") else "channel")
-            out.append(Channel(id=ch["id"], name=await self._chat_name(ch), kind=kind))
+            out.append(Channel(id=ch["id"], name=await self._chat_name(ch),
+                               kind=_chat_kind(ch)))
+        return out
+
+    async def list_seats(self) -> list[Channel]:
+        out: list[Channel] = []
+        for ch in await self._paged("users.conversations", "channels",
+                                    types=_MEMBER_TYPES, exclude_archived="true"):
+            out.append(Channel(id=ch["id"], name=await self._chat_name(ch),
+                               kind=_chat_kind(ch)))
         return out
 
     async def _resolve_user_id(self, who: str) -> str:
