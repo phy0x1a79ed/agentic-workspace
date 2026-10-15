@@ -228,9 +228,9 @@ class StorageDriver(ABC):
 
 ONEDRIVE_PRELUDE = r"""
 window.__awmMira = window.__awmMira || {};
-if (!window.__awmMira.onedrive || window.__awmMira.onedrive._v !== 8) {
+if (!window.__awmMira.onedrive || window.__awmMira.onedrive._v !== 9) {
   const O = {};
-  O._v = 8;  // bump when changing helpers so a long-lived page self-upgrades
+  O._v = 9;  // bump when changing helpers so a long-lived page self-upgrades
   O._b64 = function (buf) {
     const bytes = new Uint8Array(buf);
     let bin = '';
@@ -526,9 +526,10 @@ if (!window.__awmMira.onedrive || window.__awmMira.onedrive._v !== 8) {
             deleted: it.DeletedDate || '', deleted_by: it.DeletedByName || '',
             stage: Number(it.ItemState) === 2 ? 2 : 1};
   };
-  // Deleted items at or below path in its site collection's recycle bin, newest first.
+  // Deleted items at or below path in its web's recycle bin, newest first. The
+  // site-collection bin (site/RecycleBin) needs site-collection admin.
   O.recycled = async function (path, limit) {
-    const j = await O._getJson(O._api(path) + '/site/RecycleBin?$top=' + (limit || 500) +
+    const j = await O._getJson(O._api(path) + '/web/RecycleBin?$top=' + (limit || 500) +
       '&$orderby=DeletedDate desc', 'recycled', path);
     const base = String(path || '').replace(/\/+$/, '').toLowerCase();
     return (j.value || []).map(O._binEntry).filter(function (e) {
@@ -541,7 +542,7 @@ if (!window.__awmMira.onedrive || window.__awmMira.onedrive._v !== 8) {
     const hit = (await O.recycled(path, 5000)).find(function (e) { return e.path.toLowerCase() === want; });
     if (!hit) throw O._err('ENOENT', path + ' is not in the recycle bin');
     const digest = await O._digest(path);
-    const r = await O._post(O._api(path) + "/site/RecycleBin('" + hit.id + "')/Restore()", digest);
+    const r = await O._post(O._api(path) + "/web/RecycleBin('" + hit.id + "')/Restore()", digest);
     if (!r.ok) throw await O._fail(r, 'restore', path);
     return O.stat(path);
   };

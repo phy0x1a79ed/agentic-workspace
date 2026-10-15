@@ -103,7 +103,7 @@ class TestCodec:
         folder = src / "dl"
         (folder / "x").mkdir(parents=True)
         (folder / "x" / "deep.bin").write_bytes(b"\x00" * 1000)
-        result = json.dumps({"files": [{"path": str(a), "size": 1500},
+        result = json.dumps({"files": [{"path": str(a), "size": 1500, "url": "/files/x"},
                                        {"path": str(folder)}],
                              "count": 2, "dir": str(src)})
         tar_path = tmp_path / "r.tar"
@@ -113,6 +113,7 @@ class TestCodec:
         out = json.loads(filehop.unpack_result(str(tar_path), str(dest)))
         p0, p1 = (f["path"] for f in out["files"])
         assert p0.startswith(str(dest)) and open(p0, "rb").read() == b"hello" * 300
+        assert out["files"][0]["remote_path"] == str(a) and "url" not in out["files"][0]
         assert _tree(p1) == {os.path.join("x", "deep.bin"): b"\x00" * 1000}
         assert out["dir"] == str(dest) and out["count"] == 2
 
