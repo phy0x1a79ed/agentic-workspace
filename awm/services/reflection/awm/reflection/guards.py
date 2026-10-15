@@ -107,6 +107,10 @@ def resume_text(followup: Optional[str]) -> str:
 _MODAL_MARKERS = (
     "esc to cancel", "enter to confirm", "enter to select", "to navigate",
     "do you want to", "disconnect this session",
+    # The confirm dialogs Claude Code 2.1.x opens when a conversation that has
+    # output changes its effort or model. `control` answers them; every other
+    # path must treat them as a modal that a keystroke would answer.
+    "change effort level?", "switch model?",
 )
 _SCREEN_TAIL_CHARS = 2500
 _CSI_MOVE = re.compile(r"\x1b\[[0-9;?]*[ABCDEFGHJKfd]")
