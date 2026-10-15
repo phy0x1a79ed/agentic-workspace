@@ -153,6 +153,30 @@ mutual (nothing is synced). `edge_url` may be bare `host:port` (coerced to
   CA-verified TLS. `RefCache` keys include the peer so `2fa` and `2fa@mira` never
   collide. Unchanged — the `@` form remains the service-side spelling.
 
+### Files across the hop
+
+A verb whose arguments or results are local paths declares it in its manifest:
+`"file": "in"` on a param, `"returns_files": true` on a function whose result
+lists `files[].path`. The catalog projects both into the verb's schema, and
+`awm-mcp` reads them from the far node's `describe` (cached for ten minutes).
+When it follows a redirect for such a verb, it sends one tar body
+(`application/x-awm-call+tar`): the call, then each local file or folder. With
+`X-Awm-Return-Files` the far gateway answers with a tar of the result files,
+and the proxy rewrites each path to its local copy. `awm/gateway/awm/gateway/filehop.py`
+holds the format.
+
+- Tar, not multipart, because it needs only the standard library on both ends
+  and carries a folder as a folder.
+- A path that does not exist on the calling node travels unchanged, so a path
+  already on the far node still works.
+- Both ends must carry the file hop. Against an older gateway the proxy sees no
+  markers in `describe` and sends plain JSON, so the far side reads the path on
+  its own disk.
+- The proxy waits for the verb's own manifest `timeout`. Its call to its own
+  gateway waits about an hour, because the gateway enforces each verb's limit.
+- `httpsfront` streams request bodies through, so a large upload never sits
+  whole in the edge.
+
 ### Who provides what — and why the gateway still never relays
 
 `peers.py` is the address book; `peer_catalog.py` is the capability half, holding

@@ -9,6 +9,13 @@ management — agents call `social(verb="send", args={…})` etc. (run
 component libraries it imports (`config`, `persistence`, `gatewayclient`) and its
 platform SDKs (`discord.py`, `slack_sdk`).
 
+## Purpose & Contents
+
+This file is the service's contract for whoever installs or configures it: the
+install, the `social.toml` sections, and the behaviour a caller cannot read off
+`social(verb="describe")`. Verbs and their arguments live in the manifest in
+`awm/social/hub_adapter.py`, not here.
+
 ## Install
 
     bash install.sh
@@ -117,14 +124,34 @@ are skipped rather than erroring the whole call.
 
 ## Cloud-drive buckets (Google Drive, OneDrive/SharePoint)
 
-Beyond messaging, the service can give awm full **file** access to cloud drives
+Beyond messaging, the service gives awm full **file** access to cloud drives
 through a separate **buckets** surface (it is not a messaging connector). Each
-`[bucket.<name>]` section in `social.toml` configures one store; the verbs are
-`social_buckets` (list configured buckets) and `social_bucket_ls / get / put /
-rm / search`. Paths are POSIX-style and **relative to the bucket's `root`**
-(omit `path`, or pass `""`, for the root). Downloads land in a system temp dir
-(outside the workspace) and return paths; `put` reads a local `src` file — bytes
-never inline into the RPC.
+`[bucket.<name>]` section in `social.toml` configures one store. The verbs are
+the `bucket_*` entries of `social(verb="describe")`. Each verb's description
+says which bucket kinds support it: a OneDrive bucket supports every verb, and
+a Drive bucket lacks sites, sharing, versions and the recycle bin.
+
+Paths are POSIX-style and **relative to the bucket's `root`** (omit `path`, or
+pass `""`, for the root). A OneDrive bucket also takes an absolute
+server-relative path (`/teams/<x>/...`, `/sites/<x>/...`,
+`/personal/<user>/...`), so one bucket reaches every site the mira session can.
+SharePoint's own permissions are the only boundary, and a refusal comes back as
+a permission error. Entries under the root come back relative, entries
+elsewhere absolute. `bucket_sites` finds the absolute paths.
+
+File arguments and results are paths **on the calling node**, whichever node
+runs social. `bucket_put` reads a local file or folder as `src`, and
+`bucket_get` and `download_attachments` return local paths. The gateway
+carries the bytes across the peer hop inside the one call (see `FEDERATION.md`
+§ *Cross-peer calls*). Bytes never inline into the RPC, and downloads land in a
+system temp dir outside the workspace.
+
+**CAUTION** `bucket_share` is outward-facing. Its description tells an agent to
+get Tony's confirmation of the item, the audience and the role first.
+`send_email` stays false unless asked for.
+
+**CAUTION** `overwrite` on `bucket_mv` and `bucket_cp` first sends the existing
+target to the recycle bin (Drive: trash). `bucket_restore` brings it back.
 
 ```toml
 [bucket.gdrive-phyber]          # Google Drive via an OAuth2 refresh token.
@@ -160,15 +187,14 @@ sub-tree); Google-native docs are exported on `get` (Docs→pdf, Sheets→csv).
 **OneDrive / SharePoint (via mira).** The UBC student account can't mint an
 offline OAuth token without a Microsoft app registration + tenant admin consent,
 so this reuses the **mira** pattern (the same host that drives Teams/Slack): the
-mira daemon keeps a logged-in `*.sharepoint.com` tab in Opera and drives the
-SharePoint REST API in-page over CDP, same-origin with the session cookie. The
-bucket here is a thin client of the daemon's `/v1/fs/onedrive/…` routes. It
-requires the `[mira]` block (already configured for Teams/Slack) and the
-redeployed daemon with `MIRA_STORAGE=onedrive` plus a logged-in SharePoint tab —
-see `mira/README.md`. The `root` is the document library's **server-relative
-path** (decode `%20` etc. from the share URL). Personal OneDrive differs only by
-host (`<tenant>-my.sharepoint.com`) + root path. Writes use the SharePoint
-request digest automatically.
+mira daemon keeps logged-in SharePoint tabs in Opera and drives the SharePoint
+REST API in-page over CDP, same-origin with the session cookie. The bucket here
+is a thin client of the daemon's `/v1/fs/onedrive/…` routes. It requires the
+`[mira]` block (already configured for Teams/Slack) and the daemon with
+`MIRA_STORAGE=onedrive` plus logged-in `<tenant>.sharepoint.com` and
+`<tenant>-my.sharepoint.com` tabs. The second tab serves personal OneDrive. See
+`mira/README.md`. The `root` is a **server-relative path** (decode `%20` etc.
+from the share URL, or pass the link to `bucket_resolve`).
 
 The Google libraries (`google-api-python-client`, `google-auth`,
 `google-auth-oauthlib`) are declared deps, imported lazily — the service still
