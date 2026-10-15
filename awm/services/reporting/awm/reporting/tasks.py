@@ -4,11 +4,17 @@ Every verb names its session by the pid the gateway stamped on the call, never
 by an argument. ``session_id`` is only a check against the record behind that
 pid. The ledger changes first and carries a ``dirty`` mark; the board follows,
 and a board failure leaves the mark for the next sweep to clear.
+
+A task can be linked to a federation card (``card_id``). Each transition of
+such a task is mirrored onto the card with ``fed_state``, the last state the
+mirror wrote. A card that sits somewhere else was moved by hand, and a manual
+move wins: the mirror adopts it and skips that one transition.
 """
 
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import re
@@ -22,10 +28,13 @@ from awm.claudedaemon import roster
 from awm.config import node_name
 
 from awm.reporting import config
-from awm.reporting.ledger import (ACTIVE, BLOCKED, CANCELLED, CLOSED, COLUMNS, DONE, OPEN, PLANNED,
-                                  PROPOSED, REVIEW, Ledger)
+from awm.reporting.federation import AmbiguousRef, FedError, Federation
+from awm.reporting.intake import PLAN_APPROVED, PLAN_SUBMITTED, card_state, send_dm, short_ref, swarm_of
+from awm.reporting.ledger import (ACTIVE, BLOCKED, CANCELLED, CLOSED, COLUMNS, DONE,
+                                  OPEN, PLANNED, PROPOSED, REJECTED, REVIEW, Ledger)
 from awm.reporting.record import TITLE_CHARS, cut_at_word, plan_title, render_ledger, render_record
-from awm.reporting.store import Offloaded
+from awm.reporting.sessions import GONE, STOPPED, CxUnavailable, Cx
+from awm.reporting.store import Offloaded, Queue
 from awm.reporting.swarmboard import BoardError, SwarmBoard
 
 log = logging.getLogger("awm.reporting.tasks")
@@ -33,6 +42,9 @@ log = logging.getLogger("awm.reporting.tasks")
 #: A Trilium note URL: the note is the last segment of the fragment.
 NOTE_URL = re.compile(r"https?://[^\s#]+#(?:[\w-]+/)*([\w-]{4,})")
 CLAIM_WORDS = re.compile(r"\b(claim|attach)\b", re.I)
+#: "claim task <ref>", the line a card's direct message ends with.
+CLAIM_TASK = re.compile(r"\bclaim\s+task\s+(\S+)", re.I)
+_CARD_REF = re.compile(r"[0-9a-fA-F]{6,32}")
 JOURNAL_SERVICE = "journal"
 JOURNAL_FETCH = "fetch"
 JOURNAL_TOPIC = "posts"
@@ -58,6 +70,16 @@ def _posted_at(post: dict) -> float:
         return 0.0
 
 
+def _digest(text: str) -> str:
+    return hashlib.sha1(text.encode()).hexdigest()[:10]
+
+
+def _session_name(pid: Any) -> str | None:
+    from awm.board import agent
+
+    return agent.session_name(pid)
+
+
 def blocked_marker(session_id: str):
     """The file the prompt hook checks to send the next prompt; the hook deletes it on unblock."""
     return roster.claude_home() / "awm-reporting" / f"{session_id}.blocked"
@@ -76,6 +98,22 @@ def _job_state(job: str) -> dict:
     return data if isinstance(data, dict) else {}
 
 
+def _scopes_of(project_dir) -> list[str]:
+    try:
+        return sorted(p.name for p in project_dir.iterdir()
+                      if p.is_dir() and not p.name.startswith(".") and p.name != "data")[:50]
+    except OSError:
+        return []
+
+
+def _claim_refusal(ref: str, exc: FedError) -> str:
+    if exc.status == 409:
+        return f"card {ref} is already held by another swarm or is finished: {exc}"
+    if exc.status == 404:
+        return f"card {ref} is not open to this swarm: {exc}"
+    return f"the board would not let this swarm claim card {ref}: {exc}"
+
+
 def _flag(flags: list, name: str) -> str | None:
     for i, flag in enumerate(flags):
         if flag == name and i + 1 < len(flags):
@@ -85,24 +123,30 @@ def _flag(flags: list, name: str) -> str | None:
     return None
 
 
-async def _send_dm(text: str) -> None:
-    account, channel = config.dm_target()
-    result = await gatewayclient.call_maybe_peer(
-        gatewayclient.peer_env("AWM_SOCIAL_PEER"), "social", "send",
-        {"account": account, "channel": channel, "text": text})
-    if isinstance(result, dict) and result.get("ok") is False:
-        raise RuntimeError(f"social send refused: {result.get('error') or result}")
+#: Federation card states the mirror writes for a task's ledger state.
+FED_STATES = {PLANNED: "planned", ACTIVE: "active", BLOCKED: "blocked", REVIEW: "review",
+              DONE: "done", REJECTED: "rejected"}
 
 
 class Tasks:
     def __init__(self, ledger: Ledger, board: SwarmBoard, *, node: str | None = None,
                  resolve: Callable[[int], dict | None] = roster.session_by_pid,
                  job_state: Callable[[str], dict] = _job_state,
-                 dm: Callable[[str], Awaitable[None]] = _send_dm,
+                 dm: Callable[[str], Awaitable[None]] = send_dm,
                  alive: Callable[[int, str], bool] = lambda pid, start: roster.proc_start(pid) == start,
-                 fetch: Callable[..., Awaitable[Any]] = gatewayclient.call) -> None:
+                 fetch: Callable[..., Awaitable[Any]] = gatewayclient.call,
+                 queue: Queue | None = None, fed: Any = None, cx: Any = None,
+                 agent_name: Callable[[Any], str | None] | None = None,
+                 swarm: str | None = None) -> None:
         self.ledger = ledger
         self.db = Offloaded(ledger)
+        self.queue = queue or Queue(ledger.path)
+        self.qdb = Offloaded(self.queue)
+        self.fed = fed or Federation()
+        self.cx = cx or Cx()
+        self._agent_name = agent_name or _session_name
+        self.swarm = swarm or config.swarm()
+        self._fed_checked: dict[int, float] = {}
         self.board = board
         self.node = node or node_name()
         self._resolve = resolve
@@ -133,7 +177,7 @@ class Tasks:
         try:
             async with self.lock:
                 return await getattr(self, verb)(who, args)
-        except (BoardError, ValueError) as exc:
+        except (BoardError, FedError, ValueError) as exc:
             return {"ok": False, "error": str(exc)}
 
     async def _result(self, task_id: int, **extra: Any) -> dict:
@@ -216,7 +260,7 @@ class Tasks:
         return acts
 
     async def sync(self, task_id: int) -> bool:
-        """Bring the board in line with the ledger for one task. False when the board refused."""
+        """Bring the boards in line with the ledger for one task. False when a board refused."""
         task = await self.db.get(task_id)
         if not task["note_id"]:
             return True
@@ -228,17 +272,57 @@ class Tasks:
                 return True
             await self._write_card(task)
             if task["state"] in CLOSED:
-                node_note = await self.board.write_ledger(
+                await self.board.write_ledger(
                     self.node, render_ledger(self.node, await self.db.closed(self.node)))
-                await self.board.move(task["note_id"], into=node_note)
-                await self.db.update(task_id, dirty=0, shown=None)
-            else:
-                await self.board.move(task["note_id"], COLUMNS[task["state"]])
-                await self.db.update(task_id, dirty=0, shown=COLUMNS[task["state"]])
+            column = COLUMNS[task["state"]]
+            await self.board.move(task["note_id"], column)
+            await self.db.update(task_id, shown=column)
         except BoardError as exc:
             log.warning("reporting: task %s waits for the board: %s", task_id, exc)
             return False
+        mirrored = await self._mirror(await self.db.get(task_id))
+        await self.db.update(task_id, dirty=int(not mirrored))
+        return mirrored
+
+    async def _mirror(self, task: dict) -> bool:
+        """Put the federation card in the state the task is in. False when the board should be tried again."""
+        want = FED_STATES.get(task["state"])
+        if not task["card_id"] or task["fed_state"] is None or want in (None, task["fed_state"]):
+            return True
+        try:
+            actual = card_state(await self.fed.get(task["card_id"]))
+            if actual == want:
+                recorded = want
+            elif actual != task["fed_state"]:
+                log.info("reporting: card %s was moved to %s by hand; the mirror leaves it",
+                         task["card_id"], actual)
+                recorded = actual
+            elif want == REJECTED:
+                await self.fed.reject(task["card_id"], "rejected from the Swarm board", task["pid"])
+                recorded = want
+            else:
+                await self.fed.status(task["card_id"], want)
+                recorded = want
+        except FedError as exc:
+            if exc.retryable:
+                log.warning("reporting: task %s waits for the federation board: %s", task["id"], exc)
+                return False
+            log.warning("reporting: the federation board refused task %s's move to %s: %s",
+                        task["id"], want, exc)
+            return True
+        await self.db.update(task["id"], fed_state=recorded)
         return True
+
+    async def _say_once(self, task: dict, who: Who, text: str, key: str) -> None:
+        """Post ``text`` on the task's federation card thread, once per ``key``. A failure is logged."""
+        if not task["card_id"] or task["fed_state"] is None:
+            return
+        if not await self.db.event(task["id"], "said", text, ref=f"{text}:{key}"):
+            return
+        try:
+            await self.fed.message(task["card_id"], text, who.pid)
+        except FedError as exc:
+            log.warning("reporting: could not post %r on card %s: %s", text, task["card_id"], exc)
 
     async def _set(self, task: dict, state: str, event: str, detail: str = "", **fields: Any) -> dict:
         await self.db.update(task["id"], state=state, dirty=1, **fields)
@@ -261,12 +345,15 @@ class Tasks:
         await self.db.update(task["id"], plan=text, dirty=1)
         await self.db.event(task["id"], "plan", str(args.get("plan_path") or ""))
         await self.sync(task["id"])
+        await self._say_once(task, who, PLAN_SUBMITTED, _digest(text))
         return await self._result(task["id"])
 
     async def hook_plan_approved(self, who: Who, args: dict) -> dict:
         text = str(args.get("plan_text") or "")
         task = await self._find(who) or await self._open(who, ACTIVE, title=await self._intent(who, text))
-        return await self._set(task, ACTIVE, "approved", plan=text or task["plan"])
+        out = await self._set(task, ACTIVE, "approved", plan=text or task["plan"])
+        await self._say_once(task, who, PLAN_APPROVED, _digest(text or task["plan"]))
+        return out
 
     async def hook_todos(self, who: Who, args: dict) -> dict:
         items = args.get("items")
@@ -282,9 +369,12 @@ class Tasks:
 
     async def hook_prompt(self, who: Who, args: dict) -> dict:
         prompt = str(args.get("prompt") or "")
+        asked = CLAIM_TASK.search(prompt)
+        if asked and (_CARD_REF.fullmatch(asked.group(1)) or NOTE_URL.search(asked.group(1))):
+            return await self._claim_ref(who, asked.group(1))
         found = NOTE_URL.search(prompt)
         if found and CLAIM_WORDS.search(prompt):
-            return await self._claim(who, found.group(1))
+            return await self._claim_ref(who, found.group(0))
         task = await self._find(who)
         if task is None:
             return {"ok": True, "tracked": False, "blocked": False}
@@ -310,11 +400,30 @@ class Tasks:
     # -- agent verbs ---------------------------------------------------------
 
     async def claim_task(self, who: Who, args: dict) -> dict:
-        url = str(args.get("url") or "").strip()
-        found = NOTE_URL.search(url)
-        note_id = found.group(1) if found else (url if re.fullmatch(r"[\w-]{4,}", url) else "")
+        text = str(args.get("ref") or args.get("url") or "").strip()
+        text = re.sub(r"^claim\s+task\s+", "", text, flags=re.I)
+        if not text:
+            raise ValueError("ref is required: a federation card reference or a Trilium note URL")
+        return await self._claim_ref(who, text.split()[0])
+
+    async def _claim_ref(self, who: Who, ref: str) -> dict:
+        """Claim what ``ref`` names: a federation card, else a Trilium note."""
+        try:
+            card = await self.fed.resolve(ref)
+        except AmbiguousRef:
+            raise
+        except FedError as exc:
+            if _CARD_REF.fullmatch(ref):
+                raise ValueError(f"cannot look up card {ref}: {exc}") from exc
+            card = None
+        if card is not None:
+            return await self._claim_card(who, card)
+        found = NOTE_URL.search(ref)
+        if _CARD_REF.fullmatch(ref) and not found:
+            raise ValueError(f"no federation card matches {ref}")
+        note_id = found.group(1) if found else (ref if re.fullmatch(r"[\w-]{4,}", ref) else "")
         if not note_id:
-            raise ValueError("url must be the link to a Trilium note")
+            raise ValueError("ref must be a federation card reference or the link to a Trilium note")
         return await self._claim(who, note_id)
 
     async def _claim(self, who: Who, note_id: str) -> dict:
@@ -334,6 +443,102 @@ class Tasks:
         await self.db.event(task["id"], "claimed", note_id)
         await self.sync(task["id"])
         return await self._result(task["id"])
+
+    async def _claim_card(self, who: Who, card: dict) -> dict:
+        """Claim a federation card for the calling session and show it on the Swarm board in Planned."""
+        card_id, ref = card["id"], short_ref(card["id"])
+        held = await self.db.open_for_card(card_id)
+        if held is not None and (held["node"], held["key"]) == (self.node, who.key):
+            return await self._claimed(who, held, card)
+        if held is not None:
+            if card_state(card) != "proposed":
+                raise ValueError(f"card {ref} is already held here by {held['key']}")
+            await self.close(held, CANCELLED, fed_state=None)  # Tony released the claim
+        mine = await self._find(who)
+        if mine is not None and mine["card_id"] and mine["card_id"] != card_id:
+            raise ValueError(f"this session already works on card {short_ref(mine['card_id'])}; "
+                             "finish or reject it first")
+        self._refuse_if_held_elsewhere(card, ref)
+        fed_state = None
+        if card.get("kind") == "request":
+            try:
+                card = await self.fed.claim(card_id, who.pid)
+            except FedError as exc:
+                raise ValueError(_claim_refusal(ref, exc)) from exc
+            fed_state = card_state(card)
+        note_id = card.get("note_id")
+        if not note_id:
+            raise ValueError("the board did not report the card's Trilium note; upgrade the board host")
+        await self.board.move(note_id, COLUMNS[PLANNED])
+        await self.board.carry_labels(note_id, {
+            "cardFrom": swarm_of(card.get("sender")), "cardTo": card.get("recipient"),
+            "project": card.get("project"), "owner": card.get("owner")})
+        title = card.get("title") or ref
+        if mine is None:
+            mine = await self._open(who, PLANNED, title=title, note_id=note_id)
+        else:
+            await self.db.update(mine["id"], title=title, note_id=note_id, state=PLANNED, dirty=1, owned=0)
+        await self.db.update(mine["id"], card_id=card_id, fed_state=fed_state)
+        name = self._agent_name(who.pid) or who.key
+        await self.qdb.take(card, name, who.key if who.kind == "bg" else None)
+        await self.db.event(mine["id"], "claimed", card_id)
+        await self.sync(mine["id"])
+        return await self._claimed(who, await self.db.get(mine["id"]), card)
+
+    def _refuse_if_held_elsewhere(self, card: dict, ref: str) -> None:
+        """Refuse a card another session of this swarm holds on another node."""
+        owner = str(card.get("owner") or "")
+        parts = owner.split("/")
+        if (card_state(card) not in ("proposed", "done", "rejected") and card.get("claimant") == self.swarm
+                and len(parts) > 1 and parts[1] not in ("-", self.node)):
+            raise ValueError(f"card {ref} is held by {owner}. Ask Tony to drag it back to Proposed, "
+                             "then claim it again")
+
+    async def _claimed(self, who: Who, task: dict, card: dict) -> dict:
+        """The claim's answer: the task, and where to work with whom."""
+        where = await self._where(who, card)
+        return await self._result(task["id"], ref=short_ref(card["id"]), card_id=card["id"],
+                                  card_state=task["fed_state"] or card_state(card),
+                                  wakes_on_messages=who.kind == "bg", **where)
+
+    async def _where(self, who: Who, card: dict) -> dict:
+        """The scope to work in for a card, whether it exists, and who is already working there."""
+        project = card.get("project") or None
+        scope = card.get("scope") or None
+        out: dict[str, Any] = {"project": project, "scope": scope, "scope_source": "label" if scope else None,
+                               "scope_exists": None, "worktree": None, "project_scopes": [],
+                               "sessions": None}
+        if not project:
+            out["next"] = ("The card names no project. Ask Tony which scope to work in, or find one "
+                           "with scope search.")
+            return out
+        root = config.projects_dir() / project
+        out["project_scopes"] = await asyncio.to_thread(_scopes_of, root)
+        if not scope:
+            scope = out["scope"] = f"card-{short_ref(card['id'])}"
+            out["scope_source"] = "suggested"
+        path = root / scope
+        exists = await asyncio.to_thread(path.is_dir)
+        out.update(scope_exists=exists, worktree=str(path) if exists else None)
+        try:
+            rows = await self.cx.list()
+        except CxUnavailable as exc:
+            out["sessions_error"] = str(exc)
+            rows = []
+        else:
+            out["sessions"] = [
+                {"job": r.get("job"), "name": r.get("name"), "state": r.get("state"), "node": r.get("node")}
+                for r in rows if r.get("project") == project and r.get("scope") == scope
+                and r.get("job") != who.key and r.get("state") not in (GONE, STOPPED)]
+        if exists:
+            others = out["sessions"] or []
+            out["next"] = (f"Work in {path}." + (
+                f" {len(others)} session(s) already work there: tell them what you take on "
+                "(reflection message or SendMessage) before you edit." if others else ""))
+        else:
+            out["next"] = (f"Scope {project}/{scope} does not exist. Run scope create for it, "
+                           "then work in its worktree.")
+        return out
 
     async def request_human(self, who: Who, args: dict) -> dict:
         kind = str(args.get("kind") or "").strip()
@@ -366,6 +571,63 @@ class Tasks:
             raise ValueError("summary is required")
         task = await self._task(who, REVIEW)
         return await self._set(task, REVIEW, "review", summary, reason=summary, urgent=0)
+
+    # -- watching cards --------------------------------------------------------
+
+    async def board_watch(self, who: Who, args: dict) -> dict:
+        job = self._watcher_job(who)
+        targets = []
+        if args.get("card_id"):
+            targets.append(await self._card_id(str(args["card_id"])))
+        if args.get("posted_by_me") is True:
+            targets.append(f"posted:{self._posting_name(who)}")
+        if not targets:
+            raise ValueError("pass card_id or posted_by_me=true")
+        for target in targets:
+            await self.qdb.watch(job, target)
+        out = {"ok": True, "watching": await self.qdb.watched_by(job)}
+        if config.refusal() is not None:
+            out["warning"] = ("this node does not run the front door, so card events reach this "
+                              "session only if the front door runs here")
+        return out
+
+    async def board_unwatch(self, who: Who, args: dict) -> dict:
+        job = self._watcher_job(who)
+        targets: list[str | None] = []
+        if args.get("card_id"):
+            targets.append(await self._card_id(str(args["card_id"])))
+        if args.get("posted_by_me") is True:
+            targets.append(f"posted:{self._posting_name(who)}")
+        for target in targets or [None]:
+            await self.qdb.unwatch(job, target)
+        return {"ok": True, "watching": await self.qdb.watched_by(job)}
+
+    @staticmethod
+    def _watcher_job(who: Who) -> str:
+        if who.kind != "bg":
+            raise ValueError("board_watch types events into a background session; this session "
+                             "has no job id to type into")
+        return who.key
+
+    def _posting_name(self, who: Who) -> str:
+        name = self._agent_name(who.pid)
+        if not name:
+            raise ValueError("this session has no name, so the board cannot tell its posts apart; "
+                             "pass card_id instead")
+        return name
+
+    async def _card_id(self, ref: str) -> str:
+        card = await self.fed.resolve(ref)
+        if card is None:
+            raise ValueError(f"no card matches {ref}, or this swarm may not see it")
+        return card["id"]
+
+    async def card_closed(self, card_id: str, state: str) -> None:
+        """The federation card finished on the board: close the task that holds it."""
+        async with self.lock:
+            task = await self.db.open_for_card(card_id)
+            if task is not None:
+                await self.close(task, DONE if state == "done" else REJECTED, fed_state=state)
 
     # -- conversion ----------------------------------------------------------
 
@@ -412,6 +674,8 @@ class Tasks:
             for task in await self.db.open(self.node):
                 await self._ending(task, jobs.get(task["key"]))
             await self._board()
+            await self._finished_cards()
+            await self._archive()
             await self._catch_up()
             for task in await self.db.open(self.node):
                 if (task["state"] == BLOCKED and task["urgent"] and not task["reminded"]
@@ -439,7 +703,7 @@ class Tasks:
                 return
         elif await asyncio.to_thread(self._alive, task["pid"], task["key"].split(":", 1)[1]):
             return
-        await self.close(task)
+        await self.close(task, **({"fed_state": None} if task["state"] != REVIEW else {}))
 
     async def _board(self) -> None:
         try:
@@ -461,12 +725,40 @@ class Tasks:
                     await self.db.close(task["id"], CANCELLED)
                 else:
                     await self.db.event(task["id"], "dragged", f"{task['shown']} -> {column}")
-                    await self.db.update(task["id"], state=state_of[column], shown=column, dirty=1)
+                    if state_of[column] in (DONE, REJECTED):
+                        await self.close(task, state_of[column], shown=column)
+                    else:
+                        await self.db.update(task["id"], state=state_of[column], shown=column, dirty=1)
             if (await self.db.get(task["id"]))["dirty"]:
                 await self.sync(task["id"])
         for task in await self.db.closed(self.node):
             if task["dirty"]:
                 await self.sync(task["id"])
+
+    async def _finished_cards(self) -> None:
+        """Close the tasks whose federation card finished, for a node that follows no stream."""
+        now = time.time()
+        for task in await self.db.open(self.node):
+            if (not task["card_id"] or task["fed_state"] is None or task["dirty"]
+                    or now - self._fed_checked.get(task["id"], 0.0) < config.catchup_interval_s()):
+                continue
+            self._fed_checked[task["id"]] = now
+            try:
+                state = card_state(await self.fed.get(task["card_id"]))
+            except FedError:
+                continue
+            if state in ("done", "rejected") and state != task["fed_state"]:
+                await self.close(task, DONE if state == "done" else REJECTED, fed_state=state)
+
+    async def _archive(self) -> None:
+        """Hide the cards that sat in Done or Rejected for two weeks."""
+        for task in await self.db.archivable(self.node):
+            try:
+                await self.board.archive(task["note_id"])
+            except BoardError as exc:
+                log.warning("reporting: cannot archive card %s: %s", task["note_id"], exc)
+                return
+            await self.db.update(task["id"], shown="archived")
 
     # -- journals ------------------------------------------------------------
 

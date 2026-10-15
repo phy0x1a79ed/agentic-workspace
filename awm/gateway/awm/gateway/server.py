@@ -521,7 +521,7 @@ _SESSION_BOUND: dict[str, frozenset[str]] = {
     "reflection": frozenset({"message_self", "compact", "mode", "whoami"}),
     "operations": frozenset({
         "hook_plan", "hook_plan_approved", "hook_todos", "hook_prompt",
-        "hook_session_clear", "task_claim", "request_human"}),
+        "hook_session_clear", "task_claim", "request_human", "board_watch", "board_unwatch"}),
 }
 
 

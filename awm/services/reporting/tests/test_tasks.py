@@ -5,11 +5,12 @@ from __future__ import annotations
 import pytest
 
 from awm.reporting.ledger import Ledger
+from awm.reporting.store import Queue
 from awm.reporting.swarmboard import SwarmBoard
 from awm.reporting import tasks
 from awm.reporting.tasks import Tasks
 
-from stubs import FakeTrilium, make_board
+from stubs import FakeCx, FakeFed, FakeTrilium, make_board, make_card
 
 pytestmark = [pytest.mark.unit, pytest.mark.smoke]
 
@@ -27,12 +28,20 @@ class Env:
         self.dm_error: Exception | None = None
         self.job = {"intent": "Fix the thing\nmore", "respawnFlags": ["--model", "opus", "--effort=high"]}
         self.ledger = Ledger(tmp_path / "reporting.db")
+        self.queue = Queue(tmp_path / "reporting.db")
         self.alive = {200: True}
+        self.fed = FakeFed()
+        self.cx = FakeCx()
+        self.names = {100: "opal", 200: "tty-agent"}
         self.tasks = Tasks(self.ledger, SwarmBoard(self.tri), node="altair",
                            resolve=self.records.get, job_state=lambda job: self.job, dm=self._dm,
-                           alive=lambda pid, start: self.alive.get(pid, False), fetch=self._fetch)
+                           alive=lambda pid, start: self.alive.get(pid, False), fetch=self._fetch,
+                           queue=self.queue, fed=self.fed, cx=self.cx, agent_name=self.names.get,
+                           swarm="tony")
+        self.fed.names = self.names
         self.posts: list[dict] = []
         self.fetches: list[dict] = []
+        self._fed_board: str | None = None
 
     async def _fetch(self, service, fn, args, timeout=0):
         self.fetches.append(args)
@@ -55,6 +64,15 @@ class Env:
     def column(self, note_id):
         cols = {v: k for k, v in self.ids.items()}
         return sorted(cols[p] for p in self.tri.parents(note_id) if p in cols)
+
+    def federation_card(self, **over):
+        """A card on the federation board: its note sits in that board's Proposed folder."""
+        if self._fed_board is None:
+            self._fed_board = self.tri.add("Federation board", type="book")
+        title = over.setdefault("title", "Rig the thing")
+        folder = self.tri.add("Proposed", self._fed_board, type="book")
+        note = self.tri.add(title, folder, content="the card body")
+        return self.fed.add(make_card(note_id=note, **over))
 
     def tonys_note(self, title="Tony's task"):
         tonys = self.tri.add("Tasks", type="book")
@@ -298,7 +316,7 @@ async def started(env):
     return env.task()
 
 
-async def test_a_stopped_job_closes_its_task_as_done_and_files_the_card_in_the_ledger(env):
+async def test_a_stopped_job_closes_its_task_as_done_and_files_the_card_in_the_done_column(env):
     note, tonys = env.tonys_note()
     await env.call("claim_task", url=URL.format(note))
     await env.tasks.sweep([row("stopped")])
@@ -307,7 +325,7 @@ async def test_a_stopped_job_closes_its_task_as_done_and_files_the_card_in_the_l
     ledger_note = env.tri.kids(env.ids["Ledger"])[0]
     assert env.tri.notes[ledger_note]["title"] == "altair" and "Tony's task" in env.tri.notes[ledger_note]["content"]
     assert set(env.tri.notes[ledger_note]["labels"]) == {"agentManaged", "readOnly"}
-    assert sorted(env.tri.parents(note)) == sorted([tonys, ledger_note])
+    assert sorted(env.tri.parents(note)) == sorted([tonys, env.ids["Done"]])
     assert env.tri.kids(note) and note in env.tri.notes
 
 
@@ -383,14 +401,14 @@ async def test_a_sweep_retries_what_the_board_refused(env):
     assert "alpha" in env.body(task)
 
 
-async def test_a_close_the_board_refused_is_filed_once_the_board_is_back(env):
+async def test_a_close_the_board_refused_is_moved_to_done_once_the_board_is_back(env):
     task = await started(env)
     env.tri.fail = RuntimeError("down")
     await env.tasks.sweep([row("stopped")])
     assert env.task()["state"] == "done" and env.task()["dirty"] == 1
     env.tri.fail = None
     await env.tasks.sweep([])
-    assert env.task()["dirty"] == 0 and env.column(task["note_id"]) == []
+    assert env.task()["dirty"] == 0 and env.column(task["note_id"]) == ["Done"]
 
 
 async def test_a_blocked_urgent_task_gets_one_reminder_after_the_delay(env, monkeypatch):
