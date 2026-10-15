@@ -228,8 +228,8 @@ async def _h_query(args: dict, as_: str | None = None) -> dict:
     limit = max(1, min(int(args.get("limit") or 10), 100))
     per_hit = max(1, min(int(args.get("passages") or 1), 10))
     filters = fastlayer.Filters.from_args(args)
-    exact = await asyncio.to_thread(PAPERS.exact, str(args.get("query") or ""), filters, limit, per_hit)
-    return {"exact": exact, "related": [], "graph": []}
+    found = await asyncio.to_thread(PAPERS.search, str(args.get("query") or ""), filters, limit, per_hit)
+    return {**found, "graph": []}
 
 
 async def _h_start(args: dict, as_: str | None = None) -> dict:

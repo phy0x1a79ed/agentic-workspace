@@ -11,6 +11,7 @@ under its semdb id.
 from __future__ import annotations
 
 import json
+import math
 import re
 import sqlite3
 import threading
@@ -30,6 +31,11 @@ PROBE_GRAMS = 6
 #: A keyword OR stops adding terms, rarest first, once their passages pass this many. BM25 scores every
 #: passage an OR matches, so a common term costs seconds and adds almost nothing to the ranking.
 OR_BUDGET = 150_000
+#: A paper that holds only some of the query's words is related only when its best passage holds this share
+#: of the query's information, each word weighted by its IDF; a word no passage holds weighs the most. Below
+#: it, a question about a cluster job pulls in papers that merely say "node" and "run". 0.5 kept 98% of
+#: semdb's gold papers and dropped 91% of the papers that journal queries pulled in (judgement set, 2026-10).
+MIN_COVERAGE = 0.5
 _ZONE_RANK = {"title": 0, "abstract": 1}
 _STOPWORDS = frozenset(
     "a an the and or of to in on for with by from at as is are was were be been it its this "
@@ -136,19 +142,31 @@ def document_frequency(conn: sqlite3.Connection, words: list[str]) -> dict[str, 
     return out
 
 
-def keyword_exprs(conn: sqlite3.Connection, text: str) -> list[str]:
-    """An AND of every term some passage holds, then an OR of the rarest of them within :data:`OR_BUDGET`."""
-    held = sorted((n, w) for w, n in document_frequency(conn, terms(text)).items() if n)
+def keyword_exprs(df: dict[str, int]) -> tuple[str, str]:
+    """From each query word's passage count: an AND of every word some passage holds, and an OR of the rarest
+    of them within :data:`OR_BUDGET`; the OR is empty when it would match no more than the AND."""
+    held = sorted((n, w) for w, n in df.items() if n)
     if not held:
-        return []
+        return "", ""
     kept, spent = [], 0
     for n, w in held:
         if kept and spent + n > OR_BUDGET:
             break
         kept.append(w)
         spent += n
-    quoted = [f'"{w}"' for _, w in held]
-    return ([" AND ".join(quoted)] if len(quoted) > 1 else []) + [" OR ".join(f'"{w}"' for w in kept)]
+    every = " AND ".join(f'"{w}"' for _, w in held)
+    return every, (" OR ".join(f'"{w}"' for w in kept) if len(held) > 1 else "")
+
+
+def coverage(df: dict[str, int], passages: int, text: str) -> float:
+    """The IDF-weighted share of the query's words, given by their passage counts ``df``, that ``text`` holds."""
+    weights = {w: math.log((passages + 1) / (n + 1)) for w, n in df.items()}
+    total = sum(weights.values())
+    if total <= 0:
+        return 0.0
+    wanted = stems(list(weights))
+    held = set(stems(terms(text)).values())
+    return sum(v for w, v in weights.items() if wanted.get(w) in held) / total
 
 
 def literal(query: str) -> str:
@@ -274,17 +292,17 @@ class FastLayer:
             stores.append(delta)
         return stores
 
-    def exact(self, query: str, filters: Filters, limit: int, per_hit: int) -> list[dict[str, Any]]:
-        """Papers holding the query literally, then papers matching its words, each with its passages."""
+    def search(self, query: str, filters: Filters, limit: int, per_hit: int) -> dict[str, list[dict[str, Any]]]:
+        """``exact``: papers holding the query literally, then papers holding every one of its words.
+        ``related``: the other papers holding its rarest words. Each hit quotes its passages."""
         if filters.blocked or not query.strip():
-            return []
+            return {"exact": [], "related": []}
         stores = self._stores()
         try:
-            hits = _literal_hits(stores, literal(query), filters, limit, per_hit)
-            seen = {h["id"] for h in hits}
-            if len(hits) < limit:
-                hits += _keyword_hits(stores, query, filters, limit - len(hits), per_hit, seen)
-            return hits
+            exact = _literal_hits(stores, literal(query), filters, limit, per_hit)
+            seen = {h["id"] for h in exact}
+            exact += _keyword_hits(stores, query, filters, limit - len(exact), per_hit, seen, every=True)
+            return {"exact": exact, "related": _keyword_hits(stores, query, filters, limit, per_hit, seen, every=False)}
         finally:
             for conn in stores:
                 conn.close()
@@ -408,27 +426,36 @@ def _literal_hits(stores: list[sqlite3.Connection], needle: str, filters: Filter
 
 
 def _keyword_hits(stores: list[sqlite3.Connection], query: str, filters: Filters, limit: int, per_hit: int,
-                  skip: set[str]) -> list[dict[str, Any]]:
-    if not terms(query) or limit <= 0:
+                  skip: set[str], every: bool) -> list[dict[str, Any]]:
+    """Papers whose passages hold every word of the query, or else the rarest of its words and at least
+    :data:`MIN_COVERAGE` of its information, best BM25 first. The papers returned join ``skip``."""
+    words = terms(query)
+    if not words or limit <= 0 or not stores:
         return []
-    scored: list[tuple[int, float, sqlite3.Row, list[dict[str, Any]]]] = []
+    scored: list[tuple[float, sqlite3.Row, list[sqlite3.Row]]] = []
+    weighed = document_frequency(stores[0], words)
+    passages = stores[0].execute("SELECT max(rowid) FROM passage").fetchone()[0] or 0
     for conn in stores:
-        for tier, expr in enumerate(keyword_exprs(conn, query)):
-            if sum(1 for s in scored if s[0] < tier) >= limit:
-                break
-            rows = conn.execute(
-                "SELECT p.*, bm25(passage_bm25) AS rank FROM passage_bm25 JOIN passage p ON p.id = passage_bm25.rowid"
-                " WHERE passage_bm25 MATCH ? ORDER BY rank LIMIT ?", (expr, CANDIDATES)).fetchall()
-            by_paper: dict[str, list[sqlite3.Row]] = {}
-            for p in rows:
-                if p["paper_id"] not in skip:
-                    by_paper.setdefault(p["paper_id"], []).append(p)
-            papers = _papers(conn, list(by_paper))
-            for pid, found in by_paper.items():
-                paper = papers.get(pid)
-                if paper is None or not filters.keeps(paper["ts"]):
-                    continue
-                skip.add(pid)
-                scored.append((tier, -found[0]["rank"], paper, [_quote(p) for p in found[:per_hit]]))
-    scored.sort(key=lambda s: (s[0], -s[1]))
-    return [_hit(paper, "keyword", score, quotes) for _, score, paper, quotes in scored[:limit]]
+        expr = keyword_exprs(weighed if conn is stores[0] else document_frequency(conn, words))[0 if every else 1]
+        if not expr:
+            continue
+        rows = conn.execute(
+            "SELECT p.*, bm25(passage_bm25) AS rank FROM passage_bm25 JOIN passage p ON p.id = passage_bm25.rowid"
+            " WHERE passage_bm25 MATCH ? ORDER BY rank LIMIT ?", (expr, CANDIDATES)).fetchall()
+        by_paper: dict[str, list[sqlite3.Row]] = {}
+        for p in rows:
+            if p["paper_id"] not in skip:
+                by_paper.setdefault(p["paper_id"], []).append(p)
+        papers = _papers(conn, list(by_paper))
+        scored += [(-found[0]["rank"], papers[pid], found) for pid, found in by_paper.items()
+                   if pid in papers and filters.keeps(papers[pid]["ts"])]
+    scored.sort(key=lambda s: -s[0])
+    hits = []
+    for score, paper, found in scored:
+        if len(hits) == limit:
+            break
+        if paper["paper_id"] in skip or (not every and coverage(weighed, passages, found[0]["text"]) < MIN_COVERAGE):
+            continue
+        skip.add(paper["paper_id"])
+        hits.append(_hit(paper, "keyword", score, [_quote(p) for p in found[:per_hit]]))
+    return hits

@@ -298,7 +298,7 @@ class Archive:
         return {s: [{**h, "origin": origin} for h in hits] for s, hits in found.items()}, degraded
 
     async def _live(self, source: Source, q: Query) -> tuple[Source, dict[str, list[dict[str, Any]]], dict[str, Any]]:
-        args = {"query": q.text, "limit": q.limit, **q.raw}
+        args = {"query": q.text, "limit": q.limit, "passages": q.passages, **q.raw}
         try:
             raw = await asyncio.wait_for(
                 self.gateway.call(source.service, source.query, args, LIVE_TIMEOUT_S),

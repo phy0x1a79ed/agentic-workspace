@@ -95,6 +95,14 @@ async def test_keywords_follow_literals_and_no_document_repeats_across_sections(
     assert len(keys) == len(set(keys))
 
 
+async def test_a_document_holding_only_some_of_the_words_is_related_not_exact(loaded):
+    result = await loaded.query(parse({"query": "gateway restart unit caps"}))
+    assert result["exact"] == []
+    assert {h["id"] for h in result["related"]} >= {"j1", "j2", "j3", "p1"}
+    both = await loaded.query(parse({"query": "restart unit"}))
+    assert [(h["id"], h["match"]) for h in both["exact"]] == [("j1", "keyword")]
+
+
 async def test_kind_takes_a_list(loaded):
     result = await loaded.query(parse({"query": "gateway", "kind": ["message", "decision"]}))
     assert {h["id"] for h in every(result)} == {"j2", "p1"}

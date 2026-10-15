@@ -1,7 +1,7 @@
 """The archive's index: documents in, and the filtered query out in sections.
 
-``exact`` lists the documents that hold the query literally, then those that
-match its words by BM25. ``related`` lists the documents nearest in meaning.
+``exact`` lists the documents that hold the query literally, then those with a
+passage holding all its words. ``related`` ranks the rest by meaning and words.
 Every hit quotes its passages with their spans in the document.
 """
 
@@ -165,8 +165,9 @@ def exact_literal(conn: sqlite3.Connection, query: str, filters: Filters, limit:
 
 def exact_keyword(conn: sqlite3.Connection, query: str, filters: Filters, limit: int,
                   per_hit: int, skip: set[str] = frozenset()) -> list[dict[str, Any]]:
-    """Documents whose passages match the query's words, best BM25 passage first; ``skip`` names keys to leave out."""
-    expr = engine.fts_query(query)
+    """Documents with a passage holding every word of the query, best BM25 passage first; ``skip`` names keys to
+    leave out. A document holding only some of the words is left to ``related``, which ranks it by meaning too."""
+    expr = engine.fts_query(query).replace(" OR ", " AND ")
     if not expr or not filters.sources:
         return []
     allowed, params = filters.allowed()
@@ -210,20 +211,21 @@ def _related_quote(conn: sqlite3.Connection, row: sqlite3.Row, chunk_text: str) 
 
 def related(conn: sqlite3.Connection, query: str, filters: Filters,
             limit: int) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
-    """Documents nearest the query in meaning, each with the passage that matched best."""
+    """Documents nearest the query in meaning and words together, each with the passage that matched best.
+
+    The engine fuses cosine with BM25 over any of the query's words. Without a
+    model it ranks by the words alone and says so in the ``degraded`` block.
+    """
     if not filters.sources or not query.strip():
         return [], None
     allowed, params = filters.allowed()
-    try:
-        found = engine.semantic_search(conn, query, store.CORPUS, limit, allowed=allowed, params=params)
-    except engine.EmbeddingsUnavailable:
-        return [], engine.degraded_marker(store.SERVICE, fallback="exact")
-    keys = [h["source_id"] for h in found]
+    result = engine.search(conn, query, source_type=store.CORPUS, allowed=allowed, params=params, limit=limit)
+    match = "keyword" if result.degraded else "meaning"
+    keys = [h["source_id"] for h in result.hits]
     rows = {r["key"]: r for r in conn.execute(
         f"SELECT * FROM documents WHERE key IN ({','.join('?' * len(keys))})", keys)} if keys else {}
-    return [_hit(rows[h["source_id"]], "meaning", h["score"], _related_quote(conn, rows[h["source_id"]],
-                                                                               h["chunk_text"]))
-            for h in found if h["source_id"] in rows], None
+    return [_hit(rows[h["source_id"]], match, h["score"], _related_quote(conn, rows[h["source_id"]], h["snippet"]))
+            for h in result.hits if h["source_id"] in rows], result.degraded
 
 
 def search(conn: sqlite3.Connection, query: str, filters: Filters, limit: int,

@@ -7,7 +7,7 @@ import asyncio
 import pytest
 
 from awm.gatewayclient import GatewayCallError
-from awm.search import federation
+from awm.search import federation, store
 from awm.search.query import parse
 
 from .conftest import doc, every, synced
@@ -149,8 +149,24 @@ async def test_a_malformed_live_reply_is_an_error_status(loaded, gateway):
 async def test_filters_reach_a_live_source(loaded, gateway):
     gateway.plug_live("web", transcripts)
     await loaded.refresh()
-    await loaded.query(parse({"query": "kitchen", "project": "awm", "after": "2026-01-01"}))
-    assert gateway.calls[-1][2] == {"query": "kitchen", "limit": 10, "project": "awm", "after": "2026-01-01"}
+    await loaded.query(parse({"query": "kitchen", "project": "awm", "after": "2026-01-01", "passages": 3}))
+    assert gateway.calls[-1][2] == {"query": "kitchen", "limit": 10, "passages": 3, "project": "awm",
+                                    "after": "2026-01-01"}
+
+
+async def test_a_source_that_turns_live_drops_its_indexed_documents(loaded, gateway):
+    gateway.plug("papers", {"z1": doc("Old abstract", "kitchen sink abstract")})
+    await synced(loaded, gateway)
+    assert ("papers", "z1") in ids(await loaded.query(parse({"query": "kitchen sink"})))
+    gateway.stop("papers")
+    gateway.plug_live("papers", lambda args: {"exact": [{"source": "papers", "id": "doi:1", "title": "New"}]})
+    await loaded.refresh()
+    assert ids(await loaded.query(parse({"query": "kitchen sink", "sources": ["papers"]}))) == [("papers", "doi:1")]
+    conn = store.connect()
+    try:
+        assert store.document_ids(conn, "papers") == set()
+    finally:
+        conn.close()
 
 
 # -- grants ----------------------------------------------------------------

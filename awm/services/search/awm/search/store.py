@@ -180,14 +180,17 @@ def record_registry(conn: sqlite3.Connection, sources: dict[str, dict], present:
 
     ``sources`` maps a name to its ``{service, mode, ...}`` spec. A stored source
     the registry no longer shows is kept and marked absent, never deleted: its
-    documents stay searchable as frozen.
+    documents stay searchable as frozen. A source that turns from index to live
+    answers for itself from then on, so its indexed documents are dropped.
     """
     now = time.time() if now is None else now
-    stored = {r["name"]: r for r in conn.execute("SELECT name, spec, present FROM sources")}
+    stored = {r["name"]: r for r in conn.execute("SELECT name, mode, spec, present FROM sources")}
     news = []
     for name, spec in sources.items():
         blob = json.dumps(spec, sort_keys=True)
         row = stored.get(name)
+        if row is not None and row["mode"] == "index" and spec["mode"] == "live":
+            drop_documents(conn, name, document_ids(conn, name))
         if row is None:
             conn.execute(
                 "INSERT INTO sources (name, service, mode, spec, present, first_seen, last_seen)"
