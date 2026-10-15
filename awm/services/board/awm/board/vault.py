@@ -267,8 +267,8 @@ class Vault:
             return None
         home_note = None
         if state is None and labels.get(FOLDED) and self.board_id() not in parents:
-            home = self._home(labels[FOLDED], card_id, homes)
-            if home and home["note_id"] in parents:
+            home = self._home_above(labels[FOLDED], card_id, parents, homes)
+            if home:
                 home_note, state, in_archive = home["note_id"], home["state"], True
         if state is None and home_note is None and self.board_id() not in parents:
             return None
@@ -278,6 +278,20 @@ class Vault:
         return {"note_id": note_id, "title": note.get("title") or "",
                 "content": content, "labels": labels, "relations": relations, "state": state,
                 "archived_in": in_archive, "home_note": home_note}
+
+    def _home_above(self, target: str, card_id: str, parents: list[str],
+                    homes: dict[str, dict | None] | None) -> dict | None:
+        """The card on the chain of homes starting at ``target`` whose note is one of ``parents``, if any."""
+        seen = {card_id}
+        while target and target not in seen:
+            seen.add(target)
+            home = self._home(target, card_id, homes)
+            if home is None:
+                return None
+            if home["note_id"] in parents:
+                return home
+            target = home["labels"].get(FOLDED, "")
+        return None
 
     def _home(self, home_id: str, card_id: str, homes: dict[str, dict | None] | None) -> dict | None:
         """The record of the card ``home_id``, for a card folded into it. None when it is gone or is the card itself."""

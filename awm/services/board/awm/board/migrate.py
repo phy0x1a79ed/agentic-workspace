@@ -6,7 +6,7 @@
 root. A reply card that carries `cardThreaded` was posted on the thread too,
 so the plan leaves it out. `homes` moves each archived card that carries
 `cardFolded` from its `Archived` folder under the note of the card it was
-folded into. All are dry runs until told otherwise, and a second apply changes
+folded into, or of the top card where that one was folded in turn. All are dry runs until told otherwise, and a second apply changes
 nothing.
 
 A thread migration cannot renumber a thread without moving the sequence numbers
@@ -112,21 +112,21 @@ def homes(board: Board, dry_run: bool) -> dict:
         moves: list[tuple[dict, dict]] = []
         per_home: dict[str, dict] = {}
         report: Counter = Counter()
-        homed = {rec["labels"]["cardId"] for rec in archived if rec["home_note"]}
         for rec in archived:
-            card_id, home_id = rec["labels"]["cardId"], rec["labels"].get(FOLDED)
-            if not home_id:
+            if not rec["labels"].get(FOLDED):
                 report["without_home"] += 1
                 continue
-            home = by_id.get(home_id) or board.vault.read(home_id, content=False)
-            if home is None or home_id == card_id:
+            home = _top_home(board, rec, by_id)
+            if home == "cyclic":
+                report["cyclic_skipped"] += 1
+                continue
+            if home is None:
                 report["home_missing"] += 1
                 continue
-            slot = per_home.setdefault(home_id, {"title": home["title"], "to_move": 0, "already": 0})
-            if card_id in homed:
+            slot = per_home.setdefault(home["labels"]["cardId"],
+                                       {"title": home["title"], "to_move": 0, "already": 0})
+            if rec["home_note"] == home["note_id"]:
                 slot["already"] += 1
-            elif _folds_into(by_id, home_id, card_id):
-                report["cyclic_skipped"] += 1
             else:
                 slot["to_move"] += 1
                 moves.append((rec, home))
@@ -142,14 +142,27 @@ def homes(board: Board, dry_run: bool) -> dict:
         return {**out, "moved": len(moves)}
 
 
-def _folds_into(by_id: dict[str, dict], home_id: str, card_id: str) -> bool:
-    """Whether the chain of homes above ``home_id`` leads back to ``card_id``."""
-    seen = {card_id}
-    while home_id and home_id not in seen:
-        seen.add(home_id)
-        home = by_id.get(home_id)
-        home_id = home["labels"].get(FOLDED) if home else None
-    return home_id == card_id
+def _top_home(board: Board, rec: dict, by_id: dict[str, dict]) -> dict | str | None:
+    """The card at the top of the chain of `cardFolded` homes above ``rec``.
+
+    A card folded into a card that was itself folded goes under the top one, so
+    a subject's cards sit flat under it. None when the first home is gone,
+    "cyclic" when the chain loops. A chain that breaks higher up ends at the
+    last card found.
+    """
+    seen = {rec["labels"]["cardId"]}
+    top = None
+    cur = rec
+    while cur["labels"].get(FOLDED):
+        target = cur["labels"][FOLDED]
+        if target in seen:
+            return "cyclic"
+        seen.add(target)
+        nxt = by_id.get(target) or board.vault.read(target, content=False)
+        if nxt is None:
+            break
+        top = cur = nxt
+    return top
 
 
 # -- threads ------------------------------------------------------------------

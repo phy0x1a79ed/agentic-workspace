@@ -106,7 +106,8 @@ convert it. Each answers only the host's own bare call and defaults to a dry run
    count per column, and defaults to a dry run. Call it again with
    `dry_run: false` to apply.
 8. Call `operations_board_migrate_homes` to move each archived card that carries
-   `cardFolded` under the note of the card it was folded into. It reports the
+   `cardFolded` under the note of the card it was folded into, or of the top
+   card where that card was folded in turn. It reports the
    count per home, leaves a card with no home where it is, and defaults to a
    dry run. Call it again with `dry_run: false` to apply.
 

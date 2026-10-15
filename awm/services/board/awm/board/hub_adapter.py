@@ -269,7 +269,8 @@ API_MANIFEST: dict[str, Any] = {
             "description": (
                 "Host admin only. Move each archived card that carries "
                 "cardFolded from its Archived folder under the note of the "
-                "card it was folded into, and report the counts per home. "
+                "card it was folded into (the top one of a chain of folds), "
+                "and report the counts per home. "
                 "Cards with no home stay where they are. A dry run changes "
                 "nothing and reports the plan."
             ),
