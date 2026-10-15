@@ -126,8 +126,9 @@ async def _on_command(cmd: connectors.Command) -> None:
     """Emit a normalised slash-command invocation for live subscribers.
 
     Unlike messages these aren't persisted — a command is an ephemeral trigger,
-    not a record. The 2fa service subscribes to ``/svc/social/emit/command`` and
-    reacts to ``name == "approve"`` by arming a Duo approval burst.
+    not a record. Consumers subscribe to ``/svc/social/emit/command`` and react
+    to the commands they own (``approve``, ``reject``, ``new_agent``). The
+    connector has already checked the sender against the operators table.
     """
     if _adapter is None:
         return
@@ -141,7 +142,11 @@ async def _on_command(cmd: connectors.Command) -> None:
         "user_name": cmd.user_name,
         "channel_id": cmd.channel_id,
         "is_dm": cmd.is_dm,
+        "operator": cmd.operator,
     }
+    # Command-specific options (ref, reason, project, ...) ride flat beside the
+    # fixed fields; none of them collides with one.
+    payload.update(cmd.options)
     await _adapter.emit("command", payload)
 
 

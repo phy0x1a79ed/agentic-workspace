@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import logging
 
+from awm.social import operators
 from awm.social.connectors.base import (
     Account, Attachment, Channel, Command, Connector, Identity, InboundMessage,
     OnCommand, OnMessage,
@@ -42,10 +43,13 @@ def _attachments_of(message) -> list[Attachment]:  # noqa: ANN001
         ))
     return out
 
-# Slash command exposed by the bot. Kept deliberately tiny — one command, used
-# by DMing the bot, that other services react to via the adapter's ``command``
-# emit. ``approve`` is consumed by the 2fa service to arm a Duo approval burst.
+# Slash commands exposed by the bot, all DM-only and operator-only. Other
+# services react to them via the adapter's ``command`` emit: ``approve`` is
+# consumed by the 2fa and ssh services to arm an approval burst; ``reject`` and
+# ``new_agent`` are consumed by the reporting service.
 APPROVE_COMMAND = "approve"
+REJECT_COMMAND = "reject"
+NEW_AGENT_COMMAND = "new_agent"
 # Channel form naming a user's DM with the bot, e.g. ``dm:188743359983124480``.
 DM_PREFIX = "dm:"
 # Duo devices a user can target. Mirrors the 2fa service's device names; offered
@@ -118,15 +122,61 @@ class DiscordConnector(Connector):
 
         return client
 
-    def _register_commands(self, tree, app_commands) -> None:
-        """Register the bot's slash command(s) on the command tree.
+    async def _admit(self, interaction, name: str, options: dict,  # noqa: ANN001
+                     ack: str, *, ephemeral: bool) -> bool:
+        """Gate and ack one slash invocation, then hand it to ``on_command``.
 
-        One command — ``/approve [device]`` — usable only as a DM to the bot
-        (``interaction.guild is None``). It acks within Discord's 3-second
-        interaction deadline, then hands a normalised :class:`Command` to the
-        injected ``on_command`` callback (the adapter emits it for the 2fa
-        service to consume). The command surface stays here; the *meaning* of
-        ``approve`` lives entirely on the 2fa side.
+        Guild invocations and senders absent from the operators table get an
+        ephemeral refusal and publish nothing. Otherwise the ack goes out inside
+        Discord's 3-second interaction deadline, before the command is emitted.
+        """
+        async def reply(text: str, *, private: bool) -> None:
+            try:
+                await interaction.response.send_message(text, ephemeral=private)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("discord[%s] %s reply failed: %s",
+                            self.account.name, name, exc)
+
+        if interaction.guild is not None:
+            await reply("DM me to use this command.", private=True)
+            return False
+        user = getattr(interaction, "user", None)
+        user_id = str(getattr(user, "id", "")) if user else ""
+        operator = operators.lookup(self.platform, user_id)
+        if not operator:
+            log.warning("discord[%s] refused /%s from non-operator %s",
+                        self.account.name, name, user_id)
+            await reply("You are not an operator of this bot.", private=True)
+            return False
+        await reply(ack, private=ephemeral)
+        if self.on_command is None:
+            return True
+        cmd = Command(
+            account=self.account.name,
+            platform=self.platform,
+            name=name,
+            options=options,
+            user_id=user_id,
+            user_name=str(user) if user else "",
+            channel_id=str(getattr(interaction, "channel_id", "") or ""),
+            is_dm=True,
+            operator=operator,
+        )
+        try:
+            await self.on_command(cmd)
+        except Exception as exc:  # noqa: BLE001 — never bubble into the dispatcher
+            log.warning("discord[%s] on_command handler failed: %s",
+                        self.account.name, exc)
+        return True
+
+    def _register_commands(self, tree, app_commands) -> None:
+        """Register the bot's slash commands on the command tree.
+
+        Each is usable only as a DM to the bot by an operator, and acks within
+        Discord's 3-second interaction deadline before the normalised
+        :class:`Command` goes to the injected ``on_command`` callback (the
+        adapter emits it for other services to consume). The command surface
+        stays here; the *meaning* of each command lives on the consumer's side.
         """
 
         choices = [app_commands.Choice(name=d, value=d) for d in DEVICE_CHOICES]
@@ -138,43 +188,43 @@ class DiscordConnector(Connector):
         @app_commands.describe(device="Duo device to approve for (default cwl)")
         @app_commands.choices(device=choices)
         async def approve(interaction, device: str | None = None):  # noqa: ANN001, ANN202
-            # DM-only authorization: only honour invocations in a DM to the bot.
-            if interaction.guild is not None:
-                try:
-                    await interaction.response.send_message(
-                        "DM me to use this command.", ephemeral=True)
-                except Exception as exc:  # noqa: BLE001
-                    log.debug("discord[%s] guild-reject reply failed: %s",
-                              self.account.name, exc)
-                return
             # With a str param + choices, discord hands back the chosen value
             # directly (not a Choice object).
             dev = device or "cwl"
-            # Ack first — the burst is armed asynchronously by the 2fa service.
-            try:
-                await interaction.response.send_message(
-                    f"⏳ Arming `{dev}` Duo approvals for 5 min…")
-            except Exception as exc:  # noqa: BLE001
-                log.warning("discord[%s] approve ack failed: %s",
-                            self.account.name, exc)
-            if self.on_command is None:
-                return
-            user = getattr(interaction, "user", None)
-            cmd = Command(
-                account=self.account.name,
-                platform=self.platform,
-                name=APPROVE_COMMAND,
-                options={"device": dev},
-                user_id=str(getattr(user, "id", "")) if user else "",
-                user_name=str(user) if user else "",
-                channel_id=str(getattr(interaction, "channel_id", "") or ""),
-                is_dm=True,
-            )
-            try:
-                await self.on_command(cmd)
-            except Exception as exc:  # noqa: BLE001 — never bubble into the dispatcher
-                log.warning("discord[%s] on_command handler failed: %s",
-                            self.account.name, exc)
+            await self._admit(
+                interaction, APPROVE_COMMAND, {"device": dev},
+                f"⏳ Arming `{dev}` Duo approvals for 5 min…", ephemeral=False)
+
+        @tree.command(
+            name=REJECT_COMMAND,
+            description="Reject a pending request (DM the bot).",
+        )
+        @app_commands.describe(ref="Reference of the request to reject",
+                               reason="Why it is rejected")
+        async def reject(interaction, ref: str, reason: str | None = None):  # noqa: ANN001, ANN202
+            await self._admit(
+                interaction, REJECT_COMMAND,
+                {"ref": ref, "reason": reason or ""},
+                f"⏳ Rejecting `{ref}`…", ephemeral=True)
+
+        @tree.command(
+            name=NEW_AGENT_COMMAND.replace("_", "-"),
+            description="Start a new agent session (DM the bot).",
+        )
+        @app_commands.describe(
+            project="Project to work in", scope="Scope within the project",
+            name="Name for the session", prompt="First prompt for the agent")
+        async def new_agent(  # noqa: ANN001, ANN202
+            interaction, project: str | None = None, scope: str | None = None,
+            name: str | None = None, prompt: str | None = None,
+        ):
+            user_id = str(getattr(getattr(interaction, "user", None), "id", ""))
+            await self._admit(
+                interaction, NEW_AGENT_COMMAND,
+                {"project": project or "", "scope": scope or "",
+                 "name": name or "", "prompt": prompt or "",
+                 "reply_to": f"{DM_PREFIX}{user_id}"},
+                "⏳ Starting an agent…", ephemeral=True)
 
     async def start(self) -> None:
         try:
