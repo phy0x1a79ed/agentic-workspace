@@ -207,6 +207,20 @@ def test_a_message_cannot_be_claimed(board, tony, collins, trilium):
     assert board.get(collins, card["id"])["claimant"] is None
 
 
+def test_the_recipient_finishes_a_message_and_nobody_else_does(board, tony, collins, make_party):
+    mock = make_party("mock")
+    card = message(board, tony)
+    with pytest.raises(Forbidden):
+        board.complete(tony, card["id"], "x")
+    with pytest.raises(NotFound):
+        board.complete(mock, card["id"], "x")
+    assert board.complete(collins, card["id"], "read")["state"] == "done"
+    with pytest.raises(Forbidden):
+        board.complete(collins, card["id"], "again")
+    other = message(board, tony)
+    assert board.fail(collins, other["id"], "not for us")["state"] == "rejected"
+
+
 def test_a_card_held_by_another_swarm_is_a_conflict(board, tony, make_party):
     mock, shaula = make_party("mock"), make_party("shaula")
     card = request(board, tony, to="open")

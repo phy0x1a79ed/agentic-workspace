@@ -431,9 +431,13 @@ class Board:
             raise ValueError("result is too long")
         with self._guard:
             rec, card = self._fetch(party, card_id)
-            if card["claimant"] != party["swarm"]:
+            if card["kind"] == "message" and card["recipient"] == party["swarm"]:
+                # Nobody claims a message: its recipient reads it, replies and finishes it.
+                if card["state"] in ("done", "rejected"):
+                    raise Forbidden("the card is finished")
+            elif card["claimant"] != party["swarm"]:
                 raise Forbidden("only the claimant finishes a card")
-            if card["state"] not in HELD:
+            elif card["state"] not in HELD:
                 raise Forbidden("the card is not in progress")
             self._transition(rec, card, state, event,
                              content=(card["body"] or "") + RESULT_MARKER + text, result=text)
