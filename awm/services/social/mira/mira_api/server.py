@@ -17,8 +17,8 @@ Runs ON mira. Exposes a clean per-platform API over the awm-network so the awm
     POST /v1/{platform}/send  {channel,text,thread?}
     POST /v1/{platform}/open_dm  {user}  → resolve a user (id/name) to a DM channel
     GET  /v1/events                      → WS; pushes inbound {type:"message", …}
-    GET  /v1/fs/{name}/ls|stat|get|search|sites|shares|resolve
-    POST /v1/fs/{name}/put|upload|mkdir|rm|mv|cp|share|unshare
+    GET  /v1/fs/{name}/ls|stat|get|search|sites|shares|resolve|versions|recycled
+    POST /v1/fs/{name}/put|upload|mkdir|rm|mv|cp|share|unshare|restore
                                          → cloud file store (OneDrive/SharePoint)
 
 A file-store failure carries ``{error, code}``: 404 ENOENT, 409 ENOTDIR/EISDIR/
@@ -116,6 +116,9 @@ class MiraAPI:
         app.router.add_get("/v1/fs/{name}/sites", self._h_fs_sites)
         app.router.add_get("/v1/fs/{name}/shares", self._h_fs_shares)
         app.router.add_get("/v1/fs/{name}/resolve", self._h_fs_resolve)
+        app.router.add_get("/v1/fs/{name}/versions", self._h_fs_versions)
+        app.router.add_get("/v1/fs/{name}/recycled", self._h_fs_recycled)
+        app.router.add_post("/v1/fs/{name}/restore", self._h_fs_restore)
         app.router.add_post("/v1/fs/{name}/share", self._h_fs_share)
         app.router.add_post("/v1/fs/{name}/unshare", self._h_fs_unshare)
         app.router.add_post("/v1/fs/{name}/put", self._h_fs_put)
@@ -330,7 +333,8 @@ class MiraAPI:
             return web.json_response(
                 {"error": "offset and length must be integers"}, status=400)
         try:
-            return web.json_response(await s.get(path, offset, length))
+            return web.json_response(await s.get(
+                path, offset, length, request.query.get("version") or None))
         except Exception as exc:  # noqa: BLE001
             return _fs_error(exc)
 
@@ -451,6 +455,41 @@ class MiraAPI:
             return web.json_response({"error": "url is required"}, status=400)
         try:
             return web.json_response(await s.resolve(url))
+        except Exception as exc:  # noqa: BLE001
+            return _fs_error(exc)
+
+    async def _h_fs_versions(self, request: web.Request) -> web.Response:
+        s = self._storage_driver(request)
+        path = request.query.get("path", "")
+        if not path:
+            return web.json_response({"error": "path is required"}, status=400)
+        try:
+            return web.json_response({"versions": await s.versions(path)})
+        except Exception as exc:  # noqa: BLE001
+            return _fs_error(exc)
+
+    async def _h_fs_recycled(self, request: web.Request) -> web.Response:
+        s = self._storage_driver(request)
+        path = request.query.get("path", "")
+        if not path:
+            return web.json_response({"error": "path is required"}, status=400)
+        try:
+            limit = int(request.query.get("limit", "500") or 500)
+            return web.json_response({"entries": await s.recycled(path, limit)})
+        except Exception as exc:  # noqa: BLE001
+            return _fs_error(exc)
+
+    async def _h_fs_restore(self, request: web.Request) -> web.Response:
+        s = self._storage_driver(request)
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001
+            return web.json_response({"error": "invalid JSON body"}, status=400)
+        if not body.get("path"):
+            return web.json_response({"error": "path is required"}, status=400)
+        try:
+            return web.json_response(
+                {"entry": await s.restore(body["path"], body.get("version") or None)})
         except Exception as exc:  # noqa: BLE001
             return _fs_error(exc)
 

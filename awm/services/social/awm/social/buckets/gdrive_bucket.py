@@ -180,8 +180,12 @@ class GoogleDriveBucket(Bucket):
     async def stat(self, path: str) -> Entry:
         return self._entry(await self._resolve(path), path.strip("/"))
 
-    async def get(self, path: str, dest_dir: str) -> dict:
+    async def get(self, path: str, dest_dir: str, *,
+                  version: str | None = None) -> dict:
         from googleapiclient.http import MediaIoBaseDownload  # lazy
+
+        if version:
+            raise NotImplementedError("google_drive bucket does not read versions")
 
         meta = await self._resolve(path)
         if meta.get("mimeType") == _FOLDER_MIME:

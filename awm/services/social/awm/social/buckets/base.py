@@ -114,9 +114,11 @@ class Bucket(ABC):
         """Return the :class:`Entry` for one file/folder at ``path``."""
 
     @abstractmethod
-    async def get(self, path: str, dest_dir: str) -> dict:
+    async def get(self, path: str, dest_dir: str, *,
+                  version: str | None = None) -> dict:
         """Download one file into ``dest_dir`` →
         ``{filename, mime, size, path}``, ``path`` being the local file.
+        ``version`` is a label from :meth:`versions`.
 
         The backend streams to disk, so a file never has to fit in memory.
         """
@@ -249,6 +251,20 @@ class Bucket(ABC):
                 except Exception as exc:  # noqa: BLE001
                     failures.append(_failure(f"{remote}/{f}", exc))
         return {"entry": root, "count": count, "failures": failures}
+
+    async def versions(self, path: str) -> list[dict]:
+        """A file's versions, newest first → ``{label, size, modified,
+        author, current}`` dicts."""
+        raise NotImplementedError(f"{self.kind} bucket does not keep versions")
+
+    async def restore(self, path: str, *, version: str | None = None) -> Entry:
+        """Restore ``version`` of the file at ``path``, or without a version
+        the item deleted from ``path`` → its entry."""
+        raise NotImplementedError(f"{self.kind} bucket does not support restore")
+
+    async def recycled(self, path: str = "", *, limit: int = 500) -> list[dict]:
+        """Deleted items at or below ``path``, newest first."""
+        raise NotImplementedError(f"{self.kind} bucket has no recycle bin")
 
     async def share(self, path: str, *, scope: str, role: str,
                     people: list[str] | None = None,

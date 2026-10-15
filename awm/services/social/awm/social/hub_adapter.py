@@ -396,7 +396,8 @@ async def _h_bucket_get(args: dict) -> dict:
     failures: list[dict] = []
     try:
         try:
-            written = await b.get(args["path"], out_dir)
+            written = await b.get(args["path"], out_dir,
+                                  version=args.get("version") or None)
         except IsADirectoryError:
             written = await b.get_tree(args["path"], out_dir,
                                        limit=int(args.get("limit") or 10000))
@@ -444,6 +445,23 @@ async def _h_bucket_cp(args: dict) -> dict:
     return {"entry": _entry_to_dict(await _bucket(args["bucket"]).cp(
         args["src"], args["dst"], overwrite=bool(args.get("overwrite")),
         parents=bool(args.get("parents"))))}
+
+
+async def _h_bucket_versions(args: dict) -> dict:
+    versions = await _bucket(args["bucket"]).versions(args["path"])
+    return {"versions": versions, "count": len(versions)}
+
+
+async def _h_bucket_restore(args: dict) -> dict:
+    """Restore a version, restore a deleted item, or list the recycle bin."""
+    b, path = _bucket(args["bucket"]), args.get("path", "") or ""
+    version = args.get("version") or None
+    if version:
+        return {"entry": _entry_to_dict(await b.restore(path, version=version))}
+    if args.get("recycled"):
+        return {"entry": _entry_to_dict(await b.restore(path))}
+    entries = await b.recycled(path, limit=int(args.get("limit") or 500))
+    return {"recycled": entries, "count": len(entries)}
 
 
 async def _h_bucket_share(args: dict) -> dict:
@@ -671,13 +689,15 @@ API_MANIFEST: dict[str, Any] = {
                            "local folder tree (files[0].is_dir, with `count` "
                            "files), refusing one over `limit` entries (default "
                            "10000). Files that fail are listed in `failures` "
-                           "and the rest still download.",
+                           "and the rest still download. `version` (a label from "
+                           "bucket_versions) reads an older version of a file.",
             "returns_files": True,
             "timeout": 3600,
             "params": [
                 {"name": "bucket", "type": "string", "required": True},
                 {"name": "path", "type": "string", "required": True},
                 {"name": "limit", "type": "number", "required": False},
+                {"name": "version", "type": "string", "required": False},
             ],
         },
         {
@@ -762,6 +782,37 @@ API_MANIFEST: dict[str, Any] = {
             "params": [
                 {"name": "bucket", "type": "string", "required": True},
                 {"name": "site", "type": "string", "required": False},
+            ],
+        },
+        {
+            "name": "bucket_versions",
+            "tool": "social_bucket_versions",
+            "description": "List the versions of a file in a OneDrive bucket, "
+                           "newest first: label, size, modified, author, and "
+                           "which one is current. Read one with bucket_get "
+                           "`version`, bring one back with bucket_restore.",
+            "params": [
+                {"name": "bucket", "type": "string", "required": True},
+                {"name": "path", "type": "string", "required": True},
+            ],
+        },
+        {
+            "name": "bucket_restore",
+            "tool": "social_bucket_restore",
+            "description": "Undo in a OneDrive bucket. With `version`: make that "
+                           "version of the file at `path` current again (the "
+                           "replaced one stays in the history). With "
+                           "`recycled=true`: bring back the item deleted from "
+                           "`path` (a path now occupied is an error). With "
+                           "neither: list the recycle bin at or below `path` "
+                           "(default the bucket root), newest first, up to "
+                           "`limit` (default 500).",
+            "params": [
+                {"name": "bucket", "type": "string", "required": True},
+                {"name": "path", "type": "string", "required": False},
+                {"name": "version", "type": "string", "required": False},
+                {"name": "recycled", "type": "boolean", "required": False},
+                {"name": "limit", "type": "number", "required": False},
             ],
         },
         {
@@ -915,6 +966,8 @@ HANDLERS = {
     "bucket_mv": _h_bucket_mv,
     "bucket_cp": _h_bucket_cp,
     "bucket_sites": _h_bucket_sites,
+    "bucket_versions": _h_bucket_versions,
+    "bucket_restore": _h_bucket_restore,
     "bucket_share": _h_bucket_share,
     "bucket_shares": _h_bucket_shares,
     "bucket_unshare": _h_bucket_unshare,

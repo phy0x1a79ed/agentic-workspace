@@ -419,7 +419,7 @@ class TestTrees:
         b = _gdrive(self._tree())
         real_get = b.get
 
-        async def flaky(path, dest_dir):
+        async def flaky(path, dest_dir, **kw):
             if path.endswith("note.txt"):
                 raise PermissionError("denied")
             return await real_get(path, dest_dir)
@@ -475,6 +475,7 @@ class _StubFsDaemon:
         self.calls = []          # (op, path-or-query)
         self.ls_entries = []
         self.get_file = {}
+        self.get_versions = []
         self.put_received = None  # (path, bytes, mime)
         self.search_entries = []
         self.search_query = None
@@ -501,6 +502,9 @@ class _StubFsDaemon:
         app.router.add_post("/v1/fs/{name}/unshare", self._echo)
         app.router.add_get("/v1/fs/{name}/shares", self._echo_query)
         app.router.add_get("/v1/fs/{name}/resolve", self._resolve)
+        app.router.add_get("/v1/fs/{name}/versions", self._versions)
+        app.router.add_get("/v1/fs/{name}/recycled", self._recycled)
+        app.router.add_post("/v1/fs/{name}/restore", self._echo_entry)
         app.router.add_post("/v1/fs/{name}/put", self._put)
         app.router.add_post("/v1/fs/{name}/upload", self._upload)
         app.router.add_post("/v1/fs/{name}/rm", self._rm)
@@ -548,6 +552,7 @@ class _StubFsDaemon:
         from aiohttp import web
         q = request.query
         self.calls.append(("get", q.get("path"), int(q["offset"]), int(q["length"])))
+        self.get_versions.append(q.get("version"))
         failure = self._failure()
         if failure:
             return failure
@@ -586,6 +591,24 @@ class _StubFsDaemon:
         from aiohttp import web
         self.calls.append((request.path.rsplit("/", 1)[-1], dict(request.query)))
         return web.json_response({"links": [], "people": []})
+
+    async def _versions(self, request):
+        from aiohttp import web
+        self.calls.append(("versions", request.query.get("path")))
+        return web.json_response({"versions": [{"label": "2.0", "current": True}]})
+
+    async def _recycled(self, request):
+        from aiohttp import web
+        self.calls.append(("recycled", dict(request.query)))
+        return web.json_response({"entries": [
+            {"path": "/teams/x/Docs/old.txt", "deleted": "2026"},
+            {"path": "/teams/y/Docs/far.txt", "deleted": "2026"}]})
+
+    async def _echo_entry(self, request):
+        from aiohttp import web
+        body = await request.json()
+        self.calls.append((request.path.rsplit("/", 1)[-1], body))
+        return web.json_response({"entry": {"name": "a", "path": body["path"]}})
 
     async def _resolve(self, request):
         from aiohttp import web
@@ -877,6 +900,27 @@ class TestOneDrive:
         assert (await b.ls(""))[0].web_url == "https://t/a?web=1"
         await b.close()
 
+    async def test_versions_restore_and_recycled(self, fs_daemon):
+        b = _onedrive(fs_daemon)
+        assert (await b.versions("a"))[0]["label"] == "2.0"
+        assert fs_daemon.calls[-1] == ("versions", "/teams/x/Docs/a")
+        e = await b.restore("a", version="1.0")
+        assert e.path == "a"
+        assert fs_daemon.calls[-1] == ("restore", {"path": "/teams/x/Docs/a", "version": "1.0"})
+        await b.restore("a")
+        assert fs_daemon.calls[-1] == ("restore", {"path": "/teams/x/Docs/a"})
+        rows = await b.recycled("")
+        assert [r["path"] for r in rows] == ["old.txt", "/teams/y/Docs/far.txt"]
+        assert fs_daemon.calls[-1] == ("recycled", {"path": "/teams/x/Docs", "limit": "500"})
+        await b.close()
+
+    async def test_get_threads_version(self, fs_daemon, tmp_path):
+        b = _onedrive(fs_daemon)
+        fs_daemon.get_file = {"filename": "a.txt", "mime": "text/plain", "data": b"v1"}
+        await b.get("a.txt", str(tmp_path), version="1.0")
+        assert fs_daemon.get_versions[-1] == "1.0"
+        await b.close()
+
     async def test_sharing_sends_abs_paths(self, fs_daemon):
         b = _onedrive(fs_daemon)
         out = await b.share("s", scope="people", role="edit", people=["a@x"])
@@ -927,9 +971,9 @@ class _FakeBucket:
         self.calls.append(("ls", path))
         return [Entry(name="a.txt", path="a.txt", size=2)]
 
-    async def get(self, path, dest_dir):
+    async def get(self, path, dest_dir, *, version=None):
         import os
-        self.calls.append(("get", path))
+        self.calls.append(("get", path) + ((version,) if version else ()))
         if path == "boom":
             raise FileNotFoundError(path)
         local = os.path.join(dest_dir, "a.txt")
@@ -971,6 +1015,15 @@ class _FakeBucket:
         from awm.social.buckets.base import Entry
         self.calls.append(("cp", src, dst, overwrite, parents))
         return Entry(name=dst.rsplit("/", 1)[-1], path=dst)
+
+    async def restore(self, path, *, version=None):
+        from awm.social.buckets.base import Entry
+        self.calls.append(("restore", path, version))
+        return Entry(name="a", path=path)
+
+    async def recycled(self, path="", *, limit=500):
+        self.calls.append(("recycled", path, limit))
+        return [{"path": "gone.txt"}]
 
     async def share(self, path, *, scope, role, people=None, send_email=False):
         self.calls.append(("share", path, scope, role, people, send_email))
@@ -1084,6 +1137,22 @@ class TestBucketHandlers:
         await hub._h_bucket_cp(
             {"bucket": "b", "src": "a", "dst": "e", "parents": True})
         assert fake.calls[-1] == ("cp", "a", "e", False, True)
+
+    async def test_h_bucket_restore_three_ways(self, wired_buckets):
+        hub, fake = wired_buckets
+        out = await hub._h_bucket_restore({"bucket": "b", "path": "a", "version": "1.0"})
+        assert out["entry"]["path"] == "a" and fake.calls[-1] == ("restore", "a", "1.0")
+        await hub._h_bucket_restore({"bucket": "b", "path": "a", "recycled": True})
+        assert fake.calls[-1] == ("restore", "a", None)
+        out = await hub._h_bucket_restore({"bucket": "b"})
+        assert out["count"] == 1 and fake.calls[-1] == ("recycled", "", 500)
+
+    async def test_h_bucket_get_threads_version(self, wired_buckets):
+        import shutil
+        hub, fake = wired_buckets
+        out = await hub._h_bucket_get({"bucket": "b", "path": "a.txt", "version": "1.0"})
+        assert fake.calls[-1] == ("get", "a.txt", "1.0")
+        shutil.rmtree(out["dir"])
 
     async def test_h_bucket_share_defaults_to_an_org_view_link(self, wired_buckets):
         hub, fake = wired_buckets

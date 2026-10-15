@@ -129,10 +129,11 @@ class StorageDriver(ABC):
 
     @abstractmethod
     async def get(self, path: str, offset: int = 0,
-                  length: int | None = None) -> dict:
+                  length: int | None = None, version: str | None = None) -> dict:
         """Download bytes ``[offset, offset+length)`` of one file →
         ``{filename, mime, size, offset, etag, b64}``. ``length`` None reads to
-        the end. ``size`` is the whole file's."""
+        the end. ``size`` is the whole file's. ``version`` reads an older
+        version by its label."""
 
     @abstractmethod
     async def put(self, path: str, b64: str, mime: str | None = None,
@@ -172,6 +173,20 @@ class StorageDriver(ABC):
         """Copy ``src`` to the full path ``dst`` → the new entry."""
         raise NotImplementedError(
             f"{self.name} storage driver does not support cp")
+
+    async def versions(self, path: str) -> list[dict]:
+        """A file's versions, newest first → ``{label, size, modified, author,
+        current}`` dicts."""
+        raise NotImplementedError(f"{self.name} storage driver does not keep versions")
+
+    async def restore(self, path: str, version: str | None = None) -> dict:
+        """Restore ``version`` of a file, or with no version the item deleted
+        from ``path`` → its entry."""
+        raise NotImplementedError(f"{self.name} storage driver does not support restore")
+
+    async def recycled(self, path: str, limit: int = 500) -> list[dict]:
+        """Deleted items at or below ``path``, newest first."""
+        raise NotImplementedError(f"{self.name} storage driver has no recycle bin")
 
     async def share(self, path: str, scope: str, role: str,
                     people: list[str] | None = None,
@@ -213,9 +228,9 @@ class StorageDriver(ABC):
 
 ONEDRIVE_PRELUDE = r"""
 window.__awmMira = window.__awmMira || {};
-if (!window.__awmMira.onedrive || window.__awmMira.onedrive._v !== 7) {
+if (!window.__awmMira.onedrive || window.__awmMira.onedrive._v !== 8) {
   const O = {};
-  O._v = 7;  // bump when changing helpers so a long-lived page self-upgrades
+  O._v = 8;  // bump when changing helpers so a long-lived page self-upgrades
   O._b64 = function (buf) {
     const bytes = new Uint8Array(buf);
     let bin = '';
@@ -430,13 +445,16 @@ if (!window.__awmMira.onedrive || window.__awmMira.onedrive._v !== 7) {
     return {sliced: true, r: r};
   };
   // Bytes [offset, offset+length) of a file; length null reads to the end.
-  // etag lets a chunked reader notice the file changing under it.
-  O.get = async function (path, offset, length) {
+  // etag lets a chunked reader notice the file changing under it. version, a
+  // label from versions(), reads that version instead.
+  O.get = async function (path, offset, length, version) {
     const f = await O._file(path);
     if (!f) {
       if (await O._folder(path)) throw O._err('EISDIR', path + ' is a folder');
       throw O._err('ENOENT', path + ': not found');
     }
+    if (version && String(version) !== String(f.UIVersionLabel || ''))
+      return O._getVersion(path, f, String(version), offset, length);
     const size = Number(f.Length || 0) || 0;
     const start = Math.min(Math.max(Number(offset) || 0, 0), size);
     const end = length == null ? size : Math.min(size, start + Number(length));
@@ -455,6 +473,77 @@ if (!window.__awmMira.onedrive || window.__awmMira.onedrive._v !== 7) {
     }
     return {filename: f.Name || O._segs(path).pop() || 'file', mime: mime,
             size: size, offset: start, etag: f.ETag || '', b64: O._b64(buf)};
+  };
+  O._versionList = async function (path) {
+    return (await O._getJson(O._fileUrl(path) + '/Versions?$expand=CreatedBy', 'versions', path)).value || [];
+  };
+  O._getVersion = async function (path, f, label, offset, length) {
+    const v = (await O._versionList(path)).find(function (x) { return String(x.VersionLabel) === label; });
+    if (!v) throw O._err('ENOENT', path + ' has no version ' + label);
+    const url = location.origin + O._webBase(path).split('/').map(encodeURIComponent).join('/') + '/' +
+      String(v.Url || '').split('/').map(encodeURIComponent).join('/');
+    const size = Number(v.Size || 0) || 0;
+    const start = Math.min(Math.max(Number(offset) || 0, 0), size);
+    const end = length == null ? size : Math.min(size, start + Number(length));
+    let buf = new ArrayBuffer(0), mime = '';
+    if (end > start) {
+      const r = await O._fetch(url, {headers: {'Range': 'bytes=' + start + '-' + (end - 1)}});
+      if (!r.ok) throw await O._fail(r, 'get', path + ' version ' + label);
+      mime = r.headers.get('Content-Type') || '';
+      buf = await r.arrayBuffer();
+      if (r.status !== 206) buf = buf.slice(start, end);
+    }
+    return {filename: f.Name || O._segs(path).pop() || 'file', mime: mime, size: size,
+            offset: start, etag: 'version:' + label, b64: O._b64(buf)};
+  };
+  // Every version of a file, newest first; the current one is marked.
+  O.versions = async function (path) {
+    const f = await O._file(path);
+    if (!f) {
+      if (await O._folder(path)) throw O._err('EISDIR', path + ' is a folder; only files have versions');
+      throw O._err('ENOENT', path + ': not found');
+    }
+    const out = [{label: String(f.UIVersionLabel || ''), size: Number(f.Length || 0) || 0,
+                  modified: f.TimeLastModified || '', author: '', current: true}];
+    for (const v of (await O._versionList(path)).reverse())
+      out.push({label: String(v.VersionLabel || ''), size: Number(v.Size || 0) || 0,
+                modified: v.Created || '', author: (v.CreatedBy || {}).Title || '',
+                current: false});
+    return out;
+  };
+  O.restoreVersion = async function (path, label) {
+    if (!(await O._file(path))) throw O._err('ENOENT', path + ': not found');
+    const digest = await O._digest(path);
+    const r = await O._post(O._fileUrl(path) + "/Versions/RestoreByLabel('" +
+      encodeURIComponent(String(label).replace(/'/g, "''")) + "')", digest);
+    if (!r.ok) throw await O._fail(r, 'restore', path + ' version ' + label);
+    return O.stat(path);
+  };
+  O._binEntry = function (it) {
+    const dir = '/' + String(it.DirName || '').replace(/^\/+/, '').replace(/\/+$/, '');
+    return {id: it.Id || '', name: it.LeafName || '', path: dir + '/' + (it.LeafName || ''),
+            is_dir: Number(it.ItemType) === 5, size: Number(it.Size || 0) || 0,
+            deleted: it.DeletedDate || '', deleted_by: it.DeletedByName || '',
+            stage: Number(it.ItemState) === 2 ? 2 : 1};
+  };
+  // Deleted items at or below path in its site collection's recycle bin, newest first.
+  O.recycled = async function (path, limit) {
+    const j = await O._getJson(O._api(path) + '/site/RecycleBin?$top=' + (limit || 500) +
+      '&$orderby=DeletedDate desc', 'recycled', path);
+    const base = String(path || '').replace(/\/+$/, '').toLowerCase();
+    return (j.value || []).map(O._binEntry).filter(function (e) {
+      const p = e.path.toLowerCase();
+      return !base || p === base || p.startsWith(base + '/');
+    });
+  };
+  O.restoreRecycled = async function (path) {
+    const want = String(path).replace(/\/+$/, '').toLowerCase();
+    const hit = (await O.recycled(path, 5000)).find(function (e) { return e.path.toLowerCase() === want; });
+    if (!hit) throw O._err('ENOENT', path + ' is not in the recycle bin');
+    const digest = await O._digest(path);
+    const r = await O._post(O._api(path) + "/site/RecycleBin('" + hit.id + "')/Restore()", digest);
+    if (!r.ok) throw await O._fail(r, 'restore', path);
+    return O.stat(path);
   };
   O.mkdir = async function (path) {
     const segs = O._segs(path);
@@ -902,10 +991,26 @@ class OneDriveDriver(StorageDriver):
         return res or {}
 
     async def get(self, path: str, offset: int = 0,
-                  length: int | None = None) -> dict:
+                  length: int | None = None, version: str | None = None) -> dict:
         res = await self._run("window.__awmMira.onedrive.get", path, offset,
-                              length, path=path, timeout=TRANSFER_TIMEOUT_S)
+                              length, version or None, path=path,
+                              timeout=TRANSFER_TIMEOUT_S)
         return res or {}
+
+    async def versions(self, path: str) -> list[dict]:
+        return await self._run("window.__awmMira.onedrive.versions", path,
+                               path=path) or []
+
+    async def restore(self, path: str, version: str | None = None) -> dict:
+        if version:
+            return await self._run("window.__awmMira.onedrive.restoreVersion",
+                                   path, version, path=path, retry=False) or {}
+        return await self._run("window.__awmMira.onedrive.restoreRecycled",
+                               path, path=path, retry=False) or {}
+
+    async def recycled(self, path: str, limit: int = 500) -> list[dict]:
+        return await self._run("window.__awmMira.onedrive.recycled", path,
+                               limit, path=path) or []
 
     async def upload(self, path: str, upload_id: str, offset: int, final: bool,
                      b64: str, parents: bool = False) -> dict:

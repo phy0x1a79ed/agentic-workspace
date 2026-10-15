@@ -182,14 +182,16 @@ class OneDriveBucket(Bucket):
         resp = await self._post(f"/v1/fs/{_FS_NAME}/mkdir", {"path": self._abs(path)})
         return self._entry(resp.get("entry", {}), fallback_path=path.strip("/"))
 
-    async def get(self, path: str, dest_dir: str) -> dict:
+    async def get(self, path: str, dest_dir: str, *,
+                  version: str | None = None) -> dict:
         src = self._abs(path)
+        extra = {"version": version} if version else {}
         offset, first, local, fh = 0, None, "", None
         try:
             while True:
                 resp = await self._get(f"/v1/fs/{_FS_NAME}/get",
                                        timeout=_CHUNK_TIMEOUT_S, path=src,
-                                       offset=offset, length=CHUNK)
+                                       offset=offset, length=CHUNK, **extra)
                 if first is None:
                     first = resp
                     name = resp.get("filename") or path.strip("/").rsplit("/", 1)[-1]
@@ -284,6 +286,25 @@ class OneDriveBucket(Bucket):
             "overwrite": bool(overwrite), "parents": bool(parents),
         }, timeout=_TRANSFER_TIMEOUT_S)
         return self._entry(resp.get("entry", {}), fallback_path=dst.strip("/"))
+
+    async def versions(self, path: str) -> list[dict]:
+        resp = await self._get(f"/v1/fs/{_FS_NAME}/versions", path=self._abs(path))
+        return list(resp.get("versions", []))
+
+    async def restore(self, path: str, *, version: str | None = None) -> Entry:
+        body = {"path": self._abs(path)}
+        if version:
+            body["version"] = version
+        resp = await self._post(f"/v1/fs/{_FS_NAME}/restore", body)
+        return self._entry(resp.get("entry", {}), fallback_path=path.strip("/"))
+
+    async def recycled(self, path: str = "", *, limit: int = 500) -> list[dict]:
+        resp = await self._get(f"/v1/fs/{_FS_NAME}/recycled",
+                               path=self._abs(path), limit=limit)
+        out = []
+        for e in resp.get("entries", []):
+            out.append(dict(e, path=self._entry(e).path))
+        return out
 
     async def share(self, path: str, *, scope: str, role: str,
                     people: list[str] | None = None,

@@ -191,6 +191,7 @@ class TestManifest:
             "social_bucket_mv", "social_bucket_cp", "social_bucket_sites",
             "social_bucket_share", "social_bucket_shares",
             "social_bucket_unshare", "social_bucket_resolve",
+            "social_bucket_versions", "social_bucket_restore",
             "social_emit_probe",
         }
         # Tool names must be globally unique (the catalog warn-and-skips dups).

@@ -15,6 +15,7 @@
     F.threshold = 5000;    // children past which /Folders and /Files refuse
     F.pageSize = 5000;     // rows per RenderListDataAsStream page
     F.seq = 0;
+    F.bin = [];            // recycle bin items, oldest first
     F.links = {};          // path -> [{Url, ShareId, LinkKind}]
     F.grants = {};         // path -> [{email, role, id}]
     F.shareUrls = {};      // share url -> path, for the v2.0 shares API
@@ -39,8 +40,28 @@
   F.addFile = function (p, data) {
     const segs = p.split('/').filter(Boolean);
     const bytes = typeof data === 'string' ? new TextEncoder().encode(data) : data;
+    const old = F.nodes[p];
+    if (old && old.kind === 'file') {
+      // An overwrite keeps the file and pushes the old bytes into its history.
+      old.history.push({id: F.seq + 1, label: old.label, data: old.data, created: old.modified});
+      old.label = (Number(old.label) + 1).toFixed(1);
+      old.data = bytes;
+      old.etag = '"{' + F.uid() + '},' + old.label + '"';
+      return;
+    }
     F.nodes[p] = {kind: 'file', name: segs[segs.length - 1], uid: F.uid(), data: bytes,
-                  modified: '2026-01-01T00:00:00Z', etag: '"{' + F.uid() + '},1"'};
+                  modified: '2026-01-01T00:00:00Z', etag: '"{' + F.uid() + '},1"',
+                  label: '1.0', history: []};
+  };
+  F.recycle = function (p) {
+    const keys = Object.keys(F.nodes).filter(k => k === p || k.startsWith(p + '/'));
+    const n = F.nodes[p];
+    const saved = {};
+    for (const k of keys) { saved[k] = F.nodes[k]; delete F.nodes[k]; }
+    F.bin.push({Id: 'bin-' + F.uid(), LeafName: n.name, DirName: F.parent(p).slice(1),
+                ItemType: n.kind === 'folder' ? 5 : 1, Size: n.kind === 'file' ? String(n.data.length) : '0',
+                DeletedDate: new Date(Date.UTC(2026, 0, 1, 0, 0, F.seq)).toISOString(),
+                DeletedByName: 'Tony', ItemState: 1, saved: saved});
   };
   F.parent = function (p) { const s = p.split('/').filter(Boolean); s.pop(); return '/' + s.join('/'); };
   F.children = function (p) {
@@ -55,7 +76,8 @@
   F.fileJson = function (p) {
     const n = F.nodes[p];
     return {Name: n.name, ServerRelativeUrl: p, UniqueId: n.uid,
-            Length: String(n.data.length), TimeLastModified: n.modified, ETag: n.etag};
+            Length: String(n.data.length), TimeLastModified: n.modified, ETag: n.etag,
+            UIVersionLabel: n.label};
   };
   F.lit = function (s) { return decodeURIComponent(s).replace(/''/g, "'"); };
   F.json = function (obj, status) {
@@ -142,6 +164,16 @@
       if (!n || n.kind !== 'file') return F.notFound();
       return F.serve(n, opts, F.range === 'download');
     }
+    const vh = url.match(/\/_vti_history\/(\d+)(\/.*)$/);
+    if (vh) {
+      F.calls.push(method + ' _vti_history');
+      const u = F.strip(url);
+      const vp = decodeURIComponent(u.slice(0, u.indexOf('/_vti_history')) + vh[2]);
+      const n = F.nodes[vp];
+      const v = n && n.history.find(h => h.id === Number(vh[1]));
+      if (!v) return F.notFound();
+      return F.serve({data: v.data}, opts, true);
+    }
     const at = url.indexOf('/_api');
     const web = url.slice(location.origin.length, at);
     const rest = url.slice(at + 5);
@@ -220,6 +252,24 @@
         Title: l.split('/').pop(), ItemCount: F.children(l).length,
         LastItemModifiedDate: '2026-01-01T00:00:00Z', RootFolder: {ServerRelativeUrl: l}}))});
     }
+    m = rest.match(/^\/site\/RecycleBin\?\$top=(\d+)&\$orderby=DeletedDate desc$/);
+    if (m && method === 'GET') {
+      const site = decodeURIComponent(web);
+      return F.json({value: F.bin.filter(b => F.site('/' + b.DirName + '/x') === site)
+        .slice().reverse().slice(0, Number(m[1]))
+        .map(b => Object.assign({}, b, {saved: undefined}))});
+    }
+    m = rest.match(/^\/site\/RecycleBin\('([^']+)'\)\/Restore\(\)$/);
+    if (m && method === 'POST') {
+      const i = F.bin.findIndex(b => b.Id === m[1]);
+      if (i < 0) return F.notFound('no such recycle bin item');
+      const b = F.bin[i];
+      for (const k of Object.keys(b.saved))
+        if (F.nodes[k]) return F.json({'odata.error': {message: {value: 'A file or folder with the name ' + k + ' already exists'}}}, 400);
+      Object.assign(F.nodes, b.saved);
+      F.bin.splice(i, 1);
+      return F.json({});
+    }
     if (method === 'POST' && rest === '/SP.Web.ShareObject') {
       const b = JSON.parse(body);
       const p = F.strip(b.url);
@@ -278,10 +328,7 @@
         return F.json({value: F.children(p).filter(k => F.nodes[k].kind === 'folder').map(F.folderJson)});
       if (tail === '/Files')
         return F.json({value: F.children(p).filter(k => F.nodes[k].kind === 'file').map(F.fileJson)});
-      if (tail === '/recycle()' && method === 'POST') {
-        for (const k of Object.keys(F.nodes)) if (k === p || k.startsWith(p + '/')) delete F.nodes[k];
-        return F.json({value: 'recycled'});
-      }
+      if (tail === '/recycle()' && method === 'POST') { F.recycle(p); return F.json({value: 'recycled'}); }
       const add = tail.match(/^\/Files\/add\(url='((?:[^']|'')*)',overwrite=true\)$/);
       if (add && method === 'POST') {
         const fp = p + '/' + F.lit(add[1]);
@@ -317,7 +364,18 @@
         n.etag = '"{' + F.uid() + '},2"';
         return F.json(F.fileJson(p));
       }
-      if (tail === '/recycle()' && method === 'POST') { delete F.nodes[p]; return F.json({value: 'x'}); }
+      if (tail === '/recycle()' && method === 'POST') { F.recycle(p); return F.json({value: 'x'}); }
+      if (tail === '/Versions?$expand=CreatedBy')
+        return F.json({value: n.history.map(v => ({ID: v.id, VersionLabel: v.label,
+          Size: String(v.data.length), Created: v.created, CreatedBy: {Title: 'Tony'},
+          Url: '_vti_history/' + v.id + p.slice(F.site(p).length)}))});
+      const rb = tail.match(/^\/Versions\/RestoreByLabel\('([^']+)'\)$/);
+      if (rb && method === 'POST') {
+        const v = n.history.find(h => h.label === decodeURIComponent(rb[1]));
+        if (!v) return F.notFound('no such version');
+        F.addFile(p, v.data);
+        return F.json({});
+      }
     }
     return F.json({error: 'fake SharePoint has no route for ' + method + ' ' + rest}, 400);
   };

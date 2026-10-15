@@ -356,8 +356,8 @@ class _FakeStorage:
         self.calls.append(("stat", path))
         return {"name": "a.txt", "path": path, "is_dir": False}
 
-    async def get(self, path, offset=0, length=None):
-        self.calls.append(("get", path, offset, length))
+    async def get(self, path, offset=0, length=None, version=None):
+        self.calls.append(("get", path, offset, length) + ((version,) if version else ()))
         return {"filename": "a.txt", "mime": "text/plain", "b64": "aGk="}
 
     async def upload(self, path, upload_id, offset, final, b64, parents=False):
@@ -405,6 +405,18 @@ class _FakeStorage:
     async def resolve(self, url):
         self.calls.append(("resolve", url))
         return {"entry": {"path": "/r/s", "is_dir": True}, "via": "shares"}
+
+    async def versions(self, path):
+        self.calls.append(("versions", path))
+        return [{"label": "2.0", "current": True}]
+
+    async def recycled(self, path, limit=500):
+        self.calls.append(("recycled", path, limit))
+        return [{"path": path + "/gone.txt"}]
+
+    async def restore(self, path, version=None):
+        self.calls.append(("restore", path, version))
+        return {"path": path}
 
     async def sites(self, site=None):
         self.calls.append(("sites", site))
@@ -521,6 +533,19 @@ class TestFsRoutes:
         resp = await api._h_fs_mkdir(_FsReq("onedrive", body={"path": "/r/a"}))
         assert resp.status == status
         assert _payload(resp)["code"] == code
+
+    async def test_version_and_recycle_routes(self):
+        api, fake = _api_with_storage()
+        resp = await api._h_fs_versions(_FsReq("onedrive", {"path": "/r/a"}))
+        assert _payload(resp)["versions"][0]["label"] == "2.0"
+        await api._h_fs_get(_FsReq("onedrive", {"path": "/r/a", "version": "1.0"}))
+        assert fake.calls[-1] == ("get", "/r/a", 0, None, "1.0")
+        resp = await api._h_fs_recycled(_FsReq("onedrive", {"path": "/r", "limit": "9"}))
+        assert fake.calls[-1] == ("recycled", "/r", 9)
+        await api._h_fs_restore(_FsReq("onedrive", body={"path": "/r/a", "version": "1.0"}))
+        assert fake.calls[-1] == ("restore", "/r/a", "1.0")
+        await api._h_fs_restore(_FsReq("onedrive", body={"path": "/r/a"}))
+        assert fake.calls[-1] == ("restore", "/r/a", None)
 
     async def test_sharing_routes(self):
         api, fake = _api_with_storage()

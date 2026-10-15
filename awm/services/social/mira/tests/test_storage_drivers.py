@@ -105,7 +105,7 @@ class TestOneDriveDriver:
                          {"filename": "a.txt", "mime": "text/plain", "b64": "aGk="}})
         out = await OneDriveDriver(page).get("/teams/x/a.txt", 8, 4)
         assert out == {"filename": "a.txt", "mime": "text/plain", "b64": "aGk="}
-        assert '"/teams/x/a.txt", 8, 4)' in page.exprs[-1]
+        assert '"/teams/x/a.txt", 8, 4, null)' in page.exprs[-1]
         assert page.kw[-1]["timeout"] == TRANSFER_TIMEOUT_S
 
     async def test_upload_never_retries(self):

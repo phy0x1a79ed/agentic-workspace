@@ -476,3 +476,71 @@ class TestResolve:
         sp.reset(sharesApi=False)
         with pytest.raises(ValueError):
             sp.call("resolve", "https://t.sharepoint.com/teams/x/Docs")
+
+
+class TestVersions:
+    def _two_versions(self, sp):
+        sp.reset(files={f"{D}/a.txt": "first"})
+        sp.call("put", f"{D}/a.txt", _b64(b"second!"), None, False)
+
+    def test_versions_newest_first(self, sp):
+        self._two_versions(sp)
+        vs = sp.call("versions", f"{D}/a.txt")
+        assert [(v["label"], v["size"], v["current"]) for v in vs] == [
+            ("2.0", 7, True), ("1.0", 5, False)]
+
+    def test_get_an_old_version_in_chunks(self, sp):
+        self._two_versions(sp)
+        got = b""
+        while True:
+            r = sp.call("get", f"{D}/a.txt", len(got), 2, "1.0")
+            got += base64.b64decode(r["b64"])
+            assert r["size"] == 5 and r["etag"] == "version:1.0"
+            if len(got) >= r["size"]:
+                break
+        assert got == b"first"
+
+    def test_current_label_reads_the_file(self, sp):
+        self._two_versions(sp)
+        r = sp.call("get", f"{D}/a.txt", 0, None, "2.0")
+        assert base64.b64decode(r["b64"]) == b"second!"
+
+    def test_missing_version_is_enoent(self, sp):
+        self._two_versions(sp)
+        with pytest.raises(FileNotFoundError):
+            sp.call("get", f"{D}/a.txt", 0, None, "9.0")
+
+    def test_restore_version(self, sp):
+        self._two_versions(sp)
+        entry = sp.call("restoreVersion", f"{D}/a.txt", "1.0")
+        assert entry["size"] == 5
+        assert [v["label"] for v in sp.call("versions", f"{D}/a.txt")] == ["3.0", "2.0", "1.0"]
+
+    def test_folder_has_no_versions(self, sp):
+        sp.reset(folders=[f"{D}/s"])
+        with pytest.raises(IsADirectoryError):
+            sp.call("versions", f"{D}/s")
+
+
+class TestRecycleBin:
+    def test_rm_then_restore_a_folder_tree(self, sp):
+        sp.reset(folders=[f"{D}/s"], files={f"{D}/s/f.txt": "x", f"{D}/k.txt": "k"})
+        sp.call("rm", f"{D}/s")
+        sp.call("rm", f"{D}/k.txt")
+        bin_ = sp.call("recycled", D, 500)
+        assert [(e["path"], e["is_dir"]) for e in bin_] == [
+            (f"{D}/k.txt", False), (f"{D}/s", True)]
+        assert [e["path"] for e in sp.call("recycled", f"{D}/s", 500)] == [f"{D}/s"]
+        entry = sp.call("restoreRecycled", f"{D}/s")
+        assert entry["is_dir"] and sp.nodes().get(f"{D}/s/f.txt") == "file"
+
+    def test_restore_onto_an_occupied_path_passes_the_error(self, sp):
+        sp.reset(files={f"{D}/a.txt": "old"})
+        sp.call("rm", f"{D}/a.txt")
+        sp.call("put", f"{D}/a.txt", _b64(b"new"), None, False)
+        with pytest.raises(Exception, match="already exists"):
+            sp.call("restoreRecycled", f"{D}/a.txt")
+
+    def test_restore_unknown_is_enoent(self, sp):
+        with pytest.raises(FileNotFoundError, match="recycle bin"):
+            sp.call("restoreRecycled", f"{D}/never.txt")
