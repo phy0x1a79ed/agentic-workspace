@@ -13,6 +13,7 @@ dependencies = [
     "awm-gatewayclient",
     "discord.py>=2.3",
     "slack_sdk>=3.27",
+    "aiohttp>=3.9",
     # Google Drive buckets (OAuth2 refresh-token flow). Imported lazily, so the
     # service still boots without them — only google_drive buckets need them.
     "google-api-python-client>=2.0",

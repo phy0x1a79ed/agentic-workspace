@@ -7,9 +7,10 @@ account, and runs the shared :class:`awm.gatewayclient.ServiceAdapter` loop
 the control WS and projected into the gateway catalog as ``social_*`` tools.
 
 Inbound messages flow: connector → ``_on_message`` → **emit** on
-``/svc/social/emit/message``. Nothing is persisted — the external platforms are
-the source of truth, and ``fetch`` / ``search`` / ``download_attachments`` query
-them live. A small bounded in-memory set dedupes redelivered events (replacing
+``/svc/social/emit/message``. The external platforms are the source of truth,
+and ``fetch`` / ``search`` / ``download_attachments`` query them live. The one
+exception is a bot account, whose connector keeps a synced history that
+``history`` reads (see :mod:`awm.social.history`). A small bounded in-memory set dedupes redelivered events (replacing
 the former DB unique index). ``emit`` no-ops when no live subscriber is attached.
 
 Run via ``run.sh`` (which the hub spawns and respawns):
@@ -31,6 +32,7 @@ from awm.social import config as social_config
 from awm.social import connectors
 from awm.social.attachments import file_url, sink_dir, write_attachments
 from awm.social.dao import SocialDAO, init as dao_init
+from awm.social.history import History
 
 log = logging.getLogger("awm.social.hub_adapter")
 
@@ -107,10 +109,10 @@ def _msg_to_dict(m: connectors.InboundMessage, awm_user: str = "") -> dict:
     }
 
 
-# -- inbound: emit (no persistence) -----------------------------------------
+# -- inbound: emit -----------------------------------------
 
 async def _on_message(inbound: connectors.InboundMessage) -> None:
-    """Emit one inbound message for live subscribers (nothing is stored)."""
+    """Emit one inbound message for live subscribers."""
     key = (inbound.platform, inbound.account, inbound.message_id)
     if inbound.message_id:
         if key in _seen:
@@ -180,6 +182,25 @@ async def _h_send(args: dict) -> dict:
     sent = await _conn(args["account"]).send(
         args["channel"], args["text"], thread=args.get("thread"))
     return {"ok": True, **sent}
+
+
+async def _h_history(args: dict) -> dict:
+    """A bot account's synced history: the newest ``limit`` messages, or with
+    ``since`` (a message ts) the ``limit`` right after it, oldest first. The
+    catch-up read for a listener that missed pushes."""
+    conn = _conn(args["account"])
+    if not conn.keeps_history:
+        raise RuntimeError(
+            f"account {args['account']!r} keeps no history; use fetch")
+    msgs = _dao.history(
+        args["account"],
+        channel_id=args.get("channel") or None,
+        since=args.get("since") or None,
+        limit=int(args.get("limit", 100)),
+        include_deleted=bool(args.get("include_deleted")),
+    )
+    return {"messages": msgs, "count": len(msgs),
+            "chats": _dao.synced_channels(args["account"])}
 
 
 async def _h_channels(args: dict) -> dict:
@@ -550,6 +571,24 @@ API_MANIFEST: dict[str, Any] = {
                 {"name": "channel", "type": "string", "required": True},
                 {"name": "limit", "type": "number", "required": False},
                 {"name": "before", "type": "string", "required": False},
+            ],
+        },
+        {
+            "name": "history",
+            "effect": "read",
+            "tool": "social_history",
+            "description": "Read a bot account's synced history of every chat "
+                           "the bot is in (edits applied, deletes hidden unless "
+                           "`include_deleted`). Newest `limit` messages, or with "
+                           "`since` (a message ts) the ones after it, oldest "
+                           "first — the catch-up read after `awm services listen "
+                           "social message`. Also lists each chat's sync cursor.",
+            "params": [
+                {"name": "account", "type": "string", "required": True},
+                {"name": "channel", "type": "string", "required": False},
+                {"name": "since", "type": "string", "required": False},
+                {"name": "limit", "type": "number", "required": False},
+                {"name": "include_deleted", "type": "boolean", "required": False},
             ],
         },
         {
@@ -958,7 +997,7 @@ API_MANIFEST: dict[str, Any] = {
 def _forwarding(fn: str, handler: Any) -> Any:
     """Wrap an account-taking handler so a borrowed account resolves on its owner.
 
-    Applied to the six verbs that name an ``account`` — and only those. All six
+    Applied to the seven verbs that name an ``account`` — and only those. All seven
     are already coroutine functions, so wrapping them changes nothing about how
     the adapter runs them; a blanket wrap over ``HANDLERS`` would instead turn
     the sync handlers into coroutine functions and move their DB work off the
@@ -1000,6 +1039,7 @@ HANDLERS = {
     "open_dm": _forwarding("open_dm", _h_open_dm),
     "accounts": _h_accounts,
     "fetch": _forwarding("fetch", _h_fetch),
+    "history": _forwarding("history", _h_history),
     "search": _forwarding("search", _h_search),
     "download_attachments": _forwarding(
         "download_attachments", _h_download_attachments),
@@ -1071,6 +1111,8 @@ def _on_start() -> None:
         except ValueError as exc:
             log.error("cannot build connector for %s: %s", cfg.name, exc)
             continue
+        if conn.keeps_history:
+            conn.history = History(_dao, cfg.name)
         _connectors[cfg.name] = conn
         loop.create_task(conn.start())
         log.info("account %s (%s) connector launched",

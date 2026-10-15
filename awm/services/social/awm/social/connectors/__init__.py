@@ -14,6 +14,7 @@ from awm.social.connectors.base import (
 from awm.social.connectors.discord_conn import DiscordConnector
 from awm.social.connectors.gmail_conn import GmailConnector
 from awm.social.connectors.mira_conn import MiraConnector
+from awm.social.connectors.slack_bot_conn import SlackBotConnector
 from awm.social.connectors.slack_conn import SlackConnector
 
 REGISTRY: dict[str, type[Connector]] = {
@@ -31,8 +32,9 @@ def build(
     """Construct the connector for one configured account.
 
     Routing: ``source = "mira"`` accounts (Slack/Teams driven on the mira host)
-    use :class:`MiraConnector` regardless of platform; everything else uses the
-    native per-platform connector from ``REGISTRY``. Config validation already
+    use :class:`MiraConnector` regardless of platform; a Slack bot token
+    (``xoxb-``) uses the plain-HTTPS :class:`SlackBotConnector`; everything else
+    uses the native per-platform connector from ``REGISTRY``. Config validation already
     rejects unknown platforms, so the ``ValueError`` is belt-and-braces.
 
     ``on_command`` is only honoured by connectors with a command surface
@@ -55,6 +57,8 @@ def build(
     )
     if cfg.source == "mira":
         return MiraConnector(account, on_message)
+    if cfg.platform == "slack" and cfg.token.startswith("xoxb-"):
+        return SlackBotConnector(account, on_message)
     cls = REGISTRY.get(cfg.platform)
     if cls is None:
         raise ValueError(f"no connector for platform {cfg.platform!r}")
