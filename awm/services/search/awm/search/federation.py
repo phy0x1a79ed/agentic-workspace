@@ -1,9 +1,9 @@
-"""The peer fan-out: ask each node in the book the same question, report each answer apart.
+"""Asking other nodes: the named peers, or every domestic node, the same question, each answer apart.
 
 Every peer answers through its own gateway gate, which keeps only the sources
 that peer granted this node, so what a peer returns is already narrowed to its
-grants. A peer that fails, refuses or runs an older release shows as a per-peer
-status and never fails the search or hides the local hits.
+grants. A station runs no search and is never asked. A peer that fails, refuses
+or runs an older release shows as a per-peer status and never fails the search.
 """
 
 from __future__ import annotations
@@ -20,6 +20,7 @@ from awm.config.peertoken import node_label
 PEER_TIMEOUT_S = 10.0
 #: The verb every fan-out calls, with `peers=false`, so a search cannot recurse through the federation.
 PEER_TOOL = "search_query"
+GET_TOOL = "search_get"
 #: A reply larger than this is discarded unread.
 MAX_REPLY_BYTES = 2 * 1024 * 1024
 _TEXT_KEYS = ("source", "id", "title", "snippet", "ts", "project", "scope", "kind", "url")
@@ -48,7 +49,7 @@ def _describe(exc: BaseException) -> str:
     return (f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__)[:300]
 
 
-def _unsupported(exc: BaseException) -> bool:
+def _no_tool(exc: BaseException) -> bool:
     from awm.gatewayclient import GatewayCallError
     return isinstance(exc, GatewayCallError) and (exc.status == 404 or "Unknown tool" in exc.body)
 
@@ -84,6 +85,8 @@ def _hit(raw: Any, origin: dict[str, str]) -> dict[str, Any] | None:
 
 async def _ask_one(peers: Peers, record: dict[str, Any], args: dict[str, Any], limit: int) -> PeerResult:
     name = record["name"]
+    if record.get("role") == "station":
+        return PeerResult(name, [], {"status": "station"})
     try:
         raw = await asyncio.wait_for(peers.invoke(name, PEER_TOOL, args, PEER_TIMEOUT_S),
                                      timeout=PEER_TIMEOUT_S + 1.0)
@@ -91,7 +94,9 @@ async def _ask_one(peers: Peers, record: dict[str, Any], args: dict[str, Any], l
     except (asyncio.TimeoutError, TimeoutError):
         return PeerResult(name, [], {"status": "error", "error": f"timeout after {PEER_TIMEOUT_S:g}s"})
     except Exception as exc:  # noqa: BLE001 — a peer's failure is reported, never raised
-        if _unsupported(exc):
+        if _no_tool(exc) and record.get("relation") == "domestic":
+            return PeerResult(name, [], {"status": "no-search", "detail": "its release has no search tool"})
+        if _no_tool(exc):
             return PeerResult(name, [], {"status": "unsupported",
                                          "detail": "no search tool there, or no source granted to this node"})
         return PeerResult(name, [], {"status": "error", "error": _describe(exc)})
@@ -102,12 +107,32 @@ async def _ask_one(peers: Peers, record: dict[str, Any], args: dict[str, Any], l
                                    "sources": sorted(sources) if isinstance(sources, dict) else []})
 
 
-async def ask(peers: Peers, wanted: list[str] | None, args: dict[str, Any],
+async def ask(peers: Peers, wanted: list[str] | str, args: dict[str, Any],
               limit: int) -> list[PeerResult]:
-    """One result per peer asked. ``wanted`` names the peers to ask; ``None`` asks every peer in the book."""
+    """One result per peer asked. ``wanted`` names the peers, or is ``"fleet"`` for every domestic one."""
     book = {r["name"]: r for r in peers.records()}
-    names = sorted(book) if wanted is None else wanted
+    if isinstance(wanted, str):
+        names = sorted(n for n, r in book.items() if r.get("relation", "domestic") == "domestic")
+    else:
+        names = wanted
     unknown = [PeerResult(n, [], {"status": "error", "error": "not in the peer book"})
                for n in names if n not in book]
     asked = await asyncio.gather(*(_ask_one(peers, book[n], args, limit) for n in names if n in book))
     return [*asked, *unknown]
+
+
+async def fetch(peers: Peers, name: str, source: str, doc_id: str) -> dict[str, Any]:
+    """One document from a peer's archive, stamped with the peer as its origin."""
+    record = next((r for r in peers.records() if r["name"] == name), None)
+    if record is None:
+        raise ValueError(f"{name!r} is not in the peer book")
+    raw = await asyncio.wait_for(peers.invoke(name, GET_TOOL, {"source": source, "id": doc_id}, PEER_TIMEOUT_S),
+                                 timeout=PEER_TIMEOUT_S + 1.0)
+    if isinstance(raw, dict) and "document" not in raw and "result" in raw:
+        raw = raw["result"]
+    if isinstance(raw, (str, bytes)):
+        raw = json.loads(raw)
+    doc = raw.get("document") if isinstance(raw, dict) else None
+    if not isinstance(doc, dict):
+        raise RuntimeError(str((raw or {}).get("error") if isinstance(raw, dict) else "") or "reply has no document")
+    return {"document": {**doc, "source": source, "id": doc_id, "origin": _origin(record)}}

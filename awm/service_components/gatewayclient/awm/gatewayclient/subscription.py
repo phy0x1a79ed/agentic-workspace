@@ -138,6 +138,8 @@ class SupervisedSubscription:
         self.last_connect_ts: float | None = None
         self.last_event_ts: float | None = None
         self.last_error: str | None = None
+        #: How the last connection ended: ``idle`` (the deadline re-subscribed), ``closed`` or ``error``.
+        self.last_end: str | None = None
         # Monotonic twin of last_connect_ts. Wall-clock can jump (NTP, suspend)
         # and this measures a duration, not a moment.
         self._connected_since: float | None = None
@@ -198,6 +200,7 @@ class SupervisedSubscription:
                     if self.last_event_ts else None
                 ),
                 "last_error": self.last_error,
+                "last_end": self.last_end,
                 "idle_timeout_s": self._idle_timeout,
             }
         except Exception as exc:  # noqa: BLE001 — health must not throw
@@ -224,21 +227,27 @@ class SupervisedSubscription:
         while True:
             started = time.monotonic()
             try:
-                await self._one_connection()
-                # A clean return means the far end closed the stream — the
-                # gateway now does exactly this when the emitting service goes
-                # down, which is the signal the old loop never received.
-                self.last_error = "stream closed by peer"
+                self.last_end = await self._one_connection()
+                if self.last_end == "closed":
+                    # The far end closed the stream — the gateway does exactly
+                    # this when the emitting service goes down.
+                    self.last_error = "stream closed by peer"
             except asyncio.CancelledError:
                 self.connected = False
                 raise
             except Exception as exc:  # noqa: BLE001 — never let the task die
+                self.last_end = "error"
                 self.last_error = f"{type(exc).__name__}: {exc}"
             finally:
                 self.connected = False
                 self._connected_since = None
 
             lasted = time.monotonic() - started
+            if self.last_end == "idle":
+                backoff = self._backoff_initial
+                self.consecutive_failures = 0
+                await asyncio.sleep(0)
+                continue
             if lasted >= self._stability:
                 # The connection itself was fine; whatever ended it is not a
                 # reason to back off. Resetting here (rather than on a received
@@ -261,8 +270,8 @@ class SupervisedSubscription:
             await asyncio.sleep(backoff)
             backoff = min(backoff * self._backoff_factor, self._backoff_max)
 
-    async def _one_connection(self) -> None:
-        """One stream, consumed until it ends or goes idle past the deadline.
+    async def _one_connection(self) -> str:
+        """One stream, consumed until it ends (``closed``) or goes idle past the deadline (``idle``).
 
         The idle branch closes the current stream *before* returning, so the
         caller's reconnect is break-before-make.
@@ -282,13 +291,11 @@ class SupervisedSubscription:
                     ev = await asyncio.wait_for(anext(gen),
                                                 timeout=self._idle_deadline())
                 except StopAsyncIteration:
-                    return
+                    return "closed"
                 except asyncio.TimeoutError:
-                    log.warning(
-                        "subscription %s: no event for %.0fs — re-subscribing "
-                        "(the socket looked fine, which is the failure mode)",
-                        self.name, self._idle_timeout)
-                    return
+                    log.info("subscription %s: no event for %.0fs — re-subscribing",
+                             self.name, self._idle_timeout)
+                    return "idle"
                 self.events += 1
                 self.last_event_ts = time.time()
                 await self._dispatch(ev)

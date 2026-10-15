@@ -189,10 +189,20 @@ def peer_hits(*docs, sources=("journals",)):
                          "sources": {s: {"status": "ok"} for s in sources}, "peers": {}}
 
 
-async def test_peers_are_asked_apart_and_their_hits_join_the_list(loaded, peers):
+async def test_no_peers_named_searches_this_node_only(loaded, peers):
+    peers.add("altair", peer_hits("r1"))
+    for value in (None, False, "", "local", ["local"]):
+        args = {"query": "kitchen"} if value is None else {"query": "kitchen", "peers": value}
+        result = await loaded.query(parse(args))
+        assert result["peers"] == {} and result["hits"]
+    assert peers.calls == []
+
+
+async def test_named_peers_are_asked_apart_and_their_hits_join_the_list(loaded, peers):
     peers.add("altair", peer_hits("r1", "r2"))
     peers.add("shaula", peer_hits("r3"), relation="foreign", swarm="other")
-    result = await loaded.query(parse({"query": "kitchen", "sources": ["journals"]}))
+    result = await loaded.query(parse({"query": "kitchen", "sources": ["journals"],
+                                       "peers": "local,altair,shaula"}))
     assert result["peers"]["altair"] == {"status": "ok", "hits": 2, "sources": ["journals"]}
     remote = {h["id"]: h for h in result["hits"] if h["origin"]["node"] != "local"}
     assert set(remote) == {"r1", "r2", "r3"}
@@ -202,20 +212,42 @@ async def test_peers_are_asked_apart_and_their_hits_join_the_list(loaded, peers)
     assert any(h["origin"]["node"] == "local" for h in result["hits"])
 
 
+async def test_a_named_peer_alone_runs_the_query_there_only(loaded, peers):
+    peers.add("shaula", peer_hits("r3"), relation="foreign", swarm="other")
+    result = await loaded.query(parse({"query": "kitchen", "peers": "shaula"}))
+    assert [h["id"] for h in result["hits"]] == ["r3"]
+    assert result["sources"] == {}
+
+
+async def test_fleet_asks_every_domestic_node_and_never_a_foreign_one(loaded, peers):
+    peers.add("capella", peer_hits("r1"))
+    peers.add("mira", peer_hits("r2"), role="station")
+    peers.add("shaula", peer_hits("r3"), relation="foreign", swarm="other")
+    result = await loaded.query(parse({"query": "kitchen", "peers": "fleet"}))
+    assert result["peers"] == {"capella": {"status": "ok", "hits": 1, "sources": ["journals"]},
+                               "mira": {"status": "station"}}
+    assert [c[0] for c in peers.calls] == ["capella"]
+    assert any(h["origin"]["node"] == "local" for h in result["hits"])
+
+
 async def test_a_peer_is_asked_the_same_question_without_a_further_fan_out(loaded, peers):
     peers.add("altair", peer_hits())
-    await loaded.query(parse({"query": "kitchen", "sources": ["journals"], "project": "awm", "limit": 4}))
+    await loaded.query(parse({"query": "kitchen", "sources": ["journals"], "project": "awm", "limit": 4,
+                              "peers": "altair"}))
     (name, tool, args), = peers.calls
     assert (name, tool) == ("altair", "search_query")
     assert args == {"query": "kitchen", "limit": 4, "peers": False, "project": "awm", "sources": ["journals"]}
 
 
-async def test_an_older_peer_is_unsupported_and_local_hits_remain(loaded, peers):
-    peers.add("shaula", lambda args: GatewayCallError(404, '{"detail":"Unknown tool: search_query"}'))
-    peers.add("altair", peer_hits("r1"))
-    result = await loaded.query(parse({"query": "kitchen"}))
+async def test_a_release_without_search_is_no_search_at_home_and_unsupported_abroad(loaded, peers):
+    def missing(args):
+        return GatewayCallError(404, '{"detail":"Unknown tool: search_query"}')
+
+    peers.add("capella", missing)
+    peers.add("shaula", missing, relation="foreign", swarm="other")
+    result = await loaded.query(parse({"query": "kitchen", "peers": "local,capella,shaula"}))
+    assert result["peers"]["capella"]["status"] == "no-search"
     assert result["peers"]["shaula"]["status"] == "unsupported"
-    assert result["peers"]["altair"]["status"] == "ok"
     assert any(h["origin"]["node"] == "local" for h in result["hits"])
 
 
@@ -229,7 +261,7 @@ async def test_a_failing_or_slow_peer_is_a_status(loaded, peers, monkeypatch):
     peers.add("junk", lambda args: {"detail": "nope"})
     peers.add("big", lambda args: "x" * (federation.MAX_REPLY_BYTES + 1))
     peers.add("slow", slow)
-    result = await loaded.query(parse({"query": "kitchen"}))
+    result = await loaded.query(parse({"query": "kitchen", "peers": "fleet"}))
     assert "refused" in result["peers"]["down"]["error"]
     assert "no hits" in result["peers"]["junk"]["error"]
     assert "exceeds" in result["peers"]["big"]["error"]
@@ -237,16 +269,10 @@ async def test_a_failing_or_slow_peer_is_a_status(loaded, peers, monkeypatch):
     assert result["hits"]
 
 
-async def test_peers_false_asks_nobody(loaded, peers):
-    peers.add("altair", peer_hits("r1"))
-    result = await loaded.query(parse({"query": "kitchen", "peers": False}))
-    assert peers.calls == [] and result["peers"] == {}
-
-
 async def test_a_call_from_a_peer_searches_this_node_only(loaded, peers):
     peers.add("altair", peer_hits("r1"))
     for as_ in ("peer:altair", "peer"):
-        result = await loaded.query(parse({"query": "kitchen"}, as_))
+        result = await loaded.query(parse({"query": "kitchen", "peers": "fleet"}, as_))
         assert result["peers"] == {}
     assert peers.calls == []
 
@@ -260,7 +286,9 @@ async def test_named_peers_are_asked_and_unknown_ones_reported(loaded, peers):
     assert [c[0] for c in peers.calls] == ["altair"]
 
 
-async def test_this_node_is_never_asked(monkeypatch):
-    monkeypatch.setattr(federation.config, "list_records",
-                        lambda: [{"name": "Local.lan"}, {"name": "altair"}])
-    assert [r["name"] for r in federation.Peers().records()] == ["altair"]
+async def test_get_with_a_node_reads_that_peers_archive(peers):
+    peers.add("shaula", lambda args: {"document": {"title": "far", "text": "body", "origin": {"node": "liar"}}},
+              relation="foreign", swarm="other")
+    got = await federation.fetch(peers, "shaula", "journals", "r3")
+    assert got["document"]["origin"] == {"node": "shaula", "swarm": "other"}
+    assert peers.calls == [("shaula", "search_get", {"source": "journals", "id": "r3"})]

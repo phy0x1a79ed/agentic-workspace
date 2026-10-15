@@ -134,3 +134,36 @@ async def test_a_push_that_finds_the_lock_held_is_retried_not_dropped(
     task.cancel()
 
     assert len(attempts) >= 2, "the busy push was dropped rather than retried"
+
+
+# -- items -------------------------------------------------------------------
+
+
+def _library(*versions):
+    return {"versions": {"users/0": max(versions)}, "pulled": "2026-10-01T00:00:00Z",
+            "items": [{"key": f"K{v}", "library": "users/0", "ref": f"users/0/K{v}", "version": v,
+                       "title": f"paper {v}", "notes": {"N": "<p>x</p>"}} for v in versions]}
+
+
+def test_items_pages_what_moved_past_the_cursor_without_notes():
+    library = _library(3, 1, 5, 4)
+    first = hub_adapter.items_page(library, {"users/0": 2}, 0, 2)
+    assert [i["key"] for i in first["items"]] == ["K3", "K4"]
+    assert first["total"] == 3 and first["next"] == 2
+    assert "notes" not in first["items"][0]
+    rest = hub_adapter.items_page(library, {"users/0": 2}, first["next"], 2)
+    assert [i["key"] for i in rest["items"]] == ["K5"] and rest["next"] is None
+    assert rest["versions"] == {"users/0": 5}
+
+
+def test_items_reads_a_library_the_cursor_omits_whole():
+    assert hub_adapter.items_page(_library(1, 2), {"groups/9": 50}, 0, 10)["total"] == 2
+
+
+def test_items_is_open_to_peers_and_the_operator_only(tmp_path, monkeypatch):
+    b = _bundle_at(tmp_path)
+    monkeypatch.setattr(hub_adapter.sync, "bundle", lambda: b)
+    for as_ in (None, "peer:altair"):
+        assert asyncio.run(hub_adapter._h_items({}, as_))["total"] == 1
+    with pytest.raises(PermissionError):
+        asyncio.run(hub_adapter._h_items({}, "user:someone"))

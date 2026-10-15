@@ -5,11 +5,18 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from awm import config
+from awm.config.peertoken import node_label
+
 from awm.search import store
 from awm.search.index import Filters
 
 DEFAULT_LIMIT = 10
 MAX_LIMIT = 100
+#: The ``peers`` word for every domestic node, this one included.
+FLEET = "fleet"
+#: The ``peers`` word for this node in a list of names.
+LOCAL = "local"
 
 
 @dataclass
@@ -22,10 +29,14 @@ class Query:
     after: str = ""
     before: str = ""
     limit: int = DEFAULT_LIMIT
-    fan_out: bool = True
-    peer_names: list[str] | None = None
+    local: bool = True
+    peer_names: list[str] | str = field(default_factory=list)
     grants: frozenset[str] | None = None
     raw: dict[str, str] = field(default_factory=dict)
+
+    @property
+    def fan_out(self) -> bool:
+        return bool(self.peer_names)
 
     def allows(self, source: str) -> bool:
         return self.grants is None or source in self.grants
@@ -63,33 +74,38 @@ def peer_originated(as_: str | None) -> bool:
     return as_ == "peer" or (as_ or "").startswith("peer:")
 
 
-def _peers(value: Any) -> tuple[bool, list[str] | None]:
-    """``(fan out?, the peers to ask)``: ``None`` means every peer in the book."""
-    if value is None or value is True:
-        return True, None
-    if value is False:
-        return False, None
-    if isinstance(value, str):
-        word = value.strip().lower()
-        if word in ("false", "0", "no"):
-            return False, None
-        if word in ("", "true", "1", "yes"):
-            return True, None
+def _peers(value: Any) -> tuple[bool, list[str] | str]:
+    """``(search this node?, the peers to ask)``. Nothing named is this node alone, ``fleet`` adds every
+    domestic node, and a list of names asks only those, with ``local`` standing for this node."""
+    if value is None or value is False:
+        return True, []
+    if value is True:
+        return True, FLEET
+    if isinstance(value, str) and value.strip().lower() in ("", "false", "0", "no", LOCAL):
+        return True, []
+    if isinstance(value, str) and value.strip().lower() in ("true", "1", "yes", FLEET):
+        return True, FLEET
     chosen = names(value) or []
-    return bool(chosen), chosen
+    if FLEET in chosen:
+        return True, FLEET
+    here = node_label(config.node_name())
+    remote = [n for n in chosen if n != LOCAL and node_label(n) != here]
+    return len(remote) < len(chosen), remote
 
 
 def parse(args: dict[str, Any], as_: str | None = None) -> Query:
     text = str(args.get("query") or "").strip()
     if not text:
         raise ValueError("search query needs a query")
-    fan_out, peer_names = _peers(args.get("peers"))
+    local, peer_names = _peers(args.get("peers"))
+    if peer_originated(as_):
+        local, peer_names = True, []
     grants = args.get("_grants")
     return Query(
         text=text, sources=names(args.get("sources")),
         project=str(args.get("project") or ""), scope=str(args.get("scope") or ""),
         kind=str(args.get("kind") or ""), after=_time(args, "after"), before=_time(args, "before"),
         limit=max(1, min(int(args.get("limit") or DEFAULT_LIMIT), MAX_LIMIT)),
-        fan_out=fan_out and not peer_originated(as_), peer_names=peer_names,
+        local=local, peer_names=peer_names,
         grants=None if grants is None else frozenset(str(g) for g in grants),
         raw={k: str(args[k]) for k in ("project", "scope", "kind", "after", "before") if args.get(k)})

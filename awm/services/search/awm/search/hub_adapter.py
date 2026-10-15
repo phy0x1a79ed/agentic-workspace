@@ -17,9 +17,11 @@ import asyncio
 import logging
 from typing import Any
 
+from awm import config
+from awm.config.peertoken import node_label
 from awm.gatewayclient import ServiceAdapter, spawn_supervised
 
-from awm.search import query as request, store
+from awm.search import federation, query as request, store
 from awm.search.archive import Archive
 
 log = logging.getLogger("awm.search.hub_adapter")
@@ -36,10 +38,11 @@ API_MANIFEST: dict[str, Any] = {
             "timeout": 60,
             "description": (
                 "One ranked search over everything the swarm knows: journals, precedents, "
-                "papers and any other source in `search sources`, on this node and across "
-                "peers. Each hit carries source, id, title, snippet, ts, score and origin "
-                "(node and swarm). Read the answer's `sources` and `peers` for the status "
-                "of each source and peer asked. Fetch a whole hit with `get`."
+                "papers and any other source in `search sources`. It searches this node "
+                "only, unless `peers` names other nodes. Each hit carries source, id, title, "
+                "snippet, ts, score and origin (node and swarm). Read the answer's `sources` "
+                "and `peers` for the status of each source and peer asked. Fetch a whole hit "
+                "with `get`."
             ),
             "params": [
                 {"name": "query", "type": "string", "required": True,
@@ -55,9 +58,11 @@ API_MANIFEST: dict[str, Any] = {
                 {"name": "before", "type": "string",
                  "description": "Only documents before this ISO 8601 date or time (UTC)."},
                 {"name": "limit", "type": "integer", "description": "Maximum hits, 1-100. Default 10."},
-                {"name": "peers", "type": "boolean",
-                 "description": "Also ask the peers in the book. Default true; false searches "
-                                "this node only."},
+                {"name": "peers", "type": "string",
+                 "description": "Where to search. Omit it for this node only. `fleet` adds every "
+                                "domestic node. Node names, comma-separated, domestic or foreign, "
+                                "search only those nodes. Add `local` to the names to include "
+                                "this node."},
             ],
         },
         {
@@ -67,12 +72,14 @@ API_MANIFEST: dict[str, Any] = {
             "tool": "search_get",
             "description": (
                 "One archived document in full: title, text, project, scope, kind, ts and url. "
-                "Take `source` and `id` from a hit. A hit from another node is fetched with "
-                "this verb's `peer` argument set to the hit's origin node."
+                "Take `source` and `id` from a hit. For a hit from another node, set `node` to "
+                "the hit's origin node."
             ),
             "params": [
                 {"name": "source", "type": "string", "required": True, "description": "The hit's source."},
                 {"name": "id", "type": "string", "required": True, "description": "The hit's id."},
+                {"name": "node", "type": "string",
+                 "description": "The node that holds the document, from the hit's origin. Default: this node."},
             ],
         },
         {
@@ -130,7 +137,11 @@ async def _h_query(args: dict, as_: str | None = None) -> dict:
     return await ARCHIVE.query(request.parse(args, as_))
 
 
-async def _h_get(args: dict) -> dict:
+async def _h_get(args: dict, as_: str | None = None) -> dict:
+    node = str(args.get("node") or "").strip()
+    if node and node != request.LOCAL and not request.peer_originated(as_) \
+            and node_label(node) != node_label(config.node_name()):
+        return await federation.fetch(ARCHIVE.peers, node, str(args["source"]), str(args["id"]))
     return await ARCHIVE.get(str(args["source"]), str(args["id"]), _grants(args))
 
 

@@ -31,6 +31,7 @@ import importlib.util
 import os
 import re
 import sqlite3
+import threading
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -188,24 +189,45 @@ class Embedder(Protocol):
     def encode(self, texts: list[str], *, query: bool) -> Any: ...
 
 
+def _hub_cache() -> Path:
+    if os.environ.get("HF_HUB_CACHE"):
+        return Path(os.environ["HF_HUB_CACHE"])
+    home = os.environ.get("HF_HOME") or os.path.join(
+        os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"), "huggingface")
+    return Path(home) / "hub"
+
+
+def _offline_if_cached(model: str) -> None:
+    """A cached model loads without asking the Hub, whose round trips stall a query behind the network."""
+    if (_hub_cache() / f"models--sentence-transformers--{model}").is_dir():
+        os.environ.setdefault("HF_HUB_OFFLINE", "1")
+
+
 class _SentenceTransformer:
     name = MODEL_NAME
 
     def __init__(self) -> None:
         self._model = None
+        self._lock = threading.Lock()
 
     def _load(self):
         if self._model is None:
-            try:
-                import torch
-                from sentence_transformers import SentenceTransformer
-            except ImportError as exc:
-                raise EmbeddingsUnavailable(f"sentence-transformers: {_INSTALL_HINT}") from exc
-            threads = int(os.environ.get("AWM_EMBED_THREADS", "4"))
-            if threads < torch.get_num_threads():
-                torch.set_num_threads(threads)
-            self._model = SentenceTransformer(MODEL_NAME, device="cpu")
+            with self._lock:
+                if self._model is None:
+                    self._model = self._open()
         return self._model
+
+    def _open(self):
+        _offline_if_cached(MODEL_NAME)
+        try:
+            import torch
+            from sentence_transformers import SentenceTransformer
+        except ImportError as exc:
+            raise EmbeddingsUnavailable(f"sentence-transformers: {_INSTALL_HINT}") from exc
+        threads = int(os.environ.get("AWM_EMBED_THREADS", "4"))
+        if threads < torch.get_num_threads():
+            torch.set_num_threads(threads)
+        return SentenceTransformer(MODEL_NAME, device="cpu")
 
     def count_tokens(self, texts: list[str]) -> list[int]:
         if not texts:
@@ -223,15 +245,17 @@ class _SentenceTransformer:
 
 
 _embedder: Embedder | None = None
+_embedder_lock = threading.Lock()
 
 
 def get_embedder() -> Embedder:
     """The process-wide embedder; raises :class:`EmbeddingsUnavailable` without the stack."""
     global _embedder
-    if _embedder is None:
-        if not probe()["available"]:
-            raise EmbeddingsUnavailable(f"{', '.join(probe()['missing'])}: {_INSTALL_HINT}")
-        _embedder = _SentenceTransformer()
+    with _embedder_lock:
+        if _embedder is None:
+            if not probe()["available"]:
+                raise EmbeddingsUnavailable(f"{', '.join(probe()['missing'])}: {_INSTALL_HINT}")
+            _embedder = _SentenceTransformer()
     return _embedder
 
 
