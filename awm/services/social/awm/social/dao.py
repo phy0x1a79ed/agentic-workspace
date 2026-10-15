@@ -11,6 +11,8 @@ Never a token (tokens live solely in ``social.toml``):
   account (every chat the bot is a member of) and its per-chat sync cursor.
 - ``social_mounts`` — which Claude session holds which seat (a chat a bot
   account is in). Written only on the node that owns the account.
+- ``social_keepers`` — the agent the keeper started for each kept seat, with
+  the fingerprint of its launch spec.
 
 Accounts that act as a person (Slack/Teams via mira, Gmail) keep no local copy:
 the platform is the source of truth and fetch/search query it live. A bot's
@@ -28,7 +30,7 @@ from awm.persistence.dao import BaseDAO
 from awm.persistence.databases import init_service_db
 
 SERVICE = "social"
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 SCHEMA_SQL = """\
 CREATE TABLE IF NOT EXISTS social_accounts (
@@ -83,11 +85,21 @@ CREATE TABLE IF NOT EXISTS social_mounts (
     mounted_at   TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (account, channel_id)
 );
+
+CREATE TABLE IF NOT EXISTS social_keepers (
+    seat         TEXT NOT NULL PRIMARY KEY,
+    node         TEXT NOT NULL,
+    job          TEXT NOT NULL,
+    spec_hash    TEXT NOT NULL DEFAULT '',
+    started_at   TEXT NOT NULL DEFAULT ''
+);
 """
 
+_KEEPERS_AT = SCHEMA_SQL.index("CREATE TABLE IF NOT EXISTS social_keepers")
 _MOUNTS_AT = SCHEMA_SQL.index("CREATE TABLE IF NOT EXISTS social_mounts")
 HISTORY_DDL = SCHEMA_SQL[SCHEMA_SQL.index("CREATE TABLE IF NOT EXISTS social_history"):_MOUNTS_AT]
-MOUNTS_DDL = SCHEMA_SQL[_MOUNTS_AT:]
+MOUNTS_DDL = SCHEMA_SQL[_MOUNTS_AT:_KEEPERS_AT]
+KEEPERS_DDL = SCHEMA_SQL[_KEEPERS_AT:]
 
 # v1 → v2: the local message mirror is gone (query platforms live). Drop the
 # orphan table + its indexes from any existing prod/dev DB. Idempotent.
@@ -99,6 +111,7 @@ DROP TABLE IF EXISTS social_messages;
 """,
     (2, 3): HISTORY_DDL,
     (3, 4): MOUNTS_DDL,
+    (4, 5): KEEPERS_DDL,
 }
 
 _initialized = False
@@ -367,3 +380,18 @@ class SocialDAO(BaseDAO):
             (node, job))
         self.execute("DELETE FROM social_mounts WHERE node = ? AND job = ?", (node, job))
         return rows
+
+    # -- kept seats ----------------------------------------------------------
+
+    def keeper(self, seat: str) -> dict | None:
+        return self.query_one(
+            "SELECT seat, node, job, spec_hash, started_at FROM social_keepers "
+            "WHERE seat = ?", (seat,))
+
+    def set_keeper(self, seat: str, node: str, job: str, spec_hash: str) -> None:
+        self.execute(
+            "INSERT INTO social_keepers (seat, node, job, spec_hash, started_at) "
+            "VALUES (?, ?, ?, ?, ?) ON CONFLICT (seat) DO UPDATE SET "
+            "node = excluded.node, job = excluded.job, "
+            "spec_hash = excluded.spec_hash, started_at = excluded.started_at",
+            (seat, node, job, spec_hash, _now()))

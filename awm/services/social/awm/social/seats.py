@@ -75,8 +75,10 @@ def holder_label(row: dict) -> str:
 # -- the pushed line ---------------------------------------------------------
 
 def push_line(m: InboundMessage) -> str:
-    """``<platform> from <sender>[ ↳<thread>]: <text>`` on one line."""
+    """``<platform> from <sender>[ [bot]][ ↳<thread>]: <text>`` on one line."""
     who = m.sender_name or m.sender_id or "?"
+    if m.sender_bot:
+        who += " [bot]"
     thread = (f" ↳{m.thread_id}"
               if m.thread_id and m.thread_id != m.message_id else "")
     text = " ⏎ ".join(line for line in (m.text or "").splitlines())

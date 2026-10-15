@@ -166,6 +166,25 @@ class BucketConfig:
     mira_verify_tls: bool = False
 
 
+@dataclass(frozen=True)
+class SeatConfig:
+    """One kept seat: a chat whose holder social starts and keeps alive.
+
+    ``node`` is where the agent runs (it needs Claude Code). ``project`` and
+    ``scope`` name the worktree it starts in. ``brief`` opens its first prompt.
+    """
+
+    name: str
+    account: str
+    channel: str
+    node: str
+    project: str
+    scope: str
+    brief: str
+    model: str | None = None
+    effort: str | None = None
+
+
 class SocialConfigError(Exception):
     pass
 
@@ -478,3 +497,63 @@ def load_buckets(path: Path | None = None) -> list[BucketConfig]:
             if source == "mira" else False,
         ))
     return buckets
+
+
+def load_seats(path: Path | None = None) -> list[SeatConfig]:
+    """Load the ``[seat.<name>]`` sections of ``social.toml``.
+
+    Isolated from :func:`load` like the buckets, so a bad seat never takes the
+    accounts down. Shape::
+
+        [seat.hallam-general]
+        account = "discord-bot"
+        channel = "1560400515630760049"   # the chat id
+        node = "altair"                   # where the agent runs
+        scope = "awm/seat-hallam-general" # project/scope it starts in
+        brief = "You speak as Opal ..."
+        # model = "opus"                  # optional
+        # effort = "high"                 # optional
+    """
+    path = path if path is not None else _config_file()
+    if not path.exists():
+        return []
+    try:
+        with open(path, "rb") as f:
+            data = tomllib.load(f)
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        raise SocialConfigError(f"could not parse {path}: {exc}") from exc
+    seats_tbl = data.get("seat")
+    if seats_tbl is None:
+        return []
+    if not isinstance(seats_tbl, dict):
+        raise SocialConfigError(f"{path}: [seat] must be a table of named seats")
+    seats: list[SeatConfig] = []
+    for name, section in seats_tbl.items():
+        where = f"{path}: [seat.{name}]"
+        if not isinstance(section, dict):
+            raise SocialConfigError(f"{where} must be a table")
+        fields = {}
+        for key in ("account", "channel", "node", "scope", "brief"):
+            value = section.get(key)
+            if not isinstance(value, str) or not value.strip():
+                raise SocialConfigError(f"{where}.{key} is required")
+            fields[key] = value.strip()
+        project, _, scope = fields.pop("scope").partition("/")
+        if not project or not scope:
+            raise SocialConfigError(f"{where}.scope must be <project>/<scope>")
+        optional = {}
+        for key in ("model", "effort"):
+            value = section.get(key)
+            if value is not None and (not isinstance(value, str) or not value.strip()):
+                raise SocialConfigError(f"{where}.{key} must be a string")
+            optional[key] = value.strip() if value else None
+        unknown = set(section) - {"account", "channel", "node", "scope", "brief",
+                                  "model", "effort"}
+        if unknown:
+            raise SocialConfigError(f"{where} has unknown keys: {', '.join(sorted(unknown))}")
+        seats.append(SeatConfig(name=str(name).strip(), project=project,
+                                scope=scope, **fields, **optional))
+    keys = [(s.account, s.channel) for s in seats]
+    if len(set(keys)) != len(keys):
+        raise SocialConfigError(f"{path}: two [seat] tables keep the same chat")
+    return seats

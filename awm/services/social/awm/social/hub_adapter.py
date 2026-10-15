@@ -30,6 +30,7 @@ from awm.gatewayclient import ServiceAdapter
 from awm.social import buckets as buckets_mod
 from awm.social import config as social_config
 from awm.social import connectors
+from awm.social import keeper as keeper_mod
 from awm.social import seats
 from awm.social.attachments import file_url, sink_dir, write_attachments
 from awm.social.dao import SocialDAO, init as dao_init
@@ -48,6 +49,8 @@ _accounts: dict[str, social_config.AccountConfig] = {}
 _buckets: dict[str, buckets_mod.Bucket] = {}
 _bucket_cfgs: dict[str, social_config.BucketConfig] = {}
 _dao = SocialDAO()
+# The kept-seat keeper, on the owner node when social.toml declares seats.
+_keeper: keeper_mod.Keeper | None = None
 
 # Bounded in-memory dedupe of redelivered inbound events, keyed by
 # (platform, account, message_id) — replaces the old DB unique index now that
@@ -102,6 +105,7 @@ def _msg_to_dict(m: connectors.InboundMessage, awm_user: str = "") -> dict:
         "thread_id": m.thread_id,
         "sender_id": m.sender_id,
         "sender_name": m.sender_name,
+        "sender_bot": m.sender_bot,
         "awm_user": awm_user,
         "text": m.text,
         "ts": m.ts,
@@ -359,8 +363,14 @@ async def _h_seats(args: dict) -> dict:
     """Every chat the account is in, each with its holder or None."""
     conn = _conn(args["account"])
     held = {r["channel_id"]: r for r in _dao.mounts(args["account"])}
-    return {"seats": [{**vars(c), "holder": _holder_dict(held.get(c.id))}
+    return {"seats": [{**vars(c), "holder": _holder_dict(held.get(c.id)),
+                       "kept": _kept_status(args["account"], c.id)}
                       for c in await conn.list_seats()]}
+
+
+def _kept_status(account: str, channel_id: str) -> dict | None:
+    seat = _keeper.kept(account, channel_id) if _keeper else None
+    return _keeper.status(seat) if seat else None
 
 
 async def _h_mount(args: dict, as_: str | None = None) -> dict:
@@ -372,6 +382,13 @@ async def _h_mount(args: dict, as_: str | None = None) -> dict:
     except seats.SeatError as exc:
         return {"ok": False, "error": str(exc)}
     label = seat.name or seat.id
+    kept = _kept_status(account, seat.id)
+    if kept:
+        return {"ok": False, "kept": kept, "error": (
+            f"{label} is the kept seat {kept['seat']!r}: social keeps its agent "
+            f"({kept['job'] or 'starting'}@{kept['node']}) and holds the seat for "
+            "it. Message that agent, or change [seat." + kept["seat"] + "] in "
+            "social.toml.")}
     prev = _dao.holder(account, seat.id)
     evicted = prev if prev and (prev["node"], prev["job"]) != (who["node"], who["job"]) else None
     if evicted and not args.get("force"):
@@ -722,7 +739,9 @@ API_MANIFEST: dict[str, Any] = {
             "description": "List the chats a bot account is in (its seats), each "
                            "with the session holding it or null. A session "
                            "mounts a seat to have its messages typed into its "
-                           "prompt.",
+                           "prompt. `kept` is set on a seat a [seat.*] table "
+                           "declares: social starts and keeps its agent, with "
+                           "its job, health and restart count.",
             "params": [
                 {"name": "account", "type": "string", "required": True},
             ],
@@ -737,7 +756,9 @@ API_MANIFEST: dict[str, Any] = {
                            "from'). Background sessions only. One holder per "
                            "seat: a held seat is refused unless `force`, which "
                            "takes it and tells the old holder. A Discord DM is "
-                           "reserved for notifications and cannot be mounted.",
+                           "reserved for notifications and cannot be mounted, "
+                           "and a kept seat is refused: social holds it for "
+                           "the agent it keeps.",
             "params": [
                 {"name": "account", "type": "string", "required": True},
                 {"name": "channel", "type": "string", "required": True,
@@ -1289,6 +1310,8 @@ def _on_start() -> None:
     loop = asyncio.get_event_loop()
     borrowed = _is_borrower()
     loop.create_task(seats.prune_loop(_dao))
+    if not borrowed:
+        _start_keeper()
     for cfg in accounts:
         _accounts[cfg.name] = cfg
         _dao.upsert_account(
@@ -1334,6 +1357,33 @@ def _on_start() -> None:
             log.error("cannot build bucket %s: %s", bcfg.name, exc)
             continue
         log.info("bucket %s (%s) ready", bcfg.name, bcfg.kind)
+
+
+def _describe_account(account: str) -> tuple[str, bool] | None:
+    conn = _connectors.get(account)
+    return (conn.platform, conn.keeps_history) if conn else None
+
+
+async def _channel_name(account: str, channel_id: str) -> str:
+    return (await _find_seat(_conn(account), channel_id)).name
+
+
+def _start_keeper() -> None:
+    """Keep the agents of the ``[seat.*]`` tables. A bad table keeps none and
+    leaves the accounts alone."""
+    global _keeper
+    from awm.gatewayclient import spawn_supervised
+
+    try:
+        kept = social_config.load_seats()
+    except social_config.SocialConfigError as exc:
+        log.error("social.toml [seat] invalid; keeping no seats: %s", exc)
+        return
+    if not kept:
+        return
+    _keeper = keeper_mod.Keeper(_dao, kept, _describe_account, _channel_name)
+    spawn_supervised("social.keeper", _keeper.run)
+    log.info("keeping %d seat(s): %s", len(kept), ", ".join(s.name for s in kept))
 
 
 async def main() -> None:

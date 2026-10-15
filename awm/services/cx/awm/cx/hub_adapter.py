@@ -100,6 +100,11 @@ API_MANIFEST: dict[str, Any] = {
                                 "Off unless true. The result's `link` is the "
                                 "claude.ai link, null with a `link_reason` if "
                                 "it has not connected within a few seconds."},
+                {"name": "pin", "type": "boolean",
+                 "description": "Pin the job, so the daemon's idle retirement "
+                                "passes it over. A pinned job is a kept "
+                                "session: stopping it unpins it and removes it "
+                                "with `claude rm`."},
             ],
             "timeout": 1800,
             "effect": "write",
@@ -130,7 +135,8 @@ API_MANIFEST: dict[str, Any] = {
             "tool": "reflection_stop_other",
             "description": (
                 "Stop a session that `start_other` created. The conversation is "
-                "kept and `claude attach <job>` reopens it. Refuses a job "
+                "kept and `claude attach <job>` reopens it, except for a pinned "
+                "job, which is unpinned and removed. Refuses a job "
                 "that `start_other` did not create."
             ),
             "params": [

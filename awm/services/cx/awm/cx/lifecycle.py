@@ -37,7 +37,7 @@ from pathlib import Path
 from typing import Any
 
 from awm import gatewayclient
-from awm.claudedaemon import launch, roster, sessionmode
+from awm.claudedaemon import cli, launch, pins, roster, sessionmode
 from awm.config import caller_peer, node_name, node_role, peer_relation
 
 from awm.cx import config, sessions, trust
@@ -159,7 +159,7 @@ async def _start(args: dict[str, Any], as_: str | None) -> dict[str, Any]:
             "cwd": str(cwd), "parent": parent, "caller": caller,
             "mode": spec["mode"], "remote_control": spec["remote_control"],
             "model": spec["model"], "started_at": _iso(time.time()),
-            "started_epoch": time.time(),
+            "started_epoch": time.time(), "pinned": spec["pin"],
         }
         _write_pending(record)
         try:
@@ -182,12 +182,13 @@ async def _start(args: dict[str, Any], as_: str | None) -> dict[str, Any]:
             raise Refused(f"started {session.short} but could not record it "
                           f"({exc}); the pending record keeps its mode") from exc
         _drop_pending(spec["name"])
-    log.info("cx: started %s as %s in %s (mode %s)", spec["name"], session.short,
-             cwd, spec["mode"])
+    pinned = spec["pin"] and await _pin(session.short)
+    log.info("cx: started %s as %s in %s (mode %s%s)", spec["name"], session.short,
+             cwd, spec["mode"], ", pinned" if pinned else "")
     return {"ok": True, "job": session.short, "name": spec["name"],
             "node": node_name(), "project": spec["project"], "scope": spec["scope"],
             "cwd": str(cwd), "attach": f"claude attach {session.short}",
-            "parent": parent, "mode": spec["mode"],
+            "parent": parent, "mode": spec["mode"], "pinned": pinned,
             **await _started_link(session.short, bool(spec["remote_control"]))}
 
 
@@ -212,6 +213,15 @@ async def _started_link(job: str, remote_control: bool) -> dict[str, Any]:
                                     f"{LINK_WAIT_S:g}s; `reflection link` with "
                                     f"job {job} returns the link once it has")}
         await asyncio.sleep(LINK_POLL_S)
+
+
+async def _pin(job: str) -> bool:
+    try:
+        await asyncio.to_thread(pins.pin, job)
+    except (OSError, ValueError, TimeoutError) as exc:
+        log.warning("cx: could not pin %s: %s", job, exc)
+        return False
+    return True
 
 
 def _refuse_unknown_caller(args: dict[str, Any]) -> None:
@@ -269,6 +279,7 @@ def _parse(args: dict[str, Any]) -> dict[str, Any]:
         "restricted": _flag(args.get("restricted"), "restricted"),
         "strict_mcp": _flag(args.get("strict_mcp"), "strict_mcp"),
         "remote_control": _remote_control(args.get("remote_control"), name),
+        "pin": _flag(args.get("pin"), "pin"),
     }
 
 
@@ -522,6 +533,26 @@ def prune_lineage(now: float | None = None) -> list[str]:
     return gone
 
 
+def prune_pins() -> list[str]:
+    """Unpin jobs whose daemon record is gone, so the pin list cannot grow stale.
+
+    Nothing is unpinned when the jobs directory cannot be read.
+    """
+    jobs = config.jobs_dir()
+    try:
+        present = set(os.listdir(jobs))
+    except OSError:
+        return []
+    stale = [j for j in pins.pinned() if j not in present]
+    if not stale:
+        return []
+    try:
+        return pins.unpin(stale)
+    except (OSError, ValueError, TimeoutError) as exc:
+        log.warning("cx: could not prune pins: %s", exc)
+        return []
+
+
 def adopt_pending(now: float | None = None) -> list[str]:
     """Give a pending record to the job that outlived its launch timeout.
 
@@ -577,7 +608,11 @@ def _parent_of(pid: Any) -> str | None:
 
 
 async def stop(args: dict[str, Any], as_: str | None = None) -> dict[str, Any]:
-    """Stop a session `start` created. Its conversation is kept."""
+    """Stop a session `start` created.
+
+    An unpinned session keeps its conversation. A pinned one is a kept session
+    that a keeper replaces, so it is unpinned and removed with `claude rm`.
+    """
     reason = caller_refusal(as_)
     job = args.get("job")
     if not reason and (not isinstance(job, str) or not _JOB.match(job)):
@@ -590,10 +625,23 @@ async def stop(args: dict[str, Any], as_: str | None = None) -> dict[str, Any]:
     if reason:
         log.info("cx: stop refused — %s", reason)
         return {"ok": False, "reason": reason}
+    if rec.get("pinned") or job in pins.pinned():
+        return await _stop_pinned(job)
     ok, detail = await run_claude_stop(job)
     if not ok:
         return {"ok": False, "job": job, "reason": detail}
     return {"ok": True, "job": job}
+
+
+async def _stop_pinned(job: str) -> dict[str, Any]:
+    try:
+        await asyncio.to_thread(pins.unpin, job)
+    except (OSError, ValueError, TimeoutError) as exc:
+        return {"ok": False, "job": job, "reason": f"could not unpin {job}: {exc}"}
+    out = await asyncio.to_thread(cli.stop_and_remove, job, claude=config.claude_bin())
+    if not out["removed"]:
+        return {"ok": False, "job": job, "reason": out["detail"]}
+    return {"ok": True, "job": job, "removed": True}
 
 
 def _stop_caller_refusal(caller_pid: Any, rec: dict[str, Any]) -> str | None:
@@ -641,8 +689,9 @@ def collect(project: str | None = None, scope: str | None = None,
     """
     lineage = _lineage_records()
     node = node_name()
-    rows = [_job_row(s, lineage.get(s.short), node) for s in sessions.load()
-            if s.has_record]
+    pinned = set(pins.pinned())
+    rows = [{**_job_row(s, lineage.get(s.short), node), "pinned": s.short in pinned}
+            for s in sessions.load() if s.has_record]
     panes = _tmux_panes()
     rows += [_interactive_row(rec, panes, node) for rec in _interactive_records()]
     out = [r for r in rows
@@ -693,6 +742,7 @@ def _interactive_row(rec: dict[str, Any], panes: dict[int, str],
         "remote_control": bool(bridge), "remote_control_label": None,
         "link": roster.bridge_link(bridge),
         "started_at": _iso_ms(rec.get("startedAt")), "pool": False,
+        "pinned": False,
     }
 
 
