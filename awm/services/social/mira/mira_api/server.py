@@ -17,8 +17,8 @@ Runs ON mira. Exposes a clean per-platform API over the awm-network so the awm
     POST /v1/{platform}/send  {channel,text,thread?}
     POST /v1/{platform}/open_dm  {user}  → resolve a user (id/name) to a DM channel
     GET  /v1/events                      → WS; pushes inbound {type:"message", …}
-    GET  /v1/fs/{name}/ls|stat|get|search|sites
-    POST /v1/fs/{name}/put|upload|mkdir|rm|mv|cp
+    GET  /v1/fs/{name}/ls|stat|get|search|sites|shares|resolve
+    POST /v1/fs/{name}/put|upload|mkdir|rm|mv|cp|share|unshare
                                          → cloud file store (OneDrive/SharePoint)
 
 A file-store failure carries ``{error, code}``: 404 ENOENT, 409 ENOTDIR/EISDIR/
@@ -114,6 +114,10 @@ class MiraAPI:
         app.router.add_get("/v1/fs/{name}/get", self._h_fs_get)
         app.router.add_get("/v1/fs/{name}/search", self._h_fs_search)
         app.router.add_get("/v1/fs/{name}/sites", self._h_fs_sites)
+        app.router.add_get("/v1/fs/{name}/shares", self._h_fs_shares)
+        app.router.add_get("/v1/fs/{name}/resolve", self._h_fs_resolve)
+        app.router.add_post("/v1/fs/{name}/share", self._h_fs_share)
+        app.router.add_post("/v1/fs/{name}/unshare", self._h_fs_unshare)
         app.router.add_post("/v1/fs/{name}/put", self._h_fs_put)
         app.router.add_post("/v1/fs/{name}/upload", self._h_fs_upload)
         app.router.add_post("/v1/fs/{name}/mkdir", self._h_fs_mkdir)
@@ -427,6 +431,57 @@ class MiraAPI:
         try:
             return web.json_response(
                 {"entries": await s.sites(request.query.get("site") or None)})
+        except Exception as exc:  # noqa: BLE001
+            return _fs_error(exc)
+
+    async def _h_fs_shares(self, request: web.Request) -> web.Response:
+        s = self._storage_driver(request)
+        path = request.query.get("path", "")
+        if not path:
+            return web.json_response({"error": "path is required"}, status=400)
+        try:
+            return web.json_response(await s.shares(path))
+        except Exception as exc:  # noqa: BLE001
+            return _fs_error(exc)
+
+    async def _h_fs_resolve(self, request: web.Request) -> web.Response:
+        s = self._storage_driver(request)
+        url = request.query.get("url", "")
+        if not url:
+            return web.json_response({"error": "url is required"}, status=400)
+        try:
+            return web.json_response(await s.resolve(url))
+        except Exception as exc:  # noqa: BLE001
+            return _fs_error(exc)
+
+    async def _h_fs_share(self, request: web.Request) -> web.Response:
+        s = self._storage_driver(request)
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001
+            return web.json_response({"error": "invalid JSON body"}, status=400)
+        if not body.get("path") or not body.get("scope") or not body.get("role"):
+            return web.json_response(
+                {"error": "path, scope and role are required"}, status=400)
+        try:
+            return web.json_response(await s.share(
+                body["path"], body["scope"], body["role"],
+                body.get("people") or [], bool(body.get("send_email"))))
+        except Exception as exc:  # noqa: BLE001
+            return _fs_error(exc)
+
+    async def _h_fs_unshare(self, request: web.Request) -> web.Response:
+        s = self._storage_driver(request)
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001
+            return web.json_response({"error": "invalid JSON body"}, status=400)
+        if not body.get("path") or not (body.get("link") or body.get("person")):
+            return web.json_response(
+                {"error": "path and one of link or person are required"}, status=400)
+        try:
+            return web.json_response(await s.unshare(
+                body["path"], body.get("link"), body.get("person")))
         except Exception as exc:  # noqa: BLE001
             return _fs_error(exc)
 

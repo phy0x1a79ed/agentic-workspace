@@ -390,6 +390,22 @@ class _FakeStorage:
             raise FileExistsError(f"{dst} exists")
         return {"name": dst.rsplit("/", 1)[-1], "path": dst, "is_dir": False}
 
+    async def share(self, path, scope, role, people=None, send_email=False):
+        self.calls.append(("share", path, scope, role, people, send_email))
+        return {"url": "https://t/:f:/t/x/abc", "scope": scope, "role": role}
+
+    async def shares(self, path):
+        self.calls.append(("shares", path))
+        return {"links": [], "people": []}
+
+    async def unshare(self, path, link=None, person=None):
+        self.calls.append(("unshare", path, link, person))
+        return {"ok": True}
+
+    async def resolve(self, url):
+        self.calls.append(("resolve", url))
+        return {"entry": {"path": "/r/s", "is_dir": True}, "via": "shares"}
+
     async def sites(self, site=None):
         self.calls.append(("sites", site))
         return [{"name": "X", "path": "/teams/x", "kind": "site"}]
@@ -505,6 +521,29 @@ class TestFsRoutes:
         resp = await api._h_fs_mkdir(_FsReq("onedrive", body={"path": "/r/a"}))
         assert resp.status == status
         assert _payload(resp)["code"] == code
+
+    async def test_sharing_routes(self):
+        api, fake = _api_with_storage()
+        resp = await api._h_fs_share(_FsReq("onedrive", body={
+            "path": "/r/s", "scope": "people", "role": "view", "people": ["a@x"]}))
+        assert _payload(resp)["role"] == "view"
+        assert fake.calls[-1] == ("share", "/r/s", "people", "view", ["a@x"], False)
+        resp = await api._h_fs_shares(_FsReq("onedrive", {"path": "/r/s"}))
+        assert _payload(resp) == {"links": [], "people": []}
+        resp = await api._h_fs_unshare(_FsReq("onedrive", body={
+            "path": "/r/s", "person": "a@x"}))
+        assert fake.calls[-1] == ("unshare", "/r/s", None, "a@x")
+        resp = await api._h_fs_resolve(_FsReq("onedrive", {"url": "https://t/x"}))
+        assert _payload(resp)["via"] == "shares"
+
+    @pytest.mark.parametrize("handler,body", [
+        ("_h_fs_share", {"path": "/r/s", "scope": "organization"}),
+        ("_h_fs_unshare", {"path": "/r/s"}),
+    ])
+    async def test_sharing_routes_need_their_args(self, handler, body):
+        api, _ = _api_with_storage()
+        resp = await getattr(api, handler)(_FsReq("onedrive", body=body))
+        assert resp.status == 400
 
     async def test_sites(self):
         api, fake = _api_with_storage()

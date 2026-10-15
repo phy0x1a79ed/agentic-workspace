@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import base64
 import json
+import uuid
 from pathlib import Path
 
 import pytest
@@ -389,3 +390,89 @@ class TestDiscovery:
         rows = sp.call("sites", "/teams/x")
         assert sorted(r["path"] for r in rows) == [D, "/teams/x/Shared Documents"]
         assert all(r["kind"] == "library" and "AllItems.aspx" in r["web_url"] for r in rows)
+
+
+ENGCYC = "c7be31b8-5867-4576-9500-3d8b45833463"
+
+
+def _share_link(guid: str, prefix: bytes = b"\x00\x01", site: str = "x") -> str:
+    token = base64.urlsafe_b64encode(prefix + uuid.UUID(guid).bytes_le + b"\x02\x03")
+    return f"https://t.sharepoint.com/:f:/t/{site}/{token.decode().rstrip('=')}?e=abc"
+
+
+class TestSharing:
+    def test_organization_link_lists_and_revokes(self, sp):
+        sp.reset(folders=[f"{D}/s"])
+        made = sp.call("share", f"{D}/s", "organization", "view", [], False)
+        assert made["url"].startswith("https://") and made["scope"] == "organization"
+        info = sp.call("shares", f"{D}/s")
+        assert [(l["url"], l["scope"], l["role"]) for l in info["links"]] == [
+            (made["url"], "organization", "view")]
+        sp.call("unshare", f"{D}/s", made["url"], "")
+        assert sp.call("shares", f"{D}/s")["links"] == []
+
+    def test_edit_link_on_a_file(self, sp):
+        sp.reset(files={f"{D}/a.txt": "x"})
+        made = sp.call("share", f"{D}/a.txt", "organization", "edit", [], False)
+        link = sp.call("shares", f"{D}/a.txt")["links"][0]
+        assert link["role"] == "edit" and link["share_id"] == made["share_id"]
+
+    def test_refused_anyone_link_is_passed_through(self, sp):
+        sp.reset(folders=[f"{D}/s"], denyAnyone=True)
+        with pytest.raises(Exception, match="Anonymous sharing is disabled"):
+            sp.call("share", f"{D}/s", "anyone", "view", [], False)
+
+    def test_people_grant_never_mails_by_default_and_revokes(self, sp):
+        sp.reset(folders=[f"{D}/s"])
+        made = sp.call("share", f"{D}/s", "people", "edit", ["ann@x.ca"], False)
+        assert made["people"] == ["ann@x.ca"]
+        sent = sp.page.evaluate("window.__fakeSP.lastShareObject")
+        assert sent["sendEmail"] is False and sent["roleValue"] == "role:1073741827"
+        people = sp.call("shares", f"{D}/s")["people"]
+        assert [(p["email"], p["role"]) for p in people] == [("ann@x.ca", "edit")]
+        sp.call("unshare", f"{D}/s", "", "ann@x.ca")
+        assert sp.call("shares", f"{D}/s")["people"] == []
+
+    def test_unresolved_person_is_einval(self, sp):
+        sp.reset(folders=[f"{D}/s"])
+        with pytest.raises(ValueError, match="cannot resolve"):
+            sp.call("share", f"{D}/s", "people", "view", ["nobody@x.ca"], False)
+
+    def test_bad_scope_or_role_is_einval(self, sp):
+        sp.reset(folders=[f"{D}/s"])
+        with pytest.raises(ValueError):
+            sp.call("share", f"{D}/s", "world", "view", [], False)
+        with pytest.raises(ValueError):
+            sp.call("share", f"{D}/s", "organization", "own", [], False)
+
+    def test_unknown_link_is_enoent(self, sp):
+        sp.reset(folders=[f"{D}/s"])
+        with pytest.raises(FileNotFoundError):
+            sp.call("unshare", f"{D}/s", "https://t/nope", "")
+
+
+class TestResolve:
+    def test_shares_api_resolves_a_made_link(self, sp):
+        sp.reset(folders=[f"{D}/s"])
+        made = sp.call("share", f"{D}/s", "organization", "view", [], False)
+        got = sp.call("resolve", made["url"])
+        assert got["via"] == "shares" and got["entry"]["path"] == f"{D}/s"
+
+    @pytest.mark.parametrize("prefix", [b"\x00\x01", b"\x05"])
+    def test_token_fallback_finds_the_unique_id(self, sp, prefix):
+        sp.reset(folders=[f"{D}/Outputs", f"{D}/Outputs/Engcyc"],
+                 uids={f"{D}/Outputs/Engcyc": ENGCYC}, sharesApi=False)
+        got = sp.call("resolve", _share_link(ENGCYC, prefix))
+        assert got["via"] == "token"
+        assert got["entry"]["path"] == f"{D}/Outputs/Engcyc"
+        assert got["entry"]["id"] == ENGCYC
+
+    def test_unknown_token_is_enoent(self, sp):
+        sp.reset(sharesApi=False)
+        with pytest.raises(FileNotFoundError):
+            sp.call("resolve", _share_link(str(uuid.uuid4())))
+
+    def test_not_a_share_link_is_einval(self, sp):
+        sp.reset(sharesApi=False)
+        with pytest.raises(ValueError):
+            sp.call("resolve", "https://t.sharepoint.com/teams/x/Docs")

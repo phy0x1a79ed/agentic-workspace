@@ -250,6 +250,26 @@ class Bucket(ABC):
                     failures.append(_failure(f"{remote}/{f}", exc))
         return {"entry": root, "count": count, "failures": failures}
 
+    async def share(self, path: str, *, scope: str, role: str,
+                    people: list[str] | None = None,
+                    send_email: bool = False) -> dict:
+        """Share ``path``: a link for ``organization`` or ``anyone``, direct
+        access for ``people`` → ``{url, scope, role, ...}``."""
+        raise NotImplementedError(f"{self.kind} bucket does not support sharing")
+
+    async def shares(self, path: str) -> dict:
+        """The links on ``path`` and the people with access → ``{links, people}``."""
+        raise NotImplementedError(f"{self.kind} bucket does not support sharing")
+
+    async def unshare(self, path: str, *, link: str = "",
+                      person: str = "") -> dict:
+        """Revoke one link (url or share id) or one person's access."""
+        raise NotImplementedError(f"{self.kind} bucket does not support sharing")
+
+    async def resolve(self, url: str) -> tuple[Entry, str]:
+        """A share link → ``(entry, how it was resolved)``."""
+        raise NotImplementedError(f"{self.kind} bucket does not resolve share links")
+
     async def sites(self, site: str = "") -> list[dict]:
         """The sites and libraries this identity reaches →
         ``{name, path, kind, web_url}`` dicts; with ``site``, that site's

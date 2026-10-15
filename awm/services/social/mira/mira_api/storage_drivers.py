@@ -173,6 +173,26 @@ class StorageDriver(ABC):
         raise NotImplementedError(
             f"{self.name} storage driver does not support cp")
 
+    async def share(self, path: str, scope: str, role: str,
+                    people: list[str] | None = None,
+                    send_email: bool = False) -> dict:
+        """Create a link (``organization``, ``anyone``) or grant ``people``
+        access → ``{url, scope, role, ...}``."""
+        raise NotImplementedError(f"{self.name} storage driver does not support sharing")
+
+    async def shares(self, path: str) -> dict:
+        """The item's links and the people with access → ``{links, people}``."""
+        raise NotImplementedError(f"{self.name} storage driver does not support sharing")
+
+    async def unshare(self, path: str, link: str | None = None,
+                      person: str | None = None) -> dict:
+        """Revoke one link (url or share id) or one person's access."""
+        raise NotImplementedError(f"{self.name} storage driver does not support sharing")
+
+    async def resolve(self, url: str) -> dict:
+        """A share link → ``{entry, via}``."""
+        raise NotImplementedError(f"{self.name} storage driver does not resolve links")
+
     async def sites(self, site: str | None = None) -> list[dict]:
         """The sites the session reaches, or ``site``'s document libraries →
         ``{name, path, kind, web_url}`` dicts."""
@@ -193,9 +213,9 @@ class StorageDriver(ABC):
 
 ONEDRIVE_PRELUDE = r"""
 window.__awmMira = window.__awmMira || {};
-if (!window.__awmMira.onedrive || window.__awmMira.onedrive._v !== 6) {
+if (!window.__awmMira.onedrive || window.__awmMira.onedrive._v !== 7) {
   const O = {};
-  O._v = 6;  // bump when changing helpers so a long-lived page self-upgrades
+  O._v = 7;  // bump when changing helpers so a long-lived page self-upgrades
   O._b64 = function (buf) {
     const bytes = new Uint8Array(buf);
     let bin = '';
@@ -615,6 +635,148 @@ if (!window.__awmMira.onedrive || window.__awmMira.onedrive._v !== 6) {
         modified: c.LastModifiedTime || '', id: c.UniqueId || '', web_url: path};
     });
   };
+  // The ListItemAllFields url of the file or folder at path.
+  O._item = async function (path) {
+    if (await O._file(path)) return {base: O._fileUrl(path) + '/ListItemAllFields', isDir: false};
+    if (await O._folder(path)) return {base: O._folderUrl(path) + '/ListItemAllFields', isDir: true};
+    throw O._err('ENOENT', path + ': not found');
+  };
+  O._linkKind = {organization: {view: 2, edit: 3}, anyone: {view: 4, edit: 5}};
+  O._scopeOf = {1: 'direct', 2: 'organization', 3: 'organization', 4: 'anyone',
+                5: 'anyone', 6: 'people'};
+  O._claim = function (who) {
+    who = String(who || '');
+    return who.indexOf('|') >= 0 ? who : 'i:0#.f|membership|' + who;
+  };
+  // A link (organization or anyone) on the item, or direct access for people.
+  O.share = async function (path, scope, role, people, sendEmail) {
+    if (role !== 'view' && role !== 'edit')
+      throw O._err('EINVAL', 'role must be view or edit, not ' + role);
+    const it = await O._item(path);
+    const digest = await O._digest(path);
+    if (scope === 'people') {
+      if (!people || !people.length) throw O._err('EINVAL', 'scope people needs people');
+      const r = await O._postJson(O._api(path) + '/SP.Web.ShareObject', digest, {
+        url: O._full(path),
+        peoplePickerInput: JSON.stringify(people.map(function (p) { return {Key: O._claim(p)}; })),
+        roleValue: role === 'edit' ? 'role:1073741827' : 'role:1073741826',
+        groupId: 0, propagateAcl: false, sendEmail: !!sendEmail,
+        includeAnonymousLinkInEmail: false, emailSubject: '', emailBody: '',
+        useSimplifiedRoles: true});
+      if (!r.ok) throw await O._fail(r, 'share', path);
+      const j = await r.json();
+      if (Number(j.StatusCode) < 0)
+        throw O._err(Number(j.StatusCode) === -2 ? 'EAUTH' : 'EINVAL', 'share ' + path + ': ' +
+          (j.ErrorMessage || 'SharePoint status ' + j.StatusCode));
+      return {url: j.Url || O._webUrl(path, it.isDir), scope: scope, role: role, people: people};
+    }
+    const kinds = O._linkKind[scope];
+    if (!kinds) throw O._err('EINVAL', 'scope must be organization, people or anyone, not ' + scope);
+    const r = await O._postJson(it.base + '/ShareLink', digest,
+      {request: {createLink: true, settings: {linkKind: kinds[role], expiration: null}}});
+    if (!r.ok) throw await O._fail(r, 'share', path);
+    const info = (await r.json()).sharingLinkInfo || {};
+    return {url: info.Url || '', share_id: info.ShareId || '', scope: scope, role: role};
+  };
+  O.shares = async function (path) {
+    const it = await O._item(path);
+    const digest = await O._digest(path);
+    const r = await O._postJson(it.base + '/GetSharingInformation?$expand=permissionsInformation',
+      digest, {request: {maxPrincipalsToReturn: 100, maxLinkMembersToReturn: 100}});
+    if (!r.ok) throw await O._fail(r, 'shares', path);
+    const pi = (await r.json()).permissionsInformation || {};
+    const links = [];
+    for (const l of (pi.links || [])) {
+      const d = l.linkDetails || {};
+      if (!d.Url) continue;
+      links.push({url: d.Url, share_id: d.ShareId || '', link_kind: Number(d.LinkKind),
+                  scope: O._scopeOf[d.LinkKind] || String(d.LinkKind),
+                  role: d.IsEditLink ? 'edit' : 'view', expires: d.Expiration || ''});
+    }
+    const people = (pi.principals || []).map(function (p) {
+      const q = p.principal || {};
+      return {name: q.name || '', email: q.email || '', login: q.loginName || '',
+              role: ({1: 'view', 2: 'edit', 3: 'owner'})[p.role] || String(p.role)};
+    });
+    return {links: links, people: people};
+  };
+  // Revoke one link (by url or share id) or one person's access (by email or claim).
+  O.unshare = async function (path, link, person) {
+    const it = await O._item(path);
+    const digest = await O._digest(path);
+    if (link) {
+      const L = (await O.shares(path)).links.find(function (l) {
+        return l.url === link || l.share_id === link;
+      });
+      if (!L) throw O._err('ENOENT', path + ' has no share link ' + link);
+      const r = await O._postJson(it.base + '/UnshareLink', digest,
+        {linkKind: L.link_kind, shareId: L.share_id});
+      if (!r.ok) throw await O._fail(r, 'unshare', path);
+      return {ok: true, link: L.url};
+    }
+    if (!person) throw O._err('EINVAL', 'unshare needs a link or a person');
+    const who = String(person);
+    const lit = encodeURIComponent(who.replace(/'/g, "''"));
+    const uurl = O._api(path) + (who.indexOf('|') >= 0
+      ? "/web/SiteUsers/GetByLoginName(@v)?@v='" + lit + "'"
+      : "/web/SiteUsers/GetByEmail('" + lit + "')");
+    const u = await O._getJson(uurl, 'unshare', who);
+    const r = await O._fetch(it.base + '/RoleAssignments/GetByPrincipalId(' + Number(u.Id) + ')',
+      {method: 'POST', headers: {'X-RequestDigest': digest, 'X-HTTP-Method': 'DELETE',
+                                 'Accept': 'application/json;odata=nometadata'}});
+    if (!r.ok) throw await O._fail(r, 'unshare', path + ' for ' + who);
+    return {ok: true, person: who};
+  };
+  O._shareToken = function (url) {
+    const u = new URL(url);
+    const segs = u.pathname.split('/').filter(Boolean);
+    if (segs.length < 3 || !/^:[a-z]:$/i.test(segs[0]))
+      throw O._err('EINVAL', 'not a SharePoint share link: ' + url);
+    const kind = segs[1].toLowerCase(), rest = segs.slice(2, -1);
+    let web = '';
+    if (kind === 't' && rest.length) web = '/teams/' + rest[0];
+    else if (kind === 's' && rest.length) web = '/sites/' + rest[0];
+    else web = rest.length ? '/' + rest.map(decodeURIComponent).join('/') : '';
+    return {web: web, token: segs[segs.length - 1]};
+  };
+  O._guidAt = function (b, k) {
+    const h = function (i) { return b[k + i].toString(16).padStart(2, '0'); };
+    return h(3) + h(2) + h(1) + h(0) + '-' + h(5) + h(4) + '-' + h(7) + h(6) + '-' +
+      h(8) + h(9) + '-' + h(10) + h(11) + h(12) + h(13) + h(14) + h(15);
+  };
+  // A share link → the path it points at. The v2.0 shares API answers first.
+  // Failing that, the token carries the item's UniqueId little-endian after a
+  // short prefix (two bytes in the one decoded sample, one tried as well).
+  O.resolve = async function (url) {
+    try { new URL(url); } catch (e) { throw O._err('EINVAL', 'not a url: ' + url); }
+    const enc = 'u!' + btoa(unescape(encodeURIComponent(url)))
+      .replace(/=+$/, '').replace(/\//g, '_').replace(/\+/g, '-');
+    const r = await O._fetch(location.origin + '/_api/v2.0/shares/' + enc + '/driveItem',
+      {headers: {'Accept': 'application/json'}});
+    if (r.ok) {
+      const j = await r.json();
+      if (j.webUrl)
+        return {entry: await O.stat(decodeURIComponent(new URL(j.webUrl).pathname)), via: 'shares'};
+    }
+    const t = O._shareToken(url);
+    let b64 = t.token.replace(/-/g, '+').replace(/_/g, '/');
+    while (b64.length % 4) b64 += '=';
+    let bytes;
+    try { bytes = O._unb64(b64); } catch (e) { throw O._err('EINVAL', 'undecodable share token in ' + url); }
+    for (const k of [2, 1]) {
+      if (bytes.length < k + 16) continue;
+      const g = O._guidAt(bytes, k);
+      for (const what of ['Folder', 'File']) {
+        const fr = await O._fetch(O._api(t.web) + '/web/Get' + what + "ById('" + g + "')",
+          {headers: O._hdr});
+        if (!fr.ok) continue;
+        const d = await fr.json();
+        if (d.Exists === false || !d.ServerRelativeUrl) continue;
+        return {entry: what === 'Folder' ? O._folderEntry(d) : O._fileEntry(d), via: 'token'};
+      }
+    }
+    throw O._err('ENOENT', 'share link ' + url + ' resolves to nothing this session can see');
+  };
   // Sites the session can reach (search-backed, so minutes behind a new
   // site), its personal OneDrive and followed sites; or, given a site, its
   // visible document libraries.
@@ -859,6 +1021,27 @@ class OneDriveDriver(StorageDriver):
                     raise
                 await asyncio.sleep(delay)
         raise AssertionError("unreachable")
+
+    async def share(self, path: str, scope: str, role: str,
+                    people: list[str] | None = None,
+                    send_email: bool = False) -> dict:
+        return await self._run("window.__awmMira.onedrive.share", path, scope,
+                               role, list(people or []), bool(send_email),
+                               path=path, retry=False) or {}
+
+    async def shares(self, path: str) -> dict:
+        return await self._run("window.__awmMira.onedrive.shares", path,
+                               path=path) or {}
+
+    async def unshare(self, path: str, link: str | None = None,
+                      person: str | None = None) -> dict:
+        return await self._run("window.__awmMira.onedrive.unshare", path,
+                               link or "", person or "", path=path) or {}
+
+    async def resolve(self, url: str) -> dict:
+        page_path = "/personal" if "-my.sharepoint.com" in url.lower() else None
+        return await self._run("window.__awmMira.onedrive.resolve", url,
+                               path=page_path) or {}
 
     async def sites(self, site: str | None = None) -> list[dict]:
         rows = await self._run("window.__awmMira.onedrive.sites", site or "",

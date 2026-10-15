@@ -285,6 +285,29 @@ class OneDriveBucket(Bucket):
         }, timeout=_TRANSFER_TIMEOUT_S)
         return self._entry(resp.get("entry", {}), fallback_path=dst.strip("/"))
 
+    async def share(self, path: str, *, scope: str, role: str,
+                    people: list[str] | None = None,
+                    send_email: bool = False) -> dict:
+        return await self._post(f"/v1/fs/{_FS_NAME}/share", {
+            "path": self._abs(path), "scope": scope, "role": role,
+            "people": list(people or []), "send_email": bool(send_email)})
+
+    async def shares(self, path: str) -> dict:
+        return await self._get(f"/v1/fs/{_FS_NAME}/shares", path=self._abs(path))
+
+    async def unshare(self, path: str, *, link: str = "",
+                      person: str = "") -> dict:
+        body = {"path": self._abs(path)}
+        if link:
+            body["link"] = link
+        if person:
+            body["person"] = person
+        return await self._post(f"/v1/fs/{_FS_NAME}/unshare", body)
+
+    async def resolve(self, url: str) -> tuple[Entry, str]:
+        resp = await self._get(f"/v1/fs/{_FS_NAME}/resolve", url=url)
+        return self._entry(resp.get("entry", {})), resp.get("via", "")
+
     async def sites(self, site: str = "") -> list[dict]:
         params = {"site": "/" + site.strip("/")} if site.strip("/") else {}
         resp = await self._get(f"/v1/fs/{_FS_NAME}/sites", **params)

@@ -497,6 +497,10 @@ class _StubFsDaemon:
         app.router.add_get("/v1/fs/{name}/get", self._get)
         app.router.add_get("/v1/fs/{name}/search", self._search)
         app.router.add_get("/v1/fs/{name}/sites", self._sites)
+        app.router.add_post("/v1/fs/{name}/share", self._echo)
+        app.router.add_post("/v1/fs/{name}/unshare", self._echo)
+        app.router.add_get("/v1/fs/{name}/shares", self._echo_query)
+        app.router.add_get("/v1/fs/{name}/resolve", self._resolve)
         app.router.add_post("/v1/fs/{name}/put", self._put)
         app.router.add_post("/v1/fs/{name}/upload", self._upload)
         app.router.add_post("/v1/fs/{name}/rm", self._rm)
@@ -571,6 +575,23 @@ class _StubFsDaemon:
                 "name": body["path"].rsplit("/", 1)[-1], "path": body["path"],
                 "is_dir": False, "size": n}})
         return web.json_response({"offset": n})
+
+    async def _echo(self, request):
+        from aiohttp import web
+        body = await request.json()
+        self.calls.append((request.path.rsplit("/", 1)[-1], body))
+        return self._failure() or web.json_response({"ok": True, **body})
+
+    async def _echo_query(self, request):
+        from aiohttp import web
+        self.calls.append((request.path.rsplit("/", 1)[-1], dict(request.query)))
+        return web.json_response({"links": [], "people": []})
+
+    async def _resolve(self, request):
+        from aiohttp import web
+        self.calls.append(("resolve", request.query.get("url")))
+        return web.json_response({"via": "token", "entry": {
+            "name": "Engcyc", "path": "/teams/x/Docs/Outputs/Engcyc", "is_dir": True}})
 
     async def _sites(self, request):
         from aiohttp import web
@@ -856,6 +877,18 @@ class TestOneDrive:
         assert (await b.ls(""))[0].web_url == "https://t/a?web=1"
         await b.close()
 
+    async def test_sharing_sends_abs_paths(self, fs_daemon):
+        b = _onedrive(fs_daemon)
+        out = await b.share("s", scope="people", role="edit", people=["a@x"])
+        assert out["path"] == "/teams/x/Docs/s" and out["send_email"] is False
+        await b.shares("s")
+        assert fs_daemon.calls[-1] == ("shares", {"path": "/teams/x/Docs/s"})
+        await b.unshare("s", person="a@x")
+        assert fs_daemon.calls[-1] == ("unshare", {"path": "/teams/x/Docs/s", "person": "a@x"})
+        entry, via = await b.resolve("https://t/:f:/t/x/tok")
+        assert (entry.path, entry.is_dir, via) == ("Outputs/Engcyc", True, "token")
+        await b.close()
+
     async def test_probe_stats_root(self, fs_daemon):
         b = _onedrive(fs_daemon)
         try:
@@ -938,6 +971,14 @@ class _FakeBucket:
         from awm.social.buckets.base import Entry
         self.calls.append(("cp", src, dst, overwrite, parents))
         return Entry(name=dst.rsplit("/", 1)[-1], path=dst)
+
+    async def share(self, path, *, scope, role, people=None, send_email=False):
+        self.calls.append(("share", path, scope, role, people, send_email))
+        return {"url": "https://t/x", "scope": scope, "role": role}
+
+    async def unshare(self, path, *, link="", person=""):
+        self.calls.append(("unshare", path, link, person))
+        return {"ok": True}
 
     async def search(self, query, *, limit=50, path=""):
         from awm.social.buckets.base import Entry
@@ -1043,6 +1084,24 @@ class TestBucketHandlers:
         await hub._h_bucket_cp(
             {"bucket": "b", "src": "a", "dst": "e", "parents": True})
         assert fake.calls[-1] == ("cp", "a", "e", False, True)
+
+    async def test_h_bucket_share_defaults_to_an_org_view_link(self, wired_buckets):
+        hub, fake = wired_buckets
+        await hub._h_bucket_share({"bucket": "b", "path": "s"})
+        assert fake.calls[-1] == ("share", "s", "organization", "view", [], False)
+        await hub._h_bucket_share({"bucket": "b", "path": "s", "scope": "people",
+                                   "people": "a@x, b@y"})
+        assert fake.calls[-1][4] == ["a@x", "b@y"]
+
+    async def test_h_bucket_unshare_takes_exactly_one_target(self, wired_buckets):
+        hub, fake = wired_buckets
+        with pytest.raises(ValueError):
+            await hub._h_bucket_unshare({"bucket": "b", "path": "s"})
+        with pytest.raises(ValueError):
+            await hub._h_bucket_unshare(
+                {"bucket": "b", "path": "s", "link": "l", "person": "p"})
+        await hub._h_bucket_unshare({"bucket": "b", "path": "s", "link": "l"})
+        assert fake.calls[-1] == ("unshare", "s", "l", "")
 
     async def test_unknown_bucket_raises(self, wired_buckets):
         hub, _ = wired_buckets

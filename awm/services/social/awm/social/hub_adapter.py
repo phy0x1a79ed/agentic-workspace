@@ -446,6 +446,33 @@ async def _h_bucket_cp(args: dict) -> dict:
         parents=bool(args.get("parents"))))}
 
 
+async def _h_bucket_share(args: dict) -> dict:
+    people = args.get("people") or []
+    if isinstance(people, str):
+        people = [p.strip() for p in people.split(",") if p.strip()]
+    return await _bucket(args["bucket"]).share(
+        args["path"], scope=args.get("scope") or "organization",
+        role=args.get("role") or "view", people=people,
+        send_email=bool(args.get("send_email")))
+
+
+async def _h_bucket_shares(args: dict) -> dict:
+    return await _bucket(args["bucket"]).shares(args["path"])
+
+
+async def _h_bucket_unshare(args: dict) -> dict:
+    link, person = args.get("link") or "", args.get("person") or ""
+    if bool(link) == bool(person):
+        raise ValueError("bucket_unshare takes exactly one of link or person")
+    return await _bucket(args["bucket"]).unshare(
+        args["path"], link=link, person=person)
+
+
+async def _h_bucket_resolve(args: dict) -> dict:
+    entry, via = await _bucket(args["bucket"]).resolve(args["url"])
+    return {"entry": _entry_to_dict(entry), "via": via}
+
+
 async def _h_bucket_sites(args: dict) -> dict:
     entries = await _bucket(args["bucket"]).sites(args.get("site", "") or "")
     return {"entries": entries, "count": len(entries)}
@@ -738,6 +765,65 @@ API_MANIFEST: dict[str, Any] = {
             ],
         },
         {
+            "name": "bucket_share",
+            "tool": "social_bucket_share",
+            "description": "Share a file or folder in a OneDrive bucket. "
+                           "CAUTION: this is outward-facing. Get Tony's explicit "
+                           "confirmation of the item, the audience and the role "
+                           "before you call it. `scope`: organization (a link "
+                           "anyone at UBC can open, the default), people (direct "
+                           "access for the emails in `people`) or anyone (an "
+                           "anonymous link, if the tenant allows it). `role`: "
+                           "view (default) or edit. `send_email` (default "
+                           "false) mails the people. Returns the url.",
+            "params": [
+                {"name": "bucket", "type": "string", "required": True},
+                {"name": "path", "type": "string", "required": True},
+                {"name": "scope", "type": "string", "required": False},
+                {"name": "role", "type": "string", "required": False},
+                {"name": "people", "type": "array", "required": False},
+                {"name": "send_email", "type": "boolean", "required": False},
+            ],
+        },
+        {
+            "name": "bucket_shares",
+            "tool": "social_bucket_shares",
+            "description": "List the share links on a file or folder in a "
+                           "OneDrive bucket (url, scope, role) and the people "
+                           "with access (name, email, role).",
+            "params": [
+                {"name": "bucket", "type": "string", "required": True},
+                {"name": "path", "type": "string", "required": True},
+            ],
+        },
+        {
+            "name": "bucket_unshare",
+            "tool": "social_bucket_unshare",
+            "description": "Revoke one share link (`link` = its url or share "
+                           "id, from bucket_shares) or one person's access "
+                           "(`person` = an email) on a file or folder in a "
+                           "OneDrive bucket. Pass exactly one of the two.",
+            "params": [
+                {"name": "bucket", "type": "string", "required": True},
+                {"name": "path", "type": "string", "required": True},
+                {"name": "link", "type": "string", "required": False},
+                {"name": "person", "type": "string", "required": False},
+            ],
+        },
+        {
+            "name": "bucket_resolve",
+            "tool": "social_bucket_resolve",
+            "description": "Turn a SharePoint/OneDrive share link "
+                           "(https://<tenant>.sharepoint.com/:f:/t/<site>/<token>) "
+                           "into the entry it points at, with a path the other "
+                           "bucket verbs take. Not-found when the session "
+                           "cannot see the item.",
+            "params": [
+                {"name": "bucket", "type": "string", "required": True},
+                {"name": "url", "type": "string", "required": True},
+            ],
+        },
+        {
             "name": "bucket_search",
             "tool": "social_bucket_search",
             "description": "Search a bucket for files matching `query` (Google "
@@ -829,6 +915,10 @@ HANDLERS = {
     "bucket_mv": _h_bucket_mv,
     "bucket_cp": _h_bucket_cp,
     "bucket_sites": _h_bucket_sites,
+    "bucket_share": _h_bucket_share,
+    "bucket_shares": _h_bucket_shares,
+    "bucket_unshare": _h_bucket_unshare,
+    "bucket_resolve": _h_bucket_resolve,
     "bucket_search": _h_bucket_search,
     "emit_probe": _h_emit_probe,
 }

@@ -15,6 +15,12 @@
     F.threshold = 5000;    // children past which /Folders and /Files refuse
     F.pageSize = 5000;     // rows per RenderListDataAsStream page
     F.seq = 0;
+    F.links = {};          // path -> [{Url, ShareId, LinkKind}]
+    F.grants = {};         // path -> [{email, role, id}]
+    F.shareUrls = {};      // share url -> path, for the v2.0 shares API
+    F.sharesApi = spec.sharesApi !== false;
+    F.denyAnyone = !!spec.denyAnyone;
+    F.users = spec.users || {'ann@x.ca': 7};   // email -> site user id
     F.libs = spec.libraries || ['/teams/x/Docs'];
     F.personalUrl = spec.personalUrl || 'https://t-my.sharepoint.com/personal/me_x/';
     F.searchSites = spec.searchSites || [];   // [{Title, Path}]
@@ -22,6 +28,7 @@
     for (const lib of F.libs) F.addFolder(lib);
     for (const [p, text] of Object.entries(spec.files || {})) F.addFile(p, text);
     for (const p of (spec.folders || [])) F.addFolder(p);
+    for (const [p, uid] of Object.entries(spec.uids || {})) F.nodes[p].uid = uid;
   };
   F.uid = function () { F.seq += 1; return 'uid-' + F.seq; };
   F.addFolder = function (p) {
@@ -90,6 +97,40 @@
         uid: move ? n.uid : F.uid()});
       if (move) delete F.nodes[k];
     }
+  };
+  // The ListItemAllFields routes of the item at p.
+  F.item = function (p, tail, method, body, opts) {
+    if (tail === '/ListItemAllFields/ShareLink' && method === 'POST') {
+      const kind = JSON.parse(body).request.settings.linkKind;
+      if (F.denyAnyone && (kind === 4 || kind === 5))
+        return F.json({'odata.error': {message: {value: 'Anonymous sharing is disabled'}}}, 400);
+      const id = F.uid();
+      const link = {Url: 'https://t.sharepoint.com/:f:/t/x/' + id, ShareId: id, LinkKind: kind};
+      (F.links[p] = F.links[p] || []).push(link);
+      F.shareUrls[link.Url] = p;
+      return F.json({sharingLinkInfo: link});
+    }
+    if (tail === '/ListItemAllFields/GetSharingInformation?$expand=permissionsInformation' &&
+        method === 'POST')
+      return F.json({permissionsInformation: {
+        links: [{linkDetails: {Url: '', LinkKind: 1}}].concat((F.links[p] || []).map(l =>
+          ({linkDetails: {Url: l.Url, ShareId: l.ShareId, LinkKind: l.LinkKind,
+                          IsEditLink: l.LinkKind % 2 === 1, Expiration: ''}}))),
+        principals: (F.grants[p] || []).map(g => ({principal: {name: g.email, email: g.email,
+          loginName: 'i:0#.f|membership|' + g.email, id: g.id}, role: g.role}))}});
+    if (tail === '/ListItemAllFields/UnshareLink' && method === 'POST') {
+      const b = JSON.parse(body);
+      const before = (F.links[p] || []).length;
+      F.links[p] = (F.links[p] || []).filter(l => !(l.ShareId === b.shareId && l.LinkKind === b.linkKind));
+      return before === F.links[p].length ? F.json({error: 'no such link'}, 400) : F.json({});
+    }
+    const ra = tail.match(/^\/ListItemAllFields\/RoleAssignments\/GetByPrincipalId\((\d+)\)$/);
+    if (ra && method === 'POST' && opts.headers['X-HTTP-Method'] === 'DELETE') {
+      const before = (F.grants[p] || []).length;
+      F.grants[p] = (F.grants[p] || []).filter(g => g.id !== Number(ra[1]));
+      return before === F.grants[p].length ? F.notFound('no role assignment') : F.json({});
+    }
+    return null;
   };
   F.handle = async function (url, opts) {
     const method = (opts && opts.method) || 'GET';
@@ -179,6 +220,41 @@
         Title: l.split('/').pop(), ItemCount: F.children(l).length,
         LastItemModifiedDate: '2026-01-01T00:00:00Z', RootFolder: {ServerRelativeUrl: l}}))});
     }
+    if (method === 'POST' && rest === '/SP.Web.ShareObject') {
+      const b = JSON.parse(body);
+      const p = F.strip(b.url);
+      if (!F.nodes[p]) return F.json({StatusCode: -1, ErrorMessage: 'no such item'});
+      const role = b.roleValue === 'role:1073741827' ? 2 : 1;
+      for (const k of JSON.parse(b.peoplePickerInput)) {
+        const email = k.Key.split('|').pop();
+        if (!(email in F.users)) return F.json({StatusCode: -1, ErrorMessage: 'cannot resolve ' + email});
+        (F.grants[p] = F.grants[p] || []).push({email: email, role: role, id: F.users[email]});
+      }
+      F.lastShareObject = b;
+      return F.json({StatusCode: 0, Url: 'https://t.sharepoint.com' + p});
+    }
+    m = rest.match(/^\/web\/SiteUsers\/GetByEmail\('((?:[^']|'')*)'\)$/);
+    if (m && method === 'GET') {
+      const email = F.lit(m[1]);
+      return email in F.users ? F.json({Id: F.users[email]}) : F.notFound('no such user');
+    }
+    m = rest.match(/^\/v2\.0\/shares\/u!([A-Za-z0-9_-]+)\/driveItem$/);
+    if (m && method === 'GET') {
+      let b64 = m[1].replace(/-/g, '+').replace(/_/g, '/');
+      while (b64.length % 4) b64 += '=';
+      const p = F.shareUrls[decodeURIComponent(escape(atob(b64)))];
+      if (!F.sharesApi || !p) return F.json({error: {code: 'itemNotFound'}}, 404);
+      return F.json({name: F.nodes[p].name, webUrl: 'https://t.sharepoint.com' +
+        p.split('/').map(encodeURIComponent).join('/')});
+    }
+    m = rest.match(/^\/web\/Get(Folder|File)ById\('([0-9a-f-]+)'\)$/);
+    if (m && method === 'GET') {
+      const kind = m[1].toLowerCase();
+      const hit = Object.keys(F.nodes).find(k => F.nodes[k].uid === m[2] && F.nodes[k].kind === kind &&
+        F.site(k) === decodeURIComponent(web));
+      if (!hit) return F.notFound();
+      return F.json(kind === 'folder' ? F.folderJson(hit) : F.fileJson(hit));
+    }
     m = rest.match(/^\/web\/folders\/AddUsingPath\(decodedurl='((?:[^']|'')*)'\)$/);
     if (m && method === 'POST') {
       const p = F.lit(m[1]);
@@ -193,6 +269,8 @@
       const n = F.nodes[p];
       if (tail === '') return F.json(F.folderJson(p));
       if (!n || n.kind !== 'folder') return F.notFound('folder missing');
+      const itf = F.item(p, tail, method, body, opts);
+      if (itf) return itf;
       if ((tail === '/Folders' || tail === '/Files') && F.children(p).length > F.threshold)
         return F.json({'odata.error': {code: '-2147024860, Microsoft.SharePoint.SPQueryThrottledException',
           message: {value: 'The attempted operation is prohibited because it exceeds the list view threshold.'}}}, 500);
@@ -217,6 +295,8 @@
       const n = F.nodes[p];
       if (!n || n.kind !== 'file') return F.notFound();
       if (tail === '') return F.json(F.fileJson(p));
+      const iti = F.item(p, tail, method, body, opts);
+      if (iti) return iti;
       if (tail === '/$value') return F.serve(n, opts, F.range === 'value');
       const up = tail.match(/^\/(StartUpload|ContinueUpload|FinishUpload|CancelUpload)\(uploadId=guid'([^']+)'(?:,fileOffset=(\d+))?\)$/);
       if (up && method === 'POST') {
