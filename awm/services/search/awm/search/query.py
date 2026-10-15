@@ -36,6 +36,8 @@ class Query:
     local: bool = True
     peer_names: list[str] | str = field(default_factory=list)
     grants: frozenset[str] | None = None
+    #: Another node made the call, so it answers from this node alone and asks no home either.
+    relayed: bool = False
     raw: dict[str, str] = field(default_factory=dict)
 
     @property
@@ -116,6 +118,6 @@ def parse(args: dict[str, Any], as_: str | None = None) -> Query:
         kinds=kinds, after=_time(args, "after"), before=_time(args, "before"),
         limit=max(1, min(int(args.get("limit") or DEFAULT_LIMIT), MAX_LIMIT)),
         passages=max(1, min(int(args.get("passages") or DEFAULT_PASSAGES), MAX_PASSAGES)),
-        local=local, peer_names=peer_names,
+        local=local, peer_names=peer_names, relayed=peer_originated(as_),
         grants=None if grants is None else frozenset(str(g) for g in grants),
         raw=raw)

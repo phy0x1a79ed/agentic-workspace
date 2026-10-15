@@ -34,6 +34,7 @@ SETTLE_S = 5.0
 TICK_S = 15.0
 REGISTRY_TTL_S = 10.0
 LIVE_TIMEOUT_S = 15.0
+HOMES_TTL_S = 300.0
 EXPORT_TIMEOUT_S = 120.0
 PAGE = 200
 MAX_PAGES = 100_000
@@ -78,6 +79,9 @@ class Archive:
         self._wake = asyncio.Event()
         self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="search-index")
         self._topics: dict[tuple[str, str], tuple[SupervisedSubscription, asyncio.Task]] = {}
+        #: Source name → the node that is home to its domain, for a domain this node does not serve.
+        self.homed: dict[str, str] = {}
+        self.homed_at: float | None = None
 
     def origin(self) -> dict[str, str]:
         return {"node": config.node_name(), "swarm": config.node_swarm()}
@@ -113,6 +117,16 @@ class Archive:
         if news:
             self._wake.set()
         return True
+
+    async def refresh_homes(self, force: bool = False) -> None:
+        """Learn the sources of each domain declared homed on another node, at most every :data:`HOMES_TTL_S`."""
+        if not force and self.homed_at is not None and self.now() - self.homed_at < HOMES_TTL_S:
+            return
+        served = {s.service for s in self.sources.values()}
+        wanted = {d: h for d, h in federation.homes().items() if d not in served}
+        found, unread = await federation.homed_sources(self.peers, wanted) if wanted else ({}, set())
+        kept = {n: h for n, h in self.homed.items() if h in unread}
+        self.homed, self.homed_at = {**kept, **found}, self.now()
 
     async def _refresh_if_stale(self) -> None:
         if self.registry_at is None or self.now() - self.registry_at > REGISTRY_TTL_S:
@@ -206,6 +220,7 @@ class Archive:
             self._wake.clear()
             try:
                 await self.refresh()
+                await self.refresh_homes()
                 for name in self._due_names():
                     await self.sweep(name)
             except Exception:  # noqa: BLE001 — a bad tick must not end the loop
@@ -328,9 +343,17 @@ class Archive:
                 live.append(self.sources[name])
             else:
                 statuses[name] = {"status": "frozen", "hits": 0}
+        homed: dict[str, list[str]] = {}
+        if q.local and not q.relayed:
+            for name in (q.sources if q.sources is not None else list(self.homed)):
+                if name in self.homed and name not in rows and q.allows(name):
+                    homed.setdefault(self.homed[name], []).append(name)
+                    statuses.pop(name, None)
 
         jobs: list[Any] = [asyncio.to_thread(self._archive_hits, q, index_names)] if index_names else []
         jobs += [self._live(source, q) for source in live]
+        jobs += [federation.ask_home(self.peers, home, names, q.forwarded(), q.limit)
+                 for home, names in homed.items()]
         if q.fan_out:
             jobs.append(federation.ask(self.peers, q.peer_names, q.forwarded(), q.limit))
         results = await asyncio.gather(*jobs, return_exceptions=True)
@@ -354,6 +377,18 @@ class Archive:
                 _, sections, status = found
                 lists.append(sections)
                 statuses[source.name] = status
+        for home, names in homed.items():
+            asked = results.pop(0)
+            for name in names:
+                if isinstance(asked, BaseException):
+                    statuses[name] = {"status": "error", "error": _describe(asked), "via": home}
+                elif asked.status.get("status") != "ok":
+                    statuses[name] = {**asked.status, "via": home}
+                else:
+                    count = sum(1 for hits in asked.found.values() for h in hits if h["source"] == name)
+                    statuses[name] = {"status": "ok", "hits": count, "via": home}
+            if not isinstance(asked, BaseException):
+                lists.append(asked.found)
         if q.fan_out:
             asked = results.pop(0)
             if isinstance(asked, BaseException):

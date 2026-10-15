@@ -288,6 +288,51 @@ async def test_named_peers_are_asked_and_unknown_ones_reported(loaded, peers):
     assert [c[0] for c in peers.calls] == ["altair"]
 
 
+def papers_home(args):
+    if "query" not in args:
+        return {"sources": [{"name": "papers", "service": "papers", "mode": "live"},
+                            {"name": "journals", "service": "journal", "mode": "index"}]}
+    assert args["sources"] == ["papers"] and args["peers"] is False
+    return {"exact": [{"source": "papers", "id": "doi:1", "title": "A paper",
+                       "passages": [{"text": "a kitchen tap", "start": 0, "end": 13}]}],
+            "related": [], "graph": []}
+
+
+async def test_a_domain_homed_elsewhere_is_asked_of_its_home_alone(loaded, peers, monkeypatch):
+    monkeypatch.setenv("AWM_DOMAIN_HOME_papers", "altair")
+    monkeypatch.setenv("AWM_DOMAIN_HOME_kb", "altair")
+    peers.add("altair", papers_home)
+    await loaded.refresh_homes(force=True)
+    assert loaded.homed == {"papers": "altair"}
+    result = await loaded.query(parse({"query": "kitchen"}))
+    assert ("papers", "doi:1") in ids(result)
+    assert result["sources"]["papers"] == {"status": "ok", "hits": 1, "via": "altair"}
+    assert result["peers"] == {}
+    named = await loaded.query(parse({"query": "kitchen", "sources": ["papers"]}))
+    assert ids(named) == [("papers", "doi:1")] and named["exact"][0]["origin"]["node"] == "altair"
+
+
+async def test_a_relayed_call_asks_no_home(loaded, peers, monkeypatch):
+    monkeypatch.setenv("AWM_DOMAIN_HOME_papers", "altair")
+    peers.add("altair", papers_home)
+    await loaded.refresh_homes(force=True)
+    calls = len(peers.calls)
+    result = await loaded.query(parse({"query": "kitchen"}, "peer:capella"))
+    assert "papers" not in result["sources"] and len(peers.calls) == calls
+
+
+async def test_an_unreachable_home_keeps_its_sources_and_reports_the_error(loaded, peers, monkeypatch):
+    monkeypatch.setenv("AWM_DOMAIN_HOME_papers", "altair")
+    peers.add("altair", papers_home)
+    await loaded.refresh_homes(force=True)
+    peers.answers["altair"] = lambda args: ConnectionError("no route to host")
+    await loaded.refresh_homes(force=True)
+    assert loaded.homed == {"papers": "altair"}
+    result = await loaded.query(parse({"query": "kitchen"}))
+    assert result["sources"]["papers"]["status"] == "error" and result["sources"]["papers"]["via"] == "altair"
+    assert ids(result)
+
+
 async def test_get_with_a_node_reads_that_peers_archive(peers):
     peers.add("shaula", lambda args: {"document": {"title": "far", "text": "body", "origin": {"node": "liar"}}},
               relation="foreign", swarm="other")

@@ -113,6 +113,50 @@ async def ask(peers: Peers, wanted: list[str] | str, args: dict[str, Any],
     return [*asked, *unknown]
 
 
+#: ``AWM_DOMAIN_HOME_<domain>=<node>`` declares that a domain this node lacks lives on that node alone.
+HOME_PREFIX = "AWM_DOMAIN_HOME_"
+SOURCES_TOOL = "search_sources"
+
+
+def homes() -> dict[str, str]:
+    """Domain → the domestic node declared its home, the same declaration the gateway routes by."""
+    import os
+    return {k[len(HOME_PREFIX):]: v.strip() for k, v in os.environ.items()
+            if k.startswith(HOME_PREFIX) and k[len(HOME_PREFIX):] and v.strip()}
+
+
+async def homed_sources(peers: Peers, wanted: dict[str, str]) -> tuple[dict[str, str], set[str]]:
+    """Source name → home node for the sources each home's search holds from the domains it is home to,
+    and the homes that could not be read, whose last answer the caller keeps."""
+    book = {r["name"]: r for r in peers.records()}
+    out: dict[str, str] = {}
+    unread: set[str] = set()
+    for domain, home in wanted.items():
+        if home not in book or book[home].get("relation", "domestic") != "domestic":
+            continue
+        try:
+            raw = await asyncio.wait_for(peers.invoke(home, SOURCES_TOOL, {}, PEER_TIMEOUT_S),
+                                         timeout=PEER_TIMEOUT_S + 1.0)
+        except Exception:  # noqa: BLE001 — an unreachable home keeps its last sources
+            unread.add(home)
+            continue
+        if isinstance(raw, dict) and "sources" not in raw and "result" in raw:
+            raw = raw["result"]
+        listed = raw.get("sources") if isinstance(raw, dict) else None
+        for s in listed or []:
+            if isinstance(s, dict) and s.get("service") == domain and s.get("name") and not s.get("frozen"):
+                out[str(s["name"])] = home
+    return out, unread
+
+
+async def ask_home(peers: Peers, home: str, names: list[str], args: dict[str, Any], limit: int) -> PeerResult:
+    """The named sources' sections, asked of the node that is home to them."""
+    record = next((r for r in peers.records() if r["name"] == home), None)
+    if record is None:
+        return PeerResult(home, {"status": "error", "error": "not in the peer book"})
+    return await _ask_one(peers, record, {**args, "sources": names}, limit)
+
+
 async def fetch(peers: Peers, name: str, source: str, doc_id: str) -> dict[str, Any]:
     """One document from a peer's archive, stamped with the peer as its origin."""
     record = next((r for r in peers.records() if r["name"] == name), None)
