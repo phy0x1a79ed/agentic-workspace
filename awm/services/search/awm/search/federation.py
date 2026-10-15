@@ -103,9 +103,14 @@ async def _ask_one(peers: Peers, record: dict[str, Any], args: dict[str, Any], l
         return PeerResult(name, [], {"status": "error", "error": _describe(exc)})
     origin = _origin(record)
     hits = [h for h in (_hit(x, origin) for x in reply["hits"]) if h][:limit]
-    sources = reply.get("sources")
-    return PeerResult(name, hits, {"status": "ok", "hits": len(hits),
-                                   "sources": sorted(sources) if isinstance(sources, dict) else []})
+    return PeerResult(name, hits, {"status": "ok", "hits": len(hits), "sources": _served(reply.get("sources"))})
+
+
+def _served(sources: Any) -> list[str]:
+    """The sources a peer searched. A named source it does not serve, or did not grant, comes back absent."""
+    if not isinstance(sources, dict):
+        return []
+    return sorted(n for n, v in sources.items() if not (isinstance(v, dict) and v.get("status") == "absent"))
 
 
 async def ask(peers: Peers, wanted: list[str] | str, args: dict[str, Any],

@@ -219,6 +219,16 @@ async def test_a_named_peer_alone_runs_the_query_there_only(loaded, peers):
     assert result["sources"] == {}
 
 
+async def test_a_peers_sources_leave_out_the_ones_it_answered_absent(loaded, peers):
+    def gated(args):
+        return {"hits": [], "peers": {},
+                "sources": {"journals": {"status": "ok"}, "kb": {"status": "absent"}}}
+
+    peers.add("shaula", gated, relation="foreign", swarm="other")
+    result = await loaded.query(parse({"query": "kitchen", "sources": ["journals", "kb"], "peers": "shaula"}))
+    assert result["peers"]["shaula"]["sources"] == ["journals"]
+
+
 async def test_fleet_asks_every_domestic_node_and_never_a_foreign_one(loaded, peers):
     peers.add("capella", peer_hits("r1"))
     peers.add("mira", peer_hits("r2"), role="station")
