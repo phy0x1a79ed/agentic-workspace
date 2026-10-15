@@ -359,3 +359,33 @@ class TestMoveCopy:
         sp.page.evaluate(f"window.__fakeSP.addFile('{E}/a.txt', 'taken')")
         prog = sp.call("copyJobProgress", f"{D}/a.txt", job)
         assert prog["done"] is True and "cannot place" in prog["error"]
+
+
+class TestDiscovery:
+    def test_entries_carry_web_urls(self, sp):
+        sp.reset(folders=[f"{D}/a b"], files={f"{D}/a b/c#d.txt": "x"})
+        rows = sp.call("ls", f"{D}/a b")
+        assert rows[0]["web_url"].endswith("/teams/x/Docs/a%20b/c%23d.txt?web=1")
+        folder = sp.call("stat", f"{D}/a b")
+        assert folder["web_url"].endswith(
+            "/teams/x/Docs/Forms/AllItems.aspx?id=%2Fteams%2Fx%2FDocs%2Fa%20b")
+
+    def test_sites_merges_personal_search_and_followed(self, sp):
+        sp.reset(searchSites=[
+            {"Title": "X", "Path": "https://t.sharepoint.com/teams/x"},
+            {"Title": "Y", "Path": "https://t.sharepoint.com/teams/y"}],
+            followed=[{"Name": "Y", "Uri": "https://t.sharepoint.com/teams/y"},
+                      {"Name": "Z", "Uri": "https://t.sharepoint.com/sites/z"}])
+        rows = sp.call("sites", "")
+        assert [(r["path"], r["kind"], r.get("followed", False)) for r in rows] == [
+            ("/personal/me_x", "personal", False),
+            ("/teams/x", "site", False),
+            ("/teams/y", "site", True),
+            ("/sites/z", "site", True)]
+
+    def test_sites_with_a_site_lists_its_libraries(self, sp):
+        sp.reset(sites=["/teams/x", "/teams/y"],
+                 libraries=[D, "/teams/x/Shared Documents", "/teams/y/Docs"])
+        rows = sp.call("sites", "/teams/x")
+        assert sorted(r["path"] for r in rows) == [D, "/teams/x/Shared Documents"]
+        assert all(r["kind"] == "library" and "AllItems.aspx" in r["web_url"] for r in rows)

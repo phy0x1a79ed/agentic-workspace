@@ -77,7 +77,8 @@ class Entry:
     take back). ``id`` is the backend's own handle (a Drive file id, a SharePoint
     unique id) — advisory, never required from a caller. ``size`` is the byte
     count for files (``0`` for folders / when unknown); ``modified`` is the
-    platform's last-modified string when reported.
+    platform's last-modified string when reported. ``web_url`` opens the item
+    in a browser.
     """
 
     name: str
@@ -87,6 +88,7 @@ class Entry:
     mime: str = ""
     modified: str = ""
     id: str = ""
+    web_url: str = ""
     ref: dict = field(default_factory=dict, compare=False)
 
 
@@ -247,6 +249,13 @@ class Bucket(ABC):
                 except Exception as exc:  # noqa: BLE001
                     failures.append(_failure(f"{remote}/{f}", exc))
         return {"entry": root, "count": count, "failures": failures}
+
+    async def sites(self, site: str = "") -> list[dict]:
+        """The sites and libraries this identity reaches →
+        ``{name, path, kind, web_url}`` dicts; with ``site``, that site's
+        document libraries."""
+        raise NotImplementedError(
+            f"{self.kind} bucket does not support site discovery")
 
     async def probe(self) -> None:
         """Raise unless the store answers for this identity right now."""

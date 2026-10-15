@@ -173,6 +173,12 @@ class StorageDriver(ABC):
         raise NotImplementedError(
             f"{self.name} storage driver does not support cp")
 
+    async def sites(self, site: str | None = None) -> list[dict]:
+        """The sites the session reaches, or ``site``'s document libraries →
+        ``{name, path, kind, web_url}`` dicts."""
+        raise NotImplementedError(
+            f"{self.name} storage driver does not support site discovery")
+
     async def search(self, query: str, limit: int,
                      root: str | None = None) -> list[dict]:
         """Search the store → entry dicts. Non-abstract: a store with no usable
@@ -187,9 +193,9 @@ class StorageDriver(ABC):
 
 ONEDRIVE_PRELUDE = r"""
 window.__awmMira = window.__awmMira || {};
-if (!window.__awmMira.onedrive || window.__awmMira.onedrive._v !== 5) {
+if (!window.__awmMira.onedrive || window.__awmMira.onedrive._v !== 6) {
   const O = {};
-  O._v = 5;  // bump when changing helpers so a long-lived page self-upgrades
+  O._v = 6;  // bump when changing helpers so a long-lived page self-upgrades
   O._b64 = function (buf) {
     const bytes = new Uint8Array(buf);
     let bin = '';
@@ -295,14 +301,27 @@ if (!window.__awmMira.onedrive || window.__awmMira.onedrive._v !== 5) {
     if (await O._file(path)) return O._err('ENOTDIR', path + ' is a file');
     return O._err('ENOENT', path + ': not found');
   };
+  // A browser link: a folder opens in its library view, a file in Office for
+  // the web (or the preview, for other types).
+  O._webUrl = function (path, isDir) {
+    if (!path) return '';
+    const enc = function (p) { return p.split('/').map(encodeURIComponent).join('/'); };
+    if (!isDir) return O._origin(path) + enc(path) + '?web=1';
+    const lib = '/' + O._segs(path).slice(0, O._libDepth(path)).join('/');
+    return O._origin(path) + enc(lib) + '/Forms/AllItems.aspx?id=' + encodeURIComponent(path);
+  };
   O._folderEntry = function (d) {
-    return {name: d.Name || '', path: d.ServerRelativeUrl || '', is_dir: true,
-            size: 0, mime: '', modified: d.TimeLastModified || '', id: d.UniqueId || ''};
+    const path = d.ServerRelativeUrl || '';
+    return {name: d.Name || '', path: path, is_dir: true,
+            size: 0, mime: '', modified: d.TimeLastModified || '', id: d.UniqueId || '',
+            web_url: O._webUrl(path, true)};
   };
   O._fileEntry = function (f) {
-    return {name: f.Name || '', path: f.ServerRelativeUrl || '', is_dir: false,
+    const path = f.ServerRelativeUrl || '';
+    return {name: f.Name || '', path: path, is_dir: false,
             size: Number(f.Length || 0) || 0, mime: '',
-            modified: f.TimeLastModified || '', id: f.UniqueId || ''};
+            modified: f.TimeLastModified || '', id: f.UniqueId || '',
+            web_url: O._webUrl(path, false)};
   };
   O.ls = async function (path) {
     if (!(await O._folder(path))) throw await O._missing(path);
@@ -348,7 +367,8 @@ if (!window.__awmMira.onedrive || window.__awmMira.onedrive._v !== 5) {
         (isDir ? dirs : files).push({name: name, path: row.FileRef || '', is_dir: isDir,
           size: isDir ? 0 : (Number(row.File_x0020_Size || 0) || 0), mime: '',
           modified: row['Modified.'] || row.Modified || '',
-          id: String(row.UniqueId || '').replace(/[{}]/g, '')});
+          id: String(row.UniqueId || '').replace(/[{}]/g, ''),
+          web_url: O._webUrl(row.FileRef || '', isDir)});
       }
       next = j.NextHref || '';
     } while (next);
@@ -592,8 +612,63 @@ if (!window.__awmMira.onedrive || window.__awmMira.onedrive._v !== 5) {
       return {name: c.Title || (sr.split('/').filter(Boolean).pop()) || '',
         path: decodeURIComponent(sr), is_dir: isDir,
         size: Number(c.Size || 0) || 0, mime: isDir ? '' : (c.FileExtension || ''),
-        modified: c.LastModifiedTime || '', id: c.UniqueId || ''};
+        modified: c.LastModifiedTime || '', id: c.UniqueId || '', web_url: path};
     });
+  };
+  // Sites the session can reach (search-backed, so minutes behind a new
+  // site), its personal OneDrive and followed sites; or, given a site, its
+  // visible document libraries.
+  O.sites = async function (site) {
+    if (site) {
+      const url = O._api(site) + '/web/lists?$filter=' +
+        encodeURIComponent('BaseTemplate eq 101 and Hidden eq false') +
+        '&$select=Title,ItemCount,LastItemModifiedDate,RootFolder/ServerRelativeUrl&$expand=RootFolder';
+      const j = await O._getJson(url, 'sites', site);
+      return (j.value || []).map(function (l) {
+        const p = (l.RootFolder || {}).ServerRelativeUrl || '';
+        return {name: l.Title || '', path: p, kind: 'library',
+                items: Number(l.ItemCount || 0) || 0,
+                modified: l.LastItemModifiedDate || '', web_url: O._webUrl(p, true)};
+      });
+    }
+    const out = [], seen = {};
+    const add = function (e) {
+      const k = e.path.toLowerCase();
+      if (seen[k]) { if (e.followed) seen[k].followed = true; return; }
+      seen[k] = e; out.push(e);
+    };
+    const pathOf = function (u) {
+      try { return decodeURIComponent(new URL(u).pathname).replace(/\/+$/, ''); }
+      catch (e) { return ''; }
+    };
+    try {
+      const me = await O._getJson(O._api('') +
+        '/SP.UserProfiles.PeopleManager/GetMyProperties?$select=PersonalUrl', 'sites', '/');
+      const p = pathOf(me.PersonalUrl || '');
+      if (p) add({name: 'OneDrive (personal)', path: p, kind: 'personal',
+                  web_url: me.PersonalUrl});
+    } catch (e) { if (O._isCode(e, 'EAUTH')) throw e; }
+    const q = O._api('') + "/search/query?querytext='contentclass:STS_Site'&rowlimit=500" +
+      "&trimduplicates=false&selectproperties='Title,Path'";
+    const j = await O._getJson(q, 'sites', '/');
+    let rows = [];
+    try { rows = j.PrimaryQueryResult.RelevantResults.Table.Rows; } catch (e) { rows = []; }
+    for (const row of (rows || [])) {
+      const c = {};
+      for (const cell of (row.Cells || [])) c[cell.Key] = cell.Value;
+      const p = pathOf(c.Path || '');
+      if (p) add({name: c.Title || p, path: p, kind: 'site', web_url: c.Path});
+    }
+    try {
+      const f = await O._getJson(O._api('') + '/social.following/my/followed(types=4)',
+        'sites', '/');
+      for (const s of (f.value || [])) {
+        const p = pathOf(s.Uri || s.Url || '');
+        if (p) add({name: s.Name || p, path: p, kind: 'site', followed: true,
+                    web_url: s.Uri || s.Url});
+      }
+    } catch (e) { if (O._isCode(e, 'EAUTH')) throw e; }
+    return out;
   };
   window.__awmMira.onedrive = O;
 }
@@ -784,6 +859,11 @@ class OneDriveDriver(StorageDriver):
                     raise
                 await asyncio.sleep(delay)
         raise AssertionError("unreachable")
+
+    async def sites(self, site: str | None = None) -> list[dict]:
+        rows = await self._run("window.__awmMira.onedrive.sites", site or "",
+                               path=site or None)
+        return rows or []
 
     async def search(self, query: str, limit: int,
                      root: str | None = None) -> list[dict]:

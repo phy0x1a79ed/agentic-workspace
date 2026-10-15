@@ -110,7 +110,7 @@ class GoogleDriveBucket(Bucket):
             req = svc.files().list(
                 q=f"'{parent_id}' in parents and trashed=false",
                 fields="nextPageToken, files(id, name, mimeType, size, "
-                       "modifiedTime)",
+                       "modifiedTime, webViewLink)",
                 pageSize=1000,
                 pageToken=page,
                 supportsAllDrives=True,
@@ -157,6 +157,7 @@ class GoogleDriveBucket(Bucket):
             size=int(meta.get("size", 0) or 0),
             mime=mime,
             modified=meta.get("modifiedTime", "") or "",
+            web_url=meta.get("webViewLink", "") or "",
             id=meta.get("id", "") or "",
             ref={"id": meta.get("id", "")},
         )
@@ -245,7 +246,7 @@ class GoogleDriveBucket(Bucket):
         existing = [c for c in await self._children(parent)
                     if c.get("name") == name
                     and c.get("mimeType") != _FOLDER_MIME]
-        fields = "id, name, mimeType, size, modifiedTime"
+        fields = "id, name, mimeType, size, modifiedTime, webViewLink"
         if existing:
             req = svc.files().update(
                 fileId=existing[0]["id"], media_body=media, fields=fields,
@@ -273,7 +274,7 @@ class GoogleDriveBucket(Bucket):
         moved = await self._execute(svc.files().update(
             fileId=meta["id"], body={"name": name}, addParents=parent,
             removeParents=",".join(cur.get("parents") or []),
-            fields="id, name, mimeType, size, modifiedTime",
+            fields="id, name, mimeType, size, modifiedTime, webViewLink",
             supportsAllDrives=True))
         return self._entry(moved, dst.strip("/"))
 
@@ -321,7 +322,7 @@ class GoogleDriveBucket(Bucket):
     async def _copy_tree(self, meta: dict, parent: str, name: str) -> dict:
         """Drive copies files only, so a folder is rebuilt level by level."""
         svc = await self._service()
-        fields = "id, name, mimeType, size, modifiedTime"
+        fields = "id, name, mimeType, size, modifiedTime, webViewLink"
         if meta.get("mimeType") != _FOLDER_MIME:
             return await self._execute(svc.files().copy(
                 fileId=meta["id"], body={"name": name, "parents": [parent]},
@@ -352,7 +353,7 @@ class GoogleDriveBucket(Bucket):
                 req = svc.files().create(
                     body={"name": seg, "parents": [parent],
                           "mimeType": _FOLDER_MIME},
-                    fields="id, name, mimeType, modifiedTime",
+                    fields="id, name, mimeType, modifiedTime, webViewLink",
                     supportsAllDrives=True)
                 meta = await self._execute(req)
             parent = meta["id"]
@@ -374,7 +375,7 @@ class GoogleDriveBucket(Bucket):
         safe = query.replace("'", "\\'")
         req = svc.files().list(
             q=f"name contains '{safe}' and trashed=false",
-            fields="files(id, name, mimeType, size, modifiedTime)",
+            fields="files(id, name, mimeType, size, modifiedTime, webViewLink)",
             pageSize=max(1, min(int(limit), 1000)),
             supportsAllDrives=True,
             includeItemsFromAllDrives=True,

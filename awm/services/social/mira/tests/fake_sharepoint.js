@@ -15,7 +15,11 @@
     F.threshold = 5000;    // children past which /Folders and /Files refuse
     F.pageSize = 5000;     // rows per RenderListDataAsStream page
     F.seq = 0;
-    for (const lib of (spec.libraries || ['/teams/x/Docs'])) F.addFolder(lib);
+    F.libs = spec.libraries || ['/teams/x/Docs'];
+    F.personalUrl = spec.personalUrl || 'https://t-my.sharepoint.com/personal/me_x/';
+    F.searchSites = spec.searchSites || [];   // [{Title, Path}]
+    F.followed = spec.followed || [];         // [{Name, Uri}]
+    for (const lib of F.libs) F.addFolder(lib);
     for (const [p, text] of Object.entries(spec.files || {})) F.addFile(p, text);
     for (const p of (spec.folders || [])) F.addFolder(p);
   };
@@ -161,6 +165,19 @@
       });
       const more = start + F.pageSize < kids.length;
       return F.json({Row: page, NextHref: more ? '?Paged=TRUE&p_ID=' + (start + F.pageSize) : undefined});
+    }
+    if (method === 'GET' && rest.startsWith('/SP.UserProfiles.PeopleManager/GetMyProperties'))
+      return F.json({PersonalUrl: F.personalUrl});
+    if (method === 'GET' && rest.startsWith("/search/query?querytext='contentclass:STS_Site'"))
+      return F.json({PrimaryQueryResult: {RelevantResults: {Table: {Rows: F.searchSites.map(r =>
+        ({Cells: [{Key: 'Title', Value: r.Title}, {Key: 'Path', Value: r.Path}]}))}}}});
+    if (method === 'GET' && rest === '/social.following/my/followed(types=4)')
+      return F.json({value: F.followed});
+    if (method === 'GET' && rest.startsWith('/web/lists?$filter=')) {
+      const site = decodeURIComponent(web);
+      return F.json({value: F.libs.filter(l => F.site(l) === site).map(l => ({
+        Title: l.split('/').pop(), ItemCount: F.children(l).length,
+        LastItemModifiedDate: '2026-01-01T00:00:00Z', RootFolder: {ServerRelativeUrl: l}}))});
     }
     m = rest.match(/^\/web\/folders\/AddUsingPath\(decodedurl='((?:[^']|'')*)'\)$/);
     if (m && method === 'POST') {

@@ -332,7 +332,8 @@ def _bucket(name: str) -> buckets_mod.Bucket:
 
 def _entry_to_dict(e: buckets_mod.Entry) -> dict:
     return {"name": e.name, "path": e.path, "is_dir": e.is_dir,
-            "size": e.size, "mime": e.mime, "modified": e.modified, "id": e.id}
+            "size": e.size, "mime": e.mime, "modified": e.modified, "id": e.id,
+            "web_url": e.web_url}
 
 
 _PROBE_TIMEOUT_S = 20.0
@@ -443,6 +444,11 @@ async def _h_bucket_cp(args: dict) -> dict:
     return {"entry": _entry_to_dict(await _bucket(args["bucket"]).cp(
         args["src"], args["dst"], overwrite=bool(args.get("overwrite")),
         parents=bool(args.get("parents"))))}
+
+
+async def _h_bucket_sites(args: dict) -> dict:
+    entries = await _bucket(args["bucket"]).sites(args.get("site", "") or "")
+    return {"entries": entries, "count": len(entries)}
 
 
 async def _h_bucket_search(args: dict) -> dict:
@@ -594,7 +600,7 @@ API_MANIFEST: dict[str, Any] = {
                            "/sites/<site>/..., /personal/<user>/...) to reach any "
                            "site the session can. A missing path is a not-found "
                            "error, a file is a not-a-folder error. Returns entries "
-                           "with name, path, is_dir, size, mime. "
+                           "with name, path, is_dir, size, mime, web_url. "
                            "`recursive=true` walks the whole tree instead, "
                            "stopping at `limit` entries (default 1000) and "
                            "setting `truncated` when more exist.",
@@ -716,6 +722,22 @@ API_MANIFEST: dict[str, Any] = {
             ],
         },
         {
+            "name": "bucket_sites",
+            "tool": "social_bucket_sites",
+            "description": "Discover where a OneDrive bucket can reach. Without "
+                           "`site`: the personal OneDrive, the SharePoint sites "
+                           "search finds (minutes behind a new site) and "
+                           "followed sites. With `site` (e.g. /teams/<x>): that "
+                           "site's document libraries. Each entry has name, an "
+                           "absolute path to pass to the other bucket verbs, "
+                           "kind (personal, site, library) and web_url.",
+            "timeout": 120,
+            "params": [
+                {"name": "bucket", "type": "string", "required": True},
+                {"name": "site", "type": "string", "required": False},
+            ],
+        },
+        {
             "name": "bucket_search",
             "tool": "social_bucket_search",
             "description": "Search a bucket for files matching `query` (Google "
@@ -806,6 +828,7 @@ HANDLERS = {
     "bucket_rm": _h_bucket_rm,
     "bucket_mv": _h_bucket_mv,
     "bucket_cp": _h_bucket_cp,
+    "bucket_sites": _h_bucket_sites,
     "bucket_search": _h_bucket_search,
     "emit_probe": _h_emit_probe,
 }

@@ -17,7 +17,8 @@ Runs ON mira. Exposes a clean per-platform API over the awm-network so the awm
     POST /v1/{platform}/send  {channel,text,thread?}
     POST /v1/{platform}/open_dm  {user}  → resolve a user (id/name) to a DM channel
     GET  /v1/events                      → WS; pushes inbound {type:"message", …}
-    GET  /v1/fs/{name}/ls|stat|get|search, POST /v1/fs/{name}/put|upload|mkdir|rm|mv|cp
+    GET  /v1/fs/{name}/ls|stat|get|search|sites
+    POST /v1/fs/{name}/put|upload|mkdir|rm|mv|cp
                                          → cloud file store (OneDrive/SharePoint)
 
 A file-store failure carries ``{error, code}``: 404 ENOENT, 409 ENOTDIR/EISDIR/
@@ -112,6 +113,7 @@ class MiraAPI:
         app.router.add_get("/v1/fs/{name}/stat", self._h_fs_stat)
         app.router.add_get("/v1/fs/{name}/get", self._h_fs_get)
         app.router.add_get("/v1/fs/{name}/search", self._h_fs_search)
+        app.router.add_get("/v1/fs/{name}/sites", self._h_fs_sites)
         app.router.add_post("/v1/fs/{name}/put", self._h_fs_put)
         app.router.add_post("/v1/fs/{name}/upload", self._h_fs_upload)
         app.router.add_post("/v1/fs/{name}/mkdir", self._h_fs_mkdir)
@@ -417,6 +419,14 @@ class MiraAPI:
             entry = await op(src, dst, overwrite=bool(body.get("overwrite")),
                              parents=bool(body.get("parents")))
             return web.json_response({"entry": entry})
+        except Exception as exc:  # noqa: BLE001
+            return _fs_error(exc)
+
+    async def _h_fs_sites(self, request: web.Request) -> web.Response:
+        s = self._storage_driver(request)
+        try:
+            return web.json_response(
+                {"entries": await s.sites(request.query.get("site") or None)})
         except Exception as exc:  # noqa: BLE001
             return _fs_error(exc)
 

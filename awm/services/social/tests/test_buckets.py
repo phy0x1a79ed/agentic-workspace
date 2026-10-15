@@ -119,6 +119,7 @@ class _FakeFiles:
             m["size"] = n["size"]
         if n.get("modifiedTime"):
             m["modifiedTime"] = n["modifiedTime"]
+        m["webViewLink"] = f"https://drive.example/{fid}"
         return m
 
     def create(self, *, body, media_body=None, fields=None, **kw):
@@ -332,6 +333,10 @@ class TestGoogleDrive:
         n = b._svc.files().nodes[fid]
         return n["parent"], n["name"]
 
+    async def test_entries_carry_web_view_link(self):
+        b = _gdrive(self._tree())
+        assert (await b.stat("pic.png")).web_url == "https://drive.example/f2"
+
     async def test_mv_renames_and_moves(self):
         b = _gdrive(self._tree())
         e = await b.mv("pic.png", "docs/p2.png")
@@ -491,6 +496,7 @@ class _StubFsDaemon:
         app.router.add_post("/v1/fs/{name}/mkdir", self._mkdir)
         app.router.add_get("/v1/fs/{name}/get", self._get)
         app.router.add_get("/v1/fs/{name}/search", self._search)
+        app.router.add_get("/v1/fs/{name}/sites", self._sites)
         app.router.add_post("/v1/fs/{name}/put", self._put)
         app.router.add_post("/v1/fs/{name}/upload", self._upload)
         app.router.add_post("/v1/fs/{name}/rm", self._rm)
@@ -565,6 +571,13 @@ class _StubFsDaemon:
                 "name": body["path"].rsplit("/", 1)[-1], "path": body["path"],
                 "is_dir": False, "size": n}})
         return web.json_response({"offset": n})
+
+    async def _sites(self, request):
+        from aiohttp import web
+        self.calls.append(("sites", request.query.get("site")))
+        return web.json_response({"entries": [
+            {"name": "X", "path": "/teams/x", "kind": "site",
+             "web_url": "https://t/teams/x"}]})
 
     async def _search(self, request):
         from aiohttp import web
@@ -826,6 +839,21 @@ class TestOneDrive:
         fs_daemon.fail = (409, "EEXIST", "/teams/x/Docs/b exists")
         with pytest.raises(FileExistsError, match="'o'"):
             await b.mv("a", "b")
+        await b.close()
+
+    async def test_sites_threads_site(self, fs_daemon):
+        b = _onedrive(fs_daemon)
+        rows = await b.sites()
+        assert rows[0]["kind"] == "site" and fs_daemon.calls[-1] == ("sites", None)
+        await b.sites("teams/x/")
+        assert fs_daemon.calls[-1] == ("sites", "/teams/x")
+        await b.close()
+
+    async def test_entries_carry_web_url(self, fs_daemon):
+        b = _onedrive(fs_daemon)
+        fs_daemon.ls_entries = [{"name": "a", "path": "/teams/x/Docs/a",
+                                 "web_url": "https://t/a?web=1"}]
+        assert (await b.ls(""))[0].web_url == "https://t/a?web=1"
         await b.close()
 
     async def test_probe_stats_root(self, fs_daemon):

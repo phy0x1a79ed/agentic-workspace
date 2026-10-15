@@ -161,6 +161,7 @@ class OneDriveBucket(Bucket):
             mime=d.get("mime", "") or "",
             modified=d.get("modified", "") or "",
             id=d.get("id", "") or "",
+            web_url=d.get("web_url", "") or "",
             ref=d.get("ref") or {},
         )
 
@@ -283,6 +284,11 @@ class OneDriveBucket(Bucket):
             "overwrite": bool(overwrite), "parents": bool(parents),
         }, timeout=_TRANSFER_TIMEOUT_S)
         return self._entry(resp.get("entry", {}), fallback_path=dst.strip("/"))
+
+    async def sites(self, site: str = "") -> list[dict]:
+        params = {"site": "/" + site.strip("/")} if site.strip("/") else {}
+        resp = await self._get(f"/v1/fs/{_FS_NAME}/sites", **params)
+        return list(resp.get("entries", []))
 
     async def search(self, query: str, *, limit: int = 50,
                      path: str = "") -> list[Entry]:

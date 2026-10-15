@@ -390,6 +390,10 @@ class _FakeStorage:
             raise FileExistsError(f"{dst} exists")
         return {"name": dst.rsplit("/", 1)[-1], "path": dst, "is_dir": False}
 
+    async def sites(self, site=None):
+        self.calls.append(("sites", site))
+        return [{"name": "X", "path": "/teams/x", "kind": "site"}]
+
     async def search(self, query, limit, root=None):
         self.calls.append(("search", query, limit, root))
         return [{"name": "hit.txt", "path": "/r/hit.txt", "is_dir": False}]
@@ -501,6 +505,14 @@ class TestFsRoutes:
         resp = await api._h_fs_mkdir(_FsReq("onedrive", body={"path": "/r/a"}))
         assert resp.status == status
         assert _payload(resp)["code"] == code
+
+    async def test_sites(self):
+        api, fake = _api_with_storage()
+        resp = await api._h_fs_sites(_FsReq("onedrive"))
+        assert _payload(resp)["entries"][0]["kind"] == "site"
+        assert fake.calls[-1] == ("sites", None)
+        await api._h_fs_sites(_FsReq("onedrive", {"site": "/teams/x"}))
+        assert fake.calls[-1] == ("sites", "/teams/x")
 
     async def test_mv_and_cp(self):
         api, fake = _api_with_storage()
