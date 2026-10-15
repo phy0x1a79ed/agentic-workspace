@@ -84,9 +84,10 @@ THREADED = "cardThreaded"
 #: Width of the zero-padded `msgSeq` label, so Trilium's text sort is sequence order.
 SEQ_WIDTH = 8
 #: A note a person is still typing is not sealed until it has sat this long unchanged.
-SETTLE_S = 5.0
+SETTLE_S = 1.5
 #: Message notes each sweep checks against the record. The check cycles through all of them.
-VERIFY_BATCH = 20
+#: A note that differs costs one more write, so this also bounds a format change's rewrites per sweep.
+VERIFY_BATCH = 10
 #: A Done or Rejected card is archived this long after it entered that state.
 ARCHIVE_AFTER_S = 14 * 86400.0
 
@@ -164,16 +165,32 @@ def _public(message: dict) -> dict:
     return {k: v for k, v in message.items() if k != "note_id"}
 
 
+def _author(message: dict) -> str:
+    """Who wrote a message, as a reader of the thread should see it.
+
+    An agent is named by where it ran (``<swarm>/<node>/<agent>``), because its
+    principal is the swarm's shared one. A person typing in the Trilium GUI is
+    the host operator's principal and the one party that can; anyone else
+    posted through the API.
+    """
+    sender, agent = message["sender"], message.get("agent")
+    if agent:
+        return owner_label(sender["swarm"], message.get("node"), agent)
+    if message["origin"] == "gui":
+        return f"{sender['principal']} (Trilium)"
+    return f"{sender['principal']}@{sender['swarm']}"
+
+
 def _mirror_fields(message: dict) -> tuple[str, dict[str, str]]:
     """The title and labels a message's note carries, all derived from its row."""
-    sender, agent = message["sender"], message.get("agent")
-    title = f"{message['seq']} · {sender['swarm']}/{sender['principal']}"
+    author = _author(message)
     labels = {MESSAGE_SEQ: str(message["seq"]).zfill(SEQ_WIDTH), "msgAt": message["at"],
-              "msgFrom": f"{sender['principal']}@{sender['swarm']}", "readOnly": ""}
-    if agent:
-        title += f" · {agent}"
-        labels["msgAgent"] = agent
-    return title, labels
+              "msgFrom": author, "readOnly": ""}
+    if message.get("agent"):
+        labels["msgAgent"] = message["agent"]
+    if message.get("node"):
+        labels["msgNode"] = message["node"]
+    return f"{message['seq']} · {author}", labels
 
 
 def _age_s(utc_modified: str) -> float:
@@ -266,6 +283,7 @@ class Board:
             "reply_to": reply_to,
             "result": result,
             "agent": labels.get("cardAgent") or None,
+            "node": labels.get("cardNode") or None,
             "project": labels.get("project") or None,
             "owner": labels.get("owner") or None,
             "note_id": rec.get("note_id"),
@@ -318,7 +336,8 @@ class Board:
 
     def post(self, party: dict, *, kind: str, recipient: str, title: str, body: str,
              priority: str = "normal", reply_to: str | None = None,
-             project: str | None = None, agent: str | None = None) -> dict:
+             project: str | None = None, agent: str | None = None,
+             node: str | None = None) -> dict:
         """Post a card to Proposed. A reply also posts a message on its root card's thread."""
         self._live(party)
         if kind not in KINDS:
@@ -340,7 +359,7 @@ class Board:
         if "## Result" in body:
             raise ValueError("body may not hold a '## Result' heading: the board uses it "
                              "to tell the body from the result")
-        project, agent = check_project(project), clean_agent(agent)
+        project, agent, node = check_project(project), clean_agent(agent), clean_node(node)
         with self._guard:
             relations: dict[str, str] = {}
             root_rec = root = None
@@ -366,6 +385,8 @@ class Board:
             }
             if agent:
                 labels["cardAgent"] = agent
+            if node:
+                labels["cardNode"] = node
             if project:
                 labels["project"] = project
             if root is not None:
@@ -380,7 +401,7 @@ class Board:
             sender = {"swarm": party["swarm"], "principal": party["principal"],
                       "party": party["party_id"]}
             message = self._add_message(root_rec, root, sender, "api",
-                                        body.strip() and body or title, agent=agent)
+                                        body.strip() and body or title, agent=agent, node=node)
             return {**card, "folded_into": root["id"], "message": message}
 
     def _root_of(self, rec: dict, card: dict) -> tuple[dict, dict]:
@@ -459,7 +480,8 @@ class Board:
                 self._transition(rec, card, state, "card.moved")
             return card
 
-    def reject(self, party: dict, card_id: str, reason, *, agent: str | None = None) -> dict:
+    def reject(self, party: dict, card_id: str, reason, *, agent: str | None = None,
+               node: str | None = None) -> dict:
         """Move an unfinished card to Rejected, with the reason as a message from the party.
 
         The recipient swarm, the claimant and the board's admin may reject.
@@ -469,7 +491,7 @@ class Board:
             raise ValueError("reason must be non-empty text")
         if len(reason) > _MAX_TEXT:
             raise ValueError("reason must be text of at most %d characters" % _MAX_TEXT)
-        agent = clean_agent(agent)
+        agent, node = clean_agent(agent), clean_node(node)
         with self._guard:
             rec, card = self._fetch(party, card_id)
             if party["swarm"] not in (card["recipient"], card["claimant"]) \
@@ -480,7 +502,7 @@ class Board:
             self._transition(rec, card, "rejected", "card.moved")
             sender = {"swarm": party["swarm"], "principal": party["principal"],
                       "party": party["party_id"]}
-            message = self._add_message(rec, card, sender, "api", reason, agent=agent)
+            message = self._add_message(rec, card, sender, "api", reason, agent=agent, node=node)
             return {**card, "message": message}
 
     def get(self, party: dict, card_id: str) -> dict:
@@ -542,7 +564,8 @@ class Board:
 
     # -- a card's thread -------------------------------------------------------
 
-    def message(self, party: dict, card_id: str, body: str, *, agent: str | None = None) -> dict:
+    def message(self, party: dict, card_id: str, body: str, *, agent: str | None = None,
+                node: str | None = None) -> dict:
         """Add a message to the card's thread. Anyone who can see the card may post."""
         self._live(party)
         if not isinstance(body, str) or not body.strip():
@@ -553,7 +576,8 @@ class Board:
             rec, card = self._fetch(party, card_id)
             sender = {"swarm": party["swarm"], "principal": party["principal"],
                       "party": party["party_id"]}
-            return self._add_message(rec, card, sender, "api", body, agent=clean_agent(agent))
+            return self._add_message(rec, card, sender, "api", body, agent=clean_agent(agent),
+                                     node=clean_node(node))
 
     def messages(self, party: dict, card_id: str, *, after: int | None = None,
                  limit: int | None = None) -> list[dict]:
@@ -567,7 +591,8 @@ class Board:
         return [_public(m) for m in self.events.messages(card_id, after, limit)]
 
     def _add_message(self, rec: dict, card: dict, sender: dict, origin: str, body: str,
-                     note_id: str | None = None, agent: str | None = None) -> dict:
+                     note_id: str | None = None, agent: str | None = None,
+                     node: str | None = None) -> dict:
         """Record a message, mirror it into the vault, and log `card.message`.
 
         The row is written first and is the message. A mirror or label write
@@ -576,7 +601,7 @@ class Board:
         """
         message = self.events.message_add(card["id"], at=_now(), sender=sender,
                                           origin=origin, body=body, note_id=note_id,
-                                          agent=agent)
+                                          agent=agent, node=node)
         try:
             self._mirror(rec["note_id"], message)
             self.vault.update(rec["note_id"], labels={LAST_MESSAGE: str(message["seq"])})
@@ -641,7 +666,6 @@ class Board:
                 del self._seen[card_id]
             self.events.seen_drop(stale)
             try:
-                self._seal_gui_messages()
                 self._verify_messages()
             except VaultError as e:
                 log.warning("message sweep stopped early: %s", e)
@@ -657,6 +681,14 @@ class Board:
             self.vault.archive(rec, card["state"])
         except VaultError as e:
             log.warning("could not archive card %s: %s", card["id"], e)
+
+    def seal(self) -> None:
+        """Seal the notes people added in the GUI. One search when there are none, so a caller can run it every second."""
+        with self._guard:
+            try:
+                self._seal_gui_messages()
+            except VaultError as e:
+                log.warning("sealing stopped early: %s", e)
 
     def _seal_gui_messages(self) -> None:
         """Turn each settled note a person added under a card's chat into the card's next message."""
@@ -726,6 +758,7 @@ class Board:
         while not stop.is_set():
             try:
                 self.sweep()
+                self.seal()
                 if pruned <= 0:
                     self.events.prune()
                     pruned = 3600.0

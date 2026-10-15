@@ -120,9 +120,11 @@ class BoardClient:
         reply_to: str | None = None,
         project: str | None = None,
         agent: str | None = None,
+        node: str | None = None,
     ) -> dict:
         payload = {"kind": kind, "recipient": recipient, "title": title, "body": body, "priority": priority}
-        for key, value in (("reply_to", reply_to), ("project", project), ("agent", agent)):
+        for key, value in (("reply_to", reply_to), ("project", project), ("agent", agent),
+                           ("node", node)):
             if value:
                 payload[key] = value
         return await self._send("POST", "/cards", json=payload)
@@ -141,8 +143,9 @@ class BoardClient:
         """Move a card this party holds to ``state``: planned, active, blocked, review or done."""
         return await self._send("POST", f"/cards/{card_id}/status", json={"state": state})
 
-    async def reject(self, card_id: str, reason: str, *, agent: str | None = None) -> dict:
-        payload = {"reason": reason, **({"agent": agent} if agent else {})}
+    async def reject(self, card_id: str, reason: str, *, agent: str | None = None,
+                     node: str | None = None) -> dict:
+        payload = {"reason": reason, **{k: v for k, v in (("agent", agent), ("node", node)) if v}}
         return await self._send("POST", f"/cards/{card_id}/reject", json=payload)
 
     async def get(self, card_id: str) -> dict:
@@ -158,8 +161,9 @@ class BoardClient:
             params["offset"] = int(offset)
         return await self._send("GET", "/cards", params=params)
 
-    async def message(self, card_id: str, body: str, *, agent: str | None = None) -> dict:
-        payload = {"body": body, **({"agent": agent} if agent else {})}
+    async def message(self, card_id: str, body: str, *, agent: str | None = None,
+                      node: str | None = None) -> dict:
+        payload = {"body": body, **{k: v for k, v in (("agent", agent), ("node", node)) if v}}
         return await self._send("POST", f"/cards/{card_id}/messages", json=payload)
 
     async def messages(self, card_id: str, *, after: int | None = None,

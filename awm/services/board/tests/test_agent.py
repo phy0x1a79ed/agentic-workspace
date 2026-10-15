@@ -72,13 +72,15 @@ async def test_the_relay_sends_the_stamped_sessions_name_and_ignores_the_models(
     posted = await hub_adapter.post({"kind": "request", "recipient": "alpha", "title": "t",
                                      "agent": "forged", "_caller_pid": 4242})
     assert posted["ok"] and relay.board.last_post_extra["agent"] == "the real session"
+    assert relay.board.last_post_extra["node"] == "deneb"
     card_id = posted["card"]["id"]
     await hub_adapter.claim({"card_id": card_id, "agent": "forged", "node": "elsewhere",
                              "_caller_pid": 4242})
     assert relay.board.last_claim_extra == {"agent": "the real session", "node": "deneb"}
     sent = await hub_adapter.message_post({"card_id": card_id, "body": "hi", "agent": "forged",
-                                           "_caller_pid": 4242})
+                                           "node": "elsewhere", "_caller_pid": 4242})
     assert sent["message"]["agent"] == "the real session"
+    assert sent["message"]["node"] == "deneb"
 
 
 async def test_a_model_supplied_agent_is_dropped_when_no_session_is_stamped(relay):
@@ -104,7 +106,7 @@ async def test_the_new_verbs_relay_to_the_host(relay):
     assert [e["type"] for e in later["events"]] == ["card.moved"]
     rejected = await hub_adapter.reject({"card_id": card_id, "reason": "no", "_caller_pid": 4242})
     assert rejected["ok"] and rejected["card"]["state"] == "rejected"
-    assert relay.board.last_reject_extra == {"agent": "the real session"}
+    assert relay.board.last_reject_extra == {"agent": "the real session", "node": "deneb"}
 
 
 # -- the migration verbs ---------------------------------------------------------------
