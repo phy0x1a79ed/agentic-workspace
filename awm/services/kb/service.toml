@@ -3,5 +3,5 @@ tier = "off"
 
 [[archive]]
 name = "kb"
-mode = "index"
-export = "kb_export"
+mode = "live"
+query = "kb_query"
