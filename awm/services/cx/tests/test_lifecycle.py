@@ -1125,11 +1125,12 @@ def test_list_carries_needs_and_detail_from_the_job_record(home, monkeypatch):
     home.add(PARENT_JOB, "<warm saiga>", os.getpid())
     path = home.jobs / PARENT_JOB / "state.json"
     rec = json.loads(path.read_text())
-    rec.update(state="blocked", needs="login required \u2014 run /login", detail="d" * 500)
+    rec.update(state="blocked", needs="login required \u2014 run /login", detail="d" * 500,
+               tempo="blocked")
     path.write_text(json.dumps(rec))
     row = next(r for r in lifecycle.collect() if r["job"] == PARENT_JOB)
     assert row["state"] == "blocked" and row["needs"] == "login required \u2014 run /login"
-    assert row["detail"] == "d" * 200
+    assert row["detail"] == "d" * 200 and row["tempo"] == "blocked"
 
 
 @pytest.mark.parametrize("recorded,reported", [("stopped", "stopped"), ("working", "gone")])

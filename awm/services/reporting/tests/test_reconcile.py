@@ -576,6 +576,19 @@ async def test_an_outdated_session_mid_turn_is_replaced_after_its_turn(queue):
     assert cx.stopped == ["old00001"] and modes_started(cx) == ["representative"]
 
 
+async def test_an_outdated_session_whose_status_still_says_working_is_replaced_once_idle(queue):
+    cx = FakeCx()
+    queue.record_session("representative", "old00001", None)
+    cx.rows.append(session_row("representative", job="old00001", state="working", tempo="active"))
+    ours(queue, cx, "secretary", job="sec00001")
+    loop = loop_for(cx, queue)
+    await loop.tick()
+    assert cx.stopped == [] and cx.started == []
+    cx.rows[0]["tempo"] = "idle"
+    await loop.tick()
+    assert cx.stopped == ["old00001"] and modes_started(cx) == ["representative"]
+
+
 def test_the_fingerprint_ignores_key_order():
     assert reconcile.spec_hash({"a": 1, "b": [2]}) == reconcile.spec_hash({"b": [2], "a": 1})
     assert reconcile.spec_hash({"a": 1}) != reconcile.spec_hash({"a": 2})
