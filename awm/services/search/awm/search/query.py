@@ -86,10 +86,10 @@ def _peers(value: Any) -> tuple[bool, list[str] | str]:
     if isinstance(value, str) and value.strip().lower() in ("true", "1", "yes", FLEET):
         return True, FLEET
     chosen = names(value) or []
-    if FLEET in chosen:
-        return True, FLEET
     here = node_label(config.node_name())
     remote = [n for n in chosen if n != LOCAL and node_label(n) != here]
+    if FLEET in remote:
+        return True, remote
     return len(remote) < len(chosen), remote
 
 

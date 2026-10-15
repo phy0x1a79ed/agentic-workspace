@@ -154,7 +154,7 @@ Revoke a grant with `awm peer revoke <name> <source>`. The next call is refused.
 
 ## Federated search
 
-`search query` answers across the federation. It searches this node's archive sources and live sources, and it asks every peer in the book at once with an ordinary `search_query` call that sets `peers=false`. Each peer answers through its own gate, which narrows the answer to the sources that peer granted this node. A peer granted only `journals` therefore returns journal hits and nothing else. Each hit carries `origin` (node and swarm), and the reply carries a status for every plug-in and every peer.
+`search query` searches this node's archive sources and live sources. `peers` takes it across the federation: `fleet` asks every domestic peer, and node names ask those nodes, foreign ones included. The two combine, as in `fleet,shaula`. Each asked peer gets an ordinary `search_query` call that sets `peers=false`. Each peer answers through its own gate, which narrows the answer to the sources that peer granted this node. A peer granted only `journals` therefore returns journal hits and nothing else. Each hit carries `origin` (node and swarm), and the reply carries a status for every plug-in and every peer.
 
 A peer that is down, refuses, times out (10 seconds) or sends more than 2 MiB never fails the search or hides local hits. A peer on a release without `search`, or one that granted this node no source, shows as `unsupported`.
 
