@@ -52,7 +52,7 @@ _WRITES_OR_RUNS = [
 
 #: The built-ins each persona holds. `Task` and `Agent` are one tool under two
 #: names, depending on the Claude Code version. The representative reads cards
-#: only through `reporting`, so it holds no file tools and cannot ask a person a
+#: only through `operations`, so it holds no file tools and cannot ask a person a
 #: question nobody is there to answer.
 _REPRESENTATIVE_TOOLS = ["Task", "Agent", "SendMessage", "ListAgents", "Skill", "ToolSearch"]
 _SECRETARY_TOOLS = ["SendMessage", "ListAgents", "Skill", "ToolSearch", "AskUserQuestion"]

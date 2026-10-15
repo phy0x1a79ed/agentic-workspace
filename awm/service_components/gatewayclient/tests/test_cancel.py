@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import subprocess
 import threading
 import time
 
@@ -68,6 +69,13 @@ def test_no_token_behaves_like_subprocess_run():
     r = cancel.run(["bash", "-c", "echo out; echo err >&2; exit 3"])
     assert (r.returncode, r.stdout, r.stderr) == (3, "out\n", "err\n")
 
+
+
+def test_check_raises_like_subprocess_run():
+    with pytest.raises(subprocess.CalledProcessError) as ei:
+        cancel.run(["bash", "-c", "echo out; echo err >&2; exit 3"], check=True)
+    assert (ei.value.returncode, ei.value.stdout, ei.value.stderr) == (3, "out\n", "err\n")
+    assert cancel.run(["true"], check=True).returncode == 0
 
 class _WS:
     def __init__(self):

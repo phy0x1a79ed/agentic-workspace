@@ -102,7 +102,8 @@ def _kill_group(proc: subprocess.Popen) -> None:
 
 
 def run(argv: list[str], *, cwd: str | None = None, env: dict | None = None,
-        timeout: float | None = None, text: bool = True) -> subprocess.CompletedProcess:
+        timeout: float | None = None, text: bool = True,
+        check: bool = False) -> subprocess.CompletedProcess:
     """``subprocess.run(capture_output=True)`` whose process group dies with the call."""
     token = current()
     if token is not None:
@@ -123,4 +124,6 @@ def run(argv: list[str], *, cwd: str | None = None, env: dict | None = None,
             token._untrack(proc)
     if token is not None:
         token.check()
+    if check and proc.returncode:
+        raise subprocess.CalledProcessError(proc.returncode, argv, out, err)
     return subprocess.CompletedProcess(argv, proc.returncode, out, err)

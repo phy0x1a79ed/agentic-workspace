@@ -27,13 +27,20 @@ door does with the others:
 * failed (an unclassified API error): stop it, which the door may do because it
   started it, and start a new one. Restarts back off, doubling from
   `MIN_RETRY_S`. A session's own "failed: ..." line is not this state.
+
+A session also keeps the instructions it started with. The door records a
+fingerprint of the launch config with each job, and replaces an alive session
+whose fingerprint differs from today's, or is missing, the same way it replaces
+a failed one. It waits while the session is mid-turn.
 """
 
 from __future__ import annotations
 
 import asyncio
 import fcntl
+import hashlib
 import importlib
+import json
 import logging
 import os
 import time
@@ -54,6 +61,13 @@ QUIET_S = 600.0
 #: The shortest wait before a failed start is tried again.
 MIN_RETRY_S = 60.0
 MAX_RETRY_S = 900.0
+#: The cx state of a session in the middle of a turn.
+WORKING = "working"
+
+
+def spec_hash(spec: dict) -> str:
+    """A fingerprint of a launch config. Equal configs hash equal whatever their key order."""
+    return hashlib.sha256(json.dumps(spec, sort_keys=True, default=str).encode()).hexdigest()[:16]
 
 
 class Loop:
@@ -212,15 +226,18 @@ class Loop:
             if len(have) > 1:
                 self._note(f"dup:{role}", f"{role}: {len(have)} live sessions carry mode "
                            f"{spec['mode']!r}; the door leaves them alone")
-            if not health.restartable:
-                self.jobs[role] = health.job or ""
-                if health.alive:
-                    self._failures.pop(role, None)
-                    self._settle_restarts(role)
-                return
-            stopped = await self._stop_failed(role, health)
+            if health.alive and self._outdated(role, spec, health.job, rows):
+                stopped = await self._stop_failed(role, health, "its launch config is outdated")
             if stopped is None:
-                return
+                if not health.restartable:
+                    self.jobs[role] = health.job or ""
+                    if health.alive:
+                        self._failures.pop(role, None)
+                        self._settle_restarts(role)
+                    return
+                stopped = await self._stop_failed(role, health)
+                if stopped is None:
+                    return
         self.jobs.pop(role, None)
         taken = [r for r in rows if r.get("name") == spec.get("name")
                  and r.get("state") != sessions.GONE and r.get("job") != stopped]
@@ -237,7 +254,7 @@ class Loop:
                 self._next_try.pop(role, None)
             self.jobs[role] = reply.get("job") or ""
             if reply.get("job"):
-                self.queue.record_session(role, reply["job"])
+                self.queue.record_session(role, reply["job"], spec_hash(spec))
                 await self._pins.pin(reply["job"])
             await self._retire(role, rows, reply.get("job"), stopped)
             log.info("reporting: started the %s as %s", role, reply.get("job"))
@@ -260,8 +277,20 @@ class Loop:
         for job in (old | {stopped}) - {new, None}:
             await self._pins.release(job)
 
-    async def _stop_failed(self, role: str, health: sessions.Health) -> str | None:
-        """Stop the door's failed session so a new one can start. Returns its job, or None to wait.
+    def _outdated(self, role: str, spec: dict, job: str | None, rows: list[dict]) -> bool:
+        """Whether ``job`` started from another launch config and sits between turns."""
+        if not job or self.queue.session_spec_hash(role, job) == spec_hash(spec):
+            return False
+        row = next((r for r in rows if r.get("job") == job), {})
+        if row.get("state") == WORKING:
+            self._note(f"outdated:{role}", f"{role}: {job} runs an outdated launch config; "
+                       "replacing it after its turn")
+            return False
+        return True
+
+    async def _stop_failed(self, role: str, health: sessions.Health,
+                           why: str | None = None) -> str | None:
+        """Stop the door's failed or outdated session so a new one can start. Returns its job, or None to wait.
 
         A failed session is stopped at most once per back-off period, so a
         session that fails as soon as it starts cannot make the door churn.
@@ -273,10 +302,11 @@ class Loop:
         self._next_try[role] = time.time() + self._restart_wait(role)
         reply = await self.cx.stop(health.job or "")
         if not reply.get("ok"):
-            self._note(f"stop:{role}", f"{role}: cx would not stop the failed session "
+            self._note(f"stop:{role}", f"{role}: cx would not stop the session "
                        f"{health.job}: {reply.get('reason') or reply!r}")
             return None
-        log.info("reporting: stopped the failed %s %s (%s); starting a new one", role, health.job, health.reason)
+        log.info("reporting: stopped the %s %s (%s); starting a new one", role, health.job,
+                 why or health.reason)
         return health.job
 
     def _restart_wait(self, role: str) -> float:
@@ -317,7 +347,7 @@ class Loop:
         for row in sessions.strangers(rows, spec["mode"], jobs):
             if (row.get("name") == spec.get("name") and row.get("job")
                     and row.get("caller") is not None and row.get("parent") is None):
-                self.queue.record_session(role, row["job"])
+                self.queue.record_session(role, row["job"], spec_hash(spec))
                 await self._pins.pin(row["job"])
                 log.info("reporting: adopted %s as the %s; its start outlived the call", row["job"], role)
                 found = True

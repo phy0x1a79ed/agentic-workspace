@@ -41,8 +41,9 @@ CREATE TABLE IF NOT EXISTS meta (
 );
 CREATE TABLE IF NOT EXISTS sessions (
     role    TEXT NOT NULL,
-    job     TEXT NOT NULL,
-    started REAL NOT NULL,
+    job       TEXT NOT NULL,
+    started   REAL NOT NULL,
+    spec_hash TEXT,
     PRIMARY KEY (role, job)
 );
 """
@@ -101,8 +102,9 @@ CREATE TABLE IF NOT EXISTS todos (
 );
 """
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
+_QUEUE_SCHEMA_V3 = _QUEUE_SCHEMA.replace("    spec_hash TEXT,\n", "")
 _TASKS_SCHEMA_V2 = _TASKS_SCHEMA.replace("    owned      INTEGER NOT NULL DEFAULT 0,\n", "")
 
 _OWNED_MIGRATION = """
@@ -110,6 +112,8 @@ ALTER TABLE tasks ADD COLUMN owned INTEGER NOT NULL DEFAULT 0;
 UPDATE tasks SET owned = 1 WHERE NOT EXISTS (
     SELECT 1 FROM task_events WHERE task_events.task_id = tasks.id AND task_events.kind = 'claimed');
 """
+
+_SPEC_HASH_MIGRATION = "ALTER TABLE sessions ADD COLUMN spec_hash TEXT;"
 
 _URGENT_FIRST = "CASE priority WHEN 'urgent' THEN 0 WHEN 'normal' THEN 1 ELSE 2 END"
 _CURSOR = "cursor"
@@ -124,7 +128,8 @@ class Db:
         self.path = Path(path)
         databases.init_db_at(self.path, _QUEUE_SCHEMA + _TASKS_SCHEMA,
                              schema_version=SCHEMA_VERSION,
-                             migrations={(1, 2): _TASKS_SCHEMA_V2, (2, 3): _OWNED_MIGRATION})
+                             migrations={(1, 2): _TASKS_SCHEMA_V2, (2, 3): _OWNED_MIGRATION,
+                                         (3, 4): _SPEC_HASH_MIGRATION})
 
     def _conn(self) -> sqlite3.Connection:
         return databases.get_connection_at(self.path)
@@ -357,12 +362,22 @@ class Queue(Db):
 
     # -- the sessions the door started --------------------------------------
 
-    def record_session(self, role: str, job: str) -> None:
+    def record_session(self, role: str, job: str, spec_hash: str | None = None) -> None:
         conn = self._conn()
         try:
             with conn:
-                conn.execute("INSERT OR IGNORE INTO sessions (role, job, started) VALUES (?,?,?)",
-                             (role, job, time.time()))
+                conn.execute("INSERT OR IGNORE INTO sessions (role, job, started, spec_hash) "
+                             "VALUES (?,?,?,?)", (role, job, time.time(), spec_hash))
+        finally:
+            conn.close()
+
+    def session_spec_hash(self, role: str, job: str) -> str | None:
+        """The launch-config fingerprint the door recorded for ``job``. None for a row from before it did."""
+        conn = self._conn()
+        try:
+            row = conn.execute("SELECT spec_hash FROM sessions WHERE role=? AND job=?",
+                               (role, job)).fetchone()
+            return row["spec_hash"] if row else None
         finally:
             conn.close()
 
