@@ -93,3 +93,25 @@ def test_every_table_in_the_tree_names_a_verb_its_service_publishes():
         sources = "".join(p.read_text() for p in (SERVICES / service / "awm").rglob("*.py"))
         assert f'"tool": "{verb}"' in sources, (service, verb)
         assert registry._NAME.fullmatch(table["name"]), table
+
+
+def test_an_unchanged_registry_writes_nothing_so_a_query_never_waits_on_a_sweep(search_db):
+    import sqlite3
+
+    from awm.search import store
+    spec = {"journals": {"service": "journal", "mode": "index"}}
+    conn = store.connect()
+    assert store.record_registry(conn, spec, set(spec)) == ["journals"]
+    conn.close()
+    sweep = store.connect()
+    sweep.execute("BEGIN IMMEDIATE")
+    query = store.connect()
+    query.execute("PRAGMA busy_timeout = 50")
+    try:
+        assert store.record_registry(query, spec, set(spec)) == []
+        with pytest.raises(sqlite3.OperationalError, match="locked"):
+            store.record_registry(query, {}, set())
+    finally:
+        sweep.rollback()
+        query.close()
+        sweep.close()

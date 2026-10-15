@@ -102,7 +102,8 @@ def record_registry(conn: sqlite3.Connection, sources: dict[str, dict], present:
 
     ``sources`` maps a name to its ``{service, mode, ...}`` spec. A stored source
     the registry no longer shows is kept and marked absent, never deleted: its
-    documents stay searchable as frozen.
+    documents stay searchable as frozen. An unchanged registry writes nothing,
+    because a query calls this and must not wait on a sweep's write lock.
     """
     now = time.time() if now is None else now
     stored = {r["name"]: r for r in conn.execute("SELECT name, spec, present FROM sources")}
@@ -115,14 +116,15 @@ def record_registry(conn: sqlite3.Connection, sources: dict[str, dict], present:
                 "INSERT INTO sources (name, service, mode, spec, present, first_seen, last_seen)"
                 " VALUES (?,?,?,?,1,?,?)", (name, spec["service"], spec["mode"], blob, now, now))
             news.append(name)
-            continue
-        if row["spec"] != blob or not row["present"]:
+        elif row["spec"] != blob or not row["present"]:
             news.append(name)
-        conn.execute("UPDATE sources SET service=?, mode=?, spec=?, present=1, last_seen=? WHERE name=?",
-                     (spec["service"], spec["mode"], blob, now, name))
+            conn.execute("UPDATE sources SET service=?, mode=?, spec=?, present=1, last_seen=? WHERE name=?",
+                         (spec["service"], spec["mode"], blob, now, name))
     for name in stored.keys() - sources.keys():
-        conn.execute("UPDATE sources SET present=0 WHERE name=?", (name,))
-    conn.commit()
+        if stored[name]["present"]:
+            conn.execute("UPDATE sources SET present=0 WHERE name=?", (name,))
+    if conn.in_transaction:
+        conn.commit()
     return news
 
 
