@@ -62,11 +62,11 @@ def excerpt(body: str | None, limit: int = EXCERPT_CHARS) -> str:
 def card_dm(card: dict, *, claimable: bool) -> str:
     """The message that tells Tony about a card, ending in the line he hands an agent."""
     ref = short_ref(card["id"])
-    lines = [f"**{card.get('title') or '(no title)'}**"
+    lines = [f"New post from {party_label(card.get('sender'), card.get('agent'))}"
+             f" to {card.get('recipient') or '?'}",
+             f"**{card.get('title') or '(no title)'}**"
              + (" [message]" if card.get("kind") == "message" else "")
-             + (" (urgent)" if card.get("priority") == "urgent" else ""),
-             f"From: {party_label(card.get('sender'), card.get('agent'))}",
-             f"To: {card.get('recipient') or '?'}"]
+             + (" (urgent)" if card.get("priority") == "urgent" else "")]
     if card.get("project"):
         lines.append(f"Project: {card['project']}")
     text = excerpt(card.get("body"))
