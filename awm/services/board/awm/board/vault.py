@@ -2,8 +2,9 @@
 
 The board is a note carrying one marker label. Its children are the column
 folders, one per state, and each card is a child of the folder for its state.
-A card still sitting directly under the board is one from before the folders
-existed. This module finds those notes and moves bytes between them and plain
+Each column folder holds one `Archived` folder, and an archived card lives
+there, still in the state of the column around it. A card still sitting
+directly under the board is one from before the folders existed. This module finds those notes and moves bytes between them and plain
 dicts. It knows the `cardId` label because that is how a card is found, and
 which folder is which state, and nothing else about what a card means.
 
@@ -37,6 +38,15 @@ MESSAGE_SEQ = "msgSeq"
 
 #: Marks a column folder; its value is the state the folder stands for.
 COLUMN_LABEL = "cardColumn"
+
+#: Marks the `Archived` folder inside a column folder; its value is the state of that column.
+ARCHIVE_FOLDER_LABEL = "cardArchiveFolder"
+
+#: Hides a note, and the board view hides a folder that carries it.
+ARCHIVED = "archived"
+
+#: The title of the folder that holds a column's archived cards.
+ARCHIVE_TITLE = "Archived"
 
 #: The label that makes Trilium's board view take its columns from the board's child folders.
 #: Without it the view groups cards by `#status` and shows no sections.
@@ -95,6 +105,8 @@ class Vault:
         self._chat_by_card: dict[str, str] = {}
         #: state to the id of its column folder, as last found. None until looked up.
         self._columns: dict[str, str] | None = None
+        #: state to the id of the `Archived` folder inside its column folder. None until looked up.
+        self._archives: dict[str, str] | None = None
         self._chips_defined = False
 
     # -- transport -------------------------------------------------------------
@@ -130,6 +142,7 @@ class Vault:
         """Look the board note and its column folders up again."""
         self.board_id(refresh=True)
         self._columns = None
+        self._archives = None
 
     # -- the column folders ----------------------------------------------------
 
@@ -154,8 +167,29 @@ class Vault:
             self._columns = columns
         return self._columns
 
+    def archives(self) -> dict[str, str]:
+        """State to the id of its column's `Archived` folder, for the folders that exist. Makes none."""
+        if self._archives is None:
+            columns = self.columns()
+            found = self._call("note_search", query=f"#{ARCHIVE_FOLDER_LABEL}",
+                               ancestor=self.board_id(), limit=50, archived=True)
+            by_column = {folder: state for state, folder in columns.items()}
+            archives: dict[str, str] = {}
+            for note in sorted(found.get("results") or [], key=lambda n: n.get("noteId", "")):
+                state = next((by_column[p] for p in note.get("parentNoteIds") or []
+                              if p in by_column), None)
+                if state is None:
+                    continue
+                if state in archives:
+                    log.warning("two archive folders in the %s column: using %s, ignoring %s",
+                                state, archives[state], note["noteId"])
+                    continue
+                archives[state] = note["noteId"]
+            self._archives = archives
+        return self._archives
+
     def ensure_columns(self) -> dict[str, str]:
-        """Make each missing column folder, in board order, and the board's chip definitions. Idempotent."""
+        """Make each missing column folder and its `Archived` folder, in board order, and the board's chip definitions. Idempotent."""
         columns = self.columns()
         if len(columns) < len(STATES):
             board = self.board_id()
@@ -167,6 +201,15 @@ class Vault:
                 if not made.get("note_id"):
                     raise VaultError(f"note_create returned no note id: {made!r}")
                 columns[state] = made["note_id"]
+        archives = self.archives()
+        for state in STATES:
+            if state in archives:
+                continue
+            made = self._call("note_create", title=ARCHIVE_TITLE, content="", parent=columns[state],
+                              type="text", labels={ARCHIVE_FOLDER_LABEL: state, ARCHIVED: ""})
+            if not made.get("note_id"):
+                raise VaultError(f"note_create returned no note id: {made!r}")
+            archives[state] = made["note_id"]
         if not self._chips_defined:
             self._define_board_view()
         return columns
@@ -190,13 +233,19 @@ class Vault:
     def _record(self, note: dict, content: str | None) -> dict | None:
         """A card record from a Trilium note, or None when the note is not a card.
 
-        ``state`` is the state of the column folder the card sits in, or None
-        for a card still directly under the board, whose state is its `status`
-        label.
+        ``state`` is the state of the column folder the card sits in, or of the
+        column around the `Archived` folder it sits in, or None for a card still
+        directly under the board, whose state is its `status` label.
+        ``archived_in`` says whether the card sits in an `Archived` folder.
         """
         parents = note.get("parentNoteIds") or []
         by_folder = {folder: state for state, folder in self.columns().items()}
         state = next((by_folder[p] for p in parents if p in by_folder), None)
+        in_archive = False
+        if state is None:
+            by_archive = {folder: state for state, folder in self.archives().items()}
+            state = next((by_archive[p] for p in parents if p in by_archive), None)
+            in_archive = state is not None
         if state is None and self.board_id() not in parents:
             return None
         labels: dict[str, str] = {}
@@ -211,7 +260,8 @@ class Vault:
         self._note_by_card[card_id] = note_id
         self._card_by_note[note_id] = card_id
         return {"note_id": note_id, "title": note.get("title") or "",
-                "content": content, "labels": labels, "relations": relations, "state": state}
+                "content": content, "labels": labels, "relations": relations, "state": state,
+                "archived_in": in_archive}
 
     def create(self, title: str, body: str, labels: dict[str, str],
                relations: dict[str, str], state: str = "proposed") -> dict:
@@ -283,6 +333,26 @@ class Vault:
             self._call("note_move", note_id=rec["note_id"], parent=self.ensure_columns()[state])
         if "status" in rec["labels"]:
             self._call("attr_delete", note_id=rec["note_id"], name="status")
+
+    def archive(self, rec: dict, state: str, labels: dict[str, str] | None = None) -> None:
+        """Label the card `archived` and file it in the `Archived` folder of the column for ``state``.
+
+        The labels go first and the move last, as every write does. A card
+        already filed there is not moved again. Extra ``labels`` are written
+        with the `archived` label. Unarchiving is moving the card back out.
+        """
+        self.update(rec["note_id"], labels={**(labels or {}), ARCHIVED: ""})
+        if not (rec.get("archived_in") and rec.get("state") == state):
+            self.ensure_columns()
+            self._call("note_move", note_id=rec["note_id"], parent=self.archives()[state])
+        if "status" in rec["labels"]:
+            self._call("attr_delete", note_id=rec["note_id"], name="status")
+
+    def list_archived(self) -> list[dict]:
+        """Every archived card note under the board, wherever it sits."""
+        found = self._call("note_search", query=f"#cardId #{ARCHIVED}",
+                           ancestor=self.board_id(), limit=SEARCH_LIMIT, archived=True)
+        return [rec for n in found.get("results") or [] if (rec := self._record(n, None))]
 
     # -- card chats ------------------------------------------------------------
 

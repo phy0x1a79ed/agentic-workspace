@@ -7,6 +7,9 @@ Active, Blocked, Pending review, Done, Rejected. This process is the only API
 writer; the watcher (`Board.sweep`) notices edits made outside it and turns
 them into `card.moved` events. The event log only feeds stream replay.
 
+An archived card carries the `archived` label and sits in the `Archived` folder
+inside its column folder, so it keeps the state of the column around it.
+
 Every card also carries `status`, the previous release's four-value vocabulary
 derived from its state, so a peer that has not upgraded keeps reading the board.
 
@@ -646,7 +649,7 @@ class Board:
         if _iso_age_s(since) < self.archive_after_s:
             return
         try:
-            self.vault.update(rec["note_id"], labels={"archived": ""})
+            self.vault.archive(rec, card["state"])
         except VaultError as e:
             log.warning("could not archive card %s: %s", card["id"], e)
 
@@ -732,6 +735,11 @@ class Board:
         """Move every card still directly under the board into the folder for its status."""
         from . import migrate
         return migrate.columns(self, dry_run)
+
+    def migrate_archive(self, dry_run: bool = True) -> dict:
+        """File every archived card in the `Archived` folder of its column. See `migrate.archive`."""
+        from . import migrate
+        return migrate.archive(self, dry_run)
 
     def migrate_threads(self, dry_run: bool = True, proposal_path: str | Path | None = None) -> dict:
         """Fold reply cards into the threads of their root cards. See `migrate.threads`."""

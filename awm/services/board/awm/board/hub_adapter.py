@@ -34,7 +34,7 @@ from awm.board.client import BoardClient, BoardError
 
 log = logging.getLogger("awm.board.hub_adapter")
 
-HOST_ONLY = ("party_add", "party_revoke", "party_list", "migrate_columns", "migrate_threads")
+HOST_ONLY = ("party_add", "party_revoke", "party_list", "migrate_columns", "migrate_archive", "migrate_threads")
 CARD_FIELDS = ("sender", "recipient", "claimant", "status", "state", "kind", "reply_to", "project")
 
 #: Set once the host's stores exist. The admin verbs read it.
@@ -228,6 +228,19 @@ API_MANIFEST: dict[str, Any] = {
                 "Host admin only. Make the column folders and move every card "
                 "still under the board into the folder for its old status. A "
                 "dry run changes nothing and reports the plan."
+            ),
+            "params": [_param("dry_run", "boolean", "Default true. Pass false to apply.")],
+        },
+        {
+            "name": "migrate_archive",
+            "tool": "operations_board_migrate_archive",
+            "surfaces": ["cli", "http"],
+            "effect": "write",
+            "description": (
+                "Host admin only. Make the Archived folder inside each column "
+                "folder and move every archived card into the one for its "
+                "column. A card under the board takes the column of its old "
+                "status. A dry run changes nothing and reports the plan."
             ),
             "params": [_param("dry_run", "boolean", "Default true. Pass false to apply.")],
         },
@@ -513,6 +526,11 @@ async def migrate_columns(args: dict, as_: str | None = None) -> dict:
     return await _migration("migrate_columns", as_, lambda b: b.migrate_columns(dry_run))
 
 
+async def migrate_archive(args: dict, as_: str | None = None) -> dict:
+    dry_run = _flag(args, "dry_run", True)
+    return await _migration("migrate_archive", as_, lambda b: b.migrate_archive(dry_run))
+
+
 async def migrate_threads(args: dict, as_: str | None = None) -> dict:
     dry_run = _flag(args, "dry_run", True)
     path = args.get("proposal_path") or data_dir() / "thread-proposal.json"
@@ -532,6 +550,7 @@ HANDLERS: dict[str, Any] = {
     "messages": messages,
     "events": events,
     "migrate_columns": migrate_columns,
+    "migrate_archive": migrate_archive,
     "migrate_threads": migrate_threads,
     "party_add": party_add,
     "party_revoke": party_revoke,
