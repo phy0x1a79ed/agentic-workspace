@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 from awm.board.client import BoardConflict, BoardRefused
@@ -17,7 +18,7 @@ def make_card(**over) -> dict:
         "id": f"{_N:032x}", "kind": "request", "recipient": "tony", "status": "posted",
         "priority": "normal", "title": f"card {_N}", "body": "do the thing",
         "sender": {"swarm": "beta", "principal": "op", "party": "p"},
-        "claimant": None, "created_at": "2026-10-09T12:00:00.000+00:00",
+        "claimant": None, "created_at": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
     }
     card.update(over)
     return card
@@ -171,10 +172,12 @@ class FakeCx:
 
 def session_row(mode: str, job: str = "abc12345", state: str = "idle", name: str | None = None,
                 caller: str | None = None, parent: str | None = None,
-                needs: str | None = None, detail: str | None = None) -> dict:
+                needs: str | None = None, detail: str | None = None,
+                tempo: str | None = None) -> dict:
     """A cx list row. A hand-started session has no lineage, so no caller."""
     return {"job": job, "name": name or mode, "mode": mode, "state": state,
-            "caller": caller, "parent": parent, "needs": needs, "detail": detail}
+            "caller": caller, "parent": parent, "needs": needs, "detail": detail,
+            "tempo": tempo}
 
 
 class FakeTrilium:

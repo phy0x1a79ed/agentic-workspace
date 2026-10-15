@@ -61,13 +61,21 @@ QUIET_S = 600.0
 #: The shortest wait before a failed start is tried again.
 MIN_RETRY_S = 60.0
 MAX_RETRY_S = 900.0
-#: The cx state of a session in the middle of a turn.
+#: The cx state a session reports for itself while it works. It can outlast the turn.
 WORKING = "working"
+#: The daemon's tempo while a turn is running.
+ACTIVE = "active"
 
 
 def spec_hash(spec: dict) -> str:
     """A fingerprint of a launch config. Equal configs hash equal whatever their key order."""
     return hashlib.sha256(json.dumps(spec, sort_keys=True, default=str).encode()).hexdigest()[:16]
+
+
+def _mid_turn(row: dict) -> bool:
+    """Whether a cx row's session is running a turn. A cx without ``tempo`` leaves only the self-report."""
+    tempo = row.get("tempo")
+    return tempo == ACTIVE if tempo else row.get("state") == WORKING
 
 
 class Loop:
@@ -282,7 +290,7 @@ class Loop:
         if not job or self.queue.session_spec_hash(role, job) == spec_hash(spec):
             return False
         row = next((r for r in rows if r.get("job") == job), {})
-        if row.get("state") == WORKING:
+        if _mid_turn(row):
             self._note(f"outdated:{role}", f"{role}: {job} runs an outdated launch config; "
                        "replacing it after its turn")
             return False
