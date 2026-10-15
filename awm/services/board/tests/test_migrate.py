@@ -173,6 +173,7 @@ def test_apply_backfills_the_thread_in_original_order_and_folds_the_cards(
     assert not cards & {chains["b"], chains["c"], chains["d"]}          # archived, hidden
     assert board.get(root, chains["b"])["id"] == chains["b"]            # but never deleted
     assert trilium.label(trilium.card_note(chains["b"]), "archived") == ""
+    assert trilium.is_filed_archived(chains["b"]) and trilium.state_of(chains["b"]) == "proposed"
     assert board.get(root, chains["a"])["last_message"] == 3
     assert board.get(root, chains["a"])["project"] == "factorio"
     chat = trilium.children(trilium.card_note(chains["a"]))

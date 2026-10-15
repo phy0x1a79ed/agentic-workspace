@@ -107,12 +107,28 @@ class FakeTrilium:
         raise KeyError(state)
 
     def state_of(self, card_id: str) -> str | None:
-        """The state of the folder the card sits in, or None when it sits elsewhere."""
+        """The state of the folder the card sits in, or of the column around its `Archived` folder.
+
+        None when it sits elsewhere.
+        """
         (parent,) = self.notes[self.card_note(card_id)]["parentNoteIds"]
+        if self.label(parent, "cardArchiveFolder") is not None:
+            (parent,) = self.notes[parent]["parentNoteIds"]
         for a in self.attrs.values():
             if a["noteId"] == parent and a["name"] == "cardColumn":
                 return a["value"]
         return None
+
+    def archive_folder(self, state: str) -> str:
+        """The `Archived` folder inside the column folder for ``state``."""
+        (found,) = [n for n in self.children(self.column(state))
+                    if self.label(n, "cardArchiveFolder") is not None]
+        return found
+
+    def is_filed_archived(self, card_id: str) -> bool:
+        """Whether the card sits in an `Archived` folder."""
+        (parent,) = self.notes[self.card_note(card_id)]["parentNoteIds"]
+        return self.label(parent, "cardArchiveFolder") is not None
 
     def gui_move(self, card_id: str, state: str) -> None:
         """What dragging a card to another column folder does: one branch change, no lock."""
