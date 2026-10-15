@@ -9,6 +9,7 @@ keyed by card id.
 
 from __future__ import annotations
 
+import asyncio
 import sqlite3
 import time
 from pathlib import Path
@@ -151,7 +152,31 @@ class Db:
                                          (4, 5): _THREADS_MIGRATION})
 
     def _conn(self) -> sqlite3.Connection:
-        return databases.get_connection_at(self.path)
+        conn = databases.get_connection_at(self.path)
+        conn.execute("PRAGMA synchronous=NORMAL")
+        return conn
+
+
+class Offloaded:
+    """Runs a `Db`'s methods on a worker thread, as coroutines.
+
+    Every call opens a connection and commits, and on this machine's root disk
+    an fsync can stall for tens of seconds. The service's event loop also
+    answers the gateway's control-WS keepalive pings, so a commit made on the
+    loop gets the lease closed. Code on the loop calls the database through
+    this; the object it wraps stays the one with plain methods.
+    """
+
+    def __init__(self, db: Any) -> None:
+        self._db = db
+
+    def __getattr__(self, name: str) -> Any:
+        method = getattr(self._db, name)
+
+        async def call(*args: Any, **kwargs: Any) -> Any:
+            return await asyncio.to_thread(method, *args, **kwargs)
+
+        return call
 
 
 class Queue(Db):

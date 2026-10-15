@@ -36,25 +36,25 @@ def test_a_bad_role_refuses_instead_of_running(monkeypatch):
     assert "invalid" in config.refusal()
 
 
-def test_start_on_a_station_logs_a_refusal_and_builds_nothing(monkeypatch, caplog, tmp_path):
+async def test_start_on_a_station_logs_a_refusal_and_builds_nothing(monkeypatch, caplog, tmp_path):
     monkeypatch.setenv("AWM_NODE_ROLE", "station")
     monkeypatch.setattr(hub_adapter, "RUNTIME", None)
     spawned = []
     monkeypatch.setattr(hub_adapter, "spawn_supervised", lambda *a, **k: spawned.append(a))
     with caplog.at_level(logging.WARNING):
-        hub_adapter._on_start()
+        await hub_adapter._on_start()
     assert hub_adapter.RUNTIME is None
     assert spawned == []
     assert not (tmp_path / "reporting.db").exists()
     assert "not running" in caplog.text
 
 
-def test_start_with_the_flag_off_runs_no_front_door_tasks(monkeypatch):
+async def test_start_with_the_flag_off_runs_no_front_door_tasks(monkeypatch):
     monkeypatch.setenv("AWM_FRONT_DOOR", "0")
     monkeypatch.setattr(hub_adapter, "RUNTIME", None)
     spawned = []
     monkeypatch.setattr(hub_adapter, "spawn_supervised", lambda name, *a: spawned.append(name))
-    hub_adapter._on_start()
+    await hub_adapter._on_start()
     assert spawned == ["reporting-reconcile", "reporting-journals"]
     assert hub_adapter.RUNTIME is not None and not hub_adapter.RUNTIME.door
 
