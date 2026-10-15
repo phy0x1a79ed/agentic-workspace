@@ -60,6 +60,13 @@ async def test_reject_without_a_reason_gives_one(parts):
     assert fed.verbs("reject")[0]["reason"] == "rejected by the recipient"
 
 
+async def test_a_reason_typed_after_the_ref_is_kept(parts):
+    commands, fed, _, _ = parts
+    card = fed.add(make_card())
+    await commands.handle(event("reject", ref=f"{card['id'][:8]} testing reject", reason=""))
+    assert fed.verbs("reject") == [{"card_id": card["id"], "reason": "testing reject"}]
+
+
 async def test_reject_answers_in_the_channel_the_command_named(parts):
     commands, fed, _, replies = parts
     card = fed.add(make_card())
