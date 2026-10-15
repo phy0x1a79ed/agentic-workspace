@@ -97,19 +97,19 @@ async def test_a_refused_reject_is_reported(parts):
 
 async def test_new_agent_starts_a_session_with_remote_control_and_replies_with_its_link(parts):
     commands, _, cx, replies = parts
-    await commands.handle(event("new_agent", project="factorio", scope="dev", name="phone",
-                                prompt="hello", reply_to="dm:42"))
+    await commands.handle(event("new_agent", prompt="hello", reply_to="dm:42"))
     await settle(commands)
-    assert cx.started == [{"project": "factorio", "scope": "dev", "name": "phone",
-                           "remote_control": True, "prompt": "hello"}]
+    spec = cx.started[0]
+    assert (spec["project"], spec["scope"], spec["remote_control"], spec["prompt"]) == (
+        "awm", "dev", True, "hello")
     account, channel, text = replies.sent[0]
     assert (account, channel) == ("discord-bot", "dm:42")
-    assert "https://claude.ai/code/session_job0001" in text and "phone" in text
+    assert "https://claude.ai/code/session_job0001" in text and spec["name"] in text
 
 
-async def test_new_agent_defaults_the_project_scope_and_name(parts, monkeypatch):
+async def test_new_agent_takes_its_project_scope_and_name_from_the_node(parts, monkeypatch):
     commands, _, cx, _ = parts
-    await commands.handle(event("new_agent", project="", scope="", name="", prompt=""))
+    await commands.handle(event("new_agent", prompt=""))
     await settle(commands)
     spec = cx.started[0]
     assert (spec["project"], spec["scope"], spec["remote_control"]) == ("awm", "dev", True)
@@ -133,7 +133,7 @@ async def test_a_link_that_is_not_ready_is_reported_with_the_reason(parts):
 async def test_a_start_cx_refuses_is_reported(parts):
     commands, _, cx, replies = parts
     cx.start_reply = {"ok": False, "reason": "a live session already holds the name"}
-    await commands.handle(event("new_agent", name="dup"))
+    await commands.handle(event("new_agent"))
     await settle(commands)
     assert "could not start an agent: a live session already holds the name" in replies.sent[0][2]
 

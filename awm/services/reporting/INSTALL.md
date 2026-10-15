@@ -125,7 +125,7 @@ deletes it when a result says the task is no longer blocked.
 | `AWM_REPORTING_REMIND_S` | seconds an urgent request stays blocked before Tony gets one reminder (default 3600) |
 | `AWM_REPORTING_DM_ACCOUNT`, `AWM_REPORTING_DM_CHANNEL` | the `social` account and channel that carry card DMs and urgent requests (default: the account and DM that `auth` uses for the password push). `AWM_SOCIAL_PEER` names the node that runs `social` |
 | `AWM_REPORTING_TRILIUM_URL` | where Tony opens a note from, without the `#`, for the link in that message (default: this node's edge URL plus `/trilium`) |
-| `AWM_REPORTING_NEW_AGENT_PROJECT`, `AWM_REPORTING_NEW_AGENT_SCOPE` | where `/new-agent` starts a session when the command names no scope (default `awm`, `dev`) |
+| `AWM_REPORTING_NEW_AGENT_PROJECT`, `AWM_REPORTING_NEW_AGENT_SCOPE` | where `/new-agent` starts a session (default `awm`, `dev`). The agent moves to another scope when its prompt asks it to |
 | `AWM_REPORTING_MESSAGE_BACKLOG_S` | how old a message card may be and still be queued by a catch-up (default 3 days) |
 
 ## Task identity

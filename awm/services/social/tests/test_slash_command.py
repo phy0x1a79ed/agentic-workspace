@@ -240,18 +240,15 @@ class TestNewAgentCommand:
 
         conn = _connector(cap)
         inter = _FakeInteraction(guild=None)
-        await conn._tree.get_command("new-agent").callback(
-            inter, project="awm", scope="feat-x", name="n1", prompt="go")
+        await conn._tree.get_command("new-agent").callback(inter, prompt="fix the tests")
 
         assert captured[0].name == "new_agent"
-        assert captured[0].options == {
-            "project": "awm", "scope": "feat-x", "name": "n1", "prompt": "go",
-            "reply_to": "dm:4242"}
+        assert captured[0].options == {"prompt": "fix the tests", "reply_to": "dm:4242"}
         content, ephemeral = inter.response.messages[0]
         assert ephemeral is True and "agent" in content
 
     @pytest.mark.asyncio
-    async def test_all_options_optional(self):
+    async def test_the_prompt_is_optional(self):
         captured = []
 
         async def cap(cmd):
@@ -260,8 +257,7 @@ class TestNewAgentCommand:
         conn = _connector(cap)
         await conn._tree.get_command("new-agent").callback(
             _FakeInteraction(guild=None))
-        assert captured[0].options["project"] == ""
-        assert captured[0].options["reply_to"] == "dm:4242"
+        assert captured[0].options == {"prompt": "", "reply_to": "dm:4242"}
 
 
 # -- adapter emit -----------------------------------------------------------
@@ -310,17 +306,14 @@ class TestOnCommandEmit:
             is_dm=True, operator="tony"))
         await hub_adapter._on_command(Command(
             account="bot", platform="discord", name="new_agent",
-            options={"project": "awm", "scope": "s", "name": "n",
-                     "prompt": "p", "reply_to": "dm:1"},
+            options={"prompt": "p", "reply_to": "dm:1"},
             user_id="1", is_dm=True, operator="tony"))
 
         reject, new_agent = (p for _, p in emitted)
         assert (reject["command"], reject["ref"], reject["reason"],
                 reject["operator"]) == ("reject", "r1", "no", "tony")
-        assert (new_agent["command"], new_agent["project"], new_agent["scope"],
-                new_agent["name"], new_agent["prompt"], new_agent["reply_to"],
-                new_agent["operator"]) == (
-            "new_agent", "awm", "s", "n", "p", "dm:1", "tony")
+        assert (new_agent["command"], new_agent["prompt"], new_agent["reply_to"],
+                new_agent["operator"]) == ("new_agent", "p", "dm:1", "tony")
         assert new_agent["account"] == "bot"
 
     @pytest.mark.asyncio

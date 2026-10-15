@@ -211,19 +211,12 @@ class DiscordConnector(Connector):
             name=NEW_AGENT_COMMAND.replace("_", "-"),
             description="Start a new agent session (DM the bot).",
         )
-        @app_commands.describe(
-            project="Project to work in", scope="Scope within the project",
-            name="Name for the session", prompt="First prompt for the agent")
-        async def new_agent(  # noqa: ANN001, ANN202
-            interaction, project: str | None = None, scope: str | None = None,
-            name: str | None = None, prompt: str | None = None,
-        ):
+        @app_commands.describe(prompt="What the agent should do")
+        async def new_agent(interaction, prompt: str | None = None):  # noqa: ANN001, ANN202
             user_id = str(getattr(getattr(interaction, "user", None), "id", ""))
             await self._admit(
                 interaction, NEW_AGENT_COMMAND,
-                {"project": project or "", "scope": scope or "",
-                 "name": name or "", "prompt": prompt or "",
-                 "reply_to": f"{DM_PREFIX}{user_id}"},
+                {"prompt": prompt or "", "reply_to": f"{DM_PREFIX}{user_id}"},
                 "⏳ Starting an agent…", ephemeral=True)
 
     async def start(self) -> None:

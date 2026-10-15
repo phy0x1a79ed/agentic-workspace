@@ -104,7 +104,7 @@ def message_backlog_s() -> float:
 
 
 def new_agent_target() -> tuple[str, str]:
-    """The project and scope `/new-agent` starts in when the command names none."""
+    """The project and scope `/new-agent` starts in."""
     return (os.environ.get("AWM_REPORTING_NEW_AGENT_PROJECT") or "awm",
             os.environ.get("AWM_REPORTING_NEW_AGENT_SCOPE") or "dev")
 

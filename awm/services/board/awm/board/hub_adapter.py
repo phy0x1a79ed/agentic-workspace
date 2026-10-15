@@ -59,7 +59,8 @@ API_MANIFEST: dict[str, Any] = {
         "sits in one of seven states: proposed, planned, active, blocked, "
         "review, done, rejected. Post a card, claim a request addressed to "
         "you, move it along and complete or fail what you claimed. A reply "
-        "is a message on the thread of the card it answers. Your swarm's "
+        "is a message card that also joins the thread of its chain's root "
+        "card. Your swarm's "
         "token stays on this node: you never hold it."
     ),
     "functions": [
