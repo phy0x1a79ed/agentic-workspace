@@ -28,6 +28,7 @@ import logging
 from typing import Any
 
 from awm.gatewayclient import ServiceAdapter, spawn_supervised
+from awm.persistence import embeddings
 
 from awm.precedence import dao, export, index, store
 
@@ -440,6 +441,7 @@ async def _on_start() -> None:
     finally:
         conn.close()
     spawn_supervised("precedence:search-backfill", _backfill_loop)
+    embeddings.warm()
 
 
 async def main() -> None:
