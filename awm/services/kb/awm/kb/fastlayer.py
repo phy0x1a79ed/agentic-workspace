@@ -13,19 +13,23 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
 
-SCHEMA = 2
+SCHEMA = 3
 #: How many matching passages a literal or keyword query weighs before it ranks papers.
 CANDIDATES = 2000
-#: The trigram index serves LIKE only for a pattern holding a run this long free of % and _.
 TRIGRAM = 3
-#: A keyword query ORs at most this many of its rarest terms, each in at most this share of passages.
-#: A common term costs a long posting list and adds almost nothing to BM25.
-KEYWORD_TERMS = 6
-COMMON_SHARE = 0.10
+#: A literal longer than this, or holding a LIKE wildcard, is looked up by its :data:`PROBE_GRAMS` rarest
+#: trigrams and checked whole on each passage found. LIKE asks for every trigram of its pattern, and the
+#: index keeps no positions, so each costs its whole posting list: cheap for a phrase, seconds for a sentence.
+LONG_LITERAL = 40
+PROBE_GRAMS = 6
+#: A keyword OR stops adding terms, rarest first, once their passages pass this many. BM25 scores every
+#: passage an OR matches, so a common term costs seconds and adds almost nothing to the ranking.
+OR_BUDGET = 150_000
 _ZONE_RANK = {"title": 0, "abstract": 1}
 _STOPWORDS = frozenset(
     "a an the and or of to in on for with by from at as is are was were be been it its this "
@@ -62,6 +66,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS passage_tri USING fts5(
 CREATE VIRTUAL TABLE IF NOT EXISTS passage_bm25 USING fts5(
     text, content='passage', content_rowid='id', tokenize='porter unicode61');
 CREATE VIRTUAL TABLE IF NOT EXISTS passage_vocab USING fts5vocab(passage_bm25, 'row');
+CREATE VIRTUAL TABLE IF NOT EXISTS passage_tri_vocab USING fts5vocab(passage_tri, 'row');
 CREATE TRIGGER IF NOT EXISTS passage_ai AFTER INSERT ON passage BEGIN
     INSERT INTO passage_tri(rowid, text) VALUES (new.id, new.text);
     INSERT INTO passage_bm25(rowid, text) VALUES (new.id, new.text);
@@ -105,31 +110,45 @@ def terms(text: str) -> list[str]:
     return list(dict.fromkeys(t for t in re.findall(r"\w+", text.lower()) if t not in _STOPWORDS))
 
 
-def _df(conn: sqlite3.Connection, word: str) -> int | None:
-    """How many passages hold ``word``'s stem, found by trimming the word down to a stem the vocabulary has."""
-    for cut in range(len(word), max(2, len(word) - 4), -1):
-        stem = word[:cut]
+_stem_lock = threading.Lock()
+_stemmer: sqlite3.Connection | None = None
+
+
+def stems(words: list[str]) -> dict[str, str]:
+    """Each word's stem as the BM25 index's own porter tokenizer makes it, so a vocabulary lookup agrees."""
+    global _stemmer
+    with _stem_lock:
+        if _stemmer is None:
+            _stemmer = sqlite3.connect(":memory:", check_same_thread=False)
+            _stemmer.executescript("CREATE VIRTUAL TABLE s USING fts5(t, tokenize='porter unicode61');"
+                                   "CREATE VIRTUAL TABLE v USING fts5vocab(s, 'instance');")
+        _stemmer.execute("DELETE FROM s")
+        _stemmer.executemany("INSERT INTO s(rowid, t) VALUES (?, ?)", list(enumerate(words, 1)))
+        return {words[doc - 1]: term for term, doc in _stemmer.execute("SELECT term, doc FROM v")}
+
+
+def document_frequency(conn: sqlite3.Connection, words: list[str]) -> dict[str, int]:
+    """How many passages hold each word's stem; 0 for a word no passage holds."""
+    out = {}
+    for word, stem in stems(words).items():
         row = conn.execute("SELECT doc FROM passage_vocab WHERE term = ?", (stem,)).fetchone()
-        if row is None and stem.endswith("y"):
-            row = conn.execute("SELECT doc FROM passage_vocab WHERE term = ?", (stem[:-1] + "i",)).fetchone()
-        if row:
-            return row[0]
-    return None
+        out[word] = row[0] if row else 0
+    return out
 
 
-def keyword_expr(conn: sqlite3.Connection, text: str) -> str:
-    """An OR of the query's rarest terms that some passage holds and few passages share."""
-    words = terms(text)
-    total = conn.execute("SELECT MAX(id) FROM passage").fetchone()[0] or 1
-    counted = [(n, w) for w in words if (n := _df(conn, w))]
-    kept = [w for n, w in sorted(counted) if n <= COMMON_SHARE * total][:KEYWORD_TERMS]
-    kept = kept or [w for _, w in sorted(counted)][:2]
-    return " OR ".join(f'"{w}"' for w in kept)
-
-
-def _like_runs(needle: str) -> str:
-    """The longest run of ``needle`` free of LIKE's wildcards, which the trigram index can serve."""
-    return max(re.split(r"[%_\\]", needle), key=len)
+def keyword_exprs(conn: sqlite3.Connection, text: str) -> list[str]:
+    """An AND of every term some passage holds, then an OR of the rarest of them within :data:`OR_BUDGET`."""
+    held = sorted((n, w) for w, n in document_frequency(conn, terms(text)).items() if n)
+    if not held:
+        return []
+    kept, spent = [], 0
+    for n, w in held:
+        if kept and spent + n > OR_BUDGET:
+            break
+        kept.append(w)
+        spent += n
+    quoted = [f'"{w}"' for _, w in held]
+    return ([" AND ".join(quoted)] if len(quoted) > 1 else []) + [" OR ".join(f'"{w}"' for w in kept)]
 
 
 def literal(query: str) -> str:
@@ -284,16 +303,12 @@ def _match(base: sqlite3.Connection, item: dict[str, Any]) -> str | None:
     title, year = _norm_title(item.get("title") or ""), item.get("year")
     if len(title) < 20 or not year:
         return None
-    run = _like_runs((item.get("title") or "").strip()[:200])
-    if len(run) < TRIGRAM:
-        return None
-    rows = base.execute(
-        "SELECT p.paper_id, pa.title, pa.year FROM passage_tri JOIN passage p ON p.id = passage_tri.rowid"
-        " JOIN paper pa ON pa.paper_id = p.paper_id"
-        " WHERE passage_tri.text LIKE ? AND p.zone = 'title' LIMIT 20", (f"%{run}%",)).fetchall()
-    for r in rows:
-        if _norm_title(r["title"]) == title and str(r["year"]) == str(year)[:4]:
-            return r["paper_id"]
+    for p in _literal_rows(base, (item.get("title") or "").strip()[:200]):
+        if p["zone"] != "title":
+            continue
+        paper = base.execute("SELECT title, year FROM paper WHERE paper_id = ?", (p["paper_id"],)).fetchone()
+        if paper and _norm_title(paper["title"]) == title and str(paper["year"]) == str(year)[:4]:
+            return p["paper_id"]
     return None
 
 
@@ -336,18 +351,42 @@ def _quote(p: sqlite3.Row, marks: list[list[int]] | None = None) -> dict[str, An
     return out
 
 
+def _gram_counts(conn: sqlite3.Connection, grams: list[str]) -> dict[str, int]:
+    """How many passages hold each trigram: from the base's precomputed table, else from the vocabulary.
+
+    A vocabulary lookup reads the trigram's whole posting list to count it,
+    which the small delta can afford and the base cannot.
+    """
+    marks = ",".join("?" * len(grams))
+    has_table = conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'trigram_df'").fetchone()
+    source = "trigram_df" if has_table else "passage_tri_vocab"
+    return dict(conn.execute(f"SELECT term, doc FROM {source} WHERE term IN ({marks})", grams).fetchall())
+
+
+def _literal_rows(conn: sqlite3.Connection, needle: str) -> list[sqlite3.Row]:
+    """Passages that may hold ``needle``; the caller checks the literal on each."""
+    if len(needle) <= LONG_LITERAL and not re.search(r"[%_]", needle):
+        return conn.execute("SELECT p.* FROM passage_tri JOIN passage p ON p.id = passage_tri.rowid"
+                            " WHERE passage_tri.text LIKE ? LIMIT ?", (f"%{needle}%", CANDIDATES)).fetchall()
+    grams = sorted({needle[i:i + TRIGRAM].lower() for i in range(len(needle) - TRIGRAM + 1)})
+    df = _gram_counts(conn, grams)
+    if len(df) < len(grams):
+        return []
+    chosen = sorted(grams, key=df.__getitem__)[:PROBE_GRAMS]
+    expr = " AND ".join('"' + g.replace('"', '""') + '"' for g in chosen)
+    return conn.execute("SELECT p.* FROM passage_tri JOIN passage p ON p.id = passage_tri.rowid"
+                        " WHERE passage_tri MATCH ? LIMIT ?", (expr, CANDIDATES)).fetchall()
+
+
 def _literal_hits(stores: list[sqlite3.Connection], needle: str, filters: Filters, limit: int,
                   per_hit: int) -> list[dict[str, Any]]:
-    run = _like_runs(needle)
-    if len(run) < TRIGRAM:
+    if len(needle) < TRIGRAM:
         return []
     pattern = re.compile(re.escape(needle), re.IGNORECASE)
     ranked: list[tuple[tuple, sqlite3.Row, list[dict[str, Any]]]] = []
     seen: set[str] = set()
     for conn in stores:
-        rows = conn.execute(
-            "SELECT p.* FROM passage_tri JOIN passage p ON p.id = passage_tri.rowid"
-            " WHERE passage_tri.text LIKE ? LIMIT ?", (f"%{run}%", CANDIDATES)).fetchall()
+        rows = _literal_rows(conn, needle)
         by_paper: dict[str, list[tuple[sqlite3.Row, list[list[int]]]]] = {}
         for p in rows:
             marks = [[p["start"] + m.start(), p["start"] + m.end()] for m in pattern.finditer(p["text"])]
@@ -372,24 +411,24 @@ def _keyword_hits(stores: list[sqlite3.Connection], query: str, filters: Filters
                   skip: set[str]) -> list[dict[str, Any]]:
     if not terms(query) or limit <= 0:
         return []
-    scored: list[tuple[float, sqlite3.Row, list[dict[str, Any]]]] = []
+    scored: list[tuple[int, float, sqlite3.Row, list[dict[str, Any]]]] = []
     for conn in stores:
-        expr = keyword_expr(conn, query)
-        if not expr:
-            continue
-        rows = conn.execute(
-            "SELECT p.*, bm25(passage_bm25) AS rank FROM passage_bm25 JOIN passage p ON p.id = passage_bm25.rowid"
-            " WHERE passage_bm25 MATCH ? ORDER BY rank LIMIT ?", (expr, CANDIDATES)).fetchall()
-        by_paper: dict[str, list[sqlite3.Row]] = {}
-        for p in rows:
-            if p["paper_id"] not in skip:
-                by_paper.setdefault(p["paper_id"], []).append(p)
-        papers = _papers(conn, list(by_paper))
-        for pid, found in by_paper.items():
-            paper = papers.get(pid)
-            if paper is None or not filters.keeps(paper["ts"]):
-                continue
-            skip.add(pid)
-            scored.append((-found[0]["rank"], paper, [_quote(p) for p in found[:per_hit]]))
-    scored.sort(key=lambda s: s[0], reverse=True)
-    return [_hit(paper, "keyword", score, quotes) for score, paper, quotes in scored[:limit]]
+        for tier, expr in enumerate(keyword_exprs(conn, query)):
+            if sum(1 for s in scored if s[0] < tier) >= limit:
+                break
+            rows = conn.execute(
+                "SELECT p.*, bm25(passage_bm25) AS rank FROM passage_bm25 JOIN passage p ON p.id = passage_bm25.rowid"
+                " WHERE passage_bm25 MATCH ? ORDER BY rank LIMIT ?", (expr, CANDIDATES)).fetchall()
+            by_paper: dict[str, list[sqlite3.Row]] = {}
+            for p in rows:
+                if p["paper_id"] not in skip:
+                    by_paper.setdefault(p["paper_id"], []).append(p)
+            papers = _papers(conn, list(by_paper))
+            for pid, found in by_paper.items():
+                paper = papers.get(pid)
+                if paper is None or not filters.keeps(paper["ts"]):
+                    continue
+                skip.add(pid)
+                scored.append((tier, -found[0]["rank"], paper, [_quote(p) for p in found[:per_hit]]))
+    scored.sort(key=lambda s: (s[0], -s[1]))
+    return [_hit(paper, "keyword", score, quotes) for _, score, paper, quotes in scored[:limit]]

@@ -51,6 +51,14 @@ def test_a_literal_in_a_body_quotes_its_passage_with_offsets(layer):
     assert hits[0]["url"] == "https://doi.org/10.1/at" and hits[0]["kind"] == "paper"
 
 
+def test_a_sentence_long_literal_is_probed_by_its_rarest_trigrams(layer):
+    sentence = "The assembly index of a molecule counts the joining steps on its shortest"
+    hits = layer.exact(sentence, fastlayer.Filters(), 10, 1)
+    assert [(h["id"], h["match"]) for h in hits if h["match"] == "literal"] == [("doi:10.1/at", "literal")]
+    assert layer.exact(sentence + " zzqx", fastlayer.Filters(), 10, 1) == [] or \
+        all(h["match"] == "keyword" for h in layer.exact(sentence + " zzqx", fastlayer.Filters(), 10, 1))
+
+
 def test_case_then_zone_rank_literal_papers(layer):
     hits = layer.exact("assembly index", fastlayer.Filters(), 10, 1)
     assert [h["id"] for h in hits[:2]] == ["doi:10.1/at", "doi:10.1/old"]
