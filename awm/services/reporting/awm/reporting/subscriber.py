@@ -216,6 +216,8 @@ class Subscriber:
                 await self._left(card)
             return
         await self._tell_watchers(type_, card)
+        if card.get("reply_to"):
+            return                      # its thread message on the root carries it
         state = card_state(card)
         if state == "proposed" and type_ in (POSTED, MOVED):
             await self._intake(card, reopen=type_ == MOVED)
@@ -265,7 +267,7 @@ class Subscriber:
         seen: set[str] = set()
         for filters in ({"recipient": self.swarm}, {"recipient": OPEN}, {"sender": self.swarm}):
             for card in await self._all(state="proposed", **filters):
-                if card["id"] in seen:
+                if card["id"] in seen or card.get("reply_to"):
                     continue
                 seen.add(card["id"])
                 try:

@@ -127,6 +127,17 @@ def test_the_threads_dry_run_proposes_and_changes_nothing(board, trilium, chains
     assert chains["b"] not in by_root                    # replies are not subjects
 
 
+def test_a_reply_posted_on_this_release_is_left_out_of_the_plan(board, trilium, board_note,
+                                                                chains, tmp_path):
+    legacy(trilium, board_note, "9" * 32, "Posted", reply_to=chains["a"], cardKind="message",
+           frm="collins", to="tony", cardThreaded=chains["a"])
+    path = tmp_path / "proposal.json"
+    summary = board.migrate_threads(dry_run=True, proposal_path=path)
+    assert summary["cards_folded"] == 3 and summary["chains"] == 5
+    ids = {r["id"] for s in json.loads(path.read_text())["subjects"] for r in s["replies"]}
+    assert "9" * 32 not in ids
+
+
 def test_two_chains_that_share_a_topic_are_not_merged(board, chains, tmp_path):
     path = tmp_path / "p.json"
     board.migrate_threads(dry_run=True, proposal_path=path)

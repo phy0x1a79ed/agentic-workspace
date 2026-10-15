@@ -312,36 +312,45 @@ LEGACY_CARD_KEYS = {"id", "kind", "sender", "recipient", "claimant", "priority",
                     "last_message"}
 
 
-def test_a_reply_is_a_message_on_the_root_cards_thread_not_a_card(board, trilium, tony, collins):
+def test_a_reply_is_a_card_and_a_message_on_the_root_cards_thread(board, tony, collins):
     ask = request(board, tony)
     reply = message(board, collins, to="tony", reply_to=ask["id"], title="Re: run", body="on it")
     assert LEGACY_CARD_KEYS <= set(reply)         # an old client reads it as it read a reply card
-    assert reply["status"] in ("posted", "in_progress", "done", "failed")
+    assert reply["id"] != ask["id"] and reply["status"] == "posted"
     assert reply["reply_to"] == ask["id"] and reply["folded_into"] == ask["id"]
     assert reply["message"]["body"] == "on it" and reply["message"]["seq"] == 1
     assert reply["message"]["sender"]["swarm"] == "collins"
-    assert board.list(tony, reply_to=ask["id"]) == []
-    assert [c["id"] for c in board.list(tony)] == [ask["id"]]
+    # a peer on the previous release finds the reply by listing cards
+    assert [c["id"] for c in board.list(tony, sender="collins")] == [reply["id"]]
+    assert [c["id"] for c in board.list(tony, reply_to=ask["id"])] == [reply["id"]]
     assert [m["body"] for m in board.messages(tony, ask["id"])] == ["on it"]
     assert board.get(tony, ask["id"])["last_message"] == 1
     assert board.get(tony, ask["id"])["status"] == "posted"
-    assert len([n for n in trilium.notes.values() if n["title"] == "Re: run"]) == 0
+
+
+def test_a_reply_to_a_thread_swarm_is_filed_in_done(board, tony, collins):
+    board.thread_swarms = frozenset({"tony"})
+    ask = message(board, tony, to="collins", body="hello")
+    to_tony = message(board, collins, to="tony", reply_to=ask["id"], body="hi back")
+    to_collins = message(board, tony, to="collins", reply_to=to_tony["id"], body="again")
+    assert to_tony["state"] == "done"            # tony reads it on the thread
+    assert to_collins["state"] == "proposed"     # collins's door takes Proposed message cards
+    assert [m["body"] for m in board.messages(tony, ask["id"])] == ["hi back", "again"]
 
 
 def test_a_reply_to_a_reply_reaches_the_root_of_the_chain(board, events, tony, collins):
     ask = request(board, tony)
     first = board.message(collins, ask["id"], "first")
-    old_reply = {"id": ask["id"]}                  # a client that only knows the card it answers
-    second = message(board, tony, to="collins", reply_to=old_reply["id"], body="second")
-    third = message(board, collins, to="tony", reply_to=second["folded_into"], body="third")
+    second = message(board, tony, to="collins", reply_to=ask["id"], body="second")
+    third = message(board, collins, to="tony", reply_to=second["id"], body="third")
     assert first["seq"] == 1 and (second["message"]["seq"], third["message"]["seq"]) == (2, 3)
-    assert third["folded_into"] == ask["id"]
+    assert third["reply_to"] == second["id"] and third["folded_into"] == ask["id"]
     assert [m["body"] for m in board.messages(collins, ask["id"])] == ["first", "second", "third"]
     posts = [e for e in events.since(0, {"swarm": "tony"}) if e["type"] == "card.posted"]
-    assert len(posts) == 1                          # replies post no card
+    assert len(posts) == 3
 
 
-def test_a_reply_to_an_old_reply_card_folds_into_the_chains_root(board, trilium, vault, tony, collins):
+def test_a_reply_to_an_old_reply_card_joins_the_chains_root(board, trilium, vault, tony, collins):
     ask = request(board, tony)
     old = vault.create("Re: old", "from the days of reply cards",
                        {"cardId": "c" * 32, "cardKind": "message", "cardFrom": "collins",

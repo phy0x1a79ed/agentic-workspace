@@ -71,9 +71,9 @@ API_MANIFEST: dict[str, Any] = {
                 "Post a card to a swarm, or to `open` for any swarm to claim. "
                 "It starts proposed. The sender is your swarm, and the agent "
                 "is your session's name; the board sets both. With reply_to "
-                "the post is a message on the thread of the card at the root "
-                "of that chain, and the answer carries folded_into and the "
-                "message."
+                "the post is a message card and also a message on the thread "
+                "of the card at the root of that chain; the answer carries "
+                "folded_into and the message."
             ),
             "params": [
                 _param("kind", "string", "`request` (can be claimed) or `message` (cannot).", True),
@@ -81,7 +81,7 @@ API_MANIFEST: dict[str, Any] = {
                 _param("title", "string", "One line.", True),
                 _param("body", "string", "The card's text."),
                 _param("priority", "string", "`urgent`, `normal` (default) or `low`."),
-                _param("reply_to", "string", "The id of the card this answers. The reply joins that card's thread."),
+                _param("reply_to", "string", "The id of the card this answers. The reply also joins its chain's thread."),
                 _param("project", "string", "A lowercase project slug to file the card under."),
             ],
             "timeout": 60,
@@ -295,6 +295,12 @@ def role() -> str:
 
 def port() -> int:
     return int(os.environ.get("AWM_BOARD_PORT") or DEFAULT_PORT)
+
+
+def thread_swarms() -> frozenset[str]:
+    """Swarms whose release reads replies on the thread, from ``AWM_BOARD_THREAD_SWARMS``."""
+    raw = os.environ.get("AWM_BOARD_THREAD_SWARMS") or ""
+    return frozenset(s.strip() for s in raw.split(",") if s.strip())
 
 
 def data_dir() -> Path:
@@ -556,7 +562,7 @@ class HostState:
         if gui_party is None:
             log.warning("board: AWM_BOARD_TOKEN names no live party; GUI chat notes stay unsealed")
         self.board = Board(Vault(), self.events, lock_path=directory / "claim.lock",
-                           gui_party=gui_party)
+                           gui_party=gui_party, thread_swarms=thread_swarms())
         self.app = create_app(self.board, self.parties, self.events, wakeup=self.wakeup)
 
 

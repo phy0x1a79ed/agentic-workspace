@@ -2,7 +2,8 @@
 
 `columns` files every card into the column folder for its old `#status`.
 `threads` folds each chain of reply cards into the thread of the card at its
-root. Both are dry runs until told otherwise, and a second apply changes
+root. A reply card that carries `cardThreaded` was posted on the thread too,
+so the plan leaves it out. Both are dry runs until told otherwise, and a second apply changes
 nothing.
 
 A thread migration cannot renumber a thread without moving the sequence numbers
@@ -22,7 +23,7 @@ from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .cards import Board
+from .cards import THREADED, Board
 from .names import check_project
 from .states import STATES, TERMINAL
 from .vault import VaultError
@@ -98,6 +99,8 @@ def _plan(board: Board) -> dict:
     """Every chain of reply cards, one subject per root, with the projects the words suggest."""
     known = {}
     for rec in board.vault.list(content=True):
+        if rec["labels"].get(THREADED):
+            continue                    # posted on this release: its thread holds it already
         card = board._card(rec)
         known[card["id"]] = card
     root_of: dict[str, str] = {}
