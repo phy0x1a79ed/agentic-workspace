@@ -8,6 +8,7 @@ version = "0.1.0"
 requires-python = ">=3.11"
 description = "AWM board service: federation cards exchanged between swarms, stored in the Trilium vault and served over one bearer-authenticated door."
 dependencies = [
+    "awm-claudedaemon",
     "awm-config",
     "awm-gatewayclient",
     "awm-persistence",

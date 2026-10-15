@@ -118,20 +118,32 @@ class BoardClient:
         body: str = "",
         priority: str = "normal",
         reply_to: str | None = None,
+        project: str | None = None,
+        agent: str | None = None,
     ) -> dict:
         payload = {"kind": kind, "recipient": recipient, "title": title, "body": body, "priority": priority}
-        if reply_to:
-            payload["reply_to"] = reply_to
+        for key, value in (("reply_to", reply_to), ("project", project), ("agent", agent)):
+            if value:
+                payload[key] = value
         return await self._send("POST", "/cards", json=payload)
 
-    async def claim(self, card_id: str) -> dict:
-        return await self._send("POST", f"/cards/{card_id}/claim")
+    async def claim(self, card_id: str, *, agent: str | None = None, node: str | None = None) -> dict:
+        payload = {k: v for k, v in (("agent", agent), ("node", node)) if v}
+        return await self._send("POST", f"/cards/{card_id}/claim", json=payload)
 
     async def complete(self, card_id: str, result: Any = None) -> dict:
         return await self._send("POST", f"/cards/{card_id}/complete", json={"result": result})
 
     async def fail(self, card_id: str, reason: str = "") -> dict:
         return await self._send("POST", f"/cards/{card_id}/fail", json={"reason": reason})
+
+    async def status(self, card_id: str, state: str) -> dict:
+        """Move a card this party holds to ``state``: planned, active, blocked, review or done."""
+        return await self._send("POST", f"/cards/{card_id}/status", json={"state": state})
+
+    async def reject(self, card_id: str, reason: str, *, agent: str | None = None) -> dict:
+        payload = {"reason": reason, **({"agent": agent} if agent else {})}
+        return await self._send("POST", f"/cards/{card_id}/reject", json=payload)
 
     async def get(self, card_id: str) -> dict:
         return await self._send("GET", f"/cards/{card_id}")
@@ -146,14 +158,21 @@ class BoardClient:
             params["offset"] = int(offset)
         return await self._send("GET", "/cards", params=params)
 
-    async def message(self, card_id: str, body: str) -> dict:
-        return await self._send("POST", f"/cards/{card_id}/messages", json={"body": body})
+    async def message(self, card_id: str, body: str, *, agent: str | None = None) -> dict:
+        payload = {"body": body, **({"agent": agent} if agent else {})}
+        return await self._send("POST", f"/cards/{card_id}/messages", json=payload)
 
     async def messages(self, card_id: str, *, after: int | None = None,
                        limit: int | None = None) -> list[dict]:
         """The card's messages after sequence ``after``, oldest first."""
         params = {k: int(v) for k, v in (("after", after), ("limit", limit)) if v}
         return await self._send("GET", f"/cards/{card_id}/messages", params=params)
+
+    async def events(self, card_id: str, *, since: int | None = None,
+                     limit: int | None = None) -> list[dict]:
+        """The card's events after event id ``since``, oldest first, from the host's replay store."""
+        params = {k: int(v) for k, v in (("since", since), ("limit", limit)) if v}
+        return await self._send("GET", f"/cards/{card_id}/events", params=params)
 
     # -- the stream ----------------------------------------------------------
 

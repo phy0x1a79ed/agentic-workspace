@@ -40,6 +40,8 @@ class FakeTrilium:
         #: land first) or land fully and still report a failure (`fail_after_apply`).
         self.fail_after_labels: int | None = None
         self.fail_after_apply = False
+        #: One-shot fault for `note_move`: "before" refuses it, "after" lands it and still reports a failure.
+        self.fail_move: str | None = None
         self._lock = threading.RLock()
         self.clock = 1_000_000.0
 
@@ -97,10 +99,35 @@ class FakeTrilium:
                 return a["noteId"]
         raise KeyError(card_id)
 
-    def gui_move(self, card_id: str, column: str) -> None:
-        """What dragging a card to another column does: one label write, no lock."""
+    def column(self, state: str) -> str:
+        """The column folder for ``state``."""
+        for a in self.attrs.values():
+            if a["name"] == "cardColumn" and a["value"] == state:
+                return a["noteId"]
+        raise KeyError(state)
+
+    def state_of(self, card_id: str) -> str | None:
+        """The state of the folder the card sits in, or None when it sits elsewhere."""
+        (parent,) = self.notes[self.card_note(card_id)]["parentNoteIds"]
+        for a in self.attrs.values():
+            if a["noteId"] == parent and a["name"] == "cardColumn":
+                return a["value"]
+        return None
+
+    def gui_move(self, card_id: str, state: str) -> None:
+        """What dragging a card to another column folder does: one branch change, no lock."""
         with self._lock:
-            self.set_attr(self.card_note(card_id), "status", column)
+            self.notes[self.card_note(card_id)]["parentNoteIds"] = [self.column(state)]
+
+    def columns(self) -> list[str]:
+        """The states of the column folders, in tree order."""
+        board = next(a["noteId"] for a in self.attrs.values() if a["name"] == BOARD_LABEL)
+        out = []
+        for n in self.children(board):
+            value = self.label(n, "cardColumn")
+            if value is not None:
+                out.append(value)
+        return out
 
     def all_text(self) -> str:
         """Everything the vault holds, for asserting that something never reached it."""
@@ -135,7 +162,7 @@ class FakeTrilium:
         return any(p == ancestor or self._descends(p, ancestor)
                    for p in self.notes[note_id]["parentNoteIds"] if p in self.notes)
 
-    def _h_note_search(self, query, ancestor=None, limit=50, **_):
+    def _h_note_search(self, query, ancestor=None, limit=50, archived=False, **_):
         terms = []
         for word in query.split():
             m = _TERM.match(word)
@@ -147,6 +174,8 @@ class FakeTrilium:
             if ancestor and not self._descends(note_id, ancestor):
                 continue
             labels = [a for _, a in self._effective(note_id) if a["type"] == "label"]
+            if not archived and any(a["name"] == "archived" for a in labels):
+                continue
             if all(negated != any(a["name"] == name and (value is None or a["value"] == value)
                                   for a in labels)
                    for negated, name, value in terms):
@@ -158,6 +187,28 @@ class FakeTrilium:
             raise RuntimeError(f"404 no note {note_id}")
         self.set_attr(note_id, name, str(value), type, bool(inheritable))
         return {"note_id": note_id}
+
+    def _h_attr_delete(self, note_id, name, type="label"):
+        if note_id not in self.notes:
+            raise RuntimeError(f"404 no note {note_id}")
+        gone = [k for k, a in self.attrs.items()
+                if a["noteId"] == note_id and a["name"] == name and a["type"] == type]
+        for k in gone:
+            del self.attrs[k]
+        return {"note_id": note_id, "name": name, "removed": len(gone)}
+
+    def _h_note_move(self, note_id, parent):
+        if note_id not in self.notes or parent not in self.notes:
+            raise RuntimeError(f"404 no note {note_id} or {parent}")
+        if self.fail_move == "before":
+            self.fail_move = None
+            raise RuntimeError("fault: the move was refused")
+        self.notes[note_id]["parentNoteIds"] = [parent]
+        self.touch(note_id)
+        if self.fail_move == "after":
+            self.fail_move = None
+            raise RuntimeError("fault: the move landed and the reply was lost")
+        return {"note_id": note_id, "parent": parent}
 
     def _h_note_create(self, title, content="", parent="root", type="text", mime=None,
                        labels=None, relations=None):
