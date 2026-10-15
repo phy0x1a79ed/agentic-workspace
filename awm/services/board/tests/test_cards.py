@@ -105,6 +105,13 @@ def test_the_folders_are_made_once_and_never_twice(board, trilium, board_note, t
              if a["noteId"] == board_note and a["name"].startswith("label:")}
     assert set(chips) == {"label:cardFrom", "label:cardTo", "label:project", "label:owner"}
     assert all(a["isInheritable"] and a["value"].startswith("promoted,") for a in chips.values())
+    assert trilium.label(board_note, "board:columnsFrom") == "folders"
+
+
+def test_a_board_grouped_another_way_is_switched_to_its_folders(board, trilium, board_note, tony):
+    trilium.set_attr(board_note, "board:columnsFrom", "label")
+    request(board, tony)
+    assert trilium.label(board_note, "board:columnsFrom") == "folders"
 
 
 def test_the_old_status_vocabulary_maps_both_ways(board, tony, collins):

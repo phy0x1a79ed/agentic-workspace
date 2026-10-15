@@ -53,12 +53,13 @@ def test_the_columns_dry_run_reports_the_plan_and_changes_nothing(board, old_boa
 
 
 def test_the_columns_apply_files_every_card_by_its_status_and_removes_the_grouping(
-        board, old_board, events, tony):
+        board, old_board, board_note, events, tony):
     report = board.migrate_columns(dry_run=False)
     assert report["moved"] == 4
     assert [old_board.state_of(c * 32) for c in "abcd"] == ["proposed", "planned", "done", "rejected"]
     assert old_board.columns() == ["proposed", "planned", "active", "blocked", "review", "done", "rejected"]
     assert not [a for a in old_board.attrs.values() if a["name"] == "status"]
+    assert old_board.label(board_note, "board:columnsFrom") == "folders"
     assert events.latest_id() == 0                          # filing a card is not a state change
     assert board.sweep() == []
     again = board.migrate_columns(dry_run=False)

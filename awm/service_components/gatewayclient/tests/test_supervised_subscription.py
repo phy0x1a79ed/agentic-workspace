@@ -99,6 +99,18 @@ class TestIdleDeadline:
         await _run_briefly(sub, 0.3)
         assert opened > 2, "silent stream was never re-subscribed"
 
+    async def test_an_idle_resubscribe_is_not_reported_as_a_failure(self):
+        async def stream():
+            await asyncio.sleep(3600)
+            yield  # pragma: no cover
+
+        sub = SupervisedSubscription("t", stream, lambda ev: None,
+                                     **_fast({"idle_timeout": 0.05}))
+        await _run_briefly(sub, 0.3)
+        assert sub.last_end == "idle"
+        assert sub.last_error is None
+        assert sub.consecutive_failures == 0
+
     async def test_resubscribe_is_break_before_make(self):
         """The old stream must be fully closed before the new one opens.
 

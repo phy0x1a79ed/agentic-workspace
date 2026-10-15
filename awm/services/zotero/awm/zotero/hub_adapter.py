@@ -73,6 +73,9 @@ SCHEDULED = os.environ.get("ZOTERO_SYNC_ENABLED", "1") not in ("0", "false", "no
 MAY_CREATE_ROOT = os.environ.get(
     "ZOTERO_MAY_CREATE_ROOT", "1") not in ("0", "false", "no")
 
+ITEMS_PAGE = 200
+ITEMS_MAX = 1000
+
 API_MANIFEST: dict[str, Any] = {
     "functions": [
         {
@@ -89,6 +92,27 @@ API_MANIFEST: dict[str, Any] = {
                  "description": "Ask the library for its version. Default true."},
             ],
             "timeout": 120,
+        },
+        {
+            "name": "items",
+            "effect": "read",
+            "tool": "zotero_items",
+            "description": (
+                "The mirrored references, a page at a time: key, library, title, "
+                "creators, year, DOI, URL, publication, abstract, tags and stored "
+                "file names. Pass `since` to get only the items that moved after "
+                "a cursor. Read the reply's `versions` as the next cursor. Open "
+                "to the operator and to domestic peers."
+            ),
+            "params": [
+                {"name": "since", "type": "object",
+                 "description": "Per-library versions, {library: version}, from an "
+                                "earlier reply. A library it omits is read whole."},
+                {"name": "offset", "type": "integer", "description": "Skip this many items. Default 0."},
+                {"name": "limit", "type": "integer",
+                 "description": f"Items per page, 1-{ITEMS_MAX}. Default {ITEMS_PAGE}."},
+            ],
+            "timeout": 60,
         },
         {
             "name": "pull",
@@ -211,6 +235,34 @@ async def _h_status(args: dict, as_: str | None = None) -> dict:
     return out
 
 
+def _peer_or_operator(as_: str | None, verb: str) -> None:
+    """Refuse a person who came in through the edge. The gateway already keeps a foreign peer off this verb."""
+    if as_ is not None and not (as_ == "peer" or as_.startswith("peer:")):
+        raise PermissionError(f"{verb} is open to the operator and to domestic peers only")
+
+
+def items_page(library: dict[str, Any], since: dict[str, int], offset: int, limit: int) -> dict[str, Any]:
+    """One page of ``library``'s items that moved past ``since``, oldest version first."""
+    moved = [i for i in library.get("items") or []
+             if int(i.get("version") or 0) > int(since.get(i.get("library") or "", -1))]
+    moved.sort(key=lambda i: (int(i.get("version") or 0), i.get("ref") or ""))
+    page = [{k: v for k, v in i.items() if k != "notes"} for i in moved[offset:offset + limit]]
+    after = offset + len(page)
+    return {"versions": library.get("versions") or {}, "pulled": library.get("pulled"),
+            "total": len(moved), "items": page, "next": after if after < len(moved) else None}
+
+
+async def _h_items(args: dict, as_: str | None = None) -> dict:
+    _peer_or_operator(as_, "items")
+    since = args.get("since") or {}
+    if not isinstance(since, dict):
+        raise ValueError("since must be an object of {library: version}")
+    offset = max(0, int(args.get("offset") or 0))
+    limit = max(1, min(int(args.get("limit") or ITEMS_PAGE), ITEMS_MAX))
+    library = await asyncio.to_thread(sync.bundle().read)
+    return items_page(library, {str(k): int(v) for k, v in since.items()}, offset, limit)
+
+
 async def _h_pull(args: dict, as_: str | None = None) -> dict:
     _operator_only(as_, "pull")
     return await asyncio.to_thread(
@@ -244,6 +296,7 @@ async def _h_sync(args: dict, as_: str | None = None) -> dict:
 
 HANDLERS = {
     "status": _h_status,
+    "items": _h_items,
     "pull": _h_pull,
     "apply": _h_apply,
     "sync": _h_sync,

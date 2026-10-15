@@ -38,6 +38,10 @@ MESSAGE_SEQ = "msgSeq"
 #: Marks a column folder; its value is the state the folder stands for.
 COLUMN_LABEL = "cardColumn"
 
+#: The label that makes Trilium's board view take its columns from the board's child folders.
+#: Without it the view groups cards by `#status` and shows no sections.
+COLUMNS_FROM = "board:columnsFrom"
+
 #: The labels the board note offers as promoted attributes, with their chip captions.
 CHIPS = {"cardFrom": "From", "cardTo": "To", "project": "Project", "owner": "Owner"}
 
@@ -164,15 +168,19 @@ class Vault:
                     raise VaultError(f"note_create returned no note id: {made!r}")
                 columns[state] = made["note_id"]
         if not self._chips_defined:
-            self._define_chips()
+            self._define_board_view()
         return columns
 
-    def _define_chips(self) -> None:
-        """Offer cardFrom, cardTo, project and owner as promoted attributes on every card."""
+    def _define_board_view(self) -> None:
+        """Group the board view by its folders, and offer the chip labels as promoted attributes on every card."""
         board = self.board_id()
-        held = {a.get("name") for a in _own_attributes(self._call("note_get", note_id=board, content=False))}
+        held = {(a.get("name"), a.get("value")) for a in _own_attributes(
+            self._call("note_get", note_id=board, content=False))}
+        names = {name for name, _ in held}
+        if (COLUMNS_FROM, "folders") not in held:
+            self._call("attr_set", note_id=board, name=COLUMNS_FROM, value="folders")
         for label, caption in CHIPS.items():
-            if f"label:{label}" not in held:
+            if f"label:{label}" not in names:
                 self._call("attr_set", note_id=board, name=f"label:{label}",
                            value=f"promoted,single,text,alias={caption}", inheritable=True)
         self._chips_defined = True

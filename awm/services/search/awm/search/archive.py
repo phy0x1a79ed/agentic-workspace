@@ -310,16 +310,19 @@ class Archive:
         return status
 
     async def query(self, q: Query) -> dict[str, Any]:
-        """One ranked list over the picked sources, plus a status for every source and peer asked."""
+        """One ranked list over the picked sources and peers, plus a status for every source and peer asked."""
         await self._refresh_if_stale()
         rows = {r["name"]: r for r in self._visible(
             await asyncio.to_thread(_with_conn, store.source_rows), q.grants)}
         statuses: dict[str, Any] = {}
+        if not q.local:
+            rows = {}
         if q.sources is None:
             picked = [n for n, r in rows.items() if r["mode"] == "index" or not r["spec"].get("optin")]
         else:
             picked = [n for n in q.sources if n in rows]
-            statuses.update({n: {"status": "absent"} for n in q.sources if n not in rows})
+            if q.local:
+                statuses.update({n: {"status": "absent"} for n in q.sources if n not in rows})
         index_names, live = [], []
         for name in picked:
             row = rows[name]
