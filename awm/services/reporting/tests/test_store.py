@@ -33,6 +33,11 @@ def test_a_card_is_told_to_tony_until_it_is_marked_told(queue):
     assert queue.needs_dm("f" * 32) is False
 
 
+def test_a_call_leaves_the_wal_unchecked_so_closing_its_connection_does_not_fsync(queue):
+    queue.enqueue(make_card())
+    assert queue.path.with_name(queue.path.name + "-wal").exists()
+
+
 def test_a_quiet_card_is_recorded_as_already_told(queue):
     card = make_card()
     assert queue.enqueue(card, quiet=True) is True
