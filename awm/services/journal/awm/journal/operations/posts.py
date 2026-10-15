@@ -48,6 +48,7 @@ POST_MANIFEST_FUNCTIONS = [
         "name": "fetch",
         "tool": "journal_fetch",
         "effect": "read",
+        "timeout": 60,
         "category": "journals",
         "description": (
             "Fetch or search a scope's posts — messages and journal entries. "
