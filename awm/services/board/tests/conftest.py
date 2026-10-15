@@ -112,6 +112,8 @@ class FakeTrilium:
         None when it sits elsewhere.
         """
         (parent,) = self.notes[self.card_note(card_id)]["parentNoteIds"]
+        if self.label(parent, "cardId") is not None:                 # under its home card
+            return self.state_of(self.label(parent, "cardId"))
         if self.label(parent, "cardArchiveFolder") is not None:
             (parent,) = self.notes[parent]["parentNoteIds"]
         for a in self.attrs.values():
@@ -129,6 +131,20 @@ class FakeTrilium:
         """Whether the card sits in an `Archived` folder."""
         (parent,) = self.notes[self.card_note(card_id)]["parentNoteIds"]
         return self.label(parent, "cardArchiveFolder") is not None
+
+    def archives_of_all(self) -> list[str]:
+        """Every `Archived` folder's note id."""
+        return [a["noteId"] for a in self.attrs.values() if a["name"] == "cardArchiveFolder"]
+
+    def chat_of(self, card_id: str) -> str:
+        """The card's `Chat` note."""
+        (chat,) = [n for n in self.children(self.card_note(card_id))
+                   if self.label(n, "chatFolder") is not None]
+        return chat
+
+    def is_under(self, card_id: str, home_id: str) -> bool:
+        """Whether the card's note is a child of the home card's note."""
+        return self.notes[self.card_note(card_id)]["parentNoteIds"] == [self.card_note(home_id)]
 
     def gui_move(self, card_id: str, state: str) -> None:
         """What dragging a card to another column folder does: one branch change, no lock."""

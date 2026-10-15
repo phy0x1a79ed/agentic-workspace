@@ -82,7 +82,7 @@ party verbs are CLI and HTTP only: they are not on the MCP surface.
 ## Migrate a board from the previous release
 
 The previous release kept every card directly under the board note, grouped by
-a `#status` label, and filed each reply as its own card. Three host-only verbs
+a `#status` label, and filed each reply as its own card. Four host-only verbs
 convert it. Each answers only the host's own bare call and defaults to a dry run.
 
 1. Take a Trilium snapshot on the host.
@@ -98,13 +98,18 @@ convert it. Each answers only the host's own bare call and defaults to a dry run
 6. **WARNING** The next step writes thread history into `events.db`, and no
    later run removes it. Call it with `dry_run: false`. It folds each chain's
    replies into the root card's thread in their original time order. It sets
-   the project, moves each subject marked `to_done` to Done, and archives each
-   folded note. It deletes nothing.
+   the project, moves each subject marked `to_done` to Done, and files each
+   folded note, archived, under the root card. It deletes nothing.
 7. Call `operations_board_migrate_archive` to file every archived card in the
    `Archived` folder of its column. A card still under the board goes to the
    column its old status names. It makes the `Archived` folders, reports the
    count per column, and defaults to a dry run. Call it again with
    `dry_run: false` to apply.
+8. Call `operations_board_migrate_homes` to move each archived card that carries
+   `cardFolded` under the note of the card it was folded into, or of the top
+   card where that card was folded in turn. It reports the
+   count per home, leaves a card with no home where it is, and defaults to a
+   dry run. Call it again with `dry_run: false` to apply.
 
 ## Tests
 
