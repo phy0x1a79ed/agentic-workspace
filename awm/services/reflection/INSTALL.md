@@ -191,6 +191,13 @@ Every verb is on MCP + CLI + HTTP:
   `message_self` guards). Before it types, a control verb refuses when the
   target waits on an answer or its screen shows a modal, because a keystroke
   into a modal answers it.
+- **CAUTION** Claude Code saves every typed `/model` and `/effort` as the
+  default for new sessions in `~/.claude/settings.json`. `model` and `effort`
+  put the old `model`, `effortLevel` and `modelSettings.<m>.effortLevel` back
+  after the change lands. The running session keeps its new value. A
+  conversation with output also asks "Switch model?" or "Change effort
+  level?". The verb presses Enter only on the "Yes, switch to <value>" option
+  it asked for, and reports the outcome in its follow-up.
 
 A call on yourself carries nothing agent-specific, on either hosting kind:
 
