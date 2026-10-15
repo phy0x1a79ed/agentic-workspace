@@ -7,7 +7,7 @@ management — agents call `social(verb="send", args={…})` etc. (run
 `social(verb="describe")` to list verbs); the operations stay expanded as
 `social_*` on the CLI/HTTP surfaces (`awm social send`, `{name:"social_send"}`). It needs the `awm` conda env to contain its package plus the shared
 component libraries it imports (`config`, `persistence`, `gatewayclient`) and its
-platform SDKs (`discord.py`, `slack_sdk`).
+platform SDKs (`discord.py`, `slack_sdk`, `aiohttp`).
 
 ## Purpose & Contents
 
@@ -38,10 +38,11 @@ the token.
 platform = "discord"           # and violates Discord ToS — not supported).
 token = "..."                  # Bot token from the Discord developer portal.
 
-[account.slack-bot]
-platform = "slack"
-token = "xoxb-..."             # Bot OAuth token (send + list channels).
-app_token = "xapp-..."         # App-level token; REQUIRED for Socket Mode receive.
+[account.slack-bot]            # A Slack app's bot user. An xoxb- token selects the
+platform = "slack"             # plain-HTTPS bot connector (see "Slack bot" below).
+token_file = "social-secrets/slack-opal.bot"     # Bot OAuth token (xoxb-).
+app_token_file = "social-secrets/slack-opal.app" # App-level token (xapp-) for receive.
+singleton = true
 
 [account.slack-me]             # Legitimate "me" identity: a Slack user OAuth token.
 platform = "slack"
@@ -60,6 +61,23 @@ token = "abcd efgh ijkl mnop"  # 16-char App Password (NOT your normal password)
 
 You create the Discord bot / Slack app yourself and paste the tokens here; no
 OAuth-callback server is built.
+
+**Slack bot.** An `xoxb-` account runs `SlackBotConnector`: Web API calls over
+aiohttp, receive over Socket Mode, no `slack_sdk` and no browser. To create one in
+any workspace:
+
+1. Create an app at <https://api.slack.com/apps> → *From a manifest*, pasting
+   `slack-bot-manifest.json`.
+2. Generate an app-level token with the `connections:write` scope. Save it as the
+   `app_token_file`.
+3. Install the app to the workspace. Copy the *Bot User OAuth Token* into the
+   `token_file`.
+
+**CAUTION** A workspace that restricts apps turns step 3 into an install request.
+Only Workspace Owners and app managers receive it, not every admin. **CAUTION**
+Mark the account `singleton = true`. Slack splits events across all open Socket
+Mode connections, so a second node connecting the same app silently halves what
+each one receives.
 
 **Slack as "me" without an app (`creds_cmd` / mira).** A Slack web-session pair (an
 `xoxc-` token + the `d` cookie) lets the service act as *you* with no app or bot —
@@ -83,10 +101,18 @@ line in the text sets the subject. UBC-webmail / WeChat later get their own path
 
 ## Reading messages, searching & attachments
 
-The service keeps **no local message store** — the external platforms are the
-source of truth, and every read queries them live. (Live receive still only
-*emits* messages arriving after connect, for subscribers like the 2fa
-`/approve` flow; it never persists.) The read surface:
+The external platforms are the source of truth, and every read below queries
+them live. Live receive *emits* each message arriving after connect on the
+`message` topic. Follow it with `awm services listen social message --peer
+<owner>`, one JSON line per message.
+
+A bot account (Slack `xoxb-`) is the one exception: it keeps a synced history of
+every chat the bot is in, edits and deletes applied. It delta-syncs at start,
+after each reconnect, every 10 minutes, and on first sight of a chat.
+
+- **`social_history account= [channel=] [since=] [limit=]`** reads that store.
+  With `since` (a message ts) it returns the messages after it, oldest first.
+  Use it to catch up after `listen` prints `listen.reconnected`.
 
 - **`social_fetch account= channel= [limit=] [before=]`** fetches a channel's
   existing messages live from the platform (including ones from before the
