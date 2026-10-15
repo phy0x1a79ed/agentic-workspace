@@ -31,6 +31,7 @@ from typing import Any
 
 from awm.config import autocommit, userroot
 from awm.gatewayclient import ServiceAdapter, spawn_supervised
+from awm.persistence import embeddings
 
 from awm.notes import config, dao, export, index, notes, rooms
 
@@ -659,6 +660,7 @@ async def _backfill_loop() -> None:
 async def _on_start() -> None:
     _startup()
     spawn_supervised("notes:search-backfill", _backfill_loop)
+    embeddings.warm()
 
 
 def _commit_user_store(user: str) -> None:

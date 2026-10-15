@@ -183,3 +183,21 @@ def test_one_row_table_upgrades_in_place(tmp_path, stub):
     assert [h["source_id"] for h in E.search(c, "zeppelin", source_type="post").hits] == ["p1"]
     assert E.reindex(c, "post", [E.Document("p1", "legacy zeppelin text")])["changed"] == 1
     c.close()
+
+
+# ---------------------------------------------------------------- warm-up
+
+
+def test_warm_up_leaves_an_injected_embedder_alone(stub, monkeypatch):
+    started = []
+    monkeypatch.setattr(E.threading, "Thread", lambda **kw: started.append(kw))
+    E.warm()
+    assert started == []
+
+
+def test_warm_up_can_be_turned_off(monkeypatch):
+    started = []
+    monkeypatch.setattr(E.threading, "Thread", lambda **kw: started.append(kw))
+    monkeypatch.setenv("AWM_EMBED_WARM", "0")
+    E.warm()
+    assert started == []

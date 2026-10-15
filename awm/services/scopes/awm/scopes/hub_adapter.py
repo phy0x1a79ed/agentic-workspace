@@ -21,6 +21,7 @@ from typing import Any
 
 from awm.config import PROJECTS_DIR
 from awm.gatewayclient import ServiceAdapter, spawn_supervised
+from awm.persistence import embeddings
 from awm.scopes import dao, search_index
 from awm.scopes.identity import (
     agent_id_for_scope,
@@ -255,6 +256,7 @@ async def _on_start() -> None:
     dao.init()
     await asyncio.to_thread(search_index.ensure_schema)
     spawn_supervised("scopes:search-backfill", search_index.backfill_loop)
+    embeddings.warm()
 
 
 async def main() -> None:

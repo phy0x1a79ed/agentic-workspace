@@ -20,6 +20,7 @@ from typing import Any
 from awm import config
 from awm.config.peertoken import node_label
 from awm.gatewayclient import ServiceAdapter, spawn_supervised
+from awm.persistence import embeddings
 
 from awm.search import federation, query as request, store
 from awm.search.archive import Archive
@@ -171,6 +172,7 @@ HANDLERS = {
 async def _on_start() -> None:
     await asyncio.to_thread(store.init)
     spawn_supervised("search:archive", ARCHIVE.run)
+    embeddings.warm()
 
 
 async def main() -> None:

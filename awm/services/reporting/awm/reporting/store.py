@@ -163,17 +163,9 @@ class Db:
                                          (3, 4): _SPEC_HASH_MIGRATION,
                                          (4, 5): _THREADS_MIGRATION,
                                          (5, 6): _INTAKE_MIGRATION})
-        # The last connection to close a WAL database checkpoints it and fsyncs, and on
-        # altair's root disk that fsync takes seconds. Every method opens and closes its
-        # own connection, so without this idle one each call paid it and a verb that makes
-        # a dozen calls outran the gateway's timeout. Under synchronous=NORMAL a commit
-        # alone does not fsync.
-        self._keeper = databases.get_connection_at(self.path)
 
     def _conn(self) -> sqlite3.Connection:
-        conn = databases.get_connection_at(self.path)
-        conn.execute("PRAGMA synchronous=NORMAL")
-        return conn
+        return databases.get_connection_at(self.path)
 
 
 class Offloaded:
