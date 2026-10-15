@@ -6,5 +6,6 @@ session crosses a **relay** neither side has to be reachable from, runs in front
 of the owner, and either side can **cut** it.
 
 This package is the gateway adapter and nothing else. Every byte of a session
-is handled by the Rust binaries under ``rust/``.
+is handled by the tether binaries, which are built and released from the
+``phy0x1a79ed/tether`` repository and fetched here by the version RELEASE pins.
 """

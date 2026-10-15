@@ -63,6 +63,11 @@ API_MANIFEST: dict[str, Any] = {
         "watch everything you do and either side can cut it. Nothing is "
         "installed on their machine. Both sides keep a record of what was "
         "done, which the owner is shown and agrees to before anything runs. "
+        "A machine with no terminal, such as an agent's sandbox, is shown the "
+        "prompt with three more words and says yes by running the line again "
+        "with `--agree` and those words; the session reads `confirming` "
+        "meanwhile. Only whoever read that prompt has the words, so do not "
+        "ask for them or guess them. "
         "To hear the owner between turns, run the `listen.command` that "
         "`invite` returns under a background watcher such as Monitor."
     ),
@@ -388,6 +393,30 @@ async def invite(args: dict) -> dict:
     return answer
 
 
+def _release_report() -> dict[str, Any]:
+    """What version this host is pinned to, and what it is actually running.
+
+    A developer pointing ``AWM_TETHER_BIN`` at their own build runs no fetch, so
+    there is no VERSION to compare — say that plainly rather than report a
+    permanent mismatch. Otherwise an installed version behind the pin means the
+    last fetch did not finish, and the fetch log's last line says why.
+    """
+    pinned = paths.pinned_release()
+    if paths.BIN_OVERRIDE:
+        return {"pinned": pinned, "source": f"AWM_TETHER_BIN={paths.BIN_OVERRIDE}"}
+    installed = paths.installed_release()
+    report: dict[str, Any] = {
+        "pinned": pinned,
+        "installed": installed,
+        "in_sync": pinned == installed,
+    }
+    if not report["in_sync"]:
+        tail = daemon.tail(paths.FETCH_LOG, 1)
+        if tail:
+            report["last_fetch"] = tail[-1]
+    return report
+
+
 async def status(args: dict) -> dict:
     """What this host knows, then what its daemon knows.
 
@@ -397,6 +426,10 @@ async def status(args: dict) -> dict:
     report: dict[str, Any] = {
         "ok": True,
         "child": CHILD.snapshot(),
+        # The release this host is pinned to versus the one it actually fetched,
+        # so a fetch that failed on start shows as a version that lags the pin
+        # rather than as a binary nobody can explain.
+        "release": _release_report(),
         # Where this host's own buffer stands, which is what `drain` reads and
         # is not the same thing as the daemon's. A caller comparing the two can
         # see whether the watch connection is keeping up.
