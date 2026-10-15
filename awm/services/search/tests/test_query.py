@@ -10,11 +10,11 @@ from awm.gatewayclient import GatewayCallError
 from awm.search import federation
 from awm.search.query import parse
 
-from .conftest import doc, synced
+from .conftest import doc, every, synced
 
 pytestmark = [pytest.mark.search]
 
-HIT_KEYS = {"source", "id", "title", "snippet", "ts", "score", "origin"}
+HIT_KEYS = {"source", "id", "title", "ts", "score", "match", "passages", "origin"}
 
 
 @pytest.fixture()
@@ -35,13 +35,13 @@ async def loaded(archive, gateway):
 
 
 def ids(result):
-    return [(h["source"], h["id"]) for h in result["hits"]]
+    return [(h["source"], h["id"]) for h in every(result)]
 
 
 async def test_one_ranked_list_spans_every_source(loaded):
     result = await loaded.query(parse({"query": "kitchen sink"}))
     assert {s for s, _ in ids(result)} == {"journals", "precedence", "kb"}
-    for h in result["hits"]:
+    for h in every(result):
         assert HIT_KEYS <= set(h)
         assert h["origin"] == {"node": "local", "swarm": "tony"}
     assert result["sources"]["journals"]["status"] == "ok"
@@ -84,7 +84,8 @@ async def test_a_bad_date_is_refused():
 
 
 async def test_limit_is_clamped(loaded):
-    assert len((await loaded.query(parse({"query": "kitchen", "limit": 1})))["hits"]) == 1
+    result = await loaded.query(parse({"query": "kitchen", "limit": 1}))
+    assert [len(result[s]) for s in ("exact", "related")] == [1, 1]
     assert parse({"query": "x", "limit": 5000}).limit == 100
 
 
@@ -168,7 +169,7 @@ async def test_a_grant_limits_every_read_to_its_sources(loaded):
 async def test_a_named_source_outside_the_grants_looks_absent(loaded):
     result = await loaded.query(parse({"query": "kitchen", "sources": ["precedence"], "_grants": ["journals"]},
                                       "peer:shaula"))
-    assert result["hits"] == [] and result["sources"] == {"precedence": {"status": "absent"}}
+    assert every(result) == [] and result["sources"] == {"precedence": {"status": "absent"}}
     with pytest.raises(ValueError, match="no source"):
         await loaded.get("precedence", "p1", frozenset({"journals"}))
 
@@ -194,7 +195,7 @@ async def test_no_peers_named_searches_this_node_only(loaded, peers):
     for value in (None, False, "", "local", ["local"]):
         args = {"query": "kitchen"} if value is None else {"query": "kitchen", "peers": value}
         result = await loaded.query(parse(args))
-        assert result["peers"] == {} and result["hits"]
+        assert result["peers"] == {} and every(result)
     assert peers.calls == []
 
 
@@ -204,18 +205,18 @@ async def test_named_peers_are_asked_apart_and_their_hits_join_the_list(loaded, 
     result = await loaded.query(parse({"query": "kitchen", "sources": ["journals"],
                                        "peers": "local,altair,shaula"}))
     assert result["peers"]["altair"] == {"status": "ok", "hits": 2, "sources": ["journals"]}
-    remote = {h["id"]: h for h in result["hits"] if h["origin"]["node"] != "local"}
+    remote = {h["id"]: h for h in every(result) if h["origin"]["node"] != "local"}
     assert set(remote) == {"r1", "r2", "r3"}
     assert remote["r1"]["origin"] == {"node": "altair", "swarm": "tony"}
     assert remote["r3"]["origin"] == {"node": "shaula", "swarm": "other"}
     assert "secret" not in remote["r1"]
-    assert any(h["origin"]["node"] == "local" for h in result["hits"])
+    assert any(h["origin"]["node"] == "local" for h in every(result))
 
 
 async def test_a_named_peer_alone_runs_the_query_there_only(loaded, peers):
     peers.add("shaula", peer_hits("r3"), relation="foreign", swarm="other")
     result = await loaded.query(parse({"query": "kitchen", "peers": "shaula"}))
-    assert [h["id"] for h in result["hits"]] == ["r3"]
+    assert [h["id"] for h in every(result)] == ["r3"]
     assert result["sources"] == {}
 
 
@@ -227,7 +228,7 @@ async def test_fleet_asks_every_domestic_node_and_never_a_foreign_one(loaded, pe
     assert result["peers"] == {"capella": {"status": "ok", "hits": 1, "sources": ["journals"]},
                                "mira": {"status": "station"}}
     assert [c[0] for c in peers.calls] == ["capella"]
-    assert any(h["origin"]["node"] == "local" for h in result["hits"])
+    assert any(h["origin"]["node"] == "local" for h in every(result))
 
 
 async def test_a_peer_is_asked_the_same_question_without_a_further_fan_out(loaded, peers):
@@ -236,7 +237,8 @@ async def test_a_peer_is_asked_the_same_question_without_a_further_fan_out(loade
                               "peers": "altair"}))
     (name, tool, args), = peers.calls
     assert (name, tool) == ("altair", "search_query")
-    assert args == {"query": "kitchen", "limit": 4, "peers": False, "project": "awm", "sources": ["journals"]}
+    assert args == {"query": "kitchen", "limit": 4, "passages": 1, "peers": False, "project": "awm",
+                    "sources": ["journals"]}
 
 
 async def test_a_release_without_search_is_no_search_at_home_and_unsupported_abroad(loaded, peers):
@@ -248,7 +250,7 @@ async def test_a_release_without_search_is_no_search_at_home_and_unsupported_abr
     result = await loaded.query(parse({"query": "kitchen", "peers": "local,capella,shaula"}))
     assert result["peers"]["capella"]["status"] == "no-search"
     assert result["peers"]["shaula"]["status"] == "unsupported"
-    assert any(h["origin"]["node"] == "local" for h in result["hits"])
+    assert any(h["origin"]["node"] == "local" for h in every(result))
 
 
 async def test_a_failing_or_slow_peer_is_a_status(loaded, peers, monkeypatch):
@@ -266,7 +268,7 @@ async def test_a_failing_or_slow_peer_is_a_status(loaded, peers, monkeypatch):
     assert "no hits" in result["peers"]["junk"]["error"]
     assert "exceeds" in result["peers"]["big"]["error"]
     assert "timeout" in result["peers"]["slow"]["error"]
-    assert result["hits"]
+    assert every(result)
 
 
 async def test_a_call_from_a_peer_searches_this_node_only(loaded, peers):

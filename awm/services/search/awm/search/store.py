@@ -1,9 +1,15 @@
-"""The search service's database: the source registry, the document table, the corpus.
+"""The search service's database: the source registry, the documents, their passages, the corpus.
 
-Every archive document is one row in ``documents`` keyed ``source:id``, and one
-document in the retrieval engine under the single source type :data:`CORPUS`.
-One corpus matters because the engine normalises scores per call: ranking each
-source in its own corpus would make their scores incomparable.
+Every archive document is one row in ``documents`` keyed ``source:id``. Two FTS5
+indexes serve the exact section. ``documents_exact`` holds trigrams of whole
+documents and finds any literal of three characters or more, even one that
+crosses a passage boundary. ``passages_words`` holds porter-stemmed words of
+passages and ranks keyword matches by BM25. Both are external-content tables
+kept in step by triggers on an explicit integer key, which no VACUUM renumbers.
+
+Each document is also one entry in the retrieval engine under the single source
+type :data:`CORPUS`, which serves the related section. One corpus matters
+because the engine normalises scores per call.
 """
 
 from __future__ import annotations
@@ -17,11 +23,13 @@ from typing import Any, Iterable
 from awm.persistence import embeddings as engine
 from awm.persistence.databases import get_connection, init_service_db
 
+from awm.search import passages as cutter
+
 SERVICE = "search"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 CORPUS = "doc"
 
-SCHEMA_SQL = """\
+_SOURCES = """\
 CREATE TABLE IF NOT EXISTS sources (
     name        TEXT PRIMARY KEY,
     service     TEXT NOT NULL,
@@ -34,9 +42,11 @@ CREATE TABLE IF NOT EXISTS sources (
     first_seen  REAL NOT NULL,
     last_seen   REAL NOT NULL
 );
+"""
 
-CREATE TABLE IF NOT EXISTS documents (
-    key      TEXT PRIMARY KEY,       -- source:id
+_DOCUMENTS = ["""CREATE TABLE IF NOT EXISTS documents (
+    rid      INTEGER PRIMARY KEY,
+    key      TEXT NOT NULL UNIQUE,   -- source:id
     source   TEXT NOT NULL,
     doc_id   TEXT NOT NULL,
     title    TEXT NOT NULL DEFAULT '',
@@ -46,23 +56,72 @@ CREATE TABLE IF NOT EXISTS documents (
     kind     TEXT NOT NULL DEFAULT '',
     ts       TEXT NOT NULL DEFAULT '', -- ISO 8601 UTC, second resolution, so text order is time order
     url      TEXT NOT NULL DEFAULT ''
+);""",
+    "CREATE INDEX IF NOT EXISTS idx_documents_source ON documents(source, doc_id);",
+    "CREATE INDEX IF NOT EXISTS idx_documents_filter ON documents(source, project, scope, kind, ts);"]
+
+_TEXT_INDEXES = """
+CREATE VIRTUAL TABLE IF NOT EXISTS documents_exact USING fts5(
+    title, text, content='documents', content_rowid='rid', tokenize='trigram');
+CREATE TRIGGER IF NOT EXISTS documents_exact_ai AFTER INSERT ON documents BEGIN
+    INSERT INTO documents_exact(rowid, title, text) VALUES (new.rid, new.title, new.text);
+END;
+CREATE TRIGGER IF NOT EXISTS documents_exact_ad AFTER DELETE ON documents BEGIN
+    INSERT INTO documents_exact(documents_exact, rowid, title, text)
+        VALUES ('delete', old.rid, old.title, old.text);
+END;
+CREATE TRIGGER IF NOT EXISTS documents_exact_au AFTER UPDATE OF title, text ON documents BEGIN
+    INSERT INTO documents_exact(documents_exact, rowid, title, text)
+        VALUES ('delete', old.rid, old.title, old.text);
+    INSERT INTO documents_exact(rowid, title, text) VALUES (new.rid, new.title, new.text);
+END;
+
+CREATE TABLE IF NOT EXISTS passages (
+    id       INTEGER PRIMARY KEY,
+    key      TEXT NOT NULL,          -- the document's source:id
+    field    TEXT NOT NULL,          -- title or text: the field start and stop index into
+    start    INTEGER NOT NULL,
+    stop     INTEGER NOT NULL,
+    section  TEXT NOT NULL DEFAULT '',
+    text     TEXT NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_documents_source ON documents(source, doc_id);
-CREATE INDEX IF NOT EXISTS idx_documents_filter ON documents(source, project, scope, kind, ts);
-""" + engine.EMBEDDINGS_DDL
+CREATE INDEX IF NOT EXISTS idx_passages_key ON passages(key, field, start);
+CREATE VIRTUAL TABLE IF NOT EXISTS passages_words USING fts5(
+    text, content='passages', content_rowid='id', tokenize='porter unicode61');
+CREATE TRIGGER IF NOT EXISTS passages_words_ai AFTER INSERT ON passages BEGIN
+    INSERT INTO passages_words(rowid, text) VALUES (new.id, new.text);
+END;
+CREATE TRIGGER IF NOT EXISTS passages_words_ad AFTER DELETE ON passages BEGIN
+    INSERT INTO passages_words(passages_words, rowid, text) VALUES ('delete', old.id, old.text);
+END;
+"""
+
+SCHEMA_SQL = _SOURCES + "\n".join(_DOCUMENTS) + _TEXT_INDEXES + engine.EMBEDDINGS_DDL
+
+MIGRATIONS = {(1, 2): "\n".join([
+    "ALTER TABLE documents RENAME TO documents_v1;",
+    "DROP INDEX IF EXISTS idx_documents_source;",
+    "DROP INDEX IF EXISTS idx_documents_filter;",
+    _DOCUMENTS[0],
+    "INSERT INTO documents (key, source, doc_id, title, text, project, scope, kind, ts, url)"
+    " SELECT key, source, doc_id, title, text, project, scope, kind, ts, url FROM documents_v1;",
+    "DROP TABLE documents_v1;",
+    *_DOCUMENTS[1:],
+]) + _TEXT_INDEXES + "INSERT INTO documents_exact(documents_exact) VALUES ('rebuild');\n"}
 
 _initialized = False
 
 
 def init() -> None:
-    """Idempotently create the search database and the engine's chunk store."""
+    """Idempotently create the search database and the engine's chunk store, and cut missing passages."""
     global _initialized
     if not _initialized:
-        init_service_db(SERVICE, SCHEMA_SQL, schema_version=SCHEMA_VERSION)
+        init_service_db(SERVICE, SCHEMA_SQL, schema_version=SCHEMA_VERSION, migrations=MIGRATIONS)
         _initialized = True
     conn = connect()
     try:
         engine.ensure_schema(conn)
+        cut_missing(conn)
     finally:
         conn.close()
 
@@ -150,6 +209,8 @@ def mark_attempt(conn: sqlite3.Connection, name: str, error: str | None,
 
 # -- documents -------------------------------------------------------------
 
+_FIELDS = ("title", "text", "project", "scope", "kind", "ts", "url")
+
 
 def key_of(source: str, doc_id: str) -> str:
     return f"{source}:{doc_id}"
@@ -174,14 +235,47 @@ def clean(source: str, raw: dict[str, Any]) -> dict[str, Any] | None:
             "url": str(raw.get("url") or "")}
 
 
-def put_documents(conn: sqlite3.Connection, rows: Iterable[dict[str, Any]]) -> None:
+def _cut(conn: sqlite3.Connection, key: str, title: str, text: str) -> None:
+    conn.execute("DELETE FROM passages WHERE key=?", (key,))
+    rows = [(key, "title", 0, len(title), "", title)] if title.strip() else []
+    rows += [(key, "text", p.start, p.end, p.section, text[p.start:p.end]) for p in cutter.split(text)]
+    conn.executemany("INSERT INTO passages (key, field, start, stop, section, text) VALUES (?,?,?,?,?,?)",
+                     rows)
+
+
+def put_documents(conn: sqlite3.Connection, rows: Iterable[dict[str, Any]]) -> int:
+    """Store ``rows``, writing only what changed; return how many changed.
+
+    An unchanged document costs one read, so a full export pass over a quiet
+    source rewrites no index.
+    """
+    rows = list(rows)
+    held = {r["key"]: r for r in conn.execute(
+        f"SELECT key, {', '.join(_FIELDS)} FROM documents WHERE key IN ({','.join('?' * len(rows))})",
+        [r["key"] for r in rows])} if rows else {}
+    changed = [r for r in rows if r["key"] not in held or any(held[r["key"]][f] != r[f] for f in _FIELDS)]
     conn.executemany(
         "INSERT INTO documents (key, source, doc_id, title, text, project, scope, kind, ts, url)"
         " VALUES (:key,:source,:doc_id,:title,:text,:project,:scope,:kind,:ts,:url)"
         " ON CONFLICT(key) DO UPDATE SET title=excluded.title, text=excluded.text,"
         " project=excluded.project, scope=excluded.scope, kind=excluded.kind, ts=excluded.ts,"
-        " url=excluded.url", list(rows))
+        " url=excluded.url", changed)
+    for r in changed:
+        old = held.get(r["key"])
+        if old is None or (old["title"], old["text"]) != (r["title"], r["text"]):
+            _cut(conn, r["key"], r["title"], r["text"])
     conn.commit()
+    return len(changed)
+
+
+def cut_missing(conn: sqlite3.Connection) -> int:
+    """Cut passages for every stored document that has none, as after the move to schema 2."""
+    rows = conn.execute("SELECT key, title, text FROM documents"
+                        " WHERE key NOT IN (SELECT DISTINCT key FROM passages)").fetchall()
+    for r in rows:
+        _cut(conn, r["key"], r["title"], r["text"])
+    conn.commit()
+    return len(rows)
 
 
 def document_ids(conn: sqlite3.Connection, source: str) -> set[str]:
@@ -193,6 +287,7 @@ def drop_documents(conn: sqlite3.Connection, source: str, doc_ids: Iterable[str]
     for doc_id in gone:
         key = key_of(source, doc_id)
         engine.delete_document(conn, CORPUS, key)
+        conn.execute("DELETE FROM passages WHERE key=?", (key,))
         conn.execute("DELETE FROM documents WHERE key=?", (key,))
     conn.commit()
     return len(gone)

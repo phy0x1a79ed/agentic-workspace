@@ -67,6 +67,11 @@ class Exporter:
         return out
 
 
+def every(result: dict[str, Any]) -> list[dict[str, Any]]:
+    """Every hit of a query answer, section by section in reading order."""
+    return [h for section in ("exact", "related", "graph") for h in result[section]]
+
+
 def doc(title: str, text: str, ts: str = "2026-03-01T10:00:00Z", **extra: Any) -> dict[str, Any]:
     return {"title": title, "text": text, "ts": ts, **extra}
 

@@ -3,8 +3,8 @@
 An index source is paged through its service's ``export`` verb into the one
 corpus, pushed on its topic when it has one and swept in full every hour. A
 source whose service stops is frozen: its documents stay, because absence is
-not deletion. A live source is asked at query time. The archive's list, each
-live source's list and each peer's list fuse by reciprocal rank.
+not deletion. A live source is asked at query time. The archive's sections,
+each live source's and each peer's fuse by reciprocal rank, section by section.
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ from awm import config
 from awm.gatewayclient import SupervisedSubscription
 from awm.persistence import embeddings as engine
 
-from awm.search import federation, index, merge, registry, store
+from awm.search import federation, hits as hitshape, index, merge, registry, store
 from awm.search.federation import Peers
 from awm.search.gateway import Gateway
 from awm.search.query import Query
@@ -55,19 +55,12 @@ def _drop_vanished(conn, source: str, kept: set[str]) -> int:
     return store.drop_documents(conn, source, store.document_ids(conn, source) - kept)
 
 
-def _live_hits(source: str, raw: Any, origin: dict[str, str]) -> list[dict[str, Any]]:
-    if not isinstance(raw, dict) or not isinstance(raw.get("hits"), list):
-        raise ValueError("the query verb returned no `hits` list")
-    hits = []
-    for item in raw["hits"]:
-        if not isinstance(item, dict) or not item.get("id"):
-            continue
-        hit = {"source": source, "id": str(item["id"]), "title": str(item.get("title") or ""),
-               "snippet": " ".join(str(item.get("snippet") or "").split())[:index.SNIPPET_CHARS],
-               "ts": store.normalize_ts(item.get("ts")), "score": 0.0, "origin": origin}
-        hit.update({k: str(item[k]) for k in ("project", "scope", "kind", "url") if item.get(k)})
-        hits.append(hit)
-    return hits
+def _live_sections(source: str, raw: Any, origin: dict[str, str], limit: int) -> dict[str, list[dict[str, Any]]]:
+    found = hitshape.sections(raw, origin, limit, source=source)
+    for section in found.values():
+        for hit in section:
+            hit["ts"] = store.normalize_ts(hit["ts"])
+    return found
 
 
 class Archive:
@@ -158,7 +151,7 @@ class Archive:
 
     async def _pass(self, source: Source) -> dict[str, int]:
         cursor, pages = None, 0
-        totals = {"documents": 0, "skipped": 0, "indexed": 0}
+        totals = {"documents": 0, "changed": 0, "skipped": 0, "indexed": 0}
         while True:
             args: dict[str, Any] = {"limit": PAGE, **({"cursor": cursor} if cursor else {})}
             page = await self.gateway.call(source.service, source.export, args, EXPORT_TIMEOUT_S)
@@ -284,23 +277,23 @@ class Archive:
 
     # -- query ------------------------------------------------------------
 
-    def _archive_hits(self, q: Query, names: list[str]) -> tuple[list[dict[str, Any]], Any]:
-        hits, degraded = _with_conn(index.search, q.text, q.filters(names), q.limit)
+    def _archive_hits(self, q: Query, names: list[str]) -> tuple[dict[str, list[dict[str, Any]]], Any]:
+        found, degraded = _with_conn(index.search, q.text, q.filters(names), q.limit, q.passages)
         origin = self.origin()
-        return [{**h, "origin": origin} for h in hits], degraded
+        return {s: [{**h, "origin": origin} for h in hits] for s, hits in found.items()}, degraded
 
-    async def _live(self, source: Source, q: Query) -> tuple[Source, list[dict[str, Any]], dict[str, Any]]:
+    async def _live(self, source: Source, q: Query) -> tuple[Source, dict[str, list[dict[str, Any]]], dict[str, Any]]:
         args = {"query": q.text, "limit": q.limit, **q.raw}
         try:
             raw = await asyncio.wait_for(
                 self.gateway.call(source.service, source.query, args, LIVE_TIMEOUT_S),
                 timeout=LIVE_TIMEOUT_S + 1.0)
-            hits = _live_hits(source.name, raw, self.origin())
+            found = _live_sections(source.name, raw, self.origin(), q.limit)
         except (asyncio.TimeoutError, TimeoutError):
-            return source, [], {"status": "error", "error": f"timeout after {LIVE_TIMEOUT_S:g}s"}
+            return source, {}, {"status": "error", "error": f"timeout after {LIVE_TIMEOUT_S:g}s"}
         except Exception as exc:  # noqa: BLE001 — one source failing never fails the search
-            return source, [], {"status": "error", "error": _describe(exc)}
-        return source, hits, {"status": "ok", "hits": len(hits)}
+            return source, {}, {"status": "error", "error": _describe(exc)}
+        return source, found, {"status": "ok", "hits": hitshape.count(found)}
 
     def _index_status(self, row: dict[str, Any], hits: int) -> dict[str, Any]:
         state = "frozen" if not row["present"] else "unsynced" if row["synced_at"] is None else "ok"
@@ -310,7 +303,8 @@ class Archive:
         return status
 
     async def query(self, q: Query) -> dict[str, Any]:
-        """One ranked list over the picked sources and peers, plus a status for every source and peer asked."""
+        """The ``exact``, ``related`` and ``graph`` sections over the picked sources and peers, plus a
+        status for every source and peer asked."""
         await self._refresh_if_stale()
         rows = {r["name"]: r for r in self._visible(
             await asyncio.to_thread(_with_conn, store.source_rows), q.grants)}
@@ -347,17 +341,18 @@ class Archive:
             if isinstance(found, BaseException):
                 statuses.update({n: {"status": "error", "error": _describe(found)} for n in index_names})
             else:
-                hits, degraded = found
-                lists.append(hits)
-                per_source = {n: sum(1 for h in hits if h["source"] == n) for n in index_names}
+                sections, degraded = found
+                lists.append(sections)
+                every = [h for hits in sections.values() for h in hits]
+                per_source = {n: sum(1 for h in every if h["source"] == n) for n in index_names}
                 statuses.update({n: self._index_status(rows[n], per_source[n]) for n in index_names})
         for source in live:
             found = results.pop(0)
             if isinstance(found, BaseException):
                 statuses[source.name] = {"status": "error", "error": _describe(found)}
             else:
-                _, hits, status = found
-                lists.append(hits)
+                _, sections, status = found
+                lists.append(sections)
                 statuses[source.name] = status
         if q.fan_out:
             asked = results.pop(0)
@@ -365,10 +360,10 @@ class Archive:
                 peer_status["*"] = {"status": "error", "error": _describe(asked)}
             else:
                 for result in asked:
-                    lists.append(result.hits)
+                    lists.append(result.found)
                     peer_status[result.name] = result.status
 
-        out: dict[str, Any] = {"query": q.text, "hits": merge.fuse(lists, q.limit),
+        out: dict[str, Any] = {"query": q.text, **merge.fuse_sections(lists, q.limit),
                                "sources": statuses, "peers": peer_status}
         if degraded:
             out["degraded"] = degraded

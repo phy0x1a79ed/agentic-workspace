@@ -673,7 +673,7 @@ def search(conn: sqlite3.Connection, query: str, *, source_type: str,
 def semantic_search(conn: sqlite3.Connection, query: str, source_type: str,
                     limit: int = 10, *, allowed: str | None = None,
                     params: Iterable[Any] = ()) -> list[dict[str, Any]]:
-    """Dense-only MaxP search: ``source_type``, ``source_id``, ``chunk_text``, cosine ``score``.
+    """Dense-only MaxP search: ``source_type``, ``source_id``, the best ``chunk`` and its ``chunk_text``, cosine ``score``.
 
     For a caller that blends raw cosine into its own score; ``allowed`` and
     ``params`` filter first, as in :func:`search`.
@@ -686,6 +686,6 @@ def semantic_search(conn: sqlite3.Connection, query: str, source_type: str,
         row = conn.execute(
             "SELECT chunk_text FROM embeddings WHERE source_type=? AND source_id=? AND chunk=?",
             (source_type, sid, ch)).fetchone()
-        out.append({"source_type": source_type, "source_id": sid,
+        out.append({"source_type": source_type, "source_id": sid, "chunk": ch,
                     "chunk_text": (row[0] if row else "")[:200], "score": round(score, 4)})
     return out

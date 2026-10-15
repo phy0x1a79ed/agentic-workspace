@@ -9,10 +9,13 @@ from awm import config
 from awm.config.peertoken import node_label
 
 from awm.search import store
+from awm.search.hits import MAX_PASSAGES
 from awm.search.index import Filters
 
 DEFAULT_LIMIT = 10
 MAX_LIMIT = 100
+#: Passages quoted per hit by default.
+DEFAULT_PASSAGES = 1
 #: The ``peers`` word for every domestic node, this one included.
 FLEET = "fleet"
 #: The ``peers`` word for this node in a list of names.
@@ -25,10 +28,11 @@ class Query:
     sources: list[str] | None = None
     project: str = ""
     scope: str = ""
-    kind: str = ""
+    kinds: list[str] = field(default_factory=list)
     after: str = ""
     before: str = ""
     limit: int = DEFAULT_LIMIT
+    passages: int = DEFAULT_PASSAGES
     local: bool = True
     peer_names: list[str] | str = field(default_factory=list)
     grants: frozenset[str] | None = None
@@ -42,11 +46,12 @@ class Query:
         return self.grants is None or source in self.grants
 
     def filters(self, sources: list[str]) -> Filters:
-        return Filters(sources, self.project, self.scope, self.kind, self.after, self.before)
+        return Filters(sources, self.project, self.scope, self.kinds, self.after, self.before)
 
     def forwarded(self) -> dict[str, Any]:
         """The arguments a peer is asked with: the same question, never a further fan-out."""
-        args: dict[str, Any] = {"query": self.text, "limit": self.limit, "peers": False, **self.raw}
+        args: dict[str, Any] = {"query": self.text, "limit": self.limit, "passages": self.passages,
+                                "peers": False, **self.raw}
         if self.sources is not None:
             args["sources"] = self.sources
         return args
@@ -101,11 +106,16 @@ def parse(args: dict[str, Any], as_: str | None = None) -> Query:
     if peer_originated(as_):
         local, peer_names = True, []
     grants = args.get("_grants")
+    kinds = names(args.get("kind")) or []
+    raw = {k: str(args[k]) for k in ("project", "scope", "after", "before") if args.get(k)}
+    if kinds:
+        raw["kind"] = ",".join(kinds)
     return Query(
         text=text, sources=names(args.get("sources")),
         project=str(args.get("project") or ""), scope=str(args.get("scope") or ""),
-        kind=str(args.get("kind") or ""), after=_time(args, "after"), before=_time(args, "before"),
+        kinds=kinds, after=_time(args, "after"), before=_time(args, "before"),
         limit=max(1, min(int(args.get("limit") or DEFAULT_LIMIT), MAX_LIMIT)),
+        passages=max(1, min(int(args.get("passages") or DEFAULT_PASSAGES), MAX_PASSAGES)),
         local=local, peer_names=peer_names,
         grants=None if grants is None else frozenset(str(g) for g in grants),
-        raw={k: str(args[k]) for k in ("project", "scope", "kind", "after", "before") if args.get(k)})
+        raw=raw)

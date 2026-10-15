@@ -10,11 +10,13 @@ from __future__ import annotations
 
 import asyncio
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from awm import config
 from awm.config.peertoken import node_label
+
+from awm.search import hits as hitshape
 
 #: Budget for one peer, connect to reply.
 PEER_TIMEOUT_S = 10.0
@@ -23,7 +25,6 @@ PEER_TOOL = "search_query"
 GET_TOOL = "search_get"
 #: A reply larger than this is discarded unread.
 MAX_REPLY_BYTES = 2 * 1024 * 1024
-_TEXT_KEYS = ("source", "id", "title", "snippet", "ts", "project", "scope", "kind", "url")
 
 
 class Peers:
@@ -41,8 +42,8 @@ class Peers:
 @dataclass
 class PeerResult:
     name: str
-    hits: list[dict[str, Any]]
     status: dict[str, Any]
+    found: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
 
 
 def _describe(exc: BaseException) -> str:
@@ -55,14 +56,14 @@ def _no_tool(exc: BaseException) -> bool:
 
 
 def _reply(raw: Any) -> dict[str, Any]:
-    if isinstance(raw, dict) and "hits" not in raw and "result" in raw:
+    if isinstance(raw, dict) and "result" in raw and not any(k in raw for k in ("hits", *hitshape.SECTIONS)):
         raw = raw["result"]
     size = len(raw) if isinstance(raw, (str, bytes)) else len(json.dumps(raw, default=str))
     if size > MAX_REPLY_BYTES:
         raise ValueError(f"reply of {size} bytes exceeds the {MAX_REPLY_BYTES} byte cap")
     if isinstance(raw, (str, bytes)):
         raw = json.loads(raw)
-    if not isinstance(raw, dict) or not isinstance(raw.get("hits"), list):
+    if not isinstance(raw, dict) or not any(isinstance(raw.get(k), list) for k in ("hits", *hitshape.SECTIONS)):
         detail = raw.get("error") if isinstance(raw, dict) else None
         raise RuntimeError(str(detail or "reply has no hits"))
     return raw
@@ -75,36 +76,27 @@ def _origin(record: dict[str, Any]) -> dict[str, str]:
     return {"node": record["name"], "swarm": swarm}
 
 
-def _hit(raw: Any, origin: dict[str, str]) -> dict[str, Any] | None:
-    """A peer's hit cut down to the shared keys, so a peer cannot inject others or claim our origin."""
-    if not isinstance(raw, dict) or not raw.get("source") or not raw.get("id"):
-        return None
-    hit = {k: str(raw[k])[:2000] for k in _TEXT_KEYS if raw.get(k) not in (None, "")}
-    return {"title": "", "snippet": "", "ts": "", **hit, "score": 0.0, "origin": origin}
-
-
 async def _ask_one(peers: Peers, record: dict[str, Any], args: dict[str, Any], limit: int) -> PeerResult:
     name = record["name"]
     if record.get("role") == "station":
-        return PeerResult(name, [], {"status": "station"})
+        return PeerResult(name, {"status": "station"})
     try:
         raw = await asyncio.wait_for(peers.invoke(name, PEER_TOOL, args, PEER_TIMEOUT_S),
                                      timeout=PEER_TIMEOUT_S + 1.0)
         reply = _reply(raw)
     except (asyncio.TimeoutError, TimeoutError):
-        return PeerResult(name, [], {"status": "error", "error": f"timeout after {PEER_TIMEOUT_S:g}s"})
+        return PeerResult(name, {"status": "error", "error": f"timeout after {PEER_TIMEOUT_S:g}s"})
     except Exception as exc:  # noqa: BLE001 — a peer's failure is reported, never raised
         if _no_tool(exc) and record.get("relation") == "domestic":
-            return PeerResult(name, [], {"status": "no-search", "detail": "its release has no search tool"})
+            return PeerResult(name, {"status": "no-search", "detail": "its release has no search tool"})
         if _no_tool(exc):
-            return PeerResult(name, [], {"status": "unsupported",
-                                         "detail": "no search tool there, or no source granted to this node"})
-        return PeerResult(name, [], {"status": "error", "error": _describe(exc)})
-    origin = _origin(record)
-    hits = [h for h in (_hit(x, origin) for x in reply["hits"]) if h][:limit]
+            return PeerResult(name, {"status": "unsupported",
+                                     "detail": "no search tool there, or no source granted to this node"})
+        return PeerResult(name, {"status": "error", "error": _describe(exc)})
+    found = hitshape.sections(reply, _origin(record), limit)
     sources = reply.get("sources")
-    return PeerResult(name, hits, {"status": "ok", "hits": len(hits),
-                                   "sources": sorted(sources) if isinstance(sources, dict) else []})
+    return PeerResult(name, {"status": "ok", "hits": hitshape.count(found),
+                             "sources": sorted(sources) if isinstance(sources, dict) else []}, found)
 
 
 async def ask(peers: Peers, wanted: list[str] | str, args: dict[str, Any],
@@ -115,7 +107,7 @@ async def ask(peers: Peers, wanted: list[str] | str, args: dict[str, Any],
         names = sorted(n for n, r in book.items() if r.get("relation", "domestic") == "domestic")
     else:
         names = wanted
-    unknown = [PeerResult(n, [], {"status": "error", "error": "not in the peer book"})
+    unknown = [PeerResult(n, {"status": "error", "error": "not in the peer book"})
                for n in names if n not in book]
     asked = await asyncio.gather(*(_ask_one(peers, book[n], args, limit) for n in names if n in book))
     return [*asked, *unknown]

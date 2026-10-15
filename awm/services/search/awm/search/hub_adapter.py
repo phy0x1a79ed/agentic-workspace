@@ -37,12 +37,16 @@ API_MANIFEST: dict[str, Any] = {
             "tool": "search_query",
             "timeout": 60,
             "description": (
-                "One ranked search over everything the swarm knows: journals, precedents, "
-                "papers and any other source in `search sources`. It searches this node "
-                "only, unless `peers` names other nodes. Each hit carries source, id, title, "
-                "snippet, ts, score and origin (node and swarm). Read the answer's `sources` "
-                "and `peers` for the status of each source and peer asked. Fetch a whole hit "
-                "with `get`."
+                "One search over everything the swarm knows: journals, precedents, papers "
+                "and any other source in `search sources`. It searches this node only, unless "
+                "`peers` names other nodes. The answer has three ranked sections, read in "
+                "order: `exact` (the query as a literal substring, case-insensitive, then "
+                "keyword matches), `related` (nearest in meaning) and `graph` (linked through "
+                "the knowledge graph). A document appears in the first section that holds it. "
+                "Each hit carries source, id, title, ts, score, match, origin (node and swarm) "
+                "and its passages: quotes with their section and their start and end offsets in "
+                "the document's field. Read the answer's `sources` and `peers` for the status "
+                "of each source and peer asked. Fetch a whole hit with `get`."
             ),
             "params": [
                 {"name": "query", "type": "string", "required": True,
@@ -52,12 +56,16 @@ API_MANIFEST: dict[str, Any] = {
                                 "index source and every live source that is not opt-in."},
                 {"name": "project", "type": "string", "description": "Only this project's documents."},
                 {"name": "scope", "type": "string", "description": "Only this scope's documents."},
-                {"name": "kind", "type": "string", "description": "Only this kind, such as journal."},
+                {"name": "kind", "type": "array",
+                 "description": "Only these kinds, such as journal or paper."},
                 {"name": "after", "type": "string",
                  "description": "Only documents at or after this ISO 8601 date or time (UTC)."},
                 {"name": "before", "type": "string",
                  "description": "Only documents before this ISO 8601 date or time (UTC)."},
-                {"name": "limit", "type": "integer", "description": "Maximum hits, 1-100. Default 10."},
+                {"name": "limit", "type": "integer",
+                 "description": "Maximum hits per section, 1-100. Default 10."},
+                {"name": "passages", "type": "integer",
+                 "description": "Maximum passages quoted per hit, 1-10. Default 1."},
                 {"name": "peers", "type": "string",
                  "description": "Where to search. Omit it for this node only. `fleet` adds every "
                                 "domestic node. Node names, comma-separated, domestic or foreign, "

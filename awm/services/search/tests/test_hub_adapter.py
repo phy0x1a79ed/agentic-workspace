@@ -8,7 +8,7 @@ from awm.search import hub_adapter
 from awm.search.hub_adapter import API_MANIFEST, HANDLERS
 from awm.search.query import parse
 
-from .conftest import doc, synced
+from .conftest import doc, every, synced
 
 pytestmark = [pytest.mark.search]
 
@@ -35,7 +35,7 @@ def test_every_verb_is_published_under_the_search_tool_and_wired():
 def test_the_query_verb_declares_every_key_it_reads_and_every_key_it_sends_a_peer():
     declared = {p["name"] for p in FNS["query"]["params"]}
     full = {"query": "q", "sources": ["a"], "project": "p", "scope": "s", "kind": "k",
-            "after": "2026-01-01", "before": "2026-02-01", "limit": 3, "peers": "fleet"}
+            "after": "2026-01-01", "before": "2026-02-01", "limit": 3, "passages": 1, "peers": "fleet"}
     assert set(full) == declared
     sent = parse(full).forwarded()
     assert set(sent) <= declared
@@ -54,7 +54,7 @@ async def test_the_handlers_answer_a_granted_peer_only_its_sources(archive, gate
     monkeypatch.setattr(hub_adapter, "ARCHIVE", archive)
     granted = {"_grants": ["journals"]}
     result = await HANDLERS["query"]({"query": "kitchen sink", **granted}, "peer:shaula")
-    assert {h["source"] for h in result["hits"]} == {"journals"}
+    assert {h["source"] for h in every(result)} == {"journals"}
     assert [s["name"] for s in (await HANDLERS["sources"](granted))["sources"]] == ["journals"]
     assert (await HANDLERS["status"](granted))["sources"] == {"journals": 1}
     with pytest.raises(ValueError, match="no source"):
