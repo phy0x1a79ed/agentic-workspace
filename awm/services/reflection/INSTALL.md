@@ -1,12 +1,13 @@
 # Installing the `reflection` service
 
 A Python feature service in the `awm.reflection` namespace. It lets an agent run
-a slash-command **on itself** by typing it into its own prompt. The headline case
+a slash-command **on itself**, or on another session on its node, by typing it
+into that session's prompt. The headline case
 is `/compact`: an agent whose context is filling up can compact itself, which it
 otherwise cannot do (the TUI only takes `/compact` as typed input).
 
 It owns **no database** and depends only on the shared component libraries it
-imports (`config`, `gatewayclient`).
+imports (`claudedaemon`, `config`, `gatewayclient`).
 
 ## How it works
 
@@ -75,8 +76,8 @@ the record catches that one — see *How a send is confirmed* above.
 
 ## Who gets typed into
 
-Reflection acts on the caller and on nobody else, so **nothing in the surface
-takes a target**. Identity is not accepted as an argument at all; it is observed.
+A verb acts on the caller's own session unless it names `job`. The caller's
+identity is not accepted as an argument at all; it is observed.
 `awm-mcp` runs as a stdio child of the session that calls it, so the gateway
 stamps that proxy's parent pid onto every reflection call as `_caller_pid` —
 always overwriting, and stripping it when there is no header, so a model cannot
@@ -111,6 +112,17 @@ asking whether the roster entry's `bg-pty-host` actually contains the caller,
 since that `pid` is the host and never the REPL. And because session records are
 keyed by pid, `procStart` must agree with `/proc/<pid>/stat` before a record is
 trusted.
+
+The session-control verbs take an optional `job`: a job id or a name as
+`list_other` shows it. A name two sessions share is refused with the candidates
+listed. The target is resolved through the same `session_target` lookup as the
+caller, with the target's REPL pid, so the same identity checks hold. Any
+session may act on any other session on its node, and nothing reaches another
+node.
+
+**CAUTION** A confused agent can stop or reconfigure another agent's session.
+`stop` refuses the caller's own session without `confirm`, and that is the
+only guard.
 
 Callers with no proxy in front of them (a human at a plain shell) have no
 identity and are refused. `reflection_whoami` reports what the service resolved,
@@ -160,7 +172,7 @@ No auth — the registration handshake carries no token.
 
 ## Surface
 
-Five verbs, all on MCP + CLI + HTTP, none of which takes a target:
+Every verb is on MCP + CLI + HTTP:
 
 - `reflection_message_self` — type any text/slash command into your own prompt and submit
   it. Destructive commands (`/clear`, `/quit`, `/exit`) require `confirm=true`;
@@ -171,8 +183,16 @@ Five verbs, all on MCP + CLI + HTTP, none of which takes a target:
   one verb that is not caller-scoped, because its whole job is to make a *lost*
   promise visible from outside the session that lost it.
 - `reflection_whoami` — report which session reflection resolves you to.
+- Session control, on the caller or on `job`: `remote_control` (types `/rc`,
+  and answers with the `https://claude.ai/code/session_…` link once the bridge
+  connects), `model`, `effort`, `rename`, `interrupt` (one Escape), `stop`
+  (ends a background session and runs `claude rm`), `link` (reads the record
+  and types nothing) and `message` (types into another session, under the
+  `message_self` guards). Before it types, a control verb refuses when the
+  target waits on an answer or its screen shows a modal, because a keystroke
+  into a modal answers it.
 
-The normal call carries nothing agent-specific, on either hosting kind:
+A call on yourself carries nothing agent-specific, on either hosting kind:
 
     reflection(verb="compact")
     reflection(verb="message_self", args={text: "/model opus"})

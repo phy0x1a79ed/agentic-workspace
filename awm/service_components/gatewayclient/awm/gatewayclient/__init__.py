@@ -156,10 +156,12 @@ def _svc_url(service: str, fn: str) -> str:
     return f"{hub_base_url()}/svc/{service}/fn/{fn}"
 
 
-def _headers(as_: str | None) -> dict[str, str]:
+def _headers(as_: str | None, caller_pid: int | None = None) -> dict[str, str]:
     h: dict[str, str] = {"Content-Type": "application/json"}
     if as_ is not None:
         h["X-Awm-As"] = as_
+    if caller_pid is not None:
+        h["X-Awm-Caller-Pid"] = str(int(caller_pid))
     return h
 
 
@@ -183,12 +185,15 @@ async def call(
     args: dict | None = None,
     *,
     as_: str | None = None,
+    caller_pid: int | None = None,
     timeout: float = 30.0,
 ) -> Any:
     """Call ``fn`` on ``service`` via the gateway and return the JSON result.
 
     POSTs ``json(args)`` to ``{AWM_HUB_URL}/svc/{service}/fn/{fn}`` with an
-    ``X-Awm-As: <as_>`` header when ``as_`` is given. Raises
+    ``X-Awm-As: <as_>`` header when ``as_`` is given. ``caller_pid`` names the
+    session the call acts for: the gateway stamps it as the verb's
+    ``_caller_pid``, as it does for the session's own calls. Raises
     ``GatewayCallError`` on any non-2xx response (status + body attached).
 
     A ``None``/null service result comes back as ``{}`` (the gateway
@@ -199,7 +204,7 @@ async def call(
     url = _svc_url(service, fn)
     async with httpx.AsyncClient(timeout=timeout) as cli:
         resp = await cli.post(url, content=json.dumps(args or {}),
-                              headers=_headers(as_))
+                              headers=_headers(as_, caller_pid))
     return _parse_reply(resp, service, fn)
 
 

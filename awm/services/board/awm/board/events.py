@@ -35,6 +35,31 @@ CREATE INDEX IF NOT EXISTS events_recipient ON events (recipient, id);
 CREATE INDEX IF NOT EXISTS events_created ON events (created_at);
 """
 
+_MESSAGES_V3 = """
+CREATE TABLE IF NOT EXISTS messages (
+    card_id   TEXT NOT NULL,
+    seq       INTEGER NOT NULL,
+    at        TEXT NOT NULL,
+    swarm     TEXT NOT NULL,
+    principal TEXT NOT NULL,
+    party     TEXT NOT NULL,
+    origin    TEXT NOT NULL,
+    body      TEXT NOT NULL,
+    note_id   TEXT,
+    PRIMARY KEY (card_id, seq)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS messages_note ON messages (note_id);
+"""
+
+#: The reply cards the thread migration has folded into a root card's thread.
+_FOLDED = """
+CREATE TABLE IF NOT EXISTS folded (
+    reply_id TEXT PRIMARY KEY,
+    root_id  TEXT NOT NULL,
+    at       REAL NOT NULL
+);
+"""
+
 _MESSAGES = """
 CREATE TABLE IF NOT EXISTS messages (
     card_id   TEXT NOT NULL,
@@ -46,6 +71,7 @@ CREATE TABLE IF NOT EXISTS messages (
     origin    TEXT NOT NULL,
     body      TEXT NOT NULL,
     note_id   TEXT,
+    agent     TEXT,
     PRIMARY KEY (card_id, seq)
 );
 CREATE UNIQUE INDEX IF NOT EXISTS messages_note ON messages (note_id);
@@ -67,22 +93,24 @@ CREATE TABLE IF NOT EXISTS last_seen (
     recipient TEXT,
     claimant  TEXT
 );
-""" + _INDEXES + _MESSAGES
+""" + _INDEXES + _MESSAGES + _FOLDED
 
 _MIGRATIONS = {
     (1, 2): ("ALTER TABLE last_seen ADD COLUMN recipient TEXT;\n"
              "ALTER TABLE last_seen ADD COLUMN claimant TEXT;\n" + _INDEXES),
-    (2, 3): _MESSAGES,
+    (2, 3): _MESSAGES_V3,
+    (3, 4): "ALTER TABLE messages ADD COLUMN agent TEXT;\n" + _FOLDED,
 }
 
-_MESSAGE_COLUMNS = "card_id, seq, at, swarm, principal, party, origin, body, note_id"
+_MESSAGE_COLUMNS = "card_id, seq, at, swarm, principal, party, origin, body, note_id, agent"
 
 
 def _message(row: sqlite3.Row) -> dict:
     return {"card_id": row["card_id"], "seq": row["seq"], "at": row["at"],
             "sender": {"swarm": row["swarm"], "principal": row["principal"],
                        "party": row["party"]},
-            "origin": row["origin"], "body": row["body"], "note_id": row["note_id"]}
+            "origin": row["origin"], "body": row["body"], "note_id": row["note_id"],
+            "agent": row["agent"]}
 
 
 class Events:
@@ -90,7 +118,7 @@ class Events:
 
     def __init__(self, path: str | Path):
         self._path = Path(path)
-        databases.init_db_at(self._path, _SCHEMA, schema_version=3, migrations=_MIGRATIONS)
+        databases.init_db_at(self._path, _SCHEMA, schema_version=4, migrations=_MIGRATIONS)
 
     def _conn(self) -> sqlite3.Connection:
         return databases.get_connection_at(self._path)
@@ -126,6 +154,23 @@ class Events:
                 " WHERE id > ? AND (sender = ? OR recipient IN (?, ?))"
                 " ORDER BY id LIMIT ?",
                 (int(last_id or 0), swarm, swarm, OPEN, max(1, int(limit))),
+            ).fetchall()
+        finally:
+            conn.close()
+        return [{"id": r["id"], "type": r["type"], "card": json.loads(r["card"]),
+                 "created_at": r["created_at"]} for r in rows]
+
+    def for_card(self, card_id: str, party: dict, since: int = 0,
+                 limit: int = DEFAULT_LIMIT) -> list[dict]:
+        """One card's events after ``since`` that ``party`` may see, oldest first. Same filter as `since`."""
+        swarm = party["swarm"]
+        conn = self._conn()
+        try:
+            rows = conn.execute(
+                "SELECT id, type, card, created_at FROM events"
+                " WHERE card_id = ? AND id > ? AND (sender = ? OR recipient IN (?, ?))"
+                " ORDER BY id LIMIT ?",
+                (card_id, int(since or 0), swarm, swarm, OPEN, max(1, int(limit))),
             ).fetchall()
         finally:
             conn.close()
@@ -201,16 +246,16 @@ class Events:
     # -- card messages ----------------------------------------------------------
 
     def message_add(self, card_id: str, *, at: str, sender: dict, origin: str,
-                    body: str, note_id: str | None = None) -> dict:
+                    body: str, note_id: str | None = None, agent: str | None = None) -> dict:
         """Record a message as the card's next one. The sequence is the order of the thread."""
         conn = self._conn()
         try:
             conn.execute(
                 "INSERT INTO messages (" + _MESSAGE_COLUMNS + ")"
-                " SELECT ?, COALESCE(MAX(seq), 0) + 1, ?, ?, ?, ?, ?, ?, ?"
+                " SELECT ?, COALESCE(MAX(seq), 0) + 1, ?, ?, ?, ?, ?, ?, ?, ?"
                 " FROM messages WHERE card_id = ?",
                 (card_id, at, sender["swarm"], sender["principal"], sender["party"],
-                 origin, body, note_id, card_id))
+                 origin, body, note_id, agent, card_id))
             row = conn.execute(
                 "SELECT " + _MESSAGE_COLUMNS + " FROM messages WHERE card_id = ?"
                 " ORDER BY seq DESC LIMIT 1", (card_id,)).fetchone()
@@ -261,3 +306,54 @@ class Events:
             conn.close()
         cursor = rows[-1]["rowid"] if len(rows) == limit else 0
         return [_message(r) for r in rows], cursor
+
+    # -- the thread migration ---------------------------------------------------
+
+    def folded_ids(self, reply_ids: list[str]) -> set[str]:
+        """Which of ``reply_ids`` the thread migration has already folded into a thread."""
+        if not reply_ids:
+            return set()
+        conn = self._conn()
+        try:
+            marks = ",".join("?" * len(reply_ids))
+            rows = conn.execute(f"SELECT reply_id FROM folded WHERE reply_id IN ({marks})",
+                                list(reply_ids)).fetchall()
+        finally:
+            conn.close()
+        return {r["reply_id"] for r in rows}
+
+    def messages_backfill(self, root_id: str, history: list[dict]) -> list[dict]:
+        """Put ``history`` at the head of the root card's thread, in one transaction.
+
+        Each entry is ``{reply_id, at, sender, body}``, already in the order it
+        should read. The messages the thread holds keep their order and move up
+        by ``len(history)``, so every backfilled sequence number sorts before
+        them. Two passes through negative numbers keep the primary key unique
+        while the rows shift. Returns the whole thread afterwards.
+        """
+        shift = len(history)
+        conn = self._conn()
+        try:
+            conn.execute("UPDATE messages SET seq = -(seq + ?) WHERE card_id = ?",
+                         (shift, root_id))
+            conn.execute("UPDATE messages SET seq = -seq WHERE card_id = ? AND seq < 0",
+                         (root_id,))
+            for seq, item in enumerate(history, start=1):
+                sender = item["sender"]
+                conn.execute(
+                    "INSERT INTO messages (" + _MESSAGE_COLUMNS + ")"
+                    " VALUES (?,?,?,?,?,?,?,?,?,?)",
+                    (root_id, seq, item["at"], sender["swarm"], sender["principal"],
+                     sender["party"], "migrated", item["body"], None, None))
+                conn.execute("INSERT INTO folded (reply_id, root_id, at) VALUES (?,?,?)",
+                             (item["reply_id"], root_id, time.time()))
+            conn.commit()
+            rows = conn.execute(
+                "SELECT " + _MESSAGE_COLUMNS + " FROM messages WHERE card_id = ? ORDER BY seq",
+                (root_id,)).fetchall()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+        return [_message(r) for r in rows]

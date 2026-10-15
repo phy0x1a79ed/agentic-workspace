@@ -511,6 +511,16 @@ async def _root(request: Request) -> Response:
     return resp
 
 
+async def _body(request: Request):
+    """Stream a request body of known length upstream rather than holding it
+    whole: a peer's file-hop call can carry gigabytes. Anything else is read
+    first, so the upstream leg is framed by length and a caller's
+    ``Transfer-Encoding`` never reaches it."""
+    if request.headers.get("content-length") not in (None, "", "0"):
+        return request.stream()
+    return await request.body()
+
+
 async def _landing_add_tag(request: Request) -> Response:
     """``POST /__landing/tags`` — body ``{page, tag}``. Returns the page's
     updated tag list plus the refreshed global tag counts."""
@@ -818,9 +828,9 @@ async def _http_proxy(request: Request) -> Response:
         bridge = _penpot_bridge_kind(request, path)
     client: httpx.AsyncClient = app.state.client
     url = _upstream_url(up, raw, request.scope.get("query_string") or b"")
-    body = await request.body()
     upstream_req = client.build_request(
-        request.method, url, headers=_req_headers(request, sub), content=body,
+        request.method, url, headers=_req_headers(request, sub),
+        content=await _body(request),
     )
     try:
         resp = await client.send(upstream_req, stream=True)

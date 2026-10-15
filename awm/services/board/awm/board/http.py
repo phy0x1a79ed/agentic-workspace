@@ -31,7 +31,7 @@ from awm.board import stream as streams
 
 log = logging.getLogger("awm.board.http")
 
-LIST_FILTERS = ("sender", "recipient", "claimant", "status", "kind", "reply_to")
+LIST_FILTERS = ("sender", "recipient", "claimant", "status", "state", "kind", "reply_to", "project")
 #: Paging, passed to ``Board.list`` as text; a value that is not a whole number answers 400.
 LIST_PAGING = ("limit", "offset")
 
@@ -164,6 +164,8 @@ class Door:
             body=body.get("body") or "",
             priority=body.get("priority") or "normal",
             reply_to=body.get("reply_to") or None,
+            project=body.get("project") or None,
+            agent=body.get("agent"),
         )
 
     async def list_cards(self, request: Request) -> JSONResponse:
@@ -185,7 +187,10 @@ class Door:
         card_id = self._card_id(request)
         if party is None or card_id is None:
             return not_found()
-        return await self._call(self.board.claim, party, card_id)
+        # A claim sent without a body is a claim from a client that names no agent.
+        body = await self._body(request) or {}
+        return await self._call(self.board.claim, party, card_id,
+                                agent=body.get("agent"), node=body.get("node"))
 
     async def complete_card(self, request: Request) -> JSONResponse:
         party = await self._party(request)
@@ -215,7 +220,37 @@ class Door:
         body = await self._body(request)
         if body is None:
             return JSONResponse({"error": "body must be a JSON object"}, status_code=400)
-        return await self._call(self.board.message, party, card_id, body.get("body"))
+        return await self._call(self.board.message, party, card_id, body.get("body"),
+                                agent=body.get("agent"))
+
+    async def set_status(self, request: Request) -> JSONResponse:
+        party = await self._party(request)
+        card_id = self._card_id(request)
+        if party is None or card_id is None:
+            return not_found()
+        body = await self._body(request)
+        if body is None:
+            return JSONResponse({"error": "body must be a JSON object"}, status_code=400)
+        return await self._call(self.board.set_status, party, card_id, body.get("state"))
+
+    async def reject_card(self, request: Request) -> JSONResponse:
+        party = await self._party(request)
+        card_id = self._card_id(request)
+        if party is None or card_id is None:
+            return not_found()
+        body = await self._body(request)
+        if body is None:
+            return JSONResponse({"error": "body must be a JSON object"}, status_code=400)
+        return await self._call(self.board.reject, party, card_id, body.get("reason"),
+                                agent=body.get("agent"))
+
+    async def list_events(self, request: Request) -> JSONResponse:
+        party = await self._party(request)
+        card_id = self._card_id(request)
+        if party is None or card_id is None:
+            return not_found()
+        paging = {k: v for k in ("since", "limit") if (v := request.query_params.get(k))}
+        return await self._call(self.board.card_events, party, card_id, **paging)
 
     async def list_messages(self, request: Request) -> JSONResponse:
         party = await self._party(request)
@@ -278,6 +313,9 @@ def create_app(
         Route(f"{PREFIX}/cards/{{card_id}}/claim", guarded(door.claim_card), methods=["POST"]),
         Route(f"{PREFIX}/cards/{{card_id}}/complete", guarded(door.complete_card), methods=["POST"]),
         Route(f"{PREFIX}/cards/{{card_id}}/fail", guarded(door.fail_card), methods=["POST"]),
+        Route(f"{PREFIX}/cards/{{card_id}}/status", guarded(door.set_status), methods=["POST"]),
+        Route(f"{PREFIX}/cards/{{card_id}}/reject", guarded(door.reject_card), methods=["POST"]),
+        Route(f"{PREFIX}/cards/{{card_id}}/events", guarded(door.list_events), methods=["GET"]),
         Route(f"{PREFIX}/cards/{{card_id}}/messages", guarded(door.post_message), methods=["POST"]),
         Route(f"{PREFIX}/cards/{{card_id}}/messages", guarded(door.list_messages), methods=["GET"]),
         Route(f"{PREFIX}/stream", guarded(door.stream), methods=["GET"]),

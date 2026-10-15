@@ -12,6 +12,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import shutil
+import tarfile
+import tempfile
 import time
 from collections.abc import Callable
 from contextlib import asynccontextmanager
@@ -20,7 +24,10 @@ from typing import Any
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
+from starlette.background import BackgroundTask
+from starlette.concurrency import run_in_threadpool
 from starlette.datastructures import Headers
+from starlette.responses import StreamingResponse
 
 from awm.config import (
     HOST,
@@ -31,7 +38,7 @@ from awm.config import (
     IDLE_SHUTDOWN_SECONDS,
 )
 from awm.config import modes as session_modes
-from awm.gateway import catalog, mcp_caller, peer_catalog
+from awm.gateway import catalog, filehop, mcp_caller, peer_catalog
 from awm.gateway.gateway_ops import GATEWAY_OPERATIONS, bound_caller
 from awm.gateway.operations import register_fastapi_routes
 
@@ -510,6 +517,29 @@ _CALLER_STAMPED: dict[str, frozenset[str] | None] = {
 }
 
 
+# The stamped verbs that need the caller's own session record on the node that
+# serves them: they inject into the session, or act as the session on the task
+# ledger. The rest of `_CALLER_STAMPED` uses the pid as a label (`start_other`'s
+# parent) or as a gate input (`stop_other`, trilium writes), and a peer reads the
+# missing pid as "an operator", so those stay routable. A session-bound verb
+# forwarded to a peer arrives with no pid and fails there with a misleading
+# "no calling session", so `/invoke` refuses it first.
+_SESSION_BOUND: dict[str, frozenset[str]] = {
+    "reflection": frozenset({"message_self", "compact", "mode", "whoami"}),
+    "operations": frozenset({
+        "hook_plan", "hook_plan_approved", "hook_todos", "hook_prompt",
+        "hook_session_clear", "task_claim", "request_human", "board_watch", "board_unwatch"}),
+}
+
+
+def _session_bound_refusal(redirect: peer_catalog.PeerRedirect) -> str | None:
+    """Why this redirected call must not leave the node, or None if it may."""
+    if redirect.verb not in _SESSION_BOUND.get(redirect.tool, ()):
+        return None
+    return (f"{redirect.tool}.{redirect.verb} acts on your own session on this node, "
+            f"so it cannot run on peer {redirect.peer!r}; call it without peer")
+
+
 def _stamped_bag(name: str, args: dict) -> dict | None:
     """The dict that carries `_caller_pid` for this call, or None if it is not stamped.
 
@@ -586,6 +616,18 @@ def _stamp_caller(name: str, args: dict, pid_header: str | None,
         inner.pop("_caller_pid", None)
 
 
+async def _receive_files(request: Request, spool: str) -> dict:
+    """Spool a :mod:`filehop` tar body and unpack it → the call it carries."""
+    body = os.path.join(spool, ".body.tar")
+    with open(body, "wb") as fh:
+        async for chunk in request.stream():
+            fh.write(chunk)
+    try:
+        return await run_in_threadpool(filehop.unpack_call, body, spool)
+    finally:
+        os.remove(body)
+
+
 def _svc_stamp(svc: str, headers: Any, as_: str | None) -> Callable[[str, dict], None]:
     """The `/svc/<svc>/fn/<fn>` door's caller stamp: the one `/invoke` applies.
 
@@ -604,7 +646,7 @@ def _svc_stamp(svc: str, headers: Any, as_: str | None) -> Callable[[str, dict],
 # ---------------------------------------------------------------------------
 # Session mode gate
 # ---------------------------------------------------------------------------
-# A session started in a restricted mode (the representative, the secretary)
+# A session started in a restricted mode (`awm.config.modes.MODES`)
 # may call only the verbs `awm.config.modes` lists for that mode. The gate runs
 # on both doors a session's calls arrive through, `/invoke` and
 # `/svc/<svc>/fn/<fn>`, before dispatch. The calling session is the one the
@@ -767,12 +809,37 @@ async def _dispatch_while_connected(request: Request, call):
 
 
 @app.post("/invoke")
-async def invoke_tool(payload: dict, request: Request):
+async def invoke_tool(request: Request):
     """Dispatch an MCP-style tool call by name through the catalog. Async so
     service ops can be awaited over their control WS on the server loop (no
     second event loop — see catalog.py concurrency note). The MCP proxy
     forwards here over HTTP so the core can restart without tearing down the
-    stdio pipe Claude Code has open."""
+    stdio pipe Claude Code has open.
+
+    The body is JSON, or a :mod:`awm.gateway.filehop` tar carrying the call
+    plus the caller's file arguments, which are spooled to a temp dir for the
+    duration of the call."""
+    ctype = request.headers.get("content-type", "").split(";")[0].strip()
+    if ctype != filehop.CONTENT_TYPE:
+        try:
+            payload = await request.json()
+        except ValueError:
+            raise HTTPException(422, "body must be a JSON object")
+        if not isinstance(payload, dict):
+            raise HTTPException(422, "body must be a JSON object")
+        return await _invoke(payload, request)
+    spool = tempfile.mkdtemp(prefix="awm-hop-")
+    try:
+        try:
+            payload = await _receive_files(request, spool)
+        except (OSError, ValueError, KeyError, tarfile.TarError) as e:
+            raise HTTPException(400, f"bad file-hop body: {e}")
+        return await _invoke(payload, request)
+    finally:
+        await run_in_threadpool(shutil.rmtree, spool, True)
+
+
+async def _invoke(payload: dict, request: Request):
     name = payload.get("name")
     args = payload.get("args")
     if not name:
@@ -805,6 +872,11 @@ async def invoke_tool(payload: dict, request: Request):
             # named the peer or the domain's default provider is one.
             log.info("mode gate: refused %s — it resolves to a peer", name)
             raise HTTPException(403, f"mode {mode!r} may not run a verb on a peer")
+        refusal = _session_bound_refusal(e)
+        if refusal:
+            log.info("refused %s.%s on peer %s: it acts on the caller's own session",
+                     e.tool, e.verb, e.peer)
+            raise HTTPException(400, refusal)
         # The call belongs to a peer. The gateway resolves, never relays — so a
         # caller that told us it can dial a peer edge (only `awm-mcp` does, via
         # this header) gets the address back and makes the call itself, keeping
@@ -843,6 +915,13 @@ async def invoke_tool(payload: dict, request: Request):
             status_code=500,
             detail={"error_class": type(e).__name__, "error": str(e), "tool": name},
         )
+    if request.headers.get(filehop.RETURN_FILES_HEADER) and isinstance(result, str):
+        if catalog.call_spec(name, args)["returns_files"]:
+            sent = filehop.result_paths(result)
+            return StreamingResponse(
+                filehop.iter_result(result, sent),
+                media_type=filehop.CONTENT_TYPE,
+                background=BackgroundTask(filehop.remove_sent, [p for _, p in sent]))
     return {"result": result}
 
 

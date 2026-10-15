@@ -1,9 +1,11 @@
 """The board's access to Trilium, through the local gateway's `trilium` domain.
 
-The board is a note carrying one marker label, and each card is a direct child
-of it. This module finds those notes and moves bytes between them and plain
+The board is a note carrying one marker label. Its children are the column
+folders, one per state, and each card is a child of the folder for its state.
+A card still sitting directly under the board is one from before the folders
+existed. This module finds those notes and moves bytes between them and plain
 dicts. It knows the `cardId` label because that is how a card is found, and
-nothing else about what a card means.
+which folder is which state, and nothing else about what a card means.
 
 Trilium's note verbs are operator-only and admit loopback, so the board has to
 run on the host that runs Trilium. The transport is a plain callable
@@ -12,8 +14,13 @@ run on the host that runs Trilium. The transport is a plain callable
 
 from __future__ import annotations
 
+import logging
 import re
 from typing import Any, Callable
+
+from .states import STATES, TITLES
+
+log = logging.getLogger("awm.board.vault")
 
 Transport = Callable[[str, dict], dict]
 
@@ -27,6 +34,16 @@ SEARCH_LIMIT = 10000
 CHAT_FOLDER = "chatFolder"
 CHAT_MESSAGE = "chatMsg"
 MESSAGE_SEQ = "msgSeq"
+
+#: Marks a column folder; its value is the state the folder stands for.
+COLUMN_LABEL = "cardColumn"
+
+#: The label that makes Trilium's board view take its columns from the board's child folders.
+#: Without it the view groups cards by `#status` and shows no sections.
+COLUMNS_FROM = "board:columnsFrom"
+
+#: The labels the board note offers as promoted attributes, with their chip captions.
+CHIPS = {"cardFrom": "From", "cardTo": "To", "project": "Project", "owner": "Owner"}
 
 _LABEL_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
@@ -76,6 +93,9 @@ class Vault:
         self._note_by_card: dict[str, str] = {}
         self._card_by_note: dict[str, str] = {}
         self._chat_by_card: dict[str, str] = {}
+        #: state to the id of its column folder, as last found. None until looked up.
+        self._columns: dict[str, str] | None = None
+        self._chips_defined = False
 
     # -- transport -------------------------------------------------------------
 
@@ -106,11 +126,78 @@ class Vault:
         self._board_id = hits[0]["noteId"]
         return self._board_id
 
+    def refresh(self) -> None:
+        """Look the board note and its column folders up again."""
+        self.board_id(refresh=True)
+        self._columns = None
+
+    # -- the column folders ----------------------------------------------------
+
+    def columns(self) -> dict[str, str]:
+        """State to the id of its column folder, for the folders that exist. Makes none."""
+        if self._columns is None:
+            board = self.board_id()
+            found = self._call("note_search", query=f"#{COLUMN_LABEL}", ancestor=board, limit=50)
+            columns: dict[str, str] = {}
+            for note in sorted(found.get("results") or [], key=lambda n: n.get("noteId", "")):
+                if board not in (note.get("parentNoteIds") or []):
+                    continue
+                state = next((a.get("value") for a in _own_attributes(note)
+                              if a.get("name") == COLUMN_LABEL and a.get("type") == "label"), None)
+                if state not in STATES:
+                    continue
+                if state in columns:
+                    log.warning("two folders stand for state %s: using %s, ignoring %s",
+                                state, columns[state], note["noteId"])
+                    continue
+                columns[state] = note["noteId"]
+            self._columns = columns
+        return self._columns
+
+    def ensure_columns(self) -> dict[str, str]:
+        """Make each missing column folder, in board order, and the board's chip definitions. Idempotent."""
+        columns = self.columns()
+        if len(columns) < len(STATES):
+            board = self.board_id()
+            for state in STATES:
+                if state in columns:
+                    continue
+                made = self._call("note_create", title=TITLES[state], content="", parent=board,
+                                  type="text", labels={COLUMN_LABEL: state})
+                if not made.get("note_id"):
+                    raise VaultError(f"note_create returned no note id: {made!r}")
+                columns[state] = made["note_id"]
+        if not self._chips_defined:
+            self._define_board_view()
+        return columns
+
+    def _define_board_view(self) -> None:
+        """Group the board view by its folders, and offer the chip labels as promoted attributes on every card."""
+        board = self.board_id()
+        held = {(a.get("name"), a.get("value")) for a in _own_attributes(
+            self._call("note_get", note_id=board, content=False))}
+        names = {name for name, _ in held}
+        if (COLUMNS_FROM, "folders") not in held:
+            self._call("attr_set", note_id=board, name=COLUMNS_FROM, value="folders")
+        for label, caption in CHIPS.items():
+            if f"label:{label}" not in names:
+                self._call("attr_set", note_id=board, name=f"label:{label}",
+                           value=f"promoted,single,text,alias={caption}", inheritable=True)
+        self._chips_defined = True
+
     # -- records ---------------------------------------------------------------
 
     def _record(self, note: dict, content: str | None) -> dict | None:
-        """A card record from a Trilium note, or None when the note is not a card."""
-        if self.board_id() not in (note.get("parentNoteIds") or []):
+        """A card record from a Trilium note, or None when the note is not a card.
+
+        ``state`` is the state of the column folder the card sits in, or None
+        for a card still directly under the board, whose state is its `status`
+        label.
+        """
+        parents = note.get("parentNoteIds") or []
+        by_folder = {folder: state for state, folder in self.columns().items()}
+        state = next((by_folder[p] for p in parents if p in by_folder), None)
+        if state is None and self.board_id() not in parents:
             return None
         labels: dict[str, str] = {}
         relations: dict[str, str] = {}
@@ -124,13 +211,13 @@ class Vault:
         self._note_by_card[card_id] = note_id
         self._card_by_note[note_id] = card_id
         return {"note_id": note_id, "title": note.get("title") or "",
-                "content": content, "labels": labels, "relations": relations}
+                "content": content, "labels": labels, "relations": relations, "state": state}
 
     def create(self, title: str, body: str, labels: dict[str, str],
-               relations: dict[str, str]) -> dict:
-        """Make a card note under the board. The caller supplies ``cardId`` in the labels."""
+               relations: dict[str, str], state: str = "proposed") -> dict:
+        """Make a card note in the column for ``state``. The caller supplies ``cardId`` in the labels."""
         made = self._call(
-            "note_create", title=title, content=body, parent=self.board_id(),
+            "note_create", title=title, content=body, parent=self.ensure_columns()[state],
             type="code", mime="text/plain", labels=labels, relations=relations)
         note_id = made.get("note_id")
         if not note_id:
@@ -155,9 +242,8 @@ class Vault:
                 return rec
             self._note_by_card.pop(card_id, None)
         found = self._call("note_search", query=f"#cardId={card_id}",
-                           ancestor=self.board_id(), limit=5)
-        notes = [n for n in found.get("results") or []
-                 if self.board_id() in (n.get("parentNoteIds") or [])]
+                           ancestor=self.board_id(), limit=5, archived=True)
+        notes = [n for n in found.get("results") or [] if self._record(n, None)]
         if not notes:
             return None
         if len(notes) > 1:
@@ -191,6 +277,13 @@ class Vault:
             args["content"] = content
         self._call("note_update", **args)
 
+    def place(self, rec: dict, state: str) -> None:
+        """Move the card into the folder for ``state``, and drop the `status` label of the old grouping."""
+        if rec.get("state") != state:
+            self._call("note_move", note_id=rec["note_id"], parent=self.ensure_columns()[state])
+        if "status" in rec["labels"]:
+            self._call("attr_delete", note_id=rec["note_id"], name="status")
+
     # -- card chats ------------------------------------------------------------
 
     def create_child(self, parent: str, title: str, body: str,
@@ -217,7 +310,8 @@ class Vault:
         chat = self._chat_by_card.get(card_note)
         if chat:
             return chat
-        found = self._call("note_search", query=f"#{CHAT_FOLDER}", ancestor=card_note, limit=5)
+        found = self._call("note_search", query=f"#{CHAT_FOLDER}", ancestor=card_note, limit=5,
+                           archived=True)
         hits = [n for n in found.get("results") or []
                 if card_note in (n.get("parentNoteIds") or [])]
         if hits:

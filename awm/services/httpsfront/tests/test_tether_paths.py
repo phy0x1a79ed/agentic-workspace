@@ -37,6 +37,10 @@ TICKET = "0123456789abcdef0123456789abcdef"
     "/tether/claim/999",
     f"/tether/join/7/{TICKET}",                 # the session socket
     f"/tether/release/7/{TICKET}",              # the operator ending its own slot
+    f"/tether/poll/7/{TICKET}",                 # the chair, for a path with no socket
+    f"/tether/seat/{TICKET}/recv",              # and the three requests that hold it
+    f"/tether/seat/{TICKET}/send",
+    f"/tether/seat/{TICKET}/close",
     "/tether/issue",                            # the operator's, gated at the relay
     "/tether/status",
 ])
@@ -63,6 +67,12 @@ def test_the_mount_claims_the_relays_whole_public_surface(path):
     (f"/tether/release/7/{TICKET[:31]}", "a seat token is thirty-two hex"),
     ("/tether/release/7", "a release names a slot and its seat token"),
     (f"/tether/release/0/{TICKET}", "slot 0 is not a slot"),
+    (f"/tether/poll/0/{TICKET}", "slot 0 is not a slot"),
+    (f"/tether/poll/7/{TICKET[:31]}", "a ticket is thirty-two hex"),
+    (f"/tether/seat/{TICKET}", "a polled chair is asked something"),
+    (f"/tether/seat/{TICKET}/join", "a polled chair answers three requests"),
+    (f"/tether/seat/{TICKET.upper()}/recv", "a poll id is lowercase hex"),
+    ("/tether/seat/7/recv", "a poll id is not a slot"),
     ("/tether/bin/../../etc/passwd", "a download names one file"),
     ("/tether/bin/", "a download names a file"),
     ("/tether/win/", "a trailing slash is not a route the relay has"),
@@ -94,6 +104,7 @@ def test_a_name_that_merely_starts_the_same_is_not_this_mounts(path):
 @pytest.mark.parametrize("path,inner", [
     ("/tether", "/"),
     ("/tether/claim/7", "/claim/7"),
+    (f"/tether/seat/{TICKET}/recv", f"/seat/{TICKET}/recv"),
     (f"/tether/join/7/{TICKET}", f"/join/7/{TICKET}"),
     ("/tether/issue", "/issue"),
     ("/tether/bin/tether", "/bin/tether"),

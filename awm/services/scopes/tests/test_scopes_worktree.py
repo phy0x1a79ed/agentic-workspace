@@ -55,7 +55,7 @@ def test_cleanup_does_not_wipe_sibling_worktree(bare_with_two_worktrees):
     assert (bare / "worktrees" / "a").exists()
     assert (bare / "worktrees" / "b").exists()
 
-    _cleanup_worktree(bare, a_dir, "feat/a")
+    _cleanup_worktree(bare, a_dir)
 
     # Target gone.
     assert not a_dir.exists()
@@ -114,7 +114,7 @@ def test_deleting_nested_scope_leaves_flat_sibling_intact(bare_with_colliding_ba
     bare, flat, nested = bare_with_colliding_basenames
     flat_admin = _worktree_admin_dir(bare, flat)
 
-    _cleanup_worktree(bare, nested, "fabfos/dev")
+    _cleanup_worktree(bare, nested)
 
     assert not nested.exists()
     assert flat.exists()
@@ -130,7 +130,7 @@ def test_deleting_flat_scope_leaves_nested_sibling_intact(bare_with_colliding_ba
     bare, flat, nested = bare_with_colliding_basenames
     nested_admin = _worktree_admin_dir(bare, nested)
 
-    _cleanup_worktree(bare, flat, "feat/dev")
+    _cleanup_worktree(bare, flat)
 
     assert not flat.exists()
     assert nested.exists()

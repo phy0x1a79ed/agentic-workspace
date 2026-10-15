@@ -239,3 +239,42 @@ async def test_a_vault_failure_is_a_503_and_a_value_error_a_400(door):
         assert response.status_code == 503
         assert response.json() == {"error": "vault unavailable"}
         assert (await client.post("/board/cards", json={**CARD, "kind": "quest"})).status_code == 400
+
+
+async def test_status_reject_and_events_have_routes_and_hide_refusals_as_404(door):
+    async with door.client(door.tokens["alpha"]) as alpha, door.client(door.tokens["beta"]) as beta, \
+            door.client(door.tokens["gamma"]) as gamma:
+        card = (await alpha.post("/board/cards", json=CARD)).json()
+        path = f"/board/cards/{card['id']}"
+        assert (await beta.post(f"{path}/claim", json={"agent": "w", "node": "n"})).status_code == 200
+        assert door.board.last_claim_extra == {"agent": "w", "node": "n"}
+        moved = await beta.post(f"{path}/status", json={"state": "active"})
+        assert moved.status_code == 200 and moved.json()["state"] == "active"
+        assert (await beta.post(f"{path}/status", json={"state": "proposed"})).status_code == 400
+        assert (await alpha.post(f"{path}/status", json={"state": "done"})).status_code == 404
+        assert (await gamma.post(f"{path}/status", json={"state": "done"})).status_code == 404
+        assert (await beta.post(f"{path}/status", content=b"nope")).status_code == 400
+        rejected = await beta.post(f"{path}/reject", json={"reason": "no", "agent": "w"})
+        assert rejected.json()["message"] == {"body": "no", "agent": "w"}
+        assert (await alpha.post(f"{path}/reject", json={"reason": "no"})).status_code == 404
+        assert (await beta.post(f"{path}/reject", json={"reason": " "})).status_code == 400
+        history = await alpha.get(f"{path}/events")
+        assert [e["type"] for e in history.json()] == ["card.posted", "card.claimed", "card.moved", "card.moved"]
+        assert (await gamma.get(f"{path}/events")).status_code == 404
+        since = history.json()[1]["id"]
+        assert len((await alpha.get(f"{path}/events", params={"since": since})).json()) == 2
+
+
+async def test_a_claim_without_a_body_is_a_claim_that_names_no_agent(door):
+    async with door.client(door.tokens["alpha"]) as alpha, door.client(door.tokens["beta"]) as beta:
+        card = (await alpha.post("/board/cards", json=CARD)).json()
+        assert (await beta.post(f"/board/cards/{card['id']}/claim")).status_code == 200
+        assert door.board.last_claim_extra == {"agent": None, "node": None}
+
+
+async def test_post_and_message_carry_the_project_and_agent_to_the_board(door):
+    async with door.client(door.tokens["alpha"]) as alpha:
+        card = (await alpha.post("/board/cards", json={**CARD, "project": "factorio", "agent": "w"})).json()
+        assert (card["project"], card["agent"]) == ("factorio", "w")
+        sent = await alpha.post(f"/board/cards/{card['id']}/messages", json={"body": "hi", "agent": "w"})
+        assert sent.json()["agent"] == "w"

@@ -122,11 +122,22 @@ def test_update_refuses_a_column_it_does_not_know(led):
 
 # -- the door-database migration ---------------------------------------------
 
-def make_v1(path: Path) -> None:
-    from awm.reporting import store
+#: The door database as the first release made it: the queue and the persona sessions.
+OLD_QUEUE_SCHEMA = """
+CREATE TABLE IF NOT EXISTS cards (
+    card_id TEXT PRIMARY KEY, kind TEXT NOT NULL, priority TEXT NOT NULL DEFAULT 'normal',
+    title TEXT NOT NULL, body TEXT NOT NULL DEFAULT '', sender TEXT NOT NULL DEFAULT '', reply_to TEXT,
+    status TEXT NOT NULL, assigned_to TEXT, arrival REAL NOT NULL, updated REAL NOT NULL,
+    notified INTEGER NOT NULL DEFAULT 0, announced_at REAL);
+CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS sessions (
+    role TEXT NOT NULL, job TEXT NOT NULL, started REAL NOT NULL, PRIMARY KEY (role, job));
+"""
 
+
+def make_v1(path: Path) -> None:
     conn = sqlite3.connect(path)
-    conn.executescript(store._QUEUE_SCHEMA_V3 + "CREATE TABLE schema_version (version INTEGER NOT NULL);"
+    conn.executescript(OLD_QUEUE_SCHEMA + "CREATE TABLE schema_version (version INTEGER NOT NULL);"
                        "INSERT INTO schema_version VALUES (1);")
     conn.execute("INSERT INTO cards (card_id, kind, title, status, arrival, updated)"
                  " VALUES ('c1','request','t','done',1,1)")
@@ -142,3 +153,41 @@ def test_a_v1_database_migrates_in_place_to_the_task_schema(tmp_path):
     assert q.get("c1")["status"] == "done" and q.cursor() == 41
     task, made = Ledger(tmp_path / "old.db").ensure("altair", "j", "bg")
     assert made and task["id"] == 1
+
+
+# -- federation links, rejected, archive ----------------------------------------
+
+
+def test_a_task_links_to_a_federation_card_and_is_found_by_it(led):
+    task, _ = led.ensure("altair", "j", "bg")
+    led.update(task["id"], card_id="c" * 32, fed_state="planned")
+    assert led.open_for_card("c" * 32)["id"] == task["id"]
+    assert led.open_for_card("d" * 32) is None
+    led.close(task["id"], "rejected")
+    assert led.open_for_card("c" * 32) is None
+    assert led.find("altair", "j")["state"] == "rejected"
+
+
+def test_close_takes_done_rejected_or_cancelled_only(led):
+    task, _ = led.ensure("altair", "j", "bg")
+    with pytest.raises(ValueError):
+        led.close(task["id"], "active")
+
+
+def test_archivable_tasks_are_the_old_done_and_rejected_ones_a_card_of_ours_or_the_federations(led):
+    import time
+
+    from awm.reporting.ledger import ARCHIVE_AFTER_S
+
+    now = time.time()
+    old = now - ARCHIVE_AFTER_S - 100
+    rows = {}
+    for key, state, closed, extra in [
+            ("made", "done", old, {"owned": 1}), ("fed", "rejected", old, {"card_id": "c" * 32}),
+            ("tonys", "done", old, {}), ("fresh", "done", now - 100, {"owned": 1}),
+            ("cancelled", "cancelled", old, {"owned": 1}), ("done_already", "done", old, {"owned": 1, "shown": "archived"})]:
+        task, _ = led.ensure("altair", key, "bg")
+        led.update(task["id"], note_id=f"note-{key}", state=state, closed=closed, **extra)
+        rows[key] = task["id"]
+    assert sorted(t["key"] for t in led.archivable("altair", now)) == ["fed", "made"]
+    assert led.archivable("capella", now) == []

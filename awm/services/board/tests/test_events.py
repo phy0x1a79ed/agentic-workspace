@@ -145,3 +145,56 @@ def test_message_sequences_count_per_card(events):
     assert len(page) == 3 and cursor
     rest, end = events.message_page(cursor, 3)
     assert [m["card_id"] for m in rest] == ["a"] and end == 0
+
+
+def test_a_version_3_log_gains_the_agent_column_and_the_folded_table(tmp_path):
+    from awm.board.events import Events
+
+    path = tmp_path / "old.db"
+    conn = sqlite3.connect(path)
+    conn.executescript("""
+        CREATE TABLE schema_version (version INTEGER NOT NULL);
+        INSERT INTO schema_version VALUES (3);
+        CREATE TABLE events (id INTEGER PRIMARY KEY AUTOINCREMENT, type TEXT NOT NULL,
+            card_id TEXT NOT NULL, sender TEXT NOT NULL, recipient TEXT NOT NULL,
+            card TEXT NOT NULL, created_at REAL NOT NULL);
+        CREATE TABLE last_seen (card_id TEXT PRIMARY KEY, status TEXT NOT NULL,
+            recipient TEXT, claimant TEXT);
+        CREATE TABLE messages (card_id TEXT NOT NULL, seq INTEGER NOT NULL, at TEXT NOT NULL,
+            swarm TEXT NOT NULL, principal TEXT NOT NULL, party TEXT NOT NULL,
+            origin TEXT NOT NULL, body TEXT NOT NULL, note_id TEXT, PRIMARY KEY (card_id, seq));
+        INSERT INTO messages VALUES ('x', 1, 't', 'tony', 'p', 'q', 'api', 'old', NULL);
+    """)
+    conn.commit()
+    conn.close()
+    upgraded = Events(path)
+    assert upgraded.messages("x")[0]["agent"] is None
+    sender = {"swarm": "tony", "principal": "p", "party": "q"}
+    assert upgraded.message_add("x", at="t", sender=sender, origin="api", body="new",
+                                agent="worker")["agent"] == "worker"
+    assert upgraded.folded_ids(["r"]) == set()
+
+
+def test_a_card_history_is_filtered_like_the_stream_and_pages_by_event_id(events):
+    mine = events.append("card.posted", card("a", sender="tony", recipient="collins"))
+    events.append("card.posted", card("b", sender="tony", recipient="collins"))
+    later = events.append("card.claimed", card("a", sender="tony", recipient="collins"))
+    hidden = events.append("card.moved", card("a", sender="tony", recipient="collins"))
+    assert [e["id"] for e in events.for_card("a", {"swarm": "collins"})] == [mine, later, hidden]
+    assert [e["id"] for e in events.for_card("a", {"swarm": "collins"}, since=mine)] == [later, hidden]
+    assert [e["id"] for e in events.for_card("a", {"swarm": "collins"}, limit=1)] == [mine]
+    assert events.for_card("a", {"swarm": "mock"}) == []
+
+
+def test_backfill_puts_history_before_the_thread_and_never_repeats(events):
+    sender = {"swarm": "tony", "principal": "p", "party": "q"}
+    for body in ("live one", "live two"):
+        events.message_add("root", at="t", sender=sender, origin="api", body=body)
+    history = [{"reply_id": f"r{i}", "at": f"2026-01-0{i}", "sender": sender, "body": f"old {i}"}
+               for i in (1, 2, 3)]
+    thread = events.messages_backfill("root", history)
+    assert [(m["seq"], m["body"]) for m in thread] == [
+        (1, "old 1"), (2, "old 2"), (3, "old 3"), (4, "live one"), (5, "live two")]
+    assert thread[0]["origin"] == "migrated" and thread[0]["at"] == "2026-01-01"
+    assert events.folded_ids(["r1", "r2", "r9"]) == {"r1", "r2"}
+    assert [m["seq"] for m in events.messages("root")] == [1, 2, 3, 4, 5]

@@ -346,6 +346,7 @@ def _payload(resp):
 class _FakeStorage:
     def __init__(self):
         self.calls = []
+        self.raise_on_mkdir = None
 
     async def ls(self, path):
         self.calls.append(("ls", path))
@@ -355,16 +356,71 @@ class _FakeStorage:
         self.calls.append(("stat", path))
         return {"name": "a.txt", "path": path, "is_dir": False}
 
-    async def get(self, path):
-        self.calls.append(("get", path))
+    async def get(self, path, offset=0, length=None, version=None):
+        self.calls.append(("get", path, offset, length) + ((version,) if version else ()))
         return {"filename": "a.txt", "mime": "text/plain", "b64": "aGk="}
 
-    async def put(self, path, b64, mime=None):
-        self.calls.append(("put", path, b64, mime))
+    async def upload(self, path, upload_id, offset, final, b64, parents=False):
+        self.calls.append(("upload", path, upload_id, offset, final, b64, parents))
+        return {"entry": {"path": path}} if final else {"offset": offset + 3}
+
+    async def upload_cancel(self, path, upload_id):
+        self.calls.append(("cancel", path, upload_id))
+
+    async def put(self, path, b64, mime=None, parents=False):
+        self.calls.append(("put", path, b64, mime, parents))
         return {"name": "a.txt", "path": path, "is_dir": False}
+
+    async def mkdir(self, path):
+        self.calls.append(("mkdir", path))
+        if self.raise_on_mkdir:
+            raise self.raise_on_mkdir
+        return {"name": path.rsplit("/", 1)[-1], "path": path, "is_dir": True}
 
     async def rm(self, path):
         self.calls.append(("rm", path))
+
+    async def mv(self, src, dst, *, overwrite=False, parents=False):
+        self.calls.append(("mv", src, dst, overwrite, parents))
+        return {"name": dst.rsplit("/", 1)[-1], "path": dst, "is_dir": False}
+
+    async def cp(self, src, dst, *, overwrite=False, parents=False):
+        self.calls.append(("cp", src, dst, overwrite, parents))
+        if dst.endswith("/taken"):
+            raise FileExistsError(f"{dst} exists")
+        return {"name": dst.rsplit("/", 1)[-1], "path": dst, "is_dir": False}
+
+    async def share(self, path, scope, role, people=None, send_email=False):
+        self.calls.append(("share", path, scope, role, people, send_email))
+        return {"url": "https://t/:f:/t/x/abc", "scope": scope, "role": role}
+
+    async def shares(self, path):
+        self.calls.append(("shares", path))
+        return {"links": [], "people": []}
+
+    async def unshare(self, path, link=None, person=None):
+        self.calls.append(("unshare", path, link, person))
+        return {"ok": True}
+
+    async def resolve(self, url):
+        self.calls.append(("resolve", url))
+        return {"entry": {"path": "/r/s", "is_dir": True}, "via": "shares"}
+
+    async def versions(self, path):
+        self.calls.append(("versions", path))
+        return [{"label": "2.0", "current": True}]
+
+    async def recycled(self, path, limit=500):
+        self.calls.append(("recycled", path, limit))
+        return [{"path": path + "/gone.txt"}]
+
+    async def restore(self, path, version=None):
+        self.calls.append(("restore", path, version))
+        return {"path": path}
+
+    async def sites(self, site=None):
+        self.calls.append(("sites", site))
+        return [{"name": "X", "path": "/teams/x", "kind": "site"}]
 
     async def search(self, query, limit, root=None):
         self.calls.append(("search", query, limit, root))
@@ -401,7 +457,45 @@ class TestFsRoutes:
         api, fake = _api_with_storage()
         resp = await api._h_fs_get(_FsReq("onedrive", {"path": "/r/a.txt"}))
         assert _payload(resp)["b64"] == "aGk="
-        assert fake.calls[-1] == ("get", "/r/a.txt")
+        assert fake.calls[-1] == ("get", "/r/a.txt", 0, None)
+
+    async def test_get_threads_range(self):
+        api, fake = _api_with_storage()
+        await api._h_fs_get(_FsReq(
+            "onedrive", {"path": "/r/a.txt", "offset": "8", "length": "4"}))
+        assert fake.calls[-1] == ("get", "/r/a.txt", 8, 4)
+        resp = await api._h_fs_get(_FsReq(
+            "onedrive", {"path": "/r/a.txt", "offset": "x"}))
+        assert resp.status == 400
+
+    async def test_upload_chunk_and_final(self):
+        api, fake = _api_with_storage()
+        resp = await api._h_fs_upload(_FsReq("onedrive", body={
+            "path": "/r/big", "upload_id": "u", "offset": 0, "b64": "AAAA",
+            "parents": True}))
+        assert _payload(resp) == {"offset": 3}
+        assert fake.calls[-1] == ("upload", "/r/big", "u", 0, False, "AAAA", True)
+        resp = await api._h_fs_upload(_FsReq("onedrive", body={
+            "path": "/r/big", "upload_id": "u", "offset": 3, "final": True,
+            "b64": "AA=="}))
+        assert _payload(resp)["entry"]["path"] == "/r/big"
+
+    async def test_upload_cancel_and_validation(self):
+        api, fake = _api_with_storage()
+        resp = await api._h_fs_upload(_FsReq("onedrive", body={
+            "path": "/r/big", "upload_id": "u", "cancel": True}))
+        assert _payload(resp)["ok"] and fake.calls[-1] == ("cancel", "/r/big", "u")
+        resp = await api._h_fs_upload(_FsReq("onedrive", body={"path": "/r/big"}))
+        assert resp.status == 400
+        resp = await api._h_fs_upload(_FsReq("onedrive", body={
+            "path": "/r/big", "upload_id": "u"}))
+        assert resp.status == 400
+
+    def test_request_cap_fits_a_chunk(self):
+        from mira_api.server import MAX_REQUEST_BYTES
+        api, _ = _api_with_storage()
+        assert api.build_app()._client_max_size == MAX_REQUEST_BYTES
+        assert MAX_REQUEST_BYTES > (8 * 1024 * 1024) * 4 // 3 + 4096
 
     async def test_put(self):
         api, fake = _api_with_storage()
@@ -410,7 +504,103 @@ class TestFsRoutes:
                               "mime": "application/octet-stream"}))
         assert resp.status == 200
         assert fake.calls[-1] == ("put", "/r/up.bin", "AAEC",
-                                  "application/octet-stream")
+                                  "application/octet-stream", False)
+
+    async def test_put_threads_parents(self):
+        api, fake = _api_with_storage()
+        await api._h_fs_put(_FsReq(
+            "onedrive", body={"path": "/r/a/b.bin", "b64": "AA==", "parents": True}))
+        assert fake.calls[-1][-1] is True
+
+    async def test_mkdir(self):
+        api, fake = _api_with_storage()
+        resp = await api._h_fs_mkdir(_FsReq("onedrive", body={"path": "/r/a/b"}))
+        assert resp.status == 200
+        assert _payload(resp)["entry"]["is_dir"] is True
+        assert fake.calls[-1] == ("mkdir", "/r/a/b")
+
+    @pytest.mark.parametrize("exc,status,code", [
+        (FileNotFoundError("/r/a: not found"), 404, "ENOENT"),
+        (NotADirectoryError("/r/a is a file"), 409, "ENOTDIR"),
+        (PermissionError("HTTP 403"), 403, "EAUTH"),
+        (ValueError("above a library"), 400, "EINVAL"),
+        (NotImplementedError("nope"), 501, "ENOTSUP"),
+        (RuntimeError("boom"), 502, "EUPSTREAM"),
+    ])
+    async def test_errors_carry_status_and_code(self, exc, status, code):
+        api, fake = _api_with_storage()
+        fake.raise_on_mkdir = exc
+        resp = await api._h_fs_mkdir(_FsReq("onedrive", body={"path": "/r/a"}))
+        assert resp.status == status
+        assert _payload(resp)["code"] == code
+
+    async def test_version_and_recycle_routes(self):
+        api, fake = _api_with_storage()
+        resp = await api._h_fs_versions(_FsReq("onedrive", {"path": "/r/a"}))
+        assert _payload(resp)["versions"][0]["label"] == "2.0"
+        await api._h_fs_get(_FsReq("onedrive", {"path": "/r/a", "version": "1.0"}))
+        assert fake.calls[-1] == ("get", "/r/a", 0, None, "1.0")
+        resp = await api._h_fs_recycled(_FsReq("onedrive", {"path": "/r", "limit": "9"}))
+        assert fake.calls[-1] == ("recycled", "/r", 9)
+        await api._h_fs_restore(_FsReq("onedrive", body={"path": "/r/a", "version": "1.0"}))
+        assert fake.calls[-1] == ("restore", "/r/a", "1.0")
+        await api._h_fs_restore(_FsReq("onedrive", body={"path": "/r/a"}))
+        assert fake.calls[-1] == ("restore", "/r/a", None)
+
+    async def test_sharing_routes(self):
+        api, fake = _api_with_storage()
+        resp = await api._h_fs_share(_FsReq("onedrive", body={
+            "path": "/r/s", "scope": "people", "role": "view", "people": ["a@x"]}))
+        assert _payload(resp)["role"] == "view"
+        assert fake.calls[-1] == ("share", "/r/s", "people", "view", ["a@x"], False)
+        resp = await api._h_fs_shares(_FsReq("onedrive", {"path": "/r/s"}))
+        assert _payload(resp) == {"links": [], "people": []}
+        resp = await api._h_fs_unshare(_FsReq("onedrive", body={
+            "path": "/r/s", "person": "a@x"}))
+        assert fake.calls[-1] == ("unshare", "/r/s", None, "a@x")
+        resp = await api._h_fs_resolve(_FsReq("onedrive", {"url": "https://t/x"}))
+        assert _payload(resp)["via"] == "shares"
+
+    @pytest.mark.parametrize("handler,body", [
+        ("_h_fs_share", {"path": "/r/s", "scope": "organization"}),
+        ("_h_fs_unshare", {"path": "/r/s"}),
+    ])
+    async def test_sharing_routes_need_their_args(self, handler, body):
+        api, _ = _api_with_storage()
+        resp = await getattr(api, handler)(_FsReq("onedrive", body=body))
+        assert resp.status == 400
+
+    async def test_sites(self):
+        api, fake = _api_with_storage()
+        resp = await api._h_fs_sites(_FsReq("onedrive"))
+        assert _payload(resp)["entries"][0]["kind"] == "site"
+        assert fake.calls[-1] == ("sites", None)
+        await api._h_fs_sites(_FsReq("onedrive", {"site": "/teams/x"}))
+        assert fake.calls[-1] == ("sites", "/teams/x")
+
+    async def test_mv_and_cp(self):
+        api, fake = _api_with_storage()
+        resp = await api._h_fs_mv(_FsReq("onedrive", body={
+            "src": "/r/a.txt", "dst": "/r/b.txt", "overwrite": True}))
+        assert resp.status == 200
+        assert _payload(resp)["entry"]["path"] == "/r/b.txt"
+        assert fake.calls[-1] == ("mv", "/r/a.txt", "/r/b.txt", True, False)
+        resp = await api._h_fs_cp(_FsReq("onedrive", body={
+            "src": "/r/a.txt", "dst": "/r/c/d.txt", "parents": True}))
+        assert resp.status == 200
+        assert fake.calls[-1] == ("cp", "/r/a.txt", "/r/c/d.txt", False, True)
+
+    async def test_cp_onto_existing_is_eexist(self):
+        api, _ = _api_with_storage()
+        resp = await api._h_fs_cp(_FsReq("onedrive", body={
+            "src": "/r/a.txt", "dst": "/r/taken"}))
+        assert resp.status == 409
+        assert _payload(resp)["code"] == "EEXIST"
+
+    async def test_mv_requires_src_and_dst(self):
+        api, _ = _api_with_storage()
+        resp = await api._h_fs_mv(_FsReq("onedrive", body={"src": "/r/a"}))
+        assert resp.status == 400
 
     async def test_put_requires_path_and_b64(self):
         api, _ = _api_with_storage()
@@ -438,8 +628,9 @@ class TestFsRoutes:
                 return False
 
         api, fake = _api_with_storage()
-        fake.page = _DeadPage()
+        fake.pages = lambda: {"tenant": _DeadPage(), "personal": _DeadPage()}
         resp = await api._h_health(_FsReq("onedrive"))
         body = _payload(resp)
         assert "onedrive" in body["storage"]
         assert body["storage"]["onedrive"]["healthy"] is False
+        assert set(body["storage"]["onedrive"]["pages"]) == {"tenant", "personal"}

@@ -100,6 +100,7 @@ class Command:
     user_name: str = ""
     channel_id: str = ""
     is_dm: bool = False                       # invoked in a DM to the bot?
+    operator: str = ""                        # awm_user the sender maps to
 
 
 @dataclass(frozen=True)

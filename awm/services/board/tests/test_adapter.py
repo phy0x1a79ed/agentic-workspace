@@ -22,9 +22,11 @@ pytestmark = [pytest.mark.unit, pytest.mark.smoke]
 EFFECTS = {
     "post": "queue", "claim": "queue", "complete": "queue", "fail": "queue",
     "get": "read", "list": "read", "message_post": "queue", "messages": "read",
+    "status": "queue", "reject": "queue", "events": "read",
+    "migrate_columns": "write", "migrate_threads": "write",
     "party_add": "secret", "party_revoke": "write", "party_list": "read",
 }
-HIDDEN = {"party_add", "party_revoke", "party_list"}
+HIDDEN = {"party_add", "party_revoke", "party_list", "migrate_columns", "migrate_threads"}
 
 
 def functions() -> dict[str, dict]:

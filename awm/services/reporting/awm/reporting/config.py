@@ -94,31 +94,19 @@ def catchup_interval_s() -> float:
     return _float("AWM_REPORTING_CATCHUP_S", 300.0)
 
 
-def notify_batch_s() -> float:
-    """How long a new card waits for others before the representative is told."""
-    return _float("AWM_REPORTING_NOTIFY_BATCH_S", 5.0)
-
-
-def notify_retry_s() -> float:
-    """How long to wait before telling the representative again after a failure."""
-    return _float("AWM_REPORTING_NOTIFY_RETRY_S", 30.0)
-
-
 def message_backlog_s() -> float:
-    """How old a posted message card may be and still be queued by a catch-up.
+    """How old a card or thread message may be and still be news for a catch-up to tell Tony about.
 
-    A message card stays ``posted`` for ever, so without a window the first
-    catch-up would queue every message the swarm was ever sent.
+    A card stays on the board for ever, so without a window the first
+    catch-up would tell him about every card the swarm was ever sent.
     """
     return _float("AWM_REPORTING_MESSAGE_BACKLOG_S", 3 * 86400.0)
 
 
-def reannounce_s() -> float:
-    """How long a card may sit queued before the representative is told about it again.
-
-    ``AWM_REPORTING_REANNOUNCE_MIN`` is in minutes; the default is 10.
-    """
-    return _float("AWM_REPORTING_REANNOUNCE_MIN", 10.0) * 60.0
+def new_agent_target() -> tuple[str, str]:
+    """The project and scope `/new-agent` starts in."""
+    return (os.environ.get("AWM_REPORTING_NEW_AGENT_PROJECT") or "awm",
+            os.environ.get("AWM_REPORTING_NEW_AGENT_SCOPE") or "dev")
 
 
 def projects_dir() -> Path:

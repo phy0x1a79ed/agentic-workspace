@@ -20,10 +20,12 @@ UnsetEnvironment=WAYLAND_DISPLAY
 # auto-detects the wayland-0 socket in XDG_RUNTIME_DIR and would render to the
 # real GNOME compositor instead of our Xvfb. Pin X11. The occlusion flag stops
 # Chromium painting the off-screen Xvfb window black.
-# The sharepoint.com tab backs the OneDrive bucket (MIRA_STORAGE=onedrive); its
-# Microsoft SSO carries over from the Teams login in the same Opera profile.
+# The two sharepoint.com tabs back the OneDrive bucket (MIRA_STORAGE=onedrive):
+# the tenant tab serves team and project sites, the -my tab serves personal
+# OneDrive (/personal/...). Same-origin fetch reaches only the tab's own host,
+# so each host needs a tab. Microsoft SSO carries over from the Teams login.
 ExecStartPre=/bin/sleep 2
-ExecStart=/snap/bin/opera --remote-debugging-port=9224 --no-first-run --disable-gpu --ozone-platform=x11 --disable-features=CalculateNativeWinOcclusion https://teams.microsoft.com https://app.slack.com https://ubcca.sharepoint.com/teams/ubcMICB-gr-HallamLab
+ExecStart=/snap/bin/opera --remote-debugging-port=9224 --no-first-run --disable-gpu --ozone-platform=x11 --disable-features=CalculateNativeWinOcclusion https://teams.microsoft.com https://app.slack.com https://ubcca.sharepoint.com/teams/ubcMICB-gr-HallamLab https://ubcca-my.sharepoint.com
 Restart=always
 RestartSec=5
 

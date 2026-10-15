@@ -9,6 +9,13 @@ management — agents call `social(verb="send", args={…})` etc. (run
 component libraries it imports (`config`, `persistence`, `gatewayclient`) and its
 platform SDKs (`discord.py`, `slack_sdk`).
 
+## Purpose & Contents
+
+This file is the service's contract for whoever installs or configures it: the
+install, the `social.toml` sections, and the behaviour a caller cannot read off
+`social(verb="describe")`. Verbs and their arguments live in the manifest in
+`awm/social/hub_adapter.py`, not here.
+
 ## Install
 
     bash install.sh
@@ -136,14 +143,34 @@ are skipped rather than erroring the whole call.
 
 ## Cloud-drive buckets (Google Drive, OneDrive/SharePoint)
 
-Beyond messaging, the service can give awm full **file** access to cloud drives
+Beyond messaging, the service gives awm full **file** access to cloud drives
 through a separate **buckets** surface (it is not a messaging connector). Each
-`[bucket.<name>]` section in `social.toml` configures one store; the verbs are
-`social_buckets` (list configured buckets) and `social_bucket_ls / get / put /
-rm / search`. Paths are POSIX-style and **relative to the bucket's `root`**
-(omit `path`, or pass `""`, for the root). Downloads land in a system temp dir
-(outside the workspace) and return paths; `put` reads a local `src` file — bytes
-never inline into the RPC.
+`[bucket.<name>]` section in `social.toml` configures one store. The verbs are
+the `bucket_*` entries of `social(verb="describe")`. Each verb's description
+says which bucket kinds support it: a OneDrive bucket supports every verb, and
+a Drive bucket lacks sites, sharing, versions and the recycle bin.
+
+Paths are POSIX-style and **relative to the bucket's `root`** (omit `path`, or
+pass `""`, for the root). A OneDrive bucket also takes an absolute
+server-relative path (`/teams/<x>/...`, `/sites/<x>/...`,
+`/personal/<user>/...`), so one bucket reaches every site the mira session can.
+SharePoint's own permissions are the only boundary, and a refusal comes back as
+a permission error. Entries under the root come back relative, entries
+elsewhere absolute. `bucket_sites` finds the absolute paths.
+
+File arguments and results are paths **on the calling node**, whichever node
+runs social. `bucket_put` reads a local file or folder as `src`, and
+`bucket_get` and `download_attachments` return local paths. The gateway
+carries the bytes across the peer hop inside the one call (see `FEDERATION.md`
+§ *Cross-peer calls*). Bytes never inline into the RPC, and downloads land in a
+system temp dir outside the workspace.
+
+**CAUTION** `bucket_share` is outward-facing. Its description tells an agent to
+get Tony's confirmation of the item, the audience and the role first.
+`send_email` stays false unless asked for.
+
+**CAUTION** `overwrite` on `bucket_mv` and `bucket_cp` first sends the existing
+target to the recycle bin (Drive: trash). `bucket_restore` brings it back.
 
 ```toml
 [bucket.gdrive-phyber]          # Google Drive via an OAuth2 refresh token.
@@ -188,15 +215,14 @@ sub-tree); Google-native docs are exported on `get` (Docs→pdf, Sheets→csv).
 **OneDrive / SharePoint (via mira).** The UBC student account can't mint an
 offline OAuth token without a Microsoft app registration + tenant admin consent,
 so this reuses the **mira** pattern (the same host that drives Teams/Slack): the
-mira daemon keeps a logged-in `*.sharepoint.com` tab in Opera and drives the
-SharePoint REST API in-page over CDP, same-origin with the session cookie. The
-bucket here is a thin client of the daemon's `/v1/fs/onedrive/…` routes. It
-requires the `[mira]` block (already configured for Teams/Slack) and the
-redeployed daemon with `MIRA_STORAGE=onedrive` plus a logged-in SharePoint tab —
-see `mira/README.md`. The `root` is the document library's **server-relative
-path** (decode `%20` etc. from the share URL). Personal OneDrive differs only by
-host (`<tenant>-my.sharepoint.com`) + root path. Writes use the SharePoint
-request digest automatically.
+mira daemon keeps logged-in SharePoint tabs in Opera and drives the SharePoint
+REST API in-page over CDP, same-origin with the session cookie. The bucket here
+is a thin client of the daemon's `/v1/fs/onedrive/…` routes. It requires the
+`[mira]` block (already configured for Teams/Slack) and the daemon with
+`MIRA_STORAGE=onedrive` plus logged-in `<tenant>.sharepoint.com` and
+`<tenant>-my.sharepoint.com` tabs. The second tab serves personal OneDrive. See
+`mira/README.md`. The `root` is a **server-relative path** (decode `%20` etc.
+from the share URL, or pass the link to `bucket_resolve`).
 
 The Google libraries (`google-api-python-client`, `google-auth`,
 `google-auth-oauthlib`) are declared deps, imported lazily — the service still
@@ -222,16 +248,30 @@ Under a shadow `AWM_WORKSPACE` is rewritten to a sandbox dir, so point the
 service at a real `social.toml` with **`AWM_SOCIAL_CONFIG=/abs/path/social.toml`**
 (the parallel of the 2fa service's `AWM_2FA_DIR`).
 
-## Discord slash command (`/approve`)
+## Discord slash commands
 
-The Discord connector registers one application command, `/approve [device]`,
-usable only as a **DM to the bot** (`interaction.guild is None`; guild-channel
-invocations are rejected). It's synced as a *global* command in `on_ready` —
-global is the only kind that appears in a DM. On invocation the connector acks
-within Discord's 3s deadline and emits a normalised event on the `command`
-emitter topic (`/svc/social/emit/command`) with `{command, device, account,
-channel_id, …}`. The service does nothing with `approve` itself — the **`2fa`**
-service subscribes to that topic and arms a Duo approval burst (see its INSTALL).
+The Discord connector registers three application commands. Each works only as
+a **DM to the bot**, and only for a sender in the `social_operators` table.
+
+| Command | Consumer |
+|---|---|
+| `/approve [device]` | `2fa` and `ssh` arm a Duo approval burst (see their INSTALL) |
+| `/reject <ref> [reason]` | `reporting` rejects the federation card |
+| `/new-agent [prompt]` | `reporting` starts a session with Remote Control on and answers with its link |
+
+The commands sync as *global* commands in `on_ready`, because global is the
+only kind that appears in a DM. On invocation the connector checks the sender,
+acks within Discord's 3s deadline and emits a normalised event on the `command`
+emitter topic (`/svc/social/emit/command`) with `{command, account,
+channel_id, operator, …}`. The service does nothing with a command itself.
+
+A guild invocation, or a sender absent from the operators table, gets an
+ephemeral refusal and emits nothing. Add an operator on the node that owns the
+bot account with `social add_operator platform=discord
+platform_user_id=<discord id> awm_user=<name>`.
+
+**WARNING** Add the operators before you deploy this gate. Until then every
+command, `/approve` included, is refused.
 
 Prereqs: a `[account.*]` with `platform = "discord"` and a bot token whose app
 was invited with the `applications.commands` scope. New slash commands can take

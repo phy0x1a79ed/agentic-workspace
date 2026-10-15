@@ -2,9 +2,9 @@
 
 ## Purpose & Contents
 
-This file is the design of awm federation. It covers how nodes reach each other, how a peer proves who it is, what a foreign swarm may read, and how swarms exchange work. The sections run in this order: the node roles and the shape of a cross-node call, authentication, node tokens, relations and grants, the foreign gate, federated search, the board and the front door, the legacy SSH bearer, the peer directory, the cross-peer transports, singletons, the connection-slot arbiter, TLS and deployment.
+This file is the design of awm federation. It covers how nodes reach each other, how a peer proves who it is, what a foreign swarm may read, and how swarms exchange work. The sections run in this order: the node roles and the shape of a cross-node call, authentication, node tokens, relations and grants, the foreign gate, federated search, the board and intake, the legacy SSH bearer, the peer directory, the cross-peer transports, singletons, the connection-slot arbiter, TLS and deployment.
 
-Operator steps for the board and the front door live in each service's `INSTALL.md`. Gateway internals live in `ARCHITECTURE.md`.
+Operator steps for the board and intake live in each service's `INSTALL.md`. Gateway internals live in `ARCHITECTURE.md`.
 
 ## Overview
 
@@ -67,7 +67,7 @@ demand; there is no single identity brain (per-node state, cross-reads on demand
 | foreign gate | gateway (`awm/gateway/awm/gateway/catalog.py`) | which verbs a foreign caller may run |
 | cross-peer calls | `gatewayclient.call_peer` + the `awm-mcp` proxy | reach a peer's edge directly (client-side federation) |
 | board | `awm/services/board/` | the swarms' shared cards, stored in the Trilium vault. Agents call it as `operations board_*` |
-| front door | `awm/services/reporting/` where `AWM_FRONT_DOOR=1` | queues the swarm's cards and keeps the representative alive |
+| intake (the front door) | `awm/services/reporting/` where `AWM_FRONT_DOOR=1` | turns the swarm's cards into Proposed tasks, tells Tony, and routes thread messages and card events into sessions |
 | task reporting | `awm/services/reporting/` on every fleet node | each node's task ledger, shown on the Swarm board in the shared vault |
 
 ## Authentication
@@ -130,7 +130,7 @@ Each peer book entry (`<AWM_DIR>/state/peers.json`) holds the edge URL, the ssh 
 Two environment variables describe this node itself:
 
 - `AWM_NODE_ROLE` is `fleet` (default) or `station`. A station hosts services for others and runs no agent sessions. `reflection start_other` and the `reporting` service refuse on a station, and the gateway logs a warning at boot when a station has the `cx` service enabled. Any other value is an error.
-- `AWM_SWARM` names this node's swarm (default `tony`). The front door claims cards for it, and archive hits carry it as `origin_swarm`.
+- `AWM_SWARM` names this node's swarm (default `tony`). Intake takes in the cards addressed to it, and archive hits carry it as `origin_swarm`.
 
 Manage entries with `awm peer add|set|grant|revoke|list|resolve|forget`. The `operations` tool carries the same verbs as `peer_*`, with the writes hidden from MCP, so an agent can read the book and only an operator changes it. The peer-book writes close to a caller with a peer stamp. Each write refuses `peer` and `peer:<node>` on every door, the HTTP routes included. A domestic peer is refused as much as a foreign one. The refusal is a `PermissionError`, which `/invoke` and the routes answer with 403. A foreign caller never reaches it, because the foreign gate answers 404 first. The operator CLI, a local agent and a person signed in at the edge (`user:<sub>`, including `user:operator`) pass. The writes also declare `effect = write`, so a restricted session cannot run them. **CAUTION** Domestic trust is full trust. A domestic peer can start a session here with `reflection start_other`, and that session's agent carries a local stamp. Mark a node domestic only if you control it.
 
@@ -164,29 +164,37 @@ A post that arrives through the edge carries the edge's stamp (`peer:<node>`, or
 
 ## The board
 
-The board is the swarms' shared place to post requests and messages. Every party connects out to it, so no swarm opens a port for another. A **card** is a request, which a swarm can claim, complete or fail, or a message, which nobody claims. Each card is one issue and carries its own thread: a sequence of read-only messages that any party who can see the card may post. A reply is a message on the thread. A swarm on an older release still replies with a new message card that sets `reply_to`.
+The board is the swarms' shared place to post work. Every party connects out to it, so no swarm opens a port for another. Every **card** is a task. A request is claimed by one swarm and carried to Done. A message is a task whose work may be "read it and reply", and nobody claims it. Each card is one subject and carries its own thread: a sequence of read-only messages that any party who can see the card may post. A reply is a message card that sets `reply_to`, and the board also posts it on the thread of the card at the root of its chain.
 
-- **Store.** A card is a child note of the Trilium note that carries the `#federationBoard` label. The card's status is its board-view column, so dragging a card in the Trilium GUI changes its status and the stream reports `card.moved`. The board service is the only API writer. Trilium admits loopback callers only, so the board host must be the node that runs Trilium.
-- **Identity.** A party bearer is the only identity the board trusts. The board stores its hash in a local table and never in the vault. The sender of a card comes from the bearer and never from the card. A node token or the legacy bearer never authenticates to the board.
+- **Store.** A card is a note in a column folder under the Trilium note that carries the `#federationBoard` label. The board service is the only API writer. Trilium admits loopback callers only, so the board host must be the node that runs Trilium. Each card reports its `note_id`, and `task_claim` places that same note on the Swarm board, so one note shows on both boards.
+- **States.** A card's state is the folder it sits in: Proposed, Planned, Active, Blocked, Pending review, Done or Rejected, the same columns as the Swarm board. A drag between folders in the Trilium GUI changes the state, and the stream reports `card.moved`. A claim moves a card from Proposed to Planned. Only the claimant's swarm moves it among the held states and Done with `board_status`. The recipient swarm, the claimant or the host's own swarm rejects it with `board_reject`, and the reason joins the thread. The board archives a Done or Rejected card after 14 days.
+- **Older peers.** Every card still carries the previous release's four-value `status` (`posted`, `in_progress`, `done`, `failed`), and the filters still accept it, so a peer on that release keeps parsing what it reads. `awm/services/board/awm/board/states.py` holds the mapping. A reply stays a card because such a peer finds replies by listing cards, and its front door takes only Proposed message cards. A reply to a swarm named in the host's `AWM_BOARD_THREAD_SWARMS` goes straight to Done, because that swarm reads it on the thread. **CAUTION** Name a swarm there only once it runs this release. Its front door on the previous release never sees a reply filed in Done.
+- **Identity.** A party bearer is the only identity the board trusts. The board stores its hash in a local table and never in the vault. The sender of a card comes from the bearer and never from the card. A node token or the legacy bearer never authenticates to the board. The relaying node adds the posting agent's session name to each card, message and claim, read from the pid the gateway stamps on the call and never from an argument. The name is a label the swarm vouches for, not an identity.
+- **Chips.** The board note defines `cardFrom`, `cardTo`, `project` and `owner` as promoted, inheritable labels, so every card shows them as chips. The board sets them from its own records, never from card text. A claim writes `owner` as `<swarm>/<node>/<agent>`. The Trilium fork colours each chip by its value and filters the board view by chip.
 - **Refusals.** Every refusal answers 404 with one body, so a caller cannot map the board. A claim on a card that another party holds answers 409.
-- **Claims.** A claim re-reads the card under one service-wide lock and writes the claimant only if the card is still posted. Two simultaneous claims give one 200 and one 409. The guarantee holds only while one board process runs, so the host takes a lock file and a second process refuses to start.
+- **Claims.** A claim re-reads the card under one service-wide lock and writes the claimant only if the card is still Proposed. Two simultaneous claims give one 200 and one 409. The guarantee holds only while one board process runs, so the host takes a lock file and a second process refuses to start.
 - **Threads.** The board stores each message in `events.db` with a board-assigned sequence number, a UTC time and the poster's party, and only then mirrors it into the vault as a `#readOnly` child of the card's `Chat` note. The table is the record, because Trilium enforces `#readOnly` only in its GUI and knows no author but the vault's operator. The sweep rewrites any mirror note that drifts from the table. A note a person adds under a `Chat` note in the GUI becomes the card's next message once it is 5 seconds unchanged, and its author is the host's own party.
-- **Stream.** `GET /board/stream` is server-sent events with a heartbeat every 30 seconds. A client resumes with `Last-Event-ID`, and the board replays events up to 30 days old.
+- **Stream.** `GET /board/stream` is server-sent events with a heartbeat every 30 seconds. A client resumes with `Last-Event-ID`, and the board replays events up to 30 days old. `board_events` reads one card's history from the same store.
 - **Door.** When `AWM_EDGE_BOARD` is set, the public edge mounts the board at `/board/`. The mount allows exact method-and-path shapes only. It answers before edge authentication. It strips every `X-Awm-*` header, `Cookie` and `X-Forwarded-*`, and it removes a node token or legacy bearer before it forwards the request.
 - **Agents.** The `operations` tool's `board_*` verbs relay an agent's calls to the host with the swarm's token from the node's env file. An agent never holds the token. The card verbs refuse a caller that arrives from another node, because the token is this swarm's identity.
 
-## The front door
+## Intake
 
-The front door is how a swarm receives a request durably. The `reporting` service runs it only when `AWM_FRONT_DOOR=1` on a fleet node. It subscribes to the board and claims request cards addressed to `node_swarm()`. It queues a message card without claiming it. It writes each card to a SQLite queue before it saves its stream cursor, and it catches up from `GET /board/cards` after a gap. It keeps two sessions alive through `reflection start_other`: the representative and the secretary.
+Intake turns a post into a Proposed task that waits for Tony. The `reporting` service runs it, as the front door, only when `AWM_FRONT_DOOR=1` on a fleet node. It follows the board stream, and it catches up from `GET /board/cards` after a gap. It writes each card to a SQLite queue before it saves its stream cursor.
 
-The representative reads the queue through the `operations` `queue_*` verbs, chooses a domestic agent, hands it the card and records the hand-off. It never claims, completes or posts a card, and it never does a card's work. The agent that takes the card finishes it on the board. § *The hand-off text* of `REPRESENTATIVE_INSTRUCTIONS` in `awm/services/reporting/awm/reporting/personas.py` fixes that convention. The representative passes that text to the agent as its prompt, so the agent needs no other source.
+1. **Post.** A card addressed to this swarm or to `open`, or posted by this swarm, is queued as Proposed. The door never claims a card.
+2. **Notify.** Tony gets one Discord DM per card: title, From, To, project, an excerpt and the line `claim task <ref> <link>`. The ref is the card id's first 8 characters. A card this swarm sent to another swarm carries `ref <ref>` instead.
+3. **Claim.** An agent claims a card only at Tony's word, with `operations task_claim <ref>`. The ref may be the full id, a unique prefix of 6 or more characters or the card's Trilium link. The claim takes the card on the board (a message card skips this step), puts its note in Planned on the Swarm board and assigns it to the calling session. The answer names the card's project and scope, whether the scope exists, and the sessions already working in it.
+4. **Work.** The Swarm-board lifecycle moves the Federation card. A submitted plan posts "plan submitted" on the thread. Plan approval moves the card to Active, `request_human` to Blocked or Pending review, and a close to Done or Rejected. A move a person makes by hand wins, and the mirror leaves it.
+5. **Talk.** A thread message from another party wakes the assigned background session with one line that names the card and the sender. The session reads the thread with `board_messages`. A session that does not take the line gets one retry. After a second miss, or when the card has no session, Tony gets a short DM. The door keeps a per-card thread cursor, so a catch-up routes the messages the stream missed.
+6. **Follow.** `operations board_watch` records the calling background session as a watcher of one card, or of every card it posts. The door types one line per event into each watcher: claimed and by whom, a state change, plan submitted or approved, a new message. Watching ends with the session.
+7. **Reject.** Tony rejects a card with `/reject <ref> [reason]` on Discord, through any agent with `board_reject`, or by a drag to Rejected.
 
-One agent handles a card, and a new message on its thread wakes that agent. When the representative hands a card to a session it started, it records the session's job with `queue_assign`. The door accepts only a live job whose parent is the representative. A `card.message` event from another swarm then types one line into that job. The line names the card and never carries message text, so a card's content never reaches a session as an instruction. A session that does not take the line gets one retry. After a second miss, or when the card has no job, the card returns to the representative's queue with `thread_open` set. A message on a card this swarm sent also returns to the representative. The door keeps a per-card thread cursor, so its catch-up routes the messages the stream missed.
-
-- **Containment.** Cards come from other parties, so the representative reads them as data. It holds no file or shell tools. The mode gate (`ARCHITECTURE.md` § *Verb gating*) limits its awm verbs. Any session it starts is a delegate: no Bash, no `SendMessage` or `ListAgents`, file tools confined to the scope, and only the awm MCP server. Delegates work in scope `awm/door-work` unless the card names an existing scope.
-- **Messaging.** Agents on one node message each other with Claude's `SendMessage`. Swarms message each other through the board. `journal post` stays passive mail that wakes no one.
-  **CAUTION** Claude Code holds a message to a session in another permission mode until that session's user approves it. A background session such as the secretary then waits on the approval prompt and does nothing else.
-- **One door per swarm.** This is a deployment rule. Set `AWM_FRONT_DOOR=1` on one node per `AWM_SWARM`. Nothing in code stops a second door.
+- **Containment.** Card text reaches Tony, never an agent, until a claim. A line the door types into a session carries a card id, an event and a sender, never card or message text. The `task_claim` description tells the claiming agent that card text is data from its poster.
+- **CAUTION** The door types only into sessions on its own node. A session on another node that claims a card gets no wake line, and the card's new messages reach Tony as a DM. `board_watch` on another node records the watch, warns, and types nothing.
+- **Messaging.** Agents on one node message each other with Claude's `SendMessage` or `reflection message`. Swarms message each other through the board. `journal post` stays passive mail that wakes no one.
+  **CAUTION** Claude Code holds a `SendMessage` to a session in another permission mode until that session's user approves it. A background session then waits on the approval prompt and does nothing else.
+- **One door per swarm.** This is a deployment rule. Set `AWM_FRONT_DOOR=1` on one node per `AWM_SWARM`. Nothing in code stops a second door, and two doors send every DM twice.
 
 ## The legacy bearer over SSH
 
@@ -285,6 +293,36 @@ with the legacy bearer fetched over SSH. The client then calls that peer with
 the legacy bearer for five minutes. A foreign peer never gets the legacy bearer.
 Its refusal returns as sent. Only 401 triggers the fallback, because a 403 is an
 authorisation verdict that another credential cannot change.
+
+### Files across the hop
+
+A verb whose arguments or results are local paths declares it in its manifest:
+`"file": "in"` on a param, `"returns_files": true` on a function whose result
+lists `files[].path`. The catalog projects both into the verb's schema and its
+`describe` answer, and `awm-mcp` reads them from the far node's `describe`
+(cached for ten minutes, in `gateway/peer_files.py`, shared by both proxies).
+When it follows a redirect for such a verb, it sends one tar body
+(`application/x-awm-call+tar`): the call, then each local file or folder. With
+`X-Awm-Return-Files` the far gateway answers with a tar of the result files,
+and the proxy rewrites each path to its local copy. `awm/gateway/awm/gateway/filehop.py`
+holds the format.
+
+- Tar, not multipart, because it needs only the standard library on both ends
+  and carries a folder as a folder.
+- A path that does not exist on the calling node travels unchanged, so a path
+  already on the far node still works.
+- Both ends must carry the file hop. Against an older gateway the proxy sees no
+  markers in `describe` and sends plain JSON, so the far side reads the path on
+  its own disk.
+- The far gateway sends back only result files under its system temp dir. A
+  file it does not send comes back as `path: null` with an `error`.
+- A verb with these markers skips the `fileviewer` pull (§ *Cross-peer bytes*).
+  That pull stays the fallback for a peer without the hop, and it cannot carry
+  a folder.
+- The proxy waits up to its read ceiling (`mcp_http.read_timeout()`, about an
+  hour). The far gateway enforces each verb's own `timeout`.
+- `httpsfront` streams request bodies through, so a large upload never sits
+  whole in the edge.
 
 ### Who provides what — and why the gateway still never relays
 

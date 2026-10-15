@@ -1,9 +1,12 @@
-"""The queue: idempotent by card id, ordered, and the cursor only moves forward."""
+"""The queue: idempotent by card id, told once, watchers, and the cursor only moves forward."""
 
 from __future__ import annotations
 
+import sqlite3
+
 import pytest
 
+from awm.reporting import store
 from awm.reporting.store import Queue
 
 from stubs import make_card
@@ -16,52 +19,58 @@ def test_a_card_is_queued_once_whatever_the_number_of_deliveries(queue):
     assert queue.enqueue(card) is True
     assert queue.enqueue(card) is False
     assert queue.enqueue({**card, "title": "renamed"}) is False
-    rows = queue.list()
-    assert len(rows) == 1
-    assert rows[0]["title"] == "renamed"
-    assert rows[0]["status"] == "queued"
-    assert rows[0]["sender"] == "beta"
+    got = queue.get(card["id"])
+    assert (got["title"], got["status"], got["sender"]) == ("renamed", "proposed", "beta")
+    assert queue.counts()["proposed"] == 1
+
+
+def test_a_card_is_told_to_tony_until_it_is_marked_told(queue):
+    card = make_card()
+    queue.enqueue(card)
+    assert queue.needs_dm(card["id"]) is True
+    queue.mark_notified(card["id"])
+    assert queue.needs_dm(card["id"]) is False
+    assert queue.needs_dm("f" * 32) is False
+
+
+def test_a_quiet_card_is_recorded_as_already_told(queue):
+    card = make_card()
+    assert queue.enqueue(card, quiet=True) is True
+    assert queue.needs_dm(card["id"]) is False
 
 
 def test_a_redelivery_keeps_the_arrival_time_and_the_assignment(queue):
     card = make_card()
     queue.enqueue(card)
     first = queue.get(card["id"])
-    queue.assign(card["id"], "agent-7")
+    queue.take(card, "agent-7", "job1")
     queue.enqueue(card)
     again = queue.get(card["id"])
     assert again["arrival"] == first["arrival"]
-    assert (again["status"], again["assigned_to"]) == ("assigned", "agent-7")
+    assert (again["status"], again["assigned_to"], again["assigned_job"]) == ("assigned", "agent-7", "job1")
 
 
 def test_the_queue_survives_a_restart(tmp_path):
-    card = make_card(priority="urgent")
+    card = make_card()
     Queue(tmp_path / "reporting.db").enqueue(card)
-    reopened = Queue(tmp_path / "reporting.db")
-    got = reopened.get(card["id"])
-    assert (got["priority"], got["status"]) == ("urgent", "queued")
-    assert got["arrival_at"].endswith("Z")
+    got = Queue(tmp_path / "reporting.db").get(card["id"])
+    assert got["status"] == "proposed" and got["arrival_at"].endswith("Z")
 
 
-def test_list_puts_urgent_first_then_oldest(queue):
-    low = make_card(priority="low")
-    normal = make_card()
-    urgent = make_card(priority="urgent")
-    for card in (low, normal, urgent):
-        queue.enqueue(card)
-    assert [r["card_id"] for r in queue.list()] == [urgent["id"], normal["id"], low["id"]]
+def test_take_records_a_card_the_queue_never_held_and_is_not_news_again(queue):
+    card = make_card()
+    queue.take(card, "agent", None)
+    got = queue.get(card["id"])
+    assert (got["status"], got["assigned_job"]) == ("assigned", None)
+    assert queue.needs_dm(card["id"]) is False
 
 
-def test_list_filters_by_status_and_rejects_nonsense(queue):
-    a, b = make_card(), make_card()
-    queue.enqueue(a)
-    queue.enqueue(b)
-    queue.assign(a["id"], "x")
-    assert [r["card_id"] for r in queue.list("assigned")] == [a["id"]]
-    assert [r["card_id"] for r in queue.list("queued")] == [b["id"]]
-    assert queue.counts() == {"claiming": 0, "queued": 1, "assigned": 1, "done": 0, "failed": 0, "gone": 0}
-    with pytest.raises(ValueError):
-        queue.list("posted")
+def test_release_puts_an_assigned_card_back_to_proposed(queue):
+    card = make_card()
+    queue.take(card, "agent", "job1")
+    queue.release(card["id"])
+    got = queue.get(card["id"])
+    assert (got["status"], got["assigned_to"], got["assigned_job"]) == ("proposed", None, None)
 
 
 def test_mark_finishes_a_card_and_only_a_known_one(queue):
@@ -69,29 +78,41 @@ def test_mark_finishes_a_card_and_only_a_known_one(queue):
     queue.enqueue(card)
     assert queue.mark(card["id"], "done") is True
     assert queue.mark(card["id"], "done") is False
-    assert queue.mark("f" * 32, "failed") is False
+    assert queue.mark("f" * 32, "rejected") is False
     assert queue.get(card["id"])["status"] == "done"
     with pytest.raises(ValueError):
-        queue.mark(card["id"], "queued")
+        queue.mark(card["id"], "proposed")
 
 
-def test_assign_refuses_a_missing_or_finished_card(queue):
+def test_gone_applies_only_to_cards_still_open(queue):
+    open_card, finished = make_card(), make_card()
+    queue.enqueue(open_card)
+    queue.enqueue(finished)
+    queue.mark(finished["id"], "done")
+    assert queue.mark(open_card["id"], "gone") is True
+    assert queue.mark(finished["id"], "gone") is False
+    assert queue.status_of(finished["id"]) == "done"
+
+
+def test_reopen_puts_a_finished_or_assigned_card_back_and_tells_tony_again(queue):
     card = make_card()
     queue.enqueue(card)
-    queue.mark(card["id"], "failed")
-    assert queue.assign(card["id"], "x")[0] is None
-    assert queue.assign("e" * 32, "x")[0] is None
-
-
-def test_reopen_puts_a_finished_card_back(queue):
-    card = make_card()
-    queue.enqueue(card)
-    queue.assign(card["id"], "x")
+    queue.mark_notified(card["id"])
+    queue.take(card, "x", "job1")
     queue.mark(card["id"], "done")
     assert queue.enqueue(card) is False
     assert queue.enqueue(card, reopen=True) is True
     got = queue.get(card["id"])
-    assert (got["status"], got["assigned_to"]) == ("queued", None)
+    assert (got["status"], got["assigned_to"]) == ("proposed", None)
+    assert queue.needs_dm(card["id"]) is True
+
+
+def test_active_ids_are_the_open_cards_oldest_first(queue):
+    a, b, c = make_card(), make_card(), make_card()
+    for card in (a, b, c):
+        queue.enqueue(card)
+    queue.mark(b["id"], "rejected")
+    assert queue.active_ids() == [a["id"], c["id"]]
 
 
 def test_the_cursor_moves_forward_only_unless_forced(queue):
@@ -103,96 +124,73 @@ def test_the_cursor_moves_forward_only_unless_forced(queue):
     assert queue.cursor() == 2
 
 
-def test_announcements_cover_queued_cards_once(queue):
-    a, b = make_card(), make_card(priority="urgent")
-    queue.enqueue(a)
-    queue.enqueue(b)
-    assert {c for c, _, _ in queue.unannounced()} == {a["id"], b["id"]}
-    queue.mark_announced([a["id"]])
-    assert [c for c, _, _ in queue.unannounced()] == [b["id"]]
-    queue.reset_announced()
-    assert len(queue.unannounced()) == 2
-    queue.assign(a["id"], "x")  # a handed-off card is no longer news
-    assert [c for c, _, _ in queue.unannounced()] == [b["id"]]
+def test_thread_cursors_never_move_back(queue):
+    queue.set_thread_seq("c", 3)
+    queue.set_thread_seq("c", 1)
+    assert queue.thread_seq("c") == 3 and queue.thread_seqs() == {"c": 3}
 
 
-def test_reply_to_is_kept_and_returned(queue):
-    card = make_card(kind="message", reply_to="a" * 32)
-    queue.enqueue(card)
-    assert queue.get(card["id"])["reply_to"] == "a" * 32
-    assert queue.list()[0]["reply_to"] == "a" * 32
-    plain = make_card()
-    queue.enqueue(plain)
-    assert queue.get(plain["id"])["reply_to"] is None
+def test_watchers_follow_a_card_or_an_agents_posts(queue):
+    assert queue.watch("j1", "card-a") is True
+    assert queue.watch("j1", "card-a") is False
+    queue.watch("j2", "posted:muse")
+    queue.watch("j3", "card-b")
+    assert queue.watchers_of("card-a") == ["j1"]
+    assert queue.watchers_of("card-a", posted_by="muse") == ["j1", "j2"]
+    assert queue.watchers_of("card-b", posted_by="other") == ["j3"]
+    assert queue.watched_by("j1") == ["card-a"]
 
 
-def test_handing_off_a_message_finishes_it_but_a_request_stays_assigned(queue):
-    message, request = make_card(kind="message"), make_card()
-    queue.enqueue(message)
-    queue.enqueue(request)
-    done, _ = queue.assign(message["id"], "agent-1")
-    assigned, _ = queue.assign(request["id"], "agent-1")
-    assert (done["status"], done["assigned_to"]) == ("done", "agent-1")
-    assert assigned["status"] == "assigned"
-    assert queue.active_ids() == [request["id"]]
+def test_unwatch_one_target_or_everything(queue):
+    queue.watch("j1", "a")
+    queue.watch("j1", "b")
+    assert queue.unwatch("j1", "a") == 1
+    assert queue.watched_by("j1") == ["b"]
+    assert queue.unwatch("j1") == 1
+    assert queue.watched_by("j1") == []
 
 
-def test_a_claiming_row_is_not_active_or_announced_until_the_card_is_queued(queue):
-    card = make_card()
-    assert queue.begin_claim(card) is True
-    assert queue.begin_claim(card) is False
-    assert queue.status_of(card["id"]) == "claiming"
-    assert queue.active_ids() == [] and queue.unannounced() == []
-    assert queue.assign(card["id"], "x")[0] is None  # not open for hand-off yet
-    assert queue.enqueue(card) is True  # the claim landed
-    assert queue.status_of(card["id"]) == "queued"
-    assert [c for c, _, _ in queue.unannounced()] == [card["id"]]
+def test_pruning_drops_the_watchers_whose_job_ended(queue):
+    queue.watch("alive", "a")
+    queue.watch("dead", "a")
+    queue.watch("dead", "b")
+    assert queue.prune_watchers({"alive"}) == 1
+    assert queue.watchers_of("a") == ["alive"] and queue.watchers_of("b") == []
 
 
-def test_a_refused_claim_attempt_leaves_no_row(queue):
-    card = make_card()
-    queue.begin_claim(card)
-    queue.drop_claim(card["id"])
-    assert queue.get(card["id"]) is None
-    queue.enqueue(card)
-    queue.drop_claim(card["id"])  # a queued card is never dropped
-    assert queue.get(card["id"]) is not None
-
-
-def test_gone_applies_only_to_cards_still_in_the_doors_hands(queue):
-    open_card, finished = make_card(), make_card()
-    queue.enqueue(open_card)
-    queue.enqueue(finished)
-    queue.mark(finished["id"], "done")
-    assert queue.mark(open_card["id"], "gone") is True
-    assert queue.mark(finished["id"], "gone") is False
-    assert queue.status_of(finished["id"]) == "done"
-
-
-def test_a_queued_card_is_announced_again_after_the_stale_window(queue):
-    card = make_card()
-    queue.enqueue(card)
-    queue.mark_announced([card["id"]], now=1000.0)
-    assert queue.unannounced() == []
-    assert queue.unannounced(stale_after_s=600, now=1500.0) == []
-    assert queue.unannounced(stale_after_s=600, now=1700.0) == [(card["id"], "normal", False)]
-    queue.mark_announced([card["id"]], now=1700.0)
-    assert queue.unannounced(stale_after_s=600, now=1800.0) == []
-
-
-def test_assigned_cards_are_not_announced_again(queue):
-    card = make_card()
-    queue.enqueue(card)
-    queue.mark_announced([card["id"]], now=0.0)
-    queue.assign(card["id"], "x")
-    assert queue.unannounced(stale_after_s=1, now=10_000.0) == []
-
-
-def test_the_sessions_the_door_started_are_recorded_per_role(tmp_path):
-    q = Queue(tmp_path / "reporting.db")
-    q.record_session("representative", "aaaa1111")
-    q.record_session("representative", "aaaa1111")
-    q.record_session("secretary", "bbbb2222")
-    assert Queue(tmp_path / "reporting.db").session_jobs("representative") == {"aaaa1111"}
-    assert q.session_jobs("secretary") == {"bbbb2222"}
-    assert q.session_jobs("other") == set()
+def test_a_v5_database_becomes_the_intake_queue(tmp_path):
+    path = tmp_path / "old.db"
+    conn = sqlite3.connect(path)
+    conn.executescript("""
+        CREATE TABLE schema_version (version INTEGER NOT NULL);
+        INSERT INTO schema_version VALUES (5);
+        CREATE TABLE cards (card_id TEXT PRIMARY KEY, kind TEXT NOT NULL, priority TEXT NOT NULL DEFAULT 'normal',
+            title TEXT NOT NULL, body TEXT NOT NULL DEFAULT '', sender TEXT NOT NULL DEFAULT '', reply_to TEXT,
+            status TEXT NOT NULL, assigned_to TEXT, assigned_job TEXT, thread_open INTEGER NOT NULL DEFAULT 0,
+            arrival REAL NOT NULL, updated REAL NOT NULL, notified INTEGER NOT NULL DEFAULT 0, announced_at REAL);
+        CREATE TABLE sessions (role TEXT NOT NULL, job TEXT NOT NULL, started REAL NOT NULL, spec_hash TEXT,
+            PRIMARY KEY (role, job));
+        CREATE TABLE tasks (id INTEGER PRIMARY KEY AUTOINCREMENT, node TEXT NOT NULL, key TEXT NOT NULL,
+            kind TEXT NOT NULL, state TEXT NOT NULL, started REAL NOT NULL, updated REAL NOT NULL);
+        CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+        INSERT INTO meta VALUES ('cursor', '41');
+    """)
+    for card_id, status in (("q", "queued"), ("c", "claiming"), ("a", "assigned"), ("f", "failed"), ("d", "done")):
+        conn.execute("INSERT INTO cards (card_id, kind, title, status, arrival, updated, notified)"
+                     " VALUES (?, 'request', 't', ?, 1, 1, 1)", (card_id, status))
+    conn.commit()
+    conn.close()
+    queue = Queue(path)
+    assert queue.cursor() == 41
+    status = {c: queue.status_of(c) for c in "qcafd"}
+    assert status == {"q": "proposed", "c": "proposed", "a": "assigned", "f": "rejected", "d": "done"}
+    assert queue.needs_dm("q") and queue.needs_dm("c") and not queue.needs_dm("a")
+    conn = sqlite3.connect(path)
+    tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    columns = {r[1] for r in conn.execute("PRAGMA table_info(cards)")}
+    task_columns = {r[1] for r in conn.execute("PRAGMA table_info(tasks)")}
+    conn.close()
+    assert "sessions" not in tables and "watchers" in tables
+    assert not columns & {"body", "priority", "reply_to", "thread_open", "announced_at"}
+    assert {"card_id", "fed_state"} <= task_columns
+    assert store.SCHEMA_VERSION == 6

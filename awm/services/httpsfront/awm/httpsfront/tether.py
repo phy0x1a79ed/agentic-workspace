@@ -16,12 +16,13 @@ here is a door onto sessions that already exist and are already addressed by a
 number the relay itself issued.
 
 **The mount is an allow-list of exact shapes, not a prefix.** The relay's whole
-public surface is eight routes and every one of them has a fixed grammar, so the
+public surface is twelve routes and every one of them has a fixed grammar, so the
 edge can refuse everything else before it has consulted anything at all — which
 is the plan's requirement that a slot the relay never issued be turned away
 before any pairing happens. The shapes have to agree exactly with what the relay
 parses (``Slot::parse``: one to three digits, no leading zero, 1 to 999;
-``Token::parse``: thirty-two lowercase hex) or the edge would forward a request
+``Token::parse``: thirty-two lowercase hex, which a poll id is too) or the edge
+would forward a request
 the relay is about to reject, which costs nothing but says the two disagree.
 
 **What is deliberately not forwarded:**
@@ -64,6 +65,10 @@ _SLOT = r"[1-9][0-9]{0,2}"
 #: One seat ticket, as the relay parses it.
 _TOKEN = r"[0-9a-f]{32}"
 
+#: One polled chair, named by the id the relay handed back when it was taken.
+#: Minted as a token, so it has a token's grammar.
+_POLL_ID = _TOKEN
+
 #: A downloadable name, matching the relay's own asset allow-list.
 _ASSET = r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}"
 
@@ -74,6 +79,8 @@ SHAPES = (
     re.compile(rf"^{PREFIX}/bin/{_ASSET}$"),               # a client download
     re.compile(rf"^{PREFIX}/claim/{_SLOT}$"),              # the owner's ticket
     re.compile(rf"^{PREFIX}/join/{_SLOT}/{_TOKEN}$"),      # the session socket
+    re.compile(rf"^{PREFIX}/poll/{_SLOT}/{_TOKEN}$"),      # the same chair, for a path with no socket
+    re.compile(rf"^{PREFIX}/seat/{_POLL_ID}/(?:recv|send|close)$"),  # and its requests
     re.compile(rf"^{PREFIX}/release/{_SLOT}/{_TOKEN}$"),   # the operator ending its own slot
     re.compile(rf"^{PREFIX}/issue$"),                      # operator only, at the relay
     re.compile(rf"^{PREFIX}/status$"),                     # operator only, at the relay

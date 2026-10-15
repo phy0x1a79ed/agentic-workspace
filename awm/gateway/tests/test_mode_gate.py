@@ -3,9 +3,11 @@
 A session cx started in a restricted mode may call only the verbs
 `awm.config.modes` lists for it. The gateway finds the mode from the pid header
 through `awm.claudedaemon.sessionmode`, which reads files on disk. These tests
-cover the gate's decision for each mode, both call shapes and both doors, the
-fail-closed lookups, and the per-pid cache. The last group runs the real
-tri-state lookup against a temporary Claude home.
+cover the gate's decision for each kind of policy, both call shapes and both
+doors, the fail-closed lookups, and the per-pid cache. The built-in modes are
+only `unknown`, so the tests register their own: `fixed` and `fixed2` name
+their verbs (`Allow`), and `reader` admits by declared effect (`ByEffect`). The
+last group runs the real tri-state lookup against a temporary Claude home.
 """
 
 from __future__ import annotations
@@ -18,10 +20,50 @@ from fastapi.testclient import TestClient
 
 pytestmark = [pytest.mark.hub, pytest.mark.smoke]
 
+from awm.config import modes as policies
 from awm.gateway import server
 
 PID = os.getpid()
 HEAD = {"X-Awm-Session-Pid": str(PID)}
+
+
+def _pairs(*items):
+    return frozenset(tuple(i.split(".")) for i in items)
+
+
+def _is_reply(call_args):
+    reply_to = call_args.get("reply_to")
+    return call_args.get("kind") == "message" and isinstance(reply_to, str) and bool(reply_to)
+
+
+_FIXED = _pairs(
+    "operations.board_list", "operations.board_get", "operations.board_fail",
+    "operations.board_messages", "reflection.start_other", "reflection.list_other",
+    "reflection.compact", "reflection.whoami", "operations.status", "operations.queue_list",
+    "operations.queue_get", "operations.queue_assign", "journal.fetch", "journal.goal_read",
+    "scope.search", "scope.resolve", "search.query")
+_FIXED2 = _pairs(
+    "reflection.start_other", "reflection.list_other", "reflection.stop_other",
+    "operations.board_list", "operations.board_get", "operations.status",
+    "operations.queue_list", "operations.queue_get", "reflection.compact", "journal.fetch")
+_CARDS = _pairs("operations.queue_list", "operations.queue_get", "operations.queue_assign",
+                "operations.status")
+
+
+@pytest.fixture(autouse=True)
+def test_policies(monkeypatch):
+    monkeypatch.setitem(policies.MODES, "fixed", policies.Allow(_FIXED))
+    monkeypatch.setitem(policies.MODES, "fixed2", policies.Allow(_FIXED2))
+    monkeypatch.setitem(policies.MODES, "reader", policies.ByEffect(
+        effects=frozenset({"read"}),
+        denied_domains=frozenset({"browser", "factorio"}),
+        denied_pairs=_pairs("operations.party_list") | _CARDS,
+        pairs=_pairs("operations.board_get", "operations.board_list", "operations.board_complete",
+                     "operations.board_fail", "operations.board_message_post",
+                     "operations.board_messages", "reflection.compact", "reflection.whoami",
+                     "search.query"),
+        when={("operations", "board_post"): _is_reply}))
+
 
 
 @pytest.fixture
@@ -77,14 +119,14 @@ def domain_call(client, domain, verb, inner=None, *, peer=None, headers=HEAD):
 # --- the decision, per mode ------------------------------------------------------
 
 
-REP_ALLOWED = [
+FIXED_ALLOWED = [
     ("operations", "board_list"), ("operations", "board_get"), ("operations", "board_fail"),
     ("reflection", "start_other"), ("reflection", "list_other"), ("reflection", "compact"),
     ("operations", "status"), ("operations", "queue_list"), ("operations", "queue_get"),
     ("operations", "queue_assign"), ("journal", "fetch"), ("scope", "search"),
     ("journal", "goal_read"), ("operations", "board_messages"),
 ]
-REP_REFUSED = [
+FIXED_REFUSED = [
     ("reflection", "stop_other"), ("reflection", "claim_other"), ("reflection", "seed_other"),
     ("reflection", "remove_other"),
     ("ssh", "connect"), ("social", "send"), ("journal", "post"), ("scope", "create"),
@@ -97,44 +139,44 @@ REP_REFUSED = [
 ]
 
 
-@pytest.mark.parametrize("domain,verb", REP_ALLOWED)
-def test_representative_may_call_its_verbs(client, dispatched, modes, domain, verb):
-    modes[PID] = "representative"
+@pytest.mark.parametrize("domain,verb", FIXED_ALLOWED)
+def test_a_fixed_mode_may_call_its_verbs(client, dispatched, modes, domain, verb):
+    modes[PID] = "fixed"
     assert domain_call(client, domain, verb).status_code == 200
     assert invoke(client, f"{domain}_{verb}").status_code == 200
     assert len(dispatched) == 2
 
 
-@pytest.mark.parametrize("domain,verb", REP_REFUSED)
-def test_representative_is_refused_everything_else(client, dispatched, modes, domain, verb):
-    modes[PID] = "representative"
+@pytest.mark.parametrize("domain,verb", FIXED_REFUSED)
+def test_a_fixed_mode_is_refused_everything_else(client, dispatched, modes, domain, verb):
+    modes[PID] = "fixed"
     for resp in (domain_call(client, domain, verb), invoke(client, f"{domain}_{verb}")):
         assert resp.status_code == 403
-        assert "representative" in resp.json()["detail"]
+        assert "fixed" in resp.json()["detail"]
     assert dispatched == []
 
 
-SECRETARY_ALLOWED = [("reflection", "start_other"), ("reflection", "list_other"),
+FIXED2_ALLOWED = [("reflection", "start_other"), ("reflection", "list_other"),
                      ("reflection", "stop_other"), ("operations", "board_list"),
                      ("operations", "board_get"), ("operations", "status"),
                      ("operations", "queue_list"), ("operations", "queue_get"),
                      ("reflection", "compact"), ("journal", "fetch")]
-SECRETARY_REFUSED = [("operations", "board_post"), ("operations", "board_claim"),
+FIXED2_REFUSED = [("operations", "board_post"), ("operations", "board_claim"),
                      ("operations", "board_complete"), ("operations", "board_fail"),
                      ("operations", "queue_assign"), ("reflection", "claim_other"),
                      ("journal", "post"), ("reflection", "message_self")]
 
 
-@pytest.mark.parametrize("domain,verb", SECRETARY_ALLOWED)
-def test_secretary_may_call_its_verbs(client, dispatched, modes, domain, verb):
-    modes[PID] = "secretary"
+@pytest.mark.parametrize("domain,verb", FIXED2_ALLOWED)
+def test_a_second_fixed_mode_may_call_its_verbs(client, dispatched, modes, domain, verb):
+    modes[PID] = "fixed2"
     assert domain_call(client, domain, verb).status_code == 200
     assert invoke(client, f"{domain}_{verb}").status_code == 200
 
 
-@pytest.mark.parametrize("domain,verb", SECRETARY_REFUSED)
-def test_secretary_never_acts_on_cards(client, dispatched, modes, domain, verb):
-    modes[PID] = "secretary"
+@pytest.mark.parametrize("domain,verb", FIXED2_REFUSED)
+def test_a_second_fixed_mode_never_acts_on_cards(client, dispatched, modes, domain, verb):
+    modes[PID] = "fixed2"
     assert domain_call(client, domain, verb).status_code == 403
     assert invoke(client, f"{domain}_{verb}").status_code == 403
     assert dispatched == []
@@ -143,7 +185,7 @@ def test_secretary_never_acts_on_cards(client, dispatched, modes, domain, verb):
 def test_an_unknown_mode_may_only_compact(client, dispatched, modes):
     modes[PID] = "unknown"
     assert domain_call(client, "reflection", "compact").status_code == 200
-    for domain, verb in REP_ALLOWED + SECRETARY_ALLOWED:
+    for domain, verb in FIXED_ALLOWED + FIXED2_ALLOWED:
         if (domain, verb) == ("reflection", "compact"):
             continue
         assert domain_call(client, domain, verb).status_code == 403, (domain, verb)
@@ -152,7 +194,7 @@ def test_an_unknown_mode_may_only_compact(client, dispatched, modes):
 
 def test_a_session_that_is_positively_not_cx_started_is_not_gated(client, dispatched, modes):
     modes[PID] = None
-    for domain, verb in REP_REFUSED:
+    for domain, verb in FIXED_REFUSED:
         assert domain_call(client, domain, verb).status_code == 200
     assert invoke(client, "ssh_connect").status_code == 200
 
@@ -164,7 +206,7 @@ def test_a_worker_is_not_gated(client, dispatched, modes):
 
 
 def test_describe_is_allowed_for_a_domain_the_mode_can_use(client, dispatched, modes):
-    modes[PID] = "representative"
+    modes[PID] = "fixed"
     assert domain_call(client, "operations", "describe").status_code == 200
     assert domain_call(client, "ssh", "describe").status_code == 403
     modes[PID] = "unknown"
@@ -174,7 +216,7 @@ def test_describe_is_allowed_for_a_domain_the_mode_can_use(client, dispatched, m
 
 
 def test_a_restricted_mode_may_not_name_a_peer(client, dispatched, modes):
-    modes[PID] = "representative"
+    modes[PID] = "fixed"
     resp = domain_call(client, "operations", "board_list", peer="capella")
     assert resp.status_code == 403 and "peer" in resp.json()["detail"]
     assert invoke(client, "operations_board_list", {"peer": "capella"}).status_code == 403
@@ -182,7 +224,7 @@ def test_a_restricted_mode_may_not_name_a_peer(client, dispatched, modes):
 
 
 def test_a_call_with_no_verb_is_refused(client, dispatched, modes):
-    modes[PID] = "representative"
+    modes[PID] = "fixed"
     for name in ("operations", "providersOf", "more"):
         assert invoke(client, name, {"tool": "operations"}).status_code == 403
     assert dispatched == []
@@ -190,7 +232,7 @@ def test_a_call_with_no_verb_is_refused(client, dispatched, modes):
 
 def test_a_flat_name_that_also_carries_a_verb_is_judged_as_the_flat_call_dispatch_makes(
         client, dispatched, modes, catalog_of_services):
-    modes[PID] = "representative"
+    modes[PID] = "fixed"
     # dispatch takes the flat path when the name is a known tool, so a stray
     # `verb` argument cannot turn operations_board_list into another verb
     assert invoke(client, "operations_board_list", {"verb": "list"}).status_code == 200
@@ -198,18 +240,18 @@ def test_a_flat_name_that_also_carries_a_verb_is_judged_as_the_flat_call_dispatc
 
 
 def test_an_unknown_domain_with_a_verb_is_read_as_a_domain_call(client, dispatched, modes):
-    modes[PID] = "representative"
+    modes[PID] = "fixed"
     assert domain_call(client, "operations", "board_list").status_code == 200
     assert domain_call(client, "elsewhere", "list").status_code == 403
 
 
 def test_a_malformed_args_bag_is_refused(client, dispatched, modes):
-    modes[PID] = "representative"
-    assert server._call_refusal("representative", "operations_board_list", ["x"]) is not None
+    modes[PID] = "fixed"
+    assert server._call_refusal("fixed", "operations_board_list", ["x"]) is not None
 
 
 def test_the_caller_stamp_still_reaches_an_allowed_call(client, dispatched, modes):
-    modes[PID] = "representative"
+    modes[PID] = "fixed"
     invoke(client, "reflection", {"verb": "compact", "args": {"_caller_pid": 1}})
     assert dispatched[0][1]["args"]["_caller_pid"] == PID
 
@@ -231,7 +273,7 @@ def test_an_edge_stamped_request_is_not_gated_here(client, dispatched, modes):
 def test_the_descendant_header_is_resolved_like_the_stamp(client, dispatched, modes,
                                                            monkeypatch):
     monkeypatch.setattr(server.mcp_caller, "resolve_caller_pid", lambda pid: {4242: PID}[pid])
-    modes[PID] = "representative"
+    modes[PID] = "fixed"
     resp = invoke(client, "ssh_connect", headers={"X-Awm-Caller-Pid": "4242"})
     assert resp.status_code == 403
     assert modes["lookups"] == [PID]
@@ -240,7 +282,7 @@ def test_the_descendant_header_is_resolved_like_the_stamp(client, dispatched, mo
 def test_the_session_header_wins_over_the_descendant_header(client, dispatched, modes,
                                                             monkeypatch):
     monkeypatch.setattr(server.mcp_caller, "resolve_caller_pid", lambda pid: 1 / 0)
-    modes[PID] = "representative"
+    modes[PID] = "fixed"
     headers = {**HEAD, "X-Awm-Caller-Pid": "4242"}
     assert invoke(client, "operations_board_list", headers=headers).status_code == 200
 
@@ -289,14 +331,14 @@ def test_a_missing_claudedaemon_is_the_most_restricted_mode(client, dispatched, 
 
 
 def test_the_mode_is_looked_up_once_per_pid_inside_the_window(client, dispatched, modes):
-    modes[PID] = "representative"
+    modes[PID] = "fixed"
     for _ in range(3):
         invoke(client, "operations_board_list")
     assert modes["lookups"] == [PID]
 
 
 def test_the_cache_is_per_pid(client, dispatched, modes):
-    modes[PID] = "representative"
+    modes[PID] = "fixed"
     modes[PID + 1] = None
     invoke(client, "ssh_connect")
     assert invoke(client, "ssh_connect",
@@ -306,7 +348,7 @@ def test_the_cache_is_per_pid(client, dispatched, modes):
 
 
 def test_a_lookup_is_repeated_once_the_window_has_passed(client, dispatched, modes, monkeypatch):
-    modes[PID] = "representative"
+    modes[PID] = "fixed"
     invoke(client, "operations_board_list")
     monkeypatch.setattr(server, "_MODE_CACHE_TTL_S", 0.0)
     invoke(client, "operations_board_list")
@@ -356,7 +398,7 @@ def door(monkeypatch):
 
 
 def test_the_door_gates_a_function_by_its_tool_name(door, modes):
-    modes[PID] = "representative"
+    modes[PID] = "fixed"
     board = _service("board", [{"name": "fail", "tool": "operations_board_fail"},
                                {"name": "party_add", "tool": "operations_party_add"}])
     assert door(board, "fail").status_code == 503  # past the gate
@@ -365,7 +407,7 @@ def test_the_door_gates_a_function_by_its_tool_name(door, modes):
 
 
 def test_the_door_follows_a_tool_name_override(door, modes):
-    modes[PID] = "representative"
+    modes[PID] = "fixed"
     scopes = _service("scopes", [
         {"name": "awm_fetch", "tool": "journal_fetch"},
         {"name": "scope_create", "tool": "scope_create"},
@@ -377,7 +419,7 @@ def test_the_door_follows_a_tool_name_override(door, modes):
 
 
 def test_the_door_refuses_an_unregistered_function(door, modes):
-    modes[PID] = "representative"
+    modes[PID] = "fixed"
     assert door(_service("board", []), "party_add").status_code == 403
 
 
@@ -392,7 +434,7 @@ def test_the_door_applies_the_unknown_mode(door, modes):
 
 
 def test_the_door_closes_every_other_service_path_to_a_restricted_mode(door, modes):
-    modes[PID] = "secretary"
+    modes[PID] = "fixed2"
     board = _service("board", [{"name": "list", "tool": "operations_board_list"}])
     assert door(board, "x", path="/svc/board/session/pcm").status_code == 403
 
@@ -447,8 +489,8 @@ def _start_session(root, mode, job="abababab"):
     (root / "cx" / "starts" / f"{job}.json").write_text(json.dumps({"mode": mode}))
 
 
-def test_a_cx_started_representative_is_gated_from_disk(client, dispatched, home):
-    _start_session(home, "representative")
+def test_a_cx_started_fixed_mode_session_is_gated_from_disk(client, dispatched, home):
+    _start_session(home, "fixed")
     assert invoke(client, "operations_board_list").status_code == 200
     assert invoke(client, "operations_party_add").status_code == 403
     assert domain_call(client, "ssh", "connect").status_code == 403
@@ -459,9 +501,9 @@ def test_the_gateway_reads_the_lineage_where_cx_writes_it(client, dispatched, ho
     (state / "starts").mkdir(parents=True)
     (home / "cx" / "starts" / "abababab.json").write_text("{}")
     monkeypatch.setenv("AWM_CX_STATE", str(state))
-    (state / "starts" / "abababab.json").write_text(json.dumps({"mode": "secretary"}))
+    (state / "starts" / "abababab.json").write_text(json.dumps({"mode": "fixed2"}))
     _start_session(home, "worker")
-    (state / "starts" / "abababab.json").write_text(json.dumps({"mode": "secretary"}))
+    (state / "starts" / "abababab.json").write_text(json.dumps({"mode": "fixed2"}))
     assert invoke(client, "operations_board_post").status_code == 403
 
 
@@ -473,14 +515,14 @@ def test_an_unreadable_roster_leaves_only_compaction(client, dispatched, home, m
     from awm.claudedaemon import sessionmode
 
     monkeypatch.setattr(sessionmode, "_may_be_a_session", lambda pid: True)
-    _start_session(home, "representative")
+    _start_session(home, "fixed")
     (home / "daemon" / "roster.json").write_text("{ not json")
     assert invoke(client, "operations_board_list").status_code == 403
     assert invoke(client, "reflection_compact").status_code == 200
 
 
 def test_a_corrupt_lineage_record_leaves_only_compaction(client, dispatched, home):
-    _start_session(home, "representative")
+    _start_session(home, "fixed")
     (home / "cx" / "starts" / "abababab.json").write_text("{ not json")
     assert invoke(client, "operations_board_list").status_code == 403
     assert invoke(client, "reflection_compact").status_code == 200
@@ -512,9 +554,9 @@ def test_a_caller_with_no_roster_and_no_lineage_directory_is_ungated(client, dis
     assert invoke(client, "ssh_connect").status_code == 200
 
 
-def test_a_corrupt_record_of_another_job_does_not_lock_the_representative(client, dispatched,
+def test_a_corrupt_record_of_another_job_does_not_lock_the_session(client, dispatched,
                                                                        home):
-    _start_session(home, "representative")
+    _start_session(home, "fixed")
     (home / "cx" / "starts" / "cccccccc.json").write_text("{ not json")
     (home / "cx" / "starts" / "pending-0123456789abcdef.json").write_text("[")
     assert invoke(client, "operations_board_list").status_code == 200
@@ -523,7 +565,7 @@ def test_a_corrupt_record_of_another_job_does_not_lock_the_representative(client
 
 def test_a_proxy_whose_repl_has_no_session_record_is_gated_by_the_roster(
         client, dispatched, home, monkeypatch):
-    """The REPL of a cx-started delegate has no sessions/<pid>.json, and its MCP
+    """The REPL of a cx-started session has no sessions/<pid>.json, and its MCP
     proxy runs under a wrapper: the caller is a record-less child of a listed job."""
     from awm.claudedaemon import sessionmode
 
@@ -531,7 +573,7 @@ def test_a_proxy_whose_repl_has_no_session_record_is_gated_by_the_roster(
     (home / "daemon" / "roster.json").write_text(json.dumps({"workers": {"abababab": {
         "replPid": parent, "replProcStart": _proc_start(parent),
         "dispatch": {"seed": {"name": "rep"}}}}}))
-    (home / "cx" / "starts" / "abababab.json").write_text(json.dumps({"mode": "delegate"}))
+    (home / "cx" / "starts" / "abababab.json").write_text(json.dumps({"mode": "reader"}))
     monkeypatch.setattr(sessionmode, "_may_be_a_session", lambda pid: pid == parent)
     assert invoke(client, "scope_post").status_code == 403
     assert invoke(client, "reflection_compact").status_code == 200
@@ -570,7 +612,7 @@ def test_a_cx_launched_job_with_no_lineage_is_the_most_restricted_mode(client, d
     assert invoke(client, "reflection_compact").status_code == 200
 
 
-# --- the delegate: an effect-based mode ----------------------------------------
+# --- an effect-based mode ----------------------------------------
 
 
 def _fn(name, effect=None, tool=None):
@@ -618,11 +660,11 @@ def catalog_of_services(monkeypatch):
     return records
 
 
-DELEGATE_ALLOWED = [("reflection", "compact"), ("reflection", "whoami"), ("precedence", "search"),
+READER_ALLOWED = [("reflection", "compact"), ("reflection", "whoami"), ("precedence", "search"),
                     ("reflection", "list_other"), ("journal", "fetch"),
                     ("operations", "board_get"), ("operations", "board_list"),
                     ("operations", "board_complete"), ("operations", "board_fail")]
-DELEGATE_REFUSED = [("journal", "post"), ("scope", "create"), ("scope", "sync"),
+READER_REFUSED = [("journal", "post"), ("scope", "create"), ("scope", "sync"),
                     ("precedence", "add"), ("reflection", "start_other"),
                     ("reflection", "stop_other"), ("operations", "queue_list"),
                     ("operations", "queue_assign"), ("browser", "cdp"), ("browser", "open"),
@@ -631,26 +673,26 @@ DELEGATE_REFUSED = [("journal", "post"), ("scope", "create"), ("scope", "sync"),
                     ("reflection", "mode"), ("awm", "token"), ("nowhere", "verb")]
 
 
-@pytest.mark.parametrize("domain,verb", DELEGATE_ALLOWED)
-def test_a_delegate_may_call_what_declares_read_and_finish_its_card(
+@pytest.mark.parametrize("domain,verb", READER_ALLOWED)
+def test_a_reader_may_call_what_declares_read_and_finish_its_card(
         client, dispatched, modes, catalog_of_services, domain, verb):
-    modes[PID] = "delegate"
+    modes[PID] = "reader"
     assert domain_call(client, domain, verb).status_code == 200
     assert invoke(client, f"{domain}_{verb}").status_code == 200
 
 
-@pytest.mark.parametrize("domain,verb", DELEGATE_REFUSED)
-def test_a_delegate_is_refused_everything_else(client, dispatched, modes,
+@pytest.mark.parametrize("domain,verb", READER_REFUSED)
+def test_a_reader_is_refused_everything_else(client, dispatched, modes,
                                                catalog_of_services, domain, verb):
-    modes[PID] = "delegate"
+    modes[PID] = "reader"
     assert domain_call(client, domain, verb).status_code == 403
     assert invoke(client, f"{domain}_{verb}").status_code == 403
     assert dispatched == []
 
 
-def test_a_delegate_posts_a_reply_message_and_nothing_else(client, dispatched, modes,
+def test_a_reader_posts_a_reply_message_and_nothing_else(client, dispatched, modes,
                                                            catalog_of_services):
-    modes[PID] = "delegate"
+    modes[PID] = "reader"
     reply = {"kind": "message", "recipient": "mock", "title": "t", "body": "b",
              "reply_to": "a" * 32}
     assert domain_call(client, "operations", "board_post", reply).status_code == 200
@@ -661,13 +703,13 @@ def test_a_delegate_posts_a_reply_message_and_nothing_else(client, dispatched, m
     assert len(dispatched) == 2
 
 
-def test_a_delegate_may_not_name_a_peer(client, dispatched, modes, catalog_of_services):
-    modes[PID] = "delegate"
+def test_a_reader_may_not_name_a_peer(client, dispatched, modes, catalog_of_services):
+    modes[PID] = "reader"
     assert domain_call(client, "precedence", "search", peer="capella").status_code == 403
 
 
-def test_the_door_judges_a_delegate_by_the_declared_effect(door, modes):
-    modes[PID] = "delegate"
+def test_the_door_judges_a_reader_by_the_declared_effect(door, modes):
+    modes[PID] = "reader"
     kb = _service("kb", [_fn("search", "read"), _fn("add", "write"), _fn("odd")])
     assert door(kb, "search").status_code == 503
     assert door(kb, "add").status_code == 403
@@ -678,8 +720,8 @@ def test_the_door_judges_a_delegate_by_the_declared_effect(door, modes):
     assert door(queue, "card_list").status_code == 403
 
 
-def test_the_door_refuses_a_delegate_post_it_cannot_inspect(door, modes):
-    modes[PID] = "delegate"
+def test_the_door_refuses_a_reader_post_it_cannot_inspect(door, modes):
+    modes[PID] = "reader"
     board = _service("board", [_fn("post", "queue", tool="operations_board_post"),
                                _fn("fail", "queue", tool="operations_board_fail")])
     assert door(board, "post", body={"kind": "message", "reply_to": "a" * 32}).status_code == 403
@@ -689,7 +731,7 @@ def test_the_door_refuses_a_delegate_post_it_cannot_inspect(door, modes):
 # --- gateway-native ops are judged by what they resolve to ---------------------------
 
 
-@pytest.mark.parametrize("mode", ["representative", "secretary", "unknown", "delegate"])
+@pytest.mark.parametrize("mode", ["fixed", "fixed2", "unknown", "reader"])
 @pytest.mark.parametrize("name", ["awm_restart", "awm_mcp_sync"])
 def test_a_flat_native_op_is_judged_as_its_tool_and_verb(client, dispatched, modes,
                                                              catalog_of_services, mode, name):
@@ -706,17 +748,17 @@ def test_the_native_op_resolves_to_its_tool_and_verb(catalog_of_services):
         "operations", "peer_join", "write")
 
 
-def test_a_native_read_op_is_open_to_the_delegate_only_by_its_effect(
+def test_a_native_read_op_is_open_to_the_reader_only_by_its_effect(
         client, dispatched, modes, catalog_of_services):
-    modes[PID] = "delegate"
+    modes[PID] = "reader"
     assert invoke(client, "awm_status").status_code == 200  # awm.status declares read
-    modes[PID] = "representative"
+    modes[PID] = "fixed"
     server._mode_cache.clear()
     assert invoke(client, "awm_status").status_code == 403
 
 
 def test_a_flat_describe_through_a_native_name_is_still_refused(client, dispatched, modes):
-    modes[PID] = "representative"
+    modes[PID] = "fixed"
     assert invoke(client, "awm_describe").status_code == 403
 
 
@@ -728,7 +770,7 @@ def test_a_flat_describe_through_a_native_name_is_still_refused(client, dispatch
 @pytest.mark.parametrize("args", [["x"], "text", 5, True, [], 0, ""])
 def test_a_non_object_args_is_a_400_before_stamping_or_the_gate(client, dispatched, modes,
                                                                 name, args):
-    modes[PID] = "representative"
+    modes[PID] = "fixed"
     resp = client.post("/invoke", json={"name": name, "args": args}, headers=HEAD)
     assert resp.status_code == 400 and "args" in resp.json()["detail"]
     assert dispatched == [] and modes["lookups"] == []
@@ -772,9 +814,9 @@ def test_missing_or_null_args_still_dispatch(client, dispatched, modes):
 
 
 def test_a_flat_describe_name_is_not_a_describe(client, dispatched, modes):
-    modes[PID] = "representative"
+    modes[PID] = "fixed"
     assert invoke(client, "operations_describe").status_code == 403
-    modes[PID] = "delegate"
+    modes[PID] = "reader"
     server._mode_cache.clear()
     assert invoke(client, "kb_describe").status_code == 403
     assert domain_call(client, "kb", "describe").status_code == 200
@@ -787,7 +829,7 @@ def test_a_restricted_mode_gets_403_not_a_peer_redirect(client, monkeypatch, mod
         raise peer_catalog.PeerRedirect("capella", name, "list")
 
     monkeypatch.setattr(server.catalog, "dispatch", redirect)
-    modes[PID] = "representative"
+    modes[PID] = "fixed"
     resp = invoke(client, "operations", {"verb": "board_list"},
                   {**HEAD, "X-Awm-Peer-Redirect": "1"})
     assert resp.status_code == 403 and "peer" in resp.json()["detail"]

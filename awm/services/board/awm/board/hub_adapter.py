@@ -34,8 +34,8 @@ from awm.board.client import BoardClient, BoardError
 
 log = logging.getLogger("awm.board.hub_adapter")
 
-HOST_ONLY = ("party_add", "party_revoke", "party_list")
-CARD_FIELDS = ("sender", "recipient", "claimant", "status", "kind", "reply_to")
+HOST_ONLY = ("party_add", "party_revoke", "party_list", "migrate_columns", "migrate_threads")
+CARD_FIELDS = ("sender", "recipient", "claimant", "status", "state", "kind", "reply_to", "project")
 
 #: Set once the host's stores exist. The admin verbs read it.
 HOST: "HostState | None" = None
@@ -55,10 +55,13 @@ def _param(name: str, type_: str, description: str, required: bool = False) -> d
 API_MANIFEST: dict[str, Any] = {
     "description": (
         "The federation board: cards exchanged between swarms. A request card "
-        "asks a swarm to do something; a message card just informs. Post a "
-        "card, claim a request addressed to you, and complete or fail what "
-        "you claimed. Your swarm's token stays on this node: you never hold "
-        "it."
+        "asks a swarm to do something; a message card just informs. A card "
+        "sits in one of seven states: proposed, planned, active, blocked, "
+        "review, done, rejected. Post a card, claim a request addressed to "
+        "you, move it along and complete or fail what you claimed. A reply "
+        "is a message card that also joins the thread of its chain's root "
+        "card. Your swarm's "
+        "token stays on this node: you never hold it."
     ),
     "functions": [
         {
@@ -67,7 +70,11 @@ API_MANIFEST: dict[str, Any] = {
             "effect": "queue",
             "description": (
                 "Post a card to a swarm, or to `open` for any swarm to claim. "
-                "The sender is your swarm, set by the board and not by you."
+                "It starts proposed. The sender is your swarm, and the agent "
+                "is your session's name; the board sets both. With reply_to "
+                "the post is a message card and also a message on the thread "
+                "of the card at the root of that chain; the answer carries "
+                "folded_into and the message."
             ),
             "params": [
                 _param("kind", "string", "`request` (can be claimed) or `message` (cannot).", True),
@@ -75,7 +82,8 @@ API_MANIFEST: dict[str, Any] = {
                 _param("title", "string", "One line.", True),
                 _param("body", "string", "The card's text."),
                 _param("priority", "string", "`urgent`, `normal` (default) or `low`."),
-                _param("reply_to", "string", "The id of the card this one answers."),
+                _param("reply_to", "string", "The id of the card this answers. The reply also joins its chain's thread."),
+                _param("project", "string", "A lowercase project slug to file the card under."),
             ],
             "timeout": 60,
         },
@@ -83,7 +91,11 @@ API_MANIFEST: dict[str, Any] = {
             "name": "claim",
             "tool": "operations_board_claim",
             "effect": "queue",
-            "description": "Claim a request card. Answers a conflict when another party already holds it.",
+            "description": (
+                "Claim a proposed request card: it moves to planned and its "
+                "owner is your swarm, node and session. Answers a conflict "
+                "when another party already holds it."
+            ),
             "params": [_param("card_id", "string", "The card's id.", True)],
             "timeout": 60,
         },
@@ -91,7 +103,7 @@ API_MANIFEST: dict[str, Any] = {
             "name": "complete",
             "tool": "operations_board_complete",
             "effect": "queue",
-            "description": "Finish a card you claimed, with its result.",
+            "description": "Finish a card you claimed: it moves to done, with its result.",
             "params": [
                 _param("card_id", "string", "The card's id.", True),
                 _param("result", "string", "What came of it."),
@@ -102,10 +114,39 @@ API_MANIFEST: dict[str, Any] = {
             "name": "fail",
             "tool": "operations_board_fail",
             "effect": "queue",
-            "description": "Give up on a card you claimed, with the reason.",
+            "description": "Give up on a card you claimed: it moves to rejected, with the reason as its result.",
             "params": [
                 _param("card_id", "string", "The card's id.", True),
                 _param("reason", "string", "Why it failed."),
+            ],
+            "timeout": 60,
+        },
+        {
+            "name": "status",
+            "tool": "operations_board_status",
+            "effect": "queue",
+            "description": (
+                "Move a card your swarm claimed among planned, active, "
+                "blocked, review and done. Only the claimant's swarm may."
+            ),
+            "params": [
+                _param("card_id", "string", "The card's id.", True),
+                _param("state", "string", "`planned`, `active`, `blocked`, `review` or `done`.", True),
+            ],
+            "timeout": 60,
+        },
+        {
+            "name": "reject",
+            "tool": "operations_board_reject",
+            "effect": "queue",
+            "description": (
+                "Reject a card that is not finished: it moves to rejected and "
+                "your reason joins its thread. The recipient swarm, the "
+                "claimant or the host admin may."
+            ),
+            "params": [
+                _param("card_id", "string", "The card's id.", True),
+                _param("reason", "string", "Why it is rejected.", True),
             ],
             "timeout": 60,
         },
@@ -126,7 +167,9 @@ API_MANIFEST: dict[str, Any] = {
                 _param("sender", "string", "Only cards from this swarm."),
                 _param("recipient", "string", "Only cards to this swarm, or `open`."),
                 _param("claimant", "string", "Only cards claimed by this swarm."),
-                _param("status", "string", "`posted`, `in_progress`, `done` or `failed`."),
+                _param("status", "string", "Old vocabulary: `posted`, `in_progress`, `done` or `failed`. A state name works too."),
+                _param("state", "string", "`proposed`, `planned`, `active`, `blocked`, `review`, `done` or `rejected`. An old status works too."),
+                _param("project", "string", "Only cards filed under this project."),
                 _param("kind", "string", "`request` or `message`."),
                 _param("reply_to", "string", "Only answers to this card id."),
                 _param("limit", "integer", "At most this many cards (default 100, at most 500)."),
@@ -140,7 +183,8 @@ API_MANIFEST: dict[str, Any] = {
             "effect": "queue",
             "description": (
                 "Add a message to a card's thread. The message is final once "
-                "sent. The sender is your swarm, set by the board."
+                "sent. The sender is your swarm and the agent your session's "
+                "name; the board sets both."
             ),
             "params": [
                 _param("card_id", "string", "The card's id.", True),
@@ -159,6 +203,49 @@ API_MANIFEST: dict[str, Any] = {
                 _param("limit", "integer", "At most this many messages (default 100, at most 500)."),
             ],
             "timeout": 60,
+        },
+        {
+            "name": "events",
+            "tool": "operations_board_events",
+            "effect": "read",
+            "description": (
+                "A card's event history you may see, oldest first, from the "
+                "board's 30-day replay store."
+            ),
+            "params": [
+                _param("card_id", "string", "The card's id.", True),
+                _param("since", "integer", "Only events after this event id."),
+                _param("limit", "integer", "At most this many events (default 100, at most 500)."),
+            ],
+            "timeout": 60,
+        },
+        {
+            "name": "migrate_columns",
+            "tool": "operations_board_migrate_columns",
+            "surfaces": ["cli", "http"],
+            "effect": "write",
+            "description": (
+                "Host admin only. Make the column folders and move every card "
+                "still under the board into the folder for its old status. A "
+                "dry run changes nothing and reports the plan."
+            ),
+            "params": [_param("dry_run", "boolean", "Default true. Pass false to apply.")],
+        },
+        {
+            "name": "migrate_threads",
+            "tool": "operations_board_migrate_threads",
+            "surfaces": ["cli", "http"],
+            "effect": "write",
+            "description": (
+                "Host admin only. Fold each chain of reply cards into the "
+                "thread of the card at its root. A dry run writes a proposal "
+                "file and reports its summary; apply reads that file. Folded "
+                "replies are archived, never deleted."
+            ),
+            "params": [
+                _param("dry_run", "boolean", "Default true. Pass false to apply the proposal."),
+                _param("proposal_path", "string", "The proposal file. Default: thread-proposal.json in the board's data dir."),
+            ],
         },
         {
             "name": "party_add",
@@ -209,6 +296,12 @@ def role() -> str:
 
 def port() -> int:
     return int(os.environ.get("AWM_BOARD_PORT") or DEFAULT_PORT)
+
+
+def thread_swarms() -> frozenset[str]:
+    """Swarms whose release reads replies on the thread, from ``AWM_BOARD_THREAD_SWARMS``."""
+    raw = os.environ.get("AWM_BOARD_THREAD_SWARMS") or ""
+    return frozenset(s.strip() for s in raw.split(",") if s.strip())
 
 
 def data_dir() -> Path:
@@ -273,16 +366,32 @@ def _card_reply(reply: dict) -> dict:
     return reply
 
 
+def _who(args: dict) -> dict:
+    """What this node says about the calling session: its name and the node.
+
+    The name comes from the pid the gateway stamped on the call. An `agent` or
+    `node` the model put in its arguments is never read.
+    """
+    from awm.board import agent
+    from awm.config import node_name
+
+    return {"agent": agent.session_name(args.get("_caller_pid")), "node": node_name()}
+
+
 async def post(args: dict, as_: str | None = None) -> dict:
+    who = _who(args)
     return _card_reply(await _relay(lambda c: c.post(
         kind=args["kind"], recipient=args["recipient"], title=args["title"],
         body=args.get("body") or "", priority=args.get("priority") or "normal",
-        reply_to=args.get("reply_to") or None,
+        reply_to=args.get("reply_to") or None, project=args.get("project") or None,
+        agent=who["agent"],
     ), as_))
 
 
 async def claim(args: dict, as_: str | None = None) -> dict:
-    return _card_reply(await _relay(lambda c: c.claim(args["card_id"]), as_))
+    who = _who(args)
+    return _card_reply(await _relay(
+        lambda c: c.claim(args["card_id"], agent=who["agent"], node=who["node"]), as_))
 
 
 async def complete(args: dict, as_: str | None = None) -> dict:
@@ -291,6 +400,16 @@ async def complete(args: dict, as_: str | None = None) -> dict:
 
 async def fail(args: dict, as_: str | None = None) -> dict:
     return _card_reply(await _relay(lambda c: c.fail(args["card_id"], args.get("reason") or ""), as_))
+
+
+async def status(args: dict, as_: str | None = None) -> dict:
+    return _card_reply(await _relay(lambda c: c.status(args["card_id"], args["state"]), as_))
+
+
+async def reject(args: dict, as_: str | None = None) -> dict:
+    who = _who(args)
+    return _card_reply(await _relay(
+        lambda c: c.reject(args["card_id"], args["reason"], agent=who["agent"]), as_))
 
 
 async def get(args: dict, as_: str | None = None) -> dict:
@@ -304,7 +423,8 @@ async def list_cards(args: dict, as_: str | None = None) -> dict:
 
 
 async def message_post(args: dict, as_: str | None = None) -> dict:
-    reply = await _relay(lambda c: c.message(args["card_id"], args["body"]), as_)
+    who = _who(args)
+    reply = await _relay(lambda c: c.message(args["card_id"], args["body"], agent=who["agent"]), as_)
     return {"ok": True, "message": reply["result"]} if reply.get("ok") else reply
 
 
@@ -312,6 +432,12 @@ async def messages(args: dict, as_: str | None = None) -> dict:
     paging = {k: args[k] for k in ("after", "limit") if args.get(k) not in (None, "")}
     reply = await _relay(lambda c: c.messages(args["card_id"], **paging), as_)
     return {"ok": True, "messages": reply["result"]} if reply.get("ok") else reply
+
+
+async def events(args: dict, as_: str | None = None) -> dict:
+    paging = {k: args[k] for k in ("since", "limit") if args.get(k) not in (None, "")}
+    reply = await _relay(lambda c: c.events(args["card_id"], **paging), as_)
+    return {"ok": True, "events": reply["result"]} if reply.get("ok") else reply
 
 
 # -- party admin: host only ---------------------------------------------------
@@ -364,15 +490,49 @@ async def party_list(args: dict, as_: str | None = None) -> dict:
     return {"ok": True, "parties": [_public(r) for r in rows]}
 
 
+def _flag(args: dict, name: str, default: bool) -> bool:
+    value = args.get(name)
+    if value in (None, ""):
+        return default
+    return value not in (False, "false", "False", "0", "no")
+
+
+async def _migration(verb: str, as_: str | None, run: Any) -> dict:
+    refused = _admin_refusal(verb, as_)
+    if refused:
+        return refused
+    try:
+        report = await asyncio.to_thread(run, HOST.board)
+    except Exception as exc:  # noqa: BLE001 — a vault or proposal fault is reported as text
+        return {"ok": False, "error": str(exc)}
+    return {"ok": True, **report}
+
+
+async def migrate_columns(args: dict, as_: str | None = None) -> dict:
+    dry_run = _flag(args, "dry_run", True)
+    return await _migration("migrate_columns", as_, lambda b: b.migrate_columns(dry_run))
+
+
+async def migrate_threads(args: dict, as_: str | None = None) -> dict:
+    dry_run = _flag(args, "dry_run", True)
+    path = args.get("proposal_path") or data_dir() / "thread-proposal.json"
+    return await _migration("migrate_threads", as_, lambda b: b.migrate_threads(dry_run, path))
+
+
 HANDLERS: dict[str, Any] = {
     "post": post,
     "claim": claim,
     "complete": complete,
     "fail": fail,
+    "status": status,
+    "reject": reject,
     "get": get,
     "list": list_cards,
     "message_post": message_post,
     "messages": messages,
+    "events": events,
+    "migrate_columns": migrate_columns,
+    "migrate_threads": migrate_threads,
     "party_add": party_add,
     "party_revoke": party_revoke,
     "party_list": party_list,
@@ -403,7 +563,7 @@ class HostState:
         if gui_party is None:
             log.warning("board: AWM_BOARD_TOKEN names no live party; GUI chat notes stay unsealed")
         self.board = Board(Vault(), self.events, lock_path=directory / "claim.lock",
-                           gui_party=gui_party)
+                           gui_party=gui_party, thread_swarms=thread_swarms())
         self.app = create_app(self.board, self.parties, self.events, wakeup=self.wakeup)
 
 

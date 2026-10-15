@@ -16,15 +16,18 @@ from typing import Any, Iterator
 from awm.reporting.store import Db
 
 PROPOSED, PLANNED, ACTIVE, BLOCKED, REVIEW = "proposed", "planned", "active", "blocked", "review"
-DONE, CANCELLED = "done", "cancelled"
+DONE, REJECTED, CANCELLED = "done", "rejected", "cancelled"
 OPEN = (PROPOSED, PLANNED, ACTIVE, BLOCKED, REVIEW)
-CLOSED = (DONE, CANCELLED)
+CLOSED = (DONE, REJECTED, CANCELLED)
+#: A cancelled task has no column: its card was deleted from the board.
 COLUMNS = {PROPOSED: "Proposed", PLANNED: "Planned", ACTIVE: "Active",
-           BLOCKED: "Blocked", REVIEW: "Pending review"}
+           BLOCKED: "Blocked", REVIEW: "Pending review", DONE: "Done", REJECTED: "Rejected"}
+ARCHIVE_AFTER_S = 14 * 86400.0
 
 _FIELDS = frozenset({
     "session_id", "title", "project", "scope", "model", "effort", "state", "note_id", "shown", "dirty",
-    "plan", "reason", "urgent", "blocked_at", "reminded", "ended", "closed", "owned"})
+    "plan", "reason", "urgent", "blocked_at", "reminded", "ended", "closed", "owned",
+    "card_id", "fed_state"})
 
 
 class Ledger(Db):
@@ -53,6 +56,25 @@ class Ledger(Db):
 
     def find(self, node: str, key: str) -> dict | None:
         return self._one("SELECT * FROM tasks WHERE node=? AND key=?", (node, key))
+
+    def open_for_card(self, card_id: str) -> dict | None:
+        """The open task holding the federation card, if any."""
+        marks = ",".join("?" for _ in OPEN)
+        return self._one(f"SELECT * FROM tasks WHERE card_id=? AND state IN ({marks})"
+                         " ORDER BY id DESC", (card_id, *OPEN))
+
+    def archivable(self, node: str, now: float | None = None) -> list[dict]:
+        """Finished tasks whose card has sat in Done or Rejected for the archive period.
+
+        A claimed note of Tony's own is not archived: only a card the service
+        made or a federation card is.
+        """
+        cutoff = (time.time() if now is None else now) - ARCHIVE_AFTER_S
+        return self._all(
+            "SELECT * FROM tasks WHERE node=? AND state IN (?,?) AND closed < ?"
+            " AND note_id IS NOT NULL AND COALESCE(shown, '') != 'archived'"
+            " AND (owned = 1 OR card_id IS NOT NULL) ORDER BY closed",
+            (node, DONE, REJECTED, cutoff))
 
     def ensure(self, node: str, key: str, kind: str, *, state: str = PLANNED,
                pid: int | None = None, **fields: Any) -> tuple[dict, bool]:

@@ -106,43 +106,33 @@ model supplies. A pending record goes to disk before the launch, so a launch
 that outlives its timeout still has a declared mode. The reconcile loop adopts
 the late job, or drops the record after five minutes.
 
-#### A caller in a delegating mode starts a delegate
+#### Every caller gets the same session
 
-The representative runs in a delegating mode (`modes.DELEGATING_MODES`). A card
-must not talk it into starting a session stronger than itself, so cx ignores
-what such a caller asks for. The secretary is not delegating, so the sessions it
-starts are ordinary top-level workers with skip-permissions and the user's
-settings. A delegating caller may pass `project`, `scope`, `prompt`,
-`name`, `effort` and a model from an allowlist. It refuses `permission`, `mode`,
-`remote_control` and the tool and confinement arguments. It starts a `delegate`
-with a fixed policy:
+A session that `start_other` starts behaves like one Tony starts with `cx`:
+skip-permissions, his settings, and Remote Control off. cx applies no
+caller-dependent policy, so an agent starts exactly what a person would. A
+named `permission` starts the session in that mode, and cx adds
+`--allow-dangerously-skip-permissions` so bypass stays in the session's mode
+cycle. A plan-mode start therefore returns to bypass once its plan is approved.
 
-- Permission `dontAsk`, so a session nobody watches denies a prompt at once and
-  cannot stall.
-- A fixed built-in tool list with no Bash, and `SendMessage` and `ListAgents`
-  disallowed, so a card cannot reach another session through it.
-- `--restricted`, which confines the file tools to the worktree and ignores user
-  settings. A restricted session also gets `--settings` with the reporting hook
-  fragment, from `AWM_CX_RESTRICTED_SETTINGS` (default
-  `~/.claude/hooks/awm-reporting-settings.json`), so its hooks fire. cx omits
-  the flag when the file is absent on the node.
-- A strict MCP config that holds only the awm server, copied from the workspace
-  `.mcp.json`.
+`remote_control` turns Remote Control on, labelled with the session's name. The
+result's `link` is the session's `https://claude.ai/code/session_…` address once
+the bridge connects, and `list_other` reports `link` for every session.
 
-The scope must already exist for such a caller. The names `representative` and
-`secretary`, including as the role prefix of `<role> - <node>`, and the modes `representative`, `secretary` and `delegate` are
-reserved. A session that asks for one is refused. Only a caller with no session
-pid (the front door service or an operator) may use them. A caller whose mode cannot be read starts
-nothing.
+The arguments `allowed_tools`, `tools`, `restricted` and `strict_mcp` map to
+`claude --allowedTools`, `--tools`, `--restricted` and `--strict-mcp-config`.
 
-The arguments `allowed_tools`, `tools`, `restricted` and `strict_mcp` exist for
-that front door and for operators. They map to `claude --allowedTools`,
-`--tools`, `--restricted` and `--strict-mcp-config`.
+**CAUTION** `--restricted` refuses bypass, so a restricted start runs in its
+named mode with no way to reach bypass. A restricted session also ignores user
+settings, so cx passes it `--settings` with the reporting hook fragment from
+`AWM_CX_RESTRICTED_SETTINGS` (default
+`~/.claude/hooks/awm-reporting-settings.json`). cx omits the flag when the file
+is absent on the node.
 
 #### Where a mode lives
 
-The gateway gates a calling session by its mode, and cx gates what that session
-may start or stop by it. Both read the answer from `awm.claudedaemon.sessionmode`,
+The gateway gates a calling session by its mode. It reads the answer from
+`awm.claudedaemon.sessionmode`,
 which reads the lineage records and Claude Code's own session records from disk.
 The gateway therefore needs no call into this process. The answer is a mode
 string, `None` for a session that cx did not start, or `unknown`. A caller reads

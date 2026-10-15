@@ -1,31 +1,43 @@
 """Cards: the board's rules, over notes in the Trilium vault.
 
-The vault is the store. A card is a note under the board note, and its status is
-the board-view column the note sits in, so a drag in the Trilium GUI is a real
-status change. This process is the only API writer; the watcher (`Board.sweep`)
-notices edits made outside it and turns them into `card.moved` events. The event
-log only feeds stream replay.
+The vault is the store. A card is a note in a column folder under the board
+note, and its state is the folder it sits in, so a drag in the Trilium GUI is a
+real state change. The folders mirror the Swarm board: Proposed, Planned,
+Active, Blocked, Pending review, Done, Rejected. This process is the only API
+writer; the watcher (`Board.sweep`) notices edits made outside it and turns
+them into `card.moved` events. The event log only feeds stream replay.
+
+Every card also carries `status`, the previous release's four-value vocabulary
+derived from its state, so a peer that has not upgraded keeps reading the board.
 
 Claim safety rests on one service-wide lock: a threading lock for threads, and
 an flock on `lock_path` so a second board process refuses to start. Both are
 held per path for the life of the process and shared by every `Board` built on
 that path, so a supervised respawn inside one process reuses them. A claim
-re-reads the card note under that lock and writes only if the card is posted.
+re-reads the card note under that lock and writes only if the card is Proposed.
 The GUI does not take the lock, so a drag landing between that read and the
 write is overwritten (last write wins), and a drag landing before the read makes
 the claim a Conflict. `get` and `list` only read, and take no lock.
 
-A claim is decided by status alone, because Trilium writes a note's labels one
-call at a time and a failure partway leaves a Posted card with a stale
-claimant. A Posted card is claimable whatever its claimant says, and the claim
-overwrites it. A claim by the swarm that already holds the card returns the card
-unchanged, so a client that timed out can retry.
+A claim is decided by state alone, because Trilium writes a note's labels one
+call at a time and the move into a folder is a separate call. Every write puts
+the labels first and the move last, so a failure partway leaves a Proposed card
+with a stale claimant. A Proposed card is claimable whatever its claimant says,
+and the claim overwrites it. A claim by the swarm that already holds the card
+returns the card unchanged, so a client that timed out can retry.
 
 Refusals use three exceptions. The door answers 404 for `NotFound` and
 `Forbidden` and 409 for `Conflict`. `Conflict` means only that another swarm
 holds the card, or that it is already finished. A message card is never
 claimable: claiming one raises `Forbidden`, after the visibility and recipient
 checks.
+
+A reply is a message card that sets `reply_to`, as on the previous release,
+and also a message on the thread of the card at the root of its chain. The
+card keeps the old wire working: a peer on that release finds replies by
+listing cards, and its front door takes only Proposed message cards. A reply
+to a swarm in `thread_swarms` reads its replies on the thread, so its card is
+filed straight into Done.
 """
 
 from __future__ import annotations
@@ -41,7 +53,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .events import Events
+from .names import check_project, clean_agent, clean_node, owner_label
 from .parties import OPEN, Conflict, Forbidden, NotFound, can_see
+from .states import (HELD, SETTABLE, STATES, STATUS_OF, TERMINAL, from_label,
+                     from_recorded, states_for)
 from .vault import MESSAGE_SEQ, Vault, VaultError
 
 __all__ = ["Board", "BoardLocked", "Conflict", "Forbidden", "NotFound"]
@@ -50,13 +65,6 @@ log = logging.getLogger("awm.board")
 
 KINDS = ("request", "message")
 PRIORITIES = ("urgent", "normal", "low")
-STATUSES = ("posted", "in_progress", "done", "failed")
-
-#: Status to the column name the board's `label:status` definition offers.
-#: These four are the only `#status` values the board ever writes.
-COLUMNS = {"posted": "Posted", "in_progress": "In progress",
-           "done": "Done", "failed": "Failed"}
-_STATUS_OF = {column.lower(): status for status, column in COLUMNS.items()}
 
 RESULT_MARKER = "\n\n## Result\n\n"
 _MAX_TEXT = 200_000
@@ -67,12 +75,16 @@ MAX_LIST_LIMIT = 500
 #: The card label holding its newest message's sequence, so a client can tell
 #: it missed messages without listing them.
 LAST_MESSAGE = "cardLastMsg"
+#: On a reply card, the root card whose thread already holds the reply.
+THREADED = "cardThreaded"
 #: Width of the zero-padded `msgSeq` label, so Trilium's text sort is sequence order.
 SEQ_WIDTH = 8
 #: A note a person is still typing is not sealed until it has sat this long unchanged.
 SETTLE_S = 5.0
 #: Message notes each sweep checks against the record. The check cycles through all of them.
 VERIFY_BATCH = 20
+#: A Done or Rejected card is archived this long after it entered that state.
+ARCHIVE_AFTER_S = 14 * 86400.0
 
 _SLUG = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 
@@ -150,10 +162,14 @@ def _public(message: dict) -> dict:
 
 def _mirror_fields(message: dict) -> tuple[str, dict[str, str]]:
     """The title and labels a message's note carries, all derived from its row."""
-    sender = message["sender"]
-    return (f"{message['seq']} · {sender['swarm']}",
-            {MESSAGE_SEQ: str(message["seq"]).zfill(SEQ_WIDTH), "msgAt": message["at"],
-             "msgFrom": f"{sender['principal']}@{sender['swarm']}", "readOnly": ""})
+    sender, agent = message["sender"], message.get("agent")
+    title = f"{message['seq']} · {sender['swarm']}/{sender['principal']}"
+    labels = {MESSAGE_SEQ: str(message["seq"]).zfill(SEQ_WIDTH), "msgAt": message["at"],
+              "msgFrom": f"{sender['principal']}@{sender['swarm']}", "readOnly": ""}
+    if agent:
+        title += f" · {agent}"
+        labels["msgAgent"] = agent
+    return title, labels
 
 
 def _age_s(utc_modified: str) -> float:
@@ -165,26 +181,40 @@ def _age_s(utc_modified: str) -> float:
     return (datetime.now(timezone.utc) - then.replace(tzinfo=timezone.utc)).total_seconds()
 
 
-def _known_status(column: str) -> str | None:
-    """The status a column name stands for, matched case-insensitively, or None for any other column."""
-    return _STATUS_OF.get((column or "").strip().lower())
+def _iso_age_s(stamp: str | None) -> float:
+    """Seconds since one of the board's own ISO stamps. An unreadable one counts as new."""
+    try:
+        then = datetime.fromisoformat(stamp or "")
+    except ValueError:
+        return 0.0
+    if then.tzinfo is None:
+        then = then.replace(tzinfo=timezone.utc)
+    return (datetime.now(timezone.utc) - then).total_seconds()
 
 
 class Board:
     """The card rules. At most one process holds the lock file."""
 
     def __init__(self, vault: Vault, events: Events, *, lock_path: str | Path,
-                 gui_party: dict | None = None):
+                 gui_party: dict | None = None, thread_swarms: frozenset[str] = frozenset()):
         self._lock_key, hold = _acquire(Path(lock_path))
         self._guard = hold.guard
         self.vault = vault
         self.events = events
         #: The author of a message a person types in the Trilium GUI. Only the
-        #: host's operator can open the vault, and it names no other user.
+        #: host's operator can open the vault, and it names no other user. It
+        #: is also the board's admin: its swarm may reject any card it sees.
         #: None leaves such notes unsealed.
         self.gui_party = gui_party
-        #: card id to the {status, recipient, claimant} last recorded for it
-        self._seen: dict[str, dict] = events.seen_all()
+        #: Swarms whose release reads replies on the thread. A reply to one is
+        #: filed in Done instead of Proposed.
+        self.thread_swarms = frozenset(thread_swarms)
+        self.archive_after_s = ARCHIVE_AFTER_S
+        #: card id to the {status, recipient, claimant} last recorded for it.
+        #: `status` holds a state; rows an older release wrote hold a status.
+        self._seen: dict[str, dict] = {
+            card_id: {**seen, "status": from_recorded(seen["status"])}
+            for card_id, seen in events.seen_all().items()}
         self._verify_cursor = 0
 
     def close(self) -> None:
@@ -212,9 +242,10 @@ class Board:
                 reply_to = self.vault.card_id_for_note(target)
             except VaultError:
                 reply_to = None
-        # A column the board does not own reports the status last known for the card.
-        status = (_known_status(labels.get("status") or "")
-                  or self._seen.get(card_id, {}).get("status") or "posted")
+        # A card still outside the folders reports the state its old column names,
+        # or the one last known for it when the column is not one the board wrote.
+        state = (rec.get("state") or from_label(labels.get("status"))
+                 or self._seen.get(card_id, {}).get("status") or "proposed")
         return {
             "id": card_id,
             "kind": labels.get("cardKind") or "request",
@@ -224,18 +255,23 @@ class Board:
             "recipient": labels.get("cardTo") or "",
             "claimant": labels.get("cardClaimant") or None,
             "priority": labels.get("cardPriority") or "normal",
-            "status": status,
+            "state": state,
+            "status": STATUS_OF[state],
             "title": rec["title"],
             "body": body,
             "reply_to": reply_to,
             "result": result,
+            "agent": labels.get("cardAgent") or None,
+            "project": labels.get("project") or None,
+            "owner": labels.get("owner") or None,
+            "note_id": rec.get("note_id"),
             "created_at": labels.get("cardCreated") or "",
             "updated_at": labels.get("cardUpdated") or "",
             "last_message": _seq(labels.get(LAST_MESSAGE)),
         }
 
     def _remember(self, card: dict) -> None:
-        state = {"status": card["status"], "recipient": card["recipient"],
+        state = {"status": card["state"], "recipient": card["recipient"],
                  "claimant": card["claimant"] or ""}
         self._seen[card["id"]] = state
         self.events.seen_set(card["id"], **state)
@@ -244,6 +280,9 @@ class Board:
         if not isinstance(party, dict) or not party.get("swarm") or party.get("revoked"):
             raise Forbidden("no live party")
         return party
+
+    def _is_admin(self, party: dict) -> bool:
+        return bool(self.gui_party) and party["swarm"] == self.gui_party["swarm"]
 
     def _fetch(self, party: dict, card_id: str) -> tuple[dict, dict]:
         """The card's fresh record and card dict, or NotFound if the party may not see it."""
@@ -255,10 +294,28 @@ class Board:
             raise NotFound(card_id)
         return rec, card
 
+    def _transition(self, rec: dict, card: dict, state: str, event: str, *,
+                    labels: dict[str, str] | None = None, content: str | None = None,
+                    **fields) -> None:
+        """Move a card to ``state`` and log ``event``.
+
+        The labels are written first and the move last, so a failure partway
+        leaves the card in the state it was in.
+        """
+        now = _now()
+        self.vault.update(rec["note_id"], content=content, labels={
+            **(labels or {}), "cardUpdated": now, "cardStateAt": now})
+        self.vault.place(rec, state)
+        card.update(state=state, status=STATUS_OF[state], updated_at=now, **fields)
+        self.events.append(event, card)
+        self._remember(card)
+
     # -- verbs -----------------------------------------------------------------
 
     def post(self, party: dict, *, kind: str, recipient: str, title: str, body: str,
-             priority: str = "normal", reply_to: str | None = None) -> dict:
+             priority: str = "normal", reply_to: str | None = None,
+             project: str | None = None, agent: str | None = None) -> dict:
+        """Post a card to Proposed. A reply also posts a message on its root card's thread."""
         self._live(party)
         if kind not in KINDS:
             raise ValueError(f"kind must be one of {KINDS}: {kind!r}")
@@ -279,11 +336,16 @@ class Board:
         if "## Result" in body:
             raise ValueError("body may not hold a '## Result' heading: the board uses it "
                              "to tell the body from the result")
+        project, agent = check_project(project), clean_agent(agent)
         with self._guard:
-            relations = {}
+            relations: dict[str, str] = {}
+            root_rec = root = None
             if reply_to:
-                parent, _ = self._fetch(party, reply_to)
-                relations["replyTo"] = parent["note_id"]
+                parent_rec, parent = self._fetch(party, reply_to)
+                relations["replyTo"] = parent_rec["note_id"]
+                root_rec, root = self._root_of(parent_rec, parent)
+                if not can_see(party, root):
+                    root_rec = root = None
             now = _now()
             labels = {
                 "cardId": uuid.uuid4().hex,
@@ -296,49 +358,70 @@ class Board:
                 "cardPriority": priority,
                 "cardCreated": now,
                 "cardUpdated": now,
-                "status": COLUMNS["posted"],
+                "cardStateAt": now,
             }
-            rec = self.vault.create(title, body, labels, relations)
+            if agent:
+                labels["cardAgent"] = agent
+            if project:
+                labels["project"] = project
+            if root is not None:
+                labels[THREADED] = root["id"]
+            state = "done" if root is not None and recipient in self.thread_swarms else "proposed"
+            rec = self.vault.create(title, body, labels, relations, state)
             card = self._card(rec)
             self.events.append("card.posted", card)
             self._remember(card)
-            return card
+            if root is None:
+                return card
+            sender = {"swarm": party["swarm"], "principal": party["principal"],
+                      "party": party["party_id"]}
+            message = self._add_message(root_rec, root, sender, "api",
+                                        body.strip() and body or title, agent=agent)
+            return {**card, "folded_into": root["id"], "message": message}
 
-    def claim(self, party: dict, card_id: str) -> dict:
+    def _root_of(self, rec: dict, card: dict) -> tuple[dict, dict]:
+        """The record and card at the root of a `reply_to` chain. A broken link ends the walk."""
+        seen = {card["id"]}
+        while card["reply_to"] and card["reply_to"] not in seen:
+            parent = self.vault.read(card["reply_to"])
+            if parent is None:
+                break
+            rec, card = parent, self._card(parent)
+            seen.add(card["id"])
+        return rec, card
+
+    def claim(self, party: dict, card_id: str, *, agent: str | None = None,
+              node: str | None = None) -> dict:
+        """Claim a Proposed request: it moves to Planned and its owner is the claiming agent."""
         self._live(party)
+        owner = owner_label(party["swarm"], clean_node(node), clean_agent(agent))
         with self._guard:
             rec, card = self._fetch(party, card_id)
             if card["recipient"] not in (party["swarm"], OPEN):
                 raise Forbidden("the card is not addressed to this swarm")
             if card["kind"] == "message":
                 raise Forbidden("a message cannot be claimed")
-            if card["status"] == "in_progress" and card["claimant"] == party["swarm"]:
+            if card["state"] in HELD and card["claimant"] == party["swarm"]:
                 # A retry after a lost reply. If the first attempt wrote the card
                 # but died before logging it, the log still owes the claim event.
-                if self._seen.get(card["id"], {}).get("status") != "in_progress":
+                if self._seen.get(card["id"], {}).get("status") not in HELD:
                     self.events.append("card.claimed", card)
                     self._remember(card)
                 return card
-            if card["status"] != "posted":
+            if card["state"] != "proposed":
                 raise Conflict("the card is already held")
-            now = _now()
-            # Written in this order, status last, so a failure partway leaves a
-            # Posted card, which is still claimable.
-            self.vault.update(rec["note_id"], labels={
-                "cardClaimant": party["swarm"], "cardUpdated": now,
-                "status": COLUMNS["in_progress"]})
-            card.update(claimant=party["swarm"], status="in_progress", updated_at=now)
-            self.events.append("card.claimed", card)
-            self._remember(card)
+            self._transition(rec, card, "planned", "card.claimed",
+                             labels={"cardClaimant": party["swarm"], "owner": owner},
+                             claimant=party["swarm"], owner=owner)
             return card
 
     def complete(self, party: dict, card_id: str, result) -> dict:
         return self._finish(party, card_id, result, "done", "card.completed")
 
     def fail(self, party: dict, card_id: str, reason) -> dict:
-        return self._finish(party, card_id, reason, "failed", "card.failed")
+        return self._finish(party, card_id, reason, "rejected", "card.failed")
 
-    def _finish(self, party: dict, card_id: str, result, status: str, event: str) -> dict:
+    def _finish(self, party: dict, card_id: str, result, state: str, event: str) -> dict:
         self._live(party)
         text = result if isinstance(result, str) else json.dumps(result)
         if len(text) > _MAX_TEXT:
@@ -347,34 +430,75 @@ class Board:
             rec, card = self._fetch(party, card_id)
             if card["claimant"] != party["swarm"]:
                 raise Forbidden("only the claimant finishes a card")
-            if card["status"] != "in_progress":
+            if card["state"] not in HELD:
                 raise Forbidden("the card is not in progress")
-            now = _now()
-            content = (card["body"] or "") + RESULT_MARKER + text
-            self.vault.update(rec["note_id"], content=content, labels={
-                "cardUpdated": now, "status": COLUMNS[status]})
-            card.update(status=status, result=text, updated_at=now)
-            self.events.append(event, card)
-            self._remember(card)
+            self._transition(rec, card, state, event,
+                             content=(card["body"] or "") + RESULT_MARKER + text, result=text)
             return card
+
+    def set_status(self, party: dict, card_id: str, state: str) -> dict:
+        """Move a card its claimant holds among Planned, Active, Blocked, Pending review and Done."""
+        self._live(party)
+        if state not in SETTABLE:
+            raise ValueError(f"state must be one of {SETTABLE}: {state!r}")
+        with self._guard:
+            rec, card = self._fetch(party, card_id)
+            if card["claimant"] != party["swarm"]:
+                raise Forbidden("only the claimant moves a card")
+            if card["state"] not in HELD:
+                raise Forbidden("the card is not held")
+            if card["state"] != state:
+                self._transition(rec, card, state, "card.moved")
+            return card
+
+    def reject(self, party: dict, card_id: str, reason, *, agent: str | None = None) -> dict:
+        """Move an unfinished card to Rejected, with the reason as a message from the party.
+
+        The recipient swarm, the claimant and the board's admin may reject.
+        """
+        self._live(party)
+        if not isinstance(reason, str) or not reason.strip():
+            raise ValueError("reason must be non-empty text")
+        if len(reason) > _MAX_TEXT:
+            raise ValueError("reason must be text of at most %d characters" % _MAX_TEXT)
+        agent = clean_agent(agent)
+        with self._guard:
+            rec, card = self._fetch(party, card_id)
+            if party["swarm"] not in (card["recipient"], card["claimant"]) \
+                    and not self._is_admin(party):
+                raise Forbidden("only the recipient, the claimant or the admin rejects a card")
+            if card["state"] in TERMINAL:
+                raise Conflict("the card is already finished")
+            self._transition(rec, card, "rejected", "card.moved")
+            sender = {"swarm": party["swarm"], "principal": party["principal"],
+                      "party": party["party_id"]}
+            message = self._add_message(rec, card, sender, "api", reason, agent=agent)
+            return {**card, "message": message}
 
     def get(self, party: dict, card_id: str) -> dict:
         self._live(party)
         _, card = self._fetch(party, card_id)
         return card
 
-    _FILTERS = ("sender", "recipient", "claimant", "status", "kind", "reply_to")
+    _FILTERS = ("sender", "recipient", "claimant", "status", "state", "kind", "reply_to",
+                "project")
 
     def list(self, party: dict, *, limit: int | None = None, offset: int | None = None,
              **filters) -> list[dict]:
-        """Cards the party may see, oldest first, filtered, then paged by ``limit`` and ``offset``."""
+        """Cards the party may see, oldest first, filtered, then paged by ``limit`` and ``offset``.
+
+        ``status`` takes the previous release's values and ``state`` the new
+        ones, and each also takes the other's spelling.
+        """
         self._live(party)
         unknown = set(filters) - set(self._FILTERS)
         if unknown:
             raise ValueError(f"unknown filter {sorted(unknown)}")
         wanted = {k: v for k, v in filters.items() if v not in (None, "")}
-        if "status" in wanted and wanted["status"] not in STATUSES:
-            raise ValueError(f"status must be one of {STATUSES}")
+        states = set(STATES)
+        for key in ("status", "state"):
+            if key in wanted:
+                states &= set(states_for(wanted[key]))
         limit = DEFAULT_LIST_LIMIT if limit is None else int(limit)
         offset = 0 if offset is None else int(offset)
         if not 1 <= limit <= MAX_LIST_LIMIT or offset < 0:
@@ -382,10 +506,10 @@ class Board:
         matches = []
         for rec in self.vault.list():
             card = self._card({**rec, "content": None})
-            if not can_see(party, card):
+            if not can_see(party, card) or card["state"] not in states:
                 continue
-            if any(card[k] != wanted[k] for k in ("recipient", "claimant", "status",
-                                                  "kind", "reply_to") if k in wanted):
+            if any(card[k] != wanted[k] for k in ("recipient", "claimant", "kind",
+                                                  "reply_to", "project") if k in wanted):
                 continue
             if "sender" in wanted and card["sender"]["swarm"] != wanted["sender"]:
                 continue
@@ -397,9 +521,20 @@ class Board:
             page.append(self._card(full) if full is not None else card)
         return page
 
+    def card_events(self, party: dict, card_id: str, *, since: int | None = None,
+                    limit: int | None = None) -> list[dict]:
+        """The card's events after id ``since`` that the party may see, oldest first, from the replay store."""
+        self._live(party)
+        limit = DEFAULT_LIST_LIMIT if limit is None else int(limit)
+        since = 0 if since is None else int(since)
+        if not 1 <= limit <= MAX_LIST_LIMIT or since < 0:
+            raise ValueError(f"limit must be 1 to {MAX_LIST_LIMIT} and since 0 or more")
+        self._fetch(party, card_id)
+        return self.events.for_card(card_id, party, since, limit)
+
     # -- a card's thread -------------------------------------------------------
 
-    def message(self, party: dict, card_id: str, body: str) -> dict:
+    def message(self, party: dict, card_id: str, body: str, *, agent: str | None = None) -> dict:
         """Add a message to the card's thread. Anyone who can see the card may post."""
         self._live(party)
         if not isinstance(body, str) or not body.strip():
@@ -410,7 +545,7 @@ class Board:
             rec, card = self._fetch(party, card_id)
             sender = {"swarm": party["swarm"], "principal": party["principal"],
                       "party": party["party_id"]}
-            return self._add_message(rec, card, sender, "api", body)
+            return self._add_message(rec, card, sender, "api", body, agent=clean_agent(agent))
 
     def messages(self, party: dict, card_id: str, *, after: int | None = None,
                  limit: int | None = None) -> list[dict]:
@@ -424,7 +559,7 @@ class Board:
         return [_public(m) for m in self.events.messages(card_id, after, limit)]
 
     def _add_message(self, rec: dict, card: dict, sender: dict, origin: str, body: str,
-                     note_id: str | None = None) -> dict:
+                     note_id: str | None = None, agent: str | None = None) -> dict:
         """Record a message, mirror it into the vault, and log `card.message`.
 
         The row is written first and is the message. A mirror or label write
@@ -432,7 +567,8 @@ class Board:
         A ``note_id`` is a note a person already made, which is stamped in place.
         """
         message = self.events.message_add(card["id"], at=_now(), sender=sender,
-                                          origin=origin, body=body, note_id=note_id)
+                                          origin=origin, body=body, note_id=note_id,
+                                          agent=agent)
         try:
             self._mirror(rec["note_id"], message)
             self.vault.update(rec["note_id"], labels={LAST_MESSAGE: str(message["seq"])})
@@ -458,28 +594,29 @@ class Board:
     # -- the watcher -----------------------------------------------------------
 
     def sweep(self) -> list[dict]:
-        """Notice cards whose status, recipient or claimant changed outside this process.
+        """Notice cards whose state, recipient or claimant changed outside this process.
 
         Compares each card note with the state last recorded for it and emits
         `card.moved` with the new card. A card seen for the first time is
-        recorded without an event, and so is a card sitting in a column the board
-        does not own: its last known status stands. A drag back to Posted
-        releases the claim, because a card nobody holds should be claimable
-        again. Returns the events it emitted.
+        recorded without an event. A drag back to Proposed releases the claim,
+        because a card nobody holds should be claimable again. A Done or
+        Rejected card is archived once it has sat there for `archive_after_s`.
+        Returns the events it emitted.
         """
         moved: list[dict] = []
         with self._guard:
-            self.vault.board_id(refresh=True)
+            self.vault.refresh()
             live = set()
             for rec in self.vault.list():
                 card_id = rec["labels"]["cardId"]
                 live.add(card_id)
                 card = self._card({**rec, "content": None})
+                self._archive_if_old(rec, card)
                 previous = self._seen.get(card_id)
                 if previous is None:
                     self._remember(card)
                     continue
-                now = {"status": card["status"], "recipient": card["recipient"],
+                now = {"status": card["state"], "recipient": card["recipient"],
                        "claimant": card["claimant"] or ""}
                 if previous.get("recipient") is None:    # recorded by an older schema
                     self._remember(card)
@@ -501,6 +638,17 @@ class Board:
             except VaultError as e:
                 log.warning("message sweep stopped early: %s", e)
         return moved
+
+    def _archive_if_old(self, rec: dict, card: dict) -> None:
+        if card["state"] not in TERMINAL or "archived" in rec["labels"]:
+            return
+        since = rec["labels"].get("cardStateAt") or rec["labels"].get("cardUpdated")
+        if _iso_age_s(since) < self.archive_after_s:
+            return
+        try:
+            self.vault.update(rec["note_id"], labels={"archived": ""})
+        except VaultError as e:
+            log.warning("could not archive card %s: %s", card["id"], e)
 
     def _seal_gui_messages(self) -> None:
         """Turn each settled note a person added under a card's chat into the card's next message."""
@@ -546,16 +694,18 @@ class Board:
             if rec is not None:
                 self._mirror(rec["note_id"], message)
 
-    def _record_move(self, card_id: str, previous_status: str) -> dict:
+    def _record_move(self, card_id: str, previous_state: str) -> dict:
         rec = self.vault.read(card_id)
         if rec is None:
             raise VaultError(f"card {card_id} vanished mid-sweep")
         card = self._card(rec)
         now = _now()
         labels = {"cardUpdated": now}
-        if card["status"] == "posted" and previous_status != "posted" and card["claimant"]:
-            labels["cardClaimant"] = ""
-            card["claimant"] = None
+        if card["state"] != previous_state:
+            labels["cardStateAt"] = now
+        if card["state"] == "proposed" and previous_state != "proposed" and card["claimant"]:
+            labels.update(cardClaimant="", owner="")
+            card.update(claimant=None, owner=None)
         self.vault.update(rec["note_id"], labels=labels)
         card["updated_at"] = now
         event_id = self.events.append("card.moved", card)
@@ -575,3 +725,15 @@ class Board:
                 log.exception("board sweep failed")
             pruned -= interval
             stop.wait(interval)
+
+    # -- migrations ------------------------------------------------------------
+
+    def migrate_columns(self, dry_run: bool = True) -> dict:
+        """Move every card still directly under the board into the folder for its status."""
+        from . import migrate
+        return migrate.columns(self, dry_run)
+
+    def migrate_threads(self, dry_run: bool = True, proposal_path: str | Path | None = None) -> dict:
+        """Fold reply cards into the threads of their root cards. See `migrate.threads`."""
+        from . import migrate
+        return migrate.threads(self, dry_run, proposal_path)

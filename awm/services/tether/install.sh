@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # Canonical install for the awm-tether service.
 #
-# Two halves. The Python half is the gateway adapter and installs like every
-# other service. The Rust half is the three binaries under rust/, and it is
-# skipped when there is no cargo on the box — the public host has no toolchain
-# and is not getting one, so it receives built artifacts instead (see
-# ship-binaries.sh). A host without cargo still installs cleanly and reports the
+# The service is the gateway adapter and installs like every other service. The
+# binaries it supervises are not built here: they are built and published by the
+# phy0x1a79ed/tether repository, and this host fetches the version RELEASE pins
+# with fetch-release.sh, which is the same mechanism run.sh uses on every start.
+# A host that cannot reach the release still installs cleanly and reports the
 # missing binaries through `awm tether status` rather than failing here.
 #
 # Override the target env with AWM_ENV=<name>.
@@ -25,12 +25,9 @@ PYBIN="$(mamba run -n "$ENV" python -c 'import sys; print(sys.executable)')"
 printf 'AWM_PYTHON=%s\nAWM_ENV_BIN=%s\n' "$PYBIN" "$(dirname "$PYBIN")" \
     > "$HERE/.runtime-env"
 
-if command -v cargo >/dev/null 2>&1; then
-    echo "+ cargo build --release ($HERE/rust)"
-    cargo build --release --manifest-path "$HERE/rust/Cargo.toml"
-else
-    echo "no cargo on this host — skipping the Rust binaries." >&2
-    echo "this host must receive them from a build box; see ship-binaries.sh." >&2
-fi
+# Fetch this host's pinned binaries now, so a fresh install comes up running
+# rather than waiting for the first restart. Non-fatal: run.sh fetches again on
+# every start, and a host offline now catches up then.
+bash "$HERE/fetch-release.sh" || echo "fetch-release.sh failed; see .awm/services/tether/fetch.log" >&2
 
 echo "Installed awm-tether into env '$ENV'."

@@ -363,6 +363,15 @@ def _handle_tools_call(params: dict) -> dict:
             # Followed exactly once; ``peer`` is stripped so the far side does
             # not re-route what we already routed.
             forwarded = {k: v for k, v in arguments.items() if k != "peer"}
+            from awm.gateway import peer_files  # noqa: PLC0415 — peer path only
+            hop = peer_files.invoke_with_files(
+                redirect["peer"], redirect, {"name": name, "args": forwarded}, as_)
+            if hop is not None:
+                # Files went up with the call and came back to local paths.
+                if hop.status_code >= 400:
+                    raise _HTTPStatusError(hop.status_code, hop.text)
+                return {"content": [{"type": "text", "text": hop.json()["result"]}],
+                        "isError": False}
             data = _peer_invoke(
                 redirect["peer"], name, forwarded, as_, entry=redirect)
             # The call ran elsewhere, so any file it produced is on that node.

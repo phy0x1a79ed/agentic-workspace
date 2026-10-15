@@ -17,6 +17,7 @@ import shutil
 import subprocess
 import tempfile
 import uuid as _uuid
+from dataclasses import dataclass
 from pathlib import Path
 
 from awm.config import (
@@ -190,7 +191,7 @@ def _assert_branch_available(bare_dir: Path, branch: str) -> None:
         return  # let worktree add report whatever is wrong with the repo
     existing = set(r.stdout.split())
     if branch in existing:
-        return  # a plain collision — create_scope's own path reports it
+        return  # an existing branch: create_scope checks it out as it is
 
     parts = branch.split("/")
     for i in range(1, len(parts)):
@@ -211,10 +212,78 @@ def _assert_branch_available(bare_dir: Path, branch: str) -> None:
         )
 
 
-def _cleanup_worktree(bare_dir: Path, worktree_dir: Path, feature_branch: str,
+def _worktree_branches(bare_dir: Path) -> dict[Path, str | None]:
+    """Each worktree of ``bare_dir`` with its checked-out branch, None when detached."""
+    r = run_git(["git", "-C", str(bare_dir), "worktree", "list", "--porcelain"])
+    if r.returncode != 0:
+        raise RuntimeError(
+            f"Could not list worktrees of {bare_dir}: {(r.stderr or '').strip()}")
+    out: dict[Path, str | None] = {}
+    path: Path | None = None
+    for line in r.stdout.splitlines():
+        if line.startswith("worktree "):
+            path = Path(line[len("worktree "):])
+            out[path] = None
+        elif line.strip() == "bare" and path is not None:
+            out.pop(path, None)
+            path = None
+        elif line.startswith("branch refs/heads/") and path is not None:
+            out[path] = line[len("branch refs/heads/"):]
+    return out
+
+
+def _branch_checkouts(bare_dir: Path) -> dict[str, Path]:
+    """Each local branch that a worktree of ``bare_dir`` has checked out, with that worktree."""
+    return {b: p for p, b in _worktree_branches(bare_dir).items() if b}
+
+
+def _ref_sha(bare_dir: Path, ref: str) -> str | None:
+    r = run_git(["git", "-C", str(bare_dir), "rev-parse", "--verify", "--quiet",
+                 f"{ref}^{{commit}}"])
+    return r.stdout.strip() if r.returncode == 0 and r.stdout.strip() else None
+
+
+def _delete_branch(bare_dir: Path, branch: str,
+                   expected_sha: str | None = None) -> str | None:
+    """Delete local branch ``branch`` and return the SHA it held, or None if nothing was deleted.
+
+    The single place a scope verb deletes a branch. With ``expected_sha`` the
+    ref goes only while it still points there, compared atomically by
+    ``update-ref``, so a branch that moved or was recreated meanwhile survives.
+    """
+    ref = f"refs/heads/{branch}"
+    sha = _ref_sha(bare_dir, ref)
+    if sha is None or (expected_sha is not None and sha != expected_sha):
+        return None
+    holder = _branch_checkouts(bare_dir).get(branch)
+    if holder is not None:
+        raise RuntimeError(f"branch '{branch}' is checked out at {holder}")
+    r = run_git(["git", "-C", str(bare_dir), "update-ref", "-d", ref, sha])
+    if r.returncode != 0:
+        if expected_sha is not None:
+            return None
+        raise RuntimeError(f"could not delete branch '{branch}': {(r.stderr or '').strip()}")
+    run_git(["git", "-C", str(bare_dir), "config", "--remove-section", f"branch.{branch}"])
+    return sha
+
+
+def _settle_branch(bare_dir: Path, branch: str, delete: bool) -> str:
+    """Delete the branch when asked, and say what became of it."""
+    if not delete:
+        return f"branch {branch} kept"
+    try:
+        sha = _delete_branch(bare_dir, branch)
+    except RuntimeError as exc:
+        return f"branch {branch} kept: {exc}"
+    if sha is None:
+        return f"branch {branch} not found, nothing deleted"
+    return f"branch {branch} deleted at {sha} (restore: git branch {branch} {sha})"
+
+
+def _cleanup_worktree(bare_dir: Path, worktree_dir: Path,
                       *, project: str | None = None, scope: str | None = None,
                       force: bool = False) -> dict:
-    """Remove a scope's worktree and branch.
+    """Remove a scope's worktree. The branch stays: see :func:`_delete_branch`.
 
     Deleting a worktree unlinks names, never bytes: a scope's data is hardlinks
     into the shared cache and its pins are commits on a branch, so the cache
@@ -280,7 +349,6 @@ def _cleanup_worktree(bare_dir: Path, worktree_dir: Path, feature_branch: str,
     # one case _worktree_admin_dir cannot resolve. git prunes only entries it has
     # established are dead, so this can never reach a live sibling.
     run_git(["git", "-C", str(bare_dir), "worktree", "prune"])
-    run_git(["git", "-C", str(bare_dir), "branch", "-D", feature_branch])
     _prune_empty_parents(bare_dir.parent, worktree_dir.parent)
     return guard
 
@@ -681,6 +749,68 @@ def heal_scopes(project: str | None = None, dry_run: bool = False) -> list[dict]
     return report
 
 
+def audit_worktrees(project: str | None = None) -> dict:
+    """Mismatches between the scope rows and the worktrees on disk. Reads only.
+
+    ``unregistered``: worktrees under ``projects/<p>/`` that no row in any
+    status names, other than the main checkout. ``orphaned_rows``: allocated or active rows whose worktree
+    directory is gone. A project whose worktrees cannot be listed goes to
+    ``errors`` and the pass continues.
+    """
+    if project:
+        projects = [project]
+    else:
+        projects = sorted(d.name for d in PROJECTS_DIR.iterdir()
+                          if (d / ".bare").is_dir()) if PROJECTS_DIR.is_dir() else []
+
+    sql = ("SELECT p.name AS project, a.scope, a.worktree, a.status "
+           "FROM agents a JOIN projects p ON p.id = a.project_id")
+    params: list = []
+    if project:
+        sql += " WHERE p.name=?"
+        params.append(project)
+    rows = ScopesDAO().query_all(sql, params)
+
+    registered: dict[str, set] = {}
+    orphaned: list[dict] = []
+    for row in rows:
+        worktree = _resolve_worktree(row["project"], row["scope"], row["worktree"])
+        names = registered.setdefault(row["project"], set())
+        names.update({row["scope"], worktree.resolve()})
+        if row["status"] in ("allocated", "active") and not worktree.is_dir():
+            orphaned.append({"project": row["project"], "scope": row["scope"],
+                             "status": row["status"], "worktree": str(worktree)})
+
+    for name, main in main_checkouts(project).items():
+        registered.setdefault(name, set()).add(Path(main.worktree).resolve())
+
+    unregistered: list[dict] = []
+    errors: list[dict] = []
+    for name in projects:
+        project_dir = PROJECTS_DIR / name
+        try:
+            worktrees = _worktree_branches(project_dir / ".bare")
+        except (OSError, RuntimeError) as exc:
+            errors.append({"project": name, "error": str(exc)})
+            continue
+        known = registered.get(name, set())
+        for path, branch in worktrees.items():
+            try:
+                scope = path.relative_to(project_dir)
+            except ValueError:
+                continue
+            if ".claude" in scope.parts or not path.is_dir():
+                continue
+            if scope.as_posix() in known or path.resolve() in known:
+                continue
+            unregistered.append({
+                "project": name, "scope": scope.as_posix(), "worktree": str(path),
+                "branch": branch,
+                "context_md": (path / ".awm" / "context.md").is_file(),
+            })
+    return {"unregistered": unregistered, "orphaned_rows": orphaned, "errors": errors}
+
+
 def _ensure_awm_gitignored(repo_dir: Path) -> None:
     """Make ``.awm/`` invisible to git in ``repo_dir`` without touching any
     tracked file.
@@ -771,19 +901,112 @@ def _scaffold_awm_dir(
     return context_content
 
 
+@dataclass
+class _Checkout:
+    """How create_scope gets the scope's branch into its worktree."""
+    add_args: list[str]       # after `git worktree add`
+    upstream: str | None      # <remote>/<branch> to set after the add, if any
+    made_at: str | None       # SHA a branch this call creates starts at; None when it pre-exists
+    note: str
+
+
+def _remote_copies(bare_dir: Path, branch: str) -> dict[str, str]:
+    """Each remote whose fetched refs carry ``branch``, with its SHA. No network."""
+    r = run_git(["git", "-C", str(bare_dir), "remote"])
+    remotes = r.stdout.split() if r.returncode == 0 else []
+    copies = {}
+    for remote in remotes:
+        sha = _ref_sha(bare_dir, f"refs/remotes/{remote}/{branch}")
+        if sha:
+            copies[remote] = sha
+    return copies
+
+
+def _plan_checkout(bare_dir: Path, branch: str, from_branch: str | None,
+                   repo_dir: Path) -> _Checkout:
+    """Decide how to check ``branch`` out at ``repo_dir``, refusing before anything changes.
+
+    A branch that exists, locally or only on a remote, is checked out as it is.
+    Its upstream is the one remote that carries it. When several do, the caller
+    names one as ``from_branch="<remote>/<branch>"``.
+    """
+    local_sha = _ref_sha(bare_dir, f"refs/heads/{branch}")
+    copies = _remote_copies(bare_dir, branch)
+
+    if local_sha is None and not copies:
+        base = from_branch or detect_default_branch(bare_dir)
+        start = _ref_sha(bare_dir, base)
+        if start is None:
+            raise ValueError(f"from_branch '{base}' does not name a commit in this project")
+        return _Checkout([str(repo_dir), "-b", branch, base], None, start,
+                         f"new branch {branch} from {base}")
+
+    picked: str | None = None
+    if from_branch is not None:
+        picked = next((r for r in copies if from_branch == f"{r}/{branch}"), None)
+        if picked is None:
+            named = ", ".join(f"{r}/{branch}" for r in copies) or "none, no remote carries it"
+            raise ValueError(
+                f"Branch '{branch}' already exists, so from_branch can only pick which "
+                f"remote copy it tracks ({named}), not '{from_branch}'")
+
+    def ambiguous() -> ValueError:
+        listed = ", ".join(f"{r}/{branch} at {sha[:12]}" for r, sha in sorted(copies.items()))
+        return ValueError(
+            f"Branch '{branch}' is on several remotes ({listed}). Pass "
+            f"from_branch='<remote>/{branch}' to pick the one it tracks.")
+
+    if local_sha is not None:
+        holder = _branch_checkouts(bare_dir).get(branch)
+        if holder is not None and holder != repo_dir:
+            raise FileExistsError(f"Branch '{branch}' is already checked out at {holder}")
+        r = run_git(["git", "-C", str(bare_dir), "for-each-ref",
+                     "--format=%(upstream:short)", f"refs/heads/{branch}"])
+        current = r.stdout.strip() if r.returncode == 0 else ""
+        if picked is not None:
+            upstream = f"{picked}/{branch}"
+        elif current:
+            upstream = None
+        elif len(copies) == 1:
+            upstream = f"{next(iter(copies))}/{branch}"
+        elif copies:
+            raise ambiguous()
+        else:
+            upstream = None
+        tracking = (f"tracking {upstream}" if upstream
+                    else f"tracking {current}" if current else "with no upstream")
+        return _Checkout([str(repo_dir), branch], upstream, None,
+                         f"existing branch {branch} at {local_sha[:12]}, {tracking}")
+
+    if picked is None:
+        if len(copies) > 1:
+            raise ambiguous()
+        picked = next(iter(copies))
+    return _Checkout(["--track", "-b", branch, str(repo_dir), f"{picked}/{branch}"],
+                     None, copies[picked], f"branch {branch} from {picked}/{branch}, tracking it")
+
+
 def _roll_back_create(bare_dir: Path, repo_dir: Path, branch: str,
-                      project: str, scope: str) -> None:
+                      project: str, scope: str, made_at: str | None) -> None:
+    """Undo a failed create. The branch goes only if this call made it and it has not moved."""
     try:
-        _cleanup_worktree(bare_dir, repo_dir, branch,
-                          project=project, scope=scope, force=True)
+        _cleanup_worktree(bare_dir, repo_dir, project=project, scope=scope, force=True)
     except Exception as exc:  # noqa: BLE001 — the original failure is the one to report
         log.error("scope %s/%s: rollback left the worktree: %s", project, scope, exc)
+    branch_fate = "kept"
+    if made_at is not None:
+        try:
+            if _delete_branch(bare_dir, branch, expected_sha=made_at):
+                branch_fate = "deleted"
+        except Exception as exc:  # noqa: BLE001
+            log.error("scope %s/%s: rollback kept branch %s: %s",
+                      project, scope, branch, exc)
     aid = agent_id_for_scope(project, scope, active_only=True)
     if aid:
         with ScopesDAO().transaction() as conn:
             ScopesDAO(conn=conn).execute("DELETE FROM agents WHERE id=?", (aid,))
-    log.warning("scope %s/%s: create failed; worktree and branch rolled back",
-                project, scope)
+    log.warning("scope %s/%s: create failed; worktree rolled back, branch %s %s",
+                project, scope, branch, branch_fate)
 
 
 def create_scope(req: ScopeCreateRequest) -> ScopeActionResponse:
@@ -827,7 +1050,6 @@ def create_scope(req: ScopeCreateRequest) -> ScopeActionResponse:
     elif req.scope is None:
         raise FileExistsError(f"Project '{req.project}' already exists at {bare_dir}")
 
-    from_branch = req.from_branch or detect_default_branch(bare_dir)
     repo_dir = PROJECTS_DIR / req.project / req.scope
     feature_branch = req.branch_name or f"feat/{req.scope}"
 
@@ -850,18 +1072,23 @@ def create_scope(req: ScopeCreateRequest) -> ScopeActionResponse:
     # Before anything destructive: the stale-directory cleanup below removes a
     # tree, and a request that was never going to succeed must not get that far.
     _assert_branch_available(bare_dir, feature_branch)
+    run_git(["git", "-C", str(bare_dir), "worktree", "prune"])
+    checkout = _plan_checkout(bare_dir, feature_branch, req.from_branch, repo_dir)
 
     if repo_dir.exists():
-        _cleanup_worktree(bare_dir, repo_dir, feature_branch,
-                          project=req.project, scope=req.scope)
+        _cleanup_worktree(bare_dir, repo_dir, project=req.project, scope=req.scope)
 
-    # Everything from here on is undone if it fails or the caller cancels:
-    # the branch is new (checked above) and the directory was cleared.
+    # Everything from here on is undone if it fails or the caller cancels. The
+    # branch is undone only when this call made it: checkout.made_at.
     try:
-        r = run_git(["git", "-C", str(bare_dir), "worktree", "add",
-                     str(repo_dir), "-b", feature_branch, from_branch])
+        r = run_git(["git", "-C", str(bare_dir), "worktree", "add", *checkout.add_args])
         if r.returncode != 0:
             raise RuntimeError(f"Failed to create worktree: {r.stderr}")
+        if checkout.upstream:
+            r = run_git(["git", "-C", str(repo_dir), "branch",
+                         f"--set-upstream-to={checkout.upstream}", feature_branch])
+            if r.returncode != 0:
+                raise RuntimeError(f"Failed to set upstream {checkout.upstream}: {r.stderr}")
         _scaffold_awm_dir(
             req.project, req.scope, repo_dir,
             branch=feature_branch,
@@ -870,7 +1097,8 @@ def create_scope(req: ScopeCreateRequest) -> ScopeActionResponse:
         )
     except BaseException:
         with cancel.shielded():
-            _roll_back_create(bare_dir, repo_dir, feature_branch, req.project, req.scope)
+            _roll_back_create(bare_dir, repo_dir, feature_branch, req.project, req.scope,
+                              checkout.made_at)
         raise
 
     return ScopeActionResponse(
@@ -880,7 +1108,7 @@ def create_scope(req: ScopeCreateRequest) -> ScopeActionResponse:
         session=session_num,
         message=(
             f"Created scope at projects/{req.project}/{req.scope} (.awm/ initialized) "
-            f"on branch {feature_branch}, session {session_num}"
+            f"on {checkout.note}, session {session_num}"
         ),
     )
 
@@ -965,6 +1193,9 @@ def update_scope(project: str, scope: str, req: ScopeUpdateRequest) -> ScopeActi
 
     if req.action != "complete":
         raise ValueError(f"Unknown action: {req.action}. Only 'complete' is supported.")
+    if req.delete_branch and not req.cleanup:
+        raise ValueError("delete_branch needs cleanup=true: git cannot delete a branch "
+                         "its worktree still has checked out")
 
     aid = agent_id_for_scope(project, scope, active_only=True)
     if aid:
@@ -984,13 +1215,16 @@ def update_scope(project: str, scope: str, req: ScopeUpdateRequest) -> ScopeActi
         run_git(["git", "-C", str(main_worktree), "push"])
         merge_msg = f", merged into {default_branch}"
 
+    cleanup_msg = ""
     if req.cleanup:
-        _cleanup_worktree(bare_dir, repo_dir, feature_branch,
+        _cleanup_worktree(bare_dir, repo_dir,
                           project=project, scope=scope, force=req.force)
+        cleanup_msg = (f", worktree removed, "
+                       f"{_settle_branch(bare_dir, feature_branch, req.delete_branch)}")
 
     return ScopeActionResponse(
         project=project, scope=scope, status="completed",
-        message=f"Scope completed{merge_msg}",
+        message=f"Scope completed{merge_msg}{cleanup_msg}",
     )
 
 
@@ -1241,7 +1475,8 @@ def scatter_scope(project: str, hub: str, peripherals: list[str],
     )
 
 
-def delete_scope(project: str, scope: str, force: bool = False) -> ScopeActionResponse:
+def delete_scope(project: str, scope: str, force: bool = False,
+                 delete_branch: bool = False) -> ScopeActionResponse:
     validate_name(project, kind="project name")
     validate_scope_name(scope)
     bare_dir = PROJECTS_DIR / project / ".bare"
@@ -1263,8 +1498,8 @@ def delete_scope(project: str, scope: str, force: bool = False) -> ScopeActionRe
     if aid_row is None:
         raise FileNotFoundError(f"No scope '{scope}' found in project '{project}'")
 
-    _cleanup_worktree(bare_dir, repo_dir, feature_branch,
-                      project=project, scope=scope, force=force)
+    _cleanup_worktree(bare_dir, repo_dir, project=project, scope=scope, force=force)
+    branch_msg = _settle_branch(bare_dir, feature_branch, delete_branch)
 
     with dao.transaction() as conn:
         ScopesDAO(conn=conn).execute(
@@ -1276,7 +1511,7 @@ def delete_scope(project: str, scope: str, force: bool = False) -> ScopeActionRe
 
     return ScopeActionResponse(
         project=project, scope=scope, status="deleted",
-        message="Scope deleted, worktree and branch cleaned up",
+        message=f"Scope deleted, worktree removed, {branch_msg}",
     )
 
 

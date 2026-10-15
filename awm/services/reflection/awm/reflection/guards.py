@@ -7,6 +7,7 @@ would be a nasty surprise if `/clear` were guarded on one path and not the other
 """
 from __future__ import annotations
 
+import re
 from typing import Optional
 
 # Slash commands that irreversibly discard context / end the session. Refused
@@ -24,6 +25,7 @@ INTERACTIVE = {
     "/mcp", "/status", "/config", "/permissions", "/agents",
     "/hooks", "/resume", "/theme", "/login", "/logout",
     "/bashes", "/doctor", "/statusline", "/vim",
+    "/rc", "/remote-control",
 }
 
 # Commands that act directly WITH an argument but open a picker modal when bare
@@ -59,8 +61,12 @@ def opens_modal(text: str) -> bool:
     return False
 
 
-def refusal(text: str, *, confirm: bool) -> Optional[dict]:
+def refusal(text: str, *, confirm: bool,
+            allow_modal: bool = False) -> Optional[dict]:
     """Return the refusal result for ``text``, or ``None`` if it may be injected.
+
+    ``allow_modal`` is for a verb that drives the modal it opens (the
+    Remote Control verbs); a free-text caller never sets it.
 
     Raises ``ValueError`` for empty text — that is a caller bug, not a refusal.
     """
@@ -75,7 +81,7 @@ def refusal(text: str, *, confirm: bool) -> Optional[dict]:
                       f"pass confirm=true to proceed.",
             "guard": sorted(DESTRUCTIVE),
         }
-    if opens_modal(text):
+    if not allow_modal and opens_modal(text):
         return {
             "ok": False,
             "refused": True,
@@ -92,3 +98,31 @@ def refusal(text: str, *, confirm: bool) -> Optional[dict]:
 def resume_text(followup: Optional[str]) -> str:
     """The prompt to inject once a slash command completes."""
     return followup.strip() if followup and followup.strip() else DEFAULT_FOLLOWUP
+
+
+# Copy a TUI modal or permission prompt paints that the ordinary prompt screen
+# does not. TUI copy can move under a CLI update; a stale list fails toward
+# "no modal seen", which is why the session record's `waiting` status is asked
+# as well before anything is typed.
+_MODAL_MARKERS = (
+    "esc to cancel", "enter to confirm", "enter to select", "to navigate",
+    "do you want to", "disconnect this session",
+)
+_SCREEN_TAIL_CHARS = 2500
+_CSI_MOVE = re.compile(r"\x1b\[[0-9;?]*[ABCDEFGHJKfd]")
+_ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[()][A-Z0-9]")
+
+
+def plain_screen(screen: str) -> str:
+    """A screen as text. A cursor move becomes a line break, other escapes go.
+
+    The daemon lane hands back the pty byte stream, where a repaint of one line
+    is a cursor move followed by that line's text.
+    """
+    return _ANSI.sub("", _CSI_MOVE.sub("\n", screen))
+
+
+def modal_on_screen(screen: str) -> Optional[str]:
+    """The marker that shows a modal or permission prompt on ``screen``, or None."""
+    tail = plain_screen(screen)[-_SCREEN_TAIL_CHARS:].lower()
+    return next((m for m in _MODAL_MARKERS if m in tail), None)

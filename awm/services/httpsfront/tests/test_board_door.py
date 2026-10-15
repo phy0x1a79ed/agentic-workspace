@@ -40,8 +40,11 @@ SHAPES = [
     ("POST", f"/board/cards/{CARD}/claim"),
     ("POST", f"/board/cards/{CARD}/complete"),
     ("POST", f"/board/cards/{CARD}/fail"),
+    ("POST", f"/board/cards/{CARD}/status"),
+    ("POST", f"/board/cards/{CARD}/reject"),
     ("POST", f"/board/cards/{CARD}/messages"),
     ("GET", f"/board/cards/{CARD}/messages"),
+    ("GET", f"/board/cards/{CARD}/events"),
     ("GET", "/board/stream"),
 ]
 

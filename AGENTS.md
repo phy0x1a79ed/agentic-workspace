@@ -70,7 +70,8 @@ The CLI (`awm <tool> <verb>`) and HTTP (`POST /invoke`) surfaces keep one comman
 ## Git
 
 - A scope's branch is `feat/<scope>` by default. A legacy or nested scope has its own branch name. Ask `scope(verb="search")` instead of guessing.
-- Open PRs from feature branches into `release`. There is no `main`.
+- Land your own work. Merge `feat → dev → release`, push, and deploy to the nodes as `FEDERATION.md` § Deploy describes. There is no `main`.
+- Do not open pull requests. Open one only when Tony asks for it.
 - **WARNING** Never commit in the workspace root checkout. On a node that deploys awm, each deploy resets `<workspace>/` onto upstream `release` and discards local commits without a warning. Work in a scope worktree under `projects/` and push the branch. A `reset: moving to …` entry in `git -C <workspace> reflog` shows a deploy ran.
 - A push to a peer usually fails with *branch is currently checked out*. This is not a permissions fault. See `PROTOCOLS.md` § *Pushing to a peer*.
 - Do not submodule another project's code. Put a consumer and the library it moves with in one repository, as directories. A stale gitlink fails silently. `projects/metasmith/` is the model.

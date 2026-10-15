@@ -39,6 +39,7 @@ log = logging.getLogger("awm.reflection.session_target")
 # Overridable for tests; both are user-private (mode 0600) in practice.
 SESSIONS_DIR = Path(os.path.expanduser("~/.claude/sessions"))
 ROSTER_PATH = Path(os.path.expanduser("~/.claude/daemon/roster.json"))
+JOBS_DIR = Path(os.path.expanduser("~/.claude/jobs"))
 
 # Seam for tests: ``None`` means read the live process table. Anything else is
 # called with no arguments and must return a ppid → [child pids] mapping.

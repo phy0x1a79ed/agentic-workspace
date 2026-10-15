@@ -1,29 +1,30 @@
-"""The board subscriber: cards addressed to this swarm go into the queue.
+"""The board subscriber: cards addressed to this swarm become Proposed, and Tony is told once.
 
 Two paths feed the queue and both are idempotent by card id. The stream is
 live and resumes from a saved cursor. The catch-up reads the board directly,
 which closes the gaps the stream cannot: a cursor the board no longer holds
 (``resync``), a first start with no cursor, and a long silence.
 
-A request card is claimed before it is queued, so two doors never queue the
-same card. The door writes a ``claiming`` row first. A crash between the claim
-and the queue write then leaves a row only this door could have made, and the
-recovery path adopts exactly those cards: a card the board shows as held by
-this swarm with no such row was claimed by someone else in the swarm and is
-left alone. A claim that answers 409 means someone else holds it, and the door
-skips the card. A message card is queued and never claimed, because the board
-refuses to claim one.
+The door never claims a card and never shows a card's text to an agent. A card
+addressed to this swarm or to ``open``, or posted by this swarm, is queued as
+``proposed`` and Tony gets one direct message with the claim reference. A
+message that fails to send leaves the card unannounced, and the next catch-up
+sends it. An agent takes a card with ``task_claim``, which assigns the card to
+the agent's session.
+
+A message on a card's thread wakes the session the card was assigned to, with
+a line that names the card and sender and carries none of its text. A session
+that cannot take the line gets one more try, from the catch-up the miss asks
+for. After that, or when the card has no session, Tony gets a short message.
+Each card's thread cursor moves only once its message reached someone, so a
+catch-up after downtime routes what the stream missed.
+
+The jobs that watch a card, or every card an agent posted, are typed one line
+per event.
 
 The stream cursor is saved only after the event's card write has committed.
 A failure part way through leaves the cursor behind, and the restart replays
 the event. A catch-up that fails never keeps the stream from starting.
-
-A message on a card's thread wakes the session the card was assigned to, with
-a line that names the card and carries none of its text. A session that cannot
-take the line gets one more try, from the catch-up the miss asks for. After
-that, or when the card has no session, the card goes back to the
-representative's queue. Each card's thread cursor moves only once its message
-reached someone, so a catch-up after downtime routes what the stream missed.
 """
 
 from __future__ import annotations
@@ -33,30 +34,33 @@ import contextlib
 import logging
 import time
 from datetime import datetime, timezone
-from typing import Any, Callable
+from typing import Any, Awaitable, Callable
 
 import httpx
 
-from awm.board.client import RESYNC, BoardConflict, BoardError, BoardRefused
+from awm.board.client import RESYNC, BoardError, BoardRefused
 
-from awm.reporting import CLAIMING, DONE, FAILED, GONE, TERMINAL
-from awm.reporting.store import Queue
+from awm.reporting import ACTIVE, ASSIGNED, DONE, GONE, PROPOSED, REJECTED
+from awm.reporting.intake import (card_dm, card_state, event_line, message_dm, send_dm, swarm_of,
+                                  wake_text)
+from awm.reporting.store import Offloaded, Queue
 
 log = logging.getLogger("awm.reporting.subscriber")
 
 POSTED = "card.posted"
+CLAIMED = "card.claimed"
 MOVED = "card.moved"
+COMPLETED = "card.completed"
+FAILED = "card.failed"
 MESSAGE = "card.message"
+OPEN = "open"
 PAGE = 200
 MAX_PAGES = 50
 RESTART_DELAY_S = 2.0
 KICK_DELAY_S = 10.0
 MAX_RESTART_DELAY_S = 120.0
 REFUSED_DELAY_S = 300.0
-
-
-def thread_text(card_id: str) -> str:
-    return f"New message on board card {card_id}, run operations board_messages"
+_FINISHED = {"done": DONE, "rejected": REJECTED}
 
 
 def _send_line(job: str, text: str) -> None:
@@ -65,23 +69,22 @@ def _send_line(job: str, text: str) -> None:
     send_line(job, text)
 
 
-def _swarm_of(sender: Any) -> str:
-    return str(sender.get("swarm") or "") if isinstance(sender, dict) else str(sender or "")
-
-
 class Subscriber:
     """Reads the board for one swarm and writes the queue."""
 
     def __init__(self, queue: Queue, client: Any, swarm: str, *,
-                 on_queued: Callable[[], None] | None = None,
+                 dm: Callable[[str], Awaitable[None]] = send_dm,
+                 on_closed: Callable[[str, str], Awaitable[None]] | None = None,
                  catchup_s: float = 300.0,
                  message_backlog_s: float = 3 * 86400.0,
                  send: Callable[[str, str], None] = _send_line,
                  clock: Callable[[], float] = time.time) -> None:
         self.queue = queue
+        self.db = Offloaded(queue)
         self.client = client
         self.swarm = swarm
-        self._on_queued = on_queued or (lambda: None)
+        self._dm = dm
+        self._on_closed = on_closed
         self._catchup_s = catchup_s
         self._backlog_s = message_backlog_s
         self._send = send
@@ -93,83 +96,70 @@ class Subscriber:
         self.attached = False
         self.last_error: str | None = None
 
+    # -- which cards are ours --------------------------------------------------
+
+    def _mine(self, card: dict) -> bool:
+        """A card to this swarm or to anyone, or one this swarm posted."""
+        return (card.get("recipient") in (self.swarm, OPEN)
+                or swarm_of(card.get("sender")) == self.swarm)
+
+    def _claimable(self, card: dict) -> bool:
+        return card.get("recipient") in (self.swarm, OPEN)
+
     # -- one card ------------------------------------------------------------
 
-    def _queued(self, card: dict, *, reopen: bool = False) -> None:
-        if self.queue.enqueue(card, reopen=reopen):
-            log.info("reporting: queued %r card %s (%r)", card.get("kind"), card["id"],
-                     card.get("priority"))
-            self._on_queued()
+    async def _intake(self, card: dict, *, reopen: bool = False, quiet: bool = False) -> None:
+        """Queue a card as proposed, and tell Tony if he has not been told."""
+        if await self.db.enqueue(card, quiet=quiet, reopen=reopen):
+            log.info("reporting: queued %r card %s", card.get("kind"), card["id"])
+        if await self.db.needs_dm(card["id"]):
+            try:
+                await self._dm(card_dm(card, claimable=self._claimable(card)))
+            except Exception as exc:  # noqa: BLE001 — the catch-up sends it again
+                log.warning("reporting: could not tell Tony about card %s: %s", card["id"], exc)
+                self.last_error = f"direct message failed: {exc}"
+                self._kick.set()
+                return
+            await self.db.mark_notified(card["id"])
 
-    async def _intake(self, card: dict, *, claim_known: bool, reopen: bool = False) -> bool:
-        """Queue a card addressed to us. Returns True if the card is now queued by us.
+    async def _left(self, card: dict) -> None:
+        """A card this swarm does not hold any more: another swarm took it, or it was re-addressed."""
+        if swarm_of(card.get("sender")) != self.swarm and await self.db.mark(card["id"], GONE):
+            log.info("reporting: card %s left this swarm's hands", card["id"])
 
-        ``claim_known`` claims a request even when the queue already holds it:
-        the caller has current board state saying the card is posted again.
-        """
-        if card.get("kind") == "message":
-            self._queued(card, reopen=reopen)
-            return True
-        held = self.queue.status_of(card["id"])
-        if held is not None and held != CLAIMING and not claim_known:
-            return False  # a `claiming` row is retried: a claim by the same swarm is idempotent
-        marked = self.queue.begin_claim(card)
-        try:
-            claimed = await self.client.claim(card["id"])
-        except BoardConflict:
-            log.info("reporting: card %s is held by someone else; skipped", card["id"])
-            self._unmark(card, marked)
-            return False
-        except BoardRefused:
-            log.info("reporting: the board will not let this swarm claim %s; skipped", card["id"])
-            self._unmark(card, marked)
-            return False
-        merged = {**card, **(claimed if isinstance(claimed, dict) else {})}
-        self._queued(merged, reopen=True if claim_known else reopen)
-        return True
-
-    def _unmark(self, card: dict, marked: bool) -> None:
-        if marked:
-            self.queue.drop_claim(card["id"])
-
-    def _adopt(self, card: dict, *, authoritative: bool) -> None:
-        """Queue a card the board shows as held by this swarm, if the door claimed it.
-
-        The door's own mark is the evidence: a ``claiming`` row, or a finished
-        row that the board now shows in progress under our name (a reopened card
-        whose claim landed before the crash). ``authoritative`` is the current
-        board state; a replayed event may be older than the queue, so it adopts
-        only on the ``claiming`` mark.
-        """
-        status = self.queue.status_of(card["id"])
-        if status == CLAIMING or (authoritative and status in TERMINAL):
-            log.info("reporting: adopting card %s, claimed before the queue write landed", card["id"])
-            self._queued(card, reopen=True)
+    async def _finished(self, card: dict, state: str) -> None:
+        job = await self._assignee(card["id"]) if state == "rejected" else None
+        if await self.db.mark(card["id"], _FINISHED[state]):
+            log.info("reporting: card %s is %s on the board", card["id"], state)
+            if job:
+                await self._tell(job, event_line(FAILED, card))
+        if self._on_closed is not None:
+            await self._on_closed(card["id"], state)
 
     # -- one thread message --------------------------------------------------
 
-    def _ours(self, card: dict) -> bool:
-        return card.get("recipient") == self.swarm or _swarm_of(card.get("sender")) == self.swarm
-
     async def _on_message(self, card: dict) -> None:
         message = card.get("message")
-        if not isinstance(message, dict) or not self._ours(card):
+        if not isinstance(message, dict) or not self._mine(card):
             return
         seq = int(message.get("seq") or 0)
-        if seq <= self.queue.thread_seq(card["id"]):
+        if seq <= await self.db.thread_seq(card["id"]):
             return
-        if _swarm_of(message.get("sender")) == self.swarm or await self._route(card):
-            self.queue.set_thread_seq(card["id"], seq)
+        if swarm_of(message.get("sender")) == self.swarm or await self._route(card, message):
+            await self.db.set_thread_seq(card["id"], seq)
+            await self._tell_watchers(MESSAGE, card, skip=await self._assignee(card["id"]))
 
-    async def _route(self, card: dict) -> bool:
-        """Tell the card's session, or the representative, about a new message. False to retry."""
-        held = self.queue.get(card["id"])
-        if held is not None and held["status"] == CLAIMING:
-            return True  # the card reaches the representative with its thread
-        job = held.get("assigned_job") if held else None
+    async def _assignee(self, card_id: str) -> str | None:
+        held = await self.db.get(card_id)
+        return held.get("assigned_job") if held and held["status"] == ASSIGNED else None
+
+    async def _route(self, card: dict, message: dict) -> bool:
+        """Tell the card's session, else Tony, about a new message. False to retry."""
+        job = await self._assignee(card["id"])
+        note = ""
         if job:
             try:
-                await asyncio.to_thread(self._send, job, thread_text(card["id"]))
+                await asyncio.to_thread(self._send, job, wake_text(card["id"], message))
             except Exception as exc:  # noqa: BLE001 — a closed PTY or a dialog is a miss
                 if card["id"] not in self._missed:
                     self._missed.add(card["id"])
@@ -177,51 +167,81 @@ class Subscriber:
                              job, card["id"], exc)
                     self._kick.set()
                     return False
-                log.info("reporting: %s is gone; card %s goes back to the representative",
-                         job, card["id"])
+                note = f"its agent, job {job}, could not be reached"
+                log.info("reporting: %s is gone; Tony hears of card %s's message", job, card["id"])
             else:
                 self._missed.discard(card["id"])
                 log.info("reporting: told %s about a message on card %s", job, card["id"])
                 return True
+        else:
+            held = await self.db.get(card["id"])
+            if held is not None and held["status"] == ASSIGNED:
+                note = f"claimed by {held['assigned_to']}, which has no background session to wake"
         self._missed.discard(card["id"])
-        self.queue.reopen_thread(card)
-        log.info("reporting: queued card %s for a message on its thread", card["id"])
-        self._on_queued()
+        try:
+            await self._dm(message_dm(card, message, note=note))
+        except Exception as exc:  # noqa: BLE001 — the catch-up routes it again
+            log.warning("reporting: could not tell Tony about a message on card %s: %s",
+                        card["id"], exc)
+            self._kick.set()
+            return False
         return True
+
+    # -- watchers --------------------------------------------------------------
+
+    async def _tell(self, job: str, line: str | None) -> None:
+        try:
+            await asyncio.to_thread(self._send, job, line)
+        except Exception as exc:  # noqa: BLE001 — a busy or closed session misses a line
+            log.info("reporting: %s did not take a line about card %s: %s", job, line, exc)
+
+    async def _tell_watchers(self, type_: str, card: dict, *, skip: str | None = None) -> None:
+        """Type one line into each session that follows the card. Never raises."""
+        line = event_line(type_, card)
+        if line is None:
+            return
+        poster = card.get("agent") if swarm_of(card.get("sender")) == self.swarm else None
+        for job in await self.db.watchers_of(card["id"], poster):
+            if job != skip:
+                await self._tell(job, line)
+
+    # -- the events ------------------------------------------------------------
 
     async def _apply(self, type_: str, card: dict) -> None:
         if type_ == MESSAGE:
             await self._on_message(card)
             return
-        if card.get("recipient") != self.swarm:
-            if self.queue.has(card["id"]) and self.queue.mark(card["id"], GONE):
-                log.info("reporting: card %s was re-addressed away from this swarm", card["id"])
+        if not self._mine(card):
+            if await self.db.has(card["id"]):
+                await self._left(card)
             return
-        status = card.get("status")
-        if status == "posted" and type_ in (POSTED, MOVED):
-            await self._intake(card, claim_known=type_ == MOVED, reopen=type_ == MOVED)
-        elif status in (DONE, FAILED):
-            if self.queue.mark(card["id"], status):
-                log.info("reporting: card %s is %s on the board", card["id"], status)
-        elif (status == "in_progress" and card.get("kind") == "request"
-              and card.get("claimant") == self.swarm):
-            self._adopt(card, authoritative=False)
+        await self._tell_watchers(type_, card)
+        if card.get("reply_to"):
+            return                      # its thread message on the root carries it
+        state = card_state(card)
+        if state == "proposed" and type_ in (POSTED, MOVED):
+            await self._intake(card, reopen=type_ == MOVED)
+        elif state in _FINISHED:
+            await self._finished(card, state)
+        elif (type_ == CLAIMED and card.get("claimant") and card["claimant"] != self.swarm
+              and card.get("recipient") == OPEN):
+            await self._left(card)
 
     async def _handle(self, event_id: int, type_: str, card: dict) -> None:
         if type_ == RESYNC:
             await self._catch_up()
-            self.queue.set_cursor(event_id, force=True)
+            await self.db.set_cursor(event_id, force=True)
         else:
             try:
                 await self._apply(type_, card)
             except (BoardError, httpx.HTTPError) as exc:
-                # Retrying the same event would fail the same way for ever. The
-                # card keeps its `claiming` mark and the next catch-up takes it.
+                # Retrying the same event would fail the same way for ever.
+                # The next catch-up reads the board and closes the gap.
                 log.warning("reporting: event %s on card %s failed (%s); left for the catch-up",
                             event_id, card.get("id"), exc)
                 self.last_error = f"event {event_id} failed: {exc}"
                 self._kick.set()
-            self.queue.set_cursor(event_id)
+            await self.db.set_cursor(event_id)
         self._progress = True
 
     # -- catch-up ------------------------------------------------------------
@@ -244,48 +264,55 @@ class Subscriber:
 
     async def _catch_up(self) -> int:
         failed = 0
-        for card in await self._all(recipient=self.swarm, kind="request", status="posted"):
-            try:
-                await self._intake(card, claim_known=True)
-            except BoardError as exc:
-                failed += 1
-                log.warning("reporting: could not take card %s in catch-up: %s", card["id"], exc)
-        for card in await self._all(recipient=self.swarm, kind="request",
-                                    status="in_progress", claimant=self.swarm):
-            self._adopt(card, authoritative=True)
-        for card in await self._all(recipient=self.swarm, kind="message", status="posted"):
-            if not self.queue.has(card["id"]) and self._recent(card):
-                self._queued(card)
-        for card_id in self.queue.active_ids():
+        seen: set[str] = set()
+        for filters in ({"recipient": self.swarm}, {"recipient": OPEN}, {"sender": self.swarm}):
+            for card in await self._all(state="proposed", **filters):
+                if card["id"] in seen or card.get("reply_to"):
+                    continue
+                seen.add(card["id"])
+                try:
+                    await self._intake(card, quiet=not self._recent(card))
+                except BoardError as exc:
+                    failed += 1
+                    log.warning("reporting: could not take card %s in catch-up: %s", card["id"], exc)
+        for card_id in await self.db.active_ids():
             try:
                 current = await self.client.get(card_id)
             except BoardRefused:
-                if self.queue.mark(card_id, GONE):
+                if await self.db.mark(card_id, GONE):
                     log.info("reporting: card %s is no longer on the board", card_id)
                 continue
             except BoardError as exc:
                 failed += 1
                 log.warning("reporting: could not re-read card %s: %s", card_id, exc)
                 continue
-            if current.get("recipient") != self.swarm:
-                if self.queue.mark(card_id, GONE):
-                    log.info("reporting: card %s was re-addressed away from this swarm", card_id)
-            elif current.get("status") in (DONE, FAILED):
-                self.queue.mark(card_id, current["status"])
+            state = card_state(current)
+            if not self._mine(current):
+                await self._left(current)
+            elif state in _FINISHED:
+                await self._finished(current, state)
+            elif (state != "proposed" and current.get("recipient") == OPEN
+                  and current.get("claimant") != self.swarm):
+                await self._left(current)
         return failed + await self._catch_up_threads()
 
     async def _catch_up_threads(self) -> int:
         """Route thread messages the stream missed. Returns the number of cards that failed."""
-        seen = self.queue.thread_seqs()
-        cards = {c["id"]: c for c in (await self._all(recipient=self.swarm)
-                                      + await self._all(sender=self.swarm))}
+        seen = await self.db.thread_seqs()
+        cards = {c["id"]: c for filters in ({"recipient": self.swarm}, {"recipient": OPEN},
+                                            {"sender": self.swarm})
+                 for c in await self._all(**filters)}
         failed = 0
         for card in cards.values():
-            after = seen.get(card["id"], 0)
-            if int(card.get("last_message") or 0) <= after:
+            after = seen.get(card["id"])
+            last = int(card.get("last_message") or 0)
+            if last <= (after or 0):
+                continue
+            if after is None and (card_state(card) in _FINISHED or not self._recent(card)):
+                await self.db.set_thread_seq(card["id"], last)  # history, not news
                 continue
             try:
-                fresh = await self.client.messages(card["id"], after=after)
+                fresh = await self.client.messages(card["id"], after=after or 0)
             except BoardRefused:
                 continue
             except BoardError as exc:
@@ -294,9 +321,9 @@ class Subscriber:
                 continue
             if not fresh:
                 continue
-            theirs = any(_swarm_of(m.get("sender")) != self.swarm for m in fresh)
-            if not theirs or await self._route(card):
-                self.queue.set_thread_seq(card["id"], max(int(m["seq"]) for m in fresh))
+            theirs = [m for m in fresh if swarm_of(m.get("sender")) != self.swarm]
+            if not theirs or await self._route(card, theirs[-1]):
+                await self.db.set_thread_seq(card["id"], max(int(m["seq"]) for m in fresh))
         return failed
 
     def _recent(self, card: dict) -> bool:
@@ -315,7 +342,7 @@ class Subscriber:
 
     async def consume(self) -> None:
         """Read the stream from the saved cursor until it ends or an event fails."""
-        stream = self.client.stream(self.queue.cursor(), on_state=self._set_attached)
+        stream = self.client.stream(await self.db.cursor(), on_state=self._set_attached)
         try:
             async for event_id, type_, card in stream:
                 async with self._lock:

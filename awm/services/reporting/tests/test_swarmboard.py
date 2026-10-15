@@ -25,9 +25,16 @@ async def test_ensure_makes_the_board_once_under_awm(tri):
     first = await board.ensure()
     assert first["created"] is True
     note = tri.notes[first["board"]]
-    assert note["parents"] == [awm] and note["labels"] == {"swarmBoard": "", "board:columnsFrom": "folders"}
+    assert note["parents"] == [awm]
+    assert {k: v for k, v in note["labels"].items() if not k.startswith("label:")} == {
+        "swarmBoard": "", "board:columnsFrom": "folders"}
     assert [tri.notes[i]["title"] for i in tri.kids(first["board"])] == [
-        "Proposed", "Planned", "Active", "Blocked", "Pending review", "Ledger"]
+        "Proposed", "Planned", "Active", "Blocked", "Pending review", "Done", "Rejected", "Ledger"]
+    chips = {k: v for k, v in note["labels"].items() if k.startswith("label:")}
+    assert chips == {"label:cardFrom": "promoted,single,text,alias=From",
+                     "label:cardTo": "promoted,single,text,alias=To",
+                     "label:project": "promoted,single,text,alias=Project",
+                     "label:owner": "promoted,single,text,alias=Owner"}
     before = len(tri.notes)
     second = await board.ensure()
     assert second["created"] is False and len(tri.notes) == before
@@ -67,7 +74,7 @@ async def test_move_never_uses_note_move_and_places_the_card_in_one_call(tri):
     card = tri.add("x", tri.add("Tony", type="book"))
     board = SwarmBoard(tri)
     await board.move(card, "Active")
-    assert [fn for fn in tri.writes()] == ["note_place"]
+    assert [fn for fn in tri.writes() if fn != "attr_set"] == ["note_place"]
 
 
 async def test_move_refuses_a_note_that_is_part_of_the_board(tri):
@@ -173,6 +180,15 @@ async def test_stamp_ops_backfills_only_the_notices_without_a_stamp(tri):
     assert await board.stamp_ops() == [] and tri.notes[fresh]["content"].count("Changed:") == 1
 
 
+async def test_stamp_ops_leaves_tonys_own_notes_in_ops_alone(tri):
+    tri.add("AWM", type="book")
+    board = SwarmBoard(tri)
+    ops = (await board.ensure())["ops"]
+    mine = tri.add("Links", ops, type="code", content="# Me\n\nhttps://example.org")
+    assert await board.stamp_ops() == []
+    assert "changed" not in tri.notes[mine]["labels"] and tri.notes[mine]["content"].startswith("# Me")
+
+
 async def test_a_ledger_note_per_node_is_managed(tri):
     ids = make_board(tri)
     board = SwarmBoard(tri)
@@ -190,3 +206,69 @@ async def test_a_trilium_failure_is_a_board_error_and_forgets_the_layout(tri):
     with pytest.raises(BoardError, match="down"):
         await board.snapshot()
     assert board._layout is None
+
+
+async def test_a_board_made_before_done_and_rejected_gets_the_columns_on_first_use(tri):
+    ids = make_board(tri)
+    tri.notes.pop(ids["Done"])
+    tri.notes.pop(ids["Rejected"])
+    lay = await SwarmBoard(tri).layout()
+    assert {tri.notes[lay.columns[t]]["title"] for t in ("Done", "Rejected")} == {"Done", "Rejected"}
+    assert tri.notes[lay.columns["Done"]]["type"] == "book"
+    assert tri.parents(lay.columns["Done"]) == [ids["board"]]
+
+
+async def test_the_chips_are_defined_once_and_not_redefined_when_present(tri):
+    make_board(tri)
+    board = SwarmBoard(tri)
+    await board.layout()
+    await board.layout()
+    sets = [a["name"] for fn, a in tri.calls if fn == "attr_set"]
+    assert sorted(sets) == ["label:cardFrom", "label:cardTo", "label:owner", "label:project"]
+    again = SwarmBoard(tri)
+    await again.layout()
+    assert len([1 for fn, _ in tri.calls if fn == "attr_set"]) == 4, "a second process finds them"
+
+
+async def test_a_chip_definition_failure_costs_only_the_chips(tri, caplog):
+    make_board(tri)
+    board = SwarmBoard(tri)
+    real = tri._attr_set
+
+    def refuse(**args):
+        raise RuntimeError("no")
+
+    tri._attr_set = refuse
+    with caplog.at_level("WARNING"):
+        assert (await board.layout()).columns
+    assert "could not define the card chips" in caplog.text and board._chips is False
+    tri._attr_set = real
+
+
+async def test_carry_labels_sets_only_what_is_missing_or_different(tri):
+    make_board(tri)
+    note = tri.add("card", labels={"cardFrom": "beta", "project": "old"})
+    board = SwarmBoard(tri)
+    assert await board.carry_labels(note, {"cardFrom": "beta", "cardTo": "tony", "project": "new",
+                                           "owner": None}) is True
+    assert tri.notes[note]["labels"] == {"cardFrom": "beta", "cardTo": "tony", "project": "new"}
+    writes = len(tri.writes())
+    assert await board.carry_labels(note, {"cardFrom": "beta", "cardTo": "tony"}) is False
+    assert len(tri.writes()) == writes
+
+
+async def test_archive_labels_the_note(tri):
+    make_board(tri)
+    note = tri.add("card")
+    await SwarmBoard(tri).archive(note)
+    assert tri.notes[note]["labels"] == {"archived": ""}
+
+
+async def test_done_and_rejected_are_columns_cards_can_be_placed_in(tri):
+    ids = make_board(tri)
+    card = tri.add("x", tri.add("Tony", type="book"))
+    board = SwarmBoard(tri)
+    await board.move(card, "Done")
+    await board.move(card, "Rejected")
+    assert ids["Rejected"] in tri.parents(card) and ids["Done"] not in tri.parents(card)
+    assert (await board.snapshot())[card] == "Rejected"

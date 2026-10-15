@@ -131,7 +131,7 @@ class TestContainerDirectoryIsNotAScope:
 
     def test_cleanup_refuses_a_container_directory(self, project):
         with pytest.raises(RuntimeError, match="not a scope"):
-            _cleanup_worktree(project / ".bare", project / "fabfos", "fabfos")
+            _cleanup_worktree(project / ".bare", project / "fabfos")
         assert (project / "fabfos" / "dev").exists()
         assert (project / "fabfos" / "dev" / ".git").exists()
 
@@ -150,7 +150,7 @@ class TestContainerDirectoryIsNotAScope:
             "the refused request destroyed a live nested scope"
 
     def test_removing_the_last_nested_scope_takes_its_container(self, project):
-        _cleanup_worktree(project / ".bare", project / "fabfos" / "dev", "fabfos/dev")
+        _cleanup_worktree(project / ".bare", project / "fabfos" / "dev")
         assert not (project / "fabfos").exists()
         assert project.exists(), "pruning must stop at the project directory"
 
@@ -158,7 +158,7 @@ class TestContainerDirectoryIsNotAScope:
         nested_b = project / "fabfos" / "bench"
         _git(project / ".bare", "worktree", "add", "-b", "fabfos/bench",
              str(nested_b), "main")
-        _cleanup_worktree(project / ".bare", project / "fabfos" / "dev", "fabfos/dev")
+        _cleanup_worktree(project / ".bare", project / "fabfos" / "dev")
         assert (project / "fabfos").is_dir()
         assert nested_b.exists()
 
@@ -168,7 +168,7 @@ class TestContainerDirectoryIsNotAScope:
         stale = project / "stale"
         stale.mkdir()
         (stale / "leftover.txt").write_text("x")
-        _cleanup_worktree(project / ".bare", stale, "feat/stale")
+        _cleanup_worktree(project / ".bare", stale)
         assert not stale.exists()
 
 

@@ -47,6 +47,7 @@ rest comes from the node's env file, `<workspace>/.awm/env`.
 | `AWM_BOARD_PORT` | host | the loopback port of the door (default 12521) |
 | `AWM_BOARD_DIR` | host | where `parties.db`, `events.db` and the locks live (default `<workspace>/.awm/board`) |
 | `AWM_BOARD_URL` | client | the door's base URL, for example `https://nexus.tony-xy-liu.com` |
+| `AWM_BOARD_THREAD_SWARMS` | host | comma-separated swarms that read replies on the thread. A reply card to one is filed in Done instead of Proposed (default none) |
 | `AWM_BOARD_TOKEN` | both | this swarm's party token; agents never see it. On the host, its party is the author of every message a person posts in the vault |
 
 On the host, `AWM_BOARD_URL` defaults to the loopback door, so the host's own
@@ -77,6 +78,28 @@ token once. Put it in the owning swarm's env file as `AWM_BOARD_TOKEN`. Run
 `operations_party_revoke` with the party id from `operations_party_list` to cut
 it off; its token and any open stream stop working within one heartbeat. The
 party verbs are CLI and HTTP only: they are not on the MCP surface.
+
+## Migrate a board from the previous release
+
+The previous release kept every card directly under the board note, grouped by
+a `#status` label, and filed each reply as its own card. Two host-only verbs
+convert it. Each answers only the host's own bare call and defaults to a dry run.
+
+1. Take a Trilium snapshot on the host.
+2. Call `operations_board_migrate_columns` and read the plan it reports.
+3. **WARNING** The next step moves every card note. Call it again with
+   `dry_run: false`. It makes the column folders and moves each card into the
+   folder for its old status.
+4. Call `operations_board_migrate_threads`. It writes a proposal to
+   `thread-proposal.json` in `AWM_BOARD_DIR`, with one subject per reply chain
+   and a suggested project, and reports a summary.
+5. Review the proposal with Tony. Edit the file to change a project or to keep
+   two chains apart.
+6. **WARNING** The next step writes thread history into `events.db`, and no
+   later run removes it. Call it with `dry_run: false`. It folds each chain's
+   replies into the root card's thread in their original time order. It sets
+   the project, moves each subject marked `to_done` to Done, and labels each
+   folded note `#archived`. It deletes nothing.
 
 ## Tests
 

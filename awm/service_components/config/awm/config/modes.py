@@ -1,23 +1,19 @@
 """Session modes and the verbs each may call.
 
-`reflection start_other` declares a mode for a session it creates. The gateway
-looks the calling session's mode up and refuses any call the mode's policy does
-not admit (`refusal`). A mode that is not listed in `MODES`, such as the default `worker`,
-is unrestricted.
+The gateway looks the calling session's mode up and refuses any call the mode's
+policy does not admit (`refusal`). A mode that is not listed in `MODES`, such as
+the default `worker`, is unrestricted. The one listed mode is `UNKNOWN`.
 
 A policy is one of two shapes, and both admit only what they name or declare:
 
-- `Allow` names the exact (domain, verb) pairs a session may call. It suits a
-  session with a fixed job (the representative, the secretary).
+- `Allow` names the exact (domain, verb) pairs a session may call.
 - `ByEffect` admits verbs by the effect they declare (`read`, `queue`, `write`
-  or `secret`), minus domains and verbs named out, plus a few named exceptions.
-  It suits a session that does open-ended work (the delegate) and has no tool
-  that runs code: a verb with no declared effect counts as `write`, so a new
-  verb is closed until its author declares it a read.
+  or `secret`), minus domains and verbs named out, plus a few named exceptions:
+  a verb with no declared effect counts as `write`, so a new verb is closed
+  until its author declares it a read.
 
 A policy is a guardrail on the agent-facing doors: it cannot cover a built-in
-tool the session itself holds, which is why a restricted session also launches
-with an explicit tool list.
+tool the session itself holds.
 """
 
 from __future__ import annotations
@@ -25,26 +21,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-REPRESENTATIVE = "representative"
-SECRETARY = "secretary"
-
-#: The mode cx gives a session that a restricted session started. Only cx
-#: assigns it, and it is never a mode a caller may ask for.
-DELEGATE = "delegate"
-
-#: Modes whose sessions start only delegates.
-DELEGATING_MODES = frozenset({REPRESENTATIVE})
-
 #: What `mode_of` answers when it cannot establish a mode. The most restricted
 #: mode, so an unreadable record never reads as "unrestricted".
 UNKNOWN = "unknown"
-
-#: Modes a session may not request for a session it starts. The front door
-#: service, which carries no session, starts the first two; cx assigns the third.
-RESERVED_MODES = frozenset({REPRESENTATIVE, SECRETARY, DELEGATE})
-
-#: Names only the front door service may give a session.
-RESERVED_NAMES = frozenset({REPRESENTATIVE, SECRETARY})
 
 Pair = tuple[str, str]
 CallArgs = dict[str, Any]
@@ -101,69 +80,12 @@ class ByEffect:
 Policy = Allow | ByEffect
 
 
-def is_reply(call_args: CallArgs) -> bool:
-    """Whether a `board_post` is a message card answering another card."""
-    reply_to = call_args.get("reply_to")
-    return call_args.get("kind") == "message" and isinstance(reply_to, str) and bool(reply_to)
-
-
 #: A restricted session can always shed its own context. `compact` acts only on
 #: the calling session (the gateway stamps the pid), and `reflection mode`,
 #: which changes the session's permission mode, is deliberately absent.
 _REFLECTION = _pairs("reflection", "compact", "whoami")
 
-#: What every session reports through: hooks fire these for it, and it claims
-#: its task and asks a human through them.
-_REPORTING = _pairs("operations", "hook_plan", "hook_plan_approved", "hook_todos",
-                    "hook_prompt", "hook_session_clear", "task_claim", "request_human")
-
-#: The card ledger, which only a triage session may read.
-_CARDS = _pairs("operations", "queue_list", "queue_get", "queue_assign", "status")
-
-#: The archive search's read verbs. `reindex` rebuilds the index and is not one.
-_SEARCH_READS = _pairs("search", "query", "get", "sources", "status")
-
-#: Pure reads of the scope channel.
-_SCOPE_READS = (_pairs("journal", "fetch", "goal_read", "goal_history")
-                | _pairs("scope", "search", "resolve")
-                | _SEARCH_READS)
-
 MODES: dict[str, Policy] = {
-    # Triage only: read cards, start or list workers, record the hand-off, and
-    # fail a card it refuses. It never does a card's work and never claims,
-    # completes or posts a card: the front door claims, a delegate finishes.
-    REPRESENTATIVE: Allow(
-        _pairs("operations", "board_list", "board_get", "board_fail", "board_messages")
-        | _pairs("reflection", "start_other", "list_other")
-        | _CARDS
-        | _REPORTING
-        | _REFLECTION
-        | _SCOPE_READS
-    ),
-    # Tony's assistant over Remote Control: starts, names, lists and stops
-    # agents. It never touches the board except to read it.
-    SECRETARY: Allow(
-        _pairs("reflection", "start_other", "list_other", "stop_other")
-        | _pairs("operations", "board_list", "board_get", "board_messages")
-        | _pairs("operations", "status", "queue_list", "queue_get")
-        | _REPORTING
-        | _REFLECTION
-        | _SCOPE_READS
-    ),
-    # The worker a restricted session starts for a card. It reads what the
-    # node declares readable, answers on its card's thread and finishes the
-    # card on the board, and it posts a message card only as a reply. It starts nothing, writes no scope, queue or
-    # setting, and has no browser: `browser` can drive a loopback browser to the
-    # gateway's HTTP door, past this gate.
-    DELEGATE: ByEffect(
-        effects=frozenset({"read"}),
-        denied_domains=frozenset({"browser", "factorio"}),
-        denied_pairs=_pairs("operations", "party_list") | _CARDS,
-        pairs=(_pairs("operations", "board_get", "board_list", "board_complete", "board_fail",
-                      "board_message_post", "board_messages")
-               | _REFLECTION | _REPORTING | _SEARCH_READS),
-        when={("operations", "board_post"): is_reply},
-    ),
     # A session whose mode could not be established gets the least that keeps
     # it alive: it can compact itself and nothing else.
     UNKNOWN: Allow(_REFLECTION),
