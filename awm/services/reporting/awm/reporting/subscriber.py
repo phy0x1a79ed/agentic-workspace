@@ -41,7 +41,7 @@ import httpx
 from awm.board.client import RESYNC, BoardError, BoardRefused
 
 from awm.reporting import ACTIVE, ASSIGNED, DONE, GONE, PROPOSED, REJECTED
-from awm.reporting.intake import (card_dm, card_state, event_line, message_dm, send_dm, swarm_of,
+from awm.reporting.intake import (card_dm, card_state, event_line, send_dm, swarm_of,
                                   wake_text)
 from awm.reporting.store import Offloaded, Queue
 
@@ -154,37 +154,23 @@ class Subscriber:
         return held.get("assigned_job") if held and held["status"] == ASSIGNED else None
 
     async def _route(self, card: dict, message: dict) -> bool:
-        """Tell the card's session, else Tony, about a new message. False to retry."""
+        """Wake the card's session about a new message. False to retry. Tony gets no DM."""
         job = await self._assignee(card["id"])
-        note = ""
-        if job:
-            try:
-                await asyncio.to_thread(self._send, job, wake_text(card["id"], message))
-            except Exception as exc:  # noqa: BLE001 — a closed PTY or a dialog is a miss
-                if card["id"] not in self._missed:
-                    self._missed.add(card["id"])
-                    log.info("reporting: %s did not take card %s's message (%s); retrying",
-                             job, card["id"], exc)
-                    self._kick.set()
-                    return False
-                note = f"its agent, job {job}, could not be reached"
-                log.info("reporting: %s is gone; Tony hears of card %s's message", job, card["id"])
-            else:
-                self._missed.discard(card["id"])
-                log.info("reporting: told %s about a message on card %s", job, card["id"])
-                return True
-        else:
-            held = await self.db.get(card["id"])
-            if held is not None and held["status"] == ASSIGNED:
-                note = f"claimed by {held['assigned_to']}, which has no background session to wake"
-        self._missed.discard(card["id"])
+        if not job:
+            return True
         try:
-            await self._dm(message_dm(card, message, note=note))
-        except Exception as exc:  # noqa: BLE001 — the catch-up routes it again
-            log.warning("reporting: could not tell Tony about a message on card %s: %s",
-                        card["id"], exc)
-            self._kick.set()
-            return False
+            await asyncio.to_thread(self._send, job, wake_text(card["id"], message))
+        except Exception as exc:  # noqa: BLE001 — a closed PTY or a dialog is a miss
+            if card["id"] not in self._missed:
+                self._missed.add(card["id"])
+                log.info("reporting: %s did not take card %s's message (%s); retrying",
+                         job, card["id"], exc)
+                self._kick.set()
+                return False
+            log.info("reporting: %s is gone; card %s's message stays on its thread", job, card["id"])
+        else:
+            log.info("reporting: told %s about a message on card %s", job, card["id"])
+        self._missed.discard(card["id"])
         return True
 
     # -- watchers --------------------------------------------------------------
