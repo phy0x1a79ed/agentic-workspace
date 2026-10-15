@@ -230,6 +230,17 @@ async def test_fleet_asks_every_domestic_node_and_never_a_foreign_one(loaded, pe
     assert any(h["origin"]["node"] == "local" for h in result["hits"])
 
 
+async def test_fleet_among_names_adds_the_domestic_nodes_to_them(loaded, peers):
+    peers.add("capella", peer_hits("r1"))
+    peers.add("shaula", peer_hits("r3"), relation="foreign", swarm="other")
+    for value in ("fleet,shaula", ["shaula", "fleet", "capella"]):
+        peers.calls.clear()
+        result = await loaded.query(parse({"query": "kitchen", "peers": value}))
+        assert set(result["peers"]) == {"capella", "shaula"}
+        assert sorted(c[0] for c in peers.calls) == ["capella", "shaula"]
+        assert any(h["origin"]["node"] == "local" for h in result["hits"])
+
+
 async def test_a_peer_is_asked_the_same_question_without_a_further_fan_out(loaded, peers):
     peers.add("altair", peer_hits())
     await loaded.query(parse({"query": "kitchen", "sources": ["journals"], "project": "awm", "limit": 4,

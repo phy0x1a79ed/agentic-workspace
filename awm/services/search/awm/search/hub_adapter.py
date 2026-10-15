@@ -62,7 +62,8 @@ API_MANIFEST: dict[str, Any] = {
                  "description": "Where to search. Omit it for this node only. `fleet` adds every "
                                 "domestic node. Node names, comma-separated, domestic or foreign, "
                                 "search only those nodes. Add `local` to the names to include "
-                                "this node."},
+                                "this node. `fleet` among the names adds every domestic node to "
+                                "them, as in `fleet,shaula`."},
             ],
         },
         {
