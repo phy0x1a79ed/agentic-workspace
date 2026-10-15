@@ -198,3 +198,39 @@ def test_backfill_puts_history_before_the_thread_and_never_repeats(events):
     assert thread[0]["origin"] == "migrated" and thread[0]["at"] == "2026-01-01"
     assert events.folded_ids(["r1", "r2", "r9"]) == {"r1", "r2"}
     assert [m["seq"] for m in events.messages("root")] == [1, 2, 3, 4, 5]
+
+
+def test_a_version_4_log_gains_the_node_column_and_opens_again_unchanged(tmp_path):
+    from awm.board.events import Events
+
+    path = tmp_path / "old.db"
+    conn = sqlite3.connect(path)
+    conn.executescript("""
+        CREATE TABLE schema_version (version INTEGER NOT NULL);
+        INSERT INTO schema_version VALUES (4);
+        CREATE TABLE events (id INTEGER PRIMARY KEY AUTOINCREMENT, type TEXT NOT NULL,
+            card_id TEXT NOT NULL, sender TEXT NOT NULL, recipient TEXT NOT NULL,
+            card TEXT NOT NULL, created_at REAL NOT NULL);
+        CREATE TABLE last_seen (card_id TEXT PRIMARY KEY, status TEXT NOT NULL,
+            recipient TEXT, claimant TEXT);
+        CREATE TABLE messages (card_id TEXT NOT NULL, seq INTEGER NOT NULL, at TEXT NOT NULL,
+            swarm TEXT NOT NULL, principal TEXT NOT NULL, party TEXT NOT NULL,
+            origin TEXT NOT NULL, body TEXT NOT NULL, note_id TEXT, agent TEXT,
+            PRIMARY KEY (card_id, seq));
+        INSERT INTO messages VALUES ('x', 1, 't', 'tony', 'p', 'q', 'api', 'old', NULL, 'w');
+    """)
+    conn.commit()
+    conn.close()
+    upgraded = Events(path)
+    assert upgraded.messages("x")[0]["node"] is None
+    sender = {"swarm": "tony", "principal": "p", "party": "q"}
+    added = upgraded.message_add("x", at="t", sender=sender, origin="api", body="new",
+                                 agent="w", node="deneb")
+    assert (added["agent"], added["node"]) == ("w", "deneb")
+    assert Events(path).messages("x", after=1)[0]["node"] == "deneb"
+
+
+def test_a_fresh_log_has_the_node_column(events):
+    sender = {"swarm": "tony", "principal": "p", "party": "q"}
+    assert events.message_add("x", at="t", sender=sender, origin="api", body="b",
+                              node="mira")["node"] == "mira"

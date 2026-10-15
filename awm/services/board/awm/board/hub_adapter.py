@@ -413,7 +413,7 @@ async def post(args: dict, as_: str | None = None) -> dict:
         kind=args["kind"], recipient=args["recipient"], title=args["title"],
         body=args.get("body") or "", priority=args.get("priority") or "normal",
         reply_to=args.get("reply_to") or None, project=args.get("project") or None,
-        agent=who["agent"],
+        agent=who["agent"], node=who["node"],
     ), as_))
 
 
@@ -438,7 +438,8 @@ async def status(args: dict, as_: str | None = None) -> dict:
 async def reject(args: dict, as_: str | None = None) -> dict:
     who = _who(args)
     return _card_reply(await _relay(
-        lambda c: c.reject(args["card_id"], args["reason"], agent=who["agent"]), as_))
+        lambda c: c.reject(args["card_id"], args["reason"], agent=who["agent"],
+                           node=who["node"]), as_))
 
 
 async def get(args: dict, as_: str | None = None) -> dict:
@@ -453,7 +454,8 @@ async def list_cards(args: dict, as_: str | None = None) -> dict:
 
 async def message_post(args: dict, as_: str | None = None) -> dict:
     who = _who(args)
-    reply = await _relay(lambda c: c.message(args["card_id"], args["body"], agent=who["agent"]), as_)
+    reply = await _relay(lambda c: c.message(args["card_id"], args["body"], agent=who["agent"],
+                                             node=who["node"]), as_)
     return {"ok": True, "message": reply["result"]} if reply.get("ok") else reply
 
 
