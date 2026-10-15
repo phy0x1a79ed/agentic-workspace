@@ -233,6 +233,14 @@ class Connector(ABC):
         channel list unchanged.
         """
 
+    async def list_seats(self) -> list[Channel]:
+        """The chats this account is in that a session may mount.
+
+        The default is every listed channel and DM. A connector overrides it to
+        list memberships only, or to leave out chats reserved for other uses.
+        """
+        return await self.list_channels(include_dms=True)
+
     async def open_dm(self, user: str) -> Channel:
         """Resolve a platform user (by id, or by name where supported) to a DM
         conversation and open it, returning the :class:`Channel`.

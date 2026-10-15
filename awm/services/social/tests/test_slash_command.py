@@ -65,6 +65,18 @@ def _approve_cmd(conn):
     return conn._tree.get_command("approve")
 
 
+# -- where the commands show ------------------------------------------------
+
+def test_every_command_is_registered_for_the_bot_dm_only():
+    """Discord hides each command in servers and group DMs: the synced payload
+    allows only the bot DM context (1) on a guild install (0)."""
+    conn = _connector(None)
+    payloads = [c.to_dict(conn._tree) for c in conn._tree.get_commands()]
+    assert {p["name"] for p in payloads} == {"approve", "reject", "new-agent"}
+    for p in payloads:
+        assert p["contexts"] == [1] and p["integration_types"] == [0]
+
+
 # -- on_command wiring ------------------------------------------------------
 
 class TestBuildForwardsOnCommand:

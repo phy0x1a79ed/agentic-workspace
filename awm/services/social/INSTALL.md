@@ -108,7 +108,12 @@ them live. Live receive *emits* each message arriving after connect on the
 
 A bot account (Slack `xoxb-`) is the one exception: it keeps a synced history of
 every chat the bot is in, edits and deletes applied. It delta-syncs at start,
-after each reconnect, every 10 minutes, and on first sight of a chat.
+after each reconnect, every 10 minutes, and on first sight of a chat. Only the
+sync moves a chat's cursor, so a live event that lands first never hides a gap.
+
+**CAUTION** The sync re-reads replies only on threads with activity in the 7
+days below the cursor. A reply that revives an older thread while the socket is
+down stays out of history.
 
 - **`social_history account= [channel=] [since=] [limit=]`** reads that store.
   With `since` (a message ts) it returns the messages after it, oldest first.
@@ -166,6 +171,44 @@ and require the mira host to be running the updated daemon
 (`mira/install-mira.sh`). Teams attachment download is best-effort: hosted-content
 images resolve in-session, but SharePoint-hosted files may need separate auth and
 are skipped rather than erroring the whole call.
+
+## Seats
+
+A seat is one channel or chat a bot account is in. `social_seats` lists them
+with their holders. A Claude Code background session mounts a seat with
+`social_mount`. Each later message in that seat, from anyone but the bot, is
+typed into the holder's prompt through `reflection message`, one line each:
+
+    slack from <sender>[ ↳<thread ts>]: <text>
+
+The line names no channel. The mount reply names the channel and how to answer.
+Newlines become ` ⏎ `. Text past 1500 characters is cut, and attachments add
+`[+N files]`. A mount replays nothing, so read the backlog with
+`social_history`.
+
+- **One holder.** A mount on a held seat is refused and names the holder.
+  `force=true` takes it, and the old holder gets one line saying it lost the
+  seat. The swarm is cooperative, so force is the recovery path.
+- **Release.** `social_unmount` frees one seat, or every seat the caller holds.
+  The owner prunes every 60 s and frees each seat whose job is gone or stopped.
+  An idle background session retires after about an hour, which frees its seats
+  the same way. A node that does not answer keeps its seats.
+- **Delivery.** Each holder has one ordered queue. A refused line (the holder
+  sits at a dialog) is retried with backoff for 2 minutes, then dropped.
+  History still holds it.
+- **Discord DM.** A Discord DM is the operator's notification channel and is
+  never a seat. `social_seats` lists guild text channels only.
+
+The holder is the calling session, never an argument. On the owner node the
+gateway stamps `_caller_pid`. A caller on another node arrives through the
+owner's edge, and its MCP proxy adds `_caller_session` from its own session
+record.
+
+**CAUTION** Two lists must agree for a cross-node mount:
+`SESSION_CLAIM_VERBS` in `awm/gateway/awm/gateway/mcp_caller.py` and the
+`social` entry of `_CALLER_STAMPED` in `server.py` beside it. The owner strips
+`_caller_session` from any call that skips the edge. A proxy started before the deploy sends no
+claim, so restart the session after you deploy.
 
 ## Cloud-drive buckets (Google Drive, OneDrive/SharePoint)
 
@@ -286,13 +329,14 @@ a **DM to the bot**, and only for a sender in the `social_operators` table.
 | `/new-agent [prompt]` | `reporting` starts a session with Remote Control on and answers with its link |
 
 The commands sync as *global* commands in `on_ready`, because global is the
-only kind that appears in a DM. On invocation the connector checks the sender,
+only kind that appears in a DM. The command tree allows the bot DM context only,
+so Discord hides the commands in servers and group DMs. On invocation the connector checks the sender,
 acks within Discord's 3s deadline and emits a normalised event on the `command`
 emitter topic (`/svc/social/emit/command`) with `{command, account,
 channel_id, operator, …}`. The service does nothing with a command itself.
 
-A guild invocation, or a sender absent from the operators table, gets an
-ephemeral refusal and emits nothing. Add an operator on the node that owns the
+A guild invocation that slips past the hidden context, or a sender absent from
+the operators table, gets an ephemeral refusal and emits nothing. Add an operator on the node that owns the
 bot account with `social add_operator platform=discord
 platform_user_id=<discord id> awm_user=<name>`.
 

@@ -30,6 +30,7 @@ from awm.gatewayclient import ServiceAdapter
 from awm.social import buckets as buckets_mod
 from awm.social import config as social_config
 from awm.social import connectors
+from awm.social import seats
 from awm.social.attachments import file_url, sink_dir, write_attachments
 from awm.social.dao import SocialDAO, init as dao_init
 from awm.social.history import History
@@ -123,6 +124,9 @@ async def _on_message(inbound: connectors.InboundMessage) -> None:
     if _adapter is not None:
         awm_user = _dao.lookup(inbound.platform, inbound.sender_id) or ""
         await _adapter.emit("message", _msg_to_dict(inbound, awm_user))
+    held = _dao.holder(inbound.account, inbound.channel_id)
+    if held:
+        _pusher.push(held["node"], held["job"], seats.push_line(inbound))
 
 
 async def _on_command(cmd: connectors.Command) -> None:
@@ -308,6 +312,121 @@ async def _h_search(args: dict) -> dict:
     rows = [_msg_to_dict(m, _dao.lookup(m.platform, m.sender_id) or "")
             for m in msgs]
     return {"messages": rows, "count": len(rows)}
+
+
+
+# -- seats ------------------------------------------------------------------
+
+def _release_gone(node: str, job: str) -> None:
+    for row in _dao.release_holder(node, job):
+        log.info("released seat %s/%s: holder %s is gone",
+                 row["account"], row["channel_id"], seats.holder_label(row))
+
+
+_pusher = seats.Pusher(on_gone=_release_gone)
+
+
+def _holder_dict(row: dict | None) -> dict | None:
+    if not row:
+        return None
+    return {k: row[k] for k in ("node", "job", "session_name", "mounted_at")}
+
+
+async def _find_seat(conn: connectors.Connector, channel: str) -> connectors.Channel:
+    """The seat ``channel`` names, by id or by name."""
+    ref = channel.strip()
+    name = ref.lstrip("#@").lower()
+    chats = await conn.list_seats()
+    hits = [c for c in chats if c.id == ref] or [
+        c for c in chats if c.name and c.name.lower() in (ref.lower(), name)]
+    if len(hits) == 1:
+        return hits[0]
+    if hits:
+        raise seats.SeatError(
+            f"{ref!r} names {len(hits)} seats: "
+            + ", ".join(f"{c.name} ({c.id})" for c in hits) + ". Pass the id.")
+    if ref.startswith("dm:") or any(
+            c.kind == "dm" and (c.id == ref or c.name.lower() == name)
+            for c in await conn.list_channels(include_dms=True)):
+        raise seats.SeatError(
+            f"{conn.platform} DMs are reserved for notifications and cannot be mounted")
+    raise seats.SeatError(
+        f"account {conn.account.name!r} is not in {ref!r}. `seats` lists the chats "
+        "it is in; invite the bot to add one")
+
+
+async def _h_seats(args: dict) -> dict:
+    """Every chat the account is in, each with its holder or None."""
+    conn = _conn(args["account"])
+    held = {r["channel_id"]: r for r in _dao.mounts(args["account"])}
+    return {"seats": [{**vars(c), "holder": _holder_dict(held.get(c.id))}
+                      for c in await conn.list_seats()]}
+
+
+async def _h_mount(args: dict, as_: str | None = None) -> dict:
+    account = args["account"]
+    conn = _conn(account)
+    try:
+        who = seats.caller(args, as_)
+        seat = await _find_seat(conn, str(args["channel"]))
+    except seats.SeatError as exc:
+        return {"ok": False, "error": str(exc)}
+    label = seat.name or seat.id
+    prev = _dao.holder(account, seat.id)
+    evicted = prev if prev and (prev["node"], prev["job"]) != (who["node"], who["job"]) else None
+    if evicted and not args.get("force"):
+        return {"ok": False, "error": (
+            f"{label} is held by {seats.holder_label(evicted)} since "
+            f"{evicted['mounted_at']}. Pass force=true to take it."),
+            "holder": _holder_dict(evicted)}
+    row = _dao.mount(account, seat.id, seat.name, who)
+    if evicted:
+        _pusher.push(evicted["node"], evicted["job"],
+                     f"{conn.platform} seat lost: {label} is now held by "
+                     f"{seats.holder_label(row)}. Nothing more from it reaches you.")
+    return {
+        "ok": True,
+        "seat": {"account": account, "id": seat.id, "name": seat.name,
+                 "kind": seat.kind, "holder": _holder_dict(row)},
+        "evicted": _holder_dict(evicted),
+        "push": (f"each new message here is typed into your prompt as "
+                 f"'{conn.platform} from <sender>: <text>', with ' ↳<thread ts>' "
+                 f"after the sender for a thread reply"),
+        "reply": (f"social send account={account} channel={seat.id} text=<text>; "
+                  f"add thread=<thread ts> to answer in a thread"),
+        "backlog": (f"social history account={account} channel={seat.id}"
+                    if conn.keeps_history else
+                    f"social fetch account={account} channel={seat.id}"),
+        "lasts": "until unmount, a forced mount by another session, or this "
+                 "session's job ending",
+    }
+
+
+async def _h_unmount(args: dict, as_: str | None = None) -> dict:
+    account = args["account"]
+    _conn(account)
+    try:
+        who = seats.caller(args, as_)
+    except seats.SeatError as exc:
+        return {"ok": False, "error": str(exc)}
+    rows = _dao.mounts(account)
+    ref = str(args.get("channel") or "").strip()
+    if ref:
+        name = ref.lstrip("#@").lower()
+        rows = [r for r in rows if r["channel_id"] == ref
+                or r["channel_name"].lower() in (ref.lower(), name)]
+        if not rows:
+            return {"ok": False, "error": f"{ref!r} is not mounted"}
+        others = [r for r in rows if (r["node"], r["job"]) != (who["node"], who["job"])]
+        if others:
+            return {"ok": False, "error": (
+                f"{ref!r} is held by {seats.holder_label(others[0])}, not by you")}
+    else:
+        rows = [r for r in rows if (r["node"], r["job"]) == (who["node"], who["job"])]
+    for r in rows:
+        _dao.unmount(account, r["channel_id"])
+    return {"ok": True, "released": [
+        {"id": r["channel_id"], "name": r["channel_name"]} for r in rows]}
 
 
 def _written_reply(written: list[dict]) -> dict:
@@ -594,6 +713,47 @@ API_MANIFEST: dict[str, Any] = {
                 {"name": "since", "type": "string", "required": False},
                 {"name": "limit", "type": "number", "required": False},
                 {"name": "include_deleted", "type": "boolean", "required": False},
+            ],
+        },
+        {
+            "name": "seats",
+            "effect": "read",
+            "tool": "social_seats",
+            "description": "List the chats a bot account is in (its seats), each "
+                           "with the session holding it or null. A session "
+                           "mounts a seat to have its messages typed into its "
+                           "prompt.",
+            "params": [
+                {"name": "account", "type": "string", "required": True},
+            ],
+        },
+        {
+            "name": "mount",
+            "effect": "write",
+            "tool": "social_mount",
+            "description": "Hold a seat: every new message in that chat, from "
+                           "anyone but the bot, is typed into your prompt as one "
+                           "line 'slack from <sender>: <text>' (Discord: 'discord "
+                           "from'). Background sessions only. One holder per "
+                           "seat: a held seat is refused unless `force`, which "
+                           "takes it and tells the old holder. A Discord DM is "
+                           "reserved for notifications and cannot be mounted.",
+            "params": [
+                {"name": "account", "type": "string", "required": True},
+                {"name": "channel", "type": "string", "required": True,
+                 "description": "A seat's id or name, as `seats` lists it."},
+                {"name": "force", "type": "boolean", "required": False},
+            ],
+        },
+        {
+            "name": "unmount",
+            "effect": "write",
+            "tool": "social_unmount",
+            "description": "Release a seat you hold, or every seat you hold on "
+                           "the account when `channel` is omitted.",
+            "params": [
+                {"name": "account", "type": "string", "required": True},
+                {"name": "channel", "type": "string", "required": False},
             ],
         },
         {
@@ -1002,7 +1162,7 @@ API_MANIFEST: dict[str, Any] = {
 def _forwarding(fn: str, handler: Any) -> Any:
     """Wrap an account-taking handler so a borrowed account resolves on its owner.
 
-    Applied to the seven verbs that name an ``account`` — and only those. All seven
+    Applied to the verbs that name an ``account`` — and only those. All of them
     are already coroutine functions, so wrapping them changes nothing about how
     the adapter runs them; a blanket wrap over ``HANDLERS`` would instead turn
     the sync handlers into coroutine functions and move their DB work off the
@@ -1038,8 +1198,42 @@ def _forwarding(fn: str, handler: Any) -> Any:
     return _wrapped
 
 
+def _seat_forwarding(fn: str, handler: Any) -> Any:
+    """:func:`_forwarding` for a verb that acts for the calling session.
+
+    The owner cannot see a borrower's pid, so the borrower reads its own session
+    record and forwards the job as ``_caller_session``. The owner takes the node
+    from the edge's ``peer:<node>`` stamp, never from the call.
+    """
+    async def _wrapped(args: dict, as_: str | None = None) -> Any:
+        from awm import gatewayclient
+
+        peer = gatewayclient.peer_env(_SOCIAL_PEER_ENV)
+        account = (args or {}).get("account")
+        if peer and account and account not in _connectors:
+            fwd = {k: v for k, v in args.items()
+                   if k not in ("_caller_pid", "_caller_session")}
+            pid = args.get("_caller_pid")
+            if isinstance(pid, int):
+                fwd["_caller_session"] = seats.session_claim(pid)
+            try:
+                return await gatewayclient.call_peer(peer, "social", fn, fwd)
+            except gatewayclient.PeerError as exc:
+                raise RuntimeError(
+                    f"account {account!r} is a fleet singleton owned by peer "
+                    f"{peer!r}, which could not be reached: {exc}") from exc
+        return await handler(args, as_)
+
+    _wrapped.__name__ = getattr(handler, "__name__", f"_h_{fn}")
+    _wrapped.__doc__ = handler.__doc__
+    return _wrapped
+
+
 HANDLERS = {
     "send": _forwarding("send", _h_send),
+    "seats": _forwarding("seats", _h_seats),
+    "mount": _seat_forwarding("mount", _h_mount),
+    "unmount": _seat_forwarding("unmount", _h_unmount),
     "channels": _forwarding("channels", _h_channels),
     "open_dm": _forwarding("open_dm", _h_open_dm),
     "accounts": _h_accounts,
@@ -1094,6 +1288,7 @@ def _on_start() -> None:
 
     loop = asyncio.get_event_loop()
     borrowed = _is_borrower()
+    loop.create_task(seats.prune_loop(_dao))
     for cfg in accounts:
         _accounts[cfg.name] = cfg
         _dao.upsert_account(

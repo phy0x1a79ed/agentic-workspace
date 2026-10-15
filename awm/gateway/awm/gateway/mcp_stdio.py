@@ -361,7 +361,7 @@ def _handle_tools_call(params: dict) -> dict:
         if redirect:
             # Followed exactly once; ``peer`` is stripped so the far side does
             # not re-route what we already routed.
-            forwarded = {k: v for k, v in arguments.items() if k != "peer"}
+            forwarded = mcp_caller.forwarded_args(name, arguments, session_pid)
             from awm.gateway import peer_files  # noqa: PLC0415 — peer path only
             hop = peer_files.invoke_with_files(
                 redirect["peer"], redirect, {"name": name, "args": forwarded}, as_)

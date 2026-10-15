@@ -77,7 +77,14 @@ class DiscordConnector(Connector):
         # and we log it as a permanent failure.
         intents.message_content = True
         client = discord.Client(intents=intents)
-        tree = app_commands.CommandTree(client)
+        # Every command lives only in the bot's DM: Discord hides it in servers
+        # and group DMs, and `_admit` refuses one that arrives anyway.
+        tree = app_commands.CommandTree(
+            client,
+            allowed_contexts=app_commands.AppCommandContext(
+                guild=False, dm_channel=True, private_channel=False),
+            allowed_installs=app_commands.AppInstallationType(guild=True, user=False),
+        )
         self._tree = tree
         self._register_commands(tree, app_commands)
 
@@ -373,6 +380,10 @@ class DiscordConnector(Connector):
                         kind="dm",
                     ))
         return out
+
+    async def list_seats(self) -> list[Channel]:
+        # The DM carries notifications and approvals, so no session may hold it.
+        return await self.list_channels()
 
     async def identity(self) -> Identity:
         if self._client is None:

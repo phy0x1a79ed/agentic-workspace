@@ -9,6 +9,8 @@ Never a token (tokens live solely in ``social.toml``):
   the ``platform`` column.
 - ``social_history`` / ``social_sync`` — the synced message history of a bot
   account (every chat the bot is a member of) and its per-chat sync cursor.
+- ``social_mounts`` — which Claude session holds which seat (a chat a bot
+  account is in). Written only on the node that owns the account.
 
 Accounts that act as a person (Slack/Teams via mira, Gmail) keep no local copy:
 the platform is the source of truth and fetch/search query it live. A bot's
@@ -26,7 +28,7 @@ from awm.persistence.dao import BaseDAO
 from awm.persistence.databases import init_service_db
 
 SERVICE = "social"
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 SCHEMA_SQL = """\
 CREATE TABLE IF NOT EXISTS social_accounts (
@@ -70,9 +72,22 @@ CREATE TABLE IF NOT EXISTS social_sync (
     synced_ts    TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (account, channel_id)
 );
+
+CREATE TABLE IF NOT EXISTS social_mounts (
+    account      TEXT NOT NULL,
+    channel_id   TEXT NOT NULL,
+    channel_name TEXT NOT NULL DEFAULT '',
+    node         TEXT NOT NULL,
+    job          TEXT NOT NULL,
+    session_name TEXT NOT NULL DEFAULT '',
+    mounted_at   TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (account, channel_id)
+);
 """
 
-HISTORY_DDL = SCHEMA_SQL[SCHEMA_SQL.index("CREATE TABLE IF NOT EXISTS social_history"):]
+_MOUNTS_AT = SCHEMA_SQL.index("CREATE TABLE IF NOT EXISTS social_mounts")
+HISTORY_DDL = SCHEMA_SQL[SCHEMA_SQL.index("CREATE TABLE IF NOT EXISTS social_history"):_MOUNTS_AT]
+MOUNTS_DDL = SCHEMA_SQL[_MOUNTS_AT:]
 
 # v1 → v2: the local message mirror is gone (query platforms live). Drop the
 # orphan table + its indexes from any existing prod/dev DB. Idempotent.
@@ -83,6 +98,7 @@ DROP INDEX IF EXISTS ix_social_messages_channel;
 DROP TABLE IF EXISTS social_messages;
 """,
     (2, 3): HISTORY_DDL,
+    (3, 4): MOUNTS_DDL,
 }
 
 _initialized = False
@@ -267,6 +283,17 @@ class SocialDAO(BaseDAO):
                 r[flag] = bool(r[flag])
         return rows
 
+    def active_threads(self, account: str, channel_id: str,
+                       since_ts: str) -> list[str]:
+        """Threads in a chat with a stored message newer than ``since_ts``."""
+        rows = self.query_all(
+            "SELECT DISTINCT thread_id FROM social_history WHERE account = ? "
+            "AND channel_id = ? AND thread_id != '' "
+            "AND CAST(ts AS REAL) > CAST(? AS REAL)",
+            (account, channel_id, since_ts),
+        )
+        return [r["thread_id"] for r in rows]
+
     def synced_ts(self, account: str, channel_id: str) -> str | None:
         row = self.query_one(
             "SELECT synced_ts FROM social_sync WHERE account = ? AND channel_id = ?",
@@ -293,3 +320,50 @@ class SocialDAO(BaseDAO):
             "SELECT channel_id, channel_name, synced_ts FROM social_sync "
             "WHERE account = ? ORDER BY channel_name", (account,),
         )
+
+
+    # -- seats ---------------------------------------------------------------
+
+    _MOUNT_COLS = ("account, channel_id, channel_name, node, job, session_name, "
+                   "mounted_at")
+
+    def holder(self, account: str, channel_id: str) -> dict | None:
+        return self.query_one(
+            f"SELECT {self._MOUNT_COLS} FROM social_mounts "
+            "WHERE account = ? AND channel_id = ?", (account, channel_id))
+
+    def mounts(self, account: str | None = None) -> list[dict]:
+        if account:
+            return self.query_all(
+                f"SELECT {self._MOUNT_COLS} FROM social_mounts WHERE account = ? "
+                "ORDER BY channel_name", (account,))
+        return self.query_all(
+            f"SELECT {self._MOUNT_COLS} FROM social_mounts ORDER BY account, channel_name")
+
+    def mount(self, account: str, channel_id: str, channel_name: str,
+              holder: dict) -> dict:
+        """Make ``holder`` (node, job, name) the seat's holder, replacing any other."""
+        self.execute(
+            "INSERT INTO social_mounts (account, channel_id, channel_name, node, job, "
+            "session_name, mounted_at) VALUES (?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT (account, channel_id) DO UPDATE SET "
+            "channel_name = excluded.channel_name, node = excluded.node, "
+            "job = excluded.job, session_name = excluded.session_name, "
+            "mounted_at = excluded.mounted_at",
+            (account, channel_id, channel_name, holder["node"], holder["job"],
+             holder.get("name") or "", _now()),
+        )
+        return self.holder(account, channel_id)
+
+    def unmount(self, account: str, channel_id: str) -> bool:
+        return self.execute(
+            "DELETE FROM social_mounts WHERE account = ? AND channel_id = ?",
+            (account, channel_id)) > 0
+
+    def release_holder(self, node: str, job: str) -> list[dict]:
+        """Free every seat ``(node, job)`` holds; returns the freed rows."""
+        rows = self.query_all(
+            f"SELECT {self._MOUNT_COLS} FROM social_mounts WHERE node = ? AND job = ?",
+            (node, job))
+        self.execute("DELETE FROM social_mounts WHERE node = ? AND job = ?", (node, job))
+        return rows
