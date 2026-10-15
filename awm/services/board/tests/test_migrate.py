@@ -173,12 +173,13 @@ def test_apply_backfills_the_thread_in_original_order_and_folds_the_cards(
     assert not cards & {chains["b"], chains["c"], chains["d"]}          # archived, hidden
     assert board.get(root, chains["b"])["id"] == chains["b"]            # but never deleted
     assert trilium.label(trilium.card_note(chains["b"]), "archived") == ""
-    assert trilium.is_filed_archived(chains["b"]) and trilium.state_of(chains["b"]) == "proposed"
+    assert trilium.is_under(chains["b"], chains["a"]) and board.get(root, chains["b"])["state"] == "proposed"
+    assert not trilium.is_filed_archived(chains["b"])                   # filed under its home, no Archived folder
+    assert not [c for fn, c in trilium.calls if fn == "note_move"
+                and c["parent"] in trilium.archives_of_all()]
     assert board.get(root, chains["a"])["last_message"] == 3
     assert board.get(root, chains["a"])["project"] == "factorio"
-    chat = trilium.children(trilium.card_note(chains["a"]))
-    assert len(chat) == 1
-    mirrored = sorted(trilium.children(chat[0]), key=lambda n: trilium.label(n, "msgSeq"))
+    mirrored = sorted(trilium.children(trilium.chat_of(chains["a"])), key=lambda n: trilium.label(n, "msgSeq"))
     assert [trilium.notes[n]["content"] for n in mirrored] == [
         "which one?", "here it is", "Re: Re: Re:"]
     assert [trilium.label(n, "msgSeq") for n in mirrored] == ["00000001", "00000002", "00000003"]
@@ -222,7 +223,7 @@ def test_backfill_sorts_before_messages_the_root_already_has(board, trilium, cha
     assert [(m["seq"], m["body"]) for m in thread] == [
         (1, "which one?"), (2, "here it is"), (3, "Re: Re: Re:"), (4, "live one"), (5, "live two")]
     assert board.get({"swarm": "tony"}, chains["a"])["last_message"] == 5
-    chat = trilium.children(trilium.card_note(chains["a"]))[0]
+    chat = trilium.chat_of(chains["a"])
     titles = {trilium.label(n, "msgSeq"): trilium.notes[n]["title"] for n in trilium.children(chat)}
     assert sorted(titles) == ["0000000%d" % i for i in range(1, 6)]
     assert titles["00000004"].startswith("4 ·") and titles["00000005"].startswith("5 ·")

@@ -3,9 +3,11 @@
 The board is a note carrying one marker label. Its children are the column
 folders, one per state, and each card is a child of the folder for its state.
 Each column folder holds one `Archived` folder, and an archived card lives
-there, still in the state of the column around it. A card still sitting
-directly under the board is one from before the folders existed. This module finds those notes and moves bytes between them and plain
-dicts. It knows the `cardId` label because that is how a card is found, and
+there, still in the state of the column around it. A card folded into another
+(`cardFolded` names its home) may sit under the home card's note instead, and
+takes the home's state. A card still sitting directly under the board is one
+from before the folders existed. This module finds those notes and moves bytes
+between them and plain dicts. It knows the `cardId` label because that is how a card is found, and
 which folder is which state, and nothing else about what a card means.
 
 Trilium's note verbs are operator-only and admit loopback, so the board has to
@@ -41,6 +43,9 @@ COLUMN_LABEL = "cardColumn"
 
 #: Marks the `Archived` folder inside a column folder; its value is the state of that column.
 ARCHIVE_FOLDER_LABEL = "cardArchiveFolder"
+
+#: Names the card a folded reply was folded into: its home.
+FOLDED = "cardFolded"
 
 #: Hides a note, and the board view hides a folder that carries it.
 ARCHIVED = "archived"
@@ -108,6 +113,8 @@ class Vault:
         #: state to the id of the `Archived` folder inside its column folder. None until looked up.
         self._archives: dict[str, str] | None = None
         self._chips_defined = False
+        #: Cards whose home is being read, to cut a loop of homes.
+        self._homing: set[str] = set()
 
     # -- transport -------------------------------------------------------------
 
@@ -230,13 +237,17 @@ class Vault:
 
     # -- records ---------------------------------------------------------------
 
-    def _record(self, note: dict, content: str | None) -> dict | None:
+    def _record(self, note: dict, content: str | None,
+                homes: dict[str, dict | None] | None = None) -> dict | None:
         """A card record from a Trilium note, or None when the note is not a card.
 
         ``state`` is the state of the column folder the card sits in, or of the
-        column around the `Archived` folder it sits in, or None for a card still
-        directly under the board, whose state is its `status` label.
-        ``archived_in`` says whether the card sits in an `Archived` folder.
+        column around the `Archived` folder it sits in, or of its home card when
+        it sits under that card's note, or None for a card still directly under
+        the board, whose state is its `status` label. ``archived_in`` says
+        whether the card sits in an `Archived` folder or under its home.
+        ``home_note`` is the note of the home card it sits under, else None.
+        ``homes`` memoizes home records across the notes of one search.
         """
         parents = note.get("parentNoteIds") or []
         by_folder = {folder: state for state, folder in self.columns().items()}
@@ -246,8 +257,6 @@ class Vault:
             by_archive = {folder: state for state, folder in self.archives().items()}
             state = next((by_archive[p] for p in parents if p in by_archive), None)
             in_archive = state is not None
-        if state is None and self.board_id() not in parents:
-            return None
         labels: dict[str, str] = {}
         relations: dict[str, str] = {}
         for a in _own_attributes(note):
@@ -256,12 +265,50 @@ class Vault:
         card_id = labels.get("cardId")
         if not card_id:
             return None
+        home_note = None
+        if state is None and labels.get(FOLDED) and self.board_id() not in parents:
+            home = self._home_above(labels[FOLDED], card_id, parents, homes)
+            if home:
+                home_note, state, in_archive = home["note_id"], home["state"], True
+        if state is None and home_note is None and self.board_id() not in parents:
+            return None
         note_id = note["noteId"]
         self._note_by_card[card_id] = note_id
         self._card_by_note[note_id] = card_id
         return {"note_id": note_id, "title": note.get("title") or "",
                 "content": content, "labels": labels, "relations": relations, "state": state,
-                "archived_in": in_archive}
+                "archived_in": in_archive, "home_note": home_note}
+
+    def _home_above(self, target: str, card_id: str, parents: list[str],
+                    homes: dict[str, dict | None] | None) -> dict | None:
+        """The card on the chain of homes starting at ``target`` whose note is one of ``parents``, if any."""
+        seen = {card_id}
+        while target and target not in seen:
+            seen.add(target)
+            home = self._home(target, card_id, homes)
+            if home is None:
+                return None
+            if home["note_id"] in parents:
+                return home
+            target = home["labels"].get(FOLDED, "")
+        return None
+
+    def _home(self, home_id: str, card_id: str, homes: dict[str, dict | None] | None) -> dict | None:
+        """The record of the card ``home_id``, for a card folded into it. None when it is gone or is the card itself."""
+        if home_id == card_id:
+            return None
+        if homes is not None and home_id in homes:
+            return homes[home_id]
+        if card_id in self._homing:                         # a loop of homes: stop at the second visit
+            return None
+        self._homing.add(card_id)
+        try:
+            home = self.read(home_id, content=False)
+        finally:
+            self._homing.discard(card_id)
+        if homes is not None:
+            homes[home_id] = home
+        return home
 
     def create(self, title: str, body: str, labels: dict[str, str],
                relations: dict[str, str], state: str = "proposed") -> dict:
@@ -334,25 +381,35 @@ class Vault:
         if "status" in rec["labels"]:
             self._call("attr_delete", note_id=rec["note_id"], name="status")
 
-    def archive(self, rec: dict, state: str, labels: dict[str, str] | None = None) -> None:
+    def archive(self, rec: dict, state: str, labels: dict[str, str] | None = None,
+                home: dict | None = None) -> None:
         """Label the card `archived` and file it in the `Archived` folder of the column for ``state``.
 
+        With a ``home`` record the card goes under the home card's note instead.
         The labels go first and the move last, as every write does. A card
         already filed there is not moved again. Extra ``labels`` are written
         with the `archived` label. Unarchiving is moving the card back out.
         """
         self.update(rec["note_id"], labels={**(labels or {}), ARCHIVED: ""})
-        if not (rec.get("archived_in") and rec.get("state") == state):
+        if home is not None:
+            self.file_under(rec, home)
+        elif not (rec.get("archived_in") and rec.get("state") == state):
             self.ensure_columns()
             self._call("note_move", note_id=rec["note_id"], parent=self.archives()[state])
         if "status" in rec["labels"]:
             self._call("attr_delete", note_id=rec["note_id"], name="status")
 
+    def file_under(self, rec: dict, home: dict) -> None:
+        """Move the card under the note of its ``home`` card, unless it is there already."""
+        if rec.get("home_note") != home["note_id"]:
+            self._call("note_move", note_id=rec["note_id"], parent=home["note_id"])
+
     def list_archived(self) -> list[dict]:
         """Every archived card note under the board, wherever it sits."""
         found = self._call("note_search", query=f"#cardId #{ARCHIVED}",
                            ancestor=self.board_id(), limit=SEARCH_LIMIT, archived=True)
-        return [rec for n in found.get("results") or [] if (rec := self._record(n, None))]
+        homes: dict[str, dict | None] = {}
+        return [rec for n in found.get("results") or [] if (rec := self._record(n, None, homes))]
 
     # -- card chats ------------------------------------------------------------
 

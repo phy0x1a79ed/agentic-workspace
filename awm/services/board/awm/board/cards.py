@@ -8,7 +8,8 @@ writer; the watcher (`Board.sweep`) notices edits made outside it and turns
 them into `card.moved` events. The event log only feeds stream replay.
 
 An archived card carries the `archived` label and sits in the `Archived` folder
-inside its column folder, so it keeps the state of the column around it.
+inside its column folder, so it keeps the state of the column around it. A
+folded card sits under its home card's note and takes the home's state.
 
 Every card also carries `status`, the previous release's four-value vocabulary
 derived from its state, so a peer that has not upgraded keeps reading the board.
@@ -431,9 +432,13 @@ class Board:
             raise ValueError("result is too long")
         with self._guard:
             rec, card = self._fetch(party, card_id)
-            if card["claimant"] != party["swarm"]:
+            if card["kind"] == "message" and card["recipient"] == party["swarm"]:
+                # Nobody claims a message: its recipient reads it, replies and finishes it.
+                if card["state"] in ("done", "rejected"):
+                    raise Forbidden("the card is finished")
+            elif card["claimant"] != party["swarm"]:
                 raise Forbidden("only the claimant finishes a card")
-            if card["state"] not in HELD:
+            elif card["state"] not in HELD:
                 raise Forbidden("the card is not in progress")
             self._transition(rec, card, state, event,
                              content=(card["body"] or "") + RESULT_MARKER + text, result=text)
@@ -740,6 +745,11 @@ class Board:
         """File every archived card in the `Archived` folder of its column. See `migrate.archive`."""
         from . import migrate
         return migrate.archive(self, dry_run)
+
+    def migrate_homes(self, dry_run: bool = True) -> dict:
+        """Move each folded card under the card it was folded into. See `migrate.homes`."""
+        from . import migrate
+        return migrate.homes(self, dry_run)
 
     def migrate_threads(self, dry_run: bool = True, proposal_path: str | Path | None = None) -> dict:
         """Fold reply cards into the threads of their root cards. See `migrate.threads`."""

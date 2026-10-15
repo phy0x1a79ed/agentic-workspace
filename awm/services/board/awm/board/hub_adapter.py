@@ -34,7 +34,8 @@ from awm.board.client import BoardClient, BoardError
 
 log = logging.getLogger("awm.board.hub_adapter")
 
-HOST_ONLY = ("party_add", "party_revoke", "party_list", "migrate_columns", "migrate_archive", "migrate_threads")
+HOST_ONLY = ("party_add", "party_revoke", "party_list", "migrate_columns", "migrate_archive", "migrate_threads",
+             "migrate_homes")
 CARD_FIELDS = ("sender", "recipient", "claimant", "status", "state", "kind", "reply_to", "project")
 
 #: Set once the host's stores exist. The admin verbs read it.
@@ -259,6 +260,21 @@ API_MANIFEST: dict[str, Any] = {
                 _param("dry_run", "boolean", "Default true. Pass false to apply the proposal."),
                 _param("proposal_path", "string", "The proposal file. Default: thread-proposal.json in the board's data dir."),
             ],
+        },
+        {
+            "name": "migrate_homes",
+            "tool": "operations_board_migrate_homes",
+            "surfaces": ["cli", "http"],
+            "effect": "write",
+            "description": (
+                "Host admin only. Move each archived card that carries "
+                "cardFolded from its Archived folder under the note of the "
+                "card it was folded into (the top one of a chain of folds), "
+                "and report the counts per home. "
+                "Cards with no home stay where they are. A dry run changes "
+                "nothing and reports the plan."
+            ),
+            "params": [_param("dry_run", "boolean", "Default true. Pass false to apply.")],
         },
         {
             "name": "party_add",
@@ -537,6 +553,11 @@ async def migrate_threads(args: dict, as_: str | None = None) -> dict:
     return await _migration("migrate_threads", as_, lambda b: b.migrate_threads(dry_run, path))
 
 
+async def migrate_homes(args: dict, as_: str | None = None) -> dict:
+    dry_run = _flag(args, "dry_run", True)
+    return await _migration("migrate_homes", as_, lambda b: b.migrate_homes(dry_run))
+
+
 HANDLERS: dict[str, Any] = {
     "post": post,
     "claim": claim,
@@ -552,6 +573,7 @@ HANDLERS: dict[str, Any] = {
     "migrate_columns": migrate_columns,
     "migrate_archive": migrate_archive,
     "migrate_threads": migrate_threads,
+    "migrate_homes": migrate_homes,
     "party_add": party_add,
     "party_revoke": party_revoke,
     "party_list": party_list,
