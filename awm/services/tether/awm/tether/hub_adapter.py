@@ -359,6 +359,30 @@ def _forward(verb: str, timeout: float):
     return handler
 
 
+def _release_report() -> dict[str, Any]:
+    """What version this host is pinned to, and what it is actually running.
+
+    A developer pointing ``AWM_TETHER_BIN`` at their own build runs no fetch, so
+    there is no VERSION to compare — say that plainly rather than report a
+    permanent mismatch. Otherwise an installed version behind the pin means the
+    last fetch did not finish, and the fetch log's last line says why.
+    """
+    pinned = paths.pinned_release()
+    if paths.BIN_OVERRIDE:
+        return {"pinned": pinned, "source": f"AWM_TETHER_BIN={paths.BIN_OVERRIDE}"}
+    installed = paths.installed_release()
+    report: dict[str, Any] = {
+        "pinned": pinned,
+        "installed": installed,
+        "in_sync": pinned == installed,
+    }
+    if not report["in_sync"]:
+        tail = daemon.tail(paths.FETCH_LOG, 1)
+        if tail:
+            report["last_fetch"] = tail[-1]
+    return report
+
+
 async def status(args: dict) -> dict:
     """What this host knows, then what its daemon knows.
 
@@ -368,6 +392,10 @@ async def status(args: dict) -> dict:
     report: dict[str, Any] = {
         "ok": True,
         "child": CHILD.snapshot(),
+        # The release this host is pinned to versus the one it actually fetched,
+        # so a fetch that failed on start shows as a version that lags the pin
+        # rather than as a binary nobody can explain.
+        "release": _release_report(),
         # Where this host's own buffer stands, which is what `drain` reads and
         # is not the same thing as the daemon's. A caller comparing the two can
         # see whether the watch connection is keeping up.

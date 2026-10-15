@@ -45,6 +45,46 @@ async def test_status_answers_with_no_daemon_running(tmp_path, monkeypatch):
     assert "logs" in report["hint"]
 
 
+async def test_status_reports_a_version_lag_when_the_fetch_fell_behind(tmp_path, monkeypatch):
+    """A node whose fetch failed runs an older version than RELEASE pins. That
+    gap is the whole account of the failure, so `status` has to show it."""
+    release = tmp_path / "RELEASE"
+    release.write_text("v0.2.0\n")
+    version = tmp_path / "bin" / "VERSION"
+    version.parent.mkdir()
+    version.write_text("v0.1.0\n")
+    log = tmp_path / "fetch.log"
+    log.write_text("2026-01-01T00:00:00Z tether fetch: could not fetch SHA256SUMS for v0.2.0\n")
+    monkeypatch.setattr(paths, "RELEASE_FILE", release)
+    monkeypatch.setattr(paths, "VERSION_FILE", version)
+    monkeypatch.setattr(paths, "FETCH_LOG", log)
+    monkeypatch.setattr(paths, "BIN_OVERRIDE", None)
+    monkeypatch.setattr(paths, "CONTROL_SOCKET", tmp_path / "absent.sock")
+    monkeypatch.setattr(paths, "ROLE", paths.OPERATOR)
+
+    rel = (await hub_adapter.status({}))["release"]
+
+    assert rel == {
+        "pinned": "v0.2.0",
+        "installed": "v0.1.0",
+        "in_sync": False,
+        "last_fetch": "2026-01-01T00:00:00Z tether fetch: could not fetch SHA256SUMS for v0.2.0",
+    }
+
+
+async def test_status_says_a_local_build_is_an_override_not_a_lag(tmp_path, monkeypatch):
+    """A developer pointing AWM_TETHER_BIN at their own build runs no fetch, so
+    there is no version to compare — say that, rather than a permanent mismatch."""
+    monkeypatch.setattr(paths, "BIN_OVERRIDE", "/some/cargo/target")
+    monkeypatch.setattr(paths, "CONTROL_SOCKET", tmp_path / "absent.sock")
+    monkeypatch.setattr(paths, "ROLE", paths.OPERATOR)
+
+    rel = (await hub_adapter.status({}))["release"]
+
+    assert "in_sync" not in rel
+    assert rel["source"] == "AWM_TETHER_BIN=/some/cargo/target"
+
+
 async def test_logs_reads_the_file_rather_than_the_daemon(tmp_path, monkeypatch):
     log = tmp_path / "daemon.log"
     log.write_text("first\nsecond\nthird\n")
