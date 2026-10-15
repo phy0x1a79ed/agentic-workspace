@@ -15,11 +15,14 @@ from awm.board.parties import Parties
 from awm.board.vault import Vault
 
 BOARD_LABEL = "federationBoard"
-_QUERY = re.compile(r'^#(\w+)(?:="?([^"]*)"?)?$')
+_TERM = re.compile(r'^#(!?)(\w+)(?:="?([^"]*)"?)?$')
 
 
 class FakeTrilium:
     """Just enough of the `trilium` domain: notes, labels and relations, a label search.
+
+    Labels inherit as Trilium's do: an inheritable label applies to the note's
+    whole subtree, and a search matches it on every note it applies to.
 
     It models what the vault calls and raises on anything else, so a test cannot
     pass because the fake quietly agreed. `hooks[fn]` runs before that verb, which
@@ -38,6 +41,7 @@ class FakeTrilium:
         self.fail_after_labels: int | None = None
         self.fail_after_apply = False
         self._lock = threading.RLock()
+        self.clock = 1_000_000.0
 
     # -- the transport the vault is given -------------------------------------
 
@@ -58,18 +62,28 @@ class FakeTrilium:
         note_id = uuid.uuid4().hex[:12]
         self.notes[note_id] = {"noteId": note_id, "title": title, "content": content,
                                "type": "text", "mime": "text/html",
-                               "parentNoteIds": [parent] if parent else ["root"]}
+                               "parentNoteIds": [parent] if parent else ["root"],
+                               "modified": self.clock}
         for name, value in (labels or {}).items():
             self.set_attr(note_id, name, value)
         return note_id
 
-    def set_attr(self, note_id: str, name: str, value: str, type: str = "label") -> None:
+    def set_attr(self, note_id: str, name: str, value: str, type: str = "label",
+                 inheritable: bool = False) -> None:
         for a in self.attrs.values():
             if a["noteId"] == note_id and a["name"] == name and a["type"] == type:
                 a["value"] = value
+                a["isInheritable"] = inheritable
                 return
         self.attrs[uuid.uuid4().hex[:12]] = {"noteId": note_id, "name": name,
-                                             "value": value, "type": type}
+                                             "value": value, "type": type,
+                                             "isInheritable": inheritable}
+
+    def touch(self, note_id: str) -> None:
+        self.notes[note_id]["modified"] = self.clock
+
+    def children(self, parent: str) -> list[str]:
+        return [n for n, note in self.notes.items() if parent in note["parentNoteIds"]]
 
     def label(self, note_id: str, name: str) -> str | None:
         for a in self.attrs.values():
@@ -96,33 +110,54 @@ class FakeTrilium:
 
     # -- the verbs -------------------------------------------------------------
 
+    def _ancestors(self, note_id: str) -> set[str]:
+        out: set[str] = set()
+        for p in self.notes[note_id]["parentNoteIds"]:
+            if p in self.notes and p not in out:
+                out |= {p} | self._ancestors(p)
+        return out
+
+    def _effective(self, note_id: str) -> list[tuple[str, dict]]:
+        """The note's own attributes, then the inheritable ones of its ancestors."""
+        above = self._ancestors(note_id)
+        return [(k, a) for k, a in self.attrs.items()
+                if a["noteId"] == note_id or (a["noteId"] in above and a.get("isInheritable"))]
+
     def _pojo(self, note_id: str) -> dict:
         n = self.notes[note_id]
-        attributes = [{"attributeId": k, **a} for k, a in self.attrs.items()
-                      if a["noteId"] == note_id]
+        attributes = [{"attributeId": k, **a} for k, a in self._effective(note_id)]
+        stamp = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(n["modified"])) + ".000Z"
         return {"noteId": note_id, "title": n["title"], "type": n["type"],
                 "mime": n["mime"], "parentNoteIds": list(n["parentNoteIds"]),
-                "attributes": attributes}
+                "utcDateModified": stamp, "attributes": attributes}
 
     def _descends(self, note_id: str, ancestor: str) -> bool:
         return any(p == ancestor or self._descends(p, ancestor)
                    for p in self.notes[note_id]["parentNoteIds"] if p in self.notes)
 
     def _h_note_search(self, query, ancestor=None, limit=50, **_):
-        m = _QUERY.match(query)
-        if not m:
-            raise RuntimeError(f"fake trilium cannot parse {query!r}")
-        name, value = m.group(1), m.group(2)
+        terms = []
+        for word in query.split():
+            m = _TERM.match(word)
+            if not m:
+                raise RuntimeError(f"fake trilium cannot parse {query!r}")
+            terms.append((m.group(1) == "!", m.group(2), m.group(3)))
         hits = []
         for note_id in self.notes:
             if ancestor and not self._descends(note_id, ancestor):
                 continue
-            for a in self.attrs.values():
-                if (a["noteId"] == note_id and a["name"] == name and a["type"] == "label"
-                        and (value is None or a["value"] == value)):
-                    hits.append(self._pojo(note_id))
-                    break
+            labels = [a for _, a in self._effective(note_id) if a["type"] == "label"]
+            if all(negated != any(a["name"] == name and (value is None or a["value"] == value)
+                                  for a in labels)
+                   for negated, name, value in terms):
+                hits.append(self._pojo(note_id))
         return {"results": hits[:limit]}
+
+    def _h_attr_set(self, note_id, name, value="", type="label", inheritable=False):
+        if note_id not in self.notes:
+            raise RuntimeError(f"404 no note {note_id}")
+        self.set_attr(note_id, name, str(value), type, bool(inheritable))
+        return {"note_id": note_id}
 
     def _h_note_create(self, title, content="", parent="root", type="text", mime=None,
                        labels=None, relations=None):
@@ -150,6 +185,7 @@ class FakeTrilium:
             self.notes[note_id]["title"] = title
         if content is not None:
             self.notes[note_id]["content"] = content
+        self.touch(note_id)
         written = 0
         for name, value in (labels or {}).items():
             self.set_attr(note_id, name, str(value))

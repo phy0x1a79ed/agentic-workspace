@@ -25,6 +25,7 @@ from awm.gatewayclient import ServiceAdapter, spawn_supervised
 from awm.reporting import DOMAIN, STATUSES, config
 from awm.reporting.notify import Notifier
 from awm.reporting.reconcile import Loop
+from awm.reporting.sessions import GONE, STOPPED, CxUnavailable
 from awm.reporting.ledger import Ledger
 from awm.reporting.store import Queue
 from awm.reporting.subscriber import Subscriber
@@ -108,11 +109,15 @@ API_MANIFEST: dict[str, Any] = {
                 "Record that a card was handed to an agent. A request becomes "
                 "`assigned`, and the agent that takes it completes it on the "
                 "board. A message becomes `done`, because messages are never "
-                "completed on the board. This changes only the front door's queue."
+                "completed on the board. With `job`, each later message on the "
+                "card's thread is typed into that session. This changes only the "
+                "front door's queue."
             ),
             "params": [
                 _param("card_id", "string", "The card's id.", True),
                 _param("agent", "string", "The agent or session the card was handed to.", True),
+                _param("job", "string", "The job id of the background session the "
+                       "representative started for the card, from `start_other` or `list_other`."),
             ],
         },
         {
@@ -445,10 +450,34 @@ async def assign(args: dict, as_: str | None = None) -> dict:
     if (not isinstance(agent, str) or not agent.strip() or len(agent) > MAX_AGENT_LEN
             or not agent.isprintable()):
         return {"ok": False, "error": "agent must be a short printable name"}
-    card, error = await asyncio.to_thread(RUNTIME.queue.assign, card_id, agent.strip())
+    job = args.get("job") or None
+    if job is not None:
+        refusal = await _job_refusal(job)
+        if refusal:
+            return {"ok": False, "error": refusal}
+    card, error = await asyncio.to_thread(RUNTIME.queue.assign, card_id, agent.strip(), job)
     if card is None:
         return {"ok": False, "error": error}
     return {"ok": True, "card": card}
+
+
+async def _job_refusal(job: Any) -> str | None:
+    """Why ``job`` may not hear a card's thread: only a live session the representative started may."""
+    if not isinstance(job, str) or not job.isalnum() or len(job) > MAX_AGENT_LEN:
+        return "job must be a job id"
+    representative = await RUNTIME.loop.representative_job()
+    if representative is None:
+        return "there is no live representative to vouch for the job"
+    try:
+        rows = await RUNTIME.loop.cx.list()
+    except CxUnavailable as exc:
+        return f"cannot check job {job}: {exc}"
+    row = next((r for r in rows if r.get("job") == job), None)
+    if row is None or row.get("state") in (GONE, STOPPED):
+        return f"job {job} is not a live session"
+    if row.get("parent") != representative:
+        return f"job {job} was not started by the representative"
+    return None
 
 
 async def board_ensure(args: dict, as_: str | None = None) -> dict:

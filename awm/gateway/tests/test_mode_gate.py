@@ -82,7 +82,7 @@ REP_ALLOWED = [
     ("reflection", "start_other"), ("reflection", "list_other"), ("reflection", "compact"),
     ("operations", "status"), ("operations", "queue_list"), ("operations", "queue_get"),
     ("operations", "queue_assign"), ("journal", "fetch"), ("scope", "search"),
-    ("journal", "goal_read"),
+    ("journal", "goal_read"), ("operations", "board_messages"),
 ]
 REP_REFUSED = [
     ("reflection", "stop_other"), ("reflection", "claim_other"), ("reflection", "seed_other"),
@@ -92,7 +92,8 @@ REP_REFUSED = [
     ("operations", "party_list"), ("reflection", "message_self"), ("reflection", "mode"),
     ("operations", "ops_post"), ("spawn", "start"), ("awm", "restart"),
     ("operations", "board_post"), ("operations", "board_claim"),
-    ("operations", "board_complete"), ("journal", "render"),
+    ("operations", "board_complete"), ("operations", "board_message_post"),
+    ("journal", "render"),
 ]
 
 

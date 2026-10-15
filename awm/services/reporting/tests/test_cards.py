@@ -258,7 +258,7 @@ async def test_convert_rerenders_open_cards_drops_owned_records_and_stamps_ops(e
 
 def test_the_task_schema_gains_owned_and_old_rows_keep_their_origin(tmp_path):
     path = tmp_path / "old.db"
-    databases.init_db_at(path, store._QUEUE_SCHEMA + store._TASKS_SCHEMA_V2, schema_version=2)
+    databases.init_db_at(path, store._QUEUE_SCHEMA_V3 + store._TASKS_SCHEMA_V2, schema_version=2)
     conn = databases.get_connection_at(path)
     now = 1.0
     for key in ("mine", "taken"):

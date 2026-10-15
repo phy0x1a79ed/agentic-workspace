@@ -17,6 +17,13 @@ refuses to claim one.
 The stream cursor is saved only after the event's card write has committed.
 A failure part way through leaves the cursor behind, and the restart replays
 the event. A catch-up that fails never keeps the stream from starting.
+
+A message on a card's thread wakes the session the card was assigned to, with
+a line that names the card and carries none of its text. A session that cannot
+take the line gets one more try, from the catch-up the miss asks for. After
+that, or when the card has no session, the card goes back to the
+representative's queue. Each card's thread cursor moves only once its message
+reached someone, so a catch-up after downtime routes what the stream missed.
 """
 
 from __future__ import annotations
@@ -39,12 +46,27 @@ log = logging.getLogger("awm.reporting.subscriber")
 
 POSTED = "card.posted"
 MOVED = "card.moved"
+MESSAGE = "card.message"
 PAGE = 200
 MAX_PAGES = 50
 RESTART_DELAY_S = 2.0
 KICK_DELAY_S = 10.0
 MAX_RESTART_DELAY_S = 120.0
 REFUSED_DELAY_S = 300.0
+
+
+def thread_text(card_id: str) -> str:
+    return f"New message on board card {card_id}, run operations board_messages"
+
+
+def _send_line(job: str, text: str) -> None:
+    from awm.claudedaemon.job import send_line
+
+    send_line(job, text)
+
+
+def _swarm_of(sender: Any) -> str:
+    return str(sender.get("swarm") or "") if isinstance(sender, dict) else str(sender or "")
 
 
 class Subscriber:
@@ -54,6 +76,7 @@ class Subscriber:
                  on_queued: Callable[[], None] | None = None,
                  catchup_s: float = 300.0,
                  message_backlog_s: float = 3 * 86400.0,
+                 send: Callable[[str, str], None] = _send_line,
                  clock: Callable[[], float] = time.time) -> None:
         self.queue = queue
         self.client = client
@@ -61,7 +84,9 @@ class Subscriber:
         self._on_queued = on_queued or (lambda: None)
         self._catchup_s = catchup_s
         self._backlog_s = message_backlog_s
+        self._send = send
         self._clock = clock
+        self._missed: set[str] = set()
         self._lock = asyncio.Lock()
         self._progress = False
         self._kick = asyncio.Event()
@@ -121,7 +146,53 @@ class Subscriber:
             log.info("reporting: adopting card %s, claimed before the queue write landed", card["id"])
             self._queued(card, reopen=True)
 
+    # -- one thread message --------------------------------------------------
+
+    def _ours(self, card: dict) -> bool:
+        return card.get("recipient") == self.swarm or _swarm_of(card.get("sender")) == self.swarm
+
+    async def _on_message(self, card: dict) -> None:
+        message = card.get("message")
+        if not isinstance(message, dict) or not self._ours(card):
+            return
+        seq = int(message.get("seq") or 0)
+        if seq <= self.queue.thread_seq(card["id"]):
+            return
+        if _swarm_of(message.get("sender")) == self.swarm or await self._route(card):
+            self.queue.set_thread_seq(card["id"], seq)
+
+    async def _route(self, card: dict) -> bool:
+        """Tell the card's session, or the representative, about a new message. False to retry."""
+        held = self.queue.get(card["id"])
+        if held is not None and held["status"] == CLAIMING:
+            return True  # the card reaches the representative with its thread
+        job = held.get("assigned_job") if held else None
+        if job:
+            try:
+                await asyncio.to_thread(self._send, job, thread_text(card["id"]))
+            except Exception as exc:  # noqa: BLE001 — a closed PTY or a dialog is a miss
+                if card["id"] not in self._missed:
+                    self._missed.add(card["id"])
+                    log.info("reporting: %s did not take card %s's message (%s); retrying",
+                             job, card["id"], exc)
+                    self._kick.set()
+                    return False
+                log.info("reporting: %s is gone; card %s goes back to the representative",
+                         job, card["id"])
+            else:
+                self._missed.discard(card["id"])
+                log.info("reporting: told %s about a message on card %s", job, card["id"])
+                return True
+        self._missed.discard(card["id"])
+        self.queue.reopen_thread(card)
+        log.info("reporting: queued card %s for a message on its thread", card["id"])
+        self._on_queued()
+        return True
+
     async def _apply(self, type_: str, card: dict) -> None:
+        if type_ == MESSAGE:
+            await self._on_message(card)
+            return
         if card.get("recipient") != self.swarm:
             if self.queue.has(card["id"]) and self.queue.mark(card["id"], GONE):
                 log.info("reporting: card %s was re-addressed away from this swarm", card["id"])
@@ -201,6 +272,31 @@ class Subscriber:
                     log.info("reporting: card %s was re-addressed away from this swarm", card_id)
             elif current.get("status") in (DONE, FAILED):
                 self.queue.mark(card_id, current["status"])
+        return failed + await self._catch_up_threads()
+
+    async def _catch_up_threads(self) -> int:
+        """Route thread messages the stream missed. Returns the number of cards that failed."""
+        seen = self.queue.thread_seqs()
+        cards = {c["id"]: c for c in (await self._all(recipient=self.swarm)
+                                      + await self._all(sender=self.swarm))}
+        failed = 0
+        for card in cards.values():
+            after = seen.get(card["id"], 0)
+            if int(card.get("last_message") or 0) <= after:
+                continue
+            try:
+                fresh = await self.client.messages(card["id"], after=after)
+            except BoardRefused:
+                continue
+            except BoardError as exc:
+                failed += 1
+                log.warning("reporting: could not read card %s's thread: %s", card["id"], exc)
+                continue
+            if not fresh:
+                continue
+            theirs = any(_swarm_of(m.get("sender")) != self.swarm for m in fresh)
+            if not theirs or await self._route(card):
+                self.queue.set_thread_seq(card["id"], max(int(m["seq"]) for m in fresh))
         return failed
 
     def _recent(self, card: dict) -> bool:

@@ -5,6 +5,11 @@ a card is, only to tell a reconnecting client what happened while it was away.
 The log also holds the board's memory of the last state it saw for each card,
 which the watcher compares against the vault to notice an edit made outside
 this process.
+
+Card messages are the exception: the `messages` table is their record, and each
+message's Trilium note is a mirror the board restores from it. Trilium enforces
+`#readOnly` only in its GUI and knows no author but the vault's operator, so a
+note alone could be neither final nor attributed.
 """
 
 from __future__ import annotations
@@ -18,7 +23,8 @@ from awm.persistence import databases
 
 from .parties import OPEN
 
-TYPES = ("card.posted", "card.claimed", "card.completed", "card.failed", "card.moved")
+TYPES = ("card.posted", "card.claimed", "card.completed", "card.failed", "card.moved",
+         "card.message")
 
 #: Events a single `since` call returns at most. A stream calls again from its cursor.
 DEFAULT_LIMIT = 500
@@ -27,6 +33,22 @@ _INDEXES = """
 CREATE INDEX IF NOT EXISTS events_sender ON events (sender, id);
 CREATE INDEX IF NOT EXISTS events_recipient ON events (recipient, id);
 CREATE INDEX IF NOT EXISTS events_created ON events (created_at);
+"""
+
+_MESSAGES = """
+CREATE TABLE IF NOT EXISTS messages (
+    card_id   TEXT NOT NULL,
+    seq       INTEGER NOT NULL,
+    at        TEXT NOT NULL,
+    swarm     TEXT NOT NULL,
+    principal TEXT NOT NULL,
+    party     TEXT NOT NULL,
+    origin    TEXT NOT NULL,
+    body      TEXT NOT NULL,
+    note_id   TEXT,
+    PRIMARY KEY (card_id, seq)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS messages_note ON messages (note_id);
 """
 
 _SCHEMA = """
@@ -45,12 +67,22 @@ CREATE TABLE IF NOT EXISTS last_seen (
     recipient TEXT,
     claimant  TEXT
 );
-""" + _INDEXES
+""" + _INDEXES + _MESSAGES
 
 _MIGRATIONS = {
     (1, 2): ("ALTER TABLE last_seen ADD COLUMN recipient TEXT;\n"
              "ALTER TABLE last_seen ADD COLUMN claimant TEXT;\n" + _INDEXES),
+    (2, 3): _MESSAGES,
 }
+
+_MESSAGE_COLUMNS = "card_id, seq, at, swarm, principal, party, origin, body, note_id"
+
+
+def _message(row: sqlite3.Row) -> dict:
+    return {"card_id": row["card_id"], "seq": row["seq"], "at": row["at"],
+            "sender": {"swarm": row["swarm"], "principal": row["principal"],
+                       "party": row["party"]},
+            "origin": row["origin"], "body": row["body"], "note_id": row["note_id"]}
 
 
 class Events:
@@ -58,7 +90,7 @@ class Events:
 
     def __init__(self, path: str | Path):
         self._path = Path(path)
-        databases.init_db_at(self._path, _SCHEMA, schema_version=2, migrations=_MIGRATIONS)
+        databases.init_db_at(self._path, _SCHEMA, schema_version=3, migrations=_MIGRATIONS)
 
     def _conn(self) -> sqlite3.Connection:
         return databases.get_connection_at(self._path)
@@ -165,3 +197,67 @@ class Events:
             conn.commit()
         finally:
             conn.close()
+
+    # -- card messages ----------------------------------------------------------
+
+    def message_add(self, card_id: str, *, at: str, sender: dict, origin: str,
+                    body: str, note_id: str | None = None) -> dict:
+        """Record a message as the card's next one. The sequence is the order of the thread."""
+        conn = self._conn()
+        try:
+            conn.execute(
+                "INSERT INTO messages (" + _MESSAGE_COLUMNS + ")"
+                " SELECT ?, COALESCE(MAX(seq), 0) + 1, ?, ?, ?, ?, ?, ?, ?"
+                " FROM messages WHERE card_id = ?",
+                (card_id, at, sender["swarm"], sender["principal"], sender["party"],
+                 origin, body, note_id, card_id))
+            row = conn.execute(
+                "SELECT " + _MESSAGE_COLUMNS + " FROM messages WHERE card_id = ?"
+                " ORDER BY seq DESC LIMIT 1", (card_id,)).fetchone()
+            conn.commit()
+        finally:
+            conn.close()
+        return _message(row)
+
+    def message_set_note(self, card_id: str, seq: int, note_id: str) -> None:
+        conn = self._conn()
+        try:
+            conn.execute("UPDATE messages SET note_id = ? WHERE card_id = ? AND seq = ?",
+                         (note_id, card_id, seq))
+            conn.commit()
+        finally:
+            conn.close()
+
+    def messages(self, card_id: str, after: int = 0, limit: int = DEFAULT_LIMIT) -> list[dict]:
+        """The card's messages after sequence ``after``, in sequence order."""
+        conn = self._conn()
+        try:
+            rows = conn.execute(
+                "SELECT " + _MESSAGE_COLUMNS + " FROM messages"
+                " WHERE card_id = ? AND seq > ? ORDER BY seq LIMIT ?",
+                (card_id, int(after or 0), max(1, int(limit)))).fetchall()
+        finally:
+            conn.close()
+        return [_message(r) for r in rows]
+
+    def message_by_note(self, note_id: str) -> dict | None:
+        conn = self._conn()
+        try:
+            row = conn.execute("SELECT " + _MESSAGE_COLUMNS + " FROM messages WHERE note_id = ?",
+                               (note_id,)).fetchone()
+        finally:
+            conn.close()
+        return _message(row) if row else None
+
+    def message_page(self, after_rowid: int, limit: int) -> tuple[list[dict], int]:
+        """A page of every message in insertion order, and the cursor for the next page (0 at the end)."""
+        limit = max(1, int(limit))
+        conn = self._conn()
+        try:
+            rows = conn.execute(
+                "SELECT rowid, " + _MESSAGE_COLUMNS + " FROM messages WHERE rowid > ?"
+                " ORDER BY rowid LIMIT ?", (int(after_rowid), limit)).fetchall()
+        finally:
+            conn.close()
+        cursor = rows[-1]["rowid"] if len(rows) == limit else 0
+        return [_message(r) for r in rows], cursor

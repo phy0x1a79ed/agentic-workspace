@@ -207,6 +207,24 @@ class Door:
             return JSONResponse({"error": "body must be a JSON object"}, status_code=400)
         return await self._call(self.board.fail, party, card_id, body.get("reason"))
 
+    async def post_message(self, request: Request) -> JSONResponse:
+        party = await self._party(request)
+        card_id = self._card_id(request)
+        if party is None or card_id is None:
+            return not_found()
+        body = await self._body(request)
+        if body is None:
+            return JSONResponse({"error": "body must be a JSON object"}, status_code=400)
+        return await self._call(self.board.message, party, card_id, body.get("body"))
+
+    async def list_messages(self, request: Request) -> JSONResponse:
+        party = await self._party(request)
+        card_id = self._card_id(request)
+        if party is None or card_id is None:
+            return not_found()
+        paging = {k: v for k in ("after", "limit") if (v := request.query_params.get(k))}
+        return await self._call(self.board.messages, party, card_id, **paging)
+
     async def stream(self, request: Request) -> StreamingResponse | JSONResponse:
         party = await self._party(request)
         if party is None:
@@ -260,6 +278,8 @@ def create_app(
         Route(f"{PREFIX}/cards/{{card_id}}/claim", guarded(door.claim_card), methods=["POST"]),
         Route(f"{PREFIX}/cards/{{card_id}}/complete", guarded(door.complete_card), methods=["POST"]),
         Route(f"{PREFIX}/cards/{{card_id}}/fail", guarded(door.fail_card), methods=["POST"]),
+        Route(f"{PREFIX}/cards/{{card_id}}/messages", guarded(door.post_message), methods=["POST"]),
+        Route(f"{PREFIX}/cards/{{card_id}}/messages", guarded(door.list_messages), methods=["GET"]),
         Route(f"{PREFIX}/stream", guarded(door.stream), methods=["GET"]),
     ]
     return Starlette(routes=routes, exception_handlers={HTTPException: _refuse})

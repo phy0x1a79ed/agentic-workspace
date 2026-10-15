@@ -44,6 +44,7 @@ SHAPES: tuple[tuple[frozenset[str], re.Pattern[str]], ...] = (
     (frozenset({"POST", "GET"}), re.compile(rf"^{PREFIX}/cards$")),
     (frozenset({"GET"}), re.compile(rf"^{PREFIX}/cards/{_ID}$")),
     (frozenset({"POST"}), re.compile(rf"^{PREFIX}/cards/{_ID}/(?:claim|complete|fail)$")),
+    (frozenset({"POST", "GET"}), re.compile(rf"^{PREFIX}/cards/{_ID}/messages$")),
     (frozenset({"GET"}), re.compile(rf"^{PREFIX}/stream$")),
 )
 

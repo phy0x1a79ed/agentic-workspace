@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 from awm.board.client import BoardConflict, BoardRefused
@@ -17,7 +18,7 @@ def make_card(**over) -> dict:
         "id": f"{_N:032x}", "kind": "request", "recipient": "tony", "status": "posted",
         "priority": "normal", "title": f"card {_N}", "body": "do the thing",
         "sender": {"swarm": "beta", "principal": "op", "party": "p"},
-        "claimant": None, "created_at": "2026-10-09T12:00:00.000+00:00",
+        "claimant": None, "created_at": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
     }
     card.update(over)
     return card
@@ -37,10 +38,29 @@ class FakeBoard:
         self.list_calls: list[dict] = []
         self.list_error: Exception | None = None
         self.get_errors: dict[str, Exception] = {}
+        self.threads: dict[str, list[dict]] = {}
+        self.message_reads: list[tuple[str, int | None]] = []
 
     def add(self, card: dict) -> dict:
         self.cards[card["id"]] = card
         return card
+
+    def say(self, card: dict, body: str = "hello", swarm: str = "beta") -> dict:
+        """Add a message to ``card``'s thread. Returns the ``card.message`` event's card."""
+        thread = self.threads.setdefault(card["id"], [])
+        message = {"card_id": card["id"], "seq": len(thread) + 1, "at": "2026-10-14T12:00:00Z",
+                   "sender": {"swarm": swarm, "principal": "op", "party": "p"},
+                   "origin": "api", "body": body}
+        thread.append(message)
+        card["last_message"] = message["seq"]
+        return {**card, "message": message}
+
+    async def messages(self, card_id: str, *, after: int | None = None,
+                       limit: int | None = None) -> list[dict]:
+        self.message_reads.append((card_id, after))
+        if card_id not in self.cards:
+            raise BoardRefused(404, "not found")
+        return [dict(m) for m in self.threads.get(card_id, []) if m["seq"] > (after or 0)]
 
     def post_event(self, type_: str, card: dict, event_id: int | None = None) -> int:
         event_id = event_id or (self.events[-1][0] + 1 if self.events else 1)
@@ -75,6 +95,8 @@ class FakeBoard:
         for card in self.cards.values():
             if any(card.get(k) != v for k, v in filters.items()
                    if v and k in ("recipient", "kind", "status", "claimant")):
+                continue
+            if filters.get("sender") and card["sender"]["swarm"] != filters["sender"]:
                 continue
             out.append(dict(card))
         start = offset or 0
@@ -150,10 +172,12 @@ class FakeCx:
 
 def session_row(mode: str, job: str = "abc12345", state: str = "idle", name: str | None = None,
                 caller: str | None = None, parent: str | None = None,
-                needs: str | None = None, detail: str | None = None) -> dict:
+                needs: str | None = None, detail: str | None = None,
+                tempo: str | None = None) -> dict:
     """A cx list row. A hand-started session has no lineage, so no caller."""
     return {"job": job, "name": name or mode, "mode": mode, "state": state,
-            "caller": caller, "parent": parent, "needs": needs, "detail": detail}
+            "caller": caller, "parent": parent, "needs": needs, "detail": detail,
+            "tempo": tempo}
 
 
 class FakeTrilium:
