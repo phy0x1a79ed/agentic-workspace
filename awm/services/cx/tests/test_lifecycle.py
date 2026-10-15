@@ -15,6 +15,8 @@ import time
 
 import pytest
 
+from awm.cx import config
+
 PARENT_JOB = "aaaaaaaa"
 CHILD_JOB = "bbbbbbbb"
 
@@ -704,60 +706,57 @@ def test_stop_never_deletes_the_conversation():
 # --- the caller's mode gates what it may start -------------------------------
 
 
-def allowed_list(flags):
-    return next(f for f in flags if f.startswith("--allowedTools=")).split("=", 1)[1].split(",")
+def test_every_caller_gets_the_same_plain_worker(home, launched):
+    for mode in ("representative", "secretary", "delegate", "worker", None):
+        launched.clear()
+        parent_session(home, mode=mode)
+        ok = start({**BASE, "name": f"w-{mode}", "prompt": "do it", "model": "opus", "effort": "high",
+                    "_caller_pid": os.getpid()})
+        assert ok["ok"] and ok["mode"] == "worker" and ok["parent"] == PARENT_JOB, mode
+        flags = launched[0]["flags"]
+        assert "--dangerously-skip-permissions" in flags and "--allow-dangerously-skip-permissions" in flags
+        assert not any(f.startswith(("--restricted", "--strict-mcp", "--tools", "--settings",
+                                     "--remote-control")) for f in flags)
+        assert "--model=opus" in flags and "--effort=high" in flags
+        for f in os.listdir(config.starts_dir()):
+            os.unlink(config.starts_dir() / f)
+        home.set_workers({})
 
 
-def test_a_gated_caller_gets_a_delegate_with_a_fixed_policy(home, launched):
-    parent_session(home, mode="representative")
-    ok = start({**BASE, "model": "opus", "effort": "high", "prompt": "do it",
+def test_a_caller_may_ask_for_the_options_the_verb_declares(home, launched):
+    parent_session(home, mode="worker")
+    ok = start({**BASE, "permission": "plan", "allowed_tools": ["Bash"], "disallowed_tools": ["Read"],
+                "tools": ["Bash", "Read"], "remote_control": True, "mode": "mine",
                 "_caller_pid": os.getpid()})
-    assert ok["ok"] and ok["mode"] == "delegate" and ok["parent"] == PARENT_JOB
     flags = launched[0]["flags"]
-    assert "--permission-mode=dontAsk" in flags and "--restricted" in flags
-    assert "--strict-mcp-config" in flags
-    tools = next(f for f in flags if f.startswith("--tools="))
-    assert "Bash" not in tools.split("=", 1)[1].split(",")
-    assert "Edit" in tools and "Task" in tools
-    assert "SendMessage" not in tools and "ListAgents" not in tools
-    assert not any(t in allowed_list(flags) for t in ("SendMessage", "ListAgents"))
-    allowed = next(f for f in flags if f.startswith("--allowedTools="))
-    assert "mcp__awm__*" in allowed and "Bash" not in allowed.split(",")
-    assert not any(f.startswith(("--remote-control", "--dangerously")) for f in flags)
-    assert "--model=opus" in flags and "--effort=high" in flags
-
-
-def test_a_secretary_caller_gets_a_top_level_worker(home, launched):
-    parent_session(home, mode="secretary")
-    ok = start({**BASE, "prompt": "do it", "_caller_pid": os.getpid()})
-    assert ok["ok"] and ok["mode"] == "worker" and ok["parent"] == PARENT_JOB
-    flags = launched[0]["flags"]
-    assert "--dangerously-skip-permissions" in flags
-    assert not any(f.startswith(("--restricted", "--strict-mcp", "--tools", "--settings"))
-                   for f in flags)
+    assert ok["ok"] and ok["mode"] == "mine"
+    assert "--permission-mode=plan" in flags and "--allow-dangerously-skip-permissions" in flags
+    assert "--tools=Bash,Read" in flags and "--allowedTools=Bash" in flags
+    assert "--disallowedTools=Read" in flags and any(f.startswith("--remote-control=") for f in flags)
 
 
 def test_a_restricted_start_omits_the_settings_when_the_file_is_missing(
         home, launched, monkeypatch, tmp_path):
     monkeypatch.setenv("AWM_CX_RESTRICTED_SETTINGS", str(tmp_path / "missing.json"))
-    parent_session(home, mode="representative")
-    start({**BASE, "_caller_pid": os.getpid()})
-    assert not any(f.startswith("--settings") for f in launched[0]["flags"])
+    start({**BASE, "restricted": True, "permission": "dontAsk"})
+    flags = launched[0]["flags"]
+    assert "--restricted" in flags and "--permission-mode=dontAsk" in flags
+    assert not any(f.startswith("--settings") for f in flags)
 
 
-def test_a_restricted_start_passes_the_reporting_settings(
+def test_a_restricted_start_passes_the_reporting_settings_and_cannot_offer_bypass(
         home, launched, monkeypatch, tmp_path):
     settings = tmp_path / "reporting-settings.json"
     settings.write_text("{}")
     monkeypatch.setenv("AWM_CX_RESTRICTED_SETTINGS", str(settings))
-    parent_session(home, mode="representative")
-    start({**BASE, "_caller_pid": os.getpid()})
-    assert f"--settings={settings}" in launched[0]["flags"]
+    start({**BASE, "restricted": True, "permission": "dontAsk"})
+    flags = launched[0]["flags"]
+    assert f"--settings={settings}" in flags
+    assert "--allow-dangerously-skip-permissions" not in flags, "the CLI refuses bypass under --restricted"
 
 
-def test_the_delegate_loads_only_the_awm_server_from_the_workspace_config(home, launched):
-    parent_session(home, mode="representative")
-    start({**BASE, "_caller_pid": os.getpid()})
+def test_a_strict_start_loads_only_the_awm_server_from_the_workspace_config(home, launched):
+    start({**BASE, "strict_mcp": True})
     flags = launched[0]["flags"]
     path = next(f for f in flags if f.startswith("--mcp-config=")).split("=", 1)[1]
     assert json.loads(open(path).read()) == {"mcpServers": {"awm": {
@@ -765,58 +764,36 @@ def test_the_delegate_loads_only_the_awm_server_from_the_workspace_config(home, 
         "env": {"AWM_WORKSPACE": "/ws"}}}}
 
 
-@pytest.mark.parametrize("override", [
-    {"permission": "bypassPermissions"}, {"permission": "plan"},
-    {"allowed_tools": ["Bash"]}, {"disallowed_tools": ["Read"]}, {"tools": ["Bash"]},
-    {"remote_control": True}, {"remote_control": "x"}, {"mode": "worker"},
-    {"restricted": False}, {"strict_mcp": False}, {"model": "opus-evil"},
-])
-def test_a_gated_caller_may_not_override_the_policy(home, launched, override):
-    parent_session(home, mode="representative")
-    out = start({**BASE, "_caller_pid": os.getpid(), **override})
-    assert out["ok"] is False and launched == []
-
-
-def test_a_gated_caller_may_not_create_a_scope(home, launched, monkeypatch):
-    from awm.cx import lifecycle
-
-    async def boom(*a, **k):
-        raise AssertionError("created a scope")
-
-    monkeypatch.setattr(lifecycle, "create_scope", boom)
-    parent_session(home, mode="representative")
-    out = start({"project": "awm", "scope": "nowhere", "_caller_pid": os.getpid()})
-    assert out["ok"] is False and "may not create scopes" in out["reason"]
-    assert launched == []
-
-
-def test_a_missing_awm_mcp_server_refuses_a_delegate(home, launched):
-    parent_session(home, mode="representative")
+def test_a_missing_awm_mcp_server_refuses_a_strict_start(home, launched):
     home.mcp_source.write_text(json.dumps({"mcpServers": {}}))
-    out = start({**BASE, "_caller_pid": os.getpid()})
+    out = start({**BASE, "strict_mcp": True})
     assert out["ok"] is False and "awm server" in out["reason"]
 
 
-def test_the_front_door_with_no_session_may_start_the_reserved_sessions(home, launched):
-    out = start({**BASE, "name": "representative", "mode": "representative",
-                 "permission": "dontAsk", "tools": ["SendMessage"],
-                 "restricted": True, "strict_mcp": True})
-    assert out["ok"] and out["mode"] == "representative"
-    flags = launched[0]["flags"]
-    assert "--tools=SendMessage" in flags and "--restricted" in flags
+def test_a_caller_may_create_the_scope_it_starts_in(home, launched, monkeypatch):
+    from awm.cx import lifecycle
+
+    made = []
+
+    async def create(project, scope):
+        made.append((project, scope))
+        (config.projects_dir() / project / scope).mkdir(parents=True)
+
+    monkeypatch.setattr(lifecycle, "create_scope", create)
+    parent_session(home, mode="worker")
+    out = start({"project": "awm", "scope": "nowhere", "_caller_pid": os.getpid()})
+    assert out["ok"] and made == [("awm", "nowhere")]
 
 
-@pytest.mark.parametrize("caller_mode", [None, "worker", "other"])
-@pytest.mark.parametrize("ask", [{"mode": "representative"}, {"mode": "secretary"},
-                                 {"mode": "delegate"}, {"name": "representative"},
-                                 {"name": "secretary"},
-                                 {"name": "representative - altair"},
-                                 {"name": "secretary - capella"}])
-def test_a_session_may_not_start_a_reserved_name_or_mode(home, launched, caller_mode, ask):
-    parent_session(home, mode=caller_mode)
-    out = start({**BASE, "_caller_pid": os.getpid(), **ask})
-    assert out["ok"] is False and "front door" in out["reason"]
-    assert launched == []
+def test_the_old_persona_names_and_modes_are_plain_labels(home, launched):
+    parent_session(home, mode="worker")
+    for ask in ({"mode": "representative"}, {"name": "secretary"}, {"name": "representative - altair"}):
+        for f in os.listdir(config.starts_dir()):
+            os.unlink(config.starts_dir() / f)
+        home.set_workers({})
+        parent_session(home, mode="worker")
+        out = start({**BASE, "_caller_pid": os.getpid(), **ask})
+        assert out["ok"] is True, ask
 
 
 def test_a_worker_or_unmoded_caller_may_start_any_other_mode(home, launched):

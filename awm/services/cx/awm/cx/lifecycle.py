@@ -38,7 +38,7 @@ from typing import Any
 
 from awm import gatewayclient
 from awm.claudedaemon import launch, roster, sessionmode
-from awm.config import caller_peer, modes, node_name, node_role, peer_relation
+from awm.config import caller_peer, node_name, node_role, peer_relation
 
 from awm.cx import config, sessions, trust
 
@@ -51,14 +51,6 @@ EFFORTS = ("low", "medium", "high", "xhigh", "max")
 #: Default mode of a started session. A gated mode keys on its own name; every
 #: other session is a plain worker.
 DEFAULT_MODE = "worker"
-
-#: What a caller in a gated mode may ask for. Everything else about the session
-#: it starts is cx's choice (`_child_spec`), so a card cannot talk the
-#: representative into starting a stronger session than a delegate.
-CHILD_FREE_ARGS = frozenset({"project", "scope", "prompt", "name", "model", "effort"})
-CHILD_OVERRIDES = ("permission", "allowed_tools", "disallowed_tools", "tools",
-                   "remote_control", "mode", "restricted", "strict_mcp")
-CHILD_MODELS = frozenset({"sonnet", "opus", "haiku", "sonnet[1m]", "opus[1m]"})
 
 UNKNOWN = sessionmode.UNKNOWN
 
@@ -147,13 +139,13 @@ async def _start(args: dict[str, Any], as_: str | None) -> dict[str, Any]:
         raise Refused(reason)
     spec = _parse(args)
     ensure_starts_dir()
-    confined = _apply_caller_policy(args, spec)
+    _refuse_unknown_caller(args)
     if spec["strict_mcp"]:
         spec["mcp_config"] = str(_write_mcp_config())
     if sessions.daemon_pid() is None:
         raise Refused("no claude code daemon is running — a session started now "
                       "would land inside awm's control group")
-    cwd = await _resolve_worktree(spec["project"], spec["scope"], create=not confined)
+    cwd = await _resolve_worktree(spec["project"], spec["scope"])
     untrusted = await asyncio.to_thread(trust.start_refusal, cwd)
     if untrusted:
         raise Refused(untrusted)
@@ -222,43 +214,16 @@ async def _started_link(job: str, remote_control: bool) -> dict[str, Any]:
         await asyncio.sleep(LINK_POLL_S)
 
 
-def _apply_caller_policy(args: dict[str, Any], spec: dict[str, Any]) -> bool:
-    """Hold the new session to what its caller is allowed to start.
+def _refuse_unknown_caller(args: dict[str, Any]) -> None:
+    """Refuse a caller whose mode cannot be established: it may start nothing.
 
     No `_caller_pid` means an operator or a service (the front door), which
-    carries no mode and may ask for anything. A session caller:
-
-    - may not ask for a reserved name or mode: only the front door starts the
-      representative and the secretary, and only cx assigns `delegate`;
-    - in an unknown mode may start nothing;
-    - in a delegating mode (`modes.DELEGATING_MODES`) gets a delegate. It may name the project,
-      scope, prompt, name, an allowlisted model and the effort, and nothing
-      else, and the scope must already exist. cx fixes the rest.
-
-    Returns whether the new session is confined to an existing scope.
+    carries no mode.
     """
     caller_pid = args.get("_caller_pid")
-    if caller_pid is None:
-        return False
-    role = spec["name"].partition(" - ")[0]
-    if spec["mode"] in modes.RESERVED_MODES or role in modes.RESERVED_NAMES:
-        raise Refused(f"only the front door may start a session named or moded "
-                      f"{sorted(modes.RESERVED_NAMES | modes.RESERVED_MODES)}")
-    mode = mode_of(caller_pid)
-    if mode == UNKNOWN:
+    if caller_pid is not None and mode_of(caller_pid) == UNKNOWN:
         raise Refused("the caller's mode could not be determined, so it may not "
                       "start sessions")
-    if mode not in modes.DELEGATING_MODES:
-        return False
-    given = [k for k in CHILD_OVERRIDES if args.get(k) not in (None, "", [])]
-    if given:
-        raise Refused(f"a session in mode {mode!r} may not set {', '.join(given)}; "
-                      "cx starts its sessions as delegates")
-    if spec["model"] not in CHILD_MODELS and args.get("model"):
-        raise Refused(f"a session in mode {mode!r} may use only the models "
-                      f"{', '.join(sorted(CHILD_MODELS))}")
-    spec.update(config.child_policy())
-    return True
 
 
 def _parse(args: dict[str, Any]) -> dict[str, Any]:
@@ -400,20 +365,14 @@ def _write_mcp_config() -> Path:
     return path
 
 
-async def _resolve_worktree(project: str, scope: str, *, create: bool = True) -> Path:
-    """The scope's worktree, created through the scopes service when absent.
-
-    A caller that may not create scopes (`create=False`) gets a refusal instead.
-    """
+async def _resolve_worktree(project: str, scope: str) -> Path:
+    """The scope's worktree, created through the scopes service when absent."""
     root = config.projects_dir()
     cwd = root / project / scope
     if not cwd.resolve().is_relative_to(root.resolve()):
         raise Refused("the scope resolves outside the projects directory")
     if cwd.is_dir():
         return cwd
-    if not create:
-        raise Refused(f"scope {project}/{scope} does not exist, and this caller "
-                      "may not create scopes")
     try:
         await create_scope(project, scope)
     except Exception as exc:  # noqa: BLE001 — any failure is the reason

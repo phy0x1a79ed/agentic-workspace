@@ -159,33 +159,6 @@ def projects_dir() -> Path:
     return awm_config.canonical_workspace() / "projects"
 
 
-#: The built-in tools a delegate holds: file work inside its scope and its own
-#: subagents. There is no Bash, so it runs nothing, and no SendMessage or
-#: ListAgents, so a card cannot reach another session through it.
-DELEGATE_TOOLS = ["Read", "Grep", "Glob", "Edit", "Write", "MultiEdit", "TodoWrite",
-                  "Task", "Agent", "Skill", "ToolSearch"]
-
-
-def child_policy() -> dict:
-    """What cx imposes on a session that a gated session started.
-
-    `dontAsk` denies at once anything that would prompt, so an unwatched
-    delegate cannot stall. `restricted` confines the file tools to the scope's
-    worktree and ignores user settings, and the strict MCP config leaves it only
-    the awm server.
-    """
-    from awm.config import modes
-
-    return {
-        "mode": modes.DELEGATE, "permission": "dontAsk",
-        "tools": list(DELEGATE_TOOLS),
-        "allowed_tools": [*DELEGATE_TOOLS, "mcp__awm__*"],
-        "disallowed_tools": ["Bash", "PowerShell", "Monitor", "Workflow", "WebFetch",
-                             "WebSearch", "NotebookEdit", "SendMessage", "ListAgents"],
-        "restricted": True, "strict_mcp": True, "remote_control": None,
-    }
-
-
 def mcp_source() -> Path:
     """The workspace's own MCP config, which names how to start the awm server."""
     env = os.environ.get("AWM_CX_MCP_SOURCE")
