@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from mira_api.storage_drivers import ONEDRIVE_PRELUDE, _call, classify
+from mira_api.storage_drivers import ONEDRIVE_PRELUDE, OneDriveDriver, _call, classify
 
 sync_api = pytest.importorskip("playwright.sync_api")
 
@@ -242,3 +242,107 @@ class TestRangedGet:
         sp.reset(files={f"{D}/a.txt": "hi"})
         got = sp.call("get", f"{D}/a.txt", 10, 5)
         assert got["b64"] == "" and got["size"] == 2
+
+
+class _SyncPage:
+    """A CDPPage stand-in that evaluates on the fake's page synchronously."""
+
+    def __init__(self, page):
+        self.page = page
+
+    async def evaluate_json(self, expr, **_kw):
+        try:
+            value = self.page.evaluate(expr)
+        except sync_api.Error as exc:
+            raise RuntimeError(str(exc)) from exc
+        return json.loads(value) if isinstance(value, str) else value
+
+
+def _drive(coro):
+    """Run a driver coroutine without an event loop. Sync playwright refuses a
+    running loop, and the driver awaits nothing but the page and sleep(0)."""
+    try:
+        while True:
+            coro.send(None)
+    except StopIteration as stop:
+        return stop.value
+
+
+@pytest.fixture()
+def drv(sp):
+    d = OneDriveDriver(_SyncPage(sp.page), _SyncPage(sp.page))
+    d.poll_delays = (0,)
+    return d
+
+
+E = "/teams/y/Docs"
+
+
+class TestMoveCopy:
+    def test_rename_keeps_the_item(self, sp, drv):
+        sp.reset(files={f"{D}/a.txt": "hi"})
+        before = sp.call("stat", f"{D}/a.txt")["id"]
+        entry = _drive(drv.mv(f"{D}/a.txt", f"{D}/b.txt"))
+        assert entry["name"] == "b.txt" and entry["id"] == before
+        assert f"{D}/a.txt" not in sp.nodes()
+
+    def test_move_folder_takes_its_tree(self, sp, drv):
+        sp.reset(folders=[f"{D}/s", f"{D}/t"], files={f"{D}/s/f.txt": "x"})
+        entry = _drive(drv.mv(f"{D}/s", f"{D}/t/s2"))
+        assert entry["is_dir"] is True
+        assert sp.nodes().get(f"{D}/t/s2/f.txt") == "file"
+        assert f"{D}/s" not in sp.nodes()
+
+    def test_copy_folder_leaves_the_source(self, sp, drv):
+        sp.reset(folders=[f"{D}/s"], files={f"{D}/s/f.txt": "x"})
+        entry = _drive(drv.cp(f"{D}/s", f"{D}/s-copy"))
+        assert entry["id"] != sp.call("stat", f"{D}/s")["id"]
+        assert {f"{D}/s/f.txt", f"{D}/s-copy/f.txt"} <= set(sp.nodes())
+
+    def test_existing_target_needs_overwrite(self, sp, drv):
+        sp.reset(files={f"{D}/a.txt": "new", f"{D}/b.txt": "old"})
+        with pytest.raises(FileExistsError, match="overwrite"):
+            _drive(drv.cp(f"{D}/a.txt", f"{D}/b.txt"))
+        _drive(drv.cp(f"{D}/a.txt", f"{D}/b.txt", overwrite=True))
+        got = sp.call("get", f"{D}/b.txt", 0, None)
+        assert base64.b64decode(got["b64"]) == b"new"
+
+    def test_missing_parent_needs_parents(self, sp, drv):
+        sp.reset(files={f"{D}/a.txt": "hi"})
+        with pytest.raises(FileNotFoundError, match="parents"):
+            _drive(drv.mv(f"{D}/a.txt", f"{D}/n/m/a.txt"))
+        _drive(drv.mv(f"{D}/a.txt", f"{D}/n/m/a.txt", parents=True))
+        assert sp.nodes().get(f"{D}/n/m/a.txt") == "file"
+
+    def test_missing_source_is_enoent(self, sp, drv):
+        with pytest.raises(FileNotFoundError):
+            _drive(drv.mv(f"{D}/nope", f"{D}/b"))
+
+    def test_into_itself_is_einval(self, sp, drv):
+        sp.reset(folders=[f"{D}/s"])
+        with pytest.raises(ValueError):
+            _drive(drv.mv(f"{D}/s", f"{D}/s/inner"))
+
+    @pytest.mark.parametrize("op,source_left", [("cp", True), ("mv", False)])
+    def test_cross_site_runs_a_copy_job(self, sp, drv, op, source_left):
+        sp.reset(sites=["/teams/x", "/teams/y"], libraries=[D, E],
+                 folders=[f"{D}/s"], files={f"{D}/s/f.txt": "x"})
+        entry = _drive(getattr(drv, op)(f"{D}/s", f"{E}/s"))
+        assert entry["path"] == f"{E}/s"
+        assert sp.nodes().get(f"{E}/s/f.txt") == "file"
+        assert (f"{D}/s" in sp.nodes()) is source_left
+
+    def test_cross_site_rename_is_einval(self, sp, drv):
+        sp.reset(sites=["/teams/x", "/teams/y"], libraries=[D, E],
+                 files={f"{D}/a.txt": "x"})
+        with pytest.raises(ValueError, match="keeps the name"):
+            _drive(drv.cp(f"{D}/a.txt", f"{E}/b.txt"))
+
+    def test_copy_job_error_is_reported(self, sp):
+        sp.reset(sites=["/teams/x", "/teams/y"], libraries=[D, E],
+                 files={f"{D}/a.txt": "x"})
+        job = sp.call("copyJob", f"{D}/a.txt", E, False)
+        assert sp.call("copyJobProgress", f"{D}/a.txt", job)["done"] is False
+        sp.page.evaluate(f"window.__fakeSP.addFile('{E}/a.txt', 'taken')")
+        prog = sp.call("copyJobProgress", f"{D}/a.txt", job)
+        assert prog["done"] is True and "cannot place" in prog["error"]

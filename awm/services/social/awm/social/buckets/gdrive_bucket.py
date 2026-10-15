@@ -263,6 +263,76 @@ class GoogleDriveBucket(Bucket):
         await self._execute(
             svc.files().delete(fileId=meta["id"], supportsAllDrives=True))
 
+    async def mv(self, src: str, dst: str, *, overwrite: bool = False,
+                 parents: bool = False) -> Entry:
+        meta, parent, name = await self._prepare_target(
+            "mv", src, dst, overwrite, parents)
+        svc = await self._service()
+        cur = await self._execute(svc.files().get(
+            fileId=meta["id"], fields="parents", supportsAllDrives=True))
+        moved = await self._execute(svc.files().update(
+            fileId=meta["id"], body={"name": name}, addParents=parent,
+            removeParents=",".join(cur.get("parents") or []),
+            fields="id, name, mimeType, size, modifiedTime",
+            supportsAllDrives=True))
+        return self._entry(moved, dst.strip("/"))
+
+    async def cp(self, src: str, dst: str, *, overwrite: bool = False,
+                 parents: bool = False) -> Entry:
+        meta, parent, name = await self._prepare_target(
+            "cp", src, dst, overwrite, parents)
+        return self._entry(await self._copy_tree(meta, parent, name),
+                           dst.strip("/"))
+
+    async def _prepare_target(self, op: str, src: str, dst: str,
+                              overwrite: bool, parents: bool):
+        """Resolve ``src`` and the folder ``dst`` lands in, clearing an
+        existing ``dst`` into the trash when ``overwrite`` → (meta, parent id,
+        new name)."""
+        segs = _split(dst)
+        if not segs or not _split(src):
+            raise ValueError(f"{op} needs a source and a target path")
+        if "/".join(segs).startswith("/".join(_split(src)) + "/"):
+            raise ValueError(f"{op}: cannot {op} {src!r} into itself")
+        meta = await self._resolve(src)
+        name, parent_path = segs[-1], "/".join(segs[:-1])
+        if parent_path and parents:
+            parent = (await self.mkdir(parent_path)).id
+        elif parent_path:
+            pmeta = await self._resolve(parent_path)
+            if pmeta.get("mimeType") != _FOLDER_MIME:
+                raise NotADirectoryError(
+                    f"bucket {self.account.name!r}: {parent_path!r} is a file")
+            parent = pmeta["id"]
+        else:
+            parent = self._root_id
+        taken = [c for c in await self._children(parent)
+                 if c.get("name") == name and c.get("id") != meta.get("id")]
+        if taken and not overwrite:
+            raise FileExistsError(
+                f"bucket {self.account.name!r}: {dst!r} exists "
+                f"(pass overwrite:true to replace it)")
+        svc = await self._service()
+        for c in taken:
+            await self._execute(svc.files().update(
+                fileId=c["id"], body={"trashed": True}, supportsAllDrives=True))
+        return meta, parent, name
+
+    async def _copy_tree(self, meta: dict, parent: str, name: str) -> dict:
+        """Drive copies files only, so a folder is rebuilt level by level."""
+        svc = await self._service()
+        fields = "id, name, mimeType, size, modifiedTime"
+        if meta.get("mimeType") != _FOLDER_MIME:
+            return await self._execute(svc.files().copy(
+                fileId=meta["id"], body={"name": name, "parents": [parent]},
+                fields=fields, supportsAllDrives=True))
+        made = await self._execute(svc.files().create(
+            body={"name": name, "parents": [parent], "mimeType": _FOLDER_MIME},
+            fields=fields, supportsAllDrives=True))
+        for child in await self._children(meta["id"]):
+            await self._copy_tree(child, made["id"], child["name"])
+        return made
+
     async def mkdir(self, path: str) -> Entry:
         segs = _split(path)
         if not segs:

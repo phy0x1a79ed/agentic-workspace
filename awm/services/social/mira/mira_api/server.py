@@ -17,7 +17,7 @@ Runs ON mira. Exposes a clean per-platform API over the awm-network so the awm
     POST /v1/{platform}/send  {channel,text,thread?}
     POST /v1/{platform}/open_dm  {user}  → resolve a user (id/name) to a DM channel
     GET  /v1/events                      → WS; pushes inbound {type:"message", …}
-    GET  /v1/fs/{name}/ls|stat|get|search, POST /v1/fs/{name}/put|upload|mkdir|rm
+    GET  /v1/fs/{name}/ls|stat|get|search, POST /v1/fs/{name}/put|upload|mkdir|rm|mv|cp
                                          → cloud file store (OneDrive/SharePoint)
 
 A file-store failure carries ``{error, code}``: 404 ENOENT, 409 ENOTDIR/EISDIR/
@@ -116,6 +116,8 @@ class MiraAPI:
         app.router.add_post("/v1/fs/{name}/upload", self._h_fs_upload)
         app.router.add_post("/v1/fs/{name}/mkdir", self._h_fs_mkdir)
         app.router.add_post("/v1/fs/{name}/rm", self._h_fs_rm)
+        app.router.add_post("/v1/fs/{name}/mv", self._h_fs_mv)
+        app.router.add_post("/v1/fs/{name}/cp", self._h_fs_cp)
         app.on_startup.append(self._on_startup)
         app.on_cleanup.append(self._on_cleanup)
         return app
@@ -392,6 +394,29 @@ class MiraAPI:
         try:
             await s.rm(path)
             return web.json_response({"ok": True})
+        except Exception as exc:  # noqa: BLE001
+            return _fs_error(exc)
+
+    async def _h_fs_mv(self, request: web.Request) -> web.Response:
+        return await self._fs_transfer(request, copy=False)
+
+    async def _h_fs_cp(self, request: web.Request) -> web.Response:
+        return await self._fs_transfer(request, copy=True)
+
+    async def _fs_transfer(self, request: web.Request, *, copy: bool) -> web.Response:
+        s = self._storage_driver(request)
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001
+            return web.json_response({"error": "invalid JSON body"}, status=400)
+        src, dst = body.get("src"), body.get("dst")
+        if not src or not dst:
+            return web.json_response({"error": "src and dst are required"}, status=400)
+        op = s.cp if copy else s.mv
+        try:
+            entry = await op(src, dst, overwrite=bool(body.get("overwrite")),
+                             parents=bool(body.get("parents")))
+            return web.json_response({"entry": entry})
         except Exception as exc:  # noqa: BLE001
             return _fs_error(exc)
 

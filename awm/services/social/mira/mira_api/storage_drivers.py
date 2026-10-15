@@ -24,9 +24,11 @@ where ``path`` is the absolute server-relative url and ``id`` is the SharePoint
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
+import time
 from abc import ABC, abstractmethod
 from typing import Any
 
@@ -36,6 +38,8 @@ log = logging.getLogger("mira_api.storage_drivers")
 
 #: CDP evaluate budget for one transfer call (a chunk to or from SharePoint).
 TRANSFER_TIMEOUT_S = 180.0
+#: How long a cross-site copy job may run before mv/cp gives up waiting.
+COPY_JOB_TIMEOUT_S = 3000.0
 
 
 def _call(helper: str, *args: Any) -> str:
@@ -157,6 +161,18 @@ class StorageDriver(ABC):
         raise NotImplementedError(
             f"{self.name} storage driver does not support mkdir")
 
+    async def mv(self, src: str, dst: str, *, overwrite: bool = False,
+                 parents: bool = False) -> dict:
+        """Move or rename ``src`` to the full path ``dst`` → the new entry."""
+        raise NotImplementedError(
+            f"{self.name} storage driver does not support mv")
+
+    async def cp(self, src: str, dst: str, *, overwrite: bool = False,
+                 parents: bool = False) -> dict:
+        """Copy ``src`` to the full path ``dst`` → the new entry."""
+        raise NotImplementedError(
+            f"{self.name} storage driver does not support cp")
+
     async def search(self, query: str, limit: int,
                      root: str | None = None) -> list[dict]:
         """Search the store → entry dicts. Non-abstract: a store with no usable
@@ -171,9 +187,9 @@ class StorageDriver(ABC):
 
 ONEDRIVE_PRELUDE = r"""
 window.__awmMira = window.__awmMira || {};
-if (!window.__awmMira.onedrive || window.__awmMira.onedrive._v !== 3) {
+if (!window.__awmMira.onedrive || window.__awmMira.onedrive._v !== 4) {
   const O = {};
-  O._v = 3;  // bump when changing helpers so a long-lived page self-upgrades
+  O._v = 4;  // bump when changing helpers so a long-lived page self-upgrades
   O._b64 = function (buf) {
     const bytes = new Uint8Array(buf);
     let bin = '';
@@ -449,6 +465,73 @@ if (!window.__awmMira.onedrive || window.__awmMira.onedrive._v !== 3) {
     if (!r.ok) throw await O._fail(r, 'rm', path);
     return {ok: true};
   };
+  // The origin serving a path: personal OneDrive lives on the tenant's -my host.
+  O._origin = function (path) {
+    const tenant = location.origin.replace(/-my\.sharepoint\.com$/i, '.sharepoint.com');
+    if ((O._segs(path)[0] || '').toLowerCase() === 'personal')
+      return tenant.replace(/\.sharepoint\.com$/i, '-my.sharepoint.com');
+    return tenant;
+  };
+  O._full = function (path) { return O._origin(path) + path; };
+  O._postJson = async function (url, digest, obj, verbose) {
+    return O._fetch(url, {method: 'POST', body: JSON.stringify(obj), headers: {
+      'X-RequestDigest': digest, 'Accept': 'application/json;odata=nometadata',
+      'Content-Type': verbose ? 'application/json;odata=verbose' : 'application/json;odata=nometadata'}});
+  };
+  O._resPath = function (path) {
+    return {__metadata: {type: 'SP.ResourcePath'}, DecodedUrl: O._full(path)};
+  };
+  O._sameSite = function (a, b) {
+    return O._origin(a) === O._origin(b) &&
+      O._webBase(a).toLowerCase() === O._webBase(b).toLowerCase();
+  };
+  // Move or copy within one site collection. The caller has cleared the target.
+  O.transfer = async function (src, dst, isDir, copy) {
+    if (!O._sameSite(src, dst))
+      throw O._err('EINVAL', 'transfer needs one site collection; use copyJob for ' + src + ' -> ' + dst);
+    const op = (copy ? 'Copy' : 'Move') + (isDir ? 'Folder' : 'File') + 'ByPath';
+    const options = {__metadata: {type: 'SP.MoveCopyOptions'}, KeepBoth: false,
+      ResetAuthorAndCreatedOnCopy: false, ShouldBypassSharedLocks: true};
+    if (!copy) options.RetainEditorAndModifiedOnMove = true;
+    const url = O._api(src) + '/SP.MoveCopyUtil.' + op +
+      (isDir ? '()' : '(overwrite=@a1)?@a1=false');
+    const digest = await O._digest(src);
+    const r = await O._postJson(url, digest,
+      {srcPath: O._resPath(src), destPath: O._resPath(dst), options: options}, true);
+    if (!r.ok) throw await O._fail(r, copy ? 'cp' : 'mv', src + ' -> ' + dst);
+    return {ok: true};
+  };
+  // Start a cross-site copy or move of src into the folder destDir. The item
+  // keeps its name. Poll it with copyJobProgress.
+  O.copyJob = async function (src, destDir, move) {
+    const digest = await O._digest(src);
+    const r = await O._postJson(O._api(src) + '/site/CreateCopyJobs', digest, {
+      exportObjectUris: [O._full(src)], destinationUri: O._full(destDir),
+      options: {IgnoreVersionHistory: false, IsMoveMode: !!move,
+                AllowSchemaMismatch: true, NameConflictBehavior: 0}});
+    if (!r.ok) throw await O._fail(r, move ? 'mv' : 'cp', src + ' -> ' + destDir);
+    const j = await r.json();
+    const job = (j.value || [])[0];
+    if (!job) throw new Error('CreateCopyJobs returned no job for ' + src);
+    return job;
+  };
+  // {done, error}: done once the job leaves the queue. A logged JobError or
+  // JobFatalError is the job's failure.
+  O.copyJobProgress = async function (src, job) {
+    const digest = await O._digest(src);
+    const r = await O._postJson(O._api(src) + '/site/GetCopyJobProgress', digest,
+      {copyJobInfo: job});
+    if (!r.ok) throw await O._fail(r, 'copy job', src);
+    const j = await r.json();
+    let error = '';
+    for (const line of (j.Logs || [])) {
+      let ev = {};
+      try { ev = JSON.parse(line); } catch (e) { continue; }
+      if (ev.Event === 'JobError' || ev.Event === 'JobFatalError')
+        error = error || (ev.Message || ev.Event);
+    }
+    return {done: Number(j.JobState) === 0, error: error};
+  };
   O.search = async function (query, limit, root) {
     const api = O._api(root || '');
     let q = String(query || '');
@@ -476,6 +559,22 @@ if (!window.__awmMira.onedrive || window.__awmMira.onedrive._v !== 3) {
   window.__awmMira.onedrive = O;
 }
 """
+
+
+def _segs(path: str) -> list[str]:
+    return [s for s in (path or "").split("/") if s]
+
+
+def _parent(path: str) -> str:
+    return "/" + "/".join(_segs(path)[:-1])
+
+
+def _site_key(path: str) -> str:
+    """The site collection owning a path, as the prelude's ``_webBase`` sees it."""
+    segs = _segs(path)
+    if len(segs) >= 2 and segs[0].lower() in ("teams", "sites", "personal"):
+        return f"/{segs[0]}/{segs[1]}".lower()
+    return ""
 
 
 def _is_personal(path: str | None) -> bool:
@@ -556,6 +655,96 @@ class OneDriveDriver(StorageDriver):
 
     async def rm(self, path: str) -> None:
         await self._run("window.__awmMira.onedrive.rm", path, path=path)
+
+    async def mv(self, src: str, dst: str, *, overwrite: bool = False,
+                 parents: bool = False) -> dict:
+        return await self._transfer(src, dst, copy=False,
+                                    overwrite=overwrite, parents=parents)
+
+    async def cp(self, src: str, dst: str, *, overwrite: bool = False,
+                 parents: bool = False) -> dict:
+        return await self._transfer(src, dst, copy=True,
+                                    overwrite=overwrite, parents=parents)
+
+    #: Seconds between polls: a copy job's progress, and a target settling.
+    poll_delays = (0.5, 1.0, 2.0, 3.0, 5.0)
+
+    async def _transfer(self, src: str, dst: str, *, copy: bool,
+                        overwrite: bool, parents: bool) -> dict:
+        """Clear the way, run the move or copy, and wait for the target.
+
+        One site collection uses SharePoint's MoveCopyUtil. Across site
+        collections (or onto personal OneDrive) it runs a copy job, which
+        keeps version history where a download and re-upload would not."""
+        verb = "cp" if copy else "mv"
+        if not _segs(dst) or not _segs(src):
+            raise ValueError(f"{verb} needs a source and a target path")
+        if dst == src or dst.lower().startswith(src.lower() + "/"):
+            raise ValueError(f"{verb}: cannot {verb} {src} onto itself or into itself")
+        entry = await self.stat(src)
+        try:
+            existing = await self.stat(dst)
+        except FileNotFoundError:
+            existing = None
+        if existing and existing.get("id") != entry.get("id"):
+            if not overwrite:
+                raise FileExistsError(
+                    f"{dst} exists (pass overwrite:true to replace it)")
+            await self.rm(dst)
+        parent = _parent(dst)
+        if parents:
+            await self.mkdir(parent)
+        else:
+            try:
+                p = await self.stat(parent)
+            except FileNotFoundError:
+                raise FileNotFoundError(
+                    f"parent folder {parent} does not exist "
+                    f"(pass parents:true to create it)") from None
+            if not p.get("is_dir"):
+                raise NotADirectoryError(f"{parent} is a file")
+        is_dir = bool(entry.get("is_dir"))
+        if _site_key(src) == _site_key(dst):
+            await self._run("window.__awmMira.onedrive.transfer", src, dst,
+                            is_dir, copy, path=src, timeout=TRANSFER_TIMEOUT_S,
+                            retry=False)
+        else:
+            if _segs(dst)[-1] != _segs(src)[-1]:
+                raise ValueError(
+                    f"{verb} across site collections keeps the name "
+                    f"{_segs(src)[-1]!r}; rename it after with mv")
+            await self._copy_job(src, parent, move=not copy)
+        return await self._settled(dst)
+
+    async def _copy_job(self, src: str, dest_dir: str, *, move: bool) -> None:
+        job = await self._run("window.__awmMira.onedrive.copyJob", src,
+                              dest_dir, move, path=src, retry=False)
+        deadline = time.monotonic() + COPY_JOB_TIMEOUT_S
+        i = 0
+        while True:
+            prog = await self._run("window.__awmMira.onedrive.copyJobProgress",
+                                   src, job, path=src) or {}
+            if prog.get("error"):
+                raise RuntimeError(f"copy job {src} -> {dest_dir}: {prog['error']}")
+            if prog.get("done"):
+                return
+            if time.monotonic() > deadline:
+                raise TimeoutError(
+                    f"copy job {src} -> {dest_dir} still running after "
+                    f"{COPY_JOB_TIMEOUT_S:.0f}s; it may yet finish")
+            await asyncio.sleep(self.poll_delays[min(i, len(self.poll_delays) - 1)])
+            i += 1
+
+    async def _settled(self, path: str) -> dict:
+        """The target's entry, waiting while SharePoint still settles it."""
+        for delay in (*self.poll_delays, None):
+            try:
+                return await self.stat(path)
+            except FileNotFoundError:
+                if delay is None:
+                    raise
+                await asyncio.sleep(delay)
+        raise AssertionError("unreachable")
 
     async def search(self, query: str, limit: int,
                      root: str | None = None) -> list[dict]:

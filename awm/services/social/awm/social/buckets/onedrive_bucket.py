@@ -47,6 +47,8 @@ _MANAGED_PATHS = ("teams", "sites", "personal")
 CHUNK = 8 * 1024 * 1024
 #: Seconds for one chunk round-trip; the daemon gives SharePoint 180 of them.
 _CHUNK_TIMEOUT_S = 240
+#: Seconds for a move or copy; a cross-site copy job runs up to 3000 of them.
+_TRANSFER_TIMEOUT_S = 3300
 
 _CODE_ERRORS: dict[str, type[Exception]] = {
     "ENOENT": FileNotFoundError,
@@ -136,9 +138,9 @@ class OneDriveBucket(Bucket):
     async def _get(self, route: str, timeout: float = 120, **params) -> dict:
         return await self._request("GET", route, params=params, timeout=timeout)
 
-    async def _post(self, route: str, body: dict) -> dict:
-        return await self._request("POST", route, body=body,
-                                   timeout=_CHUNK_TIMEOUT_S)
+    async def _post(self, route: str, body: dict,
+                    timeout: float = _CHUNK_TIMEOUT_S) -> dict:
+        return await self._request("POST", route, body=body, timeout=timeout)
 
     # -- mapping ------------------------------------------------------------
 
@@ -265,6 +267,22 @@ class OneDriveBucket(Bucket):
 
     async def rm(self, path: str) -> None:
         await self._post(f"/v1/fs/{_FS_NAME}/rm", {"path": self._abs(path)})
+
+    async def mv(self, src: str, dst: str, *, overwrite: bool = False,
+                 parents: bool = False) -> Entry:
+        return await self._transfer("mv", src, dst, overwrite, parents)
+
+    async def cp(self, src: str, dst: str, *, overwrite: bool = False,
+                 parents: bool = False) -> Entry:
+        return await self._transfer("cp", src, dst, overwrite, parents)
+
+    async def _transfer(self, op: str, src: str, dst: str, overwrite: bool,
+                        parents: bool) -> Entry:
+        resp = await self._post(f"/v1/fs/{_FS_NAME}/{op}", {
+            "src": self._abs(src), "dst": self._abs(dst),
+            "overwrite": bool(overwrite), "parents": bool(parents),
+        }, timeout=_TRANSFER_TIMEOUT_S)
+        return self._entry(resp.get("entry", {}), fallback_path=dst.strip("/"))
 
     async def search(self, query: str, *, limit: int = 50,
                      path: str = "") -> list[Entry]:

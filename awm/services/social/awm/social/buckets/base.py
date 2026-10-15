@@ -129,6 +129,20 @@ class Bucket(ABC):
         raise NotImplementedError(
             f"{self.kind} bucket does not support mkdir")
 
+    async def mv(self, src: str, dst: str, *, overwrite: bool = False,
+                 parents: bool = False) -> Entry:
+        """Move or rename ``src`` to the full path ``dst`` → the new entry.
+
+        An existing ``dst`` is ``FileExistsError`` unless ``overwrite``.
+        ``parents`` creates missing folders above ``dst``."""
+        raise NotImplementedError(f"{self.kind} bucket does not support mv")
+
+    async def cp(self, src: str, dst: str, *, overwrite: bool = False,
+                 parents: bool = False) -> Entry:
+        """Copy ``src`` to the full path ``dst`` → the new entry, as for
+        :meth:`mv`."""
+        raise NotImplementedError(f"{self.kind} bucket does not support cp")
+
     async def probe(self) -> None:
         """Raise unless the store answers for this identity right now."""
         await self.stat("")

@@ -380,6 +380,16 @@ class _FakeStorage:
     async def rm(self, path):
         self.calls.append(("rm", path))
 
+    async def mv(self, src, dst, *, overwrite=False, parents=False):
+        self.calls.append(("mv", src, dst, overwrite, parents))
+        return {"name": dst.rsplit("/", 1)[-1], "path": dst, "is_dir": False}
+
+    async def cp(self, src, dst, *, overwrite=False, parents=False):
+        self.calls.append(("cp", src, dst, overwrite, parents))
+        if dst.endswith("/taken"):
+            raise FileExistsError(f"{dst} exists")
+        return {"name": dst.rsplit("/", 1)[-1], "path": dst, "is_dir": False}
+
     async def search(self, query, limit, root=None):
         self.calls.append(("search", query, limit, root))
         return [{"name": "hit.txt", "path": "/r/hit.txt", "is_dir": False}]
@@ -491,6 +501,30 @@ class TestFsRoutes:
         resp = await api._h_fs_mkdir(_FsReq("onedrive", body={"path": "/r/a"}))
         assert resp.status == status
         assert _payload(resp)["code"] == code
+
+    async def test_mv_and_cp(self):
+        api, fake = _api_with_storage()
+        resp = await api._h_fs_mv(_FsReq("onedrive", body={
+            "src": "/r/a.txt", "dst": "/r/b.txt", "overwrite": True}))
+        assert resp.status == 200
+        assert _payload(resp)["entry"]["path"] == "/r/b.txt"
+        assert fake.calls[-1] == ("mv", "/r/a.txt", "/r/b.txt", True, False)
+        resp = await api._h_fs_cp(_FsReq("onedrive", body={
+            "src": "/r/a.txt", "dst": "/r/c/d.txt", "parents": True}))
+        assert resp.status == 200
+        assert fake.calls[-1] == ("cp", "/r/a.txt", "/r/c/d.txt", False, True)
+
+    async def test_cp_onto_existing_is_eexist(self):
+        api, _ = _api_with_storage()
+        resp = await api._h_fs_cp(_FsReq("onedrive", body={
+            "src": "/r/a.txt", "dst": "/r/taken"}))
+        assert resp.status == 409
+        assert _payload(resp)["code"] == "EEXIST"
+
+    async def test_mv_requires_src_and_dst(self):
+        api, _ = _api_with_storage()
+        resp = await api._h_fs_mv(_FsReq("onedrive", body={"src": "/r/a"}))
+        assert resp.status == 400
 
     async def test_put_requires_path_and_b64(self):
         api, _ = _api_with_storage()

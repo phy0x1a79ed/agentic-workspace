@@ -415,6 +415,18 @@ async def _h_bucket_rm(args: dict) -> dict:
     return {"ok": True, "path": args["path"]}
 
 
+async def _h_bucket_mv(args: dict) -> dict:
+    return {"entry": _entry_to_dict(await _bucket(args["bucket"]).mv(
+        args["src"], args["dst"], overwrite=bool(args.get("overwrite")),
+        parents=bool(args.get("parents"))))}
+
+
+async def _h_bucket_cp(args: dict) -> dict:
+    return {"entry": _entry_to_dict(await _bucket(args["bucket"]).cp(
+        args["src"], args["dst"], overwrite=bool(args.get("overwrite")),
+        parents=bool(args.get("parents"))))}
+
+
 async def _h_bucket_search(args: dict) -> dict:
     entries = await _bucket(args["bucket"]).search(
         args["query"], limit=int(args.get("limit", 50)),
@@ -636,6 +648,43 @@ API_MANIFEST: dict[str, Any] = {
             ],
         },
         {
+            "name": "bucket_mv",
+            "tool": "social_bucket_mv",
+            "description": "Move or rename the file or folder `src` to `dst` "
+                           "in a bucket. `dst` is the full new path, not a "
+                           "folder to move into. Paths as for bucket_ls, so a "
+                           "OneDrive move may cross sites (the name stays the "
+                           "same across sites). Version history and sharing "
+                           "go with the item. An existing `dst` is an error "
+                           "unless `overwrite=true`, which first sends it to "
+                           "the recycle bin (Drive: trash). `parents=true` "
+                           "creates missing folders above `dst`. Returns the "
+                           "new entry.",
+            "timeout": 3600,
+            "params": [
+                {"name": "bucket", "type": "string", "required": True},
+                {"name": "src", "type": "string", "required": True},
+                {"name": "dst", "type": "string", "required": True},
+                {"name": "overwrite", "type": "boolean", "required": False},
+                {"name": "parents", "type": "boolean", "required": False},
+            ],
+        },
+        {
+            "name": "bucket_cp",
+            "tool": "social_bucket_cp",
+            "description": "Copy the file or folder `src` to `dst` in a bucket. "
+                           "Arguments and errors as for bucket_mv. Returns the "
+                           "new entry.",
+            "timeout": 3600,
+            "params": [
+                {"name": "bucket", "type": "string", "required": True},
+                {"name": "src", "type": "string", "required": True},
+                {"name": "dst", "type": "string", "required": True},
+                {"name": "overwrite", "type": "boolean", "required": False},
+                {"name": "parents", "type": "boolean", "required": False},
+            ],
+        },
+        {
             "name": "bucket_search",
             "tool": "social_bucket_search",
             "description": "Search a bucket for files matching `query` (Google "
@@ -724,6 +773,8 @@ HANDLERS = {
     "bucket_get": _h_bucket_get,
     "bucket_put": _h_bucket_put,
     "bucket_rm": _h_bucket_rm,
+    "bucket_mv": _h_bucket_mv,
+    "bucket_cp": _h_bucket_cp,
     "bucket_search": _h_bucket_search,
     "emit_probe": _h_emit_probe,
 }

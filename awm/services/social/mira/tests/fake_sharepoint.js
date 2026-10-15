@@ -11,6 +11,7 @@
     F.auth = 'ok';         // 'ok' | 'redirect' | '403'
     F.range = 'value';     // who honours Range: 'value' ($value) | 'download' | 'none'
     F.uploads = {};        // upload id -> {path, data: Uint8Array}
+    F.jobs = {};           // copy job id -> {src, destDir, move, polls}
     F.seq = 0;
     for (const lib of (spec.libraries || ['/teams/x/Docs'])) F.addFolder(lib);
     for (const [p, text] of Object.entries(spec.files || {})) F.addFile(p, text);
@@ -68,6 +69,22 @@
     return new Response(n.data.slice(a, b + 1), {status: 206,
       headers: {'Content-Type': 'application/octet-stream'}});
   };
+  F.site = function (p) {
+    const s = p.split('/').filter(Boolean);
+    return s.length >= 2 ? '/' + s[0] + '/' + s[1] : '';
+  };
+  F.strip = function (u) { return u.startsWith(location.origin) ? u.slice(location.origin.length) : u; };
+  // Copy (or move) the subtree at src to dst. A copy gets fresh ids.
+  F.relocate = function (src, dst, move) {
+    for (const k of Object.keys(F.nodes).sort()) {
+      if (k !== src && !k.startsWith(src + '/')) continue;
+      const n = F.nodes[k], to = dst + k.slice(src.length);
+      const segs = to.split('/').filter(Boolean);
+      F.nodes[to] = Object.assign({}, n, {name: segs[segs.length - 1],
+        uid: move ? n.uid : F.uid()});
+      if (move) delete F.nodes[k];
+    }
+  };
   F.handle = async function (url, opts) {
     const method = (opts && opts.method) || 'GET';
     const body = opts && opts.body;
@@ -89,7 +106,45 @@
     if (method === 'POST' && rest === '/contextinfo') return F.json({FormDigestValue: 'digest'});
     if (method === 'POST' && opts.headers['X-RequestDigest'] !== 'digest')
       return F.json({error: 'bad digest'}, 403);
-    let m = rest.match(/^\/web\/folders\/AddUsingPath\(decodedurl='((?:[^']|'')*)'\)$/);
+    let m = rest.match(/^\/SP\.MoveCopyUtil\.(Move|Copy)(File|Folder)ByPath\((?:overwrite=@a1\)\?@a1=false|\))$/);
+    if (m && method === 'POST') {
+      const b = JSON.parse(body);
+      if (opts.headers['Content-Type'] !== 'application/json;odata=verbose' ||
+          b.srcPath.__metadata.type !== 'SP.ResourcePath' ||
+          b.options.__metadata.type !== 'SP.MoveCopyOptions')
+        return F.json({error: 'MoveCopyUtil wants a verbose, typed body'}, 400);
+      const src = F.strip(b.srcPath.DecodedUrl), dst = F.strip(b.destPath.DecodedUrl);
+      const n = F.nodes[src];
+      if (!n || n.kind !== m[2].toLowerCase()) return F.notFound();
+      if (F.site(src) !== F.site(dst)) return F.json({error: 'fake MoveCopyUtil stays in one site'}, 400);
+      if (F.nodes[dst]) return F.json({error: 'target exists'}, 400);
+      if (!F.nodes[F.parent(dst)]) return F.notFound('target folder missing');
+      F.relocate(src, dst, m[1] === 'Move');
+      return F.json({});
+    }
+    if (method === 'POST' && rest === '/site/CreateCopyJobs') {
+      const b = JSON.parse(body);
+      const src = F.strip(b.exportObjectUris[0]);
+      if (!F.nodes[src]) return F.notFound();
+      const id = 'job-' + F.uid();
+      F.jobs[id] = {src: src, destDir: F.strip(b.destinationUri),
+                    move: b.options.IsMoveMode, polls: 0};
+      return F.json({value: [{JobId: id, JobQueueUri: 'q', EncryptionKey: 'k'}]});
+    }
+    if (method === 'POST' && rest === '/site/GetCopyJobProgress') {
+      const job = F.jobs[JSON.parse(body).copyJobInfo.JobId];
+      if (!job) return F.json({error: 'no such job'}, 400);
+      job.polls += 1;
+      if (job.polls < 2) return F.json({JobState: 4, Logs: []});
+      const name = job.src.split('/').filter(Boolean).pop();
+      const dst = job.destDir + '/' + name;
+      if (F.nodes[dst] || !F.nodes[job.destDir])
+        return F.json({JobState: 0, Logs: [JSON.stringify({Event: 'JobError',
+          Message: 'cannot place ' + dst})]});
+      F.relocate(job.src, dst, job.move);
+      return F.json({JobState: 0, Logs: [JSON.stringify({Event: 'JobEnd'})]});
+    }
+    m = rest.match(/^\/web\/folders\/AddUsingPath\(decodedurl='((?:[^']|'')*)'\)$/);
     if (m && method === 'POST') {
       const p = F.lit(m[1]);
       if (F.nodes[p]) return F.json({error: 'exists'}, 500);

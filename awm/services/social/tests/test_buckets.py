@@ -135,11 +135,33 @@ class _FakeFiles:
             return self._meta(fid)
         return _Req(run)
 
-    def update(self, *, fileId, media_body=None, fields=None, **kw):
+    def update(self, *, fileId, media_body=None, body=None, fields=None,
+               addParents=None, removeParents=None, **kw):
         def run():
-            self.nodes[fileId]["content"] = media_body._data
-            self.nodes[fileId]["size"] = len(media_body._data)
+            n = self.nodes[fileId]
+            if media_body is not None:
+                n["content"] = media_body._data
+                n["size"] = len(media_body._data)
+            if (body or {}).get("trashed"):
+                n["parent"] = "trash"
+            if (body or {}).get("name"):
+                n["name"] = body["name"]
+            if addParents:
+                assert removeParents == n["parent"]
+                n["parent"] = addParents
             return self._meta(fileId)
+        return _Req(run)
+
+    def get(self, *, fileId, fields=None, **kw):
+        return _Req(lambda: {"id": fileId, "parents": [self.nodes[fileId]["parent"]]})
+
+    def copy(self, *, fileId, body, fields=None, **kw):
+        def run():
+            self._seq += 1
+            fid = f"cp{self._seq}"
+            self.nodes[fid] = dict(self.nodes[fileId], name=body["name"],
+                                   parent=body["parents"][0])
+            return self._meta(fid)
         return _Req(run)
 
     def delete(self, *, fileId, **kw):
@@ -306,6 +328,43 @@ class TestGoogleDrive:
         assert "a" in {x.name for x in await b.ls("")}
         assert "b" in {x.name for x in await b.ls("a")}
 
+    def _where(self, b, fid):
+        n = b._svc.files().nodes[fid]
+        return n["parent"], n["name"]
+
+    async def test_mv_renames_and_moves(self):
+        b = _gdrive(self._tree())
+        e = await b.mv("pic.png", "docs/p2.png")
+        assert e.path == "docs/p2.png" and e.id == "f2"
+        assert self._where(b, "f2") == ("d1", "p2.png")
+
+    async def test_mv_onto_existing_needs_overwrite(self):
+        b = _gdrive(self._tree())
+        with pytest.raises(FileExistsError):
+            await b.mv("pic.png", "docs/note.txt")
+        await b.mv("pic.png", "docs/note.txt", overwrite=True)
+        assert self._where(b, "f1")[0] == "trash"
+        assert self._where(b, "f2") == ("d1", "note.txt")
+
+    async def test_mv_missing_parent_needs_parents(self):
+        b = _gdrive(self._tree())
+        with pytest.raises(FileNotFoundError):
+            await b.mv("pic.png", "new/pic.png")
+        e = await b.mv("pic.png", "new/pic.png", parents=True)
+        assert e.path == "new/pic.png"
+
+    async def test_cp_folder_rebuilds_tree(self):
+        b = _gdrive(self._tree())
+        e = await b.cp("docs", "docs2")
+        assert e.is_dir and e.id != "d1"
+        assert [x.name for x in await b.ls("docs2")] == ["note.txt"]
+        assert [x.name for x in await b.ls("docs")] == ["note.txt"]
+
+    async def test_mv_into_itself_is_refused(self):
+        b = _gdrive(self._tree())
+        with pytest.raises(ValueError):
+            await b.mv("docs", "docs/inner")
+
     async def test_search_name_contains(self):
         b = _gdrive(self._tree())
         hits = {e.name for e in await b.search("note")}
@@ -347,6 +406,8 @@ class _StubFsDaemon:
         app.router.add_post("/v1/fs/{name}/put", self._put)
         app.router.add_post("/v1/fs/{name}/upload", self._upload)
         app.router.add_post("/v1/fs/{name}/rm", self._rm)
+        app.router.add_post("/v1/fs/{name}/mv", self._transfer)
+        app.router.add_post("/v1/fs/{name}/cp", self._transfer)
         self._runner = web.AppRunner(app)
         await self._runner.setup()
         site = web.TCPSite(self._runner, "127.0.0.1", 0)
@@ -431,6 +492,14 @@ class _StubFsDaemon:
         return web.json_response({"entry": {
             "name": body["path"].rsplit("/", 1)[-1], "path": body["path"],
             "is_dir": False, "size": len(base64.b64decode(body["b64"]))}})
+
+    async def _transfer(self, request):
+        from aiohttp import web
+        body = await request.json()
+        self.calls.append((request.path.rsplit("/", 1)[-1], body))
+        return self._failure() or web.json_response({"entry": {
+            "name": body["dst"].rsplit("/", 1)[-1], "path": body["dst"],
+            "is_dir": False}})
 
     async def _rm(self, request):
         from aiohttp import web
@@ -651,6 +720,26 @@ class TestOneDrive:
         finally:
             await b.close()
 
+    async def test_mv_and_cp_send_abs_paths(self, fs_daemon):
+        b = _onedrive(fs_daemon)
+        e = await b.mv("a.txt", "sub/b.txt", overwrite=True)
+        assert e.path == "sub/b.txt"
+        assert fs_daemon.calls[-1] == ("mv", {
+            "src": "/teams/x/Docs/a.txt", "dst": "/teams/x/Docs/sub/b.txt",
+            "overwrite": True, "parents": False})
+        e = await b.cp("a.txt", "/teams/y/Docs/a.txt", parents=True)
+        assert e.path == "/teams/y/Docs/a.txt"
+        assert fs_daemon.calls[-1][0] == "cp"
+        assert fs_daemon.calls[-1][1]["parents"] is True
+        await b.close()
+
+    async def test_mv_existing_target_is_file_exists(self, fs_daemon):
+        b = _onedrive(fs_daemon)
+        fs_daemon.fail = (409, "EEXIST", "/teams/x/Docs/b exists")
+        with pytest.raises(FileExistsError, match="'o'"):
+            await b.mv("a", "b")
+        await b.close()
+
     async def test_probe_stats_root(self, fs_daemon):
         b = _onedrive(fs_daemon)
         try:
@@ -723,6 +812,16 @@ class _FakeBucket:
 
     async def rm(self, path):
         self.calls.append(("rm", path))
+
+    async def mv(self, src, dst, *, overwrite=False, parents=False):
+        from awm.social.buckets.base import Entry
+        self.calls.append(("mv", src, dst, overwrite, parents))
+        return Entry(name=dst.rsplit("/", 1)[-1], path=dst)
+
+    async def cp(self, src, dst, *, overwrite=False, parents=False):
+        from awm.social.buckets.base import Entry
+        self.calls.append(("cp", src, dst, overwrite, parents))
+        return Entry(name=dst.rsplit("/", 1)[-1], path=dst)
 
     async def search(self, query, *, limit=50, path=""):
         from awm.social.buckets.base import Entry
@@ -818,6 +917,16 @@ class TestBucketHandlers:
         hub, fake = wired_buckets
         out = await hub._h_bucket_search({"bucket": "b", "query": "x", "limit": 7})
         assert out["count"] == 1 and fake.calls[-1] == ("search", "x", 7, "")
+
+    async def test_h_bucket_mv_and_cp(self, wired_buckets):
+        hub, fake = wired_buckets
+        out = await hub._h_bucket_mv(
+            {"bucket": "b", "src": "a", "dst": "c/d", "overwrite": True})
+        assert out["entry"]["path"] == "c/d"
+        assert fake.calls[-1] == ("mv", "a", "c/d", True, False)
+        await hub._h_bucket_cp(
+            {"bucket": "b", "src": "a", "dst": "e", "parents": True})
+        assert fake.calls[-1] == ("cp", "a", "e", False, True)
 
     async def test_unknown_bucket_raises(self, wired_buckets):
         hub, _ = wired_buckets
