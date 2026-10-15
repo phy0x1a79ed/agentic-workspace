@@ -47,7 +47,8 @@ async def test_a_posted_request_is_queued_as_proposed_and_never_claimed(queue):
     assert queue.cursor() == 1
     assert len(told.texts) == 1
     text = told.texts[0]
-    assert "Rig the thing" in text and "From: beta/op" in text and "To: tony" in text
+    assert text.splitlines()[0] == "New post from beta/op to tony"
+    assert "Rig the thing" in text
     assert "please do it" in text and f"claim task {card['id'][:8]}" in text
 
 
@@ -67,7 +68,7 @@ async def test_the_message_carries_the_trilium_link_the_agent_and_the_project(qu
     board.post_event("card.posted", card)
     await sub.consume()
     text = told.texts[0]
-    assert "From: beta/op (muse-writer)" in text and "Project: factorio" in text
+    assert "New post from beta/op (muse-writer) to tony" in text and "Project: factorio" in text
     assert text.splitlines()[-1] == f"claim task {card['id'][:8]} https://vault.example/trilium/#root/AbCdEfGhIjKl"
 
 
@@ -123,7 +124,7 @@ async def test_a_card_to_open_and_a_card_this_swarm_posted_are_told_too(queue):
     assert len(told.texts) == 2
     assert f"claim task {to_open['id'][:8]}" in told.texts[0]
     assert "claim task" not in told.texts[1] and f"ref {ours['id'][:8]}" in told.texts[1]
-    assert "From: tony/agent (opal)" in told.texts[1]
+    assert "New post from tony/agent (opal)" in told.texts[1]
 
 
 async def test_cards_between_other_swarms_are_ignored(queue):
