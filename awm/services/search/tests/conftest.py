@@ -146,8 +146,8 @@ class FakePeers:
         self.calls: list[tuple[str, str, dict]] = []
 
     def add(self, name: str, answer: Callable[[dict], Any], relation: str = "domestic",
-            swarm: str = "tony") -> None:
-        self.book[name] = {"name": name, "relation": relation, "swarm": swarm}
+            swarm: str = "tony", role: str = "fleet") -> None:
+        self.book[name] = {"name": name, "relation": relation, "swarm": swarm, "role": role}
         self.answers[name] = answer
 
     def records(self) -> list[dict[str, Any]]:
