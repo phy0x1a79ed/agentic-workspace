@@ -118,6 +118,13 @@ async def test_run_and_tasks_carry_the_sessions_os(daemon):
     assert named["os"]["declared"] == "windows"
     assert named["os"]["label"] == "Windows"
 
+    # Once the owner is in and their client disagrees, the short form says so
+    # too, so `shell` is never read alone.
+    daemon["owner"] = {"who": "ann", "host": "box", "os": "linux", "build": "x"}
+    ran = await hub_adapter.HANDLERS["run"]({"command": "uname", "code": "7"})
+    assert ran["os"]["reported"] == "linux"
+    assert ran["os"]["mismatch"] is True
+
 
 async def test_macos_is_told_apart_from_linux():
     mac = remote_os.describe("macos", "macos")
