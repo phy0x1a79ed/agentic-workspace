@@ -145,7 +145,7 @@ async def test_an_invite_tells_the_operator_how_to_hear_the_owner(monkeypatch):
 
     monkeypatch.setattr(hub_adapter.control, "call", minted)
 
-    answer = await hub_adapter.HANDLERS["invite"]({"os": "linux"})
+    answer = await hub_adapter.HANDLERS["invite"]({"os": "unix"})
 
     assert answer["slot"] == 7
     assert answer["listen"]["command"].startswith("awm services listen tether session")

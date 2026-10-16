@@ -45,16 +45,27 @@ def daemon(monkeypatch):
     return state
 
 
-@pytest.mark.parametrize("given", [None, "", "unix", "Windows", "mac"])
+@pytest.mark.parametrize("given", [None, "", "Windows", "freebsd box"])
 async def test_an_invite_without_a_known_os_is_refused_before_minting(daemon, given):
     args = {} if given is None else {"os": given}
 
     answer = await hub_adapter.HANDLERS["invite"](args)
 
     assert answer["ok"] is False
-    assert "Ask the owner" in answer["error"]
+    assert "Ask the owner explicitly" in answer["error"]
+    # WSL is offered as its own answer, or its users say "Windows".
+    assert "Windows PowerShell, WSL, Linux or Mac?" in answer["error"]
     assert "guess" in answer["error"]
     assert daemon["calls"] == [], "a session was minted on a guess"
+
+
+@pytest.mark.parametrize("given", ["wsl", "linux", "macos", "Mac"])
+async def test_a_unix_flavour_is_refused_with_the_value_to_send(daemon, given):
+    answer = await hub_adapter.HANDLERS["invite"]({"os": given})
+
+    assert answer["ok"] is False
+    assert 'send `os: "unix"`' in answer["error"]
+    assert daemon["calls"] == []
 
 
 async def test_the_gateway_refusal_for_a_missing_os_says_to_ask():
@@ -65,11 +76,10 @@ async def test_the_gateway_refusal_for_a_missing_os_says_to_ask():
     with pytest.raises(ValueError) as refused:
         await ad._dispatch("invite", {}, None)
     assert "missing required argument(s): os" in str(refused.value)
-    assert "Ask the owner" in str(refused.value)
+    assert "Windows PowerShell, WSL, Linux or Mac?" in str(refused.value)
 
 
-@pytest.mark.parametrize("os_name, line", [
-    ("windows", WIN), ("wsl", SH), ("linux", SH), ("macos", SH)])
+@pytest.mark.parametrize("os_name, line", [("windows", WIN), ("unix", SH)])
 async def test_an_invite_returns_only_that_machines_launcher(daemon, os_name, line):
     answer = await hub_adapter.HANDLERS["invite"]({"os": os_name, "words": 2})
 
@@ -82,18 +92,18 @@ async def test_an_invite_returns_only_that_machines_launcher(daemon, os_name, li
 
 
 async def test_status_shows_the_declared_os_and_flags_a_mismatch(daemon):
-    await hub_adapter.HANDLERS["invite"]({"os": "wsl"})
+    await hub_adapter.HANDLERS["invite"]({"os": "unix"})
 
     waiting = (await hub_adapter.status({}))["sessions"][0]["os"]
-    assert waiting["declared"] == "wsl"
-    assert "/mnt/c" in waiting["notes"]
-    assert "reported" not in waiting and "mismatch" not in waiting
+    assert waiting == {"declared": "unix", "shell": "POSIX sh"}
 
-    # WSL runs the Linux client, so a Linux report agrees with it.
+    # WSL runs the Linux client, so Linux and macOS reports both agree.
     daemon["owner"] = {"who": "ann", "host": "box", "os": "linux", "build": "x"}
-    agreed = (await hub_adapter.status({}))["sessions"][0]["os"]
-    assert agreed["reported"] == "linux"
-    assert "mismatch" not in agreed
+    for platform in ("linux", "macos"):
+        daemon["owner"]["os"] = platform
+        agreed = (await hub_adapter.status({}))["sessions"][0]["os"]
+        assert agreed["reported"] == platform
+        assert "mismatch" not in agreed
 
     daemon["owner"]["os"] = "windows"
     wrong = (await hub_adapter.status({}))["sessions"][0]["os"]
@@ -115,8 +125,7 @@ async def test_run_and_tasks_carry_the_sessions_os(daemon):
     assert ran["os"] == {"declared": "windows", "shell": "PowerShell"}
 
     named = await hub_adapter.HANDLERS["tasks"]({"code": "acre fox kettle"})
-    assert named["os"]["declared"] == "windows"
-    assert named["os"]["label"] == "Windows"
+    assert named["os"] == {"declared": "windows", "shell": "PowerShell"}
 
     # Once the owner is in and their client disagrees, the short form says so
     # too, so `shell` is never read alone.
@@ -126,7 +135,8 @@ async def test_run_and_tasks_carry_the_sessions_os(daemon):
     assert ran["os"]["mismatch"] is True
 
 
-async def test_macos_is_told_apart_from_linux():
-    mac = remote_os.describe("macos", "macos")
-    assert "BSD" in mac["notes"] and "zsh" in mac["notes"]
-    assert remote_os.describe("linux", "macos")["mismatch"] is True
+def test_only_a_windows_report_disagrees_with_unix_and_vice_versa():
+    assert "mismatch" not in remote_os.describe("unix", "macos")
+    assert remote_os.describe("unix", "windows")["mismatch"] is True
+    assert remote_os.describe("windows", "macos")["mismatch"] is True
+    assert "mismatch" not in remote_os.describe("windows", "windows")
