@@ -75,14 +75,15 @@ API_MANIFEST: dict[str, Any] = {
         "ask for them or guess them. "
         "To hear the owner between turns, run the `listen.command` that "
         "`invite` returns under a background watcher such as Monitor. "
-        "Know the machine before you invite: ask the owner whether it is "
-        "Windows, WSL, Linux or macOS and pass that as `os`, never a guess. "
-        "Each session then carries its `os` in `invite`, `status` and "
-        "`tasks`. Write every command for that machine: PowerShell on "
-        "Windows, POSIX sh on WSL, Linux and macOS (WSL is Linux with the "
-        "Windows drives under /mnt/c; macOS has BSD tools and zsh). When the "
-        "owner's client reports a different platform, `os.warning` says so: "
-        "stop and ask the owner."
+        "Know the machine before you invite. Ask the owner explicitly: "
+        "Windows PowerShell, WSL, Linux or Mac? Offer WSL as its own option, "
+        "because a WSL user may otherwise answer Windows. Then pass "
+        "`os: windows` for Windows PowerShell and `os: unix` for WSL, Linux "
+        "or Mac, never a guess. Each session then carries its `os` in "
+        "`invite`, `status` and `tasks`. Write every command for that shell: "
+        "PowerShell on `windows`, POSIX sh on `unix`. When the owner's "
+        "client reports a different platform, `os.warning` says so: stop and "
+        "ask the owner."
     ),
     "functions": [
         {
@@ -103,11 +104,12 @@ API_MANIFEST: dict[str, Any] = {
             "params": [
                 {"name": "os", "type": "string", "required": True,
                  "if_missing": remote_os.ASK,
-                 "description": "The owner's kind of computer: `windows`, "
-                                "`wsl` (Linux inside Windows), `linux` or "
-                                "`macos`. Ask the owner; do not guess. "
-                                "`windows` gets the PowerShell launcher, the "
-                                "other three the sh one."},
+                 "description": "`windows` or `unix`. Ask the owner: Windows "
+                                "PowerShell, WSL, Linux or Mac? Windows "
+                                "PowerShell is `windows` and gets the "
+                                "PowerShell launcher. WSL, Linux and Mac are "
+                                "`unix` and get the sh launcher. Do not "
+                                "guess."},
                 {"name": "words", "type": "number",
                  "description": "How many secret words in the code (default "
                                 "2), on top of the word that names the "
@@ -143,7 +145,7 @@ API_MANIFEST: dict[str, Any] = {
                 "from the start, so a command that reads until end of input "
                 "does not wait for a keyboard. It runs in the owner's own "
                 "shell, so write it in that shell's syntax: PowerShell on a "
-                "`windows` session, POSIX sh on `wsl`, `linux` and `macos`. "
+                "`windows` session, POSIX sh on a `unix` one. "
                 "The answer repeats the session's `os` and `shell`; read "
                 "`status` when you are not sure, and ask the owner rather "
                 "than assume."
@@ -174,8 +176,7 @@ API_MANIFEST: dict[str, Any] = {
                 "`keys`, read it with `drain`, and end it with `close`. One "
                 "terminal per session: the owner has one screen. The shell is "
                 "PowerShell on a `windows` session and the owner's login "
-                "shell (bash, or zsh on macOS) elsewhere, so type what that "
-                "shell understands."
+                "shell on a `unix` one, so type what that shell understands."
             ),
             "params": [
                 {"name": "cols", "type": "number",
