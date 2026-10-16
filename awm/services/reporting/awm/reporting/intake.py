@@ -121,6 +121,9 @@ async def send_social(account: str, channel: str, text: str, *, ack_ref: str = "
 
 
 async def send_dm(text: str) -> None:
-    """Send Tony a direct message."""
-    account, channel = config.dm_target()
+    """Send the operator a direct message."""
+    target = config.dm_target()
+    if target is None:
+        raise RuntimeError("this node has no operator DM: set AWM_OPERATOR_DM_CHANNEL")
+    account, channel = target
     await send_social(account, channel, text)

@@ -37,7 +37,7 @@ A single failed connect that could have spent an MFA attempt puts that host into
 a **hold**: further automated `connect`s are refused **before** any VPN/2FA/ssh
 runs, so a host that failed once can never march toward the provider's
 MFA-lockout ceiling. The operator is paged in their Discord DM with the bot
-(`_ALERT_CHANNEL`, a `dm:<user_id>` target). See *What is allowed to hold a host* for the
+(the node's operator DM, `AWM_OPERATOR_DM_CHANNEL` in `FEDERATION.md`). See *What is allowed to hold a host* for the
 three failures that are exempt because they demonstrably spent nothing.
 
 **Recovery is operator-gated, out of band.** There is no verb and no self-serve

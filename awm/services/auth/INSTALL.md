@@ -94,8 +94,8 @@ password and records the new one, which is the only repair.
 | `lockout_minutes` | `15` | how long the lock holds |
 | `push_enabled` | `true` | push the login password on each mint, to the Ops note under AWM through `reporting ops_post` (`AWM_REPORTING_PEER=<peer>` on a node without reporting) |
 | `push_discord` | `false` | send the push to Discord through `social send` in place of the Ops note |
-| `discord_account` | `discord-bot` | social account id for the Discord push |
-| `discord_channel` | `dm:188743359983124480` | Discord push target: a channel id, or `dm:<user_id>` for the operator's DM with the bot |
+| `discord_account` | empty | social account id for the Discord push. Empty uses the node's operator DM account |
+| `discord_channel` | empty | Discord push target: a channel id, or `dm:<user_id>`. Empty uses the node's operator DM (`AWM_OPERATOR_DM_CHANNEL` in `FEDERATION.md`) |
 
 ## Python dependencies
 

@@ -14,7 +14,8 @@ pytestmark = [pytest.mark.unit, pytest.mark.smoke]
 
 @pytest.fixture(autouse=True)
 def clean_env(monkeypatch, tmp_path):
-    for var in ("AWM_NODE_ROLE", "AWM_SWARM"):
+    for var in ("AWM_NODE_ROLE", "AWM_SWARM", "AWM_OPERATOR_DM_ACCOUNT",
+                "AWM_OPERATOR_DM_CHANNEL", "AWM_REPORTING_DM_CHANNEL"):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setattr(config, "AWM_DIR", tmp_path)
 
@@ -55,6 +56,21 @@ def test_node_swarm_default_and_strip(monkeypatch):
     assert config.node_swarm() == "blue"
     monkeypatch.setenv("AWM_SWARM", "   ")
     assert config.node_swarm() == "tony"
+
+
+def test_operator_dm_falls_back_to_tony_only_in_his_swarm(monkeypatch):
+    assert config.operator_dm() == ("discord-bot", "dm:188743359983124480")
+    monkeypatch.setenv("AWM_SWARM", "collins")
+    assert config.operator_dm() is None
+
+
+def test_operator_dm_setting_wins_in_any_swarm(monkeypatch):
+    monkeypatch.setenv("AWM_SWARM", "collins")
+    monkeypatch.setenv("AWM_REPORTING_DM_CHANNEL", "dm:2")
+    assert config.operator_dm() == ("discord-bot", "dm:2")
+    monkeypatch.setenv("AWM_OPERATOR_DM_CHANNEL", " dm:1 ")
+    monkeypatch.setenv("AWM_OPERATOR_DM_ACCOUNT", "other-bot")
+    assert config.operator_dm() == ("other-bot", "dm:1")
 
 
 def test_missing_or_corrupt_book_is_empty(tmp_path):

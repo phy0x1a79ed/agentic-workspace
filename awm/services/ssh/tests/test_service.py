@@ -361,7 +361,7 @@ class TestCircuitBreaker:
 
         assert out["sent"] is True
         assert out["result"] == {"ok": True, "id": "msg-123"}
-        assert out["channel"] == ssh_service._ALERT_CHANNEL
+        assert out["channel"] == ssh_service.config.operator_dm()[1]
         assert len(captured) == 1
         # Unmistakably a test, and no /approve reflex bait for a fake device.
         assert "self-test" in captured[0].lower()
@@ -2031,3 +2031,18 @@ class TestNothingWasSpent:
         assert svc._read_lock(cfg) is None, "no hold — Duo was never presented a login"
         assert alerts == [], "and therefore nothing to page the operator about"
         assert "fir" not in svc._leased, "the slot is freed for the next attempt"
+
+
+async def test_another_swarm_with_no_operator_dm_alerts_no_one(monkeypatch):
+    for var in ("AWM_OPERATOR_DM_CHANNEL", "AWM_REPORTING_DM_CHANNEL"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("AWM_SWARM", "collins")
+    sent: list = []
+
+    async def _call(*a, **k):
+        sent.append(a)
+
+    monkeypatch.setattr(ssh_service.gatewayclient, "call_maybe_peer", _call)
+    with pytest.raises(RuntimeError, match="AWM_OPERATOR_DM_CHANNEL"):
+        await SSHService()._send_social("locked")
+    assert sent == []
