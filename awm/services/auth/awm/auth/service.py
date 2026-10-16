@@ -326,15 +326,21 @@ async def _push_password_to_discord_attempt(login_password: str) -> None:
             raise RuntimeError(f"reporting ops_post refused the password: {result!r}")
         log.info("auth: posted %s's login password to the Ops note", node)
         return
+    operator = config.operator_dm() or ("", "")
+    account = s.discord_account or operator[0]
+    channel = s.discord_channel or operator[1]
+    if not (account and channel):
+        raise RuntimeError("no Discord target for the password push: set "
+                           "discord_channel or AWM_OPERATOR_DM_CHANNEL")
     await gatewayclient.call_maybe_peer(
         gatewayclient.peer_env(_SOCIAL_PEER_ENV),
         "social", "send", {
-            "account": s.discord_account,
-            "channel": s.discord_channel,
+            "account": account,
+            "channel": channel,
             "text": text,
         })
     log.info("auth: pushed %s's login password to Discord %s#%s",
-             node, s.discord_account, s.discord_channel)
+             node, account, channel)
 
 
 async def _push_password_to_discord(login_password: str, expires_at: float) -> None:

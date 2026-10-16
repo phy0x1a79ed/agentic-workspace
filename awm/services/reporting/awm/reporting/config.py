@@ -135,10 +135,15 @@ def remind_s() -> float:
     return _float("AWM_REPORTING_REMIND_S", 3600.0)
 
 
-def dm_target() -> tuple[str, str]:
-    """The social account and channel that carry an urgent request to Tony."""
-    return (os.environ.get("AWM_REPORTING_DM_ACCOUNT") or "discord-bot",
-            os.environ.get("AWM_REPORTING_DM_CHANNEL") or "dm:188743359983124480")
+def dm_target() -> tuple[str, str] | None:
+    """The social account and channel that carry an urgent request to the operator, or None."""
+    from awm.config import operator_dm
+
+    target = operator_dm()
+    if target is None:
+        return None
+    account, channel = target
+    return os.environ.get("AWM_REPORTING_DM_ACCOUNT") or account, channel
 
 
 def trilium_url() -> str | None:

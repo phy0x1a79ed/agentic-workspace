@@ -7,8 +7,7 @@ mint, so a cadence change takes effect on the next rotation with no restart.
 
 Defaults encode the agreed contract: mint a fresh pair every **12 h**, each
 valid **24 h** (two generations overlap), and push the day's login password to
-the operator's Discord DM — the same ``discord-bot`` account and target the
-``ssh`` service already alerts through.
+the node's operator DM — the same target the ``ssh`` service alerts through.
 
 The Penpot rotation hour is here rather than beside the cadences above because
 it is a different kind of knob: the shared credential rotates on an *interval*,
@@ -23,11 +22,6 @@ import os
 from pydantic import BaseModel, Field
 
 from awm.persistence.service_config import ConfigContract
-
-# The ssh service posts lock alerts here; reuse the exact target so the day's
-# password lands in the same operator DM with the bot.
-_DEFAULT_DISCORD_ACCOUNT = "discord-bot"
-_DEFAULT_DISCORD_CHANNEL = "dm:188743359983124480"
 
 #: Lets a host state its own Penpot rotation hour in ``/etc/awm/env`` rather
 #: than leaving it to whoever last opened the settings page. Read once, at
@@ -99,12 +93,14 @@ class AuthSettings(BaseModel):
                     "place of the reporting service's Ops note.",
     )
     discord_account: str = Field(
-        default=_DEFAULT_DISCORD_ACCOUNT,
-        description="social account id used for the password push.",
+        default="",
+        description="social account id used for the password push. Empty "
+                    "uses the node's operator DM account.",
     )
     discord_channel: str = Field(
-        default=_DEFAULT_DISCORD_CHANNEL,
-        description="Discord channel id the password push is sent to.",
+        default="",
+        description="Discord channel id the password push is sent to. Empty "
+                    "uses the node's operator DM (AWM_OPERATOR_DM_CHANNEL).",
     )
     push_retry_attempts: int = Field(
         default=4,

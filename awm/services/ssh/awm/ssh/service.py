@@ -60,10 +60,6 @@ _RECONCILE_WAIT_TIMEOUT = 60.0
 # nobody in the fleet calls mira.
 _NODE_NAME = config.node_name()
 
-# Discord target for lockout alerts: the operator's DM with the bot.
-_ALERT_ACCOUNT = "discord-bot"
-_ALERT_CHANNEL = "dm:188743359983124480"
-
 # Singleton re-homing selectors (federation). When 2fa / social run as canonical
 # singletons on a peer node, this node borrows them by exporting these to the
 # peer's name (e.g. AWM_TWOFA_PEER=mira, AWM_SOCIAL_PEER=mira). Unset/empty ⇒ the
@@ -1660,11 +1656,16 @@ class SSHService:
         send result. Touches no lockfile. The one federated notify wire, shared by
         the swallowing lock alert (:meth:`_alert`) and the result-surfacing
         self-test (:meth:`notify_test`) so both exercise the identical path."""
+        target = config.operator_dm()
+        if target is None:
+            raise RuntimeError(
+                "this node has no operator DM: set AWM_OPERATOR_DM_CHANNEL")
+        account, channel = target
         return await gatewayclient.call_maybe_peer(
             gatewayclient.peer_env(_SOCIAL_PEER_ENV),
             "social", "send", {
-                "account": _ALERT_ACCOUNT,
-                "channel": _ALERT_CHANNEL,
+                "account": account,
+                "channel": channel,
                 "text": text,
             })
 
@@ -1693,11 +1694,12 @@ class SSHService:
             f"real lock."
         )
         result = await self._send_social(text)  # surfaces on failure — no try/except
+        account, channel = config.operator_dm()
         return {
             "sent": True,
             "peer": peer or "local",
-            "account": _ALERT_ACCOUNT,
-            "channel": _ALERT_CHANNEL,
+            "account": account,
+            "channel": channel,
             "result": result,
         }
 
