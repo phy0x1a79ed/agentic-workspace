@@ -47,12 +47,14 @@ class _FakeInteraction:
         self.channel_id = 999
         self.response = _FakeResponse()
         self.edits = []
+        self.attached = []
         self.edit_error = None
 
-    async def edit_original_response(self, *, content):
+    async def edit_original_response(self, *, content, attachments=()):
         if self.edit_error:
             raise self.edit_error
         self.edits.append(content)
+        self.attached.append([(f.filename, f.fp.read()) for f in attachments])
         return _FakeMessage()
 
 
@@ -303,6 +305,15 @@ class TestNewAgentCommand:
         assert await conn.edit_ack("31337", "again") is None
 
     @pytest.mark.asyncio
+    async def test_the_answer_can_attach_text_files(self):
+        conn = _connector(None)
+        inter = _FakeInteraction(guild=None)
+        await conn._tree.get_command("new-agent").callback(inter)
+
+        await conn.edit_ack("31337", "agent-1234", files=[{"filename": "prompt.txt", "text": "do it"}])
+        assert inter.attached == [[("prompt.txt", b"do it")]]
+
+    @pytest.mark.asyncio
     async def test_an_expired_ack_is_not_edited(self, monkeypatch):
         from awm.social.connectors import discord_conn
 
@@ -326,15 +337,20 @@ class TestNewAgentCommand:
 # -- send with an ack_ref ---------------------------------------------------
 
 class _AckConn:
+    sends_files = True
+
     def __init__(self, edited):
         self.edited = edited
         self.sent = []
+        self.files = []
 
-    async def edit_ack(self, ref, text):
+    async def edit_ack(self, ref, text, *, files=None):
+        self.files.append(files)
         return self.edited
 
-    async def send(self, channel, text, *, thread=None):
+    async def send(self, channel, text, *, thread=None, files=None):
         self.sent.append((channel, text))
+        self.files.append(files)
         return {"message_id": "new"}
 
 
@@ -359,6 +375,29 @@ class TestSendReplacesAck:
         out = await hub_adapter._h_send(
             {"account": "bot", "channel": "dm:1", "text": "hi", "ack_ref": "31337"})
         assert out["message_id"] == "new" and conn.sent == [("dm:1", "hi")]
+
+    @pytest.mark.asyncio
+    async def test_files_reach_the_edit_and_the_fallback_send(self, monkeypatch):
+        from awm.social import hub_adapter
+
+        conn = _AckConn(None)
+        monkeypatch.setattr(hub_adapter, "_connectors", {"bot": conn})
+        files = [{"filename": "prompt.txt", "text": "do it"}]
+        await hub_adapter._h_send({"account": "bot", "channel": "dm:1", "text": "hi",
+                                   "ack_ref": "31337", "files": files})
+        assert conn.files == [files, files]
+
+    @pytest.mark.asyncio
+    async def test_an_account_that_cannot_attach_refuses_files(self, monkeypatch):
+        from awm.social import hub_adapter
+
+        conn = _AckConn(None)
+        conn.sends_files = False
+        monkeypatch.setattr(hub_adapter, "_connectors", {"bot": conn})
+        with pytest.raises(RuntimeError, match="cannot attach files"):
+            await hub_adapter._h_send({"account": "bot", "channel": "dm:1", "text": "hi",
+                                       "files": [{"filename": "a.txt", "text": "x"}]})
+        assert conn.sent == []
 
 
 # -- adapter emit -----------------------------------------------------------

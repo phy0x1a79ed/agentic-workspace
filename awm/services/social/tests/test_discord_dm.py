@@ -23,10 +23,12 @@ class _DM:
     def __init__(self):
         self.sent = []
         self.suppressed = []
+        self.files = []
 
-    async def send(self, text, suppress_embeds=False):
+    async def send(self, text, suppress_embeds=False, files=()):
         self.sent.append(text)
         self.suppressed.append(suppress_embeds)
+        self.files.append([f.filename for f in files])
         return _Sent(self)
 
 
@@ -97,6 +99,13 @@ def test_a_dm_never_unfurls_its_links():
     conn = _connector()
     asyncio.run(conn.send("dm:4242", "see https://example.com"))
     assert conn._client.users[4242].dm_channel.suppressed == [True]
+
+
+def test_send_attaches_text_files():
+    conn = _connector()
+    asyncio.run(conn.send("dm:4242", "here", files=[{"filename": "prompt.txt", "text": "x"}]))
+    asyncio.run(conn.send("dm:4242", "bare"))
+    assert conn._client.users[4242].dm_channel.files == [["prompt.txt"], []]
 
 
 def test_open_dm_accepts_bare_id_and_dm_form():

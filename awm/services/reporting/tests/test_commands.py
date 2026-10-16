@@ -18,13 +18,16 @@ class Replies:
     def __init__(self) -> None:
         self.sent: list[tuple[str, str, str]] = []
         self.acks: list[str] = []
+        self.files: list[list[dict]] = []
         self.error: Exception | None = None
 
-    async def __call__(self, account: str, channel: str, text: str, *, ack_ref: str = "") -> None:
+    async def __call__(self, account: str, channel: str, text: str, *, ack_ref: str = "",
+                       files: list[dict] | None = None) -> None:
         if self.error:
             raise self.error
         self.sent.append((account, channel, text))
         self.acks.append(ack_ref)
+        self.files.append(files or [])
 
 
 def event(command, **over):
@@ -123,12 +126,25 @@ async def test_new_agent_answer_quotes_its_prompt(parts):
     lines = replies.sent[0][2].splitlines()
     assert lines[:2] == ["> fix the tests", "> then deploy"]
     assert "https://claude.ai/code/session_job0001" in lines[2]
-    await commands.handle(event("new_agent", prompt="x" * 5000))
-    await settle(commands)
-    assert len(replies.sent[1][2]) < 2000
+    assert replies.files[0] == []
     await commands.handle(event("new_agent", prompt=""))
     await settle(commands)
-    assert not replies.sent[2][2].startswith(">")
+    assert not replies.sent[1][2].startswith(">")
+
+
+async def test_a_long_prompt_is_previewed_and_attached_whole(parts):
+    commands, _, _, replies = parts
+    prompt = "\n".join(f"step {i}" for i in range(10))
+    await commands.handle(event("new_agent", prompt=prompt))
+    await settle(commands)
+    lines = replies.sent[0][2].splitlines()
+    assert lines[:3] == ["> step 0", "> step 1", "> step 2…"]
+    assert "https://claude.ai/code/session_job0001" in lines[3]
+    assert replies.files[0] == [{"filename": "prompt.txt", "text": prompt}]
+    await commands.handle(event("new_agent", prompt="x" * 5000))
+    await settle(commands)
+    assert len(replies.sent[1][2]) < 400
+    assert replies.files[1][0]["text"] == "x" * 5000
 
 
 async def test_new_agent_answers_by_replacing_the_starting_ack(parts):
