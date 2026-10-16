@@ -32,7 +32,7 @@ from typing import Any
 
 from awm.gatewayclient import ServiceAdapter, spawn_supervised
 
-from awm.tether import control, daemon, paths, stream
+from awm.tether import control, daemon, paths, remote_os, stream
 
 log = logging.getLogger("awm.tether.hub_adapter")
 
@@ -50,6 +50,11 @@ ADAPTER: ServiceAdapter | None = None
 #: nobody has to type a number. Two surfaces draining the same session will each
 #: consume what the other wanted, which is what the explicit cursor is for.
 CURSORS: dict[str, int] = {}
+
+#: The OS each session was invited for, by slot. Held here because the daemon
+#: has no field for it, and lost with this process — which is safe, because the
+#: daemon and every session it holds die with this process too.
+DECLARED: dict[int, dict[str, str]] = {}
 
 #: Every function carries an explicit ``tool`` name under a ``tether_`` prefix,
 #: which is what decides the domain this service appears as: the gateway folds
@@ -69,7 +74,15 @@ API_MANIFEST: dict[str, Any] = {
         "meanwhile. Only whoever read that prompt has the words, so do not "
         "ask for them or guess them. "
         "To hear the owner between turns, run the `listen.command` that "
-        "`invite` returns under a background watcher such as Monitor."
+        "`invite` returns under a background watcher such as Monitor. "
+        "Know the machine before you invite: ask the owner whether it is "
+        "Windows, WSL, Linux or macOS and pass that as `os`, never a guess. "
+        "Each session then carries its `os` in `invite`, `status` and "
+        "`tasks`. Write every command for that machine: PowerShell on "
+        "Windows, POSIX sh on WSL, Linux and macOS (WSL is Linux with the "
+        "Windows drives under /mnt/c; macOS has BSD tools and zsh). When the "
+        "owner's client reports a different platform, `os.warning` says so: "
+        "stop and ask the owner."
     ),
     "functions": [
         {
@@ -78,13 +91,23 @@ API_MANIFEST: dict[str, Any] = {
             "tool": "tether_invite",
             "description": (
                 "Mint an invite code and open a session for it at the relay. "
-                "Returns the words to read out and the one-line command the "
-                "owner runs on their machine. Only an operator can do this; "
+                "Requires `os`: ask the owner which kind of computer they "
+                "are on first. Returns the words to read out, the one-line "
+                "command for that kind of computer only, and `os`, which says "
+                "which shell later commands must be written for. Only an "
+                "operator can do this; "
                 "the owner's side can only redeem. The session expires in "
                 "minutes if nobody redeems it, and is destroyed after a few "
                 "failed attempts."
             ),
             "params": [
+                {"name": "os", "type": "string", "required": True,
+                 "if_missing": remote_os.ASK,
+                 "description": "The owner's kind of computer: `windows`, "
+                                "`wsl` (Linux inside Windows), `linux` or "
+                                "`macos`. Ask the owner; do not guess. "
+                                "`windows` gets the PowerShell launcher, the "
+                                "other three the sh one."},
                 {"name": "words", "type": "number",
                  "description": "How many secret words in the code (default "
                                 "2), on top of the word that names the "
@@ -100,7 +123,10 @@ API_MANIFEST: dict[str, Any] = {
             "description": (
                 "Report this host's role, whether its binaries are built and "
                 "at what commit, whether the daemon is running, and every live "
-                "session with its age and which side is connected."
+                "session with its age, which side is connected, and its `os`: "
+                "the kind of computer declared at invite, the platform the "
+                "owner's client reports once connected, the shell to write "
+                "commands for, and a `warning` when the two disagree."
             ),
             "params": [],
         },
@@ -115,7 +141,12 @@ API_MANIFEST: dict[str, Any] = {
                 "them with `drain --until <task>`. The owner watches it "
                 "happen; nothing here is hidden from them. Its input is closed "
                 "from the start, so a command that reads until end of input "
-                "does not wait for a keyboard."
+                "does not wait for a keyboard. It runs in the owner's own "
+                "shell, so write it in that shell's syntax: PowerShell on a "
+                "`windows` session, POSIX sh on `wsl`, `linux` and `macos`. "
+                "The answer repeats the session's `os` and `shell`; read "
+                "`status` when you are not sure, and ask the owner rather "
+                "than assume."
             ),
             "params": [
                 {"name": "command", "type": "string",
@@ -141,7 +172,10 @@ API_MANIFEST: dict[str, Any] = {
                 "usable, and the only way the owner sees it as the screen you "
                 "are looking at rather than as escape codes. Type at it with "
                 "`keys`, read it with `drain`, and end it with `close`. One "
-                "terminal per session: the owner has one screen."
+                "terminal per session: the owner has one screen. The shell is "
+                "PowerShell on a `windows` session and the owner's login "
+                "shell (bash, or zsh on macOS) elsewhere, so type what that "
+                "shell understands."
             ),
             "params": [
                 {"name": "cols", "type": "number",
@@ -219,7 +253,8 @@ API_MANIFEST: dict[str, Any] = {
             "tool": "tether_tasks",
             "description": (
                 "What is open right now in a session: each task, what it is, "
-                "how long it has been going and how much it has written."
+                "how long it has been going and how much it has written, and "
+                "the session's `os`."
             ),
             "params": [
                 {"name": "code", "type": "string",
@@ -387,10 +422,86 @@ LISTEN = {
 
 
 async def invite(args: dict) -> dict:
-    answer = await _forward("invite", 60)(args)
-    if isinstance(answer, dict) and answer.get("ok") is not False and "error" not in answer:
-        answer = {**answer, "listen": LISTEN}
-    return answer
+    """Mint a session for one declared kind of computer, and say so.
+
+    Refused before reaching the daemon when the OS is missing or unknown: a
+    session minted on a guess is the failure this exists to prevent.
+    """
+    forward = _forward("invite", 60)
+    if paths.ROLE == paths.RELAY:
+        return await forward(args)
+    os_name = args.get("os")
+    refused = remote_os.refusal(os_name)
+    if refused:
+        return {"ok": False, "error": refused}
+    answer = await forward({k: v for k, v in args.items() if k != "os"})
+    if not isinstance(answer, dict) or answer.get("ok") is False or "error" in answer:
+        return answer
+    choice = remote_os.CHOICES[os_name]
+    line = remote_os.launcher_line(os_name, answer.get("command") or "")
+    slot = answer.get("slot")
+    if isinstance(slot, int):
+        DECLARED[slot] = {"os": os_name,
+                          "word": str(answer.get("code") or "").split(" ")[0]}
+    return {
+        **answer,
+        "command": line,
+        "read_out": f"{choice['open']}, then answer the prompt it shows you: "
+                    f"{line}",
+        "os": remote_os.describe(os_name),
+        "listen": LISTEN,
+    }
+
+
+def _os_of(session: dict) -> dict[str, Any]:
+    declared = DECLARED.get(session.get("slot"), {}).get("os")
+    reported = (session.get("owner") or {}).get("os")
+    return remote_os.describe(declared, reported)
+
+
+async def _live_sessions() -> list[dict]:
+    try:
+        report = await control.call("status", {}, timeout=30)
+    except control.DaemonUnavailable:
+        return []
+    return [s for s in report.get("sessions") or [] if s.get("phase") != "ended"]
+
+
+async def _session_for(code: Any) -> dict | None:
+    """The daemon's report of the session a verb was aimed at, if one is clear.
+
+    Resolved the way the daemon resolves it: a slot number, the slot's word, or
+    the only live session when no code is given.
+    """
+    sessions = await _live_sessions()
+    if not code:
+        return sessions[0] if len(sessions) == 1 else None
+    first = str(code).split()[0]
+    for s in sessions:
+        word = DECLARED.get(s.get("slot"), {}).get("word")
+        code_word = str(s.get("code") or "").split(" ")[0]
+        if first in (str(s.get("slot")), word, code_word):
+            return s
+    return None
+
+
+def _with_os(verb: str, timeout: float, brief: bool):
+    """Forward ``verb``, then say which machine the answer came from."""
+    forward = _forward(verb, timeout)
+
+    async def handler(args: dict) -> dict:
+        answer = await forward(args)
+        if not isinstance(answer, dict) or answer.get("ok") is False or "error" in answer:
+            return answer
+        session = await _session_for(args.get("code"))
+        if session is None:
+            return answer
+        about = _os_of(session)
+        if brief:
+            about = {k: about[k] for k in ("declared", "shell", "warning")
+                     if k in about}
+        return {**answer, "os": about}
+    return handler
 
 
 def _release_report() -> dict[str, Any]:
@@ -443,6 +554,11 @@ async def status(args: dict) -> dict:
         report |= await control.call("status", {}, timeout=30)
     except control.DaemonUnavailable as exc:
         report |= _unreachable(exc)
+        return report
+    sessions = report.get("sessions") or []
+    for gone in set(DECLARED) - {s.get("slot") for s in sessions}:
+        DECLARED.pop(gone, None)
+    report["sessions"] = [{**s, "os": _os_of(s)} for s in sessions]
     return report
 
 
@@ -572,6 +688,9 @@ HANDLERS: dict[str, Any] = {
     for fn in API_MANIFEST["functions"]
 }
 HANDLERS["invite"] = invite
+HANDLERS["run"] = _with_os("run", 60, brief=True)
+HANDLERS["shell"] = _with_os("shell", 60, brief=True)
+HANDLERS["tasks"] = _with_os("tasks", 60, brief=False)
 HANDLERS["status"] = status
 HANDLERS["logs"] = logs
 HANDLERS["drain"] = drain

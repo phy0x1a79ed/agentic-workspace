@@ -271,11 +271,23 @@ class ServiceAdapter:
         check replaces a bare ``KeyError`` inside ~190 handlers across every
         service with a clear, named usage error before the handler ever runs.
         """
+        return [p["name"] for p in self._params(fn)
+                if p.get("required") and p["name"] not in args]
+
+    def _params(self, fn: str) -> list[dict[str, Any]]:
         for entry in self.manifest.get("functions", []) or []:
             if entry.get("name") == fn:
-                return [p["name"] for p in entry.get("params", []) or []
-                        if p.get("required") and p["name"] not in args]
+                return entry.get("params", []) or []
         return []
+
+    def _missing_error(self, fn: str, missing: list[str]) -> str:
+        """The usage error for absent required params, with each one's
+        ``if_missing`` text: what the caller should do instead of retrying
+        with a guessed value."""
+        hints = [p["if_missing"] for p in self._params(fn)
+                 if p["name"] in missing and p.get("if_missing")]
+        return " ".join([f"{fn}: missing required argument(s): "
+                         f"{', '.join(missing)}.", *hints])
 
     async def _dispatch(self, fn: str | None, args: Any, as_: str | None) -> Any:
         handler = self.handlers.get(fn or "")
@@ -287,8 +299,7 @@ class ServiceAdapter:
         args = args or {}
         missing = self._missing_required_params(fn or "", args)
         if missing:
-            raise ValueError(
-                f"{fn}: missing required argument(s): {', '.join(missing)}")
+            raise ValueError(self._missing_error(fn or "", missing))
         # Pass as_ only if the handler asked for a second positional arg.
         try:
             nparams = len(inspect.signature(handler).parameters)
