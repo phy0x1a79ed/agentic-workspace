@@ -1421,7 +1421,8 @@ def _start_keeper() -> None:
         return
     if not kept:
         return
-    _keeper = keeper_mod.Keeper(_dao, kept, _describe_account, _channel_name)
+    _keeper = keeper_mod.Keeper(_dao, kept, _describe_account, _channel_name,
+                                push=_pusher.push)
     spawn_supervised("social.keeper", _keeper.run)
     log.info("keeping %d seat(s): %s", len(kept), ", ".join(s.name for s in kept))
 

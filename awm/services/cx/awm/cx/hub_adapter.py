@@ -64,6 +64,14 @@ API_MANIFEST: dict[str, Any] = {
                  "description": "The scope whose worktree is the session's directory."},
                 {"name": "prompt", "type": "string",
                  "description": "The first task. Without one the session starts empty."},
+                {"name": "system_prompt", "type": "string",
+                 "description": "Text appended to the system prompt "
+                                "(claude --append-system-prompt). Unlike the "
+                                "prompt, a compaction never rewrites it."},
+                {"name": "autocompact", "type": "integer",
+                 "description": "The auto-compact window in tokens, 100000 to "
+                                "1000000. Claude Code compacts about 33k below "
+                                "it. Omitted means the model's own window."},
                 {"name": "name", "type": "string",
                  "description": "The session's name; defaults to the scope."},
                 {"name": "model", "type": "string",
@@ -144,6 +152,23 @@ API_MANIFEST: dict[str, Any] = {
                  "description": "The job id `start_other` returned."},
             ],
             "timeout": 30,
+            "effect": "write",
+        },
+        {
+            "name": "resume",
+            "tool": "reflection_resume_other",
+            "description": (
+                "Bring back a stopped or retired job that `start_other` "
+                "created, under the same job id and with its own conversation "
+                "(`claude respawn`), and re-pin it if it was pinned. Refuses a "
+                "running job, a removed job, a job whose transcript is gone, and "
+                "a job that `start_other` did not create."
+            ),
+            "params": [
+                {"name": "job", "type": "string", "required": True,
+                 "description": "The job id `start_other` returned."},
+            ],
+            "timeout": 90,
             "effect": "write",
         },
         {
@@ -260,10 +285,15 @@ async def _stop(args: dict[str, Any], as_: str | None = None) -> dict[str, Any]:
     return await lifecycle.stop(args, as_)
 
 
+async def _resume(args: dict[str, Any], as_: str | None = None) -> dict[str, Any]:
+    return await lifecycle.resume(args, as_)
+
+
 HANDLERS: dict[str, Any] = {
     "start": _start,
     "list": _list,
     "stop": _stop,
+    "resume": _resume,
     "claim": _claim,
     "seed": _seed,
     "remove": _remove,

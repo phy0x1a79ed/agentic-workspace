@@ -292,6 +292,27 @@ def test_every_valued_flag_uses_the_equals_form(home, launched):
     assert not bare & set(launched[0]["flags"])
 
 
+def test_system_prompt_and_autocompact_become_equals_form_flags(home, launched):
+    start({**BASE, "system_prompt": "--not a flag\nsecond line", "autocompact": 233_000})
+    flags = launched[0]["flags"]
+    assert "--append-system-prompt=--not a flag\nsecond line" in flags
+    assert "--autocompact=233000" in flags
+    start({**BASE, "name": "second"})
+    assert not any(f.startswith(("--append-system-prompt", "--autocompact"))
+                   for f in launched[1]["flags"])
+
+
+@pytest.mark.parametrize("value", [99_999, 1_000_001, "200000", True, 2.5e5])
+def test_autocompact_outside_the_cli_range_is_refused(home, launched, value):
+    out = start({**BASE, "autocompact": value})
+    assert not out["ok"] and "autocompact" in out["reason"] and not launched
+
+
+def test_system_prompt_must_be_a_string(home, launched):
+    out = start({**BASE, "system_prompt": ["a"]})
+    assert not out["ok"] and "system_prompt" in out["reason"]
+
+
 def test_a_model_supplied_parent_is_ignored(home, launched):
     out = start({**BASE, "parent": "evil", "caller": "evil"})
     assert out["ok"] and out["parent"] is None
@@ -1327,10 +1348,107 @@ def test_the_manifest_declares_effects_and_drops_status():
     from awm.cx.hub_adapter import API_MANIFEST
 
     fns = {f["name"]: f for f in API_MANIFEST["functions"]}
-    assert {"start", "list", "stop", "claim", "seed", "remove"} == set(fns)
+    assert {"start", "list", "stop", "resume", "claim", "seed", "remove"} == set(fns)
     assert "status" not in fns and "wake" not in fns
     assert fns["start"]["effect"] == "write"
     assert fns["stop"]["effect"] == "write"
+    assert fns["resume"]["effect"] == "write"
     assert fns["list"]["effect"] == "read"
     assert all(f["effect"] in ("read", "write") for f in fns.values())
     assert "tier" not in str(API_MANIFEST)
+
+
+# --- resume ------------------------------------------------------------------
+
+
+def resume(args, as_=None):
+    from awm.cx import lifecycle
+
+    return asyncio.run(lifecycle.resume(args, as_))
+
+
+def stopped_job(home, monkeypatch, job=CHILD_JOB, *, transcript=True, **over):
+    """A job cx started that has since stopped: lineage and state, no roster entry."""
+    lineage(job, name="seat - x", **over)
+    (home.jobs / job).mkdir(parents=True, exist_ok=True)
+    (home.jobs / job / "state.json").write_text(json.dumps({
+        "name": "seat - x", "sessionId": f"{job}-sid", "state": "done"}))
+    transcripts = home.root / "transcripts"
+    monkeypatch.setenv("AWM_CX_TRANSCRIPTS", str(transcripts))
+    if transcript:
+        (transcripts / "-some-cwd").mkdir(parents=True, exist_ok=True)
+        (transcripts / "-some-cwd" / f"{job}-sid.jsonl").write_text("{}\n")
+
+
+@pytest.fixture
+def respawned(home, monkeypatch):
+    from awm.cx import lifecycle
+    from awm.claudedaemon import roster
+
+    calls: list[tuple[str, dict]] = []
+
+    async def fake(job, **kw):
+        calls.append((job, kw))
+        home.add(job, "seat - x", os.getppid())
+        return next(s for s in roster.load(kw["roster_path"], kw["jobs_dir"])
+                    if s.short == job)
+
+    monkeypatch.setattr(lifecycle.launch, "respawn", fake)
+    return calls
+
+
+def test_resume_respawns_the_same_job_and_re_pins_it(home, respawned, monkeypatch):
+    stopped_job(home, monkeypatch, pinned=True)
+    out = resume({"job": CHILD_JOB})
+    assert out["ok"] and out["job"] == CHILD_JOB and out["pinned"] is True
+    assert out["name"] == "seat - x" and out["link"] is None
+    assert respawned[0][0] == CHILD_JOB
+    assert respawned[0][1]["unit_prefix"] == "awm-cx-resume"
+    assert _pins(home) == [CHILD_JOB]
+
+
+def test_an_unpinned_job_resumes_unpinned(home, respawned, monkeypatch):
+    stopped_job(home, monkeypatch)
+    out = resume({"job": CHILD_JOB})
+    assert out["ok"] and out["pinned"] is False and _pins(home) == []
+
+
+def test_resume_refuses_a_job_cx_did_not_start(home, respawned):
+    out = resume({"job": CHILD_JOB})
+    assert not out["ok"] and "not started by" in out["reason"] and not respawned
+
+
+def test_resume_refuses_a_removed_job(home, respawned, monkeypatch):
+    stopped_job(home, monkeypatch)
+    (home.jobs / CHILD_JOB / "state.json").unlink()
+    out = resume({"job": CHILD_JOB})
+    assert not out["ok"] and "removed" in out["reason"] and not respawned
+
+
+def test_resume_refuses_a_job_whose_transcript_is_gone(home, respawned, monkeypatch):
+    stopped_job(home, monkeypatch, transcript=False)
+    out = resume({"job": CHILD_JOB})
+    assert not out["ok"] and "transcript" in out["reason"] and not respawned
+
+
+def test_resume_refuses_a_running_job(home, monkeypatch):
+    stopped_job(home, monkeypatch)
+    home.add(CHILD_JOB, "seat - x", os.getpid())
+    (home.jobs / CHILD_JOB / "state.json").write_text(json.dumps({
+        "name": "seat - x", "sessionId": f"{CHILD_JOB}-sid"}))
+    out = resume({"job": CHILD_JOB})
+    assert not out["ok"] and "running" in out["reason"]
+
+
+def test_resume_refuses_without_a_daemon(home, respawned, monkeypatch):
+    stopped_job(home, monkeypatch)
+    home.set_workers({}, supervisor=2**22 + 12345)
+    out = resume({"job": CHILD_JOB})
+    assert not out["ok"] and "no claude code daemon" in out["reason"] and not respawned
+
+
+def test_a_cx_session_may_resume_only_its_own_jobs(home, respawned, monkeypatch):
+    parent_session(home, mode="worker")
+    stopped_job(home, monkeypatch, parent="someone-else")
+    out = resume({"job": CHILD_JOB, "_caller_pid": os.getpid()})
+    assert not out["ok"] and "may resume only" in out["reason"] and not respawned

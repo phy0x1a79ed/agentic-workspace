@@ -30,7 +30,7 @@ from awm.persistence.dao import BaseDAO
 from awm.persistence.databases import init_service_db
 
 SERVICE = "social"
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 SCHEMA_SQL = """\
 CREATE TABLE IF NOT EXISTS social_accounts (
@@ -91,7 +91,8 @@ CREATE TABLE IF NOT EXISTS social_keepers (
     node         TEXT NOT NULL,
     job          TEXT NOT NULL,
     spec_hash    TEXT NOT NULL DEFAULT '',
-    started_at   TEXT NOT NULL DEFAULT ''
+    started_at   TEXT NOT NULL DEFAULT '',
+    seen_at      TEXT NOT NULL DEFAULT ''
 );
 """
 
@@ -99,7 +100,16 @@ _KEEPERS_AT = SCHEMA_SQL.index("CREATE TABLE IF NOT EXISTS social_keepers")
 _MOUNTS_AT = SCHEMA_SQL.index("CREATE TABLE IF NOT EXISTS social_mounts")
 HISTORY_DDL = SCHEMA_SQL[SCHEMA_SQL.index("CREATE TABLE IF NOT EXISTS social_history"):_MOUNTS_AT]
 MOUNTS_DDL = SCHEMA_SQL[_MOUNTS_AT:_KEEPERS_AT]
-KEEPERS_DDL = SCHEMA_SQL[_KEEPERS_AT:]
+#: The keepers table as v5 created it; v6 adds `seen_at`.
+KEEPERS_V5_DDL = """\
+CREATE TABLE IF NOT EXISTS social_keepers (
+    seat         TEXT NOT NULL PRIMARY KEY,
+    node         TEXT NOT NULL,
+    job          TEXT NOT NULL,
+    spec_hash    TEXT NOT NULL DEFAULT '',
+    started_at   TEXT NOT NULL DEFAULT ''
+);
+"""
 
 # v1 → v2: the local message mirror is gone (query platforms live). Drop the
 # orphan table + its indexes from any existing prod/dev DB. Idempotent.
@@ -111,7 +121,8 @@ DROP TABLE IF EXISTS social_messages;
 """,
     (2, 3): HISTORY_DDL,
     (3, 4): MOUNTS_DDL,
-    (4, 5): KEEPERS_DDL,
+    (4, 5): KEEPERS_V5_DDL,
+    (5, 6): "ALTER TABLE social_keepers ADD COLUMN seen_at TEXT NOT NULL DEFAULT '';\n",
 }
 
 _initialized = False
@@ -385,7 +396,7 @@ class SocialDAO(BaseDAO):
 
     def keeper(self, seat: str) -> dict | None:
         return self.query_one(
-            "SELECT seat, node, job, spec_hash, started_at FROM social_keepers "
+            "SELECT seat, node, job, spec_hash, started_at, seen_at FROM social_keepers "
             "WHERE seat = ?", (seat,))
 
     def set_keeper(self, seat: str, node: str, job: str, spec_hash: str) -> None:
@@ -393,5 +404,11 @@ class SocialDAO(BaseDAO):
             "INSERT INTO social_keepers (seat, node, job, spec_hash, started_at) "
             "VALUES (?, ?, ?, ?, ?) ON CONFLICT (seat) DO UPDATE SET "
             "node = excluded.node, job = excluded.job, "
-            "spec_hash = excluded.spec_hash, started_at = excluded.started_at",
+            "spec_hash = excluded.spec_hash, started_at = excluded.started_at, "
+            "seen_at = ''",
             (seat, node, job, spec_hash, _now()))
+
+    def keeper_seen(self, seat: str, at: float) -> None:
+        """Record ``at`` (epoch seconds) as the last moment the seat's agent was alive."""
+        self.execute("UPDATE social_keepers SET seen_at = ? WHERE seat = ?",
+                     (f"{at:.3f}", seat))

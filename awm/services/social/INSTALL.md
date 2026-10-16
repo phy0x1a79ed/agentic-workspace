@@ -240,13 +240,19 @@ in the owner's `social.toml`:
     channel = "1560400515630760049"    # the chat id, as social_seats lists it
     node    = "altair"                 # where the agent runs: it needs Claude Code
     scope   = "awm/seat-hallam-general"
-    brief   = """…"""                  # opens the agent's first prompt
+    brief   = """…"""                  # the agent's standing instructions
     # model = "opus"   effort = "high"  (optional)
+    # compact_at = 200000              (optional: 200k to 960k tokens)
 
 The seat stays an interface: the agent hears the chat only through pushed
 lines and answers with `social_send`. It runs no Monitor. Social reads the
 tables once, at start, so restart social after you edit one. A bad table is
 logged and disables the kept seats only. The accounts keep running.
+
+The brief and the chat rules go into the agent's system prompt, not its first
+message. A compaction summary rewrites the conversation and never the system
+prompt, so the brief survives every compaction word for word. The agent
+compacts in place once its context reaches `compact_at`.
 
 The keeper runs on the owner every 60 s:
 
@@ -254,22 +260,32 @@ The keeper runs on the owner every 60 s:
    node that does not answer skips the tick.
 2. It starts a missing agent with `cx start`, named `seat - <name>`, pinned,
    with Remote Control on. It writes the mount row itself.
-3. It replaces an agent that exited or failed. Restarts back off from 60 s to
-   15 min, and the count resets after 10 min of health.
-4. It leaves an agent blocked on login or usage for a person, and logs it once.
-5. It recycles an agent whose launch spec changed, once its tempo is idle.
+3. It resumes an agent that exited, with `cx resume`. The agent keeps its own
+   conversation and its prompt cache. The keeper then pushes it one line that
+   names `social history since=<ts>`, the last tick that saw it alive, because
+   lines pushed while it was down were dropped.
+4. It starts a new agent when the old one failed on an API error, when
+   `cx resume` refuses, or after three resumes that did not last 10 min.
+   Restarts back off from 60 s to 15 min, and the count resets after 10 min
+   of health.
+5. It leaves an agent blocked on login or usage for a person, and logs it once.
+6. It replaces an agent whose launch spec changed, once its tempo is idle.
    A recycle is not a restart.
 
-A `cx stop` of a pinned agent unpins it and removes it with `claude rm`. The
-Claude Code daemon still retires a pinned session under memory pressure. The
-keeper then starts a new one. `social_mount` on a kept seat is refused and
-names the agent. `social_seats` shows each kept seat's job, health and
-restart count.
+**CAUTION** `compact_at` is where compaction fires, not the window. Claude Code
+compacts 33k tokens below its `--autocompact` window, so the keeper passes
+`compact_at` plus `AUTOCOMPACT_RESERVE` in `keeper.py`. Check that constant
+when Claude Code changes its compaction rule.
 
-**CAUTION** Every replacement agent opens on the same brief and reads the
-backlog first. Write the brief so that a second reading of a handled backlog
-posts nothing. A brief that says "announce yourself on start" posts again on
-every restart.
+A `cx stop` of a pinned agent unpins it and removes it with `claude rm`, so the
+keeper calls it only before a new start. The Claude Code daemon still retires a
+pinned session under memory pressure, and the next tick resumes it.
+`social_mount` on a kept seat is refused and names the agent. `social_seats`
+shows each kept seat's job, health, restart count and resume count.
+
+**CAUTION** A new agent opens on the same brief and reads the backlog first.
+Write the brief so that a second reading of a handled backlog posts nothing. A
+brief that says "announce yourself on start" posts again on every new start.
 
 **CAUTION** `cx start` refuses a scope worktree that Claude Code does not
 trust. A scope in a repository that has never run Claude Code is refused on

@@ -66,6 +66,8 @@ SCOPE_CREATE_TIMEOUT_S = 1700.0
 #: A lineage record younger than this is never pruned, so a record written the
 #: instant a job registers cannot be collected before the roster shows it.
 PRUNE_GRACE_S = 120.0
+#: The auto-compact window the CLI accepts, in tokens.
+AUTOCOMPACT_MIN, AUTOCOMPACT_MAX = 100_000, 1_000_000
 #: How long a pending record waits for its late job before it is dropped.
 PENDING_TTL_S = 300.0
 
@@ -257,6 +259,9 @@ def _parse(args: dict[str, Any]) -> dict[str, Any]:
     prompt = args.get("prompt")
     if prompt is not None and not isinstance(prompt, str):
         raise Refused("prompt must be a string")
+    system_prompt = args.get("system_prompt")
+    if system_prompt is not None and not isinstance(system_prompt, str):
+        raise Refused("system_prompt must be a string")
     model = args.get("model") or config.default_model()
     if not isinstance(model, str) or not _MODEL.match(model):
         raise Refused("model is not a model name")
@@ -271,7 +276,9 @@ def _parse(args: dict[str, Any]) -> dict[str, Any]:
         raise Refused("mode must be a short label")
     return {
         "project": project, "scope": scope, "name": name,
-        "prompt": prompt or None, "model": model, "effort": effort,
+        "prompt": prompt or None, "system_prompt": system_prompt or None,
+        "autocompact": _autocompact(args.get("autocompact")),
+        "model": model, "effort": effort,
         "permission": permission, "mode": mode,
         "disallowed_tools": _tool_list(args.get("disallowed_tools")),
         "allowed_tools": _tool_list(args.get("allowed_tools"), "allowed_tools"),
@@ -303,6 +310,16 @@ def _tool_list(value: Any, field: str = "disallowed_tools") -> list[str]:
         raise Refused(f"{field} holds {bad[0]!r}, which is not a tool name or a "
                       "tool rule such as Read(./**) or mcp__awm__*")
     return tools
+
+
+def _autocompact(value: Any) -> int | None:
+    if value is None:
+        return None
+    if (isinstance(value, int) and not isinstance(value, bool)
+            and AUTOCOMPACT_MIN <= value <= AUTOCOMPACT_MAX):
+        return value
+    raise Refused(f"autocompact must be a token count from {AUTOCOMPACT_MIN} "
+                  f"to {AUTOCOMPACT_MAX}")
 
 
 def _remote_control(value: Any, name: str) -> str | None:
@@ -356,6 +373,10 @@ def build_flags(spec: dict[str, Any]) -> list[str]:
         flags.append("--allowedTools=" + ",".join(spec["allowed_tools"]))
     if spec["remote_control"]:
         flags.append(f"--remote-control={spec['remote_control']}")
+    if spec.get("system_prompt"):
+        flags.append(f"--append-system-prompt={spec['system_prompt']}")
+    if spec.get("autocompact"):
+        flags.append(f"--autocompact={spec['autocompact']}")
     return [*flags, f"--effort={spec['effort']}", f"--model={spec['model']}"]
 
 
@@ -604,6 +625,67 @@ def _parent_of(pid: Any) -> str | None:
     return str(rec["sessionId"]) if rec.get("sessionId") else None
 
 
+# --- resume ------------------------------------------------------------------
+
+
+async def resume(args: dict[str, Any], as_: str | None = None) -> dict[str, Any]:
+    """Bring back a stopped job that `start` created, with its own conversation."""
+    try:
+        return await _resume(args, as_)
+    except Refused as exc:
+        log.info("cx: resume refused — %s", exc)
+        return {"ok": False, "reason": str(exc)}
+    except OSError as exc:
+        log.warning("cx: resume failed — %s", exc)
+        return {"ok": False, "reason": f"resume failed: {exc}"}
+
+
+async def _resume(args: dict[str, Any], as_: str | None) -> dict[str, Any]:
+    reason = station_refusal() or caller_refusal(as_)
+    job = args.get("job")
+    if not reason and (not isinstance(job, str) or not _JOB.match(job)):
+        reason = "job must be a job id"
+    if reason:
+        raise Refused(reason)
+    rec = read_lineage(job)
+    if rec is None:
+        raise Refused(f"job {job} was not started by reflection start_other, so it "
+                      "will not be resumed")
+    reason = _caller_refusal_for(args.get("_caller_pid"), rec, "resume")
+    if reason:
+        raise Refused(reason)
+    state = _read_json(config.jobs_dir() / job / "state.json")
+    if not state:
+        raise Refused(f"job {job} has no state record; it was removed")
+    session_id = state.get("sessionId")
+    if not isinstance(session_id, str) or not _transcript_exists(session_id):
+        raise Refused(f"job {job} has no transcript left to resume")
+    if sessions.daemon_pid() is None:
+        raise Refused("no claude code daemon is running — a session resumed now "
+                      "would land inside awm's control group")
+    async with _START_LOCK:
+        try:
+            session = await launch.respawn(
+                job, claude=config.claude_bin(), unit_prefix="awm-cx-resume",
+                roster_path=config.roster_path(), jobs_dir=config.jobs_dir())
+        except launch.Refused as exc:
+            raise Refused(str(exc)) from exc
+        except (TimeoutError, OSError) as exc:
+            raise Refused(f"the session did not resume: {exc}") from exc
+    pinned = bool(rec.get("pinned")) and await _pin(job)
+    log.info("cx: resumed %s as %s%s", session.name, job, ", pinned" if pinned else "")
+    return {"ok": True, "job": job, "name": session.name, "node": node_name(),
+            "project": rec.get("project"), "scope": rec.get("scope"),
+            "attach": f"claude attach {job}", "pinned": pinned,
+            **await _started_link(job, bool(rec.get("remote_control")))}
+
+
+def _transcript_exists(session_id: str) -> bool:
+    if not re.match(r"^[0-9A-Za-z-]+$", session_id):
+        return False
+    return any(config.transcripts_dir().glob(f"*/{session_id}.jsonl"))
+
+
 # --- stop --------------------------------------------------------------------
 
 
@@ -621,7 +703,7 @@ async def stop(args: dict[str, Any], as_: str | None = None) -> dict[str, Any]:
     if not reason and rec is None:
         reason = f"job {job} was not started by reflection start_other, so it will not be stopped"
     if not reason:
-        reason = _stop_caller_refusal(args.get("_caller_pid"), rec)
+        reason = _caller_refusal_for(args.get("_caller_pid"), rec, "stop")
     if reason:
         log.info("cx: stop refused — %s", reason)
         return {"ok": False, "reason": reason}
@@ -644,11 +726,11 @@ async def _stop_pinned(job: str) -> dict[str, Any]:
     return {"ok": True, "job": job, "removed": True}
 
 
-def _stop_caller_refusal(caller_pid: Any, rec: dict[str, Any]) -> str | None:
-    """A session with a cx mode may stop only the jobs it started itself.
+def _caller_refusal_for(caller_pid: Any, rec: dict[str, Any], verb: str) -> str | None:
+    """A session with a cx mode may stop or resume only the jobs it started.
 
     No `_caller_pid`, or a pid that is positively not a cx session, is an
-    operator or a service and may stop any job cx started.
+    operator or a service and may act on any job cx started.
     """
     if caller_pid is None:
         return None
@@ -656,11 +738,11 @@ def _stop_caller_refusal(caller_pid: Any, rec: dict[str, Any]) -> str | None:
     if mode is None:
         return None
     if mode == UNKNOWN:
-        return "the caller's mode could not be determined, so it may not stop sessions"
+        return f"the caller's mode could not be determined, so it may not {verb} sessions"
     parent = _parent_of(caller_pid)
     if parent is not None and parent == rec.get("parent"):
         return None
-    return "a session may stop only the jobs it started"
+    return f"a session may {verb} only the jobs it started"
 
 
 async def run_claude_stop(job: str) -> tuple[bool, str]:
