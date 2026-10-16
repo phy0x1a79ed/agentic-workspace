@@ -420,6 +420,9 @@ The `/new-agent` ack is public in the DM and carries an `ack_ref` in its event.
 A `send` with that `ack_ref` overwrites the ack with the answer. Discord allows
 the edit for 15 minutes, so after 14 the `send` posts a new message instead.
 Every message into a DM goes out with link previews suppressed.
+A `send` with `files` attaches each `{filename, text}` as a text file. Only Discord
+accounts take `files`. Every other account refuses the `send`. The files travel inline
+in the call, so a `send` forwarded to a peer node carries them.
 
 A guild invocation that slips past the hidden context, or a sender absent from
 the operators table, gets an ephemeral refusal and emits nothing. Add an operator on the node that owns the

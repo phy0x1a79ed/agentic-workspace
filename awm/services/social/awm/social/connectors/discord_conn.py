@@ -13,6 +13,7 @@ them bubble into the adapter's control-WS loop.
 from __future__ import annotations
 
 import asyncio
+import io
 import logging
 import time
 
@@ -60,8 +61,16 @@ DEVICE_CHOICES = ("cwl", "alliance")
 ACK_TTL = 14 * 60
 
 
+def _discord_files(files: list[dict] | None) -> list:
+    import discord
+
+    return [discord.File(io.BytesIO(str(f["text"]).encode()), filename=str(f["filename"]))
+            for f in files or ()]
+
+
 class DiscordConnector(Connector):
     platform = "discord"
+    sends_files = True
 
     def __init__(self, account: Account, on_message: OnMessage,
                  on_command: OnCommand | None = None) -> None:
@@ -195,13 +204,15 @@ class DiscordConnector(Connector):
         self._acks[ref] = (now + ACK_TTL, interaction)
         return ref
 
-    async def edit_ack(self, ref: str, text: str) -> dict | None:
+    async def edit_ack(self, ref: str, text: str, *,
+                       files: list[dict] | None = None) -> dict | None:
         deadline, interaction = self._acks.pop(ref, (0.0, None))
         if interaction is None or deadline <= time.monotonic():
             return None
+        extra = {"attachments": _discord_files(files)} if files else {}
         try:
             # The ack went out with embeds suppressed, and an edit keeps the flag.
-            msg = await interaction.edit_original_response(content=text)
+            msg = await interaction.edit_original_response(content=text, **extra)
         except Exception as exc:  # noqa: BLE001 — the caller falls back to a new message
             log.warning("discord[%s] could not edit ack %s: %s",
                         self.account.name, ref, exc)
@@ -292,7 +303,8 @@ class DiscordConnector(Connector):
                 f"discord[{self.account.name}] not connected") from exc
 
     async def send(
-        self, channel: str, text: str, *, thread: str | None = None
+        self, channel: str, text: str, *, thread: str | None = None,
+        files: list[dict] | None = None,
     ) -> dict:
         import discord
 
@@ -302,7 +314,8 @@ class DiscordConnector(Connector):
         target = await self._resolve_channel(thread or channel)
         # A DM is a notification feed: link previews there are noise.
         dm = channel.startswith(DM_PREFIX) or isinstance(target, discord.DMChannel)
-        sent = await target.send(text, suppress_embeds=dm)
+        extra = {"files": _discord_files(files)} if files else {}
+        sent = await target.send(text, suppress_embeds=dm, **extra)
         return {
             "message_id": str(sent.id),
             "channel_id": str(sent.channel.id),

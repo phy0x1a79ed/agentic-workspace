@@ -110,10 +110,13 @@ def event_line(type_: str, card: dict) -> str | None:
     return None
 
 
-async def send_social(account: str, channel: str, text: str, *, ack_ref: str = "") -> None:
+async def send_social(account: str, channel: str, text: str, *, ack_ref: str = "",
+                      files: list[dict] | None = None) -> None:
     args = {"account": account, "channel": channel, "text": text}
     if ack_ref:
         args["ack_ref"] = ack_ref
+    if files:
+        args["files"] = files
     result = await gatewayclient.call_maybe_peer(
         gatewayclient.peer_env("AWM_SOCIAL_PEER"), "social", "send", args)
     if isinstance(result, dict) and result.get("ok") is False:

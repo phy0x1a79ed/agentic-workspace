@@ -159,6 +159,9 @@ class Connector(ABC):
     # the only reader of its chats). The adapter then injects ``history``.
     keeps_history: bool = False
     history = None  # awm.social.history.History, set by the adapter
+    # True for a connector whose ``send`` and ``edit_ack`` take ``files``: a list
+    # of ``{"filename", "text"}`` text files to attach.
+    sends_files: bool = False
 
     def __init__(
         self,
@@ -189,7 +192,8 @@ class Connector(ABC):
         ``message_id`` when the platform supplies one).
         """
 
-    async def edit_ack(self, ref: str, text: str) -> dict | None:
+    async def edit_ack(self, ref: str, text: str, *,
+                       files: list[dict] | None = None) -> dict | None:
         """Rewrite the acknowledgement of the command carrying ``ack_ref=ref``.
 
         Returns ``None`` when the platform can no longer edit it (expired,

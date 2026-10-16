@@ -150,7 +150,9 @@ outside its operators table, so a command that arrives here comes from Tony.
 - `/reject <ref> [reason]` rejects the card and posts the reason on its thread.
 - `/new-agent [prompt]` starts a session named `agent-xxxx` through cx `start` (the verb
   behind `reflection start_other`) with Remote Control on, and answers with the session's
-  `https://claude.ai/code/session_…` link. The answer overwrites the "Starting an agent…" ack. The prompt tells the agent to rename itself with
+  `https://claude.ai/code/session_…` link. The answer overwrites the "Starting an agent…" ack.
+  It quotes the first three lines of the prompt, up to 300 characters. It attaches a longer
+  prompt whole as `prompt.txt`, which Discord shows collapsed. The prompt tells the agent to rename itself with
   `reflection rename` once it knows its work.
 
 The reconcile loop holds a non-blocking lock on `<state>/reconcile.lock` for

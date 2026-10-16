@@ -27,8 +27,10 @@ DEFAULT_REASON = "rejected by the recipient"
 RENAME_HINT = ("You were started from Discord as {name}, a placeholder name. Once you know what this "
                "session is for, rename yourself to a short name for that work (2-4 words) with "
                "reflection(verb=\"rename\", args={{name: \"<name>\"}}).")
-# Discord caps a message at 2000 characters; leave room for the link line.
-QUOTE_CHARS = 1500
+# The answer quotes this much of the prompt and attaches the rest as a file.
+PREVIEW_LINES = 3
+PREVIEW_CHARS = 300
+PROMPT_FILE = "prompt.txt"
 
 
 def _new_agent_prompt(name: str, prompt: str) -> str:
@@ -36,11 +38,15 @@ def _new_agent_prompt(name: str, prompt: str) -> str:
     return f"{prompt}\n\n{hint}" if prompt else f"{hint} Wait for Tony's first instruction."
 
 
-def _quoted(prompt: str) -> str:
-    """``prompt`` as a Discord block quote, cut short to fit one message."""
-    if len(prompt) > QUOTE_CHARS:
-        prompt = prompt[:QUOTE_CHARS].rstrip() + "…"
-    return "\n".join(f"> {line}" for line in prompt.splitlines())
+def _quoted(prompt: str) -> tuple[str, list[dict]]:
+    """A block-quoted preview of ``prompt``, and the whole prompt as a file when
+    the preview leaves some of it out."""
+    lines = prompt.splitlines()
+    if len(lines) <= PREVIEW_LINES and len(prompt) <= PREVIEW_CHARS:
+        return "\n".join(f"> {line}" for line in lines), []
+    preview = "\n".join(lines[:PREVIEW_LINES])[:PREVIEW_CHARS].rstrip() + "…"
+    return "\n".join(f"> {line}" for line in preview.splitlines()), [
+        {"filename": PROMPT_FILE, "text": prompt}]
 
 
 class Commands:
@@ -73,16 +79,19 @@ class Commands:
             self._running.add(task)
             task.add_done_callback(self._running.discard)
 
-    async def _answered(self, event: dict, work: Awaitable[str]) -> None:
-        """Run a command and send its outcome back. A failure is an outcome too."""
+    async def _answered(self, event: dict, work: Awaitable[str | tuple[str, list[dict]]]) -> None:
+        """Run a command and send its outcome back, with any files the outcome
+        carries. A failure is an outcome too."""
+        files: list[dict] = []
         try:
-            text = await work
+            outcome = await work
+            text, files = outcome if isinstance(outcome, tuple) else (outcome, [])
         except Exception as exc:  # noqa: BLE001 — Tony hears of it either way
             log.warning("reporting: command %s failed: %s", event.get("command"), exc)
             text = f"{event.get('command')} failed: {exc}"
-        await self._tell(event, text)
+        await self._tell(event, text, files)
 
-    async def _tell(self, event: dict, text: str) -> None:
+    async def _tell(self, event: dict, text: str, files: list[dict] | None = None) -> None:
         account = event.get("account")
         user = event.get("user_id")
         channel = event.get("reply_to") or (f"dm:{user}" if user else event.get("channel_id"))
@@ -91,7 +100,7 @@ class Commands:
             return
         try:
             await self._reply(str(account), str(channel), text,
-                              ack_ref=str(event.get("ack_ref") or ""))
+                              ack_ref=str(event.get("ack_ref") or ""), files=files or [])
         except Exception as exc:  # noqa: BLE001
             log.warning("reporting: could not answer a command: %s", exc)
 
@@ -116,7 +125,7 @@ class Commands:
 
     # -- /new-agent ------------------------------------------------------------
 
-    async def _new_agent(self, event: dict) -> str:
+    async def _new_agent(self, event: dict) -> tuple[str, list[dict]]:
         project, scope = config.new_agent_target()
         name = f"agent-{uuid.uuid4().hex[:4]}"
         prompt = str(event.get("prompt") or "").strip()
@@ -131,5 +140,8 @@ class Commands:
         else:
             outcome = (f"started {job}, link not ready yet: "
                        f"{started.get('link_reason') or 'Remote Control did not report a link'}")
+        if not prompt:
+            return outcome, []
         # The answer replaces the ack, so it carries the prompt the agent was started with.
-        return f"{_quoted(prompt)}\n{outcome}" if prompt else outcome
+        quote, files = _quoted(prompt)
+        return f"{quote}\n{outcome}", files
