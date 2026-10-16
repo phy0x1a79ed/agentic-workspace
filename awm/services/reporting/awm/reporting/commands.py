@@ -27,11 +27,20 @@ DEFAULT_REASON = "rejected by the recipient"
 RENAME_HINT = ("You were started from Discord as {name}, a placeholder name. Once you know what this "
                "session is for, rename yourself to a short name for that work (2-4 words) with "
                "reflection(verb=\"rename\", args={{name: \"<name>\"}}).")
+# Discord caps a message at 2000 characters; leave room for the link line.
+QUOTE_CHARS = 1500
 
 
 def _new_agent_prompt(name: str, prompt: str) -> str:
     hint = RENAME_HINT.format(name=name)
     return f"{prompt}\n\n{hint}" if prompt else f"{hint} Wait for Tony's first instruction."
+
+
+def _quoted(prompt: str) -> str:
+    """``prompt`` as a Discord block quote, cut short to fit one message."""
+    if len(prompt) > QUOTE_CHARS:
+        prompt = prompt[:QUOTE_CHARS].rstrip() + "…"
+    return "\n".join(f"> {line}" for line in prompt.splitlines())
 
 
 class Commands:
@@ -110,13 +119,17 @@ class Commands:
     async def _new_agent(self, event: dict) -> str:
         project, scope = config.new_agent_target()
         name = f"agent-{uuid.uuid4().hex[:4]}"
+        prompt = str(event.get("prompt") or "").strip()
         spec = {"project": project, "scope": scope, "name": name, "remote_control": True,
-                "prompt": _new_agent_prompt(name, str(event.get("prompt") or "").strip())}
+                "prompt": _new_agent_prompt(name, prompt)}
         started = await self.cx.start(spec)
-        if not started.get("ok"):
-            return f"could not start an agent: {started.get('reason') or started.get('error') or started}"
         job = started.get("job")
-        if started.get("link"):
-            return f"{name} ({project}/{scope}, job {job}): {started['link']}"
-        return (f"started {job}, link not ready yet: "
-                f"{started.get('link_reason') or 'Remote Control did not report a link'}")
+        if not started.get("ok"):
+            outcome = f"could not start an agent: {started.get('reason') or started.get('error') or started}"
+        elif started.get("link"):
+            outcome = f"{name} ({project}/{scope}, job {job}): {started['link']}"
+        else:
+            outcome = (f"started {job}, link not ready yet: "
+                       f"{started.get('link_reason') or 'Remote Control did not report a link'}")
+        # The answer replaces the ack, so it carries the prompt the agent was started with.
+        return f"{_quoted(prompt)}\n{outcome}" if prompt else outcome

@@ -116,6 +116,21 @@ async def test_new_agent_starts_a_session_with_remote_control_and_replies_with_i
     assert "https://claude.ai/code/session_job0001" in text and spec["name"] in text
 
 
+async def test_new_agent_answer_quotes_its_prompt(parts):
+    commands, _, _, replies = parts
+    await commands.handle(event("new_agent", prompt="fix the tests\nthen deploy"))
+    await settle(commands)
+    lines = replies.sent[0][2].splitlines()
+    assert lines[:2] == ["> fix the tests", "> then deploy"]
+    assert "https://claude.ai/code/session_job0001" in lines[2]
+    await commands.handle(event("new_agent", prompt="x" * 5000))
+    await settle(commands)
+    assert len(replies.sent[1][2]) < 2000
+    await commands.handle(event("new_agent", prompt=""))
+    await settle(commands)
+    assert not replies.sent[2][2].startswith(">")
+
+
 async def test_new_agent_answers_by_replacing_the_starting_ack(parts):
     commands, _, _, replies = parts
     await commands.handle(event("new_agent", reply_to="dm:42", ack_ref="31337"))
