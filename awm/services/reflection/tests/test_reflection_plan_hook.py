@@ -95,41 +95,72 @@ def test_the_call_carries_the_hooks_own_pid_and_expected_session(monkeypatch):
 
 
 def _no_wait(monkeypatch):
-    monkeypatch.setattr(hook.time, "sleep", lambda _s: None)
+    now = [0.0]
+
+    def sleep(s):
+        now[0] += s
+
+    monkeypatch.setattr(hook.time, "sleep", sleep)
+    monkeypatch.setattr(hook.time, "monotonic", lambda: now[0])
 
 
-def test_a_covered_footer_is_retried(monkeypatch):
-    # On tmux an unreadable footer is a modal, and whatever covers it right after
-    # an approval is transient.
+@pytest.mark.parametrize("hosting", ["tmux", "background"])
+def test_a_covered_footer_is_retried(monkeypatch, hosting):
+    # An unreadable footer is a modal on either lane — the service renders a
+    # background session's stream into a screen — and whatever covers it right
+    # after an approval is transient.
     calls = []
-    results = [{"ok": False, "mode": "unknown", "hosting": "tmux"}, {"ok": True}]
-    monkeypatch.setattr(hook, "call_mode",
-                        lambda sid: calls.append(sid) or results[len(calls) - 1])
+    results = [{"ok": False, "mode": "unknown", "hosting": hosting}, {"ok": True}]
+    monkeypatch.setattr(hook, "call_mode", lambda sid, timeout=None:
+                        calls.append(sid) or results[len(calls) - 1])
     monkeypatch.setattr(hook, "note", lambda msg: pytest.fail(f"logged: {msg}"))
     _no_wait(monkeypatch)
     hook.ensure_bypass("sid-1")
     assert calls == ["sid-1", "sid-1"]
 
 
-def test_a_blind_lane_is_not_retried(monkeypatch):
-    # A background session shows an append-only pty stream, and a footer paint
-    # that is not in it does not arrive by waiting — measured live, with the mode
-    # changing exactly as asked while every read came back unknown. Retrying
-    # would stall the turn for nothing.
+@pytest.mark.parametrize("exc", [
+    TimeoutError("timed out"),
+    hook.urllib.error.URLError(TimeoutError("timed out")),
+])
+def test_a_timed_out_call_is_never_retried(monkeypatch, exc):
+    # The walk a timed-out call started is still pressing keys on the server. A
+    # retry starts a second walk on top of it, and between them they step past
+    # bypass — observed live on a busy background session.
     calls, logged = [], []
-    monkeypatch.setattr(hook, "call_mode", lambda sid: calls.append(sid) or {
-        "ok": False, "mode": "unknown", "hosting": "background",
-        "error": "cannot see this session's permission-mode indicator"})
+
+    def slow(sid, timeout=None):
+        calls.append(sid)
+        raise exc
+
+    monkeypatch.setattr(hook, "call_mode", slow)
     monkeypatch.setattr(hook, "note", logged.append)
     _no_wait(monkeypatch)
     hook.ensure_bypass("sid-1")
     assert len(calls) == 1
-    assert len(logged) == 1
+    assert len(logged) == 1 and "not retried" in logged[0]
+
+
+def test_every_attempt_fits_inside_the_hook_budget(monkeypatch):
+    # Claude Code kills the hook at its settings timeout; an attempt that starts
+    # late must not be given the full HTTP timeout.
+    timeouts = []
+
+    def boom(sid, timeout=None):
+        timeouts.append(timeout)
+        hook.time.sleep(timeout)
+        raise OSError("connection refused")
+
+    monkeypatch.setattr(hook, "call_mode", boom)
+    monkeypatch.setattr(hook, "note", lambda msg: None)
+    _no_wait(monkeypatch)
+    hook.ensure_bypass("sid-1")
+    assert sum(timeouts) + hook.RETRY_GAP_S * (len(timeouts) - 1) <= hook.DEADLINE_S
 
 
 def test_a_settled_refusal_is_logged_once_and_not_retried(monkeypatch):
     calls, logged = [], []
-    monkeypatch.setattr(hook, "call_mode", lambda sid: calls.append(sid) or {
+    monkeypatch.setattr(hook, "call_mode", lambda sid, timeout=None: calls.append(sid) or {
         "ok": False, "mode": "auto",
         "error": "this session's permission-mode cycle never offers bypass"})
     monkeypatch.setattr(hook, "note", logged.append)
@@ -142,7 +173,7 @@ def test_a_settled_refusal_is_logged_once_and_not_retried(monkeypatch):
 def test_an_unreachable_gateway_is_retried_then_logged(monkeypatch):
     calls, logged = [], []
 
-    def boom(sid):
+    def boom(sid, timeout=None):
         calls.append(sid)
         raise OSError("connection refused")
 

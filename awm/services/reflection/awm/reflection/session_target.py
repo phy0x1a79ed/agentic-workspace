@@ -238,10 +238,15 @@ def resolve(repl_pid: int, *, socket: Optional[str] = None, runner=None,
                 f"the daemon roster entry for session {session_id} has no PTY "
                 f"socket or input token; reflection cannot reach it")
         modes = worker.get("decModes") or []
+        dispatch = worker.get("dispatch") or {}
+        cols, rows = dispatch.get("cols"), dispatch.get("rows")
+        geometry = ((cols, rows) if isinstance(cols, int) and isinstance(rows, int)
+                    and cols > 0 and rows > 1 else None)
         return DaemonLane(
             sock=sock, auth=auth, session_id=session_id, repl_pid=repl_pid,
             name=name, cli_version=worker.get("cliVersion"),
             dec_modes=tuple(int(m) for m in modes if isinstance(m, int)),
+            geometry=geometry,
         )
 
     raise ResolveError(

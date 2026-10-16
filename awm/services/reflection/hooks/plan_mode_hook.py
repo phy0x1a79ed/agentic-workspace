@@ -26,13 +26,16 @@ hands us:
   time we run, never ``"plan"``. Already-bypass needs no call; a literal
   ``"plan"`` means something unmodelled happened and we stand down.
 
-Which lane the session is on decides whether a refusal is worth retrying, and the
-service says which it is. A terminal session that cannot be read has a modal over
-its footer, which passes; a background session that cannot be read is showing us
-an append-only pty stream with no footer paint in it, and no amount of waiting
-adds one — measured on a live background session, where the mode changed exactly
-as asked while every read came back unknown. Retrying that would buy nothing and
-cost the turn fifteen seconds.
+An unreadable footer is retried on either lane: the service renders a
+background session's stream into a screen, so "unknown" there means a modal
+covering the footer, as it does on tmux, and whatever covers it right after an
+approval is transient.
+
+A call that times out is never retried. The walk it started is still pressing
+Shift+Tab on the server, and a second walk interleaved with it steps past bypass
+— observed live, when an 8-second timeout fired on a busy session's 17-second
+walk. Only a gateway that could not be reached at all, where nothing started, is
+retried.
 
 Identity is the reason this is not a one-line ``curl``. Reflection acts only on
 the calling session and works that out by observing the caller's pid — but a
@@ -68,9 +71,10 @@ SETTLE_S = 0.6
 # Bounded by construction: the settings entry gives this hook a timeout, and
 # overrunning it means Claude Code kills us mid-POST. Everything below has to
 # fit inside that with room to spare.
-HTTP_TIMEOUT_S = 8.0
-DEADLINE_S = 15.0
+HTTP_TIMEOUT_S = 15.0
+DEADLINE_S = 17.0
 RETRY_GAP_S = 1.5
+MIN_ATTEMPT_S = 3.0
 
 
 def hub_url() -> str:
@@ -87,7 +91,7 @@ def note(message: str) -> None:
         pass
 
 
-def call_mode(session_id: str) -> dict:
+def call_mode(session_id: str, timeout: float = HTTP_TIMEOUT_S) -> dict:
     """One ``reflection_mode`` call over plain HTTP. Raises on transport failure.
 
     The flat ``/invoke`` surface rather than the CLI: the generated CLI sends no
@@ -101,7 +105,7 @@ def call_mode(session_id: str) -> dict:
         hub_url() + "/invoke", data=body, method="POST",
         headers={"Content-Type": "application/json",
                  "X-Awm-Caller-Pid": str(os.getpid())})
-    with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT_S) as resp:
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
         payload = json.loads(resp.read().decode() or "{}")
     return payload.get("result") or {}
 
@@ -115,15 +119,26 @@ def should_act(payload: dict) -> bool:
     return payload.get("permission_mode") not in ("bypassPermissions", "plan")
 
 
+def timed_out(exc: BaseException) -> bool:
+    return isinstance(exc, TimeoutError) or isinstance(
+        getattr(exc, "reason", None), TimeoutError)
+
+
 def ensure_bypass(session_id: str) -> None:
     deadline = time.monotonic() + DEADLINE_S
     last = ""
     while True:
+        budget = min(HTTP_TIMEOUT_S, deadline - time.monotonic())
         try:
-            result = call_mode(session_id)
+            result = call_mode(session_id, timeout=budget)
         except urllib.error.HTTPError as exc:
             last = "HTTP %s from the gateway" % exc.code
         except (urllib.error.URLError, OSError, ValueError) as exc:
+            if timed_out(exc):
+                note("session %s: the mode call timed out after %.0fs and was "
+                     "not retried, because its walk may still be running"
+                     % (session_id, budget))
+                return
             # Connection refused is the gateway mid-restart, which is exactly
             # what the retry window is for.
             last = "could not reach the gateway: %s" % exc
@@ -131,15 +146,9 @@ def ensure_bypass(session_id: str) -> None:
             if result.get("ok"):
                 return
             last = str(result.get("error") or result.get("reason") or result)
-            # On a terminal session an unreadable footer is a modal covering it,
-            # and whatever covers it right after an approval is transient. On a
-            # background session it means the pty stream carries no footer paint,
-            # which seconds of retrying will not conjure — so that one is settled
-            # on the first answer, and the turn is not stalled for nothing. Every
-            # other refusal is settled on any lane.
-            if result.get("mode") != "unknown" or result.get("hosting") != "tmux":
+            if result.get("mode") != "unknown":
                 break
-        if time.monotonic() + RETRY_GAP_S >= deadline:
+        if deadline - time.monotonic() < RETRY_GAP_S + MIN_ATTEMPT_S:
             break
         time.sleep(RETRY_GAP_S)
     note("session %s not switched to bypass: %s" % (session_id, last))

@@ -20,15 +20,23 @@ parks the session in *plan mode*, which is worse than where it started. So this
 never counts. It reads the mode the TUI is displaying, presses once, and reads
 again — and if bypass never shows up it walks the session back to where it began
 and says so.
+
+Two walks on one session must never overlap. Each reads the footer the other's
+press just changed, so between them they step past bypass and each concludes the
+cycle never offered it — observed live, when a plan hook's HTTP timeout fired
+mid-walk and its retry started a second walk while the first was still pressing.
+Walks are serialised per session, and a walk that waited its turn starts from a
+fresh read, which is usually "already in bypass".
 """
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from typing import Callable, Optional
 
 from awm import claudedaemon
-from awm.reflection import session_target, tmux_inject
+from awm.reflection import guards, session_target, tmux_inject
 
 log = logging.getLogger("awm.reflection.permission_mode")
 
@@ -53,9 +61,16 @@ TARGET_MODE = "bypassPermissions"
 # forever.
 _MAX_STEPS = 6
 
-# Beat between pressing Shift+Tab and reading the footer back, so we classify the
-# redrawn footer rather than the one we just invalidated.
-_REDRAW_S = 0.35
+# After a press, the footer is read back until it shows a different mode. Every
+# step of the cycle changes the indicator (default's is the absence of one), so
+# no change within the budget means the press did not land.
+_REDRAW_POLLS = 10
+_REDRAW_POLL_S = 0.1
+
+# How long a walk waits for another walk on the same session to finish.
+_WALK_WAIT_S = 10.0
+_walk_locks: dict[str, threading.Lock] = {}
+_walk_locks_guard = threading.Lock()
 
 # Shift+Tab. tmux names it `BTab`; on a raw pty it is the CSI Z ("cursor back
 # tab") sequence.
@@ -86,18 +101,10 @@ def classify(screen: str) -> str:
     indistinguishable from a footer we failed to capture — so it reads as
     unknown. That is the honest answer, and callers treat unknown as "do not act".
 
-    Known gap, background sessions only: that backend reads an append-only byte
-    stream rather than a rendered screen, so a session sitting in ``default``
-    (which paints no indicator at all) can read back as whatever mode last
-    painted one. Discarding buffered output before each keypress fixes this for
-    every read *during* a walk; the very first read has nothing to discard and
-    can still be stale. The consequence is bounded — such a session may be left
-    in ``default`` instead of being switched — which is no worse than the
-    behaviour this verb exists to improve on. Nothing repaints the footer on
-    demand (an empty bracketed paste and a cursor key were both tried), so
-    closing the gap properly means rendering the stream through a terminal
-    emulator, which is a dependency this service does not otherwise need. The
-    tmux backend is unaffected: ``capture-pane`` renders current state.
+    Pass a rendered screen (see :func:`_footer`), not a background session's raw
+    pty stream. A busy session's spinner repaints push the footer out of the
+    tail window of a raw stream, so bypass read as unknown and the walk pressed
+    straight past it.
     """
     tail = screen[-_TAIL_CHARS:].lower()
     best_mode, best_at = "unknown", -1
@@ -125,6 +132,13 @@ class _TmuxSession:
 
     def read(self) -> str:
         return tmux_inject.capture_pane(self._target.pane, **self._kw)
+
+    def glance(self) -> str:
+        return self.read()
+
+    def repaint(self) -> bool:
+        # `capture-pane` renders the screen as it stands; nothing is missing.
+        return False
 
     def forget(self) -> None:
         # `capture-pane` renders the *current* screen, so there is no stale copy
@@ -164,6 +178,22 @@ class _DaemonSession:
     def read(self) -> str:
         return self._conn.screen(quiet_for=0.3, cap=3.0)
 
+    def glance(self) -> str:
+        """The stream so far, after a short listen.
+
+        ``read`` waits for the stream to go quiet, which a busy session's spinner
+        never lets it do, so every read there costs the full cap. A poll does not
+        need quiet, only the next paint.
+        """
+        return self._conn.screen(quiet_for=0.1, cap=0.3)
+
+    def repaint(self) -> bool:
+        """Have the session redraw its screen. False when its size is unknown."""
+        if not self._target.geometry:
+            return False
+        self._conn.repaint(*self._target.geometry)
+        return True
+
     def forget(self) -> None:
         """Discard buffered output so the next read only sees what comes next.
 
@@ -200,6 +230,27 @@ def open_session(target, **kw):
     return _open(target, **kw)
 
 
+def _footer(sess) -> str:
+    """The mode the session's screen shows now."""
+    return classify(guards.current_screen(sess.glance()))
+
+
+def _await_change(sess, before: str, sleep: Callable[[float], None]) -> str:
+    now = before
+    for _ in range(_REDRAW_POLLS):
+        sleep(_REDRAW_POLL_S)
+        now = _footer(sess)
+        if now != before:
+            break
+    return now
+
+
+def _walk_lock(target) -> threading.Lock:
+    key = getattr(target, "session_id", None) or repr(target)
+    with _walk_locks_guard:
+        return _walk_locks.setdefault(key, threading.Lock())
+
+
 def ensure_bypass(*, caller_pid: Optional[int], socket: Optional[str] = None,
                   runner=None, opener=None,
                   sleep: Callable[[float], None] = time.sleep,
@@ -220,9 +271,28 @@ def ensure_bypass(*, caller_pid: Optional[int], socket: Optional[str] = None,
             "mode to change. Reflection acts on the caller's own session only")
     target = session_target.resolve(caller_pid, socket=socket, runner=runner,
                                     expect_session=expect_session)
+    lock = _walk_lock(target)
+    if not lock.acquire(timeout=_WALK_WAIT_S):
+        return {"ok": False, "changed": False, "mode": "unknown", "steps": 0,
+                "session": target.name or target.session_id,
+                "hosting": target.hosting,
+                "error": ("another permission-mode change on this session is "
+                          "still running. Nothing was sent.")}
+    try:
+        return _walk(target, socket=socket, runner=runner, opener=opener,
+                     sleep=sleep)
+    finally:
+        lock.release()
+
+
+def _walk(target, *, socket, runner, opener, sleep) -> dict:
     sess = _open(target, socket=socket, runner=runner, opener=opener, sleep=sleep)
     try:
-        started_as = classify(sess.read())
+        started_as = classify(guards.current_screen(sess.read()))
+        # A session busy for a while painted its footer before anything the
+        # daemon replays to us, so ask it to draw the screen again.
+        if started_as == "unknown" and sess.repaint():
+            started_as = classify(guards.current_screen(sess.read()))
         if started_as == TARGET_MODE:
             return {"ok": True, "changed": False, "mode": TARGET_MODE, "steps": 0,
                     "session": sess.label, "hosting": target.hosting,
@@ -247,10 +317,8 @@ def ensure_bypass(*, caller_pid: Optional[int], socket: Optional[str] = None,
 
         seen = [started_as]
         for step in range(1, _MAX_STEPS + 1):
-            sess.forget()
             sess.cycle()
-            sleep(_REDRAW_S)
-            now = classify(sess.read())
+            now = _await_change(sess, seen[-1], sleep)
             seen.append(now)
             if now == TARGET_MODE:
                 log.info("reflection: %s → bypass permissions in %d step(s) (%s)",

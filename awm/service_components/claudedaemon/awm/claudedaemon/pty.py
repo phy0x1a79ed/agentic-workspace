@@ -348,6 +348,19 @@ class Connection:
             raise DaemonError("refusing to send input before authenticating")
         self._send(_RAW, data)
 
+    def repaint(self, cols: int, rows: int) -> None:
+        """Make the session redraw its whole screen at ``cols`` x ``rows``.
+
+        The host replays only recent output on connect, so on a session that has
+        been busy for a while the footer was painted long before anything we can
+        read. A resize makes the TUI repaint everything. One to the current size
+        is ignored, so the screen shrinks by a row and comes straight back.
+        """
+        for r in (rows - 1, rows):
+            self._send(_CTL, json.dumps(
+                {"t": "resize", "cols": cols, "rows": r}).encode())
+            self._sleep(_SETTLE_S)
+
     def screen(self, *, quiet_for: float = _QUIET_S,
                cap: float = _HELLO_WAIT_S) -> str:
         """Whatever the host has sent us so far, as text.

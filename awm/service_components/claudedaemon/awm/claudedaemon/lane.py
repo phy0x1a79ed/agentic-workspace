@@ -22,5 +22,7 @@ class DaemonLane:
     name: Optional[str] = None
     cli_version: Optional[str] = None
     dec_modes: tuple[int, ...] = ()
+    #: (cols, rows) the session was dispatched at, when the roster records it.
+    geometry: Optional[tuple[int, int]] = None
     kind: str = "daemon"
     hosting: str = "background"
