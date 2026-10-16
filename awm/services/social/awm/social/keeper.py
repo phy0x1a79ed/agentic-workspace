@@ -83,11 +83,14 @@ def launch_spec(seat: SeatConfig, platform: str, keeps_history: bool) -> dict:
         "brief changes.",
         seat.brief,
         f"Each new message in the chat is typed into your prompt as one line: "
-        f"'{platform} from <sender>: <text>'. A thread reply carries ' ↳<thread>' "
-        "after the sender, and a bot sender carries ' [bot]'. Nothing else "
-        "delivers them, so do not run a Monitor or poll.",
+        f"'{platform} from <sender> [channel=<id> message_id=<id>]: <text>'. A "
+        "thread reply carries ' ↳<thread>' after the sender, and a bot sender "
+        "carries ' [bot]'. Nothing else delivers them, so do not run a Monitor "
+        "or poll.",
         f"Reply with `social send {where} text=<text>`. Add thread=<thread> to "
         f"answer in a thread. Read the backlog with `social {backlog} {where}`.",
+        f"Before work that takes a while, react 👀 with `social react {where} "
+        "message_id=<id> emoji=👀`, then post the answer with `social send`.",
         "Start by reading the backlog, then answer what is still unanswered. "
         "Then wait for the next pushed line.",
     ])

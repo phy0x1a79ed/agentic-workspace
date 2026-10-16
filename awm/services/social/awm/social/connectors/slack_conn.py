@@ -26,7 +26,7 @@ import time
 
 from awm.social.connectors.base import (
     Account, Attachment, Channel, Connector, Identity, InboundMessage,
-    OnMessage,
+    OnMessage, react_by_message,
 )
 
 log = logging.getLogger("awm.social.connectors.slack")
@@ -367,6 +367,13 @@ class SlackConnector(Connector):
             "channel_id": resp.get("channel", channel),
             "ts": resp.get("ts", ""),
         }
+
+    async def react(
+        self, channel: str, message_id: str, emoji: str, *,
+        remove: bool = False, thread: str | None = None,
+    ) -> dict:
+        return await react_by_message(self, channel, emoji,
+                                      remove=remove, thread=thread)
 
     async def list_channels(self, *, include_dms: bool = False) -> list[Channel]:
         if include_dms:
