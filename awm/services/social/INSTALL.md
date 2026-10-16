@@ -172,6 +172,20 @@ and require the mira host to be running the updated daemon
 images resolve in-session, but SharePoint-hosted files may need separate auth and
 are skipped rather than erroring the whole call.
 
+## Reactions
+
+`social_react` puts an emoji on a message, or takes it off with `remove`.
+`emoji` is a character, a Slack name or `:name:`. The names live in
+`awm/social/emoji.py`.
+
+- **Discord.** The bot reacts. A Discord user token is a self-bot under
+  Discord's terms, so no account reacts as Tony there.
+- **Slack.** The Opal app lacks `reactions:write` until a Workspace Owner
+  reinstalls it from `slack-bot-manifest.json`. Until then every Slack account
+  posts the emoji alone as a message, into `thread` when given, and answers
+  `"as": "message"`. `remove` refuses, because there is no reaction to take off.
+- **Gmail and Teams.** Refuse.
+
 ## Seats
 
 A seat is one channel or chat a bot account is in. `social_seats` lists them
@@ -179,11 +193,12 @@ with their holders. A Claude Code background session mounts a seat with
 `social_mount`. Each later message in that seat, from anyone but the bot, is
 typed into the holder's prompt through `reflection message`, one line each:
 
-    slack from <sender>[ ↳<thread ts>][ [bot]]: <text>
+    slack from <sender>[ [bot]][ ↳<thread ts>] [channel=<id> message_id=<id>]: <text>
 
 ` [bot]` marks a bot sender, so an agent can tell another swarm's bot from a
-person. The line names no channel. The mount reply names the channel and how to answer.
-Newlines become ` ⏎ `. Text past 1500 characters is cut, and attachments add
+person. The ids are the `channel` and `message_id` arguments of `social_react`
+and `social_send`. They tell a session that holds several seats which chat a
+line came from. Newlines become ` ⏎ `. Text past 1500 characters is cut, and attachments add
 `[+N files]`. A mount replays nothing, so read the backlog with
 `social_history`.
 
@@ -199,6 +214,10 @@ Newlines become ` ⏎ `. Text past 1500 characters is cut, and attachments add
   History still holds it.
 - **Discord DM.** A Discord DM is the operator's notification channel and is
   never a seat. `social_seats` lists guild text channels only.
+- **Acknowledge.** The mount reply and the kept-seat brief tell a holder to
+  react 👀 on the message before work that takes a while, then answer with
+  `social_send`. A reaction marks the request as seen without a message that
+  says only "on it".
 
 The holder is the calling session, never an argument. On the owner node the
 gateway stamps `_caller_pid`. A caller on another node arrives through the

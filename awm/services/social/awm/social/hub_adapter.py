@@ -790,8 +790,9 @@ API_MANIFEST: dict[str, Any] = {
             "tool": "social_mount",
             "description": "Hold a seat: every new message in that chat, from "
                            "anyone but the bot, is typed into your prompt as one "
-                           "line 'slack from <sender>: <text>' (Discord: 'discord "
-                           "from'). Background sessions only. One holder per "
+                           "line 'slack from <sender> [channel=<id> "
+                           "message_id=<id>]: <text>' (Discord: 'discord from'). "
+                           "Background sessions only. One holder per "
                            "seat: a held seat is refused unless `force`, which "
                            "takes it and tells the old holder. A Discord DM is "
                            "reserved for notifications and cannot be mounted, "
