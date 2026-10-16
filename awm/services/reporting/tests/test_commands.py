@@ -17,12 +17,14 @@ pytestmark = [pytest.mark.unit, pytest.mark.smoke]
 class Replies:
     def __init__(self) -> None:
         self.sent: list[tuple[str, str, str]] = []
+        self.acks: list[str] = []
         self.error: Exception | None = None
 
-    async def __call__(self, account: str, channel: str, text: str) -> None:
+    async def __call__(self, account: str, channel: str, text: str, *, ack_ref: str = "") -> None:
         if self.error:
             raise self.error
         self.sent.append((account, channel, text))
+        self.acks.append(ack_ref)
 
 
 def event(command, **over):
@@ -112,6 +114,13 @@ async def test_new_agent_starts_a_session_with_remote_control_and_replies_with_i
     account, channel, text = replies.sent[0]
     assert (account, channel) == ("discord-bot", "dm:42")
     assert "https://claude.ai/code/session_job0001" in text and spec["name"] in text
+
+
+async def test_new_agent_answers_by_replacing_the_starting_ack(parts):
+    commands, _, _, replies = parts
+    await commands.handle(event("new_agent", reply_to="dm:42", ack_ref="31337"))
+    await settle(commands)
+    assert replies.acks == ["31337"]
 
 
 async def test_new_agent_takes_its_project_scope_and_name_from_the_node(parts, monkeypatch):

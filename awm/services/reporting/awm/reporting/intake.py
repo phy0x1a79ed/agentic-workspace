@@ -110,10 +110,12 @@ def event_line(type_: str, card: dict) -> str | None:
     return None
 
 
-async def send_social(account: str, channel: str, text: str) -> None:
+async def send_social(account: str, channel: str, text: str, *, ack_ref: str = "") -> None:
+    args = {"account": account, "channel": channel, "text": text}
+    if ack_ref:
+        args["ack_ref"] = ack_ref
     result = await gatewayclient.call_maybe_peer(
-        gatewayclient.peer_env("AWM_SOCIAL_PEER"), "social", "send",
-        {"account": account, "channel": channel, "text": text})
+        gatewayclient.peer_env("AWM_SOCIAL_PEER"), "social", "send", args)
     if isinstance(result, dict) and result.get("ok") is False:
         raise RuntimeError(f"social send refused: {result.get('error') or result}")
 

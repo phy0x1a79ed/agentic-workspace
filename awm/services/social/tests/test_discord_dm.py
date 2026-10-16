@@ -22,9 +22,11 @@ class _DM:
 
     def __init__(self):
         self.sent = []
+        self.suppressed = []
 
-    async def send(self, text):
+    async def send(self, text, suppress_embeds=False):
         self.sent.append(text)
+        self.suppressed.append(suppress_embeds)
         return _Sent(self)
 
 
@@ -89,6 +91,12 @@ def test_send_to_dm_opens_it_once():
     assert user.opened == 1
     assert conn._client.fetched == [4242]
     assert user.dm_channel.sent == ["one", "two"]
+
+
+def test_a_dm_never_unfurls_its_links():
+    conn = _connector()
+    asyncio.run(conn.send("dm:4242", "see https://example.com"))
+    assert conn._client.users[4242].dm_channel.suppressed == [True]
 
 
 def test_open_dm_accepts_bare_id_and_dm_form():

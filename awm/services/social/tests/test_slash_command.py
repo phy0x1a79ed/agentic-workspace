@@ -27,7 +27,7 @@ class _FakeResponse:
     def __init__(self):
         self.messages = []  # list of (content, ephemeral)
 
-    async def send_message(self, content, ephemeral=False):
+    async def send_message(self, content, ephemeral=False, suppress_embeds=False):
         self.messages.append((content, ephemeral))
 
 
@@ -43,8 +43,25 @@ class _FakeInteraction:
     def __init__(self, guild, uid=4242):
         self.guild = guild
         self.user = _FakeUser(uid)
+        self.id = 31337
         self.channel_id = 999
         self.response = _FakeResponse()
+        self.edits = []
+        self.edit_error = None
+
+    async def edit_original_response(self, *, content):
+        if self.edit_error:
+            raise self.edit_error
+        self.edits.append(content)
+        return _FakeMessage()
+
+
+class _FakeMessage:
+    id = 777
+    created_at = None
+
+    class channel:
+        id = 999
 
 
 def _connector(on_command):
@@ -255,9 +272,10 @@ class TestNewAgentCommand:
         await conn._tree.get_command("new-agent").callback(inter, prompt="fix the tests")
 
         assert captured[0].name == "new_agent"
-        assert captured[0].options == {"prompt": "fix the tests", "reply_to": "dm:4242"}
+        assert captured[0].options == {"prompt": "fix the tests", "reply_to": "dm:4242",
+                                       "ack_ref": "31337"}
         content, ephemeral = inter.response.messages[0]
-        assert ephemeral is True and "agent" in content
+        assert ephemeral is False and "agent" in content
 
     @pytest.mark.asyncio
     async def test_the_prompt_is_optional(self):
@@ -269,7 +287,78 @@ class TestNewAgentCommand:
         conn = _connector(cap)
         await conn._tree.get_command("new-agent").callback(
             _FakeInteraction(guild=None))
-        assert captured[0].options == {"prompt": "", "reply_to": "dm:4242"}
+        assert captured[0].options == {"prompt": "", "reply_to": "dm:4242",
+                                       "ack_ref": "31337"}
+
+    @pytest.mark.asyncio
+    async def test_the_answer_replaces_the_starting_ack(self):
+        conn = _connector(None)
+        inter = _FakeInteraction(guild=None)
+        await conn._tree.get_command("new-agent").callback(inter)
+
+        edited = await conn.edit_ack("31337", "agent-1234: https://claude.ai/x")
+        assert inter.edits == ["agent-1234: https://claude.ai/x"]
+        assert edited["message_id"] == "777"
+        # An ack is replaced once; a second answer has nothing left to edit.
+        assert await conn.edit_ack("31337", "again") is None
+
+    @pytest.mark.asyncio
+    async def test_an_expired_ack_is_not_edited(self, monkeypatch):
+        from awm.social.connectors import discord_conn
+
+        monkeypatch.setattr(discord_conn, "ACK_TTL", -1)
+        conn = _connector(None)
+        inter = _FakeInteraction(guild=None)
+        await conn._tree.get_command("new-agent").callback(inter)
+        assert await conn.edit_ack("31337", "x") is None
+        assert inter.edits == []
+
+    @pytest.mark.asyncio
+    async def test_a_failed_or_unknown_ack_edit_returns_none(self):
+        conn = _connector(None)
+        inter = _FakeInteraction(guild=None)
+        inter.edit_error = RuntimeError("Unknown Webhook")
+        await conn._tree.get_command("new-agent").callback(inter)
+        assert await conn.edit_ack("31337", "x") is None
+        assert await conn.edit_ack("nope", "x") is None
+
+
+# -- send with an ack_ref ---------------------------------------------------
+
+class _AckConn:
+    def __init__(self, edited):
+        self.edited = edited
+        self.sent = []
+
+    async def edit_ack(self, ref, text):
+        return self.edited
+
+    async def send(self, channel, text, *, thread=None):
+        self.sent.append((channel, text))
+        return {"message_id": "new"}
+
+
+class TestSendReplacesAck:
+    @pytest.mark.asyncio
+    async def test_an_editable_ack_is_replaced(self, monkeypatch):
+        from awm.social import hub_adapter
+
+        conn = _AckConn({"message_id": "777"})
+        monkeypatch.setattr(hub_adapter, "_connectors", {"bot": conn})
+        out = await hub_adapter._h_send(
+            {"account": "bot", "channel": "dm:1", "text": "hi", "ack_ref": "31337"})
+        assert out["edited"] is True and out["message_id"] == "777"
+        assert conn.sent == []
+
+    @pytest.mark.asyncio
+    async def test_a_gone_ack_sends_a_new_message(self, monkeypatch):
+        from awm.social import hub_adapter
+
+        conn = _AckConn(None)
+        monkeypatch.setattr(hub_adapter, "_connectors", {"bot": conn})
+        out = await hub_adapter._h_send(
+            {"account": "bot", "channel": "dm:1", "text": "hi", "ack_ref": "31337"})
+        assert out["message_id"] == "new" and conn.sent == [("dm:1", "hi")]
 
 
 # -- adapter emit -----------------------------------------------------------
