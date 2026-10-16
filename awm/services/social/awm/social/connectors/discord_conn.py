@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 
 from awm.social import operators
 from awm.social.connectors.base import (
@@ -55,6 +56,8 @@ DM_PREFIX = "dm:"
 # Duo devices a user can target. Mirrors the 2fa service's device names; offered
 # as Discord choices so the slash UI is a pick-list rather than free text.
 DEVICE_CHOICES = ("cwl", "alliance")
+# Discord lets an app edit its interaction response for 15 minutes; stop short.
+ACK_TTL = 14 * 60
 
 
 class DiscordConnector(Connector):
@@ -66,6 +69,8 @@ class DiscordConnector(Connector):
         self._client = None  # type: ignore[assignment]
         self._tree = None    # discord.app_commands.CommandTree
         self._ready = asyncio.Event()
+        # Acks a consumer may rewrite with the outcome: ack_ref -> (deadline, interaction).
+        self._acks: dict[str, tuple[float, object]] = {}
 
     def _build_client(self):
         import discord
@@ -131,19 +136,24 @@ class DiscordConnector(Connector):
         return client
 
     async def _admit(self, interaction, name: str, options: dict,  # noqa: ANN001
-                     ack: str, *, ephemeral: bool) -> bool:
+                     ack: str, *, ephemeral: bool, editable: bool = False) -> bool:
         """Gate and ack one slash invocation, then hand it to ``on_command``.
 
         Guild invocations and senders absent from the operators table get an
         ephemeral refusal and publish nothing. Otherwise the ack goes out inside
         Discord's 3-second interaction deadline, before the command is emitted.
+        An ``editable`` ack is kept, and the command carries its ``ack_ref`` so
+        the consumer's answer can replace it via :meth:`edit_ack`.
         """
-        async def reply(text: str, *, private: bool) -> None:
+        async def reply(text: str, *, private: bool) -> bool:
             try:
-                await interaction.response.send_message(text, ephemeral=private)
+                await interaction.response.send_message(
+                    text, ephemeral=private, suppress_embeds=True)
+                return True
             except Exception as exc:  # noqa: BLE001
                 log.warning("discord[%s] %s reply failed: %s",
                             self.account.name, name, exc)
+                return False
 
         if interaction.guild is not None:
             await reply("DM me to use this command.", private=True)
@@ -156,7 +166,8 @@ class DiscordConnector(Connector):
                         self.account.name, name, user_id)
             await reply("You are not an operator of this bot.", private=True)
             return False
-        await reply(ack, private=ephemeral)
+        if await reply(ack, private=ephemeral) and editable:
+            options = {**options, "ack_ref": self._keep_ack(interaction)}
         if self.on_command is None:
             return True
         cmd = Command(
@@ -176,6 +187,30 @@ class DiscordConnector(Connector):
             log.warning("discord[%s] on_command handler failed: %s",
                         self.account.name, exc)
         return True
+
+    def _keep_ack(self, interaction) -> str:  # noqa: ANN001
+        now = time.monotonic()
+        self._acks = {k: v for k, v in self._acks.items() if v[0] > now}
+        ref = str(interaction.id)
+        self._acks[ref] = (now + ACK_TTL, interaction)
+        return ref
+
+    async def edit_ack(self, ref: str, text: str) -> dict | None:
+        deadline, interaction = self._acks.pop(ref, (0.0, None))
+        if interaction is None or deadline <= time.monotonic():
+            return None
+        try:
+            # The ack went out with embeds suppressed, and an edit keeps the flag.
+            msg = await interaction.edit_original_response(content=text)
+        except Exception as exc:  # noqa: BLE001 — the caller falls back to a new message
+            log.warning("discord[%s] could not edit ack %s: %s",
+                        self.account.name, ref, exc)
+            return None
+        return {
+            "message_id": str(msg.id),
+            "channel_id": str(msg.channel.id),
+            "ts": msg.created_at.isoformat() if msg.created_at else "",
+        }
 
     def _register_commands(self, tree, app_commands) -> None:
         """Register the bot's slash commands on the command tree.
@@ -225,7 +260,7 @@ class DiscordConnector(Connector):
             await self._admit(
                 interaction, NEW_AGENT_COMMAND,
                 {"prompt": prompt or "", "reply_to": f"{DM_PREFIX}{user_id}"},
-                "⏳ Starting an agent…", ephemeral=True)
+                "⏳ Starting an agent…", ephemeral=False, editable=True)
 
     async def start(self) -> None:
         try:
@@ -265,7 +300,9 @@ class DiscordConnector(Connector):
             raise RuntimeError(f"discord[{self.account.name}] not started")
         await self._wait_ready()
         target = await self._resolve_channel(thread or channel)
-        sent = await target.send(text)
+        # A DM is a notification feed: link previews there are noise.
+        dm = channel.startswith(DM_PREFIX) or isinstance(target, discord.DMChannel)
+        sent = await target.send(text, suppress_embeds=dm)
         return {
             "message_id": str(sent.id),
             "channel_id": str(sent.channel.id),

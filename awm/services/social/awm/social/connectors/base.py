@@ -169,6 +169,14 @@ class Connector(ABC):
         ``message_id`` when the platform supplies one).
         """
 
+    async def edit_ack(self, ref: str, text: str) -> dict | None:
+        """Rewrite the acknowledgement of the command carrying ``ack_ref=ref``.
+
+        Returns ``None`` when the platform can no longer edit it (expired,
+        unknown, or no command surface at all); the caller then sends anew.
+        """
+        return None
+
     async def fetch(
         self, channel: str, *, limit: int = 50, before: str | None = None
     ) -> list[InboundMessage]:

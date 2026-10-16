@@ -2,7 +2,8 @@
 
 Social has already checked the sender against its operators table, so a command
 that reaches this module comes from Tony. Each command is answered in the
-channel it came from, with the outcome or the reason it failed.
+channel it came from, with the outcome or the reason it failed. A command whose
+ack social kept (``ack_ref``) has that ack replaced by the answer.
 """
 
 from __future__ import annotations
@@ -35,7 +36,7 @@ def _new_agent_prompt(name: str, prompt: str) -> str:
 
 class Commands:
     def __init__(self, fed: Federation, cx: Cx, *,
-                 reply: Callable[[str, str, str], Awaitable[None]] = send_social) -> None:
+                 reply: Callable[..., Awaitable[None]] = send_social) -> None:
         self.fed = fed
         self.cx = cx
         self._reply = reply
@@ -80,7 +81,8 @@ class Commands:
             log.warning("reporting: cannot answer a command with no account or channel")
             return
         try:
-            await self._reply(str(account), str(channel), text)
+            await self._reply(str(account), str(channel), text,
+                              ack_ref=str(event.get("ack_ref") or ""))
         except Exception as exc:  # noqa: BLE001
             log.warning("reporting: could not answer a command: %s", exc)
 

@@ -381,6 +381,11 @@ acks within Discord's 3s deadline and emits a normalised event on the `command`
 emitter topic (`/svc/social/emit/command`) with `{command, account,
 channel_id, operator, …}`. The service does nothing with a command itself.
 
+The `/new-agent` ack is public in the DM and carries an `ack_ref` in its event.
+A `send` with that `ack_ref` overwrites the ack with the answer. Discord allows
+the edit for 15 minutes, so after 14 the `send` posts a new message instead.
+Every message into a DM goes out with link previews suppressed.
+
 A guild invocation that slips past the hidden context, or a sender absent from
 the operators table, gets an ephemeral refusal and emits nothing. Add an operator on the node that owns the
 bot account with `social add_operator platform=discord

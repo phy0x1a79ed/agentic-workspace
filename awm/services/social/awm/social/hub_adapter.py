@@ -192,8 +192,12 @@ async def _h_emit_probe(args: dict) -> dict:
 
 async def _h_send(args: dict) -> dict:
     # Send only — outbound messages are no longer mirrored to a local store.
-    sent = await _conn(args["account"]).send(
-        args["channel"], args["text"], thread=args.get("thread"))
+    conn = _conn(args["account"])
+    if args.get("ack_ref"):
+        edited = await conn.edit_ack(str(args["ack_ref"]), args["text"])
+        if edited is not None:
+            return {"ok": True, "edited": True, **edited}
+    sent = await conn.send(args["channel"], args["text"], thread=args.get("thread"))
     return {"ok": True, **sent}
 
 
@@ -691,12 +695,16 @@ API_MANIFEST: dict[str, Any] = {
             "name": "send",
             "effect": "write",
             "tool": "social_send",
-            "description": "Send a message as a configured account to a channel.",
+            "description": "Send a message as a configured account to a channel. "
+                           "`ack_ref`, from a slash command's event, replaces that "
+                           "command's acknowledgement while the platform still "
+                           "allows it, and sends a new message otherwise.",
             "params": [
                 {"name": "account", "type": "string", "required": True},
                 {"name": "channel", "type": "string", "required": True},
                 {"name": "text", "type": "string", "required": True},
                 {"name": "thread", "type": "string", "required": False},
+                {"name": "ack_ref", "type": "string", "required": False},
             ],
         },
         {
