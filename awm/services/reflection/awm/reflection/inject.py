@@ -73,7 +73,6 @@ from awm.reflection import (
     oc_session,
     pending,
     session_target,
-    stop_gate,
     tmux_inject,
     watcher,
 )
@@ -508,15 +507,6 @@ def send(text: str, *, caller_pid: Optional[int], enter: bool = True,
     followup_deferred = False
     if submitted and guards.is_slash(text):
         followup_deferred = True
-        # The queued command waits for this session's own turn to end, and the
-        # turn-end-open-items Stop hook can block that exact Stop event if the
-        # session is armed with open todos/background jobs. Disarm it before the
-        # wait begins so reflection's own automation cannot stall behind a nag
-        # it has no visibility into; `_await_and_resume` rearms it on every exit
-        # path. If a crash lands between this and `pending.record` below, the
-        # gate is left disarmed with no promise to later rearm it — accepted,
-        # same as `pending.record`'s own best-effort framing.
-        stop_gate.disarm(lane.session_id)
         proc_start = session_target._proc_start(lane.repl_pid) or ""
         earlier = pending.read(lane.repl_pid)
         if earlier is not None and earlier.proc_start != proc_start:
@@ -742,12 +732,6 @@ def _await_and_resume(item: pending.Pending, *, tail=None, read_status=None,
             _ACTIVE[item.repl_pid].remove(item.injected_at_ms)
             if not _ACTIVE[item.repl_pid]:
                 del _ACTIVE[item.repl_pid]
-        # Rearms on every exit path below: VANISHED, delivered-and-verified, or
-        # gave up after MAX_DELIVERY_ROUNDS. Covers replay_pending() for free,
-        # since it re-enters this function per surviving promise. A watcher that
-        # stood down for a newer promise leaves the gate to that one.
-        if not _superseded(item):
-            stop_gate.rearm(item.session_id)
 
 
 def _round_backoff(failures: int) -> float:
