@@ -93,6 +93,12 @@ def build_argv(*, claude: str, name: str, flags: list[str] | tuple[str, ...],
     cmd = [claude, "--bg", f"--name={name}", *flags]
     if prompt:
         cmd += ["--", prompt]
+    return in_unit(cmd, cwd=cwd, env=env, unit_prefix=unit_prefix)
+
+
+def in_unit(cmd: list[str], *, cwd: str | Path, env: dict[str, str],
+            unit_prefix: str) -> tuple[list[str], str, dict[str, str]]:
+    """``cmd`` wrapped in a transient user unit when there is a user manager."""
     bus = user_manager_env()
     if not bus:
         return cmd, "directly (no user systemd manager)", {}
@@ -156,3 +162,50 @@ async def launch(*, cwd: str | Path, name: str,
                 return s
         await asyncio.sleep(POLL_S)
     raise TimeoutError(f"no new {label} session appeared within {limit:.0f}s")
+
+
+def _alive(s: roster.Session) -> bool:
+    return bool(s.repl_proc_start) and roster.proc_start(s.repl_pid) == s.repl_proc_start
+
+
+async def respawn(job: str, *, claude: str | None = None,
+                  unit_prefix: str = "awm-claude",
+                  roster_path: Path | None = None,
+                  jobs_dir: Path | None = None,
+                  timeout: float | None = None) -> roster.Session:
+    """Bring a stopped background job back under its own id, conversation intact.
+
+    `claude respawn` keeps the job id, the transcript and the launch flags.
+    `claude --bg --resume <session>` does not: it starts a new, empty job. A
+    respawn of a live job restarts it, so a live job is refused. Raises
+    `Refused` for that or for a missing daemon, `TimeoutError` if the job does
+    not come back live.
+    """
+    refusal = daemon_refusal(roster_path)
+    if refusal:
+        raise Refused(refusal)
+    before = next((s for s in roster.load(roster_path, jobs_dir) if s.short == job), None)
+    if before is not None and _alive(before):
+        raise Refused(f"job {job} is running")
+    stale = before.repl_proc_start if before else None
+
+    limit = LAUNCH_TIMEOUT_S if timeout is None else timeout
+    home = Path.home()
+    argv, how, extra_env = in_unit([claude or default_claude_bin(), "respawn", job],
+                                   cwd=home, env={}, unit_prefix=unit_prefix)
+    log.info("claudedaemon: respawning %s %s", job, how)
+    proc = await asyncio.create_subprocess_exec(
+        *argv, cwd=str(home), env={**os.environ, **extra_env, "HOME": str(home)},
+        stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+    try:
+        await asyncio.wait_for(proc.wait(), timeout=limit)
+    except (TimeoutError, asyncio.TimeoutError):
+        proc.kill()
+
+    deadline = asyncio.get_running_loop().time() + limit
+    while asyncio.get_running_loop().time() < deadline:
+        for s in roster.load(roster_path, jobs_dir):
+            if s.short == job and s.repl_proc_start != stale and _alive(s):
+                return s
+        await asyncio.sleep(POLL_S)
+    raise TimeoutError(f"job {job} did not come back within {limit:.0f}s")

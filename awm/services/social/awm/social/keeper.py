@@ -11,7 +11,11 @@ duplicates happen. For each seat, with its recorded job:
 
 * alive: nothing, except that an outdated launch spec is replaced once the
   session sits between turns.
-* exited, missing or failed on an API error: start a new one. Repeated
+* exited with its launch spec unchanged: resume it, so it keeps its own
+  conversation and its cache, and push it one line naming what it missed.
+  Repeated resumes back off, and after `MAX_RESUMES` without settling the
+  keeper starts a new agent instead.
+* missing, failed on an API error, or not resumable: start a new one. Repeated
   replacements back off from `MIN_RETRY_S` to `MAX_RETRY_S`, and the count
   resets once an agent has run for `SETTLE_S`.
 * blocked on a login or a usage limit: a warning when the state changes. A
@@ -34,6 +38,7 @@ import logging
 import os
 import time
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
@@ -48,6 +53,8 @@ MAX_RETRY_S = 900.0
 SETTLE_S = 600.0
 QUIET_S = 600.0
 START_TIMEOUT_S = 240.0
+RESUME_TIMEOUT_S = 120.0
+MAX_RESUMES = 3
 LIST_TIMEOUT_S = 30.0
 STOP_TIMEOUT_S = 60.0
 
@@ -58,6 +65,10 @@ ACTIVE, WORKING = "active", "working"
 #: session is the only mend.
 API_ERROR = "API error"
 #: Starts of the `needs` texts that a person must clear.
+#: How far below its `--autocompact` window Claude Code 2.1.301 compacts: a 20k
+#: reserve for output plus a 13k buffer for the summary. A seat that should
+#: compact at `compact_at` gets a window this much larger.
+AUTOCOMPACT_RESERVE = 33_000
 PERSON_NEEDS = (
     "login required", "org disabled oauth", "account on hold",
     "cloud credentials unavailable", "organization verification required",
@@ -74,13 +85,17 @@ def spec_hash(spec: dict) -> str:
 
 
 def launch_spec(seat: SeatConfig, platform: str, keeps_history: bool) -> dict:
-    """The `cx start` arguments of a seat's agent."""
+    """The `cx start` arguments of a seat's agent.
+
+    Everything the seat must keep sits in the system prompt, which a compaction
+    never rewrites. The prompt is only the first turn's instruction.
+    """
     where = f"account={seat.account} channel={seat.channel}"
     backlog = "history" if keeps_history else "fetch"
-    prompt = "\n\n".join([
+    system_prompt = "\n\n".join([
         f"You hold the kept seat {seat.name!r}: a {platform} chat ({where}). "
-        "Social keeps this session alive, and replaces it when it ends or this "
-        "brief changes.",
+        "Social keeps this session alive. It resumes this conversation when the "
+        "session ends, and starts a new one only when this brief changes.",
         seat.brief,
         f"Each new message in the chat is typed into your prompt as one line: "
         f"'{platform} from <sender> [channel=<id> message_id=<id>]: <text>'. A "
@@ -91,18 +106,35 @@ def launch_spec(seat: SeatConfig, platform: str, keeps_history: bool) -> dict:
         f"answer in a thread. Read the backlog with `social {backlog} {where}`.",
         f"Before work that takes a while, react 👀 with `social react {where} "
         "message_id=<id> emoji=👀`, then post the answer with `social send`.",
-        "Start by reading the backlog, then answer what is still unanswered. "
-        "Then wait for the next pushed line.",
+        "When this conversation is compacted, the summary must carry every "
+        "question still unanswered, every agent you dispatched and what it is "
+        "for, and everything you promised someone.",
     ])
+    prompt = ("Start by reading the backlog, then answer what is still unanswered. "
+              "Then wait for the next pushed line.")
     spec: dict[str, Any] = {
         "project": seat.project, "scope": seat.scope, "name": session_name(seat),
-        "prompt": prompt, "remote_control": True, "pin": True,
+        "system_prompt": system_prompt, "prompt": prompt,
+        "autocompact": seat.compact_at + AUTOCOMPACT_RESERVE,
+        "remote_control": True, "pin": True,
     }
     if seat.model:
         spec["model"] = seat.model
     if seat.effort:
         spec["effort"] = seat.effort
     return spec
+
+
+def catch_up_line(seat: SeatConfig, keeps_history: bool, since: float | None) -> str:
+    """The line a resumed seat gets: lines pushed while it was down were dropped."""
+    where = f"account={seat.account} channel={seat.channel}"
+    if keeps_history and since:
+        read = f"`social history {where} since={since:.0f}`"
+    else:
+        read = f"`social {'history' if keeps_history else 'fetch'} {where}`"
+    return (f"social keeper: this session stopped and was resumed. Lines that "
+            f"arrived meanwhile were not pushed to you. Read them with {read}, and "
+            "answer only what is still unanswered.")
 
 
 # -- health -------------------------------------------------------------------
@@ -118,6 +150,18 @@ class Health:
     @property
     def alive(self) -> bool:
         return self.state in ("running", WAITING)
+
+
+def _seen_epoch(rec: dict) -> float | None:
+    """When the keeper last saw the job alive, else when it started it."""
+    try:
+        return float(rec.get("seen_at") or "")
+    except ValueError:
+        pass
+    try:
+        return datetime.fromisoformat(rec.get("started_at") or "").timestamp()
+    except ValueError:
+        return None
 
 
 def _short(text: Any, limit: int = 120) -> str:
@@ -162,7 +206,7 @@ class CxUnavailable(RuntimeError):
 
 
 class Cx:
-    """`cx list`, `start` and `stop` on a node, local or a domestic peer."""
+    """`cx list`, `start`, `resume` and `stop` on a node, local or a domestic peer."""
 
     async def _call(self, node: str, fn: str, args: dict, timeout: float) -> Any:
         if node == config.node_name():
@@ -186,6 +230,13 @@ class Cx:
             return {"ok": False, "reason": f"cx start on {node} failed: {exc}"}
         return reply if isinstance(reply, dict) else {"ok": False, "reason": repr(reply)}
 
+    async def resume(self, node: str, job: str) -> dict:
+        try:
+            reply = await self._call(node, "resume", {"job": job}, RESUME_TIMEOUT_S)
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "reason": f"cx resume on {node} failed: {exc}"}
+        return reply if isinstance(reply, dict) else {"ok": False, "reason": repr(reply)}
+
     async def stop(self, node: str, job: str) -> dict:
         try:
             reply = await self._call(node, "stop", {"job": job}, STOP_TIMEOUT_S)
@@ -200,18 +251,22 @@ class Cx:
 Describe = Callable[[str], "tuple[str, bool] | None"]
 #: (account, channel id) -> the chat's name.
 ChannelName = Callable[[str, str], Awaitable[str]]
+#: (node, job, line) -> queue one line for a session's prompt.
+Push = Callable[[str, str, str], None]
 
 
 class Keeper:
     def __init__(self, dao: Any, seats: list[SeatConfig], describe: Describe,
                  channel_name: ChannelName, cx: Any = None,
                  interval_s: float = TICK_S, lock_path: Path | None = None,
-                 clock: Callable[[], float] = time.time) -> None:
+                 clock: Callable[[], float] = time.time,
+                 push: Push | None = None) -> None:
         self.dao = dao
         self.seats = list(seats)
         self._describe = describe
         self._channel_name = channel_name
         self.cx = cx or Cx()
+        self._push = push
         self._interval_s = interval_s
         self._lock_path = lock_path
         self._lock_fd: int | None = None
@@ -221,6 +276,8 @@ class Keeper:
         self._failures: dict[str, int] = {}
         self._restarts: dict[str, int] = {}
         self._restarted_at: dict[str, float] = {}
+        self._resumes: dict[str, int] = {}
+        self._resumed_at: dict[str, float] = {}
         self._seen: dict[str, tuple] = {}
         self.health: dict[str, Health] = {}
         self._last_tick: float | None = None
@@ -236,7 +293,8 @@ class Keeper:
                 "started_at": rec.get("started_at"),
                 "health": health.state if health else "unknown",
                 "reason": health.reason if health else "",
-                "restarts": self._restarts.get(seat.name, 0)}
+                "restarts": self._restarts.get(seat.name, 0),
+                "resumes": self._resumes.get(seat.name, 0)}
 
     async def run(self) -> None:
         """Tick, then sleep, forever. Never returns, never raises."""
@@ -297,6 +355,7 @@ class Keeper:
                                             why="its launch spec changed", counted=False)
                         return
                 await self._hold(seat, row["job"])
+                self.dao.keeper_seen(seat.name, self._now())
                 self._settle(seat.name)
                 return
             if health.state == BLOCKED:
@@ -306,6 +365,8 @@ class Keeper:
             return
         health = Health("exited" if rec else "missing", "", rec["job"] if rec else None)
         self._report(seat, health)
+        if rec and rec["spec_hash"] == want and await self._resume(seat, rec, rows, described[1]):
+            return
         await self._replace(seat, spec, want, rows, old=rec["job"] if rec else None,
                             why="it is not running" if rec else "it has none yet",
                             counted=rec is not None)
@@ -315,6 +376,42 @@ class Keeper:
                      and r.get("name") == session_name(seat)
                      and r.get("parent") is None
                      and (rec is None or r["job"] != rec["job"])), None)
+
+    async def _resume(self, seat: SeatConfig, rec: dict, rows: list[dict],
+                      keeps_history: bool) -> bool:
+        """Bring the recorded job back. False means start a new agent instead."""
+        now, job = self._now(), rec["job"]
+        if self._next_try.get(seat.name, 0.0) > now:
+            return True
+        resumes = self._resumes.get(seat.name, 0)
+        if resumes >= MAX_RESUMES:
+            self._note(f"resume:{seat.name}", f"{seat.name}: {job} stopped again after "
+                       f"{resumes} resumes; starting a new agent")
+            self._resumes.pop(seat.name, None)
+            self._resumed_at.pop(seat.name, None)
+            return False
+        taken = [r for r in rows if r.get("name") == session_name(seat) and _live(r)
+                 and r.get("job") != job]
+        if taken:
+            self._note(f"name:{seat.name}", f"{seat.name}: session {taken[0].get('job')} "
+                       f"already holds the name {session_name(seat)!r}; not resuming")
+            return True
+        reply = await self.cx.resume(seat.node, job)
+        if not reply.get("ok"):
+            self._note(f"resume:{seat.name}", f"{seat.name}: cx would not resume {job}: "
+                       f"{reply.get('reason') or reply!r}; starting a new agent")
+            self._resumes.pop(seat.name, None)
+            self._resumed_at.pop(seat.name, None)
+            return False
+        self._resumes[seat.name] = resumes + 1
+        self._resumed_at[seat.name] = now
+        self._next_try[seat.name] = now + self._backoff(resumes + 1)
+        await self._hold(seat, job)
+        self.health[seat.name] = Health("running", "", job)
+        if self._push:
+            self._push(seat.node, job, catch_up_line(seat, keeps_history, _seen_epoch(rec)))
+        log.info("keeper: resumed %s for %s on %s", job, seat.name, seat.node)
+        return True
 
     async def _replace(self, seat: SeatConfig, spec: dict, want: str, rows: list[dict],
                        old: str | None, why: str, counted: bool = True) -> None:
@@ -373,6 +470,12 @@ class Keeper:
             self._restarts.pop(seat, None)
             self._restarted_at.pop(seat, None)
             self._next_try.pop(seat, None)
+        since = self._resumed_at.get(seat)
+        if since is not None and self._now() - since >= SETTLE_S:
+            self._resumes.pop(seat, None)
+            self._resumed_at.pop(seat, None)
+            if seat not in self._restarted_at:
+                self._next_try.pop(seat, None)
 
     def _report(self, seat: SeatConfig, health: Health) -> None:
         self.health[seat.name] = health

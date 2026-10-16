@@ -171,7 +171,8 @@ class SeatConfig:
     """One kept seat: a chat whose holder social starts and keeps alive.
 
     ``node`` is where the agent runs (it needs Claude Code). ``project`` and
-    ``scope`` name the worktree it starts in. ``brief`` opens its first prompt.
+    ``scope`` name the worktree it starts in. ``brief`` goes into its system
+    prompt. ``compact_at`` is the context size, in tokens, at which it compacts.
     """
 
     name: str
@@ -183,6 +184,12 @@ class SeatConfig:
     brief: str
     model: str | None = None
     effort: str | None = None
+    compact_at: int = 200_000
+
+
+#: The range of a seat's `compact_at`. Below 200k a seat compacts too often to
+#: keep its cache warm; above, the window it implies passes Claude Code's 1M cap.
+COMPACT_AT_MIN, COMPACT_AT_MAX = 200_000, 960_000
 
 
 class SocialConfigError(Exception):
@@ -513,6 +520,7 @@ def load_seats(path: Path | None = None) -> list[SeatConfig]:
         brief = "You speak as Opal ..."
         # model = "opus"                  # optional
         # effort = "high"                 # optional
+        # compact_at = 200000             # optional, tokens
     """
     path = path if path is not None else _config_file()
     if not path.exists():
@@ -547,8 +555,14 @@ def load_seats(path: Path | None = None) -> list[SeatConfig]:
             if value is not None and (not isinstance(value, str) or not value.strip()):
                 raise SocialConfigError(f"{where}.{key} must be a string")
             optional[key] = value.strip() if value else None
+        compact_at = section.get("compact_at", SeatConfig.compact_at)
+        if (not isinstance(compact_at, int) or isinstance(compact_at, bool)
+                or not COMPACT_AT_MIN <= compact_at <= COMPACT_AT_MAX):
+            raise SocialConfigError(f"{where}.compact_at must be a token count from "
+                                    f"{COMPACT_AT_MIN} to {COMPACT_AT_MAX}")
+        optional["compact_at"] = compact_at
         unknown = set(section) - {"account", "channel", "node", "scope", "brief",
-                                  "model", "effort"}
+                                  "model", "effort", "compact_at"}
         if unknown:
             raise SocialConfigError(f"{where} has unknown keys: {', '.join(sorted(unknown))}")
         seats.append(SeatConfig(name=str(name).strip(), project=project,

@@ -12,8 +12,9 @@ reasoning that reading the code does not give: who may start a session and what
 a restricted caller gets, where a session's mode lives, why a session is moved
 exactly once, which of two files answers which question about a session, how a
 session comes by its name, why the service refuses to seed or start on a node
-with no daemon, which trust rule applies to a move and to a start, why a pinned
-session is removed when it stops, and what the pool deliberately does not do. The verb list is in `awm cx --help`.
+with no daemon, which trust rule applies to a move and to a start, how a stopped
+session resumes, why a pinned session is removed when it stops, and what the
+pool deliberately does not do. The verb list is in `awm cx --help`.
 
 ## Install
 
@@ -51,6 +52,7 @@ the gateway logs a warning at boot if a station enables this service.
     awm reflection list_other           # every session on this node, and the pool summary
     awm reflection start_other --help   # start a named session in a scope's worktree
     awm reflection stop_other --help    # stop a session that start_other created
+    awm reflection resume_other --help  # bring a stopped session back with its conversation
     awm reflection remove_other         # what the pool may delete, and why. Deletes nothing
     awm reflection remove_other --apply # delete it
     awm reflection seed_other           # start one warm session now, or say why it is refused
@@ -121,6 +123,9 @@ the bridge connects, and `list_other` reports `link` for every session.
 
 The arguments `allowed_tools`, `tools`, `restricted` and `strict_mcp` map to
 `claude --allowedTools`, `--tools`, `--restricted` and `--strict-mcp-config`.
+`system_prompt` and `autocompact` map to `--append-system-prompt` and
+`--autocompact`. Use `system_prompt` for anything the session must keep, because
+a compaction summary rewrites the conversation and never the system prompt.
 
 **CAUTION** `--restricted` refuses bypass, so a restricted start runs in its
 named mode with no way to reach bypass. A restricted session also ignores user
@@ -225,6 +230,20 @@ refuses to seed or start when no daemon is running. No daemon means nobody is
 using Claude Code on that node, and a cold first launch is the right answer
 there.
 
+A node that hosts kept seats needs a daemon from boot, so that social's keeper
+can resume them. `systemd/claude-daemon.service` runs one as a user unit, with
+`--origin service`. Only a transient daemon exits when its last client leaves,
+so this one stays up with no sessions. The node needs `loginctl enable-linger`
+for a user unit to run at boot. Install it:
+
+1. Copy `systemd/claude-daemon.service` to `~/.config/systemd/user/`.
+2. Run `systemctl --user daemon-reload`.
+3. Run `systemctl --user enable claude-daemon.service`.
+
+**WARNING** Do not start the unit while a daemon runs. A service daemon makes
+a running transient daemon yield, and a takeover brings back only some of its
+sessions. The unit starts at the next boot.
+
 The transient systemd unit covers the residual race where the daemon dies
 between the check and the launch. It carries `KillMode=process`. Without that,
 tearing the unit down kills its whole control group, which in that race holds
@@ -285,6 +304,23 @@ detach by replacing itself with `claude agents`. That picker does not return on
 its own. Ctrl+Z is the documented way out. An earlier implementation ran a
 watcher beside the attach to signal the picker away, which cost the left-arrow
 route to the agent view; the vendor's behaviour is kept instead.
+
+### A stopped session resumes under its own id
+
+`resume_other` runs `claude respawn <job>`. It brings the job back under the
+same id, with the same transcript, the same `respawnFlags` and a warm prompt
+cache, and it re-pins a job whose lineage says it was pinned. It takes the same
+callers as `stop_other`.
+
+**CAUTION** `claude --bg --resume <session id>` looks like the same operation
+and is not. On Claude Code 2.1.301 it starts a new, empty job under a new id.
+
+`resume_other` refuses a running job, because `claude respawn` restarts a live
+one. It also refuses a job with no `state.json`, which `claude rm` deleted, and
+a job whose transcript is gone. So a stop that keeps the conversation, a crash
+and a daemon retirement leave a job resumable, and a `stop_other` of a pinned
+job does not. The launch runs in the same transient unit as a start, and the
+same daemon guard applies.
 
 ### A pinned session is removed when it stops
 

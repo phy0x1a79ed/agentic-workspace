@@ -34,6 +34,8 @@ class FakeCx:
         self.rows: list[dict] = []
         self.started: list[dict] = []
         self.stopped: list[str] = []
+        self.resumed: list[str] = []
+        self.dead: dict[str, dict] = {}
         self.down = False
         self.refuse = None
         self._n = 0
@@ -57,7 +59,20 @@ class FakeCx:
     async def stop(self, node, job):
         self.stopped.append(job)
         self.rows = [r for r in self.rows if r["job"] != job]
+        self.dead.pop(job, None)
         return {"ok": True, "job": job}
+
+    async def resume(self, node, job):
+        self.resumed.append(job)
+        if job not in self.dead:
+            return {"ok": False, "reason": f"job {job} has no state record; it was removed"}
+        self.rows.append(self.dead.pop(job))
+        return {"ok": True, "job": job}
+
+    def die(self, job):
+        """The session ends the way a crash or a retirement leaves it: resumable."""
+        self.dead[job] = self.row(job)
+        self.rows.remove(self.dead[job])
 
     def row(self, job):
         return next(r for r in self.rows if r["job"] == job)
@@ -83,7 +98,9 @@ def kept(awm_workspace, tmp_path):
         return "lab"
 
     k = Keeper(dao, [_seat()], lambda a: ("discord", True) if a == "bot" else None,
-               channel_name, cx=cx, lock_path=tmp_path / "keeper.lock", clock=clock)
+               channel_name, cx=cx, lock_path=tmp_path / "keeper.lock", clock=clock,
+               push=lambda node, job, line: k.pushed.append((node, job, line)))
+    k.pushed = []
     return k, cx, dao, clock
 
 
@@ -96,13 +113,24 @@ def test_seat_tables_load_beside_the_accounts(tmp_path):
     (seat,) = config.load_seats(path)
     assert (seat.name, seat.account, seat.channel, seat.node) == ("lab", "bot", "C1", "altair")
     assert (seat.project, seat.scope, seat.model) == ("awm", "seat-lab", None)
+    assert seat.compact_at == 200_000
     assert [a.name for a in config.load(path)] == ["bot"]
+
+
+def test_a_seat_may_compact_later(tmp_path):
+    from awm.social import config
+    path = tmp_path / "social.toml"
+    path.write_text(SEAT_TOML + "compact_at = 400000\n")
+    (seat,) = config.load_seats(path)
+    assert seat.compact_at == 400_000
 
 
 @pytest.mark.parametrize("bad", [
     '[seat.lab]\naccount = "bot"\n',
     '[seat.lab]\naccount="bot"\nchannel="C1"\nnode="a"\nscope="noslash"\nbrief="b"\n',
     '[seat.lab]\naccount="bot"\nchannel="C1"\nnode="a"\nscope="p/s"\nbrief="b"\ncolour="red"\n',
+    '[seat.lab]\naccount="bot"\nchannel="C1"\nnode="a"\nscope="p/s"\nbrief="b"\ncompact_at=150000\n',
+    '[seat.lab]\naccount="bot"\nchannel="C1"\nnode="a"\nscope="p/s"\nbrief="b"\ncompact_at="200k"\n',
     '[seat.a]\naccount="bot"\nchannel="C1"\nnode="a"\nscope="p/s"\nbrief="b"\n'
     '[seat.b]\naccount="bot"\nchannel="C1"\nnode="a"\nscope="p/s"\nbrief="b"\n',
 ])
@@ -124,8 +152,12 @@ async def test_a_missing_agent_is_started_pinned_and_holds_the_seat(kept):
     assert spec["name"] == "seat - lab" and spec["pin"] is True
     assert spec["remote_control"] is True
     assert (spec["project"], spec["scope"]) == ("awm", "seat-lab")
-    assert "Answer the lab." in spec["prompt"] and "Monitor" in spec["prompt"]
-    assert "social history account=bot channel=C1" in spec["prompt"]
+    system = spec["system_prompt"]
+    assert "Answer the lab." in system and "Monitor" in system
+    assert "social history account=bot channel=C1" in system
+    assert "compacted" in system and "Answer the lab." not in spec["prompt"]
+    assert spec["prompt"].startswith("Start by reading the backlog")
+    assert spec["autocompact"] == 233_000
     held = dao.holder("bot", "C1")
     assert (held["node"], held["job"], held["session_name"]) == ("altair", "job00001", "seat - lab")
     assert dao.keeper("lab")["job"] == "job00001"
@@ -157,6 +189,91 @@ async def test_a_stopped_agent_is_replaced_then_backs_off(kept):
     clock.t += 31
     await k.tick()
     assert len(cx.started) == 3
+
+
+async def test_an_exited_agent_is_resumed_and_told_what_it_missed(kept):
+    k, cx, dao, clock = kept
+    await k.tick()
+    clock.t += 60
+    await k.tick()
+    seen = clock.t
+    cx.die("job00001")
+    dao.unmount("bot", "C1")
+    clock.t += 60
+    await k.tick()
+    assert cx.resumed == ["job00001"] and not cx.stopped and len(cx.started) == 1
+    assert dao.keeper("lab")["job"] == "job00001"
+    assert dao.holder("bot", "C1")["job"] == "job00001"
+    status = k.status(k.seats[0])
+    assert status["restarts"] == 0 and status["resumes"] == 1
+    ((node, job, line),) = k.pushed
+    assert (node, job) == ("altair", "job00001")
+    assert f"social history account=bot channel=C1 since={seen:.0f}" in line
+
+
+async def test_the_last_alive_tick_survives_a_new_keeper(kept, tmp_path):
+    from awm.social.keeper import Keeper
+    k, cx, dao, clock = kept
+    await k.tick()
+    clock.t += 60
+    await k.tick()
+    seen = clock.t
+    cx.die("job00001")
+    pushed = []
+    fresh = Keeper(dao, k.seats, k._describe, k._channel_name, cx=cx,
+                   lock_path=tmp_path / "other.lock", clock=clock,
+                   push=lambda *a: pushed.append(a))
+    clock.t += 3600
+    await fresh.tick()
+    assert cx.resumed == ["job00001"]
+    assert f"since={seen:.0f}" in pushed[0][2]
+
+
+async def test_a_refused_resume_falls_back_to_a_new_agent(kept):
+    k, cx, dao, _ = kept
+    await k.tick()
+    await cx.stop("altair", "job00001")
+    await k.tick()
+    assert cx.resumed == ["job00001"]
+    assert dao.keeper("lab")["job"] == "job00002"
+    assert k.status(k.seats[0])["restarts"] == 1 and not k.pushed
+
+
+async def test_a_changed_spec_starts_new_instead_of_resuming(kept):
+    k, cx, dao, _ = kept
+    await k.tick()
+    cx.die("job00001")
+    k.seats = [_seat(brief="Answer the lab, briefly.")]
+    await k.tick()
+    assert not cx.resumed and dao.keeper("lab")["job"] == "job00002"
+    assert "briefly" in cx.started[-1]["system_prompt"]
+
+
+async def test_a_seat_that_keeps_dying_on_resume_gets_a_new_agent(kept):
+    from awm.social.keeper import MAX_RESUMES
+    k, cx, dao, clock = kept
+    await k.tick()
+    for _ in range(MAX_RESUMES):
+        cx.die("job00001")
+        clock.t += 1000
+        await k.tick()
+    assert len(cx.resumed) == MAX_RESUMES and len(cx.started) == 1
+    cx.die("job00001")
+    await k.tick()
+    assert dao.keeper("lab")["job"] == "job00001", "a resume backs off first"
+    clock.t += 1000
+    await k.tick()
+    assert len(cx.resumed) == MAX_RESUMES and dao.keeper("lab")["job"] == "job00002"
+
+
+async def test_resumes_settle_after_a_healthy_spell(kept):
+    k, cx, _, clock = kept
+    await k.tick()
+    cx.die("job00001")
+    await k.tick()
+    clock.t += 601
+    await k.tick()
+    assert k.status(k.seats[0])["resumes"] == 0
 
 
 async def test_restarts_settle_after_a_healthy_spell(kept):
@@ -197,7 +314,7 @@ async def test_a_changed_brief_recycles_only_between_turns(kept):
     cx.row("job00001")["tempo"] = "idle"
     await k.tick()
     assert cx.stopped == ["job00001"]
-    assert "briefly" in cx.started[-1]["prompt"]
+    assert "briefly" in cx.started[-1]["system_prompt"]
     assert dao.holder("bot", "C1")["job"] == "job00002"
     assert k.status(k.seats[0])["restarts"] == 0
 
@@ -324,4 +441,6 @@ def test_a_v4_database_gains_the_keepers_table(awm_workspace):
     assert d.keeper("lab")["job"] == "aaaa1111"
     assert d.holder("bot", "C1")["job"] == "aaaa1111"
     conn = sqlite3.connect(path)
-    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == 5
+    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == 6
+    d.keeper_seen("lab", 1234.5)
+    assert d.keeper("lab")["seen_at"] == "1234.500"
