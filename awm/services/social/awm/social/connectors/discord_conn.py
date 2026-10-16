@@ -389,6 +389,38 @@ class DiscordConnector(Connector):
                         getattr(a, "content_type", "") or "", data))
         return out
 
+    async def react(
+        self, channel: str, message_id: str, emoji: str, *,
+        remove: bool = False, thread: str | None = None,
+    ) -> dict:
+        # A Discord thread is its own channel, so ``channel`` already names it.
+        import discord
+
+        from awm.social.emoji import to_char
+
+        if self._client is None:
+            raise RuntimeError(f"discord[{self.account.name}] not started")
+        await self._wait_ready()
+        char = to_char(emoji) or emoji.strip()
+        target = await self._resolve_channel(channel)
+        message = await target.fetch_message(int(message_id))
+        try:
+            if remove:
+                await message.remove_reaction(char, self._client.user)
+            else:
+                await message.add_reaction(char)
+        except discord.Forbidden as exc:
+            raise RuntimeError(
+                f"discord[{self.account.name}] may not react in {channel}: "
+                f"{exc.text or exc}") from exc
+        except discord.HTTPException as exc:
+            raise RuntimeError(
+                f"discord[{self.account.name}] rejected {char!r}: "
+                f"{exc.text or exc}") from exc
+        return {"as": "reaction", "emoji": char, "removed": remove,
+                "message_id": str(message.id),
+                "channel_id": str(message.channel.id)}
+
     # `search` is intentionally not implemented: a Discord *bot* token cannot
     # use the user message-search endpoint, so the ABC default raises a clean
     # "not supported" error. `fetch` covers per-channel history retrieval.

@@ -35,7 +35,7 @@ import aiohttp
 
 from awm.social.connectors.base import (
     Account, Attachment, Channel, Connector, Identity, InboundMessage,
-    OnMessage,
+    OnMessage, react_by_message,
 )
 
 log = logging.getLogger("awm.social.connectors.slack_bot")
@@ -350,6 +350,13 @@ class SlackBotConnector(Connector):
             await self._record(r.get("channel", channel), r["message"])
         return {"message_id": r.get("ts", ""),
                 "channel_id": r.get("channel", channel), "ts": r.get("ts", "")}
+
+    async def react(
+        self, channel: str, message_id: str, emoji: str, *,
+        remove: bool = False, thread: str | None = None,
+    ) -> dict:
+        return await react_by_message(self, channel, emoji,
+                                      remove=remove, thread=thread)
 
     async def fetch(
         self, channel: str, *, limit: int = 50, before: str | None = None

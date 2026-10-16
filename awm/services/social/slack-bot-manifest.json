@@ -29,7 +29,8 @@
         "mpim:read",
         "im:write",
         "users:read",
-        "files:read"
+        "files:read",
+        "reactions:write"
       ]
     }
   },

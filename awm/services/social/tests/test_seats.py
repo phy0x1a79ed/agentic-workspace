@@ -148,22 +148,23 @@ async def test_a_message_in_a_held_seat_is_pushed_to_the_holder(wired):
     await wired._h_mount({"account": "bot", "channel": "D1", **mine}, as_)
     await wired._on_message(_msg(text="first\nsecond"))
     await wired._on_message(_msg(channel_id="C1", message_id="11.1", text="unheld"))
-    assert wired.pushed == [("altair", ME["job"], "slack from tony: first ⏎ second")]
+    assert wired.pushed == [("altair", ME["job"], "slack from tony [channel=D1 message_id=10.1]: first ⏎ second")]
 
 
 def test_push_line_marks_thread_replies_and_cuts_long_text():
     from awm.social import seats
     from awm.social.connectors.base import Attachment
     reply = _msg(thread_id="9.5", message_id="10.1", text="yes")
-    assert seats.push_line(reply) == "slack from tony ↳9.5: yes"
+    assert seats.push_line(reply) == "slack from tony ↳9.5 [channel=D1 message_id=10.1]: yes"
     parent = _msg(thread_id="10.1", message_id="10.1", platform="discord")
-    assert seats.push_line(parent) == "discord from tony: hi"
+    assert seats.push_line(parent) == "discord from tony [channel=D1 message_id=10.1]: hi"
     long = seats.push_line(_msg(text="x" * (seats.TEXT_MAX + 50)))
     assert long.endswith("…(cut, full text in social history)")
-    assert len(long) < seats.TEXT_MAX + 80
+    assert len(long) < seats.TEXT_MAX + 120
     files = _msg(text="", attachments=[Attachment(idx=0, filename="a"),
                                        Attachment(idx=1, filename="b")])
-    assert seats.push_line(files) == "slack from tony: [+2 files]"
+    assert seats.push_line(files) == "slack from tony [channel=D1 message_id=10.1]: [+2 files]"
+    assert seats.push_line(_msg(message_id="")) == "slack from tony: hi"
 
 
 async def test_pusher_delivers_in_order_and_retries_a_refusal():

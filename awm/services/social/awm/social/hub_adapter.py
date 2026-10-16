@@ -201,6 +201,14 @@ async def _h_send(args: dict) -> dict:
     return {"ok": True, **sent}
 
 
+async def _h_react(args: dict) -> dict:
+    conn = _conn(args["account"])
+    done = await conn.react(
+        args["channel"], str(args["message_id"]), str(args["emoji"]),
+        remove=bool(args.get("remove")), thread=args.get("thread") or None)
+    return {"ok": True, **done}
+
+
 async def _h_history(args: dict) -> dict:
     """A bot account's synced history: the newest ``limit`` messages, or with
     ``since`` (a message ts) the ``limit`` right after it, oldest first. The
@@ -411,10 +419,13 @@ async def _h_mount(args: dict, as_: str | None = None) -> dict:
                  "kind": seat.kind, "holder": _holder_dict(row)},
         "evicted": _holder_dict(evicted),
         "push": (f"each new message here is typed into your prompt as "
-                 f"'{conn.platform} from <sender>: <text>', with ' ↳<thread ts>' "
-                 f"after the sender for a thread reply"),
+                 f"'{conn.platform} from <sender> [channel=<id> message_id=<id>]: "
+                 f"<text>', with ' ↳<thread ts>' after the sender for a thread reply"),
         "reply": (f"social send account={account} channel={seat.id} text=<text>; "
-                  f"add thread=<thread ts> to answer in a thread"),
+                  f"add thread=<thread ts> to answer in a thread. Before work "
+                  f"that takes a while, react 👀 with `social react "
+                  f"account={account} channel={seat.id} message_id=<id> "
+                  f"emoji=👀`, then post the answer with `social send`"),
         "backlog": (f"social history account={account} channel={seat.id}"
                     if conn.keeps_history else
                     f"social fetch account={account} channel={seat.id}"),
@@ -708,6 +719,25 @@ API_MANIFEST: dict[str, Any] = {
             ],
         },
         {
+            "name": "react",
+            "effect": "write",
+            "tool": "social_react",
+            "description": "Put an emoji reaction on a message, or take it off "
+                           "with `remove`. `emoji` is a character, a name or "
+                           ":name:. Discord bots react. Slack posts the emoji "
+                           "as a message until the app holds reactions:write, "
+                           "into `thread` when given, and cannot remove. Gmail "
+                           "and Teams refuse.",
+            "params": [
+                {"name": "account", "type": "string", "required": True},
+                {"name": "channel", "type": "string", "required": True},
+                {"name": "message_id", "type": "string", "required": True},
+                {"name": "emoji", "type": "string", "required": True},
+                {"name": "remove", "type": "boolean", "required": False},
+                {"name": "thread", "type": "string", "required": False},
+            ],
+        },
+        {
             "name": "fetch",
             "effect": "read",
             "tool": "social_fetch",
@@ -760,8 +790,9 @@ API_MANIFEST: dict[str, Any] = {
             "tool": "social_mount",
             "description": "Hold a seat: every new message in that chat, from "
                            "anyone but the bot, is typed into your prompt as one "
-                           "line 'slack from <sender>: <text>' (Discord: 'discord "
-                           "from'). Background sessions only. One holder per "
+                           "line 'slack from <sender> [channel=<id> "
+                           "message_id=<id>]: <text>' (Discord: 'discord from'). "
+                           "Background sessions only. One holder per "
                            "seat: a held seat is refused unless `force`, which "
                            "takes it and tells the old holder. A Discord DM is "
                            "reserved for notifications and cannot be mounted, "
@@ -1260,6 +1291,7 @@ def _seat_forwarding(fn: str, handler: Any) -> Any:
 
 HANDLERS = {
     "send": _forwarding("send", _h_send),
+    "react": _forwarding("react", _h_react),
     "seats": _forwarding("seats", _h_seats),
     "mount": _seat_forwarding("mount", _h_mount),
     "unmount": _seat_forwarding("unmount", _h_unmount),

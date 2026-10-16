@@ -23,7 +23,7 @@ import logging
 
 from awm.social.connectors.base import (
     Account, Attachment, Channel, Connector, Identity, InboundMessage,
-    OnMessage,
+    OnMessage, react_by_message,
 )
 
 log = logging.getLogger("awm.social.connectors.mira")
@@ -110,6 +110,16 @@ class MiraConnector(Connector):
             "channel_id": resp.get("channel_id", channel),
             "ts": resp.get("ts", ""),
         }
+
+    async def react(
+        self, channel: str, message_id: str, emoji: str, *,
+        remove: bool = False, thread: str | None = None,
+    ) -> dict:
+        if self.platform != "slack":
+            return await super().react(channel, message_id, emoji,
+                                       remove=remove, thread=thread)
+        return await react_by_message(self, channel, emoji,
+                                      remove=remove, thread=thread)
 
     async def list_channels(self, *, include_dms: bool = False) -> list[Channel]:
         params = {"include_dms": "true"} if include_dms else {}

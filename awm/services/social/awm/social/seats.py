@@ -75,7 +75,8 @@ def holder_label(row: dict) -> str:
 # -- the pushed line ---------------------------------------------------------
 
 def push_line(m: InboundMessage) -> str:
-    """``<platform> from <sender>[ [bot]][ ↳<thread>]: <text>`` on one line."""
+    """``<platform> from <sender>[ [bot]][ ↳<thread>] [channel=<id> message_id=<id>]: <text>``
+    on one line. The ids are what the holder passes to ``social react``."""
     who = m.sender_name or m.sender_id or "?"
     if m.sender_bot:
         who += " [bot]"
@@ -87,7 +88,9 @@ def push_line(m: InboundMessage) -> str:
     if m.attachments:
         n = len(m.attachments)
         text = f"{text} [+{n} file{'s' if n > 1 else ''}]".lstrip()
-    return f"{m.platform} from {who}{thread}: {text}"
+    ids = (f" [channel={m.channel_id} message_id={m.message_id}]"
+           if m.message_id else "")
+    return f"{m.platform} from {who}{thread}{ids}: {text}"
 
 
 # -- delivery ----------------------------------------------------------------
