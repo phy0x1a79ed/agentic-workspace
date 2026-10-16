@@ -243,8 +243,13 @@ Two guards, both read off the hook's own stdin: `tool_response` must carry a
 at all, it is a separate `PermissionDenied` event), and `permission_mode` — which
 `ExitPlanMode` has already restored by the time the hook runs — must not already
 be `bypassPermissions`. A refusal it cannot retry past is appended to
-`~/.claude/awm-reflection-mode.log`; an unreadable footer is retried for ~15s,
+`~/.claude/awm-reflection-mode.log`. An unreadable footer is retried for ~15s,
 since whatever covers it after an approval is transient.
+
+**CAUTION** The hook never retries a call that timed out. The server keeps
+walking after the caller gives up, and a second walk on top of it steps past
+bypass. The service also serialises walks per session, so a late duplicate
+waits and then finds the session already in bypass.
 
 It never counts presses. The cycle is `default → acceptEdits → plan →
 bypassPermissions → auto → default`, `bypassPermissions` and `auto` appear only
@@ -257,15 +262,14 @@ pressing anything, for the same reason the modal guard exists.
 Footer strings are TUI copy and can move under a CLI update; they fail safe,
 since an unrecognised footer reads as unknown and unknown does not act.
 
-Reading the footer is what bounds this to the tmux lane in practice. `capture-pane`
-renders the current screen; the daemon backend gets an append-only stream of
-repaint deltas, and the *first* read of a walk has nothing to discard, so a
-background session mid-turn reads back either no footer at all (`unknown`, which
-refuses) or the last one painted — which can name a mode it has since left, and
-that reads as "already in bypass" and returns ok having done nothing. Both were
-measured on one live background session minutes apart. Neither types blind, and
-both leave the session where it was; the useful lane is tmux, which is also the
-one a phone-approved plan takes.
+A background session's lane is a stream of repaint deltas, not a screen. The
+walk replays it onto a grid (`termscreen`) before it reads the footer. Classifying
+the raw stream fails on a busy session, because spinner repaints push the footer
+out of the classifier's window. The daemon also replays only recent output on
+connect, so a session busy for minutes may hold no footer paint at all. The walk
+then asks for a full repaint with a resize to one row short and back, at the
+size the roster recorded at dispatch. A resize to the current size repaints
+nothing. A session with no recorded size gets no repaint and refuses as unknown.
 
 This footer walk is now the only place in the service that treats a rendered
 screen as evidence. Every send confirms from the record and the transcript
