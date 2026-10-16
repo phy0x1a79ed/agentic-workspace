@@ -49,13 +49,13 @@ the gateway logs a warning at boot if a station enables this service.
 
 ## Operate
 
-    awm reflection list_other           # every session on this node, and the pool summary
-    awm reflection start_other --help   # start a named session in a scope's worktree
-    awm reflection stop_other --help    # stop a session that start_other created
-    awm reflection resume_other --help  # bring a stopped session back with its conversation
-    awm reflection remove_other         # what the pool may delete, and why. Deletes nothing
-    awm reflection remove_other --apply # delete it
-    awm reflection seed_other           # start one warm session now, or say why it is refused
+    awm reflection list-other           # every session on this node, and the pool summary
+    awm reflection start-other --help   # start a named session in a scope's worktree
+    awm reflection stop-other --help    # stop a session that start_other created
+    awm reflection resume-other --help  # bring a stopped session back with its conversation
+    awm reflection remove-other         # what the pool may delete, and why. Deletes nothing
+    awm reflection remove-other --apply # delete it
+    awm reflection seed-other           # start one warm session now, or say why it is refused
 
 A dead job reads `stopped` in `list_other` when `claude stop` ended it, and `gone`
 when it died. **CAUTION** `reporting` reads this difference: `stopped` closes the
