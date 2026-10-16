@@ -498,7 +498,8 @@ def _with_os(verb: str, timeout: float, brief: bool):
             return answer
         about = _os_of(session)
         if brief:
-            about = {k: about[k] for k in ("declared", "shell", "warning")
+            about = {k: about[k] for k in ("declared", "reported", "shell",
+                                           "mismatch", "warning")
                      if k in about}
         return {**answer, "os": about}
     return handler
