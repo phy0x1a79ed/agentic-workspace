@@ -155,6 +155,17 @@ Windows has its own launcher at its own address:
 
     & ([scriptblock]::Create((irm https://nexus.tony-xy-liu.com/tether/win))) acre anchor kettle
 
+`invite` requires `os`: `windows`, `wsl`, `linux` or `macos`. It has no
+default, because a guessed OS hands the owner a line their shell cannot run.
+`windows` gets the PowerShell line and the other three get the `sh` line. The
+daemon builds only the `sh` line, so the adapter builds the Windows one from it.
+
+**CAUTION** The declared `os` lives in the adapter's memory, not in the daemon.
+That is safe only because the daemon and its sessions die with the adapter. The
+owner's client reports its real platform in its `Hello`, which `status` shows
+beside the declaration. A `wsl` session reports `linux`, which counts as
+agreement.
+
 The launcher fetches the client for that machine from the GitHub release first
 and from the relay only when GitHub is unreachable, verifies the download's
 SHA-256 against a baked value, runs it, and stops. It installs nothing to PATH
