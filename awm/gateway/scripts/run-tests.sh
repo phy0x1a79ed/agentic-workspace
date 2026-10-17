@@ -62,6 +62,7 @@ declare -A DISTS=(
   [dvc]="$WS/awm/services/dvc::$WS/awm/services/dvc/tests"
   [claude-science]="$WS/awm/services/claude-science::$WS/awm/services/claude-science/tests"
   [dsh]="$WS/awm/services/dsh::$WS/awm/services/dsh/tests"
+  [engcyc]="$WS/awm/services/engcyc::$WS/awm/services/engcyc/tests"
   [hermes]="$WS/awm/services/hermes::$WS/awm/services/hermes/tests"
   [trilium]="$WS/awm/services/trilium::$WS/awm/services/trilium/tests"
   [zotero]="$WS/awm/services/zotero::$WS/awm/services/zotero/tests"
@@ -79,7 +80,7 @@ declare -A DISTS=(
 )
 
 # Stable run order.
-ORDER=(gateway gatewayclient config persistence telemetry claudedaemon scopes journal search writing events precedence social 2fa ssh auth httpsfront rlm-browser rlm-factorio graphify stt tts fileviewer drawio notes virtmic mic vpn compute reflection dvc claude-science dsh hermes trilium zotero penpot penpot-view penpot-plugins cx dev tether kb board reporting reporting-hooks transcripts)
+ORDER=(gateway gatewayclient config persistence telemetry claudedaemon scopes journal search writing events precedence social 2fa ssh auth httpsfront rlm-browser rlm-factorio graphify stt tts fileviewer drawio notes virtmic mic vpn compute reflection dvc claude-science dsh engcyc hermes trilium zotero penpot penpot-view penpot-plugins cx dev tether kb board reporting reporting-hooks transcripts)
 
 # Allow selecting a subset on the command line.
 if [ "$#" -gt 0 ]; then
