@@ -6,9 +6,8 @@ so the next plan opens a new card. ``compact`` and ``resume`` also fire SessionS
 and are ignored.
 
 Pure stdlib, runs under ``python3 -S`` and exits 0 on every path. It writes to stdout
-only when a plan opened a card: the service's ``notice``, as PostToolUse context the
-agent reads. A UserPromptSubmit hook's stdout becomes model context, so a prompt
-prints nothing.
+only when a card opened: the service's ``notice``, as context the agent reads. A
+UserPromptSubmit hook's stdout becomes model context, so a prompt prints nothing else.
 
 The call is synchronous ``POST /invoke`` with ``X-Awm-Caller-Pid``: the gateway walks
 the hook's ancestry to find the session, which a detached hook would break. The
@@ -16,7 +15,9 @@ the hook's ancestry to find the session, which a detached hook would break. The
 
 Each verb result carries ``blocked``. It is mirrored into a marker file so that
 UserPromptSubmit, which runs on every prompt, makes no network call unless the
-prompt holds a Trilium note URL or the session's task is Blocked.
+prompt holds a Trilium note URL or the session's task is Blocked. A background
+job's first prompt is the exception: it asks once whether the job is a briefed
+worker, whose card opens then, and a ``.seen`` marker records that it asked.
 """
 
 from __future__ import annotations
@@ -65,8 +66,8 @@ def call(verb: str, **args) -> dict:
             time.sleep(RETRY_GAP_S)
 
 
-def marker(session_id: str) -> str:
-    return os.path.join(MARKER_DIR, session_id.replace("/", "_") + ".blocked")
+def marker(session_id: str, kind: str = "blocked") -> str:
+    return os.path.join(MARKER_DIR, session_id.replace("/", "_") + "." + kind)
 
 
 def report(session_id: str, verb: str, **args) -> dict:
@@ -75,8 +76,7 @@ def report(session_id: str, verb: str, **args) -> dict:
         return result
     try:
         if result["blocked"]:
-            os.makedirs(MARKER_DIR, exist_ok=True)
-            open(marker(session_id), "w").close()
+            touch(marker(session_id))
         else:
             os.unlink(marker(session_id))
     except OSError:
@@ -84,10 +84,18 @@ def report(session_id: str, verb: str, **args) -> dict:
     return result
 
 
-def tell(result: dict) -> None:
+def touch(path: str) -> None:
+    try:
+        os.makedirs(MARKER_DIR, exist_ok=True)
+        open(path, "w").close()
+    except OSError:
+        pass
+
+
+def tell(result: dict, event: str = "PostToolUse") -> None:
     notice = result.get("notice")
     if isinstance(notice, str) and notice:
-        print(json.dumps({"hookSpecificOutput": {"hookEventName": "PostToolUse",
+        print(json.dumps({"hookSpecificOutput": {"hookEventName": event,
                                                  "additionalContext": notice}}))
 
 
@@ -130,7 +138,13 @@ def handle(p: dict) -> None:
     elif p.get("hook_event_name") == "UserPromptSubmit":
         prompt = p.get("prompt") or ""
         claims = CLAIM_WORDS.search(prompt) and NOTE_URL.search(prompt)
-        if claims or os.path.exists(marker(sid)):
+        first = bool(os.environ.get("CLAUDE_JOB_DIR")) and not os.path.exists(marker(sid, "seen"))
+        if first:
+            result = report(sid, "hook_prompt", prompt=prompt, first=True)
+            if result:
+                touch(marker(sid, "seen"))
+            tell(result, "UserPromptSubmit")
+        elif claims or os.path.exists(marker(sid)):
             report(sid, "hook_prompt", prompt=prompt)
     elif tool in ("Write", "Edit"):
         path = os.path.abspath(str(tool_input.get("file_path") or ""))

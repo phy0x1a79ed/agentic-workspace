@@ -129,12 +129,14 @@ API_MANIFEST: dict[str, Any] = {
                 "Hook verb, called by the prompt hook, not by an agent. A prompt "
                 "that says `claim task <ref>`, or says claim or attach and holds "
                 "a Trilium note URL, claims that task exactly as task_claim does. "
-                "Any prompt moves a Blocked card back to Active. The result's "
-                "`blocked` says whether the card is still Blocked."
+                "Any prompt moves a Blocked card back to Active. A briefed cx "
+                "worker's first prompt opens its card in Active, with a `notice`. "
+                "The result's `blocked` says whether the card is still Blocked."
             ),
             "params": [
                 _param("session_id", "string", "The calling session's id.", True),
                 _param("prompt", "string", "The prompt Tony sent.", True),
+                _param("first", "boolean", "This is the session's first prompt.", False),
             ],
         },
         {

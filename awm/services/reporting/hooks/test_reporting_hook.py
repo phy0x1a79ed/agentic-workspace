@@ -191,6 +191,21 @@ def test_a_prompt_with_a_note_url_is_sent(home, gw):
                               "args": {"session_id": "s1", "prompt": "claim task " + URL + " please"}}
 
 
+def test_a_background_jobs_first_prompt_asks_once_and_prints_the_notice(home, gw):
+    gw.reply = {"ok": True, "blocked": False, "opened": True, "notice": "on the board"}
+    out = run(home, gw.url, prompt("do the thing"), prints=True, CLAUDE_JOB_DIR="/jobs/j1")
+    assert gw.calls[0][2]["args"] == {"session_id": "s1", "prompt": "do the thing", "first": True}
+    assert json.loads(out.stdout)["hookSpecificOutput"] == {
+        "hookEventName": "UserPromptSubmit", "additionalContext": "on the board"}
+    run(home, gw.url, prompt("next"), CLAUDE_JOB_DIR="/jobs/j1")
+    assert len(gw.calls) == 1
+
+
+def test_a_first_prompt_the_gateway_missed_asks_again(home):
+    run(home, "http://127.0.0.1:9", prompt("do the thing"), CLAUDE_JOB_DIR="/jobs/j1")
+    assert not (home / ".claude" / "awm-reporting" / "s1.seen").exists()
+
+
 def test_a_claim_of_a_nexus_url_without_a_trilium_path_is_sent(home, gw):
     run(home, gw.url, prompt("attach to https://nexus.example.org/#root/abc/def123456789"))
     assert len(gw.calls) == 1

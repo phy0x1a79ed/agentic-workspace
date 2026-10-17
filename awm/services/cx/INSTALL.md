@@ -132,8 +132,9 @@ a compaction summary rewrites the conversation and never the system prompt.
 
 cx appends the lifecycle brief (`lifecycle.BRIEF`) after any `system_prompt`.
 The brief tells the session to work in its work's scope, to ask Tony through
-`request_human`, and to debrief, report back and stop itself when the work is
-done. It rides in the system prompt so that no compaction paraphrases it away.
+`request_human`, and to sign off with the `retire` skill when the work is done:
+debrief, report back, and stop itself. It spells those steps out for a node
+without `retire`. It rides in the system prompt so that no compaction paraphrases it away.
 
 - A calling session is named as the starter and as the place to report to.
   `started_by` names the starter only when no session called, such as
@@ -143,9 +144,10 @@ done. It rides in the system prompt so that no compaction paraphrases it away.
 - `brief: false` leaves the brief out.
 
 **CAUTION** The lineage record and the `list_other` row carry `brief`.
-Reporting's sweep opens a board card for each live job with `brief` set, so a
-session started without the brief stays off the board until it plans, claims
-or asks.
+Reporting opens a board card for each live job with `brief` set, so a session
+started without the brief stays off the board until it plans, claims or asks.
+A job runs its first prompt before `start` writes its lineage record, so until
+then `list_other` reads the job's fields from its pending record.
 
 **CAUTION** `--restricted` refuses bypass, so a restricted start runs in its
 named mode with no way to reach bypass. A restricted session also ignores user

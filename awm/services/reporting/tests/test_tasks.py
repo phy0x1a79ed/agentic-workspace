@@ -416,6 +416,33 @@ async def test_a_worker_card_tony_closed_stays_closed(env):
     assert env.ledger.open() == []
 
 
+async def test_a_briefed_workers_first_prompt_opens_its_card_with_a_notice(env):
+    env.cx.rows = [worker("job00001")]
+    out = await env.call("hook_prompt", prompt="go", first=True)
+    task = env.task()
+    assert out["opened"] is True and "Swarm board" in out["notice"]
+    assert task["state"] == "active" and task["session_id"] == "sess-1"
+    assert env.column(task["note_id"]) == ["Active"]
+    await env.tasks.sweep(env.cx.rows)
+    assert len(env.ledger.open()) == 1
+
+
+@pytest.mark.parametrize("rows", [[], [worker("job00001", brief=False)],
+                                  [worker("job00001", pinned=True)]])
+async def test_a_first_prompt_opens_no_card_for_other_sessions(env, rows):
+    env.cx.rows = rows
+    out = await env.call("hook_prompt", prompt="go", first=True)
+    assert out["tracked"] is False and env.ledger.open() == []
+
+
+async def test_a_first_prompt_reopens_nothing_the_ledger_held(env):
+    env.cx.rows = [worker("job00001")]
+    await env.call("hook_prompt", prompt="go", first=True)
+    env.ledger.close(env.task()["id"])
+    out = await env.call("hook_prompt", prompt="go", first=True)
+    assert out["tracked"] is False and env.ledger.open() == []
+
+
 @pytest.mark.parametrize("over", [{"brief": False}, {"brief": None}, {"pinned": True},
                                   {"state": "stopped"}, {"state": "gone"}, {"job": None}])
 async def test_only_a_running_briefed_unpinned_worker_gets_a_card_at_start(env, over):
