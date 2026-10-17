@@ -230,6 +230,10 @@ line came from. Newlines become ` ⏎ `. Text past 1500 characters is cut, and a
   History still holds it.
 - **Discord DM.** A Discord DM is the operator's notification channel and is
   never a seat. `social_seats` lists guild text channels only.
+- **Name.** A holder goes by its seat: `seat:<app>/<server>/<channel>`, or
+  `seat:<app>/DM/<person>` for a DM, such as `seat:discord/Hallam Hive/general`
+  or `seat:slack/arbutus`. A kept seat's agent starts with that name. The mount
+  reply's `rename` tells a session that holds only that seat to take the name.
 - **Acknowledge.** The mount reply and the kept-seat brief tell a holder to
   react 👀 on the message before work that takes a while, then answer with
   `social_send`. A reaction marks the request as seen without a message that
@@ -274,7 +278,7 @@ The keeper runs on the owner every 60 s:
 
 1. It lists `cx` sessions on `node`, locally or through a domestic peer. A
    node that does not answer skips the tick.
-2. It starts a missing agent with `cx start`, named `seat - <name>`, pinned,
+2. It starts a missing agent with `cx start`, named for its chat, pinned,
    with Remote Control on. It writes the mount row itself.
 3. It resumes an agent that exited, with `cx resume`. The agent keeps its own
    conversation and its prompt cache. The keeper then pushes it one line that
@@ -287,6 +291,11 @@ The keeper runs on the owner every 60 s:
 5. It leaves an agent blocked on login or usage for a person, and logs it once.
 6. It replaces an agent whose launch spec changed, once its tempo is idle.
    A recycle is not a restart.
+
+**CAUTION** The spec hash leaves out the session name, so a renamed chat never
+recycles a live agent. An agent keeps the name it started with, and an agent
+started before seats were named for their chat keeps `seat - <name>` until its
+next replacement.
 
 **CAUTION** `compact_at` is where compaction fires, not the window. Claude Code
 compacts 33k tokens below its `--autocompact` window, so the keeper passes

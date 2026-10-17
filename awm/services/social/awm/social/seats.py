@@ -67,6 +67,12 @@ def caller(args: dict, as_: str | None) -> dict:
     return {"node": node, "job": str(claim["job"]), "name": str(claim.get("name") or "")}
 
 
+def session_name(platform: str, chat) -> str:
+    """The name a seat's holder goes by: ``seat:<app>/<server>/<channel>``, or ``seat:<app>/DM/<person>``."""
+    where = f"DM/{chat.name}" if chat.kind == "dm" else (chat.name or chat.id).replace("#", "/", 1)
+    return f"seat:{platform}/{where}"
+
+
 def holder_label(row: dict) -> str:
     name = f" ({row['session_name']})" if row.get("session_name") else ""
     return f"{row['job']}@{row['node']}{name}"
