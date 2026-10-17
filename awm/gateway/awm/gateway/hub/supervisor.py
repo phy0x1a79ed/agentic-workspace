@@ -456,6 +456,102 @@ async def supervise_disconnect(name: str) -> None:
     await _respawn_from_journal(name, entry)
 
 
+# ---------------------------------------------------------------------------
+# Page journal — durable kind="page" base registrations
+# ---------------------------------------------------------------------------
+#
+# Page bases (kind="page", served at /ui/<name>) carry no process the hub can
+# respawn, so the service journal above does not cover them: on a gateway
+# restart their in-memory registry records are simply gone and nothing brings
+# them back — the /ui/* pages vanish until manually re-registered. The page
+# journal closes that gap. Every base page registered through POST /hub/register
+# is recorded here (name -> {prefix, dir}); on boot `reconcile_journaled_pages`
+# re-registers each one from its stored dir. Shadow overlays (POST
+# /hub/shadow/register) are deliberately NOT journaled — they belong to a live
+# `awm dev shadow` process and must not survive it.
+
+_PAGES_STATE_FILENAME = "pages.json"
+
+
+def _pages_journal_path() -> Path:
+    state_dir = config.AWM_DIR / "state"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    return state_dir / _PAGES_STATE_FILENAME
+
+
+def load_page_journal() -> dict[str, dict]:
+    """Return the journaled page map ({name: {prefix, dir}}). Empty dict on
+    missing or corrupt file (logged at warning)."""
+    path = _pages_journal_path()
+    if not path.is_file():
+        return {}
+    try:
+        data = _json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, _json.JSONDecodeError) as exc:
+        log.warning("could not parse %s: %s", path, exc)
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return data
+
+
+def _write_page_journal(state: dict[str, dict]) -> None:
+    path = _pages_journal_path()
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(_json.dumps(state, indent=2, sort_keys=True), encoding="utf-8")
+    tmp.replace(path)
+
+
+def journal_page(name: str, prefix: str, static_dir: str) -> None:
+    """Record a base page so a gateway restart can re-register it. Called from
+    the POST /hub/register page branch (base pages only; overlays never)."""
+    state = load_page_journal()
+    state[name] = {"name": name, "prefix": prefix, "dir": static_dir}
+    _write_page_journal(state)
+
+
+def unjournal_page(name: str) -> None:
+    """Drop a page's journal entry so a deliberate deregister keeps it down
+    across restarts. No-op if the page was never journaled."""
+    state = load_page_journal()
+    if state.pop(name, None) is not None:
+        _write_page_journal(state)
+
+
+async def reconcile_journaled_pages() -> None:
+    """Boot-time re-registration of journaled base pages.
+
+    For each entry, re-register the /ui/<name> base from its stored dir. A page
+    whose dir has since vanished (dist deleted / moved) is skipped with a warning
+    but kept in the journal — the dir may return. Idempotent: a name already
+    registered at the same prefix re-registers in place; a genuine prefix clash
+    is logged and skipped. Runs alongside the service reconcile at boot; pages
+    depend on nothing else, so ordering is immaterial.
+    """
+    journal = load_page_journal()
+    if not journal:
+        return
+    from awm.gateway.hub.registry import PrefixConflict, get_registry
+    registry = get_registry()
+    for name, entry in list(journal.items()):
+        if not isinstance(entry, dict):
+            continue
+        static_dir = entry.get("dir") or ""
+        prefix = entry.get("prefix") or f"/ui/{name}"
+        if not static_dir or not Path(static_dir).is_dir():
+            log.warning(
+                "page %s: journaled dir %r missing; skipping re-register",
+                name, static_dir)
+            continue
+        try:
+            await registry.register_page(name, prefix, static_dir)
+            log.info("reconciled page %s → %s", name, prefix)
+        except PrefixConflict as exc:
+            log.warning("could not re-register journaled page %s: %s", name, exc)
+        except Exception as exc:
+            log.warning("unexpected error re-registering page %s: %s", name, exc)
+
+
 async def bootstrap_discovered_services() -> None:
     """First-boot bootstrap: spawn every discovered, enabled service that the
     journal has never seen.

@@ -133,6 +133,11 @@ async def _op_gateway_deregister(name: str, kind: str | None = None) -> dict[str
         raise FileExistsError(str(exc)) from exc
     if rec is None:
         raise FileNotFoundError(f"unknown service: {name}")
+    # A deliberate deregister of a base page must also drop its journal entry,
+    # else the next gateway restart would re-register the page we just removed.
+    if rec.kind == "page" and not rec.is_overlay:
+        from awm.gateway.hub import supervisor
+        supervisor.unjournal_page(rec.name)
     return {"evicted": {
         "name": rec.name,
         "prefix": rec.prefix,

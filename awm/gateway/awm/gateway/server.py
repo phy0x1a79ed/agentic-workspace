@@ -298,11 +298,16 @@ async def lifespan(app: FastAPI):
     async def _bring_up_services() -> None:
         from awm.gateway.hub.supervisor import (
             bootstrap_discovered_services,
+            reconcile_journaled_pages,
             reconcile_journaled_services,
             self_heal_loop,
         )
         await reconcile_journaled_services()
         await bootstrap_discovered_services()
+        # Re-register journaled base pages (/ui/*). They carry no respawnable
+        # process, so the service reconcile above doesn't cover them — without
+        # this the pages vanish on every gateway restart.
+        await reconcile_journaled_pages()
         # 3. Periodic self-heal: re-bootstrap any service later found wedged
         #    (dead PID, no ready control) without waiting for a gateway restart
         #    — covers crashes that bypass the control-WS disconnect watchdog.

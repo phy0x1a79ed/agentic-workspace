@@ -271,3 +271,74 @@ class TestReconcileRespawn:
         kill.assert_not_called()
         spawn.assert_called_once()
         assert spawn.call_args.args[0] == "fresh"
+
+
+# ---------------------------------------------------------------------------
+# Page journal — durable kind="page" base registrations
+# ---------------------------------------------------------------------------
+
+
+class TestPageJournal:
+    def test_empty_page_journal_when_no_file(self):
+        assert supervisor.load_page_journal() == {}
+
+    def test_journal_then_load(self):
+        supervisor.journal_page("notes", "/ui/notes", "/srv/notes/dist")
+        state = supervisor.load_page_journal()
+        assert state["notes"] == {
+            "name": "notes", "prefix": "/ui/notes", "dir": "/srv/notes/dist",
+        }
+
+    def test_unjournal_page(self):
+        supervisor.journal_page("notes", "/ui/notes", "/a")
+        supervisor.journal_page("dash", "/ui/dashboard", "/b")
+        supervisor.unjournal_page("notes")
+        state = supervisor.load_page_journal()
+        assert "notes" not in state
+        assert state["dash"]["dir"] == "/b"
+
+    def test_unjournal_missing_is_noop(self):
+        supervisor.unjournal_page("never-existed")  # must not raise
+        assert supervisor.load_page_journal() == {}
+
+    def test_corrupt_page_journal_returns_empty(self):
+        supervisor._pages_journal_path().write_text("{bad", encoding="utf-8")
+        assert supervisor.load_page_journal() == {}
+
+
+class TestReconcilePages:
+    def test_empty_journal_is_noop(self):
+        asyncio.new_event_loop().run_until_complete(
+            supervisor.reconcile_journaled_pages()
+        )
+        from awm.gateway.hub.registry import get_registry
+        assert get_registry().is_empty()
+
+    def test_journaled_page_reregistered(self, tmp_path):
+        dist = tmp_path / "notes-dist"
+        dist.mkdir()
+        supervisor.journal_page("notes", "/ui/notes", str(dist))
+
+        asyncio.new_event_loop().run_until_complete(
+            supervisor.reconcile_journaled_pages()
+        )
+
+        from awm.gateway.hub.registry import get_registry
+        rec = get_registry().get_by_name("page", "notes")
+        assert rec is not None
+        assert rec.kind == "page"
+        assert rec.prefix == "/ui/notes"
+        assert rec.static_dir == str(dist)
+
+    def test_missing_dir_skipped_but_kept(self):
+        # Journaled dir that no longer exists → skip register, keep the entry.
+        supervisor.journal_page("gone", "/ui/gone", "/no/such/dir")
+
+        asyncio.new_event_loop().run_until_complete(
+            supervisor.reconcile_journaled_pages()
+        )
+
+        from awm.gateway.hub.registry import get_registry
+        assert get_registry().get_by_name("page", "gone") is None
+        # Entry survives so the dir can come back later.
+        assert "gone" in supervisor.load_page_journal()

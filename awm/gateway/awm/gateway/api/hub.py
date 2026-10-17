@@ -47,7 +47,7 @@ from awm.gateway.hub.lease import LeaseAlreadyHeld, get_lease_manager
 from awm.gateway.hub.registry import (
     NoBaseToShadow, PrefixConflict, ServiceRecord, get_registry,
 )
-from awm.gateway.hub.supervisor import update_service_journal_entry
+from awm.gateway.hub.supervisor import journal_page, update_service_journal_entry
 
 log = logging.getLogger("awm.api.hub")
 
@@ -162,6 +162,11 @@ async def register(req: RegisterRequest) -> RegisterResponse:
                     f"page.dir {req.page.dir!r} is not a directory",
                 )
             rec = await registry.register_page(req.name, req.prefix, str(resolved))
+            # Journal the base page so a gateway restart re-registers it (page
+            # bases carry no process the supervisor could respawn, so without
+            # this they vanish on restart). Overlays go through /hub/shadow/
+            # register and are never journaled.
+            journal_page(rec.name, rec.prefix, rec.static_dir)
     except PrefixConflict as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc))
     return RegisterResponse(
