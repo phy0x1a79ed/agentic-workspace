@@ -249,7 +249,7 @@ async def test_convert_rerenders_open_cards_drops_owned_records_and_stamps_ops(e
     assert done["dry_run"] is False
     card = env.tri.notes[owned["note_id"]]
     assert "<details" in card["content"] and card["title"] == "Title"
-    assert card["labels"] == {"agentManaged": "", "readOnly": ""} and stale not in env.tri.notes
+    assert card["labels"].keys() == {"agentManaged", "readOnly", "cardStateAt"} and stale not in env.tri.notes
     assert env.tri.notes[claimed_rec]["type"] == "text" and "<details" in env.tri.notes[claimed_rec]["content"]
     assert env.tri.notes[note]["content"] == "body" and env.tri.notes[note]["title"] == "Tony's task"
     assert env.tri.notes[legacy]["labels"]["changed"] and env.tri.notes[legacy]["content"].startswith("Changed: ")

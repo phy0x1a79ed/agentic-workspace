@@ -257,11 +257,101 @@ async def test_carry_labels_sets_only_what_is_missing_or_different(tri):
     assert len(tri.writes()) == writes
 
 
-async def test_archive_labels_the_note(tri):
-    make_board(tri)
-    note = tri.add("card")
-    await SwarmBoard(tri).archive(note)
-    assert tri.notes[note]["labels"] == {"archived": ""}
+async def test_fold_moves_the_card_into_older_and_keeps_a_clone_on_tonys_board(tri):
+    ids = make_board(tri)
+    tonys = tri.add("Todo", type="book")
+    card = tri.add("x", tonys)
+    board = SwarmBoard(tri)
+    await board.move(card, "Done")
+    assert await board.fold(card, "Done") is True
+    assert set(tri.parents(card)) == {tonys, ids["Older Done"]}
+    assert card not in await board.snapshot()
+
+
+async def test_fold_waits_while_the_column_has_no_older_book(tri):
+    ids = make_board(tri, older=False)
+    card = tri.add("x", ids["Done"])
+    assert await SwarmBoard(tri).fold(card, "Done") is False
+    assert tri.parents(card) == [ids["Done"]]
+
+
+async def test_a_board_without_older_books_is_read_again_until_it_has_them(tri):
+    make_board(tri, older=False)
+    board = SwarmBoard(tri)
+    assert (await board.layout()).older == {}
+    await board.ensure()
+    assert set((await board.layout()).older) == {"Done", "Rejected"}
+    reads = len(tri.calls)
+    await board.layout()
+    assert len(tri.calls) == reads
+
+
+async def test_snapshot_does_not_take_an_older_book_for_a_card(tri):
+    ids = make_board(tri)
+    card = tri.add("x", ids["Done"])
+    assert await SwarmBoard(tri).snapshot() == {card: "Done"}
+
+
+async def test_move_refuses_an_older_book_and_takes_a_card_back_out_of_one(tri):
+    ids = make_board(tri)
+    board = SwarmBoard(tri)
+    with pytest.raises(BoardError, match="part of the board"):
+        await board.move(ids["Older Done"], "Active")
+    card = tri.add("x", ids["Older Done"])
+    assert await board.move(card, "Active") is True
+    assert tri.parents(card) == [ids["Active"]]
+
+
+async def test_a_move_dates_the_card_and_fill_only_dates_a_card_without_a_date(tri):
+    ids = make_board(tri)
+    board = SwarmBoard(tri)
+    card = tri.add("x", ids["Active"])
+    await board.move(card, "Done", stamp="move")
+    first = tri.notes[card]["labels"]["cardStateAt"]
+    assert first.endswith("+00:00")
+    tri.notes[card]["labels"]["cardStateAt"] = "2026-01-01T00:00:00.000+00:00"
+    await board.move(card, "Done", stamp="move")
+    assert tri.notes[card]["labels"]["cardStateAt"] == "2026-01-01T00:00:00.000+00:00"
+    await board.move(card, "Rejected", stamp="fill")
+    assert tri.notes[card]["labels"]["cardStateAt"] == "2026-01-01T00:00:00.000+00:00"
+    bare = tri.add("y", ids["Active"])
+    await board.move(bare, "Done", stamp="fill")
+    assert "cardStateAt" in tri.notes[bare]["labels"]
+
+
+async def test_ensure_sorts_done_and_rejected_and_folds_the_archived_cards(tri):
+    ids = make_board(tri, older=False)
+    archived = tri.add("old", ids["Done"], labels={"archived": "", "cardStateAt": "2026-09-01T00:00:00.000+00:00"})
+    undated = tri.add("undated", ids["Rejected"])
+    tri.notes[undated]["modified"] = "2026-10-01 10:20:30.400Z"
+    live = tri.add("live", ids["Done"], labels={"cardStateAt": "2026-10-15T00:00:00.000+00:00"})
+    out = await SwarmBoard(tri).ensure()
+    sort = {"sorted": "cardStateAt", "sortDirection": "desc"}
+    for column in ("Done", "Rejected"):
+        older = out["older"][column]
+        assert tri.parents(older) == [ids[column]]
+        assert tri.notes[older]["labels"] == {"swarmOlder": "", "cardStateAt": "0000", **sort}
+        assert tri.notes[ids[column]]["labels"].items() >= sort.items()
+    assert tri.parents(archived) == [out["older"]["Done"]] and "archived" not in tri.notes[archived]["labels"]
+    assert tri.notes[undated]["labels"] == {"cardStateAt": "2026-10-01T10:20:30.400+00:00"}
+    assert tri.parents(live) == [ids["Done"]]
+    assert (out["folded"], out["stamped"]) == (1, 1)
+    before = len(tri.notes)
+    again = await SwarmBoard(tri).ensure()
+    assert (again["folded"], again["stamped"]) == (0, 0) and len(tri.notes) == before
+
+
+async def test_count_older_titles_each_book_by_its_cards_and_writes_only_a_change(tri):
+    ids = make_board(tri)
+    tri.add("a", ids["Older Done"])
+    tri.add("b", ids["Older Done"])
+    board = SwarmBoard(tri)
+    await board.count_older()
+    assert tri.notes[ids["Older Done"]]["title"] == "Older (2)"
+    assert tri.notes[ids["Older Rejected"]]["title"] == "Older (0)"
+    writes = len(tri.writes())
+    await board.count_older()
+    assert len(tri.writes()) == writes
 
 
 async def test_done_and_rejected_are_columns_cards_can_be_placed_in(tri):

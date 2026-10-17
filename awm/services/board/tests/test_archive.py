@@ -1,10 +1,13 @@
-"""Archived cards live in the `Archived` folder of their column and keep that column's state."""
+"""Archived cards live in the archive folder of their column and keep that column's state.
+
+Done and Rejected show that folder as "Older (n)", sorted newest first; the other columns keep it hidden.
+"""
 
 from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from awm.board.states import STATES
+from awm.board.states import STATES, TERMINAL
 from awm.board.vault import Vault
 
 from test_migrate import WRITES, legacy, snapshot
@@ -44,11 +47,54 @@ def test_ensure_makes_an_archived_folder_in_every_column_once(trilium, board_not
     Vault(trilium, board_label=BOARD_LABEL).ensure_columns()          # a fresh process finds them
     for state in STATES:
         (folder,) = trilium.children(trilium.column(state))
-        assert trilium.notes[folder]["title"] == "Archived"
-        assert trilium.label(folder, "archived") == ""
         assert trilium.label(folder, "cardArchiveFolder") == state
+        if state in TERMINAL:
+            assert trilium.notes[folder]["title"].startswith("Older")
+            assert trilium.label(folder, "archived") is None
+            assert trilium.label(folder, "cardStateAt") == "0000"
+            for note in (folder, trilium.column(state)):
+                assert (trilium.label(note, "sorted"), trilium.label(note, "sortDirection")) == (
+                    "cardStateAt", "desc")
+        else:
+            assert trilium.notes[folder]["title"] == "Archived"
+            assert trilium.label(folder, "archived") == ""
+            assert trilium.label(trilium.column(state), "sorted") is None
     assert vault.archives() == {s: trilium.archive_folder(s) for s in STATES}
     assert trilium.columns() == list(STATES)                           # none leaked up to the board
+
+
+def test_ensure_turns_an_old_archived_folder_of_done_into_a_visible_sorted_older_folder(
+        trilium, board_note, vault):
+    vault.ensure_columns()
+    folder = trilium.archive_folder("done")
+    trilium.notes[folder]["title"] = "Archived"
+    trilium.set_attr(folder, "archived", "")
+    for name in ("sorted", "sortDirection", "cardStateAt"):
+        trilium("attr_delete", {"note_id": folder, "name": name})
+    fresh = Vault(trilium, board_label=BOARD_LABEL)
+    assert [state for state, _, _ in fresh.older_changes()] == ["done"]
+    fresh.ensure_columns()
+    assert trilium.label(folder, "archived") is None and trilium.label(folder, "cardStateAt") == "0000"
+    assert fresh.older_changes() == []
+
+
+def test_count_older_titles_the_folder_by_its_cards(board, trilium, finished):
+    assert trilium.notes[trilium.archive_folder("done")]["title"] == "Older (1)"
+    assert trilium.notes[trilium.archive_folder("rejected")]["title"] == "Older (0)"
+
+
+def test_a_move_keeps_a_parent_outside_the_board(board, trilium, tony, collins):
+    card = request(board, tony)
+    swarm_column = trilium.add_note("Planned")                         # the Swarm board column of a claim
+    note = trilium.card_note(card["id"])
+    trilium.notes[note]["parentNoteIds"].append(swarm_column)
+    board.claim(collins, card["id"])
+    board.complete(collins, card["id"], "ok")
+    assert set(trilium.notes[note]["parentNoteIds"]) == {trilium.column("done"), swarm_column}
+    age(trilium, card["id"], 15)
+    board.sweep()
+    assert set(trilium.notes[note]["parentNoteIds"]) == {trilium.archive_folder("done"), swarm_column}
+    assert not [fn for fn, _ in trilium.calls if fn == "note_move"]
 
 
 def test_reading_makes_no_archived_folder(trilium, board_note, vault):
@@ -62,7 +108,7 @@ def test_reading_makes_no_archived_folder(trilium, board_note, vault):
 def test_archiving_files_the_card_in_its_columns_archived_folder_and_keeps_its_state(
         board, trilium, finished, tony):
     note = trilium.card_note(finished["id"])
-    assert trilium.label(note, "archived") == ""
+    assert trilium.label(note, "archived") is None                    # shown in its Older folder
     assert trilium.notes[note]["parentNoteIds"] == [trilium.archive_folder("done")]
     assert trilium.state_of(finished["id"]) == "done"
     card = board.get(tony, finished["id"])
@@ -105,20 +151,20 @@ def test_an_archived_card_still_takes_replies_and_messages(board, trilium, finis
     assert trilium.notes[note]["parentNoteIds"] == [trilium.archive_folder("done")]
 
 
-def test_a_card_unarchived_by_hand_and_left_in_the_folder_still_reads_its_state(
+def test_a_card_dragged_out_of_older_into_another_column_takes_that_state(
         board, trilium, finished, tony):
-    trilium("attr_delete", {"note_id": trilium.card_note(finished["id"]), "name": "archived"})
+    trilium.gui_move(finished["id"], "review")
     listed = board.list(tony)
-    assert [c["id"] for c in listed] == [finished["id"]] and listed[0]["state"] == "done"
+    assert [c["id"] for c in listed] == [finished["id"]] and listed[0]["state"] == "review"
 
 
 def test_archiving_twice_does_not_move_the_card_again(trilium, vault):
     rec = vault.create("t", "", {"cardId": ID}, {}, state="done")
     vault.archive(rec, "done")
     rec = vault.read(ID)
-    moves = len([1 for fn, _ in trilium.calls if fn == "note_move"])
+    moves = len([1 for fn, _ in trilium.calls if fn == "note_place"])
     vault.archive(rec, "done")
-    assert len([1 for fn, _ in trilium.calls if fn == "note_move"]) == moves
+    assert len([1 for fn, _ in trilium.calls if fn == "note_place"]) == moves
 
 
 # -- the migration ------------------------------------------------------------------
@@ -142,7 +188,7 @@ def test_the_archive_dry_run_reports_the_plan_and_changes_nothing(board, trilium
     report = board.migrate_archive(dry_run=True)
     assert report["dry_run"] is True and report["cards_to_move"] == 4 and report["already_filed"] == 0
     assert report["by_state"] == {"proposed": 2, "done": 1, "rejected": 1}
-    assert report["folders_to_create"] == []
+    assert report["folders_to_create"] == [] and report["labels_to_drop"] == 2
     assert snapshot(trilium) == before
     assert not [fn for fn, _ in trilium.calls[trilium_calls:] if fn in WRITES]
 
@@ -166,8 +212,10 @@ def test_the_archive_apply_files_each_card_by_its_column_and_a_second_apply_chan
     assert trilium.label(trilium.card_note("b" * 32), "status") is None
     assert not trilium.is_filed_archived("e" * 32)                      # a live card stays put
     assert board.get(tony, "b" * 32)["state"] == "done"
+    assert report["unlabelled"] == 2
+    assert [trilium.label(trilium.card_note(c * 32), "archived") for c in "bcd"] == [None, None, ""]
     assert [c["id"] for c in board.list(tony)] == ["e" * 32]
     before = snapshot(trilium)
     again = board.migrate_archive(dry_run=False)
-    assert again["cards_to_move"] == 0 and again["already_filed"] == 4
+    assert again["cards_to_move"] == 0 and again["labels_to_drop"] == 0 and again["already_filed"] == 2
     assert snapshot(trilium) == before

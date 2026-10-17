@@ -280,8 +280,10 @@ API_MANIFEST: dict[str, Any] = {
             "description": (
                 "Make the Swarm board under the AWM note: its seven columns "
                 "(Proposed, Planned, Active, Blocked, Pending review, Done, "
-                "Rejected), its card chips and its Ledger note. Idempotent. "
-                "Operator only; run it once, on any node, after the first deploy."
+                "Rejected), its card chips and its Ledger note. Gives Done and "
+                "Rejected an Older book and the newest-first sort, and folds each "
+                "card labelled #archived into its Older book. Idempotent. "
+                "Operator only; run it once, on any node, after a deploy that changes the board."
             ),
             "params": [_param("parent", "string", "The note to make the board under. Default: the one AWM note under the root.")],
             "timeout": 120,

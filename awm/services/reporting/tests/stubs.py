@@ -287,15 +287,26 @@ class FakeTrilium:
         self.notes[note_id]["labels"][name] = value
         return {"note_id": note_id}
 
+    def _attr_delete(self, note_id: str, name: str) -> dict:
+        removed = self.notes[note_id]["labels"].pop(name, None) is not None
+        return {"note_id": note_id, "name": name, "removed": int(removed)}
+
     def _note_delete(self, note_id: str) -> dict:
         del self.notes[note_id]
         return {"note_id": note_id, "deleted": True}
 
 
-def make_board(tri: FakeTrilium) -> dict[str, str]:
-    """A Swarm board as `board_ensure` leaves it. Returns column title -> note id, plus board and Ledger."""
+def make_board(tri: FakeTrilium, *, older: bool = True) -> dict[str, str]:
+    """A Swarm board as `board_ensure` leaves it. Returns column title -> note id, plus board and Ledger.
+
+    ``older`` adds the Older books, as "Older Done" and "Older Rejected".
+    """
     awm = tri.add("AWM", type="book")
     board = tri.add("Swarm board", awm, type="book", labels={"swarmBoard": ""})
     out = {t: tri.add(t, board, type="book") for t in ("Proposed", "Planned", "Active", "Blocked",
                                                          "Pending review", "Done", "Rejected", "Ledger")}
+    if older:
+        for t in ("Done", "Rejected"):
+            out[f"Older {t}"] = tri.add("Older (0)", out[t], type="book",
+                                        labels={"swarmOlder": "", "cardStateAt": "0000"})
     return {**out, "board": board, "awm": awm}

@@ -31,7 +31,7 @@ from awm.reporting import config
 from awm.reporting.federation import AmbiguousRef, FedError, Federation
 from awm.reporting.intake import PLAN_APPROVED, PLAN_SUBMITTED, card_state, send_dm, short_ref, swarm_of
 from awm.reporting.ledger import (ACTIVE, BLOCKED, CANCELLED, CLOSED, COLUMNS, DONE,
-                                  OPEN, PLANNED, PROPOSED, REJECTED, REVIEW, Ledger)
+                                  OLDER_SHOWN, OPEN, PLANNED, PROPOSED, REJECTED, REVIEW, Ledger)
 from awm.reporting.record import TITLE_CHARS, cut_at_word, plan_title, render_ledger, render_record
 from awm.reporting.sessions import GONE, STOPPED, CxUnavailable, Cx
 from awm.reporting.store import Offloaded, Queue
@@ -328,8 +328,10 @@ class Tasks:
                 await self.board.write_ledger(
                     self.node, render_ledger(self.node, await self.db.closed(self.node)))
             column = COLUMNS[task["state"]]
-            await self.board.move(task["note_id"], column)
-            await self.db.update(task_id, shown=column)
+            if not (task["state"] in CLOSED and task["shown"] == OLDER_SHOWN):
+                # A federation card carries the board's own cardStateAt, so it is only filled in.
+                await self.board.move(task["note_id"], column, stamp="fill" if task["card_id"] else "move")
+                await self.db.update(task_id, shown=column)
         except BoardError as exc:
             log.warning("reporting: task %s waits for the board: %s", task_id, exc)
             return False
@@ -761,6 +763,9 @@ class Tasks:
                 await self._ending(task, jobs.get(task["key"]))
             await self._workers(rows)
             await self._board()
+            for task in await self.db.open(self.node):
+                if task["kind"] == "bg":
+                    await self._agent(task, jobs.get(task["key"]))
             await self._finished_cards()
             await self._archive()
             await self._catch_up()
@@ -769,6 +774,32 @@ class Tasks:
                         and time.time() - (task["blocked_at"] or 0) >= config.remind_s()
                         and await self._notify(task, reminder=True)):
                     await self.db.update(task["id"], reminded=1)
+
+    async def _agent(self, task: dict, row: dict | None) -> None:
+        """Record the live session working the task, for its card's Agent line.
+
+        The link is the session's claude.ai page, or the attach command while
+        Remote Control is off. A rename, a Remote Control toggle or the session
+        stopping rewrites the card once. A sweep that misses the job's row
+        changes nothing, since the task's close drops the line anyway. Only the
+        card's body is rewritten, never its column, so a drag or a removal by
+        Tony stands. A failed write is tried again on the next sweep.
+        """
+        if row is None:
+            return
+        if row.get("state") not in (GONE, STOPPED):
+            agent = row.get("name") or task["key"]
+            link = (row.get("link") if row.get("remote_control") else None) or row.get("attach")
+        else:
+            agent = link = None
+        if (agent, link) == (task.get("agent"), task.get("agent_link")) or not task["note_id"]:
+            return
+        await self.db.update(task["id"], agent=agent, agent_link=link)
+        try:
+            await self._write_card(await self.db.get(task["id"]))
+        except BoardError as exc:
+            log.warning("reporting: task %s waits for the board: %s", task["id"], exc)
+            await self.db.update(task["id"], agent=task.get("agent"), agent_link=task.get("agent_link"))
 
     async def _workers(self, rows: list[dict]) -> None:
         """Open a card in Active for each running worker cx started with the brief.
@@ -833,6 +864,10 @@ class Tasks:
                     await self.db.close(task["id"], CANCELLED)
                 else:
                     await self.db.event(task["id"], "dragged", f"{task['shown']} -> {column}")
+                    try:
+                        await self.board.stamp(task["note_id"])
+                    except BoardError as exc:
+                        log.warning("reporting: cannot date the drag of card %s: %s", task["note_id"], exc)
                     if state_of[column] in (DONE, REJECTED):
                         await self.close(task, state_of[column], shown=column)
                     else:
@@ -859,14 +894,14 @@ class Tasks:
                 await self.close(task, DONE if state == "done" else REJECTED, fed_state=state)
 
     async def _archive(self) -> None:
-        """Hide the cards that sat in Done or Rejected for two weeks."""
-        for task in await self.db.archivable(self.node):
-            try:
-                await self.board.archive(task["note_id"])
-            except BoardError as exc:
-                log.warning("reporting: cannot archive card %s: %s", task["note_id"], exc)
-                return
-            await self.db.update(task["id"], shown="archived")
+        """Fold the cards that sat in Done or Rejected for two weeks into the column's Older book."""
+        try:
+            for task in await self.db.archivable(self.node):
+                if await self.board.fold(task["note_id"], COLUMNS[task["state"]]):
+                    await self.db.update(task["id"], shown=OLDER_SHOWN)
+            await self.board.count_older()
+        except BoardError as exc:
+            log.warning("reporting: cannot fold the finished cards: %s", exc)
 
     # -- journals ------------------------------------------------------------
 

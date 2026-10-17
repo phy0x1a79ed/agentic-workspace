@@ -1,7 +1,9 @@
 """One-off migrations of the board's existing cards, run by the host's admin.
 
 `columns` files every card into the column folder for its old `#status`.
-`archive` files every archived card in the `Archived` folder of its column.
+`archive` turns the `Archived` folders of Done and Rejected into visible Older
+folders sorted newest first, files every card labelled `archived` in its
+column's archive folder, and takes the label off each one in an Older folder.
 `threads` folds each chain of reply cards into the thread of the card at its
 root. A reply card that carries `cardThreaded` was posted on the thread too,
 so the plan leaves it out. `homes` moves each archived card that carries
@@ -84,22 +86,28 @@ def columns(board: Board, dry_run: bool) -> dict:
 
 def archive(board: Board, dry_run: bool) -> dict:
     with board._guard:
-        archived = board.vault.list_archived()
+        archived = [rec for rec in board.vault.list_archived()
+                    if not rec["home_note"] and not rec["labels"].get(FOLDED)]
         misfiled = [rec for rec in archived if not rec["archived_in"]]
         target = {rec["note_id"]: board._card({**rec, "content": None})["state"]
-                  for rec in misfiled}
-        by_state = Counter(target.values())
+                  for rec in archived}
+        unlabel = [rec for rec in archived if target[rec["note_id"]] in TERMINAL]
+        by_state = Counter(target[rec["note_id"]] for rec in misfiled)
         report = {"dry_run": dry_run,
                   "folders_to_create": [s for s in STATES if s not in board.vault.archives()],
+                  "folders_to_convert": sorted({state for state, _, _ in board.vault.older_changes()}),
                   "already_filed": len(archived) - len(misfiled),
                   "cards_to_move": len(misfiled),
+                  "labels_to_drop": len(unlabel),
                   "by_state": {s: by_state[s] for s in STATES if by_state[s]}}
         if dry_run:
             return report
         board.vault.ensure_columns()
         for rec in misfiled:
             board.vault.archive(rec, target[rec["note_id"]])
-        return {**report, "moved": len(misfiled)}
+        for rec in unlabel:
+            board.vault.unlabel_archived(rec["note_id"])
+        return {**report, "moved": len(misfiled), "unlabelled": len(unlabel)}
 
 
 # -- homes --------------------------------------------------------------------
