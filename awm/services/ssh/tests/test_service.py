@@ -121,6 +121,21 @@ def _no_live_gateway(monkeypatch):
     monkeypatch.setattr(ssh_service.gatewayclient, "call", _refuse)
 
 
+_REAL_DETACH_PREFIX = SSHService._detach_prefix
+
+
+@pytest.fixture(autouse=True)
+def _no_systemd_scope(monkeypatch):
+    """Spawn masters bare, as on a node without a user systemd manager.
+
+    The real probe runs `systemd-run`, which the spawn mocks below would
+    swallow. TestMasterScope exercises the real method."""
+    async def _bare(self, cfg):
+        return []
+
+    monkeypatch.setattr(SSHService, "_detach_prefix", _bare)
+
+
 @pytest.fixture
 def isolated_dirs(tmp_path, monkeypatch):
     """Redirect lock/live dirs so breaker tests never touch the real ~/.ssh."""
@@ -2046,3 +2061,173 @@ async def test_another_swarm_with_no_operator_dm_alerts_no_one(monkeypatch):
     with pytest.raises(RuntimeError, match="AWM_OPERATOR_DM_CHANNEL"):
         await SSHService()._send_social("locked")
     assert sent == []
+
+
+class TestDependenciesBeforeTheLogin:
+    """What a login needs is named when it fails, and is never the host's fault.
+
+    On 2026-10-16 the UBC tunnel was down, the vpn dial outlived the 30s
+    gateway default, and every connect to sockeye answered "sockeye refused the
+    connection" — so agents went looking at sockeye.
+    """
+
+    async def test_a_dead_vpn_is_named_and_spends_nothing(
+            self, isolated_dirs, monkeypatch) -> None:
+        svc = SSHService()
+        cfg = resolve_host("sockeye")
+        spawned: list = []
+
+        async def _vpn_fails(service, verb, args=None, **kw):
+            raise RuntimeError("gateway call vpn/up failed: HTTP 502")
+
+        async def _spawn(*a, **k):
+            spawned.append(a)
+            raise AssertionError("no ssh may run without the tunnel")
+
+        monkeypatch.setattr(ssh_service.gatewayclient, "call", _vpn_fails)
+        monkeypatch.setattr(ssh_service.asyncio, "create_subprocess_exec", _spawn)
+        monkeypatch.setattr(svc, "_check_master", _false)
+        monkeypatch.setattr(svc, "_trip_breaker",
+                            lambda c, r: _coro(pytest.fail("no hold")))
+
+        result = await svc._do_connect_attempt(cfg, gated=False)
+
+        assert result["status"] == "error"
+        assert "'ubc' VPN exit" in result["error"]
+        assert "refused" not in result["error"]
+        assert "no MFA attempt was spent" in result["error"]
+        assert spawned == []
+        assert svc._read_lock(cfg) is None
+
+    async def test_the_vpn_gets_its_own_budget_outside_the_ssh_clock(
+            self, isolated_dirs, monkeypatch) -> None:
+        svc = SSHService()
+        cfg = resolve_host("chamois")       # VPN, no 2FA device
+        seen: dict = {}
+
+        async def _slow_vpn(service, verb, args=None, **kw):
+            seen.update(service=service, verb=verb, **kw)
+            await asyncio.sleep(0.1)        # longer than the ssh clock below
+            return {"status": "up"}
+
+        async def _master(c, marker, rec):
+            return None
+
+        monkeypatch.setattr(ssh_service.gatewayclient, "call", _slow_vpn)
+        monkeypatch.setattr(ssh_service, "_CONNECT_TIMEOUT", 0.05)
+        monkeypatch.setattr(svc, "_attempt_master", _master)
+
+        result = await svc._do_connect_attempt(cfg, gated=False)
+
+        assert result["status"] == "connected"
+        assert (seen["service"], seen["verb"]) == ("vpn", "up")
+        assert seen["timeout"] == ssh_service._VPN_UP_TIMEOUT
+        assert ssh_service._VPN_UP_TIMEOUT >= 240.0, \
+            "must cover the vpn service's own worst case (UP_BUDGET_S)"
+
+    async def test_an_unreachable_approver_is_named_before_any_ssh(
+            self, isolated_dirs, monkeypatch) -> None:
+        svc = SSHService()
+        cfg = resolve_host("fir")
+        spawned: list = []
+
+        async def _mira_restarting(*a, **k):
+            raise ConnectionError("All connection attempts failed")
+
+        async def _spawn(*a, **k):
+            spawned.append(a)
+            raise AssertionError("no push may fire without the approver")
+
+        monkeypatch.setattr(ssh_service.gatewayclient, "call_maybe_peer",
+                            _mira_restarting)
+        monkeypatch.setattr(ssh_service.asyncio, "create_subprocess_exec", _spawn)
+        monkeypatch.setattr(svc, "_check_master", _false)
+
+        result = await svc._do_connect_attempt(cfg, gated=True)
+
+        assert result["status"] == "error"
+        assert "Duo auto-approver" in result["error"]
+        assert result["_preauth"] is True, "the slot is freed, not held"
+        assert spawned == []
+
+    async def test_an_unreachable_arbiter_is_not_a_hold(
+            self, isolated_dirs, monkeypatch) -> None:
+        async def _down(*a, **k):
+            raise ConnectionError("Connect call failed")
+
+        monkeypatch.setattr(ssh_service.gatewayclient,
+                            "acquire_lease_maybe_peer", _down)
+        result = await SSHService()._connect_via_arbiter_peer(
+            resolve_host("sockeye"), "mira")
+
+        assert result["status"] == "error", \
+            "'unavailable' tells the agent to wait for an /approve nobody needs"
+        assert "ssh@mira" in result["error"]
+
+
+class TestMasterScope:
+    """A master must not share awm.service's cgroup, or a restart kills it."""
+
+    async def test_masters_get_their_own_scope_when_systemd_allows(
+            self, monkeypatch) -> None:
+        svc = SSHService()
+        probes: list = []
+
+        async def _ok(argv):
+            probes.append(argv)
+            return True
+
+        monkeypatch.setattr(svc, "_run_check", _ok)
+        cfg = resolve_host("sockeye")
+
+        first = await _REAL_DETACH_PREFIX(svc, cfg)
+        second = await _REAL_DETACH_PREFIX(svc, cfg)
+
+        assert first[:4] == ["systemd-run", "--user", "--scope", "--quiet"]
+        assert first[-1] == "--"
+        unit = next(a for a in first if a.startswith("--unit="))
+        assert unit.startswith("--unit=awm-ssh-sockeye-")
+        assert first != second, "each master gets a unit of its own"
+        assert len(probes) == 1, "the probe runs once per service life"
+
+    async def test_without_a_user_manager_masters_spawn_bare(
+            self, monkeypatch) -> None:
+        svc = SSHService()
+
+        async def _no(argv):
+            return False
+
+        monkeypatch.setattr(svc, "_run_check", _no)
+        assert await _REAL_DETACH_PREFIX(svc, resolve_host("fir")) == []
+
+    async def test_the_scope_wraps_the_ssh_argv(
+            self, isolated_dirs, monkeypatch) -> None:
+        svc = SSHService()
+        cfg = resolve_host("chamois")
+        argvs: list = []
+
+        class _Proc:
+            pid = 424242
+
+            async def wait(self):
+                return 0
+
+        async def _spawn(*a, **k):
+            argvs.append(list(a))
+            assert k.get("start_new_session") is True
+            return _Proc()
+
+        async def _scoped(self, c):
+            return ["systemd-run", "--user", "--scope", "--unit=x", "--"]
+
+        monkeypatch.setattr(SSHService, "_detach_prefix", _scoped)
+        monkeypatch.setattr(ssh_service.asyncio, "create_subprocess_exec", _spawn)
+        monkeypatch.setattr(svc, "_check_master", _true)
+
+        await svc._attempt_master(cfg, svc._deviation_marker(cfg),
+                                  ssh_service._AttemptRecord())
+
+        assert argvs[0][:5] == ["systemd-run", "--user", "--scope",
+                                "--unit=x", "--"]
+        assert argvs[0][5:9] == ["ssh", "-f", "-N", "-M"]
+        assert argvs[0][-1] == "chamois"

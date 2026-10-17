@@ -55,6 +55,8 @@ API_MANIFEST: dict[str, Any] = {
             "params": [
                 {"name": "profile", "type": "string", "required": True},
             ],
+            # A cold dial outlives the gateway's 30s default RPC cap.
+            "timeout": container.UP_BUDGET_S,
         },
         {
             "name": "down",

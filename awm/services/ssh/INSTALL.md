@@ -197,6 +197,19 @@ the stale-socket sweep. Two such processes outlived their attempt by minutes on
   is the least durable key there is, and matching on the command line instead
   would match any ssh on the box, including one a person is using.
 
+## Masters survive a gateway restart
+
+A master spawned into awm.service's cgroup dies on every `awm deploy`, because
+stopping the unit kills the whole cgroup however the child forked. The service
+spawns each master through `systemd-run --user --scope` instead, as a unit named
+`awm-ssh-<host>-<hex>.scope`. Boot reconciliation adopts the live master after
+the restart. The service probes `systemd-run` once per life. A node whose gateway
+runs as a system unit (capella) fails the probe and spawns masters bare.
+
+The VPN exit is brought up before the 120s login clock starts, on its own budget.
+That budget must cover the vpn service's `UP_BUDGET_S`, or a slow docker daemon
+reads as a dead host.
+
 **CAUTION** The askpass keeps its rate-cap state in `~/.ssh/awm-duo-locks/`, and
 answering counts toward a cap that trips a 30-minute hold refusing all Duo
 answers for the device. Anything that exercises the real helper must point
