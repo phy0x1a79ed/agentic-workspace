@@ -1,6 +1,8 @@
 /** Shared fleet types — mirror of the notifications service's list_fleet shape. */
 
-export type FleetState = 'needs-you' | 'error' | 'starting' | 'working' | 'idle' | 'ended';
+export type FleetState =
+  | 'needs-you' | 'error' | 'starting' | 'working'
+  | 'running' | 'idle' | 'ended' | 'stopped';
 
 export interface OpenItem {
   id: string;

@@ -1,9 +1,10 @@
 <script lang="ts">
   /**
-   * Claude FleetView in the browser — a machine-wide roster of every agent,
-   * grouped by status, with a full-screen terminal overlay to view/drive any
-   * attachable one, plus spawn + dispose. Subsumes the attention board: the
-   * needs-you set still drives desktop push.
+   * Claude FleetView in the browser — a roster of every *fleet-tracked* agent
+   * (spawned through this page's new-agent overlay; external sessions never
+   * appear), grouped by status, with a full-screen terminal overlay to
+   * view/drive any attachable one, plus spawn + dispose. Subsumes the attention
+   * board: the needs-you set still drives desktop push.
    *
    * Data flow: one list_fleet fetch is the source of truth; the agents service's
    * `feed` WS is a doorbell that debounce-refetches; a slow reconcile poll
@@ -414,6 +415,8 @@
   .group-head.state-error { color: var(--danger, #e06c75); }
   .group-head.state-starting { color: var(--warn, #e5c07b); }
   .group-head.state-working { color: var(--ok, #98c379); }
+  .group-head.state-running { color: var(--ok, #98c379); }
+  .group-head.state-stopped { color: var(--text3, #777); }
   .chev { color: var(--text3); }
 
   /* Column header — aligned to the same grid so labels sit over their cells. */
@@ -449,8 +452,10 @@
   .status.state-error { color: var(--danger, #e06c75); }
   .status.state-starting { color: var(--warn, #e5c07b); }
   .status.state-working { color: var(--ok, #98c379); }
+  .status.state-running { color: var(--ok, #98c379); }
   .status.state-idle { color: var(--text2); }
   .status.state-ended { color: var(--text3); }
+  .status.state-stopped { color: var(--text3, #777); }
 
   .term { text-align: center; color: var(--text3); }
   .term.on { color: var(--atomizer, #4b8bff); }

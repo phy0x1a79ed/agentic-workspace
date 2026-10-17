@@ -28,6 +28,7 @@ from awm.agents.terminal_session import terminal_session
 from awm.agents import fleet_spawn
 from awm.agents import scope_spawn
 from awm.agents import roster
+from awm.agents import pi_watch
 from awm.agents.fleet_config import FLEET_CONTRACT
 from awm.agents.models import (
     AgentSessionInfo,
@@ -91,8 +92,8 @@ API_MANIFEST: dict[str, Any] = {
             "tool": "agent_launch",
             "surfaces": ["cli", "http"],
             "description": (
-                "Launch a plain, idle interactive agent (claude/opencode) in a "
-                "fresh detached tmux session at a directory — NOT a DAG "
+                "Launch a plain, idle interactive agent (claude/opencode/pi) in "
+                "a fresh detached tmux session at a directory — NOT a DAG "
                 "placement. Used by the fleet page's new-agent overlay. Returns "
                 "the tmux session name (the terminal's attach handle)."
             ),
@@ -101,10 +102,10 @@ API_MANIFEST: dict[str, Any] = {
                  "description": "Directory to launch in (a scope worktree or "
                                 "any path)."},
                 {"name": "harness", "type": "string", "required": False,
-                 "description": "claude (default) | opencode."},
+                 "description": "claude (default) | opencode | pi."},
                 {"name": "model", "type": "string", "required": False,
-                 "description": "Model id (required for claude; opencode picks "
-                                "its own)."},
+                 "description": "Model id (required for claude; opencode/pi pick "
+                                "their own)."},
                 {"name": "effort", "type": "string", "required": False,
                  "description": "claude reasoning effort: low/medium/high/"
                                 "xhigh/max."},
@@ -133,7 +134,7 @@ API_MANIFEST: dict[str, Any] = {
             "tool": "agent_launch_scoped",
             "surfaces": ["cli", "http"],
             "description": (
-                "Launch an idle interactive agent (claude/opencode) in an awm "
+                "Launch an idle interactive agent (claude/opencode/pi) in an awm "
                 "scope's worktree (projects/<project>/<scope>/), provisioning the "
                 "scope first if it doesn't exist. The agent lands with the scope's "
                 ".awm/context.md + workspace MCP. Returns the tmux session name "
@@ -150,7 +151,7 @@ API_MANIFEST: dict[str, Any] = {
                  "description": "claude reasoning effort: low/medium/high/"
                                 "xhigh/max."},
                 {"name": "harness", "type": "string", "required": False,
-                 "description": "claude (default) | opencode."},
+                 "description": "claude (default) | opencode | pi."},
                 {"name": "permission", "type": "string", "required": False,
                  "description": "default (default) | full."},
                 {"name": "context", "type": "string", "required": False,
@@ -195,7 +196,7 @@ API_MANIFEST: dict[str, Any] = {
             ),
             "params": [
                 {"name": "harness", "type": "string", "required": True,
-                 "description": "claude | opencode"},
+                 "description": "claude | opencode | pi"},
                 {"name": "event", "type": "string", "required": True,
                  "description": "turn_end | notification | user_prompt | error"
                                 " | session_start | session_end | spawned"},
@@ -223,10 +224,11 @@ API_MANIFEST: dict[str, Any] = {
             "name": "list_fleet",
             "tool": "agent_fleet",
             "surfaces": ["cli", "http"],
-            "description": "The machine-wide agent roster: every recently-live "
-                           "Claude/OpenCode session with state, attach handle, "
-                           "cost (EOOT), context size, and open attention items. "
-                           "Carries fleet column config + spawn defaults.",
+            "description": "The fleet-tracked agent roster: sessions spawned "
+                           "through the fleet view (claude/opencode/pi), with "
+                           "state, attach handle, cost (EOOT), context size, and "
+                           "open attention items. Carries fleet column config + "
+                           "spawn defaults.",
             "params": [
                 {"name": "window_s", "type": "number",
                  "description": "Liveness window override (seconds)."},
@@ -758,9 +760,21 @@ async def _h_spawn(args: dict) -> dict:
     return result
 
 
-def _h_kill_tmux(args: dict) -> dict:
-    killed = fleet_spawn.kill_tmux_session(args.get("tmux_session") or "")
-    return {"ok": killed, "tmux_session": args.get("tmux_session")}
+async def _h_kill_tmux(args: dict) -> dict:
+    name = args.get("tmux_session") or ""
+    killed = fleet_spawn.kill_tmux_session(name)
+    if killed:
+        # A fleet pi row has no hook to learn it died — mark it stopped now and
+        # doorbell the page (idempotent: the pane probe would get there on its
+        # next poll, but the dispose path shouldn't wait for it).
+        conn = dao.connect()
+        try:
+            stopped = pi_watch.mark_stopped_by_tmux(conn, name)
+        finally:
+            conn.close()
+        if stopped:
+            await _emit_feed({"ok": True, "type": "session", "tmux_session": name})
+    return {"ok": killed, "tmux_session": name}
 
 
 async def _h_spawn_scoped(args: dict) -> dict:
@@ -1189,6 +1203,14 @@ HANDLERS.update(DRIVER_CONTRACT.handlers())
 
 async def _on_start() -> None:
     dao.init()
+    # Boot cleanup — the roster is fleet-tracked: drop any pre-gate machine-wide
+    # rows (and their orphaned attention items) once. Idempotent; with the
+    # handle_report gate no new untracked row can appear.
+    conn = dao.connect()
+    try:
+        roster.purge_untracked(conn)
+    finally:
+        conn.close()
     # Boot cleanup only — close stale instance rows. There is no agents-side
     # resume driver: the orchestrator owns re-dispatch of resting nodes, and a
     # dead placement is reported back via orch.fail (liveness).
@@ -1199,6 +1221,9 @@ async def _on_start() -> None:
     # attached or paused. Runs inside the event loop (on_start is awaited there).
     from awm.agents import placement
     asyncio.create_task(placement.stall_watchdog_loop())
+    # pi has no hook: the pane-probe watcher drives its starting→running→stopped
+    # lifecycle (see pi_watch). Runs inside the event loop, never exits.
+    asyncio.create_task(pi_watch.pi_watch_loop(_emit_feed))
 
 
 async def main() -> None:

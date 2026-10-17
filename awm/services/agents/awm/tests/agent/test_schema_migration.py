@@ -1,5 +1,6 @@
 """agent_instances v3 schema — fresh shape, project dropped, index uniqueness,
-migration paths (v1→v3 chain + v2→v3 DROP COLUMN)."""
+migration paths (v1→v3 chain + v2→v3 DROP COLUMN); v5 adds the fleet roster's
+``tracked`` gate column."""
 
 from __future__ import annotations
 
@@ -113,6 +114,54 @@ class TestMigration:
         # v3→v4 stands up the absorbed fleet observe-plane tables.
         assert _has_table(conn, "fleet_sessions")
         assert _has_table(conn, "fleet_notifications")
+        ver = conn.execute("SELECT version FROM schema_version").fetchone()[0]
+        assert ver == SCHEMA_VERSION
+        conn.close()
+
+    def test_v4_to_v5_adds_tracked_column(self, tmp_path, monkeypatch):
+        """A v4 DB (fleet tables without the tracking gate) migrates to v5:
+        pre-existing machine-wide rows gain ``tracked = 0`` — hidden from the
+        roster until the boot purge deletes them."""
+        import awm.persistence.databases as dbs_mod
+        from awm.agents.dao import SCHEMA_SQL, MIGRATIONS, SCHEMA_VERSION
+        monkeypatch.setattr(dbs_mod, "SERVICES_DIR", tmp_path / "services")
+
+        v4_sql = (
+            "CREATE TABLE IF NOT EXISTS fleet_sessions ("
+            "session_id TEXT PRIMARY KEY, harness TEXT NOT NULL, cwd TEXT, "
+            "project TEXT, title TEXT, state TEXT NOT NULL DEFAULT 'working', "
+            "tmux_session TEXT, model TEXT, "
+            "tok_in INTEGER NOT NULL DEFAULT 0, tok_out INTEGER NOT NULL DEFAULT 0, "
+            "tok_cache_write_5m INTEGER NOT NULL DEFAULT 0, "
+            "tok_cache_write_1h INTEGER NOT NULL DEFAULT 0, "
+            "tok_cache_read INTEGER NOT NULL DEFAULT 0, "
+            "context_tokens INTEGER NOT NULL DEFAULT 0, "
+            "transcript_offset INTEGER NOT NULL DEFAULT 0, "
+            "first_seen REAL NOT NULL, last_seen REAL NOT NULL);\n"
+            "CREATE TABLE IF NOT EXISTS fleet_notifications ("
+            "id TEXT PRIMARY KEY, session_id TEXT NOT NULL, kind TEXT NOT NULL, "
+            "title TEXT NOT NULL, detail TEXT, snippet TEXT, "
+            "created_at REAL NOT NULL, notify_at REAL NOT NULL, seen_at REAL, "
+            "resolved_at REAL, resolved_by TEXT);"
+        )
+        dbs_mod.init_service_db("agents", v4_sql, schema_version=4)
+        conn = dbs_mod.get_connection("agents")
+        now = now_ms() / 1000.0
+        conn.execute(
+            "INSERT INTO fleet_sessions (session_id, harness, state, first_seen,"
+            " last_seen) VALUES (?,?,?,?,?)",
+            ("legacy", "claude", "idle", now, now))
+        conn.commit()
+        conn.close()
+
+        dbs_mod.init_service_db("agents", SCHEMA_SQL, schema_version=SCHEMA_VERSION,
+                                migrations=MIGRATIONS)
+
+        conn = dbs_mod.get_connection("agents")
+        assert "tracked" in _cols(conn, "fleet_sessions")
+        row = conn.execute(
+            "SELECT tracked FROM fleet_sessions WHERE session_id='legacy'").fetchone()
+        assert row is not None and row["tracked"] == 0
         ver = conn.execute("SELECT version FROM schema_version").fetchone()[0]
         assert ver == SCHEMA_VERSION
         conn.close()

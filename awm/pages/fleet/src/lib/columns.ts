@@ -50,8 +50,10 @@ export function gridTemplate(cols: ColumnDef[]): string {
 
 // Status sections, most-urgent first. `starting` sits just above `working` so a
 // freshly-spawned agent is visible immediately, then transitions down as it boots.
+// `running` / `stopped` are the pi harness's vocabulary (pi has no hook, so its
+// rows only ever reach starting → running → stopped via the pane-probe watcher).
 export const SECTION_ORDER: FleetState[] = [
-  'needs-you', 'error', 'starting', 'working', 'idle', 'ended',
+  'needs-you', 'error', 'starting', 'working', 'running', 'idle', 'ended', 'stopped',
 ];
 
 export const STATE_LABEL: Record<string, string> = {
@@ -59,8 +61,10 @@ export const STATE_LABEL: Record<string, string> = {
   error: 'error',
   starting: 'starting',
   working: 'working',
+  running: 'running',
   idle: 'idle',
   ended: 'ended',
+  stopped: 'stopped',
 };
 
 export const STATE_ICON: Record<string, string> = {
@@ -68,8 +72,10 @@ export const STATE_ICON: Record<string, string> = {
   error: '▲',
   starting: '◌',
   working: '▶',
+  running: '●',
   idle: '◦',
   ended: '×',
+  stopped: '■',
 };
 
 export function sectionOf(state: string): FleetState {

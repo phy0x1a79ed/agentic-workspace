@@ -68,9 +68,9 @@ def _resolve_tmux_session(init: dict) -> Tuple[Optional[str], Optional[str]]:
 
     Three identity forms, in priority order:
 
-    - ``{tmux_session}`` — an **ad-hoc** attach by name (any machine-wide tmux
-      session the fleet roster surfaced, not necessarily an agents-registry
-      agent). Verified to exist; registry-agnostic.
+    - ``{tmux_session}`` — an **ad-hoc** attach by name (any fleet-tracked tmux
+      session the roster surfaced, not necessarily an agents-registry agent).
+      Verified to exist; registry-agnostic.
     - ``{session_id}`` / ``{scope}`` — resolve a live *registry* agent and use
       its recorded ``tmux_session``.
 

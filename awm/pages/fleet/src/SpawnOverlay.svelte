@@ -29,7 +29,7 @@
   }
   let { defaults, cwdSuggestions, onClose, onSpawned }: Props = $props();
 
-  const HARNESSES = ['claude', 'opencode'];
+  const HARNESSES = ['claude', 'opencode', 'pi'];
   const CLAUDE_MODELS = ['opus', 'sonnet', 'haiku', 'fable'];
   const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
 
@@ -127,7 +127,7 @@
       </select>
     </label>
   {:else}
-    <p class="fld-note">opencode picks its model in-app.</p>
+    <p class="fld-note">opencode / pi pick their model in-app.</p>
   {/if}
 
   {#if mode === 'scope'}

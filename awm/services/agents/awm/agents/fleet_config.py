@@ -36,7 +36,7 @@ from .accounting import DEFAULT_RATES, ModelRate
 KNOWN_COLUMNS = [
     "status",       # icon + keyword (working / idle / needs-you / error / ended)
     "title",        # session title or project label
-    "harness",      # claude | opencode
+    "harness",      # claude | opencode | pi
     "model",        # resolved model (from transcript usage)
     "uptime",       # first_seen → now
     "last_activity",  # last_seen → now

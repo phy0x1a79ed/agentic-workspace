@@ -26,6 +26,9 @@ class TestBuildCommand:
     def test_opencode_is_bare(self):
         assert fs.build_command("opencode", "ignored", "ignored") == "opencode"
 
+    def test_pi_is_bare(self):
+        assert fs.build_command("pi", "ignored", "ignored") == "pi"
+
 
 class TestSafeName:
     def test_strips_tmux_specials(self):
@@ -47,6 +50,13 @@ class TestValidation:
     def test_claude_requires_model(self, tmp_path):
         with pytest.raises(ValueError, match="requires an explicit model"):
             fs.spawn_terminal(cwd=str(tmp_path), harness="claude")
+
+    def test_pi_does_not_require_model(self, tmp_path, monkeypatch):
+        # pi picks its model in-app — a blank model passes the validation gates;
+        # with tmux absent the spawn dies on tmux, never on the model.
+        monkeypatch.setattr(fs.shutil, "which", lambda b: None)
+        with pytest.raises(FileNotFoundError, match="tmux not found"):
+            fs.spawn_terminal(cwd=str(tmp_path), harness="pi")
 
     def test_bad_effort(self, tmp_path):
         with pytest.raises(ValueError, match="Invalid effort"):

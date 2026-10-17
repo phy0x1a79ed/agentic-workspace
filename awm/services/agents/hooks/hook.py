@@ -13,11 +13,13 @@ Contract (a hook must NEVER hurt the agent's turn):
 - do NOT read the transcript here (it lags the Stop hook — the flush race;
   the service reads it server-side with retry).
 
-Roster is **machine-wide**: every Claude session reports, not just awm-scope
-worktrees (the fleet page shows the whole machine; non-tmux sessions still
-appear, just marked not-attachable). When ``$TMUX`` is set the hook resolves the
-enclosing tmux session name and sends it as ``tmux_session`` — the browser
-terminal's attach handle.
+The roster is **fleet-tracked, not machine-wide**: the service keeps a row
+only for a session whose ``spawned`` event (fleet view) created it — a
+``claude`` started in an ordinary terminal reports here but is dropped
+server-side and never appears in the fleet page. This hook still reports
+**every** Claude session (the service decides); when ``$TMUX`` is set it
+resolves the enclosing tmux session name and sends it as ``tmux_session`` —
+the browser terminal's attach handle.
 
 Endpoint: ``$AWM_HUB_URL`` when set (awm-spawned agents inherit it, so they
 report to the hub that spawned them; exporting it also routes a sandbox e2e),

@@ -52,6 +52,19 @@ def _report(conn, **event):
     return asyncio.run(roster.handle_report(conn, event))
 
 
+def _seed_tracked(conn, session_id, *, harness="claude", cwd=None, tmux=None):
+    """Plant a fleet-tracked roster row directly (the DB-level equivalent of the
+    fleet view's ``spawned`` event), so subsequent hook events for this session
+    pass the tracking gate. ``tmux=None`` yields the non-attachable shape."""
+    import time as _t
+    now = _t.time()
+    conn.execute(
+        "INSERT INTO fleet_sessions (session_id, harness, cwd, state, tracked,"
+        " tmux_session, first_seen, last_seen) VALUES (?,?,?,?,1,?,?,?)",
+        (session_id, harness, cwd, "starting", tmux, now, now))
+    conn.commit()
+
+
 # ---------------------------------------------------------------------------
 # Classifier
 # ---------------------------------------------------------------------------
@@ -134,6 +147,7 @@ class TestReport:
         # Regrounded: turn_end is plain idle regardless of message content —
         # no NLP question fork. A blocked turn resurfaces via Notification.
         from awm.agents.roster import IDLE_GRACE_S
+        _seed_tracked(conn, "s1", cwd="/w/p")
         p = tmp_path / "t.jsonl"
         p.write_text(json.dumps({"type": "assistant", "message": {"content": [
             {"type": "text", "text": "Which port should I use?"}]}}) + "\n")
@@ -146,6 +160,7 @@ class TestReport:
 
     def test_turn_end_idle_has_grace(self, conn):
         from awm.agents.roster import IDLE_GRACE_S
+        _seed_tracked(conn, "s2")
         delta = _report(conn, harness="opencode", event="turn_end",
                         session_id="s2", last_message="All tests pass.")
         item = delta["item"]
@@ -154,6 +169,7 @@ class TestReport:
             item["created_at"] + IDLE_GRACE_S)
 
     def test_notification_is_needs_you(self, conn):
+        _seed_tracked(conn, "s3")
         delta = _report(conn, harness="claude", event="notification",
                         session_id="s3",
                         message="Claude needs your permission to use Bash")
@@ -161,6 +177,7 @@ class TestReport:
         assert "permission" in delta["item"]["detail"]
 
     def test_dedupe_refreshes_not_duplicates(self, conn):
+        _seed_tracked(conn, "s4")
         d1 = _report(conn, harness="opencode", event="turn_end",
                      session_id="s4", last_message="done A")
         d2 = _report(conn, harness="opencode", event="turn_end",
@@ -173,6 +190,7 @@ class TestReport:
 
     def test_user_prompt_auto_resolves(self, conn):
         from awm.agents import roster
+        _seed_tracked(conn, "s5")
         raised = _report(conn, harness="claude", event="notification",
                          session_id="s5", message="waiting for your input")
         delta = _report(conn, harness="claude", event="user_prompt",
@@ -188,6 +206,7 @@ class TestReport:
 
     def test_session_end_resolves(self, conn):
         from awm.agents import roster
+        _seed_tracked(conn, "s6")
         _report(conn, harness="opencode", event="turn_end",
                 session_id="s6", last_message="idle now")
         delta = _report(conn, harness="opencode", event="session_end",
@@ -197,6 +216,7 @@ class TestReport:
         assert out["sessions"]["s6"]["state"] == "ended"
 
     def test_error_event(self, conn):
+        _seed_tracked(conn, "s7")
         delta = _report(conn, harness="opencode", event="error",
                         session_id="s7", message="ProviderAuthError")
         assert delta["item"]["kind"] == "error"
@@ -206,6 +226,7 @@ class TestReport:
         assert _report(conn, harness="x", event="turn_end", session_id="")["ok"] is False
 
     def test_needs_you_and_idle_coexist_then_both_resolve(self, conn):
+        _seed_tracked(conn, "s8")
         _report(conn, harness="claude", event="notification",
                 session_id="s8", message="permission?")
         _report(conn, harness="opencode", event="turn_end",
@@ -226,6 +247,7 @@ class TestReport:
 class TestSweepAndVerbs:
     def test_stale_session_expires_on_list(self, conn):
         from awm.agents import roster
+        _seed_tracked(conn, "s9")
         _report(conn, harness="claude", event="notification",
                 session_id="s9", message="q?")
         # Backdate the session far past the TTL.
@@ -239,6 +261,7 @@ class TestSweepAndVerbs:
 
     def test_mark_seen_and_resolve_and_clear(self, conn):
         from awm.agents import roster
+        _seed_tracked(conn, "s10")
         d = _report(conn, harness="claude", event="error",
                     session_id="s10", message="boom")
         iid = d["item"]["id"]
@@ -246,6 +269,7 @@ class TestSweepAndVerbs:
         out = roster.list_items(conn)
         assert [i for i in out["items"] if i["id"] == iid][0]["seen_at"]
         assert roster.resolve_items(conn, item_id=iid) == [iid]
+        _seed_tracked(conn, "s11")
         _report(conn, harness="claude", event="error",
                 session_id="s11", message="boom2")
         assert roster.clear_all(conn)["resolved"]
@@ -323,6 +347,7 @@ class TestUsageAccounting:
 class TestFleetRoster:
     def test_list_fleet_shape_and_metrics(self, conn, tmp_path):
         from awm.agents import roster
+        _seed_tracked(conn, "f1", cwd="/w/proj", tmux="awm-f1")
         p = tmp_path / "t.jsonl"
         p.write_text(_assistant("claude-sonnet-5", input_tokens=100,
                                  output_tokens=50, cache_read_input_tokens=2000,
@@ -333,6 +358,7 @@ class TestFleetRoster:
                 session_id="f1", cwd="/w/proj", transcript_path=str(p))
         out = roster.list_fleet(conn)
         row = [s for s in out["sessions"] if s["session_id"] == "f1"][0]
+        assert row["tracked"] == 1
         assert row["attachable"] is True
         assert row["tmux_session"] == "awm-f1"
         assert row["state"] == "idle"
@@ -343,6 +369,7 @@ class TestFleetRoster:
 
     def test_non_tmux_session_not_attachable(self, conn):
         from awm.agents import roster
+        _seed_tracked(conn, "f2", harness="opencode")
         _report(conn, harness="opencode", event="turn_end",
                 session_id="f2", last_message="done")
         row = [s for s in roster.list_fleet(conn)["sessions"]
@@ -352,6 +379,7 @@ class TestFleetRoster:
 
     def test_liveness_window_excludes_old(self, conn):
         from awm.agents import roster
+        _seed_tracked(conn, "f3")
         _report(conn, harness="claude", event="turn_end",
                 session_id="f3", last_message="done")
         conn.execute("UPDATE fleet_sessions SET last_seen = ? WHERE session_id='f3'",
@@ -366,9 +394,11 @@ class TestFleetRoster:
         from awm.agents import roster
         from awm.agents import fleet_config
         ended_win = fleet_config.FLEET_CONTRACT.load_model().ended_window_s
-        # A working session and an ended one, same cwd.
+        # A working session and an ended one, same cwd — both fleet-spawned.
+        _seed_tracked(conn, "live", cwd="/w/shared", tmux="awm-live")
         _report(conn, harness="claude", event="session_start",
                 session_id="live", cwd="/w/shared", tmux_session="awm-live")
+        _seed_tracked(conn, "dead", cwd="/w/shared")
         _report(conn, harness="claude", event="session_end",
                 session_id="dead", cwd="/w/shared")
         # Age the ended one past the ended-window but well within the live window.
@@ -382,6 +412,7 @@ class TestFleetRoster:
     def test_recently_ended_session_still_shows(self, conn):
         """Just-finished sessions remain visible briefly."""
         from awm.agents import roster
+        _seed_tracked(conn, "just-done", cwd="/w/x")
         _report(conn, harness="claude", event="session_end",
                 session_id="just-done", cwd="/w/x")
         ids = {s["session_id"] for s in roster.list_fleet(conn)["sessions"]}
@@ -407,6 +438,7 @@ class TestSpawnPlaceholder:
         row = [s for s in roster.list_fleet(conn)["sessions"]
                if s["tmux_session"] == "fleet-x-1"][0]
         assert row["state"] == "starting"
+        assert row["tracked"] == 1   # spawned → fleet-tracked
         assert row["attachable"] is True
 
     def test_real_hook_adopts_placeholder_no_dupe(self, conn):
@@ -423,10 +455,14 @@ class TestSpawnPlaceholder:
         assert len(rows) == 1                 # placeholder adopted, not duplicated
         assert rows[0]["session_id"] == "real-uuid"
         assert rows[0]["state"] == "working"
+        assert rows[0]["tracked"] == 1       # tracked flag survives the adoption
 
     def test_spawned_skips_when_real_row_already_present(self, conn):
         from awm.agents import roster
-        # A fast boot: the real hook beats the spawn RPC.
+        # A fast boot: the placeholder is planted, adopted by the real hook, then
+        # a duplicate spawned report (retried spawn RPC) must not plant a second.
+        _report(conn, harness="claude", event="spawned",
+                session_id="fleet-x-3", tmux_session="fleet-x-3", cwd="/w/proj")
         _report(conn, harness="claude", event="session_start",
                 session_id="real-first", tmux_session="fleet-x-3", cwd="/w/proj")
         _report(conn, harness="claude", event="spawned",
@@ -451,13 +487,16 @@ class TestSpawnPlaceholder:
         assert len(rows) == 1                       # merged, not duplicated
         assert rows[0]["session_id"] == "real-uuid-4"
         assert rows[0]["state"] == "working"
+        assert rows[0]["tracked"] == 1
         assert rows[0]["tmux_session"] == "fleet-x-4"   # inherited handle
         assert rows[0]["attachable"] is True
 
     def test_cwd_adoption_bounded_by_window(self, conn):
         from awm.agents import roster
         # A placeholder older than the adopt window is NOT swept up by an
-        # unrelated same-cwd session (bounded merge).
+        # unrelated same-cwd session (bounded merge). Both sessions are
+        # fleet-spawned (the unrelated one via its own spawned event), so both
+        # have tracked rows — only the merge is refused.
         roster.SPAWN_ADOPT_WINDOW_S  # sanity: constant exists
         _report(conn, harness="claude", event="spawned",
                 session_id="fleet-x-5", tmux_session="fleet-x-5", cwd="/w/shared")
@@ -465,8 +504,53 @@ class TestSpawnPlaceholder:
         conn.execute(
             "UPDATE fleet_sessions SET first_seen = first_seen - ? WHERE session_id = ?",
             (roster.SPAWN_ADOPT_WINDOW_S + 60, "fleet-x-5"))
+        _report(conn, harness="claude", event="spawned",
+                session_id="unrelated-5", tmux_session="unrelated-5", cwd="/w/shared")
         _report(conn, harness="claude", event="session_start",
                 session_id="unrelated-5", tmux_session=None, cwd="/w/shared")
         rows = [s for s in roster.list_fleet(conn)["sessions"]
                 if (s["cwd"] or "") == "/w/shared"]
         assert len(rows) == 2                       # not merged (too old)
+
+
+class TestTrackingGate:
+    """v5: the roster is fleet-tracked — a hook event never *creates* a row."""
+
+    def test_hook_events_for_untracked_session_are_dropped(self, conn):
+        from awm.agents import roster
+        d1 = _report(conn, harness="claude", event="session_start",
+                     session_id="ext", cwd="/w/outside", tmux_session="ext-tmux")
+        assert d1.get("ignored") is True
+        d2 = _report(conn, harness="claude", event="turn_end",
+                     session_id="ext", cwd="/w/outside")
+        assert d2.get("ignored") is True
+        assert roster.list_fleet(conn)["sessions"] == []
+        assert roster.list_items(conn)["items"] == []
+        assert roster.stats(conn)["sessions_by_state"] == {}
+
+    def test_untracked_pre_gate_rows_hidden_and_purged(self, conn):
+        from awm.agents import roster
+        # A pre-gate machine-wide row: no spawned event ever created it.
+        now = time.time()
+        conn.execute(
+            "INSERT INTO fleet_sessions (session_id, harness, cwd, state, tracked,"
+            " first_seen, last_seen) VALUES (?,?,?,?,0,?,?)",
+            ("legacy", "claude", "/w/legacy", "idle", now, now))
+        conn.commit()
+        ids = {s["session_id"] for s in roster.list_fleet(conn)["sessions"]}
+        assert "legacy" not in ids                 # hidden by the read gate
+        assert roster.purge_untracked(conn) == 1    # then deleted at boot
+        assert roster.purge_untracked(conn) == 0    # idempotent
+        assert roster.list_fleet(conn)["sessions"] == []
+
+    def test_tracked_session_keeps_updating_state(self, conn):
+        from awm.agents import roster
+        _seed_tracked(conn, "k1", cwd="/w/k")
+        _report(conn, harness="claude", event="session_start",
+                session_id="k1", cwd="/w/k", tmux_session="k1-tmux")
+        _report(conn, harness="claude", event="turn_end",
+                session_id="k1", last_message="done")
+        row = [s for s in roster.list_fleet(conn)["sessions"]
+               if s["session_id"] == "k1"][0]
+        assert row["state"] == "idle"
+        assert row["tracked"] == 1

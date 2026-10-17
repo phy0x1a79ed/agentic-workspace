@@ -16,7 +16,7 @@ from awm.persistence.dao import BaseDAO
 from awm.persistence.databases import get_connection, init_service_db
 
 SERVICE = "agents"
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 SCHEMA_SQL = """\
 CREATE TABLE IF NOT EXISTS agent_instances (
@@ -57,8 +57,8 @@ CREATE INDEX IF NOT EXISTS idx_agent_transcript_scope_ts
     ON agent_transcript(scope, ts);
 """ + """
 -- Fleet observe plane (absorbed from the retired notifications service). The
--- machine-wide roster of every hook-reporting Claude/OpenCode session +
--- attention items. Prefixed ``fleet_`` to stay distinct from the DAG tables
+-- fleet-tracked roster of spawned-through-the-fleet sessions (tracked column)
+-- + attention items. Prefixed ``fleet_`` to stay distinct from the DAG tables
 -- above in this same DB. See roster.py / fleet_config.py / accounting.py.
 CREATE TABLE IF NOT EXISTS fleet_sessions (
     session_id        TEXT PRIMARY KEY,
@@ -67,6 +67,7 @@ CREATE TABLE IF NOT EXISTS fleet_sessions (
     project           TEXT,
     title             TEXT,
     state             TEXT NOT NULL DEFAULT 'working',
+    tracked           INTEGER NOT NULL DEFAULT 0,
     tmux_session      TEXT,
     model             TEXT,
     tok_in            INTEGER NOT NULL DEFAULT 0,
@@ -134,8 +135,7 @@ MIGRATIONS: dict[tuple[int, int], str] = {
     # v3→v4: absorb the notifications observe plane. Additive — stand up the
     # fleet roster + attention tables on the agents DB (idempotent CREATE IF NOT
     # EXISTS, so a DB that already got them via the fresh-DB DDL path no-ops).
-    (3, 4): (
-        "CREATE TABLE IF NOT EXISTS fleet_sessions (\n"
+    (3, 4): (        "CREATE TABLE IF NOT EXISTS fleet_sessions (\n"
         "    session_id        TEXT PRIMARY KEY,\n"
         "    harness           TEXT NOT NULL,\n"
         "    cwd               TEXT,\n"
@@ -171,6 +171,15 @@ MIGRATIONS: dict[tuple[int, int], str] = {
         "ON fleet_notifications(session_id);\n"
         "CREATE INDEX IF NOT EXISTS idx_fleet_notifications_open "
         "ON fleet_notifications(session_id, kind) WHERE resolved_at IS NULL;\n"
+    ),
+    # v4→v5: the fleet roster stops being machine-wide. ``tracked`` marks a
+    # session as spawned through the fleet view (created by the ``spawned``
+    # event / its placeholder adoption); everything else is ignored at ingest
+    # and purged at boot. Additive — pre-existing machine-wide rows gain
+    # tracked=0 and disappear from list_fleet (hidden until the boot purge).
+    (4, 5): (
+        "ALTER TABLE fleet_sessions ADD COLUMN "
+        "tracked INTEGER NOT NULL DEFAULT 0;\n"
     ),
 }
 

@@ -23,6 +23,14 @@ attention items (``fleet_notifications``):
 - ``spawned`` → a transient ``starting`` placeholder keyed by tmux name, which
   the real hook adopts when the agent boots.
 
+**Fleet-tracked, not machine-wide.** A row exists only if a ``spawned`` event
+(the fleet spawn path, in-process) created it: ``spawned`` plants the tracked
+placeholder, and a real hook event adopts it (or updates an existing tracked
+row). Every other event for a session with no tracked row is **dropped** — a
+``claude``/``opencode``/``pi`` started in an ordinary terminal never appears in
+``list_fleet``. ``pi`` has no hook, so its row stays the ``spawned`` placeholder
+and is driven by the pane-probe stop watcher (:mod:`awm.agents.pi_watch`).
+
 Reads run a lazy expiry sweep: a hard-killed harness never sends
 ``session_end``, so open items whose session went silent past the TTL are
 auto-resolved as ``expired`` on the next read.
@@ -111,6 +119,7 @@ def upsert_session(
     title: Optional[str] = None,
     state: Optional[str] = None,
     tmux_session: Optional[str] = None,
+    tracked: Optional[bool] = None,
 ) -> None:
     now = _now()
     cur = conn.execute(
@@ -118,10 +127,10 @@ def upsert_session(
     if cur.fetchone() is None:
         conn.execute(
             "INSERT INTO fleet_sessions (session_id, harness, cwd, project, title,"
-            " state, tmux_session, first_seen, last_seen)"
-            " VALUES (?,?,?,?,?,?,?,?,?)",
+            " state, tracked, tmux_session, first_seen, last_seen)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?)",
             (session_id, harness, cwd, _project_label(cwd), title,
-             state or "working", tmux_session, now, now),
+             state or "working", 1 if tracked else 0, tmux_session, now, now),
         )
     else:
         sets = ["last_seen = ?", "harness = ?"]
@@ -138,6 +147,9 @@ def upsert_session(
         if tmux_session:
             sets.append("tmux_session = ?")
             vals.append(tmux_session)
+        if tracked is not None:
+            sets.append("tracked = ?")
+            vals.append(1 if tracked else 0)
         vals.append(session_id)
         conn.execute(
             f"UPDATE fleet_sessions SET {', '.join(sets)} WHERE session_id = ?", vals)
@@ -293,6 +305,16 @@ def sweep_stale(conn: sqlite3.Connection, ttl: float = STALE_TTL_S) -> list[str]
 # ---------------------------------------------------------------------------
 
 
+def _session_tracked(conn: sqlite3.Connection, session_id: str) -> bool:
+    """Whether ``session_id`` has a fleet-tracked roster row (spawned through
+    the fleet view). Untracked rows only ever predate the tracking gate; the
+    boot purge deletes them."""
+    r = conn.execute(
+        "SELECT tracked FROM fleet_sessions WHERE session_id = ?", (session_id,))
+    r = r.fetchone()
+    return bool(r and r["tracked"])
+
+
 async def handle_report(conn: sqlite3.Connection, event: dict[str, Any]) -> dict[str, Any]:
     """Ingest one normalized producer event. Returns a feed delta (or a no-op).
 
@@ -317,7 +339,9 @@ async def handle_report(conn: sqlite3.Connection, event: dict[str, Any]) -> dict
     # same-cwd placeholder when the producer hook didn't report a tmux_session
     # (older deployed hooks omit it — without this fallback the real UUID row and
     # the tmux-keyed placeholder never merge). The surviving real row *inherits*
-    # the placeholder's tmux_session so it stays attachable after the merge.
+    # the placeholder's tmux_session so it stays attachable, and its ``tracked``
+    # flag so it stays in the roster, after the merge.
+    adopted = False
     if ev != "spawned":
         ph = None
         if tmux_session:
@@ -336,10 +360,20 @@ async def handle_report(conn: sqlite3.Connection, event: dict[str, Any]) -> dict
                 (cwd, session_id, _now() - SPAWN_ADOPT_WINDOW_S),
             ).fetchone()
         if ph is not None:
+            adopted = True
             if not tmux_session and ph["tmux_session"]:
                 tmux_session = ph["tmux_session"]  # keep the attach handle
             conn.execute(
                 "DELETE FROM fleet_sessions WHERE session_id = ?", (ph["session_id"],))
+
+    # Fleet-tracked gate: a roster row exists only for sessions the fleet view
+    # spawned. ``spawned`` is the sole row-creating event (tracked); a hook event
+    # is processed only when it adopted a tracked placeholder or its session
+    # already has a tracked row. Everything else is dropped outright — no row,
+    # no attention items — so a claude/opencode/pi started in an ordinary
+    # terminal never appears in the roster.
+    if ev != "spawned" and not adopted and not _session_tracked(conn, session_id):
+        return {"ok": True, "type": None, "ignored": True}
 
     if ev == "spawned":
         # Only plant the placeholder if the real row for this tmux session hasn't
@@ -354,23 +388,25 @@ async def handle_report(conn: sqlite3.Connection, event: dict[str, Any]) -> dict
         )
         if existing is None:
             upsert_session(conn, session_id, harness, cwd=cwd, title=title,
-                           state="starting", tmux_session=tmux_session)
+                           state="starting", tmux_session=tmux_session,
+                           tracked=True)
         delta["type"] = "session"
 
     elif ev == "session_start":
         upsert_session(conn, session_id, harness, cwd=cwd, title=title,
-                       state="working", tmux_session=tmux_session)
+                       state="working", tmux_session=tmux_session,
+                       tracked=True)
         delta["type"] = "session"
 
     elif ev == "user_prompt":
         upsert_session(conn, session_id, harness, cwd=cwd, state="working",
-                       tmux_session=tmux_session)
+                       tmux_session=tmux_session, tracked=True)
         ids = resolve_items(conn, session_id=session_id, by="user_response")
         delta.update(type="resolve" if ids else "session", ids=ids)
 
     elif ev == "session_end":
         upsert_session(conn, session_id, harness, cwd=cwd, state="ended",
-                       tmux_session=tmux_session)
+                       tmux_session=tmux_session, tracked=True)
         ids = resolve_items(conn, session_id=session_id, by="session_end")
         delta.update(type="resolve" if ids else "session", ids=ids)
 
@@ -381,7 +417,7 @@ async def handle_report(conn: sqlite3.Connection, event: dict[str, Any]) -> dict
         # on its own, no NLP guess required).
         msg = event.get("message") or "Agent is waiting for your input"
         upsert_session(conn, session_id, harness, cwd=cwd, state="needs-you",
-                       tmux_session=tmux_session)
+                       tmux_session=tmux_session, tracked=True)
         item, created = raise_item(
             conn, session_id, "needs-you", _snippet(msg) or "Needs your input",
             detail=msg, snippet=_snippet(event.get("last_message")),
@@ -391,7 +427,7 @@ async def handle_report(conn: sqlite3.Connection, event: dict[str, Any]) -> dict
     elif ev == "error":
         msg = event.get("message") or "Agent session errored"
         upsert_session(conn, session_id, harness, cwd=cwd, state="error",
-                       tmux_session=tmux_session)
+                       tmux_session=tmux_session, tracked=True)
         item, created = raise_item(
             conn, session_id, "error", _snippet(msg) or "Agent errored",
             detail=msg, snippet=_snippet(event.get("last_message")),
@@ -407,7 +443,7 @@ async def handle_report(conn: sqlite3.Connection, event: dict[str, Any]) -> dict
             last, _tools = await accounting.read_last_assistant(
                 event["transcript_path"])
         upsert_session(conn, session_id, harness, cwd=cwd, state="idle",
-                       tmux_session=tmux_session)
+                       tmux_session=tmux_session, tracked=True)
         # Fold in token / context usage from the just-appended transcript bytes.
         tpath = event.get("transcript_path")
         if tpath:
@@ -457,12 +493,14 @@ def list_items(conn: sqlite3.Connection, *, all: bool = False) -> dict[str, Any]
 
 
 def list_fleet(conn: sqlite3.Connection, *, window_s: Optional[float] = None) -> dict[str, Any]:
-    """The full machine-wide roster: every recently-live session + its metrics.
+    """The fleet-tracked roster: every fleet-spawned session + its metrics.
 
     Unlike :func:`list_items` (attention items), this returns *sessions* — one
     row per agent — with cost (EOOT), context size, attach handle, and any open
-    attention items folded in. Column config + spawn defaults ride along so the
-    page's first paint needs a single fetch.
+    attention items folded in. Only rows created by the ``spawned`` event (or
+    adopted from it) are selected — sessions started outside the fleet view are
+    never tracked and never appear. Column config + spawn defaults ride along so
+    the page's first paint needs a single fetch.
     """
     sweep_stale(conn)
     settings = FLEET_CONTRACT.load_model()
@@ -474,11 +512,12 @@ def list_fleet(conn: sqlite3.Connection, *, window_s: Optional[float] = None) ->
 
     # Finished sessions drop off on a much shorter clock than live ones, so a
     # long-dead agent doesn't sit next to a fresh session in the same cwd and
-    # read as a duplicate.
+    # read as a duplicate. ``stopped`` (pi panes) ages off the same way.
     ended_cutoff = now - settings.ended_window_s
     srows = conn.execute(
         "SELECT * FROM fleet_sessions"
-        " WHERE last_seen >= ? AND NOT (state = 'ended' AND last_seen < ?)"
+        " WHERE tracked = 1 AND last_seen >= ?"
+        " AND NOT (state IN ('ended', 'stopped') AND last_seen < ?)"
         " ORDER BY last_seen DESC",
         (cutoff, ended_cutoff),
     ).fetchall()
@@ -552,8 +591,29 @@ def stats(conn: sqlite3.Connection) -> dict[str, Any]:
     }
     sess = {
         r["state"]: r["n"] for r in conn.execute(
-            "SELECT state, COUNT(*) AS n FROM fleet_sessions GROUP BY state")
+            "SELECT state, COUNT(*) AS n FROM fleet_sessions"
+            " WHERE tracked = 1 GROUP BY state")
     }
     total = conn.execute("SELECT COUNT(*) AS n FROM fleet_notifications").fetchone()["n"]
     return {"open_by_kind": open_by_kind, "sessions_by_state": sess,
             "total_items": total}
+
+
+def purge_untracked(conn: sqlite3.Connection) -> int:
+    """Delete roster rows for sessions never spawned through the fleet view.
+
+    One-shot, idempotent boot cleanup: with the tracking gate in
+    :func:`handle_report` no *new* untracked row can appear, so this only clears
+    pre-gate machine-wide rows (and their orphaned attention items) left by the
+    old always-track semantics. Returns the number of rows purged.
+    """
+    cur = conn.execute(
+        "SELECT session_id FROM fleet_sessions WHERE tracked != 1")
+    ids = [r["session_id"] for r in cur.fetchall()]
+    if ids:
+        qs = ",".join("?" * len(ids))
+        conn.execute(
+            f"DELETE FROM fleet_notifications WHERE session_id IN ({qs})", ids)
+        conn.execute("DELETE FROM fleet_sessions WHERE tracked != 1")
+        conn.commit()
+    return len(ids)

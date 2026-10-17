@@ -12,11 +12,18 @@ supervision driver, no one-live-per-scope guard. So this module just:
 
 Because it's a plain ``claude`` in a normal tmux pane, two things fall out for
 free: the **global** ``~/.claude/settings.json`` notifications hook fires, so the
-new agent appears in the machine-wide roster on its own (with its tmux session
-name captured → *attachable*); and the workspace-root ``.mcp.json`` gives it the
-awm MCP without any per-spawn config synthesis. The fleet terminal attaches to
-it by tmux session name via ``terminal_session``'s ad-hoc resolver; disposal is a
-plain ``tmux kill-session`` (or Ctrl-C×2 from the terminal).
+new agent appears in the fleet-tracked roster (with its tmux session name
+captured → *attachable*); and the workspace-root ``.mcp.json`` gives it the
+awm MCP without any per-spawn config synthesis. (``opencode`` and ``pi`` come up
+bare — their models are chosen in-app; ``pi`` has no hook, so its row is carried
+by the fleet spawn placeholder + the pane-probe stop watcher instead.) The fleet
+terminal attaches to it by tmux session name via ``terminal_session``'s ad-hoc
+resolver; disposal is a plain ``tmux kill-session`` (or Ctrl-C×2 from the
+terminal).
+
+**Roster tracking.** A row is created only by the ``spawned`` event this module's
+callers report; the roster is no longer machine-wide — sessions started outside
+the fleet view (a bare terminal ``claude``/``pi``) are dropped.
 """
 
 from __future__ import annotations
@@ -30,7 +37,7 @@ import uuid
 from typing import Optional
 
 _VALID_EFFORTS = {"low", "medium", "high", "xhigh", "max"}
-_SUPPORTED_HARNESSES = {"claude", "opencode"}
+_SUPPORTED_HARNESSES = {"claude", "opencode", "pi"}
 
 # tmux target names treat '.' and ':' specially and dislike whitespace.
 _NAME_SAFE = re.compile(r"[^A-Za-z0-9_-]+")
@@ -77,11 +84,11 @@ def build_command(
     """The shell command sent into the pane to launch the idle TUI.
 
     ``claude`` renders ``--permission-mode`` / ``--model`` / ``--effort`` exactly
-    as the awm claude backend does. ``opencode`` comes up bare (its model is
-    chosen in-app); ``model``/``effort`` are claude-only.
+    as the awm claude backend does. ``opencode`` and ``pi`` come up bare (their
+    models are chosen in-app); ``model``/``effort`` are claude-only.
     """
-    if harness == "opencode":
-        return "opencode"
+    if harness in ("opencode", "pi"):
+        return harness
     argv = ["claude"]
     if permission == "full":
         argv.append("--dangerously-skip-permissions")
@@ -129,8 +136,8 @@ def spawn_terminal(
     if effort and effort not in _VALID_EFFORTS:
         raise ValueError(
             f"Invalid effort {effort!r}; choices: {sorted(_VALID_EFFORTS)}")
-    # claude carries an explicit model (no ambient inheritance); opencode picks
-    # its model in-app, so a blank model is only rejected for claude.
+    # claude carries an explicit model (no ambient inheritance); opencode and pi
+    # pick their models in-app, so a blank model is only rejected for claude.
     if harness == "claude" and not model:
         raise ValueError("claude spawn requires an explicit model")
 
