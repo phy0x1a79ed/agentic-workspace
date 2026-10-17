@@ -4,9 +4,12 @@ The ``accept`` placement mode: an INDEPENDENT verifier with read + Bash-EXECUTE
 (but NO Write/Edit) that runs the infra-owned ``accept_spec`` checks and calls
 ``accept_work`` / ``reject_work``. Mirrors the plan→verify leg one layer later.
 
-Covers: the accept-mode tool + verb profile, ``ensure_verb_allowed``
-confinement, the ``relay_accept_work`` / ``relay_reject_work`` B-op relays, and
-the worker brief's authoritative acceptance-criteria + rework sections.
+Covers the AGENTS half: the accept-mode tool profile (read + Bash, no edit),
+the empty agent-domain verb profile (the accept VERDICTS moved to the
+orchestrator's ``orchwork`` domain — the lift, T4a), and the worker brief's
+authoritative acceptance-criteria + rework sections. The accept_work /
+reject_work verdicts themselves are covered by the orchestrator's own
+``test_worker_tools``.
 """
 
 from __future__ import annotations
@@ -20,18 +23,6 @@ pytestmark = [pytest.mark.agent, pytest.mark.smoke]
 
 from awm.agents import placement
 from awm.agents.dao import AgentsDAO
-# Reuse the canonical FakeOrch + seed helpers from the worker-tools suite (the
-# FakeOrch now records accept_work / reject_work too).
-from awm.tests.agent.test_worker_tools import FakeOrch, _seed, _data
-
-
-@pytest.fixture
-def fake_orch(agents_env):
-    from awm.agents import orch_client
-    impl = FakeOrch(agents_env["calls"])
-    orch_client.set_impl(impl)
-    yield impl
-    orch_client.reset_impl()
 
 
 _SPEC = {
@@ -59,12 +50,14 @@ async def _place_accept(agents_env, **over):
 
 
 class TestAcceptModeProfile:
-    async def test_verbs_are_accept_reject_fail(self, agents_env, stub_core):
+    async def test_no_agent_domain_verbs(self, agents_env, stub_core):
+        # The accept verdicts (accept_work / reject_work / task_fail) moved to the
+        # orchestrator's ``orchwork`` domain, so an accept placement records NO
+        # agent-domain verbs — its verdicts are gated orchestrator-side now.
         res = await _place_accept(agents_env)
         data = json.loads(
             AgentsDAO().resolve_placement(res["placement_token"])["data"])
-        assert set(data["allowed_verbs"]) == {
-            "accept_work", "reject_work", "task_fail"}
+        assert set(data["allowed_verbs"]) == set()
 
     async def test_tools_read_and_bash_no_edit(self, agents_env, stub_core):
         await _place_accept(agents_env)
@@ -75,7 +68,10 @@ class TestAcceptModeProfile:
         # … but NO write surface — the verifier verifies, it never fixes.
         for t in ("Write", "Edit", "NotebookEdit"):
             assert t not in cfg.allowed_tools
-        assert "mcp__awm__agent" in cfg.allowed_tools
+        # The verdicts live on the orchestrator's ``orchwork`` domain now — the
+        # accept placement carries that domain, NOT the agents ``agent`` one.
+        assert "mcp__awm__orchwork" in cfg.allowed_tools
+        assert "mcp__awm__agent" not in cfg.allowed_tools
 
     async def test_brief_has_checks_and_readonly_note(self, agents_env, stub_core):
         await _place_accept(agents_env)
@@ -92,14 +88,17 @@ class TestAcceptModeProfile:
 
 
 class TestVerbConfinement:
-    async def test_worker_verb_rejected_in_accept_mode(self, agents_env, stub_core):
+    async def test_agent_domain_verbs_all_rejected_in_accept_mode(
+            self, agents_env, stub_core):
+        # An accept placement hosts NO agent-domain verb — the worker-staging
+        # verbs and the (moved) verdict verbs alike are rejected by the agents
+        # gate; the verdicts are permitted only on the orchestrator's orchwork
+        # gate.
         await _place_accept(agents_env)
-        for verb in ("indicate_done", "edit_deliverable"):
+        for verb in ("indicate_done", "edit_deliverable",
+                     "accept_work", "reject_work", "task_fail"):
             with pytest.raises(placement.PlacementError):
                 placement.ensure_verb_allowed("leaf-a", verb)
-        # its own verdict verbs pass
-        placement.ensure_verb_allowed("leaf-a", "accept_work")
-        placement.ensure_verb_allowed("leaf-a", "reject_work")
 
     async def test_accept_work_rejected_in_worker_mode(self, agents_env, stub_core):
         await placement.place_on_task({
@@ -107,38 +106,6 @@ class TestVerbConfinement:
             "contracts_out": ["out:1"], "mode": "worker"})
         with pytest.raises(placement.PlacementError):
             placement.ensure_verb_allowed("leaf-w", "accept_work")
-
-
-class TestAcceptRelays:
-    async def test_accept_work_relays_and_retires(self, agents_env, fake_orch):
-        iid, _ = _seed(agents_env, token="plt-a", scope="leaf-a", mode="accept")
-        res = await placement.relay_accept_work({"evidence": "ran all checks"},
-                                                "leaf-a")
-        assert res["outcome"] == "accepted"
-        _o, _n, kw = next(c for c in agents_env["calls"] if c[1] == "accept_work")
-        assert kw["task_id"] == "T-1" and kw["evidence"] == "ran all checks"
-        names = [(c[0], c[1]) for c in agents_env["calls"]]
-        assert ("orch", "accept_work") in names
-        # retire = close placement + retain the unit AFTER the orch ack.
-        assert names.index(("orch", "accept_work")) < names.index(
-            ("workspace", "workspace_retain"))
-        # the placement row is closed (its terminal outcome recorded).
-        assert _data(iid)["placement_outcome"] == "accepted"
-
-    async def test_reject_work_relays_reason_and_retires(self, agents_env,
-                                                         fake_orch):
-        iid, _ = _seed(agents_env, token="plt-a", scope="leaf-a", mode="accept")
-        res = await placement.relay_reject_work(
-            {"reason": "check 'runs' failed: exit 1", "partial_ref": "art:p"},
-            "leaf-a")
-        assert res["outcome"] == "rejected"
-        _o, _n, kw = next(c for c in agents_env["calls"] if c[1] == "reject_work")
-        assert kw["reason"] == "check 'runs' failed: exit 1"
-        assert kw["partial_ref"] == "art:p"
-        names = [(c[0], c[1]) for c in agents_env["calls"]]
-        assert ("orch", "reject_work") in names
-        assert ("workspace", "workspace_retain") in names
-        assert _data(iid)["placement_outcome"] == "rejected"
 
 
 class TestWorkerBriefAcceptance:

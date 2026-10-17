@@ -25,7 +25,7 @@ set -uo pipefail
 WS="$(git -C "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" rev-parse --show-toplevel)"
 cd "$WS"
 
-COMP="$WS/awm/service_components/config:$WS/awm/service_components/persistence:$WS/awm/service_components/gatewayclient"
+COMP="$WS/awm/service_components/config:$WS/awm/service_components/persistence:$WS/awm/service_components/gatewayclient:$WS/awm/service_components/telemetry"
 
 # dist name -> "<source-root-dir>::<test-dir>"
 # agentcore is a leaf component (no service folder) — it has its own source

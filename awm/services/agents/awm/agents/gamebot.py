@@ -213,6 +213,9 @@ async def spawn_for_game(game: str, *, source: str = "manual") -> dict:
         model=spec.model,
         effort=spec.effort,
         fresh=True,
+        # The gamebot turn driver, registered as the engine's turn-boundary
+        # observer (budget countdown → force-park). No engine → gamebot import.
+        on_turn_boundary=on_turn_boundary,
     )
     session.turn_budget = spec.turn_budget
     ai._get_dao().merge_instance_data(session.id, {

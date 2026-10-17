@@ -32,7 +32,7 @@ from typing import Any
 
 from awm import gatewayclient
 from awm.gatewayclient import ServiceAdapter
-from awm.orchestrator import dao, dispatch, kernel, operations
+from awm.orchestrator import dao, dispatch, kernel, operations, worker_tools
 from awm.orchestrator.dao import OrchestratorDAO
 
 log = logging.getLogger("awm.orchestrator.hub_adapter")
@@ -230,6 +230,13 @@ API_MANIFEST: dict[str, Any] = {
     "sessions": [],
 }
 
+# The lift (T4a): fold in the worker-facing ``orchwork`` domain — the terminal
+# verdicts, task_fail, the planner reads, and the attach-gated admin ops a placed
+# agent drives under its own identity. Kept SEPARATE from the five human-facing
+# ``orch_*`` tools above; :func:`worker_tools.ensure_verb_allowed` scopes which a
+# given placement mode may call.
+API_MANIFEST["functions"].extend(worker_tools.worker_manifest_functions())
+
 # All handlers — the five public above plus the privileged ops that are
 # intentionally NOT in the manifest (claim / deliver / fail / decompose_commit /
 # approve_plan / reject_plan / set_attached) and the planner read ops
@@ -274,6 +281,11 @@ HANDLERS = {
     # planner reads — manifest-omitted (reached via the catch-all), read-only.
     "search_tasks": operations.search_tasks,
     "search_contracts": operations.search_contracts,
+    # The lift (T4a): worker-facing ``orchwork_<verb>`` handlers — each resolves
+    # the caller's task by slug, gates by placement mode, runs the op, and (for a
+    # terminal verb) tears down the placement. Keyed by their RPC dispatch name
+    # (== tool name), so no collision with the internal privileged ops above.
+    **worker_tools.WORKER_HANDLERS,
 }
 
 

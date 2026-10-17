@@ -60,17 +60,23 @@ class TestPlaceOnTask:
     async def test_spawn_carries_worker_tool_profile(self, agents_env, stub_core):
         res = await _place(agents_env)
         cfg = stub_core["opened"][0]
-        # Full fs built-ins + the single collapsed agent-domain tool. Per-verb
-        # scoping moved server-side (VERB_PROFILES) — allowed_tools no longer
-        # names individual placement verbs.
+        # Full fs built-ins + BOTH domain tools: the agents ``agent`` domain (the
+        # state-bearing verbs the agents service still hosts) and the
+        # orchestrator's ``orchwork`` domain (the verdicts / task_fail / admin —
+        # the lift, T4a). Per-verb scoping is server-side (each service gates the
+        # verbs it hosts); allowed_tools names no individual verb.
         assert "Write" in cfg.allowed_tools
         assert "mcp__awm__agent" in cfg.allowed_tools
-        assert not any(t.startswith("mcp__awm__") and t != "mcp__awm__agent"
+        assert "mcp__awm__orchwork" in cfg.allowed_tools
+        assert not any(t.startswith("mcp__awm__")
+                       and t not in ("mcp__awm__agent", "mcp__awm__orchwork")
                        for t in cfg.allowed_tools)
-        # The per-mode verb allowlist is recorded on the row for the server gate.
+        # The per-mode AGENT-domain verb allowlist is recorded on the row for the
+        # agents server gate (the orchwork verbs are gated orchestrator-side).
         data = json.loads(AgentsDAO().resolve_placement(res["placement_token"])["data"])
         assert "edit_deliverable" in data["allowed_verbs"]
         assert "add_subtask" not in data["allowed_verbs"]  # planner-only verb
+        assert "task_fail" not in data["allowed_verbs"]    # orchwork now
 
     async def test_kickoff_enqueued(self, agents_env, stub_core):
         await _place(agents_env)
@@ -148,16 +154,22 @@ class TestServerSideVerbGate:
         with pytest.raises(placement.PlacementError):
             placement.ensure_verb_allowed("leaf-1", "add_subtask")
 
-    async def test_verify_cannot_deliver(self, agents_env, stub_core):
+    async def test_verify_hosts_no_agent_domain_verb(self, agents_env, stub_core):
+        # A verify placement hosts NO agent-domain verb — a worker-staging verb
+        # AND its (moved) verdict verb are both rejected by the agents gate; the
+        # verdicts are permitted only on the orchestrator's orchwork gate.
+        await _place(agents_env, mode="verify", unit_slug="leaf-v")
+        for verb in ("edit_deliverable", "approve_plan", "reject_plan"):
+            with pytest.raises(placement.PlacementError):
+                placement.ensure_verb_allowed("leaf-v", verb)
+
+    async def test_task_fail_is_orchwork_not_an_agent_verb(
+            self, agents_env, stub_core):
+        # task_fail moved to the orchwork gate (its always-allowed escape hatch);
+        # the AGENTS gate no longer permits it for any mode.
         await _place(agents_env, mode="verify", unit_slug="leaf-v")
         with pytest.raises(placement.PlacementError):
-            placement.ensure_verb_allowed("leaf-v", "edit_deliverable")
-        # but its own verdict verbs pass
-        placement.ensure_verb_allowed("leaf-v", "approve_plan")
-
-    async def test_task_fail_always_allowed(self, agents_env, stub_core):
-        await _place(agents_env, mode="verify", unit_slug="leaf-v")
-        placement.ensure_verb_allowed("leaf-v", "task_fail")
+            placement.ensure_verb_allowed("leaf-v", "task_fail")
 
     async def test_unknown_identity_rejected(self, agents_env, stub_core):
         with pytest.raises(placement.PlacementError):
@@ -183,10 +195,11 @@ class TestModeProfiles:
         cfg = stub_core["opened"][0]
         for fs in ("Read", "Write", "Edit", "Bash", "Grep", "Glob"):
             assert fs not in (cfg.allowed_tools or [])
-        # Only the collapsed agent domain; the verify verbs are gated server-side.
-        assert cfg.allowed_tools == ["mcp__awm__agent"]
+        # Only the orchestrator's orchwork domain — verify's verdicts all moved
+        # there (the lift, T4a), so it carries NO agents ``agent`` domain.
+        assert cfg.allowed_tools == ["mcp__awm__orchwork"]
         data = json.loads(AgentsDAO().resolve_placement(res["placement_token"])["data"])
-        assert set(data["allowed_verbs"]) == {"approve_plan", "reject_plan", "task_fail"}
+        assert set(data["allowed_verbs"]) == set()  # no agent-domain verbs
 
     async def test_verify_kickoff_carries_objective_and_plan(
             self, agents_env, stub_core):

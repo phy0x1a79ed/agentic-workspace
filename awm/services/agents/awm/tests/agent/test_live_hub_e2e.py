@@ -3,8 +3,9 @@
 The in-process ``test_lifecycle_e2e`` proves the placement runtime end to end
 against a stubbed orchestrator with a fake subprocess, and the unit/integration
 suites cover ``orch_node_open`` (orchestrator ``test_node_open``), the attach-gated
-admin registry (orchestrator ``test_admin_ops`` + agents ``test_admin_ops``), and
-the workspace canonical home (``workspace`` dist). The remaining gap is a *real*
+admin registry + worker verbs (orchestrator ``test_worker_tools`` — the lift moved
+them there, T4a), and the workspace canonical home (``workspace`` dist). The
+remaining gap is a *real*
 cross-service run with a live ``claude`` — live processes, not a pure unit — so it
 stays staged here and skipped until run by hand.
 

@@ -26,13 +26,17 @@ PRIVILEGED = {"claim", "deliver", "fail", "decompose_commit",
 
 
 def test_manifest_lists_only_public_ops(orch):
-    from awm.orchestrator import hub_adapter
+    from awm.orchestrator import hub_adapter, worker_tools
 
     tool_names = {f.get("tool") or f["name"]
                   for f in hub_adapter.API_MANIFEST["functions"]}
     handler_names = set(hub_adapter.HANDLERS)
 
-    assert tool_names == PUBLIC
+    # The manifest exposes the human-facing ``orch_*`` tools AND the deliberate
+    # worker-facing ``orchwork_*`` domain (the lift, T4a) — kept SEPARATE from the
+    # public ops so a placed agent sees its verbs while ``orch_*`` stays human-only.
+    orchwork = set(worker_tools.WORKER_HANDLERS)
+    assert tool_names == PUBLIC | orchwork
     # Privileged ops are wired as handlers but never appear in the manifest.
     assert PRIVILEGED <= handler_names
     manifest_fn_names = {f["name"] for f in hub_adapter.API_MANIFEST["functions"]}

@@ -12,6 +12,7 @@ dependencies = [
     "awm-persistence",
     "awm-gatewayclient",
     "awm-agentcore",
+    "awm-telemetry",
     "httpx",
     "pydantic>=2.0",
 ]

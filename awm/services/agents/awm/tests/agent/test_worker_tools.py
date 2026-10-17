@@ -1,5 +1,10 @@
-"""Placement tool relays — staging, verdicts, planner buffer, token resolution,
-resolved refs, retain-after-ack ordering, funnel check."""
+"""Placement tool relays (agent domain) — deliverable staging, the planner graph
+buffer, identity resolution, and the funnel check.
+
+The worker VERDICTS (approve/reject/accept), the escape hatch (task_fail), and
+the planner READS moved to the orchestrator's ``orchwork`` domain (the lift,
+T4a); their coverage lives in the orchestrator's own ``test_worker_tools``. What
+stays here is the STATE-bearing surface the agents service still hosts."""
 
 from __future__ import annotations
 
@@ -17,8 +22,12 @@ from awm.agents._time import now_ms
 
 
 class FakeOrch:
-    """Records B-op calls into the shared agents_env log so ordering vs
-    workspace_retain is observable; returns a recognizable ack."""
+    """Records the (shrunk, T4a) contract-B calls into the shared agents_env log
+    so ordering vs workspace_retain is observable; returns a recognizable ack.
+
+    The seam shrank with the lift: only the SUPERVISION outcomes + side-channel
+    mirrors remain on it (the verdicts / task_fail / planner reads are orchwork
+    now, driven by the orchestrator, not relayed from here)."""
 
     def __init__(self, log):
         self.log = log
@@ -30,14 +39,9 @@ class FakeOrch:
     async def deliver(self, **kw): return self._rec("deliver", kw)
     async def fail(self, **kw): return self._rec("fail", kw)
     async def decompose_commit(self, **kw): return self._rec("decompose_commit", kw)
-    async def approve_plan(self, **kw): return self._rec("approve_plan", kw)
-    async def reject_plan(self, **kw): return self._rec("reject_plan", kw)
-    async def accept_work(self, **kw): return self._rec("accept_work", kw)
-    async def reject_work(self, **kw): return self._rec("reject_work", kw)
     async def set_attached(self, **kw): return self._rec("set_attached", kw)
     async def set_steering(self, **kw): return self._rec("set_steering", kw)
-    async def search_tasks(self, **kw): return {"tasks": []}
-    async def search_contracts(self, **kw): return {"contracts": []}
+    async def set_paused(self, **kw): return self._rec("set_paused", kw)
 
 
 @pytest.fixture
@@ -114,41 +118,6 @@ class TestDeliverableStaging:
         await placement.relay_edit_deliverable({
             "contract": "out:1", "content": "v2"}, _AS)
         assert _data(iid)["done"] is False
-
-
-class TestTaskFail:
-    async def test_fail_uses_resolved_refs_and_retains_after_ack(
-            self, agents_env, fake_orch):
-        _seed(agents_env, token="plt-f", task="T-real", agent="agt-real")
-        await placement.relay_task_fail({
-            "reason_type": "blocked",
-            "reason_text": "x", "partial_ref": "art:p",
-            "task_id": "SPOOF", "agent_ref": "SPOOF"}, _AS)
-        log = agents_env["calls"]
-        _o, _n, kw = next(c for c in log if c[1] == "fail")
-        assert kw["task_id"] == "T-real" and kw["agent_ref"] == "agt-real"
-        assert kw["partial_ref"] == "art:p"
-        names = [(c[0], c[1]) for c in log]
-        # retain happens AFTER the orchestrator ack, and it's retain (not delete).
-        assert names.index(("orch", "fail")) < names.index(
-            ("workspace", "workspace_retain"))
-
-
-class TestVerifierVerdicts:
-    async def test_approve_relays_and_retains(self, agents_env, fake_orch):
-        iid, _ = _seed(agents_env, token="plt-v", mode="verify")
-        res = await placement.relay_approve_plan({}, _AS)
-        assert res["outcome"] == "approved"
-        names = [(c[0], c[1]) for c in agents_env["calls"]]
-        assert ("orch", "approve_plan") in names
-        assert ("workspace", "workspace_retain") in names
-        assert "approved" in AgentsDAO().get_instance(iid)["data"]
-
-    async def test_reject_relays_reason(self, agents_env, fake_orch):
-        _seed(agents_env, token="plt-r", mode="verify")
-        await placement.relay_reject_plan({"reason": "missing tests"}, _AS)
-        _o, _n, kw = next(c for c in agents_env["calls"] if c[1] == "reject_plan")
-        assert kw["reason"] == "missing tests"
 
 
 class TestPlannerBuffer:

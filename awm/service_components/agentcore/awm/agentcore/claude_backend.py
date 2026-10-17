@@ -107,7 +107,17 @@ def _classify(parsed: dict, cur_msg_id: str | None = None) -> list[AgentEvent]:
         # key the downstream fold groups by (accumulate text across blocks).
         msg = parsed.get("message", {})
         msg_id = msg.get("id")
+        # Token usage rides the assistant message (transcript + stream-json both
+        # carry ``message.usage``). The interactive TUI transcript is the ONLY
+        # place these counts appear — without lifting them here the driven-claude
+        # event stream would carry no usage at all, and every telemetry
+        # projection (context gauge, EOOT/cost) would read zero for managed
+        # claude agents. Stamp it onto the message event's data (keyed by
+        # message_id so a projection dedupes per message) plus the model id.
+        usage = msg.get("usage") if isinstance(msg.get("usage"), dict) else None
+        model = msg.get("model")
         content = msg.get("content", [])
+        emitted_message = False
         for block in content if isinstance(content, list) else []:
             if not isinstance(block, dict):
                 continue
@@ -115,9 +125,11 @@ def _classify(parsed: dict, cur_msg_id: str | None = None) -> list[AgentEvent]:
             if btype == "text":
                 text = (block.get("text") or "").strip()
                 if text:
+                    emitted_message = True
                     out.append(AgentEvent(
                         kind="message", text=text,
-                        data={"message_id": msg_id},
+                        data={"message_id": msg_id, "usage": usage,
+                              "model": model},
                     ))
             elif btype == "tool_use":
                 name = block.get("name", "?")
@@ -129,8 +141,23 @@ def _classify(parsed: dict, cur_msg_id: str | None = None) -> list[AgentEvent]:
                         "id": block.get("id"),
                         "input": block.get("input"),
                         "message_id": msg_id,
+                        # Usage carried here too, so a tool-only assistant
+                        # message (no text block) still surfaces its counts.
+                        "usage": usage,
+                        "model": model,
                     },
                 ))
+        # A usage-bearing assistant message with neither text nor tool_use (rare)
+        # still needs its counts on the stream — emit a bare status carrier.
+        if usage is not None and not emitted_message and not any(
+            isinstance(b, dict) and b.get("type") == "tool_use"
+            for b in (content if isinstance(content, list) else [])
+        ):
+            out.append(AgentEvent(
+                kind="status", text=None,
+                data={"subtype": "usage", "message_id": msg_id,
+                      "usage": usage, "model": model},
+            ))
         return out
 
     if t == "user":
@@ -438,7 +465,21 @@ class ClaudeSession(AgentSession):
             tf.seek(0, os.SEEK_END)  # skip prior-turn history on resume
 
         tbuf = ""
-        last_msg_text: Optional[str] = None
+        # Per-turn carry: the final message text + the latest usage/model seen,
+        # so the synthesized Stop ``result`` (the per-turn accounting boundary)
+        # reports the turn's token usage. Without this the driven-claude result
+        # would carry no usage and per-turn cost projections would read zero.
+        turn: dict = {"text": None, "usage": None, "model": None}
+
+        def _note(ev: AgentEvent) -> None:
+            if ev.kind == "message" and ev.text:
+                turn["text"] = ev.text
+            d = ev.data or {}
+            if isinstance(d.get("usage"), dict):
+                turn["usage"] = d["usage"]
+            if d.get("model"):
+                turn["model"] = d["model"]
+
         try:
             while not self._closed:
                 progressed = False
@@ -450,8 +491,7 @@ class ClaudeSession(AgentSession):
                     *lines, tbuf = tbuf.split("\n")
                     for ln in lines:
                         for ev in self._classify_line(ln):
-                            if ev.kind == "message" and ev.text:
-                                last_msg_text = ev.text
+                            _note(ev)
                             yield ev
                 # Watch the control file for a Stop (per-turn boundary).
                 cchunk = cf.read()
@@ -478,8 +518,7 @@ class ClaudeSession(AgentSession):
                             *lines, tbuf = tbuf.split("\n")
                             for ln in lines:
                                 for ev in self._classify_line(ln):
-                                    if ev.kind == "message" and ev.text:
-                                        last_msg_text = ev.text
+                                    _note(ev)
                                     yield ev
                             quiet = 0
                         else:
@@ -488,11 +527,13 @@ class ClaudeSession(AgentSession):
                                 break
                             await asyncio.sleep(0.1)
                     yield AgentEvent(
-                        kind="result", text=last_msg_text,
+                        kind="result", text=turn["text"],
                         data={"session_id": self.session_id,
-                              "turn_boundary": True},
+                              "turn_boundary": True,
+                              "usage": turn["usage"],
+                              "model": turn["model"]},
                     )
-                    last_msg_text = None
+                    turn = {"text": None, "usage": None, "model": None}
                 if not progressed:
                     await asyncio.sleep(0.1)
         finally:
@@ -519,6 +560,14 @@ class ClaudeSession(AgentSession):
             for i, ev in enumerate(events):
                 ev.id = f"{uid}#{i}"
         return events
+
+    # ---- human attach ----
+
+    def attach_handle(self) -> Optional[str]:
+        """The tmux session name a human can ``tmux attach`` to (or None if the
+        session hasn't been named yet). This IS the interactive-attach surface —
+        claude runs in a detached tmux session, so its handle is that name."""
+        return self._tmux_session
 
     # ---- liveness (tmux session, not a child proc) ----
 

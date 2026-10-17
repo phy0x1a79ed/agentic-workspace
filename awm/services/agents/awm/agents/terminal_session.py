@@ -63,6 +63,25 @@ def _tmux_has_session(name: str) -> bool:
         return False
 
 
+def kill_tmux_session(name: str) -> bool:
+    """Dispose a tmux session by name. True if it was there and killed.
+
+    The raw-tmux disposal path — used to kill an **adopted** (human-started,
+    hook-discovered) agent that has no agents-registry entry, by the tmux session
+    name the roster surfaced. A *managed* agent is disposed through
+    ``agent_instances.kill_session`` instead (which tears down via the harness
+    seam and deregisters). Never raises."""
+    if not name:
+        return False
+    try:
+        return subprocess.run(
+            ["tmux", "kill-session", "-t", f"={name}"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5,
+        ).returncode == 0
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _resolve_tmux_session(init: dict) -> Tuple[Optional[str], Optional[str]]:
     """Resolve the terminal target for ``init`` → a tmux session name.
 

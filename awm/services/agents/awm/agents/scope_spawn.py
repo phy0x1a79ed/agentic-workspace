@@ -1,15 +1,14 @@
 """Scope agent: spawn an interactive agent *on an awm scope*.
 
-The second agent implementation (alongside the DAG agent) — a SEPARATE control
-plane that shares only leaf utilities with it, no class hierarchy. Where
-``fleet_spawn`` launches a plain agent at a bare directory, the scope agent
-lands the agent in a real **git-scope worktree** (``PROJECTS_DIR/<project>/<scope>``)
-with its ``.awm/context.md`` and the workspace-root ``.mcp.json`` (awm MCP) —
-exactly what a human's ``claude`` in that worktree would get.
+A resolve-or-provision preamble around the generic **conversational spawn**
+(``agent_instances.create_conversational_session``). Where a plain conversational
+spawn lands an agent at a bare directory, the scope agent lands it in a real
+**git-scope worktree** (``PROJECTS_DIR/<project>/<scope>``) with its
+``.awm/context.md`` — what a human's ``claude`` in that worktree would get, but
+as a *managed* session (event stream, transcript, human attach).
 
-It is deliberately NOT the DAG ``create_session`` path: no orchestrator task, no
-workspace unit, no supervision driver, no one-live-per-scope guard. It is
-``fleet_spawn.spawn_terminal`` with a resolve-or-provision preamble:
+It is deliberately NOT the DAG ``create_session`` placement path: no orchestrator
+task, no workspace unit, no supervision driver. The preamble:
 
 1. Derive the worktree path from ``awm.config.PROJECTS_DIR`` (no scopes RPC
    returns it — a known gap; the path is deterministic).
@@ -17,8 +16,8 @@ workspace unit, no supervision driver, no one-live-per-scope guard. It is
    ``scope_create`` (which lays out the git worktree + scaffolds ``.awm/``).
    ``scope_create`` is NOT idempotent (raises if an active session exists), so
    we only call it when the directory is absent.
-3. Hand off to ``spawn_terminal`` — the same detached-tmux launch the adhoc
-   path uses, so the roster/attach/terminal leaves all work unchanged.
+3. Hand off to ``create_conversational_session`` — the ONE managed spawn
+   lifecycle, so the roster/attach/terminal all work unchanged.
 """
 
 from __future__ import annotations
@@ -28,7 +27,7 @@ from typing import Any, Optional
 
 from awm import config as _config
 
-from . import fleet_spawn
+from . import agent_instances as ai
 
 
 def worktree_path(project: str, scope: str) -> str:
@@ -49,13 +48,12 @@ async def spawn_scoped(
     harness: str = "claude",
     permission: str = "default",
     context: Optional[str] = None,
-    hub_url: Optional[str] = None,
 ) -> dict[str, Any]:
-    """Resolve-or-provision a scope worktree, then launch an idle agent in it.
+    """Resolve-or-provision a scope worktree, then spawn a managed agent in it.
 
-    Returns ``spawn_terminal``'s dict plus ``{project, scope}``. Raises
-    ``ValueError`` on bad input, or propagates a scopes-service / tmux error so
-    the overlay shows a clean message.
+    Returns the managed session's identity + attach handle plus ``{project,
+    scope}``. Raises ``ValueError`` on bad input, or propagates a scopes-service
+    / spawn error so the overlay shows a clean message.
     """
     project = (project or "").strip()
     scope = (scope or "").strip()
@@ -76,17 +74,26 @@ async def spawn_scoped(
             raise FileNotFoundError(
                 f"scope worktree still absent after scope_create: {worktree!r}")
 
-    result = fleet_spawn.spawn_terminal(
+    permission_mode = ("bypassPermissions"
+                       if (permission or "").strip() == "full" else "default")
+    session = await ai.create_conversational_session(
         cwd=worktree,
-        harness=harness or "claude",
+        agent_cli=harness or "claude",
         model=model,
         effort=effort,
-        permission=permission or "default",
-        hub_url=hub_url,
+        permission_mode=permission_mode,
     )
-    result["project"] = project
-    result["scope"] = scope
-    return result
+    return {
+        "session_id": session.id,
+        "agent_id": session.agent_id,
+        "tmux_session": session.tmux_session,
+        "cwd": session.workdir,
+        "harness": session.agent_cli,
+        "model": session.model,
+        "effort": session.effort,
+        "project": project,
+        "scope": scope,
+    }
 
 
 async def list_scopes(

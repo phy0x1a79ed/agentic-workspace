@@ -114,6 +114,26 @@ def configure(
         _stop_placement_fn = stop_placement_fn
 
 
+def teardown_placement(workspace_slug: str | None, task_id: str | None) -> None:
+    """Close+retire the agents placement for a terminated worker (the lift seam).
+
+    A terminal worker verb (approve/reject/accept/fail — see
+    :mod:`awm.orchestrator.worker_tools`) drives the state machine HERE, then
+    calls this so the agents service closes the placement row BEFORE killing the
+    session — the same ordering ``orch_cancel`` uses, so a dying agent's late
+    ``fail`` / ``deliver`` resolves to a closed placement and can't re-route
+    consumers a second time. Best-effort: a stop failure never fails the verb
+    (the reclaim machinery collects any corpse; ``place_on_task``'s
+    ``_await_scope_free`` still vacates the old subprocess on the next leg)."""
+    if _stop_placement_fn is None or not workspace_slug:
+        return
+    try:
+        _stop_placement_fn(workspace_slug, task_id)
+    except Exception as exc:  # noqa: BLE001 — teardown is best-effort
+        log.warning("orchestrator: placement teardown failed for %s: %s",
+                    workspace_slug, exc)
+
+
 def _steer_fields(t: dict) -> dict:
     """Project a task's durable steering state for a UI read.
 

@@ -16,7 +16,6 @@ from typing import Any
 
 from awm.gatewayclient import ServiceAdapter
 from awm.gatewayclient.adapter import SessionContext
-from awm.agents import admin_ops
 from awm.agents.driver_config import DRIVER_CONTRACT
 from awm.agents import dao
 from awm.agents import agent_instances as ai
@@ -25,8 +24,8 @@ from awm.agents import agent_bus
 from awm.agents._time import iso_to_ms
 from awm.agents.agent_slash import dispatch as slash_dispatch
 from awm.agents.terminal_session import terminal_session
-from awm.agents import fleet_spawn
 from awm.agents import scope_spawn
+from awm.agents import terminal_session
 from awm.agents import roster
 from awm.agents.fleet_config import FLEET_CONTRACT
 from awm.agents.models import (
@@ -490,20 +489,6 @@ API_MANIFEST: dict[str, Any] = {
             ),
             "params": [],
         },
-        {
-            "name": "task_fail",
-            "tool": "agent_task_fail",
-            "description": (
-                "Give up on your placed task. Call with a reason_type and "
-                "reason_text, and optionally a partial_ref to preserve partial "
-                "work."
-            ),
-            "params": [
-                {"name": "reason_type", "type": "string", "required": False},
-                {"name": "reason_text", "type": "string", "required": False},
-                {"name": "partial_ref", "type": "string", "required": False},
-            ],
-        },
         # steering handshake (worker/plan/planner): consent to detach, rescind,
         # or flag mid-run that you want a human.
         {
@@ -541,58 +526,9 @@ API_MANIFEST: dict[str, Any] = {
             ),
             "params": [],
         },
-        # verify: a verdict on the staged plan (terminal on call).
-        {
-            "name": "approve_plan",
-            "tool": "agent_approve_plan",
-            "description": (
-                "Verifier: the plan satisfies the objective. Advances the task "
-                "from VERIFYING_PLAN to ACTIVE. Takes no arguments."
-            ),
-            "params": [],
-        },
-        {
-            "name": "reject_plan",
-            "tool": "agent_reject_plan",
-            "description": (
-                "Verifier: the plan does not satisfy the objective. Send it back "
-                "to re-plan with a concise reason."
-            ),
-            "params": [
-                {"name": "reason", "type": "string", "required": False},
-            ],
-        },
-        # accept: an independent verdict on the worker's CLAIMED delivery
-        # (terminal on call). The accept verifier runs the machine checks, then
-        # accepts (promote the claim → real delivery, complete) or rejects (loop
-        # back to the worker under a bounded budget).
-        {
-            "name": "accept_work",
-            "tool": "agent_accept_work",
-            "description": (
-                "Accept verifier: the worker's claimed delivery passes every "
-                "acceptance check and meets the objective. Promotes the claim "
-                "into a real delivery and completes the task. Pass evidence "
-                "describing what you ran and observed."
-            ),
-            "params": [
-                {"name": "evidence", "type": "string", "required": False},
-            ],
-        },
-        {
-            "name": "reject_work",
-            "tool": "agent_reject_work",
-            "description": (
-                "Accept verifier: the worker's claimed delivery fails an "
-                "acceptance check or does not meet the objective. Loops the task "
-                "back to the worker with your reason (bounded budget). Optionally "
-                "pass a partial_ref preserving partial work."
-            ),
-            "params": [
-                {"name": "reason", "type": "string", "required": False},
-                {"name": "partial_ref", "type": "string", "required": False},
-            ],
-        },
+        # The verify verdicts (approve_plan / reject_plan) and the accept verdicts
+        # (accept_work / reject_work) moved to the orchestrator's ``orchwork``
+        # domain (the lift, T4a) — a verify/accept placement sees them there.
         # planner: buffer a sub-DAG, committed when you indicate done.
         {
             "name": "add_subtask",
@@ -632,22 +568,8 @@ API_MANIFEST: dict[str, Any] = {
                 {"name": "name", "type": "string", "required": True},
             ],
         },
-        {
-            "name": "search_tasks",
-            "tool": "agent_search_tasks",
-            "description": "Planner read: search existing tasks (reuse nodes).",
-            "params": [
-                {"name": "query", "type": "string", "required": False},
-            ],
-        },
-        {
-            "name": "search_contracts",
-            "tool": "agent_search_contracts",
-            "description": "Planner read: search existing contracts.",
-            "params": [
-                {"name": "query", "type": "string", "required": False},
-            ],
-        },
+        # The planner reads (search_tasks / search_contracts) moved to the
+        # orchestrator's ``orchwork`` domain (the lift, T4a).
     ],
     "emitters": [
         {
@@ -693,19 +615,10 @@ API_MANIFEST: dict[str, Any] = {
 }
 
 
-# Attach-gated admin tools (DAG restructuring) are generated from the single
-# admin_ops registry — MCP-visible (so an attended worker sees them), but each
-# one's gate (placement.relay_admin) rejects it unless a human is attached.
-# Editing admin_ops.ADMIN_OPS adds/removes/renames a command here automatically.
-API_MANIFEST["functions"].extend(
-    {
-        "name": op["name"],
-        "tool": f"agent_{op['name']}",
-        "description": op["description"],
-        "params": op["params"],
-    }
-    for op in admin_ops.ADMIN_OPS
-)
+# The attach-gated admin tools (DAG restructuring) moved to the orchestrator's
+# ``orchwork`` domain (the lift, T4a) — its ``worker_tools`` registry now owns
+# the manifest + dispatch + attach-gate for relocate_self / create_node /
+# depend_on / link_repo / set_title / set_tags.
 
 
 async def _h_list_sessions(args: dict) -> dict:
@@ -731,35 +644,64 @@ async def _h_kill_session(args: dict) -> dict:
     return _serialize_session(info)
 
 
+def _permission_mode(permission: str | None) -> str:
+    """Map the fleet overlay's coarse ``permission`` onto a harness mode.
+
+    The overlay speaks ``default`` | ``full``; the engine speaks the full
+    permission-mode vocabulary. ``full`` → ``bypassPermissions`` (the full-open
+    flag); anything else → ``default``."""
+    return "bypassPermissions" if (permission or "").strip() == "full" else "default"
+
+
+def _spawn_result(session) -> dict:
+    """The overlay/terminal-facing view of a freshly spawned managed agent."""
+    return {
+        "session_id": session.id,
+        "agent_id": session.agent_id,
+        "tmux_session": session.tmux_session,
+        "cwd": session.workdir,
+        "harness": session.agent_cli,
+        "model": session.model,
+        "effort": session.effort,
+    }
+
+
 async def _h_spawn(args: dict) -> dict:
-    result = fleet_spawn.spawn_terminal(
+    """Generic conversational spawn: a MANAGED agentcore session at ``cwd``.
+
+    The successor to the raw-tmux fleet launch: what a human gets by opening a
+    terminal at ``cwd`` and typing ``claude``/``opencode``, but as a *managed*
+    session (normalized event stream, transcript, human attach) — no task, no
+    unit, no supervision driver. Returns the session identity + attach handle."""
+    session = await ai.create_conversational_session(
         cwd=args.get("cwd") or "",
-        harness=args.get("harness") or "claude",
+        agent_cli=args.get("harness") or "claude",
         model=args.get("model"),
         effort=args.get("effort"),
-        permission=args.get("permission") or "default",
+        permission_mode=_permission_mode(args.get("permission")),
     )
-    # Register an immediate 'starting' placeholder in the fleet roster so the new
-    # agent shows up the instant it's launched (keyed by tmux session name until
-    # its real hook fires and adopts the row). The roster is now in-process (this
-    # same service), so report locally instead of an RPC to the retired
-    # notifications service. Soft-fail: a roster hiccup must never fail the spawn
-    # — the row still arrives via the agent's own hook.
-    try:
-        await _handle_report({
-            "harness": result["harness"],
-            "event": "spawned",
-            "session_id": result["tmux_session"],
-            "tmux_session": result["tmux_session"],
-            "cwd": result["cwd"],
-        })
-    except Exception:  # noqa: BLE001 — placeholder is best-effort
-        pass
+    result = _spawn_result(session)
+    # Best-effort roster placeholder for immediate visibility (keyed by the tmux
+    # attach handle for claude). Managed agents also surface via list_sessions.
+    if session.tmux_session:
+        try:
+            await _handle_report({
+                "harness": result["harness"],
+                "event": "spawned",
+                "session_id": result["tmux_session"],
+                "tmux_session": result["tmux_session"],
+                "cwd": result["cwd"],
+            })
+        except Exception:  # noqa: BLE001 — placeholder is best-effort
+            pass
     return result
 
 
 def _h_kill_tmux(args: dict) -> dict:
-    killed = fleet_spawn.kill_tmux_session(args.get("tmux_session") or "")
+    # Raw-tmux disposal by name — for an ADOPTED agent with no registry entry.
+    # A managed agent is disposed via ``kill_session`` (session_id); killing its
+    # tmux session by name still works (the waiter loop deregisters it).
+    killed = terminal_session.kill_tmux_session(args.get("tmux_session") or "")
     return {"ok": killed, "tmux_session": args.get("tmux_session")}
 
 
@@ -777,17 +719,18 @@ async def _h_spawn_scoped(args: dict) -> dict:
         permission=args.get("permission") or "default",
         context=args.get("context"),
     )
-    try:
-        await _handle_report({
-            "harness": result["harness"],
-            "event": "spawned",
-            "session_id": result["tmux_session"],
-            "tmux_session": result["tmux_session"],
-            "cwd": result["cwd"],
-            "title": f"{result['project']}/{result['scope']}",
-        })
-    except Exception:  # noqa: BLE001 — placeholder is best-effort
-        pass
+    if result.get("tmux_session"):
+        try:
+            await _handle_report({
+                "harness": result["harness"],
+                "event": "spawned",
+                "session_id": result["tmux_session"],
+                "tmux_session": result["tmux_session"],
+                "cwd": result["cwd"],
+                "title": f"{result['project']}/{result['scope']}",
+            })
+        except Exception:  # noqa: BLE001 — placeholder is best-effort
+            pass
     return result
 
 
@@ -1147,40 +1090,19 @@ HANDLERS = {
     "stop_placement": _h_stop_placement,
     # Placement tools (also in the manifest, MCP-visible to placed agents under
     # the `agent` domain; verb == the internal fn name == the HANDLERS key).
+    # The state-bearing agent-domain verbs the agents service still hosts. The
+    # verdicts / task_fail / planner reads / admin ops moved to the orchestrator's
+    # ``orchwork`` domain (the lift, T4a).
     "edit_deliverable": _relay("relay_edit_deliverable", "edit_deliverable"),
     "indicate_done": _relay("relay_indicate_done", "indicate_done"),
-    "task_fail": _relay("relay_task_fail", "task_fail"),
     "request_detach": _relay("relay_request_detach", "request_detach"),
     "rescind_detach": _relay("relay_rescind_detach", "rescind_detach"),
     "request_steering": _relay("relay_request_steering", "request_steering"),
-    "approve_plan": _relay("relay_approve_plan", "approve_plan"),
-    "reject_plan": _relay("relay_reject_plan", "reject_plan"),
-    "accept_work": _relay("relay_accept_work", "accept_work"),
-    "reject_work": _relay("relay_reject_work", "reject_work"),
     "add_subtask": _relay("relay_add_subtask", "add_subtask"),
     "add_dependency": _relay("relay_add_dependency", "add_dependency"),
     "define_contract": _relay("relay_define_contract", "define_contract"),
-    "search_tasks": _relay("relay_search_tasks", "search_tasks"),
-    "search_contracts": _relay("relay_search_contracts", "search_contracts"),
 }
 
-
-def _admin_relay(op_name: str):
-    """Build the gated relay handler for one admin op (forwards the caller
-    identity ``as_`` so ``placement.relay_admin`` resolves + attach-gates it).
-
-    Two gates stack: ``ensure_verb_allowed`` (mode permits this admin verb) then
-    ``relay_admin``'s own live attach-gate (a human is attached right now)."""
-    async def _handler(args: dict, as_: str | None = None) -> dict:
-        from awm.agents import placement
-        placement.ensure_verb_allowed(as_, op_name)
-        return await placement.relay_admin(op_name, args, as_)
-    return _handler
-
-
-# One gated handler per admin op, generated from the registry (single source).
-for _op in admin_ops.ADMIN_OPS:
-    HANDLERS[_op["name"]] = _admin_relay(_op["name"])
 
 # Config contract handlers (config_get/config_set), reached by the gateway
 # aggregator over RPC. Not in the manifest functions[] → not projected as tools.

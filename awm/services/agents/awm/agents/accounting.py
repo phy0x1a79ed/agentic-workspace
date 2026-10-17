@@ -244,6 +244,59 @@ def accumulate_usage(transcript_path: Optional[str], from_offset: int) -> Option
 
 
 # ---------------------------------------------------------------------------
+# Telemetry projection (managed agents) — usage folded from the event stream
+# ---------------------------------------------------------------------------
+
+
+def usage_from_telemetry_events(events: list[dict]) -> dict:
+    """Fold a managed agent's telemetry events → cumulative token usage.
+
+    The projection counterpart to :func:`accumulate_usage` (which scrapes the
+    transcript file for *adopted* agents). A managed agent's normalized events
+    are teed into ``awm.telemetry`` under ``agent:<id>``; each carries the
+    assistant ``message.usage`` under ``meta['data']['usage']`` (enriched by the
+    claude backend). Usage is PER-MESSAGE, replicated onto that message's
+    message + tool_use events, so we DEDUPE by ``message_id`` — else a message
+    that also called a tool double-counts. The synthesized per-turn ``result``
+    carries usage too but has no ``message_id``, so requiring one skips it (it is
+    a duplicate of the last message). Returns::
+
+        {"add": {tok_in, tok_out, tok_cache_write_5m, tok_cache_write_1h,
+                 tok_cache_read},   # cumulative across the whole stream
+         "context_tokens": int | None,   # last message's live context size
+         "model": str | None}            # last message's model id
+
+    Pure over the event list; never raises.
+    """
+    add = {"tok_in": 0, "tok_out": 0, "tok_cache_write_5m": 0,
+           "tok_cache_write_1h": 0, "tok_cache_read": 0}
+    seen: set[str] = set()
+    context_tokens: Optional[int] = None
+    model: Optional[str] = None
+    for ev in events if isinstance(events, list) else []:
+        meta = ev.get("meta") if isinstance(ev, dict) else None
+        data = (meta or {}).get("data") if isinstance(meta, dict) else None
+        if not isinstance(data, dict):
+            continue
+        usage = data.get("usage")
+        mid = data.get("message_id")
+        if not isinstance(usage, dict) or not mid or mid in seen:
+            continue
+        seen.add(mid)
+        cats = _cat_tokens(usage)
+        for k, v in cats.items():
+            add[k] += v
+        context_tokens = (
+            cats["tok_in"] + cats["tok_cache_read"]
+            + int(usage.get("cache_creation_input_tokens") or 0)
+        )
+        m = data.get("model")
+        if m:
+            model = m
+    return {"add": add, "context_tokens": context_tokens, "model": model}
+
+
+# ---------------------------------------------------------------------------
 # EOOT pricing (Equivalent Opus-4.8 Output Tokens)
 # ---------------------------------------------------------------------------
 

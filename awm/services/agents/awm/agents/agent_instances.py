@@ -29,8 +29,9 @@ import os
 import re
 import signal
 import time
+import uuid
 from pathlib import Path
-from typing import Optional
+from typing import Awaitable, Callable, Optional
 
 from awm import config
 from awm.agents import dao as _dao_module
@@ -99,9 +100,17 @@ class AgentInstance:
         agent_cli: str,
         log_path: Path,
         agent_session: _CoreSession,
+        agent_id: Optional[str] = None,
     ):
         self.id = id
         self.scope = scope
+        # ``agent_id`` is the NEUTRAL registry identity — the one stable control
+        # key across every backend. For a task-bound placement it equals the
+        # unit slug (``scope``); for a conversational/fleet agent it is a minted
+        # id (no unit slug, no placement identity). Everything downstream that
+        # once keyed on ``scope`` (registry, transcript, bus) keys on this, so a
+        # generic ``spawn`` needs no unit slug. Defaults to ``scope``.
+        self.agent_id = agent_id or scope
         self.agent_cli = agent_cli
         self.log_path = log_path
         self.agent_session = agent_session
@@ -113,6 +122,10 @@ class AgentInstance:
         self.reader_task: Optional[asyncio.Task] = None
         self.waiter_task: Optional[asyncio.Task] = None
         self.input_pump_task: Optional[asyncio.Task] = None
+        # Telemetry tee: drains a dedicated subscriber fan into awm.telemetry
+        # under ``agent:<id>`` (the spine the roster/cost/context views project
+        # off of). Started at spawn; ends when the event pump ends.
+        self.telemetry_task: Optional[asyncio.Task] = None
         self.stdin_ready: asyncio.Event = asyncio.Event()
         self.stdin_frames_log = log_path.parent / "agent.log"
         self.permission_mode: str = "default"
@@ -155,6 +168,20 @@ class AgentInstance:
         # a long-lived session doesn't leak ids.
         self._partial_accum: dict[str, str] = {}
         self._msg_accum: dict[str, str] = {}
+        # ---- observer hooks (the generic engine's ONLY coupling to a driver) ----
+        # The engine loops are harness-generic and import no driver. A task-bound
+        # caller (placement / gamebot) registers these callbacks at spawn; a
+        # conversational agent leaves them all None (the loops just skip them).
+        # This is what lets the placement/gamebot drivers move OUT of the service
+        # (T4) without the engine importing them.
+        #   on_turn_boundary — invoked (awaited) after each terminal ``result``.
+        #   on_exit          — invoked (awaited) once the subprocess exits.
+        #   on_user_post     — invoked (sync) on each browser-originated user post.
+        self.on_turn_boundary: Optional[
+            Callable[["AgentInstance"], Awaitable[None]]] = None
+        self.on_exit: Optional[
+            Callable[["AgentInstance"], Awaitable[None]]] = None
+        self.on_user_post: Optional[Callable[["AgentInstance"], None]] = None
 
     @property
     def proc(self):
@@ -173,7 +200,10 @@ class AgentInstance:
         self.cli_session_id = value
 
 
-# In-memory registries keyed on scope (the unit slug) and instance id.
+# In-memory registries keyed on the neutral ``agent_id`` (the unit slug for a
+# placement; a minted id for a conversational agent) and on instance id. The
+# dict is still named ``_by_scope`` for continuity — its key is ``agent_id``,
+# which equals ``scope`` for every placement.
 _registry_by_id: dict[int, AgentInstance] = {}
 _by_scope: dict[str, AgentInstance] = {}
 _registry_lock = asyncio.Lock()
@@ -261,6 +291,154 @@ def _build_core_config(
 # Public API: create / lookup
 # ---------------------------------------------------------------------------
 
+def _mint_agent_id(cwd: str, agent_cli: str) -> str:
+    """A neutral, collision-free ``agent_id`` for a conversational/fleet agent.
+
+    Rooted at the spawn dir's basename (so a human recognizes it in the roster),
+    plus a short random suffix. NOT a unit slug — a conversational agent has no
+    workspace unit and no placement identity."""
+    base = re.sub(
+        r"[^A-Za-z0-9_-]", "-",
+        os.path.basename(os.path.abspath((cwd or "").rstrip("/"))) or "agent",
+    ).strip("-") or "agent"
+    return f"fleet-{base}-{uuid.uuid4().hex[:8]}"
+
+
+async def _launch(
+    *, key: str, scope: str, agent_id: str, agent_cli: str,
+    permission_mode: str, model: Optional[str], effort: Optional[str],
+    resume_session_id: Optional[str], log_path: Path, workdir: str,
+    placement: bool, mode: str,
+    task_ref: Optional[str] = None, agent_ref: Optional[str] = None,
+    placement_token: Optional[str] = None, placement_as: Optional[str] = None,
+    allowed_tools: Optional[list[str]] = None,
+    disallowed_tools: Optional[list[str]] = None,
+    on_turn_boundary: Optional[Callable[["AgentInstance"], Awaitable[None]]] = None,
+    on_exit: Optional[Callable[["AgentInstance"], Awaitable[None]]] = None,
+    on_user_post: Optional[Callable[["AgentInstance"], None]] = None,
+) -> AgentInstance:
+    """The ONE spawn lifecycle shared by placement + conversational agents.
+
+    open_agent → subscribe (before first send, no pump-drained-past race) →
+    start → build the :class:`AgentInstance` → register → start the
+    reader/waiter/input-pump loops → wait for stdin-ready. The ONLY divergence
+    is the DAO row insert (task-bound vs plain) and tmux naming; the caller
+    supplies validated params + the observer callbacks a driver needs. Runs the
+    insert under the registry lock so a busy ``key`` never orphans a row."""
+    async with _registry_lock:
+        if key in _by_scope:
+            raise ScopeBusyError(
+                f"agent {key} already has an active session "
+                f"(pid={_by_scope[key].proc.pid if _by_scope[key].proc else '?'})"
+            )
+        dao = _get_dao()
+        if placement:
+            instance_id = dao.open_task_instance(
+                scope=scope, log_path=str(log_path),
+                cli_session_id=resume_session_id, started_at=now_ms(),
+                mode=mode, task_ref=task_ref, agent_ref=agent_ref,
+                placement_token=placement_token,
+            )
+        else:
+            instance_id = dao.open_instance(
+                scope=scope, log_path=str(log_path),
+                cli_session_id=resume_session_id, started_at=now_ms(),
+            )
+
+        # A claude agent runs in tmux and gets a deterministic, human-attachable
+        # session name (keyed on the neutral agent_id + instance id); opencode
+        # has no tmux session.
+        tmux_name = (
+            _tmux_session_name(instance_id, agent_id)
+            if agent_cli == "claude" else None
+        )
+        # MCP setup is harness-owned: a placement passes its identity (the unit
+        # slug) so the harness synthesizes an awm server with AWM_AS and its
+        # B-op tools resolve to its own task with no token; a conversational
+        # agent carries no identity (placement_as=None).
+        core_config = _build_core_config(
+            agent_cli=agent_cli, permission_mode=permission_mode,
+            model=model, effort=effort, resume_session_id=resume_session_id,
+            workspace_dir=Path(workdir),
+            allowed_tools=allowed_tools, disallowed_tools=disallowed_tools,
+            placement_as=placement_as,
+            tmux_session_name=tmux_name,
+        )
+        agent_session = open_agent(core_config)
+        # Two subscribers registered BEFORE start (no pump-drained-past race):
+        # the supervisor reader loop, and the telemetry tee (its own fan so it
+        # captures every event independent of the reader).
+        event_stream = agent_session.subscribe()
+        tee_stream = agent_session.subscribe()
+        try:
+            await agent_session.start()
+        except FileNotFoundError as exc:
+            dao.close_instance(instance_id, ended_at=now_ms(), exit_code=-1,
+                               intent_override="failed_to_spawn")
+            raise RuntimeError(f"{agent_cli} binary not on PATH: {exc}") from exc
+        except Exception as exc:  # noqa: BLE001
+            dao.close_instance(instance_id, ended_at=now_ms(), exit_code=-1,
+                               intent_override="failed_to_spawn")
+            raise RuntimeError(
+                f"failed to start {agent_cli} for {key}: {exc}") from exc
+
+        session = AgentInstance(
+            id=instance_id, scope=scope, agent_cli=agent_cli,
+            log_path=log_path, agent_session=agent_session, agent_id=agent_id,
+        )
+        session.permission_mode = permission_mode
+        session.model = model
+        session.effort = effort
+        session.cli_session_id = resume_session_id
+        session.mode = mode
+        session.task_ref = task_ref
+        session.agent_ref = agent_ref
+        session.placement_token = placement_token
+        session.workdir = workdir
+        session.allowed_tools = allowed_tools
+        session.tmux_session = tmux_name
+        session.on_turn_boundary = on_turn_boundary
+        session.on_exit = on_exit
+        session.on_user_post = on_user_post
+        # Persist agent_cli (not a column) so lists/hydration report the harness
+        # correctly, plus the tmux session name for human attach.
+        data_patch: dict = {"agent_cli": agent_cli}
+        if tmux_name:
+            data_patch["tmux_session"] = tmux_name
+        dao.merge_instance_data(instance_id, data_patch)
+        _registry_by_id[instance_id] = session
+        _by_scope[key] = session
+
+    session.reader_task = asyncio.create_task(_reader_loop(session, event_stream))
+    session.waiter_task = asyncio.create_task(_waiter_loop(session))
+    session.input_pump_task = asyncio.create_task(_input_pump(session))
+    # Telemetry tee (lazy import: keeps the awm.telemetry/persistence pull off
+    # the module load path and out of the pure-logic unit tests).
+    from awm.agents import agent_telemetry
+    session.telemetry_task = asyncio.create_task(
+        agent_telemetry.tee_events(session, tee_stream))
+    try:
+        await asyncio.wait_for(session.stdin_ready.wait(), timeout=10.0)
+    except asyncio.TimeoutError:
+        # Tear down through the seam so a proc-less harness (tmux) is cleaned
+        # up too rather than leaking a detached session.
+        try:
+            await session.agent_session.close()
+        except Exception:  # noqa: BLE001
+            pass
+        if session.telemetry_task is not None:
+            session.telemetry_task.cancel()
+        async with _registry_lock:
+            _by_scope.pop(key, None)
+            _registry_by_id.pop(instance_id, None)
+        _get_dao().close_instance(instance_id, ended_at=now_ms(), exit_code=-1,
+                                   intent_override="stdin_ready_timeout")
+        raise RuntimeError(
+            f"input pump never signaled stdin-ready for {key} within 10s"
+        )
+    return session
+
+
 async def create_session(*, scope: str,
                          agent_cli: str = "claude",
                          permission_mode: str = "default",
@@ -275,34 +453,38 @@ async def create_session(*, scope: str,
                          workdir: Optional[str] = None,
                          allowed_tools: Optional[list[str]] = None,
                          disallowed_tools: Optional[list[str]] = None,
+                         on_turn_boundary: Optional[
+                             Callable[["AgentInstance"], Awaitable[None]]] = None,
+                         on_exit: Optional[
+                             Callable[["AgentInstance"], Awaitable[None]]] = None,
+                         on_user_post: Optional[
+                             Callable[["AgentInstance"], None]] = None,
                          ) -> AgentInstance:
-    """Spawn a CLI subprocess for a placement and register it.
+    """Spawn a task-bound **placement** subprocess and register it.
 
-    Every session is a task-bounded **placement**: it runs in a workspace UNIT
-    (``workdir``, required — provisioned by the workspace service), NEVER a git
-    scope, and never touches the scopes service. ``scope`` (the globally-unique
-    unit slug) is the natural key. There is no conversational mode: a human
-    attaches via the transcript WS and pushes text via ``agent_post`` (direct
-    enqueue). ``mode`` is the placement mode (worker/plan/planner/verify) and
-    ``allowed_tools`` / ``disallowed_tools`` carry its tool profile. The DAO
-    insert records the placement row and the supervision driver owns the
-    lifecycle."""
+    A placement runs in a workspace UNIT (``workdir``, required — provisioned by
+    the workspace service), NEVER a git scope. ``scope`` (the globally-unique
+    unit slug) is the placement identity AND the registry key. ``mode`` is the
+    placement mode (worker/plan/planner/verify) and ``allowed_tools`` /
+    ``disallowed_tools`` carry its tool profile. The observer callbacks
+    (``on_turn_boundary`` / ``on_exit`` / ``on_user_post``) are the driver's ONLY
+    coupling into the generic engine — the supervision driver registers them so
+    the engine itself imports no driver. For a human-driven conversational agent
+    with no unit/task, see :func:`create_conversational_session`."""
     if agent_cli not in _SUPPORTED_CLIS:
         raise ValueError(
             f"Unknown agent CLI '{agent_cli}'. Supported: {sorted(_SUPPORTED_CLIS)}"
         )
-    # Model is HARD-REQUIRED at the spawn boundary. A blank model is refused
-    # rather than silently defaulted, so a claude TUI can never omit ``--model``
-    # and inherit the operator's ambient ``ANTHROPIC_MODEL`` (see the claude
-    # backend's ``build_argv``). Callers resolve a concrete id up front —
-    # ``placement._resolve_driver`` fills a per-harness default, and a respawn
-    # carries the prior session's model — so this guard only trips a caller that
-    # bypassed resolution.
-    if not (model and model.strip()):
+    # Model is harness-aware. A claude TUI must carry an explicit model (a blank
+    # one would inherit the operator's ambient ``ANTHROPIC_MODEL`` — see the
+    # claude backend's ``build_argv``); opencode may omit it (it picks its model
+    # in-app). Callers resolve a concrete id up front — ``_resolve_driver`` fills
+    # a per-harness default and a respawn carries the prior model — so the claude
+    # guard only trips a caller that bypassed resolution.
+    if agent_cli == "claude" and not (model and model.strip()):
         raise ValueError(
-            "create_session requires an explicit, non-empty model "
-            "(hard-required at the spawn boundary; a blank model no longer "
-            "falls back to the harness/CLI/ambient default)"
+            "claude create_session requires an explicit, non-empty model "
+            "(a blank model would fall back to the harness/ambient default)"
         )
     if permission_mode not in _VALID_PERMISSION_MODES:
         raise ValueError(
@@ -317,7 +499,6 @@ async def create_session(*, scope: str,
         raise ValueError(
             "a placement requires a workdir (the workspace unit path)")
 
-    key = scope
     # The workdir is the workspace UNIT (provisioned by the workspace service),
     # not a git scope under PROJECTS_DIR.
     workspace_dir = Path(workdir)
@@ -327,116 +508,81 @@ async def create_session(*, scope: str,
     awm_dir.mkdir(parents=True, exist_ok=True)
     log_path = awm_dir / "session.log"
 
-    async with _registry_lock:
-        if key in _by_scope:
-            raise ScopeBusyError(
-                f"scope {key} already has an active session "
-                f"(pid={_by_scope[key].proc.pid if _by_scope[key].proc else '?'})"
-            )
+    # Resume id recovery (outside the lock — a plain read).
+    if resume_session_id is None and not fresh:
+        resume_session_id = _get_dao().get_latest_cli_session_id(scope)
 
-        dao = _get_dao()
-        # Resume id recovery.
-        if resume_session_id is None and not fresh:
-            resume_session_id = dao.get_latest_cli_session_id(scope)
+    return await _launch(
+        key=scope, scope=scope, agent_id=scope, agent_cli=agent_cli,
+        permission_mode=permission_mode, model=model, effort=effort,
+        resume_session_id=resume_session_id, log_path=log_path,
+        workdir=str(workspace_dir), placement=True, mode=mode,
+        task_ref=task_ref, agent_ref=agent_ref, placement_token=placement_token,
+        placement_as=scope,
+        allowed_tools=allowed_tools, disallowed_tools=disallowed_tools,
+        on_turn_boundary=on_turn_boundary, on_exit=on_exit,
+        on_user_post=on_user_post,
+    )
 
-        instance_id = dao.open_task_instance(
-            scope=scope,
-            log_path=str(log_path),
-            cli_session_id=resume_session_id,
-            started_at=now_ms(),
-            mode=mode,
-            task_ref=task_ref,
-            agent_ref=agent_ref,
-            placement_token=placement_token,
+
+async def create_conversational_session(
+    *, cwd: str,
+    agent_cli: str = "claude",
+    model: Optional[str] = None,
+    effort: Optional[str] = None,
+    permission_mode: str = "default",
+    resume_session_id: Optional[str] = None,
+    agent_id: Optional[str] = None,
+) -> AgentInstance:
+    """Spawn a human-driven **conversational** agent — no task, no unit, no driver.
+
+    The generic ``spawn``: what a human gets by opening a terminal at ``cwd`` and
+    typing ``claude``/``opencode`` — but as a *managed* agentcore session (event
+    stream, transcript, human attach) rather than a raw tmux launch. It has no
+    workspace unit and no placement identity (``placement_as=None`` → no
+    ``AWM_AS``), so it never touches the orchestrator; a minted ``agent_id`` is
+    its registry key. No supervision driver is attached (all observer hooks stay
+    None), so the engine just streams and persists its events — the shared
+    lifecycle with a placement, minus the task-bound half.
+
+    ``cwd`` may be any directory (a scope worktree or a bare dir). The session
+    log lives under a service-owned state dir keyed by ``agent_id`` — a bare
+    spawn dir is never written into."""
+    if agent_cli not in _SUPPORTED_CLIS:
+        raise ValueError(
+            f"Unknown agent CLI '{agent_cli}'. Supported: {sorted(_SUPPORTED_CLIS)}"
+        )
+    cwd = os.path.abspath(os.path.expanduser((cwd or "").strip()))
+    if not cwd or not os.path.isdir(cwd):
+        raise FileNotFoundError(f"spawn cwd is not a directory: {cwd!r}")
+    # claude carries an explicit model (no ambient inheritance); opencode picks
+    # its model in-app, so a blank model is only rejected for claude.
+    if agent_cli == "claude" and not (model and model.strip()):
+        raise ValueError("claude spawn requires an explicit model")
+    if permission_mode not in _VALID_PERMISSION_MODES:
+        raise ValueError(
+            f"Invalid permission_mode {permission_mode!r}; "
+            f"choices: {list(_VALID_PERMISSION_MODES)}"
+        )
+    if effort is not None and effort not in _VALID_EFFORTS:
+        raise ValueError(
+            f"Invalid effort {effort!r}; choices: {list(_VALID_EFFORTS)}"
         )
 
-        # Build the agentcore config and drive an AgentSession. The subprocess
-        # + stream parsing live in agentcore now; we keep only the supervisor.
-        # MCP setup is harness-owned: the placement passes its identity (the
-        # unit slug) so the harness synthesizes an awm server with AWM_AS, and
-        # its B-op tools resolve to its own task without a token.
-        placement_as = scope
-        # A claude agent runs in tmux and gets a deterministic session name
-        # (human-attachable); opencode has no tmux session.
-        tmux_name = (
-            _tmux_session_name(instance_id, scope)
-            if agent_cli == "claude" else None
-        )
-        core_config = _build_core_config(
-            agent_cli=agent_cli, permission_mode=permission_mode,
-            model=model, effort=effort, resume_session_id=resume_session_id,
-            workspace_dir=workspace_dir,
-            allowed_tools=allowed_tools, disallowed_tools=disallowed_tools,
-            placement_as=placement_as,
-            tmux_session_name=tmux_name,
-        )
-        agent_session = open_agent(core_config)
+    agent_id = agent_id or _mint_agent_id(cwd, agent_cli)
+    # Logs live under a service-owned state dir (never inside an arbitrary spawn
+    # dir), keyed by the neutral agent_id.
+    log_dir = Path(config.DATA_DIR) / "agents-conversational" / agent_id
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / "session.log"
 
-        # Subscribe BEFORE the first send so the claude init `status` event and
-        # any early acts are captured (the pump-drained-past-us race).
-        event_stream = agent_session.subscribe()
-        try:
-            await agent_session.start()
-        except FileNotFoundError as exc:
-            dao.close_instance(instance_id, ended_at=now_ms(), exit_code=-1,
-                               intent_override="failed_to_spawn")
-            raise RuntimeError(f"{agent_cli} binary not on PATH: {exc}") from exc
-        except Exception as exc:  # noqa: BLE001
-            dao.close_instance(instance_id, ended_at=now_ms(), exit_code=-1,
-                               intent_override="failed_to_spawn")
-            raise RuntimeError(
-                f"failed to start {agent_cli} for {key}: {exc}") from exc
-
-        session = AgentInstance(
-            id=instance_id,
-            scope=scope,
-            agent_cli=agent_cli,
-            log_path=log_path,
-            agent_session=agent_session,
-        )
-        session.permission_mode = permission_mode
-        session.model = model
-        session.effort = effort
-        session.cli_session_id = resume_session_id
-        session.mode = mode
-        session.task_ref = task_ref
-        session.agent_ref = agent_ref
-        session.placement_token = placement_token
-        session.workdir = str(workspace_dir)
-        session.allowed_tools = allowed_tools
-        session.tmux_session = tmux_name
-        # Persist agent_cli (not a column) so lists/hydration report the harness
-        # correctly, plus the tmux session name for human attach.
-        data_patch: dict = {"agent_cli": agent_cli}
-        if tmux_name:
-            data_patch["tmux_session"] = tmux_name
-        dao.merge_instance_data(instance_id, data_patch)
-        _registry_by_id[instance_id] = session
-        _by_scope[key] = session
-
-    session.reader_task = asyncio.create_task(_reader_loop(session, event_stream))
-    session.waiter_task = asyncio.create_task(_waiter_loop(session))
-    session.input_pump_task = asyncio.create_task(_input_pump(session))
-    # No scope-channel delivery loop: a human attaches via the transcript WS and
-    # pushes text via agent_post (direct enqueue) — every node is a placement.
-    try:
-        await asyncio.wait_for(session.stdin_ready.wait(), timeout=10.0)
-    except asyncio.TimeoutError:
-        # Tear down through the seam so a proc-less harness (tmux) is cleaned
-        # up too rather than leaking a detached session.
-        try:
-            await session.agent_session.close()
-        except Exception:  # noqa: BLE001
-            pass
-        async with _registry_lock:
-            _by_scope.pop(key, None)
-            _registry_by_id.pop(instance_id, None)
-        _get_dao().close_instance(instance_id, ended_at=now_ms(), exit_code=-1,
-                                   intent_override="stdin_ready_timeout")
-        raise RuntimeError(
-            f"input pump never signaled stdin-ready for {key} within 10s"
-        )
-    return session
+    return await _launch(
+        key=agent_id, scope=agent_id, agent_id=agent_id, agent_cli=agent_cli,
+        permission_mode=permission_mode, model=model, effort=effort,
+        resume_session_id=resume_session_id, log_path=log_path,
+        workdir=cwd, placement=False, mode="conversational",
+        placement_as=None,
+    )
 
 
 def get_session_by_scope(scope: str) -> AgentInstance | None:
@@ -514,11 +660,17 @@ def enqueue_input(session: AgentInstance, post_author: str,
         framed_body = f"[from:{post_author}]\n{post_body}"
         agent_transcript.publish_inbound(session, framed_body, client_id)
         # A new human message clears the agent's detach-readiness: new information
-        # means it must re-confirm before it can detach. No-op unless the task is
-        # attached with the readiness bit set. (Browser posts only — kickoff /
-        # supervisor turns carry no client_id and never touch the bit.)
-        from awm.agents import placement
-        placement.note_user_post(session)
+        # means it must re-confirm before it can detach. Driver-owned via the
+        # registered observer (placement's ``note_user_post``); a conversational
+        # agent has no such hook and skips it. Keeps the engine free of a driver
+        # import. (Browser posts only — kickoff / supervisor turns carry no
+        # client_id and never touch the bit.)
+        cb = session.on_user_post
+        if cb is not None:
+            try:
+                cb(session)
+            except Exception:  # noqa: BLE001
+                pass
     return True
 
 
@@ -753,19 +905,17 @@ async def _reader_loop(session: AgentInstance, event_stream) -> None:
         if kind == "result":
             session._partial_accum.clear()
             session._msg_accum.clear()
-            # Outer-loop turn boundary: drive the session's supervisor —
-            # a game bot gets the gamebot driver (budget countdown →
-            # force-park), everything else the placement driver (decrement
-            # the hard turn budget, inject the next prompt / force-fail at 0).
-            try:
-                if getattr(session, "mode", None) == "gamebot":
-                    from awm.agents import gamebot
-                    await gamebot.on_turn_boundary(session)
-                else:
-                    from awm.agents import placement
-                    await placement.on_turn_boundary(session)
-            except Exception:  # noqa: BLE001
-                pass
+            # Turn-boundary driver — the session's registered observer. A
+            # placement gets the supervision driver (turn budget, next prompt,
+            # force-fail at 0); a game bot gets its budget-countdown driver; a
+            # conversational agent has none and skips. The engine invokes the
+            # callback WITHOUT importing any driver (they move out in T4).
+            cb = getattr(session, "on_turn_boundary", None)
+            if cb is not None:
+                try:
+                    await cb(session)
+                except Exception:  # noqa: BLE001
+                    pass
 
 
 # ---------------------------------------------------------------------------
@@ -787,21 +937,24 @@ async def _waiter_loop(session: AgentInstance) -> None:
     _get_dao().close_instance(session.id, ended_at=now_ms(),
                               exit_code=session.exit_code)
 
-    # Liveness: a placement subprocess that died without a terminal outcome must
-    # not strand its task in ACTIVE — force-fail it so the orchestrator can
-    # re-place. A clean terminal or an intentional stop/respawn no-ops inside.
-    from awm.agents import placement
-    try:
-        await placement.reclaim_if_dead(session)
-    except Exception:  # noqa: BLE001
-        pass
+    # Liveness driver — the session's registered exit observer. For a placement
+    # this force-fails a task whose subprocess died without a terminal outcome
+    # (so the orchestrator can re-place); a clean terminal / intentional
+    # stop/respawn no-ops inside. A conversational agent has no exit hook. The
+    # engine invokes the callback WITHOUT importing any driver.
+    cb = session.on_exit
+    if cb is not None:
+        try:
+            await cb(session)
+        except Exception:  # noqa: BLE001
+            pass
 
     if session.input_pump_task is not None:
         session.input_pump_task.cancel()
 
     async with _registry_lock:
-        if _by_scope.get(session.scope) is session:
-            _by_scope.pop(session.scope, None)
+        if _by_scope.get(session.agent_id) is session:
+            _by_scope.pop(session.agent_id, None)
         _registry_by_id.pop(session.id, None)
 
     # The scope outlives any single session — there is nothing to auto-close.
@@ -941,6 +1094,11 @@ async def respawn_session(
         placement_token = current.placement_token
         task_workdir = current.workdir
         task_allowed_tools = current.allowed_tools
+        # Carry the driver's observer callbacks across respawn so the new
+        # subprocess keeps the SAME supervision/liveness/user-post hooks.
+        cur_on_turn = current.on_turn_boundary
+        cur_on_exit = current.on_exit
+        cur_on_user_post = current.on_user_post
         if placement_token is not None:
             _get_dao().clear_placement_token(current.id)
 
@@ -971,6 +1129,9 @@ async def respawn_session(
         placement_token=placement_token,
         workdir=task_workdir,
         allowed_tools=task_allowed_tools,
+        on_turn_boundary=cur_on_turn,
+        on_exit=cur_on_exit,
+        on_user_post=cur_on_user_post,
     )
 
 
@@ -985,7 +1146,7 @@ async def send_slash(scope_key: str, body: str) -> None:
     if session is None:
         raise NoSessionError(f"no active session for {scope_key}")
     try:
-        await session.agent_session.send(body)
+        await session.agent_session.slash(body)
     except Exception as exc:  # noqa: BLE001
         raise NoSessionError(
             f"session for {scope_key} cannot accept input: {exc}"

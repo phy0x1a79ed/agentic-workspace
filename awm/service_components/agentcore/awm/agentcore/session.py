@@ -199,6 +199,41 @@ class AgentSession(ABC):
         """Push one user turn to the harness."""
         ...
 
+    async def spawn_interactive(self) -> None:
+        """Bring the session up *idle and human-attachable* — no driven turn.
+
+        The interactive-fleet counterpart to :meth:`start`: it spawns the
+        harness (idle at its prompt) and begins pumping the event stream, but
+        does NOT send a kickoff turn. For a TUI backend (claude) this is exactly
+        what a human gets by opening a terminal and typing ``claude``; a human
+        can then ``tmux attach`` to co-drive it (see :meth:`attach_handle`).
+        The default is :meth:`start` — a backend whose plain start already comes
+        up idle (both current backends do) needs no override.
+        """
+        await self.start()
+
+    async def slash(self, line: str) -> None:
+        """Run a raw harness command line, unframed and immediate.
+
+        First-class seam for a harness's native command syntax: for the claude
+        TUI a leading-slash line (``/compact``, ``/clear``, plugin commands) is
+        pasted verbatim and the real TUI runs it natively; a harness with no
+        native command notion (opencode) degrades to a plain :meth:`send`.
+        Distinct from :meth:`send` only in intent (no ``[from:author]`` framing
+        by the caller) — the default forwards to :meth:`send`.
+        """
+        await self.send(line)
+
+    def attach_handle(self) -> Optional[str]:
+        """A human-attach handle for this session, or ``None``.
+
+        For a tmux-backed TUI (claude) this is the tmux session name a human can
+        ``tmux attach`` to; backends with no attachable surface (opencode's HTTP
+        server) return ``None``. Harness-agnostic so the fleet terminal + roster
+        read one field regardless of backend.
+        """
+        return None
+
     async def interrupt(self, text: str) -> None:
         """Force-deliver a notification that preempts the current turn.
 

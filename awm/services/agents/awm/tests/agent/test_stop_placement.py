@@ -35,10 +35,9 @@ class FakeOrch:
     async def deliver(self, **kw): return self._rec("deliver", kw)
     async def fail(self, **kw): return self._rec("fail", kw)
     async def decompose_commit(self, **kw): return self._rec("decompose_commit", kw)
-    async def approve_plan(self, **kw): return self._rec("approve_plan", kw)
-    async def reject_plan(self, **kw): return self._rec("reject_plan", kw)
     async def set_attached(self, **kw): return self._rec("set_attached", kw)
     async def set_steering(self, **kw): return self._rec("set_steering", kw)
+    async def set_paused(self, **kw): return self._rec("set_paused", kw)
 
 
 @pytest.fixture
@@ -117,13 +116,15 @@ class TestStopPlacement:
     async def test_late_report_after_stop_is_rejected(self, agents_env, fake_orch):
         _seed(agents_env)
         await placement.stop_placement({"scope": "leaf-1"})
-        # A dying agent's late fail/deliver resolves to the CLOSED placement and
-        # is rejected — it can never re-route consumers a second time.
+        # A dying agent's late agent-domain tool call resolves to the CLOSED
+        # placement and is rejected — it can never mutate the retired unit. (The
+        # orchestrator-owned terminal verdicts tear down through this same closed
+        # row via the stop_placement seam — the lift, T4a.)
         with pytest.raises(placement.PlacementError):
-            await placement.relay_task_fail(
-                {"reason_type": "transient-error"}, _AS)
-        # ...and no fail B-op reached the orchestrator from that late report.
-        assert not any(n == "fail" for n, _ in fake_orch.calls)
+            await placement.relay_indicate_done({}, _AS)
+        # ...and no delivery/fail B-op reached the orchestrator from that late
+        # report.
+        assert not any(n in ("fail", "deliver") for n, _ in fake_orch.calls)
 
 
 class TestManifestOmission:

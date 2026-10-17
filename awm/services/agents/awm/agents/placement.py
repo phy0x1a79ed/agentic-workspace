@@ -45,7 +45,6 @@ import uuid
 from pathlib import Path
 
 import awm.gatewayclient as gatewayclient
-from awm.agents import admin_ops
 from awm.agents import agent_instances as ai
 from awm.agents import orch_client
 from awm.agents.agent_instances import TASK_TURN_BUDGET, TASK_WARN_REMAINING
@@ -139,13 +138,22 @@ _BUILTIN_FULL = _BUILTIN_READONLY + ["Write", "Edit", "Bash", "NotebookEdit"]
 _BUILTIN_VERIFY_EXEC = _BUILTIN_READONLY + ["Bash"]
 
 _AGENT_DOMAIN = "mcp__awm__agent"
+# The worker VERDICTS (approve/reject/accept), the escape hatch (task_fail), the
+# planner READS (search_*), and the attach-gated ADMIN ops moved to the
+# orchestrator's own ``orchwork`` domain (the lift, T4a). A worker/plan/planner
+# placement therefore spans BOTH domains — ``agent`` for the state-bearing verbs
+# the agents service still hosts (deliverable staging / planner graph buffer /
+# steering) and ``orchwork`` for the orchestrator-owned worker verbs. verify and
+# accept host NO agent-domain verb any more (ALL of theirs moved), so they carry
+# ``orchwork`` alone.
+_ORCHWORK_DOMAIN = "mcp__awm__orchwork"
 
 TOOL_PROFILES: dict[str, list[str]] = {
-    "worker": _BUILTIN_FULL + [_AGENT_DOMAIN],
-    "plan": _BUILTIN_READONLY + [_AGENT_DOMAIN],
-    "planner": _BUILTIN_READONLY + [_AGENT_DOMAIN],
-    "verify": [_AGENT_DOMAIN],  # no filesystem at all
-    "accept": _BUILTIN_VERIFY_EXEC + [_AGENT_DOMAIN],  # read + run, NO edit
+    "worker": _BUILTIN_FULL + [_AGENT_DOMAIN, _ORCHWORK_DOMAIN],
+    "plan": _BUILTIN_READONLY + [_AGENT_DOMAIN, _ORCHWORK_DOMAIN],
+    "planner": _BUILTIN_READONLY + [_AGENT_DOMAIN, _ORCHWORK_DOMAIN],
+    "verify": [_ORCHWORK_DOMAIN],  # no filesystem, no agent domain
+    "accept": _BUILTIN_VERIFY_EXEC + [_ORCHWORK_DOMAIN],  # read + run, NO edit
 }
 
 # Claude Code's internal plan mode is DISABLED for every placement — the DAG's
@@ -157,42 +165,34 @@ TOOL_PROFILES: dict[str, list[str]] = {
 # lever, but it has no plan mode to enter, so the guarantee is claude-side.
 _PLAN_MODE_TOOLS = ["EnterPlanMode", "ExitPlanMode"]
 
-# Attach-gated DAG-restructuring verbs (configurable registry). PERMITTED for
-# every worker, but ``relay_admin`` rejects each unless a human is attached — so
-# an unattended worker may name them yet can never restructure the DAG.
-_ADMIN_VERBS = set(admin_ops.ADMIN_TOOL_NAMES)
-# Steering-handshake verbs a placed agent drives (contract D). ``request_detach``
-# / ``rescind_detach`` are attached-only (checked in the relay); ``request_steering``
-# is the mid-run wants-a-human flag, valid while detached. verify stays
-# verdict-only, so it does NOT get them.
+# The agent-domain verbs each mode may still call, gated SERVER-SIDE below. The
+# worker verdicts (approve/reject/accept), the escape hatch (task_fail), the
+# planner reads (search_*), and the attach-gated admin ops moved to the
+# orchestrator's ``orchwork`` domain (the lift, T4a) — its own
+# ``worker_tools.ensure_verb_allowed`` gates those. What remains on the ``agent``
+# domain is the STATE-bearing surface the agents service still hosts:
+#   * deliverable staging  — edit_deliverable / indicate_done,
+#   * the planner graph buffer — add_subtask / add_dependency / define_contract,
+#   * the steering handshake — request_detach / rescind_detach / request_steering.
+# ``request_detach`` / ``rescind_detach`` are attached-only (checked in the relay);
+# ``request_steering`` is the mid-run wants-a-human flag, valid while detached.
 _STEERING_VERBS = {"request_detach", "rescind_detach", "request_steering"}
-_WORKER_VERBS = {"edit_deliverable", "indicate_done", "task_fail"} | _STEERING_VERBS
+_WORKER_VERBS = {"edit_deliverable", "indicate_done"} | _STEERING_VERBS
 _PLANNER_VERBS = {
-    "add_subtask", "add_dependency", "define_contract",
-    "search_tasks", "search_contracts", "indicate_done", "task_fail",
+    "add_subtask", "add_dependency", "define_contract", "indicate_done",
 } | _STEERING_VERBS
-_VERIFY_VERBS = {"approve_plan", "reject_plan", "task_fail"}
-# The accept verifier's terminal verdict verbs. Like verify it is verdict-only
-# (no steering, no admin, no deliverable staging) — it accepts or rejects the
-# worker's claimed delivery, or bails via task_fail.
-_ACCEPT_VERBS = {"accept_work", "reject_work", "task_fail"}
-# ``set_title`` is the label-derivation seam a steered agent uses at detach time
-# (still attach-gated in ``relay_admin``). worker gets it via ``_ADMIN_VERBS``;
-# plan/planner nodes can also be attended (attach-on-rest places the next leg
-# attended), so they carry it too — so the shared steering instruction to set a
-# title holds in every steerable mode.
-_STEER_ADMIN_VERBS = {"set_title"}
 
 VERB_PROFILES: dict[str, set[str]] = {
-    "worker": _WORKER_VERBS | _ADMIN_VERBS,
-    "plan": _WORKER_VERBS | _STEER_ADMIN_VERBS,
-    "planner": _PLANNER_VERBS | _STEER_ADMIN_VERBS,
-    "verify": set(_VERIFY_VERBS),
-    "accept": set(_ACCEPT_VERBS),
+    "worker": set(_WORKER_VERBS),
+    "plan": set(_WORKER_VERBS),
+    "planner": set(_PLANNER_VERBS),
+    "verify": set(),   # verify's verdicts are all orchwork now
+    "accept": set(),   # accept's verdicts are all orchwork now
 }
 
-# task_fail is the universal escape hatch — always permitted regardless of mode.
-_ALWAYS_ALLOWED_VERBS = {"task_fail"}
+# No agent-domain verb is universally allowed any more: ``task_fail`` moved to
+# ``orchwork`` (where it is the always-allowed escape hatch).
+_ALWAYS_ALLOWED_VERBS: set[str] = set()
 
 _VALID_MODES = set(TOOL_PROFILES)
 
@@ -894,6 +894,11 @@ async def place_on_task(args: dict) -> dict:
         disallowed_tools=_disallowed_tools_for(mode),
         model=model,
         effort=effort,
+        # Register this driver's observers on the generic engine — its ONLY
+        # coupling into the session runtime. The engine imports no placement code.
+        on_turn_boundary=on_turn_boundary,
+        on_exit=reclaim_if_dead,
+        on_user_post=note_user_post,
     )
 
     # Record the placement spec on the row so the relays + supervisor can resolve
@@ -1128,18 +1133,6 @@ async def relay_indicate_done(args: dict, as_: str | None = None) -> dict:
     return {"ok": True, "done": True}
 
 
-async def relay_task_fail(args: dict, as_: str | None = None) -> dict:
-    """Any mode: give up. Relay to ``orch.fail`` (resolved refs), then retain."""
-    row = _resolve_open_placement_for(as_)
-    ack = await orch_client.fail(
-        task_id=row["task_ref"], agent_ref=row["agent_ref"],
-        reason_type=args.get("reason_type"), reason_text=args.get("reason_text"),
-        partial_ref=args.get("partial_ref"),
-    )
-    await _close_and_retire(row, "failed")
-    return {"ok": True, "outcome": "failed", "ack": ack}
-
-
 # ---------------------------------------------------------------------------
 # Steering handshake (durable attach + mutual-detach consent + objective record)
 # ---------------------------------------------------------------------------
@@ -1341,85 +1334,11 @@ def note_user_post(session) -> None:
         steer_agent_ready=False))
 
 
-# ---------------------------------------------------------------------------
-# Verifier verdict tools (terminal on call)
-# ---------------------------------------------------------------------------
-
-async def relay_approve_plan(args: dict, as_: str | None = None) -> dict:
-    """Verifier tool: the plan satisfies the objective (VERIFYING_PLAN → ACTIVE)."""
-    row = _resolve_open_placement_for(as_)
-    ack = await orch_client.approve_plan(
-        task_id=row["task_ref"], agent_ref=row["agent_ref"])
-    await _close_and_retire(row, "approved")
-    return {"ok": True, "outcome": "approved", "ack": ack}
-
-
-async def relay_reject_plan(args: dict, as_: str | None = None) -> dict:
-    """Verifier tool: the plan does not satisfy the objective (→ re-plan)."""
-    row = _resolve_open_placement_for(as_)
-    ack = await orch_client.reject_plan(
-        task_id=row["task_ref"], agent_ref=row["agent_ref"],
-        reason=args.get("reason"))
-    await _close_and_retire(row, "rejected")
-    return {"ok": True, "outcome": "rejected", "ack": ack}
-
-
-async def relay_accept_work(args: dict, as_: str | None = None) -> dict:
-    """Accept verifier tool: the claimed delivery passes (VERIFYING_WORK → done).
-
-    Promotes the worker's claim into a real delivery and completes the task. The
-    ``evidence`` (what the verifier ran and observed) is passed through; the
-    orchestrator falls back to its reason_text when omitted."""
-    row = _resolve_open_placement_for(as_)
-    ack = await orch_client.accept_work(
-        task_id=row["task_ref"], agent_ref=row["agent_ref"],
-        evidence=args.get("evidence"))
-    await _close_and_retire(row, "accepted")
-    return {"ok": True, "outcome": "accepted", "ack": ack}
-
-
-async def relay_reject_work(args: dict, as_: str | None = None) -> dict:
-    """Accept verifier tool: the claimed delivery fails (VERIFYING_WORK → re-work).
-
-    Loops the task back to the worker under a bounded budget (the worker is
-    re-placed with the rejection reason), or fails the task when the budget is
-    exhausted — the orchestrator owns that routing."""
-    row = _resolve_open_placement_for(as_)
-    ack = await orch_client.reject_work(
-        task_id=row["task_ref"], agent_ref=row["agent_ref"],
-        reason=args.get("reason"), partial_ref=args.get("partial_ref"))
-    await _close_and_retire(row, "rejected")
-    return {"ok": True, "outcome": "rejected", "ack": ack}
-
-
-# ---------------------------------------------------------------------------
-# Attach-gated admin tools (DAG restructuring; configurable registry)
-# ---------------------------------------------------------------------------
-
-
-async def relay_admin(op_name: str, args: dict, as_: str | None = None) -> dict:
-    """The ONE uniform attach-gate over the admin registry (contract D → B).
-
-    Resolves the caller's placement from its identity, enforces the registry's
-    ``requires_attached`` (rejecting when no human is attached — re-checked HERE
-    every call, since a human can detach mid-turn), then forwards to the named
-    orchestrator op as the resolved ``{task_id, agent_ref}``. Adding/removing/
-    renaming an admin command is a single edit in :mod:`admin_ops` — this relay
-    never changes."""
-    op = admin_ops.BY_NAME.get(op_name)
-    if op is None:
-        raise PlacementError(f"unknown admin op {op_name!r}")
-    row = _resolve_open_placement_for(as_)
-    if op.get("requires_attached") and not _row_data(row).get("attached"):
-        raise PlacementError(
-            f"{op_name} is an attached-only command — no human is attached to "
-            "this node")
-    payload: dict = {"task_id": row["task_ref"], "agent_ref": row["agent_ref"]}
-    for k in op.get("forward", []):
-        if args.get(k) is not None:
-            payload[k] = args[k]
-    ack = await orch_client.call_op(op["orch_op"], **payload)
-    return {"ok": True, "op": op_name, "ack": ack}
+# The verifier verdict tools (approve_plan / reject_plan / accept_work /
+# reject_work), the escape hatch (task_fail), and the attach-gated admin ops moved
+# to the orchestrator's ``orchwork`` domain (the lift, T4a) — the orchestrator now
+# resolves the caller's task by slug, casts the verdict on its own state machine,
+# and tears down THIS placement back through the ``stop_placement`` seam.
 
 
 # ---------------------------------------------------------------------------
@@ -1482,16 +1401,8 @@ async def relay_define_contract(args: dict, as_: str | None = None) -> dict:
     return {"ok": True, "contracts": len(g["contracts"])}
 
 
-async def relay_search_tasks(args: dict, as_: str | None = None) -> dict:
-    """Planner read tool: existing tasks (proxy to the orchestrator)."""
-    _resolve_open_placement_for(as_)
-    return await orch_client.search_tasks(query=args.get("query"))
-
-
-async def relay_search_contracts(args: dict, as_: str | None = None) -> dict:
-    """Planner read tool: existing contracts (proxy to the orchestrator)."""
-    _resolve_open_placement_for(as_)
-    return await orch_client.search_contracts(query=args.get("query"))
+# The planner READS (search_tasks / search_contracts) moved to the orchestrator's
+# ``orchwork`` domain (the lift, T4a) — a planner reaches them there directly.
 
 
 # ---------------------------------------------------------------------------

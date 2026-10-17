@@ -1,10 +1,10 @@
 """Tests for the scope agent (spawn_scoped / list_scopes).
 
-The scope agent is the second, scope-based implementation: a resolve-or-provision
-preamble around the shared ``fleet_spawn.spawn_terminal`` leaf. These cover the
-provisioning fork (create only when the worktree is absent), the derived
-worktree path, and the list_scopes passthrough — with the tmux launch and the
-scopes RPC both stubbed (the real launch rides the live-hub harness)."""
+The scope agent is a resolve-or-provision preamble around the generic managed
+conversational spawn (``agent_instances.create_conversational_session``). These
+cover the provisioning fork (create only when the worktree is absent), the
+derived worktree path, and the list_scopes passthrough — with the managed spawn
+and the scopes RPC both stubbed (the real launch rides the live-hub harness)."""
 
 from __future__ import annotations
 
@@ -15,6 +15,19 @@ import pytest
 pytestmark = [pytest.mark.agent, pytest.mark.smoke]
 
 from awm.agents import scope_spawn
+
+
+class _FakeSession:
+    """Minimal stand-in exposing the fields scope_spawn reads off a session."""
+
+    def __init__(self, *, cwd, harness, model, effort):
+        self.id = 1
+        self.agent_id = "fleet-x-1"
+        self.tmux_session = "fleet-x-1"
+        self.workdir = cwd
+        self.agent_cli = harness
+        self.model = model
+        self.effort = effort
 
 
 @pytest.fixture
@@ -31,17 +44,16 @@ def projects_dir(tmp_path, monkeypatch):
 
 @pytest.fixture
 def stub_spawn(monkeypatch):
-    """Record spawn_terminal calls; return a deterministic result."""
+    """Record create_conversational_session calls; return a fake session."""
     calls = []
 
-    def _fake_spawn(*, cwd, harness="claude", model=None, effort=None,
-                    permission="default", hub_url=None):
-        calls.append({"cwd": cwd, "harness": harness, "model": model,
-                      "effort": effort, "permission": permission})
-        return {"tmux_session": "fleet-x-1", "cwd": cwd, "harness": harness,
-                "model": model, "effort": effort, "command": "claude"}
+    async def _fake_spawn(*, cwd, agent_cli="claude", model=None, effort=None,
+                          permission_mode="default", **kw):
+        calls.append({"cwd": cwd, "harness": agent_cli, "model": model,
+                      "effort": effort, "permission_mode": permission_mode})
+        return _FakeSession(cwd=cwd, harness=agent_cli, model=model, effort=effort)
 
-    monkeypatch.setattr(scope_spawn.fleet_spawn, "spawn_terminal", _fake_spawn)
+    monkeypatch.setattr(scope_spawn.ai, "create_conversational_session", _fake_spawn)
     return calls
 
 
@@ -92,10 +104,11 @@ class TestSpawnScoped:
         # scope_create was called (worktree didn't exist) …
         assert ("scopes", "scope_create", {"project": "awm", "scope": "new-scope"}) \
             in stub_gw
-        # … then spawn_terminal launched IN the derived worktree.
+        # … then the managed spawn launched IN the derived worktree.
         assert stub_spawn[0]["cwd"] == str(projects_dir / "awm" / "new-scope")
         assert out["project"] == "awm" and out["scope"] == "new-scope"
         assert out["tmux_session"] == "fleet-x-1"
+        assert out["session_id"] == 1 and out["agent_id"] == "fleet-x-1"
 
     def test_skips_create_when_worktree_present(self, projects_dir, stub_spawn, stub_gw):
         (projects_dir / "awm" / "exists").mkdir(parents=True)
@@ -104,6 +117,12 @@ class TestSpawnScoped:
         # No scope_create when the worktree is already on disk (not idempotent).
         assert not [c for c in stub_gw if c[1] == "scope_create"]
         assert stub_spawn[0]["cwd"] == str(projects_dir / "awm" / "exists")
+
+    def test_full_permission_maps_to_bypass(self, projects_dir, stub_spawn, stub_gw):
+        (projects_dir / "awm" / "p").mkdir(parents=True)
+        asyncio.run(scope_spawn.spawn_scoped(
+            project="awm", scope="p", model="haiku", permission="full"))
+        assert stub_spawn[0]["permission_mode"] == "bypassPermissions"
 
     def test_passes_context_to_create(self, projects_dir, stub_spawn, stub_gw):
         asyncio.run(scope_spawn.spawn_scoped(

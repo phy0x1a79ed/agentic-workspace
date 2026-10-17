@@ -191,6 +191,42 @@ def test_classify_assistant_stamps_message_id():
     assert evts[1].data["id"] == "t1"
 
 
+def test_classify_assistant_carries_usage():
+    # Token usage rides the assistant message and MUST surface on the emitted
+    # events — it is the only place the interactive-TUI transcript exposes it, so
+    # every telemetry projection depends on it not being dropped here.
+    usage = {"input_tokens": 10, "output_tokens": 5,
+             "cache_read_input_tokens": 100,
+             "cache_creation": {"ephemeral_5m_input_tokens": 20,
+                                "ephemeral_1h_input_tokens": 0}}
+    evts = _classify({
+        "type": "assistant",
+        "message": {"id": "m1", "model": "claude-opus-4-8",
+                    "usage": usage, "content": [
+                        {"type": "text", "text": "hi"},
+                        {"type": "tool_use", "name": "Bash", "id": "t1",
+                         "input": {}},
+                    ]},
+    })
+    assert evts[0].data["usage"] == usage
+    assert evts[0].data["model"] == "claude-opus-4-8"
+    # Tool-use event carries usage too, so a tool-only message still surfaces it.
+    assert evts[1].data["usage"] == usage
+
+
+def test_classify_tool_only_assistant_emits_usage_carrier():
+    # An assistant message with only tool_use (no text) still surfaces usage —
+    # via the tool_use event's data (no separate carrier needed).
+    usage = {"input_tokens": 1, "output_tokens": 1}
+    evts = _classify({
+        "type": "assistant",
+        "message": {"id": "m2", "usage": usage, "content": [
+            {"type": "tool_use", "name": "Read", "id": "t2", "input": {}},
+        ]},
+    })
+    assert any(e.data.get("usage") == usage for e in evts)
+
+
 def test_classify_result_ok_and_error():
     ok = _classify({"type": "result", "result": "done", "usage": {}})
     assert ok[0].kind == "result"

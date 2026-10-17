@@ -6,27 +6,29 @@ placed agent's behalf. They are **manifest-omitted** on the orchestrator side
 (``/svc/orchestrator/fn/<op>``), which keys off the orchestrator's ``HANDLERS``
 rather than its manifest.
 
-Outcome ops (one per terminal worker action):
-    deliver           a worker satisfied an output contract
-    fail              a placed agent gave up (or supervision force-failed it)
-    decompose_commit  a planner handed back a sub-DAG (DECOMPOSING → children)
-    approve_plan      a verifier approved a plan (VERIFYING_PLAN → ACTIVE)
-    reject_plan       a verifier rejected a plan (VERIFYING_PLAN → re-plan)
-    accept_work       an accept verifier accepted a claimed delivery
-                      (VERIFYING_WORK → COMPLETED — claim promoted to delivery)
-    reject_work       an accept verifier rejected a claimed delivery
-                      (VERIFYING_WORK → re-work under a bounded budget)
+The seam shrank with the lift (T4a): the worker VERDICTS (approve_plan /
+reject_plan / accept_work / reject_work), the planner READS (search_tasks /
+search_contracts), and the generic admin relay (``call_op``) are no longer
+called from here — a placed agent drives those directly through the
+orchestrator's own ``orchwork`` MCP domain. What the agents service still calls
+on a placement's behalf is the SUPERVISION + side-channel surface:
 
-Side-channel ops:
-    set_attached      mirror the orthogonal user-attached flag to the kernel so
-                      it won't reclaim a task a human is driving
+Supervision outcomes (driven by the agents-side supervisor, not the worker):
+    deliver           a worker's staged deliverable was accepted at the stop
+                      boundary → satisfy an output contract
+    fail              supervision force-failed a placement (stall / budget /
+                      reclaim of a dead session)
+    decompose_commit  a planner's buffered sub-DAG was accepted (DECOMPOSING →
+                      children)
+
+Side-channel ops (mirror the agents-owned steering state to the kernel):
+    set_attached      mirror the orthogonal user-attached flag so the kernel
+                      won't reclaim a task a human is driving
     set_steering      mirror the durable steering state (attach + the three
                       consent/steering bits + the objective record); the agents
                       side is the single writer, the orchestrator only mirrors
     set_paused        mirror the sticky human-pause flag to the kernel (durable;
                       keeps the supervisor frozen even after the human detaches)
-    search_tasks      planner read: existing tasks (so a sub-DAG can reuse nodes)
-    search_contracts  planner read: existing contracts
 
 A module-level ``_IMPL`` indirection lets tests and an isolated dev hub inject a
 fake orchestrator (``set_impl(FakeOrch())``) so this whole scope builds and
@@ -55,18 +57,6 @@ class _GatewayOrch:
     async def decompose_commit(self, **kw: Any) -> Any:
         return await gatewayclient.call(ORCH_SERVICE, "decompose_commit", kw)
 
-    async def approve_plan(self, **kw: Any) -> Any:
-        return await gatewayclient.call(ORCH_SERVICE, "approve_plan", kw)
-
-    async def reject_plan(self, **kw: Any) -> Any:
-        return await gatewayclient.call(ORCH_SERVICE, "reject_plan", kw)
-
-    async def accept_work(self, **kw: Any) -> Any:
-        return await gatewayclient.call(ORCH_SERVICE, "accept_work", kw)
-
-    async def reject_work(self, **kw: Any) -> Any:
-        return await gatewayclient.call(ORCH_SERVICE, "reject_work", kw)
-
     async def set_attached(self, **kw: Any) -> Any:
         return await gatewayclient.call(ORCH_SERVICE, "set_attached", kw)
 
@@ -75,18 +65,6 @@ class _GatewayOrch:
 
     async def set_paused(self, **kw: Any) -> Any:
         return await gatewayclient.call(ORCH_SERVICE, "orch_set_paused", kw)
-
-    async def search_tasks(self, **kw: Any) -> Any:
-        return await gatewayclient.call(ORCH_SERVICE, "search_tasks", kw)
-
-    async def search_contracts(self, **kw: Any) -> Any:
-        return await gatewayclient.call(ORCH_SERVICE, "search_contracts", kw)
-
-    async def call_op(self, op: str, **kw: Any) -> Any:
-        """Generic relay to any (manifest-omitted) orchestrator op by name — the
-        attach-gated admin ops (relocate_task / node_add_dependency / link_repo /
-        orch_task_attach) dispatch through here."""
-        return await gatewayclient.call(ORCH_SERVICE, op, kw)
 
 
 _DEFAULT = _GatewayOrch()
@@ -117,22 +95,6 @@ async def decompose_commit(**kw: Any) -> Any:
     return await _IMPL.decompose_commit(**kw)
 
 
-async def approve_plan(**kw: Any) -> Any:
-    return await _IMPL.approve_plan(**kw)
-
-
-async def reject_plan(**kw: Any) -> Any:
-    return await _IMPL.reject_plan(**kw)
-
-
-async def accept_work(**kw: Any) -> Any:
-    return await _IMPL.accept_work(**kw)
-
-
-async def reject_work(**kw: Any) -> Any:
-    return await _IMPL.reject_work(**kw)
-
-
 async def set_attached(**kw: Any) -> Any:
     return await _IMPL.set_attached(**kw)
 
@@ -143,15 +105,3 @@ async def set_steering(**kw: Any) -> Any:
 
 async def set_paused(**kw: Any) -> Any:
     return await _IMPL.set_paused(**kw)
-
-
-async def search_tasks(**kw: Any) -> Any:
-    return await _IMPL.search_tasks(**kw)
-
-
-async def search_contracts(**kw: Any) -> Any:
-    return await _IMPL.search_contracts(**kw)
-
-
-async def call_op(op: str, **kw: Any) -> Any:
-    return await _IMPL.call_op(op, **kw)

@@ -32,8 +32,6 @@ class FakeOrch:
     async def deliver(self, **kw): return self._rec("deliver", kw)
     async def fail(self, **kw): return self._rec("fail", kw)
     async def decompose_commit(self, **kw): return self._rec("decompose_commit", kw)
-    async def approve_plan(self, **kw): return self._rec("approve_plan", kw)
-    async def reject_plan(self, **kw): return self._rec("reject_plan", kw)
     async def set_attached(self, **kw): return self._rec("set_attached", kw)
     async def set_steering(self, **kw): return self._rec("set_steering", kw)
     async def set_paused(self, **kw): return self._rec("set_paused", kw)
@@ -85,13 +83,15 @@ class TestLifecycle:
                             "payload_ref": _plan_path(agents_env)}) in fake_orch.ops
         await _await_deregister(UNIT)
 
-        # --- VERIFYING_PLAN: verifier (same unit) sees the plan, approves ---
+        # --- VERIFYING_PLAN: verifier (same unit) sees the plan; the
+        # orchestrator casts approve_plan on its OWN state machine (out of
+        # process now — the lift, T4a) and tears this placement down through the
+        # ``stop_placement`` seam its ``orchwork_approve_plan`` handler calls. ---
         resv = await _place("verify", unit=UNIT)
         await asyncio.sleep(0.05)
         kickoff = "\n".join(stub_core["session"].sent)
         assert "PLAN VERIFIER" in kickoff and "do the work" in kickoff  # plan embedded
-        await placement.relay_approve_plan({}, AS)
-        assert any(op == "approve_plan" for op, _ in fake_orch.ops)
+        await placement.stop_placement({"scope": UNIT})   # the orchwork teardown
         await _await_deregister(UNIT)
 
         # --- ACTIVE: worker (same unit) stages out:1 and delivers ---
