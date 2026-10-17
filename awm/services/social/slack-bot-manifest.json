@@ -30,7 +30,9 @@
         "im:write",
         "users:read",
         "files:read",
-        "reactions:write"
+        "reactions:write",
+        "files:write",
+        "reactions:read"
       ]
     }
   },
@@ -41,7 +43,8 @@
         "message.channels",
         "message.groups",
         "message.im",
-        "message.mpim"
+        "message.mpim",
+        "reaction_added"
       ]
     },
     "interactivity": {
