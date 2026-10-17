@@ -40,8 +40,10 @@ API_MANIFEST: dict[str, Any] = {
                 "concurrent requests into a single attempt — you do not need to "
                 "call the vpn or 2fa domains, and doing so spends MFA budget "
                 "this service is accounting for. Blocks until the ControlMaster "
-                "socket is live (up to 120s for cold VPN + 2FA), then returns "
-                "success. Returns status 'unavailable' (no login attempted) if "
+                "socket is live, then returns success: seconds when the VPN "
+                "exit is up, a minute or more when it has to be re-dialed. "
+                "A failure names what failed (the VPN exit, the Duo approver, "
+                "the host). Returns status 'unavailable' (no login attempted) if "
                 "the host is held by the circuit breaker after a prior failure — "
                 "recovery is an operator /approve in Discord, never a retry. An "
                 "error saying no MFA attempt was spent is safe to retry. "
@@ -51,7 +53,9 @@ API_MANIFEST: dict[str, Any] = {
             "params": [
                 {"name": "host", "type": "string", "required": True},
             ],
-            "timeout": 120,
+            # A VPN re-dial (service._VPN_UP_TIMEOUT) plus the ssh login
+            # (service._CONNECT_TIMEOUT), plus slack for the lease.
+            "timeout": 420,
         },
         {
             "name": "disconnect",

@@ -24,6 +24,7 @@ from __future__ import annotations
 import logging
 import shutil
 import subprocess
+import threading
 import time
 from datetime import datetime, timezone
 
@@ -33,17 +34,36 @@ log = logging.getLogger("awm.vpn.container")
 
 # IP-echo endpoint hit (over HTTPS) to learn an exit IP. Plain-text body = the IP.
 _IP_ECHO = "https://api.ipify.org"
-# How long to wait for a freshly-started container to bring its tunnel up.
-_UP_TIMEOUT_S = 45.0
+# How long to wait for a freshly-started container to bring its tunnel up. A
+# UBC dial (Duo push, auto-approved) took ~40s on altair on 2026-10-16.
+_UP_TIMEOUT_S = 75.0
 _UP_POLL_S = 2.0
-# Per-docker-command wall clock.
+# Per-docker-command wall clock for quick queries (ps, inspect, logs, exec).
 _DOCKER_TIMEOUT_S = 30.0
+# `docker run` and `docker rm -f` touch the network and the overlay mounts, and on
+# altair they have repeatedly outlived 30s under load (2026-10-06, -14, -16): the
+# CLI was killed while the daemon carried on, so `up` failed on an exit that came
+# up anyway, and the next `up` hit a name conflict.
+_DOCKER_SLOW_TIMEOUT_S = 60.0
+# The worst case of `up`, for callers that size their own timeouts on it:
+# rm + 2fa arm + run + tunnel wait, plus slack for the polls inside the wait.
+UP_BUDGET_S = 2 * _DOCKER_SLOW_TIMEOUT_S + 15.0 + _UP_TIMEOUT_S + 30.0
+
+# One lifecycle operation per profile at a time. The handlers run in worker
+# threads, so two concurrent `up`s used to both find no container, both arm a
+# burst, and both `docker run` the same name.
+_profile_locks: dict[str, threading.Lock] = {}
+_profile_locks_guard = threading.Lock()
 
 _host_ip_cache: str | None = None
 
 
 class VpnError(Exception):
     """A docker/VPN operation failed (actionable message for the caller)."""
+
+
+class DockerTimeout(VpnError):
+    """The docker CLI was killed at its timeout; the daemon may still finish."""
 
 
 def container_name(profile: str) -> str:
@@ -71,7 +91,7 @@ def _docker(args: list[str], *, env: dict | None = None,
             capture_output=True, text=True, timeout=timeout, env=env,
         )
     except subprocess.TimeoutExpired as exc:
-        raise VpnError(f"docker {' '.join(args[:2])} timed out after {timeout}s") from exc
+        raise DockerTimeout(f"docker {' '.join(args[:2])} timed out after {timeout}s") from exc
     if check and proc.returncode != 0:
         err = (proc.stderr or proc.stdout or "").strip()
         if "permission denied" in err.lower() or "cannot connect to the docker daemon" in err.lower():
@@ -93,8 +113,28 @@ def _exists(name: str) -> bool:
     return bool(proc.stdout.strip())
 
 
+def _state(name: str) -> str:
+    """Docker's ``State.Status`` for the container ('' when it does not exist)."""
+    proc = _docker(["inspect", "-f", "{{.State.Status}}", name], check=False)
+    return proc.stdout.strip() if proc.returncode == 0 else ""
+
+
 def _rm_quiet(name: str) -> None:
-    _docker(["rm", "-f", name], check=False)
+    """Remove the container, and confirm it is gone even if the CLI timed out."""
+    try:
+        _docker(["rm", "-f", name], check=False, timeout=_DOCKER_SLOW_TIMEOUT_S)
+    except DockerTimeout:
+        if _exists(name):
+            raise VpnError(
+                f"`docker rm -f {name}` did not finish within "
+                f"{_DOCKER_SLOW_TIMEOUT_S:.0f}s and the container is still there "
+                f"— the docker daemon is slow or wedged (check `docker ps -a`)")
+        log.warning("docker rm -f %s timed out, but the container is gone", name)
+
+
+def _profile_lock(profile: str) -> threading.Lock:
+    with _profile_locks_guard:
+        return _profile_locks.setdefault(profile, threading.Lock())
 
 
 # -- 2FA burst (host-side) -------------------------------------------------
@@ -213,6 +253,11 @@ def up(profile: str) -> dict:
     """
     if profile not in config.PROFILES:
         raise VpnError(f"unknown profile {profile!r}; known: {', '.join(config.PROFILES)}")
+    with _profile_lock(profile):
+        return _up_locked(profile)
+
+
+def _up_locked(profile: str) -> dict:
     name = container_name(profile)
     d = dao.VpnDAO()
 
@@ -223,8 +268,11 @@ def up(profile: str) -> dict:
         d.upsert(profile, container=name, status=status, exit_ip=ip)
         return descriptor(profile, status=status, exit_ip=ip)
 
-    # Clear a stale exited container left from a crash/kill-switch trip.
+    # Clear a stale exited container left from a crash/kill-switch trip. Its
+    # logs are the only record of why the tunnel died, and removing it deletes
+    # them, so they go to this service's log first.
     if _exists(name):
+        _log_dead_container(name)
         _rm_quiet(name)
 
     cfg = config.load_profile(profile)  # raises if creds missing/malformed
@@ -245,13 +293,24 @@ def up(profile: str) -> dict:
     for key in cfg.env:
         args += ["-e", key]
     args.append(cfg.image)
-    _docker(args, env=run_env)
+    run_timed_out = False
+    try:
+        _docker(args, env=run_env, timeout=_DOCKER_SLOW_TIMEOUT_S)
+    except DockerTimeout as exc:
+        # The CLI gave up, not necessarily the daemon: judge by what it did.
+        log.warning("vpn '%s': %s — waiting to see whether the container "
+                    "starts anyway", profile, exc)
+        run_timed_out = True
 
     # Wait for the tunnel: poll the in-netns leak-check until healthy or timeout.
     deadline = time.monotonic() + _UP_TIMEOUT_S
     last_ip = ""
     while time.monotonic() < deadline:
-        if not _is_running(name):
+        state = _state(name)
+        if run_timed_out and state in ("", "created"):
+            time.sleep(_UP_POLL_S)  # the daemon is still creating it
+            continue
+        if state != "running":
             logs = _tail_logs(name)
             _rm_quiet(name)
             d.upsert(profile, container=name, status="down", exit_ip="")
@@ -278,9 +337,10 @@ def up(profile: str) -> dict:
 def down(profile: str) -> dict:
     """Tear the exit down and clear its singleton row."""
     name = container_name(profile)
-    existed = _exists(name)
-    _rm_quiet(name)
-    dao.VpnDAO().delete(profile)
+    with _profile_lock(profile):
+        existed = _exists(name)
+        _rm_quiet(name)
+        dao.VpnDAO().delete(profile)
     return {"profile": profile, "container": name, "status": "down",
             "removed": existed}
 
@@ -320,6 +380,21 @@ def status_all() -> list[dict]:
 def _tail_logs(name: str, lines: int = 30) -> str:
     proc = _docker(["logs", "--tail", str(lines), name], check=False)
     return ((proc.stdout or "") + (proc.stderr or "")).strip() or "(no logs)"
+
+
+def _log_dead_container(name: str) -> None:
+    """Record when and how a stopped exit ended, before it is removed. Never raises."""
+    try:
+        when = _docker(
+            ["inspect", "-f",
+             "status={{.State.Status}} exit={{.State.ExitCode}} "
+             "started={{.State.StartedAt}} finished={{.State.FinishedAt}}", name],
+            check=False).stdout.strip()
+        log.warning("vpn container %s had stopped (%s); its last lines:\n%s",
+                    name, when or "state unknown", _tail_logs(name, 15))
+    except Exception as exc:  # noqa: BLE001 — diagnostics only
+        log.warning("vpn container %s had stopped; could not read its logs: %s",
+                    name, exc)
 
 
 def _subprocess_env() -> dict:
