@@ -458,6 +458,9 @@ async def _h_mount(args: dict, as_: str | None = None) -> dict:
         "seat": {"account": account, "id": seat.id, "name": seat.name,
                  "kind": seat.kind, "holder": _holder_dict(row)},
         "evicted": _holder_dict(evicted),
+        "rename": (f"when this is the only seat this session holds, rename the "
+                   f"session to {seats.session_name(conn.platform, seat)!r} with "
+                   f"reflection rename"),
         "push": (f"each new message here is typed into your prompt as "
                  f"'{conn.platform} from <sender> [channel=<id> message_id=<id>]: "
                  f"<text>', with ' ↳<thread ts>' after the sender for a thread reply"),
@@ -850,7 +853,8 @@ API_MANIFEST: dict[str, Any] = {
                            "takes it and tells the old holder. A Discord DM is "
                            "reserved for notifications and cannot be mounted, "
                            "and a kept seat is refused: social holds it for "
-                           "the agent it keeps.",
+                           "the agent it keeps. The result's `rename` gives the "
+                           "seat's session name, seat:<app>/<server>/<channel>.",
             "params": [
                 {"name": "account", "type": "string", "required": True},
                 {"name": "channel", "type": "string", "required": True,
@@ -1459,8 +1463,8 @@ def _describe_account(account: str) -> tuple[str, bool] | None:
     return (conn.platform, conn.keeps_history) if conn else None
 
 
-async def _channel_name(account: str, channel_id: str) -> str:
-    return (await _find_seat(_conn(account), channel_id)).name
+async def _chat(account: str, channel_id: str) -> connectors.Channel:
+    return await _find_seat(_conn(account), channel_id)
 
 
 def _start_keeper() -> None:
@@ -1476,7 +1480,7 @@ def _start_keeper() -> None:
         return
     if not kept:
         return
-    _keeper = keeper_mod.Keeper(_dao, kept, _describe_account, _channel_name,
+    _keeper = keeper_mod.Keeper(_dao, kept, _describe_account, _chat,
                                 push=_pusher.push)
     spawn_supervised("social.keeper", _keeper.run)
     log.info("keeping %d seat(s): %s", len(kept), ", ".join(s.name for s in kept))

@@ -6,6 +6,8 @@ import sqlite3
 
 import pytest
 
+from awm.social.connectors.base import Channel
+
 pytestmark = [pytest.mark.unit]
 
 SEAT_TOML = """
@@ -94,11 +96,11 @@ def kept(awm_workspace, tmp_path):
     init()
     dao, cx, clock = SocialDAO(), FakeCx(), Clock()
 
-    async def channel_name(account, channel):
-        return "lab"
+    async def chat(account, channel):
+        return Channel(id=channel, name="Lab#general", kind="text")
 
     k = Keeper(dao, [_seat()], lambda a: ("discord", True) if a == "bot" else None,
-               channel_name, cx=cx, lock_path=tmp_path / "keeper.lock", clock=clock,
+               chat, cx=cx, lock_path=tmp_path / "keeper.lock", clock=clock,
                push=lambda node, job, line: k.pushed.append((node, job, line)))
     k.pushed = []
     return k, cx, dao, clock
@@ -149,7 +151,7 @@ async def test_a_missing_agent_is_started_pinned_and_holds_the_seat(kept):
     k, cx, dao, _ = kept
     await k.tick()
     (spec,) = cx.started
-    assert spec["name"] == "seat - lab" and spec["pin"] is True
+    assert spec["name"] == "seat:discord/Lab/general" and spec["pin"] is True
     assert spec["remote_control"] is True
     assert (spec["project"], spec["scope"]) == ("awm", "seat-lab")
     system = spec["system_prompt"]
@@ -159,7 +161,7 @@ async def test_a_missing_agent_is_started_pinned_and_holds_the_seat(kept):
     assert spec["prompt"].startswith("Start by reading the backlog")
     assert spec["autocompact"] == 233_000
     held = dao.holder("bot", "C1")
-    assert (held["node"], held["job"], held["session_name"]) == ("altair", "job00001", "seat - lab")
+    assert (held["node"], held["job"], held["session_name"]) == ("altair", "job00001", "seat:discord/Lab/general")
     assert dao.keeper("lab")["job"] == "job00001"
     assert k.status(k.seats[0])["health"] == "running"
 
@@ -179,7 +181,7 @@ async def test_a_stopped_agent_is_replaced_then_backs_off(kept):
     await cx.stop("altair", "job00001")
     clock.t += 60
     await k.tick()
-    assert [s["name"] for s in cx.started] == ["seat - lab"] * 2
+    assert [s["name"] for s in cx.started] == ["seat:discord/Lab/general"] * 2
     assert dao.holder("bot", "C1")["job"] == "job00002"
     assert k.status(k.seats[0])["restarts"] == 1
     await cx.stop("altair", "job00002")
@@ -220,7 +222,7 @@ async def test_the_last_alive_tick_survives_a_new_keeper(kept, tmp_path):
     seen = clock.t
     cx.die("job00001")
     pushed = []
-    fresh = Keeper(dao, k.seats, k._describe, k._channel_name, cx=cx,
+    fresh = Keeper(dao, k.seats, k._describe, k._chat, cx=cx,
                    lock_path=tmp_path / "other.lock", clock=clock,
                    push=lambda *a: pushed.append(a))
     clock.t += 3600
@@ -319,9 +321,46 @@ async def test_a_changed_brief_recycles_only_between_turns(kept):
     assert k.status(k.seats[0])["restarts"] == 0
 
 
+async def test_a_seat_started_under_the_old_name_keeps_its_agent(kept):
+    from awm.social.keeper import launch_spec, legacy_hash, legacy_name
+    k, cx, dao, _ = kept
+    seat = k.seats[0]
+    old = {**launch_spec(seat, "discord", True, legacy_name(seat)), "node": "altair"}
+    cx.rows.append({"job": "old00001", "name": legacy_name(seat), "state": "idle",
+                    "parent": None, "caller": "mira"})
+    dao.set_keeper("lab", "altair", "old00001", legacy_hash(old, seat))
+    await k.tick()
+    await k.tick()
+    assert not cx.started and not cx.stopped
+    assert dao.keeper("lab")["job"] == "old00001"
+
+
+async def test_a_renamed_chat_renames_new_agents_only(kept):
+    k, cx, dao, _ = kept
+    await k.tick()
+
+    async def renamed(account, channel):
+        return Channel(id=channel, name="Lab#lounge", kind="text")
+
+    k._chat = renamed
+    await k.tick()
+    assert [s["name"] for s in cx.started] == ["seat:discord/Lab/general"]
+
+
+@pytest.mark.parametrize("platform,chat,name", [
+    ("discord", ("C1", "Hallam Hive#general", "text"), "seat:discord/Hallam Hive/general"),
+    ("slack", ("C2", "arbutus", "private"), "seat:slack/arbutus"),
+    ("discord", ("D1", "Tony", "dm"), "seat:discord/DM/Tony"),
+    ("slack", ("C3", "", "channel"), "seat:slack/C3"),
+])
+def test_a_seat_is_named_for_its_app_and_chat(platform, chat, name):
+    from awm.social.seats import session_name
+    assert session_name(platform, Channel(*chat)) == name
+
+
 async def test_a_start_that_outlived_its_call_is_adopted(kept):
     k, cx, dao, _ = kept
-    cx.rows.append({"job": "late0001", "name": "seat - lab", "state": "idle",
+    cx.rows.append({"job": "late0001", "name": "seat:discord/Lab/general", "state": "idle",
                     "parent": None, "caller": "mira"})
     await k.tick()
     assert not cx.started
@@ -331,7 +370,7 @@ async def test_a_start_that_outlived_its_call_is_adopted(kept):
 
 async def test_a_session_someone_else_parented_is_not_taken(kept):
     k, cx, dao, _ = kept
-    cx.rows.append({"job": "kid00001", "name": "seat - lab", "state": "idle",
+    cx.rows.append({"job": "kid00001", "name": "seat:discord/Lab/general", "state": "idle",
                     "parent": "abcd1234", "caller": "altair"})
     await k.tick()
     assert not cx.started and dao.keeper("lab") is None
@@ -366,7 +405,7 @@ async def test_a_second_keeper_cannot_take_the_lock(kept, tmp_path):
     from awm.social.keeper import Keeper
     k, cx, dao, _ = kept
     await k.tick()
-    other = Keeper(dao, [_seat()], lambda a: ("discord", True), k._channel_name,
+    other = Keeper(dao, [_seat()], lambda a: ("discord", True), k._chat,
                    cx=cx, lock_path=tmp_path / "keeper.lock")
     cx.rows.clear()
     await other.tick()
