@@ -510,6 +510,14 @@ _TOKEN_REFUSED = (401,)
 _PEER_TOKEN_REFUSAL_TTL = 300.0
 _peer_token_cache: dict[str, tuple[float, str]] = {}
 _peer_token_refused: dict[str, float] = {}
+#: The local gateway answers a call to a service that has not registered yet with
+#: 404, or 503 while its control channel is still opening. Every service restarts
+#: at once on a deploy, so one that signs a token during boot can beat `auth` to
+#: the gateway. It then fell back to the legacy bearer, which a peer that retired
+#: it refuses: every /approve subscription opened with a 403 after every restart.
+#: Waiting out `auth`'s registration costs a few seconds once.
+_SIGN_NOT_READY = (404, 503)
+_SIGN_RETRY_DELAYS = (0.5, 1.0, 2.0)
 
 
 def _peer_aud(peer: str) -> str:
@@ -581,11 +589,18 @@ def peer_token_sync(peer: str, *, force: bool = False) -> str:
         hit = _cached_peer_token(aud)
         if hit:
             return hit
-    try:
-        reply = call_sync("auth", "sign_peer_token", {"aud": aud}, as_=None,
-                          timeout=10.0)
-    except (GatewayCallError, httpx.HTTPError) as exc:
-        raise PeerError(f"could not sign a node token for {peer!r}: {exc}") from exc
+    for delay in (*_SIGN_RETRY_DELAYS, None):
+        try:
+            reply = call_sync("auth", "sign_peer_token", {"aud": aud}, as_=None,
+                              timeout=10.0)
+            break
+        except GatewayCallError as exc:
+            if exc.status not in _SIGN_NOT_READY or delay is None:
+                raise PeerError(
+                    f"could not sign a node token for {peer!r}: {exc}") from exc
+            time.sleep(delay)
+        except httpx.HTTPError as exc:
+            raise PeerError(f"could not sign a node token for {peer!r}: {exc}") from exc
     return _remember_peer_token(aud, reply)
 
 
@@ -596,11 +611,18 @@ async def peer_token(peer: str, *, force: bool = False) -> str:
         hit = _cached_peer_token(aud)
         if hit:
             return hit
-    try:
-        reply = await call("auth", "sign_peer_token", {"aud": aud}, as_=None,
-                           timeout=10.0)
-    except (GatewayCallError, httpx.HTTPError) as exc:
-        raise PeerError(f"could not sign a node token for {peer!r}: {exc}") from exc
+    for delay in (*_SIGN_RETRY_DELAYS, None):
+        try:
+            reply = await call("auth", "sign_peer_token", {"aud": aud}, as_=None,
+                               timeout=10.0)
+            break
+        except GatewayCallError as exc:
+            if exc.status not in _SIGN_NOT_READY or delay is None:
+                raise PeerError(
+                    f"could not sign a node token for {peer!r}: {exc}") from exc
+            await asyncio.sleep(delay)
+        except httpx.HTTPError as exc:
+            raise PeerError(f"could not sign a node token for {peer!r}: {exc}") from exc
     return _remember_peer_token(aud, reply)
 
 

@@ -26,7 +26,7 @@ import time
 
 from awm.social.connectors.base import (
     Account, Attachment, Channel, Connector, Identity, InboundMessage,
-    OnMessage, react_by_message,
+    OnMessage, file_bytes, react_by_message,
 )
 
 log = logging.getLogger("awm.social.connectors.slack")
@@ -81,6 +81,8 @@ def _attachments_of(m: dict) -> list[Attachment]:
 
 class SlackConnector(Connector):
     platform = "slack"
+    sends_files = True
+    max_file_bytes = 100 * 1024 * 1024
 
     def __init__(self, account: Account, on_message: OnMessage,
                  on_command=None) -> None:
@@ -355,8 +357,20 @@ class SlackConnector(Connector):
                 backoff = min(backoff * 2, 30.0)
 
     async def send(
-        self, channel: str, text: str, *, thread: str | None = None
+        self, channel: str, text: str, *, thread: str | None = None,
+        files: list[dict] | None = None,
     ) -> dict:
+        if files:
+            uploads = [{"content": file_bytes(f), "filename": f["filename"],
+                        "title": f["filename"]} for f in files]
+            resp = await self._auth_retry(
+                lambda: self._web_client().files_upload_v2(
+                    file_uploads=uploads, channel=channel, initial_comment=text or None,
+                    thread_ts=thread, request_file_info=False))
+            return {"message_id": "", "channel_id": channel, "ts": "",
+                    "files": [{"id": f.get("id", ""), "title": f.get("title", ""),
+                               "permalink": f.get("permalink", "")}
+                              for f in resp.get("files") or []]}
         kwargs = {"channel": channel, "text": text}
         if thread:
             kwargs["thread_ts"] = thread

@@ -66,13 +66,18 @@ A session with no card gets an owned card on the first of these events:
 2. It calls `request_human`.
 3. It calls `task_track`, which opens the card in Active, or returns the card it
    already has.
-4. The sweep finds a live job that cx started with the lifecycle brief (cx
-   `INSTALL.md` § *A worker gets a lifecycle brief*). The card opens in Active.
-   A kept seat never gets the brief, so it stays off the board.
+4. A job that cx started with the lifecycle brief (cx `INSTALL.md` §
+   *A worker gets a lifecycle brief*) sends its first prompt. The card opens in
+   Active. The sweep opens it for a briefed job whose first prompt missed the
+   gateway. A kept seat never gets the brief, so it stays off the board.
 
-Tony's own sessions get no card for starting. A plan or `task_track` that opens
-a card returns a notice that names the card and the board's protocol. The plan
-hook hands it to the agent as `additionalContext`.
+Tony's own sessions get no card for starting. An event that opens a card returns
+a notice that names the card and the board's protocol. The hook hands it to the
+agent as `additionalContext`.
+
+**CAUTION** A worker can finish inside one sweep, which is why its first prompt
+opens the card. That prompt runs before cx writes the job's lineage record, so
+cx lists the job from its pending record until then.
 
 A card holds one piece of work. A plan written while the card waits in Pending
 review, or after it closed, opens a new card. The reviewed card moves off the

@@ -44,6 +44,7 @@ from typing import Any, Awaitable, Callable
 
 from awm import config, gatewayclient
 from awm.social.config import SeatConfig
+from awm.social.seats import session_name
 
 log = logging.getLogger("awm.social.keeper")
 
@@ -76,15 +77,24 @@ PERSON_NEEDS = (
 )
 
 
-def session_name(seat: SeatConfig) -> str:
+def legacy_name(seat: SeatConfig) -> str:
+    """The name seats started before they were named for their chat carry."""
     return f"seat - {seat.name}"
 
 
 def spec_hash(spec: dict) -> str:
-    return hashlib.sha256(json.dumps(spec, sort_keys=True, default=str).encode()).hexdigest()[:16]
+    """The hash that decides a recycle. It leaves out the name, so a renamed chat keeps its agent."""
+    kept = {k: v for k, v in spec.items() if k != "name"}
+    return hashlib.sha256(json.dumps(kept, sort_keys=True, default=str).encode()).hexdigest()[:16]
 
 
-def launch_spec(seat: SeatConfig, platform: str, keeps_history: bool) -> dict:
+def legacy_hash(spec: dict, seat: SeatConfig) -> str:
+    """The hash recorded before :func:`spec_hash` left out the name."""
+    full = {**spec, "name": legacy_name(seat)}
+    return hashlib.sha256(json.dumps(full, sort_keys=True, default=str).encode()).hexdigest()[:16]
+
+
+def launch_spec(seat: SeatConfig, platform: str, keeps_history: bool, name: str) -> dict:
     """The `cx start` arguments of a seat's agent.
 
     Everything the seat must keep sits in the system prompt, which a compaction
@@ -106,6 +116,8 @@ def launch_spec(seat: SeatConfig, platform: str, keeps_history: bool) -> dict:
         f"answer in a thread. Read the backlog with `social {backlog} {where}`.",
         f"Before work that takes a while, react 👀 with `social react {where} "
         "message_id=<id> emoji=👀`, then post the answer with `social send`.",
+        f"Share a long document, such as a plan, as a file with `social send "
+        f"{where} file=<path> text=<summary>` instead of pasting it.",
         "When this conversation is compacted, the summary must carry every "
         "question still unanswered, every agent you dispatched and what it is "
         "for, and everything you promised someone.",
@@ -113,7 +125,7 @@ def launch_spec(seat: SeatConfig, platform: str, keeps_history: bool) -> dict:
     prompt = ("Start by reading the backlog, then answer what is still unanswered. "
               "Then wait for the next pushed line.")
     spec: dict[str, Any] = {
-        "project": seat.project, "scope": seat.scope, "name": session_name(seat),
+        "project": seat.project, "scope": seat.scope, "name": name,
         "system_prompt": system_prompt, "prompt": prompt,
         "autocompact": seat.compact_at + AUTOCOMPACT_RESERVE,
         "remote_control": True, "pin": True,
@@ -249,22 +261,24 @@ class Cx:
 
 #: (account) -> (platform, keeps_history), or None when the account is not connected here.
 Describe = Callable[[str], "tuple[str, bool] | None"]
-#: (account, channel id) -> the chat's name.
-ChannelName = Callable[[str, str], Awaitable[str]]
+#: (account, channel id) -> the chat, with its ``name`` and ``kind``.
+Chat = Callable[[str, str], Awaitable[Any]]
 #: (node, job, line) -> queue one line for a session's prompt.
 Push = Callable[[str, str, str], None]
 
 
 class Keeper:
     def __init__(self, dao: Any, seats: list[SeatConfig], describe: Describe,
-                 channel_name: ChannelName, cx: Any = None,
+                 chat: Chat, cx: Any = None,
                  interval_s: float = TICK_S, lock_path: Path | None = None,
                  clock: Callable[[], float] = time.time,
                  push: Push | None = None) -> None:
         self.dao = dao
         self.seats = list(seats)
         self._describe = describe
-        self._channel_name = channel_name
+        self._chat = chat
+        self._names: dict[str, str] = {}
+        self._chat_names: dict[str, str] = {}
         self.cx = cx or Cx()
         self._push = push
         self._interval_s = interval_s
@@ -329,11 +343,14 @@ class Keeper:
             self._note(f"account:{seat.name}",
                        f"{seat.name}: account {seat.account!r} is not connected here")
             return
-        spec = launch_spec(seat, *described)
+        spec = launch_spec(seat, *described, await self._name(seat, described[0]))
         want = spec_hash({**spec, "node": seat.node})
         rec = self.dao.keeper(seat.name)
         if rec and rec["node"] != seat.node:
             rec = None
+        if rec and rec["spec_hash"] == legacy_hash({**spec, "node": seat.node}, seat):
+            self.dao.set_keeper(seat.name, seat.node, rec["job"], want)
+            rec = self.dao.keeper(seat.name)
         row = next((r for r in rows if rec and r.get("job") == rec["job"] and _live(r)), None)
         if row is None:
             adopted = self._adoptable(seat, rows, rec)
@@ -371,9 +388,21 @@ class Keeper:
                             why="it is not running" if rec else "it has none yet",
                             counted=rec is not None)
 
+    async def _name(self, seat: SeatConfig, platform: str) -> str:
+        """The seat's session name, read from its chat once per process."""
+        if seat.name in self._names:
+            return self._names[seat.name]
+        try:
+            chat = await self._chat(seat.account, seat.channel)
+            self._names[seat.name] = session_name(platform, chat)
+            self._chat_names[seat.name] = chat.name or ""
+        except Exception as exc:  # noqa: BLE001 — a name must not stop the keeper
+            self._note(f"chat:{seat.name}", f"{seat.name}: cannot read its chat: {exc}")
+        return self._names.get(seat.name) or f"seat:{platform}/{seat.name}"
+
     def _adoptable(self, seat: SeatConfig, rows: list[dict], rec: dict | None) -> dict | None:
         return next((r for r in rows if _live(r) and r.get("job")
-                     and r.get("name") == session_name(seat)
+                     and r.get("name") == self._names.get(seat.name)
                      and r.get("parent") is None
                      and (rec is None or r["job"] != rec["job"])), None)
 
@@ -390,11 +419,11 @@ class Keeper:
             self._resumes.pop(seat.name, None)
             self._resumed_at.pop(seat.name, None)
             return False
-        taken = [r for r in rows if r.get("name") == session_name(seat) and _live(r)
-                 and r.get("job") != job]
+        name = self._names.get(seat.name)
+        taken = [r for r in rows if r.get("name") == name and _live(r) and r.get("job") != job]
         if taken:
             self._note(f"name:{seat.name}", f"{seat.name}: session {taken[0].get('job')} "
-                       f"already holds the name {session_name(seat)!r}; not resuming")
+                       f"already holds the name {name!r}; not resuming")
             return True
         reply = await self.cx.resume(seat.node, job)
         if not reply.get("ok"):
@@ -453,12 +482,9 @@ class Keeper:
         held = self.dao.holder(seat.account, seat.channel)
         if held and (held["node"], held["job"]) == (seat.node, job):
             return
-        try:
-            name = await self._channel_name(seat.account, seat.channel)
-        except Exception:  # noqa: BLE001 — the id still routes the push
-            name = (held or {}).get("channel_name") or ""
+        name = self._chat_names.get(seat.name) or (held or {}).get("channel_name") or ""
         self.dao.mount(seat.account, seat.channel, name,
-                       {"node": seat.node, "job": job, "name": session_name(seat)})
+                       {"node": seat.node, "job": job, "name": self._names.get(seat.name, "")})
 
     def _backoff(self, n: int) -> float:
         base = max(MIN_RETRY_S, self._interval_s)

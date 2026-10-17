@@ -337,7 +337,9 @@ class TestNewAgentCommand:
 # -- send with an ack_ref ---------------------------------------------------
 
 class _AckConn:
+    platform = "discord"
     sends_files = True
+    max_file_bytes = 1024
 
     def __init__(self, edited):
         self.edited = edited
@@ -394,7 +396,7 @@ class TestSendReplacesAck:
         conn = _AckConn(None)
         conn.sends_files = False
         monkeypatch.setattr(hub_adapter, "_connectors", {"bot": conn})
-        with pytest.raises(RuntimeError, match="cannot attach files"):
+        with pytest.raises(RuntimeError, match="does not take files"):
             await hub_adapter._h_send({"account": "bot", "channel": "dm:1", "text": "hi",
                                        "files": [{"filename": "a.txt", "text": "x"}]})
         assert conn.sent == []

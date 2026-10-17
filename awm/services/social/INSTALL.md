@@ -186,6 +186,22 @@ are skipped rather than erroring the whole call.
   `"as": "message"`. `remove` refuses, because there is no reaction to take off.
 - **Gmail and Teams.** Refuse.
 
+## Files
+
+`social_send` attaches a file with `file`, a path on the calling node, and
+inline text files with `files`, each `{filename, text}`. The gateway's file hop
+carries `file` to the node that runs social. A `send` that a borrower forwards to
+the owner carries the file inline as base64.
+
+- **Discord.** The bot attaches up to 10 MB per message.
+- **Slack.** Every Slack account uploads through Slack's external upload, as a
+  plain file and never a canvas. The reply carries the file ids and permalinks
+  and no message ts, because Slack shares the file after the call returns. The
+  Opal app needs `files:write`, so its uploads refuse until a Workspace Owner
+  reinstalls it from `slack-bot-manifest.json`. Tony's Slack runs through the
+  mira daemon, which takes 8 MB per message.
+- **Gmail and Teams.** Refuse. Teams takes files only through SharePoint.
+
 ## Seats
 
 A seat is one channel or chat a bot account is in. `social_seats` lists them
@@ -214,6 +230,10 @@ line came from. Newlines become ` ⏎ `. Text past 1500 characters is cut, and a
   History still holds it.
 - **Discord DM.** A Discord DM is the operator's notification channel and is
   never a seat. `social_seats` lists guild text channels only.
+- **Name.** A holder goes by its seat: `seat:<app>/<server>/<channel>`, or
+  `seat:<app>/DM/<person>` for a DM, such as `seat:discord/Hallam Hive/general`
+  or `seat:slack/arbutus`. A kept seat's agent starts with that name. The mount
+  reply's `rename` tells a session that holds only that seat to take the name.
 - **Acknowledge.** The mount reply and the kept-seat brief tell a holder to
   react 👀 on the message before work that takes a while, then answer with
   `social_send`. A reaction marks the request as seen without a message that
@@ -258,7 +278,7 @@ The keeper runs on the owner every 60 s:
 
 1. It lists `cx` sessions on `node`, locally or through a domestic peer. A
    node that does not answer skips the tick.
-2. It starts a missing agent with `cx start`, named `seat - <name>`, pinned,
+2. It starts a missing agent with `cx start`, named for its chat, pinned,
    with Remote Control on. It writes the mount row itself.
 3. It resumes an agent that exited, with `cx resume`. The agent keeps its own
    conversation and its prompt cache. The keeper then pushes it one line that
@@ -271,6 +291,11 @@ The keeper runs on the owner every 60 s:
 5. It leaves an agent blocked on login or usage for a person, and logs it once.
 6. It replaces an agent whose launch spec changed, once its tempo is idle.
    A recycle is not a restart.
+
+**CAUTION** The spec hash leaves out the session name, so a renamed chat never
+recycles a live agent. An agent keeps the name it started with, and an agent
+started before seats were named for their chat keeps `seat - <name>` until its
+next replacement.
 
 **CAUTION** `compact_at` is where compaction fires, not the window. Claude Code
 compacts 33k tokens below its `--autocompact` window, so the keeper passes
@@ -420,9 +445,7 @@ The `/new-agent` ack is public in the DM and carries an `ack_ref` in its event.
 A `send` with that `ack_ref` overwrites the ack with the answer. Discord allows
 the edit for 15 minutes, so after 14 the `send` posts a new message instead.
 Every message into a DM goes out with link previews suppressed.
-A `send` with `files` attaches each `{filename, text}` as a text file. Only Discord
-accounts take `files`. Every other account refuses the `send`. The files travel inline
-in the call, so a `send` forwarded to a peer node carries them.
+A `send` with an `ack_ref` attaches its files to the edited ack.
 
 A guild invocation that slips past the hidden context, or a sender absent from
 the operators table, gets an ephemeral refusal and emits nothing. Add an operator on the node that owns the

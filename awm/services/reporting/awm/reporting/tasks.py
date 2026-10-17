@@ -430,10 +430,29 @@ class Tasks:
             return await self._claim_ref(who, found.group(0))
         task = await self._find(who)
         if task is None:
+            if args.get("first") and await self._briefed_new(who):
+                task = await self._open(who, ACTIVE)
+                await self.sync(task["id"])
+                return await self._noticed(task["id"], True)
             return {"ok": True, "tracked": False, "blocked": False}
         if task["state"] == BLOCKED:
             return await self._set(task, ACTIVE, "unblocked", reason="", urgent=0)
         return await self._result(task["id"])
+
+    async def _briefed_new(self, who: Who) -> bool:
+        """Whether ``who`` is a worker cx started with the brief that the ledger has never held.
+
+        Its first prompt opens its card, so a worker that finishes inside one sweep
+        is still on the board. The sweep's ``_workers`` opens the card otherwise.
+        """
+        if who.kind != "bg" or await self.db.find(self.node, who.key):
+            return False
+        try:
+            rows = await self.cx.list()
+        except CxUnavailable:
+            return False
+        row = next((r for r in rows if r.get("job") == who.key), None)
+        return bool(row and row.get("brief") and not row.get("pinned"))
 
     async def hook_session_clear(self, who: Who, args: dict) -> dict:
         """The conversation was cleared: file the open task under ``<job>/<old session id>``.
