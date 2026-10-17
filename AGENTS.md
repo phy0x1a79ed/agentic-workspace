@@ -185,7 +185,7 @@ The script reports pass/fail per dist and exits non-zero if any failed. Known di
 
 ## Agent rules
 
-1. **The native `debrief` skill (`~/.claude/skills/debrief/`) is mandatory at end-of-session** — it keeps `.awm/history.md` and `.awm/artifacts.md` accurate across all scopes.
+1. **The native `debrief` skill (`~/.claude/skills/debrief/`) is mandatory at end-of-session** — it keeps `.awm/history.md` accurate across all scopes.
 2. **`awm scope heal` is idempotent and safe** — run with `--dry-run` first to preview, then for real. Enforces tier-3 = `.awm/` only.
 
 ## What goes in this file
