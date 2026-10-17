@@ -250,9 +250,11 @@ API_MANIFEST: dict[str, Any] = {
                 "Refused for a path that is not a directory, for one Claude "
                 "Code is not trusted in (the trust dialog would wait on a "
                 "person), and while a modal or permission prompt is showing. "
-                "CLAUDE.md files add up across moves: the old one stays in "
-                "context. On your own session, one follow-up prompt reports "
-                "the move when it has run."
+                "Claude Code drops the session's MCP servers on a move, so the "
+                "verb types `/mcp reconnect awm` after it; any other MCP server "
+                "stays disconnected. CLAUDE.md files add up across moves: the "
+                "old one stays in context. On your own session, one follow-up "
+                "prompt reports the move when it has run."
             ),
             "timeout": 60,
             "params": [

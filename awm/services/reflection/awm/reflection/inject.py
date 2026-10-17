@@ -139,6 +139,12 @@ MAX_DELIVERY_ROUNDS = 4
 # longest compaction observed.
 ROUND_BACKOFF_S = (30.0, 60.0, 120.0)
 
+# Claude Code 2.1.302 drops a session's MCP servers when `/cd` moves it and does
+# not connect them again, whatever directory it lands in. A session that moved
+# itself would come back without awm, and so without this service, before it
+# could ask for it, so the resume after a move is preceded by this command.
+RECONNECT_AFTER_MOVE = "/mcp reconnect awm"
+
 # How many times a session will be asked to bring its turn to a close before the
 # wait goes quiet and simply keeps holding. A pause request is text arriving
 # unbidden in somebody's session, so it is rationed: three across the life of a
@@ -819,6 +825,8 @@ def _await_and_resume_inner(item: pending.Pending, tail, who,
         # step has.
         pending.mark_delivered(item.repl_pid, item.injected_at_ms)
         pending.clear(item.repl_pid)
+        if any(c.kind == "cd" for c in item.changes):
+            _reconnect(item.repl_pid, who, tail=tail, read_status=read_status, **kw)
         try:
             deliver(item.repl_pid, item.followup, enter=True, tail=tail,
                     read_status=read_status, what="the deferred resume", **kw)
@@ -852,6 +860,16 @@ def _await_and_resume_inner(item: pending.Pending, tail, who,
               "after %s failed deliveries; the promise is left in `pending` and "
               "that session will sit idle until something resumes it",
               who, MAX_DELIVERY_ROUNDS)
+
+
+def _reconnect(repl_pid: int, who: str, **kw) -> None:
+    """Type :data:`RECONNECT_AFTER_MOVE`; a failure is logged and the resume still goes in."""
+    try:
+        deliver(repl_pid, RECONNECT_AFTER_MOVE, enter=True,
+                what="the MCP reconnect after a move", **kw)
+    except DeliveryError as exc:
+        log.warning("reflection: could not reconnect awm for session %s after its "
+                    "move: %s", who, exc)
 
 
 def resume_watch(item: pending.Pending, *,

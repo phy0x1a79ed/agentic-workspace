@@ -991,7 +991,9 @@ def set_cwd(home, pid, cwd):
 def test_cd_types_the_resolved_path_and_sees_the_session_arrive(world, moves):
     out = control.cd(str(moves) + "/", job="other one", caller_pid=ME)
     assert out["ok"] and out["moved"] is True and out["cwd"] == str(moves)
-    assert world.typed == [(OTHER_JOB, f"/cd {moves}", inject.ATTEMPTS)]
+    assert out["mcp_reconnected"] is True
+    assert world.typed == [(OTHER_JOB, f"/cd {moves}", inject.ATTEMPTS),
+                           (OTHER_JOB, inject.RECONNECT_AFTER_MOVE, inject.ATTEMPTS)]
 
 
 def test_cd_follows_a_symlink_to_the_directory_it_names(world, moves, tmp_path):
@@ -1041,10 +1043,21 @@ def test_cd_into_a_modal_is_refused(world, moves):
     assert out["refused"] and out["kind"] == "modal" and world.typed == []
 
 
-def test_cd_mid_turn_reports_the_move_as_queued(world, moves):
-    world.settled = False
-    out = control.cd(str(moves), job=OTHER_JOB, caller_pid=ME)
+def test_cd_mid_turn_reconnects_awm_once_the_move_has_run(world, moves):
+    world.settled, world.follow, spawned = False, False, []
+    out = control.cd(str(moves), job=OTHER_JOB, caller_pid=ME, spawn=spawned.append)
     assert out["ok"] and out["moved"] is False and "mid-turn" in out["detail"]
+    assert [text for _, text, _ in world.typed] == [f"/cd {moves}"]
+    set_cwd(world.home, PARENT, str(moves))
+    spawned[0]()
+    assert world.typed[-1][1] == inject.RECONNECT_AFTER_MOVE
+
+
+def test_cd_mid_turn_that_never_lands_reconnects_nothing(world, moves):
+    world.settled, world.follow, spawned = False, False, []
+    control.cd(str(moves), job=OTHER_JOB, caller_pid=ME, spawn=spawned.append)
+    spawned[0]()
+    assert [text for _, text, _ in world.typed] == [f"/cd {moves}"]
 
 
 def test_cd_that_never_lands_says_so_after_the_wait(world, moves):
@@ -1052,6 +1065,7 @@ def test_cd_that_never_lands_says_so_after_the_wait(world, moves):
     out = control.cd(str(moves), job=OTHER_JOB, caller_pid=ME)
     assert out["ok"] and out["moved"] is False and "list_other" in out["detail"]
     assert world.clock.now >= control.MOVE_WAIT_S
+    assert out["mcp_reconnected"] is False and len(world.typed) == 1
 
 
 def test_cd_on_your_own_session_goes_through_the_self_sender(world, moves):
