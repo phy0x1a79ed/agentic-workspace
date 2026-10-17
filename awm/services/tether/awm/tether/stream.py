@@ -26,6 +26,13 @@ read back from here.
 it minted at startup. When that changes, this side resets rather than carrying a
 number from one process into another, where it would either wait for events that
 are not coming or skip a whole history as already seen.
+
+**The adapter restarts more often than the daemon.** The daemon outlives this
+process (see ``daemon.py``), so a fresh adapter asks it for its whole ring and
+the buffer comes back as it was, under the same epoch. What must not come back
+twice is the side effects: a line in the session's file, or a doorbell for
+something the operator already heard. ``Mark`` keeps on disk how far those got,
+and each caller's drain cursor with it.
 """
 
 from __future__ import annotations
@@ -35,6 +42,7 @@ import contextlib
 import json
 import logging
 import os
+import tempfile
 import time
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Iterable
@@ -198,6 +206,61 @@ class Journal:
         }
 
 
+class Mark:
+    """How far this host has recorded the stream, kept across adapter restarts.
+
+    Everything here belongs to one daemon epoch except ``declared``, which is
+    keyed by slot and pruned against the daemon's live sessions instead.
+    Written after every event. The file is a few hundred bytes.
+    """
+
+    def __init__(self, path: Path | None = None) -> None:
+        self.path = path if path is not None else paths.STREAM_STATE
+        self.epoch: int | None = None
+        self.next = 0
+        self.open: dict[int, str] = {}
+        self.cursors: dict[str, int] = {}
+        self.declared: dict[int, dict[str, str]] = {}
+        try:
+            saved = json.loads(self.path.read_text())
+        except (OSError, ValueError):
+            return
+        if not isinstance(saved, dict):
+            return
+        self.epoch = saved.get("epoch") if isinstance(saved.get("epoch"), int) else None
+        self.next = int(saved.get("next") or 0)
+        self.open = {int(k): str(v) for k, v in (saved.get("open") or {}).items()}
+        self.cursors = {str(k): int(v) for k, v in (saved.get("cursors") or {}).items()}
+        self.declared = {int(k): dict(v) for k, v in (saved.get("declared") or {}).items()}
+
+    def seen(self, epoch: int, seq: int) -> bool:
+        """Whether this event was recorded and announced before a restart."""
+        return epoch == self.epoch and seq < self.next
+
+    def begin(self, epoch: int) -> None:
+        """Adopt the daemon's epoch. A new one makes every number here meaningless."""
+        if epoch == self.epoch:
+            return
+        self.epoch = epoch
+        self.next = 0
+        self.open.clear()
+        self.cursors.clear()
+        self.save()
+
+    def save(self) -> None:
+        state = {"epoch": self.epoch, "next": self.next, "open": self.open,
+                 "cursors": self.cursors, "declared": self.declared}
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            fd, tmp = tempfile.mkstemp(dir=self.path.parent, prefix=".stream-")
+            with os.fdopen(fd, "w") as fh:
+                json.dump(state, fh, separators=(",", ":"))
+            os.replace(tmp, self.path)
+        except OSError:
+            log.warning("tether: could not save the stream mark to %s", self.path,
+                        exc_info=True)
+
+
 class SessionLogs:
     """One file per session, opened on the first event that names its slot.
 
@@ -207,10 +270,13 @@ class SessionLogs:
     property inherited rather than enforced again here.
     """
 
-    def __init__(self, directory: Path | None = None) -> None:
+    def __init__(self, directory: Path | None = None, mark: Mark | None = None) -> None:
         self._dir = directory if directory is not None else paths.SESSIONS_DIR
         self._open: dict[int, Any] = {}
         self._written: dict[int, int] = {}
+        #: Where an unfinished session's file is, so an adapter that restarts
+        #: mid-session goes on writing the same file rather than starting another.
+        self._mark = mark
 
     def write(self, event: dict) -> None:
         slot = event.get("slot")
@@ -246,8 +312,16 @@ class SessionLogs:
         except OSError:
             log.warning("tether: no session log directory at %s", self._dir, exc_info=True)
             return None
-        stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
-        path = self._dir / f"{stamp}-slot{slot}.jsonl"
+        known = self._mark.open.get(slot) if self._mark is not None else None
+        if known and Path(known).parent == self._dir and Path(known).is_file():
+            path = Path(known)
+        else:
+            stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+            path = self._dir / f"{stamp}-slot{slot}.jsonl"
+            n = 1
+            while path.exists():
+                n += 1
+                path = self._dir / f"{stamp}-slot{slot}-{n}.jsonl"
         try:
             handle = open(path, "a", encoding="utf-8")
         except OSError:
@@ -258,26 +332,35 @@ class SessionLogs:
         except OSError:
             pass
         self._open[slot] = handle
-        self._written[slot] = 0
+        self._written[slot] = path.stat().st_size
+        if self._mark is not None:
+            self._mark.open[slot] = str(path)
         log.info("tether: recording slot %s in %s", slot, path)
         return handle
 
     def _close(self, slot: int) -> None:
         handle = self._open.pop(slot, None)
         self._written.pop(slot, None)
+        if self._mark is not None:
+            self._mark.open.pop(slot, None)
         if handle is not None:
             with contextlib.suppress(OSError):
                 handle.close()
 
     def close(self) -> None:
-        for slot in list(self._open):
-            self._close(slot)
+        """Close every file without marking its session finished."""
+        for handle in self._open.values():
+            with contextlib.suppress(OSError):
+                handle.close()
+        self._open.clear()
+        self._written.clear()
 
 
 Emit = Callable[[str, dict], Awaitable[None]]
 
 
-async def watch_once(journal: Journal, logs: SessionLogs, emit: Emit) -> None:
+async def watch_once(journal: Journal, logs: SessionLogs, emit: Emit,
+                     mark: Mark | None = None) -> None:
     """One connection's worth of events. Returns when the socket closes."""
     reader, writer = await asyncio.open_unix_connection(str(paths.CONTROL_SOCKET))
     journal.connected(True)
@@ -294,6 +377,10 @@ async def watch_once(journal: Journal, logs: SessionLogs, emit: Emit) -> None:
         if isinstance(epoch, int):
             if journal.head()["epoch"] != epoch:
                 journal.reset(epoch)
+            if mark is not None:
+                if mark.epoch is not None and mark.epoch != epoch:
+                    logs.close()
+                mark.begin(epoch)
 
         while True:
             raw = await asyncio.wait_for(reader.readline(), timeout=IDLE_DEADLINE_S)
@@ -309,10 +396,17 @@ async def watch_once(journal: Journal, logs: SessionLogs, emit: Emit) -> None:
             # Recorded before it is announced, so a subscriber that reacts by
             # asking `drain` always finds the event already there.
             journal.append(event)
+            seq = event.get("seq")
+            if mark is not None and isinstance(epoch, int) and isinstance(seq, int):
+                if mark.seen(epoch, seq):
+                    continue
             if paths.ROLE == paths.OPERATOR:
                 logs.write(event)
             with contextlib.suppress(Exception):
                 await emit("session", event)
+            if mark is not None and isinstance(seq, int):
+                mark.next = seq + 1
+                mark.save()
     finally:
         journal.connected(False)
         writer.close()
@@ -320,17 +414,18 @@ async def watch_once(journal: Journal, logs: SessionLogs, emit: Emit) -> None:
             await writer.wait_closed()
 
 
-async def watch_forever(journal: Journal, logs: SessionLogs, emit: Emit) -> None:
+async def watch_forever(journal: Journal, logs: SessionLogs, emit: Emit,
+                        mark: Mark | None = None) -> None:
     """Hold the watch connection open for the life of the adapter.
 
-    Never returns. The daemon is a supervised child that restarts, so losing
-    this connection is ordinary rather than exceptional, and the backoff is
+    Never returns. The daemon can be restarted or replaced, so losing this
+    connection is ordinary rather than exceptional, and the backoff is
     there to keep a daemon that will not start from being asked constantly.
     """
     delay = 1.0
     while True:
         try:
-            await watch_once(journal, logs, emit)
+            await watch_once(journal, logs, emit, mark)
             delay = 1.0
         except (FileNotFoundError, ConnectionRefusedError, OSError):
             pass

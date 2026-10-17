@@ -6,10 +6,10 @@
 # AWM_SERVICE_NAME / AWM_SERVICE_ID into the environment.
 #
 # The adapter is the only Python here. Everything that touches a session is a
-# tether binary fetched from the pinned release, parented to this process: on the
-# operator's node the tether-operator daemon, on the public host the tether-relay.
-# AWM_TETHER_ROLE selects which. Both die with this process, which is the point —
-# a tether that survived its supervisor would be the persistence the scope forbids.
+# tether binary fetched from the pinned release: on the operator's node the
+# tether-operator daemon, which outlives this process so a deploy does not end
+# its sessions, and on the public host the tether-relay, which dies with it.
+# AWM_TETHER_ROLE selects which. See awm/tether/daemon.py.
 #
 # fetch-release.sh pulls this host's role of the version RELEASE pins before the
 # adapter registers. It runs before the control-WS lease, so a slow or failed

@@ -164,3 +164,91 @@ def test_the_sessions_directory_sits_beside_the_services_own_state():
     would end up under version control."""
     assert paths.SESSIONS_DIR.parent == paths.STATE_DIR
     assert paths.SESSIONS_DIR.name == "sessions"
+
+
+async def _serve(epoch: int, events: list[dict]):
+    """A daemon's watch verb: the opening line, the events, then hang up."""
+    import asyncio
+
+    async def answer(reader, writer):
+        await reader.readline()
+        writer.write(json.dumps({"type": "watch.open", "epoch": epoch}).encode() + b"\n")
+        for e in events:
+            writer.write(json.dumps(e).encode() + b"\n")
+        await writer.drain()
+        writer.close()
+
+    return await asyncio.start_unix_server(answer, path=str(paths.CONTROL_SOCKET))
+
+
+async def _watch(events: list[dict], epoch: int = 5):
+    """One adapter lifetime: fresh buffer and logs, the mark read from disk."""
+    mark = stream.Mark()
+    logs = stream.SessionLogs(paths.SESSIONS_DIR, mark)
+    journal = stream.Journal()
+    heard: list[int] = []
+
+    async def emit(topic, payload):
+        heard.append(payload["seq"])
+
+    server = await _serve(epoch, events)
+    try:
+        await stream.watch_once(journal, logs, emit, mark)
+    finally:
+        server.close()
+        logs.close()
+    return journal, heard, mark
+
+
+async def test_a_restarted_adapter_refills_without_writing_or_ringing_twice(monkeypatch):
+    """The daemon outlives the adapter and hands a fresh one its whole ring.
+    The buffer comes back; the session file and the doorbells must not repeat."""
+    monkeypatch.setattr(paths, "ROLE", paths.OPERATOR)
+    first = [event(0, "session.phase", phase="open"), event(1), event(2)]
+
+    _, heard, mark = await _watch(first)
+    assert heard == [0, 1, 2]
+    assert mark.next == 3
+    mark.cursors["agent"] = 2
+    mark.save()
+
+    journal, heard, mark = await _watch(first + [event(3)])
+
+    assert [e["seq"] for e in journal.since(None)[0]] == [0, 1, 2, 3]
+    assert heard == [3], "a restart rang the doorbell again for old events"
+    files = list(paths.SESSIONS_DIR.iterdir())
+    assert len(files) == 1, "a restart started a second file for one session"
+    assert [json.loads(l)["seq"] for l in files[0].read_text().splitlines()] == [0, 1, 2, 3]
+    assert mark.cursors == {"agent": 2}
+
+
+async def test_a_new_daemon_epoch_clears_the_cursors_and_starts_new_files(monkeypatch):
+    monkeypatch.setattr(paths, "ROLE", paths.OPERATOR)
+    await _watch([event(0), event(1)], epoch=5)
+    mark = stream.Mark()
+    mark.cursors["agent"] = 2
+    mark.save()
+
+    journal, heard, mark = await _watch([event(0)], epoch=6)
+
+    assert heard == [0]
+    assert mark.epoch == 6
+    assert mark.cursors == {}
+    assert len(list(paths.SESSIONS_DIR.iterdir())) == 2
+
+
+async def test_drain_remembers_where_a_caller_was_across_a_restart(monkeypatch):
+    hub_adapter.JOURNAL.reset(9)
+    for seq in range(3):
+        hub_adapter.JOURNAL.append(event(seq))
+    try:
+        first = await hub_adapter.drain({}, "agent")
+        assert first["cursor"] == 3
+
+        monkeypatch.setattr(hub_adapter, "MARK", stream.Mark(paths.STREAM_STATE))
+        hub_adapter.JOURNAL.append(event(3))
+        again = await hub_adapter.drain({}, "agent")
+    finally:
+        hub_adapter.JOURNAL.reset(0)
+
+    assert [e["seq"] for e in again["events"]] == [3]
