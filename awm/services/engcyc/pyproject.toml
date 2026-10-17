@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "awm-engcyc"
+version = "0.1.0"
+requires-python = ">=3.11"
+description = "AWM engcyc service: supervise the EngCyc portal's gunicorn server for a reverse proxy to front."
+dependencies = [
+    "awm-config",
+    "awm-gatewayclient",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest",
+]
+
+# PEP 420 namespace package: no top-level awm/__init__.py; the namespace dir is awm/engcyc/.
+[tool.setuptools.packages.find]
+include = ["awm.engcyc*"]
+namespaces = true
+
+[tool.pytest.ini_options]
+markers = [
+    "smoke: fast unit tests; target <30s",
+    "unit: pure unit tests, no network or subprocesses",
+]
