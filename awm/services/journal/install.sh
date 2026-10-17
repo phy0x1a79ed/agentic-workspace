@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Canonical install for the awm-journal service (editable, into the `awm` env).
 #
-# Installs the component libraries it imports (config, persistence, gatewayclient)
+# Installs the component libraries it imports (config, persistence, gatewayclient,
+# claudedaemon)
 # first, then the service itself. Components have no install.sh of their own —
 # they are pulled in here as plain editable dependencies. Override the target env
 # with AWM_ENV=<name>.
@@ -13,6 +14,7 @@ run() { echo "+ pip install -e $*"; mamba run -n "$ENV" pip install -e "$@"; }
 run "$WS/awm/service_components/config" --no-deps
 run "$WS/awm/service_components/persistence" --no-deps
 run "$WS/awm/service_components/gatewayclient" --no-deps
+run "$WS/awm/service_components/claudedaemon" --no-deps
 # This service embeds + queries vectors, so it also needs persistence's
 # `search` extra (sentence-transformers, on the CPU torch wheel).
 # Opt-in on purpose — see that script for why it is not a declared dependency.

@@ -103,8 +103,17 @@ def test_other_domains_untouched():
     assert args["args"]["_caller_pid"] == 5
 
     flat = {}
-    _stamp_caller("journal_post", flat, "2488")
+    _stamp_caller("journal_fetch", flat, "2488")
     assert "_caller_pid" not in flat
+
+
+def test_a_journal_post_is_stamped_with_its_session():
+    flat = {"_caller_pid": 5}
+    _stamp_caller("journal_post", flat, "2488")
+    assert flat["_caller_pid"] == 2488
+    domain = {"verb": "post", "args": {}}
+    _stamp_caller("journal", domain, "2488")
+    assert domain["args"]["_caller_pid"] == 2488
 
 
 # ---------------------------------------------------------------------------

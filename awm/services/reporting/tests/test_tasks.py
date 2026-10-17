@@ -329,6 +329,97 @@ async def test_a_stopped_job_closes_its_task_as_done_and_files_the_card_in_the_d
     assert env.tri.kids(note) and note in env.tri.notes
 
 
+async def test_a_stopped_session_leaves_its_review_card_in_pending_review(env):
+    task = await started(env)
+    await env.call("request_human", kind="review", summary="s")
+    for _ in range(3):
+        await env.tasks.sweep([row("stopped")])
+    after = env.task()
+    assert after["state"] == "review" and after["ended"] == 1
+    assert env.column(task["note_id"]) == ["Pending review"]
+    assert [e["kind"] for e in env.ledger.events(task["id"])].count("ended") == 1
+    env.tri.notes[task["note_id"]]["parents"] = [env.ids["Done"]]
+    await env.tasks.sweep([])
+    assert env.task()["state"] == "done"
+
+
+async def test_an_exited_interactive_session_leaves_its_review_card_too(env):
+    await env.call("hook_plan", pid=200, plan_text="# Mine\n\nx")
+    await env.call("request_human", pid=200, kind="review", summary="s")
+    env.alive[200] = False
+    await env.tasks.sweep([])
+    assert env.task("200:77")["state"] == "review" and env.task("200:77")["ended"] == 1
+
+
+async def test_a_plan_after_review_opens_a_new_card_and_leaves_the_reviewed_one(env):
+    first = await started(env)
+    await env.call("request_human", kind="review", summary="s")
+    out = await env.call("hook_plan", plan_text="# Next job\n\nx")
+    assert out["opened"] is True and "Next job" in out["notice"]
+    new = env.task()
+    assert new["id"] != first["id"] and new["state"] == "planned" and new["title"] == "Next job"
+    old = env.ledger.get(first["id"])
+    assert old["state"] == "review" and old["plan"] == "p" and old["key"] == f"job00001/sess-1-{first['id']}"
+    assert env.column(old["note_id"]) == ["Pending review"]
+    for _ in range(2):
+        await env.tasks.sweep([row("working")])
+    assert env.ledger.get(first["id"])["state"] == "review"
+    assert env.ledger.get(first["id"])["ended"] == 1 and env.task()["state"] == "planned"
+
+
+async def test_a_plan_after_close_opens_a_new_card_instead_of_reopening(env):
+    first = await started(env)
+    env.ledger.close(first["id"])
+    await env.call("hook_plan", plan_text="# Again\n\nx")
+    assert env.ledger.get(first["id"])["state"] == "done"
+    assert env.task()["id"] != first["id"] and env.task()["state"] == "planned"
+
+
+async def test_a_plan_revising_open_work_keeps_its_card_and_says_nothing(env):
+    out = await env.call("hook_plan", plan_text="v1")
+    assert out["opened"] is True and "request_human" in out["notice"]
+    out = await env.call("hook_plan", plan_text="v2")
+    assert out["opened"] is False and "notice" not in out
+    out = await env.call("hook_plan_approved", plan_text="v2")
+    assert out["opened"] is False and out["state"] == "active"
+
+
+async def test_track_task_opens_an_active_card_once(env):
+    out = await env.call("track_task", pid=200, title="Look into the printer")
+    task = env.task("200:77")
+    assert out["opened"] is True and out["column"] == "Active" and out["title"] == "Look into the printer"
+    assert "Look into the printer" in out["notice"] and env.column(task["note_id"]) == ["Active"]
+    again = await env.call("track_task", pid=200, title="other")
+    assert again["opened"] is False and "notice" not in again and again["task"] == task["id"]
+
+
+def worker(job="job00002", state="working", **over):
+    return {"job": job, "state": state, "brief": True, "pinned": False, "cwd": "/nowhere", **over}
+
+
+async def test_a_briefed_worker_gets_an_active_card_at_its_first_sweep(env):
+    await env.tasks.sweep([worker()])
+    task = env.task("job00002")
+    assert task["state"] == "active" and task["session_id"] == "" and env.column(task["note_id"]) == ["Active"]
+    assert env.ledger.aliases(task["id"]) == []
+    await env.tasks.sweep([worker()])
+    assert len(env.ledger.open()) == 1
+
+
+async def test_a_worker_card_tony_closed_stays_closed(env):
+    await env.tasks.sweep([worker()])
+    env.ledger.close(env.task("job00002")["id"])
+    await env.tasks.sweep([worker()])
+    assert env.ledger.open() == []
+
+
+@pytest.mark.parametrize("over", [{"brief": False}, {"brief": None}, {"pinned": True},
+                                  {"state": "stopped"}, {"state": "gone"}, {"job": None}])
+async def test_only_a_running_briefed_unpinned_worker_gets_a_card_at_start(env, over):
+    await env.tasks.sweep([worker(**over)])
+    assert env.ledger.open() == []
+
+
 async def test_a_job_that_died_without_a_stop_stays_on_the_board_flagged_and_resumes(env):
     task = await started(env)
     await env.tasks.sweep([row("gone")])
@@ -493,6 +584,23 @@ async def test_posts_from_other_scopes_other_kinds_or_before_the_task_are_ignore
     for p in (post("a", scope="feat/y"), post("b", kind="message"), post("c", ts=1.0), post("d", body=" ")):
         await env.tasks.on_post({"post": p})
     assert "<p>(none)</p>" in journal_of(env) and "<h4>" not in journal_of(env)
+
+
+async def test_a_post_that_names_its_session_lands_only_on_that_sessions_card(env, tmp_path):
+    await in_scope(env, tmp_path)
+    env.records[200]["cwd"] = str(tmp_path / SCOPE_DIR)
+    await env.call("hook_plan_approved", pid=200, plan_text="p")
+    mine, other = env.task(), env.task("200:77")
+    await env.tasks.on_post({"post": post("a", meta={"session": "sess-2"})})
+    assert env.ledger.events(mine["id"], "journal") == []
+    assert len(env.ledger.events(other["id"], "journal")) == 1
+    env.ledger.alias(mine["id"], "sess-old")
+    await env.tasks.on_post({"post": post("b", scope="elsewhere", meta={"session": "sess-old"})})
+    assert len(env.ledger.events(mine["id"], "journal")) == 1
+    await env.tasks.on_post({"post": post("c", meta={"session": "nobody"})})
+    await env.tasks.on_post({"post": post("d")})
+    assert len(env.ledger.events(mine["id"], "journal")) == 2
+    assert len(env.ledger.events(other["id"], "journal")) == 2
 
 
 async def test_the_same_post_twice_is_appended_once(env, tmp_path):

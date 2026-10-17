@@ -48,13 +48,23 @@ _CARD_REF = re.compile(r"[0-9a-fA-F]{6,32}")
 JOURNAL_SERVICE = "journal"
 JOURNAL_FETCH = "fetch"
 JOURNAL_TOPIC = "posts"
+#: What a session hears when a card opens for its work, from a plan or `task_track`.
+BOARD_NOTICE = (
+    "Your work is now on Tony's Swarm board as the card \"{title}\", in {column}. "
+    "Keep it current. Work that changes files belongs in its own scope: find or create it "
+    "with scope(verb=\"search\") or scope(verb=\"create\"), then move there with "
+    "reflection(verb=\"cd\", args={{path:<its worktree>}}). When you need Tony, call "
+    "operations(verb=\"request_human\", args={{kind:\"blocked\", reason:<why>}}), which moves "
+    "the card to Blocked. When the work is done, run the debrief skill. It ends with "
+    "operations(verb=\"request_human\", args={{kind:\"review\", summary:<what to look at>}}), "
+    "which moves the card to Pending review.")
 
 
 @dataclass(frozen=True)
 class Who:
     key: str
     kind: str
-    pid: int
+    pid: int | None
     session_id: str
     cwd: str | None
 
@@ -203,10 +213,8 @@ class Tasks:
         return cut_at_word(intent, TITLE_CHARS) if intent else fallback or f"session {key}"
 
     async def _title_of(self, task: dict) -> str:
-        """What an owned card should be called now. A rekeyed task keeps the title it had."""
-        rekeyed = "/" in task["key"]
-        return await self._pick_title(task["kind"], task["key"], task["plan"],
-                                fallback=task["title"] if rekeyed else "")
+        """What an owned card should be called now. Without a better name it keeps the title it had."""
+        return await self._pick_title(task["kind"], task["key"], task["plan"], fallback=task["title"])
 
     async def _touch(self, task: dict, who: Who) -> None:
         if who.session_id and who.session_id != task["session_id"]:
@@ -231,8 +239,17 @@ class Tasks:
             return task
         return None
 
-    async def _open(self, who: Who, state: str, *, title: str = "", note_id: str | None = None) -> dict:
-        """A task for this session in ``state``, on a card made now unless ``note_id`` names one."""
+    async def _open(self, who: Who, state: str, *, title: str = "", note_id: str | None = None,
+                    fresh: bool = False) -> dict:
+        """A task for this session in ``state``, on a card made now unless ``note_id`` names one.
+
+        ``fresh`` is new work: a closed task under the session's key is filed away
+        instead of reopened. Without it a closed task is a resumed job, and reopens.
+        """
+        if fresh:
+            old = await self.db.find(self.node, who.key)
+            if old is not None and old["state"] in CLOSED:
+                await self._file_away(old, "closed")
         title = title or await self._intent(who)
         card = note_id or await self.board.create_card(title, COLUMNS[state])
         project, scope = await asyncio.to_thread(config.project_scope, who.cwd)
@@ -242,9 +259,36 @@ class Tasks:
             project=project, scope=scope, model=_flag(flags, "--model"), effort=_flag(flags, "--effort"))
         await self.db.update(task["id"], title=title, note_id=card, shown=COLUMNS[state], dirty=1,
                              owned=int(note_id is None))
-        await self.db.alias(task["id"], who.session_id)
+        if who.session_id:
+            await self.db.alias(task["id"], who.session_id)
         await self.db.event(task["id"], "created", title)
         return await self.db.get(task["id"])
+
+    async def _file_away(self, task: dict, why: str) -> None:
+        """Move ``task`` off its session's key, so the session's next work opens a card of its own."""
+        await self.db.rekey(task["id"], f"{task['key']}/{task['session_id'] or 'task'}-{task['id']}")
+        await self.db.event(task["id"], "filed", why)
+
+    async def _for_new_work(self, who: Who, state: str, text: str) -> tuple[dict, bool]:
+        """The task a plan belongs to, and True when it was opened for it.
+
+        A plan revises the open work, except that work waiting in review is
+        finished: the plan is new work, on a new card.
+        """
+        task = await self._find(who)
+        if task is not None and task["state"] == REVIEW:
+            await self._file_away(task, "a new plan after review")
+            task = None
+        if task is not None:
+            return task, False
+        return await self._open(who, state, title=await self._intent(who, text), fresh=True), True
+
+    async def _noticed(self, task_id: int, opened: bool, **extra: Any) -> dict:
+        out = await self._result(task_id, opened=opened, **extra)
+        if opened:
+            task = await self.db.get(task_id)
+            out["notice"] = BOARD_NOTICE.format(title=task["title"], column=COLUMNS[task["state"]])
+        return out
 
     async def _task(self, who: Who, state: str) -> dict:
         return await self._find(who) or await self._open(who, state)
@@ -348,21 +392,19 @@ class Tasks:
 
     async def hook_plan(self, who: Who, args: dict) -> dict:
         text = str(args.get("plan_text") or "")
-        task = await self._find(who)
-        if task is None:
-            task = await self._open(who, PLANNED, title=await self._intent(who, text))
+        task, opened = await self._for_new_work(who, PLANNED, text)
         await self.db.update(task["id"], plan=text, dirty=1)
         await self.db.event(task["id"], "plan", str(args.get("plan_path") or ""))
         await self.sync(task["id"])
         await self._say_once(task, who, PLAN_SUBMITTED, _digest(text))
-        return await self._result(task["id"])
+        return await self._noticed(task["id"], opened)
 
     async def hook_plan_approved(self, who: Who, args: dict) -> dict:
         text = str(args.get("plan_text") or "")
-        task = await self._find(who) or await self._open(who, ACTIVE, title=await self._intent(who, text))
-        out = await self._set(task, ACTIVE, "approved", plan=text or task["plan"])
+        task, opened = await self._for_new_work(who, ACTIVE, text)
+        await self._set(task, ACTIVE, "approved", plan=text or task["plan"])
         await self._say_once(task, who, PLAN_APPROVED, _digest(text or task["plan"]))
-        return out
+        return await self._noticed(task["id"], opened)
 
     async def hook_todos(self, who: Who, args: dict) -> dict:
         items = args.get("items")
@@ -407,6 +449,19 @@ class Tasks:
         return {"ok": True, "tracked": True, "task": task["id"], "blocked": False}
 
     # -- agent verbs ---------------------------------------------------------
+
+    async def track_task(self, who: Who, args: dict) -> dict:
+        """Put the calling session's work on the board: its open card, else a new one in Active."""
+        task = await self._find(who)
+        if task is not None:
+            return await self._noticed(task["id"], False, title=task["title"],
+                                       column=COLUMNS[task["state"]])
+        title = cut_at_word(str(args.get("title") or "").strip(), TITLE_CHARS)
+        task = await self._open(who, ACTIVE, title=title, fresh=True)
+        await self.sync(task["id"])
+        task = await self.db.get(task["id"])
+        return await self._noticed(task["id"], True, title=task["title"],
+                                   column=COLUMNS[task["state"]])
 
     async def claim_task(self, who: Who, args: dict) -> dict:
         text = str(args.get("ref") or args.get("url") or "").strip()
@@ -685,6 +740,7 @@ class Tasks:
                 if row:
                     await self._follow(task, row.get("cwd"))
                 await self._ending(task, jobs.get(task["key"]))
+            await self._workers(rows)
             await self._board()
             await self._finished_cards()
             await self._archive()
@@ -694,6 +750,21 @@ class Tasks:
                         and time.time() - (task["blocked_at"] or 0) >= config.remind_s()
                         and await self._notify(task, reminder=True)):
                     await self.db.update(task["id"], reminded=1)
+
+    async def _workers(self, rows: list[dict]) -> None:
+        """Open a card in Active for each running worker cx started with the brief.
+
+        Only a job the ledger has never held gets one, so a card Tony closed
+        stays closed. Sessions started before the brief carry no ``brief``, and a
+        kept seat never gets it.
+        """
+        for row in rows:
+            job = row.get("job")
+            if (not job or not row.get("brief") or row.get("pinned")
+                    or row.get("state") in (GONE, STOPPED)):
+                continue
+            if await self.db.find(self.node, job) is None:
+                await self._open(Who(job, "bg", None, "", row.get("cwd")), ACTIVE)
 
     async def _ending(self, task: dict, row: dict | None) -> None:
         if task["kind"] == "bg":
@@ -715,7 +786,13 @@ class Tasks:
                 return
         elif await asyncio.to_thread(self._alive, task["pid"], task["key"].split(":", 1)[1]):
             return
-        await self.close(task, **({"fed_state": None} if task["state"] != REVIEW else {}))
+        if task["state"] == REVIEW:
+            # The work waits for Tony, who closes it by dragging the card to Done.
+            if not task["ended"]:
+                await self.db.update(task["id"], ended=1, dirty=1)
+                await self.db.event(task["id"], "ended", "the session ended in review")
+            return
+        await self.close(task, fed_state=None)
 
     async def _board(self) -> None:
         try:
@@ -793,13 +870,21 @@ class Tasks:
             return
         meta = post.get("meta") if isinstance(post.get("meta"), dict) else {}
         title = str(meta.get("title") or "").strip()
+        session = str(meta.get("session") or "")
         for task in await self.db.open(self.node):
-            if ((task["project"], task["scope"]) == (post.get("project"), post.get("scope"))
+            if (await self._posted_by(task, post, session)
                     and _posted_at(post) >= task["started"]
                     and await self.db.event(task["id"], "journal", f"{title}\n\n{body}" if title else body,
                                             ref=str(post["id"]))):
                 await self.db.update(task["id"], dirty=1)
                 await self.sync(task["id"])
+
+    async def _posted_by(self, task: dict, post: dict, session: str) -> bool:
+        """Whether ``post`` belongs on ``task``: the posting session's card when the
+        post names its session, else every card in the post's scope."""
+        if session:
+            return session == task["session_id"] or session in await self.db.aliases(task["id"])
+        return (task["project"], task["scope"]) == (post.get("project"), post.get("scope"))
 
     async def _catch_up(self) -> None:
         """Read the recent journal of every open task's scope, for posts the subscription missed."""

@@ -10,11 +10,12 @@ launch paints an already-started renderer instead of booting one.
 This file holds what installing and operating the service needs, and the
 reasoning that reading the code does not give: who may start a session and what
 a restricted caller gets, where a session's mode lives, why a session is moved
-exactly once, which of two files answers which question about a session, how a
-session comes by its name, why the service refuses to seed or start on a node
-with no daemon, which trust rule applies to a move and to a start, how a stopped
-session resumes, why a pinned session is removed when it stops, and what the
-pool deliberately does not do. The verb list is in `awm cx --help`.
+exactly once, which of two files answers which question about a session, what
+standing brief a worker gets, how a session comes by its name, why the service
+refuses to seed or start on a node with no daemon, which trust rule applies to a
+move and to a start, how a stopped session resumes, why a pinned session is
+removed when it stops, and what the pool deliberately does not do. The verb list
+is in `awm cx --help`.
 
 ## Install
 
@@ -126,6 +127,25 @@ The arguments `allowed_tools`, `tools`, `restricted` and `strict_mcp` map to
 `system_prompt` and `autocompact` map to `--append-system-prompt` and
 `--autocompact`. Use `system_prompt` for anything the session must keep, because
 a compaction summary rewrites the conversation and never the system prompt.
+
+#### A worker gets a lifecycle brief
+
+cx appends the lifecycle brief (`lifecycle.BRIEF`) after any `system_prompt`.
+The brief tells the session to work in its work's scope, to ask Tony through
+`request_human`, and to debrief, report back and stop itself when the work is
+done. It rides in the system prompt so that no compaction paraphrases it away.
+
+- A calling session is named as the starter and as the place to report to.
+  `started_by` names the starter only when no session called, such as
+  reporting's `/new-agent`. Without either, the brief says "an awm service".
+- A pinned start gets no brief. A kept seat has its own brief from the keeper,
+  and the keeper's spec hash covers the system prompt.
+- `brief: false` leaves the brief out.
+
+**CAUTION** The lineage record and the `list_other` row carry `brief`.
+Reporting's sweep opens a board card for each live job with `brief` set, so a
+session started without the brief stays off the board until it plans, claims
+or asks.
 
 **CAUTION** `--restricted` refuses bypass, so a restricted start runs in its
 named mode with no way to reach bypass. A restricted session also ignores user

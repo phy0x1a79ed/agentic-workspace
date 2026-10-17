@@ -240,7 +240,7 @@ def test_defaults_are_skip_permissions_opus_and_high(home, launched):
 def test_arguments_override_the_defaults_in_equals_form(home, launched):
     start({**BASE, "name": "worker one", "model": "opus", "effort": "high",
            "permission": "plan", "disallowed_tools": ["Write", "Edit"],
-           "remote_control": True})
+           "remote_control": True, "brief": False})
     call = launched[0]
     assert call["name"] == "worker one"
     assert call["flags"] == ["--permission-mode=plan", "--allow-dangerously-skip-permissions",
@@ -263,7 +263,8 @@ def test_bypass_stays_in_the_mode_cycle_for_every_start(home, launched, permissi
 
 def test_allowed_tools_become_one_equals_form_flag(home, launched):
     start({**BASE, "permission": "dontAsk", "disallowed_tools": ["Bash"],
-           "allowed_tools": ["mcp__awm__*", "SendMessage"], "remote_control": "rc1"})
+           "allowed_tools": ["mcp__awm__*", "SendMessage"], "remote_control": "rc1",
+           "brief": False})
     flags = launched[0]["flags"]
     assert flags == ["--permission-mode=dontAsk", "--allow-dangerously-skip-permissions",
                      "--disallowedTools=Bash", "--allowedTools=mcp__awm__*,SendMessage", "--remote-control=rc1",
@@ -284,7 +285,8 @@ def test_allowed_tools_must_be_a_list_of_names(home, launched):
 
 
 def test_every_valued_flag_uses_the_equals_form(home, launched):
-    start({**BASE, "permission": "auto", "disallowed_tools": "Bash", "remote_control": "rc1"})
+    start({**BASE, "permission": "auto", "disallowed_tools": "Bash", "remote_control": "rc1",
+           "brief": False})
     for flag in launched[0]["flags"]:
         assert flag.startswith("--") and (flag.count("=") == 1 or "=" not in flag)
     bare = {"--effort", "--model", "--permission-mode", "--disallowedTools",
@@ -293,11 +295,12 @@ def test_every_valued_flag_uses_the_equals_form(home, launched):
 
 
 def test_system_prompt_and_autocompact_become_equals_form_flags(home, launched):
-    start({**BASE, "system_prompt": "--not a flag\nsecond line", "autocompact": 233_000})
+    start({**BASE, "system_prompt": "--not a flag\nsecond line", "autocompact": 233_000,
+           "brief": False})
     flags = launched[0]["flags"]
     assert "--append-system-prompt=--not a flag\nsecond line" in flags
     assert "--autocompact=233000" in flags
-    start({**BASE, "name": "second"})
+    start({**BASE, "name": "second", "brief": False})
     assert not any(f.startswith(("--append-system-prompt", "--autocompact"))
                    for f in launched[1]["flags"])
 
@@ -1121,6 +1124,75 @@ def test_mode_of_docstring_states_the_contract():
 
     doc = lifecycle.mode_of.__doc__
     assert "positively not" in doc and '"unknown"' in doc
+
+
+# --- the lifecycle brief ----------------------------------------------------
+
+
+def system_prompt(call):
+    found = [f for f in call["flags"] if f.startswith("--append-system-prompt=")]
+    assert len(found) <= 1
+    return found[0].partition("=")[2] if found else None
+
+
+def test_a_start_appends_the_brief_after_the_callers_system_prompt(home, launched):
+    start({**BASE, "system_prompt": "be terse"})
+    text = system_prompt(launched[0])
+    assert text.startswith("be terse\n\nYou are a worker session, started by an awm service.")
+    assert "You started in awm/demo." in text
+    assert 'reflection(verb="cd", args={path:<its worktree>})' in text
+    assert 'reflection(verb="stop", args={job:<your job>, confirm:true})' in text
+    from awm.cx import lifecycle
+
+    assert lifecycle.read_lineage(CHILD_JOB)["brief"] is True
+
+
+def test_started_by_names_who_started_a_session_with_no_caller(home, launched):
+    start({**BASE, "started_by": "Tony from Discord"})
+    text = system_prompt(launched[0])
+    assert "started by Tony from Discord." in text
+    assert "where your first prompt asks" in text
+
+
+def test_a_calling_session_is_the_parent_to_report_to(home, launched):
+    parent_session(home)
+    start({**BASE, "started_by": "Tony from Discord", "_caller_pid": os.getpid()})
+    text = system_prompt(launched[0])
+    assert f"started by the session caller ({PARENT_JOB})." in text
+    assert f'args={{job:"{PARENT_JOB}", text:…}}' in text
+    assert "Tony from Discord" not in text
+
+
+def test_an_interactive_parent_is_addressed_by_name(home, launched):
+    home.record(os.getpid(), "interactive", name="dev")
+    start({**BASE, "_caller_pid": os.getpid()})
+    assert 'args={job:"dev", text:…}' in system_prompt(launched[0])
+
+
+def test_brief_false_leaves_the_brief_out(home, launched):
+    start({**BASE, "brief": False})
+    assert system_prompt(launched[0]) is None
+    from awm.cx import lifecycle
+
+    assert lifecycle.read_lineage(CHILD_JOB)["brief"] is False
+
+
+def test_a_pinned_start_gets_no_brief(home, launched, monkeypatch):
+    from awm.cx import lifecycle
+
+    async def no_pin(job):
+        return True
+
+    monkeypatch.setattr(lifecycle, "_pin", no_pin)
+    start({**BASE, "pin": True, "system_prompt": "seat brief"})
+    assert system_prompt(launched[0]) == "seat brief"
+
+
+@pytest.mark.parametrize("args", [{"brief": "yes"}, {"started_by": ""},
+                                  {"started_by": "x" * 121}, {"started_by": "a\nb"}])
+def test_brief_arguments_are_checked(home, launched, args):
+    out = start({**BASE, **args})
+    assert not out["ok"] and not launched
 
 
 # --- the parent comes from a verified session record -------------------------

@@ -10,7 +10,9 @@ A scope IS the channel. Each entry's ``name`` is the service-internal handle
 """
 
 import logging
+from typing import Any
 
+from awm.claudedaemon import roster
 from awm.journal import channel, owners, render
 
 log = logging.getLogger("awm.journal.posts")
@@ -103,12 +105,23 @@ POST_MANIFEST_FUNCTIONS = [
 ]
 
 
+def _with_session(meta: Any, caller_pid: Any) -> Any:
+    """``meta`` with ``session`` set to the posting session's id, from the pid the
+    gateway stamped. A ``session`` the caller supplied is dropped either way."""
+    rec = roster.session_by_pid(caller_pid) if isinstance(caller_pid, int) else None
+    session = rec.get("sessionId") if rec else None
+    if not isinstance(meta, dict):
+        return {"session": session} if session else meta
+    meta = {k: v for k, v in meta.items() if k != "session"}
+    return {**meta, "session": session} if session else meta
+
+
 def _handle_post(args: dict, as_: str | None = None) -> dict:
     post = channel.post(
         args["project"], args["scope"],
         author=args["author"], body=args["body"],
         kind=args.get("kind", "message"),
-        meta=args.get("meta"),
+        meta=_with_session(args.get("meta"), args.get("_caller_pid")),
         to_scope=args.get("to_scope"),
         origin=channel.edge_origin(as_),
     )

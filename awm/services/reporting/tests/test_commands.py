@@ -178,6 +178,19 @@ async def test_a_new_agent_is_told_to_rename_itself_once_it_knows_its_work(parts
     assert 'reflection(verb="rename"' in spec["prompt"]
 
 
+async def test_a_new_agent_is_told_where_to_answer_and_who_started_it(parts):
+    commands, _, cx, _ = parts
+    await commands.handle(event("new_agent", prompt="fix the printer", reply_to="dm:42"))
+    await settle(commands)
+    spec = cx.started[0]
+    assert spec["started_by"] == "Tony from Discord"
+    assert ('social(verb="send", args={account: "discord-bot", channel: "dm:42", '
+            'text: "<text>"})') in spec["prompt"]
+    await commands.handle(event("new_agent", account=None))
+    await settle(commands)
+    assert 'social(verb="send"' not in cx.started[1]["prompt"]
+
+
 async def test_a_link_that_is_not_ready_is_reported_with_the_reason(parts):
     commands, _, cx, replies = parts
     cx.start_reply = {"ok": True, "job": "abcd1234", "link": None,

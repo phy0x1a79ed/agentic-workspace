@@ -16,9 +16,9 @@ Two parts in one service.
 **Task reporting** runs on every fleet node. Each node keeps a SQLite ledger of
 the tasks its sessions work on and shows them on the Swarm board in Trilium. The
 ledger is the source of truth and the board only displays it. Claude Code hooks
-and two agent verbs (`task_claim` and `request_human`, whose `kind` is `blocked`
-or `review`) drive it. The reconcile loop closes a task when its
-session ends, and journal posts from a task's scope append to its card.
+and three agent verbs (`task_claim`, `task_track` and `request_human`, whose
+`kind` is `blocked` or `review`) drive it. The reconcile loop closes a task when its
+session ends, and a session's journal posts append to its card.
 
 **The front door** runs intake only where `AWM_FRONT_DOOR=1`. It listens to
 the federation board for cards addressed to this swarm, keeps them in a SQLite
@@ -57,6 +57,26 @@ ref that names a federation card claims that card (`FEDERATION.md` §
 *Intake*), and its note joins Planned. A URL outside the board clones that note
 into Proposed first.
 
+A session with no card gets an owned card on the first of these events:
+
+1. It writes a plan in plan mode, or its plan is approved. The card opens in
+   Planned.
+2. It calls `request_human`.
+3. It calls `task_track`, which opens the card in Active, or returns the card it
+   already has.
+4. The sweep finds a live job that cx started with the lifecycle brief (cx
+   `INSTALL.md` § *A worker gets a lifecycle brief*). The card opens in Active.
+   A kept seat never gets the brief, so it stays off the board.
+
+Tony's own sessions get no card for starting. A plan or `task_track` that opens
+a card returns a notice that names the card and the board's protocol. The plan
+hook hands it to the agent as `additionalContext`.
+
+A card holds one piece of work. A plan written while the card waits in Pending
+review, or after it closed, opens a new card. The reviewed card moves off the
+session's key to `<key>/<session id>-<task id>` and keeps its plan and its
+column. A plan written in Active or Blocked revises the same card.
+
 - A card is a note under a column. A move adds the new column branch and removes
   only the old one, so a clone on Tony's own board stays. The service never calls
   `note_move`.
@@ -89,8 +109,12 @@ into Proposed first.
   drag to Done or Rejected closes the task.
 - A card the service made, or a federation card, is labelled `#archived` 14 days
   after its task closed in Done or Rejected. Tony's own claimed note stays.
-- A task whose session ended is filed under its node's Ledger note. A background
-  session that died without a stop stays on the board, flagged as ended.
+- A task whose session ended is filed under its node's Ledger note. Two cases
+  stay on the board, flagged as ended: a background session that died without
+  a stop, and a card in Pending review, which waits for Tony's drag to Done.
+- A journal post that names its session (`meta.session`, which the journal
+  sets from the gateway's caller pid) joins that session's card only. A post
+  with no session joins every open card in its project and scope.
 
 ## Hooks
 
@@ -125,7 +149,7 @@ deletes it when a result says the task is no longer blocked.
 | `AWM_REPORTING_REMIND_S` | seconds an urgent request stays blocked before Tony gets one reminder (default 3600) |
 | `AWM_REPORTING_DM_ACCOUNT` | the `social` account that carries card DMs and urgent requests (default: the node's operator DM account). `AWM_SOCIAL_PEER` names the node that runs `social` |
 | `AWM_REPORTING_TRILIUM_URL` | where Tony opens a note from, without the `#`, for the link in that message (default: this node's edge URL plus `/trilium`) |
-| `AWM_REPORTING_NEW_AGENT_PROJECT`, `AWM_REPORTING_NEW_AGENT_SCOPE` | where `/new-agent` starts a session (default `awm`, `dev`). The agent moves to another scope when its prompt asks it to |
+| `AWM_REPORTING_NEW_AGENT_PROJECT`, `AWM_REPORTING_NEW_AGENT_SCOPE` | where `/new-agent` starts a session (default `awm`, `dev`). The lifecycle brief tells the agent to move to its work's scope |
 | `AWM_REPORTING_MESSAGE_BACKLOG_S` | how old a message card may be and still be queued by a catch-up (default 3 days) |
 
 ## Task identity
@@ -152,8 +176,9 @@ outside its operators table, so a command that arrives here comes from Tony.
   behind `reflection start_other`) with Remote Control on, and answers with the session's
   `https://claude.ai/code/session_…` link. The answer overwrites the "Starting an agent…" ack.
   It quotes the first three lines of the prompt, up to 300 characters. It attaches a longer
-  prompt whole as `prompt.txt`, which Discord shows collapsed. The prompt tells the agent to rename itself with
-  `reflection rename` once it knows its work.
+  prompt whole as `prompt.txt`, which Discord shows collapsed. The first prompt holds Tony's
+  words, a hint to rename the session with `reflection rename`, and the account and channel
+  to answer in. cx adds the lifecycle brief, with `started_by` "Tony from Discord".
 
 The reconcile loop holds a non-blocking lock on `<state>/reconcile.lock` for
 the life of the process, so a second copy of the service sweeps nothing.

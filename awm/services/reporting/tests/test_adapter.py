@@ -44,6 +44,7 @@ def test_every_verb_declares_its_effect():
 
 PUBLISHED = {
     "status": "operations_status", "claim_task": "operations_task_claim",
+    "track_task": "operations_task_track",
     "board_watch": "operations_board_watch", "board_unwatch": "operations_board_unwatch",
     "request_human": "operations_request_human", "hook_plan": "operations_hook_plan",
     "hook_plan_approved": "operations_hook_plan_approved", "hook_todos": "operations_hook_todos",
