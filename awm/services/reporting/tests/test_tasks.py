@@ -365,6 +365,9 @@ async def test_a_plan_after_review_opens_a_new_card_and_leaves_the_reviewed_one(
         await env.tasks.sweep([row("working")])
     assert env.ledger.get(first["id"])["state"] == "review"
     assert env.ledger.get(first["id"])["ended"] == 1 and env.task()["state"] == "planned"
+    await env.tasks.on_post({"post": post("later", meta={"session": "sess-1"})})
+    assert env.ledger.events(first["id"], "journal") == []
+    assert len(env.ledger.events(new["id"], "journal")) == 1
 
 
 async def test_a_plan_after_close_opens_a_new_card_instead_of_reopening(env):

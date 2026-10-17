@@ -880,9 +880,11 @@ class Tasks:
                 await self.sync(task["id"])
 
     async def _posted_by(self, task: dict, post: dict, session: str) -> bool:
-        """Whether ``post`` belongs on ``task``: the posting session's card when the
-        post names its session, else every card in the post's scope."""
+        """Whether ``post`` belongs on ``task``: the posting session's live card when
+        the post names its session, else every card in the post's scope."""
         if session:
+            if "/" in task["key"]:  # filed away: the session has moved on to another card
+                return False
             return session == task["session_id"] or session in await self.db.aliases(task["id"])
         return (task["project"], task["scope"]) == (post.get("project"), post.get("scope"))
 
