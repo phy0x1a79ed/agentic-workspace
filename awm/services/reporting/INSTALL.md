@@ -167,6 +167,7 @@ deletes it when a result says the task is no longer blocked.
 | `AWM_REPORTING_CATCHUP_S` | seconds between board catch-up reads and between journal catch-ups (default 300) |
 | `AWM_REPORTING_REMIND_S` | seconds an urgent request stays blocked before Tony gets one reminder (default 3600) |
 | `AWM_REPORTING_DM_ACCOUNT` | the `social` account that carries card DMs and urgent requests (default: the node's operator DM account). `AWM_SOCIAL_PEER` names the node that runs `social` |
+| `AWM_REPORTING_QUIET_SWARMS` | swarms, comma- or space-separated, whose cards with this swarm are queued but never DMed to Tony, such as a standing channel a session already reads (default: none). Thread messages never DM Tony either way |
 | `AWM_REPORTING_TRILIUM_URL` | where Tony opens a note from, without the `#`, for the link in that message (default: this node's edge URL plus `/trilium`) |
 | `AWM_REPORTING_NEW_AGENT_PROJECT`, `AWM_REPORTING_NEW_AGENT_SCOPE` | where `/new-agent` starts a session (default `awm`, `dev`). The lifecycle brief tells the agent to move to its work's scope |
 | `AWM_REPORTING_MESSAGE_BACKLOG_S` | how old a message card may be and still be queued by a catch-up (default 3 days) |

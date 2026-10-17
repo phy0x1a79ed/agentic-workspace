@@ -103,6 +103,16 @@ def message_backlog_s() -> float:
     return _float("AWM_REPORTING_MESSAGE_BACKLOG_S", 3 * 86400.0)
 
 
+def quiet_swarms() -> frozenset[str]:
+    """Swarms whose cards with this swarm never DM Tony, from ``AWM_REPORTING_QUIET_SWARMS``.
+
+    A standing channel with another swarm is read by the session that holds it,
+    so a direct message for each card on it is noise.
+    """
+    raw = os.environ.get("AWM_REPORTING_QUIET_SWARMS") or ""
+    return frozenset(s.strip() for s in raw.replace(",", " ").split() if s.strip())
+
+
 def new_agent_target() -> tuple[str, str]:
     """The project and scope `/new-agent` starts in."""
     return (os.environ.get("AWM_REPORTING_NEW_AGENT_PROJECT") or "awm",

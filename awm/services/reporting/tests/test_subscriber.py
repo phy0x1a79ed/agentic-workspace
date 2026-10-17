@@ -127,6 +127,25 @@ async def test_a_card_to_open_and_a_card_this_swarm_posted_are_told_too(queue):
     assert "New post from tony/agent (opal)" in told.texts[1]
 
 
+async def test_cards_with_a_quiet_swarm_are_queued_but_never_told(queue, monkeypatch):
+    monkeypatch.setenv("AWM_REPORTING_QUIET_SWARMS", "caviar, delta")
+    sub, board, told = build(queue)
+    ours = board.add(make_card(kind="message", recipient="caviar",
+                               sender={"swarm": "tony", "principal": "tony", "party": "p"}))
+    theirs = board.add(make_card(sender={"swarm": "caviar", "principal": "caviar", "party": "q"}))
+    loud = board.add(make_card())
+    for card in (ours, theirs, loud):
+        board.post_event("card.posted", card)
+    await sub.consume()
+    assert all(queue.get(c["id"])["status"] == "proposed" for c in (ours, theirs, loud))
+    assert len(told.texts) == 1 and f"claim task {loud['id'][:8]}" in told.texts[0]
+    queue.mark(theirs["id"], "done")
+    board.post_event("card.moved", {**theirs, "state": "proposed"})
+    await sub.consume()
+    await sub.catch_up()
+    assert len(told.texts) == 1
+
+
 async def test_cards_between_other_swarms_are_ignored(queue):
     sub, board, told = build(queue)
     mine = board.add(make_card())
