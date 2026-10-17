@@ -11,11 +11,10 @@ You are the **workspace agent** — the top-level orchestrator for this multi-pr
 ### Startup Ritual
 
 1. Check this machine's identity: `cat NAME.md` (workspace-root file naming this awm node: capella, crux, mira, …; gitignored)
-2. Check workspace health: `awm_status`
-3. Check your inbox: `inbox_search scope=workspace`
-4. Review active scopes: `scope_list`
-5. Review active locks: `lock_list`
-6. Address any unread messages before taking new requests
+2. Check workspace health: `services(verb="list")` (or `awm gateway status`)
+3. Check for messages: `scope(verb="fetch", args={scope:"workspace", kind:"message"})`
+4. Review active scopes: `scope(verb="search")`
+5. Address any unread messages before taking new requests
 
 ### Core Responsibilities
 
@@ -33,19 +32,19 @@ You are the **workspace agent** — the top-level orchestrator for this multi-pr
 
 ## MCP Integration
 
-AWM is available as an MCP server. The `.mcp.json` at the workspace root registers the `awm` MCP server:
+AWM is available as an MCP server. The `.mcp.json` at the workspace root registers the `awm` MCP server.
 
-| Category | Tools |
-|----------|-------|
-| Skills | `skills_list`, `skills_get`, `skills_search`, `skills_sync` |
-| Sessions | `session_log`, `session_list`, `session_get` |
-| Scopes | `scope_create`, `scope_list`, `scope_complete`, `scope_delete` |
-| Artifacts | `artifact_register`, `artifact_search`, `artifact_delete`, `artifacts_sync` |
-| Projects | `project_create` |
-| Locks | `lock_acquire`, `lock_release`, `lock_list`, `lock_heartbeat` |
-| Messaging | `inbox_send`, `inbox_search`, `inbox_fetch`, `inbox_mark_read`, `inbox_recipients` |
-| Agents | `agent_spawn` |
-| Lifecycle | `awm_status`, `awm_restart`, `awm_refresh` |
+**Discover the surface, don't memorize it.** The catalog is projected live from
+whatever feature services are registered, and collapsed to one generic tool per
+domain (`scope`, `project`, `agent`, `services`, …) called as `{verb, args}`. Any
+roster written here goes stale the next time a service registers — so find it at
+runtime instead:
+
+- `services(verb="list")` — the running services; each one is a domain.
+- `<domain>(verb="describe")` — that domain's verbs and full parameter schemas
+  (`describe` is a reserved verb on every domain).
+
+See `WORKSPACE.md` § *MCP Tools*.
 
 ## Quick Start
 
@@ -54,8 +53,7 @@ awm scope list                                      # list active scopes
 awm project create <name> [--clone <url>]            # create a new project
 awm scope create <project> <scope> [--from <branch>] # create a scope
 awm scope complete <project> <scope> [--merge]       # complete a scope
-awm session log <project> <scope> --summary "..."     # log a session (supports --outcome, --deviations, --suggestions)
-awm skill search <query>                             # search skills (keyword + semantic)
+awm scope post <project> <scope> --kind journal ...  # journal a session (see `awm scope post --help`)
 ```
 
 ## Skill Discovery
