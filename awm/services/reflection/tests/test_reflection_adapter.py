@@ -70,7 +70,7 @@ def test_every_verb_goes_through_the_seam():
     # all of the above, which is exactly how the gap opened the first time.
     assert set(hub_adapter.HANDLERS) == {
         "message_self", "compact", "mode", "pending", "whoami", "remote_control",
-        "model", "effort", "rename", "interrupt", "stop", "link", "message"}
+        "model", "effort", "rename", "cd", "interrupt", "stop", "link", "message"}
     for verb, handler in hub_adapter.HANDLERS.items():
         assert handler.__qualname__.startswith("_guarded."), verb
 

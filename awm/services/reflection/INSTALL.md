@@ -185,7 +185,8 @@ Every verb is on MCP + CLI + HTTP:
 - `reflection_whoami` — report which session reflection resolves you to.
 - Session control, on the caller or on `job`: `remote_control` (types `/rc`,
   and answers with the `https://claude.ai/code/session_…` link once the bridge
-  connects), `model`, `effort`, `rename`, `interrupt` (one Escape), `stop`
+  connects), `model`, `effort`, `rename`, `cd` (types `/cd <path>`),
+  `interrupt` (one Escape), `stop`
   (ends a background session and runs `claude rm`), `link` (reads the record
   and types nothing) and `message` (types into another session, under the
   `message_self` guards). Before it types, a control verb refuses when the
@@ -198,6 +199,12 @@ Every verb is on MCP + CLI + HTTP:
   conversation with output also asks "Switch model?" or "Change effort
   level?". The verb presses Enter only on the "Yes, switch to <value>" option
   it asked for, and reports the outcome in its follow-up.
+- **CAUTION** `cd` refuses a directory that neither it nor an ancestor is
+  trusted in `~/.claude.json`. There `/cd` opens a trust dialog whose default
+  answer is to stay put, and the next typed line answers it. A move keeps the
+  old directory's CLAUDE.md in context and adds the new one. `list_other` and
+  the Swarm board read a session's scope from its live cwd, so a moved session
+  shows under its new scope with no register step.
 
 A call on yourself carries nothing agent-specific, on either hosting kind:
 

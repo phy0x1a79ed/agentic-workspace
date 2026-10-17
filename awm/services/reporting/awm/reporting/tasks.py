@@ -214,6 +214,15 @@ class Tasks:
                 await self.db.alias(task["id"], task["session_id"])
             await self.db.alias(task["id"], who.session_id)
             await self.db.update(task["id"], session_id=who.session_id)
+        await self._follow(task, who.cwd)
+
+    async def _follow(self, task: dict, cwd: str | None) -> None:
+        """Put the task under the scope its session is in now, so a session that ran `/cd` follows."""
+        if not cwd:
+            return
+        project, scope = await asyncio.to_thread(config.project_scope, cwd)
+        if (project, scope) != (task["project"], task["scope"]):
+            await self.db.update(task["id"], project=project, scope=scope, dirty=1)
 
     async def _find(self, who: Who) -> dict | None:
         task = await self.db.find(self.node, who.key)
@@ -672,6 +681,9 @@ class Tasks:
         async with self.lock:
             jobs = {r.get("job"): r for r in rows}
             for task in await self.db.open(self.node):
+                row = jobs.get(task["key"]) if task["kind"] == "bg" else None
+                if row:
+                    await self._follow(task, row.get("cwd"))
                 await self._ending(task, jobs.get(task["key"]))
             await self._board()
             await self._finished_cards()

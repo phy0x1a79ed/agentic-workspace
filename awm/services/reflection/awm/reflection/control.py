@@ -1,4 +1,4 @@
-"""Session control: Remote Control, model, effort, rename, interrupt, stop, link, message.
+"""Session control: Remote Control, model, effort, rename, cd, interrupt, stop, link, message.
 
 Every verb here acts on the caller's own session when it names no ``job``, and
 on any other session on this node when it does. ``job`` is a job id or the name
@@ -23,13 +23,14 @@ prompt then reports how the change ended.
 from __future__ import annotations
 
 import logging
+import os
 import re
 import time
 import uuid
 from dataclasses import dataclass, replace
 from typing import Any, Callable, Optional
 
-from awm.claudedaemon import cli, roster
+from awm.claudedaemon import cli, roster, trust
 from awm.reflection import (
     guards,
     inject,
@@ -64,6 +65,8 @@ MAX_MODAL_STEPS = 6
 KEY_SETTLE_S = 0.35
 # Lets `stop` of the caller's own session return its answer first.
 SELF_STOP_DELAY_S = 1.5
+# How long `cd` waits for an idle session's record to show the new directory.
+MOVE_WAIT_S = 8.0
 
 DISCONNECT_OPTION = "disconnect this session"
 
@@ -394,6 +397,63 @@ def rename(name: str, *, job: Optional[str], caller_pid: Any) -> dict:
         return {"ok": False, "reason": "a name may not carry the warm pool's mark"}
     return _slash(job, caller_pid, f"/rename {name}", "the rename",
                   change=_change("rename", name))
+
+
+def cd(path: str, *, job: Optional[str], caller_pid: Any) -> dict:
+    """Move the target to ``path`` by typing `/cd`.
+
+    A directory Claude Code has not been trusted in is refused: `/cd` would open
+    the trust dialog, whose default is to stay put, and the next keystroke
+    typed into the session would answer it.
+    """
+    path = path.strip() if isinstance(path, str) else ""
+    if not path or not path.isprintable() or not os.path.isabs(path):
+        return {"ok": False, "reason": "path must be an absolute directory, on one line"}
+    want = os.path.realpath(path)
+    if not os.path.isdir(want):
+        return {"ok": False, "reason": f"{want} is not a directory on this node"}
+    if not trust.trusted(want):
+        return {"ok": False, "reason": (
+            f"Claude Code is not trusted in {want} or any directory above it, so "
+            f"`/cd` would open its trust dialog and wait on a person. Open "
+            f"`claude` once in {want} and accept the dialog, then retry.")}
+    t = resolve(job, caller_pid)
+    _require_running(t)
+    if _cwd(t) == want:
+        return {"ok": True, **_identify(t), "cwd": want, "changed": False,
+                "detail": f"{t.label} is already in {want}"}
+    refused = _check_clear(t)
+    if refused:
+        return refused
+    out = _command(t, f"/cd {want}", what="the move", change=_change("cd", want))
+    if t.is_self or not out.get("ok") or not out.get("submitted"):
+        return {**out, "cwd": want}
+    if not _between_turns(t):
+        return {**out, "cwd": want, "moved": False,
+                "detail": f"{t.label} is mid-turn, so the move runs when that turn ends"}
+    moved = _await_cwd(t, want)
+    out = {**out, "cwd": want, "moved": moved}
+    if not moved:
+        out["detail"] = (f"the session record does not show {want} after "
+                         f"{MOVE_WAIT_S:g}s; `list_other` shows where it is")
+    return out
+
+
+def _cwd(t: Target) -> Optional[str]:
+    try:
+        cwd = session_target.read_session_record(t.pid).get("cwd")
+    except session_target.ResolveError:
+        return None
+    return os.path.realpath(cwd) if isinstance(cwd, str) and cwd else None
+
+
+def _await_cwd(t: Target, want: str) -> bool:
+    deadline = _clock() + MOVE_WAIT_S
+    while _cwd(t) != want:
+        if _clock() >= deadline:
+            return False
+        _sleep(POLL_S)
+    return True
 
 
 def message(job: Optional[str], text: str, *, caller_pid: Any,

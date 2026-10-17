@@ -38,7 +38,7 @@ from typing import Any
 
 from awm import gatewayclient
 from awm.claudedaemon import cli, launch, pins, roster, sessionmode
-from awm.config import caller_peer, node_name, node_role, peer_relation
+from awm.config import caller_peer, node_name, node_role, peer_relation, scope_of
 
 from awm.cx import config, sessions, trust
 
@@ -786,13 +786,15 @@ def collect(project: str | None = None, scope: str | None = None,
 def _job_row(s: sessions.Session, rec: dict[str, Any] | None,
              node: str) -> dict[str, Any]:
     rec = rec or {}
-    project, scope = _project_scope(s.cwd)
+    # The live directory wins over the launch record, so a session that ran
+    # `/cd` lists under the scope it is in now.
+    project, scope = (_project_scope(s.cwd) if s.cwd
+                      else (rec.get("project"), rec.get("scope")))
     record = _read_json(config.jobs_dir() / s.short / "state.json")
     state = record.get("state")
     return {
         "job": s.short, "tmux": None, "name": s.name, "node": node,
-        "project": rec.get("project", project), "scope": rec.get("scope", scope),
-        "cwd": s.cwd,
+        "project": project, "scope": scope, "cwd": s.cwd,
         "state": (state or "unknown") if sessions.is_alive(s) or state == "stopped" else "gone",
         "needs": record.get("needs"), "detail": _clip(record.get("detail")),
         "tempo": record.get("tempo"),
@@ -830,15 +832,7 @@ def _interactive_row(rec: dict[str, Any], panes: dict[int, str],
 
 def _project_scope(cwd: str | None) -> tuple[str | None, str | None]:
     """Project and scope from a directory under the projects tree, else None."""
-    if not cwd:
-        return None, None
-    try:
-        parts = Path(cwd).resolve().relative_to(config.projects_dir().resolve()).parts
-    except (ValueError, OSError):
-        return None, None
-    if not parts:
-        return None, None
-    return parts[0], ("/".join(parts[1:]) or None)
+    return scope_of(cwd, config.projects_dir())
 
 
 def _interactive_records() -> list[dict[str, Any]]:

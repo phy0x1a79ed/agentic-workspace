@@ -453,6 +453,31 @@ async def in_scope(env, tmp_path):
     assert (env.task()["project"], env.task()["scope"]) == ("awm", "feat/x")
 
 
+MOVED_DIR = "projects/metasmith/engine/presentation"
+
+
+def moved(tmp_path):
+    there = tmp_path / MOVED_DIR
+    (there / ".awm").mkdir(parents=True)
+    (there / "src").mkdir()
+    return str(there / "src")
+
+
+async def test_a_session_that_moved_takes_its_task_along_on_its_next_call(env, tmp_path):
+    await in_scope(env, tmp_path)
+    env.records[100]["cwd"] = moved(tmp_path)
+    await env.call("hook_plan_approved", plan_text="p")
+    assert (env.task()["project"], env.task()["scope"]) == ("metasmith", "engine/presentation")
+
+
+async def test_the_sweep_moves_a_background_task_to_the_scope_its_row_shows(env, tmp_path):
+    await in_scope(env, tmp_path)
+    await env.tasks.sweep([{**row("working"), "cwd": moved(tmp_path)}])
+    assert (env.task()["project"], env.task()["scope"]) == ("metasmith", "engine/presentation")
+    await env.tasks.sweep([row("working")])
+    assert env.task()["scope"] == "engine/presentation", "a row without a cwd moves nothing"
+
+
 def journal_of(env):
     return env.body().split("<summary>Journal")[1].split("<summary>Removed")[0]
 

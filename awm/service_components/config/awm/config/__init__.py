@@ -79,6 +79,29 @@ DATA_DIR = WORKSPACE_ROOT / "data"
 SERVICES_DIR = AWM_DIR / "services"
 
 
+def scope_of(cwd: "str | Path | None",
+             projects: "str | Path") -> tuple[str | None, str | None]:
+    """Project and scope of a directory under ``projects``, else (None, None).
+
+    The scope is the deepest enclosing directory that holds a ``.awm/``, so a
+    session sitting in a subdirectory of a worktree still reads as that scope.
+    A directory under no scope falls back to its own path below the project.
+    """
+    if not cwd:
+        return None, None
+    try:
+        root = Path(projects).resolve()
+        parts = Path(cwd).resolve().relative_to(root).parts
+    except (ValueError, OSError):
+        return None, None
+    if not parts:
+        return None, None
+    for depth in range(len(parts), 1, -1):
+        if (root.joinpath(*parts[:depth]) / ".awm").is_dir():
+            return parts[0], "/".join(parts[1:depth])
+    return parts[0], "/".join(parts[1:]) or None
+
+
 GITHUB_USER = os.environ.get("AWM_GITHUB_USER", "phy0x1a79ed")
 
 # ---------------------------------------------------------------------------

@@ -12,8 +12,8 @@ point (an agent calls ``reflection(verb="compact")`` on itself, with no argument
 - ``mode``    — put your own session back into bypass-permissions mode.
 
 Those three act on the caller and on nobody else. The session-control verbs
-(``remote_control``, ``model``, ``effort``, ``rename``, ``interrupt``, ``stop``,
-``link``, ``message``; see :mod:`awm.reflection.control`) take an optional ``job``
+(``remote_control``, ``model``, ``effort``, ``rename``, ``cd``, ``interrupt``,
+``stop``, ``link``, ``message``; see :mod:`awm.reflection.control`) take an optional ``job``
 that names any other session on this node, and act on the caller's own without
 one. They never reach another node.
 
@@ -231,6 +231,33 @@ API_MANIFEST: dict[str, Any] = {
             "params": [
                 {"name": "name", "type": "string", "required": True,
                  "description": "The new name, one short line."},
+                {"name": "job", "type": "string",
+                 "description": "A job id, or a session name as `list_other` shows "
+                                "it. Omit to act on your own session."},
+            ],
+        },
+        {
+            "name": "cd",
+            "effect": "write",
+            "tool": "reflection_cd",
+            "description": (
+                "Move a session to another directory: types `/cd <path>` and "
+                "submits it. Claude Code then runs the session's tools from "
+                "there, so later Bash calls stay in it, and loads that "
+                "directory's project settings, MCP servers, skills and "
+                "CLAUDE.md. `list_other` and the Swarm board show the session "
+                "under the scope it moved to. Queues behind a running turn. "
+                "Refused for a path that is not a directory, for one Claude "
+                "Code is not trusted in (the trust dialog would wait on a "
+                "person), and while a modal or permission prompt is showing. "
+                "CLAUDE.md files add up across moves: the old one stays in "
+                "context. On your own session, one follow-up prompt reports "
+                "the move when it has run."
+            ),
+            "timeout": 60,
+            "params": [
+                {"name": "path", "type": "string", "required": True,
+                 "description": "An absolute directory on this node."},
                 {"name": "job", "type": "string",
                  "description": "A job id, or a session name as `list_other` shows "
                                 "it. Omit to act on your own session."},
@@ -478,6 +505,10 @@ def _handle_rename(args: dict) -> dict:
                           caller_pid=_caller_pid(args))
 
 
+def _handle_cd(args: dict) -> dict:
+    return control.cd(args.get("path"), job=_job(args), caller_pid=_caller_pid(args))
+
+
 def _handle_interrupt(args: dict) -> dict:
     return control.interrupt(job=_job(args), caller_pid=_caller_pid(args))
 
@@ -505,6 +536,7 @@ HANDLERS = {verb: _guarded(verb, fn) for verb, fn in {
     "model": _handle_model,
     "effort": _handle_effort,
     "rename": _handle_rename,
+    "cd": _handle_cd,
     "interrupt": _handle_interrupt,
     "stop": _handle_stop,
     "link": _handle_link,

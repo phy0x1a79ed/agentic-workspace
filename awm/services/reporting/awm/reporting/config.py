@@ -121,13 +121,9 @@ def projects_dir() -> Path:
 
 def project_scope(cwd: str | None) -> tuple[str | None, str | None]:
     """Project and scope from a directory under the projects tree, else None."""
-    if not cwd:
-        return None, None
-    try:
-        parts = Path(cwd).resolve().relative_to(projects_dir().resolve()).parts
-    except (ValueError, OSError):
-        return None, None
-    return (parts[0], "/".join(parts[1:]) or None) if parts else (None, None)
+    from awm import config as awm_config
+
+    return awm_config.scope_of(cwd, projects_dir())
 
 
 def remind_s() -> float:

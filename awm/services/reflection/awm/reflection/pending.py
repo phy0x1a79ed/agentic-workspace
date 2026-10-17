@@ -70,6 +70,7 @@ _PHRASES = {
     "effort": "effort change to {value}",
     "model": "model change to {value}",
     "rename": "rename to {value}",
+    "cd": "move to {value}",
 }
 
 

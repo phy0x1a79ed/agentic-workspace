@@ -957,3 +957,106 @@ def test_a_daemon_press_sends_the_raw_key_bytes():
     for key in ("Escape", "Down", "Up", "Enter"):
         sess.press(key)
     assert sent == [b"\x1b", b"\x1b[B", b"\x1b[A", b"\r"]
+
+
+# --- cd ----------------------------------------------------------------------
+
+
+@pytest.fixture
+def moves(world, monkeypatch, tmp_path):
+    """A trusted target directory, and a record whose cwd follows each `/cd` typed."""
+    monkeypatch.setattr(control.trust, "trusted", lambda path: True)
+    there = tmp_path / "elsewhere" / "scope"
+    there.mkdir(parents=True)
+    original = control._deliver
+
+    def deliver(t, text, **kw):
+        out = original(t, text, **kw)
+        if text.startswith("/cd ") and world.follow:
+            set_cwd(world.home, t.pid, text[len("/cd "):])
+        return out
+
+    world.follow = True
+    monkeypatch.setattr(control, "_deliver", deliver)
+    set_cwd(world.home, PARENT, str(tmp_path))
+    return there
+
+
+def set_cwd(home, pid, cwd):
+    path = home.root / "sessions" / f"{pid}.json"
+    rec = json.loads(path.read_text())
+    path.write_text(json.dumps({**rec, "cwd": cwd}))
+
+
+def test_cd_types_the_resolved_path_and_sees_the_session_arrive(world, moves):
+    out = control.cd(str(moves) + "/", job="other one", caller_pid=ME)
+    assert out["ok"] and out["moved"] is True and out["cwd"] == str(moves)
+    assert world.typed == [(OTHER_JOB, f"/cd {moves}", inject.ATTEMPTS)]
+
+
+def test_cd_follows_a_symlink_to_the_directory_it_names(world, moves, tmp_path):
+    link = tmp_path / "shortcut"
+    link.symlink_to(moves)
+    out = control.cd(str(link), job=OTHER_JOB, caller_pid=ME)
+    assert out["ok"] and world.typed[0][1] == f"/cd {moves}"
+
+
+def test_cd_keeps_a_path_with_spaces_whole(world, moves, tmp_path):
+    spaced = tmp_path / "two words"
+    spaced.mkdir()
+    out = control.cd(str(spaced), job=OTHER_JOB, caller_pid=ME)
+    assert out["ok"] and world.typed[0][1] == f"/cd {spaced}"
+
+
+@pytest.mark.parametrize("path", ["", "relative/dir", "/no/such/dir", "/tmp\n/etc"])
+def test_cd_refuses_a_path_that_is_not_an_absolute_directory(world, moves, path):
+    out = control.cd(path, job=OTHER_JOB, caller_pid=ME)
+    assert out["ok"] is False
+    assert world.typed == [] and world.sent == [] and world.opened == []
+
+
+def test_cd_refuses_a_file(world, moves, tmp_path):
+    f = tmp_path / "a-file"
+    f.write_text("x")
+    out = control.cd(str(f), job=OTHER_JOB, caller_pid=ME)
+    assert out["ok"] is False and "not a directory" in out["reason"]
+
+
+def test_cd_refuses_where_the_trust_dialog_would_open(world, moves, monkeypatch):
+    monkeypatch.setattr(control.trust, "trusted", lambda path: False)
+    out = control.cd(str(moves), job=OTHER_JOB, caller_pid=ME)
+    assert out["ok"] is False and "trust dialog" in out["reason"]
+    assert world.typed == [] and world.opened == []
+
+
+def test_cd_to_where_the_session_already_is_types_nothing(world, moves):
+    set_cwd(world.home, PARENT, str(moves))
+    out = control.cd(str(moves), job=OTHER_JOB, caller_pid=ME)
+    assert out["ok"] and out["changed"] is False and world.typed == []
+
+
+def test_cd_into_a_modal_is_refused(world, moves):
+    world.screen = Screen(PROMPT)
+    out = control.cd(str(moves), job=OTHER_JOB, caller_pid=ME)
+    assert out["refused"] and out["kind"] == "modal" and world.typed == []
+
+
+def test_cd_mid_turn_reports_the_move_as_queued(world, moves):
+    world.settled = False
+    out = control.cd(str(moves), job=OTHER_JOB, caller_pid=ME)
+    assert out["ok"] and out["moved"] is False and "mid-turn" in out["detail"]
+
+
+def test_cd_that_never_lands_says_so_after_the_wait(world, moves):
+    world.follow = False
+    out = control.cd(str(moves), job=OTHER_JOB, caller_pid=ME)
+    assert out["ok"] and out["moved"] is False and "list_other" in out["detail"]
+    assert world.clock.now >= control.MOVE_WAIT_S
+
+
+def test_cd_on_your_own_session_goes_through_the_self_sender(world, moves):
+    out = control.cd(str(moves), job=None, caller_pid=ME)
+    assert out["ok"] and out["self"] is True and world.typed == []
+    text, kw = world.sent[0]
+    assert text == f"/cd {moves}" and kw["change"].kind == "cd"
+    assert pending.render_followup([kw["change"]]).startswith(f"The move to {moves} succeeded.")
