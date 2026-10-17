@@ -12,7 +12,9 @@ Adding a platform = one new module implementing this ABC + one line in
 
 from __future__ import annotations
 
+import base64
 import logging
+import os
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Awaitable, Callable
@@ -126,6 +128,25 @@ OnMessage = Callable[[InboundMessage], Awaitable[None]]
 OnCommand = Callable[[Command], Awaitable[None]]
 
 
+def file_bytes(f: dict) -> bytes:
+    """The content of one outbound attachment: inline ``text``, base64 ``b64``,
+    or a ``path`` on this node."""
+    if "path" in f:
+        with open(f["path"], "rb") as fh:
+            return fh.read()
+    if "b64" in f:
+        return base64.b64decode(f["b64"])
+    return str(f.get("text", "")).encode()
+
+
+def file_size(f: dict) -> int:
+    if "path" in f:
+        return os.path.getsize(f["path"])
+    if "b64" in f:
+        return len(f["b64"]) * 3 // 4 - f["b64"][-2:].count("=")
+    return len(str(f.get("text", "")).encode())
+
+
 async def react_by_message(
     conn: "Connector", channel: str, emoji: str, *,
     remove: bool, thread: str | None,
@@ -160,8 +181,11 @@ class Connector(ABC):
     keeps_history: bool = False
     history = None  # awm.social.history.History, set by the adapter
     # True for a connector whose ``send`` and ``edit_ack`` take ``files``: a list
-    # of ``{"filename", "text"}`` text files to attach.
+    # of attachments, each ``{"filename"}`` plus one of ``text``, ``b64`` or
+    # ``path`` (see :func:`file_bytes`).
     sends_files: bool = False
+    # The most bytes one message may attach, all files together.
+    max_file_bytes: int = 0
 
     def __init__(
         self,

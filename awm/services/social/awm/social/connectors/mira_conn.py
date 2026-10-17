@@ -19,16 +19,19 @@ daemon uses a self-signed cert, so TLS verification defaults off
 from __future__ import annotations
 
 import asyncio
+import base64
 import logging
 
 from awm.social.connectors.base import (
     Account, Attachment, Channel, Connector, Identity, InboundMessage,
-    OnMessage, react_by_message,
+    OnMessage, file_bytes, react_by_message,
 )
 
 log = logging.getLogger("awm.social.connectors.mira")
 
 WS_RETRY_MAX_S = 30.0
+# Files ride base64 in one JSON body, under the daemon's 16 MiB request cap.
+MAX_UPLOAD_BYTES = 8 * 1024 * 1024
 
 
 def _to_attachments(items: list) -> list[Attachment]:
@@ -52,6 +55,9 @@ class MiraConnector(Connector):
     def __init__(self, account: Account, on_message: OnMessage) -> None:
         super().__init__(account, on_message)
         self.platform = account.platform
+        if self.platform == "slack":
+            self.sends_files = True
+            self.max_file_bytes = MAX_UPLOAD_BYTES
         self._base = (account.mira_url or "").rstrip("/")
         self._token = account.mira_token or ""
         self._verify = account.mira_verify_tls
@@ -87,12 +93,12 @@ class MiraConnector(Connector):
                 raise RuntimeError(f"mira GET {path} -> {r.status}: {data.get('error')}")
             return data
 
-    async def _post(self, path: str, body: dict) -> dict:
+    async def _post(self, path: str, body: dict, timeout: float = 30) -> dict:
         import aiohttp
 
         sess = await self._ensure_session()
         async with sess.post(self._base + path, json=body,
-                            timeout=aiohttp.ClientTimeout(total=30)) as r:
+                            timeout=aiohttp.ClientTimeout(total=timeout)) as r:
             data = await r.json()
             if r.status >= 400:
                 raise RuntimeError(f"mira POST {path} -> {r.status}: {data.get('error')}")
@@ -100,10 +106,18 @@ class MiraConnector(Connector):
 
     # -- operations ---------------------------------------------------------
 
-    async def send(self, channel: str, text: str, *, thread: str | None = None) -> dict:
+    async def send(self, channel: str, text: str, *, thread: str | None = None,
+                   files: list[dict] | None = None) -> dict:
         body = {"channel": channel, "text": text}
         if thread:
             body["thread"] = thread
+        if files:
+            body["files"] = [{"filename": f["filename"],
+                              "b64": base64.b64encode(file_bytes(f)).decode()}
+                             for f in files]
+            resp = await self._post(f"/v1/{self.platform}/upload", body, timeout=180)
+            return {"message_id": "", "channel_id": resp.get("channel_id", channel),
+                    "ts": "", "files": resp.get("files", [])}
         resp = await self._post(f"/v1/{self.platform}/send", body)
         return {
             "message_id": resp.get("message_id", ""),

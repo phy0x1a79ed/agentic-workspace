@@ -46,6 +46,8 @@ It binds **`172.16.0.24:7822` only** (the awm-network interface — not
     GET  /v1/{platform}/download?channel=&message_id=&idx=   one message's
                                           attachments as [{filename,mime,b64}]
     POST /v1/{platform}/send  {channel,text,thread?}
+    POST /v1/{platform}/upload  {channel,files:[{filename,b64}],text?,thread?}
+                                          (Slack only; Teams answers 501)
     GET  /v1/events                       WS; pushes inbound {type:"message", …}
 
     # cloud file stores (OneDrive/SharePoint), gated by MIRA_STORAGE
@@ -61,7 +63,8 @@ Bytes cross the hop in ranges, never whole. `get` returns one byte range per
 call. `upload` takes one chunk per call, and the caller owns the upload id and
 the offset, so the daemon keeps no upload state. **CAUTION** the daemon's
 request cap (`MAX_REQUEST_BYTES`, 16 MiB) must stay above one base64-encoded
-bucket chunk (`CHUNK` in `onedrive_bucket.py`, 8 MiB). Lower `CHUNK` before you
+bucket chunk (`CHUNK` in `onedrive_bucket.py`, 8 MiB) and one base64-encoded
+upload (`MAX_UPLOAD_BYTES` in `mira_conn.py`, 8 MiB). Lower both before you
 lower the cap.
 
 Messages carry an `attachments` array (`idx, filename, mime, size, url, ref`);

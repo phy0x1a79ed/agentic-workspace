@@ -35,7 +35,7 @@ import aiohttp
 
 from awm.social.connectors.base import (
     Account, Attachment, Channel, Connector, Identity, InboundMessage,
-    OnMessage, react_by_message,
+    OnMessage, file_bytes, react_by_message,
 )
 
 log = logging.getLogger("awm.social.connectors.slack_bot")
@@ -94,6 +94,8 @@ def _later(a: str | None, b: str | None) -> str | None:
 class SlackBotConnector(Connector):
     platform = "slack"
     keeps_history = True
+    sends_files = True
+    max_file_bytes = 100 * 1024 * 1024
 
     def __init__(self, account: Account, on_message: OnMessage,
                  on_command=None) -> None:
@@ -341,8 +343,11 @@ class SlackBotConnector(Connector):
     # -- verbs ---------------------------------------------------------------
 
     async def send(
-        self, channel: str, text: str, *, thread: str | None = None
+        self, channel: str, text: str, *, thread: str | None = None,
+        files: list[dict] | None = None,
     ) -> dict:
+        if files:
+            return await self._upload(channel, text, thread, files)
         # A user id as channel posts into the bot's DM with that user.
         r = await self._call("chat.postMessage", channel=channel, text=text,
                              thread_ts=thread)
@@ -350,6 +355,35 @@ class SlackBotConnector(Connector):
             await self._record(r.get("channel", channel), r["message"])
         return {"message_id": r.get("ts", ""),
                 "channel_id": r.get("channel", channel), "ts": r.get("ts", "")}
+
+    async def _upload(self, channel: str, text: str, thread: str | None,
+                      files: list[dict]) -> dict:
+        try:
+            if _looks_like_user_id(channel):
+                channel = (await self.open_dm(channel)).id
+            shared = []
+            for f in files:
+                data = file_bytes(f)
+                r = await self._call("files.getUploadURLExternal",
+                                     filename=f["filename"], length=str(len(data)))
+                async with self._session().post(r["upload_url"], data=data) as up:
+                    if up.status != 200:
+                        raise RuntimeError(
+                            f"slack upload of {f['filename']!r}: http {up.status}")
+                shared.append({"id": r["file_id"], "title": f["filename"]})
+            r = await self._call(
+                "files.completeUploadExternal", files=json.dumps(shared),
+                channel_id=channel, initial_comment=text or None, thread_ts=thread)
+        except SlackApiError as exc:
+            if exc.error == "missing_scope":
+                raise RuntimeError(
+                    f"slack account {self.account.name!r} cannot upload until its "
+                    "app holds the files:write scope") from exc
+            raise
+        return {"message_id": "", "channel_id": channel, "ts": "",
+                "files": [{"id": f.get("id", ""), "title": f.get("title", ""),
+                           "permalink": f.get("permalink", "")}
+                          for f in r.get("files", [])]}
 
     async def react(
         self, channel: str, message_id: str, emoji: str, *,

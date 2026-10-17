@@ -186,6 +186,22 @@ are skipped rather than erroring the whole call.
   `"as": "message"`. `remove` refuses, because there is no reaction to take off.
 - **Gmail and Teams.** Refuse.
 
+## Files
+
+`social_send` attaches a file with `file`, a path on the calling node, and
+inline text files with `files`, each `{filename, text}`. The gateway's file hop
+carries `file` to the node that runs social. A `send` that a borrower forwards to
+the owner carries the file inline as base64.
+
+- **Discord.** The bot attaches up to 10 MB per message.
+- **Slack.** Every Slack account uploads through Slack's external upload, as a
+  plain file and never a canvas. The reply carries the file ids and permalinks
+  and no message ts, because Slack shares the file after the call returns. The
+  Opal app needs `files:write`, so its uploads refuse until a Workspace Owner
+  reinstalls it from `slack-bot-manifest.json`. Tony's Slack runs through the
+  mira daemon, which takes 8 MB per message.
+- **Gmail and Teams.** Refuse. Teams takes files only through SharePoint.
+
 ## Seats
 
 A seat is one channel or chat a bot account is in. `social_seats` lists them
@@ -420,9 +436,7 @@ The `/new-agent` ack is public in the DM and carries an `ack_ref` in its event.
 A `send` with that `ack_ref` overwrites the ack with the answer. Discord allows
 the edit for 15 minutes, so after 14 the `send` posts a new message instead.
 Every message into a DM goes out with link previews suppressed.
-A `send` with `files` attaches each `{filename, text}` as a text file. Only Discord
-accounts take `files`. Every other account refuses the `send`. The files travel inline
-in the call, so a `send` forwarded to a peer node carries them.
+A `send` with an `ack_ref` attaches its files to the edited ack.
 
 A guild invocation that slips past the hidden context, or a sender absent from
 the operators table, gets an ephemeral refusal and emits nothing. Add an operator on the node that owns the

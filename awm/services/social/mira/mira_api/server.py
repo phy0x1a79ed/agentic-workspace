@@ -107,6 +107,7 @@ class MiraAPI:
         app.router.add_get("/v1/{platform}/search", self._h_search)
         app.router.add_get("/v1/{platform}/download", self._h_download)
         app.router.add_post("/v1/{platform}/send", self._h_send)
+        app.router.add_post("/v1/{platform}/upload", self._h_upload)
         app.router.add_post("/v1/{platform}/open_dm", self._h_open_dm)
         # Cloud file-store routes (OneDrive/SharePoint), one set per storage name.
         app.router.add_get("/v1/fs/{name}/ls", self._h_fs_ls)
@@ -297,6 +298,25 @@ class MiraAPI:
         try:
             sent = await p.driver.send(channel, text, body.get("thread"))
             return web.json_response({"ok": True, **sent})
+        except Exception as exc:  # noqa: BLE001
+            return web.json_response({"error": str(exc)}, status=502)
+
+    async def _h_upload(self, request: web.Request) -> web.Response:
+        p = self._platform(request)
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001
+            return web.json_response({"error": "invalid JSON body"}, status=400)
+        channel, files = body.get("channel"), body.get("files")
+        if not channel or not files:
+            return web.json_response(
+                {"error": "channel and files are required"}, status=400)
+        try:
+            sent = await p.driver.upload(channel, files, body.get("text") or "",
+                                         body.get("thread"))
+            return web.json_response({"ok": True, **sent})
+        except NotImplementedError as exc:
+            return web.json_response({"error": str(exc)}, status=501)
         except Exception as exc:  # noqa: BLE001
             return web.json_response({"error": str(exc)}, status=502)
 
