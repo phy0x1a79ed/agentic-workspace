@@ -1245,6 +1245,26 @@ def test_list_filters_by_project_and_scope(home, launched, monkeypatch):
     assert lifecycle.collect(project="other") == []
 
 
+def test_a_job_that_moved_lists_under_the_scope_it_is_in_now(home, launched, monkeypatch):
+    from awm.cx import lifecycle
+
+    monkeypatch.setattr(lifecycle, "_tmux_panes", dict)
+    home.add(PARENT_JOB, "<warm saiga>", os.getpid())
+    start(BASE)
+    there = home.projects / "metasmith" / "engine" / "presentation"
+    (there / ".awm").mkdir(parents=True)
+    (there / "src").mkdir()
+    path = home.jobs / CHILD_JOB / "state.json"
+    rec = json.loads(path.read_text())
+    path.write_text(json.dumps({**rec, "cwd": str(there / "src")}))
+    row = next(r for r in lifecycle.collect() if r["job"] == CHILD_JOB)
+    assert (row["project"], row["scope"]) == ("metasmith", "engine/presentation")
+    assert [r["job"] for r in lifecycle.collect(project="metasmith")] == [CHILD_JOB]
+    path.write_text(json.dumps({**rec, "cwd": "/tmp"}))
+    row = next(r for r in lifecycle.collect() if r["job"] == CHILD_JOB)
+    assert (row["project"], row["scope"]) == (None, None), "outside every scope"
+
+
 async def test_the_list_verb_keeps_the_pool_summary(home, launched):
     from awm.cx import hub_adapter
 
