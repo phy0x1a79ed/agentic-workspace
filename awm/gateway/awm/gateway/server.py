@@ -516,6 +516,7 @@ _CALLER_STAMPED: dict[str, frozenset[str] | None] = {
         "note_move", "note_clone", "attr_set", "attr_delete", "attachment_put"}),
     "social": frozenset({"mount", "unmount"}),
     "journal": frozenset({"post"}),
+    "tether": None,
 }
 
 
@@ -579,8 +580,9 @@ def _stamp_caller(name: str, args: dict, pid_header: str | None,
     as the parent of the session it starts or stops, every `operations` verb (the
     reporting ones act for the calling session), the `trilium` write verbs,
     which the write gate checks, `social` `mount`/`unmount`, which make the
-    caller a seat's holder, and `journal` `post`, which records the posting
-    session so the post joins that session's card. A call from another node carries the session in
+    caller a seat's holder, `journal` `post`, which records the posting
+    session so the post joins that session's card, and every `tether` verb,
+    since a tether session answers only to the session that minted it. A call from another node carries the session in
     `mcp_caller.CLAIM_KEY` instead, so that key survives only on an edge request. Their contract with the model requires zero
     awareness of any of this: calls arrive carrying nothing about who is making
     them, and this is the one place identity is attached before dispatch.

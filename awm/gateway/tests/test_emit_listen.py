@@ -57,3 +57,21 @@ def test_empty_match_passes_everything():
     assert emit_listen.matches({"type": "task.output"}, ())
     assert not emit_listen.matches({"type": "task.output"}, ("owner.",))
     assert not emit_listen.matches(["not", "an", "event"], ("owner.",))
+
+
+def test_where_keeps_one_session_and_nothing_else():
+    where = emit_listen.parse_where("session=1-748-3f2a")
+    mine = {"type": "owner.said", "slot": 1, "session": "1-748-3f2a"}
+    reused = {"type": "owner.said", "slot": 1, "session": "1-990-3f2a"}
+    other = {"type": "session.phase", "slot": 2, "session": "2-750-3f2a"}
+    assert emit_listen.matches(mine, ("owner.",), where)
+    assert not emit_listen.matches(reused, ("owner.",), where)
+    assert not emit_listen.matches(other, ("session.",), where)
+    assert not emit_listen.matches({"type": "owner.said", "slot": 1}, (), where)
+
+
+def test_where_compares_numbers_as_text_and_refuses_a_bare_word():
+    assert emit_listen.matches({"slot": 1}, (), emit_listen.parse_where("slot=1"))
+    assert emit_listen.parse_where("") == {}
+    with pytest.raises(ValueError):
+        emit_listen.parse_where("session")

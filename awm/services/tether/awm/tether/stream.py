@@ -45,7 +45,7 @@ import os
 import tempfile
 import time
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Iterable
+from typing import Any, Awaitable, Callable, Container, Iterable
 
 from awm.tether import paths
 
@@ -66,6 +66,16 @@ IDLE_DEADLINE_S = 90.0
 #: How long a session file may grow before it stops growing. A record nobody can
 #: open is not a record.
 MAX_LOG_BYTES = 64 * 1024 * 1024
+
+#: How many past mints of one slot this host remembers the owners of.
+GENS_PER_SLOT = 8
+
+
+def in_sessions(event: dict, sessions: Container[str] | None) -> bool:
+    """Whether ``event`` is one a reader limited to ``sessions`` may see."""
+    if sessions is None or not isinstance(event.get("slot"), int):
+        return True
+    return event.get("session") in sessions
 
 
 class Journal:
@@ -133,12 +143,16 @@ class Journal:
         slot: int | None = None,
         task: int | None = None,
         types: Iterable[str] = (),
+        sessions: Container[str] | None = None,
     ) -> tuple[list[dict], int, dict | None]:
         """Events at or after ``cursor``, where to ask next, and any gap.
 
         The gap is never implied by a short answer. A caller that asked from
         before the ring's start is told so, because the alternative is a
         transcript with a hole in it that reads as though nothing happened.
+
+        ``sessions`` keeps only those session ids, plus the facts that belong
+        to no session; None keeps everything.
         """
         start = self._first_kept if cursor is None else int(cursor)
         gap = None
@@ -165,6 +179,8 @@ class Journal:
             nxt = seq + 1
             if slot is not None and event.get("slot") != slot:
                 continue
+            if not in_sessions(event, sessions):
+                continue
             if task is not None and event.get("task") != task:
                 continue
             if wanted and not any(str(event.get("type", "")).startswith(w) for w in wanted):
@@ -174,7 +190,8 @@ class Journal:
             nxt = max(self._next, start)
         return out, nxt, gap
 
-    async def wait(self, timeout: float, *, until: int | None = None) -> None:
+    async def wait(self, timeout: float, *, until: int | None = None,
+                   sessions: Container[str] | None = None) -> None:
         """Block until something lands, the named task ends, or time runs out.
 
         This is what makes a task id survivable from a terminal: a caller can
@@ -191,7 +208,8 @@ class Journal:
             if until is None:
                 return
             for event in reversed(self._events):
-                if event.get("type") == "task.exited" and event.get("task") == until:
+                if event.get("type") == "task.exited" and event.get("task") == until \
+                        and in_sessions(event, sessions):
                     return
 
     def head(self) -> dict:
@@ -211,7 +229,15 @@ class Mark:
 
     Everything here belongs to one daemon epoch except ``declared``, which is
     keyed by slot and pruned against the daemon's live sessions instead.
-    Written after every event. The file is a few hundred bytes.
+    Written after every event. The file is a few kilobytes at most.
+
+    It also holds who each session belongs to. A slot is not an identity: the
+    relay hands the same number out again once a session ends, so every mint
+    gets a session id, and each event is stamped with the id of the mint it
+    belongs to. ``gens`` keeps each slot's mints by the seq that began them,
+    ``owners`` says which caller minted each one, and ``claims`` holds an
+    invite's owner until the mint it asked for shows up on the stream, since
+    the reply and the event race each other.
     """
 
     def __init__(self, path: Path | None = None) -> None:
@@ -221,6 +247,9 @@ class Mark:
         self.open: dict[int, str] = {}
         self.cursors: dict[str, int] = {}
         self.declared: dict[int, dict[str, str]] = {}
+        self.gens: dict[int, list[dict]] = {}
+        self.owners: dict[str, dict] = {}
+        self.claims: dict[int, dict] = {}
         try:
             saved = json.loads(self.path.read_text())
         except (OSError, ValueError):
@@ -232,6 +261,9 @@ class Mark:
         self.open = {int(k): str(v) for k, v in (saved.get("open") or {}).items()}
         self.cursors = {str(k): int(v) for k, v in (saved.get("cursors") or {}).items()}
         self.declared = {int(k): dict(v) for k, v in (saved.get("declared") or {}).items()}
+        self.gens = {int(k): [dict(g) for g in v] for k, v in (saved.get("gens") or {}).items()}
+        self.owners = {str(k): dict(v) for k, v in (saved.get("owners") or {}).items()}
+        self.claims = {int(k): dict(v) for k, v in (saved.get("claims") or {}).items()}
 
     def seen(self, epoch: int, seq: int) -> bool:
         """Whether this event was recorded and announced before a restart."""
@@ -245,11 +277,76 @@ class Mark:
         self.next = 0
         self.open.clear()
         self.cursors.clear()
+        self.gens.clear()
+        self.owners.clear()
+        self.claims.clear()
         self.save()
+
+    # -- which mint an event belongs to --------------------------------------
+
+    def stamp(self, epoch: int, event: dict) -> str | None:
+        """Set ``event["session"]`` to the id of the mint its slot belongs to.
+
+        Idempotent, because a restarted adapter is handed the daemon's ring
+        again. A slot first seen with no ``session.minted`` (its mint fell out
+        of the ring, or predates this bookkeeping) starts a mint at its first
+        event, so its id is still fixed once chosen.
+        """
+        slot, seq = event.get("slot"), event.get("seq")
+        if not isinstance(slot, int) or not isinstance(seq, int):
+            return None
+        gens = self.gens.setdefault(slot, [])
+        starts = event.get("type") == "session.minted"
+        if (starts or not gens or seq < gens[0]["from"]) and \
+                all(g["from"] != seq for g in gens):
+            sid = f"{slot}-{seq}-{epoch & 0xFFFF:04x}"
+            gens.append({"sid": sid, "from": seq})
+            gens.sort(key=lambda g: g["from"])
+            del gens[:-GENS_PER_SLOT]
+            self._settle(slot)
+            live = {g["sid"] for v in self.gens.values() for g in v}
+            for gone in set(self.owners) - live:
+                del self.owners[gone]
+            self.save()
+        found = None
+        for g in gens:
+            if g["from"] <= seq:
+                found = g["sid"]
+        if found is not None:
+            event["session"] = found
+        return found
+
+    def current(self, slot: int) -> str | None:
+        """The id of the slot's latest mint, if this host has seen it."""
+        gens = self.gens.get(slot)
+        return gens[-1]["sid"] if gens else None
+
+    def claim(self, slot: int, by: str | None, label: str, floor: int) -> str | None:
+        """Record who minted the session on ``slot`` at or after seq ``floor``.
+
+        Returns its session id when the mint is already on the stream, and
+        None when the owner waits in ``claims`` for it to arrive.
+        """
+        self.claims[slot] = {"by": by, "label": label, "floor": floor}
+        sid = self._settle(slot)
+        self.save()
+        return sid
+
+    def _settle(self, slot: int) -> str | None:
+        want = self.claims.get(slot)
+        if want is None:
+            return None
+        for g in reversed(self.gens.get(slot, [])):
+            if g["from"] >= want["floor"]:
+                self.owners[g["sid"]] = {"by": want["by"], "label": want["label"]}
+                del self.claims[slot]
+                return g["sid"]
+        return None
 
     def save(self) -> None:
         state = {"epoch": self.epoch, "next": self.next, "open": self.open,
-                 "cursors": self.cursors, "declared": self.declared}
+                 "cursors": self.cursors, "declared": self.declared,
+                 "gens": self.gens, "owners": self.owners, "claims": self.claims}
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             fd, tmp = tempfile.mkstemp(dir=self.path.parent, prefix=".stream-")
@@ -393,6 +490,8 @@ async def watch_once(journal: Journal, logs: SessionLogs, emit: Emit,
             kind = event.get("type")
             if kind == "watch.idle":
                 continue
+            if mark is not None and isinstance(epoch, int):
+                mark.stamp(epoch, event)
             # Recorded before it is announced, so a subscriber that reacts by
             # asking `drain` always finds the event already there.
             journal.append(event)

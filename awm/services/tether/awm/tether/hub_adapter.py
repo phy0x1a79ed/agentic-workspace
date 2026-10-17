@@ -33,7 +33,7 @@ from typing import Any
 
 from awm.gatewayclient import ServiceAdapter, spawn_supervised
 
-from awm.tether import control, daemon, paths, remote_os, stream
+from awm.tether import callers, control, daemon, paths, remote_os, stream
 
 log = logging.getLogger("awm.tether.hub_adapter")
 
@@ -51,6 +51,16 @@ SESSION_LOGS = stream.SessionLogs(mark=MARK)
 #: adapter is constructed in ``main`` and the task is started from ``on_start``,
 #: which runs inside it.
 ADAPTER: ServiceAdapter | None = None
+
+#: The way back into a session after the agent session that minted it was
+#: replaced, which gives it a new identity. Shared by every verb that names one.
+ADOPT = {
+    "name": "adopt", "type": "boolean",
+    "description": "Take over the session `code` names although another agent "
+                   "session minted it. Only for a session you minted yourself "
+                   "before your own session restarted; never to reach another "
+                   "agent's work.",
+}
 
 #: Every function carries an explicit ``tool`` name under a ``tether_`` prefix,
 #: which is what decides the domain this service appears as: the gateway folds
@@ -71,6 +81,9 @@ API_MANIFEST: dict[str, Any] = {
         "ask for them or guess them. "
         "To hear the owner between turns, run the `listen.command` that "
         "`invite` returns under a background watcher such as Monitor. "
+        "A session belongs to the agent session that minted it: every verb "
+        "sees and acts on your own sessions only, so `code` is needed only "
+        "when you have more than one open. "
         "Know the machine before you invite. Ask the owner explicitly: "
         "Windows PowerShell, WSL, Linux or Mac? Offer WSL as its own option, "
         "because a WSL user may otherwise answer Windows. Then pass "
@@ -121,7 +134,8 @@ API_MANIFEST: dict[str, Any] = {
             "description": (
                 "Report this host's role, whether its binaries are built and "
                 "at what commit, whether the daemon is running, and every live "
-                "session with its age, which side is connected, and its `os`: "
+                "session with its age, which side is connected, whether it is "
+                "`mine`, and its `os`: "
                 "the kind of computer declared at invite, the platform the "
                 "owner's client reports once connected, the shell to write "
                 "commands for, and a `warning` when the two disagree."
@@ -150,9 +164,11 @@ API_MANIFEST: dict[str, Any] = {
                 {"name": "command", "type": "string",
                  "description": "The command to run."},
                 {"name": "code", "type": "string",
-                 "description": "Which session, named by its slot — the "
-                                "number in `status`, or the first word of the "
-                                "invite code. Omit when only one is live."},
+                 "description": "Which of your sessions, named by its slot — "
+                                "the number in `status`, or the first word of "
+                                "the invite code. Omit when only one of yours "
+                                "is live."},
+                ADOPT,
                 {"name": "limit_s", "type": "number",
                  "description": "Stop the command after this many seconds. "
                                 "Bounds one that would never end on a machine "
@@ -183,7 +199,9 @@ API_MANIFEST: dict[str, Any] = {
                  "description": "What to run in it. Defaults to the owner's "
                                 "own shell."},
                 {"name": "code", "type": "string",
-                 "description": "Which session, named by its slot."},
+                 "description": "Which of your sessions, named by its slot. "
+                                "Omit when only one of yours is live."},
+                ADOPT,
             ],
             "timeout": 60,
         },
@@ -208,7 +226,9 @@ API_MANIFEST: dict[str, Any] = {
                                 "form. Ctrl-C is `Aw==`. Use instead of "
                                 "`text`, not with it."},
                 {"name": "code", "type": "string",
-                 "description": "Which session, named by its slot."},
+                 "description": "Which of your sessions, named by its slot. "
+                                "Omit when only one of yours is live."},
+                ADOPT,
             ],
             "timeout": 60,
         },
@@ -225,7 +245,9 @@ API_MANIFEST: dict[str, Any] = {
                 {"name": "cols", "type": "number", "description": "New width."},
                 {"name": "rows", "type": "number", "description": "New height."},
                 {"name": "code", "type": "string",
-                 "description": "Which session, named by its slot."},
+                 "description": "Which of your sessions, named by its slot. "
+                                "Omit when only one of yours is live."},
+                ADOPT,
             ],
             "timeout": 60,
         },
@@ -240,7 +262,9 @@ API_MANIFEST: dict[str, Any] = {
             "params": [
                 {"name": "task", "type": "number", "description": "Which task."},
                 {"name": "code", "type": "string",
-                 "description": "Which session, named by its slot."},
+                 "description": "Which of your sessions, named by its slot. "
+                                "Omit when only one of yours is live."},
+                ADOPT,
             ],
             "timeout": 60,
         },
@@ -255,7 +279,9 @@ API_MANIFEST: dict[str, Any] = {
             ),
             "params": [
                 {"name": "code", "type": "string",
-                 "description": "Which session, named by its slot."},
+                 "description": "Which of your sessions, named by its slot. "
+                                "Omit when only one of yours is live."},
+                ADOPT,
             ],
             "timeout": 60,
         },
@@ -274,8 +300,9 @@ API_MANIFEST: dict[str, Any] = {
                 {"name": "text", "type": "string",
                  "description": "What to say."},
                 {"name": "code", "type": "string",
-                 "description": "Which session, named by its slot. Omit when "
-                                "only one is live."},
+                 "description": "Which of your sessions, named by its slot. "
+                                "Omit when only one of yours is live."},
+                ADOPT,
             ],
             "timeout": 60,
         },
@@ -289,8 +316,9 @@ API_MANIFEST: dict[str, Any] = {
             ),
             "params": [
                 {"name": "code", "type": "string",
-                 "description": "Which session, named by its slot. Omit when "
-                                "only one is live."},
+                 "description": "Which of your sessions, named by its slot. "
+                                "Omit when only one of yours is live."},
+                ADOPT,
                 {"name": "reason", "type": "string",
                  "description": "What to tell the owner. It appears on their "
                                 "screen instead of a socket that went quiet."},
@@ -302,7 +330,7 @@ API_MANIFEST: dict[str, Any] = {
             "effect": "write",
             "tool": "tether_drain",
             "description": (
-                "Read what has happened in a session: commands and their "
+                "Read what has happened in your sessions: commands and their "
                 "output, how each ended, and both sides of the conversation. "
                 "Answered from this host's own buffer, so it still works while "
                 "the daemon is restarting. With no cursor it means 'what is "
@@ -322,7 +350,13 @@ API_MANIFEST: dict[str, Any] = {
                 {"name": "limit", "type": "number",
                  "description": "Most events to return (default 500)."},
                 {"name": "code", "type": "string",
-                 "description": "Only this session, named by its slot."},
+                 "description": "Only this one of your sessions, named by its "
+                                "slot. Omit for all of yours."},
+                ADOPT,
+                {"name": "all", "type": "boolean",
+                 "description": "Every session on this host, not only yours. "
+                                "For the node's owner auditing it; an operator "
+                                "never needs it."},
                 {"name": "task", "type": "number",
                  "description": "Only this task."},
                 {"name": "types", "type": "string",
@@ -418,30 +452,60 @@ def _forward(verb: str, timeout: float):
                          "mints none. Run this verb on the operator's node.",
             }
         try:
-            return await control.call(verb, args, timeout=timeout)
+            return await control.call(verb, callers.strip(args), timeout=timeout)
         except control.DaemonUnavailable as exc:
             return _unreachable(exc)
     return handler
 
 
 #: What an operator runs to be woken when the owner speaks or the session
-#: changes phase. Leaves out ``task.output``, whose chunks would flood a watcher.
-LISTEN = {
-    "command": "awm services listen tether session --match owner.,session.",
-    "then": "Run the command under a background watcher, such as Monitor, for "
-            "the life of the session. Each line it prints is a doorbell, not "
-            "the record: call `drain` with `types: owner.` to read what the "
-            "owner said, then answer with `send`. A `listen.reconnected` line "
-            "means events may have been missed, so call `drain`. Stop the "
-            "watcher when the session ends.",
-}
+#: changes phase. Leaves out ``task.output``, whose chunks would flood a watcher,
+#: and every other session's events, which are not this operator's business.
+LISTEN_THEN = (
+    "Run the command under a background watcher, such as Monitor, for the life "
+    "of the session. It prints this session's events only. Each line is a "
+    "doorbell, not the record: call `drain` with `types: owner.` to read what "
+    "the owner said, then answer with `send`. A `listen.reconnected` line "
+    "means events may have been missed, so call `drain`. Stop the watcher when "
+    "the session ends."
+)
+
+#: How long `invite` waits for its own mint to come round on the stream, so it
+#: can name the session id the watcher filters on.
+MINT_WAIT_S = 5.0
 
 
-async def invite(args: dict) -> dict:
+def _listen(slot: int | None, sid: str | None) -> dict[str, str]:
+    where = f"session={sid}" if sid else f"slot={slot}"
+    return {
+        "command": f"awm services listen tether session --match owner.,session. "
+                   f"--where {where}",
+        "then": LISTEN_THEN,
+    }
+
+
+async def _await_owner(slot: int) -> str | None:
+    """The session id of the mint ``slot`` was just given, once it is known.
+
+    None when the stream is down, since the mint cannot arrive over it then.
+    """
+    if not JOURNAL.head()["connected"]:
+        return None
+    deadline = asyncio.get_running_loop().time() + MINT_WAIT_S
+    while slot in MARK.claims:
+        left = deadline - asyncio.get_running_loop().time()
+        if left <= 0:
+            return None
+        await JOURNAL.wait(left)
+    return MARK.current(slot)
+
+
+async def invite(args: dict, as_: str | None = None) -> dict:
     """Mint a session for one declared kind of computer, and say so.
 
     Refused before reaching the daemon when the OS is missing or unknown: a
-    session minted on a guess is the failure this exists to prevent.
+    session minted on a guess is the failure this exists to prevent. The
+    caller is recorded as the session's owner before the answer goes back.
     """
     forward = _forward("invite", 60)
     if paths.ROLE == paths.RELAY:
@@ -450,23 +514,28 @@ async def invite(args: dict) -> dict:
     refused = remote_os.refusal(os_name)
     if refused:
         return {"ok": False, "error": refused}
+    caller = callers.of(args, as_)
+    # Every event of the mint about to happen comes after this one.
+    floor = JOURNAL.head()["next"]
     answer = await forward({k: v for k, v in args.items() if k != "os"})
     if not isinstance(answer, dict) or answer.get("ok") is False or "error" in answer:
         return answer
     choice = remote_os.CHOICES[os_name]
     line = remote_os.launcher_line(os_name, answer.get("command") or "")
     slot = answer.get("slot")
+    sid = None
     if isinstance(slot, int):
         MARK.declared[slot] = {"os": os_name,
                           "word": str(answer.get("code") or "").split(" ")[0]}
-        MARK.save()
+        sid = MARK.claim(slot, caller.id, caller.label, floor) or await _await_owner(slot)
     return {
         **answer,
+        "session": sid,
         "command": line,
         "read_out": f"{choice['open']}, then answer the prompt it shows you: "
                     f"{line}",
         "os": remote_os.describe(os_name),
-        "listen": LISTEN,
+        "listen": _listen(slot, sid),
     }
 
 
@@ -484,37 +553,121 @@ async def _live_sessions() -> list[dict]:
     return [s for s in report.get("sessions") or [] if s.get("phase") != "ended"]
 
 
-async def _session_for(code: Any) -> dict | None:
-    """The daemon's report of the session a verb was aimed at, if one is clear.
-
-    Resolved the way the daemon resolves it: a slot number, the slot's word, or
-    the only live session when no code is given.
-    """
-    sessions = await _live_sessions()
-    if not code:
-        return sessions[0] if len(sessions) == 1 else None
-    first = str(code).split()[0]
+def _slot_named(code: Any, sessions: list[dict]) -> int | None:
+    """The slot ``code`` names: its number, or the word the owner was read."""
+    first = str(code).split()[0] if str(code).split() else ""
+    if first.isdigit():
+        return int(first)
     for s in sessions:
         word = MARK.declared.get(s.get("slot"), {}).get("word")
         code_word = str(s.get("code") or "").split(" ")[0]
-        if first in (str(s.get("slot")), word, code_word):
-            return s
+        if first in (word, code_word):
+            return s.get("slot")
     return None
 
 
-def _with_os(verb: str, timeout: float, brief: bool):
-    """Forward ``verb``, then say which machine the answer came from."""
+def _owner_of(slot: int) -> dict | None:
+    """Who minted the session on ``slot`` now, or None when nobody recorded it.
+
+    A claim still waiting for its mint is the newest session on that slot, so
+    it answers before the owner of whatever mint the stream showed last.
+    """
+    if slot in MARK.claims:
+        return MARK.claims[slot]
+    sid = MARK.current(slot)
+    return MARK.owners.get(sid) if sid else None
+
+
+def _take(slot: int, caller: callers.Caller) -> None:
+    sid = MARK.current(slot)
+    if sid is not None and slot not in MARK.claims:
+        MARK.owners[sid] = {"by": caller.id, "label": caller.label}
+        MARK.save()
+
+
+def _admit(caller: callers.Caller, slot: int, adopt: bool) -> str | None:
+    """Why ``caller`` may not use the session on ``slot``, or None if it may.
+
+    A session minted before owners were recorded is nobody's yet. A caller
+    who names one takes it, so the first operator to name a session it was
+    already using keeps it from then on.
+    """
+    owner = _owner_of(slot)
+    if caller.owns(owner):
+        return None
+    if owner is None or adopt:
+        if caller.id is not None:
+            _take(slot, caller)
+        return None
+    return (f"session {slot} belongs to another operator ({owner.get('label')}); "
+            f"this agent session can only see and act on sessions it minted. "
+            f"Mint your own with `invite`.")
+
+
+def _yours(caller: callers.Caller, slot: int) -> bool:
+    owner = _owner_of(slot)
+    return caller.owns(owner) or (caller.id is None and owner is None)
+
+
+async def _target(caller: callers.Caller, args: dict) -> tuple[dict, str | None]:
+    """``args`` aimed at one of the caller's sessions, or why there is none.
+
+    The daemon is always handed an explicit slot, because its own default, the
+    only live session, may be somebody else's.
+    """
+    sessions = await _live_sessions()
+    adopt = callers.truthy(args.get("adopt"))
+    code = args.get("code")
+    if code:
+        slot = _slot_named(code, sessions)
+        if slot is None:
+            return args, f"`{code}` names no live session of yours"
+        refused = _admit(caller, slot, adopt)
+        return {**args, "code": str(slot)}, refused
+    mine = [s["slot"] for s in sessions if _yours(caller, s.get("slot"))]
+    if len(mine) == 1:
+        return {**args, "code": str(mine[0])}, None
+    if mine:
+        return args, (f"you have {len(mine)} sessions open: name one with "
+                      f"`code`, one of {', '.join(map(str, mine))}")
+    unowned = [s["slot"] for s in sessions if _owner_of(s.get("slot")) is None]
+    if unowned:
+        return args, (f"no session minted by this agent session is open. Session "
+                      f"{', '.join(map(str, unowned))} has no recorded operator, "
+                      f"because it was minted before sessions had owners: if it "
+                      f"is yours, name it with `code` and it becomes yours.")
+    others = f" ({len(sessions)} belonging to other operators)" if sessions else ""
+    return args, (f"no session minted by this agent session is open on this "
+                  f"host{others}; mint one with `invite`")
+
+
+def _scoped(verb: str, timeout: float, *, os_detail: str | None = None):
+    """Forward ``verb`` to the caller's own session, then say which machine it is.
+
+    ``os_detail`` is None for verbs that do not report the machine, ``brief``
+    for the fields a command needs, and ``full`` for everything.
+    """
     forward = _forward(verb, timeout)
 
-    async def handler(args: dict) -> dict:
-        answer = await forward(args)
-        if not isinstance(answer, dict) or answer.get("ok") is False or "error" in answer:
+    async def handler(args: dict, as_: str | None = None) -> dict:
+        if paths.ROLE == paths.RELAY:
+            return await forward(args)
+        caller = callers.of(args, as_)
+        aimed, refused = await _target(caller, callers.strip(args))
+        if refused:
+            return {"ok": False, "error": refused}
+        aimed.pop("adopt", None)
+        answer = await forward(aimed)
+        if os_detail is None or not isinstance(answer, dict) \
+                or answer.get("ok") is False or "error" in answer:
             return answer
-        session = await _session_for(args.get("code"))
+        sessions = await _live_sessions()
+        slot = _slot_named(aimed.get("code") or "", sessions)
+        session = next((s for s in sessions if s.get("slot") == slot), None)
         if session is None:
             return answer
         about = _os_of(session)
-        if brief:
+        if os_detail == "brief":
             about = {k: about[k] for k in ("declared", "reported", "shell",
                                            "mismatch", "warning")
                      if k in about}
@@ -546,7 +699,7 @@ def _release_report() -> dict[str, Any]:
     return report
 
 
-async def status(args: dict) -> dict:
+async def status(args: dict, as_: str | None = None) -> dict:
     """What this host knows, then what its daemon knows.
 
     Answered locally first so it still says something useful when the daemon is
@@ -579,8 +732,22 @@ async def status(args: dict) -> dict:
         for slot in gone:
             MARK.declared.pop(slot, None)
         MARK.save()
-    report["sessions"] = [{**s, "os": _os_of(s)} for s in sessions]
+    caller = callers.of(args, as_)
+    report["sessions"] = [_as_seen_by(caller, s) for s in sessions]
     return report
+
+
+def _as_seen_by(caller: callers.Caller, session: dict) -> dict:
+    """One session's report, with whose it is and, if not the caller's, no phrase."""
+    slot = session.get("slot")
+    owner = _owner_of(slot) if isinstance(slot, int) else None
+    seen = {**session, "os": _os_of(session),
+            "session": MARK.current(slot) if isinstance(slot, int) else None,
+            "mine": _yours(caller, slot) if isinstance(slot, int) else False}
+    if not seen["mine"]:
+        seen["code"] = str(session.get("code") or "").split(" ")[0]
+        seen["operator"] = owner.get("label") if owner else None
+    return seen
 
 
 def _decoded(events: list[dict], raw: bool) -> list[dict]:
@@ -636,11 +803,12 @@ def _decoded(events: list[dict], raw: bool) -> list[dict]:
 
 
 async def drain(args: dict, as_: str | None = None) -> dict:
-    """What has happened, from where this caller last looked.
+    """What has happened in the caller's sessions, from where it last looked.
 
     Answered here rather than forwarded, which is the point rather than a
     shortcut: the moment somebody most wants to know what a session did is the
-    moment its daemon has just died.
+    moment its daemon has just died. So a session named by ``code`` is
+    resolved against this host's own records, not the daemon's table.
     """
     def number(name: str, default: int | None = None) -> int | None:
         value = args.get(name)
@@ -651,31 +819,44 @@ async def drain(args: dict, as_: str | None = None) -> dict:
         except (TypeError, ValueError):
             return default
 
-    who = as_ or "-"
+    caller = callers.of(args, as_)
+    who = caller.id or as_ or "-"
     cursor = number("cursor")
     if cursor is None:
-        cursor = MARK.cursors.get(who)
+        # A caller with no cursor of its own starts where the one cursor every
+        # caller used to share had got to, rather than at the start of the ring.
+        cursor = MARK.cursors.get(who, MARK.cursors.get(as_ or "-"))
     limit = max(1, min(number("limit", 500) or 500, 2000))
     hold = max(0.0, min(float(number("wait", 0) or 0), 90.0))
     until = number("until")
     slot = None
     code = args.get("code")
     if code:
-        first = str(code).split()[0]
-        try:
-            slot = int(first)
-        except ValueError:
-            return {"ok": False, "error": f"`{code}` does not start with a slot number"}
+        slot = _slot_named(code, await _live_sessions())
+        if slot is None:
+            return {"ok": False, "error": f"`{code}` names no session: give its "
+                                          f"slot number, as `status` shows it"}
+    if callers.truthy(args.get("all")):
+        sessions = None
+    elif slot is not None:
+        refused = _admit(caller, slot, callers.truthy(args.get("adopt")))
+        if refused:
+            return {"ok": False, "error": refused}
+        sessions = {MARK.current(slot)}
+    else:
+        sessions = _sessions_of(caller)
     types = tuple(t.strip() for t in str(args.get("types") or "").split(",") if t.strip())
 
     if hold:
         found, _, _ = JOURNAL.since(cursor, limit=limit, slot=slot,
-                                    task=number("task"), types=types)
+                                    task=number("task"), types=types,
+                                    sessions=sessions)
         if not found:
-            await JOURNAL.wait(hold, until=until)
+            await JOURNAL.wait(hold, until=until, sessions=sessions)
 
     events, nxt, gap = JOURNAL.since(cursor, limit=limit, slot=slot,
-                                     task=number("task"), types=types)
+                                     task=number("task"), types=types,
+                                     sessions=sessions)
     if MARK.cursors.get(who) != nxt:
         MARK.cursors[who] = nxt
         MARK.save()
@@ -688,6 +869,15 @@ async def drain(args: dict, as_: str | None = None) -> dict:
         "gap": gap,
         "events": _decoded(events, bool(args.get("raw"))),
     }
+
+
+def _sessions_of(caller: callers.Caller) -> set[str]:
+    """Every session id this host knows ``caller`` minted, ended ones included."""
+    known = {g["sid"] for gens in MARK.gens.values() for g in gens}
+    mine = {sid for sid in known if caller.owns(MARK.owners.get(sid))}
+    if caller.id is None:
+        mine |= known - set(MARK.owners)
+    return mine
 
 
 async def logs(args: dict) -> dict:
@@ -716,10 +906,12 @@ HANDLERS: dict[str, Any] = {
     fn["name"]: _forward(fn["name"], float(fn.get("timeout", 30)))
     for fn in API_MANIFEST["functions"]
 }
+for _verb in ("keys", "resize", "close", "send", "cut"):
+    HANDLERS[_verb] = _scoped(_verb, 60)
 HANDLERS["invite"] = invite
-HANDLERS["run"] = _with_os("run", 60, brief=True)
-HANDLERS["shell"] = _with_os("shell", 60, brief=True)
-HANDLERS["tasks"] = _with_os("tasks", 60, brief=False)
+HANDLERS["run"] = _scoped("run", 60, os_detail="brief")
+HANDLERS["shell"] = _scoped("shell", 60, os_detail="brief")
+HANDLERS["tasks"] = _scoped("tasks", 60, os_detail="full")
 HANDLERS["status"] = status
 HANDLERS["logs"] = logs
 HANDLERS["drain"] = drain

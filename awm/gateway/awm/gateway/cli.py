@@ -661,6 +661,10 @@ def services_listen(
     match: str = typer.Option(
         "", "--match",
         help="Comma-separated event `type` prefixes to print (default: all)"),
+    where: str = typer.Option(
+        "", "--where",
+        help="Comma-separated `field=value` pairs an event must all carry, "
+             "such as `session=1-748-3f2a`"),
     peer: Optional[str] = typer.Option(
         None, "--peer", help="Follow the topic on this domestic peer instead"),
 ):
@@ -687,8 +691,14 @@ def services_listen(
         print(line, flush=True)
 
     try:
+        fields = emit_listen.parse_where(where)
+    except ValueError as exc:
+        typer.echo(f"listen: {exc}", err=True)
+        raise typer.Exit(2)
+    try:
         _asyncio.run(emit_listen.listen(stream, match.split(","), _write,
-                                        fatal=(gatewayclient.PeerError,)))
+                                        fatal=(gatewayclient.PeerError,),
+                                        where=fields))
     except gatewayclient.PeerError as exc:
         typer.echo(f"listen: {exc}", err=True)
         raise typer.Exit(1)

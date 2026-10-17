@@ -494,3 +494,13 @@ def test_trilium_reads_are_not_stamped():
     args = {"verb": "note_get", "args": {"_caller_pid": 9}}
     _stamp_caller("trilium", args, "2488")
     assert args["args"] == {"_caller_pid": 9}
+
+
+def test_every_tether_verb_is_stamped_so_a_session_answers_to_its_minter():
+    for verb in ("invite", "drain", "run", "send", "cut", "status"):
+        flat = {}
+        _stamp_caller(f"tether_{verb}", flat, "2488")
+        assert flat["_caller_pid"] == 2488, verb
+    domain = {"verb": "drain", "args": {"_caller_pid": 1}}
+    _stamp_caller("tether", domain, "2488")
+    assert domain["args"]["_caller_pid"] == 2488

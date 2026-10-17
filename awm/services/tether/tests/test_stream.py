@@ -242,13 +242,26 @@ async def test_drain_remembers_where_a_caller_was_across_a_restart(monkeypatch):
     for seq in range(3):
         hub_adapter.JOURNAL.append(event(seq))
     try:
-        first = await hub_adapter.drain({}, "agent")
+        first = await hub_adapter.drain({"all": True}, "agent")
         assert first["cursor"] == 3
 
         monkeypatch.setattr(hub_adapter, "MARK", stream.Mark(paths.STREAM_STATE))
         hub_adapter.JOURNAL.append(event(3))
-        again = await hub_adapter.drain({}, "agent")
+        again = await hub_adapter.drain({"all": True}, "agent")
     finally:
         hub_adapter.JOURNAL.reset(0)
 
     assert [e["seq"] for e in again["events"]] == [3]
+
+
+async def test_every_event_is_stamped_with_the_mint_it_belongs_to(monkeypatch):
+    """The listener filters on this field, so it must be on what is emitted."""
+    monkeypatch.setattr(paths, "ROLE", paths.OPERATOR)
+    events = [event(0, "session.minted"), event(1), event(2, "session.phase", phase="ended"),
+              event(3, "session.minted"), event(4)]
+
+    journal, _, mark = await _watch(events)
+
+    stamped = [e["session"] for e in journal.since(None)[0]]
+    assert stamped[0] == stamped[1] == stamped[2] != stamped[3] == stamped[4]
+    assert mark.current(7) == stamped[4]

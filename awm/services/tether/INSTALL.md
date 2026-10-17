@@ -165,9 +165,20 @@ buffer of what the session did, and `restart` replaces the daemon.
 
 The adapter keeps its place in the daemon's event stream in `stream.json`
 beside the daemon's log: how far it recorded and announced, each caller's
-`drain` cursor, and each session's declared `os`. A restarted adapter reads the
-daemon's whole buffer back, so `drain` answers as before, and it neither writes
-a session's record twice nor announces an event twice.
+`drain` cursor, each session's declared `os`, and who minted each session. A
+restarted adapter reads the daemon's whole buffer back, so `drain` answers as
+before, and it neither writes a session's record twice nor announces an event
+twice.
+
+**CAUTION** A session belongs to the agent session that minted it, and every
+verb defaults to the caller's own sessions. The gateway stamps the calling
+session's pid on each `tether` verb. The adapter keys the owner on the
+background job id, which survives a restart of that session, or on the pid of an
+interactive session. The relay reuses slots, so the adapter gives each mint a
+session id and stamps it on every event as `session`. This keeps operators from
+reading or driving each other's sessions by mistake. It is not a wall: every
+operator on a host runs as the same user and can read the session files or the
+raw `session` topic.
 
 One shape is worth knowing before reading the list. **Asking is a call and
 hearing back is a stream.** `run` and `shell` start something and answer with a
