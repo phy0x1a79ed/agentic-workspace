@@ -1169,6 +1169,24 @@ def test_an_interactive_parent_is_addressed_by_name(home, launched):
     assert 'args={job:"dev", text:…}' in system_prompt(launched[0])
 
 
+def test_a_job_lists_its_brief_before_its_launch_returns(home, monkeypatch):
+    from awm.cx import lifecycle
+    from awm.claudedaemon import roster
+
+    rows = []
+
+    async def fake(**kw):
+        home.add(CHILD_JOB, kw["name"], os.getppid(), cwd=str(kw["cwd"]),
+                 started_ms=int(time.time() * 1000))
+        rows.extend(r for r in lifecycle.collect() if r["job"] == CHILD_JOB)
+        return next(s for s in roster.load(kw["roster_path"], kw["jobs_dir"])
+                    if s.short == CHILD_JOB)
+
+    monkeypatch.setattr(lifecycle.launch, "launch", fake)
+    start(dict(BASE))
+    assert rows and rows[0]["brief"] is True and rows[0]["mode"] == "worker"
+
+
 def test_brief_false_leaves_the_brief_out(home, launched):
     start({**BASE, "brief": False})
     assert system_prompt(launched[0]) is None

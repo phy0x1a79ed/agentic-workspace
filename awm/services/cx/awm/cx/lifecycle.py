@@ -89,11 +89,11 @@ _START_LOCK = asyncio.Lock()
 BRIEF = """\
 You are a worker session, started by {started_by}. You started in {project}/{scope}.
 
-**Work in the right scope.** Work that changes files belongs in a scope made for it. A project's `dev` and `release` worktrees are for merging, so do no feature work there. Before your first edit, find the scope with `scope(verb="search")`. Create one with `scope(verb="create")` when none fits, and name it as `PROTOCOLS.md` § Scope naming says. Then move there with `reflection(verb="cd", args={{path:<its worktree>}})`. Do not create worktrees under `.claude/worktrees/`. Questions and logistics that change no files need no scope.
+**Work in the right scope.** Work that changes files belongs in a scope made for it. A project's `dev` and `release` worktrees are for merging, so do no feature work there. Before your first edit, find the scope with `scope(verb="search")`. Create one with `scope(verb="create")` when none fits, and name it as `PROTOCOLS.md` § Scope naming says. Then move there with `reflection(verb="cd", args={{path:<its worktree>}})`. The move runs when your turn ends, and a follow-up prompt confirms it, so end the turn after that call. Do not create worktrees under `.claude/worktrees/`. Questions and logistics that change no files need no scope.
 
 **Ask Tony through the board.** When you need Tony, call `operations(verb="request_human", args={{kind:"blocked", reason:…}})`. That also moves your card to Blocked.
 
-**Close the session when the work is done.** The work is done when three things hold: what you were asked for is landed and deployed as its project's protocol says, it is verified, and nothing waits on you. A session that waits on Tony, watches a long job or was asked to stay open is not done. When you are not sure, ask. To sign off:
+**Close the session when the work is done.** The work is done when three things hold: what you were asked for is landed and deployed as its project's protocol says, it is verified, and nothing waits on you. A session that waits on Tony, watches a long job or was asked to stay open is not done. When you are not sure, ask. To sign off, run the `retire` skill. Where it is missing, sign off by hand:
 1. Run the `debrief` skill.
 2. Report what you did {report_to}.
 3. Close with `reflection(verb="stop", args={{job:<your job>, confirm:true}})`. `reflection(verb="whoami")` names your job."""
@@ -828,9 +828,11 @@ def collect(project: str | None = None, scope: str | None = None,
     with the tmux session each one sits in.
     """
     lineage = _lineage_records()
+    pending = [rec for _, rec in _pending_records()]
     node = node_name()
     pinned = set(pins.pinned())
-    rows = [{**_job_row(s, lineage.get(s.short), node), "pinned": s.short in pinned}
+    rows = [{**_job_row(s, lineage.get(s.short) or _pending_for(s, pending), node),
+             "pinned": s.short in pinned}
             for s in sessions.load() if s.has_record]
     panes = _tmux_panes()
     rows += [_interactive_row(rec, panes, node) for rec in _interactive_records()]
@@ -839,6 +841,21 @@ def collect(project: str | None = None, scope: str | None = None,
            and (scope is None or r["scope"] == scope)]
     out.sort(key=lambda r: r["started_at"] or "")
     return out
+
+
+def _pending_for(s: sessions.Session, pending: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """The pending record of a job whose launch has not returned yet.
+
+    The job runs its first prompt before `start` writes its lineage, and that
+    prompt's hook already asks whether the job carries the brief.
+    """
+    for rec in pending:
+        started = rec.get("started_epoch")
+        started = started if isinstance(started, (int, float)) else 0.0
+        if (rec["name"] in (s.seed_name, s.name)
+                and (s.started_at_ms or 0) / 1000.0 >= started - 5.0):
+            return rec
+    return None
 
 
 def _job_row(s: sessions.Session, rec: dict[str, Any] | None,
