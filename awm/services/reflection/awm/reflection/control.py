@@ -399,12 +399,15 @@ def rename(name: str, *, job: Optional[str], caller_pid: Any) -> dict:
                   change=_change("rename", name))
 
 
-def cd(path: str, *, job: Optional[str], caller_pid: Any) -> dict:
-    """Move the target to ``path`` by typing `/cd`.
+def cd(path: str, *, job: Optional[str], caller_pid: Any,
+       spawn: Callable[[Callable[[], None]], Any] = inject._default_spawn) -> dict:
+    """Move the target to ``path`` by typing `/cd`, then reconnect its awm server.
 
     A directory Claude Code has not been trusted in is refused: `/cd` would open
     the trust dialog, whose default is to stay put, and the next keystroke
-    typed into the session would answer it.
+    typed into the session would answer it. The move drops the session's MCP
+    servers (see :data:`inject.RECONNECT_AFTER_MOVE`); the caller's own session
+    gets the reconnect from its resume, any other once its record shows the move.
     """
     path = path.strip() if isinstance(path, str) else ""
     if not path or not path.isprintable() or not os.path.isabs(path):
@@ -429,10 +432,12 @@ def cd(path: str, *, job: Optional[str], caller_pid: Any) -> dict:
     if t.is_self or not out.get("ok") or not out.get("submitted"):
         return {**out, "cwd": want}
     if not _between_turns(t):
+        spawn(lambda: _reconnect_once_moved(t, want, SELF_MODAL_WAIT_S, SELF_POLL_S))
         return {**out, "cwd": want, "moved": False,
-                "detail": f"{t.label} is mid-turn, so the move runs when that turn ends"}
-    moved = _await_cwd(t, want)
-    out = {**out, "cwd": want, "moved": moved}
+                "detail": f"{t.label} is mid-turn, so the move runs when that turn "
+                          f"ends; its awm server is reconnected after it"}
+    moved = _await_cwd(t, want, MOVE_WAIT_S, POLL_S)
+    out = {**out, "cwd": want, "moved": moved, "mcp_reconnected": moved and _reconnect(t)}
     if not moved:
         out["detail"] = (f"the session record does not show {want} after "
                          f"{MOVE_WAIT_S:g}s; `list_other` shows where it is")
@@ -447,13 +452,34 @@ def _cwd(t: Target) -> Optional[str]:
     return os.path.realpath(cwd) if isinstance(cwd, str) and cwd else None
 
 
-def _await_cwd(t: Target, want: str) -> bool:
-    deadline = _clock() + MOVE_WAIT_S
+def _await_cwd(t: Target, want: str, wait_s: float, poll_s: float) -> bool:
+    deadline = _clock() + wait_s
     while _cwd(t) != want:
         if _clock() >= deadline:
             return False
-        _sleep(POLL_S)
+        _sleep(poll_s)
     return True
+
+
+def _reconnect(t: Target) -> bool:
+    try:
+        _deliver(t, inject.RECONNECT_AFTER_MOVE, what="the MCP reconnect after a move")
+    except inject.DeliveryError as exc:
+        log.warning("reflection: could not reconnect awm for %s after its move: %s",
+                    t.label, exc)
+        return False
+    return True
+
+
+def _reconnect_once_moved(t: Target, want: str, wait_s: float, poll_s: float) -> None:
+    try:
+        if _await_cwd(t, want, wait_s, poll_s):
+            _reconnect(t)
+        else:
+            log.warning("reflection: %s never reached %s; awm was not reconnected",
+                        t.label, want)
+    except Exception as exc:  # noqa: BLE001 - runs detached
+        log.warning("reflection: reconnecting awm for %s failed: %s", t.label, exc)
 
 
 def message(job: Optional[str], text: str, *, caller_pid: Any,

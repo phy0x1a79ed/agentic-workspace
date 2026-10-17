@@ -202,7 +202,11 @@ Every verb is on MCP + CLI + HTTP:
 - **CAUTION** `cd` refuses a directory that neither it nor an ancestor is
   trusted in `~/.claude.json`. There `/cd` opens a trust dialog whose default
   answer is to stay put, and the next typed line answers it. A move keeps the
-  old directory's CLAUDE.md in context and adds the new one. `list_other` and
+  old directory's CLAUDE.md in context and adds the new one.
+- **CAUTION** Claude Code 2.1.302 disconnects every MCP server on a `/cd` and
+  does not connect them again. `cd` types `/mcp reconnect awm` after the move:
+  on another session once its record shows the new directory, on your own
+  session just before its resume. Other MCP servers stay down. `list_other` and
   the Swarm board read a session's scope from its live cwd, so a moved session
   shows under its new scope with no register step.
 

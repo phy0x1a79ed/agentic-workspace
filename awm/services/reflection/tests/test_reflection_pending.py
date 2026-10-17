@@ -632,6 +632,22 @@ def test_the_resume_is_worded_from_the_outcome_known_at_delivery(lane, monkeypat
                         f"on No). {CONTINUE}"]
 
 
+def test_a_move_is_followed_by_an_mcp_reconnect_before_its_resume(lane, monkeypatch):
+    move = pending.Change("cd", "/x", "k-cd")
+    inject.send("/cd /x", caller_pid=4242, change=move, spawn=lambda fn: None)
+    [item] = pending.load_all()
+    _resume(item, monkeypatch)
+    assert lane[1:] == [inject.RECONNECT_AFTER_MOVE,
+                        f"The move to /x succeeded. {CONTINUE}"]
+
+
+def test_a_resume_with_no_move_reconnects_nothing(lane, monkeypatch):
+    inject.send("/effort low", caller_pid=4242, change=EFFORT, spawn=lambda fn: None)
+    [item] = pending.load_all()
+    _resume(item, monkeypatch)
+    assert inject.RECONNECT_AFTER_MOVE not in lane
+
+
 def test_an_applied_outcome_reads_as_success(lane, monkeypatch):
     inject.send("/effort low", caller_pid=4242, change=EFFORT, spawn=lambda fn: None)
     [item] = pending.load_all()
