@@ -515,6 +515,7 @@ _CALLER_STAMPED: dict[str, frozenset[str] | None] = {
         "note_upsert", "note_create", "note_update", "note_place", "note_delete",
         "note_move", "note_clone", "attr_set", "attr_delete", "attachment_put"}),
     "social": frozenset({"mount", "unmount"}),
+    "journal": frozenset({"post"}),
 }
 
 
@@ -529,7 +530,8 @@ _SESSION_BOUND: dict[str, frozenset[str]] = {
     "reflection": frozenset({"message_self", "compact", "mode", "whoami"}),
     "operations": frozenset({
         "hook_plan", "hook_plan_approved", "hook_todos", "hook_prompt",
-        "hook_session_clear", "task_claim", "request_human", "board_watch", "board_unwatch"}),
+        "hook_session_clear", "task_claim", "task_track", "request_human", "board_watch",
+        "board_unwatch"}),
 }
 
 
@@ -576,8 +578,9 @@ def _stamp_caller(name: str, args: dict, pid_header: str | None,
     caller's own prompt and, as `start_other` and `stop_other`, records the caller
     as the parent of the session it starts or stops, every `operations` verb (the
     reporting ones act for the calling session), the `trilium` write verbs,
-    which the write gate checks, and `social` `mount`/`unmount`, which make the
-    caller a seat's holder. A call from another node carries the session in
+    which the write gate checks, `social` `mount`/`unmount`, which make the
+    caller a seat's holder, and `journal` `post`, which records the posting
+    session so the post joins that session's card. A call from another node carries the session in
     `mcp_caller.CLAIM_KEY` instead, so that key survives only on an edge request. Their contract with the model requires zero
     awareness of any of this: calls arrive carrying nothing about who is making
     them, and this is the one place identity is attached before dispatch.

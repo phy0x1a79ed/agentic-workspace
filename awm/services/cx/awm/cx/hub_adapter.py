@@ -113,6 +113,15 @@ API_MANIFEST: dict[str, Any] = {
                                 "passes it over. A pinned job is a kept "
                                 "session: stopping it unpins it and removes it "
                                 "with `claude rm`."},
+                {"name": "brief", "type": "boolean",
+                 "description": "Append the worker lifecycle brief to the system "
+                                "prompt: work in the right scope, ask Tony "
+                                "through the board, sign off and stop when done. "
+                                "Default true. A pinned start never gets it."},
+                {"name": "started_by", "type": "string",
+                 "description": "Who the brief says started the session when no "
+                                "session called, such as 'Tony from Discord'. "
+                                "A calling session is named instead."},
             ],
             "timeout": 1800,
             "effect": "write",

@@ -69,6 +69,9 @@ async def test_block_review_unblock_and_done_follow_the_ledger(env):
     await env.call("request_human", kind="review", summary="done")
     assert state_of(env, card) == "review"
     await env.tasks.sweep([row("stopped")])
+    assert state_of(env, card) == "review" and env.task()["ended"] == 1
+    env.tri.notes[card["note_id"]]["parents"] = [env.ids["Done"]]
+    await env.tasks.sweep([])
     assert state_of(env, card) == "done" and env.task()["state"] == "done"
     assert env.column(card["note_id"]) == ["Done"]
 

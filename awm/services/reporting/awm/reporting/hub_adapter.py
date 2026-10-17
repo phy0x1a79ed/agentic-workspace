@@ -177,6 +177,22 @@ API_MANIFEST: dict[str, Any] = {
             ],
         },
         {
+            "name": "track_task",
+            "tool": "operations_task_track",
+            "effect": "write",
+            "description": (
+                "Put your session's work on the Swarm board. Returns your open "
+                "card, or makes one in Active when you have none. A session gets "
+                "a card by itself when it writes a plan, claims a task or calls "
+                "`request_human`, and a worker that cx started gets one at start. "
+                "Call this for work that has none of those. A new card's answer "
+                "carries a `notice` with the board protocol."
+            ),
+            "params": [
+                _param("title", "string", "A new card's title, kept until a plan heading or the session's name gives one."),
+            ],
+        },
+        {
             "name": "board_watch",
             "tool": "operations_board_watch",
             "effect": "write",
@@ -395,7 +411,7 @@ async def board_ensure(args: dict, as_: str | None = None) -> dict:
 
 
 TASK_VERBS = ("hook_plan", "hook_plan_approved", "hook_todos", "hook_prompt", "hook_session_clear",
-              "claim_task", "request_human", "board_watch", "board_unwatch")
+              "claim_task", "track_task", "request_human", "board_watch", "board_unwatch")
 
 
 def _task_verb(name: str) -> Any:

@@ -84,6 +84,25 @@ _JOB = sessionmode.JOB_PATTERN
 #: both pass the check.
 _START_LOCK = asyncio.Lock()
 
+#: Appended to the system prompt of every session `start` launches unpinned, so
+#: it outlives every compaction. A kept seat carries its keeper's brief instead.
+BRIEF = """\
+You are a worker session, started by {started_by}. You started in {project}/{scope}.
+
+**Work in the right scope.** Work that changes files belongs in a scope made for it. A project's `dev` and `release` worktrees are for merging, so do no feature work there. Before your first edit, find the scope with `scope(verb="search")`. Create one with `scope(verb="create")` when none fits, and name it as `PROTOCOLS.md` § Scope naming says. Then move there with `reflection(verb="cd", args={{path:<its worktree>}})`. Do not create worktrees under `.claude/worktrees/`. Questions and logistics that change no files need no scope.
+
+**Ask Tony through the board.** When you need Tony, call `operations(verb="request_human", args={{kind:"blocked", reason:…}})`. That also moves your card to Blocked.
+
+**Close the session when the work is done.** The work is done when three things hold: what you were asked for is landed and deployed as its project's protocol says, it is verified, and nothing waits on you. A session that waits on Tony, watches a long job or was asked to stay open is not done. When you are not sure, ask. To sign off:
+1. Run the `debrief` skill.
+2. Report what you did {report_to}.
+3. Close with `reflection(verb="stop", args={{job:<your job>, confirm:true}})`. `reflection(verb="whoami")` names your job."""
+
+REPORT_TO_PARENT = ("to the session that started you: `SendMessage` it when `ListAgents` lists "
+                    "it, else `reflection(verb=\"message\", args={{job:\"{target}\", text:…}})`")
+REPORT_TO_PROMPT = ("where your first prompt asks. When it names no place, your debrief "
+                    "journal is the report")
+
 
 class Refused(Exception):
     """A start or stop that must not proceed; the message is the reason."""
@@ -151,8 +170,11 @@ async def _start(args: dict[str, Any], as_: str | None) -> dict[str, Any]:
     untrusted = await asyncio.to_thread(trust.start_refusal, cwd)
     if untrusted:
         raise Refused(untrusted)
-    parent = _parent_of(args.get("_caller_pid"))
+    caller_rec = _caller_record(args.get("_caller_pid"))
+    parent = _session_ref(caller_rec)
     caller = caller_peer(as_) or as_ or "local"
+    if spec["brief"]:
+        spec["brief_text"] = brief_text(spec, caller_rec)
     async with _START_LOCK:
         if _name_taken(spec["name"]):
             raise Refused(f"a live session is already named {spec['name']!r}")
@@ -162,6 +184,7 @@ async def _start(args: dict[str, Any], as_: str | None) -> dict[str, Any]:
             "mode": spec["mode"], "remote_control": spec["remote_control"],
             "model": spec["model"], "started_at": _iso(time.time()),
             "started_epoch": time.time(), "pinned": spec["pin"],
+            "brief": spec["brief"],
         }
         _write_pending(record)
         try:
@@ -274,6 +297,13 @@ def _parse(args: dict[str, Any]) -> dict[str, Any]:
     mode = args.get("mode") or DEFAULT_MODE
     if not isinstance(mode, str) or not _MODE.match(mode):
         raise Refused("mode must be a short label")
+    started_by = args.get("started_by")
+    if started_by is not None and (not isinstance(started_by, str) or not started_by.strip()
+                                   or len(started_by) > 120 or not started_by.isprintable()):
+        raise Refused("started_by must be a short printable string")
+    brief = args.get("brief")
+    if brief is not None and not isinstance(brief, bool):
+        raise Refused("brief must be true or false")
     return {
         "project": project, "scope": scope, "name": name,
         "prompt": prompt or None, "system_prompt": system_prompt or None,
@@ -287,6 +317,8 @@ def _parse(args: dict[str, Any]) -> dict[str, Any]:
         "strict_mcp": _flag(args.get("strict_mcp"), "strict_mcp"),
         "remote_control": _remote_control(args.get("remote_control"), name),
         "pin": _flag(args.get("pin"), "pin"),
+        "brief": brief is not False and not args.get("pin"),
+        "started_by": started_by.strip() if started_by else None,
     }
 
 
@@ -373,8 +405,9 @@ def build_flags(spec: dict[str, Any]) -> list[str]:
         flags.append("--allowedTools=" + ",".join(spec["allowed_tools"]))
     if spec["remote_control"]:
         flags.append(f"--remote-control={spec['remote_control']}")
-    if spec.get("system_prompt"):
-        flags.append(f"--append-system-prompt={spec['system_prompt']}")
+    system_prompt = "\n\n".join(p for p in (spec.get("system_prompt"), spec.get("brief_text")) if p)
+    if system_prompt:
+        flags.append(f"--append-system-prompt={system_prompt}")
     if spec.get("autocompact"):
         flags.append(f"--autocompact={spec['autocompact']}")
     return [*flags, f"--effort={spec['effort']}", f"--model={spec['model']}"]
@@ -610,19 +643,44 @@ def adopt_pending(now: float | None = None) -> list[str]:
 
 
 def _parent_of(pid: Any) -> str | None:
-    """The calling session: its job id when a background job, else its session id.
+    """The calling session: its job id when a background job, else its session id."""
+    return _session_ref(_caller_record(pid))
 
-    Taken from the session's own record after checking that the record belongs to
-    the live process, so a stale record cannot name a parent.
-    """
+
+def _caller_record(pid: Any) -> dict[str, Any] | None:
+    """The calling session's own record, checked against the live process, so a
+    stale record cannot name a parent."""
     if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
         return None
-    rec = roster.session_by_pid(pid, sessions_dir=config.sessions_dir())
+    return roster.session_by_pid(pid, sessions_dir=config.sessions_dir()) or None
+
+
+def _session_ref(rec: dict[str, Any] | None) -> str | None:
     if not rec:
         return None
     if rec.get("kind") == "bg" and rec.get("jobId"):
         return str(rec["jobId"])
     return str(rec["sessionId"]) if rec.get("sessionId") else None
+
+
+def brief_text(spec: dict[str, Any], caller_rec: dict[str, Any] | None) -> str:
+    """The lifecycle brief for a start, naming who to report to.
+
+    A calling session is the parent the session reports to, and outranks a
+    `started_by` the caller supplied. A background parent is addressed by its job
+    id, which a rename does not change; an interactive one by its name.
+    """
+    parent = _session_ref(caller_rec)
+    if parent:
+        name = str(caller_rec.get("name") or "").strip()
+        started_by = f"the session {name} ({parent})" if name else f"the session {parent}"
+        target = parent if caller_rec.get("kind") == "bg" else (name or parent)
+        report_to = REPORT_TO_PARENT.format(target=target)
+    else:
+        started_by = spec.get("started_by") or "an awm service"
+        report_to = REPORT_TO_PROMPT
+    return BRIEF.format(started_by=started_by, project=spec["project"], scope=spec["scope"],
+                        report_to=report_to)
 
 
 # --- resume ------------------------------------------------------------------
@@ -804,6 +862,7 @@ def _job_row(s: sessions.Session, rec: dict[str, Any] | None,
         "remote_control_label": rec.get("remote_control"), "link": s.link,
         "started_at": rec.get("started_at") or _iso_ms(s.started_at_ms),
         "pool": sessions.is_ours(s) or sessions.was_ours(s),
+        "brief": bool(rec.get("brief")),
     }
 
 
@@ -826,7 +885,7 @@ def _interactive_row(rec: dict[str, Any], panes: dict[int, str],
         "remote_control": bool(bridge), "remote_control_label": None,
         "link": roster.bridge_link(bridge),
         "started_at": _iso_ms(rec.get("startedAt")), "pool": False,
-        "pinned": False,
+        "pinned": False, "brief": False,
     }
 
 

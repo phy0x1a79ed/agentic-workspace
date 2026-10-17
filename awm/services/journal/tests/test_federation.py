@@ -58,6 +58,19 @@ def test_the_senders_claimed_author_is_kept_in_meta(journal_workspace):
     assert "claimed_author" not in _post(None, author="agent:awm/dev")["meta"]
 
 
+def test_a_post_records_the_session_behind_the_stamped_pid(journal_workspace, monkeypatch):
+    from awm.journal.operations import posts
+    monkeypatch.setattr(posts.roster, "session_by_pid",
+                        lambda pid: {"sessionId": "sess-9"} if pid == 42 else None)
+    args = {"project": "awm", "scope": "dev", "author": "agent:awm/dev", "body": "x",
+            "kind": "journal", "meta": {"title": "t", "session": "forged"}}
+    assert posts._handle_post({**args, "_caller_pid": 42})["post"]["meta"] == {
+        "title": "t", "session": "sess-9"}
+    assert posts._handle_post({**args, "_caller_pid": 7})["post"]["meta"] == {"title": "t"}
+    assert posts._handle_post({**args, "meta": None, "_caller_pid": 42})["post"]["meta"] == {
+        "session": "sess-9"}
+
+
 def test_claimed_author_does_not_mutate_the_callers_meta(journal_workspace):
     from awm.journal.operations.posts import _handle_post
     meta = {"title": "t"}

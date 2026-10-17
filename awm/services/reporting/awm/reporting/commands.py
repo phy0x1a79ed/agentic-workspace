@@ -27,15 +27,27 @@ DEFAULT_REASON = "rejected by the recipient"
 RENAME_HINT = ("You were started from Discord as {name}, a placeholder name. Once you know what this "
                "session is for, rename yourself to a short name for that work (2-4 words) with "
                "reflection(verb=\"rename\", args={{name: \"<name>\"}}).")
+REPLY_HINT = ("Tony asked from Discord. Answer him there with social(verb=\"send\", "
+              "args={{account: \"{account}\", channel: \"{channel}\", text: \"<text>\"}}).")
 # The answer quotes this much of the prompt and attaches the rest as a file.
 PREVIEW_LINES = 3
 PREVIEW_CHARS = 300
 PROMPT_FILE = "prompt.txt"
 
 
-def _new_agent_prompt(name: str, prompt: str) -> str:
+def _new_agent_prompt(name: str, prompt: str, answer_to: tuple[str, str] | None) -> str:
     hint = RENAME_HINT.format(name=name)
+    if answer_to:
+        hint += " " + REPLY_HINT.format(account=answer_to[0], channel=answer_to[1])
     return f"{prompt}\n\n{hint}" if prompt else f"{hint} Wait for Tony's first instruction."
+
+
+def _answer_to(event: dict) -> tuple[str, str] | None:
+    """The account and channel a command is answered in, or None without both."""
+    account = event.get("account")
+    user = event.get("user_id")
+    channel = event.get("reply_to") or (f"dm:{user}" if user else event.get("channel_id"))
+    return (str(account), str(channel)) if account and channel else None
 
 
 def _quoted(prompt: str) -> tuple[str, list[dict]]:
@@ -92,14 +104,12 @@ class Commands:
         await self._tell(event, text, files)
 
     async def _tell(self, event: dict, text: str, files: list[dict] | None = None) -> None:
-        account = event.get("account")
-        user = event.get("user_id")
-        channel = event.get("reply_to") or (f"dm:{user}" if user else event.get("channel_id"))
-        if not account or not channel:
+        answer_to = _answer_to(event)
+        if answer_to is None:
             log.warning("reporting: cannot answer a command with no account or channel")
             return
         try:
-            await self._reply(str(account), str(channel), text,
+            await self._reply(*answer_to, text,
                               ack_ref=str(event.get("ack_ref") or ""), files=files or [])
         except Exception as exc:  # noqa: BLE001
             log.warning("reporting: could not answer a command: %s", exc)
@@ -130,7 +140,8 @@ class Commands:
         name = f"agent-{uuid.uuid4().hex[:4]}"
         prompt = str(event.get("prompt") or "").strip()
         spec = {"project": project, "scope": scope, "name": name, "remote_control": True,
-                "prompt": _new_agent_prompt(name, prompt)}
+                "started_by": "Tony from Discord",
+                "prompt": _new_agent_prompt(name, prompt, _answer_to(event))}
         started = await self.cx.start(spec)
         job = started.get("job")
         if not started.get("ok"):
