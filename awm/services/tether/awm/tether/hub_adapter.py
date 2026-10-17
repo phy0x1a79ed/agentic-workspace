@@ -14,7 +14,8 @@ handshake are one implementation shared by both ends.
 Two verbs are answered here rather than forwarded, and for the same reason:
 they have to work when the daemon does not. ``logs`` reads the log file, which
 is the only account of a daemon that will not start; ``status`` reports what
-this host can see of its child before asking the child anything.
+this host can see of its child before asking the child anything. ``restart``
+is answered here too, because it replaces the daemon it would be forwarded to.
 
 Which child this host supervises is the host's role, not a runtime choice: the
 operator's node runs the operator daemon, the public host runs the relay. See
@@ -39,22 +40,17 @@ log = logging.getLogger("awm.tether.hub_adapter")
 #: What the daemon has told us, and where it went. Held at module level because
 #: the watch task, the drain verb and ``status`` all read the same one.
 JOURNAL = stream.Journal()
-SESSION_LOGS = stream.SessionLogs()
+
+#: How far the stream was recorded, each caller's drain cursor, and the OS each
+#: session was invited for. On disk, because the daemon and its sessions
+#: outlive this process.
+MARK = stream.Mark()
+SESSION_LOGS = stream.SessionLogs(mark=MARK)
 
 #: Set once the adapter exists, so the watch task can reach ``emit``. The
 #: adapter is constructed in ``main`` and the task is started from ``on_start``,
 #: which runs inside it.
 ADAPTER: ServiceAdapter | None = None
-
-#: Where each caller last drained to, so the bare verb means "what is new" and
-#: nobody has to type a number. Two surfaces draining the same session will each
-#: consume what the other wanted, which is what the explicit cursor is for.
-CURSORS: dict[str, int] = {}
-
-#: The OS each session was invited for, by slot. Held here because the daemon
-#: has no field for it, and lost with this process — which is safe, because the
-#: daemon and every session it holds die with this process too.
-DECLARED: dict[int, dict[str, str]] = {}
 
 #: Every function carries an explicit ``tool`` name under a ``tether_`` prefix,
 #: which is what decides the domain this service appears as: the gateway folds
@@ -350,6 +346,25 @@ API_MANIFEST: dict[str, Any] = {
                  "description": "Lines to return (default 200)."},
             ],
         },
+        {
+            "name": "restart",
+            "effect": "write",
+            "tool": "tether_restart",
+            "description": (
+                "Replace this host's tether daemon with a fresh one. The daemon "
+                "outlives restarts of this service and of the gateway, so this "
+                "is the only way to restart it on purpose; a new release "
+                "replaces it on its own once no session is live. Ends every "
+                "live session, so it is refused while one is unless `force`."
+            ),
+            "params": [
+                {"name": "force", "type": "boolean",
+                 "description": "Restart even though sessions are live. They "
+                                "end, and each owner has to redeem a new "
+                                "invite."},
+            ],
+            "timeout": 90,
+        },
     ],
     "emitters": [
         {
@@ -375,7 +390,7 @@ API_MANIFEST: dict[str, Any] = {
 SESSION_VERBS = ("invite", "run", "shell", "keys", "resize", "close",
                  "tasks", "send", "cut")
 
-CHILD = daemon.Child()
+CHILD = daemon.for_role()
 
 
 # -- handlers ---------------------------------------------------------------
@@ -442,8 +457,9 @@ async def invite(args: dict) -> dict:
     line = remote_os.launcher_line(os_name, answer.get("command") or "")
     slot = answer.get("slot")
     if isinstance(slot, int):
-        DECLARED[slot] = {"os": os_name,
+        MARK.declared[slot] = {"os": os_name,
                           "word": str(answer.get("code") or "").split(" ")[0]}
+        MARK.save()
     return {
         **answer,
         "command": line,
@@ -455,7 +471,7 @@ async def invite(args: dict) -> dict:
 
 
 def _os_of(session: dict) -> dict[str, Any]:
-    declared = DECLARED.get(session.get("slot"), {}).get("os")
+    declared = MARK.declared.get(session.get("slot"), {}).get("os")
     reported = (session.get("owner") or {}).get("os")
     return remote_os.describe(declared, reported)
 
@@ -479,7 +495,7 @@ async def _session_for(code: Any) -> dict | None:
         return sessions[0] if len(sessions) == 1 else None
     first = str(code).split()[0]
     for s in sessions:
-        word = DECLARED.get(s.get("slot"), {}).get("word")
+        word = MARK.declared.get(s.get("slot"), {}).get("word")
         code_word = str(s.get("code") or "").split(" ")[0]
         if first in (str(s.get("slot")), word, code_word):
             return s
@@ -538,7 +554,7 @@ async def status(args: dict) -> dict:
     """
     report: dict[str, Any] = {
         "ok": True,
-        "child": CHILD.snapshot(),
+        "child": await asyncio.to_thread(CHILD.snapshot),
         # The release this host is pinned to versus the one it actually fetched,
         # so a fetch that failed on start shows as a version that lags the pin
         # rather than as a binary nobody can explain.
@@ -558,8 +574,11 @@ async def status(args: dict) -> dict:
         report |= _unreachable(exc)
         return report
     sessions = report.get("sessions") or []
-    for gone in set(DECLARED) - {s.get("slot") for s in sessions}:
-        DECLARED.pop(gone, None)
+    gone = set(MARK.declared) - {s.get("slot") for s in sessions}
+    if gone:
+        for slot in gone:
+            MARK.declared.pop(slot, None)
+        MARK.save()
     report["sessions"] = [{**s, "os": _os_of(s)} for s in sessions]
     return report
 
@@ -635,7 +654,7 @@ async def drain(args: dict, as_: str | None = None) -> dict:
     who = as_ or "-"
     cursor = number("cursor")
     if cursor is None:
-        cursor = CURSORS.get(who)
+        cursor = MARK.cursors.get(who)
     limit = max(1, min(number("limit", 500) or 500, 2000))
     hold = max(0.0, min(float(number("wait", 0) or 0), 90.0))
     until = number("until")
@@ -657,7 +676,9 @@ async def drain(args: dict, as_: str | None = None) -> dict:
 
     events, nxt, gap = JOURNAL.since(cursor, limit=limit, slot=slot,
                                      task=number("task"), types=types)
-    CURSORS[who] = nxt
+    if MARK.cursors.get(who) != nxt:
+        MARK.cursors[who] = nxt
+        MARK.save()
     head = JOURNAL.head()
     return {
         "ok": True,
@@ -682,6 +703,12 @@ async def logs(args: dict) -> dict:
     }
 
 
+async def restart(args: dict) -> dict:
+    force = args.get("force") in (True, "true", "True", "1", 1)
+    answer = await asyncio.to_thread(CHILD.restart, force=force)
+    return {"ok": answer.get("ok", answer.get("action") == "started"), **answer}
+
+
 # Every forwarded verb is the same forward, so the table is built rather than
 # written out: a handler that diverged from its manifest entry is a bug nobody
 # would see until the verb was called.
@@ -696,6 +723,7 @@ HANDLERS["tasks"] = _with_os("tasks", 60, brief=False)
 HANDLERS["status"] = status
 HANDLERS["logs"] = logs
 HANDLERS["drain"] = drain
+HANDLERS["restart"] = restart
 
 
 async def _emit(topic: str, payload: dict) -> None:
@@ -707,7 +735,7 @@ async def _emit(topic: str, payload: dict) -> None:
 
 async def _keep_watching() -> None:
     """Hold the daemon's event stream open for the life of this process."""
-    await stream.watch_forever(JOURNAL, SESSION_LOGS, _emit)
+    await stream.watch_forever(JOURNAL, SESSION_LOGS, _emit, MARK)
 
 
 async def _keep_child_running() -> None:
@@ -719,7 +747,7 @@ async def _keep_child_running() -> None:
     """
     while True:
         try:
-            CHILD.reconcile()
+            await asyncio.to_thread(CHILD.reconcile)
         except Exception:  # noqa: BLE001 — a bad tick must not end the loop
             log.exception("tether: could not reconcile the %s child", paths.ROLE)
         await asyncio.sleep(daemon.TICK_S)
@@ -763,10 +791,8 @@ async def main() -> None:
         await ADAPTER.run()
     finally:
         SESSION_LOGS.close()
-        # The child dies with this process either way — that is what
-        # PR_SET_PDEATHSIG is for. Stopping it here is what makes a clean
-        # shutdown look clean in the log rather than like a kill.
-        CHILD.stop()
+        MARK.save()
+        CHILD.shutdown()
 
 
 if __name__ == "__main__":

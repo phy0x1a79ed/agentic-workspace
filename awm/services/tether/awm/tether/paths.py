@@ -8,6 +8,7 @@ because that is what a workstation is.
 
 from __future__ import annotations
 
+import hashlib
 import os
 from pathlib import Path
 
@@ -66,6 +67,23 @@ def installed_release() -> str | None:
 CONTROL_SOCKET = STATE_DIR / "operator.sock"
 
 DAEMON_LOG = STATE_DIR / "daemon.log"
+
+#: The transient user unit the operator daemon runs in. Named after STATE_DIR
+#: so a dev shadow, which has its own state root, never adopts or stops the
+#: daemon a deployed gateway is keeping.
+OPERATOR_UNIT = "awm-tether-operator-" + hashlib.sha1(str(STATE_DIR).encode()).hexdigest()[:8]
+
+#: What the adapter last launched: pid, release and when. Read back to decide
+#: whether a daemon that is already answering is the one the pin asks for.
+LAUNCH_FILE = STATE_DIR / "daemon.json"
+
+#: The daemon's environment, handed to systemd as an EnvironmentFile rather
+#: than on a command line, because it carries the relay bearer. Mode 0600.
+ENV_FILE = STATE_DIR / "daemon.env"
+
+#: How far this host has recorded and announced the daemon's stream, and each
+#: caller's drain cursor, so a restarted adapter resumes rather than repeats.
+STREAM_STATE = STATE_DIR / "stream.json"
 
 #: One file per session: what was run, what came back, and what the two people
 #: said to each other. Beside this service's own state rather than inside a git
