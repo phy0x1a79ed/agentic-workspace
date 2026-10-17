@@ -288,6 +288,7 @@ async def _op_services_start(name: str) -> dict[str, Any]:
     from awm.gateway.hub import discovery, supervisor
     from awm.gateway.hub.registry import get_registry
 
+    _refuse_off_home(name)
     log = logging.getLogger("awm.gateway.ops")
     registry = get_registry()
     # The operator gesture that clears a tripped crash-loop breaker. Deliberate:
@@ -358,6 +359,18 @@ def _service_and_page(name: str) -> tuple[Any, Any]:
     return service, page
 
 
+def _refuse_off_home(name: str) -> None:
+    """Raise when ``name`` is a declared singleton homed on another node. A
+    ``FileExistsError`` answers 409 over HTTP: the one copy exists there."""
+    from awm.gateway.hub import discovery
+
+    owner = discovery.singleton_owner(name)
+    if owner is not None:
+        raise FileExistsError(
+            f"{name} is a fleet singleton homed on {owner}; it never runs on "
+            f"this node. Call it there with peer={owner}.")
+
+
 async def _op_services_enable(name: str) -> dict[str, Any]:
     """Enable a service and its same-named page (persists across restart) and
     bring both up now."""
@@ -365,6 +378,8 @@ async def _op_services_enable(name: str) -> dict[str, Any]:
     from awm.gateway.hub.registry import get_registry
 
     service, page = _service_and_page(name)
+    if service is not None:
+        _refuse_off_home(name)
     discovery.set_enabled(name, True)
     out: dict[str, Any] = {"name": name, "enabled": True}
     if service is not None:

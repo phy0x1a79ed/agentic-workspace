@@ -24,10 +24,14 @@ the list of gateway profiles that want it. The running gateway's active
 profiles come from the ``AWM_PROFILES`` env (comma list; a composition sandbox
 sets it in its gitignored dev ``.env``, prod sets none). Resolution precedence:
 
-1. an explicit ``enabled.json`` entry always wins (both true and false — the
+1. a declared singleton homed on another node is disabled, whatever
+   ``enabled.json`` says: its tool domain is in ``peer_catalog.declared_homes()``
+   (``AWM_TWOFA_PEER``, ``AWM_DOMAIN_HOME_<domain>``). A second copy would spend
+   the owner's one external resource, such as a Duo device or a bot login;
+2. else an explicit ``enabled.json`` entry wins (both true and false — the
    operator's word, e.g. prod's deliberately-live rlm-browser);
-2. else a marked service is enabled iff its profiles intersect the active set;
-3. else (no ``profiles`` key — every pre-existing service, and a ``service.toml``
+3. else a marked service is enabled iff its profiles intersect the active set;
+4. else (no ``profiles`` key — every pre-existing service, and a ``service.toml``
    that carries only other keys such as ``tier``) enabled everywhere, the
    *baseline*.
 
@@ -281,11 +285,23 @@ def service_tool(name: str) -> str:
     return read_tool(services_root() / name, name)
 
 
+def singleton_owner(name: str, folder: Path | None = None) -> str | None:
+    """The peer a declared singleton service lives on, or ``None`` when the
+    service may run on this node."""
+    from awm.gateway import peer_catalog
+
+    if folder is None:
+        folder = services_root() / name
+    return peer_catalog.declared_homes().get(read_tool(folder, name))
+
+
 def _resolve_enabled(name: str, folder: Path,
                      enabled_map: dict[str, bool]) -> bool:
-    """Fold the explicit enable flag and the profile gate into one verdict
-    (precedence: explicit ``enabled.json`` entry > profile intersection >
-    enabled)."""
+    """Fold the singleton home, the explicit enable flag and the profile gate
+    into one verdict (precedence: homed elsewhere > explicit ``enabled.json``
+    entry > profile intersection > enabled)."""
+    if singleton_owner(name, folder) is not None:
+        return False
     if name in enabled_map:
         return enabled_map[name]
     profiles = _read_profiles(folder)
@@ -295,8 +311,9 @@ def _resolve_enabled(name: str, folder: Path,
 
 
 def is_enabled(name: str) -> bool:
-    """A service is enabled unless explicitly disabled in ``enabled.json`` or
-    held out by an unmatched profile marker (see the module doc)."""
+    """A service is enabled unless homed on another node, explicitly disabled
+    in ``enabled.json`` or held out by an unmatched profile marker (see the
+    module doc)."""
     return _resolve_enabled(name, services_root() / name, load_enabled())
 
 
