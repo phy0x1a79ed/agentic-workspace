@@ -23,11 +23,13 @@ CLOSED = (DONE, REJECTED, CANCELLED)
 COLUMNS = {PROPOSED: "Proposed", PLANNED: "Planned", ACTIVE: "Active",
            BLOCKED: "Blocked", REVIEW: "Pending review", DONE: "Done", REJECTED: "Rejected"}
 ARCHIVE_AFTER_S = 14 * 86400.0
+#: ``shown`` for a card folded into its column's Older book. ``archived`` is the old name.
+OLDER_SHOWN = "older"
 
 _FIELDS = frozenset({
     "session_id", "title", "project", "scope", "model", "effort", "state", "note_id", "shown", "dirty",
     "plan", "reason", "urgent", "blocked_at", "reminded", "ended", "closed", "owned",
-    "card_id", "fed_state"})
+    "card_id", "fed_state", "agent", "agent_link"})
 
 
 class Ledger(Db):
@@ -64,17 +66,17 @@ class Ledger(Db):
                          " ORDER BY id DESC", (card_id, *OPEN))
 
     def archivable(self, node: str, now: float | None = None) -> list[dict]:
-        """Finished tasks whose card has sat in Done or Rejected for the archive period.
+        """Finished tasks whose card has sat in Done or Rejected for the archive period, not yet folded.
 
-        A claimed note of Tony's own is not archived: only a card the service
+        A claimed note of Tony's own is never folded: only a card the service
         made or a federation card is.
         """
         cutoff = (time.time() if now is None else now) - ARCHIVE_AFTER_S
         return self._all(
             "SELECT * FROM tasks WHERE node=? AND state IN (?,?) AND closed < ?"
-            " AND note_id IS NOT NULL AND COALESCE(shown, '') != 'archived'"
+            " AND note_id IS NOT NULL AND COALESCE(shown, '') NOT IN ('archived', ?)"
             " AND (owned = 1 OR card_id IS NOT NULL) ORDER BY closed",
-            (node, DONE, REJECTED, cutoff))
+            (node, DONE, REJECTED, cutoff, OLDER_SHOWN))
 
     def ensure(self, node: str, key: str, kind: str, *, state: str = PLANNED,
                pid: int | None = None, **fields: Any) -> tuple[dict, bool]:

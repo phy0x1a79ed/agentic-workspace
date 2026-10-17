@@ -40,9 +40,11 @@ Discord command.
 
 ## The Swarm board
 
-Run `operations board_ensure` once, on any node. It makes "Swarm board" under the
-AWM note, with the columns Proposed, Planned, Active, Blocked, Pending review,
-Done and Rejected and a "Ledger" note. It also makes the private "Ops" book under AWM, labelled
+Run `operations board_ensure` once, on any node, and again after a deploy that
+changes the board's shape. It makes "Swarm board" under the AWM note, with the
+columns Proposed, Planned, Active, Blocked, Pending review, Done and Rejected and
+a "Ledger" note. It gives Done and Rejected each an "Older" book, labelled
+`#swarmOlder`, and the newest-first sort. It also makes the private "Ops" book under AWM, labelled
 `#swarmOps`. Every node finds the board and the book by their labels and refuses
 while they are missing, so no node ever makes a second copy. Tony copies tasks
 into Proposed.
@@ -87,13 +89,18 @@ column. A plan written in Active or Blocked revises the same card.
   the record goes in a text child called "Record" with the same two labels. The
   per-node notes under "Ledger" are Markdown children, and the notes under the
   private "Ops" book carry the same labels.
-- The record is HTML. A status block comes first (state, scope, peer, job,
+- The record is HTML. A status block comes first (state, agent, scope, peer, job,
   waiting-on reason, started, closed). Plan, Todo, Journal and Removed follow as
   closed `trilium-collapsible` blocks, split by rules; Removed appears only once an item has been removed. A summary is plain text
   and carries a count, as in "Todo — 3/7 done, 1 active". The plan converts
   with `markdown-it-py`, which escapes raw HTML: its first `#` heading is
   dropped and the rest starts at `<h3>`. A journal entry is an `<h4>` and its
   body starts at `<h5>`.
+- While a background session holds an open card, the Agent line names it. The
+  name links to the session's claude.ai page, or shows `claude attach <job>`
+  while Remote Control is off. A change of name or link rewrites only the
+  card's body, never its column, so a drag by Tony stands. An interactive
+  session gets no Agent line.
 - The Todo shows a pending item as an empty box and a completed item as a
   ticked box. An active item is an empty box with a bold subject and "(in
   progress)", because neither Markdown nor Trilium draws a half-state.
@@ -107,8 +114,15 @@ column. A plan written in Active or Blocked revises the same card.
 - A card that Tony deletes from the board closes its task as cancelled. A card
   that Tony drags to another column is recorded as an event and left there. A
   drag to Done or Rejected closes the task.
-- A card the service made, or a federation card, is labelled `#archived` 14 days
-  after its task closed in Done or Rejected. Tony's own claimed note stays.
+- Done and Rejected list their cards newest first by `cardStateAt`, which a card
+  gets on entering a column. A federation card keeps the federation board's
+  value. A card the service made, or a federation card, moves into its column's
+  "Older (n)" book 14 days after its task closed there. Tony's own claimed note
+  stays. The sweep keeps the count in each book's title.
+- **CAUTION** A card with no `cardStateAt` sorts first. `board_ensure` dates
+  each undated card in Done and Rejected from its Trilium modified time.
+- The sweep reads a card in an Older book as off the board. An open card that
+  Tony drags into one closes its task as cancelled.
 - A task whose session ended is filed under its node's Ledger note. Two cases
   stay on the board, flagged as ended: a background session that died without
   a stop, and a card in Pending review, which waits for Tony's drag to Done.

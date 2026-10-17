@@ -363,7 +363,9 @@ def test_a_format_change_rewrites_a_bounded_number_of_notes_per_sweep(board, tri
         trilium.notes[note]["title"] = "old format"
     trilium.calls.clear()
     board.sweep()
-    assert len([fn for fn, _ in trilium.calls if fn == "note_update"]) == VERIFY_BATCH
+    folders = set(trilium.archives_of_all())
+    assert len([fn for fn, a in trilium.calls
+                if fn == "note_update" and a["note_id"] not in folders]) == VERIFY_BATCH
     board.sweep()
     assert not [n for n in trilium.children(chat) if trilium.notes[n]["title"] == "old format"]
 

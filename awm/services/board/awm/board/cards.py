@@ -7,9 +7,10 @@ Active, Blocked, Pending review, Done, Rejected. This process is the only API
 writer; the watcher (`Board.sweep`) notices edits made outside it and turns
 them into `card.moved` events. The event log only feeds stream replay.
 
-An archived card carries the `archived` label and sits in the `Archived` folder
-inside its column folder, so it keeps the state of the column around it. A
-folded card sits under its home card's note and takes the home's state.
+An archived card sits in the archive folder inside its column folder, so it
+keeps the state of the column around it. In Done and Rejected that folder is
+the "Older (n)" card at the end of the column. A folded card carries the
+`archived` label, sits under its home card's note and takes the home's state.
 
 Every card also carries `status`, the previous release's four-value vocabulary
 derived from its state, so a peer that has not upgraded keeps reading the board.
@@ -52,6 +53,7 @@ import logging
 import os
 import re
 import threading
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -90,6 +92,8 @@ SETTLE_S = 1.5
 VERIFY_BATCH = 10
 #: A Done or Rejected card is archived this long after it entered that state.
 ARCHIVE_AFTER_S = 14 * 86400.0
+#: How often the sweep recounts the Older folders when it folded nothing, to catch a delete by hand.
+COUNT_OLDER_S = 60.0
 
 _SLUG = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 
@@ -237,6 +241,7 @@ class Board:
             card_id: {**seen, "status": from_recorded(seen["status"])}
             for card_id, seen in events.seen_all().items()}
         self._verify_cursor = 0
+        self._counted_at = 0.0
 
     def close(self) -> None:
         """Let go of the lock file. The process exiting does the same."""
@@ -640,11 +645,12 @@ class Board:
         with self._guard:
             self.vault.refresh()
             live = set()
+            folded = False
             for rec in self.vault.list():
                 card_id = rec["labels"]["cardId"]
                 live.add(card_id)
                 card = self._card({**rec, "content": None})
-                self._archive_if_old(rec, card)
+                folded = self._archive_if_old(rec, card) or folded
                 previous = self._seen.get(card_id)
                 if previous is None:
                     self._remember(card)
@@ -665,22 +671,31 @@ class Board:
             for card_id in stale:
                 del self._seen[card_id]
             self.events.seen_drop(stale)
+            if folded or stale or time.monotonic() - self._counted_at >= COUNT_OLDER_S:
+                try:
+                    self.vault.count_older()
+                    self._counted_at = time.monotonic()
+                except VaultError as e:
+                    log.warning("could not count the Older folders: %s", e)
             try:
                 self._verify_messages()
             except VaultError as e:
                 log.warning("message sweep stopped early: %s", e)
         return moved
 
-    def _archive_if_old(self, rec: dict, card: dict) -> None:
-        if card["state"] not in TERMINAL or "archived" in rec["labels"]:
-            return
+    def _archive_if_old(self, rec: dict, card: dict) -> bool:
+        """Fold a card that sat in Done or Rejected for `archive_after_s` into its Older folder. True if it moved."""
+        if card["state"] not in TERMINAL or rec["archived_in"]:
+            return False
         since = rec["labels"].get("cardStateAt") or rec["labels"].get("cardUpdated")
         if _iso_age_s(since) < self.archive_after_s:
-            return
+            return False
         try:
             self.vault.archive(rec, card["state"])
         except VaultError as e:
             log.warning("could not archive card %s: %s", card["id"], e)
+            return False
+        return True
 
     def seal(self) -> None:
         """Seal the notes people added in the GUI. One search when there are none, so a caller can run it every second."""
@@ -775,7 +790,7 @@ class Board:
         return migrate.columns(self, dry_run)
 
     def migrate_archive(self, dry_run: bool = True) -> dict:
-        """File every archived card in the `Archived` folder of its column. See `migrate.archive`."""
+        """Give Done and Rejected their Older folders, and file every archived card. See `migrate.archive`."""
         from . import migrate
         return migrate.archive(self, dry_run)
 

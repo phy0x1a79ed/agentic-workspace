@@ -100,11 +100,14 @@ convert it. Each answers only the host's own bare call and defaults to a dry run
    replies into the root card's thread in their original time order. It sets
    the project, moves each subject marked `to_done` to Done, and files each
    folded note, archived, under the root card. It deletes nothing.
-7. Call `operations_board_migrate_archive` to file every archived card in the
-   `Archived` folder of its column. A card still under the board goes to the
-   column its old status names. It makes the `Archived` folders, reports the
-   count per column, and defaults to a dry run. Call it again with
-   `dry_run: false` to apply.
+7. Call `operations_board_migrate_archive`. It makes each column's archive
+   folder, and turns the `Archived` folders of Done and Rejected into Older
+   folders sorted newest first. It files every archived card in its column's
+   folder, and takes the `archived` label off each card in an Older folder so
+   that the card shows there. A card still under the board goes to the column
+   its old status names. It reports the count per column and defaults to a dry
+   run. Call it again with `dry_run: false` to apply. Run it again on a board
+   from before the Older folders.
 8. Call `operations_board_migrate_homes` to move each archived card that carries
    `cardFolded` under the note of the card it was folded into, or of the top
    card where that card was folded in turn. It reports the

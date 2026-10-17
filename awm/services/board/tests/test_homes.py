@@ -9,9 +9,9 @@ from test_migrate import WRITES, snapshot
 
 
 def fold(board, card, home):
-    """Archive the card as an earlier fold did: in its column's `Archived` folder, labelled with its home."""
+    """Archive the card as an earlier fold did: in its column's `Archived` folder, labelled `archived` and with its home."""
     rec = board.vault.read(card["id"])
-    board.vault.archive(rec, rec["state"], {"cardFolded": home["id"]})
+    board.vault.archive(rec, rec["state"], {"cardFolded": home["id"], "archived": ""})
 
 
 @pytest.fixture

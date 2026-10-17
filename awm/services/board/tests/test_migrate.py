@@ -7,7 +7,7 @@ import pytest
 
 from awm.board.migrate import guess_project
 
-WRITES = ("note_create", "note_update", "note_move", "attr_set", "attr_delete")
+WRITES = ("note_create", "note_update", "note_move", "note_place", "attr_set", "attr_delete")
 
 
 def legacy(trilium, board_note, card_id, column, title="old", created="2026-01-01T00:00:00.000+00:00",
@@ -175,8 +175,8 @@ def test_apply_backfills_the_thread_in_original_order_and_folds_the_cards(
     assert trilium.label(trilium.card_note(chains["b"]), "archived") == ""
     assert trilium.is_under(chains["b"], chains["a"]) and board.get(root, chains["b"])["state"] == "proposed"
     assert not trilium.is_filed_archived(chains["b"])                   # filed under its home, no Archived folder
-    assert not [c for fn, c in trilium.calls if fn == "note_move"
-                and c["parent"] in trilium.archives_of_all()]
+    assert not [c for fn, c in trilium.calls if fn == "note_place"
+                and set(c["parents"]) & set(trilium.archives_of_all())]
     assert board.get(root, chains["a"])["last_message"] == 3
     assert board.get(root, chains["a"])["project"] == "factorio"
     mirrored = sorted(trilium.children(trilium.chat_of(chains["a"])), key=lambda n: trilium.label(n, "msgSeq"))

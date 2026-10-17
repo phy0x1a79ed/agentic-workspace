@@ -109,7 +109,7 @@ async def test_a_plan_from_an_untracked_session_makes_a_planned_card_with_the_in
     assert env.column(task["note_id"]) == ["Planned"]
     card = env.tri.notes[task["note_id"]]
     assert "step one" in card["content"] and "altair" in card["content"]
-    assert card["type"] == "text" and card["labels"] == {"agentManaged": "", "readOnly": ""}
+    assert card["type"] == "text" and card["labels"].keys() == {"agentManaged", "readOnly", "cardStateAt"}
     assert env.tri.kids(task["note_id"]) == []
 
 
@@ -628,3 +628,56 @@ async def test_a_post_for_a_closed_task_is_not_appended(env, tmp_path):
     await env.tasks.sweep([row("stopped")])
     await env.tasks.on_post({"post": post()})
     assert env.ledger.events(env.task()["id"], "journal") == []
+
+
+# -- the Agent line ------------------------------------------------------------
+
+
+def live(name="fix the thing", link="https://claude.ai/code/session_01abc", remote=True, state="working"):
+    return {"job": "job00001", "state": state, "name": name, "link": link if remote else None,
+            "remote_control": remote, "attach": "claude attach job00001"}
+
+
+async def test_an_open_card_names_its_agent_and_links_its_session(env):
+    await started(env)
+    await env.tasks.sweep([live()])
+    assert ('<li><strong>Agent:</strong> <a href="https://claude.ai/code/session_01abc">'
+            "fix the thing</a></li>") in env.body()
+
+
+async def test_the_agent_line_escapes_the_name_and_the_link(env):
+    await started(env)
+    await env.tasks.sweep([live(name='<b>"x"</b>', link='https://claude.ai/code/session_"q')])
+    body = env.body()
+    assert "&lt;b&gt;&quot;x&quot;&lt;/b&gt;" in body and 'session_&quot;q"' in body and "<b>" not in body
+
+
+async def test_without_remote_control_the_agent_line_gives_the_attach_command(env):
+    await started(env)
+    await env.tasks.sweep([live(remote=False)])
+    assert ("<li><strong>Agent:</strong> fix the thing (<code>claude attach job00001</code>)</li>"
+            in env.body())
+
+
+async def test_a_rename_rewrites_the_card_once_and_an_unchanged_sweep_writes_nothing(env):
+    await started(env)
+    await env.tasks.sweep([live()])
+    await env.tasks.sweep([live(name="renamed")])
+    assert ">renamed</a>" in env.body()
+    writes = len(env.tri.writes())
+    await env.tasks.sweep([live(name="renamed")])
+    assert len(env.tri.writes()) == writes
+
+
+async def test_the_agent_line_goes_when_the_session_stops(env):
+    await started(env)
+    await env.tasks.sweep([live()])
+    await env.tasks.sweep([live(state="stopped")])
+    assert "Agent:" not in env.body()
+
+
+async def test_a_sweep_that_misses_the_row_once_keeps_the_agent_line(env):
+    await started(env)
+    await env.tasks.sweep([live()])
+    await env.tasks.sweep([])
+    assert "Agent:" in env.body() and env.task()["agent"] == "fix the thing"

@@ -242,6 +242,27 @@ class FakeTrilium:
             raise RuntimeError("fault: the move landed and the reply was lost")
         return {"note_id": note_id, "parent": parent}
 
+    def _h_note_place(self, note_id, parents, remove=None):
+        if note_id not in self.notes or any(p not in self.notes for p in parents):
+            raise RuntimeError(f"404 no note {note_id} or one of {parents}")
+        if self.fail_move == "before":
+            self.fail_move = None
+            raise RuntimeError("fault: the move was refused")
+        current = self.notes[note_id]["parentNoteIds"]
+        drop = set(current) - set(parents) if remove is None else set(remove) - set(parents)
+        self.notes[note_id]["parentNoteIds"] = [p for p in current if p not in drop] + \
+            [p for p in parents if p not in current]
+        self.touch(note_id)
+        if self.fail_move == "after":
+            self.fail_move = None
+            raise RuntimeError("fault: the move landed and the reply was lost")
+        return {"note_id": note_id, "parents": self.notes[note_id]["parentNoteIds"]}
+
+    def _h_note_children(self, note_id):
+        kids = self.children(note_id)
+        return {"parent": note_id, "count": len(kids), "children": [
+            {"note_id": k, "title": self.notes[k]["title"]} for k in kids]}
+
     def _h_note_create(self, title, content="", parent="root", type="text", mime=None,
                        labels=None, relations=None):
         note_id = self.add_note(title, parent, content)

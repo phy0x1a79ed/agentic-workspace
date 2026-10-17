@@ -238,10 +238,12 @@ API_MANIFEST: dict[str, Any] = {
             "surfaces": ["cli", "http"],
             "effect": "write",
             "description": (
-                "Host admin only. Make the Archived folder inside each column "
-                "folder and move every archived card into the one for its "
-                "column. A card under the board takes the column of its old "
-                "status. A dry run changes nothing and reports the plan."
+                "Host admin only. Make the archive folder inside each column "
+                "folder, and turn those of Done and Rejected into visible Older "
+                "folders sorted newest first. Move every archived card into the "
+                "one for its column, and take the archived label off each card "
+                "in an Older folder. A card under the board takes the column of "
+                "its old status. A dry run changes nothing and reports the plan."
             ),
             "params": [_param("dry_run", "boolean", "Default true. Pass false to apply.")],
         },
