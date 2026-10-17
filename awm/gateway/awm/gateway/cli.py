@@ -332,6 +332,11 @@ def deploy(
     )
     from awm.gateway.hub import discovery
 
+    from awm.config import load_env_file
+
+    # The expected set must be resolved under the env the gateway boots with:
+    # AWM_PROFILES and the singleton homes live in .awm/env.
+    load_env_file()
     root = D.awm_root()
     plan = D.plan_deploy(root, AWM_DIR, force=force, no_install=no_install,
                          no_build=no_build, no_reap=no_reap)
