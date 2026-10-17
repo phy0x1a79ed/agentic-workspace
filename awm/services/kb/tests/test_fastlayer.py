@@ -91,6 +91,16 @@ def test_filters_papers_cannot_meet_answer_nothing(layer):
     assert [h["id"] for h in recent] == ["doi:10.1/at"]
 
 
+def test_cached_stems_agree_with_fresh_ones(monkeypatch):
+    words = ["assembly", "indices", "molecules", "___", "running", "co2"]
+    monkeypatch.setattr(fastlayer, "_stem_cache", {})
+    fresh = fastlayer.stems(words)
+    assert fastlayer.stems(words) == fresh
+    assert fastlayer.stems(["running", "new_word", "indices"]) == {
+        "running": fresh["running"], "indices": fresh["indices"], **fastlayer.stems(["new_word"])}
+    assert "___" not in fresh and fresh["indices"] == "indic"
+
+
 def test_a_literal_with_like_wildcards_matches_only_itself(tmp_path):
     _base(tmp_path / "papers.db", {
         "a": ("", "Clustering at 100% identity with p_value cut", 2020, "", ""),

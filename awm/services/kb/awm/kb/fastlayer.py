@@ -118,19 +118,31 @@ def terms(text: str) -> list[str]:
 
 _stem_lock = threading.Lock()
 _stemmer: sqlite3.Connection | None = None
+_stem_cache: dict[str, str | None] = {}
+STEM_CACHE = 200_000
 
 
 def stems(words: list[str]) -> dict[str, str]:
-    """Each word's stem as the BM25 index's own porter tokenizer makes it, so a vocabulary lookup agrees."""
+    """Each word's stem as the BM25 index's own porter tokenizer makes it, so a vocabulary lookup agrees.
+    A word the tokenizer keeps nothing of is left out."""
     global _stemmer
     with _stem_lock:
-        if _stemmer is None:
-            _stemmer = sqlite3.connect(":memory:", check_same_thread=False)
-            _stemmer.executescript("CREATE VIRTUAL TABLE s USING fts5(t, tokenize='porter unicode61');"
-                                   "CREATE VIRTUAL TABLE v USING fts5vocab(s, 'instance');")
-        _stemmer.execute("DELETE FROM s")
-        _stemmer.executemany("INSERT INTO s(rowid, t) VALUES (?, ?)", list(enumerate(words, 1)))
-        return {words[doc - 1]: term for term, doc in _stemmer.execute("SELECT term, doc FROM v")}
+        fresh = [w for w in dict.fromkeys(words) if w not in _stem_cache]
+        if fresh:
+            if _stemmer is None:
+                _stemmer = sqlite3.connect(":memory:", check_same_thread=False)
+                _stemmer.executescript("CREATE VIRTUAL TABLE s USING fts5(t, tokenize='porter unicode61');"
+                                       "CREATE VIRTUAL TABLE v USING fts5vocab(s, 'instance');")
+            _stemmer.execute("DELETE FROM s")
+            _stemmer.executemany("INSERT INTO s(rowid, t) VALUES (?, ?)", list(enumerate(fresh, 1)))
+            got = {fresh[doc - 1]: term for term, doc in _stemmer.execute("SELECT term, doc FROM v")}
+            found = {w: got[w] if w in got else _stem_cache.get(w) for w in words}
+            if len(_stem_cache) + len(fresh) > STEM_CACHE:
+                _stem_cache.clear()
+            _stem_cache.update({w: got.get(w) for w in fresh})
+        else:
+            found = {w: _stem_cache[w] for w in words}
+        return {w: s for w, s in found.items() if s is not None}
 
 
 def document_frequency(conn: sqlite3.Connection, words: list[str]) -> dict[str, int]:
