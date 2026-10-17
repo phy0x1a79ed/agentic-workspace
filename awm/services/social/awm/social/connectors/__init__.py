@@ -9,7 +9,7 @@ from __future__ import annotations
 from awm.social.config import AccountConfig
 from awm.social.connectors.base import (
     Account, Attachment, Channel, Command, Connector, Identity, InboundMessage,
-    OnCommand, OnMessage,
+    OnCommand, OnMessage, file_bytes, file_size,
 )
 from awm.social.connectors.discord_conn import DiscordConnector
 from awm.social.connectors.gmail_conn import GmailConnector
@@ -68,4 +68,5 @@ def build(
 __all__ = [
     "REGISTRY", "build", "Connector", "Account", "Attachment", "Channel",
     "Command", "Identity", "InboundMessage", "OnCommand", "OnMessage",
+    "file_bytes", "file_size",
 ]

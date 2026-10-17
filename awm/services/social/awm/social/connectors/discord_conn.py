@@ -20,7 +20,7 @@ import time
 from awm.social import operators
 from awm.social.connectors.base import (
     Account, Attachment, Channel, Command, Connector, Identity, InboundMessage,
-    OnCommand, OnMessage,
+    OnCommand, OnMessage, file_bytes,
 )
 
 log = logging.getLogger("awm.social.connectors.discord")
@@ -64,13 +64,14 @@ ACK_TTL = 14 * 60
 def _discord_files(files: list[dict] | None) -> list:
     import discord
 
-    return [discord.File(io.BytesIO(str(f["text"]).encode()), filename=str(f["filename"]))
+    return [discord.File(io.BytesIO(file_bytes(f)), filename=str(f["filename"]))
             for f in files or ()]
 
 
 class DiscordConnector(Connector):
     platform = "discord"
     sends_files = True
+    max_file_bytes = 10 * 1024 * 1024
 
     def __init__(self, account: Account, on_message: OnMessage,
                  on_command: OnCommand | None = None) -> None:
@@ -315,7 +316,7 @@ class DiscordConnector(Connector):
         # A DM is a notification feed: link previews there are noise.
         dm = channel.startswith(DM_PREFIX) or isinstance(target, discord.DMChannel)
         extra = {"files": _discord_files(files)} if files else {}
-        sent = await target.send(text, suppress_embeds=dm, **extra)
+        sent = await target.send(text or None, suppress_embeds=dm, **extra)
         return {
             "message_id": str(sent.id),
             "channel_id": str(sent.channel.id),

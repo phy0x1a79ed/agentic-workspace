@@ -20,6 +20,7 @@ Run via ``run.sh`` (which the hub spawns and respawns):
 from __future__ import annotations
 
 import asyncio
+import base64
 import logging
 import os
 import shutil
@@ -190,18 +191,53 @@ async def _h_emit_probe(args: dict) -> dict:
 
 # -- handlers ---------------------------------------------------------------
 
+def _send_files(args: dict) -> list[dict]:
+    """The attachments of a send: inline ``files`` plus the local ``file``."""
+    files = list(args.get("files") or [])
+    path = args.get("file")
+    if path:
+        if os.path.isdir(path):
+            raise ValueError(f"send attaches one file, and {path!r} is a folder")
+        if not os.path.isfile(path):
+            raise FileNotFoundError(f"send: no local file {path!r}")
+        files.append({"filename": os.path.basename(path), "path": path})
+    return files
+
+
+def _inline_file(args: dict) -> dict:
+    """Carry ``file`` inside the args, for a peer that cannot read this node's path."""
+    if not args.get("file"):
+        return args
+    rest = {k: v for k, v in args.items() if k != "file"}
+    files = _send_files(args)
+    with open(args["file"], "rb") as fh:
+        files[-1] = {"filename": files[-1]["filename"],
+                     "b64": base64.b64encode(fh.read()).decode()}
+    return {**rest, "files": files}
+
+
 async def _h_send(args: dict) -> dict:
     # Send only — outbound messages are no longer mirrored to a local store.
     conn = _conn(args["account"])
-    files = args.get("files") or []
-    if files and not conn.sends_files:
-        raise RuntimeError(f"account {args['account']!r} cannot attach files")
+    files = _send_files(args)
+    text = args.get("text") or ""
+    if not text and not files:
+        raise ValueError("send needs text, a file, or both")
+    if files:
+        if not conn.sends_files:
+            raise RuntimeError(f"{conn.platform} account {args['account']!r} does "
+                               "not take files through social")
+        size = sum(connectors.file_size(f) for f in files)
+        if size > conn.max_file_bytes:
+            raise ValueError(
+                f"the files come to {size} bytes, over the "
+                f"{conn.max_file_bytes} that {args['account']!r} takes per message")
     extra = {"files": files} if files else {}
     if args.get("ack_ref"):
-        edited = await conn.edit_ack(str(args["ack_ref"]), args["text"], **extra)
+        edited = await conn.edit_ack(str(args["ack_ref"]), text, **extra)
         if edited is not None:
             return {"ok": True, "edited": True, **edited}
-    sent = await conn.send(args["channel"], args["text"], thread=args.get("thread"), **extra)
+    sent = await conn.send(args["channel"], text, thread=args.get("thread"), **extra)
     return {"ok": True, **sent}
 
 
@@ -429,7 +465,9 @@ async def _h_mount(args: dict, as_: str | None = None) -> dict:
                   f"add thread=<thread ts> to answer in a thread. Before work "
                   f"that takes a while, react 👀 with `social react "
                   f"account={account} channel={seat.id} message_id=<id> "
-                  f"emoji=👀`, then post the answer with `social send`"),
+                  f"emoji=👀`, then post the answer with `social send`. Share "
+                  f"a long document, such as a plan, with file=<path> instead "
+                  f"of pasting it"),
         "backlog": (f"social history account={account} channel={seat.id}"
                     if conn.keeps_history else
                     f"social fetch account={account} channel={seat.id}"),
@@ -714,14 +752,22 @@ API_MANIFEST: dict[str, Any] = {
                            "`ack_ref`, from a slash command's event, replaces that "
                            "command's acknowledgement while the platform still "
                            "allows it, and sends a new message otherwise. "
-                           "`files` attaches text files, each "
-                           "{filename, text}; only Discord accounts take them.",
+                           "`file` uploads a file from the calling node, such as "
+                           "a plan's .md, with `text` as its message; `text` is "
+                           "optional with a file. `files` attaches inline text "
+                           "files, each {filename, text}. Discord and Slack take "
+                           "files, up to 10 MB on Discord and 8 MB on Tony's "
+                           "Slack. The Opal Slack bot refuses until its app "
+                           "holds files:write. Gmail and Teams refuse.",
+            "timeout": 300,
             "params": [
                 {"name": "account", "type": "string", "required": True},
                 {"name": "channel", "type": "string", "required": True},
-                {"name": "text", "type": "string", "required": True},
+                {"name": "text", "type": "string", "required": False},
                 {"name": "thread", "type": "string", "required": False},
                 {"name": "ack_ref", "type": "string", "required": False},
+                {"name": "file", "type": "string", "required": False,
+                 "file": "in"},
                 {"name": "files", "type": "array", "required": False},
             ],
         },
@@ -1226,7 +1272,7 @@ API_MANIFEST: dict[str, Any] = {
     "sessions": [],
 }
 
-def _forwarding(fn: str, handler: Any) -> Any:
+def _forwarding(fn: str, handler: Any, outbound: Any = None) -> Any:
     """Wrap an account-taking handler so a borrowed account resolves on its owner.
 
     Applied to the verbs that name an ``account`` — and only those. All of them
@@ -1242,6 +1288,7 @@ def _forwarding(fn: str, handler: Any) -> Any:
     owner node leaves it unset, so a typo'd account there still fails locally
     with a useful error instead of being bounced to a peer that doesn't have it
     either. That also makes a forward loop impossible — the owner never forwards.
+    ``outbound`` rewrites the args before they leave for the owner.
     """
     async def _wrapped(args: dict) -> Any:
         from awm import gatewayclient
@@ -1250,7 +1297,8 @@ def _forwarding(fn: str, handler: Any) -> Any:
         account = (args or {}).get("account")
         if peer and account and account not in _connectors:
             try:
-                return await gatewayclient.call_peer(peer, "social", fn, args)
+                return await gatewayclient.call_peer(
+                    peer, "social", fn, outbound(args) if outbound else args)
             except gatewayclient.PeerError as exc:
                 # Distinguish "couldn't reach the owner" from "the owner said
                 # no" — they have completely different fixes, and a merged
@@ -1297,7 +1345,7 @@ def _seat_forwarding(fn: str, handler: Any) -> Any:
 
 
 HANDLERS = {
-    "send": _forwarding("send", _h_send),
+    "send": _forwarding("send", _h_send, outbound=_inline_file),
     "react": _forwarding("react", _h_react),
     "seats": _forwarding("seats", _h_seats),
     "mount": _seat_forwarding("mount", _h_mount),

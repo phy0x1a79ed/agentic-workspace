@@ -24,8 +24,9 @@ class FakePage:
         self.responses = responses
         self.exprs: list[str] = []
 
-    async def evaluate_json(self, expr: str):
+    async def evaluate_json(self, expr: str, **kw):
         self.exprs.append(expr)
+        self.kw = kw
         for helper, value in self.responses.items():
             if helper in expr:
                 return value
@@ -62,6 +63,16 @@ class TestSlackDriver:
                          {"message_id": "1.2", "channel_id": "C1", "ts": "1.2"}})
         out = await SlackDriver(page).send("C1", "yo")
         assert out["message_id"] == "1.2"
+
+    async def test_upload_runs_once_with_a_long_window(self):
+        from mira_api.drivers import UPLOAD_TIMEOUT_S
+        page = FakePage({"window.__awmMira.slack.upload":
+                         {"channel_id": "D1", "files": [{"id": "F1"}]}})
+        files = [{"filename": "plan.md", "b64": "eA=="}]
+        out = await SlackDriver(page).upload("D1", files, "plan", "1.0")
+        assert out["files"] == [{"id": "F1"}]
+        assert json.dumps(files) in page.exprs[-1]
+        assert page.kw == {"timeout": UPLOAD_TIMEOUT_S, "retry": False}
 
     async def test_list_channels_passthrough(self):
         page = FakePage({"window.__awmMira.slack.listChannels":

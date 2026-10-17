@@ -204,12 +204,12 @@ class TestManifest:
         assert API_MANIFEST["emitters"] == [
             {"topic": "message"}, {"topic": "command"}]
 
-    def test_send_requires_account_channel_text(self):
+    def test_send_requires_account_and_channel(self):
         from awm.social.hub_adapter import API_MANIFEST
 
         send = next(f for f in API_MANIFEST["functions"] if f["name"] == "send")
         required = {p["name"] for p in send["params"] if p["required"]}
-        assert required == {"account", "channel", "text"}
+        assert required == {"account", "channel"}
 
     def test_fetch_and_search_required_params(self):
         from awm.social.hub_adapter import API_MANIFEST

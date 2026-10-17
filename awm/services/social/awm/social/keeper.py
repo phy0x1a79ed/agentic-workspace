@@ -106,6 +106,8 @@ def launch_spec(seat: SeatConfig, platform: str, keeps_history: bool) -> dict:
         f"answer in a thread. Read the backlog with `social {backlog} {where}`.",
         f"Before work that takes a while, react 👀 with `social react {where} "
         "message_id=<id> emoji=👀`, then post the answer with `social send`.",
+        f"Share a long document, such as a plan, as a file with `social send "
+        f"{where} file=<path> text=<summary>` instead of pasting it.",
         "When this conversation is compacted, the summary must carry every "
         "question still unanswered, every agent you dispatched and what it is "
         "for, and everything you promised someone.",
