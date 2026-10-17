@@ -134,38 +134,67 @@ def test_an_unparseable_pin_does_not_abort_discovery(tmp_path):
     assert backup.dvc_output_paths(tmp_path) == [str(tmp_path / "out")]
 
 
-# --- regenerable directories ------------------------------------------------
+# --- regenerable and cache-tagged directories --------------------------------
+#
+# The failure that wrote these: excluding `__pycache__` by path split every
+# Python package directory into one item per file, and a worktree removed
+# mid-run then cost ~12 s of serial scan per vanished file — days, in all.
 
 
-def test_regenerable_dirs_are_found_by_name_at_any_depth(tmp_path):
-    touch(tmp_path / "a" / "__pycache__" / "m.pyc")
-    touch(tmp_path / "b" / "deep" / "node_modules" / "pkg" / "index.js")
-    touch(tmp_path / "b" / "deep" / "src.py")
-
-    assert backup.regenerable_paths(tmp_path) == sorted(
-        [
-            str(tmp_path / "a" / "__pycache__"),
-            str(tmp_path / "b" / "deep" / "node_modules"),
-        ]
-    )
+TAG = backup.CACHEDIR_SIGNATURE.decode() + "\n# a cache\n"
 
 
-def test_regenerable_matching_never_prunes_a_file_that_shares_the_name(tmp_path):
-    touch(tmp_path / "node_modules")  # a file, not a directory
+def test_regenerable_dirs_go_to_globus_as_name_filters():
+    rules = backup.filter_rules()
 
-    assert backup.regenerable_paths(tmp_path) == []
+    assert {r["name"] for r in rules} == backup.REGENERABLE_DIRS
+    assert all(r["method"] == "exclude" and r["type"] == "dir" for r in rules)
 
 
-def test_regenerable_walk_does_not_descend_into_skipped_paths(tmp_path):
+def test_a_regenerable_dir_does_not_split_its_parent_into_files(tmp_path):
+    touch(tmp_path / "pkg" / "__pycache__" / "m.pyc")
+    touch(tmp_path / "pkg" / "mod.py")
+
+    items = backup.partition(str(tmp_path), [], "/dest")
+
+    assert sources(items) == {f"{tmp_path}/pkg/"}
+
+
+def test_a_regenerable_dir_is_never_emitted_as_an_item(tmp_path):
+    """Globus filters beneath an item, never the item itself."""
+    touch(tmp_path / "proj" / "out" / "big.bam")
+    touch(tmp_path / "proj" / "node_modules" / "pkg" / "index.js")
+    touch(tmp_path / "proj" / "src.py")
+
+    items = backup.partition(str(tmp_path), [str(tmp_path / "proj" / "out")], "/dest")
+
+    assert sources(items) == {f"{tmp_path}/proj/src.py"}
+
+
+def test_a_cache_tagged_dir_is_found_at_any_depth(tmp_path):
+    touch(tmp_path / "a" / "b" / "conda_cache" / "CACHEDIR.TAG", TAG)
+    touch(tmp_path / "a" / "b" / "conda_cache" / "pkgs" / "x")
+    touch(tmp_path / "a" / "src.py")
+
+    assert backup.cache_tagged_paths(tmp_path) == [str(tmp_path / "a" / "b" / "conda_cache")]
+
+
+def test_a_tag_without_the_signature_is_ignored(tmp_path):
+    touch(tmp_path / "keep" / "CACHEDIR.TAG", "not a tag")
+
+    assert backup.cache_tagged_paths(tmp_path) == []
+
+
+def test_the_tag_walk_does_not_descend_into_skipped_paths(tmp_path):
     # The cache holds 300 GB of content-addressed objects and no source; walking
     # it to find nothing is the whole cost this skip exists to avoid.
     cache = tmp_path / "data" / ".dvc_cache"
-    touch(cache / "files" / "md5" / "ab" / "__pycache__" / "x")
-    touch(tmp_path / "src" / "__pycache__" / "y")
+    touch(cache / "files" / "md5" / "ab" / "CACHEDIR.TAG", TAG)
+    touch(tmp_path / "src" / "scratch" / "CACHEDIR.TAG", TAG)
 
-    found = backup.regenerable_paths(tmp_path, skip=[str(cache)])
+    found = backup.cache_tagged_paths(tmp_path, skip=[str(cache)])
 
-    assert found == [str(tmp_path / "src" / "__pycache__")]
+    assert found == [str(tmp_path / "src" / "scratch")]
 
 
 # --- the assembled document -------------------------------------------------
@@ -179,6 +208,7 @@ def _workspace(tmp_path, monkeypatch):
     touch(tmp_path / "projects" / "p" / "out" / "big.bam")
     touch(tmp_path / "projects" / "p" / "__pycache__" / "m.pyc")
     touch(tmp_path / "projects" / "p" / "src.py")
+    touch(tmp_path / "projects" / "p" / "tmp" / "CACHEDIR.TAG", TAG)
     touch(tmp_path / ".awm" / "state.json")
 
     monkeypatch.setattr(backup, "WORKSPACE_ROOT", tmp_path)
@@ -195,6 +225,7 @@ def test_the_document_excludes_the_cache_the_checkouts_and_the_junk(tmp_path, mo
     assert not any(".dvc_cache" in s for s in srcs)
     assert not any(s.rstrip("/").endswith("/projects/p/out") for s in srcs)
     assert not any("__pycache__" in s for s in srcs)
+    assert not any(s.rstrip("/").endswith("/projects/p/tmp") for s in srcs)
     # ...while everything else is still covered.
     assert f"{ws}/projects/p/src.py" in srcs
     assert f"{ws}/projects/p/out.dvc" in srcs
@@ -203,7 +234,7 @@ def test_the_document_excludes_the_cache_the_checkouts_and_the_junk(tmp_path, mo
         "dvc_outputs": 1,
         "shared_stores": 0,
         "shared_cache": 1,
-        "regenerable_dirs": 1,
+        "cache_tagged_dirs": 1,
         "total": 3,
     }
 
@@ -261,6 +292,7 @@ def test_the_mirror_submits_with_delete_enabled_and_mtime_comparison(monkeypatch
     assert seen["delete_destination_extra"] is True
     assert seen["sync_level"] == 2
     assert seen["skip_source_errors"] is True
+    assert seen["filter_rules"] == backup.filter_rules()
 
 
 def test_a_dry_run_submits_nothing_and_returns_the_document(tmp_path, monkeypatch):

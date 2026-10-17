@@ -107,6 +107,8 @@ The dvc service schedules two nightly jobs. They do different things.
 
 Every mirror destination sits under `…/workspace/`. A delete-enabled transfer therefore cannot reach the archive, whatever its exclusion logic does.
 
+Keep a regenerable directory out of the mirror with a `CACHEDIR.TAG` file, per the [Cache Directory Tagging spec](https://bford.info/cachedir/). Tag package caches, run scratch and shard pulls that a pinned file already reassembles. The mirror pays per file, not per byte: about a million small files make a run take most of a day.
+
 Neither job replaces pushing a branch. `dvc(verb="coverage")` reports what exists on no remote.
 
 A restore does not return two things:

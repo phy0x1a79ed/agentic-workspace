@@ -26,16 +26,23 @@ module emits is under ``workspace/``, so a delete-enabled transfer *cannot* reac
 the archive no matter what the exclusion logic gets wrong. Structure, not a rule.
 
 WHY THE TREE IS PARTITIONED BY HAND
-Globus ``filter_rules`` cannot express these exclusions: they match an item's
+Globus ``filter_rules`` cannot express the DVC exclusions: they match an item's
 *name* at any depth, and DVC output names (``assembly``, ``hosts``, ``genomes``)
 collide with unrelated real content elsewhere in the tree — a name-based rule
 would silently drop e.g. ``projects/metasmith-libraries/*/transforms/assembly``
 (actual source code) along with the checkout that shares its name. So
 :func:`partition` walks the tree instead and emits, for each directory, either
 the whole directory (nothing excluded beneath it), nothing (it *is* excluded), or
-a recursion into it (something excluded lies below). Name matching still happens
-for the regenerable directories, but in :func:`regenerable_paths`, where the walk
-can see a full path and hands :func:`partition` exact absolute paths.
+a recursion into it (something excluded lies below).
+
+Every path excluded by hand costs: its ancestors are recursed, and each file
+directly inside one becomes an item of its own. A source file that vanishes
+before Globus reaches it costs about twelve seconds of serial scan time, so a
+worktree removed mid-run wedged one mirror for days when ``__pycache__`` was
+excluded by path and every Python package directory had been split into files.
+Names that collide with nothing — :data:`REGENERABLE_DIRS` — therefore go to
+Globus as ``filter_rules``, and only the DVC paths and directories carrying a
+``CACHEDIR.TAG`` are partitioned around.
 
 KNOWN LIMITATION
 A top-level entry deleted locally is named by no transfer item at all, so it is
@@ -66,12 +73,24 @@ DEST_SUBDIR = "workspace"
 
 # Directory names whose contents are rebuilt from what is already backed up:
 # thousands of tiny files whose per-file transfer overhead dwarfs their value.
-# Resolved to exact absolute paths by walking, never handed to Globus as names.
+# Handed to Globus as name filters, so each must never name real content.
 # `dist/` is deliberately absent — those are built bundles that a live server
 # serves, and rebuilding one needs a toolchain that may not survive the machine.
 REGENERABLE_DIRS = frozenset(
     {"__pycache__", "node_modules", ".pytest_cache", ".mypy_cache", ".ruff_cache"}
 )
+
+# Any other directory opts out by holding a tag per the Cache Directory Tagging
+# spec (https://bford.info/cachedir/), the same marker tar, borg and restic honour.
+CACHEDIR_TAG = "CACHEDIR.TAG"
+CACHEDIR_SIGNATURE = b"Signature: 8a477f597d28d172789f06886806bc55"
+
+
+def filter_rules() -> list[dict]:
+    return [
+        {"DATA_TYPE": "filter_rule", "method": "exclude", "type": "dir", "name": name}
+        for name in sorted(REGENERABLE_DIRS)
+    ]
 
 
 def dvc_output_paths(root: Path) -> list[str]:
@@ -110,12 +129,18 @@ def shared_store_paths(root: Path) -> list[str]:
     )
 
 
-def regenerable_paths(
-    root: Path, *, names: frozenset[str] = REGENERABLE_DIRS, skip: list[str] | None = None
-) -> list[str]:
-    """Absolute paths of every directory under ``root`` named in ``names``.
+def _is_cache_tag(path: str) -> bool:
+    try:
+        with open(path, "rb") as f:
+            return f.read(len(CACHEDIR_SIGNATURE)) == CACHEDIR_SIGNATURE
+    except OSError:
+        return False
 
-    Prunes at each match rather than descending, and prunes at everything in
+
+def cache_tagged_paths(root: Path, *, skip: list[str] | None = None) -> list[str]:
+    """Absolute paths of every directory under ``root`` holding a valid ``CACHEDIR.TAG``.
+
+    Prunes at each match, at :data:`REGENERABLE_DIRS`, and at everything in
     ``skip`` — pass the cache and the DVC outputs, or this walks 300 GB of
     content-addressed objects to find nothing.
     """
@@ -124,23 +149,25 @@ def regenerable_paths(
 
     def walk(dir_path: str) -> None:
         try:
-            entries = os.scandir(dir_path)
+            with os.scandir(dir_path) as it:
+                entries = list(it)
         except (FileNotFoundError, NotADirectoryError, PermissionError):
             return
-        with entries:
-            for entry in entries:
-                if not entry.is_dir(follow_symlinks=False):
-                    continue
-                full = os.path.normpath(entry.path)
-                if full in skip_set:
-                    continue
-                if entry.name in names:
-                    found.append(full)
-                    continue
+        for entry in entries:
+            if entry.name == CACHEDIR_TAG and entry.is_file(follow_symlinks=False) \
+                    and _is_cache_tag(entry.path):
+                found.append(os.path.normpath(dir_path))
+                return
+        for entry in entries:
+            if not entry.is_dir(follow_symlinks=False) or entry.name in REGENERABLE_DIRS:
+                continue
+            full = os.path.normpath(entry.path)
+            if full not in skip_set:
                 walk(full)
 
-    walk(os.path.normpath(str(root)))
-    return sorted(found)
+    root_path = os.path.normpath(str(root))
+    walk(root_path)
+    return sorted(p for p in found if p != root_path)
 
 
 def partition(root: str, excluded: list[str], dest_prefix: str) -> list[dict]:
@@ -185,6 +212,9 @@ def partition(root: str, excluded: list[str], dest_prefix: str) -> list[dict]:
                 continue
             dest = os.path.join(dest_prefix, os.path.relpath(full, root))
             if entry.is_dir(follow_symlinks=False):
+                # Globus applies filter_rules beneath an item, never to the item itself.
+                if entry.name in REGENERABLE_DIRS:
+                    continue
                 if full in ancestors:
                     walk(full)
                 else:
@@ -225,14 +255,14 @@ def build_items(cfg: ChinookConfig) -> tuple[list[dict], dict[str, int]]:
     outs = dvc_output_paths(WORKSPACE_ROOT)
     stores = shared_store_paths(WORKSPACE_ROOT)
     cache = os.path.normpath(str(SHARED_CACHE))
-    regen = regenerable_paths(WORKSPACE_ROOT, skip=[*outs, *stores, cache])
-    excluded = [*outs, *stores, cache, *regen]
+    tagged = cache_tagged_paths(WORKSPACE_ROOT, skip=[*outs, *stores, cache])
+    excluded = [*outs, *stores, cache, *tagged]
     items = partition(str(WORKSPACE_ROOT), excluded, destination_root(cfg))
     counts = {
         "dvc_outputs": len(outs),
         "shared_stores": len(stores),
         "shared_cache": 1,
-        "regenerable_dirs": len(regen),
+        "cache_tagged_dirs": len(tagged),
         "total": len(excluded),
     }
     return items, counts
@@ -255,6 +285,7 @@ def submit(cfg: ChinookConfig, items: list[dict]) -> str:
         # A 100k-file scan will always race some file being rewritten or removed
         # underneath it; one vanished file must not fail the backup.
         skip_source_errors=True,
+        filter_rules=filter_rules(),
     )
 
 

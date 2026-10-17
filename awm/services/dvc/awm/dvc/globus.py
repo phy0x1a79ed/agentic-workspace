@@ -56,6 +56,7 @@ def submit(
     sync_level: int = 1,
     delete_destination_extra: bool = False,
     skip_source_errors: bool = False,
+    filter_rules: list[dict] | None = None,
 ) -> str:
     """Submit a transfer document and return its task id.
 
@@ -79,6 +80,8 @@ def submit(
         "skip_source_errors": skip_source_errors,
         "DATA": items,
     }
+    if filter_rules:
+        body["filter_rules"] = filter_rules
     task_id = _run(
         cfg,
         ["api", "transfer", "post", "/transfer", "--jmespath", "task_id", "--format", "unix"],
