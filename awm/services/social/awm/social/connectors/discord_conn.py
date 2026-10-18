@@ -26,6 +26,19 @@ from awm.social.connectors.base import (
 log = logging.getLogger("awm.social.connectors.discord")
 
 
+def _natural(message) -> bool:  # noqa: ANN001
+    """Whether a DM message is a person's plain words, the only kind a DM seat's
+    holder hears. A bot post, a system or command message, and text that reads
+    as a failed slash command stay out of the holder's prompt."""
+    import discord
+
+    if not isinstance(message.channel, discord.DMChannel):
+        return True
+    return (not getattr(message.author, "bot", False)
+            and message.type in (discord.MessageType.default, discord.MessageType.reply)
+            and not (message.content or "").lstrip().startswith("/"))
+
+
 def _attachments_of(message) -> list[Attachment]:  # noqa: ANN001
     """Map a discord.py message's ``.attachments`` to normalised metadata.
 
@@ -137,6 +150,7 @@ class DiscordConnector(Connector):
                     ts=message.created_at.isoformat() if message.created_at else "",
                     text=message.content or "",
                     attachments=_attachments_of(message),
+                    to_holder=_natural(message),
                 )
                 await self.on_message(inbound)
             except Exception as exc:  # noqa: BLE001 — one bad message never kills the loop

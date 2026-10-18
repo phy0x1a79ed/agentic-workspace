@@ -69,7 +69,8 @@ class InboundMessage:
 
     ``message_id`` is the platform's own id (used for redelivery dedupe);
     ``ts`` is the platform timestamp string when available. ``sender_bot`` is
-    True when the platform marks the sender as a bot.
+    True when the platform marks the sender as a bot. ``to_holder`` is False
+    for a message the connector keeps from a seat's holder.
     """
 
     account: str
@@ -85,6 +86,7 @@ class InboundMessage:
     attachments: list = field(default_factory=list, compare=False)
     raw: dict = field(default_factory=dict, compare=False)
     sender_bot: bool = False
+    to_holder: bool = True
 
 
 @dataclass(frozen=True)

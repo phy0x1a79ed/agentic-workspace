@@ -230,7 +230,8 @@ line came from. Newlines become ` ⏎ `. Text past 1500 characters is cut, and a
   History still holds it.
 - **Discord DM.** A Discord DM carries the operator's notifications and slash
   commands. An operator's DM is also a seat, so a holder hears its plain
-  messages. Slash commands go to their consumers and never to the holder.
+  messages. The holder never hears a bot post, a system or command message, or
+  text that starts with "/". Slash commands go to their consumers.
   `social_seats` lists guild text channels and the DM of each `social_operators`
   row. Any other DM is never a seat.
 - **Name.** A holder goes by its seat: `seat:<app>/<server>/<channel>`, or

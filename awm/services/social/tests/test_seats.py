@@ -151,6 +151,13 @@ async def test_a_message_in_a_held_seat_is_pushed_to_the_holder(wired):
     assert wired.pushed == [("altair", ME["job"], "slack from tony [channel=D1 message_id=10.1]: first ⏎ second")]
 
 
+async def test_a_message_kept_from_the_holder_is_not_pushed(wired):
+    mine, as_ = _as(ME)
+    await wired._h_mount({"account": "bot", "channel": "D1", **mine}, as_)
+    await wired._on_message(_msg(text="/new-agen x", to_holder=False))
+    assert wired.pushed == []
+
+
 def test_push_line_marks_thread_replies_and_cuts_long_text():
     from awm.social import seats
     from awm.social.connectors.base import Attachment
