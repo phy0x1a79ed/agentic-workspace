@@ -228,8 +228,11 @@ line came from. Newlines become ` ⏎ `. Text past 1500 characters is cut, and a
 - **Delivery.** Each holder has one ordered queue. A refused line (the holder
   sits at a dialog) is retried with backoff for 2 minutes, then dropped.
   History still holds it.
-- **Discord DM.** A Discord DM is the operator's notification channel and is
-  never a seat. `social_seats` lists guild text channels only.
+- **Discord DM.** A Discord DM carries the operator's notifications and slash
+  commands. An operator's DM is also a seat, so a holder hears its plain
+  messages. Slash commands go to their consumers and never to the holder.
+  `social_seats` lists guild text channels and the DM of each `social_operators`
+  row. Any other DM is never a seat.
 - **Name.** A holder goes by its seat: `seat:<app>/<server>/<channel>`, or
   `seat:<app>/DM/<person>` for a DM, such as `seat:discord/Hallam Hive/general`
   or `seat:slack/arbutus`. A kept seat's agent starts with that name. The mount

@@ -467,8 +467,16 @@ class DiscordConnector(Connector):
         return out
 
     async def list_seats(self) -> list[Channel]:
-        # The DM carries notifications and approvals, so no session may hold it.
-        return await self.list_channels()
+        # An operator's DM is a seat: its plain messages reach the holder, while
+        # slash commands and the bot's own notifications never do.
+        seats = await self.list_channels()
+        for row in operators.list_operators(self.platform):
+            try:
+                seats.append(await self.open_dm(row["platform_user_id"]))
+            except Exception as exc:  # noqa: BLE001 — one unreachable operator never hides the rest
+                log.info("discord[%s] cannot open the DM of operator %s: %s",
+                         self.account.name, row["platform_user_id"], exc)
+        return seats
 
     async def identity(self) -> Identity:
         if self._client is None:
