@@ -405,7 +405,8 @@ async def _find_seat(conn: connectors.Connector, channel: str) -> connectors.Cha
             c.kind == "dm" and (c.id == ref or c.name.lower() == name)
             for c in await conn.list_channels(include_dms=True)):
         raise seats.SeatError(
-            f"{conn.platform} DMs are reserved for notifications and cannot be mounted")
+            f"{conn.platform} DMs are reserved for notifications and cannot be "
+            "mounted, except an operator's DM, which `seats` lists")
     raise seats.SeatError(
         f"account {conn.account.name!r} is not in {ref!r}. `seats` lists the chats "
         "it is in; invite the bot to add one")
@@ -851,8 +852,7 @@ API_MANIFEST: dict[str, Any] = {
                            "Background sessions only. One holder per "
                            "seat: a held seat is refused unless `force`, which "
                            "takes it and tells the old holder. A Discord DM is "
-                           "reserved for notifications and cannot be mounted, "
-                           "and a kept seat is refused: social holds it for "
+                           "a seat only for an operator, and a kept seat is refused: social holds it for "
                            "the agent it keeps. The result's `rename` gives the "
                            "seat's session name, seat:<app>/<server>/<channel>.",
             "params": [

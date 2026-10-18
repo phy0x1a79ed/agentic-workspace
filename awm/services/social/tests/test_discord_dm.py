@@ -44,6 +44,8 @@ class _User:
 
 
 class _Client:
+    guilds = ()
+
     def __init__(self):
         self.users = {}
         self.fetched = []
@@ -113,3 +115,16 @@ def test_open_dm_accepts_bare_id_and_dm_form():
     ch = asyncio.run(conn.open_dm("4242"))
     assert (ch.id, ch.kind, ch.name) == ("555", "dm", "tester#0001")
     assert asyncio.run(conn.open_dm("dm:4242")).id == "555"
+
+
+def test_an_operators_dm_is_a_seat(awm_workspace):
+    from awm.social import operators
+
+    operators.add_operator("discord", "4242", "tony")
+    operators.add_operator("slack", "U1", "tony")
+    seats = asyncio.run(_connector().list_seats())
+    assert [(c.id, c.kind) for c in seats] == [("555", "dm")]
+
+
+def test_a_dm_without_an_operator_is_no_seat(awm_workspace):
+    assert asyncio.run(_connector().list_seats()) == []
