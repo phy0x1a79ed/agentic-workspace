@@ -129,7 +129,7 @@ async def _on_message(inbound: connectors.InboundMessage) -> None:
     if _adapter is not None:
         awm_user = _dao.lookup(inbound.platform, inbound.sender_id) or ""
         await _adapter.emit("message", _msg_to_dict(inbound, awm_user))
-    held = _dao.holder(inbound.account, inbound.channel_id)
+    held = _dao.holder(inbound.account, inbound.channel_id) if inbound.to_holder else None
     if held:
         _pusher.push(held["node"], held["job"], seats.push_line(inbound))
 

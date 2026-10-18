@@ -128,3 +128,31 @@ def test_an_operators_dm_is_a_seat(awm_workspace):
 
 def test_a_dm_without_an_operator_is_no_seat(awm_workspace):
     assert asyncio.run(_connector().list_seats()) == []
+
+
+@pytest.mark.parametrize(("bot", "kind", "text", "heard"), [
+    (False, "default", "tell the fig session yes", True),
+    (False, "reply", "yes", True),
+    (True, "default", "Duo approvals armed", False),
+    (False, "chat_input_command", "", False),
+    (False, "default", "/new-agen fix the build", False),
+])
+def test_a_dm_seat_hears_only_plain_words(bot, kind, text, heard):
+    import discord
+    from types import SimpleNamespace
+
+    from awm.social.connectors.discord_conn import _natural
+
+    dm = discord.DMChannel.__new__(discord.DMChannel)
+    msg = SimpleNamespace(channel=dm, author=SimpleNamespace(bot=bot),
+                          type=getattr(discord.MessageType, kind), content=text)
+    assert _natural(msg) is heard
+
+
+def test_a_guild_message_always_reaches_the_holder():
+    from types import SimpleNamespace
+
+    from awm.social.connectors.discord_conn import _natural
+
+    assert _natural(SimpleNamespace(channel=object(), author=SimpleNamespace(bot=True),
+                                    type=None, content="/x"))
