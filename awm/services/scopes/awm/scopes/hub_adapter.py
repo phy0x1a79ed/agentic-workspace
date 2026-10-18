@@ -19,7 +19,7 @@ import asyncio
 import logging
 from typing import Any
 
-from awm.config import PROJECTS_DIR
+from awm.config import PROJECTS_DIR, privacy
 from awm.gatewayclient import ServiceAdapter, spawn_supervised
 from awm.persistence import embeddings
 from awm.scopes import dao, search_index
@@ -50,7 +50,7 @@ log = logging.getLogger("awm.scopes.hub_adapter")
 
 
 def _handle_resolve_scope(args: dict[str, Any]) -> dict[str, Any]:
-    """resolveScope(project, scope) → {exists, project, scope, status} | not-found.
+    """resolveScope(project, scope) → {exists, project, scope, status, private} | not-found.
 
     Validate-only hot read: does this scope exist and is it live?
     Returns the agent's lifecycle status when found; the caller decides
@@ -67,6 +67,7 @@ def _handle_resolve_scope(args: dict[str, Any]) -> dict[str, Any]:
         "project": project,
         "scope": scope,
         "status": rec["status"],
+        "private": privacy.hidden(project, scope),
     }
 
 
@@ -167,7 +168,7 @@ _IDENTITY_FUNCTIONS = [
         "effect": "read",
         "description": (
             "Validate-only read: does this (project, scope) exist and "
-            "what is its status? Returns {exists, project, scope, status} "
+            "what is its status? Returns {exists, project, scope, status, private} "
             "when found, {exists: false, project, scope} when not found."
         ),
         "params": [

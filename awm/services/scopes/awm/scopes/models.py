@@ -88,6 +88,7 @@ class ScopeInfo(BaseModel):
     worktree: str
     repo_path: str | None = None
     session: int = 1
+    private: bool = False
 
 
 
@@ -104,6 +105,7 @@ class ProjectScopeCounts(BaseModel):
 class ProjectListInfo(BaseModel):
     name: str
     scope_counts: ProjectScopeCounts
+    private: bool = False
 
 
 class ProjectListResponse(BaseModel):

@@ -289,7 +289,7 @@ async def test_svc_door_stamps_from_the_header(monkeypatch):
     assert args["_caller_pid"] == 2488
 
 
-async def test_svc_door_ignores_the_header_on_an_edge_request(monkeypatch):
+async def test_svc_door_ignores_the_header_on_an_edge_request(monkeypatch, domestic_peers):
     args = await _post_svc(monkeypatch, "cx", "start", {"_caller_pid": 999},
                            headers={"X-Awm-Session-Pid": "2488"}, as_="peer:capella")
     assert "_caller_pid" not in args

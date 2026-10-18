@@ -27,6 +27,7 @@ from awm.config import (
     GITHUB_USER,
     VAGRANT_PROJECT,
 )
+from awm.config import privacy
 from awm.scopes.git_utils import run_git, detect_default_branch
 from awm.dvc import data_dvc
 from awm.gatewayclient import cancel
@@ -1639,6 +1640,8 @@ def search_scopes(
         except Exception as exc:  # noqa: BLE001 — reported, then answered by name match
             degraded = {"semantic": "error", "error": repr(exc)[:300], "fallback": "keyword"}
 
+    for info in merged:
+        info.private = privacy.hidden(info.project, info.scope)
     listing = None
     if not project:
         from awm.scopes import projects as projects_mod
