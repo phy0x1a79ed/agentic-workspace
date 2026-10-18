@@ -565,6 +565,30 @@ def _make_service_cli_handler(tool: dict, api_func: Callable) -> Callable:
     return handler
 
 
+#: The tools whose CLI calls name the agent session that ran the CLI, as the MCP
+#: proxy names it for every call. Narrow on purpose: for the other stamped tools
+#: a call that names a session is held to that session's gates, and a CLI call
+#: has always been exempt from them.
+CALLER_NAMING_TOOLS = frozenset({"tether"})
+
+
+def _caller_headers(tool_name: str) -> dict[str, str]:
+    """``X-Awm-Caller-Pid`` naming the agent session this CLI runs under, if any.
+
+    Only a session ancestor is named. A CLI run from a plain terminal sends
+    nothing, so it stays a call from the host rather than from some pid.
+    """
+    if tool_name.partition("_")[0] not in CALLER_NAMING_TOOLS:
+        return {}
+    import os
+
+    from awm.gateway import mcp_caller
+
+    own = os.getpid()
+    session = mcp_caller.resolve_caller_pid(own)
+    return {} if session == own else {"X-Awm-Caller-Pid": str(session)}
+
+
 def _invoke_dispatch(tool_name: str, api_func: Callable, kwargs: dict) -> None:
     """Dispatch a service tool through the by-name ``/invoke`` endpoint — the
     same path the MCP proxy uses — dropping unset (``None``) options."""
@@ -574,8 +598,10 @@ def _invoke_dispatch(tool_name: str, api_func: Callable, kwargs: dict) -> None:
     # was 600s, which sits *under* the longest declared budget (3600s) and so
     # truncated `awm scope create` the same way the MCP proxy did. Shared with
     # the proxies so the two surfaces cannot drift apart again.
+    headers = _caller_headers(tool_name)
     r = api_func("POST", "/invoke", json={"name": tool_name, "args": args},
-                 timeout=mcp_http.read_timeout())
+                 timeout=mcp_http.read_timeout(),
+                 **({"headers": headers} if headers else {}))
     _render_invoke_output(r)
 
 

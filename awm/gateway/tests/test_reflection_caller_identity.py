@@ -504,3 +504,13 @@ def test_every_tether_verb_is_stamped_so_a_session_answers_to_its_minter():
     domain = {"verb": "drain", "args": {"_caller_pid": 1}}
     _stamp_caller("tether", domain, "2488")
     assert domain["args"]["_caller_pid"] == 2488
+
+
+def test_a_cli_tether_call_is_stamped_with_the_session_it_runs_under(monkeypatch):
+    """The CLI sends its session through the descendant header; the gateway
+    walks it to the session's own pid, as it does for a hook."""
+    from awm.gateway import mcp_caller
+    monkeypatch.setattr(mcp_caller, "resolve_caller_pid", lambda pid: 550415)
+    flat = {}
+    _stamp_caller("tether_run", flat, None, "777")
+    assert flat["_caller_pid"] == 550415

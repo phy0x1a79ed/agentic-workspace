@@ -172,7 +172,9 @@ twice.
 
 **CAUTION** A session belongs to the agent session that minted it, and every
 verb defaults to the caller's own sessions. The gateway stamps the calling
-session's pid on each `tether` verb. The adapter keys the owner on the
+session's pid on each `tether` verb. An `awm tether` CLI call names the agent
+session it runs under, found by process ancestry, and a call from a plain
+terminal names none. The adapter keys the owner on the
 background job id, which survives a restart of that session, or on the pid of an
 interactive session. The relay reuses slots, so the adapter gives each mint a
 session id and stamps it on every event as `session`. This keeps operators from
