@@ -23,6 +23,13 @@ All three are reached over the ZeroTier mesh `phynet` (`10.74.81.0/24`); the `*z
 ssh aliases mean "same host via the mesh". altair is private-only on its cloud
 network, so the mesh is its *only* route to the other two.
 
+Nodes differ by design in many places: their own projects and keys, the front
+door, which singletons they borrow. `awm/scripts/node-intent.toml` records each
+deliberate difference with its reason. Run `awm/scripts/node-diff.sh <peer>`
+after any change to a node's setup and before you call two nodes synced. It
+probes both nodes and exits 1 on any difference the intent file does not explain.
+Record a difference there when it is deliberate. Fix it when it is not.
+
 This is deliberately **not** the retired federation (cr-sqlite replication,
 leader election, a peers/replication registry). It is point-to-point service
 composition: each node is authoritative for its own state; peers are visible on
@@ -597,7 +604,11 @@ that touches the CA, and a test in its suite fails if a second copy reappears.
 - **Singletons** (front a single external resource): `2fa` and `social`/the mira
   daemon are **canonical on mira** (always-on). Consumers reach them via the
   node-level env selectors above (`AWM_TWOFA_PEER` / `AWM_SOCIAL_PEER`), not a
-  general auto-resolve — a borrowing node opts in explicitly.
+  general auto-resolve — a borrowing node opts in explicitly. The gateway holds a
+  declared singleton down off its home: a service whose tool domain
+  `AWM_TWOFA_PEER` or an `AWM_DOMAIN_HOME_<domain>` places on another node never
+  boots there, whatever `enabled.json` says. `services enable` and `services
+  start` refuse it with a 409 that names the owner.
 - **Singleton *accounts*** are the same rule one level down, and the level that
   actually bites. `social` itself is per-node — every node wants its own Slack,
   Gmail and bucket access — but an individual identity inside it may still be one
@@ -617,8 +628,8 @@ that touches the CA, and a test in its suite fails if a second copy reappears.
   hand. `AWM_DOMAIN_HOME_social=mira` in altair's `.awm/env` makes it a declared
   singleton *there*: one provider, one default, no `peer` argument. Node-local
   and deliberately not fleet state — capella, which does run `social`, must never
-  get it, or it loses its own accounts. Note that this and `AWM_SOCIAL_PEER` are
-  independent: the latter tells *services* on this node where to send Discord
+  get it, or the gateway holds capella's own `social` down, accounts and all.
+  Note that this and `AWM_SOCIAL_PEER` are independent: the latter tells *services* on this node where to send Discord
   traffic, the former tells the *catalog* where an agent's call lands.
 - **Everything else is per-node** (local resource or node-owned state): visible
   on both, calls default local, nothing synced.
