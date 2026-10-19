@@ -559,3 +559,37 @@ def test_a_node_token_is_not_forwarded_over_a_websocket(monkeypatch, bearer, for
             pass
     assert dialled
     assert ("authorization" in dialled[0]) is forwarded
+
+
+def test_a_closed_edge_answers_a_node_token_with_403(monkeypatch):
+    """A caller falls back on a 401 and never on a 403, so a closed edge must
+    not look like a bad credential."""
+    monkeypatch.setenv("AWM_EDGE_PEERS", "0")
+    with _edge("awmpt1.unverified.sig") as (c, seen):
+        r = c.post("/invoke", json={})
+    assert r.status_code == 403
+    assert r.json() == {"error": "peers not admitted"}
+    assert seen == []
+
+
+def test_an_open_edge_still_answers_a_bad_node_token_with_401(monkeypatch):
+    monkeypatch.delenv("AWM_EDGE_PEERS", raising=False)
+    with _edge("awmpt1.unverified.sig") as (c, _):
+        assert c.post("/invoke", json={}).status_code == 401
+
+
+def test_a_closed_edge_answers_any_other_bearer_with_401(monkeypatch):
+    monkeypatch.setenv("AWM_EDGE_PEERS", "0")
+    with _edge("not-a-node-token") as (c, _):
+        assert c.post("/invoke", json={}).status_code == 401
+
+
+def test_the_public_listener_never_says_peers_are_not_admitted(monkeypatch):
+    monkeypatch.setenv("AWM_EDGE_PEERS", "0")
+    app = proxy.build_app(GATEWAY + "/", "/dev/null", profile="public")
+    app.state.gate = _Gate()
+    with TestClient(app, base_url="https://public.example",
+                    headers={"Authorization": "Bearer awmpt1.unverified.sig"}) as c:
+        r = c.post("/invoke", json={})
+    assert r.status_code != 403
+    assert "peers" not in r.text
