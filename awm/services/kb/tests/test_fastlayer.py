@@ -137,6 +137,82 @@ def test_zotero_items_map_onto_the_base_or_wait_in_the_delta(layer, tmp_path):
     assert [h["id"] for h in exact(layer, "iron oxidisers", fastlayer.Filters(), 10, 1)] == ["doi:10.1/vent"]
 
 
+def _crowd(path, n=120, seed=3):
+    """A base of ``n`` papers whose bodies draw words from a small vocabulary, so most words are common."""
+    import random
+
+    rnd = random.Random(seed)
+    vocab = [f"{p}{s}" for p in ("alp", "bet", "gam", "del", "eps", "zet", "eta", "the") for s in ("ron", "tal", "mix", "ing")]
+    papers = {}
+    for i in range(n):
+        body = " ".join(rnd.choice(vocab) for _ in range(40)) + f". Paper {i} ends, with marker qq{i:03d}x."
+        papers[f"p{i:03d}"] = ("", f"Title of {rnd.choice(vocab)} {i}", 2000 + i % 20, " ".join(rnd.choice(vocab) for _ in range(15)), body)
+    _base(path, papers)
+    return papers
+
+
+def test_two_whole_words_inside_a_literal_make_a_phrase():
+    phrase = fastlayer._bounded_phrase
+    assert phrase("xx bioleaching iron operation yy") == '"bioleaching iron operation"'
+    assert phrase("bioleaching iron operation") == ""
+    assert phrase("a, bc de; fg") == '"bc de"'
+    assert phrase("one two three four") == '"two three"'
+    assert phrase("ab cd naïve ef gh ij kl") == '"ef gh ij"'
+    assert phrase("x say \"hi there\" y") == '"say ""hi there"'
+
+
+def test_every_substring_of_a_passage_finds_its_paper(tmp_path):
+    papers = _crowd(tmp_path / "papers.db")
+    layer = fastlayer.FastLayer(tmp_path / "papers.db", tmp_path / "delta.db")
+    body = papers["p007"][4]
+    for length in (3, 4, 7, 12, 13, 18, 30, 55, 90, len(body)):
+        for start in range(0, len(body) - length + 1, 17):
+            needle = body[start:start + length].strip()
+            if len(needle) < 3:
+                continue
+            hits = layer.search(needle, fastlayer.Filters(), 1000, 1)["exact"]
+            assert "p007" in [h["id"] for h in hits], (start, length, needle)
+
+
+def test_a_common_phrase_still_finds_the_one_paper_past_the_candidate_cap(tmp_path, monkeypatch):
+    papers = _crowd(tmp_path / "papers.db")
+    monkeypatch.setattr(fastlayer, "CANDIDATES", 8)
+    layer = fastlayer.FastLayer(tmp_path / "papers.db", tmp_path / "delta.db")
+    needle = " ends, with marker qq099x."
+    assert [h["id"] for h in layer.search(needle, fastlayer.Filters(), 100, 1)["exact"]] == ["p099"]
+
+
+def test_ranges_of_the_index_rank_as_the_whole_does(tmp_path, monkeypatch):
+    _crowd(tmp_path / "papers.db")
+    layer = fastlayer.FastLayer(tmp_path / "papers.db", tmp_path / "delta.db")
+    queries = ["alpron betmix", "thetal gamron deling epsmix", "zetron", "etatal delmix alpron"]
+    whole = [layer.search(q, fastlayer.Filters(), 15, 2) for q in queries]
+    monkeypatch.setattr(fastlayer, "SHARD_PASSAGES", 1)
+    assert [layer.search(q, fastlayer.Filters(), 15, 2) for q in queries] == whole
+
+
+def test_stopping_early_answers_the_same_papers_as_reading_every_passage(tmp_path):
+    _crowd(tmp_path / "papers.db")
+    layer = fastlayer.FastLayer(tmp_path / "papers.db", tmp_path / "delta.db")
+    for query in ("alpron betmix", "thetal gamron deling", "etatal"):
+        early = layer.search(query, fastlayer.Filters(), 6, 1)
+        full = layer.search(query, fastlayer.Filters(), 6, 3)
+        for section in ("exact", "related"):
+            assert [h["id"] for h in early[section]] == [h["id"] for h in full[section]]
+            assert [h["passages"][0] for h in early[section]] == [h["passages"][0] for h in full[section]]
+        many = layer.search(query, fastlayer.Filters(), 40, 1)
+        assert early["exact"] == many["exact"][:len(early["exact"])]
+
+
+def test_counts_cached_for_a_store_do_not_outlive_it(tmp_path, monkeypatch):
+    monkeypatch.setattr(fastlayer, "DF_CACHED", 1)
+    _base(tmp_path / "papers.db", {"a": ("", "Zymurgy of beer", 2020, "", "")})
+    layer = fastlayer.FastLayer(tmp_path / "papers.db", tmp_path / "delta.db")
+    assert [h["id"] for h in layer.search("zymurgy beer", fastlayer.Filters(), 5, 1)["exact"]] == ["a"]
+    _base(tmp_path / "papers.db", {"b": ("", "Zymurgy of wine", 2021, "", ""), "c": ("", "Zymurgy of beer too", 2022, "", "")})
+    assert {h["id"] for h in layer.search("zymurgy", fastlayer.Filters(), 5, 1)["exact"]} == {"b", "c"}
+
+
 async def test_the_query_verb_answers_in_sections(layer, monkeypatch):
     monkeypatch.setattr(hub_adapter, "PAPERS", layer)
     out = await hub_adapter.HANDLERS["query"]({"query": "shortest construction path", "limit": 3})
