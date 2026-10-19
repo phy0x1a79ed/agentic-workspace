@@ -13,11 +13,14 @@ Change detection is signature-based against a small manifest
 ``--force`` ignores the manifest and does everything.
 
 **Editable installs mean a *code* change needs no reinstall** — the whole tree is
-``pip install -e``. Only a change to the *set* of installed dists (a new service
-folder, a new component library) requires re-running ``install.sh``. So the
-dist-set signature keys on membership, not file content. Page bundles are the
-opposite: their built ``dist/`` is what ships, so the page signature keys on
-source *content*.
+``pip install -e``. An install is needed when the *set* of installed dists
+changes (a new service folder, a new component library), when a service folder
+moves (an editable install and its ``.runtime-env`` point at the old path — a
+service can move between ``AWM_SERVICE_ROOTS`` entries under the same name), or
+when a service's install inputs change. So the install decision keys on
+membership plus, per service, its resolved folder and a hash of its install
+inputs — never on code. Page bundles are the opposite: their built ``dist/`` is
+what ships, so the page signature keys on source *content*.
 
 The pure functions here (signatures, ``plan_deploy``, ``missing_from_listing``)
 carry the logic and are unit-tested; the CLI command in ``cli.py`` is the thin
@@ -68,9 +71,9 @@ def installable_units(root: Path) -> list[str]:
     component library, and every service folder that ships its own
     ``install.sh``, in ``root`` or in an ``AWM_SERVICE_ROOTS`` entry.
 
-    Editable installs mean only *membership* matters (a code edit needs no
-    reinstall), so this is a set of names — a newly-added service or component
-    changes it, a code change does not.
+    A set of names: a newly-added service or component changes it, a code
+    change does not. ``service_installs`` covers a service that moves or whose
+    install inputs change.
     """
     units: list[str] = ["gateway"]
     comp = root / "service_components"
@@ -83,6 +86,50 @@ def installable_units(root: Path) -> list[str]:
         if (d / "install.sh").is_file():
             units.append(f"service:{d.name}")
     return sorted(units)
+
+
+# The files whose change means a service's install.sh must run again.
+INSTALL_INPUTS = ("install.sh", "pyproject.toml", "service.toml")
+
+
+def install_inputs_hash(folder: Path) -> str:
+    """Hash of a service folder's install inputs (``INSTALL_INPUTS``); an absent
+    file hashes as absent."""
+    h = hashlib.sha256()
+    for name in INSTALL_INPUTS:
+        h.update(name.encode() + b"\0")
+        f = folder / name
+        try:
+            h.update(f.read_bytes() if f.is_file() else b"<absent>")
+        except OSError:
+            h.update(b"<unreadable>")
+        h.update(b"\0")
+    return h.hexdigest()
+
+
+def service_installs(root: Path) -> dict[str, dict[str, str]]:
+    """``{name: {"path", "inputs"}}`` for every service that ships an
+    ``install.sh``, in ``root`` or an ``AWM_SERVICE_ROOTS`` entry: its resolved
+    folder and its ``install_inputs_hash``."""
+    roots = [root / "services", *discovery.extra_roots(discovery.SERVICE_ROOTS_ENV)]
+    return {d.name: {"path": str(d.resolve()), "inputs": install_inputs_hash(d)}
+            for d in discovery.root_folders(roots) if (d / "install.sh").is_file()}
+
+
+def install_triggers(prev: dict, cur: dict[str, dict[str, str]]) -> dict[str, list[str]]:
+    """The services whose install must run again, by cause: ``new`` (an
+    ``install.sh`` appeared), ``moved`` (resolved folder changed) and
+    ``changed`` (install inputs changed)."""
+    out: dict[str, list[str]] = {"new": [], "moved": [], "changed": []}
+    for name, now in sorted(cur.items()):
+        was = prev.get(name)
+        if not isinstance(was, dict):
+            out["new"].append(name)
+        elif was.get("path") != now["path"]:
+            out["moved"].append(name)
+        elif was.get("inputs") != now["inputs"]:
+            out["changed"].append(name)
+    return out
 
 
 def dist_set_signature(root: Path) -> str:
@@ -174,11 +221,13 @@ class DeployPlan:
     do_reap: bool
     dist_sig: str
     page_sigs: dict[str, str] = field(default_factory=dict)
+    services: dict[str, dict[str, str]] = field(default_factory=dict)
 
     def next_manifest(self) -> dict:
         """The manifest to persist *after* a successful deploy — the signatures
         this deploy brought the tree up to."""
-        return {"dist_sig": self.dist_sig, "page_sigs": self.page_sigs}
+        return {"dist_sig": self.dist_sig, "page_sigs": self.page_sigs,
+                "services": self.services}
 
 
 def plan_deploy(
@@ -198,17 +247,27 @@ def plan_deploy(
     manifest = load_manifest(awm_dir)
     dist_sig = dist_set_signature(root)
     page_sigs = page_signatures(root)
+    services = service_installs(root)
     prev_dist = manifest.get("dist_sig")
     prev_pages = manifest.get("page_sigs", {}) if isinstance(
         manifest.get("page_sigs"), dict) else {}
+    prev_services = manifest.get("services")
 
-    # --- install: dist-set membership ---
+    # --- install: dist-set membership, service folder moves, install inputs ---
+    triggers = install_triggers(
+        prev_services if isinstance(prev_services, dict) else {}, services)
     if no_install:
         do_install, install_reason = False, "skipped (--no-install)"
     elif force:
         do_install, install_reason = True, "forced (--force)"
     elif prev_dist is None:
         do_install, install_reason = True, "no prior deploy manifest"
+    elif not isinstance(prev_services, dict):
+        do_install, install_reason = True, "no prior service install record"
+    elif any(triggers.values()):
+        do_install = True
+        install_reason = "; ".join(f"{cause}: {', '.join(names)}"
+                                   for cause, names in triggers.items() if names)
     elif prev_dist != dist_sig:
         do_install, install_reason = True, "dist set changed"
     else:
@@ -237,6 +296,7 @@ def plan_deploy(
         do_reap=not no_reap,
         dist_sig=dist_sig,
         page_sigs=page_sigs,
+        services=services,
     )
 
 
