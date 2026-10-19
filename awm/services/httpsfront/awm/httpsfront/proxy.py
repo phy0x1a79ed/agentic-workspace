@@ -1701,7 +1701,7 @@ def build_app(upstream: str, ca_path: str, *, landing: bool = True,
     app.state.origin_override = (
         _origin_of(http_up) if rewrite_origin else None
     )
-    app.state.gate = AuthGate()
+    app.state.gate = AuthGate(peers=profile != PUBLIC_PROFILE)
     app.state.profile = profile
     #: token -> (expires_at, resolved | None). Per app, so a test builds its own.
     app.state.slice_cache = {}

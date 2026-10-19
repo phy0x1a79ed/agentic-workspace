@@ -119,7 +119,9 @@ def _verified_node(mat: dict[str, Any], token: str) -> str | None:
 class AuthGate:
     """Caches auth material and answers per-request authentication questions."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, peers: bool = True) -> None:
+        #: Whether node tokens count here. The public listener honours none.
+        self._peers = peers
         self._material: dict[str, Any] | None = None
         self._fetched_at = 0.0
         self._lock = asyncio.Lock()
@@ -174,7 +176,7 @@ class AuthGate:
         secret = mat["secret"]
 
         if bearer and peertoken.looks_like_token(bearer):
-            node = _verified_node(mat, bearer)
+            node = _verified_node(mat, bearer) if self._peers else None
             if node:
                 return True, None, PEER_PREFIX + node
         elif (bearer and legacy_bearer_enabled(mat)
