@@ -68,7 +68,7 @@ from starlette.responses import (
 from starlette.routing import Route, WebSocketRoute
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
-from awm.config import peertoken
+from awm.config import peertoken, usertoken
 from awm.httpsfront import board, pages, penpot, policy, slices, store, tether, vault
 from awm.httpsfront.auth import (
     AS_COOKIE_NAME,
@@ -191,21 +191,22 @@ _CALLER_HEADERS = frozenset({
     "x-awm-as", "x-awm-caller-pid", "x-awm-session-pid", "x-awm-peer-redirect"})
 
 
-def _consumed_node_token(authorization: str | None, sub: str | None) -> bool:
-    """Whether this ``Authorization`` is a node token the edge has read.
+def _consumed_edge_token(authorization: str | None, sub: str | None) -> bool:
+    """Whether this ``Authorization`` is a node or device token the edge has read.
 
-    Any ``awmpt1.`` bearer counts, verified or not: one that failed here may
-    still be live at the node it was signed for, and an upstream app that saw it
-    could replay it there.
+    Any ``awmpt1.`` or ``awmut1.`` bearer counts, verified or not: one that
+    failed here may still be live where it was meant for, and an upstream app
+    that saw it could replay it there.
     """
     bearer = bearer_of(authorization)
-    return (bool(sub) and sub.startswith(PEER_PREFIX)) or peertoken.looks_like_token(bearer)
+    return ((bool(sub) and sub.startswith(PEER_PREFIX))
+            or peertoken.looks_like_token(bearer) or usertoken.looks_like_token(bearer))
 
 
 def _req_headers(request: Request, sub: str | None = None) -> dict[str, str]:
     hdrs = {k: v for k, v in request.headers.items()
             if k.lower() not in _HOP and k.lower() not in _CALLER_HEADERS}
-    if _consumed_node_token(request.headers.get("authorization"), sub):
+    if _consumed_edge_token(request.headers.get("authorization"), sub):
         hdrs.pop("authorization", None)
     hdrs["X-Forwarded-Proto"] = "https"
     # Overwrite, never default: the browser's value is unverified.
@@ -857,7 +858,10 @@ async def _http_proxy(request: Request) -> Response:
         _set_session_cookie(out, refreshed,
                             int(await app.state.gate.session_ttl_seconds()),
                             _samesite(app))
-    if bridge and sub:
+    # A device carries its own bearer on every call, so the edge hands it no
+    # cookie of any kind, Penpot's included.
+    if bridge and sub and not usertoken.looks_like_token(
+            bearer_of(request.headers.get("authorization"))):
         await _bridge_penpot_session(request, out, bridge, sub,
                                      resp.status_code)
     return out
@@ -979,13 +983,14 @@ async def _relay(resp: httpx.Response):
 async def _is_mesh_credential(gate, bearer: str | None) -> bool | None:
     """Whether ``bearer`` is a credential the edge itself honours between nodes.
 
-    A node token, or the legacy node-wide bearer (whether or not it is still
-    accepted: a retired one is still one the board must not see). ``None`` says
-    the edge cannot tell because it holds no auth material yet.
+    A node token, a device token, or the legacy node-wide bearer (whether or
+    not it is still accepted: a retired one is still one the board must not
+    see). ``None`` says the edge cannot tell because it holds no auth material
+    yet.
     """
     if not bearer:
         return False
-    if peertoken.looks_like_token(bearer):
+    if peertoken.looks_like_token(bearer) or usertoken.looks_like_token(bearer):
         return True
     known = await gate.peer_credentials()
     if known is None:
@@ -1430,8 +1435,9 @@ async def _ws_proxy(ws: WebSocket) -> None:
         if v:
             fwd[k] = v
     # Only these three are copied, so none of `_CALLER_HEADERS` can ride along;
-    # a node token is dropped for the reason given at `_consumed_node_token`.
-    if _consumed_node_token(fwd.get("authorization"), sub):
+    # a node or device token is dropped for the reason given at
+    # `_consumed_edge_token`.
+    if _consumed_edge_token(fwd.get("authorization"), sub):
         fwd.pop("authorization", None)
     if slice_info is not None:
         visitor = _slice_visitor(ws, slice_info, slice_token)
