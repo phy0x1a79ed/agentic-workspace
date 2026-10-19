@@ -628,7 +628,6 @@ class _Lookups:
     An AND that is dear to score waits until the literal hits show whether the answer needs it."""
 
     def __init__(self, paths: list[Path], needle: str, words: list[str]) -> None:
-        self.paths = paths
         self._literal = [_pool.submit(_on, p, _literal_rows, needle) if len(needle) >= TRIGRAM else None
                          for p in paths]
         weights = [_pool.submit(_on, p, _weigh, words) if words else None for p in paths]
