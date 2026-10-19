@@ -31,6 +31,7 @@ import websockets
 from fastapi import Request, WebSocket
 from starlette.responses import JSONResponse, Response, StreamingResponse
 
+from awm.gateway import private_gate
 from awm.gateway.hub import rpc
 
 log = logging.getLogger("awm.hub.proxy")
@@ -337,7 +338,8 @@ async def proxy_service_http(
     Body is read as JSON (empty body → null args). Function is dispatched
     against the service's api manifest; declared no-response functions go
     via ``notify`` (returns 202), everything else awaits a ``reply``
-    envelope (returns the result as JSON). A foreign peer gets a 404.
+    envelope (returns the result as JSON). A foreign peer gets a 404, and so
+    does any peer whose args name a private target.
     """
     if _is_foreign_caller(as_):
         return JSONResponse(_NOT_FOUND, status_code=404)
@@ -366,6 +368,8 @@ async def proxy_service_http(
         except json.JSONDecodeError:
             return JSONResponse({"error": "request body is not valid JSON"},
                                 status_code=400)
+    if private_gate.refuses(as_, args):
+        return JSONResponse(_NOT_FOUND, status_code=404)
     if stamp is not None and (args is None or isinstance(args, dict)):
         stamped = {} if args is None else args
         stamp(fn, stamped)
@@ -395,7 +399,8 @@ async def open_session_via_http(
     Body is the ``init`` payload (json). Allocates a session_id (and, for
     direct kinds, a bridge_id), sends ``session.open`` to the service,
     awaits ``session.opened``, returns ``{ws_path: "/svc/<name>/session/<id>"}``
-    on success. A foreign peer gets a 404.
+    on success. A foreign peer gets a 404, and so does any peer whose ``init``
+    names a private target.
     """
     if _is_foreign_caller(as_):
         return JSONResponse(_NOT_FOUND, status_code=404)
@@ -423,6 +428,8 @@ async def open_session_via_http(
         except json.JSONDecodeError:
             return JSONResponse({"error": "session init body is not valid JSON"},
                                 status_code=400)
+    if private_gate.refuses(as_, init):
+        return JSONResponse(_NOT_FOUND, status_code=404)
     try:
         sess = await ch.open_session(kind, init, direct=direct, as_=as_)
     except rpc.RpcError as exc:

@@ -42,9 +42,11 @@ import logging
 from time import time
 from typing import Any
 
+from awm.config import privacy
 from awm.gatewayclient import ServiceAdapter, spawn_supervised
 
 from awm.dvc import coverage as coveragemod
+from awm.dvc.cache import DvcScopeError
 from awm.dvc import cron, jobs, runs, scopedata, transfer
 from awm.dvc.config import load as load_config
 from awm.dvc.globus import task_status, wait
@@ -457,11 +459,48 @@ def _schedule(args: dict) -> dict:
     return {"job": row}
 
 
+def _scope_path(args: dict, as_: str | None) -> str:
+    """The ``scope`` path, which a peer caller meets as no scope when a mark covers it."""
+    if privacy.from_peer(as_) and privacy.hidden_path(args["scope"]):
+        raise DvcScopeError(f"not a DVC scope (no .dvc/): {args['scope']}")
+    return args["scope"]
+
+
+def _project_scope(args: dict, as_: str | None) -> tuple[str, str]:
+    """``(project, scope)``, which a peer caller meets as no worktree when a mark covers it."""
+    project, scope = args["project"], args["scope"]
+    if privacy.from_peer(as_) and privacy.hidden(project, scope):
+        raise FileNotFoundError(
+            f"No worktree directory for scope '{project}/{scope}' at "
+            f"{scopedata._projects_dir() / project / scope}")
+    return project, scope
+
+
+def _gc(a: dict, as_: str | None = None) -> dict:
+    if privacy.from_peer(as_):
+        for name in [*a["projects"], *(a.get("exclude") or [])]:
+            if isinstance(name, str) and privacy.hidden(name):
+                raise FileNotFoundError(
+                    f"Project '{name}' has no bare repo at {scopedata._projects_dir() / name / '.bare'}")
+        if any(privacy.hidden(name) for name in scopedata._dvc_wired_projects()):
+            return {"result": "refused",
+                    "detail": "gc runs only from this node while it has private projects"}
+    return scopedata.gc(
+        a["projects"],
+        dry_run=bool(a.get("dry_run", True)),
+        keep=a.get("keep", "all-commits"),
+        exclude=a.get("exclude"),
+        accept_missing=a.get("accept_missing"),
+    )
+
+
 HANDLERS = {
-    "status":  lambda a: transfer.status(a["scope"]),
-    "resolve": lambda a: transfer.resolve(a["scope"]),
-    "pull":    lambda a: transfer.pull(a["scope"], dry_run=bool(a.get("dry_run"))),
-    "push":    lambda a: transfer.push(a["scope"], dry_run=bool(a.get("dry_run"))),
+    "status":  lambda a, as_=None: transfer.status(_scope_path(a, as_)),
+    "resolve": lambda a, as_=None: transfer.resolve(_scope_path(a, as_)),
+    "pull":    lambda a, as_=None: transfer.pull(_scope_path(a, as_),
+                                                 dry_run=bool(a.get("dry_run"))),
+    "push":    lambda a, as_=None: transfer.push(_scope_path(a, as_),
+                                                 dry_run=bool(a.get("dry_run"))),
     # Routed through run_job so a hand-triggered sync lands in history and is
     # watched to a verdict, exactly like a scheduled one.
     "sync":    lambda a: jobs.run_job(
@@ -470,21 +509,16 @@ HANDLERS = {
                    dry_run=bool(a.get("dry_run")),
                    force=bool(a.get("force")),
                ),
-    "coverage": lambda a: coveragemod.report(at_risk_only=not bool(a.get("all"))),
+    "coverage": lambda a, as_=None: coveragemod.report(at_risk_only=not bool(a.get("all")),
+                                                       as_=as_),
     "task":    _task,
     "jobs":     _jobs,
     "runs":     _runs,
     "run":      _run,
     "schedule": _schedule,
-    "scope_status": lambda a: scopedata.scope_status(a["project"], a["scope"]),
-    "mount":   lambda a: scopedata.mount(a["project"], a["scope"], a.get("chunks")),
-    "gc":      lambda a: scopedata.gc(
-                   a["projects"],
-                   dry_run=bool(a.get("dry_run", True)),
-                   keep=a.get("keep", "all-commits"),
-                   exclude=a.get("exclude"),
-                   accept_missing=a.get("accept_missing"),
-               ),
+    "scope_status": lambda a, as_=None: scopedata.scope_status(*_project_scope(a, as_)),
+    "mount":   lambda a, as_=None: scopedata.mount(*_project_scope(a, as_), a.get("chunks")),
+    "gc":      _gc,
 }
 
 

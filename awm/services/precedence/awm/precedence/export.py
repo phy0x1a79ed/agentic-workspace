@@ -9,6 +9,7 @@ agents were shown, and a sync pass must not inflate it.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from datetime import datetime, timezone
 from typing import Any
@@ -31,21 +32,29 @@ def _document(conn: sqlite3.Connection, row: sqlite3.Row) -> dict[str, Any]:
     if tags:
         parts.append("Tags: " + ", ".join(tags))
     parts += [f"Note ({n['kind']}): {n['body']}" for n in db.notes_for(conn, row["id"])]
-    return {"id": row["id"], "title": " ".join(row["question"].split())[:_TITLE_CHARS],
-            "text": "\n\n".join(parts), "ts": _iso(row["created"] or row["added"]), "kind": "decision"}
+    doc = {"id": row["id"], "title": " ".join(row["question"].split())[:_TITLE_CHARS],
+           "text": "\n\n".join(parts), "ts": _iso(row["created"] or row["added"]), "kind": "decision"}
+    if tags:
+        doc["tags"] = tags
+    return doc
 
 
-def export_page(conn: sqlite3.Connection, cursor: str | None = None, limit: int | None = None) -> dict:
-    """One page of ``{id,title,text,ts,kind}`` documents after ``cursor``."""
+_VISIBLE = "status = 'active' AND id NOT IN (SELECT value FROM json_each(?))"
+
+
+def export_page(conn: sqlite3.Connection, cursor: str | None = None, limit: int | None = None,
+                exclude: frozenset[str] | set[str] = frozenset()) -> dict:
+    """One page of ``{id,title,text,ts,kind,tags?}`` documents after ``cursor``, leaving out ``exclude``."""
     size = max(1, min(int(DEFAULT_LIMIT if limit is None else limit), MAX_LIMIT))
+    hidden = json.dumps(sorted(exclude))
     rows = conn.execute(
-        "SELECT * FROM decisions WHERE status = 'active' AND id > ? ORDER BY id LIMIT ?",
-        (cursor or "", size + 1)).fetchall()
+        f"SELECT * FROM decisions WHERE {_VISIBLE} AND id > ? ORDER BY id LIMIT ?",
+        (hidden, cursor or "", size + 1)).fetchall()
     done = len(rows) <= size
     rows = rows[:size]
     page = {"documents": [_document(conn, r) for r in rows],
             "next_cursor": None if done else rows[-1]["id"], "done": done}
     if done:
         page["ids"] = [r[0] for r in conn.execute(
-            "SELECT id FROM decisions WHERE status = 'active' ORDER BY id")]
+            f"SELECT id FROM decisions WHERE {_VISIBLE} ORDER BY id", (hidden,))]
     return page

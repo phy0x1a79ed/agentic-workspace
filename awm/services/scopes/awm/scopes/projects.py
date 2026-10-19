@@ -15,6 +15,7 @@ from awm.config import (
     GITHUB_USER,
     VAGRANT_PROJECT,
 )
+from awm.config import privacy
 from awm.scopes.git_utils import run_git as _run, detect_default_branch as _detect_default_branch
 from awm.scopes import search_index
 from awm.scopes.dao import ScopesDAO
@@ -215,7 +216,7 @@ def search_projects(
         by_project.setdefault(name, ProjectScopeCounts()).active += 1
 
     items = [
-        ProjectListInfo(name=n, scope_counts=c)
+        ProjectListInfo(name=n, scope_counts=c, private=privacy.hidden(n))
         for n, c in sorted(by_project.items())
     ]
 

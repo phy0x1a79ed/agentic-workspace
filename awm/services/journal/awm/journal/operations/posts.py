@@ -13,7 +13,7 @@ import logging
 from typing import Any
 
 from awm.claudedaemon import roster
-from awm.journal import channel, owners, render
+from awm.journal import channel, owners, private, render
 
 log = logging.getLogger("awm.journal.posts")
 
@@ -117,6 +117,8 @@ def _with_session(meta: Any, caller_pid: Any) -> Any:
 
 
 def _handle_post(args: dict, as_: str | None = None) -> dict:
+    if private.hides(as_, args["project"], args["scope"]):
+        raise ValueError(f"no scope {args['project']}/{args['scope']}")
     post = channel.post(
         args["project"], args["scope"],
         author=args["author"], body=args["body"],
@@ -149,6 +151,8 @@ def _handle_fetch(args: dict, as_: str | None = None) -> dict:
         p = channel.get_post(post_id)
         if p is not None and foreign and p.kind != "journal":
             p = None  # answer as for a post that does not exist, so ids cannot be probed
+        if p is not None and private.hides(as_, p.project, p.scope):
+            p = None
         return {"posts": [p.to_dict()] if p else [], "total": 1 if p else 0}
     common = dict(
         project=args.get("project"),
@@ -160,6 +164,7 @@ def _handle_fetch(args: dict, as_: str | None = None) -> dict:
         before_ts=args.get("before_ts"),
         order=args.get("order") or (
             "desc" if kind == "journal" and not args.get("query") else None),
+        exclude=private.exclusion(as_),
     )
     degraded = semantic = None
     if args.get("query"):
@@ -174,7 +179,9 @@ def _handle_fetch(args: dict, as_: str | None = None) -> dict:
     return out
 
 
-def _handle_subscribe(args: dict) -> dict:
+def _handle_subscribe(args: dict, as_: str | None = None) -> dict:
+    if private.hides(as_, args["project"], args["scope"]):
+        raise ValueError(f"no scope {args['project']}/{args['scope']}")
     sub = channel.subscribe(
         args["project"], args["scope"], args["guest"],
         display_name=args.get("display_name"),

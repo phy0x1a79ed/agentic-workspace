@@ -32,7 +32,7 @@ from typing import Any
 
 from awm.gatewayclient import ServiceAdapter
 
-from awm.compute import notices, store
+from awm.compute import notices, store, veil
 from awm.compute.watcher import Watcher
 
 log = logging.getLogger("awm.compute.hub_adapter")
@@ -187,12 +187,21 @@ def _h_sessions(_args: dict) -> dict:
     return WATCHER.dump()
 
 
-def _h_explain(args: dict) -> dict:
-    return WATCHER.explain(int(args["pid"]))
+def _h_explain(args: dict, as_: str | None = None) -> dict:
+    pid = int(args["pid"])
+    out = WATCHER.explain(pid)
+    names = veil.names_marked(as_)
+    if names and out.get("found") and veil.process_hidden(pid, out.get("cmdline") or "", names):
+        return {"pid": pid, "found": False}
+    return out
 
 
-def _h_decisions(args: dict) -> dict:
-    return {"decisions": store.recent_decisions(int(args.get("limit") or 50))}
+def _h_decisions(args: dict, as_: str | None = None) -> dict:
+    rows = store.recent_decisions(int(args.get("limit") or 50))
+    names = veil.names_marked(as_)
+    if names:
+        rows = [r for r in rows if not veil.decision_hidden(r, names)]
+    return {"decisions": rows}
 
 
 # One string beats two booleans here: the CLI generator renders a boolean

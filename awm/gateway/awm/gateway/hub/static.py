@@ -37,6 +37,7 @@ from starlette.responses import (
     Response,
 )
 
+from awm.gateway import private_gate
 from awm.gateway.hub.registry import ServiceRecord
 
 log = logging.getLogger("awm.hub.static")
@@ -71,10 +72,13 @@ async def serve_static(request: Request, rec: ServiceRecord) -> Response:
     """
     rel = request.url.path[len(rec.prefix):].lstrip("/")
     root = Path(rec.static_dir).resolve()
+    as_ = request.headers.get("X-Awm-As")
 
     if rel == "":
         index = root / "index.html"
         if index.is_file() and _is_masked(index, root, rec.deny):
+            return PlainTextResponse("not found", status_code=404)
+        if private_gate.path_refused(as_, root):
             return PlainTextResponse("not found", status_code=404)
         served_at_root = index.is_file() or rec.entry
         # Canonical directory URL: a bare prefix (``/ui/stt``) is the
@@ -96,7 +100,7 @@ async def serve_static(request: Request, rec: ServiceRecord) -> Response:
 
     try:
         target = (root / rel).resolve()
-    except OSError:
+    except (OSError, ValueError):
         return PlainTextResponse("not found", status_code=404)
     if not _is_within(target, root):
         return PlainTextResponse("not found", status_code=404)
@@ -105,6 +109,10 @@ async def serve_static(request: Request, rec: ServiceRecord) -> Response:
     # Matched on ``target`` (already resolved), so a symlink to a masked file
     # cannot slip past by presenting an unmasked request path.
     if _is_masked(target, root, rec.deny):
+        return PlainTextResponse("not found", status_code=404)
+    # A peer is not served a file under a path this node marks private, by the
+    # path it asked for or the one it resolves to.
+    if private_gate.path_refused(as_, root / rel):
         return PlainTextResponse("not found", status_code=404)
     if target.is_file():
         return FileResponse(target)

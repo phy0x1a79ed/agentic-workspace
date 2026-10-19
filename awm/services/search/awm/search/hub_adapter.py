@@ -18,6 +18,7 @@ import logging
 from typing import Any
 
 from awm import config
+from awm.config import privacy
 from awm.config.peertoken import node_label
 from awm.gatewayclient import ServiceAdapter, spawn_supervised
 from awm.persistence import embeddings
@@ -141,18 +142,18 @@ async def _h_query(args: dict, as_: str | None = None) -> dict:
 
 async def _h_get(args: dict, as_: str | None = None) -> dict:
     node = str(args.get("node") or "").strip()
-    if node and node != request.LOCAL and not request.peer_originated(as_) \
+    if node and node != request.LOCAL and not privacy.from_peer(as_) \
             and node_label(node) != node_label(config.node_name()):
         return await federation.fetch(ARCHIVE.peers, node, str(args["source"]), str(args["id"]))
-    return await ARCHIVE.get(str(args["source"]), str(args["id"]), _grants(args))
+    return await ARCHIVE.get(str(args["source"]), str(args["id"]), _grants(args), request.hidden_for(as_))
 
 
-async def _h_sources(args: dict) -> dict:
-    return await ARCHIVE.sources_view(_grants(args))
+async def _h_sources(args: dict, as_: str | None = None) -> dict:
+    return await ARCHIVE.sources_view(_grants(args), request.hidden_for(as_))
 
 
-async def _h_status(args: dict) -> dict:
-    return await ARCHIVE.status_view(_grants(args))
+async def _h_status(args: dict, as_: str | None = None) -> dict:
+    return await ARCHIVE.status_view(_grants(args), request.hidden_for(as_))
 
 
 async def _h_reindex(args: dict) -> dict:

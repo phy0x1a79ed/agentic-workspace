@@ -1,7 +1,8 @@
 """Scope operation definitions for the gateway manifest."""
 
+from awm.config import privacy
 from awm.scopes.models import ScopeCreateRequest, ScopeUpdateRequest
-from awm.scopes import scopes, search_index
+from awm.scopes import private, scopes, search_index
 
 
 # Manifest function descriptors (serializable dicts for API_MANIFEST["functions"])
@@ -173,6 +174,27 @@ SCOPE_MANIFEST_FUNCTIONS = [
         "timeout": 1800.0,
     },
     {
+        "name": "scope_private",
+        "tool": "scope_private",
+        "effect": "write",
+        "description": (
+            "Mark a project, or one scope of it, private on this node, or clear "
+            "the mark. A private project or scope, with every scope nested under "
+            "it and every path under its directory, is invisible to calls from "
+            "other nodes; callers on this node see it as before. Refuses a mark "
+            "whose path would also hide another project's or scope's transcripts "
+            "(projects 'awm' and 'awm-dev', for example). Returns the project's "
+            "marks."
+        ),
+        "params": [
+            {"name": "project", "type": "string", "required": True},
+            {"name": "scope", "type": "string", "required": False,
+             "description": "Mark only this scope. Omit to mark the whole project."},
+            {"name": "private", "type": "boolean", "required": True,
+             "description": "true sets the mark, false clears it."},
+        ],
+    },
+    {
         "name": "scope_repair",
         "tool": "scope_repair",
         "effect": "write",
@@ -254,13 +276,14 @@ def _handle_scope_create(args: dict) -> dict:
     return result.model_dump()
 
 
-def _handle_scope_search(args: dict) -> dict:
+def _handle_scope_search(args: dict, as_: str | None = None) -> dict:
     result = scopes.search_scopes(
         query=args.get("query"),
         status=args.get("status", "active"),
         project=args.get("project"),
         limit=int(args.get("limit", 50)),
         offset=int(args.get("offset", 0)),
+        as_=as_,
     )
     unset = {k for k in ("degraded", "projects") if getattr(result, k) is None}
     return result.model_dump(exclude=unset or None)
@@ -285,17 +308,30 @@ def _handle_scope_delete(args: dict) -> dict:
     return result.model_dump()
 
 
-def _handle_scope_heal(args: dict) -> dict:
-    report = scopes.heal_scopes(
-        project=args.get("project"),
-        dry_run=bool(args.get("dry_run", False)),
-    )
+def _handle_scope_heal(args: dict, as_: str | None = None) -> dict:
+    dry_run = bool(args.get("dry_run", False))
+    if args.get("project") and privacy.from_peer(as_) and privacy.hidden(args["project"]):
+        return {"scopes": [], "count": 0, "dry_run": dry_run, "unregistered_worktrees": [],
+                "orphaned_rows": [], "audit_errors": []}
+    report = privacy.visible_rows(
+        scopes.heal_scopes(project=args.get("project"), dry_run=dry_run), as_)
     audit = scopes.audit_worktrees(project=args.get("project"))
     return {"scopes": report, "count": len(report),
-            "dry_run": bool(args.get("dry_run", False)),
-            "unregistered_worktrees": audit["unregistered"],
-            "orphaned_rows": audit["orphaned_rows"],
-            "audit_errors": audit["errors"]}
+            "dry_run": dry_run,
+            "unregistered_worktrees": privacy.visible_rows(audit["unregistered"], as_),
+            "orphaned_rows": privacy.visible_rows(audit["orphaned_rows"], as_),
+            "audit_errors": privacy.visible_rows(audit["errors"], as_)}
+
+
+def _handle_scope_private(args: dict, as_: str | None = None) -> dict:
+    if privacy.from_peer(as_):
+        raise RuntimeError("unknown function 'scope_private'")
+    flag = args["private"]
+    if isinstance(flag, str):
+        flag = {"true": True, "false": False}.get(flag.strip().lower(), flag)
+    if not isinstance(flag, bool):
+        raise ValueError(f"private must be true or false, not {args['private']!r}")
+    return private.set_private(args["project"], args.get("scope"), flag)
 
 
 def _handle_scope_repair(args: dict) -> dict:
@@ -341,6 +377,7 @@ SCOPE_HANDLERS = {
     "scope_complete": _handle_scope_complete,
     "scope_delete": _handle_scope_delete,
     "scope_heal": _handle_scope_heal,
+    "scope_private": _handle_scope_private,
     "scope_repair": _handle_scope_repair,
     "scope_sync": _handle_scope_sync,
     "scope_gather": _handle_scope_gather,

@@ -25,6 +25,7 @@ import asyncio
 import logging
 from typing import Any
 
+from awm.config import privacy
 from awm.gatewayclient import ServiceAdapter, spawn_supervised
 
 from awm.cx import claim, lifecycle, pool, reconcile, remove, seed
@@ -283,7 +284,12 @@ async def _list(args: dict[str, Any], as_: str | None = None) -> dict[str, Any]:
         return {"ok": False, "reason": reason}
     rows = await asyncio.to_thread(
         lifecycle.collect, args.get("project") or None, args.get("scope") or None)
-    return {"sessions": rows, "pool": pool.status(LOOP)}
+    held = pool.status(LOOP)
+    if privacy.from_peer(as_):
+        held["sessions"] = privacy.visible_rows(held["sessions"], as_)
+        shown = {r["session"] for r in held["sessions"]}
+        held["warm"] = [s for s in held["warm"] if s in shown]
+    return {"sessions": privacy.visible_rows(rows, as_), "pool": held}
 
 
 async def _start(args: dict[str, Any], as_: str | None = None) -> dict[str, Any]:

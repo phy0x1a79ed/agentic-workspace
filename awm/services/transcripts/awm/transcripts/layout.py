@@ -27,6 +27,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 # Directories inside a project that are not sessions and must never be swept.
 RESERVED = frozenset({"memory"})
@@ -95,8 +96,12 @@ def _suffix(root: Path) -> str:
     return ".jsonl.gz" if root == ARCHIVE else ".jsonl"
 
 
-def sessions(root: Path) -> list[Session]:
-    """Every session under ``root``, live tree or archive.
+#: A test on a project directory name; a project it holds true for is left out of every listing.
+Hide = Callable[[str], bool]
+
+
+def sessions(root: Path, hide: Hide | None = None) -> list[Session]:
+    """Every session under ``root``, live tree or archive, less the projects ``hide`` names.
 
     A session is named by whichever of its two parts exists, so an orphaned
     sidecar is returned with ``transcript=None`` rather than skipped.
@@ -104,7 +109,7 @@ def sessions(root: Path) -> list[Session]:
     suffix = _suffix(root)
     out: list[Session] = []
     try:
-        projects = sorted(p for p in root.iterdir() if p.is_dir())
+        projects = sorted(p for p in root.iterdir() if p.is_dir() and not (hide and hide(p.name)))
     except OSError:
         return out
     for proj in projects:

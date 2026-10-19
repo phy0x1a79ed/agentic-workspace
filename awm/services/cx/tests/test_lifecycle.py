@@ -1373,6 +1373,27 @@ async def test_the_list_verb_applies_the_peer_refusal(home, launched, peers):
     assert "sessions" in out
 
 
+async def test_the_list_verb_hides_private_sessions_from_a_peer(
+        home, launched, peers, monkeypatch, tmp_path):
+    import awm.config as awm_config
+    from awm.config import privacy
+    from awm.cx import hub_adapter, lifecycle
+
+    monkeypatch.setattr(awm_config, "AWM_DIR", tmp_path / ".awm")
+    monkeypatch.setattr(lifecycle, "_tmux_panes", dict)
+    home.add(PARENT_JOB, "<warm saiga>", os.getpid(), cwd=str(home.projects / "awm" / "demo"))
+    await lifecycle.start(BASE, None)
+    privacy.write_marks([{"project": "awm", "scope": None, "path": str(home.projects / "awm")}])
+
+    peer = await hub_adapter.HANDLERS["list"]({}, "peer:capella")
+    assert not {r["job"] for r in peer["sessions"]} & {PARENT_JOB, CHILD_JOB}
+    assert all(r["cwd"] != str(home.projects / "awm" / "demo") for r in peer["pool"]["sessions"])
+    assert PARENT_JOB not in peer["pool"]["warm"]
+    local = await hub_adapter.HANDLERS["list"]({}, None)
+    assert CHILD_JOB in {r["job"] for r in local["sessions"]}
+    assert PARENT_JOB in {r["session"] for r in local["pool"]["sessions"]}
+
+
 def test_the_old_launcher_is_gone():
     from awm.cx import lifecycle
 

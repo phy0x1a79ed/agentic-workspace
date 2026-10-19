@@ -26,6 +26,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+from awm.config import privacy
 from awm.dvc import cache as cachemod
 from awm.dvc.config import SHARED_CACHE, WORKSPACE_ROOT
 
@@ -191,12 +192,17 @@ def _at_risk(row: dict) -> bool:
     )
 
 
-def report(*, at_risk_only: bool = True) -> dict[str, Any]:
-    """Inventory every scope worktree against the two remotes."""
+def report(*, at_risk_only: bool = True, as_: str | None = None) -> dict[str, Any]:
+    """Inventory every scope worktree against the two remotes; a peer caller ``as_``
+    sees no worktree a private mark covers."""
+    peer = privacy.from_peer(as_)
     rows = []
     for worktree in find_worktrees(WORKSPACE_ROOT):
+        if peer and privacy.hidden_path(worktree):
+            continue
         row = {
-            "scope": str(worktree.relative_to(WORKSPACE_ROOT)),
+            "scope": str(worktree.relative_to(WORKSPACE_ROOT)
+                         if worktree.is_relative_to(WORKSPACE_ROOT) else worktree),
             "uncommitted": _uncommitted(worktree),
             "unpushed": _unpushed(worktree),
             "pins": _pins(worktree),

@@ -242,6 +242,7 @@ def search(
     k: int = config.DEFAULT_K,
     explore: float | None = None,
     include_superseded: bool = False,
+    exclude: frozenset[str] | set[str] = frozenset(),
 ) -> dict[str, Any]:
     """Fielded semantic + keyword search, ranked by the usefulness blend.
 
@@ -255,7 +256,8 @@ def search(
 
     Ranks the candidate set, returns the top ``k``, and — as a side effect —
     bumps ``seen_count`` + ``last_seen`` on the returned entries so the archive
-    gathers the impressions the explore/exploit term feeds on.
+    gathers the impressions the explore/exploit term feeds on. ``exclude`` names
+    decisions the caller may not see; they are neither ranked nor pointed at.
 
     On a node without the semantic stack the fielded legs drop out and the
     payload carries a ``degraded`` block. This service degrades loudly because
@@ -270,6 +272,8 @@ def search(
         conn, tag=tag, status=status, after=after, before=before,
         include_superseded=include_superseded,
     )
+    if exclude:
+        allowed = [did for did in allowed if did not in exclude]
     allowed_set = set(allowed)
     if not allowed_set:
         return {"count": 0, "results": []}
@@ -314,6 +318,9 @@ def search(
         "count": len(top),
         "results": [_row(conn, r, breakdown=bd) for _, bd, r in top],
     }
+    for row in out["results"]:
+        if row["superseded_by"] in exclude:
+            row["superseded_by"] = None
     if degraded:
         out["degraded"] = degraded
     return out
@@ -352,21 +359,24 @@ def get(conn: sqlite3.Connection, decision_id: str, *, bump: bool = False) -> di
     return _row(conn, r)
 
 
-def stats(conn: sqlite3.Connection) -> dict[str, Any]:
-    rows = db.all_decisions(conn)
+def stats(conn: sqlite3.Connection, exclude: frozenset[str] | set[str] = frozenset()) -> dict[str, Any]:
+    """Archive counts, leaving out the decisions in ``exclude``."""
+    rows = [r for r in db.all_decisions(conn) if r["id"] not in exclude]
     by_status: dict[str, int] = {}
     by_source: dict[str, int] = {}
     for r in rows:
         by_status[r["status"] or "unknown"] = by_status.get(r["status"] or "unknown", 0) + 1
         by_source[r["source"] or "unknown"] = by_source.get(r["source"] or "unknown", 0) + 1
+    hidden = json.dumps(sorted(exclude))
     emb = conn.execute(
-        "SELECT COUNT(DISTINCT source_id) FROM embeddings WHERE source_type IN (?,?,?)",
-        tuple(config.SOURCE_TYPES.values()),
+        "SELECT COUNT(DISTINCT source_id) FROM embeddings WHERE source_type IN (?,?,?)"
+        " AND source_id NOT IN (SELECT value FROM json_each(?))",
+        (*config.SOURCE_TYPES.values(), hidden),
     ).fetchone()[0]
-    notes = conn.execute("SELECT COUNT(*) FROM notes").fetchone()[0]
-    votes = conn.execute(
-        "SELECT COALESCE(SUM(upvotes),0), COALESCE(SUM(downvotes),0) FROM decisions"
-    ).fetchone()
+    notes = conn.execute(
+        "SELECT COUNT(*) FROM notes WHERE decision_id NOT IN (SELECT value FROM json_each(?))", (hidden,)
+    ).fetchone()[0]
+    votes = (sum(r["upvotes"] or 0 for r in rows), sum(r["downvotes"] or 0 for r in rows))
     return {
         "decisions": len(rows),
         "embedded": emb,

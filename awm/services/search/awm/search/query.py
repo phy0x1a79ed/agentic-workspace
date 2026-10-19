@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Sequence
 
 from awm import config
+from awm.config import privacy
 from awm.config.peertoken import node_label
 
 from awm.search import store
@@ -32,6 +33,7 @@ class Query:
     local: bool = True
     peer_names: list[str] | str = field(default_factory=list)
     grants: frozenset[str] | None = None
+    hidden: Sequence[dict] | None = ()
     raw: dict[str, str] = field(default_factory=dict)
 
     @property
@@ -42,7 +44,7 @@ class Query:
         return self.grants is None or source in self.grants
 
     def filters(self, sources: list[str]) -> Filters:
-        return Filters(sources, self.project, self.scope, self.kind, self.after, self.before)
+        return Filters(sources, self.project, self.scope, self.kind, self.after, self.before, self.hidden)
 
     def forwarded(self) -> dict[str, Any]:
         """The arguments a peer is asked with: the same question, never a further fan-out."""
@@ -69,9 +71,14 @@ def _time(args: dict[str, Any], key: str) -> str:
     return stamp
 
 
-def peer_originated(as_: str | None) -> bool:
-    """Whether another node made the call; such a call searches this node only."""
-    return as_ == "peer" or (as_ or "").startswith("peer:")
+def hidden_for(as_: str | None) -> list[dict] | None:
+    """The private marks a caller may not see past: none for a local caller, ``None`` when unreadable."""
+    if not privacy.from_peer(as_):
+        return []
+    try:
+        return privacy.marks()
+    except privacy.MarksUnreadable:
+        return None
 
 
 def _peers(value: Any) -> tuple[bool, list[str] | str]:
@@ -98,8 +105,8 @@ def parse(args: dict[str, Any], as_: str | None = None) -> Query:
     if not text:
         raise ValueError("search query needs a query")
     local, peer_names = _peers(args.get("peers"))
-    if peer_originated(as_):
-        local, peer_names = True, []
+    if privacy.from_peer(as_):
+        local, peer_names = True, []  # a peer's call searches this node only, never fanning out again
     grants = args.get("_grants")
     return Query(
         text=text, sources=names(args.get("sources")),
@@ -107,5 +114,5 @@ def parse(args: dict[str, Any], as_: str | None = None) -> Query:
         kind=str(args.get("kind") or ""), after=_time(args, "after"), before=_time(args, "before"),
         limit=max(1, min(int(args.get("limit") or DEFAULT_LIMIT), MAX_LIMIT)),
         local=local, peer_names=peer_names,
-        grants=None if grants is None else frozenset(str(g) for g in grants),
+        grants=None if grants is None else frozenset(str(g) for g in grants), hidden=hidden_for(as_),
         raw={k: str(args[k]) for k in ("project", "scope", "kind", "after", "before") if args.get(k)})
