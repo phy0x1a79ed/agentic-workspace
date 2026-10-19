@@ -34,21 +34,26 @@ def _document(row) -> dict:
     }
 
 
-def export_page(cursor: str | None = None, limit: int | None = None) -> dict:
-    """One page of ``{id,title,text,ts,project,scope,kind}`` documents after ``cursor``."""
+def export_page(cursor: str | None = None, limit: int | None = None,
+                exclude: tuple[str, list] = ("", [])) -> dict:
+    """One page of ``{id,title,text,ts,project,scope,kind}`` documents after ``cursor``.
+
+    ``exclude`` is a WHERE fragment from :func:`awm.journal.private.exclusion`.
+    """
+    hide, hide_params = exclude
     size = max(1, min(int(DEFAULT_LIMIT if limit is None else limit), MAX_LIMIT))
     marks = ",".join("?" * len(INDEXED_KINDS))
     dao = JournalDAO()
     rows = dao.query_all(
         f"SELECT id, owner_project, owner_scope, kind, body, meta, ts FROM scope_posts"
-        f" WHERE kind IN ({marks}) AND body != '' AND id > ? ORDER BY id LIMIT ?",
-        [*INDEXED_KINDS, cursor or "", size + 1])
+        f" WHERE kind IN ({marks}) AND body != '' AND id > ?{hide} ORDER BY id LIMIT ?",
+        [*INDEXED_KINDS, cursor or "", *hide_params, size + 1])
     done = len(rows) <= size
     rows = rows[:size]
     page = {"documents": [_document(r) for r in rows],
             "next_cursor": None if done else rows[-1]["id"], "done": done}
     if done:
         page["ids"] = [r["id"] for r in dao.query_all(
-            f"SELECT id FROM scope_posts WHERE kind IN ({marks}) AND body != '' ORDER BY id",
-            list(INDEXED_KINDS))]
+            f"SELECT id FROM scope_posts WHERE kind IN ({marks}) AND body != ''{hide} ORDER BY id",
+            [*INDEXED_KINDS, *hide_params])]
     return page

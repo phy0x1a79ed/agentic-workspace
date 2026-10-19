@@ -137,11 +137,27 @@ def _scope_covers(mark_scope: str, scope: str) -> bool:
     return scope == mark_scope or scope.startswith(mark_scope + "/")
 
 
+def _canonical(project: str | None, scope: str | None) -> tuple[str | None, str | None]:
+    if not project and isinstance(scope, str):
+        for channel in ("user:proj:", "project:"):
+            if scope.startswith(channel):
+                return scope[len(channel):] or None, None
+    if isinstance(project, str) and project.startswith("task:"):
+        project = project[len("task:"):]
+    return project or None, scope
+
+
 def hidden(project: str, scope: str | None = None) -> bool:
-    """Whether a mark covers this project, or this scope of it."""
+    """Whether a mark covers this project, or this scope of it.
+
+    The journal spellings ``task:<p>`` and an empty project with scope
+    ``user:proj:<p>`` or ``project:<p>`` all name project ``<p>``."""
     loaded = _load()
     if loaded is None:
         return True
+    project, scope = _canonical(project, scope)
+    if project is None:
+        return False
     for m in loaded:
         if m["project"] != project:
             continue
@@ -196,11 +212,11 @@ def hidden_slug(name: str) -> bool:
 
 
 def _row_hidden(row: dict) -> bool:
-    project = row.get("project")
-    if isinstance(project, str) and project:
-        scope = row.get("scope")
-        if hidden(project, scope if isinstance(scope, str) and scope else None):
-            return True
+    project, scope = row.get("project"), row.get("scope")
+    project = project if isinstance(project, str) else None
+    scope = scope if isinstance(scope, str) and scope else None
+    if (project or scope) and hidden(project or "", scope):
+        return True
     return any(isinstance(row.get(k), str) and row[k] and hidden_path(row[k])
                for k in PATH_KEYS)
 
@@ -220,10 +236,10 @@ def hides_args(args: Any) -> bool:
         return False
     project = args.get("project")
     scope = args.get("scope")
-    if isinstance(project, str) and project:
-        named_scope = scope if isinstance(scope, str) and scope and not _looks_absolute(scope) else None
-        if hidden(project, named_scope):
-            return True
+    project = project if isinstance(project, str) else ""
+    named_scope = scope if isinstance(scope, str) and scope and not _looks_absolute(scope) else None
+    if (project or named_scope) and hidden(project, named_scope):
+        return True
     return any(_looks_absolute(args.get(k)) and hidden_path(args[k]) for k in ARG_PATH_KEYS)
 
 

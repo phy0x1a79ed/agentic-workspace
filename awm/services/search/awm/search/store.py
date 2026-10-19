@@ -128,9 +128,15 @@ def record_registry(conn: sqlite3.Connection, sources: dict[str, dict], present:
     return news
 
 
-def source_rows(conn: sqlite3.Connection) -> list[dict[str, Any]]:
-    """Every stored source with its document count, sorted by name."""
-    counts = dict(conn.execute("SELECT source, COUNT(*) FROM documents GROUP BY source").fetchall())
+def source_rows(conn: sqlite3.Connection, kept: tuple[str, list[Any]] = ("", [])) -> list[dict[str, Any]]:
+    """Every stored source with its document count, sorted by name.
+
+    ``kept`` is a SQL condition and its values; only the documents it keeps are counted.
+    """
+    where, params = kept
+    counts = dict(conn.execute(
+        f"SELECT source, COUNT(*) FROM documents {'WHERE ' + where if where else ''} GROUP BY source",
+        params).fetchall())
     out = []
     for r in conn.execute("SELECT * FROM sources ORDER BY name"):
         out.append({**dict(r), "spec": json.loads(r["spec"]), "present": bool(r["present"]),

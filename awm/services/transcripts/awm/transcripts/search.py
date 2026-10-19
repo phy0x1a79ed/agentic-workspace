@@ -11,16 +11,16 @@ from __future__ import annotations
 import gzip
 import re
 
-from awm.transcripts.layout import ARCHIVE, sessions
+from awm.transcripts.layout import ARCHIVE, Hide, sessions
 
 MAX_HITS = 200
 
 
 def find(pattern: str, *, project: str | None = None,
-         limit: int = MAX_HITS) -> dict:
+         limit: int = MAX_HITS, hide: Hide | None = None) -> dict:
     rx = re.compile(pattern)
     hits: list[dict] = []
-    for s in sessions(ARCHIVE):
+    for s in sessions(ARCHIVE, hide):
         if project and project not in s.project:
             continue
         if s.transcript is None:

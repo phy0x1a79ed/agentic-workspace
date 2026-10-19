@@ -207,3 +207,15 @@ def test_write_marks_rejects_bad_entries_and_leaves_no_temp(awm_dir, projects):
     assert privacy.marks() == written
     assert json.loads((awm_dir / "private.json").read_text())["version"] == 1
     assert sorted(p.name for p in awm_dir.iterdir()) == ["private.json"]
+
+
+def test_legacy_journal_spellings_name_the_project(projects):
+    privacy.write_marks([_mark(projects, "avatar")])
+    assert privacy.hidden("task:avatar")
+    assert privacy.hidden("", "user:proj:avatar")
+    assert privacy.hidden("", "project:avatar")
+    assert not privacy.hidden("", "user:proj:avatar2")
+    assert privacy.visible_rows([{"project": "task:avatar"}, {"project": "", "scope": "user:proj:avatar"},
+                                 {"project": "", "scope": "workspace"}], "peer") == [{"project": "", "scope": "workspace"}]
+    assert privacy.hides_args({"scope": "user:proj:avatar"})
+    assert not privacy.hides_args({"scope": "dev"})

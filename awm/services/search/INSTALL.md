@@ -34,4 +34,6 @@ The export verb takes `cursor` and `limit` (default 200, clamped to 1-1000). It 
 - A pushed event schedules a full export pass a few seconds later. An hourly pass runs regardless.
 - A source whose service stops is frozen. Its documents stay searchable. A sweep never reads an absent service as deletion.
 - A foreign peer reaches the read verbs only with at least one grant. The gateway passes the grants as `args["_grants"]`, and `search` answers only those sources. A call that arrives from a peer searches this node only.
+- A peer never sees a document under a private mark (`awm.config.privacy`). `search` matches a document by its `project` and `scope`, and a live hit also by a transcript slug in `project`. The filter runs in the index query, so a page stays full. The `sources` and `status` counts leave the hidden documents out. `get` answers `no document` for one.
+- **CAUTION** A document with no `project` or `scope` stays visible to peers whatever its text says. An unreadable marks file hides from peers every document that names a project or a scope.
 - A peer on a release without `search` reports `unsupported` and never hides local hits.

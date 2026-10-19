@@ -272,8 +272,9 @@ def get_post(post_id: str) -> ScopePost | None:
     return _row_to_post(row) if row else None
 
 
-def _post_filter(project, scope, kind, author, before_ts) -> tuple[str, list]:
-    sql, params = "", []
+def _post_filter(project, scope, kind, author, before_ts,
+                 exclude: tuple[str, list] = ("", [])) -> tuple[str, list]:
+    sql, params = exclude[0], list(exclude[1])
     if project is not None:
         sql += " AND owner_project = ?"
         params.append(project)
@@ -297,7 +298,8 @@ def _post_filter(project, scope, kind, author, before_ts) -> tuple[str, list]:
 def fetch(*, project: str | None = None, scope: str | None = None,
           kind: str | None = None, query: str | None = None,
           author: str | None = None, limit: int = 50, offset: int = 0,
-          before_ts: str | None = None, order: str | None = None) -> list[ScopePost]:
+          before_ts: str | None = None, order: str | None = None,
+          exclude: tuple[str, list] = ("", [])) -> list[ScopePost]:
     """Pull / search posts.
 
     - ``scope`` given, no ``query`` → that channel's recent posts.
@@ -310,11 +312,13 @@ def fetch(*, project: str | None = None, scope: str | None = None,
       newest-first cross-scope. Use ``order='desc'`` with ``limit`` to
       pull the *last N* posts of a channel (e.g. the 5 most recent journal
       entries / session logs).
+    - ``exclude`` is a WHERE fragment from :func:`awm.journal.private.exclusion`.
     """
     if query:
         return search(project=project, scope=scope, kind=kind, query=query, author=author,
-                      limit=limit, offset=offset, before_ts=before_ts, order=order)[0]
-    where, params = _post_filter(project, scope, kind, author, before_ts)
+                      limit=limit, offset=offset, before_ts=before_ts, order=order,
+                      exclude=exclude)[0]
+    where, params = _post_filter(project, scope, kind, author, before_ts, exclude)
     if order in ("asc", "desc"):
         direction = order.upper()
     else:
@@ -328,7 +332,8 @@ def fetch(*, project: str | None = None, scope: str | None = None,
 def search(*, query: str, project: str | None = None, scope: str | None = None,
            kind: str | None = None, author: str | None = None, limit: int = 50,
            offset: int = 0, before_ts: str | None = None,
-           order: str | None = None) -> tuple[list[ScopePost], dict | None, str]:
+           order: str | None = None,
+           exclude: tuple[str, list] = ("", [])) -> tuple[list[ScopePost], dict | None, str]:
     """Posts matching ``query`` by meaning and keyword, best first, a ``degraded`` block,
     and which engine ranked them: ``local``, or ``none`` for a substring match.
 
@@ -336,7 +341,7 @@ def search(*, query: str, project: str | None = None, scope: str | None = None,
     selected posts by time. A kind the index does not hold (``system``) falls
     back to a substring match.
     """
-    where, params = _post_filter(project, scope, kind, author, before_ts)
+    where, params = _post_filter(project, scope, kind, author, before_ts, exclude)
     degraded = None
     semantic = "none"
     indexed = not kind or kind in search_index.INDEXED_KINDS

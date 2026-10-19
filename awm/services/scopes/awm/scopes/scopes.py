@@ -1582,6 +1582,7 @@ def search_scopes(
     project: str | None = None,
     limit: int = 50,
     offset: int = 0,
+    as_: str | None = None,
 ) -> ScopeListResponse:
     """Search scopes. Defaults to status='active'.
 
@@ -1589,8 +1590,15 @@ def search_scopes(
     ranked by relevance of their goals and ``context.md``. A project's main
     checkout counts as an active scope named for its default branch. With no
     ``project`` the reply also lists every project (see
-    :func:`awm.scopes.projects.search_projects`).
+    :func:`awm.scopes.projects.search_projects`). A peer caller ``as_`` sees
+    no private project or scope.
     """
+    peer = privacy.from_peer(as_)
+
+    def shown(info: ScopeInfo) -> bool:
+        return not (peer and (privacy.hidden(info.project, info.scope)
+                              or privacy.hidden_path(info.worktree)))
+
     where, params = "", []
     if status and status != "all":
         if status == "active":
@@ -1616,6 +1624,7 @@ def search_scopes(
     if status in (None, "", "all", "active"):
         found += [m for m in main_checkouts(project).values()
                   if not query or query.lower() in m.scope.lower()]
+    found = [s for s in found if shown(s)]
     merged = sorted(found, key=lambda s: (s.project, s.scope))[offset:offset + limit]
     degraded = None
     if query:
@@ -1636,7 +1645,9 @@ def search_scopes(
                     _SCOPE_ROW_SQL + " AND p.name = ? AND a.scope = ?" + where
                     + " ORDER BY a.created_at DESC", [proj, scp, *params])
                 if row is not None:
-                    merged.append(_v37_render_scope(row, session=row["session"] or 1))
+                    info = _v37_render_scope(row, session=row["session"] or 1)
+                    if shown(info):
+                        merged.append(info)
         except Exception as exc:  # noqa: BLE001 — reported, then answered by name match
             degraded = {"semantic": "error", "error": repr(exc)[:300], "fallback": "keyword"}
 
@@ -1646,6 +1657,8 @@ def search_scopes(
     if not project:
         from awm.scopes import projects as projects_mod
         listing = projects_mod.search_projects(query=query, limit=limit if query else None)
+        if peer:
+            listing.projects = [p for p in listing.projects if not privacy.hidden(p.name)]
         degraded = degraded or listing.degraded
     return ScopeListResponse(scopes=merged, total=len(merged), degraded=degraded,
                              projects=listing.projects if listing else None)

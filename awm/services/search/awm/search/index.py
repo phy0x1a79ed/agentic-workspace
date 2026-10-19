@@ -4,18 +4,61 @@ from __future__ import annotations
 
 import sqlite3
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Sequence
 
 from awm.persistence import embeddings as engine
 
 from awm.search import store
 
 SNIPPET_CHARS = 300
+#: The journal's spellings of a project besides its bare name: a task's posts and a user's posts about it.
+TASK_PREFIX = "task:"
+USER_PROJECT_PREFIX = "user:proj:"
+
+
+def veil(hidden: Sequence[dict] | None) -> tuple[str, list[Any]]:
+    """SQL that keeps only the documents no private mark in ``hidden`` covers, and its bound values.
+
+    ``None`` stands for an unreadable marks file: it keeps only documents that name no project or scope.
+    """
+    if hidden is None:
+        return "(project = '' AND scope = '')", []
+    clauses: list[str] = []
+    params: list[Any] = []
+    for mark in hidden:
+        project, scope = mark["project"], mark["scope"]
+        if scope is None:
+            clauses.append("project IN (?, ?) OR (project = '' AND scope = ?)")
+            params += [project, TASK_PREFIX + project, USER_PROJECT_PREFIX + project]
+        else:
+            clauses.append("project IN (?, ?) AND (scope = ? OR substr(scope, 1, ?) = ?)")
+            params += [project, TASK_PREFIX + project, scope, len(scope) + 1, scope + "/"]
+    if not clauses:
+        return "", []
+    return "NOT (" + " OR ".join(f"({c})" for c in clauses) + ")", params
+
+
+def covered(hidden: Sequence[dict] | None, project: str, scope: str) -> bool:
+    """Whether :func:`veil` would drop a document with this project and scope."""
+    if hidden is None:
+        return bool(project or scope)
+    for mark in hidden:
+        name, marked = mark["project"], mark["scope"]
+        named = project in (name, TASK_PREFIX + name)
+        if marked is None:
+            if named or (not project and scope == USER_PROJECT_PREFIX + name):
+                return True
+        elif named and (scope == marked or scope.startswith(marked + "/")):
+            return True
+    return False
 
 
 @dataclass
 class Filters:
-    """What narrows a query. ``after`` is inclusive and ``before`` exclusive, both normalised."""
+    """What narrows a query. ``after`` is inclusive and ``before`` exclusive, both normalised.
+
+    ``hidden`` holds the private marks the caller may not see past, as :func:`veil` reads them.
+    """
 
     sources: list[str] = field(default_factory=list)
     project: str = ""
@@ -23,6 +66,7 @@ class Filters:
     kind: str = ""
     after: str = ""
     before: str = ""
+    hidden: Sequence[dict] | None = ()
 
     def allowed(self) -> tuple[str, list[Any]]:
         """The SQL the engine applies before scoring, and its bound values."""
@@ -38,6 +82,10 @@ class Filters:
         if self.before:
             clauses.append("ts < ? AND ts != ''")
             params.append(self.before)
+        kept, kept_params = veil(self.hidden)
+        if kept:
+            clauses.append(kept)
+            params += kept_params
         return "SELECT key FROM documents WHERE " + " AND ".join(clauses), params
 
 

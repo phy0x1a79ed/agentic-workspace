@@ -1,5 +1,6 @@
 """Scope operation definitions for the gateway manifest."""
 
+from awm.config import privacy
 from awm.scopes.models import ScopeCreateRequest, ScopeUpdateRequest
 from awm.scopes import private, scopes, search_index
 
@@ -275,13 +276,14 @@ def _handle_scope_create(args: dict) -> dict:
     return result.model_dump()
 
 
-def _handle_scope_search(args: dict) -> dict:
+def _handle_scope_search(args: dict, as_: str | None = None) -> dict:
     result = scopes.search_scopes(
         query=args.get("query"),
         status=args.get("status", "active"),
         project=args.get("project"),
         limit=int(args.get("limit", 50)),
         offset=int(args.get("offset", 0)),
+        as_=as_,
     )
     unset = {k for k in ("degraded", "projects") if getattr(result, k) is None}
     return result.model_dump(exclude=unset or None)
@@ -306,17 +308,19 @@ def _handle_scope_delete(args: dict) -> dict:
     return result.model_dump()
 
 
-def _handle_scope_heal(args: dict) -> dict:
-    report = scopes.heal_scopes(
-        project=args.get("project"),
-        dry_run=bool(args.get("dry_run", False)),
-    )
+def _handle_scope_heal(args: dict, as_: str | None = None) -> dict:
+    dry_run = bool(args.get("dry_run", False))
+    if args.get("project") and privacy.from_peer(as_) and privacy.hidden(args["project"]):
+        return {"scopes": [], "count": 0, "dry_run": dry_run, "unregistered_worktrees": [],
+                "orphaned_rows": [], "audit_errors": []}
+    report = privacy.visible_rows(
+        scopes.heal_scopes(project=args.get("project"), dry_run=dry_run), as_)
     audit = scopes.audit_worktrees(project=args.get("project"))
     return {"scopes": report, "count": len(report),
-            "dry_run": bool(args.get("dry_run", False)),
-            "unregistered_worktrees": audit["unregistered"],
-            "orphaned_rows": audit["orphaned_rows"],
-            "audit_errors": audit["errors"]}
+            "dry_run": dry_run,
+            "unregistered_worktrees": privacy.visible_rows(audit["unregistered"], as_),
+            "orphaned_rows": privacy.visible_rows(audit["orphaned_rows"], as_),
+            "audit_errors": privacy.visible_rows(audit["errors"], as_)}
 
 
 def _handle_scope_private(args: dict) -> dict:

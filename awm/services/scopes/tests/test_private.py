@@ -158,3 +158,67 @@ def test_the_verb_is_a_write():
     params = {p["name"]: p for p in spec["params"]}
     assert params["private"] == {**params["private"], "type": "boolean", "required": True}
     assert params["project"]["required"] and not params["scope"]["required"]
+
+
+@pytest.fixture()
+def peer_marks(scopes_workspace, seeded_scopes):
+    (scopes_workspace["projects_dir"] / "loose" / ".bare").mkdir(parents=True)
+    _call(project="proj-a", scope="scope-1", private=True)
+    _call(project="proj-b", private=True)
+    _call(project="loose", private=True)
+    return seeded_scopes
+
+
+def _search(as_, **args):
+    return HANDLERS["scope_search"]({"status": "all", **args}, as_)
+
+
+@pytest.mark.parametrize("as_", ["peer", "peer:altair"])
+def test_a_peer_search_lists_no_private_scope_or_project(peer_marks, as_):
+    out = _search(as_)
+    assert [(s["project"], s["scope"]) for s in out["scopes"]] == [("proj-a", "scope-2")]
+    assert [p["name"] for p in out["projects"]] == ["proj-a"]
+    assert _search(as_, project="proj-b")["scopes"] == []
+    assert [s["scope"] for s in _search(as_, query="scope")["scopes"]] == ["scope-2"]
+    assert "proj-b" not in json.dumps(_search(as_, query="proj-b"))
+
+
+@pytest.mark.parametrize("as_", [None, "user:tony"])
+def test_a_local_search_still_lists_everything(peer_marks, as_):
+    out = _search(as_)
+    assert len(out["scopes"]) == 3
+    assert {p["name"] for p in out["projects"]} == {"proj-a", "proj-b", "loose"}
+
+
+def test_a_broken_marks_file_shows_a_peer_no_scope(peer_marks, scopes_workspace):
+    (scopes_workspace["awm_dir"] / "private.json").write_text("{broken")
+    out = _search("peer")
+    assert out["scopes"] == [] and out["projects"] == []
+    assert len(_search(None)["scopes"]) == 3
+
+
+def test_an_unmark_restores_the_peer_view(peer_marks):
+    _call(project="proj-b", private=False)
+    assert ("proj-b", "scope-3") in {(s["project"], s["scope"]) for s in _search("peer")["scopes"]}
+
+
+def test_a_peer_resolves_a_private_scope_as_missing(peer_marks):
+    resolve, ref = HANDLERS["resolveScope"], HANDLERS["resolveRef"]
+    assert resolve({"project": "proj-b", "scope": "scope-3"}, "peer") == {
+        "exists": False, "project": "proj-b", "scope": "scope-3"}
+    assert resolve({"project": "proj-b", "scope": "scope-3"}, None)["exists"] is True
+    assert resolve({"project": "proj-a", "scope": "scope-2"}, "peer")["exists"] is True
+    assert ref({"literal": "agent:proj-a/scope-1"}, "peer:altair") is None
+    assert ref({"literal": "proj-a/scope-1"}, None) == {
+        "kind": "agent", "project": "proj-a", "scope": "scope-1"}
+
+
+def test_a_peer_heal_reports_no_private_scope(peer_marks):
+    heal = HANDLERS["scope_heal"]
+    peer, local = heal({"dry_run": True}, "peer"), heal({"dry_run": True}, None)
+    assert [r["scope"] for r in local["scopes"]] == ["scope-1"]
+    assert peer["scopes"] == [] and peer["count"] == 0
+    for key in ("unregistered_worktrees", "orphaned_rows", "audit_errors"):
+        assert not {r["project"] for r in peer[key]} & {"proj-b", "loose"}
+    assert {r["project"] for r in local["audit_errors"]} >= {"proj-b", "loose"}
+    assert heal({"project": "proj-b", "dry_run": True}, "peer")["audit_errors"] == []

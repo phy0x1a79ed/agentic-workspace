@@ -33,14 +33,15 @@ import time
 from pathlib import Path
 
 from awm.transcripts import live
-from awm.transcripts.layout import ARCHIVE, PROJECTS, Session, sessions
+from awm.transcripts.layout import ARCHIVE, PROJECTS, Hide, Session, sessions
 
 log = logging.getLogger("awm.transcripts.sweep")
 
 DEFAULT_RETENTION_DAYS = 7
 
 
-def aged(root: Path, days: float, *, skip_live: bool = False) -> list[Session]:
+def aged(root: Path, days: float, *, skip_live: bool = False,
+         hide: Hide | None = None) -> list[Session]:
     """Sessions under ``root`` whose newest file is older than ``days``.
 
     ``skip_live`` excludes conversations a Claude Code process still holds open.
@@ -48,7 +49,7 @@ def aged(root: Path, days: float, *, skip_live: bool = False) -> list[Session]:
     its transcript would leave it writing to a path that no longer exists.
     """
     cutoff = time.time() - days * 86400
-    out = [s for s in sessions(root) if 0 < s.mtime < cutoff]
+    out = [s for s in sessions(root, hide) if 0 < s.mtime < cutoff]
     if skip_live:
         held = live.session_ids()
         out = [s for s in out if s.session_id not in held]
@@ -127,7 +128,7 @@ def archive_one(s: Session, *, dry_run: bool = False) -> dict:
 
 
 def archive(*, days: float = DEFAULT_RETENTION_DAYS,
-            dry_run: bool = False) -> dict:
+            dry_run: bool = False, hide: Hide | None = None) -> dict:
     """Archive every session older than ``days``.
 
     A failure on one session is logged and the sweep continues: one unreadable
@@ -135,7 +136,7 @@ def archive(*, days: float = DEFAULT_RETENTION_DAYS,
     """
     started = time.time()
     done, failed = [], []
-    for s in aged(PROJECTS, days, skip_live=True):
+    for s in aged(PROJECTS, days, skip_live=True, hide=hide):
         try:
             done.append(archive_one(s, dry_run=dry_run))
         except OSError as exc:
@@ -157,7 +158,7 @@ def archive(*, days: float = DEFAULT_RETENTION_DAYS,
     }
 
 
-def prune(*, days: float, dry_run: bool = True) -> dict:
+def prune(*, days: float, dry_run: bool = True, hide: Hide | None = None) -> dict:
     """Delete archived sessions older than ``days``.
 
     The only irreversible operation in this service. ``dry_run`` defaults to
@@ -165,7 +166,7 @@ def prune(*, days: float, dry_run: bool = True) -> dict:
     deletes, and a caller has to say the word to lose anything.
     """
     started = time.time()
-    victims = aged(ARCHIVE, days)
+    victims = aged(ARCHIVE, days, hide=hide)
     freed = sum(s.bytes for s in victims)
     if not dry_run:
         for s in victims:

@@ -14,7 +14,7 @@ There is no delete verb and no edit-in-place. The post log has no mutation path
 and goals do not add one.
 """
 
-from awm.journal import channel, goals
+from awm.journal import channel, goals, private
 
 
 GOAL_MANIFEST_FUNCTIONS = [
@@ -109,7 +109,20 @@ GOAL_MANIFEST_FUNCTIONS = [
 ]
 
 
+def _refuse_hidden(goal_id: str | None, as_: str | None, verb: str) -> None:
+    """Answer a peer naming a goal on a private channel as for a goal that does not exist."""
+    if not goal_id:
+        return
+    target = goals.get_goal(goal_id)
+    if target is not None and private.hides(as_, target.project, target.scope):
+        raise goals.GoalError(f"no goal {goal_id!r}{verb}")
+
+
 def _handle_goal_set(args: dict, as_: str | None = None) -> dict:
+    _refuse_hidden(args.get("supersedes"), as_, " to supersede")
+    if args.get("level") and private.hides(
+            as_, *goals.owner_for_level(args["level"], args.get("project"), args.get("scope"))):
+        raise ValueError(f"no scope {args.get('project')}/{args.get('scope')}")
     goal = goals.set_goal(
         objective=args["objective"],
         author=args["author"],
@@ -128,6 +141,7 @@ def _handle_goal_set(args: dict, as_: str | None = None) -> dict:
 
 
 def _handle_goal_retire(args: dict, as_: str | None = None) -> dict:
+    _refuse_hidden(args["goal_id"], as_, " to retire")
     tombstone = goals.retire_goal(
         args["goal_id"], author=args["author"], reason=args.get("reason") or "",
         origin=channel.edge_origin(as_),
@@ -146,15 +160,16 @@ def _handle_goal_read(args: dict, as_: str | None = None) -> dict:
     levels = args.get("levels")
     if isinstance(levels, str):  # a harness may hand a comma list through
         levels = [x.strip() for x in levels.split(",") if x.strip()]
-    found, rendered = goals.read_rendered(
-        args.get("project"), args.get("scope"), levels=levels,
-    )
+    found = [g for g in goals.read_goals(args.get("project"), args.get("scope"), levels=levels)
+             if not private.hides(as_, g.project, g.scope)]
+    rendered = goals.render(found, args.get("project"), args.get("scope"))
     return {"goals": [g.to_dict() for g in found],
             "total": len(found), "rendered": rendered}
 
 
 def _handle_goal_history(args: dict, as_: str | None = None) -> dict:
     _refuse_foreign(as_)
+    _refuse_hidden(args["goal_id"], as_, "")
     chain = goals.history(args["goal_id"])
     return {"chain": [g.to_dict() for g in chain], "total": len(chain)}
 
