@@ -12,9 +12,11 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import re
 import sqlite3
 import threading
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
@@ -23,11 +25,16 @@ SCHEMA = 3
 #: How many matching passages a literal or keyword query weighs before it ranks papers.
 CANDIDATES = 2000
 TRIGRAM = 3
-#: A literal longer than this, or holding a LIKE wildcard, is looked up by its :data:`PROBE_GRAMS` rarest
-#: trigrams and checked whole on each passage found. LIKE asks for every trigram of its pattern, and the
-#: index keeps no positions, so each costs its whole posting list: cheap for a phrase, seconds for a sentence.
-LONG_LITERAL = 40
+#: A literal longer than this, or holding a LIKE wildcard, is looked up by trigrams and checked whole on each
+#: passage found, not by LIKE. LIKE asks for every trigram of its pattern, and the index keeps no positions,
+#: so each costs its whole posting list: cheap for a word, most of a second for a sentence. The lookup reads
+#: the :data:`PROBE_GRAMS` rarest, and twice as many while the passages found fill :data:`CANDIDATES`.
+LONG_LITERAL = 12
 PROBE_GRAMS = 6
+#: A BM25 lookup that scores more passages than this is split by passage id into up to :data:`SHARDS`
+#: ranges, one thread each.
+SHARD_PASSAGES = 40_000
+SHARDS = 4
 #: A keyword OR stops adding terms, rarest first, once their passages pass this many. BM25 scores every
 #: passage an OR matches, so a common term costs seconds and adds almost nothing to the ranking.
 OR_BUDGET = 150_000
@@ -145,21 +152,43 @@ def stems(words: list[str]) -> dict[str, str]:
         return {w: s for w, s in found.items() if s is not None}
 
 
+#: A term in at least this many passages is counted once per version of its store, not once per query: the
+#: vocabulary reads the term's whole posting list to count it, 30 ms for a common word.
+DF_CACHED = 2000
+_df_cache: dict[tuple[str, int, str], int] = {}
+
+
+def _version(conn: sqlite3.Connection) -> tuple[str, int]:
+    path = conn.execute("PRAGMA database_list").fetchone()[2]
+    try:
+        return path, os.stat(path).st_mtime_ns
+    except OSError:
+        return path, 0
+
+
 def document_frequency(conn: sqlite3.Connection, words: list[str]) -> dict[str, int]:
     """How many passages hold each word's stem; 0 for a word no passage holds."""
-    out = {}
+    out, version = {}, _version(conn)
     for word, stem in stems(words).items():
-        row = conn.execute("SELECT doc FROM passage_vocab WHERE term = ?", (stem,)).fetchone()
-        out[word] = row[0] if row else 0
+        n = _df_cache.get((*version, stem))
+        if n is None:
+            row = conn.execute("SELECT doc FROM passage_vocab WHERE term = ?", (stem,)).fetchone()
+            n = row[0] if row else 0
+            if n >= DF_CACHED:
+                if len(_df_cache) >= STEM_CACHE:
+                    _df_cache.clear()
+                _df_cache[(*version, stem)] = n
+        out[word] = n
     return out
 
 
-def keyword_exprs(df: dict[str, int]) -> tuple[str, str]:
+def keyword_plan(df: dict[str, int]) -> tuple[tuple[str, int], tuple[str, int]]:
     """From each query word's passage count: an AND of every word some passage holds, and an OR of the rarest
-    of them within :data:`OR_BUDGET`; the OR is empty when it would match no more than the AND."""
+    of them within :data:`OR_BUDGET`; the OR is empty when it would match no more than the AND. Each comes with
+    the number of passages it can match, which is what scoring it costs."""
     held = sorted((n, w) for w, n in df.items() if n)
     if not held:
-        return "", ""
+        return ("", 0), ("", 0)
     kept, spent = [], 0
     for n, w in held:
         if kept and spent + n > OR_BUDGET:
@@ -167,7 +196,12 @@ def keyword_exprs(df: dict[str, int]) -> tuple[str, str]:
         kept.append(w)
         spent += n
     every = " AND ".join(f'"{w}"' for _, w in held)
-    return every, (" OR ".join(f'"{w}"' for w in kept) if len(held) > 1 else "")
+    return (every, held[0][0]), ((" OR ".join(f'"{w}"' for w in kept), spent) if len(held) > 1 else ("", 0))
+
+
+def keyword_exprs(df: dict[str, int]) -> tuple[str, str]:
+    (every, _), (either, _) = keyword_plan(df)
+    return every, either
 
 
 def coverage(df: dict[str, int], passages: int, text: str) -> float:
@@ -290,31 +324,39 @@ class FastLayer:
                 conn.close()
         return out
 
-    def _stores(self) -> list[sqlite3.Connection]:
+    def _stores(self) -> list[Path]:
         stores = []
         base = _open_ro(self.base_path)
         if base is not None:
             row = base.execute("SELECT value FROM meta WHERE key='schema'").fetchone()
+            base.close()
             if row and row[0] == str(SCHEMA):
-                stores.append(base)
-            else:
-                base.close()
-        delta = _open_ro(self.delta_path)
-        if delta is not None:
-            stores.append(delta)
+                stores.append(self.base_path)
+        if self.delta_path.exists():
+            stores.append(self.delta_path)
         return stores
 
     def search(self, query: str, filters: Filters, limit: int, per_hit: int) -> dict[str, list[dict[str, Any]]]:
         """``exact``: papers holding the query literally, then papers holding every one of its words.
-        ``related``: the other papers holding its rarest words. Each hit quotes its passages."""
+        ``related``: the other papers holding its rarest words. Each hit quotes its passages.
+
+        The three index lookups (the literal's trigrams, the AND of the words, the OR of the rarest) run
+        at once, each on its own connection; the answer is then assembled in order."""
         if filters.blocked or not query.strip():
             return {"exact": [], "related": []}
-        stores = self._stores()
+        paths = self._stores()
+        if not paths:
+            return {"exact": [], "related": []}
+        needle, words = literal(query), terms(query)
+        looked = _Lookups(paths, needle, words)
+        stores = [_open_ro(p) for p in paths]
         try:
-            exact = _literal_hits(stores, literal(query), filters, limit, per_hit)
+            exact = _literal_hits(stores, needle, filters, limit, per_hit, looked.literal())
             seen = {h["id"] for h in exact}
-            exact += _keyword_hits(stores, query, filters, limit - len(exact), per_hit, seen, every=True)
-            return {"exact": exact, "related": _keyword_hits(stores, query, filters, limit, per_hit, seen, every=False)}
+            if len(exact) < limit:
+                exact += _keyword_hits(stores, looked.every(), filters, limit - len(exact), per_hit, seen, None)
+            related = _keyword_hits(stores, looked.related(), filters, limit, per_hit, seen, looked.weighed)
+            return {"exact": exact, "related": related}
         finally:
             for conn in stores:
                 conn.close()
@@ -393,81 +435,229 @@ def _gram_counts(conn: sqlite3.Connection, grams: list[str]) -> dict[str, int]:
     return dict(conn.execute(f"SELECT term, doc FROM {source} WHERE term IN ({marks})", grams).fetchall())
 
 
+def _passages_by_id(conn: sqlite3.Connection, ids: list[int]) -> list[sqlite3.Row]:
+    return conn.execute(f"SELECT * FROM passage WHERE id IN ({','.join('?' * len(ids))}) ORDER BY id", ids).fetchall()
+
+
+def _trigram_ids(conn: sqlite3.Connection, grams: list[str]) -> list[int]:
+    expr = " AND ".join('"' + g.replace('"', '""') + '"' for g in grams)
+    return [r[0] for r in conn.execute("SELECT rowid FROM passage_tri WHERE passage_tri MATCH ? LIMIT ?",
+                                       (expr, CANDIDATES))]
+
+
+def _bounded_phrase(needle: str) -> str:
+    """The longest run of whole words inside ``needle``, as a phrase the word index can look up; empty when the
+    needle holds fewer than two. A word counts only when ASCII punctuation or space bounds it in the needle on
+    both sides, so the text around any hit of the needle tokenizes it the same way, and the word index, which
+    keeps positions, holds the run in order: every passage with the needle is a hit, among others."""
+    best: list[tuple[int, int]] = []
+    run: list[tuple[int, int]] = []
+    for m in re.finditer(r"[A-Za-z0-9]+", needle):
+        a, b = m.span()
+        if not (0 < a and b < len(needle) and needle[a - 1].isascii() and needle[b].isascii()):
+            run = []
+            continue
+        run = run + [(a, b)] if run and needle[run[-1][1]:a].isascii() else [(a, b)]
+        best = max(best, run, key=len)
+    if len(best) < 2:
+        return ""
+    return '"' + needle[best[0][0]:best[-1][1]].replace('"', '""') + '"'
+
+
 def _literal_rows(conn: sqlite3.Connection, needle: str) -> list[sqlite3.Row]:
-    """Passages that may hold ``needle``; the caller checks the literal on each."""
-    if len(needle) <= LONG_LITERAL and not re.search(r"[%_]", needle):
-        return conn.execute("SELECT p.* FROM passage_tri JOIN passage p ON p.id = passage_tri.rowid"
-                            " WHERE passage_tri.text LIKE ? LIMIT ?", (f"%{needle}%", CANDIDATES)).fetchall()
+    """Passages that may hold ``needle``; the caller checks the literal on each.
+
+    A short literal is a LIKE, which the trigram index narrows to the passages holding all its trigrams and
+    SQLite then checks on the text. A longer one with two whole words inside is looked up as their phrase in
+    the word index. Any other, and any with a LIKE wildcard, is looked up by trigrams alone: its
+    :data:`PROBE_GRAMS` rarest, then twice as many. A lookup that leaves fewer passages than
+    :data:`CANDIDATES` has every passage that can hold the literal. One that fills the cap may have cut the
+    true ones off, as with a phrase made of common words, and the LIKE, which checks, decides.
+    """
+    wild = re.search(r"[%_]", needle)
+    like = ("SELECT p.* FROM passage_tri JOIN passage p ON p.id = passage_tri.rowid"
+            " WHERE passage_tri.text LIKE ? LIMIT ?", (f"%{needle}%", CANDIDATES))
+    if len(needle) <= LONG_LITERAL and not wild:
+        return conn.execute(*like).fetchall()
+    phrase = _bounded_phrase(needle)
+    if phrase:
+        ids = [r[0] for r in conn.execute("SELECT rowid FROM passage_bm25 WHERE passage_bm25 MATCH ? LIMIT ?",
+                                          (phrase, CANDIDATES))]
+        if len(ids) < CANDIDATES:
+            return _passages_by_id(conn, ids) if ids else []
     grams = sorted({needle[i:i + TRIGRAM].lower() for i in range(len(needle) - TRIGRAM + 1)})
     df = _gram_counts(conn, grams)
     if len(df) < len(grams):
-        return []
-    chosen = sorted(grams, key=df.__getitem__)[:PROBE_GRAMS]
-    expr = " AND ".join('"' + g.replace('"', '""') + '"' for g in chosen)
-    return conn.execute("SELECT p.* FROM passage_tri JOIN passage p ON p.id = passage_tri.rowid"
-                        " WHERE passage_tri MATCH ? LIMIT ?", (expr, CANDIDATES)).fetchall()
+        return [] if wild else conn.execute(*like).fetchall()
+    ordered = sorted(grams, key=df.__getitem__)
+    for count in (PROBE_GRAMS, 2 * PROBE_GRAMS):
+        ids = _trigram_ids(conn, ordered[:count])
+        if len(ids) < CANDIDATES or count >= len(ordered):
+            return _passages_by_id(conn, ids) if ids else []
+    return _passages_by_id(conn, ids) if wild else conn.execute(*like).fetchall()
 
 
 def _literal_hits(stores: list[sqlite3.Connection], needle: str, filters: Filters, limit: int,
-                  per_hit: int) -> list[dict[str, Any]]:
+                  per_hit: int, found: list[list[sqlite3.Row]]) -> list[dict[str, Any]]:
+    """Papers holding ``needle``, from each store's candidate passages ``found`` (see :func:`_literal_rows`)."""
     if len(needle) < TRIGRAM:
         return []
     pattern = re.compile(re.escape(needle), re.IGNORECASE)
     ranked: list[tuple[tuple, sqlite3.Row, list[dict[str, Any]]]] = []
     seen: set[str] = set()
-    for conn in stores:
-        rows = _literal_rows(conn, needle)
+    for conn, rows in zip(stores, found):
         by_paper: dict[str, list[tuple[sqlite3.Row, list[list[int]]]]] = {}
         for p in rows:
             marks = [[p["start"] + m.start(), p["start"] + m.end()] for m in pattern.finditer(p["text"])]
             if marks:
                 by_paper.setdefault(p["paper_id"], []).append((p, marks))
         papers = _papers(conn, [k for k in by_paper if k not in seen])
-        for pid, found in by_paper.items():
+        for pid, hold in by_paper.items():
             paper = papers.get(pid)
             if paper is None or not filters.keeps(paper["ts"]):
                 continue
             seen.add(pid)
-            found.sort(key=lambda f: (_ZONE_RANK.get(f[0]["zone"], 2), f[0]["ord"]))
-            cased = any(needle in p["text"] for p, _ in found)
-            count = sum(len(m) for _, m in found)
-            rank = (cased, -_ZONE_RANK.get(found[0][0]["zone"], 2), count, paper["ts"])
-            ranked.append((rank, paper, [_quote(p, m) for p, m in found[:per_hit]]))
+            hold.sort(key=lambda f: (_ZONE_RANK.get(f[0]["zone"], 2), f[0]["ord"]))
+            cased = any(needle in p["text"] for p, _ in hold)
+            count = sum(len(m) for _, m in hold)
+            rank = (cased, -_ZONE_RANK.get(hold[0][0]["zone"], 2), count, paper["ts"])
+            ranked.append((rank, paper, [_quote(p, m) for p, m in hold[:per_hit]]))
     ranked.sort(key=lambda r: r[0], reverse=True)
     return [_hit(paper, "literal", float(rank[2]), quotes) for rank, paper, quotes in ranked[:limit]]
 
 
-def _keyword_hits(stores: list[sqlite3.Connection], query: str, filters: Filters, limit: int, per_hit: int,
-                  skip: set[str], every: bool) -> list[dict[str, Any]]:
-    """Papers whose passages hold every word of the query, or else the rarest of its words and at least
-    :data:`MIN_COVERAGE` of its information, best BM25 first. The papers returned join ``skip``."""
-    words = terms(query)
-    if not words or limit <= 0 or not stores:
+#: The passages of a keyword match are read this many at a time, best first, until enough papers are found.
+FIRST_CHUNK = 40
+
+
+def _ranked(conn: sqlite3.Connection, expr: str, lo: int = 0, hi: int = 1 << 62) -> list[tuple[int, float]]:
+    """The passages ``expr`` matches among ids ``lo`` to ``hi``, best BM25 first, as (passage id, rank). The
+    passage rows join afterwards, on the few the answer needs: joined before the sort they are all read, a
+    hundred thousand for an OR."""
+    return [(r[0], r[1]) for r in conn.execute(
+        "SELECT rowid, rank FROM passage_bm25 WHERE passage_bm25 MATCH ? AND rowid BETWEEN ? AND ?"
+        " ORDER BY rank LIMIT ?", (expr, lo, hi, CANDIDATES))]
+
+
+def _walk(conn: sqlite3.Connection, ranked: list[tuple[int, float]], filters: Filters, want: int | None,
+          skip: set[str], weighed: tuple[dict[str, int], int] | None) -> list[tuple[float, sqlite3.Row, list[sqlite3.Row]]]:
+    """Each paper in the ranked passages that the filters keep and, when ``weighed`` (the query words' passage
+    counts and the passage total) is given, that holds :data:`MIN_COVERAGE` of the query, with its passages in
+    rank order. Passages are read in chunks, and the walk stops at ``want`` papers when a caller needs no more."""
+    accepted: dict[str, tuple[float, sqlite3.Row, list[sqlite3.Row]]] = {}
+    refused: set[str] = set()
+    start, size = 0, FIRST_CHUNK if want is None else max(FIRST_CHUNK, want * 3)
+    while start < len(ranked) and (want is None or len(accepted) < want):
+        chunk = ranked[start:start + size]
+        start, size = start + size, size * 4
+        rows = {r["id"]: r for r in conn.execute(
+            f"SELECT * FROM passage WHERE id IN ({','.join('?' * len(chunk))})", [i for i, _ in chunk])}
+        known = accepted.keys() | refused | skip
+        new = list(dict.fromkeys(rows[i]["paper_id"] for i, _ in chunk
+                                 if i in rows and rows[i]["paper_id"] not in known))
+        papers = _papers(conn, new)
+        for i, rank in chunk:
+            p = rows.get(i)
+            if p is None or p["paper_id"] in skip or p["paper_id"] in refused:
+                continue
+            pid = p["paper_id"]
+            if pid in accepted:
+                accepted[pid][2].append(p)
+                continue
+            if want is not None and len(accepted) >= want:
+                break
+            paper = papers.get(pid)
+            if paper is None or not filters.keeps(paper["ts"]) or \
+                    (weighed and coverage(weighed[0], weighed[1], p["text"]) < MIN_COVERAGE):
+                refused.add(pid)
+                continue
+            accepted[pid] = (-rank, paper, [p])
+    return list(accepted.values())
+
+
+def _keyword_hits(stores: list[sqlite3.Connection], ranked: list[list[tuple[int, float]]], filters: Filters,
+                  limit: int, per_hit: int, skip: set[str],
+                  weighed: tuple[dict[str, int], int] | None) -> list[dict[str, Any]]:
+    """Papers whose passages are among the ``ranked`` ones, best BM25 first; ``weighed`` asks, besides, that
+    a paper hold at least :data:`MIN_COVERAGE` of the query's information. The papers returned join ``skip``."""
+    if limit <= 0:
         return []
     scored: list[tuple[float, sqlite3.Row, list[sqlite3.Row]]] = []
-    weighed = document_frequency(stores[0], words)
-    passages = stores[0].execute("SELECT max(rowid) FROM passage").fetchone()[0] or 0
-    for conn in stores:
-        expr = keyword_exprs(weighed if conn is stores[0] else document_frequency(conn, words))[0 if every else 1]
-        if not expr:
-            continue
-        rows = conn.execute(
-            "SELECT p.*, bm25(passage_bm25) AS rank FROM passage_bm25 JOIN passage p ON p.id = passage_bm25.rowid"
-            " WHERE passage_bm25 MATCH ? ORDER BY rank LIMIT ?", (expr, CANDIDATES)).fetchall()
-        by_paper: dict[str, list[sqlite3.Row]] = {}
-        for p in rows:
-            if p["paper_id"] not in skip:
-                by_paper.setdefault(p["paper_id"], []).append(p)
-        papers = _papers(conn, list(by_paper))
-        scored += [(-found[0]["rank"], papers[pid], found) for pid, found in by_paper.items()
-                   if pid in papers and filters.keeps(papers[pid]["ts"])]
+    for conn, ids in zip(stores, ranked):
+        scored += _walk(conn, ids, filters, limit if per_hit == 1 else None, skip, weighed)
     scored.sort(key=lambda s: -s[0])
     hits = []
     for score, paper, found in scored:
         if len(hits) == limit:
             break
-        if paper["paper_id"] in skip or (not every and coverage(weighed, passages, found[0]["text"]) < MIN_COVERAGE):
+        if paper["paper_id"] in skip:
             continue
         skip.add(paper["paper_id"])
         hits.append(_hit(paper, "keyword", score, [_quote(p) for p in found[:per_hit]]))
     return hits
+
+
+_pool = ThreadPoolExecutor(max_workers=12, thread_name_prefix="kb-fast")
+
+
+def _on(path: Path, job, *args):
+    conn = _open_ro(path)
+    try:
+        return job(conn, *args)
+    finally:
+        conn.close()
+
+
+def _weigh(conn: sqlite3.Connection, words: list[str]) -> tuple[dict[str, int], int]:
+    return document_frequency(conn, words), conn.execute("SELECT max(rowid) FROM passage").fetchone()[0] or 0
+
+
+def _split(path: Path, expr: str, cost: int, total: int) -> list[Future]:
+    """Score ``expr`` in as many id ranges as its cost warrants. BM25 weighs a passage by the whole index's
+    statistics, so the ranges rank the same as one scan would, and their best merge to the same top."""
+    if not expr:
+        return []
+    parts = max(1, min(SHARDS, cost // SHARD_PASSAGES))
+    step = -(-total // parts)
+    return [_pool.submit(_on, path, _ranked, expr, i * step + 1, (i + 1) * step) for i in range(parts)]
+
+
+class _Lookups:
+    """The index lookups of one query, started on every store at once, each on a connection of its own: SQLite
+    holds no lock a reader needs, and releases the interpreter while it scans, so the slowest one sets the time.
+    An AND that is dear to score waits until the literal hits show whether the answer needs it."""
+
+    def __init__(self, paths: list[Path], needle: str, words: list[str]) -> None:
+        self._literal = [_pool.submit(_on, p, _literal_rows, needle) if len(needle) >= TRIGRAM else None
+                         for p in paths]
+        weights = [_pool.submit(_on, p, _weigh, words) if words else None for p in paths]
+        self.weighed: tuple[dict[str, int], int] = ({}, 0)
+        self._every: list[Any] = []
+        self._related: list[list[Future]] = []
+        for path, weight in zip(paths, weights):
+            if weight is None:
+                self._every.append([])
+                self._related.append([])
+                continue
+            df, total = weight.result()
+            if path == paths[0]:
+                self.weighed = (df, total)
+            (and_expr, and_cost), (or_expr, or_cost) = keyword_plan(df)
+            self._every.append(_split(path, and_expr, and_cost, total) if and_cost <= SHARD_PASSAGES
+                               else (path, and_expr, and_cost, total))
+            self._related.append(_split(path, or_expr, or_cost, total))
+
+    def literal(self) -> list[list[sqlite3.Row]]:
+        return [f.result() if f else [] for f in self._literal]
+
+    def every(self) -> list[list[tuple[int, float]]]:
+        started = [_split(*e) if isinstance(e, tuple) else e for e in self._every]
+        return [_best(fs) for fs in started]
+
+    def related(self) -> list[list[tuple[int, float]]]:
+        return [_best(fs) for fs in self._related]
+
+
+def _best(parts: list[Future]) -> list[tuple[int, float]]:
+    got = [r for f in parts for r in f.result()]
+    return got if len(parts) < 2 else sorted(got, key=lambda r: r[1])[:CANDIDATES]
