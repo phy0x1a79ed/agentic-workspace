@@ -66,6 +66,29 @@ A backend is a folder under `awm/services/<name>/` with a self-contained executa
 - **Out-of-process.** The supervisor spawns each service and records its PID in a journal. The control-WS lease is liveness. Each service is a `run.sh` plus a small `hub_adapter.py` built on `awm.gatewayclient.ServiceAdapter`, which handles register, ready, serve, dispatch and reconnect. `awm.gatewayclient` also has `call`, `call_sync` and `RefCache` for service-to-service calls. The `/svc/*` control plane is unauthenticated and loopback-only. `awm/services/dev/` is the smallest complete example to copy.
 - **Install.** Install each module through its own `install.sh`, never with hand-rolled `pip`. `awm/gateway/install.sh` is the composition root. It installs `config`, `persistence` and every feature dist with `--no-deps`, then the gateway with its third-party deps. Set `AWM_ENV` to change the target env.
 
+### Roots outside the tree
+
+A node can run services and pages that live outside the awm checkout, so a private project keeps them in its own repo and they never reach GitHub or a peer. List the extra roots in the node-local `.awm/env`, beside `AWM_PROFILES`:
+
+- `AWM_SERVICE_ROOTS` — `:`-separated directories, each laid out like `awm/services/`.
+- `AWM_PAGE_ROOTS` — `:`-separated directories, each laid out like `awm/pages/`.
+
+A folder under an extra root follows the whole contract of an in-tree one: `run.sh`, `service.toml`, `enabled.json` and a page that follows its same-named service. `discovery.service_folder` resolves a name to the first root that holds a folder of that name. The built-in root comes first, so it wins a clash. Discovery logs the shadowed folder and ignores it. It also logs and skips an entry that is not a directory.
+
+`awm deploy` loads `.awm/env` before it plans, so the extra roots reach every step:
+
+1. `gateway/install.sh` runs each extra service's `install.sh` with `AWM_ROOT` (this `awm/` tree) and `AWM_ENV` exported. A new extra service with an `install.sh` changes the dist set and triggers the install.
+2. `scripts/build.sh` builds each extra page with this tree's `vite.config.ts` and `node_modules`. The page imports `@awm/*` exactly as an in-tree page does. Its `dist/` lands in its own folder.
+3. Verify waits for the extra services and pages too.
+
+The owning repo provides the rest of the contract:
+
+- A Python service ships an `install.sh` that runs `pip install -e` on its folder into `$AWM_ENV` and writes the `.runtime-env` sidecar. Its `run.sh` is then the same as an in-tree one. It reaches awm paths through `$AWM_ROOT`, not through `git rev-parse`, which names the owning repo.
+- A service that execs a binary needs no `install.sh`. Its `run.sh` changes to its own folder and execs the binary, which registers with the hub through the three injected env vars.
+- The owning repo gitignores `dist/` and `.runtime-env`. awm's `.gitignore` covers only its own tree.
+
+**CAUTION** A page outside the tree finds no `node_modules` above its source. The `awm-resolve-from-tree` plugin in `vite.config.ts` resolves its bare imports from this tree. It also drops the svelte plugin's `resolve.dedupe` for such a page, because dedupe resolves `svelte` from the Vite root, which is the page folder. An in-tree build is unaffected. Diff a built in-tree `dist/` before you change either rule.
+
 ### Registration and the catalog
 
 A service declares its API as a serializable `ready.api` manifest with `functions`, `emitters` and `subscriptions`. The catalog (`catalog.py`) compiles the manifest into `Operation`s and renders them onto MCP, HTTP and the CLI. `/tools` and `/invoke` read from it. The hub-mediated comms model (`call` request and reply, `emit` and `sub` pub/sub, `Bridge` streaming, identity through `as_`, never direct sockets) is documented in `catalog.py`.
@@ -194,7 +217,7 @@ At boot the gateway reconciles, then bootstraps:
 1. `reconcile_journaled_services()` handles everything already in the journal.
 2. The gateway bootstraps every discovered, enabled service that is not in the journal.
 
-A fresh clone or a wiped `.awm/state/services.json` therefore comes up with every enabled service running. Discovery is a filesystem scan of `awm/services/*` for `run.sh`. A disabled service stays down across restarts.
+A fresh clone or a wiped `.awm/state/services.json` therefore comes up with every enabled service running. Discovery is a filesystem scan of every service root for `run.sh`. A disabled service stays down across restarts.
 
 `awm/gateway/dev/run.sh` launches uvicorn without `--reload`, so saving a backend file never swaps the worker out from under its services. Run `awm dev restart` after a backend edit.
 

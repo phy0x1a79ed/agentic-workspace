@@ -31,6 +31,8 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from awm.gateway.hub import discovery
+
 
 # ---------------------------------------------------------------------------
 # Root resolution — anchored on the gateway package, never cwd
@@ -64,7 +66,7 @@ def awm_root() -> Path:
 def installable_units(root: Path) -> list[str]:
     """The identifiers ``install.sh`` would install: the gateway, every
     component library, and every service folder that ships its own
-    ``install.sh``.
+    ``install.sh``, in ``root`` or in an ``AWM_SERVICE_ROOTS`` entry.
 
     Editable installs mean only *membership* matters (a code edit needs no
     reinstall), so this is a set of names — a newly-added service or component
@@ -76,11 +78,10 @@ def installable_units(root: Path) -> list[str]:
         for d in sorted(comp.iterdir()):
             if d.is_dir() and not d.name.startswith((".", "_")):
                 units.append(f"component:{d.name}")
-    svc = root / "services"
-    if svc.is_dir():
-        for d in sorted(svc.iterdir()):
-            if (d / "install.sh").is_file():
-                units.append(f"service:{d.name}")
+    roots = [root / "services", *discovery.extra_roots(discovery.SERVICE_ROOTS_ENV)]
+    for d in discovery.root_folders(roots):
+        if (d / "install.sh").is_file():
+            units.append(f"service:{d.name}")
     return sorted(units)
 
 
@@ -121,15 +122,10 @@ def page_signature(page_dir: Path) -> str:
 def page_signatures(root: Path) -> dict[str, str]:
     """``{page_name: content_sig}`` for every *buildable* page (a
     ``pages/<name>/`` with an ``index.html`` — the same marker ``build.sh``
-    keys on)."""
-    pages = root / "pages"
-    out: dict[str, str] = {}
-    if not pages.is_dir():
-        return out
-    for d in sorted(pages.iterdir()):
-        if d.is_dir() and (d / "index.html").is_file():
-            out[d.name] = page_signature(d)
-    return out
+    keys on), in ``root`` or in an ``AWM_PAGE_ROOTS`` entry."""
+    roots = [root / "pages", *discovery.extra_roots(discovery.PAGE_ROOTS_ENV)]
+    return {d.name: page_signature(d) for d in discovery.root_folders(roots)
+            if (d / "index.html").is_file()}
 
 
 # ---------------------------------------------------------------------------
