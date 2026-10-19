@@ -38,6 +38,13 @@ sets it in its gitignored dev ``.env``, prod sets none). Resolution precedence:
 A corrupt marker reads as marked-but-unmatched (disabled + logged), never
 fail-open.
 
+Extra roots: ``AWM_SERVICE_ROOTS`` and ``AWM_PAGE_ROOTS`` (``os.pathsep`` lists,
+set in the node-local ``.awm/env``) add service and page roots after the
+built-in one, so a node can run folders that live outside the awm checkout. A
+folder name resolves to the first root that holds it: the built-in root wins a
+clash, and the shadowed folder is logged and ignored. A missing root is logged
+and skipped.
+
 Tool, tier and archive: the same ``service.toml`` may carry ``tool`` (the MCP
 tool the service publishes under; the folder name when absent), ``tier``
 (``"on"``, or ``"off"`` to keep the tool off the MCP surface; anything else reads
@@ -111,6 +118,79 @@ def services_root() -> Path:
     # Fall back to the fixed nesting: <root>/awm/gateway/awm/gateway
     # → parents[2] == <root>/awm.
     return pkg_dir.parents[2] / "services"
+
+
+SERVICE_ROOTS_ENV = "AWM_SERVICE_ROOTS"
+PAGE_ROOTS_ENV = "AWM_PAGE_ROOTS"
+
+# Messages already logged, so a root or clash read on every /tools call logs once.
+_logged: set[str] = set()
+
+
+def _log_once(msg: str) -> None:
+    if msg not in _logged:
+        _logged.add(msg)
+        log.warning(msg)
+
+
+def extra_roots(env_var: str) -> list[Path]:
+    """The existing directories listed in ``env_var``, in order. An entry that
+    is not a directory is logged and skipped."""
+    roots: list[Path] = []
+    for raw in (os.environ.get(env_var) or "").split(os.pathsep):
+        raw = raw.strip()
+        if not raw:
+            continue
+        path = Path(raw).expanduser()
+        if not path.is_dir():
+            _log_once(f"{env_var}: {raw} is not a directory; ignored")
+            continue
+        path = path.resolve()
+        if path not in roots:
+            roots.append(path)
+    return roots
+
+
+def service_roots() -> list[Path]:
+    """The built-in services root, then every ``AWM_SERVICE_ROOTS`` entry."""
+    return [services_root(), *extra_roots(SERVICE_ROOTS_ENV)]
+
+
+def _valid_name(name: str) -> bool:
+    return bool(name) and name == Path(name).name and not name.startswith((".", "_"))
+
+
+def _first_folder(roots: list[Path], name: str) -> Path | None:
+    if not _valid_name(name):
+        return None
+    for root in roots:
+        cand = root / name
+        if cand.is_dir():
+            return cand
+    return None
+
+
+def root_folders(roots: list[Path]) -> list[Path]:
+    """Every folder under ``roots``, sorted by name; a name held by an earlier
+    root shadows the same name in a later one."""
+    found: dict[str, Path] = {}
+    for root in roots:
+        if not root.is_dir():
+            continue
+        for entry in root.iterdir():
+            if not entry.is_dir() or not _valid_name(entry.name):
+                continue
+            if entry.name in found:
+                _log_once(f"{entry} is shadowed by {found[entry.name]}; ignored")
+                continue
+            found[entry.name] = entry
+    return [found[n] for n in sorted(found)]
+
+
+def service_folder(name: str) -> Path | None:
+    """The folder of the service called ``name``: the first service root that
+    holds a directory of that name, or ``None``."""
+    return _first_folder(service_roots(), name)
 
 
 # ---------------------------------------------------------------------------
@@ -249,21 +329,15 @@ def read_archive(folder: Path) -> list[dict]:
 
 
 def service_archive(name: str) -> list[dict]:
-    """Archive tables of the service folder called ``name`` under the services root."""
-    if not name or name != Path(name).name or name.startswith("."):
-        return []
-    return read_archive(services_root() / name)
+    """Archive tables of the service folder called ``name``."""
+    folder = service_folder(name)
+    return read_archive(folder) if folder is not None else []
 
 
 def archive_sources() -> list[str]:
     """Every archive source name any discovered service declares, in folder order."""
-    root = services_root()
-    if not root.is_dir():
-        return []
     seen: list[str] = []
-    for entry in sorted(root.iterdir()):
-        if not entry.is_dir() or entry.name.startswith((".", "_")):
-            continue
+    for entry in root_folders(service_roots()):
         for table in read_archive(entry):
             if table["name"] not in seen:
                 seen.append(table["name"])
@@ -271,18 +345,16 @@ def archive_sources() -> list[str]:
 
 
 def service_tier(name: str) -> str:
-    """Tier of the service folder called ``name`` under the services root."""
-    if not name or name != Path(name).name or name.startswith("."):
-        return TIER_ON
-    return read_tier(services_root() / name)
+    """Tier of the service folder called ``name``."""
+    folder = service_folder(name)
+    return read_tier(folder) if folder is not None else TIER_ON
 
 
 def service_tool(name: str) -> str:
-    """Tool of the service folder called ``name``; ``name`` itself when it is not
-    a folder under the services root."""
-    if not name or name != Path(name).name or name.startswith("."):
-        return name
-    return read_tool(services_root() / name, name)
+    """Tool of the service folder called ``name``; ``name`` itself when no
+    service root holds such a folder."""
+    folder = service_folder(name)
+    return read_tool(folder, name) if folder is not None else name
 
 
 def singleton_owner(name: str, folder: Path | None = None) -> str | None:
@@ -291,7 +363,7 @@ def singleton_owner(name: str, folder: Path | None = None) -> str | None:
     from awm.gateway import peer_catalog
 
     if folder is None:
-        folder = services_root() / name
+        folder = service_folder(name) or services_root() / name
     return peer_catalog.declared_homes().get(read_tool(folder, name))
 
 
@@ -314,7 +386,8 @@ def is_enabled(name: str) -> bool:
     """A service is enabled unless homed on another node, explicitly disabled
     in ``enabled.json`` or held out by an unmatched profile marker (see the
     module doc)."""
-    return _resolve_enabled(name, services_root() / name, load_enabled())
+    folder = service_folder(name) or services_root() / name
+    return _resolve_enabled(name, folder, load_enabled())
 
 
 def set_enabled(name: str, enabled: bool) -> None:
@@ -332,7 +405,7 @@ def set_enabled(name: str, enabled: bool) -> None:
 # ---------------------------------------------------------------------------
 
 def discover_services() -> list[ServiceSpec]:
-    """Scan the services root for subdirs containing an executable ``run.sh``.
+    """Scan the service roots for subdirs containing an executable ``run.sh``.
 
     Returned sorted by name. The enable flag is folded in so callers
     (bootstrap, ``awm services list``) get one consistent view.
@@ -340,12 +413,9 @@ def discover_services() -> list[ServiceSpec]:
     root = services_root()
     if not root.is_dir():
         log.warning("services root %s does not exist", root)
-        return []
     enabled_map = load_enabled()
     specs: list[ServiceSpec] = []
-    for entry in sorted(root.iterdir()):
-        if not entry.is_dir() or entry.name.startswith((".", "_")):
-            continue
+    for entry in root_folders(service_roots()):
         run = entry / RUN_SCRIPT
         if not run.is_file():
             continue
@@ -396,6 +466,17 @@ def pages_root() -> Path:
     return pkg_dir.parents[2] / "pages"
 
 
+def page_roots() -> list[Path]:
+    """The built-in pages root, then every ``AWM_PAGE_ROOTS`` entry."""
+    return [pages_root(), *extra_roots(PAGE_ROOTS_ENV)]
+
+
+def page_folders() -> list[Path]:
+    """Every page folder under the page roots, sorted by name; the built-in
+    root wins a name clash."""
+    return root_folders(page_roots())
+
+
 def read_prefix_txt(pkg_dir: Path, default: str) -> str:
     """A page's optional ``prefix.txt`` override (normalized to lead with
     ``/``), else ``default``.
@@ -432,14 +513,14 @@ def is_page_enabled(name: str, enabled_map: dict[str, bool] | None = None) -> bo
         enabled_map = load_enabled()
     if name in enabled_map:
         return enabled_map[name]
-    folder = services_root() / name
-    if (folder / RUN_SCRIPT).is_file():
+    folder = service_folder(name)
+    if folder is not None and (folder / RUN_SCRIPT).is_file():
         return _resolve_enabled(name, folder, enabled_map)
     return True
 
 
 def discover_pages(*, include_disabled: bool = False) -> list[PageSpec]:
-    """Scan the pages root for bundles with a built ``dist/``.
+    """Scan the page roots for bundles with a built ``dist/``.
 
     A page is *servable* iff its ``dist/`` exists — source-only pages (no
     ``dist/`` yet, or a page still mid-build) are skipped. This mirrors how
@@ -451,12 +532,9 @@ def discover_pages(*, include_disabled: bool = False) -> list[PageSpec]:
     root = pages_root()
     if not root.is_dir():
         log.warning("pages root %s does not exist", root)
-        return []
     enabled_map = load_enabled()
     specs: list[PageSpec] = []
-    for entry in sorted(root.iterdir()):
-        if not entry.is_dir() or entry.name.startswith((".", "_")):
-            continue
+    for entry in page_folders():
         dist = entry / "dist"
         if not dist.is_dir():
             continue
