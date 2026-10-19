@@ -693,7 +693,7 @@ class Probe:
         for i, term in enumerate(terms if self.hidden else terms[:1]):
             label = f"1.{i + 1} search query {term[:40]!r}"
             self.check(label, lambda t=term: self.search_hits(t, terms))
-            self.check(f"{label} sources=transcripts",
+            self.check(f"14.{i + 1} search query {term[:40]!r} sources=transcripts",
                        lambda t=term: self.transcript_hits(t, terms), may_be_vacuous=True)
         self.check("2 search get journal doc", self.search_get, control="get")
         self.check("3.1 scope search (all projects)", self.scope_search)
