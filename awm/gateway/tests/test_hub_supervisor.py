@@ -43,6 +43,7 @@ def _isolate_state(awm_workspace, tmp_path, monkeypatch):
     reg_mod._singleton = reg_mod.Registry()
     rpc_mod._channels.clear()
     supervisor.reset_breaker_state()
+    supervisor.set_shutting_down(False)
     yield
     reg_mod._singleton = reg_mod.Registry()
     rpc_mod._channels.clear()
@@ -646,6 +647,89 @@ class TestRespawnBreaker:
             gateway_ops._op_services_start("revive"))
 
         assert supervisor.breaker_reason("revive") is None
+
+
+class TestSelfHealSweep:
+    """The 45s sweep retries a service that died or hung before it registered."""
+
+    def _journal(self, name, pid):
+        supervisor.update_service_journal_entry(name, {
+            "service_id": "",
+            "prefix": f"/svc/{name}",
+            "start_cmd": ["run.sh"],
+            "cwd": "/srv",
+            "last_pid": pid,
+        })
+
+    def _sweep(self):
+        asyncio.new_event_loop().run_until_complete(supervisor._self_heal_once())
+
+    def test_respawns_a_child_that_exited_before_registering(self, monkeypatch):
+        """A dead child stays a zombie until reaped, and a zombie passes
+        ``os.kill(pid, 0)``. The sweep must still see it as dead."""
+        proc = subprocess.Popen(["sh", "-c", "exit 3"], start_new_session=True)
+        deadline = time.monotonic() + 5
+        while open(f"/proc/{proc.pid}/stat").read().rpartition(")")[2].split()[0] != "Z":
+            assert time.monotonic() < deadline
+            time.sleep(0.01)
+        spawn = MagicMock(return_value=4242)
+        monkeypatch.setattr(supervisor, "spawn_service", spawn)
+        monkeypatch.setattr(supervisor, "kill_pid_group", MagicMock())
+        self._journal("early-exit", proc.pid)
+
+        self._sweep()
+
+        spawn.assert_called_once()
+        with pytest.raises(ChildProcessError):
+            os.waitpid(proc.pid, os.WNOHANG)
+        proc.returncode = 3
+        assert supervisor.load_service_journal()["early-exit"]["last_pid"] == 4242
+
+    def test_respawns_a_child_that_never_gets_ready(self, monkeypatch):
+        """A live child with no ready control is left alone for the grace, then
+        killed and respawned."""
+        proc = subprocess.Popen(["sleep", "30"], start_new_session=True)
+        spawn = MagicMock(return_value=4243)
+        monkeypatch.setattr(supervisor, "spawn_service", spawn)
+        self._journal("hung", proc.pid)
+
+        self._sweep()
+        self._sweep()
+        spawn.assert_not_called()
+        assert proc.poll() is None
+
+        pid, since = supervisor._unready_since["hung"]
+        supervisor._unready_since["hung"] = (pid, since - supervisor._READY_GRACE_S - 1)
+        self._sweep()
+
+        spawn.assert_called_once()
+        with pytest.raises(ProcessLookupError):
+            os.kill(proc.pid, 0)
+        proc.returncode = -signal.SIGTERM
+
+    def test_a_ready_service_is_never_timed(self, monkeypatch):
+        spawn = MagicMock()
+        monkeypatch.setattr(supervisor, "spawn_service", spawn)
+        monkeypatch.setattr(supervisor, "has_ready_control", lambda sid: True)
+        self._journal("healthy", os.getpid())
+
+        self._sweep()
+
+        assert "healthy" not in supervisor._unready_since
+        spawn.assert_not_called()
+
+    def test_a_service_that_never_comes_up_trips_the_breaker(self, monkeypatch):
+        spawn = MagicMock(return_value=4244)
+        monkeypatch.setattr(supervisor, "spawn_service", spawn)
+        monkeypatch.setattr(supervisor, "kill_pid_group", MagicMock())
+        monkeypatch.setattr(supervisor, "pid_alive", lambda pid: False)
+        self._journal("doomed", 4244)
+
+        for _ in range(supervisor._RESPAWN_BUDGET + 3):
+            self._sweep()
+
+        assert spawn.call_count == supervisor._RESPAWN_BUDGET
+        assert supervisor.breaker_reason("doomed") is not None
 
 
 class TestDisconnectWatchdogDedup:
