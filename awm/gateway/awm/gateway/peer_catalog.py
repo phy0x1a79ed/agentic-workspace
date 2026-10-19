@@ -87,6 +87,13 @@ log = logging.getLogger("awm.gateway.peer_catalog")
 #: validates against the snapshot but the peer itself is the final authority).
 _SWEEP_INTERVAL_S = 120.0
 
+#: Faster cadence while a peer has never answered, for the first minutes after
+#: start. At boot the first sweep runs before the auth service can sign a node
+#: token, and waiting the full interval leaves every session without the fleet's
+#: tools for two minutes.
+_SWEEP_RETRY_S = 10.0
+_SWEEP_RETRY_FOR_S = 300.0
+
 #: Per-peer ceiling for one catalog fetch. Bounded so a single blackholed peer
 #: cannot stall the sweep for the others — they run concurrently, but a sweep
 #: that never finishes never updates anything.
@@ -321,12 +328,21 @@ async def refresh_loop() -> None:
     best-effort per peer; this catches anything structural (an unreadable address
     book) without taking the loop down.
     """
+    started = time.monotonic()
     while True:
         try:
             await sweep()
         except Exception:  # noqa: BLE001 — a sweep must never kill the loop
             log.error("peer catalog sweep failed", exc_info=True)
-        await asyncio.sleep(_SWEEP_INTERVAL_S)
+        await asyncio.sleep(next_sweep_in(time.monotonic() - started))
+
+
+def next_sweep_in(elapsed: float) -> float:
+    never_reached = any(not p.get("reachable") and not p.get("domains")
+                        for p in _snapshot.values())
+    if never_reached and elapsed < _SWEEP_RETRY_FOR_S:
+        return _SWEEP_RETRY_S
+    return _SWEEP_INTERVAL_S
 
 
 # ---------------------------------------------------------------------------
