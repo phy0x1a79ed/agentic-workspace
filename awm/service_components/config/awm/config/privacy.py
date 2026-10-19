@@ -137,7 +137,10 @@ def _scope_covers(mark_scope: str, scope: str) -> bool:
     return scope == mark_scope or scope.startswith(mark_scope + "/")
 
 
-def _canonical(project: str | None, scope: str | None) -> tuple[str | None, str | None]:
+def canonical(project: str | None, scope: str | None) -> tuple[str | None, str | None]:
+    """The ``(project, scope)`` a journal spelling names: ``task:<p>`` and an
+    empty project with scope ``user:proj:<p>`` or ``project:<p>`` all name
+    project ``<p>``. The project is ``None`` when the spelling names none."""
     if not project and isinstance(scope, str):
         for channel in ("user:proj:", "project:"):
             if scope.startswith(channel):
@@ -145,6 +148,7 @@ def _canonical(project: str | None, scope: str | None) -> tuple[str | None, str 
     if isinstance(project, str) and project.startswith("task:"):
         project = project[len("task:"):]
     return project or None, scope
+
 
 
 def hidden(project: str, scope: str | None = None) -> bool:
@@ -155,7 +159,7 @@ def hidden(project: str, scope: str | None = None) -> bool:
     loaded = _load()
     if loaded is None:
         return True
-    project, scope = _canonical(project, scope)
+    project, scope = canonical(project, scope)
     if project is None:
         return False
     for m in loaded:

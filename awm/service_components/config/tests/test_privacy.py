@@ -219,3 +219,17 @@ def test_legacy_journal_spellings_name_the_project(projects):
                                  {"project": "", "scope": "workspace"}], "peer") == [{"project": "", "scope": "workspace"}]
     assert privacy.hides_args({"scope": "user:proj:avatar"})
     assert not privacy.hides_args({"scope": "dev"})
+
+
+@pytest.mark.parametrize("project,scope,want", [
+    ("task:avatar", None, ("avatar", None)),
+    ("task:avatar", "dev", ("avatar", "dev")),
+    ("", "user:proj:avatar", ("avatar", None)),
+    (None, "project:avatar", ("avatar", None)),
+    ("", "project:", (None, None)),
+    ("awm", "svc-a", ("awm", "svc-a")),
+    ("awm", "user:proj:avatar", ("awm", "user:proj:avatar")),
+    ("", "dev", (None, "dev")),
+])
+def test_canonical_names_the_project_a_spelling_means(project, scope, want):
+    assert privacy.canonical(project, scope) == want

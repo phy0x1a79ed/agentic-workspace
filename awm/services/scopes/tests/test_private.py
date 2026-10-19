@@ -222,3 +222,24 @@ def test_a_peer_heal_reports_no_private_scope(peer_marks):
         assert not {r["project"] for r in peer[key]} & {"proj-b", "loose"}
     assert {r["project"] for r in local["audit_errors"]} >= {"proj-b", "loose"}
     assert heal({"project": "proj-b", "dry_run": True}, "peer")["audit_errors"] == []
+
+
+@pytest.mark.parametrize("as_", ["peer", "peer:altair"])
+@pytest.mark.parametrize("args", [
+    {"project": "proj-a", "private": True},
+    {"project": "proj-a", "private": False},
+    {"project": "no-such-project", "private": True},
+    {"project": "proj-a", "private": "maybe"},
+])
+def test_a_peer_cannot_set_or_clear_a_mark(scopes_workspace, seeded_scopes, as_, args):
+    _call(project="proj-a", scope="scope-1", private=True)
+    before = privacy.marks()
+    with pytest.raises(RuntimeError) as refused:
+        HANDLERS["scope_private"](args, as_)
+    assert str(refused.value) == "unknown function 'scope_private'"
+    assert privacy.marks() == before
+
+
+@pytest.mark.parametrize("as_", [None, "user:tony", "agent:x"])
+def test_a_local_or_user_caller_may_set_a_mark(scopes_workspace, seeded_scopes, as_):
+    assert HANDLERS["scope_private"]({"project": "proj-a", "private": True}, as_)["private"] is True

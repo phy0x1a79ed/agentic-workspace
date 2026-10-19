@@ -186,6 +186,17 @@ def _hide(as_: str | None) -> Hide | None:
     return privacy.hidden_slug if privacy.from_peer(as_) else None
 
 
+def _hide_path(as_: str | None) -> search.HidePath | None:
+    """For a peer caller, the test that leaves out a session that ever worked under a marked path."""
+    return privacy.hidden_path if privacy.from_peer(as_) else None
+
+
+def _local_only(fn: str, as_: str | None) -> None:
+    """Refuse a peer the archive's maintenance verbs, in the words used for a verb that does not exist."""
+    if privacy.from_peer(as_):
+        raise RuntimeError(f"unknown function {fn!r}")
+
+
 def _status(a: dict, as_: str | None = None) -> dict:
     return status.report(days=float(a.get("days") or sweep.DEFAULT_RETENTION_DAYS),
                          prune_days=float(a["prune_days"]) if a.get("prune_days") else None,
@@ -194,32 +205,37 @@ def _status(a: dict, as_: str | None = None) -> dict:
 
 def _search(a: dict, as_: str | None = None) -> dict:
     return search.find(a["pattern"], project=a.get("project"),
-                       limit=int(a.get("limit") or search.MAX_HITS), hide=_hide(as_))
+                       limit=int(a.get("limit") or search.MAX_HITS), hide=_hide(as_),
+                       hide_path=_hide_path(as_))
 
 
 def _query(a: dict, as_: str | None = None) -> dict:
     return query.hits(a["query"], project=a.get("project"),
-                      limit=int(a.get("limit") or query.MAX_HITS), hide=_hide(as_))
+                      limit=int(a.get("limit") or query.MAX_HITS), hide=_hide(as_),
+                      hide_path=_hide_path(as_))
 
 
 def _restore(a: dict, as_: str | None = None) -> dict:
-    hide = _hide(as_)
-    if hide and hide(a["project"]):
+    hide, hide_path = _hide(as_), _hide_path(as_)
+    transcript = sweep.ARCHIVE / a["project"] / (a["session"] + ".jsonl.gz")
+    if hide and (hide(a["project"]) or (transcript.exists() and search.entered(transcript, hide_path))):
         raise FileNotFoundError(f"{a['project']}/{a['session']} is not in the archive")
     return sweep.restore(a["project"], a["session"])
 
 
 def _sweep(a: dict, as_: str | None = None) -> dict:
+    _local_only("sweep", as_)
     result = sweep.archive(days=float(a.get("days") or sweep.DEFAULT_RETENTION_DAYS),
-                           dry_run=bool(a.get("dry_run")), hide=_hide(as_))
+                           dry_run=bool(a.get("dry_run")))
     result["run"] = runs.RunsDAO().record("sweep", result,
                                           trigger=a.get("_trigger", "manual"))
     return result
 
 
 def _prune(a: dict, as_: str | None = None) -> dict:
+    _local_only("prune", as_)
     result = sweep.prune(days=float(a["days"]),
-                         dry_run=a.get("dry_run", True) is not False, hide=_hide(as_))
+                         dry_run=a.get("dry_run", True) is not False)
     result["run"] = runs.RunsDAO().record("prune", result,
                                           trigger=a.get("_trigger", "manual"))
     return result

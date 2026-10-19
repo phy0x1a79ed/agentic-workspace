@@ -323,7 +323,9 @@ def _handle_scope_heal(args: dict, as_: str | None = None) -> dict:
             "audit_errors": privacy.visible_rows(audit["errors"], as_)}
 
 
-def _handle_scope_private(args: dict) -> dict:
+def _handle_scope_private(args: dict, as_: str | None = None) -> dict:
+    if privacy.from_peer(as_):
+        raise RuntimeError("unknown function 'scope_private'")
     flag = args["private"]
     if isinstance(flag, str):
         flag = {"true": True, "false": False}.get(flag.strip().lower(), flag)

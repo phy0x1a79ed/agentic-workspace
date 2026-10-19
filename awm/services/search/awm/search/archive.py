@@ -291,7 +291,7 @@ class Archive:
         if row["mode"] != "index":
             raise ValueError(f"{source!r} is a live source: it holds no stored copy to get")
         doc = await asyncio.to_thread(_with_conn, store.get_document, source, doc_id)
-        if doc is None or index.covered(hidden, doc["project"], doc["scope"]):
+        if doc is None or index.covered(hidden, doc["project"], doc["scope"], doc["tags"]):
             raise ValueError(f"no document {source}:{doc_id}")
         return {"document": {**{k: doc[k] for k in ("title", "text", "project", "scope", "kind", "ts", "url")
                                 if doc[k]}, "source": source, "id": doc_id, "frozen": not row["present"],

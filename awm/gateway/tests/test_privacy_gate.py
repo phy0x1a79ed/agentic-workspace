@@ -14,7 +14,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from awm.config import privacy
-from awm.gateway import catalog, peer_catalog, server
+from awm.gateway import catalog, peer_catalog, private_gate, server
 from awm.gateway.hub import rpc
 from awm.gateway.hub.registry import ServiceRecord
 from awm.gateway.hub.static import serve_static
@@ -382,3 +382,112 @@ async def test_static_with_a_corrupt_marks_file_serves_a_peer_nothing(files, cor
     resp = await _serve(files, "/files/projects/awm/svc-b/README.md", DOMESTIC)
     assert resp.status_code == 404
     assert (await _serve(files, "/files/projects/awm/svc-b/README.md")).status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# Static door: records of private work outside the marked paths
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def root_mount():
+    """The ``/files`` door as production mounts it: the whole filesystem."""
+    return ServiceRecord(name="files", prefix="/files", kind="static", static_dir="/")
+
+
+@pytest.fixture()
+def home(tmp_path, monkeypatch):
+    """A gateway home whose ``~/.claude`` holds a plan and a transcript filed
+    under the workspace's ``projects`` slug, not under the marked path."""
+    home = tmp_path / "home"
+    (home / ".claude" / "plans").mkdir(parents=True)
+    (home / ".claude" / "plans" / "plan.md").write_text("private plan")
+    monkeypatch.setenv("HOME", str(home))
+    return home
+
+
+@pytest.fixture()
+def records(awm_workspace, projects, home, tmp_path):
+    """Files a peer could learn private work from, each outside every mark."""
+    ws = awm_workspace["workspace"]
+    (ws / ".awm" / "services" / "journal").mkdir(parents=True)
+    (ws / ".awm" / "services" / "journal" / "journal.db").write_text("rows")
+    slugged = tmp_path / "logs" / privacy.slug(projects / "avatar" / "Avatar" / "dev")
+    slugged.mkdir(parents=True)
+    (slugged / "s.jsonl").write_text("{}")
+    scratch = tmp_path / "scratch.txt"
+    scratch.write_text("scratch")
+    return {
+        "awm_dir": ws / ".awm" / "services" / "journal" / "journal.db",
+        "claude": home / ".claude" / "plans" / "plan.md",
+        "slug": slugged / "s.jsonl",
+        "tmp": scratch,
+        "proc": "/proc/self/status",
+    }
+
+
+def _url(path):
+    return "/files" + str(path)
+
+
+@pytest.mark.parametrize("which", ["awm_dir", "claude", "slug", "tmp", "proc"])
+async def test_static_refuses_a_peer_the_records_of_private_work(
+        root_mount, records, marked, which, monkeypatch):
+    if which != "tmp":
+        # The fixtures live under /tmp; take it off the list so each rule is
+        # shown to refuse on its own.
+        monkeypatch.setattr(private_gate, "SYSTEM_DENY_ROOTS",
+                            tuple(r for r in private_gate.SYSTEM_DENY_ROOTS if r != "/tmp"))
+    for as_ in PEERS:
+        resp = await _serve(root_mount, _url(records[which]), as_)
+        assert resp.status_code == 404 and resp.body == b"not found"
+    assert (await _serve(root_mount, _url(records[which]))).status_code == 200
+    assert (await _serve(root_mount, _url(records[which]), "user:tony")).status_code == 200
+
+
+async def test_static_refuses_a_peer_the_marks_file_itself(root_mount, records, marked):
+    resp = await _serve(root_mount, _url(privacy.marks_path()), DOMESTIC)
+    assert resp.status_code == 404
+
+
+async def test_static_refuses_a_peer_a_symlink_into_claude(root_mount, records, marked):
+    link = marked / "awm" / "svc-b" / "plan-link.md"
+    link.symlink_to(records["claude"])
+    assert (await _serve(root_mount, _url(link), DOMESTIC)).status_code == 404
+    assert (await _serve(root_mount, _url(link))).status_code == 200
+
+
+async def test_static_still_serves_a_peer_the_workspace_outside_the_marks(
+        root_mount, records, marked):
+    resp = await _serve(root_mount, _url(marked / "awm" / "svc-b" / "README.md"), DOMESTIC)
+    assert resp.status_code == 200
+
+
+@pytest.mark.parametrize("which", ["awm_dir", "claude", "slug", "tmp", "proc"])
+async def test_static_without_marks_serves_a_peer_as_before(root_mount, records, which):
+    resp = await _serve(root_mount, _url(records[which]), DOMESTIC)
+    assert resp.status_code == 200
+
+
+async def test_a_gate_that_raises_refuses_the_peer(root_mount, records, marked, monkeypatch):
+    def boom(*a, **kw):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(privacy, "hidden_path", boom)
+    readme = marked / "awm" / "svc-b" / "README.md"
+    assert (await _serve(root_mount, _url(readme), DOMESTIC)).status_code == 404
+    assert (await _serve(root_mount, _url(readme))).status_code == 200
+    assert private_gate.refuses(DOMESTIC, {"path": str(readme)})
+    assert not private_gate.refuses(None, {"path": str(readme)})
+
+
+async def test_static_answers_a_nul_byte_with_404(files, marked):
+    assert (await _serve(files, "/files/projects/awm/svc-b/x\x00y", DOMESTIC)).status_code == 404
+    assert (await _serve(files, "/files/projects/awm/svc-b/x\x00y")).status_code == 404
+
+
+async def test_emit_whose_classification_raises_reaches_locals_only(marked):
+    payload = {"event": "write", "path": str(marked / "awm" / "svc-b") + "/x\x00y"}
+    got = await _emit_round(payload)
+    assert got[DOMESTIC] is None
+    assert got[None] == payload and got["user:tony"] == payload

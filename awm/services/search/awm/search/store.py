@@ -18,7 +18,7 @@ from awm.persistence import embeddings as engine
 from awm.persistence.databases import get_connection, init_service_db
 
 SERVICE = "search"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 CORPUS = "doc"
 
 SCHEMA_SQL = """\
@@ -45,11 +45,18 @@ CREATE TABLE IF NOT EXISTS documents (
     scope    TEXT NOT NULL DEFAULT '',
     kind     TEXT NOT NULL DEFAULT '',
     ts       TEXT NOT NULL DEFAULT '', -- ISO 8601 UTC, second resolution, so text order is time order
-    url      TEXT NOT NULL DEFAULT ''
+    url      TEXT NOT NULL DEFAULT '',
+    tags     TEXT NOT NULL DEFAULT ''  -- lowercased, one per line, newline-bracketed (tag_field)
 );
 CREATE INDEX IF NOT EXISTS idx_documents_source ON documents(source, doc_id);
 CREATE INDEX IF NOT EXISTS idx_documents_filter ON documents(source, project, scope, kind, ts);
 """ + engine.EMBEDDINGS_DDL
+
+#: v2 adds ``tags``. Clearing ``synced_at`` makes every index source due at once, so the tags fill in.
+MIGRATIONS = {
+    (1, 2): "ALTER TABLE documents ADD COLUMN tags TEXT NOT NULL DEFAULT '';\n"
+            "UPDATE sources SET synced_at = NULL;",
+}
 
 _initialized = False
 
@@ -58,7 +65,7 @@ def init() -> None:
     """Idempotently create the search database and the engine's chunk store."""
     global _initialized
     if not _initialized:
-        init_service_db(SERVICE, SCHEMA_SQL, schema_version=SCHEMA_VERSION)
+        init_service_db(SERVICE, SCHEMA_SQL, schema_version=SCHEMA_VERSION, migrations=MIGRATIONS)
         _initialized = True
     conn = connect()
     try:
@@ -170,6 +177,16 @@ def engine_document(row: dict[str, Any]) -> engine.Document:
                            date=row["ts"][:10])
 
 
+def tag_field(tags: Any) -> str:
+    """The stored form of a document's tags: lowercased, one per line, with a newline at each end."""
+    if isinstance(tags, str):
+        tags = [tags]
+    if not isinstance(tags, (list, tuple)):
+        return ""
+    names = sorted({" ".join(str(t).split()).lower() for t in tags if str(t).strip()})
+    return "\n" + "\n".join(names) + "\n" if names else ""
+
+
 def clean(source: str, raw: dict[str, Any]) -> dict[str, Any] | None:
     """A stored row from one exported document, or ``None`` when it has no id or no content."""
     doc_id = str(raw.get("id") or "")
@@ -179,16 +196,16 @@ def clean(source: str, raw: dict[str, Any]) -> dict[str, Any] | None:
     return {"key": key_of(source, doc_id), "source": source, "doc_id": doc_id, "title": title,
             "text": text, "project": str(raw.get("project") or ""), "scope": str(raw.get("scope") or ""),
             "kind": str(raw.get("kind") or ""), "ts": normalize_ts(raw.get("ts")),
-            "url": str(raw.get("url") or "")}
+            "url": str(raw.get("url") or ""), "tags": tag_field(raw.get("tags"))}
 
 
 def put_documents(conn: sqlite3.Connection, rows: Iterable[dict[str, Any]]) -> None:
     conn.executemany(
-        "INSERT INTO documents (key, source, doc_id, title, text, project, scope, kind, ts, url)"
-        " VALUES (:key,:source,:doc_id,:title,:text,:project,:scope,:kind,:ts,:url)"
+        "INSERT INTO documents (key, source, doc_id, title, text, project, scope, kind, ts, url, tags)"
+        " VALUES (:key,:source,:doc_id,:title,:text,:project,:scope,:kind,:ts,:url,:tags)"
         " ON CONFLICT(key) DO UPDATE SET title=excluded.title, text=excluded.text,"
         " project=excluded.project, scope=excluded.scope, kind=excluded.kind, ts=excluded.ts,"
-        " url=excluded.url", list(rows))
+        " url=excluded.url, tags=excluded.tags", list(rows))
     conn.commit()
 
 

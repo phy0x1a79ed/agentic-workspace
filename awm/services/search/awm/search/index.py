@@ -6,49 +6,66 @@ import sqlite3
 from dataclasses import dataclass, field
 from typing import Any, Sequence
 
+from awm.config import privacy
 from awm.persistence import embeddings as engine
 
 from awm.search import store
 
 SNIPPET_CHARS = 300
-#: The journal's spellings of a project besides its bare name: a task's posts and a user's posts about it.
-TASK_PREFIX = "task:"
-USER_PROJECT_PREFIX = "user:proj:"
+#: The journal's spellings of a project ``<p>`` besides its bare name, in the ``project`` column ...
+PROJECT_SPELLINGS = ("task:{}",)
+#: ... and, with an empty ``project``, in the ``scope`` column. ``privacy.canonical`` reads all of them.
+CHANNEL_SPELLINGS = ("user:proj:{}", "project:{}")
+
+
+def _tag_needle(project: str) -> str:
+    return store.tag_field([project])
 
 
 def veil(hidden: Sequence[dict] | None) -> tuple[str, list[Any]]:
     """SQL that keeps only the documents no private mark in ``hidden`` covers, and its bound values.
 
-    ``None`` stands for an unreadable marks file: it keeps only documents that name no project or scope.
+    A mark covers a document by its project and scope, in any spelling ``privacy.canonical`` reads,
+    and also by a tag equal to the marked project's name, ignoring case.
+    ``None`` stands for an unreadable marks file: it keeps only documents that name no project,
+    scope or tag.
     """
     if hidden is None:
-        return "(project = '' AND scope = '')", []
+        return "(project = '' AND scope = '' AND tags = '')", []
     clauses: list[str] = []
     params: list[Any] = []
     for mark in hidden:
         project, scope = mark["project"], mark["scope"]
+        named = [project] + [s.format(project) for s in PROJECT_SPELLINGS]
+        in_named = f"project IN ({','.join('?' * len(named))})"
         if scope is None:
-            clauses.append("project IN (?, ?) OR (project = '' AND scope = ?)")
-            params += [project, TASK_PREFIX + project, USER_PROJECT_PREFIX + project]
+            channels = [s.format(project) for s in CHANNEL_SPELLINGS]
+            clauses.append(f"{in_named} OR (project = '' AND scope IN ({','.join('?' * len(channels))}))")
+            params += named + channels
         else:
-            clauses.append("project IN (?, ?) AND (scope = ? OR substr(scope, 1, ?) = ?)")
-            params += [project, TASK_PREFIX + project, scope, len(scope) + 1, scope + "/"]
+            clauses.append(f"{in_named} AND (scope = ? OR substr(scope, 1, ?) = ?)")
+            params += named + [scope, len(scope) + 1, scope + "/"]
+    for project in sorted({m["project"] for m in hidden}):
+        clauses.append("instr(tags, ?) > 0")
+        params.append(_tag_needle(project))
     if not clauses:
         return "", []
     return "NOT (" + " OR ".join(f"({c})" for c in clauses) + ")", params
 
 
-def covered(hidden: Sequence[dict] | None, project: str, scope: str) -> bool:
-    """Whether :func:`veil` would drop a document with this project and scope."""
+def covered(hidden: Sequence[dict] | None, project: str, scope: str, tags: str = "") -> bool:
+    """Whether :func:`veil` would drop a document with this project, scope and stored tags."""
     if hidden is None:
-        return bool(project or scope)
+        return bool(project or scope or tags)
+    name, named_scope = privacy.canonical(project, scope or None)
     for mark in hidden:
-        name, marked = mark["project"], mark["scope"]
-        named = project in (name, TASK_PREFIX + name)
-        if marked is None:
-            if named or (not project and scope == USER_PROJECT_PREFIX + name):
-                return True
-        elif named and (scope == marked or scope.startswith(marked + "/")):
+        if tags and _tag_needle(mark["project"]) in tags:
+            return True
+        if name != mark["project"]:
+            continue
+        marked = mark["scope"]
+        if marked is None or (named_scope is not None
+                              and (named_scope == marked or named_scope.startswith(marked + "/"))):
             return True
     return False
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import gzip
+import json
 import os
 import time
 
@@ -100,3 +101,53 @@ def test_an_unreadable_marks_file_hides_every_session_from_a_peer(tree, slugs):
     assert HANDLERS["query"]({"query": "kitchen"}, PEER)["hits"] == []
     assert HANDLERS["status"]({}, PEER)["live"]["sessions"] == 0
     assert len(HANDLERS["query"]({"query": "kitchen"}, LOCAL)["hits"]) == 4
+
+
+@pytest.fixture
+def wandered(tree, slugs, tmp_path):
+    """Archived sessions filed under the workspace folder: one that wandered into the marked project."""
+    _, archive = tree
+    root = tmp_path / "ws" / "projects"
+    folder = archive / privacy.slug(root)
+    folder.mkdir()
+    lines = {
+        "a-wander": [{"cwd": str(root), "text": "kitchen sink before"},
+                     {"text": "kitchen sink with no cwd"},
+                     {"cwd": str(root / "avatar" / "Avatar"), "text": "inside"},
+                     {"cwd": str(root), "text": "kitchen sink after"}],
+        "s-stay": [{"cwd": str(root), "text": "kitchen sink at home"},
+                   {"cwd": str(root / "avatar2"), "text": "kitchen sink next door"}],
+    }
+    for sid, body in lines.items():
+        with gzip.open(folder / f"{sid}.jsonl.gz", "wt") as fh:
+            fh.writelines(json.dumps(line) + "\n" for line in body)
+    return folder.name
+
+
+@pytest.mark.parametrize("verb,key", [("search", "pattern"), ("query", "query")])
+def test_a_peer_never_sees_a_session_that_entered_a_marked_path(wandered, verb, key):
+    def sessions(as_):
+        hits = HANDLERS[verb]({key: "kitchen", "project": wandered}, as_)["hits"]
+        return {h["session"] if verb == "search" else h["id"].split(":")[0]
+                for h in hits if h["project"] == wandered}
+    assert sessions(PEER) == {"s-stay"}
+    assert sessions(LOCAL) == sessions(USER) == {"a-wander", "s-stay"}
+
+
+def test_a_peer_limit_counts_only_sessions_it_may_see(wandered):
+    out = HANDLERS["search"]({"pattern": "kitchen", "project": wandered, "limit": 1}, PEER)
+    assert [h["session"] for h in out["hits"]] == ["s-stay"] and out["truncated"] is True
+
+
+def test_restore_answers_a_peer_as_if_a_wandering_session_were_not_archived(wandered, tree):
+    with pytest.raises(FileNotFoundError, match="^" + wandered + "/a-wander is not in the archive$"):
+        HANDLERS["restore"]({"project": wandered, "session": "a-wander"}, PEER)
+    assert HANDLERS["restore"]({"project": wandered, "session": "s-stay"}, PEER)["files"] == 1
+    assert HANDLERS["restore"]({"project": wandered, "session": "a-wander"}, LOCAL)["files"] == 1
+
+
+@pytest.mark.parametrize("verb,args", [("sweep", {"dry_run": True}), ("prune", {"days": 1})])
+@pytest.mark.parametrize("as_", ["peer", PEER])
+def test_a_peer_cannot_run_the_maintenance_verbs(tree, verb, args, as_):
+    with pytest.raises(RuntimeError, match=f"^unknown function '{verb}'$"):
+        HANDLERS[verb](args, as_)

@@ -4,6 +4,7 @@ set -euo pipefail
 
 usage() {
   echo "usage: $(basename "$0") <peer> <project> [--expect visible|hidden] [--post]" \
+       "[--control PROJECT] [--strict-mentions] [--allow-hit SOURCE:ID]... [--strict] [--skip N]..." \
        "[--doc-id ID] [--scope S] [--file PATH] [--term T]... [--no-ssh] [--wait S]" >&2
   exit 2
 }

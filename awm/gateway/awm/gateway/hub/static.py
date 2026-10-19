@@ -100,7 +100,7 @@ async def serve_static(request: Request, rec: ServiceRecord) -> Response:
 
     try:
         target = (root / rel).resolve()
-    except OSError:
+    except (OSError, ValueError):
         return PlainTextResponse("not found", status_code=404)
     if not _is_within(target, root):
         return PlainTextResponse("not found", status_code=404)
