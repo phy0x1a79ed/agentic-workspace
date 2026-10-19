@@ -15,7 +15,7 @@ authentication system** while the loopback interior stays open.
 
 | Node | Where | Role |
 |---|---|---|
-| `capella` | WSL on a Windows desktop | holds the **CA key**; sleeps with the host |
+| `capella` | WSL on a Windows desktop | personal node: reads the fleet, refuses every peer; holds the **CA key**; sleeps with the host |
 | `mira` | always-on mini PC | owns the singletons: `2fa`, `social`, the ssh slot arbiter |
 | `altair` | Arbutus cloud VM (16 vCPU / 1.9 TB) | always-on compute; borrows every singleton from mira |
 
@@ -123,6 +123,8 @@ For each request the edge:
 
 The legacy bearer authenticates as the bare `peer`, which the gateway treats as a domestic peer. Set `AWM_PEER_LEGACY_BEARER=0` in `<workspace>/.awm/env` to retire it. The edge then accepts only node tokens, and `auth` stops handing the bearers to the edge.
 
+Set `AWM_EDGE_PEERS=0` to close a node to every peer. The edge then refuses every node token and the legacy bearer with 401. A person's login still works. The peer book keeps its relations, because the node's own outbound calls pick providers from them. The edge guards only the awm door, so a closed node also drops new mesh connections from its peers in its firewall and authorizes none of their ssh keys. capella runs closed. **CAUTION** On a closed node a domestic entry trusts nothing inbound. Read the node's env, not its book, to learn whether a peer reaches it.
+
 The edge caches the auth material for up to 30 seconds (`httpsfront/auth.py` `_REFRESH_INTERVAL`). The material holds each peer's relation and pinned key. A new key or a relation change reaches the edge within that window. The gateway reads the peer book on every call, so a grant change applies on the next call.
 
 ## Relations and grants
@@ -171,7 +173,7 @@ A node can mark a project or one scope of it private. Run `scope private project
 
 Run `awm/scripts/privacy-probe.sh <peer> <project> --expect visible|hidden` from another node to prove a mark. Run it once with `visible` before marking, because the hidden run compares counts against that baseline.
 
-**CAUTION** A mark is visibility hygiene, not a security boundary. Text that mentions the project from another project's records stays visible, and so do untagged precedence decisions, kb papers and Trilium notes. A domestic peer can still start a session here, or drive the browser at this node's own `/files`, and that session reads with a local stamp.
+**CAUTION** A mark is visibility hygiene, not a security boundary. Text that mentions the project from another project's records stays visible, and so do untagged precedence decisions, kb papers and Trilium notes. A domestic peer can still start a session here, or drive the browser at this node's own `/files`, and that session reads with a local stamp. A closed node (§ Authentication) refuses that session too.
 
 ## Federated search
 
@@ -655,7 +657,8 @@ hand-patched onto a running node is a fix that gets reverted by the next update.
 ### Updating a node
 
 A node's `~/agentic_workspace` is a git checkout of `release`, with an `awm` remote
-pointing at capella's bare repo over ssh. To update it:
+pointing at altair's bare repo over ssh. altair's own `awm` remote is its local
+`projects/awm/.bare`. To update it:
 
     git fetch --no-tags awm release && git reset --hard awm/release
     git clean -fd            # NOT -fdx — .awm/ is ignored and must survive
