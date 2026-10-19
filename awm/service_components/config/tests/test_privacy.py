@@ -233,3 +233,14 @@ def test_legacy_journal_spellings_name_the_project(projects):
 ])
 def test_canonical_names_the_project_a_spelling_means(project, scope, want):
     assert privacy.canonical(project, scope) == want
+
+
+def test_transcript_entered_reads_every_cwd(projects, tmp_path):
+    t = tmp_path / "s.jsonl"
+    t.write_text(json.dumps({"cwd": str(projects)}) + "\n" + json.dumps({"cwd": str(projects / "avatar2")}) + "\n")
+    privacy.write_marks([_mark(projects, "avatar")])
+    assert not privacy.transcript_entered(t)
+    with t.open("a") as fh:
+        fh.write(json.dumps({"cwd": str(projects / "avatar" / "Avatar" / "dev")}) + "\n")
+    assert privacy.transcript_entered(t)
+    assert not privacy.transcript_entered(tmp_path / "missing.jsonl")

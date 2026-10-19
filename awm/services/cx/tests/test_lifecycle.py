@@ -1394,6 +1394,31 @@ async def test_the_list_verb_hides_private_sessions_from_a_peer(
     assert PARENT_JOB in {r["session"] for r in local["pool"]["sessions"]}
 
 
+async def test_the_list_verb_hides_a_job_whose_transcript_entered_a_mark_from_a_peer(
+        home, launched, peers, monkeypatch, tmp_path):
+    import awm.config as awm_config
+    from awm.config import privacy
+    from awm.cx import hub_adapter, lifecycle
+
+    monkeypatch.setattr(awm_config, "AWM_DIR", tmp_path / ".awm")
+    monkeypatch.setattr(lifecycle, "_tmux_panes", dict)
+    home.add("wander01", "folder setup", os.getpid(), cwd=str(home.projects))
+    transcript = tmp_path / "wander.jsonl"
+    inside = home.projects / "avatar" / "Avatar"
+    transcript.write_text(json.dumps({"cwd": str(home.projects)}) + "\n"
+                          + json.dumps({"cwd": str(inside)}) + "\n")
+    state = home.jobs / "wander01" / "state.json"
+    state.write_text(json.dumps({**json.loads(state.read_text()), "linkScanPath": str(transcript)}))
+
+    peer = await hub_adapter.HANDLERS["list"]({}, "peer:capella")
+    assert "wander01" in {r["job"] for r in peer["sessions"]}
+    privacy.write_marks([{"project": "avatar", "scope": None, "path": str(home.projects / "avatar")}])
+    peer = await hub_adapter.HANDLERS["list"]({}, "peer:capella")
+    assert "wander01" not in {r["job"] for r in peer["sessions"]}
+    local = await hub_adapter.HANDLERS["list"]({}, None)
+    assert "wander01" in {r["job"] for r in local["sessions"]}
+
+
 def test_the_old_launcher_is_gone():
     from awm.cx import lifecycle
 

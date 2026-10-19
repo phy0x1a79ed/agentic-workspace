@@ -10,4 +10,8 @@ usage() {
 }
 [[ $# -ge 2 && $1 != -* && $2 != -* ]] || usage
 
-exec mamba run -n awm --no-capture-output python "$(dirname "$(readlink -f "$0")")/privacy-probe.py" "$@"
+probe="$(dirname "$(readlink -f "$0")")/privacy-probe.py"
+if python -c 'import awm.gatewayclient' 2>/dev/null; then
+  exec python "$probe" "$@"
+fi
+exec mamba run -n awm --no-capture-output python "$probe" "$@"

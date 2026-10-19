@@ -215,6 +215,34 @@ def hidden_slug(name: str) -> bool:
     return any(slug_covers(prefix, name) for m in loaded for prefix in m["_slugs"])
 
 
+_CWD = re.compile(rb'"cwd":\s*"((?:[^"\\]|\\.)*)"')
+_entered: dict[tuple, bool] = {}
+
+
+def transcript_entered(path: str | os.PathLike) -> bool:
+    """Whether a Claude Code transcript ever ran with its cwd under a marked path."""
+    loaded = _load()
+    if loaded is None:
+        return True
+    if not loaded:
+        return False
+    try:
+        st = os.stat(path)
+    except OSError:
+        return False
+    key = (os.fspath(path), st.st_ino, st.st_size, st.st_mtime_ns, _cache[0])
+    if key not in _entered:
+        if len(_entered) > 1024:
+            _entered.clear()
+        try:
+            raw = Path(path).read_bytes()
+        except OSError:
+            return False
+        cwds = {m.group(1).decode("utf-8", "replace") for m in _CWD.finditer(raw)}
+        _entered[key] = any(hidden_path(json.loads(f'"{c}"')) for c in cwds if c)
+    return _entered[key]
+
+
 def _row_hidden(row: dict) -> bool:
     project, scope = row.get("project"), row.get("scope")
     project = project if isinstance(project, str) else None
