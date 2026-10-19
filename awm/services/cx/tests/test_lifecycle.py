@@ -605,6 +605,24 @@ def test_adopt_pending_gives_the_late_job_its_record(home, monkeypatch):
     assert lifecycle.mode_of(os.getppid()) == "representative"
 
 
+def test_a_job_is_recorded_only_once_cx_holds_its_lineage(home, monkeypatch):
+    """The keeper adopts only a recorded job, because cx refuses to stop or
+    resume one it has no record of."""
+    from awm.cx import lifecycle
+
+    async def fail(**kw):
+        raise TimeoutError("late")
+
+    monkeypatch.setattr(lifecycle.launch, "launch", fail)
+    start(BASE)
+    home.add(CHILD_JOB, "demo", os.getppid(), started_ms=int(time.time() * 1000))
+    row = next(r for r in lifecycle.collect() if r["job"] == CHILD_JOB)
+    assert row["recorded"] is False
+    lifecycle.adopt_pending()
+    row = next(r for r in lifecycle.collect() if r["job"] == CHILD_JOB)
+    assert row["recorded"] is True
+
+
 def test_adopt_pending_ignores_a_session_older_than_the_start(home, monkeypatch):
     from awm.cx import lifecycle
 
