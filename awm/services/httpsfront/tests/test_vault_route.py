@@ -33,7 +33,7 @@ class _Gate:
     def __init__(self, sub: str = "tony") -> None:
         self.sub = sub
 
-    async def authenticate(self, *, cookie=None, bearer=None):
+    async def authenticate(self, *, cookie=None, bearer=None, shape=None):
         if cookie == TOKEN:
             return True, None, self.sub
         return False, None, None

@@ -25,7 +25,7 @@ Owns two things in the service's own SQLite DB:
   fact — see :mod:`awm.auth.penpot` for what to do when they disagree.
 
 * **Device tokens** — ``awm_device_tokens`` holds, per minted token, its owner,
-  a label and the SHA-256 of its secret. The secret itself is never stored. A
+  a label, an optional scope and the SHA-256 of its secret. The secret itself is never stored. A
   revoked row stays, with ``revoked_at`` set, so a listing can still name it.
 
 This module is pure storage — the rotation *policy* (when to mint, the Discord
@@ -42,7 +42,7 @@ from typing import Any
 from awm.persistence.databases import get_connection, init_service_db
 
 SERVICE = "auth"
-_SCHEMA_VERSION = 4
+_SCHEMA_VERSION = 5
 
 _SCHEMA = """
 CREATE TABLE awm_secret (
@@ -84,7 +84,8 @@ CREATE TABLE awm_device_tokens (
     secret_sha256 TEXT NOT NULL,
     created_at    REAL NOT NULL,
     last_used_at  REAL,
-    revoked_at    REAL
+    revoked_at    REAL,
+    scope         TEXT
 );
 """
 
@@ -129,6 +130,7 @@ CREATE TABLE IF NOT EXISTS awm_login_fail (
 """,
     (2, 3): _PENPOT_TABLE,
     (3, 4): _DEVICE_TOKENS_TABLE,
+    (4, 5): "ALTER TABLE awm_device_tokens ADD COLUMN scope TEXT;",
 }
 
 
@@ -449,18 +451,21 @@ def _device_row(row: Any) -> dict[str, Any]:
         "created_at": row["created_at"],
         "last_used_at": row["last_used_at"],
         "revoked_at": row["revoked_at"],
+        "scope": row["scope"],
     }
 
 
 def device_insert(token_id: str, *, username: str, label: str, secret_sha256: str,
+                  scope: str | None = None,
                   now: float | None = None) -> dict[str, Any]:
     now = time.time() if now is None else now
     conn = get_connection(SERVICE)
     try:
         conn.execute(
             "INSERT INTO awm_device_tokens "
-            "(id, username, label, secret_sha256, created_at) VALUES (?, ?, ?, ?, ?)",
-            (token_id, username, label, secret_sha256, now))
+            "(id, username, label, secret_sha256, created_at, scope) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (token_id, username, label, secret_sha256, now, scope))
         conn.commit()
     finally:
         conn.close()

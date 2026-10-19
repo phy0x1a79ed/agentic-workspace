@@ -59,7 +59,7 @@ class _Gate:
     async def peer_credentials(self):
         return type(self).legacy
 
-    async def authenticate(self, *, cookie=None, bearer=None):
+    async def authenticate(self, *, cookie=None, bearer=None, shape=None):
         type(self).consulted += 1
         if cookie == SESSION:
             return True, None, "tony"
@@ -203,7 +203,7 @@ def test_board_streams_cannot_starve_the_shared_client():
 
 
 class _OpenGate(_Gate):
-    async def authenticate(self, *, cookie=None, bearer=None):
+    async def authenticate(self, *, cookie=None, bearer=None, shape=None):
         return True, None, "tony"
 
 

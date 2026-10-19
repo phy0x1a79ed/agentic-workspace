@@ -32,7 +32,7 @@ class _Gate:
         self.token = token
         self.calls: list[dict] = []
 
-    async def authenticate(self, *, cookie=None, bearer=None):
+    async def authenticate(self, *, cookie=None, bearer=None, shape=None):
         if cookie == TOKEN:
             return True, None, self.sub
         return False, None, None
@@ -182,7 +182,7 @@ def test_no_credential_means_penpots_own_login_screen_not_an_error():
 
 def test_a_gate_without_the_capability_still_serves_penpot():
     class _Old:
-        async def authenticate(self, *, cookie=None, bearer=None):
+        async def authenticate(self, *, cookie=None, bearer=None, shape=None):
             return (True, None, "tony") if cookie == TOKEN else (False, None, None)
 
         async def session_ttl_seconds(self):

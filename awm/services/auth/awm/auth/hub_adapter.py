@@ -90,8 +90,12 @@ API_MANIFEST: dict[str, Any] = {
                            "live device-token digests + session-lifetime "
                            "knobs, for the httpsfront edge to enforce auth "
                            "offline. device_used reports the device tokens "
-                           "the edge accepted since its last fetch.",
-            "params": [{"name": "device_used", "type": "object"}],
+                           "the edge accepted since its last fetch; "
+                           "token_scopes names the scopes the edge enforces, "
+                           "and a scoped token goes only to an edge that "
+                           "names its scope.",
+            "params": [{"name": "device_used", "type": "object"},
+                       {"name": "token_scopes", "type": "array"}],
         },
         {
             "name": "node_key",
@@ -223,10 +227,14 @@ API_MANIFEST: dict[str, Any] = {
                            "for an unattended device or app that must not "
                            "store a password. The token is returned once. The "
                            "operator may mint for anyone; a user only for "
-                           "themself.",
+                           "themself. scope narrows the token to a few exact "
+                           "request shapes: avatar-stage admits only the "
+                           "avatar stage session (POST "
+                           "/svc/avatar/session/stage and its WebSocket).",
             "params": [
                 {"name": "username", "type": "string", "required": True},
                 {"name": "label", "type": "string", "required": True},
+                {"name": "scope", "type": "string"},
             ],
         },
         {

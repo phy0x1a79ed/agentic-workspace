@@ -5,8 +5,9 @@ What these pin: ``device_mint`` returns an ``awmut1.<id>.<secret>`` token once
 and stores only the secret's SHA-256; ``device_list`` never returns the digest;
 ``device_revoke`` takes a token out of ``edge_material`` while keeping its row;
 ``edge_material`` carries only live tokens of enabled users and records the
-use the edge reports; the operator manages anyone's tokens, a user only their
-own, and every other caller none; and a v3 DB gains the table in place.
+use the edge reports; a scoped token goes only to an edge that names its
+scope; the operator manages anyone's tokens, a user only their own, and every
+other caller none; and a v3 or v4 DB gains the table and its scope in place.
 """
 
 from __future__ import annotations
@@ -68,7 +69,8 @@ def test_mint_returns_the_token_once_and_stores_only_its_digest(auth):
     listed = auth.h_device_list({})["tokens"]
     assert "token" not in listed[0] and "secret_sha256" not in listed[0]
     assert set(listed[0]) == {"id", "username", "label", "created_at",
-                              "last_used_at", "revoked_at"}
+                              "last_used_at", "revoked_at", "scope"}
+    assert listed[0]["scope"] is None
 
 
 def test_each_mint_is_a_new_token(auth):
@@ -90,6 +92,19 @@ def test_mint_refuses_bad_arguments(auth, args, match):
         auth.h_device_mint(args, None)
 
 
+def test_mint_refuses_an_unknown_scope(auth):
+    with pytest.raises(ValueError, match="unknown scope"):
+        auth.h_device_mint({"username": "tony", "label": "phone",
+                            "scope": "everything"}, None)
+
+
+def test_a_scoped_mint_records_its_scope(auth):
+    out = auth.h_device_mint({"username": "tony", "label": "phone",
+                              "scope": usertoken.AVATAR_STAGE}, None)
+    assert out["scope"] == usertoken.AVATAR_STAGE
+    assert auth.h_device_list({})["tokens"][0]["scope"] == usertoken.AVATAR_STAGE
+
+
 def test_mint_refuses_a_disabled_user(auth):
     auth.h_user_disable({"username": "ada"})
     with pytest.raises(ValueError, match="disabled"):
@@ -104,6 +119,22 @@ def test_edge_material_carries_live_tokens_as_id_sub_digest(auth):
     _, secret = usertoken.parse(out["token"])
     assert _live(auth) == {out["id"]: {"id": out["id"], "sub": "tony",
                                        "sha256": usertoken.digest(secret)}}
+
+
+def test_a_scoped_token_goes_only_to_an_edge_that_enforces_its_scope(auth):
+    """An edge that cannot read the scope would honour the token everywhere."""
+    plain = _mint(auth)
+    scoped = auth.h_device_mint({"username": "tony", "label": "phone",
+                                 "scope": usertoken.AVATAR_STAGE}, None)
+    assert set(_live(auth)) == {plain["id"]}
+    for scopes in ([], ["other"], "avatar-stage", None):
+        got = auth.h_edge_material({"token_scopes": scopes})["device_tokens"]
+        assert {t["id"] for t in got} == {plain["id"]}, scopes
+    got = {t["id"]: t for t in auth.h_edge_material(
+        {"token_scopes": [usertoken.AVATAR_STAGE]})["device_tokens"]}
+    assert set(got) == {plain["id"], scoped["id"]}
+    assert got[scoped["id"]]["scope"] == usertoken.AVATAR_STAGE
+    assert "scope" not in got[plain["id"]]
 
 
 def test_revoke_drops_the_token_from_the_material_and_keeps_the_row(auth):
@@ -212,6 +243,33 @@ def test_the_verbs_stay_off_the_agent_surface():
 
 
 # --- migration ------------------------------------------------------------------
+
+
+def test_a_v4_db_gains_the_scope_column(awm_workspace):
+    from awm.auth import store
+    from awm.persistence.databases import service_db_path
+    path = service_db_path("auth")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(path)
+    conn.executescript(
+        "CREATE TABLE awm_users (username TEXT PRIMARY KEY, pw_hash TEXT NOT "
+        "NULL, pw_salt TEXT NOT NULL, pw_params TEXT NOT NULL, created_at REAL "
+        "NOT NULL, disabled INTEGER NOT NULL DEFAULT 0);"
+        "CREATE TABLE awm_device_tokens (id TEXT PRIMARY KEY, username TEXT NOT "
+        "NULL, label TEXT NOT NULL, secret_sha256 TEXT NOT NULL, created_at "
+        "REAL NOT NULL, last_used_at REAL, revoked_at REAL);"
+        "CREATE TABLE schema_version (version INTEGER NOT NULL);"
+        "INSERT INTO schema_version (version) VALUES (4);"
+        "INSERT INTO awm_users VALUES ('tony', 'h', 's', 'p', 0, 0);"
+        "INSERT INTO awm_device_tokens VALUES ('0123456789abcdef', 'tony', 'x', "
+        "'d', 0, NULL, NULL);")
+    conn.commit()
+    conn.close()
+    store.init()
+    assert store.device_get("0123456789abcdef")["scope"] is None
+    store.device_insert("fedcba9876543210", username="tony", label="y",
+                        secret_sha256="e", scope=usertoken.AVATAR_STAGE)
+    assert store.device_get("fedcba9876543210")["scope"] == usertoken.AVATAR_STAGE
 
 
 def test_a_v3_db_gains_the_device_token_table(awm_workspace):

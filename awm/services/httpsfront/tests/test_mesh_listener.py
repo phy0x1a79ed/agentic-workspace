@@ -22,7 +22,7 @@ PEER_CALL = "/svc/cx/fn/list"
 
 
 class _Gate:
-    async def authenticate(self, *, cookie=None, bearer=None):
+    async def authenticate(self, *, cookie=None, bearer=None, shape=None):
         if bearer == "node-capella":
             return True, None, "peer:capella"
         return False, None, None
