@@ -27,7 +27,7 @@ SUBS = {TONY: "tony", STEVEN: "steven"}
 class _Gate:
     """Two sessions, one peer bearer, one known login, one locked login."""
 
-    async def authenticate(self, *, cookie=None, bearer=None):
+    async def authenticate(self, *, cookie=None, bearer=None, shape=None):
         if bearer == "peer-cred":
             return True, None, "peer"
         if bearer == "node-mira":

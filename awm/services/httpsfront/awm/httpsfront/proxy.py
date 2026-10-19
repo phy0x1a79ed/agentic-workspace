@@ -76,6 +76,7 @@ from awm.httpsfront.auth import (
     PEER_PREFIX,
     PEER_SUB,
     AuthGate,
+    Shape,
     bearer_of,
     is_foreign_peer,
     is_machine_sub,
@@ -302,12 +303,18 @@ async def _authenticate(request: Request) -> tuple[bool, str | None]:
     return ok, refreshed
 
 
-async def _authenticate_sub(request: Request) -> tuple[bool, str | None, str | None]:
-    """(ok, refreshed_cookie_token_or_None, sub) for the current request."""
+async def _authenticate_sub(request: Request, shape: Shape | None = None,
+                            ) -> tuple[bool, str | None, str | None]:
+    """(ok, refreshed_cookie_token_or_None, sub) for the current request.
+
+    Only the proxy legs pass ``shape``, so a scoped device token reaches the
+    paths its scope names and none of the edge's own routes.
+    """
     gate: AuthGate = request.app.state.gate
     return _unpack(await gate.authenticate(
         cookie=request.cookies.get(COOKIE_NAME),
         bearer=bearer_of(request.headers.get("authorization")),
+        shape=shape,
     ))
 
 
@@ -787,7 +794,8 @@ async def _http_proxy(request: Request) -> Response:
         if not board_up or not board.allows(request.method, path):
             return _not_found()
         return await _board_proxy(request, raw, board_up)
-    ok, refreshed, sub = await _authenticate_sub(request)
+    ok, refreshed, sub = await _authenticate_sub(request, Shape(
+        request.method, path, raw, request.scope.get("query_string") or b"", False))
     if not ok:
         return _deny(request)
     if public and not policy.allows(path, sub):
@@ -1413,6 +1421,7 @@ async def _ws_proxy(ws: WebSocket) -> None:
         ok, _, sub = _unpack(await gate.authenticate(
             cookie=ws.cookies.get(COOKIE_NAME),
             bearer=bearer_of(ws.headers.get("authorization")),
+            shape=Shape("GET", path, _raw_target(ws.scope, path), query, True),
         ))
         if not ok or (public and not policy.allows(ws.url.path, sub)):
             await ws.close(code=1008)  # policy violation

@@ -172,10 +172,11 @@ def test_the_edge_reports_use_on_its_next_fetch_and_then_forgets_it(monkeypatch)
     (service, fn, args, kw), = sent
     assert (service, fn) == ("auth", "edge_material") and "as_" not in kw
     assert set(args["device_used"]) == {entry["id"]}
+    assert args["token_scopes"] == sorted(usertoken.SCOPES)
     assert gate._device_used == {}
     gate._fetched_at = 0.0
     asyncio.run(gate._material_fresh())
-    assert sent[1][2] == {}
+    assert sent[1][2] == {"token_scopes": sorted(usertoken.SCOPES)}
 
 
 def test_a_failed_fetch_keeps_the_report_for_the_next_one(monkeypatch):

@@ -18,7 +18,9 @@ few seconds, and then:
 * checks a **device token** (``awmut1.``) against the digests of the live
   device tokens, and yields the user it was minted for. Such a bearer is
   settled on its own branch: one that fails is a 401, never a peer attempt
-  and never a fall-back to the cookie.
+  and never a fall-back to the cookie. A **scoped** device token also has to
+  match the request's shape (:func:`awm.config.usertoken.scope_admits`), and a
+  caller that passes no shape never admits one.
 
 A login (``POST /__auth/login``) is the one path that calls the ``auth`` service:
 it forwards the submitted username + password (and the client IP, for the
@@ -36,7 +38,7 @@ import asyncio
 import logging
 import os
 import time
-from typing import Any
+from typing import Any, NamedTuple
 
 from awm import config
 from awm.config import peertoken, tokens, usertoken
@@ -130,8 +132,18 @@ def _verified_node(mat: dict[str, Any], token: str) -> str | None:
     return None
 
 
-def _device_sub(mat: dict[str, Any], token: str) -> tuple[str, str] | None:
-    """``(id, user)`` for a live device token, else ``None``.
+class Shape(NamedTuple):
+    """The parts of a request a scoped device token is checked against."""
+
+    method: str
+    path: str
+    raw: bytes
+    query: bytes
+    websocket: bool
+
+
+def _device_sub(mat: dict[str, Any], token: str) -> tuple[str, str, str | None] | None:
+    """``(id, user, scope)`` for a live device token, else ``None``.
 
     A token whose owner reads as a machine is refused: a device token speaks
     for a person, and must never carry the operator's or a peer's identity.
@@ -150,7 +162,7 @@ def _device_sub(mat: dict[str, Any], token: str) -> tuple[str, str] | None:
             log.warning("edge: device token %s names machine identity %r; refused",
                         token_id, sub)
             return None
-        return token_id, sub
+        return token_id, sub, (str(entry["scope"]) if entry.get("scope") else None)
     return None
 
 
@@ -183,10 +195,12 @@ class AuthGate:
             if self._material is not None and now - self._fetched_at < _REFRESH_INTERVAL:
                 return self._material
             used = dict(self._device_used)
+            args: dict[str, Any] = {"token_scopes": sorted(usertoken.SCOPES)}
+            if used:
+                args["device_used"] = used
             try:
                 from awm import gatewayclient
-                mat = await gatewayclient.call(
-                    "auth", "edge_material", {"device_used": used} if used else {})
+                mat = await gatewayclient.call("auth", "edge_material", args)
             except Exception as exc:  # noqa: BLE001 — auth down / not yet up
                 log.warning("edge: could not fetch auth material: %s", exc)
                 return self._material  # keep stale if any; else None (fail closed)
@@ -205,8 +219,9 @@ class AuthGate:
             return None
         return [str(c) for c in mat.get("peer_credentials") or []]
 
-    async def authenticate(self, *, cookie: str | None,
-                           bearer: str | None) -> tuple[bool, str | None, str | None]:
+    async def authenticate(self, *, cookie: str | None, bearer: str | None,
+                           shape: Shape | None = None,
+                           ) -> tuple[bool, str | None, str | None]:
         """Return ``(ok, refreshed_cookie_token_or_None, sub)``.
 
         A **device token** authenticates as the user it was minted for, or not
@@ -216,7 +231,8 @@ class AuthGate:
         honoured; neither needs a cookie (peers don't carry sessions). A valid
         **session cookie** authenticates and, unless the session has passed its
         hard age ceiling, yields a refreshed token to re-set (the sliding
-        window).
+        window). A scoped device token authenticates only when ``shape`` is
+        given and its scope admits it.
         """
         mat = await self._material_fresh()
         if not mat:
@@ -228,7 +244,11 @@ class AuthGate:
             found = _device_sub(mat, bearer)
             if found is None:
                 return False, None, None
-            token_id, sub = found
+            token_id, sub, scope = found
+            if scope and (shape is None or not usertoken.scope_admits(
+                    scope, method=shape.method, path=shape.path, raw=shape.raw,
+                    query=shape.query, websocket=shape.websocket)):
+                return False, None, None
             self._device_used[token_id] = time.time()
             return True, None, sub
 

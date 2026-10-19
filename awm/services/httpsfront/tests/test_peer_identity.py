@@ -262,7 +262,7 @@ CALLER_HEADERS = {"X-Awm-Caller-Pid": "1", "x-awm-session-pid": "2",
 
 
 class _Gate:
-    async def authenticate(self, *, cookie=None, bearer=None):
+    async def authenticate(self, *, cookie=None, bearer=None, shape=None):
         if bearer in BEARERS:
             return True, None, BEARERS[bearer]
         if cookie == SESSION:

@@ -713,6 +713,20 @@ def _record_device_use(used: Any) -> None:
     store.device_touch(clean)
 
 
+def _edge_devices(enforced: Any) -> list[dict]:
+    """The live tokens an edge that enforces ``enforced`` scopes may honour."""
+    known = set(enforced) if isinstance(enforced, list) else set()
+    out = []
+    for t in store.device_live():
+        entry = {"id": t["id"], "sub": t["username"], "sha256": t["secret_sha256"]}
+        if t["scope"]:
+            if t["scope"] not in known:
+                continue
+            entry["scope"] = t["scope"]
+        out.append(entry)
+    return out
+
+
 def h_edge_material(args: dict, as_: str | None = None) -> dict:
     """Material the httpsfront edge caches to enforce auth offline.
 
@@ -721,7 +735,9 @@ def h_edge_material(args: dict, as_: str | None = None) -> dict:
     book's peers with their public keys (to verify node tokens), the digests of
     the live device tokens (to check user bearers), and the session-lifetime
     knobs. ``device_used`` is the edge's report of the device tokens it has
-    accepted since its last fetch. Operator-only: the edge itself fetches it with no
+    accepted since its last fetch. ``token_scopes`` names the scopes the edge
+    enforces. A scoped token goes out only to an edge that names its scope,
+    because an edge that cannot read the scope would honour it everywhere. Operator-only: the edge itself fetches it with no
     ``as_``, and a call that crossed an edge carries one and is refused.
 
     The legacy bearers are withheld once ``AWM_PEER_LEGACY_BEARER=0``, and
@@ -739,8 +755,7 @@ def h_edge_material(args: dict, as_: str | None = None) -> dict:
         "secret": store.ensure_secret(),
         "peer_credentials": legacy,
         "peers": _edge_peers(),
-        "device_tokens": [{"id": t["id"], "sub": t["username"],
-                           "sha256": t["secret_sha256"]} for t in store.device_live()],
+        "device_tokens": _edge_devices((args or {}).get("token_scopes")),
         "legacy_bearer": legacy_bearer_enabled(),
         "session_ttl_seconds": s.session_ttl_hours * _HOUR,
         "max_session_seconds": s.max_session_days * _DAY,
@@ -955,7 +970,7 @@ def _device_target(args: dict, as_: str | None, *, required: bool) -> str | None
 def _public_device(t: dict) -> dict:
     return {"id": t["id"], "username": t["username"], "label": t["label"],
             "created_at": t["created_at"], "last_used_at": t["last_used_at"],
-            "revoked_at": t["revoked_at"]}
+            "revoked_at": t["revoked_at"], "scope": t["scope"]}
 
 
 def h_device_mint(args: dict, as_: str | None = None) -> dict:
@@ -974,10 +989,15 @@ def h_device_mint(args: dict, as_: str | None = None) -> dict:
         raise ValueError(f"no such user {name!r}")
     if user["disabled"]:
         raise ValueError(f"user {name!r} is disabled")
+    scope = str(args.get("scope") or "").strip() or None
+    if scope is not None and scope not in usertoken.SCOPES:
+        raise ValueError(f"unknown scope {scope!r}; known: "
+                         f"{', '.join(sorted(usertoken.SCOPES))}")
     token_id, secret, token = usertoken.mint()
     row = store.device_insert(token_id, username=name, label=label,
-                              secret_sha256=usertoken.digest(secret))
-    log.warning("auth: minted device token %s for %s (%s)", token_id, name, label)
+                              secret_sha256=usertoken.digest(secret), scope=scope)
+    log.warning("auth: minted device token %s for %s (%s, scope %s)",
+                token_id, name, label, scope or "none")
     return {**_public_device(row), "token": token}
 
 
