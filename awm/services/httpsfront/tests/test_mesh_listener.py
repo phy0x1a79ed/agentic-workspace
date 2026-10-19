@@ -42,7 +42,7 @@ def _fresh_adapter():
 
 
 def _adapter(monkeypatch, **env):
-    for key in ("AWM_EDGE_MESH_HOST", "AWM_EDGE_MESH_PORT"):
+    for key in ("AWM_EDGE_MESH_HOST", "AWM_EDGE_MESH_PORT", "AWM_EDGE_CERT_DIR"):
         monkeypatch.delenv(key, raising=False)
     for key, value in env.items():
         monkeypatch.setenv(key, value)
@@ -52,6 +52,11 @@ def _adapter(monkeypatch, **env):
 
 def test_the_mesh_listener_is_off_by_default(monkeypatch):
     assert _adapter(monkeypatch).mesh_listener() is None
+
+
+def test_the_leaf_can_live_outside_the_checkout(monkeypatch, tmp_path):
+    assert _adapter(monkeypatch).CERT_DIR.name == ".certs"
+    assert _adapter(monkeypatch, AWM_EDGE_CERT_DIR=str(tmp_path)).CERT_DIR == tmp_path
 
 
 def test_the_mesh_listener_binds_its_address_alone(monkeypatch):

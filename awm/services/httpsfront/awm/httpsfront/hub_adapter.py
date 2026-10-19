@@ -42,7 +42,8 @@ log = logging.getLogger("awm.httpsfront.hub_adapter")
 
 HERE = Path(__file__).resolve().parent          # awm/services/httpsfront/awm/httpsfront
 SERVICE_DIR = HERE.parents[1]                    # awm/services/httpsfront
-CERT_DIR = SERVICE_DIR / ".certs"
+# A box whose app user cannot write the checkout keeps the leaf in its state dir.
+CERT_DIR = Path(os.environ.get("AWM_EDGE_CERT_DIR") or SERVICE_DIR / ".certs")
 SANS_FILE = SERVICE_DIR / ".sans"                # host-specific extra SANs (gitignored)
 
 PORT = int(os.environ.get("AWM_HTTPS_PORT", "8443"))
