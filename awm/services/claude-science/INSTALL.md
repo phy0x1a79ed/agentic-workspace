@@ -120,14 +120,20 @@ service, the prefix and the folder keep the full name.
 Five verbs are daemon plumbing and are off MCP (`surfaces: ["cli", "http"]`):
 `start`, `stop`, `restart`, `logs` and `update_check`. They still answer on the
 CLI and over HTTP. An agent sees `status`, `url`, `signin_url`, `connector`,
-`grants`, `message` and `read`. The service is `tier = "on"`.
+`grants`, `new`, `message` and `read`. The service is `tier = "on"`.
 
 ## Talking to a conversation
 
-`science message` posts a user turn into a running conversation and
-`science read` returns its transcript from a cursor. awm initiates both: the
-workbench's sandbox cannot reach awm (see below), so nothing can push replies
-back, and a caller polls with `read`.
+`science new` opens a conversation from a first message, `science message`
+posts a user turn into a running conversation, and `science read` returns its
+transcript from a cursor. awm initiates all three: the workbench's sandbox
+cannot reach awm (see below), so nothing can push replies back, and a caller
+polls with `read`. Add `peer` to open or follow a conversation in another
+node's workbench.
+
+`new` files the conversation under a workbench project, `Agents` unless the
+caller names one, and creates the project when it is missing. It returns the
+conversation id and cursor 0.
 
 A conversation is a *root frame*. Both verbs name one by id, id prefix, name or
 unique part of a name, and default to the most recently updated visible
@@ -148,7 +154,8 @@ no `since` returns the tail. Messages with no text (tool results, tool-only
 turns) are dropped unless `include_tools=true`; the cursor still counts them.
 
 The routes were read out of the 0.1.x binary and authenticate as the owner
-bearer from `api.py`. Reading was checked with live GETs; posting was not.
+bearer from `api.py`. Reading and opening were checked live. Posting a turn was
+not.
 
 | Method | Path | Auth | Used for | Checked live |
 |---|---|---|---|---|
@@ -156,6 +163,8 @@ bearer from `api.py`. Reading was checked with live GETs; posting was not.
 | GET | `/api/frames/:id?shallow=true` | owner bearer | a conversation's `status` and name | yes |
 | GET | `/api/frames/:id/messages?from=I&limit=N` | owner bearer | transcript page, with `from` and `total` | yes |
 | POST | `/api/frames/:id/message` | owner bearer | send a turn: `{"input_data": {"request": "<text>"}}` | no |
+| POST | `/api/projects` | owner bearer | find or create a project: `{"name", "find_or_create": true}` | yes |
+| POST | `/api/projects/:pid/request` | owner bearer | open a conversation and run its first turn in the background. Answers `{root_frame_id, status: "accepted"}` | yes |
 
 The transcript page counts from 0; `from` past the end clamps to `total`, and an
 omitted `from` with a `limit` returns the tail. The post route queues the turn
@@ -165,6 +174,8 @@ with a `detail` when the frame is awaiting an approval or answer
 Those stay the user's to clear in the workbench. The body shape comes from the
 handler in the binary: `input_data` keys that start with an underscore are
 dropped, so there is no idempotency key, and a retried `message` sends twice.
+A retried `new` opens a second conversation. So `new` never retries the request,
+and a reply lost in flight says to look for the conversation with `read` first.
 Re-check the post against a scratch conversation on a new build before relying
 on it.
 

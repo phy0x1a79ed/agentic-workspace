@@ -262,6 +262,13 @@ for a user unit to run at boot. Install it:
 2. Run `systemctl --user daemon-reload`.
 3. Run `systemctl --user enable claude-daemon.service`.
 
+**CAUTION** cx launches each session through the user manager's bus under
+`/run/user/<uid>`, and reaches the daemon's sockets under `/tmp`. A gateway run as
+a sandboxed system unit must see both, so no `ProtectHome=yes` and no
+`PrivateTmp=yes` there. Hidden from cx, `claude --bg` starts inside the gateway's
+unit. That client starts a second daemon, which evicts the user unit's daemon and
+dies with the next gateway restart, taking every session with it.
+
 **WARNING** Do not start the unit while a daemon runs. A service daemon makes
 a running transient daemon yield, and a takeover brings back only some of its
 sessions. The unit starts at the next boot.
