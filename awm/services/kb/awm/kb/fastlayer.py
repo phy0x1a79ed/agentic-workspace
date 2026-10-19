@@ -494,9 +494,7 @@ def _literal_rows(conn: sqlite3.Connection, needle: str) -> list[sqlite3.Row]:
         ids = _trigram_ids(conn, ordered[:count])
         if len(ids) < CANDIDATES or count >= len(ordered):
             return _passages_by_id(conn, ids) if ids else []
-    if wild:
-        return _passages_by_id(conn, ids)
-    return conn.execute(*like).fetchall()
+    return _passages_by_id(conn, ids) if wild else conn.execute(*like).fetchall()
 
 
 def _literal_hits(stores: list[sqlite3.Connection], needle: str, filters: Filters, limit: int,
