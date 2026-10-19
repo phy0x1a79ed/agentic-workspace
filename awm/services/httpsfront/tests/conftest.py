@@ -23,6 +23,7 @@ def peer_book(tmp_path, monkeypatch):
     path = tmp_path / "peers.json"
     monkeypatch.setattr("awm.config.peerbook.peers_file", lambda: path)
     monkeypatch.delenv("AWM_PEER_LEGACY_BEARER", raising=False)
+    monkeypatch.delenv("AWM_EDGE_PEERS", raising=False)
 
     def write(book: dict) -> None:
         path.write_text(json.dumps(book))

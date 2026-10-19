@@ -149,6 +149,28 @@ def test_retiring_the_bearer_leaves_node_tokens_and_sessions_alone(monkeypatch, 
     assert _auth(gate, cookie=cookie)[2] == "tony"
 
 
+@pytest.mark.parametrize("relation", ["domestic", "foreign"])
+def test_a_closed_edge_refuses_every_node_token(monkeypatch, keys, relation):
+    monkeypatch.setenv("AWM_EDGE_PEERS", "0")
+    private, public = keys
+    gate = _gate(peers=[_peer("mira", public, relation)])
+    assert _auth(gate, peertoken.sign(private, iss="mira", aud=ME)) == (False, None, None)
+
+
+def test_a_closed_edge_refuses_the_legacy_bearer_too(monkeypatch):
+    monkeypatch.setenv("AWM_EDGE_PEERS", "0")
+    assert _auth(_gate(peers=[]), LEGACY) == (False, None, None)
+
+
+def test_a_closed_edge_still_lets_a_person_in(monkeypatch, keys):
+    monkeypatch.setenv("AWM_EDGE_PEERS", "0")
+    private, public = keys
+    cookie = tokens.mint(SECRET, sub="tony", ttl=3600)
+    gate = _gate(peers=[_peer("mira", public)])
+    assert _auth(gate, cookie=cookie)[2] == "tony"
+    assert _auth(gate, peertoken.sign(private, iss="mira", aud=ME), cookie)[2] == "tony"
+
+
 def test_a_bad_bearer_does_not_hide_a_good_cookie():
     cookie = tokens.mint(SECRET, sub="tony", ttl=3600)
     assert _auth(_gate(peers=[]), "garbage", cookie)[2] == "tony"

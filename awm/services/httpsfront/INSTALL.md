@@ -93,6 +93,7 @@ explicitly and merged in:
 | `AWM_EDGE_BOARD` | `0` | `1`: mount the federation board at `/board/`, reachable with **no session** |
 | `AWM_BOARD_PORT` | `12521` | the board's loopback port, which the board mount forwards to |
 | `AWM_PEER_LEGACY_BEARER` | on | `0`: refuse the legacy shared bearer, so only a node token authenticates a peer |
+| `AWM_EDGE_PEERS` | on | `0`: refuse every peer, node token and legacy bearer alike. A person's login still works |
 
 `AWM_EDGE_TETHER` is the one flag here that widens the door rather than
 narrowing it, so it is off unless a host means it. The person redeeming a

@@ -47,6 +47,7 @@ AS_COOKIE_NAME = "awm_as"
 PEER_SUB = "peer"
 PEER_PREFIX = "peer:"
 LEGACY_BEARER_ENV = "AWM_PEER_LEGACY_BEARER"
+EDGE_PEERS_ENV = "AWM_EDGE_PEERS"
 # Re-fetch edge material at most this often (peer creds rotate every ~12h, so a
 # few seconds of staleness is harmless and keeps the hot path RPC-free).
 _REFRESH_INTERVAL = 30.0
@@ -90,6 +91,15 @@ def is_foreign_peer(sub: str | None, relation_of=None) -> bool:
     if node is None:
         return False
     return (relation_of(node) if relation_of else None) != "domestic"
+
+
+def edge_admits_peers() -> bool:
+    """Whether this node lets any peer in at its edge (``AWM_EDGE_PEERS``).
+
+    ``0`` closes the inbound side only: the peer book keeps its relations,
+    because this node's own outbound calls pick providers from them.
+    """
+    return (os.environ.get(EDGE_PEERS_ENV) or "").strip() != "0"
 
 
 def legacy_bearer_enabled(mat: dict[str, Any] | None = None) -> bool:
@@ -174,12 +184,13 @@ class AuthGate:
         if not mat:
             return False, None, None
         secret = mat["secret"]
+        admits = edge_admits_peers()
 
         if bearer and peertoken.looks_like_token(bearer):
-            node = _verified_node(mat, bearer) if self._peers else None
+            node = _verified_node(mat, bearer) if self._peers and admits else None
             if node:
                 return True, None, PEER_PREFIX + node
-        elif (bearer and legacy_bearer_enabled(mat)
+        elif (bearer and admits and legacy_bearer_enabled(mat)
                 and bearer in set(mat.get("peer_credentials") or [])):
             return True, None, PEER_SUB
 
