@@ -603,6 +603,8 @@ taking the edge down for an address nobody dials is worse. It used to read a mis
 key as a missing CA and re-mint, which replaced the fleet's root and surfaced as a
 certificate error on every peer.
 
+A node whose edge is public, behind a TLS-terminating proxy, joins the mesh through a second listener on its overlay address (`httpsfront/INSTALL.md` § *Configuration*). Its peer book entry names that listener as the edge URL. The public listener beside it admits no peer, so a peer call that reaches the public name answers 404.
+
 capella and mira both still hold a `ca-key.pem` — they predate this rule and each
 minted their own leaf. That is not urgent (they hold the *same* root), but it means
 either could re-mint the fleet root if its `ca.pem` were ever lost, so the goal is
