@@ -94,7 +94,7 @@ explicitly and merged in:
 | `AWM_EDGE_BOARD` | `0` | `1`: mount the federation board at `/board/`, reachable with **no session** |
 | `AWM_BOARD_PORT` | `12521` | the board's loopback port, which the board mount forwards to |
 | `AWM_PEER_LEGACY_BEARER` | on | `0`: refuse the legacy shared bearer, so only a node token authenticates a peer |
-| `AWM_EDGE_PEERS` | on | `0`: refuse every peer, node token and legacy bearer alike. A person's login still works |
+| `AWM_EDGE_PEERS` | on | `0`: refuse every peer. A node token gets 403 `peers not admitted`, the legacy bearer 401. A person's login still works |
 | `AWM_EDGE_MESH_HOST` | — | an address for a second, mesh-only listener (see below). Unset: no second listener |
 | `AWM_EDGE_MESH_PORT` | `12100` | the mesh listener's port |
 | `AWM_EDGE_CERT_DIR` | `.certs/` beside the service | where the leaf lives |
