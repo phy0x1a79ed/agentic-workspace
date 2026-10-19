@@ -161,3 +161,23 @@ def test_deploy_installs_and_builds_extra_roots(tmp_path, monkeypatch):
     assert deploy.installable_units(root) == ["gateway", "service:core",
                                               "service:myproj"]
     assert set(deploy.page_signatures(root)) == {"core", "myproj"}
+
+
+def test_deploy_installs_a_service_that_moved_to_another_root(tmp_path, monkeypatch):
+    root = tmp_path / "awm"
+    _service(root / "services", "core", install=True)
+    first = tmp_path / "first" / "services"
+    second = tmp_path / "second" / "services"
+    _service(first, "myproj", install=True)
+    second.mkdir(parents=True)
+    monkeypatch.setenv("AWM_SERVICE_ROOTS", f"{first}{os.pathsep}{second}")
+    awm_dir = tmp_path / "awm_dir"
+    deploy.save_manifest(awm_dir, deploy.plan_deploy(root, awm_dir).next_manifest())
+    assert not deploy.plan_deploy(root, awm_dir).do_install
+
+    # Same name, same install inputs, new folder: the name set is unchanged.
+    (first / "myproj").rename(second / "myproj")
+    plan = deploy.plan_deploy(root, awm_dir)
+    assert plan.dist_sig == deploy.load_manifest(awm_dir)["dist_sig"]
+    assert plan.do_install and plan.install_reason == "moved: myproj"
+    assert plan.services["myproj"]["path"] == str(second / "myproj")

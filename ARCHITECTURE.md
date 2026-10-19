@@ -77,7 +77,7 @@ A folder under an extra root follows the whole contract of an in-tree one: `run.
 
 `awm deploy` loads `.awm/env` before it plans, so the extra roots reach every step:
 
-1. `gateway/install.sh` runs each extra service's `install.sh` with `AWM_ROOT` (this `awm/` tree) and `AWM_ENV` exported. A new extra service with an `install.sh` changes the dist set and triggers the install.
+1. `gateway/install.sh` runs each extra service's `install.sh` with `AWM_ROOT` (this `awm/` tree) and `AWM_ENV` exported. Deploy records each service's resolved folder and a hash of its `install.sh`, `pyproject.toml` and `service.toml`. It runs the install when a service appears, moves to another root under the same name, or changes one of those files. A name set alone misses the move, and the moved service then starts with no `.runtime-env`.
 2. `scripts/build.sh` builds each extra page with this tree's `vite.config.ts` and `node_modules`. The page imports `@awm/*` exactly as an in-tree page does. Its `dist/` lands in its own folder.
 3. Verify waits for the extra services and pages too.
 
