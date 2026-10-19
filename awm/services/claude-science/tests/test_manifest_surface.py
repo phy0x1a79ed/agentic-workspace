@@ -45,7 +45,7 @@ def test_only_the_daemon_verbs_are_hidden_from_mcp():
     visible = {fn["tool"] for fn in FUNCTIONS} - hidden
     assert visible == {"science_status", "science_url", "science_signin_url",
                        "science_connector", "science_grants",
-                       "science_message", "science_read"}
+                       "science_message", "science_new", "science_read"}
 
 
 def test_every_declared_function_has_a_handler():

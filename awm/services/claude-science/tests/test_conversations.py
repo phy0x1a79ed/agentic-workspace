@@ -65,6 +65,16 @@ class Stub:
         if request.method == "GET" and path == "/api/frames":
             assert q["root_only"] == "true"
             return httpx.Response(200, json=self.frames)
+        if request.method == "POST" and path == "/api/projects":
+            body = json.loads(request.content)
+            assert body["find_or_create"] is True
+            return httpx.Response(200, json={"project_id": "proj_9", "name": body["name"]})
+        if request.method == "POST" and path == "/api/projects/proj_9/request":
+            if self.post_status is None:
+                raise httpx.ReadTimeout("slow", request=request)
+            return httpx.Response(200, json={
+                "root_frame_id": "eeee5555-0", "frame_id": "eeee5555-0",
+                "status": "accepted"})
         parts = path.strip("/").split("/")
         fid = parts[2] if len(parts) > 2 else None
         if fid not in {f["id"] for f in self.frames}:
@@ -161,6 +171,34 @@ def test_a_refusal_from_the_workbench_surfaces_with_its_detail():
         with pytest.raises(api.WorkbenchError, match="awaiting input") as err:
             conversations.post_message(owner, "bbbb2222-0", "x")
     assert err.value.status == 409
+
+
+# ---------------------------------------------------------------------------
+# Opening
+# ---------------------------------------------------------------------------
+
+def test_a_new_conversation_finds_its_project_and_sends_the_first_turn():
+    stub = Stub(FRAMES)
+    with stub.owner() as owner:
+        out = conversations.open_conversation(owner, "survey the data",
+                                              project="Agents", effort="high")
+
+    made, sent = stub.posts()
+    assert json.loads(made.content) == {"name": "Agents", "find_or_create": True}
+    assert json.loads(sent.content) == {"input_data": {"request": "survey the data"},
+                                        "effort": "high"}
+    assert out == {"conversation": {"id": "eeee5555-0", "project_id": "proj_9",
+                                    "project": "Agents"},
+                   "status": "accepted", "cursor": 0}
+
+
+def test_a_create_lost_in_flight_is_not_retried_and_says_so():
+    stub = Stub(FRAMES, post_status=None)
+    with stub.owner() as owner:
+        with pytest.raises(api.WorkbenchError, match="may have started"):
+            conversations.open_conversation(owner, "x", project="Agents")
+    assert [r.url.path for r in stub.posts()] == ["/api/projects",
+                                                  "/api/projects/proj_9/request"]
 
 
 # ---------------------------------------------------------------------------
