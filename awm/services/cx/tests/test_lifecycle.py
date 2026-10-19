@@ -1408,7 +1408,10 @@ async def test_the_list_verb_hides_a_job_whose_transcript_entered_a_mark_from_a_
     transcript.write_text(json.dumps({"cwd": str(home.projects)}) + "\n"
                           + json.dumps({"cwd": str(inside)}) + "\n")
     state = home.jobs / "wander01" / "state.json"
-    state.write_text(json.dumps({**json.loads(state.read_text()), "linkScanPath": str(transcript)}))
+    resumed = tmp_path / "resumed.jsonl"
+    resumed.write_text(json.dumps({"cwd": str(home.projects)}) + "\n")
+    state.write_text(json.dumps({**json.loads(state.read_text()), "linkScanPath": str(resumed),
+                                 "sessionId": "wander", "resumeSessionId": "resumed"}))
 
     peer = await hub_adapter.HANDLERS["list"]({}, "peer:capella")
     assert "wander01" in {r["job"] for r in peer["sessions"]}

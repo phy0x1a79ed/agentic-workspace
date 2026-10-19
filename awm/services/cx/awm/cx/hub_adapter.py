@@ -24,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from pathlib import Path
 from typing import Any
 
 from awm.config import privacy
@@ -301,8 +302,13 @@ def _entered_mark(job: str | None) -> bool:
         state = json.loads((config.jobs_dir() / job / "state.json").read_text())
     except (OSError, ValueError):
         return False
-    transcript = state.get("linkScanPath")
-    return bool(transcript) and privacy.transcript_entered(transcript)
+    scanned = state.get("linkScanPath")
+    if not scanned:
+        return False
+    folder = Path(scanned).parent
+    transcripts = {Path(scanned)} | {folder / f"{state[k]}.jsonl" for k in ("sessionId", "resumeSessionId")
+                                     if state.get(k)}
+    return any(privacy.transcript_entered(t) for t in transcripts)
 
 
 async def _start(args: dict[str, Any], as_: str | None = None) -> dict[str, Any]:
