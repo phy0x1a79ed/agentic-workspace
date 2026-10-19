@@ -45,11 +45,32 @@ class Refused(Exception):
 
 
 def daemon_refusal(roster_path: Path | None = None) -> str | None:
-    """Why a launch must not happen right now, or None if it may."""
-    if roster.daemon_pid(roster_path) is None:
+    """Why a launch must not happen right now, or None if it may.
+
+    With no user manager the launch runs straight from this process, and it
+    joins the running daemon only if it can see that daemon's sockets. A
+    gateway under a hardened unit has a mount namespace of its own, so its
+    launch starts a second daemon inside its own control group, which takes
+    the user's sessions down with the next restart.
+    """
+    pid = roster.daemon_pid(roster_path)
+    if pid is None:
         return ("no claude code daemon is running — launching now would put every "
                 "background session on this node inside awm's control group")
+    if user_manager_env() is None and not _shares_mount_namespace(pid):
+        return (f"the claude code daemon (pid {pid}) is not reachable from here: "
+                "there is no user systemd manager, and the daemon runs in another "
+                "mount namespace — launching now would start a second daemon "
+                "inside awm's control group")
     return None
+
+
+def _shares_mount_namespace(pid: int) -> bool:
+    """Whether ``pid`` shares this process's mount namespace; unreadable is no."""
+    try:
+        return os.readlink(f"/proc/{pid}/ns/mnt") == os.readlink("/proc/self/ns/mnt")
+    except OSError:
+        return False
 
 
 def default_claude_bin() -> str:
