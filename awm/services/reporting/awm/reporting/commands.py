@@ -27,8 +27,8 @@ DEFAULT_REASON = "rejected by the recipient"
 RENAME_HINT = ("You were started from Discord as {name}, a placeholder name. Once you know what this "
                "session is for, rename yourself to a short name for that work (2-4 words) with "
                "reflection(verb=\"rename\", args={{name: \"<name>\"}}).")
-QUIET_HINT = ("Do not post to Discord unless Tony asks you to there. Reach him through the "
-              "board, as your brief says.")
+# Discord only starts agents and carries urgent request_human notices; an agent never posts there.
+QUIET_HINT = "Do not post to Discord yourself."
 # The answer quotes this much of the prompt and attaches the rest as a file.
 PREVIEW_LINES = 3
 PREVIEW_CHARS = 300
