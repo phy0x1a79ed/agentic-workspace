@@ -15,6 +15,10 @@ few seconds, and then:
   or, when the bearer is a node token (``awmpt1.``), verifies it against the
   public key the peer book holds for the node that signed it. A node token
   yields ``peer:<node>``; the legacy shared bearer yields the bare ``peer``.
+* checks a **device token** (``awmut1.``) against the digests of the live
+  device tokens, and yields the user it was minted for. Such a bearer is
+  settled on its own branch: one that fails is a 401, never a peer attempt
+  and never a fall-back to the cookie.
 
 A login (``POST /__auth/login``) is the one path that calls the ``auth`` service:
 it forwards the submitted username + password (and the client IP, for the
@@ -35,7 +39,7 @@ import time
 from typing import Any
 
 from awm import config
-from awm.config import peertoken, tokens
+from awm.config import peertoken, tokens, usertoken
 
 log = logging.getLogger("awm.httpsfront.auth")
 
@@ -126,6 +130,30 @@ def _verified_node(mat: dict[str, Any], token: str) -> str | None:
     return None
 
 
+def _device_sub(mat: dict[str, Any], token: str) -> tuple[str, str] | None:
+    """``(id, user)`` for a live device token, else ``None``.
+
+    A token whose owner reads as a machine is refused: a device token speaks
+    for a person, and must never carry the operator's or a peer's identity.
+    """
+    try:
+        token_id, secret = usertoken.parse(token)
+    except usertoken.TokenError:
+        return None
+    for entry in mat.get("device_tokens") or []:
+        if entry.get("id") != token_id:
+            continue
+        sub = str(entry.get("sub") or "")
+        if not usertoken.matches(secret, entry.get("sha256") or ""):
+            return None
+        if not sub or is_machine_sub(sub):
+            log.warning("edge: device token %s names machine identity %r; refused",
+                        token_id, sub)
+            return None
+        return token_id, sub
+    return None
+
+
 class AuthGate:
     """Caches auth material and answers per-request authentication questions."""
 
@@ -135,6 +163,9 @@ class AuthGate:
         self._material: dict[str, Any] | None = None
         self._fetched_at = 0.0
         self._lock = asyncio.Lock()
+        #: Device tokens accepted since the last fetch, ``{id: epoch_seconds}``,
+        #: reported to ``auth`` on the next one.
+        self._device_used: dict[str, float] = {}
 
     def peer_relation(self, node: str) -> str | None:
         """``domestic`` or ``foreign`` for ``node`` per the cached material, else ``None``."""
@@ -151,15 +182,20 @@ class AuthGate:
             now = time.monotonic()
             if self._material is not None and now - self._fetched_at < _REFRESH_INTERVAL:
                 return self._material
+            used = dict(self._device_used)
             try:
                 from awm import gatewayclient
-                mat = await gatewayclient.call("auth", "edge_material", {})
+                mat = await gatewayclient.call(
+                    "auth", "edge_material", {"device_used": used} if used else {})
             except Exception as exc:  # noqa: BLE001 — auth down / not yet up
                 log.warning("edge: could not fetch auth material: %s", exc)
                 return self._material  # keep stale if any; else None (fail closed)
             if isinstance(mat, dict) and mat.get("secret"):
                 self._material = mat
                 self._fetched_at = now
+                for token_id, at in used.items():
+                    if self._device_used.get(token_id) == at:
+                        del self._device_used[token_id]
             return self._material
 
     async def peer_credentials(self) -> list[str] | None:
@@ -173,7 +209,9 @@ class AuthGate:
                            bearer: str | None) -> tuple[bool, str | None, str | None]:
         """Return ``(ok, refreshed_cookie_token_or_None, sub)``.
 
-        A valid **node token** authenticates as ``peer:<node>``, and a valid
+        A **device token** authenticates as the user it was minted for, or not
+        at all: it is decided before any peer check and sets no cookie. A valid
+        **node token** authenticates as ``peer:<node>``, and a valid
         **legacy peer bearer** as the bare ``peer`` while that bearer is still
         honoured; neither needs a cookie (peers don't carry sessions). A valid
         **session cookie** authenticates and, unless the session has passed its
@@ -185,6 +223,14 @@ class AuthGate:
             return False, None, None
         secret = mat["secret"]
         admits = edge_admits_peers()
+
+        if bearer and usertoken.looks_like_token(bearer):
+            found = _device_sub(mat, bearer)
+            if found is None:
+                return False, None, None
+            token_id, sub = found
+            self._device_used[token_id] = time.time()
+            return True, None, sub
 
         if bearer and peertoken.looks_like_token(bearer):
             node = _verified_node(mat, bearer) if self._peers and admits else None

@@ -39,6 +39,17 @@ it is stored in the clear and never touches the session-token codec. The
 mechanics are in :mod:`awm.auth.penpot`; the policy (when to rotate, what a
 failure means) is here.
 
+Device tokens
+-------------
+An unattended device or app that must act as a user without storing a password
+holds a device token (:mod:`awm.config.usertoken`) instead. This service mints
+it, keeps only the SHA-256 of its secret, and hands the edge the digests of the
+live tokens of enabled users in ``edge_material``; the edge verifies offline, so
+a revocation lands with the edge's next material refresh. The edge reports the
+tokens it saw on that same refresh, which makes ``last_used_at`` as coarse as
+the refresh interval. The operator (a call with no edge identity) manages
+anyone's tokens; a signed-in user manages only their own.
+
 ``AWM_AUTH_PROFILE=public`` (the internet-facing host) turns the shared path
 off entirely: no minting, no Discord push, ``verify`` without a username fails,
 and the edge receives no peer credentials. It does **not** turn off the Penpot
@@ -62,7 +73,8 @@ from pathlib import Path
 from typing import Any
 
 from awm import config
-from awm.config import SERVICES_DIR, peertoken, tokens
+from awm.config import SERVICES_DIR, peertoken, tokens, usertoken
+from awm.config.userroot import user_of
 
 from awm.auth import penpot, store
 from awm.auth.config import CONTRACT
@@ -692,13 +704,24 @@ def h_verify(args: dict) -> dict:
     return {"ok": True, "sub": sub, "token": token, "session_ttl_seconds": ttl}
 
 
+def _record_device_use(used: Any) -> None:
+    """Apply the edge's ``{id: epoch_seconds}`` report of device-token use."""
+    if not isinstance(used, dict):
+        return
+    clean = {str(k): float(v) for k, v in used.items()
+             if isinstance(v, (int, float)) and not isinstance(v, bool)}
+    store.device_touch(clean)
+
+
 def h_edge_material(args: dict, as_: str | None = None) -> dict:
     """Material the httpsfront edge caches to enforce auth offline.
 
     Returns the signing secret (to verify+slide cookies without an RPC per
     request), the currently-valid peer credentials (to check peer bearers), the
-    book's peers with their public keys (to verify node tokens), and the
-    session-lifetime knobs. Operator-only: the edge itself fetches it with no
+    book's peers with their public keys (to verify node tokens), the digests of
+    the live device tokens (to check user bearers), and the session-lifetime
+    knobs. ``device_used`` is the edge's report of the device tokens it has
+    accepted since its last fetch. Operator-only: the edge itself fetches it with no
     ``as_``, and a call that crossed an edge carries one and is refused.
 
     The legacy bearers are withheld once ``AWM_PEER_LEGACY_BEARER=0``, and
@@ -707,6 +730,7 @@ def h_edge_material(args: dict, as_: str | None = None) -> dict:
     a public node can also run a mesh listener that peers must reach.
     """
     _operator_only(as_, "edge_material")
+    _record_device_use((args or {}).get("device_used"))
     s = _settings()
     shared = shared_password_enabled()
     legacy = ([g["peer_credential"] for g in store.valid_generations()]
@@ -715,6 +739,8 @@ def h_edge_material(args: dict, as_: str | None = None) -> dict:
         "secret": store.ensure_secret(),
         "peer_credentials": legacy,
         "peers": _edge_peers(),
+        "device_tokens": [{"id": t["id"], "sub": t["username"],
+                           "sha256": t["secret_sha256"]} for t in store.device_live()],
         "legacy_bearer": legacy_bearer_enabled(),
         "session_ttl_seconds": s.session_ttl_hours * _HOUR,
         "max_session_seconds": s.max_session_days * _DAY,
@@ -887,3 +913,94 @@ def h_penpot_list(args: dict) -> dict:
         {"username": c["username"], "email": c["email"],
          "rotated_at": c["rotated_at"], "created_at": c["created_at"]}
         for c in store.penpot_list()]}
+
+
+# --- device tokens -----------------------------------------------------------
+#
+# CLI/HTTP only. A call with no edge identity is the operator and may name any
+# user; a ``user:<name>`` caller may name only itself. Every other identity — a
+# peer, the shared-password session — is refused.
+
+#: Identities the edge treats as machines; a device token never carries one.
+_MACHINE_NAMES = frozenset({"operator", "peer"})
+_LABEL_MAX = 64
+
+
+def _device_caller(as_: str | None) -> str | None:
+    """``None`` for the operator, else the user the caller is. Raises otherwise."""
+    if as_ is None:
+        return None
+    user = user_of(as_)
+    if user is None or user in _MACHINE_NAMES:
+        raise PermissionError("device tokens are managed by the operator or by "
+                              "the signed-in user they belong to")
+    return user
+
+
+def _device_target(args: dict, as_: str | None, *, required: bool) -> str | None:
+    """The username a device verb acts on, after the caller check."""
+    caller = _device_caller(as_)
+    given = str(args.get("username") or "").strip()
+    if caller is None:
+        if not given:
+            if required:
+                raise ValueError("username is required")
+            return None
+        return _check_username(given)
+    if given and given != caller:
+        raise PermissionError(f"{caller} may manage only their own device tokens")
+    return caller
+
+
+def _public_device(t: dict) -> dict:
+    return {"id": t["id"], "username": t["username"], "label": t["label"],
+            "created_at": t["created_at"], "last_used_at": t["last_used_at"],
+            "revoked_at": t["revoked_at"]}
+
+
+def h_device_mint(args: dict, as_: str | None = None) -> dict:
+    """Mint a device token for a user. The token is returned once, here."""
+    args = args or {}
+    name = _device_target(args, as_, required=True)
+    label = str(args.get("label") or "").strip()
+    if not label:
+        raise ValueError("label is required")
+    if len(label) > _LABEL_MAX:
+        raise ValueError(f"label is longer than {_LABEL_MAX} characters")
+    if name in _MACHINE_NAMES:
+        raise ValueError(f"{name!r} is a machine identity, not a user")
+    user = store.user_get(name)
+    if user is None:
+        raise ValueError(f"no such user {name!r}")
+    if user["disabled"]:
+        raise ValueError(f"user {name!r} is disabled")
+    token_id, secret, token = usertoken.mint()
+    row = store.device_insert(token_id, username=name, label=label,
+                              secret_sha256=usertoken.digest(secret))
+    log.warning("auth: minted device token %s for %s (%s)", token_id, name, label)
+    return {**_public_device(row), "token": token}
+
+
+def h_device_list(args: dict, as_: str | None = None) -> dict:
+    """Device tokens: everyone's for the operator unless filtered, else the
+    caller's own. Never the digest."""
+    name = _device_target(args or {}, as_, required=False)
+    return {"tokens": [_public_device(t) for t in store.device_list(name)]}
+
+
+def h_device_revoke(args: dict, as_: str | None = None) -> dict:
+    """Revoke a device token by id. The edge drops it on its next refresh."""
+    args = args or {}
+    caller = _device_caller(as_)
+    token_id = str(args.get("id") or "").strip()
+    if not token_id:
+        raise ValueError("id is required")
+    row = store.device_get(token_id)
+    # A user asking after someone else's id gets the same answer as for an id
+    # that does not exist, so ids cannot be probed across accounts.
+    if row is None or (caller is not None and row["username"] != caller):
+        raise ValueError(f"no such device token {token_id!r}")
+    store.device_revoke(token_id)
+    row = store.device_get(token_id)
+    log.warning("auth: revoked device token %s of %s", token_id, row["username"])
+    return _public_device(row)  # type: ignore[arg-type]
