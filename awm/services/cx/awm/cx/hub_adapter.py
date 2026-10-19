@@ -22,13 +22,14 @@ Run via ``run.sh`` (which the gateway spawns and respawns):
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from typing import Any
 
 from awm.config import privacy
 from awm.gatewayclient import ServiceAdapter, spawn_supervised
 
-from awm.cx import claim, lifecycle, pool, reconcile, remove, seed
+from awm.cx import claim, config, lifecycle, pool, reconcile, remove, seed
 
 log = logging.getLogger("awm.cx.hub_adapter")
 
@@ -289,7 +290,19 @@ async def _list(args: dict[str, Any], as_: str | None = None) -> dict[str, Any]:
         held["sessions"] = privacy.visible_rows(held["sessions"], as_)
         shown = {r["session"] for r in held["sessions"]}
         held["warm"] = [s for s in held["warm"] if s in shown]
+        rows = [r for r in rows if not _entered_mark(r.get("job"))]
     return {"sessions": privacy.visible_rows(rows, as_), "pool": held}
+
+
+def _entered_mark(job: str | None) -> bool:
+    if not job:
+        return False
+    try:
+        state = json.loads((config.jobs_dir() / job / "state.json").read_text())
+    except (OSError, ValueError):
+        return False
+    transcript = state.get("linkScanPath")
+    return bool(transcript) and privacy.transcript_entered(transcript)
 
 
 async def _start(args: dict[str, Any], as_: str | None = None) -> dict[str, Any]:
