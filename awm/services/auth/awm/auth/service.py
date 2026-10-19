@@ -701,8 +701,10 @@ def h_edge_material(args: dict, as_: str | None = None) -> dict:
     session-lifetime knobs. Operator-only: the edge itself fetches it with no
     ``as_``, and a call that crossed an edge carries one and is refused.
 
-    The legacy bearers are withheld once ``AWM_PEER_LEGACY_BEARER=0``. The
-    public profile verifies no peers at all, bearer or token.
+    The legacy bearers are withheld once ``AWM_PEER_LEGACY_BEARER=0``, and
+    always on the public profile. The keys are not secret and go out on every
+    profile: whether a listener honours a node token is the edge's call, because
+    a public node can also run a mesh listener that peers must reach.
     """
     _operator_only(as_, "edge_material")
     s = _settings()
@@ -712,7 +714,7 @@ def h_edge_material(args: dict, as_: str | None = None) -> dict:
     return {
         "secret": store.ensure_secret(),
         "peer_credentials": legacy,
-        "peers": _edge_peers() if shared else [],
+        "peers": _edge_peers(),
         "legacy_bearer": legacy_bearer_enabled(),
         "session_ttl_seconds": s.session_ttl_hours * _HOUR,
         "max_session_seconds": s.max_session_days * _DAY,

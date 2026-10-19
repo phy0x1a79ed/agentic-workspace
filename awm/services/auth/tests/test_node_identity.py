@@ -105,11 +105,12 @@ def test_legacy_bearers_are_withheld_when_retired(auth, monkeypatch):
     assert mat["legacy_bearer"] is False
 
 
-def test_public_profile_verifies_no_peers(auth, awm_workspace, monkeypatch):
+def test_public_profile_withholds_the_bearer_but_not_the_keys(auth, awm_workspace, monkeypatch):
     _book(awm_workspace, {"mira": {"public_key": "x"}})
     monkeypatch.setenv("AWM_AUTH_PROFILE", "public")
     mat = auth.h_edge_material({})
-    assert mat["peers"] == [] and mat["peer_credentials"] == []
+    assert mat["peer_credentials"] == []
+    assert [p["name"] for p in mat["peers"]] == ["mira"]
 
 
 def test_status_never_carries_the_private_key(auth):
