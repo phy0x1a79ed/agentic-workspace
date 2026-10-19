@@ -2,7 +2,7 @@
 
 ## Purpose & Contents
 
-This file is the design of awm federation. It covers how nodes reach each other, how a peer proves who it is, what a foreign swarm may read, and how swarms exchange work. The sections run in this order: the node roles and the shape of a cross-node call, authentication, node tokens, relations and grants, the foreign gate, federated search, the board and intake, the legacy SSH bearer, the peer directory, the cross-peer transports, singletons, the connection-slot arbiter, TLS and deployment.
+This file is the design of awm federation. It covers how nodes reach each other, how a peer proves who it is, what a foreign swarm may read, and how swarms exchange work. The sections run in this order: the node roles and the shape of a cross-node call, authentication, node tokens, relations and grants, the foreign gate, private projects, federated search, the board and intake, the legacy SSH bearer, the peer directory, the cross-peer transports, singletons, the connection-slot arbiter, TLS and deployment.
 
 Operator steps for the board and intake live in each service's `INSTALL.md`. Gateway internals live in `ARCHITECTURE.md`.
 
@@ -159,6 +159,19 @@ A category is the only boundary. A read verb that returns journal text under ano
 - `kb recall` gives a foreign peer only the hybrid, vector and lexical modes.
 
 Revoke a grant with `awm peer revoke <name> <source>`. The next call is refused.
+
+## Private projects
+
+A node can mark a project or one scope of it private. Run `scope private project=<p> [scope=<s>] private=true` on the node that holds it. Every caller stamped `peer` or `peer:<node>`, domestic or foreign, then loses everything the mark covers. Local callers and a person signed in at the edge (`user:<sub>`) see no change. Clearing the mark (`private=false`) restores peer visibility on the next call.
+
+- **What a mark covers.** A project mark covers the project's directory, each scope in it and each path below it. A scope mark covers that scope and the scopes nested under it. Journal rows that name the project as `task:<p>`, `user:proj:<p>` or `project:<p>` count as the project. Precedence decisions tagged `<p>` count too. A Claude transcript counts when its folder name is the slug of a covered path, or when any of its lines ran with a `cwd` under one.
+- **How peers lose it.** The gateway refuses a peer call whose arguments name a covered project, scope or path. The refusal is the error an unknown tool gets, as in § *The foreign gate*. Each service drops covered rows from the lists it gives a peer, so a call that names nothing still hides them. While any mark exists, `/files` also refuses a peer `AWM_DIR`, `~/.claude` and the host's `/proc`, `/sys`, `/dev`, `/run` and `/tmp`, because the service databases and transcripts hold copies of covered data.
+- **Where the mark lives.** The marks live in `<AWM_DIR>/private.json`. `scope private` owns the writes. `awm.config.privacy` is the only reader. Every process rereads the file when it changes, so a mark needs no restart. A file that exists and does not parse hides everything from peers. The mark is per node. It does nothing for a copy of the project on another node.
+- **Slug collisions.** Claude names a transcript folder by turning every non-alphanumeric character of the path into `-`. A mark on `metasmith` would therefore also cover `metasmith-libraries`. `scope private` refuses a mark whose slug prefixes another project's or scope's directory.
+
+Run `awm/scripts/privacy-probe.sh <peer> <project> --expect visible|hidden` from another node to prove a mark. Run it once with `visible` before marking, because the hidden run compares counts against that baseline.
+
+**CAUTION** A mark is visibility hygiene, not a security boundary. Text that mentions the project from another project's records stays visible, and so do untagged precedence decisions, kb papers and Trilium notes. A domestic peer can still start a session here, or drive the browser at this node's own `/files`, and that session reads with a local stamp.
 
 ## Federated search
 

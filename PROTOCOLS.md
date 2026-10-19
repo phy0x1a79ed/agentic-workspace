@@ -33,6 +33,8 @@ Nothing enumerable goes here, with one exception: a table that records a decisio
 
 `awm scope heal` repairs scopes. It is idempotent. Run it with `--dry-run` first to preview. It keeps scope-local metadata inside `.awm/` only. It also lists worktrees that no scope row names and live rows whose worktree is gone. It registers and retires neither. Register a listed worktree that has `.awm/context.md` with `scope repair`, and one without it with `scope ensure`. Retire a listed row with `scope complete`.
 
+`scope private` hides a project or scope from every other node. `FEDERATION.md` § *Private projects* covers what it hides.
+
 ## Scope naming
 
 New scopes take a prefix that names the kind of work:

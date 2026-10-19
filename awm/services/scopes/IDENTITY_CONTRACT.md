@@ -73,7 +73,7 @@ directly and call this (through `RefCache`) before acting on a reference.
 - **args:** `{ "project": str, "scope": str }`
 - **returns (found):**
   ```
-  { "exists": true, "project": str, "scope": str, "status": str }
+  { "exists": true, "project": str, "scope": str, "status": str, "private": bool }
   ```
   where `status` is the agent's lifecycle status — one of
   `"allocated" | "active" | "retired"` (mirrors `agents.status`; the underlying
@@ -81,7 +81,8 @@ directly and call this (through `RefCache`) before acting on a reference.
   resolves retired scopes too, and the caller decides whether `retired` counts).
 - **returns (not found):** `{ "exists": false, "project": str, "scope": str }`
   — the `project`/`scope` echoed back, `exists: false`, no `status`. This is the
-  falsy "not found" signal; `RefCache` will not cache it.
+  falsy "not found" signal; `RefCache` will not cache it. A peer caller gets
+  this form for a scope under a private mark (`FEDERATION.md` § *Private projects*).
 
 No `agent_id` is ever returned. The natural key the caller keeps is
 `(project, scope)`.
