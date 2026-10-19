@@ -27,18 +27,16 @@ DEFAULT_REASON = "rejected by the recipient"
 RENAME_HINT = ("You were started from Discord as {name}, a placeholder name. Once you know what this "
                "session is for, rename yourself to a short name for that work (2-4 words) with "
                "reflection(verb=\"rename\", args={{name: \"<name>\"}}).")
-REPLY_HINT = ("Tony asked from Discord. Answer him there with social(verb=\"send\", "
-              "args={{account: \"{account}\", channel: \"{channel}\", text: \"<text>\"}}).")
+QUIET_HINT = ("Do not post to Discord unless Tony asks you to there. Reach him through the "
+              "board, as your brief says.")
 # The answer quotes this much of the prompt and attaches the rest as a file.
 PREVIEW_LINES = 3
 PREVIEW_CHARS = 300
 PROMPT_FILE = "prompt.txt"
 
 
-def _new_agent_prompt(name: str, prompt: str, answer_to: tuple[str, str] | None) -> str:
-    hint = RENAME_HINT.format(name=name)
-    if answer_to:
-        hint += " " + REPLY_HINT.format(account=answer_to[0], channel=answer_to[1])
+def _new_agent_prompt(name: str, prompt: str) -> str:
+    hint = f"{RENAME_HINT.format(name=name)} {QUIET_HINT}"
     return f"{prompt}\n\n{hint}" if prompt else f"{hint} Wait for Tony's first instruction."
 
 
@@ -141,7 +139,7 @@ class Commands:
         prompt = str(event.get("prompt") or "").strip()
         spec = {"project": project, "scope": scope, "name": name, "remote_control": True,
                 "started_by": "Tony from Discord",
-                "prompt": _new_agent_prompt(name, prompt, _answer_to(event))}
+                "prompt": _new_agent_prompt(name, prompt)}
         started = await self.cx.start(spec)
         job = started.get("job")
         if not started.get("ok"):
