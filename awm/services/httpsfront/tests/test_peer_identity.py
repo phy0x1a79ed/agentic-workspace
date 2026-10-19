@@ -51,8 +51,8 @@ def keys():
     return private, peertoken.public_key_of(private)
 
 
-def _gate(*, peers, flag=None) -> AuthGate:
-    gate = AuthGate()
+def _gate(*, peers, flag=None, honour_peers=True) -> AuthGate:
+    gate = AuthGate(peers=honour_peers)
     gate._material = {
         "secret": SECRET,
         "peer_credentials": [LEGACY],
@@ -79,6 +79,17 @@ def test_a_node_token_authenticates_as_peer_colon_node(keys):
     private, public = keys
     token = peertoken.sign(private, iss="mira", aud=ME)
     assert _auth(_gate(peers=[_peer("mira", public)]), token) == (True, None, "peer:mira")
+
+
+def test_the_public_listener_honours_no_node_token(keys):
+    """A public node's mesh listener needs the keys, so they reach its public
+    listener too; that listener must not count them."""
+    private, public = keys
+    token = peertoken.sign(private, iss="mira", aud=ME)
+    gate = _gate(peers=[_peer("mira", public)], honour_peers=False)
+    assert _auth(gate, token) == (False, None, None)
+    assert proxy.build_app(GATEWAY + "/", "/dev/null", profile="public").state.gate._peers is False
+    assert proxy.build_app(GATEWAY + "/", "/dev/null", profile=None).state.gate._peers is True
 
 
 def test_a_foreign_nodes_token_authenticates_too(keys):
