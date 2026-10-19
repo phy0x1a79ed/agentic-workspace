@@ -121,9 +121,9 @@ For each request the edge:
 3. Stamp `X-Awm-As: peer:<node>`, where `<node>` is the peer book name.
 4. Remove the token from the forwarded request.
 
-The legacy bearer authenticates as the bare `peer`, which the gateway treats as a domestic peer. Set `AWM_PEER_LEGACY_BEARER=0` in `<workspace>/.awm/env` to retire it. The edge then accepts only node tokens, and `auth` stops handing the bearers to the edge.
+The legacy bearer authenticates as the bare `peer`, which the gateway treats as a domestic peer. Set `AWM_PEER_LEGACY_BEARER=0` in `<workspace>/.awm/env` to retire it. The edge then accepts only node tokens, and `auth` stops handing the bearers to the edge. The node's own outbound calls stop falling back to the bearer.
 
-Set `AWM_EDGE_PEERS=0` to close a node to every peer. The edge then refuses every node token and the legacy bearer with 401. A person's login still works. The peer book keeps its relations, because the node's own outbound calls pick providers from them. The edge guards only the awm door, so a closed node also drops new mesh connections from its peers in its firewall and authorizes none of their ssh keys. capella runs closed. **CAUTION** On a closed node a domestic entry trusts nothing inbound. Read the node's env, not its book, to learn whether a peer reaches it.
+Set `AWM_EDGE_PEERS=0` to close a node to every peer. The edge then answers a node token with 403 `peers not admitted` and the legacy bearer with 401. The 403 tells the caller that the node is closed, not that its token is bad, and it ends the call with no fallback. A person's login still works. The peer book keeps its relations, because the node's own outbound calls pick providers from them. The edge guards only the awm door, so a closed node also drops new mesh connections from its peers in its firewall and authorizes none of their ssh keys. capella runs closed. **CAUTION** On a closed node a domestic entry trusts nothing inbound. Read the node's env, not its book, to learn whether a peer reaches it.
 
 The edge caches the auth material for up to 30 seconds (`httpsfront/auth.py` `_REFRESH_INTERVAL`). The material holds each peer's relation and pinned key. A new key or a relation change reaches the edge within that window. The gateway reads the peer book on every call, so a grant change applies on the next call.
 
@@ -314,7 +314,8 @@ service and caches it.
 A domestic peer that answers 401 (a node that has not upgraded) gets one repeat
 with the legacy bearer fetched over SSH. The client then calls that peer with
 the legacy bearer for five minutes. A foreign peer never gets the legacy bearer.
-Its refusal returns as sent. Only 401 triggers the fallback, because a 403 is an
+Its refusal returns as sent. A caller that sets `AWM_PEER_LEGACY_BEARER=0`
+treats every peer the same way. Only 401 triggers the fallback, because a 403 is an
 authorisation verdict that another credential cannot change.
 
 ### Files across the hop

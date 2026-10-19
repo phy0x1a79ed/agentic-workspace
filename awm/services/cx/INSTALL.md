@@ -67,8 +67,9 @@ stored pointer to "the current session", because a stored pointer is a second
 thing that has to agree with the records and it is the half that goes stale.
 
 Every knob is an environment variable on the service process. `AWM_CX_WANT=0`
-stops the pool without stopping the service. `AWM_CX_LOOP=0` stops the reconcile
-loop alone. `AWM_CX_ROTATE_AGE_S` sets the age at which a session is replaced.
+stops the pool without stopping the service. `AWM_CX_LOOP=0` stops seeding and
+rotation alone. The reconcile loop keeps adopting late starts, because cx
+refuses to stop or resume a job it holds no lineage record for. `AWM_CX_ROTATE_AGE_S` sets the age at which a session is replaced.
 `AWM_CX_PREFIX`, `AWM_CX_SEED_DIR`, `AWM_CX_MODEL`, `AWM_CX_EFFORT` and
 `AWM_CX_CLAUDE` shape what is seeded. `AWM_CX_PROJECTS` sets the root of the
 scope worktrees that `start_other` uses, and `AWM_CX_MCP_SOURCE` names the MCP config a
@@ -267,7 +268,9 @@ for a user unit to run at boot. Install it:
 a sandboxed system unit must see both, so no `ProtectHome=yes` and no
 `PrivateTmp=yes` there. Hidden from cx, `claude --bg` starts inside the gateway's
 unit. That client starts a second daemon, which evicts the user unit's daemon and
-dies with the next gateway restart, taking every session with it.
+dies with the next gateway restart, taking every session with it. So with no user
+bus, cx compares the daemon's mount namespace with its own and refuses a start
+when they differ. A node with no systemd and one namespace launches directly.
 
 **WARNING** Do not start the unit while a daemon runs. A service daemon makes
 a running transient daemon yield, and a takeover brings back only some of its

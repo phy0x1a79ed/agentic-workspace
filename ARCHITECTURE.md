@@ -263,7 +263,7 @@ The gateway installs a loop-level signal override at lifespan startup, before uv
 
 A second signal force-exits. If the `Server` cannot be captured (TestClient, a non-main thread), the gateway falls back to a flag-only wrapper and drains from the lifespan-shutdown backstop. Force-kill is the backstop, not the mechanism. It fires only for a straggler whose lease is still held after about 8s, or whose process lives after its lease is gone.
 
-**CAUTION** A service is the gateway's child, so after it exits it stays a zombie until the gateway reaps it, and `os.kill(pid, 0)` still succeeds on a zombie. The drain reaps with `supervisor._try_reap` before it asks whether a pid is alive. A bare liveness probe counts every exited service as a straggler and logs a force-kill for each one.
+**CAUTION** A service is the gateway's child, so after it exits it stays a zombie until the gateway reaps it, and `os.kill(pid, 0)` still succeeds on a zombie. `supervisor.pid_alive` reaps before it probes. Use it, never a bare `os.kill`. A bare probe counts every exited service as alive, so the drain logs a force-kill for it and the self-heal sweep never respawns it.
 
 ### Crash respawn
 
@@ -281,9 +281,11 @@ Two independent 10s windows exist. The service's give-up deadline is service-sid
 
 ### The crash-loop breaker
 
+The self-heal sweep respawns a journalled service whose pid is dead, and one whose pid lives but has not reached ready within `_READY_GRACE_S`. **CAUTION** `supervisor` and `gateway_ops` each define `_READY_GRACE_S`. Keep the two equal, or the sweep kills a service the orphan reaper still spares as young.
+
 Every respawn path (boot reconcile, disconnect watchdog, the self-heal sweep) goes through `_respawn_from_journal`. `supervisor._note_respawn` counts respawns that did not reach ready, up to `_RESPAWN_BUDGET`. Reaching ready clears the count. `_RESPAWN_WINDOW_S` is only a slow decay.
 
-The breaker counts failures, not respawns per unit time, because the respawn cadence varies. The watchdog, the 45s sweep and ticks skipped for a zombie all differ, and a slower crash loop once escaped a 300s window entirely.
+The breaker counts failures, not respawns per unit time, because the respawn cadence varies. The watchdog, the 45s sweep and the readiness grace all differ, and a slower crash loop once escaped a 300s window entirely.
 
 Past the budget the gateway stops respawning, logs at ERROR, annotates the journal entry and shows `breaker-tripped` in `awm services list`. There is no auto-retry. `awm services start|restart` is the only way back, so a wedged service stays visibly wedged. The ERROR log is the only notification.
 
