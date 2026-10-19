@@ -35,7 +35,10 @@ it had in fact waited 60 for. Retry the connect phase; never the response phase
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
+import threading
 
 # The reconnect window, applied to the CONNECT phase only, so a request
 # transparently survives a `systemctl restart` of the core.
@@ -129,3 +132,48 @@ def catalog_no_reply_message(waited_s: float) -> str:
     """Message for a catalog fetch that went unanswered. Safe to retry by hand."""
     return (f"awm core did not answer GET /tools within {waited_s:.0f}s "
             f"(the core is up — it accepted the request — but did not reply)")
+
+
+# How often a proxy re-reads the tool list to notice that it grew. A session
+# that starts before the gateway's first peer sweep sees no peer tools, so the
+# first minutes are polled fast; after that a change is rare.
+WATCH_FAST_S = 15.0
+WATCH_FAST_FOR_S = 300.0
+WATCH_SLOW_S = 120.0
+
+
+def watch_delay(elapsed_s: float) -> float:
+    return WATCH_FAST_S if elapsed_s < WATCH_FAST_FOR_S else WATCH_SLOW_S
+
+
+class ToolListWatch:
+    """Decides when to send ``notifications/tools/list_changed``.
+
+    Compares against the list last *served* to the client, never against any
+    timestamp of the core's: the peer sweep refreshes every two minutes whether
+    or not anything changed. Each new list is announced once, so a client that
+    does not re-list is not nagged.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._served: str | None = None
+        self._announced: str | None = None
+
+    @staticmethod
+    def fingerprint(tools: list) -> str:
+        raw = json.dumps(tools, sort_keys=True, default=str).encode("utf-8")
+        return hashlib.sha256(raw).hexdigest()
+
+    def served(self, tools: list) -> None:
+        with self._lock:
+            self._served = self.fingerprint(tools)
+            self._announced = None
+
+    def changed(self, tools: list) -> bool:
+        fp = self.fingerprint(tools)
+        with self._lock:
+            if self._served is None or fp in (self._served, self._announced):
+                return False
+            self._announced = fp
+            return True

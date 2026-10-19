@@ -78,6 +78,7 @@ from awm.httpsfront.auth import (
     AuthGate,
     Shape,
     bearer_of,
+    edge_admits_peers,
     is_foreign_peer,
     is_machine_sub,
 )
@@ -352,12 +353,21 @@ def _site_name(request: Request) -> str:
 
 
 def _deny(request: Request) -> Response:
-    """Sign-in screen for a browser GET, else 401 (API / peer)."""
+    """Sign-in screen for a browser GET, 403 for a node token at an edge closed
+    to peers, else 401 (API / peer).
+
+    A caller falls back to another credential on a 401 and never on a 403, so a
+    closed edge says it is closed rather than looking like a bad token.
+    """
     if request.method == "GET" and _wants_html(request):
         return HTMLResponse(
             pages.login_page(public=_is_public(request.app),
                              name=_site_name(request)),
             status_code=200)
+    bearer = bearer_of(request.headers.get("authorization"))
+    if (bearer and peertoken.looks_like_token(bearer)
+            and not edge_admits_peers() and not _is_public(request.app)):
+        return JSONResponse({"error": "peers not admitted"}, status_code=403)
     return JSONResponse({"error": "unauthenticated"}, status_code=401)
 
 

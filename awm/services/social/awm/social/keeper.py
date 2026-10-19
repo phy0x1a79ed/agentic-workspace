@@ -206,6 +206,12 @@ def _live(row: dict) -> bool:
     return row.get("state") not in (GONE, STOPPED)
 
 
+def _recorded(row: dict) -> bool:
+    """Whether cx holds the job's lineage, without which it will not stop or
+    resume it. A row from a cx that predates the flag counts as recorded."""
+    return row.get("recorded") is not False
+
+
 def _mid_turn(row: dict) -> bool:
     tempo = row.get("tempo")
     return tempo == ACTIVE if tempo else row.get("state") == WORKING
@@ -382,7 +388,9 @@ class Keeper:
             return
         health = Health("exited" if rec else "missing", "", rec["job"] if rec else None)
         self._report(seat, health)
-        if rec and rec["spec_hash"] == want and await self._resume(seat, rec, rows, described[1]):
+        held = next((r for r in rows if rec and r.get("job") == rec["job"]), {})
+        if (rec and rec["spec_hash"] == want and _recorded(held)
+                and await self._resume(seat, rec, rows, described[1])):
             return
         await self._replace(seat, spec, want, rows, old=rec["job"] if rec else None,
                             why="it is not running" if rec else "it has none yet",
@@ -401,7 +409,7 @@ class Keeper:
         return self._names.get(seat.name) or f"seat:{platform}/{seat.name}"
 
     def _adoptable(self, seat: SeatConfig, rows: list[dict], rec: dict | None) -> dict | None:
-        return next((r for r in rows if _live(r) and r.get("job")
+        return next((r for r in rows if _live(r) and r.get("job") and _recorded(r)
                      and r.get("name") == self._names.get(seat.name)
                      and r.get("parent") is None
                      and (rec is None or r["job"] != rec["job"])), None)
