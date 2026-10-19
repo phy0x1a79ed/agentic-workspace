@@ -24,6 +24,10 @@ Owns two things in the service's own SQLite DB:
   password, so this table and Penpot's own profile row are two halves of one
   fact — see :mod:`awm.auth.penpot` for what to do when they disagree.
 
+* **Device tokens** — ``awm_device_tokens`` holds, per minted token, its owner,
+  a label and the SHA-256 of its secret. The secret itself is never stored. A
+  revoked row stays, with ``revoked_at`` set, so a listing can still name it.
+
 This module is pure storage — the rotation *policy* (when to mint, the Discord
 push, the ``$AWM_PEER_CRED`` file), password hashing and the lockout policy live
 in :mod:`awm.auth.service`.
@@ -38,7 +42,7 @@ from typing import Any
 from awm.persistence.databases import get_connection, init_service_db
 
 SERVICE = "auth"
-_SCHEMA_VERSION = 3
+_SCHEMA_VERSION = 4
 
 _SCHEMA = """
 CREATE TABLE awm_secret (
@@ -73,6 +77,15 @@ CREATE TABLE awm_penpot (
     rotated_at REAL NOT NULL,
     created_at REAL NOT NULL
 );
+CREATE TABLE awm_device_tokens (
+    id            TEXT PRIMARY KEY,
+    username      TEXT NOT NULL,
+    label         TEXT NOT NULL,
+    secret_sha256 TEXT NOT NULL,
+    created_at    REAL NOT NULL,
+    last_used_at  REAL,
+    revoked_at    REAL
+);
 """
 
 _PENPOT_TABLE = """\
@@ -82,6 +95,18 @@ CREATE TABLE IF NOT EXISTS awm_penpot (
     password   TEXT NOT NULL,
     rotated_at REAL NOT NULL,
     created_at REAL NOT NULL
+);
+"""
+
+_DEVICE_TOKENS_TABLE = """\
+CREATE TABLE IF NOT EXISTS awm_device_tokens (
+    id            TEXT PRIMARY KEY,
+    username      TEXT NOT NULL,
+    label         TEXT NOT NULL,
+    secret_sha256 TEXT NOT NULL,
+    created_at    REAL NOT NULL,
+    last_used_at  REAL,
+    revoked_at    REAL
 );
 """
 
@@ -103,6 +128,7 @@ CREATE TABLE IF NOT EXISTS awm_login_fail (
 );
 """,
     (2, 3): _PENPOT_TABLE,
+    (3, 4): _DEVICE_TOKENS_TABLE,
 }
 
 
@@ -407,5 +433,110 @@ def penpot_delete(username: str) -> bool:
         cur = conn.execute("DELETE FROM awm_penpot WHERE username = ?", (username,))
         conn.commit()
         return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
+# --- device tokens -----------------------------------------------------------
+
+
+def _device_row(row: Any) -> dict[str, Any]:
+    return {
+        "id": row["id"],
+        "username": row["username"],
+        "label": row["label"],
+        "secret_sha256": row["secret_sha256"],
+        "created_at": row["created_at"],
+        "last_used_at": row["last_used_at"],
+        "revoked_at": row["revoked_at"],
+    }
+
+
+def device_insert(token_id: str, *, username: str, label: str, secret_sha256: str,
+                  now: float | None = None) -> dict[str, Any]:
+    now = time.time() if now is None else now
+    conn = get_connection(SERVICE)
+    try:
+        conn.execute(
+            "INSERT INTO awm_device_tokens "
+            "(id, username, label, secret_sha256, created_at) VALUES (?, ?, ?, ?, ?)",
+            (token_id, username, label, secret_sha256, now))
+        conn.commit()
+    finally:
+        conn.close()
+    return device_get(token_id)  # type: ignore[return-value]
+
+
+def device_get(token_id: str) -> dict[str, Any] | None:
+    conn = get_connection(SERVICE)
+    try:
+        row = conn.execute(
+            "SELECT * FROM awm_device_tokens WHERE id = ?", (token_id,)).fetchone()
+        return _device_row(row) if row is not None else None
+    finally:
+        conn.close()
+
+
+def device_list(username: str | None = None) -> list[dict[str, Any]]:
+    """Every token, or one user's, oldest first. Revoked ones included."""
+    conn = get_connection(SERVICE)
+    try:
+        if username is None:
+            rows = conn.execute(
+                "SELECT * FROM awm_device_tokens ORDER BY created_at, id").fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM awm_device_tokens WHERE username = ? "
+                "ORDER BY created_at, id", (username,)).fetchall()
+        return [_device_row(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def device_live() -> list[dict[str, Any]]:
+    """Unrevoked tokens whose owner exists and is enabled."""
+    conn = get_connection(SERVICE)
+    try:
+        rows = conn.execute(
+            "SELECT t.* FROM awm_device_tokens t "
+            "JOIN awm_users u ON u.username = t.username "
+            "WHERE t.revoked_at IS NULL AND u.disabled = 0 "
+            "ORDER BY t.created_at, t.id").fetchall()
+        return [_device_row(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def device_revoke(token_id: str, now: float | None = None) -> bool:
+    """Mark a token revoked. Keeps the first ``revoked_at`` on a second call.
+    Returns whether the token exists."""
+    now = time.time() if now is None else now
+    conn = get_connection(SERVICE)
+    try:
+        conn.execute(
+            "UPDATE awm_device_tokens SET revoked_at = ? "
+            "WHERE id = ? AND revoked_at IS NULL", (now, token_id))
+        conn.commit()
+    finally:
+        conn.close()
+    return device_get(token_id) is not None
+
+
+def device_touch(used: dict[str, float]) -> int:
+    """Move ``last_used_at`` forward to each reported time. Never moves it back.
+    Returns the number of rows changed."""
+    if not used:
+        return 0
+    conn = get_connection(SERVICE)
+    try:
+        changed = 0
+        for token_id, at in used.items():
+            cur = conn.execute(
+                "UPDATE awm_device_tokens SET last_used_at = ? "
+                "WHERE id = ? AND (last_used_at IS NULL OR last_used_at < ?)",
+                (at, token_id, at))
+            changed += cur.rowcount
+        conn.commit()
+        return changed
     finally:
         conn.close()
