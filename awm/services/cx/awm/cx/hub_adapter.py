@@ -131,6 +131,11 @@ API_MANIFEST: dict[str, Any] = {
                                 "are appended to the prompt, it is stopped (and "
                                 "removed when pinned) if cx started it, and the "
                                 "new job's lineage records it."},
+                {"name": "tags", "type": "array",
+                 "description": "Tags to set on the scope (scope tag), such as "
+                                "['lab', '<person>'] for work a lab member asked "
+                                "for. A tagging failure is returned as a warning "
+                                "and does not stop the start."},
             ],
             "timeout": 1800,
             "effect": "write",

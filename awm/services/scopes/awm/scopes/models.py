@@ -42,6 +42,8 @@ class ScopeCreateRequest(BaseModel):
     new_project: bool = False
     clone_url: str | None = None
     fork_url: str | None = None
+    # Written on the new scope, or on the project when only the project is made.
+    tags: list[str] | None = None
 
 
 class ScopeUpdateRequest(BaseModel):
@@ -89,6 +91,7 @@ class ScopeInfo(BaseModel):
     repo_path: str | None = None
     session: int = 1
     private: bool = False
+    tags: list[str] = []
 
 
 
@@ -106,6 +109,7 @@ class ProjectListInfo(BaseModel):
     name: str
     scope_counts: ProjectScopeCounts
     private: bool = False
+    tags: list[str] = []
 
 
 class ProjectListResponse(BaseModel):
@@ -119,6 +123,8 @@ class ScopeListResponse(BaseModel):
     degraded: dict | None = None
     # Present only when the search named no project.
     projects: list[ProjectListInfo] | None = None
+    # Every tag in use, with the number of scopes carrying it; also only with no project.
+    tags: dict[str, int] | None = None
 
 
 class ScopeActionResponse(BaseModel):

@@ -23,12 +23,12 @@ from awm.persistence.databases import init_service_db
 from awm.persistence.embeddings import EMBEDDINGS_DDL
 
 SERVICE = "scopes"
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 # Tables owned by the scopes service. v2 collapsed the old rooms/messages/
 # session_logs trio into one ``scope_posts`` channel + ``scope_subscribers``;
 # v3 drops the vestigial ``agents.parent_id`` (rooms-era agent containment —
-# agents form no tree, a scope IS the channel).
+# agents form no tree, a scope IS the channel); v4 adds ``tags``.
 SCHEMA_SQL = """\
 -- Identity (kept relational — all in the scopes DB) -------------------
 CREATE TABLE IF NOT EXISTS projects (
@@ -95,6 +95,18 @@ CREATE TABLE IF NOT EXISTS scope_subscribers (
     PRIMARY KEY (owner_project, owner_scope, guest_kind, guest_ref)
 );
 CREATE INDEX IF NOT EXISTS idx_scope_subscribers_ref ON scope_subscribers(guest_kind, guest_ref);
+
+-- Tags per project (scope '') or per scope or scope group path ----------
+-- Keyed by name, not agents row: a project, a main checkout or a group such
+-- as 'metasmith/lab' can carry tags with no agents row behind it.
+--   tags : JSON list of normalised tags, never empty (an empty set deletes the row).
+CREATE TABLE IF NOT EXISTS tags (
+    project     TEXT NOT NULL,
+    scope       TEXT NOT NULL DEFAULT '',
+    tags        TEXT NOT NULL,
+    updated_at  INTEGER NOT NULL,
+    PRIMARY KEY (project, scope)
+);
 """
 
 # Upgrades for an existing DB. v3 drops the rooms-era ``agents.parent_id``:
@@ -105,6 +117,12 @@ MIGRATIONS: dict[tuple[int, int], str] = {
     (2, 3): (
         "DROP INDEX IF EXISTS idx_agents_parent;\n"
         "ALTER TABLE agents DROP COLUMN parent_id;\n"
+    ),
+    (3, 4): (
+        "CREATE TABLE IF NOT EXISTS tags (\n"
+        "    project TEXT NOT NULL, scope TEXT NOT NULL DEFAULT '',\n"
+        "    tags TEXT NOT NULL, updated_at INTEGER NOT NULL,\n"
+        "    PRIMARY KEY (project, scope));\n"
     ),
 }
 

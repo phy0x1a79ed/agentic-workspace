@@ -359,6 +359,45 @@ def test_a_failed_scope_create_is_a_refusal(home, launched, monkeypatch):
     assert launched == []
 
 
+def _scope_calls(monkeypatch, fail=None):
+    from awm.cx import lifecycle
+
+    calls = []
+
+    async def call(service, fn, args=None, **kw):
+        calls.append((service, fn, args))
+        if fail:
+            raise RuntimeError(fail)
+        return {}
+
+    monkeypatch.setattr(lifecycle.gatewayclient, "call", call)
+    return calls
+
+
+def test_tags_go_on_the_scope_and_into_the_lineage(home, launched, monkeypatch):
+    from awm.cx import lifecycle
+
+    calls = _scope_calls(monkeypatch)
+    out = start({**BASE, "tags": "lab, ana"})
+    assert out["ok"] and "warning" not in out
+    assert calls == [("scopes", "scope_tag",
+                      {"project": "awm", "scope": "demo", "tags": ["lab", "ana"]})]
+    assert lifecycle.read_lineage(CHILD_JOB)["tags"] == ["lab", "ana"]
+
+
+def test_a_start_without_tags_leaves_the_scope_alone(home, launched, monkeypatch):
+    calls = _scope_calls(monkeypatch)
+    assert start(BASE)["ok"]
+    assert calls == []
+
+
+def test_a_failed_tag_is_a_warning_not_a_refusal(home, launched, monkeypatch):
+    _scope_calls(monkeypatch, fail="invalid tag 'Bad Tag'")
+    out = start({**BASE, "tags": ["Bad Tag"]})
+    assert out["ok"] is True and "invalid tag" in out["warning"]
+    assert len(launched) == 1
+
+
 # --- refusals ----------------------------------------------------------------
 
 

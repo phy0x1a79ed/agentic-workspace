@@ -73,12 +73,15 @@ directly and call this (through `RefCache`) before acting on a reference.
 - **args:** `{ "project": str, "scope": str }`
 - **returns (found):**
   ```
-  { "exists": true, "project": str, "scope": str, "status": str, "private": bool }
+  { "exists": true, "project": str, "scope": str, "status": str, "private": bool,
+    "tags": [str] }
   ```
   where `status` is the agent's lifecycle status — one of
   `"allocated" | "active" | "retired"` (mirrors `agents.status`; the underlying
   query is the `active_only=False` form of `agent_id_for_scope`, i.e. it
   resolves retired scopes too, and the caller decides whether `retired` counts).
+  `tags` are the scope's effective tags, from its nearest tagged level
+  (`scope tag`).
 - **returns (not found):** `{ "exists": false, "project": str, "scope": str }`
   — the `project`/`scope` echoed back, `exists: false`, no `status`. This is the
   falsy "not found" signal; `RefCache` will not cache it. A peer caller gets

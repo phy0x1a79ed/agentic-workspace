@@ -18,7 +18,7 @@ from awm.scopes.identity import agent_record_for_scope
 _write_lock = threading.Lock()
 
 
-def _known_projects() -> set[str]:
+def known_projects() -> set[str]:
     names = {r["name"] for r in ScopesDAO().query_all("SELECT name FROM projects")}
     root = _scopes.PROJECTS_DIR
     if root.is_dir():
@@ -37,7 +37,7 @@ def _scope_worktree(project: str, scope: str) -> Path:
 
 
 def _target_path(project: str, scope: str | None) -> Path:
-    if project not in _known_projects():
+    if project not in known_projects():
         raise FileNotFoundError(f"Project '{project}' not found")
     if scope is None:
         return _scopes.PROJECTS_DIR / project
@@ -46,7 +46,7 @@ def _target_path(project: str, scope: str | None) -> Path:
 
 def _other_dirs(project: str) -> list[Path]:
     """Every registered project directory and scope worktree but ``project``'s own directory."""
-    dirs = [_scopes.PROJECTS_DIR / name for name in _known_projects() if name != project]
+    dirs = [_scopes.PROJECTS_DIR / name for name in known_projects() if name != project]
     rows = ScopesDAO().query_all(
         "SELECT p.name AS project, a.scope, a.worktree "
         "FROM agents a JOIN projects p ON p.id = a.project_id")

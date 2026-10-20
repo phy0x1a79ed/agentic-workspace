@@ -77,6 +77,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     fed_state  TEXT,
     agent      TEXT,
     agent_link TEXT,
+    tags       TEXT,
     started    REAL NOT NULL,
     updated    REAL NOT NULL,
     closed     REAL,
@@ -107,12 +108,14 @@ CREATE TABLE IF NOT EXISTS todos (
 );
 """
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 _FED_COLUMNS = "    card_id    TEXT,\n    fed_state  TEXT,\n"
 _AGENT_COLUMNS = "    agent      TEXT,\n    agent_link TEXT,\n"
+_TAGS_COLUMN = "    tags       TEXT,\n"
 _TASKS_SCHEMA_V2 = (_TASKS_SCHEMA.replace("    owned      INTEGER NOT NULL DEFAULT 0,\n", "")
-                    .replace(_FED_COLUMNS, "").replace(_AGENT_COLUMNS, ""))
+                    .replace(_FED_COLUMNS, "").replace(_AGENT_COLUMNS, "")
+                    .replace(_TAGS_COLUMN, ""))
 
 _OWNED_MIGRATION = """
 ALTER TABLE tasks ADD COLUMN owned INTEGER NOT NULL DEFAULT 0;
@@ -158,6 +161,9 @@ ALTER TABLE tasks ADD COLUMN agent TEXT;
 ALTER TABLE tasks ADD COLUMN agent_link TEXT;
 """
 
+#: The scope's effective tags, comma-joined, as its card's Tags chip shows them.
+_TAGS_MIGRATION = "ALTER TABLE tasks ADD COLUMN tags TEXT;"
+
 _CURSOR = "cursor"
 
 
@@ -172,7 +178,8 @@ class Db:
                                          (3, 4): _SPEC_HASH_MIGRATION,
                                          (4, 5): _THREADS_MIGRATION,
                                          (5, 6): _INTAKE_MIGRATION,
-                                         (6, 7): _AGENT_MIGRATION})
+                                         (6, 7): _AGENT_MIGRATION,
+                                         (7, 8): _TAGS_MIGRATION})
 
     def _conn(self) -> sqlite3.Connection:
         return databases.get_connection_at(self.path)

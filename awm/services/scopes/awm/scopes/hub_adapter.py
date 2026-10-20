@@ -22,7 +22,7 @@ from typing import Any
 from awm.config import PROJECTS_DIR, privacy
 from awm.gatewayclient import ServiceAdapter, spawn_supervised
 from awm.persistence import embeddings
-from awm.scopes import dao, search_index
+from awm.scopes import dao, search_index, tags as _tags
 from awm.scopes.identity import (
     agent_id_for_scope,
     agent_record_for_scope,
@@ -50,7 +50,7 @@ log = logging.getLogger("awm.scopes.hub_adapter")
 
 
 def _handle_resolve_scope(args: dict[str, Any], as_: str | None = None) -> dict[str, Any]:
-    """resolveScope(project, scope) → {exists, project, scope, status, private} | not-found.
+    """resolveScope(project, scope) → {exists, project, scope, status, private, tags} | not-found.
 
     Validate-only hot read: does this scope exist and is it live?
     Returns the agent's lifecycle status when found; the caller decides
@@ -69,6 +69,7 @@ def _handle_resolve_scope(args: dict[str, Any], as_: str | None = None) -> dict[
         "scope": scope,
         "status": rec["status"],
         "private": privacy.hidden(project, scope),
+        "tags": _tags.effective(project, scope),
     }
 
 

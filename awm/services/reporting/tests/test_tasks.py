@@ -43,9 +43,17 @@ class Env:
         self.fed.names = self.names
         self.posts: list[dict] = []
         self.fetches: list[dict] = []
+        self.scope_tags: dict[tuple[str, str], list[str]] = {}
+        self.tag_lookups: list[tuple[str, str]] = []
+        self.tags_error: Exception | None = None
         self._fed_board: str | None = None
 
     async def _fetch(self, service, fn, args, timeout=0):
+        if service == "scopes":
+            self.tag_lookups.append((args["project"], args["scope"]))
+            if self.tags_error:
+                raise self.tags_error
+            return {"effective": self.scope_tags.get((args["project"], args["scope"]), [])}
         self.fetches.append(args)
         return {"posts": list(self.posts)}
 
@@ -703,6 +711,82 @@ async def test_a_post_for_a_closed_task_is_not_appended(env, tmp_path):
     env.ledger.close(env.task()["id"])
     await env.tasks.on_post({"post": post()})
     assert env.ledger.events(env.task()["id"], "journal") == []
+
+
+# -- the Tags chip -------------------------------------------------------------
+
+
+async def test_a_card_carries_its_scopes_tags_and_follows_a_change(env, tmp_path):
+    await in_scope(env, tmp_path)
+    env.scope_tags[("awm", "feat/x")] = ["ana", "lab"]
+    await env.tasks.sweep([row("working")])
+    task = env.task()
+    card = env.tri.notes[task["note_id"]]
+    assert task["tags"] == "ana,lab" and card["labels"]["swarmTags"] == "ana,lab"
+    env.scope_tags[("awm", "feat/x")] = []
+    await env.tasks.sweep([row("working")])
+    assert env.task()["tags"] == "" and card["labels"]["swarmTags"] == ""
+    assert env.column(task["note_id"]) == ["Active"]
+
+
+async def test_a_tag_change_leaves_tonys_drag_standing(env, tmp_path):
+    await in_scope(env, tmp_path)
+    await env.tasks.sweep([row("working")])
+    note = env.task()["note_id"]
+    env.tri.notes[note]["parents"] = [env.ids["Blocked"]]
+    env.scope_tags[("awm", "feat/x")] = ["lab"]
+    await env.tasks.sweep([row("working")])
+    assert env.column(note) == ["Blocked"]
+
+
+async def test_each_scope_is_looked_up_once_a_sweep(env, tmp_path):
+    await in_scope(env, tmp_path)
+    await env.tasks.sweep([row("working")])
+    assert env.tag_lookups == [("awm", "feat/x")]
+
+
+async def test_an_unanswered_lookup_changes_nothing(env, tmp_path):
+    await in_scope(env, tmp_path)
+    env.scope_tags[("awm", "feat/x")] = ["lab"]
+    await env.tasks.sweep([row("working")])
+    env.tags_error = RuntimeError("scopes is down")
+    await env.tasks.sweep([row("working")])
+    assert env.task()["tags"] == "lab"
+
+
+async def test_a_claimed_card_gets_the_chip_on_its_own_note(env, tmp_path):
+    env.records[100]["cwd"] = str(tmp_path / SCOPE_DIR)
+    (tmp_path / SCOPE_DIR).mkdir(parents=True)
+    note, _ = env.tonys_note()
+    await env.call("claim_task", url=URL.format(note))
+    env.scope_tags[("awm", "feat/x")] = ["lab"]
+    await env.tasks.sweep([row("working")])
+    assert env.tri.notes[note]["labels"]["swarmTags"] == "lab"
+    assert env.tri.notes[note]["content"] == "body"
+
+
+async def test_each_tag_in_use_gets_one_saved_search_on_the_board(env, tmp_path):
+    await in_scope(env, tmp_path)
+    env.scope_tags[("awm", "feat/x")] = ["ana", "lab"]
+    await env.tasks.sweep([row("working")])
+    await env.tasks.sweep([row("working")])
+    board = next(i for i, n in env.tri.notes.items() if "swarmBoard" in n["labels"])
+    book = next(i for i in env.tri.kids(board) if env.tri.notes[i]["title"] == "By tag")
+    searches = {env.tri.notes[i]["title"]: env.tri.notes[i] for i in env.tri.kids(book)}
+    assert sorted(searches) == ["ana", "lab"]
+    lab = searches["lab"]
+    assert lab["type"] == "search" and lab["relations"] == {"ancestor": board}
+    assert lab["labels"]["searchString"] == "#swarmTags %= '(^|,)lab(,|$)'"
+
+
+@pytest.mark.parametrize("value,hit", [("lab", True), ("ana,lab", True), ("lab,tony", True),
+                                       ("collab", False), ("lab2", False), ("", False)])
+def test_a_tag_search_matches_the_whole_tag(value, hit):
+    import re
+    from awm.reporting.swarmboard import tag_search
+
+    pattern = tag_search("lab").split("%= ", 1)[1].strip("'")
+    assert bool(re.search(pattern, value)) is hit
 
 
 # -- the Agent line ------------------------------------------------------------

@@ -259,8 +259,9 @@ class FakeTrilium:
 
     def _note_create(self, title: str, parent: str = "root", type: str = "text", content: str = "",
                      mime: str | None = None, labels: dict | None = None, relations: dict | None = None) -> dict:
-        return {"note_id": self.add(title, parent, type=type, content=content, labels={**(labels or {})},
-                                    mime=mime), "created": True}
+        note_id = self.add(title, parent, type=type, content=content, labels={**(labels or {})}, mime=mime)
+        self.notes[note_id]["relations"] = dict(relations or {})
+        return {"note_id": note_id, "created": True}
 
     def _note_update(self, note_id: str, content: str | None = None, title: str | None = None,
                      labels: dict | None = None, type: str | None = None, mime: str | None = None) -> dict:

@@ -35,7 +35,7 @@ from awm.reporting.ledger import (ACTIVE, BLOCKED, CANCELLED, CLOSED, COLUMNS, D
 from awm.reporting.record import TITLE_CHARS, cut_at_word, plan_title, render_ledger, render_record
 from awm.reporting.sessions import GONE, STOPPED, CxUnavailable, Cx
 from awm.reporting.store import Offloaded, Queue
-from awm.reporting.swarmboard import BoardError, SwarmBoard
+from awm.reporting.swarmboard import TAGS_LABEL, BoardError, SwarmBoard
 
 log = logging.getLogger("awm.reporting.tasks")
 
@@ -48,6 +48,7 @@ _CARD_REF = re.compile(r"[0-9a-fA-F]{6,32}")
 JOURNAL_SERVICE = "journal"
 JOURNAL_FETCH = "fetch"
 JOURNAL_TOPIC = "posts"
+SCOPES_SERVICE = "scopes"
 #: What a session hears when a card opens for its work, from a plan or `task_track`.
 BOARD_NOTICE = (
     "Your work is now on Tony's Swarm board as the card \"{title}\", in {column}. "
@@ -313,14 +314,17 @@ class Tasks:
     async def _write_card(self, task: dict, *, dry_run: bool = False) -> list[str]:
         """Put the record on the board: in an owned card's own body, else in the claimed card's Record child."""
         html = await self._record(task)
+        chips = {TAGS_LABEL: task["tags"]} if task.get("tags") is not None else {}
         if not task["owned"]:
             if not dry_run:
                 await self.board.write_record(task["note_id"], html)
+                if chips:
+                    await self.board.label(task["note_id"], chips)
             return ["rewrite Record child"]
         title = await self._title_of(task)
         acts = ["rewrite body"] + ([f"retitle to {title!r}"] if title != task["title"] else [])
         if not dry_run:
-            await self.board.write_card(task["note_id"], html, title)
+            await self.board.write_card(task["note_id"], html, title, chips)
             if title != task["title"]:
                 await self.db.update(task["id"], title=title)
         return acts
@@ -779,6 +783,7 @@ class Tasks:
             for task in await self.db.open(self.node):
                 if task["kind"] == "bg":
                     await self._agent(task, jobs.get(task["key"]))
+            await self._tags()
             await self._finished_cards()
             await self._archive()
             await self._catch_up()
@@ -813,6 +818,45 @@ class Tasks:
         except BoardError as exc:
             log.warning("reporting: task %s waits for the board: %s", task["id"], exc)
             await self.db.update(task["id"], agent=task.get("agent"), agent_link=task.get("agent_link"))
+
+    async def _tags(self) -> None:
+        """Record each open task's scope tags, for its card's Tags chip and the "By tag" searches.
+
+        Each project and scope is looked up once a sweep. A change rewrites the
+        card, never its column, as ``_agent`` does, and a failed write is tried
+        again on the next sweep.
+        """
+        found: dict[tuple[str, str], str | None] = {}
+        for task in await self.db.open(self.node):
+            if not (task["project"] and task["scope"] and task["note_id"]):
+                continue
+            pair = (task["project"], task["scope"])
+            if pair not in found:
+                found[pair] = await self._scope_tags(*pair)
+            if found[pair] is None or found[pair] == task.get("tags"):
+                continue
+            await self.db.update(task["id"], tags=found[pair])
+            try:
+                await self._write_card(await self.db.get(task["id"]))
+            except BoardError as exc:
+                log.warning("reporting: task %s waits for the board: %s", task["id"], exc)
+                await self.db.update(task["id"], tags=task.get("tags"))
+        in_use = {tag for tags in found.values() if tags for tag in tags.split(",")}
+        if in_use:
+            try:
+                await self.board.ensure_tag_searches(in_use)
+            except BoardError as exc:
+                log.warning("reporting: cannot make the By tag searches: %s", exc)
+
+    async def _scope_tags(self, project: str, scope: str) -> str | None:
+        """The scope's effective tags comma-joined, or None when the scopes service did not answer."""
+        try:
+            reply = await self._fetch(SCOPES_SERVICE, "scope_tag", {"project": project, "scope": scope})
+        except Exception as exc:  # noqa: BLE001 — the chip waits for the next sweep
+            log.info("reporting: no tags for %s/%s: %s", project, scope, exc)
+            return None
+        effective = reply.get("effective") if isinstance(reply, dict) else None
+        return ",".join(effective) if isinstance(effective, list) else None
 
     async def _workers(self, rows: list[dict]) -> None:
         """Open a card in Active for each running worker cx started with the brief.

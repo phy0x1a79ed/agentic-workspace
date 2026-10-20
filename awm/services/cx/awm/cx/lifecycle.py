@@ -209,6 +209,7 @@ async def _start(args: dict[str, Any], as_: str | None) -> dict[str, Any]:
     untrusted = await asyncio.to_thread(trust.start_refusal, cwd)
     if untrusted:
         raise Refused(untrusted)
+    tag_warning = await _tag_scope(spec) if spec["tags"] is not None else None
     caller_rec = _caller_record(args.get("_caller_pid"))
     parent = _session_ref(caller_rec)
     caller = caller_peer(as_) or as_ or "local"
@@ -228,6 +229,8 @@ async def _start(args: dict[str, Any], as_: str | None) -> dict[str, Any]:
             "started_epoch": time.time(), "pinned": spec["pin"],
             "brief": spec["brief"],
         }
+        if spec["tags"] is not None:
+            record["tags"] = spec["tags"]
         if spec["replaces"]:
             record["replaces"] = spec["replaces"]
         _write_pending(record)
@@ -254,11 +257,26 @@ async def _start(args: dict[str, Any], as_: str | None) -> dict[str, Any]:
     pinned = spec["pin"] and await _pin(session.short)
     log.info("cx: started %s as %s in %s (mode %s%s)", spec["name"], session.short,
              cwd, spec["mode"], ", pinned" if pinned else "")
-    return {"ok": True, "job": session.short, "name": spec["name"],
-            "node": node_name(), "project": spec["project"], "scope": spec["scope"],
-            "cwd": str(cwd), "attach": f"claude attach {session.short}",
-            "parent": parent, "mode": spec["mode"], "pinned": pinned,
-            **await _started_link(session.short, bool(spec["remote_control"]))}
+    out = {"ok": True, "job": session.short, "name": spec["name"],
+           "node": node_name(), "project": spec["project"], "scope": spec["scope"],
+           "cwd": str(cwd), "attach": f"claude attach {session.short}",
+           "parent": parent, "mode": spec["mode"], "pinned": pinned,
+           **await _started_link(session.short, bool(spec["remote_control"]))}
+    if tag_warning:
+        out["warning"] = tag_warning
+    return out
+
+
+async def _tag_scope(spec: dict[str, Any]) -> str | None:
+    """Set the scope's tags; a failure is reported, never a reason not to start."""
+    try:
+        await gatewayclient.call("scopes", "scope_tag",
+                                 {"project": spec["project"], "scope": spec["scope"],
+                                  "tags": spec["tags"]})
+    except Exception as exc:  # noqa: BLE001 — any failure is reported
+        log.warning("cx: could not tag %s/%s: %s", spec["project"], spec["scope"], exc)
+        return f"the session started, but its scope was not tagged: {exc}"
+    return None
 
 
 async def _started_link(job: str, remote_control: bool) -> dict[str, Any]:
@@ -367,6 +385,7 @@ def _parse(args: dict[str, Any]) -> dict[str, Any]:
         "brief": brief is not False and not args.get("pin"),
         "started_by": started_by.strip() if started_by else None,
         "replaces": replaces,
+        "tags": _tag_list(args.get("tags")),
     }
 
 
@@ -390,6 +409,15 @@ def _tool_list(value: Any, field: str = "disallowed_tools") -> list[str]:
         raise Refused(f"{field} holds {bad[0]!r}, which is not a tool name or a "
                       "tool rule such as Read(./**) or mcp__awm__*")
     return tools
+
+
+def _tag_list(value: Any) -> list[str] | None:
+    if value is None:
+        return None
+    items = value.split(",") if isinstance(value, str) else value
+    if not isinstance(items, list) or not all(isinstance(t, str) for t in items):
+        raise Refused("tags must be a list of tags")
+    return [t.strip() for t in items if t.strip()]
 
 
 def _autocompact(value: Any) -> int | None:
@@ -1032,6 +1060,7 @@ def _job_row(s: sessions.Session, rec: dict[str, Any] | None,
         "started_at": rec.get("started_at") or _iso_ms(s.started_at_ms),
         "pool": sessions.is_ours(s) or sessions.was_ours(s),
         "brief": bool(rec.get("brief")),
+        "tags": rec.get("tags"),
     }
 
 
