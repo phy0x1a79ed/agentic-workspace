@@ -58,9 +58,13 @@ the gateway logs a warning at boot if a station enables this service.
     awm reflection remove-other --apply # delete it
     awm reflection seed-other           # start one warm session now, or say why it is refused
 
-A dead job reads `stopped` in `list_other` when `claude stop` ended it, and `gone`
-when it died. **CAUTION** `reporting` reads this difference: `stopped` closes the
-session's task as done, and `gone` leaves it on the board, flagged as ended.
+`claude stop` drops a job from the roster and leaves its state record as it was.
+`stop_other` therefore sets the record's `state` to `stopped` itself. A dead job
+that the roster still holds reads `stopped` in `list_other` when its record says
+so, and `gone` otherwise. **CAUTION** `reporting` reads this record for a job
+missing from `list_other`. `stopped`, or a removed job directory, moves the
+session's card to Pending review. Any other state keeps the card in its column,
+flagged "not running, resumable".
 
 `list_other` derives the pool summary from the live session records. There is no
 stored pointer to "the current session", because a stored pointer is a second

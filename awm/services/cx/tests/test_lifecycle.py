@@ -678,6 +678,13 @@ def test_stop_ends_a_job_start_created(home, launched, stops):
     assert stops == [CHILD_JOB]
 
 
+def test_stop_records_the_stop_in_the_state_record(home, launched, stops):
+    start(BASE)
+    stop({"job": CHILD_JOB})
+    record = json.loads((home.jobs / CHILD_JOB / "state.json").read_text())
+    assert record["state"] == "stopped" and record["name"] == "demo"
+
+
 def test_stop_reports_a_failed_claude_stop(home, launched, monkeypatch):
     from awm.cx import lifecycle
 
@@ -688,6 +695,7 @@ def test_stop_reports_a_failed_claude_stop(home, launched, monkeypatch):
     start(BASE)
     out = stop({"job": CHILD_JOB})
     assert out["ok"] is False and out["reason"] == "no such job"
+    assert json.loads((home.jobs / CHILD_JOB / "state.json").read_text())["state"] == "working"
 
 
 @pytest.mark.parametrize("job", ["", "../x", "ZZZZZZZZ", None, 7, "aaaaaaaaa"])
@@ -1694,6 +1702,7 @@ def test_a_replacing_start_carries_the_old_tail_and_retires_the_old_job(home, la
     prompt = launched[0]["prompt"]
     assert prompt.startswith("carry on") and "job dddddddd" in prompt and "on step 3" in prompt
     assert stops == ["dddddddd"]
+    assert json.loads((home.jobs / "dddddddd" / "state.json").read_text())["state"] == "stopped"
     from awm.cx import lifecycle
     assert lifecycle.read_lineage(CHILD_JOB)["replaces"] == "dddddddd"
 

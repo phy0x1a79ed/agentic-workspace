@@ -131,8 +131,10 @@ column. A plan written in Active or Blocked revises the same card.
 - The sweep never closes a background task. A job that leaves the daemon's
   roster while its directory under `~/.claude/jobs` remains keeps its card in
   its column, flagged "not running, resumable". An idle retire and a daemon
-  death both cause this. A stopped job, or one whose directory is gone, moves
-  to Pending review, flagged "stopped". The flag clears when the job runs again.
+  death both cause this. A job whose state record says `stopped`, or whose
+  directory is gone, moves to Pending review, flagged "stopped". cx writes
+  `stopped` on `stop_other`, because `claude stop` does not. The flag clears
+  when the job runs again.
 - **CAUTION** A daemon restart drops dead workers from `cx list`. Do not read
   a missing row as a finished session.
 - A closed task is filed under its node's Ledger note. An interactive session

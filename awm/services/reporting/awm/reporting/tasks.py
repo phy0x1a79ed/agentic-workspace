@@ -829,13 +829,20 @@ class Tasks:
             if await self.db.find(self.node, job) is None:
                 await self._open(Who(job, "bg", None, "", row.get("cwd")), ACTIVE)
 
+    def _unlisted_state(self, job: str) -> str:
+        if self._job_exists(job) and self._job_state(job).get("state") != STOPPED:
+            return GONE
+        return STOPPED
+
     async def _ending(self, task: dict, row: dict | None) -> None:
         """Flag a task whose session stopped running. Only a deliberate stop moves its card.
 
         A background job missing from cx whose directory remains was dropped from
         the daemon's roster (an idle retire, a daemon death) and can be resumed, so
         its card keeps its column. A stopped job, or one whose directory is gone,
-        moves to Pending review. The sweep never closes a background task.
+        moves to Pending review. cx records a stop in the job's state record,
+        because the roster drops a stopped job too. The sweep never closes a
+        background task.
         """
         if task["kind"] == "bg":
             if row is None:
@@ -843,13 +850,13 @@ class Tasks:
                 if self._missing[task["id"]] < 2:
                     return
             self._missing.pop(task["id"], None)
-            state = row.get("state") if row else None
-            if state == GONE or (row is None and await asyncio.to_thread(self._job_exists, task["key"])):
+            state = row.get("state") if row else await asyncio.to_thread(self._unlisted_state, task["key"])
+            if state == GONE:
                 if not task["ended"]:
                     await self.db.update(task["id"], ended=1, dirty=1)
                     await self.db.event(task["id"], "ended", NOT_RUNNING)
                 return
-            if state not in (None, STOPPED):
+            if state != STOPPED:
                 if task["ended"]:
                     await self.db.update(task["id"], ended=0, dirty=1)
                     await self.db.event(task["id"], "resumed")

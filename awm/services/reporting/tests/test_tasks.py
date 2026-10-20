@@ -505,6 +505,18 @@ async def test_a_job_dropped_from_the_roster_keeps_its_column_and_resumes_on_the
     assert "Ended:" not in env.body(task) and len(env.ledger.open()) == 1
 
 
+async def test_a_job_cx_stopped_moves_to_review_once_it_leaves_the_roster(env):
+    task = await started(env)
+    env.job_dirs.add("job00001")
+    env.job["state"] = "stopped"
+    await env.tasks.sweep([])
+    assert env.task()["state"] == "active"
+    await env.tasks.sweep([])
+    assert env.task()["state"] == "review" and env.task()["ended"] == 1
+    assert env.column(task["note_id"]) == ["Pending review"]
+    assert "<strong>Ended:</strong> stopped" in env.body(task)
+
+
 async def test_a_stopped_blocked_job_moves_to_review_and_keeps_its_question(env):
     task = await started(env)
     await env.call("request_human", reason="answer me")

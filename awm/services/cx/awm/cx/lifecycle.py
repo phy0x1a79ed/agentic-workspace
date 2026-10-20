@@ -770,6 +770,8 @@ async def _retire(old: str) -> None:
         out = await _stop_pinned(old)
     else:
         ok, detail = await run_claude_stop(old)
+        if ok:
+            await asyncio.to_thread(_record_stop, old)
         out = {"ok": ok, "reason": detail}
     if not out.get("ok"):
         log.info("cx: replacing %s, which would not stop: %s", old, out.get("reason"))
@@ -901,6 +903,7 @@ async def stop(args: dict[str, Any], as_: str | None = None) -> dict[str, Any]:
     ok, detail = await run_claude_stop(job)
     if not ok:
         return {"ok": False, "job": job, "reason": detail}
+    await asyncio.to_thread(_record_stop, job)
     return {"ok": True, "job": job}
 
 
@@ -932,6 +935,24 @@ def _caller_refusal_for(caller_pid: Any, rec: dict[str, Any], verb: str) -> str 
     if parent is not None and parent == rec.get("parent"):
         return None
     return f"a session may {verb} only the jobs it started"
+
+
+def _record_stop(job: str) -> None:
+    """Set the job's state record to ``stopped``, which `claude stop` leaves as it was.
+
+    The roster drops a stopped job, so the record is all that tells a stop from a
+    death once the job leaves `list`.
+    """
+    path = config.jobs_dir() / job / "state.json"
+    state = _read_json(path)
+    if not state:
+        return
+    tmp = path.with_name(".state.json.cx")
+    try:
+        tmp.write_text(json.dumps({**state, "state": "stopped"}, indent=2))
+        os.replace(tmp, path)
+    except OSError as exc:
+        log.warning("cx: could not record the stop of %s: %s", job, exc)
 
 
 async def run_claude_stop(job: str) -> tuple[bool, str]:
