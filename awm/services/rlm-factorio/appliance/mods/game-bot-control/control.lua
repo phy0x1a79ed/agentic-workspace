@@ -41,6 +41,7 @@ local WAITS_CAP = 128
 local WAIT_STEP = 5              -- waits are examined on every 5th tick at most
 local SCRIPTS_CAP = 256
 local SCRIPT_MAX = 65536
+local TOOLS_CAP = 256
 local BP_CHUNK_MAX, BP_CHUNKS_MAX, BP_IDS_MAX = 65536, 64, 16
 local GUARD_RADIUS = 24          -- a walk stops when an enemy comes this close
 local GUARD_HP = 0.5             -- ...or the seat's health falls under this share
@@ -74,6 +75,8 @@ local function init_state()
   storage.waits = storage.waits or {}
   storage.scripts = storage.scripts or {}
   storage.script_data = storage.script_data or {}
+  storage.tools = storage.tools or {}
+  storage.tool_data = storage.tool_data or {}
   storage.bot = nil                     -- the pre-seat singleton; gone for good
   -- A save written by an older version can hold a move order whose target is
   -- not a number pair; on_tick would crash on it. Drop such orders on load.
@@ -697,6 +700,7 @@ local STR_MAX = {
   seat = 64, name = 128, recipe = 128, surface = 64, target = 128, search = 128,
   id = 64, file = 128, label = 256, direction = 32, item = 128, cond = 16,
   data = BP_CHUNK_MAX, blueprint = 4 * 1024 * 1024, code = SCRIPT_MAX,
+  kind = 16, effect = 16, summary = 256,
 }
 
 local function check_args(args)
@@ -785,6 +789,86 @@ local function compiled(name)
     COMPILED[name] = c
   end
   return c.fn
+end
+
+-- ---- the tool registry -----------------------------------------------------
+--
+-- A tool is a stored script with a name, a kind and an effect, kept in
+-- `storage.tools` apart from the scripts so the script LRU never evicts it.
+-- A `call` tool is a function body run with `args` as its `...`. A `lib` tool
+-- runs once per peer and returns a table of functions that other tools fetch
+-- with `use(name)`. TOOL_COMPILED and LIBS are per-peer caches, rebuilt on
+-- demand and never saved.
+--
+-- A lib body runs at a different moment on each peer (at define time on the
+-- peers present, on first `use` on a peer that joins later). It sees `storage`
+-- through a proxy that raises on any write, so it cannot make the peers differ.
+
+local TOOL_COMPILED = {}
+local LIBS = {}
+local LIB_LOADING = {}
+local LAST_ERROR_MAX = 300
+
+local function write_blocked(real)
+  return setmetatable({}, {
+    __index = function(_, k)
+      local v = real[k]
+      if type(v) == "table" then return write_blocked(v) end
+      return v
+    end,
+    __newindex = function()
+      error("a lib tool must not write storage: its body runs on every peer at a different moment", 0)
+    end,
+    __pairs = function() return next, real, nil end,
+  })
+end
+
+local function compile_tool(name, rec)
+  local c = TOOL_COMPILED[name]
+  if c and c.code == rec.code then return c.fn end
+  local fn, err = load("local _ENV=(...) return (function(...) " .. rec.code ..
+                       "\nend)(select(2,...))", "=" .. name, "t")
+  if not fn then error("tool " .. name .. " does not compile: " .. tostring(err), 0) end
+  TOOL_COMPILED[name] = { code = rec.code, fn = fn }
+  return fn
+end
+
+local use
+
+local function lib_env()
+  return setmetatable({ storage = write_blocked(storage), script = SCRIPT_PROXY, use = use },
+                      { __index = _G })
+end
+
+-- Run a lib body write-blocked and return the table it yields.
+local function run_lib(name, rec)
+  if LIB_LOADING[name] then error("lib cycle through " .. name, 0) end
+  LIB_LOADING[name] = true
+  local ok, r = pcall(function()
+    local lib = compile_tool(name, rec)(lib_env())
+    if type(lib) ~= "table" then error("lib " .. name .. " must return a table, got " .. type(lib), 0) end
+    return lib
+  end)
+  LIB_LOADING[name] = nil
+  if not ok then error(r, 0) end
+  return r
+end
+
+use = function(name)
+  if LIB_LOADING[name] then error("lib cycle through " .. tostring(name), 2) end
+  local rec = storage.tools[name]
+  if not rec then error("unknown tool: " .. tostring(name), 2) end
+  if rec.kind ~= "lib" then error("tool " .. name .. " is not a lib", 2) end
+  local cached = LIBS[name]
+  if cached and cached.code == rec.code then return cached.lib end
+  local lib = run_lib(name, rec)
+  LIBS[name] = { code = rec.code, lib = lib }
+  return lib
+end
+
+local function forget_tool(name)
+  TOOL_COMPILED[name] = nil
+  LIBS = {}   -- other libs may hold a table from the old one
 end
 
 local api = {
@@ -1606,6 +1690,89 @@ local api = {
   script_drop = function(args)
     storage.scripts[args.name or ""] = nil
     COMPILED[args.name or ""] = nil
+    return { ok = true }
+  end,
+
+  -- ---- tools ----
+
+  tool_define = function(args)
+    local name, code, kind, effect = args.name, args.code, args.kind, args.effect
+    if not (name and name:match("^[%w_%-]+$") and #name <= 64) then
+      error("tool name must be 1-64 letters, digits, - _")
+    end
+    if not code then error("tool_define requires 'code'") end
+    if kind ~= "call" and kind ~= "lib" then error("tool kind must be call or lib") end
+    if effect ~= "read" and effect ~= "act" and effect ~= "cheat" then
+      error("tool effect must be read, act or cheat")
+    end
+    if not storage.tools[name] and table_size(storage.tools) >= TOOLS_CAP then
+      error("the tool registry is full (" .. TOOLS_CAP .. "); drop a tool first")
+    end
+    local rec = { code = code, kind = kind, effect = effect, summary = args.summary or "",
+                  defined = game.tick, calls = 0, errors = 0 }
+    TOOL_COMPILED[name] = nil
+    LIBS = {}   -- a dependent lib must re-run against the definition being tried
+    local lib
+    local ok, err = pcall(function()
+      compile_tool(name, rec)
+      if kind == "lib" then lib = run_lib(name, rec) end
+    end)
+    if not ok then
+      TOOL_COMPILED[name] = nil
+      error(err, 0)
+    end
+    storage.tools[name] = rec
+    forget_tool(name)
+    compile_tool(name, rec)
+    if lib then LIBS[name] = { code = code, lib = lib } end
+    return { name = name, size = #code }
+  end,
+
+  -- Run a call tool with `args` as its `...`. It sees the game's globals,
+  -- `use`, the restricted `script`, and `storage` bound to a table of its own.
+  tool_call = function(args)
+    local name = args.name
+    local rec = storage.tools[name or ""]
+    if not rec then return { ok = false, error = "no_tool", detail = tostring(name) } end
+    if rec.kind ~= "call" then
+      return { ok = false, error = "tool_error", detail = "lib tools are used, not called" }
+    end
+    local data = storage.tool_data[name]
+    if not data then
+      data = {}
+      storage.tool_data[name] = data
+    end
+    local ok, r = pcall(function()
+      local env = setmetatable({ storage = data, script = SCRIPT_PROXY, use = use },
+                               { __index = _G })
+      return compile_tool(name, rec)(env, args.args)
+    end)
+    if ok then
+      rec.calls = rec.calls + 1
+      return { ok = true, r = r }
+    end
+    local detail = tostring(r):sub(1, LAST_ERROR_MAX)
+    rec.errors = rec.errors + 1
+    rec.last_error = detail
+    return { ok = false, error = "tool_error", detail = detail }
+  end,
+
+  tool_list = function()
+    local out = {}
+    for n, rec in pairs(storage.tools) do
+      out[#out + 1] = { name = n, kind = rec.kind, effect = rec.effect, summary = rec.summary,
+                        size = #rec.code, calls = rec.calls, errors = rec.errors,
+                        last_error = rec.last_error, defined = rec.defined }
+    end
+    table.sort(out, function(a, b) return a.name < b.name end)
+    return { tools = out }
+  end,
+
+  tool_drop = function(args)
+    local name = args.name or ""
+    storage.tools[name] = nil
+    storage.tool_data[name] = nil
+    forget_tool(name)
     return { ok = true }
   end,
 
