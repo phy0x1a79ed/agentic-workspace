@@ -36,7 +36,6 @@ import hashlib
 import json
 import logging
 import os
-import re
 import shutil
 import signal
 import socket
@@ -47,7 +46,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-from awm.claudedaemon import launch, roster
+from awm.claudedaemon import daemonlog, launch, roster
 
 log = logging.getLogger("awm.keep.daemon")
 
@@ -57,7 +56,6 @@ SETTLE_S = 600.0
 DISPLACE_S = 90.0
 ENSURE_TIMEOUT_S = 30.0
 KICK_EVERY_S = 60.0
-HISTORY = 10
 
 UNIT_PROPERTIES = (
     "KillMode=process",
@@ -71,10 +69,6 @@ UNIT_PROPERTIES = (
     "TimeoutStopSec=30",
 )
 
-_START = re.compile(r"^\[(?P<at>[^\]]+)\] \[supervisor\] ─── daemon start ─── "
-                    r"version=(?P<version>\S+) pid=(?P<pid>\d+) origin=(?P<origin>\S+)")
-_STOP = re.compile(r"^\[(?P<at>[^\]]+)\] \[supervisor\] shutting down "
-                   r"\(cause=(?P<cause>[^,)]+)(?:, uptime=(?P<uptime>\d+)s)?")
 _SHOW = ("LoadState", "ActiveState", "SubState", "MainPID", "NRestarts", "Result",
          "ExecMainCode", "ExecMainStatus", "MemoryHigh", "MemoryMax")
 
@@ -97,10 +91,6 @@ def claude_bin() -> str:
 def state_dir() -> Path:
     from awm.config import SERVICES_DIR
     return SERVICES_DIR / "keep"
-
-
-def daemon_log() -> Path:
-    return roster.claude_home() / "daemon.log"
 
 
 def control_socket() -> Path:
@@ -247,50 +237,6 @@ def parse_show(text: str) -> dict[str, Any]:
     return out
 
 
-def history(text: str, limit: int = HISTORY) -> list[dict[str, Any]]:
-    """Each daemon start in ``text`` (a daemon.log tail), with why the one
-    before it stopped. A start with no shutdown line before it followed a
-    SIGKILL, an OOM kill or a power loss: the daemon had no chance to log."""
-    starts: list[dict[str, Any]] = []
-    last_stop: dict[str, Any] | None = None
-    for line in text.splitlines():
-        if m := _STOP.match(line):
-            last_stop = {"at": m["at"], "cause": m["cause"],
-                         "uptime_s": int(m["uptime"]) if m["uptime"] else None}
-        elif m := _START.match(line):
-            after = last_stop or ({"cause": "killed", "at": starts[-1].get("at")} if starts else None)
-            starts.append({"at": m["at"], "pid": int(m["pid"]), "version": m["version"],
-                           "origin": m["origin"], "after": after,
-                           "down_s": _between(after.get("at") if after else None, m["at"])})
-            last_stop = None
-    if last_stop:
-        starts.append({"at": None, "pid": None, "version": None, "origin": None,
-                       "after": last_stop})
-    return starts[-limit:]
-
-
-def _between(start: str | None, end: str | None) -> int | None:
-    """Whole seconds between two daemon.log timestamps. For a kill the start is
-    the previous start, so the figure is an upper bound."""
-    from datetime import datetime
-    try:
-        a = datetime.fromisoformat(start.replace("Z", "+00:00"))  # type: ignore[union-attr]
-        b = datetime.fromisoformat(end.replace("Z", "+00:00"))  # type: ignore[union-attr]
-    except (AttributeError, ValueError):
-        return None
-    return max(0, round((b - a).total_seconds()))
-
-
-def read_tail(path: Path, size: int = 256 * 1024) -> str:
-    try:
-        with open(path, "rb") as fh:
-            fh.seek(0, os.SEEK_END)
-            fh.seek(max(0, fh.tell() - size))
-            return fh.read().decode(errors="replace")
-    except OSError:
-        return ""
-
-
 # --- the host, behind one seam for the tests --------------------------------
 
 
@@ -325,7 +271,7 @@ class Host:
             pass
 
     def log_tail(self) -> str:
-        return read_tail(daemon_log())
+        return daemonlog.read_tail()
 
     def linger(self) -> bool | None:
         user = os.environ.get("USER") or _user()
@@ -525,7 +471,7 @@ class Keeper:
         bus = self.host.bus()
         unit = self.host.unit(bus) if bus else None
         d = self.host.daemon(unit.get("MainPID") if unit else None)
-        events = history(self.host.log_tail())
+        events = daemonlog.history(self.host.log_tail())
         return {
             "running": d is not None,
             "daemon": None if d is None else {**asdict(d), "uptime_s": _round(d.uptime(now))},
@@ -534,7 +480,7 @@ class Keeper:
             "manager": bus is not None,
             "linger": self.host.linger(),
             "held": self.host.held(),
-            "last_stop": next((e["after"] for e in reversed(events) if e.get("after")), None),
+            "last_stop": daemonlog.last_stop(events),
             "history": events,
             "loop": {"enabled": enabled() or "yes", "last_tick_s": _round(
                 None if self.last_tick is None else now - self.last_tick), "last": self.last},

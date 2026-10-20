@@ -228,15 +228,6 @@ LOG = """\
 """
 
 
-def test_history_names_why_each_daemon_before_a_start_stopped():
-    events = daemon.history(LOG)
-    assert events[0]["after"] == {"at": "2026-10-19T21:34:28.606Z", "cause": "upgrade",
-                                  "uptime_s": 7322}
-    assert events[0]["down_s"] == 11
-    assert events[1]["pid"] == 3790938 and events[1]["after"]["cause"] == "killed"
-    assert events[2]["pid"] is None and events[2]["after"]["cause"] == "signal"
-
-
 def test_status_reports_the_last_stop():
     host = FakeHost(tail=LOG)
     out = Keeper(host).status()

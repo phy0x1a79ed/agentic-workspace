@@ -1359,8 +1359,9 @@ async def test_the_list_verb_keeps_the_pool_summary(home, launched):
     from awm.cx import hub_adapter
 
     out = await hub_adapter.HANDLERS["list"]({})
-    assert set(out) == {"sessions", "pool"}
+    assert set(out) == {"sessions", "pool", "daemon"}
     assert {"warm", "want", "daemon_pid", "loop"} <= set(out["pool"])
+    assert {"state", "pid", "since", "cause"} <= set(out["daemon"])
 
 
 async def test_the_list_verb_applies_the_peer_refusal(home, launched, peers):
@@ -1611,3 +1612,35 @@ def test_a_cx_session_may_resume_only_its_own_jobs(home, respawned, monkeypatch)
     stopped_job(home, monkeypatch, parent="someone-else")
     out = resume({"job": CHILD_JOB, "_caller_pid": os.getpid()})
     assert not out["ok"] and "may resume only" in out["reason"] and not respawned
+
+
+def test_resume_without_a_daemon_asks_keep_and_says_daemon_down(home, respawned, monkeypatch,
+                                                                keep_calls):
+    stopped_job(home, monkeypatch)
+    home.set_workers({}, supervisor=2**22 + 12345)
+    out = resume({"job": CHILD_JOB})
+    assert out["ok"] is False and out["code"] == "daemon_down" and not respawned
+    assert keep_calls.calls[0][:2] == ("keep", "ensure")
+
+
+def test_resume_goes_ahead_once_keep_brings_the_daemon_up(home, respawned, monkeypatch,
+                                                          keep_calls):
+    stopped_job(home, monkeypatch)
+    home.set_workers({}, supervisor=2**22 + 12345)
+    keep_calls.answer.update(ok=True, hook=lambda: home.set_workers({}))
+    out = resume({"job": CHILD_JOB})
+    assert out["ok"] is True and respawned[0][0] == CHILD_JOB
+
+
+def test_stop_without_a_daemon_keeps_the_pinned_job(home, launched, stops, monkeypatch):
+    from awm.cx import lifecycle
+
+    removed: list[str] = []
+    monkeypatch.setattr(lifecycle.cli, "stop_and_remove",
+                        lambda job, **kw: removed.append(job) or {"removed": True})
+    monkeypatch.setattr(lifecycle.pins, "unpin", lambda job: removed.append(f"unpin {job}"))
+    start(BASE)
+    home.set_workers(home.workers(), supervisor=2**22 + 12345)
+    out = stop({"job": CHILD_JOB})
+    assert out["ok"] is False and out["code"] == "daemon_down"
+    assert stops == [] and removed == []

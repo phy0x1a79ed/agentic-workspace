@@ -27,6 +27,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
+from awm.claudedaemon import daemonlog
 from awm.config import privacy
 from awm.gatewayclient import ServiceAdapter, spawn_supervised
 
@@ -292,7 +293,8 @@ async def _list(args: dict[str, Any], as_: str | None = None) -> dict[str, Any]:
         shown = {r["session"] for r in held["sessions"]}
         held["warm"] = [s for s in held["warm"] if s in shown]
         rows = [r for r in rows if not _entered_mark(r.get("job"))]
-    return {"sessions": privacy.visible_rows(rows, as_), "pool": held}
+    return {"sessions": privacy.visible_rows(rows, as_), "pool": held,
+            "daemon": await asyncio.to_thread(daemonlog.summary, held.get("daemon_pid"))}
 
 
 def _entered_mark(job: str | None) -> bool:

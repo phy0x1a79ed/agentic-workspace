@@ -107,6 +107,46 @@ REPORT_TO_PROMPT = ("where your first prompt asks. When it names no place, your 
 class Refused(Exception):
     """A start or stop that must not proceed; the message is the reason."""
 
+    code: str | None = None
+
+
+class DaemonDown(Refused):
+    """No daemon runs, and the keep service could not bring one up."""
+
+    code = "daemon_down"
+
+
+#: How long cx waits on the keep service to bring a daemon up.
+ENSURE_TIMEOUT_S = 30.0
+
+
+async def ensure_daemon(action: str, timeout: float = ENSURE_TIMEOUT_S) -> None:
+    """Return once a daemon runs, asking the keep service first; else raise DaemonDown.
+
+    A node without the keep service answers the call with an error, and cx
+    then refuses as it always has.
+    """
+    if sessions.daemon_pid() is not None:
+        return
+    detail = ""
+    try:
+        out = await gatewayclient.call("keep", "ensure", {"timeout": timeout},
+                                       timeout=timeout + 15)
+        if isinstance(out, dict) and not out.get("ok"):
+            detail = f" ({out.get('action') or 'down'}: {out.get('reason') or out.get('error') or ''})"
+    except Exception as exc:  # noqa: BLE001 — no keep service is the old behaviour
+        detail = f" (keep: {type(exc).__name__})"
+    if sessions.daemon_pid() is None:
+        raise DaemonDown(f"no claude code daemon is running — a session {action} now "
+                         f"would land inside awm's control group{detail}")
+
+
+def refusal(exc: Refused) -> dict[str, Any]:
+    out: dict[str, Any] = {"ok": False, "reason": str(exc)}
+    if exc.code:
+        out["code"] = exc.code
+    return out
+
 
 # --- who is asking -----------------------------------------------------------
 
@@ -148,7 +188,7 @@ async def start(args: dict[str, Any], as_: str | None = None) -> dict[str, Any]:
         return await _start(args, as_)
     except Refused as exc:
         log.info("cx: start refused — %s", exc)
-        return {"ok": False, "reason": str(exc)}
+        return refusal(exc)
     except OSError as exc:
         log.warning("cx: start failed — %s", exc)
         return {"ok": False, "reason": f"start failed: {exc}"}
@@ -163,9 +203,7 @@ async def _start(args: dict[str, Any], as_: str | None) -> dict[str, Any]:
     _refuse_unknown_caller(args)
     if spec["strict_mcp"]:
         spec["mcp_config"] = str(_write_mcp_config())
-    if sessions.daemon_pid() is None:
-        raise Refused("no claude code daemon is running — a session started now "
-                      "would land inside awm's control group")
+    await ensure_daemon("started")
     cwd = await _resolve_worktree(spec["project"], spec["scope"])
     untrusted = await asyncio.to_thread(trust.start_refusal, cwd)
     if untrusted:
@@ -692,7 +730,7 @@ async def resume(args: dict[str, Any], as_: str | None = None) -> dict[str, Any]
         return await _resume(args, as_)
     except Refused as exc:
         log.info("cx: resume refused — %s", exc)
-        return {"ok": False, "reason": str(exc)}
+        return refusal(exc)
     except OSError as exc:
         log.warning("cx: resume failed — %s", exc)
         return {"ok": False, "reason": f"resume failed: {exc}"}
@@ -718,9 +756,7 @@ async def _resume(args: dict[str, Any], as_: str | None) -> dict[str, Any]:
     session_id = state.get("sessionId")
     if not isinstance(session_id, str) or not _transcript_exists(session_id):
         raise Refused(f"job {job} has no transcript left to resume")
-    if sessions.daemon_pid() is None:
-        raise Refused("no claude code daemon is running — a session resumed now "
-                      "would land inside awm's control group")
+    await ensure_daemon("resumed")
     async with _START_LOCK:
         try:
             session = await launch.respawn(
@@ -765,6 +801,13 @@ async def stop(args: dict[str, Any], as_: str | None = None) -> dict[str, Any]:
     if reason:
         log.info("cx: stop refused — %s", reason)
         return {"ok": False, "reason": reason}
+    try:
+        # With no daemon a stop cannot reach the session, and `claude rm` on a
+        # pinned job would delete the conversation a resume needs.
+        await ensure_daemon("stopped", timeout=10.0)
+    except DaemonDown as exc:
+        log.info("cx: stop refused — %s", exc)
+        return refusal(exc)
     if rec.get("pinned") or job in pins.pinned():
         return await _stop_pinned(job)
     ok, detail = await run_claude_stop(job)
