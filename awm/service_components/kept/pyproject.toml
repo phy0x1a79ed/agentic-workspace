@@ -1,0 +1,14 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "awm-kept"
+version = "0.1.0"
+requires-python = ">=3.11"
+description = "AWM kept: the restart record, the decision and the breaker every keeper of a Claude Code session shares. Pure imported source; no console scripts, no install.sh."
+
+# PEP 420 namespace package: no top-level awm/__init__.py; the namespace dir is awm/kept/.
+[tool.setuptools.packages.find]
+include = ["awm.kept*"]
+namespaces = true

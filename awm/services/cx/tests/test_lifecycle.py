@@ -1377,8 +1377,9 @@ async def test_the_list_verb_keeps_the_pool_summary(home, launched):
     from awm.cx import hub_adapter
 
     out = await hub_adapter.HANDLERS["list"]({})
-    assert set(out) == {"sessions", "pool"}
+    assert set(out) == {"sessions", "pool", "daemon"}
     assert {"warm", "want", "daemon_pid", "loop"} <= set(out["pool"])
+    assert {"state", "pid", "since", "cause"} <= set(out["daemon"])
 
 
 async def test_the_list_verb_applies_the_peer_refusal(home, launched, peers):
@@ -1525,7 +1526,7 @@ def test_the_manifest_declares_effects_and_drops_status():
     from awm.cx.hub_adapter import API_MANIFEST
 
     fns = {f["name"]: f for f in API_MANIFEST["functions"]}
-    assert {"start", "list", "stop", "resume", "claim", "seed", "remove"} == set(fns)
+    assert {"start", "list", "stop", "resume", "adopt", "claim", "seed", "remove"} == set(fns)
     assert "status" not in fns and "wake" not in fns
     assert fns["start"]["effect"] == "write"
     assert fns["stop"]["effect"] == "write"
@@ -1629,3 +1630,73 @@ def test_a_cx_session_may_resume_only_its_own_jobs(home, respawned, monkeypatch)
     stopped_job(home, monkeypatch, parent="someone-else")
     out = resume({"job": CHILD_JOB, "_caller_pid": os.getpid()})
     assert not out["ok"] and "may resume only" in out["reason"] and not respawned
+
+
+def test_resume_without_a_daemon_asks_keep_and_says_daemon_down(home, respawned, monkeypatch,
+                                                                keep_calls):
+    stopped_job(home, monkeypatch)
+    home.set_workers({}, supervisor=2**22 + 12345)
+    out = resume({"job": CHILD_JOB})
+    assert out["ok"] is False and out["code"] == "daemon_down" and not respawned
+    assert keep_calls.calls[0][:2] == ("keep", "ensure")
+
+
+def test_resume_goes_ahead_once_keep_brings_the_daemon_up(home, respawned, monkeypatch,
+                                                          keep_calls):
+    stopped_job(home, monkeypatch)
+    home.set_workers({}, supervisor=2**22 + 12345)
+    keep_calls.answer.update(ok=True, hook=lambda: home.set_workers({}))
+    out = resume({"job": CHILD_JOB})
+    assert out["ok"] is True and respawned[0][0] == CHILD_JOB
+
+
+def test_stop_without_a_daemon_keeps_the_pinned_job(home, launched, stops, monkeypatch):
+    from awm.cx import lifecycle
+
+    removed: list[str] = []
+    monkeypatch.setattr(lifecycle.cli, "stop_and_remove",
+                        lambda job, **kw: removed.append(job) or {"removed": True})
+    monkeypatch.setattr(lifecycle.pins, "unpin", lambda job: removed.append(f"unpin {job}"))
+    start(BASE)
+    home.set_workers(home.workers(), supervisor=2**22 + 12345)
+    out = stop({"job": CHILD_JOB})
+    assert out["ok"] is False and out["code"] == "daemon_down"
+    assert stops == [] and removed == []
+
+
+def _transcript(home, session_id: str, turns: list[tuple[str, str]]) -> None:
+    from awm.cx import config
+
+    folder = config.transcripts_dir() / "-proj"
+    folder.mkdir(parents=True, exist_ok=True)
+    with open(folder / f"{session_id}.jsonl", "w") as fh:
+        for role, text in turns:
+            fh.write(json.dumps({"type": role, "message": {"content": text}}) + "\n")
+
+
+def test_a_replacing_start_carries_the_old_tail_and_retires_the_old_job(home, launched, stops,
+                                                                         monkeypatch):
+    stopped_job(home, monkeypatch, job="dddddddd", transcript=False)
+    _transcript(home, "dddddddd-sid", [("user", "where were we"), ("assistant", "on step 3")])
+    out = start({**BASE, "prompt": "carry on", "replaces": "dddddddd"})
+    assert out["ok"] is True
+    prompt = launched[0]["prompt"]
+    assert prompt.startswith("carry on") and "job dddddddd" in prompt and "on step 3" in prompt
+    assert stops == ["dddddddd"]
+    from awm.cx import lifecycle
+    assert lifecycle.read_lineage(CHILD_JOB)["replaces"] == "dddddddd"
+
+
+def test_replaces_must_be_a_job_id(home, launched):
+    out = start({**BASE, "replaces": "../x"})
+    assert out["ok"] is False and "replaces" in out["reason"]
+
+
+def test_adopt_records_lineage_for_a_hand_started_job(home, monkeypatch):
+    from awm.cx import lifecycle
+
+    home.add("eeeeeeee", "seat - slack main", os.getpid())
+    out = asyncio.run(lifecycle.adopt({"job": "eeeeeeee"}))
+    assert out["ok"] is True and lifecycle.read_lineage("eeeeeeee")["adopted"] is True
+    again = asyncio.run(lifecycle.adopt({"job": "eeeeeeee"}))
+    assert again["ok"] is False and "already" in again["reason"]

@@ -253,28 +253,19 @@ refuses to seed or start when no daemon is running. No daemon means nobody is
 using Claude Code on that node, and a cold first launch is the right answer
 there.
 
-A node that hosts kept seats needs a daemon from boot, so that social's keeper
-can resume them. `systemd/claude-daemon.service` runs one as a user unit, with
-`--origin service`. Only a transient daemon exits when its last client leaves,
-so this one stays up with no sessions. The node needs `loginctl enable-linger`
-for a user unit to run at boot. Install it:
-
-1. Copy `systemd/claude-daemon.service` to `~/.config/systemd/user/`.
-2. Run `systemctl --user daemon-reload`.
-3. Run `systemctl --user enable claude-daemon.service`.
+The `keep` service holds a daemon on every node from boot, in the user unit
+`awm-claude-daemon.service`. Before cx refuses a start, resume or stop, it asks
+`keep` to ensure the daemon. It refuses with `code: "daemon_down"` only when
+that fails. `awm/services/keep/` holds the unit's launch.
 
 **CAUTION** cx launches each session through the user manager's bus under
 `/run/user/<uid>`, and reaches the daemon's sockets under `/tmp`. A gateway run as
 a sandboxed system unit must see both, so no `ProtectHome=yes` and no
 `PrivateTmp=yes` there. Hidden from cx, `claude --bg` starts inside the gateway's
-unit. That client starts a second daemon, which evicts the user unit's daemon and
+unit. That client starts a second daemon, which evicts keep's daemon and
 dies with the next gateway restart, taking every session with it. So with no user
 bus, cx compares the daemon's mount namespace with its own and refuses a start
 when they differ. A node with no systemd and one namespace launches directly.
-
-**WARNING** Do not start the unit while a daemon runs. A service daemon makes
-a running transient daemon yield, and a takeover brings back only some of its
-sessions. The unit starts at the next boot.
 
 The transient systemd unit covers the residual race where the daemon dies
 between the check and the launch. It carries `KillMode=process`. Without that,
