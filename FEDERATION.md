@@ -15,7 +15,7 @@ authentication system** while the loopback interior stays open.
 
 | Node | Where | Role |
 |---|---|---|
-| `capella` | WSL on a Windows desktop | personal node: reads the fleet, refuses every peer; holds the **CA key**; sleeps with the host |
+| `capella` | WSL on a Windows desktop | personal node: holds no work projects and authorizes no peer's ssh key; holds the **CA key**; sleeps with the host |
 | `mira` | always-on mini PC | owns the singletons: `2fa`, `social`, the ssh slot arbiter |
 | `altair` | Arbutus cloud VM (16 vCPU / 1.9 TB) | always-on compute; borrows every singleton from mira |
 
@@ -123,7 +123,7 @@ For each request the edge:
 
 The legacy bearer authenticates as the bare `peer`, which the gateway treats as a domestic peer. Set `AWM_PEER_LEGACY_BEARER=0` in `<workspace>/.awm/env` to retire it. The edge then accepts only node tokens, and `auth` stops handing the bearers to the edge. The node's own outbound calls stop falling back to the bearer.
 
-Set `AWM_EDGE_PEERS=0` to close a node to every peer. The edge then answers a node token with 403 `peers not admitted` and the legacy bearer with 401. The 403 tells the caller that the node is closed, not that its token is bad, and it ends the call with no fallback. A person's login still works. The peer book keeps its relations, because the node's own outbound calls pick providers from them. The edge guards only the awm door, so a closed node also drops new mesh connections from its peers in its firewall and authorizes none of their ssh keys. capella runs closed. **CAUTION** On a closed node a domestic entry trusts nothing inbound. Read the node's env, not its book, to learn whether a peer reaches it.
+Set `AWM_EDGE_PEERS=0` to close a node to every peer. The edge then answers a node token with 403 `peers not admitted` and the legacy bearer with 401. The 403 tells the caller that the node is closed, not that its token is bad, and it ends the call with no fallback. A person's login still works. The peer book keeps its relations, because the node's own outbound calls pick providers from them. The edge guards only the awm door, so a closed node also authorizes none of its peers' ssh keys. Its ports stay reachable. No node runs closed: seats and agents on other nodes block on a node they cannot call. capella closed its edge once and stranded a deneb seat and an altair agent. **CAUTION** On a closed node a domestic entry trusts nothing inbound. Read the node's env, not its book, to learn whether a peer reaches it.
 
 The edge caches the auth material for up to 30 seconds (`httpsfront/auth.py` `_REFRESH_INTERVAL`). The material holds each peer's relation and pinned key. A new key or a relation change reaches the edge within that window. The gateway reads the peer book on every call, so a grant change applies on the next call.
 
