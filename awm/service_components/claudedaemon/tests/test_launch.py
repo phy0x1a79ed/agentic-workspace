@@ -70,6 +70,51 @@ def test_a_running_daemon_is_not_a_refusal(home):
     assert launch.daemon_refusal(roster_file(home, {})) is None
 
 
+def test_a_daemon_in_another_mount_namespace_is_a_refusal_without_a_user_bus(
+        home, monkeypatch):
+    monkeypatch.setattr(launch, "user_manager_env", lambda: None)
+    real = os.readlink
+    monkeypatch.setattr(launch.os, "readlink", lambda p: (
+        "mnt:[1]" if p == f"/proc/{os.getpid()}/ns/mnt" else real(p)))
+    refusal = launch.daemon_refusal(roster_file(home, {}))
+    assert "not reachable" in refusal and "mount namespace" in refusal
+
+
+def test_an_unreadable_namespace_is_a_refusal_without_a_user_bus(home, monkeypatch):
+    monkeypatch.setattr(launch, "user_manager_env", lambda: None)
+
+    def denied(p):
+        raise PermissionError(p)
+
+    monkeypatch.setattr(launch.os, "readlink", denied)
+    assert "not reachable" in launch.daemon_refusal(roster_file(home, {}))
+
+
+def test_a_daemon_in_this_namespace_launches_directly_without_a_user_bus(
+        home, monkeypatch):
+    """A host with no systemd at all still launches."""
+    monkeypatch.setattr(launch, "user_manager_env", lambda: None)
+    assert launch.daemon_refusal(roster_file(home, {})) is None
+
+
+def test_a_user_bus_reaches_the_daemon_from_any_namespace(home, monkeypatch):
+    monkeypatch.setattr(launch, "user_manager_env", lambda: {"XDG_RUNTIME_DIR": "/x"})
+    monkeypatch.setattr(launch, "_shares_mount_namespace", lambda pid: False)
+    assert launch.daemon_refusal(roster_file(home, {})) is None
+
+
+async def test_an_unreachable_daemon_means_nothing_is_spawned(home, spawned, monkeypatch):
+    monkeypatch.setattr(launch, "user_manager_env", lambda: None)
+    monkeypatch.setattr(launch, "_shares_mount_namespace", lambda pid: False)
+    with pytest.raises(launch.Refused, match="not reachable"):
+        await launch.launch(cwd=home, name="n", roster_path=roster_file(home, {}),
+                            jobs_dir=home / "jobs")
+    with pytest.raises(launch.Refused, match="not reachable"):
+        await launch.respawn("abc", roster_path=roster_file(home, {}),
+                             jobs_dir=home / "jobs")
+    assert spawned == []
+
+
 async def test_no_daemon_means_nothing_is_spawned(home, spawned):
     with pytest.raises(launch.Refused, match="no claude code daemon"):
         await launch.launch(cwd=home, name="n", roster_path=home / "none.json",

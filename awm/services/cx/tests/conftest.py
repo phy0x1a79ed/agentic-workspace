@@ -68,3 +68,26 @@ def by_short(box):
     from awm.cx import sessions
 
     return {s.short: s for s in sessions.load()}
+
+
+@pytest.fixture(autouse=True)
+def keep_calls(monkeypatch):
+    """Every call cx makes to the keep service, answered here.
+
+    Without this a test with no daemon would ask the real gateway's keep
+    service to start one.
+    """
+    from awm.cx import lifecycle
+
+    calls: list[tuple] = []
+    answer: dict = {"ok": False, "reason": "daemon_down", "action": "held"}
+
+    async def fake(service, fn, args=None, **kw):
+        calls.append((service, fn, args))
+        hook = answer.get("hook")
+        if hook:
+            hook()
+        return {k: v for k, v in answer.items() if k != "hook"}
+
+    monkeypatch.setattr(lifecycle.gatewayclient, "call", fake)
+    return type("KeepCalls", (), {"calls": calls, "answer": answer})

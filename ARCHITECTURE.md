@@ -2,7 +2,7 @@
 
 ## Purpose & Contents
 
-This file is the reference for agents that change awm itself. It covers the gateway, the feature-service contract and lifecycle, the one-tool-per-service rule and the catalog that renders services onto MCP, HTTP and the CLI, the on and off tiers, ranked describe, the verb gates, the search archive, dev sandboxes, the data-layer internals, the frontend component system, federation pitfalls, a file map, and how to run tests.
+This file is the reference for agents that change awm itself. It covers the gateway, the feature-service contract and lifecycle, kept Claude Code sessions, the one-tool-per-service rule and the catalog that renders services onto MCP, HTTP and the CLI, the on and off tiers, ranked describe, the verb gates, the search archive, dev sandboxes, the data-layer internals, the frontend component system, federation pitfalls, a file map, and how to run tests.
 
 Agent orientation goes in `AGENTS.md`. Workspace procedures go in `PROTOCOLS.md`. Human install and service authoring go in `README.md` § *Authoring a service*. Cross-node design goes in `FEDERATION.md`.
 
@@ -32,6 +32,18 @@ Each feature service owns its own SQLite DB. There is no shared `state.db`. Serv
 `awm.claudedaemon` is everything awm knows about Claude Code's background sessions. It reads the daemon roster and the per-job and per-process records (`roster`), launches a session (`launch`), checks directory trust (`trust`), types a line into a session over the daemon's PTY socket (`pty`, `lane`, `job`) and answers which restricted mode a session runs in (`sessionmode`). It decides nothing about whose session a caller may reach. `cx`, `reflection`, `transcripts`, `reporting` and the gateway each import it and each make that decision for themselves.
 
 **CAUTION** `sessionmode` is the one reader of the lineage records that `reflection start_other` writes. The gateway gate and the `cx` service both call it, so the writer and the reader resolve the same directory from the same environment variables. A second copy of that resolution reads no record for any session and answers "not restricted".
+
+### Kept sessions
+
+A feature service keeps its state in SQLite, so the gateway's respawn brings it back whole. A Claude Code session keeps its state in its conversation, and only the daemon can bring that back. Three layers keep a session up:
+
+1. `keep` holds the daemon in its own user unit, outside awm's control group and outside every terminal. `awm/services/keep/INSTALL.md` says why.
+2. `cx` is the session layer. It asks `keep` to ensure the daemon before a start, resume or stop. It refuses with `code: "daemon_down"` only when that fails, and its `list` carries a `daemon` block.
+3. `awm.kept` holds the policy every keeper shares: the restart record, the decision (wait, resume, start fresh, give up) and the breaker. It does no I/O. Social's seat keeper is its first user.
+
+**CAUTION** A keeper must read `daemon_down` and `daemon.state` as "wait", never as "the session is gone". Stopping a pinned job runs `claude rm` and loses its conversation. That reading is what destroyed a seat on 2026-10-20.
+
+The gateway's crash-loop breaker lives in memory on purpose: a gateway restart is the operator's way back. A keeper's breaker persists in its service's DB, because the gateway restarts on every deploy and must not reset a session's restart budget.
 
 ### The journal is the channel
 
@@ -65,6 +77,29 @@ A backend is a folder under `awm/services/<name>/` with a self-contained executa
 - **Per-service DBs.** `awm.persistence.databases` is the factory. `get_connection(service)` and `init_service_db(service, schema_sql, schema_version=…)` give each service a DB at `AWM_DIR/services/<svc>/<svc>.db`. Raw SQL lives behind per-service `awm.persistence.dao.BaseDAO` subclasses. Each service seeds itself through its own `seed.py`. `awm/service_components/persistence/SCHEMA_HANDOFF.md` documents the schemas.
 - **Out-of-process.** The supervisor spawns each service and records its PID in a journal. The control-WS lease is liveness. Each service is a `run.sh` plus a small `hub_adapter.py` built on `awm.gatewayclient.ServiceAdapter`, which handles register, ready, serve, dispatch and reconnect. `awm.gatewayclient` also has `call`, `call_sync` and `RefCache` for service-to-service calls. The `/svc/*` control plane is unauthenticated and loopback-only. `awm/services/dev/` is the smallest complete example to copy.
 - **Install.** Install each module through its own `install.sh`, never with hand-rolled `pip`. `awm/gateway/install.sh` is the composition root. It installs `config`, `persistence` and every feature dist with `--no-deps`, then the gateway with its third-party deps. Set `AWM_ENV` to change the target env.
+
+### Roots outside the tree
+
+A node can run services and pages that live outside the awm checkout, so a private project keeps them in its own repo and they never reach GitHub or a peer. List the extra roots in the node-local `.awm/env`, beside `AWM_PROFILES`:
+
+- `AWM_SERVICE_ROOTS` — `:`-separated directories, each laid out like `awm/services/`.
+- `AWM_PAGE_ROOTS` — `:`-separated directories, each laid out like `awm/pages/`.
+
+A folder under an extra root follows the whole contract of an in-tree one: `run.sh`, `service.toml`, `enabled.json` and a page that follows its same-named service. `discovery.service_folder` resolves a name to the first root that holds a folder of that name. The built-in root comes first, so it wins a clash. Discovery logs the shadowed folder and ignores it. It also logs and skips an entry that is not a directory.
+
+`awm deploy` loads `.awm/env` before it plans, so the extra roots reach every step:
+
+1. `gateway/install.sh` runs each extra service's `install.sh` with `AWM_ROOT` (this `awm/` tree) and `AWM_ENV` exported. Deploy records each service's resolved folder and a hash of its `install.sh`, `pyproject.toml` and `service.toml`. It runs the install when a service appears, moves to another root under the same name, or changes one of those files. A name set alone misses the move, and the moved service then starts with no `.runtime-env`.
+2. `scripts/build.sh` builds each extra page with this tree's `vite.config.ts` and `node_modules`. The page imports `@awm/*` exactly as an in-tree page does. Its `dist/` lands in its own folder.
+3. Verify waits for the extra services and pages too.
+
+The owning repo provides the rest of the contract:
+
+- A Python service ships an `install.sh` that runs `pip install -e` on its folder into `$AWM_ENV` and writes the `.runtime-env` sidecar. Its `run.sh` is then the same as an in-tree one. It reaches awm paths through `$AWM_ROOT`, not through `git rev-parse`, which names the owning repo.
+- A service that execs a binary needs no `install.sh`. Its `run.sh` changes to its own folder and execs the binary, which registers with the hub through the three injected env vars.
+- The owning repo gitignores `dist/` and `.runtime-env`. awm's `.gitignore` covers only its own tree.
+
+**CAUTION** A page outside the tree finds no `node_modules` above its source. The `awm-resolve-from-tree` plugin in `vite.config.ts` resolves its bare imports from this tree. It also drops the svelte plugin's `resolve.dedupe` for such a page, because dedupe resolves `svelte` from the Vite root, which is the page folder. An in-tree build is unaffected. Diff a built in-tree `dist/` before you change either rule.
 
 ### Registration and the catalog
 
@@ -194,7 +229,7 @@ At boot the gateway reconciles, then bootstraps:
 1. `reconcile_journaled_services()` handles everything already in the journal.
 2. The gateway bootstraps every discovered, enabled service that is not in the journal.
 
-A fresh clone or a wiped `.awm/state/services.json` therefore comes up with every enabled service running. Discovery is a filesystem scan of `awm/services/*` for `run.sh`. A disabled service stays down across restarts.
+A fresh clone or a wiped `.awm/state/services.json` therefore comes up with every enabled service running. Discovery is a filesystem scan of every service root for `run.sh`. A disabled service stays down across restarts.
 
 `awm/gateway/dev/run.sh` launches uvicorn without `--reload`, so saving a backend file never swaps the worker out from under its services. Run `awm dev restart` after a backend edit.
 
@@ -240,7 +275,7 @@ The gateway installs a loop-level signal override at lifespan startup, before uv
 
 A second signal force-exits. If the `Server` cannot be captured (TestClient, a non-main thread), the gateway falls back to a flag-only wrapper and drains from the lifespan-shutdown backstop. Force-kill is the backstop, not the mechanism. It fires only for a straggler whose lease is still held after about 8s, or whose process lives after its lease is gone.
 
-**CAUTION** A service is the gateway's child, so after it exits it stays a zombie until the gateway reaps it, and `os.kill(pid, 0)` still succeeds on a zombie. The drain reaps with `supervisor._try_reap` before it asks whether a pid is alive. A bare liveness probe counts every exited service as a straggler and logs a force-kill for each one.
+**CAUTION** A service is the gateway's child, so after it exits it stays a zombie until the gateway reaps it, and `os.kill(pid, 0)` still succeeds on a zombie. `supervisor.pid_alive` reaps before it probes. Use it, never a bare `os.kill`. A bare probe counts every exited service as alive, so the drain logs a force-kill for it and the self-heal sweep never respawns it.
 
 ### Crash respawn
 
@@ -258,9 +293,11 @@ Two independent 10s windows exist. The service's give-up deadline is service-sid
 
 ### The crash-loop breaker
 
+The self-heal sweep respawns a journalled service whose pid is dead, and one whose pid lives but has not reached ready within `_READY_GRACE_S`. **CAUTION** `supervisor` and `gateway_ops` each define `_READY_GRACE_S`. Keep the two equal, or the sweep kills a service the orphan reaper still spares as young.
+
 Every respawn path (boot reconcile, disconnect watchdog, the self-heal sweep) goes through `_respawn_from_journal`. `supervisor._note_respawn` counts respawns that did not reach ready, up to `_RESPAWN_BUDGET`. Reaching ready clears the count. `_RESPAWN_WINDOW_S` is only a slow decay.
 
-The breaker counts failures, not respawns per unit time, because the respawn cadence varies. The watchdog, the 45s sweep and ticks skipped for a zombie all differ, and a slower crash loop once escaped a 300s window entirely.
+The breaker counts failures, not respawns per unit time, because the respawn cadence varies. The watchdog, the 45s sweep and the readiness grace all differ, and a slower crash loop once escaped a 300s window entirely.
 
 Past the budget the gateway stops respawning, logs at ERROR, annotates the journal entry and shows `breaker-tripped` in `awm services list`. There is no auto-retry. `awm services start|restart` is the only way back, so a wedged service stays visibly wedged. The ERROR log is the only notification.
 

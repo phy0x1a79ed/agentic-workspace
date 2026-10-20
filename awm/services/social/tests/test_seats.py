@@ -253,3 +253,15 @@ async def test_a_borrower_forwards_its_session_not_its_pid(wired, monkeypatch):
                                    "_caller_pid": 7, "_caller_session": OTHER}, None)
     assert calls == [("mira", "mount", {"account": "slack-bot", "channel": "D1",
                                         "_caller_session": ME})]
+
+
+async def test_a_session_still_writing_its_record_is_retried_not_released(monkeypatch):
+    """A just-resumed REPL refuses pushes for a few seconds after a reboot."""
+    from awm.social import seats
+
+    async def refuse(*a, **kw):
+        return {"ok": False, "error": "no Claude Code session record for pid 6595"}
+
+    monkeypatch.setattr(seats.config, "node_name", lambda: "deneb")
+    monkeypatch.setattr(seats.gatewayclient, "call", refuse)
+    assert await seats.reflect("deneb", "f97d97d7", "hello") == "retry"

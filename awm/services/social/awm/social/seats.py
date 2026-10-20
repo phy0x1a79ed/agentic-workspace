@@ -194,7 +194,7 @@ async def live_jobs(node: str) -> set[str] | None:
         return None
     return {str(row["job"]) for row in reply["sessions"]
             if isinstance(row, dict) and row.get("job")
-            and row.get("state") not in _DEAD_STATES}
+            and row.get("state") not in _DEAD_STATES and row.get("alive") is not False}
 
 
 async def prune(dao, list_jobs=live_jobs) -> list[dict]:  # noqa: ANN001

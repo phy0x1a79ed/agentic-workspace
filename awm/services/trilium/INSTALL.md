@@ -803,7 +803,7 @@ repository, so no diff over the awm tree can see it move. The install is stamped
 and costs seconds when nothing did.
 
 `deploy.sh` makes the change live on this node and stops there. Pushing to
-GitHub, to capella's bare and to mira is fleet promotion, it is node-shape-
+GitHub, to altair's bare and to mira is fleet promotion, it is node-shape-
 specific, and a script that guesses at it ships something other than what was
 promoted.
 

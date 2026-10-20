@@ -27,6 +27,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
+from awm.claudedaemon import daemonlog
 from awm.config import privacy
 from awm.gatewayclient import ServiceAdapter, spawn_supervised
 
@@ -125,6 +126,11 @@ API_MANIFEST: dict[str, Any] = {
                  "description": "Who the brief says started the session when no "
                                 "session called, such as 'Tony from Discord'. "
                                 "A calling session is named instead."},
+                {"name": "replaces", "type": "string",
+                 "description": "The job this session replaces. Its last turns "
+                                "are appended to the prompt, it is stopped (and "
+                                "removed when pinned) if cx started it, and the "
+                                "new job's lineage records it."},
             ],
             "timeout": 1800,
             "effect": "write",
@@ -181,6 +187,22 @@ API_MANIFEST: dict[str, Any] = {
                  "description": "The job id `start_other` returned."},
             ],
             "timeout": 90,
+            "effect": "write",
+        },
+        {
+            "name": "adopt",
+            "tool": "reflection_adopt_other",
+            "surfaces": ["cli", "http"],
+            "description": (
+                "Give a job that cx did not start a lineage record, so "
+                "`resume_other` and `stop_other` accept it. For a session "
+                "started by hand that a keeper now keeps."
+            ),
+            "params": [
+                {"name": "job", "type": "string", "required": True,
+                 "description": "The job id."},
+            ],
+            "timeout": 30,
             "effect": "write",
         },
         {
@@ -251,10 +273,13 @@ def _on_start() -> None:
         lifecycle.ensure_starts_dir()
     except lifecycle.Refused as exc:
         log.warning("cx: %s", exc)
-    why = LOOP.enabled()
+    why = LOOP.held_back()
     if why:
         log.info("cx: not reconciling — %s", why)
         return
+    why = LOOP.enabled()
+    if why:
+        log.info("cx: not tending the warm pool — %s", why)
     spawn_supervised("cx.reconcile", LOOP.run)
 
 
@@ -292,7 +317,8 @@ async def _list(args: dict[str, Any], as_: str | None = None) -> dict[str, Any]:
         shown = {r["session"] for r in held["sessions"]}
         held["warm"] = [s for s in held["warm"] if s in shown]
         rows = [r for r in rows if not _entered_mark(r.get("job"))]
-    return {"sessions": privacy.visible_rows(rows, as_), "pool": held}
+    return {"sessions": privacy.visible_rows(rows, as_), "pool": held,
+            "daemon": await asyncio.to_thread(daemonlog.summary, held.get("daemon_pid"))}
 
 
 def _entered_mark(job: str | None) -> bool:
@@ -323,11 +349,16 @@ async def _resume(args: dict[str, Any], as_: str | None = None) -> dict[str, Any
     return await lifecycle.resume(args, as_)
 
 
+async def _adopt(args: dict[str, Any], as_: str | None = None) -> dict[str, Any]:
+    return await lifecycle.adopt(args, as_)
+
+
 HANDLERS: dict[str, Any] = {
     "start": _start,
     "list": _list,
     "stop": _stop,
     "resume": _resume,
+    "adopt": _adopt,
     "claim": _claim,
     "seed": _seed,
     "remove": _remove,

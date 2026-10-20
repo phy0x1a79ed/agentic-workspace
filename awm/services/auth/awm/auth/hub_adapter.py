@@ -20,6 +20,8 @@ Verbs:
   - ``penpot_record`` / ``penpot_session`` / ``penpot_rotate`` / ``penpot_list``
                         the Penpot credential awm holds per person, and the
                         session the edge exchanges it for (CLI/HTTP only).
+  - ``device_mint`` / ``device_list`` / ``device_revoke``
+                        revocable per-device user tokens (CLI/HTTP only).
   - ``config_get``/``config_set`` from the config contract.
 """
 
@@ -85,9 +87,15 @@ API_MANIFEST: dict[str, Any] = {
             "surfaces": _CLI_HTTP,
             "description": "Signing secret + currently-valid peer credentials + "
                            "each book peer's name, public key and relation + "
-                           "session-lifetime knobs, for the httpsfront edge to "
-                           "enforce auth offline.",
-            "params": [],
+                           "live device-token digests + session-lifetime "
+                           "knobs, for the httpsfront edge to enforce auth "
+                           "offline. device_used reports the device tokens "
+                           "the edge accepted since its last fetch; "
+                           "token_scopes names the scopes the edge enforces, "
+                           "and a scoped token goes only to an edge that "
+                           "names its scope.",
+            "params": [{"name": "device_used", "type": "object"},
+                       {"name": "token_scopes", "type": "array"}],
         },
         {
             "name": "node_key",
@@ -210,6 +218,44 @@ API_MANIFEST: dict[str, Any] = {
             "description": "List the recorded Penpot credentials (no secrets).",
             "params": [],
         },
+        {
+            "name": "device_mint",
+            "tool": "awm_device_mint",
+            "effect": "secret",
+            "surfaces": _CLI_HTTP,
+            "description": "Mint a revocable device token that acts as a user, "
+                           "for an unattended device or app that must not "
+                           "store a password. The token is returned once. The "
+                           "operator may mint for anyone; a user only for "
+                           "themself. scope narrows the token to a few exact "
+                           "request shapes: avatar-stage admits only the "
+                           "avatar stage session (POST "
+                           "/svc/avatar/session/stage and its WebSocket).",
+            "params": [
+                {"name": "username", "type": "string", "required": True},
+                {"name": "label", "type": "string", "required": True},
+                {"name": "scope", "type": "string"},
+            ],
+        },
+        {
+            "name": "device_list",
+            "tool": "awm_device_list",
+            "effect": "read",
+            "surfaces": _CLI_HTTP,
+            "description": "List device tokens (no secrets): every user's for "
+                           "the operator, or one user's when username is "
+                           "given; a user sees only their own.",
+            "params": [{"name": "username", "type": "string"}],
+        },
+        {
+            "name": "device_revoke",
+            "tool": "awm_device_revoke",
+            "effect": "write",
+            "surfaces": _CLI_HTTP,
+            "description": "Revoke a device token by id. The edge stops "
+                           "honouring it within its ~30 s material refresh.",
+            "params": [{"name": "id", "type": "string", "required": True}],
+        },
     ],
     "emitters": [],
     "sessions": [],
@@ -235,6 +281,9 @@ HANDLERS: dict[str, Any] = {
     "penpot_session": service.h_penpot_session,
     "penpot_rotate": service.h_penpot_rotate,
     "penpot_list": service.h_penpot_list,
+    "device_mint": service.h_device_mint,
+    "device_list": service.h_device_list,
+    "device_revoke": service.h_device_revoke,
     **CONTRACT.handlers(),
 }
 

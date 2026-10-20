@@ -15,6 +15,7 @@ Runs ON mira. Exposes a clean per-platform API over the awm-network so the awm
     GET  /v1/{platform}/download?channel=&message_id=&idx=  → one message's
                                        attachments as [{filename,mime,b64}]
     POST /v1/{platform}/send  {channel,text,thread?}
+    POST /v1/{platform}/react  {channel,message_id,emoji,remove?}  (Slack only)
     POST /v1/{platform}/open_dm  {user}  → resolve a user (id/name) to a DM channel
     GET  /v1/events                      → WS; pushes inbound {type:"message", …}
     GET  /v1/fs/{name}/ls|stat|get|search|sites|shares|resolve|versions|recycled
@@ -108,6 +109,7 @@ class MiraAPI:
         app.router.add_get("/v1/{platform}/download", self._h_download)
         app.router.add_post("/v1/{platform}/send", self._h_send)
         app.router.add_post("/v1/{platform}/upload", self._h_upload)
+        app.router.add_post("/v1/{platform}/react", self._h_react)
         app.router.add_post("/v1/{platform}/open_dm", self._h_open_dm)
         # Cloud file-store routes (OneDrive/SharePoint), one set per storage name.
         app.router.add_get("/v1/fs/{name}/ls", self._h_fs_ls)
@@ -315,6 +317,25 @@ class MiraAPI:
             sent = await p.driver.upload(channel, files, body.get("text") or "",
                                          body.get("thread"))
             return web.json_response({"ok": True, **sent})
+        except NotImplementedError as exc:
+            return web.json_response({"error": str(exc)}, status=501)
+        except Exception as exc:  # noqa: BLE001
+            return web.json_response({"error": str(exc)}, status=502)
+
+    async def _h_react(self, request: web.Request) -> web.Response:
+        p = self._platform(request)
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001
+            return web.json_response({"error": "invalid JSON body"}, status=400)
+        channel, ts, emoji = body.get("channel"), body.get("message_id"), body.get("emoji")
+        if not channel or not ts or not emoji:
+            return web.json_response(
+                {"error": "channel, message_id and emoji are required"}, status=400)
+        try:
+            done = await p.driver.react(channel, str(ts), emoji,
+                                        bool(body.get("remove")))
+            return web.json_response({"ok": True, **done})
         except NotImplementedError as exc:
             return web.json_response({"error": str(exc)}, status=501)
         except Exception as exc:  # noqa: BLE001

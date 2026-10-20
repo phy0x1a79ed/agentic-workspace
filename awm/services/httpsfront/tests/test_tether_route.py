@@ -29,7 +29,7 @@ TICKET = "0123456789abcdef0123456789abcdef"
 class _Gate:
     """No session is ever presented, so nothing here should be consulted."""
 
-    async def authenticate(self, *, cookie=None, bearer=None):
+    async def authenticate(self, *, cookie=None, bearer=None, shape=None):
         return False, None, None
 
     async def session_ttl_seconds(self) -> float:

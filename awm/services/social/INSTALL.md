@@ -180,10 +180,9 @@ are skipped rather than erroring the whole call.
 
 - **Discord.** The bot reacts. A Discord user token is a self-bot under
   Discord's terms, so no account reacts as Tony there.
-- **Slack.** The Opal app lacks `reactions:write` until a Workspace Owner
-  reinstalls it from `slack-bot-manifest.json`. Until then every Slack account
-  posts the emoji alone as a message, into `thread` when given, and answers
-  `"as": "message"`. `remove` refuses, because there is no reaction to take off.
+- **Slack.** Every Slack account reacts by name. Adding a reaction already there,
+  or removing one already gone, succeeds. An app without `reactions:write`
+  refuses and names the scope.
 - **Gmail and Teams.** Refuse.
 
 ## Files
@@ -196,10 +195,9 @@ the owner carries the file inline as base64.
 - **Discord.** The bot attaches up to 10 MB per message.
 - **Slack.** Every Slack account uploads through Slack's external upload, as a
   plain file and never a canvas. The reply carries the file ids and permalinks
-  and no message ts, because Slack shares the file after the call returns. The
-  Opal app needs `files:write`, so its uploads refuse until a Workspace Owner
-  reinstalls it from `slack-bot-manifest.json`. Tony's Slack runs through the
-  mira daemon, which takes 8 MB per message.
+  and no message ts, because Slack shares the file after the call returns. An
+  app without `files:write` refuses and names the scope. Tony's Slack runs
+  through the mira daemon, which takes 8 MB per message.
 - **Gmail and Teams.** Refuse. Teams takes files only through SharePoint.
 
 ## Seats
@@ -267,6 +265,12 @@ in the owner's `social.toml`:
     brief   = """…"""                  # the agent's standing instructions
     # model = "opus"   effort = "high"  (optional)
     # compact_at = 200000              (optional: 200k to 960k tokens)
+    # alert_after = 300                (optional: seconds down before the alert)
+
+One agent can hold many chats on one account. Replace `channel` with
+`channels = ["C1", "C2"]`, or with `channels = "all"` and an optional
+`except = [...]`. An "all" seat leaves out every chat that another seat names,
+and it picks up a new chat within 5 minutes.
 
 The seat stays an interface: the agent hears the chat only through pushed
 lines and answers with `social_send`. It runs no Monitor. Social reads the
@@ -278,39 +282,59 @@ message. A compaction summary rewrites the conversation and never the system
 prompt, so the brief survives every compaction word for word. The agent
 compacts in place once its context reaches `compact_at`.
 
-The keeper runs on the owner every 60 s:
+Every 60 s the keeper lists `cx` sessions on `node` and decides with
+`awm.kept`. That shared component holds the restart record, the decision and
+the breaker. The keeper waits, resumes, or starts a new agent:
 
-1. It lists `cx` sessions on `node`, locally or through a domestic peer. A
-   node that does not answer skips the tick.
-2. It starts a missing agent with `cx start`, named for its chat, pinned,
-   with Remote Control on. It writes the mount row itself.
-3. It resumes an agent that exited, with `cx resume`. The agent keeps its own
-   conversation and its prompt cache. The keeper then pushes it one line that
-   names `social history since=<ts>`, the last tick that saw it alive, because
-   lines pushed while it was down were dropped.
-4. It starts a new agent when the old one failed on an API error, when
-   `cx resume` refuses, or after three resumes that did not last 10 min.
-   Restarts back off from 60 s to 15 min, and the count resets after 10 min
-   of health.
-5. It leaves an agent blocked on login or usage for a person, and logs it once.
-6. It replaces an agent whose launch spec changed, once its tempo is idle.
-   A recycle is not a restart.
+1. **Wait** while the node does not answer or cx reports `daemon: down`. A
+   wait spends no budget and never stops the agent. The same job resumes once
+   the daemon is back.
+2. **Resume** an agent that exited, with `cx resume`. The agent keeps its own
+   conversation.
+3. **Start a new agent** when the old one failed on an API error, its spec
+   changed, cx has no record of it, a resume is refused, or three resumes did
+   not last. The new start passes `replaces=<old job>`. cx then gives it the
+   tail of the old transcript and retires the old job.
+4. **Give up** after 4 attempts within an hour that did not reach 10 min of
+   health. Attempts back off 1, 2, 5 and 10 min. A broken seat holds for 6 h,
+   or until `social keep_reset seat=<name>`.
+
+Each outage writes a restart record: the cause, when the seat went down and
+came back, and how many messages arrived meanwhile. A daemon cause comes from
+cx's `daemon` block. The agent's first line after it comes back is that
+record, with the `social history` command that reads what it missed. A seat
+whose session ran through a daemon outage gets the record too: with no daemon,
+nothing can push into it. The breaker and the open record live in
+`social_keeper_state`, so a social restart keeps counting where it left off.
+After its own restart, social tells each live seat how many messages arrived
+while social was down.
+
+**CAUTION** The keeper never calls `cx stop`. On 2026-10-20 the old keeper read
+"no daemon" as a refused resume and stopped the seat's job. A `cx stop` of a
+pinned job runs `claude rm`, so the seat lost its conversation.
+
+The keeper sends one Discord DM to the operator (`config.operator_dm()`) when
+seats stay down past `alert_after`, one when they come back, and one when a
+seat breaks. Seats that change state in the same tick share one message. A
+seat alerts at most once an hour. The DM goes through the bot account, not
+through a seat, so it still arrives when the operator's own seat is down.
+
+Two verbs take over by hand. `social keep_adopt seat=<name> job=<id>` makes a
+running hand-started session the seat's agent and keeps its conversation.
+`social keepers` lists every kept seat with its health, cause and counters.
+The keeper adopts a session by itself only when cx has its lineage and it has
+the seat's name and no parent.
 
 **CAUTION** The spec hash leaves out the session name, so a renamed chat never
-recycles a live agent. An agent keeps the name it started with, and an agent
-started before seats were named for their chat keeps `seat - <name>` until its
-next replacement.
+recycles a live agent. An agent keeps the name it started with.
 
 **CAUTION** `compact_at` is where compaction fires, not the window. Claude Code
 compacts 33k tokens below its `--autocompact` window, so the keeper passes
 `compact_at` plus `AUTOCOMPACT_RESERVE` in `keeper.py`. Check that constant
 when Claude Code changes its compaction rule.
 
-A `cx stop` of a pinned agent unpins it and removes it with `claude rm`, so the
-keeper calls it only before a new start. The Claude Code daemon still retires a
-pinned session under memory pressure, and the next tick resumes it.
-`social_mount` on a kept seat is refused and names the agent. `social_seats`
-shows each kept seat's job, health, restart count and resume count.
+`social_mount` on a kept seat is refused and names the agent, except from the
+kept agent itself. `social_seats` shows each kept seat's job and health.
 
 **CAUTION** A new agent opens on the same brief and reads the backlog first.
 Write the brief so that a second reading of a handled backlog posts nothing. A

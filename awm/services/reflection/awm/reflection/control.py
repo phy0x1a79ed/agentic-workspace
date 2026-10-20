@@ -557,11 +557,19 @@ def stop(job: Optional[str], *, caller_pid: Any, confirm: bool = False,
     if t.is_self:
         def later() -> None:
             _sleep(SELF_STOP_DELAY_S)
+            # Nobody is left to hear the answer, so the log is the only record.
             try:
-                remove(t.job)
-            except Exception as exc:  # noqa: BLE001 - nobody is left to tell
-                log.warning("reflection: stopping own session %s failed: %s",
-                            t.job, exc)
+                result = remove(t.job)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("reflection: stopping own session %s (%s) failed: %s",
+                            t.job, t.name, exc)
+                return
+            if result.get("removed"):
+                log.info("reflection: stopped and removed own session %s (%s)",
+                         t.job, t.name)
+            else:
+                log.warning("reflection: own session %s (%s) was not removed: %s",
+                            t.job, t.name, result.get("detail"))
         spawn(later)
         return {"ok": True, **_identify(t), "stopping": True}
     result = remove(t.job)
