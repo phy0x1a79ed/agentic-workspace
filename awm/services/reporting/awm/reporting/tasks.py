@@ -100,6 +100,15 @@ def _touch_marker(marker) -> None:
     marker.touch()
 
 
+#: Ended-event details, rendered as the card's Ended line.
+NOT_RUNNING = "not running, resumable"
+STOPPED_DETAIL = "stopped"
+
+
+def _job_exists(job: str) -> bool:
+    return (roster.default_jobs_dir() / job).is_dir()
+
+
 def _job_state(job: str) -> dict:
     try:
         data = json.loads((roster.default_jobs_dir() / job / "state.json").read_text())
@@ -142,6 +151,7 @@ class Tasks:
     def __init__(self, ledger: Ledger, board: SwarmBoard, *, node: str | None = None,
                  resolve: Callable[[int], dict | None] = roster.session_by_pid,
                  job_state: Callable[[str], dict] = _job_state,
+                 job_exists: Callable[[str], bool] = _job_exists,
                  dm: Callable[[str], Awaitable[None]] = send_dm,
                  alive: Callable[[int, str], bool] = lambda pid, start: roster.proc_start(pid) == start,
                  fetch: Callable[..., Awaitable[Any]] = gatewayclient.call,
@@ -161,6 +171,7 @@ class Tasks:
         self.node = node or node_name()
         self._resolve = resolve
         self._job_state = job_state
+        self._job_exists = job_exists
         self._dm = dm
         self._alive = alive
         self._unseen: set[int] = set()
@@ -295,7 +306,9 @@ class Tasks:
 
     async def _record(self, task: dict) -> str:
         live, removed = await self.db.todos(task["id"])
-        return render_record(task, live, removed, await self.db.events(task["id"], "journal"))
+        ended = await self.db.events(task["id"], "ended")
+        return render_record(task, live, removed, await self.db.events(task["id"], "journal"),
+                             ended=ended[-1]["detail"] if ended else "")
 
     async def _write_card(self, task: dict, *, dry_run: bool = False) -> list[str]:
         """Put the record on the board: in an owned card's own body, else in the claimed card's Record child."""
@@ -457,8 +470,8 @@ class Tasks:
     async def hook_session_clear(self, who: Who, args: dict) -> dict:
         """The conversation was cleared: file the open task under ``<job>/<old session id>``.
 
-        The next plan in this job then opens a card of its own. The old task
-        closes through the sweep, which no longer finds its key among the jobs.
+        The next plan in this job then opens a card of its own. The sweep, which
+        no longer finds the old task's key among the jobs, moves it to Pending review.
         """
         task = await self.db.find(self.node, who.key)
         if task is None or task["state"] not in OPEN:
@@ -749,10 +762,10 @@ class Tasks:
     # -- the watcher ---------------------------------------------------------
 
     async def sweep(self, rows: list[dict]) -> None:
-        """One pass over this node's tasks: close the ended, follow Tony's board edits, retry the board.
+        """One pass over this node's tasks: flag the ended, follow Tony's board edits, retry the board.
 
         ``rows`` are the local ``reflection list_other`` rows. A background job with no row on
-        two passes in a row was removed, and counts as stopped.
+        two passes in a row has left the daemon's roster.
         """
         async with self.lock:
             jobs = {r.get("job"): r for r in rows}
@@ -817,6 +830,13 @@ class Tasks:
                 await self._open(Who(job, "bg", None, "", row.get("cwd")), ACTIVE)
 
     async def _ending(self, task: dict, row: dict | None) -> None:
+        """Flag a task whose session stopped running. Only a deliberate stop moves its card.
+
+        A background job missing from cx whose directory remains was dropped from
+        the daemon's roster (an idle retire, a daemon death) and can be resumed, so
+        its card keeps its column. A stopped job, or one whose directory is gone,
+        moves to Pending review. The sweep never closes a background task.
+        """
         if task["kind"] == "bg":
             if row is None:
                 self._missing[task["id"]] = self._missing.get(task["id"], 0) + 1
@@ -824,17 +844,24 @@ class Tasks:
                     return
             self._missing.pop(task["id"], None)
             state = row.get("state") if row else None
-            if state == "gone":
+            if state == GONE or (row is None and await asyncio.to_thread(self._job_exists, task["key"])):
                 if not task["ended"]:
                     await self.db.update(task["id"], ended=1, dirty=1)
-                    await self.db.event(task["id"], "ended", "the session died without a stop")
+                    await self.db.event(task["id"], "ended", NOT_RUNNING)
                 return
-            if state not in (None, "stopped"):
+            if state not in (None, STOPPED):
                 if task["ended"]:
                     await self.db.update(task["id"], ended=0, dirty=1)
                     await self.db.event(task["id"], "resumed")
                 return
-        elif await asyncio.to_thread(self._alive, task["pid"], task["key"].split(":", 1)[1]):
+            if task["state"] != REVIEW:
+                # Unfinished work is not reported to a federation card's poster.
+                await self._set(task, REVIEW, "ended", STOPPED_DETAIL, ended=1, fed_state=None)
+            elif not task["ended"]:
+                await self.db.update(task["id"], ended=1, dirty=1)
+                await self.db.event(task["id"], "ended", STOPPED_DETAIL)
+            return
+        if await asyncio.to_thread(self._alive, task["pid"], task["key"].split(":", 1)[1]):
             return
         if task["state"] == REVIEW:
             # The work waits for Tony, who closes it by dragging the card to Done.
