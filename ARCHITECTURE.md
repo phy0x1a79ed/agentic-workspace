@@ -2,7 +2,7 @@
 
 ## Purpose & Contents
 
-This file is the reference for agents that change awm itself. It covers the gateway, the feature-service contract and lifecycle, the one-tool-per-service rule and the catalog that renders services onto MCP, HTTP and the CLI, the on and off tiers, ranked describe, the verb gates, the search archive, dev sandboxes, the data-layer internals, the frontend component system, federation pitfalls, a file map, and how to run tests.
+This file is the reference for agents that change awm itself. It covers the gateway, the feature-service contract and lifecycle, kept Claude Code sessions, the one-tool-per-service rule and the catalog that renders services onto MCP, HTTP and the CLI, the on and off tiers, ranked describe, the verb gates, the search archive, dev sandboxes, the data-layer internals, the frontend component system, federation pitfalls, a file map, and how to run tests.
 
 Agent orientation goes in `AGENTS.md`. Workspace procedures go in `PROTOCOLS.md`. Human install and service authoring go in `README.md` § *Authoring a service*. Cross-node design goes in `FEDERATION.md`.
 
@@ -32,6 +32,18 @@ Each feature service owns its own SQLite DB. There is no shared `state.db`. Serv
 `awm.claudedaemon` is everything awm knows about Claude Code's background sessions. It reads the daemon roster and the per-job and per-process records (`roster`), launches a session (`launch`), checks directory trust (`trust`), types a line into a session over the daemon's PTY socket (`pty`, `lane`, `job`) and answers which restricted mode a session runs in (`sessionmode`). It decides nothing about whose session a caller may reach. `cx`, `reflection`, `transcripts`, `reporting` and the gateway each import it and each make that decision for themselves.
 
 **CAUTION** `sessionmode` is the one reader of the lineage records that `reflection start_other` writes. The gateway gate and the `cx` service both call it, so the writer and the reader resolve the same directory from the same environment variables. A second copy of that resolution reads no record for any session and answers "not restricted".
+
+### Kept sessions
+
+A feature service keeps its state in SQLite, so the gateway's respawn brings it back whole. A Claude Code session keeps its state in its conversation, and only the daemon can bring that back. Three layers keep a session up:
+
+1. `keep` holds the daemon in its own user unit, outside awm's control group and outside every terminal. `awm/services/keep/INSTALL.md` says why.
+2. `cx` is the session layer. It asks `keep` to ensure the daemon before a start, resume or stop. It refuses with `code: "daemon_down"` only when that fails, and its `list` carries a `daemon` block.
+3. `awm.kept` holds the policy every keeper shares: the restart record, the decision (wait, resume, start fresh, give up) and the breaker. It does no I/O. Social's seat keeper is its first user.
+
+**CAUTION** A keeper must read `daemon_down` and `daemon.state` as "wait", never as "the session is gone". Stopping a pinned job runs `claude rm` and loses its conversation. That reading is what destroyed a seat on 2026-10-20.
+
+The gateway's crash-loop breaker lives in memory on purpose: a gateway restart is the operator's way back. A keeper's breaker persists in its service's DB, because the gateway restarts on every deploy and must not reset a session's restart budget.
 
 ### The journal is the channel
 
