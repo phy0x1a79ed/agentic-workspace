@@ -87,8 +87,8 @@ later restart would wait the full 10 min.
 `CLAUDE_CONFIG_DIR`. The socket directory is
 `/tmp/cc-daemon-<uid>/<sha256(config dir)[:8]>`. `keep` passes the unit only
 the environment the sessions need (`PATH`, `MAMBA_ROOT_PREFIX`,
-`AWM_WORKSPACE`, `CLAUDE_CONFIG_DIR`). The gateway's own environment can carry
-a session's ids, so it is not copied.
+`AWM_WORKSPACE`, `CLAUDE_CONFIG_DIR`, `CLAUDE_PTY_ORPHAN_CHECK_MS`). The
+gateway's own environment can carry a session's ids, so it is not copied.
 
 ## A daemon `keep` did not start
 
@@ -108,11 +108,24 @@ stop kills every session in the unit.
 
 ## Stopping the daemon on purpose
 
-`daemon_hold reason=<why>` stops the daemon, and `keep` does not restart it
-until `daemon_release`.
+`daemon_hold reason=<why> seconds=<n>` stops the daemon, and `keep` does not
+restart it until `daemon_release` or until the hold expires. A hold lasts 600 s
+by default and 1200 s at most. A hold whose holder died therefore never leaves a
+node without its daemon.
 
 **WARNING** A session cannot outlive its daemon by much. Claude Code's pty host
-ends its session once it has had no daemon for 30 ×
-`CLAUDE_PTY_ORPHAN_CHECK_MS` (60 s by default). A hold longer than that kills
-every background session on the node. Social's keeper resumes the kept seats
-afterwards. Nothing resumes the others.
+ends its session once it has had no daemon and no client for 30 ×
+`CLAUDE_PTY_ORPHAN_CHECK_MS` (60 s by default). `keep` sets the check to 40 s,
+for a 20-minute grace that outlasts the 10-minute restart backoff. It sets it on
+the unit and in the user manager's environment, so a unit launched before it
+takes it on its next restart. A pty host takes the value when it starts, so a
+session started before then still dies after 60 s. Social's keeper resumes the
+kept seats afterwards. Nothing resumes the others.
+
+## Bringing a daemon back from another node
+
+Any agent brings a node's daemon back with
+`reflection daemon_ensure peer=<node>`, with no ssh. When that answers
+`action: held`, `reflection daemon_release peer=<node>` ends the hold. When the
+verb does not answer at all, `keep` itself is down: run
+`awm services_restart name=keep peer=<node>`.

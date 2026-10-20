@@ -29,6 +29,7 @@ class FakeHost(daemon.Host):
     hold_state: dict | None = None
     linger_state: bool | None = True
     tail: str = ""
+    manager_env: dict[str, str] = field(default_factory=dict)
 
     def now(self) -> float:
         return self.clock
@@ -40,7 +41,10 @@ class FakeHost(daemon.Host):
         return self.running
 
     def systemctl(self, bus, *args):
-        self.calls.append(("systemctl", *args))
+        if args[0] == "set-environment":
+            self.manager_env.update(a.split("=", 1) for a in args[1:])
+        else:
+            self.calls.append(("systemctl", *args))
         return _ok()
 
     def unit(self, bus):
@@ -175,7 +179,7 @@ def test_a_service_daemon_in_a_hand_written_unit_is_adopted():
 
 
 def test_held_means_hands_off():
-    host = FakeHost(hold_state={"since": 1, "reason": "rehearsal"})
+    host = FakeHost(hold_state={"since": 9_900, "until": 10_500, "reason": "rehearsal"})
     assert Keeper(host).reconcile()["action"] == "held"
     assert host.calls == []
 
@@ -208,9 +212,63 @@ def test_no_user_manager_launches_nothing_and_tries_linger_once():
 
 
 def test_ensure_reports_daemon_down_when_it_cannot_run(monkeypatch):
-    host = FakeHost(hold_state={"since": 1, "reason": "rehearsal"})
+    host = FakeHost(hold_state={"since": 9_900, "until": 10_500, "reason": "rehearsal"})
     out = Keeper(host).ensure(timeout=0.1)
     assert out["ok"] is False and out["reason"] == "daemon_down" and out["action"] == "held"
+    assert "daemon_release" in out["hint"]
+
+
+def test_an_expired_hold_is_cleared_and_the_daemon_launched():
+    host = FakeHost(hold_state={"since": 9_000, "until": 9_600, "reason": "rehearsal"})
+    out = Keeper(host).reconcile()
+    assert out["action"] == "launched" and out["hold_expired"]["reason"] == "rehearsal"
+    assert host.hold_state is None
+
+
+def test_a_hold_written_before_expiry_existed_ends_after_the_default():
+    host = FakeHost(hold_state={"since": 10_000 - daemon.HOLD_DEFAULT_S - 1, "reason": "old"})
+    assert Keeper(host).reconcile()["action"] == "launched"
+    host = FakeHost(hold_state={"since": 9_990, "reason": "old"})
+    assert Keeper(host).reconcile()["action"] == "held"
+
+
+def test_a_hold_past_the_orphan_grace_is_refused():
+    host = FakeHost(running=_daemon(), unit_state={"ActiveState": "active", "MainPID": 42})
+    out = Keeper(host).hold("maintenance", seconds=daemon.ORPHAN_GRACE_S + 1)
+    assert out["held"] is False and "session dies" in out["error"]
+    assert host.hold_state is None and host.calls == []
+
+
+def test_a_hold_expires_and_warns():
+    host = FakeHost(running=_daemon(), unit_state={"ActiveState": "active", "MainPID": 42})
+    out = Keeper(host).hold("rehearsal", seconds=120)
+    assert out["until"] == 10_120 and "60 s" in out["warning"]
+    assert host.hold_state["until"] == 10_120
+
+
+def test_ensure_brings_back_a_daemon_after_its_holder_died():
+    """The path a peer such as Opal takes: one daemon_ensure, no ssh."""
+    host = FakeHost(hold_state={"since": 1, "until": 601, "reason": "a holder that died"})
+    keeper = Keeper(host)
+    launched = {}
+
+    def run_unit(bus, argv):
+        launched["argv"] = argv
+        host.running = _daemon()
+        return _ok()
+    host.run_unit = run_unit
+    out = keeper.ensure(timeout=2)
+    assert out["ok"] is True and out["pid"] == 42 and host.hold_state is None
+
+
+def test_the_daemon_and_the_user_manager_carry_the_orphan_grace():
+    host = FakeHost()
+    Keeper(host).reconcile()
+    argv = next(c for c in host.calls if c[0] == "systemd-run")
+    check_ms = daemon.ORPHAN_GRACE_S * 1000 // daemon.ORPHAN_CHECKS
+    assert f"--setenv=CLAUDE_PTY_ORPHAN_CHECK_MS={check_ms}" in argv
+    assert host.manager_env == {"CLAUDE_PTY_ORPHAN_CHECK_MS": str(check_ms)}
+    assert daemon.ORPHAN_GRACE_S > 600, "the grace must outlast the 10 min restart backoff"
 
 
 def test_ensure_returns_once_the_daemon_answers():

@@ -1489,8 +1489,19 @@ def _fake_cli(monkeypatch, ran, rm_code=0):
         code = rm_code if argv[1] == "rm" else 0
         return subprocess.CompletedProcess(argv, code, b"busy" if code else b"")
 
+    class Probe:
+        """A failed `rm` leaves the job in place."""
+
+        def worker_alive(self, job):
+            return False
+
+        def present(self, job):
+            return bool(rm_code)
+
     monkeypatch.setattr(lifecycle.cli, "stop_and_remove",
-                        lambda job, **kw: real(job, **{**kw, "run": run}))
+                        lambda job, **kw: real(job, **{**kw, "run": run, "probe": Probe(),
+                                                       "sleep": lambda s: None,
+                                                       "clock": iter(range(10**6)).__next__}))
 
 
 def test_stopping_a_pinned_job_unpins_and_removes_it(home, launched, monkeypatch):

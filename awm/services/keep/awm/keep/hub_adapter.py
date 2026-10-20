@@ -48,7 +48,10 @@ API_MANIFEST: dict[str, Any] = {
             "description": (
                 "Start the Claude Code daemon now if none runs, and wait until "
                 "it answers. Returns ok=false with reason=daemon_down when it "
-                "does not come up in time, is held, or cannot run here."
+                "does not come up in time, is held, or cannot run here. "
+                "Pass peer=<node> to bring another node's daemon back with no "
+                "ssh. When this verb itself does not answer, the node's keep "
+                "service is down: `awm services_restart name=keep` on that peer."
             ),
             "params": [
                 {"name": "timeout", "type": "number",
@@ -62,12 +65,16 @@ API_MANIFEST: dict[str, Any] = {
             "tool": "reflection_daemon_hold",
             "description": (
                 "Stop the Claude Code daemon and keep it stopped until "
-                "daemon_release. Its sessions keep running, but nothing can "
-                "start, resume or message one while it is held."
+                "daemon_release or the hold expires. Its sessions keep running "
+                "for 20 minutes without the daemon, then die, so a hold lasts "
+                "at most that long. Nothing can start, resume or message a "
+                "session while it is held."
             ),
             "params": [
                 {"name": "reason", "type": "string", "required": True,
                  "description": "Why, shown in daemon_status."},
+                {"name": "seconds", "type": "number",
+                 "description": "How long the hold lasts. Default 600, at most 1200."},
             ],
             "timeout": 60,
             "effect": "write",
@@ -99,7 +106,8 @@ async def _hold(args: dict[str, Any]) -> dict[str, Any]:
     reason = str(args.get("reason") or "").strip()
     if not reason:
         return {"ok": False, "error": "a hold needs a reason"}
-    return await asyncio.to_thread(KEEPER.hold, reason)
+    seconds = float(args.get("seconds") or daemon.HOLD_DEFAULT_S)
+    return await asyncio.to_thread(KEEPER.hold, reason, seconds)
 
 
 async def _release(args: dict[str, Any]) -> dict[str, Any]:

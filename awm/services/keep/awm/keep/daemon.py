@@ -17,6 +17,13 @@ systemd manager, `awm-claude-daemon.service`, launched from here:
 - ``OOMPolicy=continue``: one OOM-killed session does not stop the unit.
 - ``OOMScoreAdjust=-200``: the kernel picks the real memory hog first.
 
+``KillMode=process`` alone keeps a session for about a minute. Each session's
+pty host kills its REPL once its parent daemon has gone and no client has
+attached for 30 checks of ``CLAUDE_PTY_ORPHAN_CHECK_MS`` (2 s by default). The
+daemon hands its environment to every pty host it starts, so the check here is
+stretched until the grace outlasts the longest restart backoff. A pty host
+started before that keeps the 60 s grace until it is respawned.
+
 A daemon started with ``--origin service`` asks a running transient daemon to
 yield over its control socket, and the transient one exits leaving its
 sessions running. When that socket is unreachable the handover fails, the new
@@ -56,6 +63,12 @@ SETTLE_S = 600.0
 DISPLACE_S = 90.0
 ENSURE_TIMEOUT_S = 30.0
 KICK_EVERY_S = 60.0
+#: How long a session outlives a daemon that is gone: longer than the 10 min
+#: restart backoff, so a daemon that comes back at all finds its sessions.
+ORPHAN_GRACE_S = 1200
+#: The pty host gives up after this many checks; see the module docstring.
+ORPHAN_CHECKS = 30
+HOLD_DEFAULT_S = 600.0
 
 UNIT_PROPERTIES = (
     "KillMode=process",
@@ -133,7 +146,13 @@ def daemon_env() -> dict[str, str]:
     for key in ("AWM_WORKSPACE", "CLAUDE_CONFIG_DIR"):
         if value := os.environ.get(key):
             env[key] = value
+    env.update(orphan_env())
     return env
+
+
+def orphan_env() -> dict[str, str]:
+    check_ms = ORPHAN_GRACE_S * 1000 // ORPHAN_CHECKS
+    return {"CLAUDE_PTY_ORPHAN_CHECK_MS": str(check_ms)}
 
 
 # --- what is running --------------------------------------------------------
@@ -330,6 +349,7 @@ class Keeper:
     _transient_since: float | None = None
     _last_kick: float = 0.0
     _linger_tried: bool = False
+    _env_pushed: bool = False
     _lock_fd: int | None = None
 
     def holds_lock(self) -> bool:
@@ -364,13 +384,30 @@ class Keeper:
             return {"action": "off", "reason": why}
         if not self.holds_lock():
             return {"action": "off", "reason": "another keeper holds the lock for this Claude home"}
+        now = self.host.now()
+        expired = None
         if hold := self.host.held():
-            return {"action": "held", "hold": hold}
+            if now < _hold_until(hold):
+                return {"action": "held", "hold": hold}
+            # The holder may have died with its own sessions, and nobody would
+            # ever release it.
+            self.host.set_held(None)
+            expired = hold
+            log.warning("keep: the hold %r expired; keeping the daemon again", hold.get("reason"))
         bus = self.host.bus()
         if bus is None:
             return self._no_manager()
+        if not self._env_pushed:
+            # A unit launched before the grace existed lacks it in its own
+            # environment, and takes the manager's on its next restart.
+            proc = self.host.systemctl(bus, "set-environment",
+                                       *(f"{k}={v}" for k, v in orphan_env().items()))
+            self._env_pushed = proc.returncode == 0
+        out = self._settle(bus, now, kick=kick)
+        return {**out, "hold_expired": expired} if expired else out
+
+    def _settle(self, bus: dict[str, str], now: float, *, kick: bool) -> dict[str, Any]:
         unit = self.host.unit(bus)
-        now = self.host.now()
         d = self.host.daemon(unit.get("MainPID"))
 
         if d is not None and d.unit == f"{UNIT}.service":
@@ -444,14 +481,25 @@ class Keeper:
                         "action": out.get("action")}
             if out.get("action") in ("off", "held", "no-manager", "failed") \
                     or time.monotonic() >= deadline:
+                if out.get("action") == "held":
+                    out = {**out, "hint": "a daemon_hold is in force; daemon_release ends it"}
                 return {"ok": False, "reason": "daemon_down", **out}
             time.sleep(1.0)
             if out.get("action") == "displacing":
                 out = self.reconcile()
 
-    def hold(self, reason: str) -> dict[str, Any]:
-        """Stop the daemon and keep it stopped. Its sessions keep running."""
-        self.host.set_held({"since": self.host.now(), "reason": reason})
+    def hold(self, reason: str, seconds: float = HOLD_DEFAULT_S) -> dict[str, Any]:
+        """Stop the daemon and keep it stopped for ``seconds`` at most.
+
+        A session outlives its daemon for ``ORPHAN_GRACE_S``, so a longer hold
+        is refused: it would kill every background session on the node.
+        """
+        if not 0 < seconds <= ORPHAN_GRACE_S:
+            return {"held": False, "error": (
+                f"a hold lasts 1 to {ORPHAN_GRACE_S} s; every background session dies "
+                f"once the daemon has been gone for {ORPHAN_GRACE_S} s")}
+        now = self.host.now()
+        self.host.set_held({"since": now, "until": now + seconds, "reason": reason})
         bus = self.host.bus()
         main = None
         if bus:
@@ -460,7 +508,11 @@ class Keeper:
         d = self.host.daemon(main)
         if d is not None and d.unit != f"{UNIT}.service":
             self.host.terminate(d.pid)
-        return {"held": True, "reason": reason, "stopped": d.pid if d else None}
+        return {"held": True, "reason": reason, "until": now + seconds,
+                "stopped": d.pid if d else None,
+                "warning": (f"sessions survive for {ORPHAN_GRACE_S} s without the daemon, "
+                            "but one whose pty host started before keep set that grace "
+                            "dies after 60 s")}
 
     def release(self) -> dict[str, Any]:
         self.host.set_held(None)
@@ -485,6 +537,14 @@ class Keeper:
             "loop": {"enabled": enabled() or "yes", "last_tick_s": _round(
                 None if self.last_tick is None else now - self.last_tick), "last": self.last},
         }
+
+
+def _hold_until(hold: dict[str, Any]) -> float:
+    """When a hold ends. One written before holds expired ends after the default."""
+    try:
+        return float(hold.get("until") or float(hold["since"]) + HOLD_DEFAULT_S)
+    except (KeyError, TypeError, ValueError):
+        return 0.0
 
 
 def _round(v: float | None) -> int | None:
