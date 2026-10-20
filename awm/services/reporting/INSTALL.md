@@ -128,9 +128,15 @@ column. A plan written in Active or Blocked revises the same card.
   each undated card in Done and Rejected from its Trilium modified time.
 - The sweep reads a card in an Older book as off the board. An open card that
   Tony drags into one closes its task as cancelled.
-- A task whose session ended is filed under its node's Ledger note. Two cases
-  stay on the board, flagged as ended: a background session that died without
-  a stop, and a card in Pending review, which waits for Tony's drag to Done.
+- The sweep never closes a background task. A job that leaves the daemon's
+  roster while its directory under `~/.claude/jobs` remains keeps its card in
+  its column, flagged "not running, resumable". An idle retire and a daemon
+  death both cause this. A stopped job, or one whose directory is gone, moves
+  to Pending review, flagged "stopped". The flag clears when the job runs again.
+- **CAUTION** A daemon restart drops dead workers from `cx list`. Do not read
+  a missing row as a finished session.
+- A closed task is filed under its node's Ledger note. An interactive session
+  that exits closes its task, except a card in Pending review.
 - A journal post that names its session (`meta.session`, which the journal
   sets from the gateway's caller pid) joins that session's card only. A post
   with no session joins every open card in its project and scope.
