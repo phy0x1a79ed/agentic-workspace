@@ -26,7 +26,7 @@ from awm import config
 from awm import gatewayclient
 from awm.gatewayclient import ServiceAdapter, spawn_supervised
 
-from awm.kb import client, fastlayer, graphrank, instances, papers, server
+from awm.kb import client, fastlayer, graphrank, instances, papers, semantic, server
 
 log = logging.getLogger("awm.kb.hub_adapter")
 
@@ -139,8 +139,12 @@ API_MANIFEST: dict[str, Any] = {
             "description": (
                 "Papers for the archive's live `kb` source, in search's sections: `exact` holds "
                 "papers whose title, abstract or body holds the query literally, then papers "
-                "matching its words. Each hit quotes its passages with their zone, section and "
-                "offsets. `search query` calls it; call that instead."
+                "matching its words. `related` holds papers near the query in meaning (the entry "
+                "index's best papers per zone, merged with the keyword matches) and `graph` the "
+                "papers one hop from the top hits and nearest entities, ordered by PageRank. Each "
+                "hit quotes its passages with their zone, section and offsets. The answer says in "
+                "`degraded` what it could not use, for example the encoder or the index. "
+                "`search query` calls it; call that instead."
             ),
             "params": [
                 {"name": "query", "type": "string", "required": True, "description": "What to find."},
@@ -154,6 +158,62 @@ API_MANIFEST: dict[str, Any] = {
                 {"name": "before", "type": "string", "description": "Only papers before this ISO 8601 date."},
             ],
             "timeout": 30,
+        },
+        {
+            "name": "graph",
+            "effect": "read",
+            "category": "kb",
+            "tool": "kb_graph",
+            "description": (
+                "Run a read-only Cypher query on the knowledge graph (papers, authors, citations, posts, and "
+                "the entities and relations extracted from papers). `near` binds meaning matches to "
+                "parameters: {\"p\": {\"index\": \"entries\", \"text\": \"...\", \"k\": 3}} makes $near_p the "
+                "keys of the 3 nearest entries' documents (index entries) or the node ids of the nearest "
+                "entity groups (index nouns). Read `kb schema` first for the labels, the relation vocabulary "
+                "and worked examples. Rows are not ranked by meaning: ORDER BY a rank property. Write "
+                "clauses are refused. Domestic callers only."
+            ),
+            "params": [
+                {"name": "cypher", "type": "string", "required": True, "description": "One read-only statement."},
+                {"name": "near", "type": "object",
+                 "description": "Variable name to {index: entries|nouns, text, k}; each binds $near_<name>."},
+                {"name": "params", "type": "object", "description": "Other query parameters."},
+                {"name": "limit", "type": "integer", "description": "Maximum rows, 1-5000. Default 200."},
+                {"name": "timeout_s", "type": "number", "description": "Seconds before the query is cancelled, "
+                                                                          "up to 60. Default 10."},
+            ],
+            "timeout": 90,
+        },
+        {
+            "name": "schema",
+            "effect": "read",
+            "category": "kb",
+            "tool": "kb_schema",
+            "description": (
+                "The graph's node labels with their properties, its relation tables, the relation-verb "
+                "vocabulary of the extracted edges, how `near` binds, and worked Cypher examples."
+            ),
+            "params": [],
+            "timeout": 15,
+        },
+        {
+            "name": "related",
+            "effect": "read",
+            "category": "kb",
+            "tool": "kb_related",
+            "surfaces": ["cli", "http"],
+            "description": (
+                "Entry-index hits for a text, per zone (body, abstract, title, journal, precedent, note), each "
+                "resolved to its source, document and span. `search query` calls it for the archive's own "
+                "documents; domestic callers only."
+            ),
+            "params": [
+                {"name": "text", "type": "string", "required": True, "description": "What to find."},
+                {"name": "k", "type": "integer", "description": "Entries per zone, 1-200. Default 50."},
+                {"name": "zones", "type": "array", "description": "Only these zones."},
+                {"name": "sources", "type": "array", "description": "Only these sources."},
+            ],
+            "timeout": 15,
         },
         {
             "name": "rank",
@@ -249,8 +309,66 @@ async def _h_query(args: dict, as_: str | None = None) -> dict:
     limit = max(1, min(int(args.get("limit") or 10), 100))
     per_hit = max(1, min(int(args.get("passages") or 1), 10))
     filters = fastlayer.Filters.from_args(args)
-    found = await asyncio.to_thread(PAPERS.search, str(args.get("query") or ""), filters, limit, per_hit)
-    return {**found, "graph": []}
+    text = str(args.get("query") or "")
+    meaning = None if filters.blocked or not text.strip() else asyncio.ensure_future(_entries(text))
+    found = await asyncio.to_thread(PAPERS.search, text, filters, limit, per_hit)
+    if meaning is None:
+        return {**found, "graph": []}
+    served, why = await meaning
+    degraded: dict[str, str] = {}
+    related, graph = found["related"], []
+    if served is None:
+        degraded["semantic"] = f"meaning matches and graph unavailable, keyword only: {why}"
+    else:
+        exact_ids = {h["id"] for h in found["exact"]}
+        related = await asyncio.to_thread(semantic.paper_hits, PAPERS, served["hits"], found["related"],
+                                          exact_ids, filters, limit, per_hit)
+        shown = exact_ids | {h["id"] for h in related}
+        seeds = [h["id"] for h in [*found["exact"], *related]][:semantic.SEEDS]
+        entities = list(dict.fromkeys(i for n in served.get("nouns") or [] for i in n["node_ids"]))
+        if seeds or entities:
+            near, errors = await semantic.neighbours([f"paper:{s}" for s in seeds], entities, limit)
+            graph = await asyncio.to_thread(semantic.describe, PAPERS,
+                                            {p: v for p, v in near.items() if p not in shown}, filters, limit,
+                                            per_hit)
+            if errors and not graph:
+                degraded["graph"] = "; ".join(errors)
+    out = {"exact": found["exact"], "related": related, "graph": graph}
+    out["semantic"] = {"status": "ok" if served else "unavailable", "generation": (served or {}).get("generation")}
+    if degraded:
+        out["degraded"] = degraded
+    return out
+
+
+async def _entries(text: str) -> tuple[dict[str, Any] | None, str]:
+    """The server's entry matches for ``text``, or None and why not: it must never fail the keyword answer."""
+    try:
+        return await semantic.entries_for(text), ""
+    except Exception as exc:  # noqa: BLE001 — a missing encoder, index or server is ordinary
+        return None, semantic.reason(exc)
+
+
+async def _h_graph(args: dict, as_: str | None = None) -> dict:
+    if _foreign(as_):
+        raise PermissionError("graph is for domestic callers: a query can read this node's posts")
+    body: dict[str, Any] = {"cypher": str(args.get("cypher") or "")}
+    for key in ("near", "params", "limit", "timeout_s"):
+        if args.get(key) is not None:
+            body[key] = args[key]
+    if not body["cypher"].strip():
+        raise ValueError("graph needs a cypher query")
+    return await client.graph(body, timeout=float(body.get("timeout_s") or 10) + 30)
+
+
+async def _h_schema(args: dict, as_: str | None = None) -> dict:
+    return await client.schema()
+
+
+async def _h_related(args: dict, as_: str | None = None) -> dict:
+    if _foreign(as_):
+        raise PermissionError("related is for the local search service")
+    body = {k: args[k] for k in ("text", "k", "zones", "sources") if args.get(k) is not None}
+    return await client.related(body)
 
 
 async def _h_rank(args: dict, as_: str | None = None) -> dict:
@@ -334,6 +452,9 @@ HANDLERS = {
     "status": _h_status,
     "recall": _h_recall,
     "query": _h_query,
+    "graph": _h_graph,
+    "schema": _h_schema,
+    "related": _h_related,
     "rank": _h_rank,
     "export": _h_export,
     "start": _h_start,

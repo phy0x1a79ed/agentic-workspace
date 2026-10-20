@@ -38,6 +38,7 @@ def kb_paths(tmp_path, monkeypatch):
         "LOG_FILE": tmp_path / "state" / "logs" / "kb-server.log", "PORT": port,
         "URL": f"http://127.0.0.1:{port}", "AUTH_JSON": auth,
         "ZOTERO_LIBRARY": tmp_path / "library.json", "START_TIMEOUT_S": 20.0,
+        "VECTORS": tmp_path / "state" / "w2" / "vectors", "LADYBUG": tmp_path / "state" / "w2" / "graph" / "g.ladybug",
     }.items():
         monkeypatch.setattr(instances, name, value)
     monkeypatch.setenv("KB_PYTHON", sys.executable)

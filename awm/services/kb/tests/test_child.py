@@ -26,6 +26,20 @@ def test_child_env_keeps_an_explicit_key_and_skips_a_missing_library(kb_paths, m
     assert "KB_ZOTERO_LIBRARY" not in env
 
 
+def test_child_env_points_the_server_at_the_shipped_indexes_and_graph_that_exist(kb_paths, monkeypatch):
+    monkeypatch.delenv("KB_VECTORS", raising=False)
+    monkeypatch.delenv("KB_LADYBUG", raising=False)
+    env = server.child_env()
+    assert "KB_VECTORS" not in env and "KB_LADYBUG" not in env
+    kb_paths.VECTORS.mkdir(parents=True)
+    kb_paths.LADYBUG.parent.mkdir(parents=True)
+    kb_paths.LADYBUG.write_text("")
+    env = server.child_env()
+    assert env["KB_VECTORS"] == str(kb_paths.VECTORS) and env["KB_LADYBUG"] == str(kb_paths.LADYBUG)
+    monkeypatch.setenv("KB_VECTORS", "/elsewhere")
+    assert server.child_env()["KB_VECTORS"] == "/elsewhere"
+
+
 def _wait(pred, timeout=10.0):
     deadline = time.time() + timeout
     while time.time() < deadline:

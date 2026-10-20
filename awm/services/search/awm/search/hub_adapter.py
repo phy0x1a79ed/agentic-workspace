@@ -46,7 +46,15 @@ API_MANIFEST: dict[str, Any] = {
                 "Each hit carries source, id, title, ts, score, match, origin (node and swarm) "
                 "and its passages: quotes with their section and their start and end offsets in "
                 "the document's field. Read the answer's `sources` and `peers` for the status "
-                "of each source and peer asked. Fetch a whole hit with `get`."
+                "of each source and peer asked. Fetch a whole hit with `get`. The `graph` section is a "
+                "guess at one hop from the top hits. When the question states a join, such as who wrote "
+                "the paper about X, which papers share a concept with Y or what cites Z, write the join "
+                "yourself: read `kb schema`, then call `kb graph` with Cypher for the hops and `near` for "
+                "the meaning-matched nouns or papers. Example: kb graph {cypher: \"MATCH "
+                "(a:Author)-[:AUTHORED]->(p:Paper) WHERE p.key IN $near_p RETURN p.title, a.name, a.rank "
+                "ORDER BY a.rank DESC LIMIT 20\", near: {p: {index: \"entries\", text: \"<a paraphrase of "
+                "the paper's claim>\", k: 3}}}. `near` binds $near_p to the 3 nearest papers' keys. Hops "
+                "carry no meaning score, so ORDER BY a rank."
             ),
             "params": [
                 {"name": "query", "type": "string", "required": True,

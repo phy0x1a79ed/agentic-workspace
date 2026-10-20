@@ -60,6 +60,9 @@ def child_env() -> dict[str, str]:
         "KB_HOST": instances.HOST,
         "KB_PORT": str(instances.PORT),
     })
+    for name, path in (("KB_VECTORS", instances.VECTORS), ("KB_LADYBUG", instances.LADYBUG)):
+        if name not in env and path.exists():
+            env[name] = str(path)
     if "KB_ZOTERO_LIBRARY" not in env and instances.ZOTERO_LIBRARY.is_file():
         env["KB_ZOTERO_LIBRARY"] = str(instances.ZOTERO_LIBRARY)
     if not env.get("LLM_API_KEY"):
