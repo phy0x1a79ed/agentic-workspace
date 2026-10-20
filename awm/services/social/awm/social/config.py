@@ -173,6 +173,11 @@ class SeatConfig:
     ``node`` is where the agent runs (it needs Claude Code). ``project`` and
     ``scope`` name the worktree it starts in. ``brief`` goes into its system
     prompt. ``compact_at`` is the context size, in tokens, at which it compacts.
+
+    A seat holds one chat (``channel``), the chats in ``channels``, or, with
+    ``every_chat``, every chat of the account except ``except_chats`` and the
+    chats another seat keeps. ``alert_after`` is how long, in seconds, it may
+    stay down before the operator hears of it.
     """
 
     name: str
@@ -185,6 +190,14 @@ class SeatConfig:
     model: str | None = None
     effort: str | None = None
     compact_at: int = 200_000
+    channels: tuple[str, ...] = ()
+    every_chat: bool = False
+    except_chats: tuple[str, ...] = ()
+    alert_after: float = 300.0
+
+    @property
+    def single(self) -> bool:
+        return bool(self.channel)
 
 
 #: The range of a seat's `compact_at`. Below 200k a seat compacts too often to
@@ -521,6 +534,11 @@ def load_seats(path: Path | None = None) -> list[SeatConfig]:
         # model = "opus"                  # optional
         # effort = "high"                 # optional
         # compact_at = 200000             # optional, tokens
+        # alert_after = 300               # optional, seconds down before an alert
+
+    A seat that holds many chats names ``channels = ["C1", "C2"]``, or
+    ``channels = "all"`` with an optional ``except = ["C3"]``, in place of
+    ``channel``.
     """
     path = path if path is not None else _config_file()
     if not path.exists():
@@ -541,11 +559,12 @@ def load_seats(path: Path | None = None) -> list[SeatConfig]:
         if not isinstance(section, dict):
             raise SocialConfigError(f"{where} must be a table")
         fields = {}
-        for key in ("account", "channel", "node", "scope", "brief"):
+        for key in ("account", "node", "scope", "brief"):
             value = section.get(key)
             if not isinstance(value, str) or not value.strip():
                 raise SocialConfigError(f"{where}.{key} is required")
             fields[key] = value.strip()
+        fields.update(_seat_chats(section, where))
         project, _, scope = fields.pop("scope").partition("/")
         if not project or not scope:
             raise SocialConfigError(f"{where}.scope must be <project>/<scope>")
@@ -561,13 +580,50 @@ def load_seats(path: Path | None = None) -> list[SeatConfig]:
             raise SocialConfigError(f"{where}.compact_at must be a token count from "
                                     f"{COMPACT_AT_MIN} to {COMPACT_AT_MAX}")
         optional["compact_at"] = compact_at
-        unknown = set(section) - {"account", "channel", "node", "scope", "brief",
-                                  "model", "effort", "compact_at"}
+        alert_after = section.get("alert_after", SeatConfig.alert_after)
+        if (not isinstance(alert_after, (int, float)) or isinstance(alert_after, bool)
+                or alert_after < 0):
+            raise SocialConfigError(f"{where}.alert_after must be a number of seconds")
+        optional["alert_after"] = float(alert_after)
+        unknown = set(section) - _SEAT_KEYS
         if unknown:
             raise SocialConfigError(f"{where} has unknown keys: {', '.join(sorted(unknown))}")
         seats.append(SeatConfig(name=str(name).strip(), project=project,
                                 scope=scope, **fields, **optional))
-    keys = [(s.account, s.channel) for s in seats]
+    keys = [(s.account, c) for s in seats for c in (s.channels or (s.channel,)) if c]
     if len(set(keys)) != len(keys):
         raise SocialConfigError(f"{path}: two [seat] tables keep the same chat")
+    every = [s.account for s in seats if s.every_chat]
+    if len(set(every)) != len(every):
+        raise SocialConfigError(f"{path}: two [seat] tables keep every chat of one account")
     return seats
+
+
+_SEAT_KEYS = {"account", "channel", "channels", "except", "node", "scope", "brief",
+              "model", "effort", "compact_at", "alert_after"}
+
+
+def _seat_chats(section: dict, where: str) -> dict:
+    """The chat fields of one ``[seat.*]``: exactly one of ``channel`` and ``channels``."""
+    channel, channels, skip = section.get("channel"), section.get("channels"), section.get("except")
+    if (channel is None) == (channels is None):
+        raise SocialConfigError(f"{where} needs exactly one of channel and channels")
+    if channel is not None:
+        if not isinstance(channel, str) or not channel.strip():
+            raise SocialConfigError(f"{where}.channel is required")
+        if skip is not None:
+            raise SocialConfigError(f'{where}.except goes only with channels = "all"')
+        return {"channel": channel.strip()}
+    if channels == "all":
+        if skip is None:
+            skip = []
+        if not isinstance(skip, list) or not all(isinstance(c, str) and c.strip() for c in skip):
+            raise SocialConfigError(f"{where}.except must be a list of chat ids")
+        return {"channel": "", "every_chat": True,
+                "except_chats": tuple(c.strip() for c in skip)}
+    if (not isinstance(channels, list) or not channels
+            or not all(isinstance(c, str) and c.strip() for c in channels)):
+        raise SocialConfigError(f'{where}.channels must be a list of chat ids or "all"')
+    if skip is not None:
+        raise SocialConfigError(f'{where}.except goes only with channels = "all"')
+    return {"channel": "", "channels": tuple(c.strip() for c in channels)}

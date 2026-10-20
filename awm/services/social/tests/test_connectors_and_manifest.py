@@ -184,6 +184,7 @@ class TestManifest:
             "social_send", "social_react", "social_fetch", "social_history", "social_search",
             "social_download_attachments", "social_accounts", "social_channels",
             "social_open_dm", "social_operators", "social_operator_add",
+            "social_keepers", "social_keep_reset", "social_keep_adopt",
             "social_operator_remove", "social_lookup",
             "social_buckets", "social_bucket_ls", "social_bucket_get",
             "social_bucket_put", "social_bucket_rm", "social_bucket_search",
