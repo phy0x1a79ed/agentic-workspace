@@ -415,6 +415,20 @@ def test_stop_removes_a_job_that_is_already_dead(world):
     assert rm.calls == [DEAD_JOB]
 
 
+def test_stop_removes_an_exited_job_that_no_live_row_names(world):
+    (world.home.root / "jobs" / "dddddddd").mkdir()
+    rm = Remover()
+    out = control.stop("dddddddd", caller_pid=ME, remove=rm)
+    assert out["ok"] and out["exited"] and rm.calls == ["dddddddd"]
+
+
+def test_stop_of_an_unknown_job_still_refuses(world):
+    rm = Remover()
+    with pytest.raises(session_target.ResolveError):
+        control.stop("eeeeeeee", caller_pid=ME, remove=rm)
+    assert rm.calls == []
+
+
 def test_stop_refuses_a_terminal_session_and_a_missing_job(world):
     world.home.record(1, "interactive", "term")
     rm = Remover()
