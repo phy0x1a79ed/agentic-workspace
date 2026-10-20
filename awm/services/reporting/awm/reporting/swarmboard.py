@@ -57,8 +57,13 @@ Call = Callable[..., Awaitable[dict]]
 
 
 def tag_search(tag: str) -> str:
-    """A Trilium search for the cards whose ``swarmTags`` hold ``tag`` whole, so "lab" misses "collab"."""
-    return f"#{TAGS_LABEL} %= '(^|,){tag.replace('.', '[.]')}(,|$)'"
+    """A Trilium search for the cards whose ``swarmTags`` hold ``tag`` whole, so "lab" misses "collab".
+
+    Trilium's search parser breaks a regex that contains a comma, so the tag's
+    edges are lookarounds on the tag alphabet rather than on the separator.
+    """
+    edge = "[a-z0-9._-]"
+    return f"#{TAGS_LABEL} %= '(?<!{edge}){tag.replace('.', '[.]')}(?!{edge})'"
 
 
 class BoardError(RuntimeError):
@@ -397,7 +402,10 @@ class SwarmBoard:
             return []
         lay = await self.layout()
         book = await self._child(lay.board, BY_TAG, type="book")
-        have = {kid.get("title") for kid in await self._children(book)}
+        kids = {kid.get("title"): kid["note_id"] for kid in await self._children(book)}
+        have = set(kids)
+        for tag in sorted(tags & have - self._tag_searches):
+            await self.label(kids[tag], {"searchString": tag_search(tag)})
         made = sorted(tags - have)
         for tag in made:
             await self._call("note_create", title=tag, parent=book, type="search", content="",

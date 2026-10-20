@@ -6,7 +6,7 @@ import pytest
 
 from awm.reporting.ledger import Ledger
 from awm.reporting.store import Queue
-from awm.reporting.swarmboard import SwarmBoard
+from awm.reporting.swarmboard import SwarmBoard, tag_search
 from awm.reporting import tasks
 from awm.reporting.tasks import Tasks
 
@@ -776,14 +776,28 @@ async def test_each_tag_in_use_gets_one_saved_search_on_the_board(env, tmp_path)
     assert sorted(searches) == ["ana", "lab"]
     lab = searches["lab"]
     assert lab["type"] == "search" and lab["relations"] == {"ancestor": board}
-    assert lab["labels"]["searchString"] == "#swarmTags %= '(^|,)lab(,|$)'"
+    assert lab["labels"]["searchString"] == "#swarmTags %= '(?<![a-z0-9._-])lab(?![a-z0-9._-])'"
+
+
+async def test_a_saved_search_from_an_older_release_gets_the_current_query(env, tmp_path):
+    await in_scope(env, tmp_path)
+    env.scope_tags[("awm", "feat/x")] = ["lab"]
+    await env.tasks.sweep([row("working")])
+    board = next(i for i, n in env.tri.notes.items() if "swarmBoard" in n["labels"])
+    book = next(i for i in env.tri.kids(board) if env.tri.notes[i]["title"] == "By tag")
+    lab = env.tri.kids(book)[0]
+    env.tri.notes[lab]["labels"]["searchString"] = "#swarmTags %= '(^|,)lab(,|$)'"
+    env.tasks.board._tag_searches.clear()
+    await env.tasks.sweep([row("working")])
+    assert env.tri.notes[lab]["labels"]["searchString"] == tag_search("lab")
+    assert env.tri.kids(book) == [lab]
 
 
 @pytest.mark.parametrize("value,hit", [("lab", True), ("ana,lab", True), ("lab,tony", True),
-                                       ("collab", False), ("lab2", False), ("", False)])
+                                       ("ana,lab,tony", True), ("collab", False), ("lab2", False),
+                                       ("lab.x", False), ("lab-x", False), ("", False)])
 def test_a_tag_search_matches_the_whole_tag(value, hit):
     import re
-    from awm.reporting.swarmboard import tag_search
 
     pattern = tag_search("lab").split("%= ", 1)[1].strip("'")
     assert bool(re.search(pattern, value)) is hit
