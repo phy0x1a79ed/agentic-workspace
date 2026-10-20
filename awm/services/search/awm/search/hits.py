@@ -56,19 +56,38 @@ def clean(raw: Any, origin: dict[str, str], source: str | None = None) -> dict[s
     return {"title": "", "ts": "", **hit, "passages": passages[:MAX_PASSAGES], "score": 0.0, "origin": origin}
 
 
+def _flat(section: Any) -> list[Any]:
+    """A section's hits as one list: a flat list as sent, or the per-source lists of a current answer in turn."""
+    if isinstance(section, dict):
+        return [h for hits in section.values() if isinstance(hits, list) for h in hits]
+    return section if isinstance(section, list) else []
+
+
 def sections(raw: Any, origin: dict[str, str], limit: int,
              source: str | None = None) -> dict[str, list[dict[str, Any]]]:
-    """Each section of an answer, cleaned and capped at ``limit``; a bare ``hits`` list is ``related``."""
+    """Each section of an answer, cleaned and capped at ``limit`` hits per source; a bare ``hits`` list is
+    ``related``. A section arrives as one flat list or as one list per source, and leaves as one flat list."""
     if not isinstance(raw, dict):
         raise ValueError("the answer is not an object")
-    if any(isinstance(raw.get(s), list) for s in SECTIONS):
-        lists = {s: raw.get(s) if isinstance(raw.get(s), list) else [] for s in SECTIONS}
+    if any(isinstance(raw.get(s), (list, dict)) for s in SECTIONS):
+        lists = {s: _flat(raw.get(s)) for s in SECTIONS}
     elif isinstance(raw.get("hits"), list):
         lists = {"exact": [], "related": raw["hits"], "graph": []}
     else:
         raise ValueError("the answer has no sections and no hits")
-    return {s: [h for h in (clean(x, origin, source) for x in items) if h][:limit]
+    return {s: _cap([h for h in (clean(x, origin, source) for x in items) if h], limit)
             for s, items in lists.items()}
+
+
+def _cap(hits: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
+    """The first ``limit`` hits of each source."""
+    taken: dict[str, int] = {}
+    out = []
+    for hit in hits:
+        taken[hit["source"]] = taken.get(hit["source"], 0) + 1
+        if taken[hit["source"]] <= limit:
+            out.append(hit)
+    return out
 
 
 def count(found: dict[str, list[dict[str, Any]]]) -> int:

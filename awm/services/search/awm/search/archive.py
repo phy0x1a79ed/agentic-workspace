@@ -19,7 +19,7 @@ from awm import config
 from awm.gatewayclient import SupervisedSubscription
 from awm.persistence import embeddings as engine
 
-from awm.search import federation, hits as hitshape, index, merge, registry, store
+from awm.search import federation, hits as hitshape, index, meaning, merge, registry, store
 from awm.search.federation import Peers
 from awm.search.gateway import Gateway
 from awm.search.query import Query
@@ -293,10 +293,44 @@ class Archive:
 
     # -- query ------------------------------------------------------------
 
-    def _archive_hits(self, q: Query, names: list[str]) -> tuple[dict[str, list[dict[str, Any]]], Any]:
-        found, degraded = _with_conn(index.search, q.text, q.filters(names), q.limit, q.passages)
+    def _per_source(self, fn: Callable[..., Any], q: Query, names: list[str], limit: int) -> list[Any]:
+        """``fn(conn, text, filters, limit, ...)`` once for each source, so each has its own ``limit``."""
+        conn = store.connect()
+        try:
+            return [fn(conn, q.text, q.filters([name]), limit, *([q.passages] if fn is index.exact else []))
+                    for name in names]
+        finally:
+            conn.close()
+
+    async def _archive_hits(self, q: Query, names: list[str]) -> tuple[dict[str, list[dict[str, Any]]], Any]:
+        """``exact`` from the archive's text indexes; ``related`` from kb's entry index for the sources it holds,
+        and from the archive's own embeddings for the rest, or for all of them while kb cannot answer."""
+        kb_names = meaning.covered(names) if any(s.service == "kb" for s in self.sources.values()) else []
+        asked = asyncio.ensure_future(
+            meaning.ask(self.gateway, q.text, kb_names, q.filters(kb_names), q.limit)) if kb_names else None
+        try:
+            exact = [h for hits in await asyncio.to_thread(self._per_source, index.exact, q, names, q.limit)
+                     for h in hits]
+            by_meaning: list[dict[str, Any]] = []
+            rest = names
+            if asked is not None:
+                try:
+                    entries = await asked
+                    by_meaning = await asyncio.to_thread(_with_conn, index.resolve, entries, q.filters(kb_names),
+                                                         q.limit * 2, q.passages)
+                    rest = [n for n in names if n not in kb_names]
+                except Exception as exc:  # noqa: BLE001 — the archive's own embeddings answer instead
+                    log.warning("search: kb entry index unavailable, using the archive's embeddings: %s",
+                                _describe(exc))
+        finally:
+            if asked is not None and not asked.done():
+                asked.cancel()
+        brute = await asyncio.to_thread(self._per_source, index.related, q, rest, q.limit * 2) if rest else []
+        degraded = next((d for _, d in brute if d), None)
         origin = self.origin()
-        return {s: [{**h, "origin": origin} for h in hits] for s, hits in found.items()}, degraded
+        related = by_meaning + [h for hits, _ in brute for h in hits]
+        return {"exact": [{**h, "origin": origin} for h in exact],
+                "related": [{**h, "origin": origin} for h in related]}, degraded
 
     async def _live(self, source: Source, q: Query) -> tuple[Source, dict[str, list[dict[str, Any]]], dict[str, Any]]:
         args = {"query": q.text, "limit": q.limit, "passages": q.passages, **q.raw}
@@ -309,7 +343,10 @@ class Archive:
             return source, {}, {"status": "error", "error": f"timeout after {LIVE_TIMEOUT_S:g}s"}
         except Exception as exc:  # noqa: BLE001 — one source failing never fails the search
             return source, {}, {"status": "error", "error": _describe(exc)}
-        return source, found, {"status": "ok", "hits": hitshape.count(found)}
+        status: dict[str, Any] = {"status": "ok", "hits": hitshape.count(found)}
+        if isinstance(raw, dict) and isinstance(raw.get("degraded"), dict):
+            status["degraded"] = {str(k): str(v)[:300] for k, v in raw["degraded"].items()}
+        return source, found, status
 
     def _index_status(self, row: dict[str, Any], hits: int) -> dict[str, Any]:
         state = "frozen" if not row["present"] else "unsynced" if row["synced_at"] is None else "ok"
@@ -351,7 +388,7 @@ class Archive:
                     homed.setdefault(self.homed[name], []).append(name)
                     statuses.pop(name, None)
 
-        jobs: list[Any] = [asyncio.to_thread(self._archive_hits, q, index_names)] if index_names else []
+        jobs: list[Any] = [self._archive_hits(q, index_names)] if index_names else []
         jobs += [self._live(source, q) for source in live]
         jobs += [federation.ask_home(self.peers, home, names, q.forwarded(), q.limit)
                  for home, names in homed.items()]
@@ -408,11 +445,12 @@ class Archive:
             out["degraded"] = degraded
         return out
 
-    async def _rank(self, fused: dict[str, list[dict[str, Any]]], context: str) -> dict[str, Any] | None:
-        """Reorder each section in place by kb's PageRank, for ``context`` when one is given."""
+    async def _rank(self, fused: dict[str, dict[str, list[dict[str, Any]]]], context: str) -> dict[str, Any] | None:
+        """Reorder each source's list in each section in place by kb's PageRank, for ``context`` when one is given."""
         if not any(s.service == "kb" for s in self.sources.values()):
             return None
-        every = [h for section in hitshape.SECTIONS for h in fused[section]]
+        slots = [(section, source) for section in hitshape.SECTIONS for source in fused[section]]
+        every = [h for section, source in slots for h in fused[section][source]]
         if not every:
             return None
         args = {"hits": [{k: h.get(k, "") for k in ("source", "id", "project", "scope")} for h in every],
@@ -428,8 +466,8 @@ class Archive:
         if raw.get("profile") is None:
             return None
         at = 0
-        for section in hitshape.SECTIONS:
-            hits = fused[section]
-            fused[section] = merge.by_rank(hits, scores[at:at + len(hits)])
+        for section, source in slots:
+            hits = fused[section][source]
+            fused[section][source] = merge.by_rank(hits, scores[at:at + len(hits)])
             at += len(hits)
         return {"profile": raw["profile"]}

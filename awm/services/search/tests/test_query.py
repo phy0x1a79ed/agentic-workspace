@@ -10,7 +10,7 @@ from awm.gatewayclient import GatewayCallError
 from awm.search import federation, store
 from awm.search.query import parse
 
-from .conftest import doc, every, synced
+from .conftest import doc, every, flat, synced
 
 pytestmark = [pytest.mark.search]
 
@@ -85,8 +85,22 @@ async def test_a_bad_date_is_refused():
 
 async def test_limit_is_clamped(loaded):
     result = await loaded.query(parse({"query": "kitchen", "limit": 1}))
-    assert [len(result[s]) for s in ("exact", "related")] == [1, 1]
+    assert all(len(hits) == 1 for s in ("exact", "related") for hits in result[s].values())
+    assert result["exact"] and result["related"]
     assert parse({"query": "x", "limit": 5000}).limit == 100
+
+
+async def test_each_source_is_reported_apart_with_its_own_limit(loaded):
+    result = await loaded.query(parse({"query": "kitchen", "limit": 1, "sources": "journals,precedence,kb"}))
+    sections = {s: {src: [h["id"] for h in hits] for src, hits in result[s].items()} for s in ("exact", "related")}
+    for section in sections.values():
+        assert all(len(ids) == 1 for ids in section.values())
+        assert set(section) <= {"journals", "precedence", "kb"}
+    assert set(sections["exact"]) == {"journals", "precedence", "kb"}
+    assert all(h["source"] == src for s in ("exact", "related", "graph") for src, hits in result[s].items()
+               for h in hits)
+    wide = await loaded.query(parse({"query": "kitchen", "limit": 10, "sources": "journals,kb"}))
+    assert len(wide["exact"]["journals"]) == 2 and len(wide["exact"]["kb"]) == 1
 
 
 async def test_a_frozen_source_still_answers_and_says_so(loaded, gateway):
@@ -308,6 +322,16 @@ async def test_named_peers_are_asked_and_unknown_ones_reported(loaded, peers):
     assert [c[0] for c in peers.calls] == ["altair"]
 
 
+async def test_a_peer_answering_with_one_list_per_source_joins_each_source_apart(loaded, peers):
+    peers.add("altair", lambda args: {
+        "exact": {"journals": [{"source": "journals", "id": "far1", "title": "Kitchen elsewhere"}],
+                  "kb": [{"source": "kb", "id": "doi:9", "title": "A far paper"}]},
+        "related": {}, "graph": {}})
+    result = await loaded.query(parse({"query": "kitchen", "peers": ["altair", "local"], "limit": 5}))
+    assert {h["id"] for h in result["exact"]["journals"]} >= {"far1", "j1"}
+    assert [h["origin"]["node"] for h in result["exact"]["kb"] if h["id"] == "doi:9"] == ["altair"]
+
+
 def papers_home(args):
     if "query" not in args:
         return {"sources": [{"name": "papers", "service": "papers", "mode": "live"},
@@ -329,7 +353,7 @@ async def test_a_domain_homed_elsewhere_is_asked_of_its_home_alone(loaded, peers
     assert result["sources"]["papers"] == {"status": "ok", "hits": 1, "via": "altair"}
     assert result["peers"] == {}
     named = await loaded.query(parse({"query": "kitchen", "sources": ["papers"]}))
-    assert ids(named) == [("papers", "doi:1")] and named["exact"][0]["origin"]["node"] == "altair"
+    assert ids(named) == [("papers", "doi:1")] and flat(named["exact"])[0]["origin"]["node"] == "altair"
 
 
 async def test_a_relayed_call_asks_no_home(loaded, peers, monkeypatch):
@@ -378,7 +402,8 @@ async def test_kb_ranks_each_section_for_the_context_and_never_changes_its_hits(
     assert set(asked[-1]["hits"][0]) == {"source", "id", "project", "scope"}
     assert ranked["rank"] == {"profile": "scope:awm/dev + project:awm"}
     for section in ("exact", "related", "graph"):
-        assert sorted(h["id"] for h in ranked[section]) == sorted(h["id"] for h in plain[section])
+        assert {s: sorted(h["id"] for h in hits) for s, hits in ranked[section].items()} == \
+            {s: sorted(h["id"] for h in hits) for s, hits in plain[section].items()}
 
 
 async def test_a_failed_rank_leaves_the_answer_in_its_section_order(loaded, gateway):

@@ -228,6 +228,13 @@ def related(conn: sqlite3.Connection, query: str, filters: Filters,
             for h in result.hits if h["source_id"] in rows], result.degraded
 
 
+def exact(conn: sqlite3.Connection, query: str, filters: Filters, limit: int, per_hit: int) -> list[dict[str, Any]]:
+    """The ``exact`` section: literal matches, then documents with a passage holding every word."""
+    literal_hits = exact_literal(conn, query, filters, limit, per_hit)
+    seen = {store.key_of(h["source"], h["id"]) for h in literal_hits}
+    return literal_hits + exact_keyword(conn, query, filters, limit - len(literal_hits), per_hit, seen)
+
+
 def search(conn: sqlite3.Connection, query: str, filters: Filters, limit: int,
            per_hit: int) -> tuple[dict[str, list[dict[str, Any]]], dict[str, Any] | None]:
     """The ``exact`` and ``related`` sections over the selected sources, plus the engine's ``degraded`` block.
@@ -235,8 +242,46 @@ def search(conn: sqlite3.Connection, query: str, filters: Filters, limit: int,
     ``related`` runs twice as deep as ``limit``, because the merge drops from it
     every document ``exact`` already holds.
     """
-    literal_hits = exact_literal(conn, query, filters, limit, per_hit)
-    seen = {store.key_of(h["source"], h["id"]) for h in literal_hits}
-    keyword_hits = exact_keyword(conn, query, filters, limit - len(literal_hits), per_hit, seen)
     near, degraded = related(conn, query, filters, limit * 2)
-    return {"exact": literal_hits + keyword_hits, "related": near}, degraded
+    return {"exact": exact(conn, query, filters, limit, per_hit), "related": near}, degraded
+
+
+def resolve(conn: sqlite3.Connection, entries: list[dict[str, Any]], filters: Filters, limit: int,
+            per_hit: int) -> list[dict[str, Any]]:
+    """Documents for the kb entry index's matches, best first, each quoting the spans its entries cover; at most
+    ``limit`` per source.
+
+    An entry names a document and a span of its title or text. A document that is gone, or that the filters
+    exclude, is dropped: the index is rebuilt nightly, so it can name what the archive has since forgotten.
+    """
+    best: dict[str, list[dict[str, Any]]] = {}
+    for e in sorted(entries, key=lambda e: -e["score"]):
+        best.setdefault(store.key_of(e["source"], e["doc"]), []).append(e)
+    if not best or not filters.sources:
+        return []
+    allowed, params = filters.allowed()
+    keys = list(best)
+    rows = {r["key"]: r for r in conn.execute(
+        f"SELECT * FROM documents WHERE key IN ({','.join('?' * len(keys))}) AND key IN ({allowed})",
+        [*keys, *params])}
+    hits, taken = [], {}
+    for key in keys:
+        row = rows.get(key)
+        if row is None or taken.get(row["source"], 0) >= limit:
+            continue
+        quotes = []
+        for e in best[key]:
+            body = row["title"] if e["part"] == "title" else row["text"]
+            if e["part"] not in ("title", "text") or e["start"] >= len(body):
+                continue
+            cut = conn.execute("SELECT section FROM passages WHERE key = ? AND field = ? AND start <= ? AND stop > ?"
+                               " ORDER BY start DESC LIMIT 1", (key, e["part"], e["start"], e["start"])).fetchone()
+            quote = _quote(e["part"], e["start"], min(e["end"], len(body)), cut["section"] if cut else "", body)
+            if all((quote["field"], quote["start"]) != (q["field"], q["start"]) for q in quotes):
+                quotes.append(quote)
+            if len(quotes) == per_hit:
+                break
+        if taken.get(row["source"], 0) < limit:
+            taken[row["source"]] = taken.get(row["source"], 0) + 1
+            hits.append(_hit(row, "meaning", best[key][0]["score"], quotes))
+    return hits

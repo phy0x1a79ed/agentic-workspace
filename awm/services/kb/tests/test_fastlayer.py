@@ -214,10 +214,15 @@ def test_counts_cached_for_a_store_do_not_outlive_it(tmp_path, monkeypatch):
 
 
 async def test_the_query_verb_answers_in_sections(layer, monkeypatch):
+    async def no_server(body, **kw):
+        raise hub_adapter.client.KbError(503, "encoder is loading")
+
     monkeypatch.setattr(hub_adapter, "PAPERS", layer)
+    monkeypatch.setattr(hub_adapter.client, "related", no_server)
     out = await hub_adapter.HANDLERS["query"]({"query": "shortest construction path", "limit": 3})
-    assert set(out) == {"exact", "related", "graph"}
+    assert {"exact", "related", "graph"} <= set(out)
     assert out["exact"][0]["id"] == "doi:10.1/at"
+    assert "keyword only" in out["degraded"]["semantic"]
 
 
 async def test_a_poll_takes_every_page_and_stores_the_cursor_last(layer, monkeypatch):

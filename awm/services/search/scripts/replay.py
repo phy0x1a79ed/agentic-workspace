@@ -59,13 +59,19 @@ def identity(source: str, doc_id: str, url: str = "") -> str:
     return f"{source}:{doc_id}"
 
 
-def ranked(answer: dict[str, Any]) -> list[tuple[str, str, dict[str, Any]]]:
-    """``(identity, section, hit)`` in reading order: the sections in turn, or an old answer's ``hits``."""
+def ranked(answer: dict[str, Any]) -> list[tuple[str, str, dict[str, Any], int]]:
+    """``(identity, section, hit, place)`` in reading order: the sections in turn, or an old answer's ``hits``.
+
+    A section is a flat list (an old answer) or one ranked list per source; ``place`` is the hit's 1-based place
+    in its own list, so a source's hits are not pushed down by another source's.
+    """
     out = []
     for section in SECTIONS if any(k in answer for k in SECTIONS) else ("hits",):
-        for hit in answer.get(section) or []:
-            out.append((identity(hit["source"], str(hit["id"]), hit.get("url", "")),
-                        "related" if section == "hits" else section, hit))
+        body = answer.get(section) or []
+        for hits in body.values() if isinstance(body, dict) else [body]:
+            for place, hit in enumerate(hits, 1):
+                out.append((identity(hit["source"], str(hit["id"]), hit.get("url", "")),
+                            "related" if section == "hits" else section, hit, place))
     return out
 
 
@@ -191,7 +197,7 @@ def judged(hub: str, only: str, files: list[str]) -> dict[str, list[dict[str, An
 def score(rows: list[dict[str, Any]], answer: dict[str, Any]) -> dict[str, Any]:
     order = ranked(answer)
     place = {}
-    for rank, (ident, section, _) in enumerate(order, 1):
+    for ident, section, _, rank in order:
         place.setdefault(ident, (rank, section))
     relevant = [r for r in rows if r["verdict"] == "relevant"]
     found = {identity(r["source"], r["doc_id"]): place.get(identity(r["source"], r["doc_id"])) for r in relevant}
@@ -200,7 +206,7 @@ def score(rows: list[dict[str, Any]], answer: dict[str, Any]) -> dict[str, Any]:
     noise = sum(1 for r in rows if r["verdict"] == "irrelevant"
                 and (place.get(identity(r["source"], r["doc_id"])) or (99,))[0] <= 10)
     sectioned = any(k in answer for k in SECTIONS)
-    bare = sum(1 for _, _, hit in order if sectioned
+    bare = sum(1 for _, _, hit, _ in order if sectioned
                and not all(isinstance(p.get("start"), int) and isinstance(p.get("end"), int)
                            for p in hit.get("passages") or [{}]))
     return {"found": found, "wrong_section": wrong_section, "noise": noise, "unquoted": bare}
