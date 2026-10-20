@@ -793,6 +793,29 @@ async def test_a_saved_search_from_an_older_release_gets_the_current_query(env, 
     assert env.tri.kids(book) == [lab]
 
 
+
+async def test_two_nodes_racing_on_one_tag_leave_one_search(env, tmp_path):
+    await in_scope(env, tmp_path)
+    env.scope_tags[("awm", "feat/x")] = ["lab"]
+    board = next(i for i, n in env.tri.notes.items() if "swarmBoard" in n["labels"])
+    book = next(i for i in env.tri.kids(board) if env.tri.notes[i]["title"] == "By tag")
+    for _ in range(2):
+        env.tri._note_create("lab", book, type="search", labels={"searchString": tag_search("lab")})
+    keep = min(env.tri.kids(book))
+    await env.tasks.sweep([row("working")])
+    assert env.tri.kids(book) == [keep]
+
+
+async def test_the_sweep_never_makes_the_by_tag_book(env, tmp_path):
+    await in_scope(env, tmp_path)
+    board = next(i for i, n in env.tri.notes.items() if "swarmBoard" in n["labels"])
+    book = next(i for i in env.tri.kids(board) if env.tri.notes[i]["title"] == "By tag")
+    env.tri._note_delete(book)
+    env.scope_tags[("awm", "feat/x")] = ["lab"]
+    await env.tasks.sweep([row("working")])
+    assert not [i for i in env.tri.kids(board) if env.tri.notes[i]["title"] == "By tag"]
+    assert env.task()["tags"] == "lab"
+
 @pytest.mark.parametrize("value,hit", [("lab", True), ("ana,lab", True), ("lab,tony", True),
                                        ("ana,lab,tony", True), ("collab", False), ("lab2", False),
                                        ("lab.x", False), ("lab-x", False), ("", False)])

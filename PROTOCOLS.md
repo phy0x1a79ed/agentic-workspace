@@ -35,6 +35,8 @@ Nothing enumerable goes here, with one exception: a table that records a decisio
 
 `scope private` hides a project or scope from every other node. `FEDERATION.md` § *Private projects* covers what it hides.
 
+`scope tag` labels a project, a scope or a scope group such as `metasmith/lab`, and `scope search` and the Swarm board filter by it. A scope takes the tags of its nearest tagged level, and a nearer set replaces a farther one. Tag Tony's own work `tony`. Tag work `lab` when it came in through a Slack seat from someone who is not Tony. Pass `tags` to `scope create` or `reflection start_other` when you start such work, because a new project starts with no tags. A seat added to `social.toml` gets no tags from its keeper, so tag its scope by hand.
+
 ## Scope naming
 
 New scopes take a prefix that names the kind of work:

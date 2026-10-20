@@ -305,7 +305,8 @@ def make_board(tri: FakeTrilium, *, older: bool = True) -> dict[str, str]:
     awm = tri.add("AWM", type="book")
     board = tri.add("Swarm board", awm, type="book", labels={"swarmBoard": ""})
     out = {t: tri.add(t, board, type="book") for t in ("Proposed", "Planned", "Active", "Blocked",
-                                                         "Pending review", "Done", "Rejected", "Ledger")}
+                                                         "Pending review", "Done", "Rejected", "Ledger",
+                                                         "By tag")}
     if older:
         for t in ("Done", "Rejected"):
             out[f"Older {t}"] = tri.add("Older (0)", out[t], type="book",

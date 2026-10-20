@@ -252,7 +252,9 @@ looks like the obvious next step.
 writes only notes no other copy writes: its own cards, its own Ledger note and
 its own Ops notes. The shared notes, the board and its books, come from one
 `board_ensure` run. A node that made a shared note on its own would race another
-node into a duplicate, as two Ops books once showed.
+node into a duplicate, as two Ops books once showed. The saved searches under
+"By tag" are the one shared note a sweep makes, because a tag can appear at any
+time. Every node keeps the lowest note id of a duplicate title and deletes the rest.
 
 WARNING: **a replica follows a deletion.** Within a minute of a note being
 deleted anywhere it is gone everywhere. Replication is not backup, which is why

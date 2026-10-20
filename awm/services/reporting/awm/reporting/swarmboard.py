@@ -396,13 +396,18 @@ class SwarmBoard:
         """Give each tag a saved search in the board's "By tag" book. Returns the tags given one now.
 
         Every node adds the tags its own cards carry and none removes one, since
-        another node's cards may still carry it.
+        another node's cards may still carry it. Two nodes that add one tag at
+        once each make a search, so every node keeps the lowest note id of a
+        title and deletes the rest.
         """
         if tags <= self._tag_searches:
             return []
         lay = await self.layout()
-        book = await self._child(lay.board, BY_TAG, type="book")
-        kids = {kid.get("title"): kid["note_id"] for kid in await self._children(book)}
+        book = next((kid["note_id"] for kid in await self._children(lay.board)
+                     if kid.get("title") == BY_TAG), None)
+        if book is None:
+            raise BoardError(f'the board has no "{BY_TAG}" book; run operations board_ensure')
+        kids = await self._tag_search_notes(book)
         have = set(kids)
         for tag in sorted(tags & have - self._tag_searches):
             await self.label(kids[tag], {"searchString": tag_search(tag)})
@@ -411,8 +416,22 @@ class SwarmBoard:
             await self._call("note_create", title=tag, parent=book, type="search", content="",
                              labels={"searchString": tag_search(tag), TAG_SEARCH_LABEL: tag},
                              relations={"ancestor": lay.board})
+        if made:
+            await self._tag_search_notes(book)
         self._tag_searches |= tags | have
         return made
+
+    async def _tag_search_notes(self, book: str) -> dict[str, str]:
+        kept: dict[str, str] = {}
+        for kid in sorted(await self._children(book), key=lambda k: k["note_id"]):
+            if kid.get("title") not in kept:
+                kept[kid.get("title")] = kid["note_id"]
+                continue
+            try:
+                await self._call("note_delete", note_id=kid["note_id"])
+            except BoardError:
+                pass
+        return kept
 
     async def write_ledger(self, node: str, content: str) -> str:
         return await self.upsert_markdown((await self.layout()).ledger, node, content)
