@@ -42,7 +42,10 @@ API_MANIFEST: dict[str, Any] = {
                 "`peers` names other nodes. The answer has three ranked sections, read in "
                 "order: `exact` (the query as a literal substring, case-insensitive, then "
                 "keyword matches), `related` (nearest in meaning) and `graph` (linked through "
-                "the knowledge graph). A document appears in the first section that holds it. "
+                "the knowledge graph). Each section reports each source on its own: a map from "
+                "source name to that source's ranked hits, up to `limit` each, so papers (source "
+                "`kb`), journals, precedents and notes are never ranked against one another; a "
+                "source with no hits is absent. A document appears in the first section that holds it. "
                 "Each hit carries source, id, title, ts, score, match, origin (node and swarm) "
                 "and its passages: quotes with their section and their start and end offsets in "
                 "the document's field. Read the answer's `sources` and `peers` for the status "
@@ -71,7 +74,7 @@ API_MANIFEST: dict[str, Any] = {
                 {"name": "before", "type": "string",
                  "description": "Only documents before this ISO 8601 date or time (UTC)."},
                 {"name": "limit", "type": "integer",
-                 "description": "Maximum hits per section, 1-100. Default 10."},
+                 "description": "Maximum hits per source in each section, 1-100. Default 10."},
                 {"name": "passages", "type": "integer",
                  "description": "Maximum passages quoted per hit, 1-10. Default 1."},
                 {"name": "peers", "type": "string",

@@ -48,16 +48,28 @@ def by_rank(hits: list[dict[str, Any]], ranks: list[float | None]) -> list[dict[
     return [hits[i] for i in sorted(range(len(hits)), key=lambda i: -fused[i])]
 
 
-def fuse_sections(found: list[dict[str, list[dict[str, Any]]]], limit: int) -> dict[str, list[dict[str, Any]]]:
-    """Each section fused across ``found``, a document kept only in the first section that holds it.
+def fuse_sections(found: list[dict[str, list[dict[str, Any]]]],
+                  limit: int) -> dict[str, dict[str, list[dict[str, Any]]]]:
+    """Each section fused across ``found`` into one ranked list per source, ``limit`` hits at most each.
 
-    The sections read in order, so a document already quoted as an exact match
-    would only repeat itself further down.
+    A source is reported on its own: its hits are never ranked against another source's, so papers do not
+    crowd out journal posts. A source's lists from several places (this node, a peer, a live source) fuse
+    into one. A document is kept only in the first section that holds it: the sections read in order, so a
+    document already quoted as an exact match would only repeat itself further down. A source with no hits in
+    a section has no entry there.
     """
-    out: dict[str, list[dict[str, Any]]] = {}
+    out: dict[str, dict[str, list[dict[str, Any]]]] = {}
     shown: set[tuple[str, str, str]] = set()
     for section in SECTIONS:
-        fused = fuse([f.get(section, []) for f in found], limit * 2)
-        out[section] = [h for h in fused if _identity(h) not in shown][:limit]
-        shown |= {_identity(h) for h in out[section]}
+        lists: dict[str, list[list[dict[str, Any]]]] = {}
+        for f in found:
+            grouped: dict[str, list[dict[str, Any]]] = {}
+            for hit in f.get(section, []):
+                grouped.setdefault(hit["source"], []).append(hit)
+            for source, hits in grouped.items():
+                lists.setdefault(source, []).append(hits)
+        per_source = {s: [h for h in fuse(lists[s], limit * 2) if _identity(h) not in shown][:limit]
+                      for s in sorted(lists)}
+        out[section] = {s: hits for s, hits in per_source.items() if hits}
+        shown |= {_identity(h) for hits in out[section].values() for h in hits}
     return out

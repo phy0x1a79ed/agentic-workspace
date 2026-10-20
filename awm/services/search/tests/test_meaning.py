@@ -8,7 +8,7 @@ from awm.gatewayclient import GatewayCallError
 from awm.search import index
 from awm.search.query import parse
 
-from .conftest import doc, every, synced
+from .conftest import doc, every, flat, synced
 
 pytestmark = [pytest.mark.search]
 
@@ -60,7 +60,7 @@ def kb(gateway, monkeypatch):
 
 async def related_ids(archive, **args):
     result = await archive.query(parse({"query": "tap replacement", **args}))
-    return [(h["source"], h["id"]) for h in result["related"]], result
+    return [(h["source"], h["id"]) for h in flat(result["related"])], result
 
 
 async def test_kb_entries_become_related_hits_with_their_spans(loaded, kb):
@@ -68,10 +68,10 @@ async def test_kb_entries_become_related_hits_with_their_spans(loaded, kb):
                                                                        text="Sink choice")]
     ids, result = await related_ids(loaded, sources=["journals", "precedence"])
     assert ids == [("journals", "j1"), ("precedence", "p1")]
-    first = result["related"][0]
+    first = flat(result["related"])[0]
     assert first["match"] == "meaning" and first["passages"][0]["text"] == SINK[3:20]
     assert (first["passages"][0]["field"], first["passages"][0]["start"], first["passages"][0]["end"]) == ("text", 3, 20)
-    assert result["related"][1]["passages"][0]["field"] == "title"
+    assert flat(result["related"])[1]["passages"][0]["field"] == "title"
     assert kb["brute"] == []
     assert "degraded" not in result
 
@@ -102,7 +102,7 @@ async def test_filters_apply_to_the_resolved_documents(loaded, kb):
 async def test_a_span_past_the_end_of_an_edited_document_quotes_nothing_and_the_hit_stays(loaded, kb):
     kb["answer"] = [entry("journals", "j2", 0.9, text=SHED, start=900, end=950)]
     ids, result = await related_ids(loaded, sources=["journals"])
-    assert ids == [("journals", "j2")] and result["related"][0]["passages"] == []
+    assert ids == [("journals", "j2")] and flat(result["related"])[0]["passages"] == []
 
 
 async def test_each_document_is_one_hit_quoting_its_best_entries_first(loaded, kb):
@@ -110,7 +110,7 @@ async def test_each_document_is_one_hit_quoting_its_best_entries_first(loaded, k
                     entry("journals", "j2", 0.8, text=SHED)]
     ids, result = await related_ids(loaded, sources=["journals"], passages=2)
     assert ids == [("journals", "j1"), ("journals", "j2")]
-    assert [p["start"] for p in result["related"][0]["passages"]] == [11, 0]
+    assert [p["start"] for p in flat(result["related"])[0]["passages"]] == [11, 0]
 
 
 @pytest.mark.parametrize("failure", [GatewayCallError(503, '{"detail":"encoder is loading"}'), KeyError("x")])
@@ -148,4 +148,4 @@ async def test_kb_papers_keep_the_degraded_note_the_live_source_sends(archive, g
                                           "graph": [], "degraded": {"semantic": "keyword only: encoder is loading"}})
     result = await archive.query(parse({"query": "anything"}))
     assert result["sources"]["kb"]["degraded"] == {"semantic": "keyword only: encoder is loading"}
-    assert [h["id"] for h in result["related"]] == ["p"]
+    assert [h["id"] for h in flat(result["related"])] == ["p"]

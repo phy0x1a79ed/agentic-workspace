@@ -63,7 +63,8 @@ def _reply(raw: Any) -> dict[str, Any]:
         raise ValueError(f"reply of {size} bytes exceeds the {MAX_REPLY_BYTES} byte cap")
     if isinstance(raw, (str, bytes)):
         raw = json.loads(raw)
-    if not isinstance(raw, dict) or not any(isinstance(raw.get(k), list) for k in ("hits", *hitshape.SECTIONS)):
+    if not isinstance(raw, dict) or not any(isinstance(raw.get(k), (list, dict))
+                                            for k in ("hits", *hitshape.SECTIONS)):
         detail = raw.get("error") if isinstance(raw, dict) else None
         raise RuntimeError(str(detail or "reply has no hits"))
     return raw

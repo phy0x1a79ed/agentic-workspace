@@ -248,7 +248,8 @@ def search(conn: sqlite3.Connection, query: str, filters: Filters, limit: int,
 
 def resolve(conn: sqlite3.Connection, entries: list[dict[str, Any]], filters: Filters, limit: int,
             per_hit: int) -> list[dict[str, Any]]:
-    """Documents for the kb entry index's matches, best first, each quoting the spans its entries cover.
+    """Documents for the kb entry index's matches, best first, each quoting the spans its entries cover; at most
+    ``limit`` per source.
 
     An entry names a document and a span of its title or text. A document that is gone, or that the filters
     exclude, is dropped: the index is rebuilt nightly, so it can name what the archive has since forgotten.
@@ -263,10 +264,10 @@ def resolve(conn: sqlite3.Connection, entries: list[dict[str, Any]], filters: Fi
     rows = {r["key"]: r for r in conn.execute(
         f"SELECT * FROM documents WHERE key IN ({','.join('?' * len(keys))}) AND key IN ({allowed})",
         [*keys, *params])}
-    hits = []
+    hits, taken = [], {}
     for key in keys:
         row = rows.get(key)
-        if row is None:
+        if row is None or taken.get(row["source"], 0) >= limit:
             continue
         quotes = []
         for e in best[key]:
@@ -280,7 +281,7 @@ def resolve(conn: sqlite3.Connection, entries: list[dict[str, Any]], filters: Fi
                 quotes.append(quote)
             if len(quotes) == per_hit:
                 break
-        hits.append(_hit(row, "meaning", best[key][0]["score"], quotes))
-        if len(hits) == limit:
-            break
+        if taken.get(row["source"], 0) < limit:
+            taken[row["source"]] = taken.get(row["source"], 0) + 1
+            hits.append(_hit(row, "meaning", best[key][0]["score"], quotes))
     return hits
