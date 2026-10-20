@@ -159,8 +159,60 @@ def test_plan_new_service_triggers_install_only(tmp_path):
     d.mkdir()
     (d / "install.sh").write_text("#!/bin/bash\n")
     plan = deploy.plan_deploy(root, awm_dir)
-    assert plan.do_install and "dist set changed" in plan.install_reason
+    assert plan.do_install and plan.install_reason == "new: brandnew"
     assert not plan.do_build  # pages untouched
+
+
+def _deployed(tmp_path, **kw):
+    """A tree and an AWM_DIR whose manifest records that tree as deployed."""
+    root = _make_tree(tmp_path / "a", **kw)
+    awm_dir = tmp_path / "awm_dir"
+    awm_dir.mkdir()
+    deploy.save_manifest(awm_dir, deploy.plan_deploy(root, awm_dir).next_manifest())
+    return root, awm_dir
+
+
+def test_plan_changed_install_sh_triggers_install(tmp_path):
+    root, awm_dir = _deployed(tmp_path)
+    (root / "services" / "stt" / "install.sh").write_text("#!/bin/bash\necho v2\n")
+    plan = deploy.plan_deploy(root, awm_dir)
+    assert plan.do_install and plan.install_reason == "changed: stt"
+
+
+@pytest.mark.parametrize("name", ["pyproject.toml", "service.toml"])
+def test_plan_changed_install_input_triggers_install(tmp_path, name):
+    root, awm_dir = _deployed(tmp_path)
+    (root / "services" / "tts" / name).write_text("[x]\n")
+    plan = deploy.plan_deploy(root, awm_dir)
+    assert plan.do_install and plan.install_reason == "changed: tts"
+
+
+def test_plan_code_edit_and_service_without_install_sh_skip_install(tmp_path):
+    root, awm_dir = _deployed(tmp_path)
+    (root / "services" / "stt" / "handler.py").write_text("print('edit')\n")
+    (root / "services" / "runonly").mkdir()
+    (root / "services" / "runonly" / "service.toml").write_text("[x]\n")
+    plan = deploy.plan_deploy(root, awm_dir)
+    assert not plan.do_install and plan.install_reason == "dist set unchanged"
+
+
+def test_plan_removed_service_still_installs(tmp_path):
+    root, awm_dir = _deployed(tmp_path)
+    (root / "services" / "tts" / "install.sh").unlink()
+    plan = deploy.plan_deploy(root, awm_dir)
+    assert plan.do_install and plan.install_reason == "dist set changed"
+
+
+def test_plan_manifest_without_service_record_installs_once(tmp_path):
+    # A manifest written before services were recorded holds only the name set.
+    root, awm_dir = _deployed(tmp_path)
+    m = deploy.load_manifest(awm_dir)
+    del m["services"]
+    deploy.save_manifest(awm_dir, m)
+    plan = deploy.plan_deploy(root, awm_dir)
+    assert plan.do_install and "no prior service install record" in plan.install_reason
+    deploy.save_manifest(awm_dir, plan.next_manifest())
+    assert not deploy.plan_deploy(root, awm_dir).do_install
 
 
 def test_plan_page_change_triggers_build_only(tmp_path):

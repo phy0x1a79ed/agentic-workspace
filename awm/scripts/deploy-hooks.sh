@@ -10,8 +10,9 @@
 # Hooks are copied, never symlinked into the awm tree: a copy works on a node
 # whose checkout does not carry the hook yet, and its md5 is checkable.
 #
-# `local` is the node this runs on. Reporting runs on the fleet nodes only; mira
-# is a station and gets none of it.
+# `local` is the node this runs on. Capella refuses every peer, so it runs this
+# itself. Reporting runs on the fleet nodes only. mira is a station and gets none
+# of it.
 set -uo pipefail
 
 AWM="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -21,10 +22,10 @@ CHECK=0
 
 # name | source under awm/ | file in ~/.claude/hooks | nodes | extra file (same dir as source)
 HOOKS=(
-  "cx-name|services/cx/hooks/name_on_prompt.py|awm-cx-name-hook.py|local capellaz miraz|"
+  "cx-name|services/cx/hooks/name_on_prompt.py|awm-cx-name-hook.py|local miraz|"
   "compute|services/compute/hooks/compute_hook.py|awm-compute-hook.py|local|"
   "reflection|services/reflection/hooks/plan_mode_hook.py|awm-reflection-mode.py|local|"
-  "reporting|services/reporting/hooks/reporting_hook.py|awm-reporting-hook.py|local capellaz|awm-reporting-settings.json"
+  "reporting|services/reporting/hooks/reporting_hook.py|awm-reporting-hook.py|local|awm-reporting-settings.json"
 )
 
 # settings.json entries per hook, as {event: entry}; @file reads the "hooks" of a shipped

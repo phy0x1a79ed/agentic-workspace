@@ -407,6 +407,33 @@ async def test_a_start_that_outlived_its_call_is_adopted(kept):
     assert dao.holder("bot", "C1")["job"] == "late0001"
 
 
+async def test_a_late_start_is_adopted_only_once_cx_has_recorded_it(kept):
+    """cx refuses to stop or resume a job it holds no lineage for, so a seat
+    must not be pinned to one."""
+    k, cx, dao, _ = kept
+    cx.rows.append({"job": "late0001", "name": "seat:discord/Lab/general", "state": "idle",
+                    "parent": None, "caller": "mira", "recorded": False})
+    await k.tick()
+    assert dao.keeper("lab") is None
+    assert not cx.started and not cx.stopped, "the name is taken; nothing is stopped"
+    cx.row("late0001")["recorded"] = True
+    await k.tick()
+    assert dao.keeper("lab")["job"] == "late0001"
+
+
+async def test_a_stopped_job_cx_has_no_record_of_is_replaced_not_resumed(kept):
+    k, cx, dao, clock = kept
+    await k.tick()
+    job = dao.keeper("lab")["job"]
+    cx.die(job)
+    cx.rows.append({**cx.dead[job], "state": "stopped", "recorded": False})
+    clock.t += 61
+    await k.tick()
+    assert cx.resumed == []
+    assert len(cx.started) == 2
+    assert dao.keeper("lab")["job"] != job
+
+
 async def test_a_session_someone_else_parented_is_not_taken(kept):
     k, cx, dao, _ = kept
     cx.rows.append({"job": "kid00001", "name": "seat:discord/Lab/general", "state": "idle",

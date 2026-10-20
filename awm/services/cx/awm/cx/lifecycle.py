@@ -963,7 +963,7 @@ def collect(project: str | None = None, scope: str | None = None,
     node = node_name()
     pinned = set(pins.pinned())
     rows = [{**_job_row(s, lineage.get(s.short) or _pending_for(s, pending), node),
-             "pinned": s.short in pinned}
+             "pinned": s.short in pinned, "recorded": s.short in lineage}
             for s in sessions.load() if s.has_record]
     panes = _tmux_panes()
     rows += [_interactive_row(rec, panes, node) for rec in _interactive_records()]

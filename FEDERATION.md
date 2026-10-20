@@ -2,7 +2,7 @@
 
 ## Purpose & Contents
 
-This file is the design of awm federation. It covers how nodes reach each other, how a peer proves who it is, what a foreign swarm may read, and how swarms exchange work. The sections run in this order: the node roles and the shape of a cross-node call, authentication, node tokens, relations and grants, the foreign gate, federated search, the board and intake, the legacy SSH bearer, the peer directory, the cross-peer transports, singletons, the connection-slot arbiter, TLS and deployment.
+This file is the design of awm federation. It covers how nodes reach each other, how a peer proves who it is, what a foreign swarm may read, and how swarms exchange work. The sections run in this order: the node roles and the shape of a cross-node call, authentication, node tokens, relations and grants, the foreign gate, private projects, federated search, the board and intake, the legacy SSH bearer, the peer directory, the cross-peer transports, singletons, the connection-slot arbiter, TLS and deployment.
 
 Operator steps for the board and intake live in each service's `INSTALL.md`. Gateway internals live in `ARCHITECTURE.md`.
 
@@ -15,7 +15,7 @@ authentication system** while the loopback interior stays open.
 
 | Node | Where | Role |
 |---|---|---|
-| `capella` | WSL on a Windows desktop | holds the **CA key**; sleeps with the host |
+| `capella` | WSL on a Windows desktop | personal node: reads the fleet, refuses every peer; holds the **CA key**; sleeps with the host |
 | `mira` | always-on mini PC | owns the singletons: `2fa`, `social`, the ssh slot arbiter |
 | `altair` | Arbutus cloud VM (16 vCPU / 1.9 TB) | always-on compute; borrows every singleton from mira |
 
@@ -121,7 +121,9 @@ For each request the edge:
 3. Stamp `X-Awm-As: peer:<node>`, where `<node>` is the peer book name.
 4. Remove the token from the forwarded request.
 
-The legacy bearer authenticates as the bare `peer`, which the gateway treats as a domestic peer. Set `AWM_PEER_LEGACY_BEARER=0` in `<workspace>/.awm/env` to retire it. The edge then accepts only node tokens, and `auth` stops handing the bearers to the edge.
+The legacy bearer authenticates as the bare `peer`, which the gateway treats as a domestic peer. Set `AWM_PEER_LEGACY_BEARER=0` in `<workspace>/.awm/env` to retire it. The edge then accepts only node tokens, and `auth` stops handing the bearers to the edge. The node's own outbound calls stop falling back to the bearer.
+
+Set `AWM_EDGE_PEERS=0` to close a node to every peer. The edge then answers a node token with 403 `peers not admitted` and the legacy bearer with 401. The 403 tells the caller that the node is closed, not that its token is bad, and it ends the call with no fallback. A person's login still works. The peer book keeps its relations, because the node's own outbound calls pick providers from them. The edge guards only the awm door, so a closed node also drops new mesh connections from its peers in its firewall and authorizes none of their ssh keys. capella runs closed. **CAUTION** On a closed node a domestic entry trusts nothing inbound. Read the node's env, not its book, to learn whether a peer reaches it.
 
 The edge caches the auth material for up to 30 seconds (`httpsfront/auth.py` `_REFRESH_INTERVAL`). The material holds each peer's relation and pinned key. A new key or a relation change reaches the edge within that window. The gateway reads the peer book on every call, so a grant change applies on the next call.
 
@@ -159,6 +161,19 @@ A category is the only boundary. A read verb that returns journal text under ano
 - `kb recall` gives a foreign peer only the hybrid, vector and lexical modes.
 
 Revoke a grant with `awm peer revoke <name> <source>`. The next call is refused.
+
+## Private projects
+
+A node can mark a project or one scope of it private. Run `scope private project=<p> [scope=<s>] private=true` on the node that holds it. Every caller stamped `peer` or `peer:<node>`, domestic or foreign, then loses everything the mark covers. Local callers and a person signed in at the edge (`user:<sub>`) see no change. Clearing the mark (`private=false`) restores peer visibility on the next call.
+
+- **What a mark covers.** A project mark covers the project's directory, each scope in it and each path below it. A scope mark covers that scope and the scopes nested under it. Journal rows that name the project as `task:<p>`, `user:proj:<p>` or `project:<p>` count as the project. Precedence decisions tagged `<p>` count too. A Claude transcript counts when its folder name is the slug of a covered path, or when any of its lines ran with a `cwd` under one.
+- **How peers lose it.** The gateway refuses a peer call whose arguments name a covered project, scope or path. The refusal is the error an unknown tool gets, as in § *The foreign gate*. Each service drops covered rows from the lists it gives a peer, so a call that names nothing still hides them. While any mark exists, `/files` also refuses a peer `AWM_DIR`, `~/.claude` and the host's `/proc`, `/sys`, `/dev`, `/run` and `/tmp`, because the service databases and transcripts hold copies of covered data.
+- **Where the mark lives.** The marks live in `<AWM_DIR>/private.json`. `scope private` owns the writes. `awm.config.privacy` is the only reader. Every process rereads the file when it changes, so a mark needs no restart. A file that exists and does not parse hides everything from peers. The mark is per node. It does nothing for a copy of the project on another node.
+- **Slug collisions.** Claude names a transcript folder by turning every non-alphanumeric character of the path into `-`. A mark on `metasmith` would therefore also cover `metasmith-libraries`. `scope private` refuses a mark whose slug prefixes another project's or scope's directory.
+
+Run `awm/scripts/privacy-probe.sh <peer> <project> --expect visible|hidden` from another node to prove a mark. Run it once with `visible` before marking, because the hidden run compares counts against that baseline.
+
+**CAUTION** A mark is visibility hygiene, not a security boundary. Text that mentions the project from another project's records stays visible, and so do untagged precedence decisions, kb papers and Trilium notes. A domestic peer can still start a session here, or drive the browser at this node's own `/files`, and that session reads with a local stamp. A closed node (§ Authentication) refuses that session too.
 
 ## Federated search
 
@@ -299,7 +314,8 @@ service and caches it.
 A domestic peer that answers 401 (a node that has not upgraded) gets one repeat
 with the legacy bearer fetched over SSH. The client then calls that peer with
 the legacy bearer for five minutes. A foreign peer never gets the legacy bearer.
-Its refusal returns as sent. Only 401 triggers the fallback, because a 403 is an
+Its refusal returns as sent. A caller that sets `AWM_PEER_LEGACY_BEARER=0`
+treats every peer the same way. Only 401 triggers the fallback, because a 403 is an
 authorisation verdict that another credential cannot change.
 
 ### Files across the hop
@@ -588,6 +604,8 @@ taking the edge down for an address nobody dials is worse. It used to read a mis
 key as a missing CA and re-mint, which replaced the fleet's root and surfaced as a
 certificate error on every peer.
 
+A node whose edge is public, behind a TLS-terminating proxy, joins the mesh through a second listener on its overlay address (`httpsfront/INSTALL.md` § *Configuration*). Its peer book entry names that listener as the edge URL. The public listener beside it admits no peer, so a peer call that reaches the public name answers 404.
+
 capella and mira both still hold a `ca-key.pem` — they predate this rule and each
 minted their own leaf. That is not urgent (they hold the *same* root), but it means
 either could re-mint the fleet root if its `ca.pem` were ever lost, so the goal is
@@ -642,7 +660,8 @@ hand-patched onto a running node is a fix that gets reverted by the next update.
 ### Updating a node
 
 A node's `~/agentic_workspace` is a git checkout of `release`, with an `awm` remote
-pointing at capella's bare repo over ssh. To update it:
+pointing at altair's bare repo over ssh. altair's own `awm` remote is its local
+`projects/awm/.bare`. To update it:
 
     git fetch --no-tags awm release && git reset --hard awm/release
     git clean -fd            # NOT -fdx — .awm/ is ignored and must survive

@@ -273,10 +273,13 @@ def _on_start() -> None:
         lifecycle.ensure_starts_dir()
     except lifecycle.Refused as exc:
         log.warning("cx: %s", exc)
-    why = LOOP.enabled()
+    why = LOOP.held_back()
     if why:
         log.info("cx: not reconciling — %s", why)
         return
+    why = LOOP.enabled()
+    if why:
+        log.info("cx: not tending the warm pool — %s", why)
     spawn_supervised("cx.reconcile", LOOP.run)
 
 

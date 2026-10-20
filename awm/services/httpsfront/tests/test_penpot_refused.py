@@ -35,7 +35,7 @@ ALLOWED = ["get-profile", "get-teams", "get-file", "update-profile",
 
 
 class _Gate:
-    async def authenticate(self, *, cookie=None, bearer=None):
+    async def authenticate(self, *, cookie=None, bearer=None, shape=None):
         return (True, None, "tony") if cookie == TOKEN else (False, None, None)
 
     async def session_ttl_seconds(self):

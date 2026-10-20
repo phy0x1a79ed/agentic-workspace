@@ -33,15 +33,29 @@ run "$WS/awm/service_components/kept" --no-deps
 # AWM_SERVICES, when set, is a space-separated allow-list of service names:
 # a host that enables only a few services installs only those. Set but empty
 # installs the gateway alone.
-for s in "$WS"/awm/services/*/install.sh; do
-    [ -e "$s" ] || continue
-    name="$(basename "$(dirname "$s")")"
-    if [ -n "${AWM_SERVICES+x}" ] && ! grep -qw -- "$name" <<<"$AWM_SERVICES"; then
-        echo "- skipping service (not in AWM_SERVICES): $name"
-        continue
-    fi
-    echo "+ installing service: $s"
-    bash "$s"
+# AWM_SERVICE_ROOTS (a ':' list, from .awm/env under `awm deploy`) adds service
+# roots outside this tree; their install.sh runs with AWM_ROOT and AWM_ENV set.
+# A name already taken by an earlier root is skipped, as in gateway discovery.
+export AWM_ROOT="$WS/awm"
+declare -A seen=()
+IFS=: read -ra extra_roots <<<"${AWM_SERVICE_ROOTS:-}"
+for root in "$WS/awm/services" "${extra_roots[@]}"; do
+    [ -d "$root" ] || continue
+    for d in "$root"/*/; do
+        [ -d "$d" ] || continue
+        name="$(basename "$d")"
+        case "$name" in .*|_*) continue ;; esac
+        [ -z "${seen[$name]:-}" ] || continue
+        seen[$name]=1
+        s="${d}install.sh"
+        [ -f "$s" ] || continue
+        if [ -n "${AWM_SERVICES+x}" ] && ! grep -qw -- "$name" <<<"$AWM_SERVICES"; then
+            echo "- skipping service (not in AWM_SERVICES): $name"
+            continue
+        fi
+        echo "+ installing service: $s"
+        bash "$s"
+    done
 done
 
 # The gateway itself — third-party deps resolved here; awm-* already satisfied.

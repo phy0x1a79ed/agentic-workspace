@@ -25,7 +25,7 @@ BROWSER_ORIGIN = "https://front.example:12301"
 
 
 class _StubGate:
-    async def authenticate(self, *, cookie=None, bearer=None):
+    async def authenticate(self, *, cookie=None, bearer=None, shape=None):
         return (cookie == TOKEN), None
 
     async def session_ttl_seconds(self) -> float:

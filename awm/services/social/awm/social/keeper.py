@@ -268,6 +268,12 @@ def _live(row: dict) -> bool:
     return row.get("state") not in (GONE, STOPPED) and row.get("alive") is not False
 
 
+def _recorded(row: dict) -> bool:
+    """Whether cx holds the job's lineage, without which it will not stop or
+    resume it. A row from a cx that predates the flag counts as recorded."""
+    return row.get("recorded") is not False
+
+
 def _mid_turn(row: dict) -> bool:
     tempo = row.get("tempo")
     return tempo == ACTIVE if tempo else row.get("state") == WORKING
@@ -618,9 +624,11 @@ class Keeper:
             situation = Situation(FAILED, daemon_up=_daemon_up(daemon))
             self._open(seat, st, rec, daemon, f"it failed ({health.reason})")
         else:
+            held = next((r for r in rows if rec and r.get("job") == rec["job"]), {})
             situation = Situation("exited" if rec else "missing",
                                   daemon_up=_daemon_up(daemon),
-                                  resumable=bool(rec) and st.unresumable != rec["job"],
+                                  resumable=bool(rec) and st.unresumable != rec["job"]
+                                  and _recorded(held),
                                   spec_changed=bool(rec) and rec["spec_hash"] != want)
             self._report(seat, Health(situation.state, "", rec["job"] if rec else None))
             if rec:
@@ -685,7 +693,7 @@ class Keeper:
 
     def _adoptable(self, seat: SeatConfig, rows: list[dict], rec: dict | None,
                    name: str) -> dict | None:
-        return next((r for r in rows if _live(r) and r.get("job")
+        return next((r for r in rows if _live(r) and r.get("job") and _recorded(r)
                      and r.get("name") == name and r.get("parent") is None
                      and (rec is None or r["job"] != rec["job"])), None)
 
