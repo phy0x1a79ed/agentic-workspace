@@ -31,6 +31,7 @@ from dataclasses import dataclass, replace
 from typing import Any, Callable, Optional
 
 from awm.claudedaemon import cli, roster, trust
+from awm.claudedaemon.sessionmode import JOB_PATTERN
 from awm.reflection import (
     guards,
     inject,
@@ -546,7 +547,19 @@ def stop(job: Optional[str], *, caller_pid: Any, confirm: bool = False,
     """
     if not isinstance(job, str) or not job.strip():
         return {"ok": False, "reason": "job is required: the session to stop"}
-    t = resolve(job, caller_pid)
+    try:
+        t = resolve(job, caller_pid)
+    except session_target.ResolveError:
+        # A job whose session has exited has no live row to resolve, and
+        # would otherwise stay in the fleet view as stopped for good.
+        short = job.strip()
+        if not (JOB_PATTERN.match(short) and (session_target.JOBS_DIR / short).is_dir()):
+            raise
+        result = remove(short)
+        out = {"ok": bool(result["removed"]), "job": short, "exited": True, **result}
+        if not out["ok"]:
+            out["reason"] = result["detail"] or "claude rm failed"
+        return out
     if t.kind != "bg" or not t.job:
         return _refused(t, f"{_describe(t)} is a terminal session, not a "
                            f"background job; close its terminal instead")
