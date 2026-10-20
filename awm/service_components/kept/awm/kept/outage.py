@@ -43,7 +43,8 @@ class Outage:
         if self.up_at is not None:
             when += f" to {_hhmm(self.up_at)} ({_span(self.up_at - self.down_at)})"
         how = {"resumed": "It was resumed with its own conversation.",
-               "fresh": "It is a new session. The tail of the previous one follows."}.get(
+               "fresh": "It is a new session. The tail of the previous one follows.",
+               "deaf": "It kept running, but no line could be pushed into it."}.get(
             self.action or "", "")
         missed = ""
         if self.missed:
