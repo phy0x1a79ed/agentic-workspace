@@ -8,7 +8,7 @@
 // a component is just `ui_components/<name>/src`, imported by name with no
 // per-package manifest. tsconfig.json carries the same `@awm/*` mapping for
 // tsc/svelte-check, so the IDE and the bundler agree on one rule.
-import { defineConfig } from 'vite';
+import { defineConfig, type Plugin } from 'vite';
 import { svelte } from '@sveltejs/vite-plugin-svelte';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -18,6 +18,36 @@ import { fileURLToPath } from 'node:url';
 const root = path.dirname(fileURLToPath(import.meta.url));
 const components = path.join(root, 'ui_components');
 const lib = path.resolve(process.cwd(), 'src/lib');
+
+// A page under an AWM_PAGE_ROOTS entry lives outside this tree, so a bare
+// import from its source (`svelte`, and the `svelte/internal/*` imports the
+// compiler injects) finds no node_modules above it. Resolve those as if
+// imported from here, so every page shares this tree's one set of deps. The
+// svelte plugin dedupes `svelte` by resolving it from the Vite root, which for
+// such a page is outside the tree too; drop that dedupe, as this plugin
+// already pins every bare import to one node_modules.
+const anchor = path.join(root, 'package.json');
+const outsideTree = (file: string) =>
+  path.isAbsolute(file) &&
+  !file.startsWith(root + path.sep) &&
+  !file.includes(`${path.sep}node_modules${path.sep}`);
+const bareImport = /^(?![./\0]|[a-zA-Z]:|\$lib|@awm\/)/;
+const resolveFromTree: Plugin = {
+  name: 'awm-resolve-from-tree',
+  enforce: 'pre',
+  config: {
+    order: 'post',
+    handler(config) {
+      if (outsideTree(path.join(process.cwd(), 'index.html')) && config.resolve) {
+        config.resolve.dedupe = [];
+      }
+    },
+  },
+  resolveId(source, importer, options) {
+    if (!importer || !bareImport.test(source) || !outsideTree(importer)) return null;
+    return this.resolve(source, anchor, { ...options, skipSelf: true });
+  },
+};
 
 export default defineConfig({
   base: './',
@@ -69,5 +99,5 @@ export default defineConfig({
       },
     },
   },
-  plugins: [svelte()],
+  plugins: [resolveFromTree, svelte()],
 });

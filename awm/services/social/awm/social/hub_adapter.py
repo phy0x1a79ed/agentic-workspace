@@ -426,6 +426,42 @@ def _kept_status(account: str, channel_id: str) -> dict | None:
     return _keeper.status(seat) if seat else None
 
 
+def _kept_seat(args: dict) -> social_config.SeatConfig:
+    seat = _keeper.find(str(args.get("seat") or "")) if _keeper else None
+    if seat is None:
+        known = ", ".join(s.name for s in _keeper.seats) if _keeper else "none"
+        raise ValueError(f"no kept seat {args.get('seat')!r} here; kept seats: {known}")
+    return seat
+
+
+async def _h_keepers(args: dict) -> dict:
+    """Every kept seat with its agent, health and breaker."""
+    return {"keepers": [_keeper.status(s) for s in _keeper.seats] if _keeper else []}
+
+
+async def _h_keep_reset(args: dict) -> dict:
+    return {"ok": True, **_keeper.reset(_kept_seat(args))}
+
+
+async def _h_keep_adopt(args: dict) -> dict:
+    return await _keeper.adopt(_kept_seat(args), str(args.get("job") or ""))
+
+
+def _keeper_forwarding(fn: str, handler: Any) -> Any:
+    """Send a keeper verb to the node that keeps the seats when this one does not."""
+    async def _wrapped(args: dict) -> Any:
+        from awm import gatewayclient
+
+        peer = gatewayclient.peer_env(_SOCIAL_PEER_ENV)
+        if _keeper is None and peer:
+            return await gatewayclient.call_peer(peer, "social", fn, args)
+        return await handler(args)
+
+    _wrapped.__name__ = getattr(handler, "__name__", f"_h_{fn}")
+    _wrapped.__doc__ = handler.__doc__
+    return _wrapped
+
+
 async def _h_mount(args: dict, as_: str | None = None) -> dict:
     account = args["account"]
     conn = _conn(account)
@@ -436,7 +472,7 @@ async def _h_mount(args: dict, as_: str | None = None) -> dict:
         return {"ok": False, "error": str(exc)}
     label = seat.name or seat.id
     kept = _kept_status(account, seat.id)
-    if kept:
+    if kept and (kept["node"], kept["job"]) != (who["node"], who["job"]):
         return {"ok": False, "kept": kept, "error": (
             f"{label} is the kept seat {kept['seat']!r}: social keeps its agent "
             f"({kept['job'] or 'starting'}@{kept['node']}) and holds the seat for "
@@ -857,6 +893,42 @@ API_MANIFEST: dict[str, Any] = {
                 {"name": "channel", "type": "string", "required": True,
                  "description": "A seat's id or name, as `seats` lists it."},
                 {"name": "force", "type": "boolean", "required": False},
+            ],
+        },
+        {
+            "name": "keepers",
+            "effect": "read",
+            "tool": "social_keepers",
+            "description": "List the kept seats ([seat.*] in social.toml): each "
+                           "one's agent, health (running, waiting, resuming, "
+                           "broken, ...), the reason, since when it is down and "
+                           "why, its recent resumes and restarts, and its last "
+                           "outage.",
+            "params": [],
+        },
+        {
+            "name": "keep_reset",
+            "effect": "write",
+            "tool": "social_keep_reset",
+            "description": "Clear a kept seat's breaker. A seat whose restarts "
+                           "kept failing is broken and is not tried again until "
+                           "this, or until six hours pass.",
+            "params": [
+                {"name": "seat", "type": "string", "required": True,
+                 "description": "The [seat.<name>] name."},
+            ],
+        },
+        {
+            "name": "keep_adopt",
+            "effect": "write",
+            "tool": "social_keep_adopt",
+            "surfaces": _CLI_HTTP,
+            "description": "Make a running background job the agent of a kept "
+                           "seat, keeping its conversation: for a holder started "
+                           "by hand that social keeps from now on.",
+            "params": [
+                {"name": "seat", "type": "string", "required": True},
+                {"name": "job", "type": "string", "required": True},
             ],
         },
         {
@@ -1351,6 +1423,9 @@ HANDLERS = {
     "seats": _forwarding("seats", _h_seats),
     "mount": _seat_forwarding("mount", _h_mount),
     "unmount": _seat_forwarding("unmount", _h_unmount),
+    "keepers": _keeper_forwarding("keepers", _h_keepers),
+    "keep_reset": _keeper_forwarding("keep_reset", _h_keep_reset),
+    "keep_adopt": _keeper_forwarding("keep_adopt", _h_keep_adopt),
     "channels": _forwarding("channels", _h_channels),
     "open_dm": _forwarding("open_dm", _h_open_dm),
     "accounts": _h_accounts,
@@ -1464,6 +1539,22 @@ async def _chat(account: str, channel_id: str) -> connectors.Channel:
     return await _find_seat(_conn(account), channel_id)
 
 
+async def _list_chats(account: str) -> list[connectors.Channel]:
+    return await _conn(account).list_seats()
+
+
+async def _alert_operator(text: str) -> None:
+    """Post a keeper notice to the operator's DM through the bot itself, so it
+    arrives even when the seat that holds that DM is the one down."""
+    target = config.operator_dm()
+    if target is None:
+        raise RuntimeError("this node has no operator DM: set AWM_OPERATOR_DM_CHANNEL")
+    account, channel = target
+    if account not in _connectors:
+        raise RuntimeError(f"the operator DM's account {account!r} is not connected here")
+    await _connectors[account].send(channel, text)
+
+
 def _start_keeper() -> None:
     """Keep the agents of the ``[seat.*]`` tables. A bad table keeps none and
     leaves the accounts alone."""
@@ -1478,7 +1569,8 @@ def _start_keeper() -> None:
     if not kept:
         return
     _keeper = keeper_mod.Keeper(_dao, kept, _describe_account, _chat,
-                                push=_pusher.push)
+                                push=_pusher.push, list_chats=_list_chats,
+                                alert=_alert_operator)
     spawn_supervised("social.keeper", _keeper.run)
     log.info("keeping %d seat(s): %s", len(kept), ", ".join(s.name for s in kept))
 

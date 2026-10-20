@@ -68,7 +68,7 @@ from starlette.responses import (
 from starlette.routing import Route, WebSocketRoute
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
-from awm.config import peertoken
+from awm.config import peertoken, usertoken
 from awm.httpsfront import board, pages, penpot, policy, slices, store, tether, vault
 from awm.httpsfront.auth import (
     AS_COOKIE_NAME,
@@ -76,7 +76,9 @@ from awm.httpsfront.auth import (
     PEER_PREFIX,
     PEER_SUB,
     AuthGate,
+    Shape,
     bearer_of,
+    edge_admits_peers,
     is_foreign_peer,
     is_machine_sub,
 )
@@ -191,21 +193,22 @@ _CALLER_HEADERS = frozenset({
     "x-awm-as", "x-awm-caller-pid", "x-awm-session-pid", "x-awm-peer-redirect"})
 
 
-def _consumed_node_token(authorization: str | None, sub: str | None) -> bool:
-    """Whether this ``Authorization`` is a node token the edge has read.
+def _consumed_edge_token(authorization: str | None, sub: str | None) -> bool:
+    """Whether this ``Authorization`` is a node or device token the edge has read.
 
-    Any ``awmpt1.`` bearer counts, verified or not: one that failed here may
-    still be live at the node it was signed for, and an upstream app that saw it
-    could replay it there.
+    Any ``awmpt1.`` or ``awmut1.`` bearer counts, verified or not: one that
+    failed here may still be live where it was meant for, and an upstream app
+    that saw it could replay it there.
     """
     bearer = bearer_of(authorization)
-    return (bool(sub) and sub.startswith(PEER_PREFIX)) or peertoken.looks_like_token(bearer)
+    return ((bool(sub) and sub.startswith(PEER_PREFIX))
+            or peertoken.looks_like_token(bearer) or usertoken.looks_like_token(bearer))
 
 
 def _req_headers(request: Request, sub: str | None = None) -> dict[str, str]:
     hdrs = {k: v for k, v in request.headers.items()
             if k.lower() not in _HOP and k.lower() not in _CALLER_HEADERS}
-    if _consumed_node_token(request.headers.get("authorization"), sub):
+    if _consumed_edge_token(request.headers.get("authorization"), sub):
         hdrs.pop("authorization", None)
     hdrs["X-Forwarded-Proto"] = "https"
     # Overwrite, never default: the browser's value is unverified.
@@ -301,12 +304,18 @@ async def _authenticate(request: Request) -> tuple[bool, str | None]:
     return ok, refreshed
 
 
-async def _authenticate_sub(request: Request) -> tuple[bool, str | None, str | None]:
-    """(ok, refreshed_cookie_token_or_None, sub) for the current request."""
+async def _authenticate_sub(request: Request, shape: Shape | None = None,
+                            ) -> tuple[bool, str | None, str | None]:
+    """(ok, refreshed_cookie_token_or_None, sub) for the current request.
+
+    Only the proxy legs pass ``shape``, so a scoped device token reaches the
+    paths its scope names and none of the edge's own routes.
+    """
     gate: AuthGate = request.app.state.gate
     return _unpack(await gate.authenticate(
         cookie=request.cookies.get(COOKIE_NAME),
         bearer=bearer_of(request.headers.get("authorization")),
+        shape=shape,
     ))
 
 
@@ -344,12 +353,21 @@ def _site_name(request: Request) -> str:
 
 
 def _deny(request: Request) -> Response:
-    """Sign-in screen for a browser GET, else 401 (API / peer)."""
+    """Sign-in screen for a browser GET, 403 for a node token at an edge closed
+    to peers, else 401 (API / peer).
+
+    A caller falls back to another credential on a 401 and never on a 403, so a
+    closed edge says it is closed rather than looking like a bad token.
+    """
     if request.method == "GET" and _wants_html(request):
         return HTMLResponse(
             pages.login_page(public=_is_public(request.app),
                              name=_site_name(request)),
             status_code=200)
+    bearer = bearer_of(request.headers.get("authorization"))
+    if (bearer and peertoken.looks_like_token(bearer)
+            and not edge_admits_peers() and not _is_public(request.app)):
+        return JSONResponse({"error": "peers not admitted"}, status_code=403)
     return JSONResponse({"error": "unauthenticated"}, status_code=401)
 
 
@@ -786,7 +804,8 @@ async def _http_proxy(request: Request) -> Response:
         if not board_up or not board.allows(request.method, path):
             return _not_found()
         return await _board_proxy(request, raw, board_up)
-    ok, refreshed, sub = await _authenticate_sub(request)
+    ok, refreshed, sub = await _authenticate_sub(request, Shape(
+        request.method, path, raw, request.scope.get("query_string") or b"", False))
     if not ok:
         return _deny(request)
     if public and not policy.allows(path, sub):
@@ -857,7 +876,10 @@ async def _http_proxy(request: Request) -> Response:
         _set_session_cookie(out, refreshed,
                             int(await app.state.gate.session_ttl_seconds()),
                             _samesite(app))
-    if bridge and sub:
+    # A device carries its own bearer on every call, so the edge hands it no
+    # cookie of any kind, Penpot's included.
+    if bridge and sub and not usertoken.looks_like_token(
+            bearer_of(request.headers.get("authorization"))):
         await _bridge_penpot_session(request, out, bridge, sub,
                                      resp.status_code)
     return out
@@ -979,13 +1001,14 @@ async def _relay(resp: httpx.Response):
 async def _is_mesh_credential(gate, bearer: str | None) -> bool | None:
     """Whether ``bearer`` is a credential the edge itself honours between nodes.
 
-    A node token, or the legacy node-wide bearer (whether or not it is still
-    accepted: a retired one is still one the board must not see). ``None`` says
-    the edge cannot tell because it holds no auth material yet.
+    A node token, a device token, or the legacy node-wide bearer (whether or
+    not it is still accepted: a retired one is still one the board must not
+    see). ``None`` says the edge cannot tell because it holds no auth material
+    yet.
     """
     if not bearer:
         return False
-    if peertoken.looks_like_token(bearer):
+    if peertoken.looks_like_token(bearer) or usertoken.looks_like_token(bearer):
         return True
     known = await gate.peer_credentials()
     if known is None:
@@ -1408,6 +1431,7 @@ async def _ws_proxy(ws: WebSocket) -> None:
         ok, _, sub = _unpack(await gate.authenticate(
             cookie=ws.cookies.get(COOKIE_NAME),
             bearer=bearer_of(ws.headers.get("authorization")),
+            shape=Shape("GET", path, _raw_target(ws.scope, path), query, True),
         ))
         if not ok or (public and not policy.allows(ws.url.path, sub)):
             await ws.close(code=1008)  # policy violation
@@ -1430,8 +1454,9 @@ async def _ws_proxy(ws: WebSocket) -> None:
         if v:
             fwd[k] = v
     # Only these three are copied, so none of `_CALLER_HEADERS` can ride along;
-    # a node token is dropped for the reason given at `_consumed_node_token`.
-    if _consumed_node_token(fwd.get("authorization"), sub):
+    # a node or device token is dropped for the reason given at
+    # `_consumed_edge_token`.
+    if _consumed_edge_token(fwd.get("authorization"), sub):
         fwd.pop("authorization", None)
     if slice_info is not None:
         visitor = _slice_visitor(ws, slice_info, slice_token)

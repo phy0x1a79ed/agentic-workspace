@@ -10,6 +10,7 @@ run() { echo "+ pip install -e $*"; mamba run -n "$ENV" pip install -e "$@"; }
 
 run "$WS/awm/service_components/gatewayclient" --no-deps
 run "$WS/awm/service_components/claudedaemon" --no-deps
+run "$WS/awm/service_components/kept" --no-deps
 run "$WS/awm/services/cx"
 
 # Bake the target env's absolute interpreter into a gitignored `.runtime-env`

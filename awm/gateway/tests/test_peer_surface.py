@@ -527,3 +527,15 @@ async def test_sweep_keeps_last_known_domains_for_a_failed_peer(monkeypatch):
     assert second["mira"]["reachable"] is False
     assert second["mira"]["domains"] == {"scope": ["search"]}
     assert "asleep" in second["mira"]["error"]
+
+
+@pytest.mark.parametrize("peer, elapsed, wait", [
+    ({"reachable": False, "domains": {}}, 0.0, peer_catalog._SWEEP_RETRY_S),
+    ({"reachable": False, "domains": {}}, 301.0, peer_catalog._SWEEP_INTERVAL_S),
+    ({"reachable": False, "domains": {"scope": []}}, 0.0, peer_catalog._SWEEP_INTERVAL_S),
+    ({"reachable": True, "domains": {"scope": []}}, 0.0, peer_catalog._SWEEP_INTERVAL_S),
+])
+def test_a_peer_never_reached_is_retried_soon_after_start(monkeypatch, peer, elapsed, wait):
+    """The first sweep at boot runs before auth can sign a node token."""
+    monkeypatch.setattr(peer_catalog, "_snapshot", {"mira": peer})
+    assert peer_catalog.next_sweep_in(elapsed) == wait

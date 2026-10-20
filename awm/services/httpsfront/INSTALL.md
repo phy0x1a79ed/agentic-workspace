@@ -57,7 +57,8 @@ Both live in `/usr/bin`, on the minimal systemd PATH the supervisor uses.
 ## TLS — reuses the remote-audio CA
 
 Certs are minted by `awm.httpsfront.certs` into a gitignored `.certs/` next to
-the service. The **root CA is shared with remote-audio** at
+the service, or into `AWM_EDGE_CERT_DIR` on a host whose app user cannot write
+the checkout. The **root CA is shared with remote-audio** at
 `~/.config/remote-audio/ca` (override with `REMOTE_AUDIO_CA_DIR`), so a device
 that already trusts that root needs no new setup. The root is minted only the
 first time it's missing; only the short-lived leaf rotates (re-minted whenever
@@ -93,6 +94,23 @@ explicitly and merged in:
 | `AWM_EDGE_BOARD` | `0` | `1`: mount the federation board at `/board/`, reachable with **no session** |
 | `AWM_BOARD_PORT` | `12521` | the board's loopback port, which the board mount forwards to |
 | `AWM_PEER_LEGACY_BEARER` | on | `0`: refuse the legacy shared bearer, so only a node token authenticates a peer |
+| `AWM_EDGE_PEERS` | on | `0`: refuse every peer. A node token gets 403 `peers not admitted`, the legacy bearer 401. A person's login still works |
+| `AWM_EDGE_MESH_HOST` | — | an address for a second, mesh-only listener (see below). Unset: no second listener |
+| `AWM_EDGE_MESH_PORT` | `12100` | the mesh listener's port |
+| `AWM_EDGE_CERT_DIR` | `.certs/` beside the service | where the leaf lives |
+
+A public node reaches its peers through a second listener. The public profile
+admits no peer: its listener honours no node token, and the public auth profile
+issues no legacy bearer. `AWM_EDGE_MESH_HOST` adds a listener bound to that one
+address, with TLS and the default profile, fronting the gateway and no app. Peer
+calls work there and stay 404 on the public listener beside it.
+
+- Bind the mesh listener to the overlay address only, never `0.0.0.0`.
+- Cut the leaf on the CA holder, with the mesh address in its SAN, and copy it
+  into the cert dir. A missing or bad leaf keeps the mesh listener off and the
+  public listener up.
+- Renew that leaf by hand before it expires. Nothing on a trust consumer renews
+  it, and the log warns 30 days ahead.
 
 `AWM_EDGE_TETHER` is the one flag here that widens the door rather than
 narrowing it, so it is off unless a host means it. The person redeeming a
@@ -100,9 +118,9 @@ tether invite is being helped with their own machine and has no account here;
 what keeps the mount narrow is the relay's own gating and an allow-list of
 exact path shapes, both described in `awm/httpsfront/tether.py`.
 
-`AWM_EDGE_BOARD` widens the door like the tether flag does, so it is off unless a host means it. The board authenticates its own parties with a bearer the board issued, so the mount answers before edge authentication. It forwards only the exact method-and-path shapes in `awm/httpsfront/board.py`. The mount **strips every `X-Awm-*` header**, `Cookie` and `X-Forwarded-*` from the request. It also removes a node token or the legacy bearer, so the board never holds a credential that is live elsewhere. The edge claims the whole `/board` mount on every node, wired or not, and a path under it never reaches the gateway.
+`AWM_EDGE_BOARD` widens the door like the tether flag does, so it is off unless a host means it. The board authenticates its own parties with a bearer the board issued, so the mount answers before edge authentication. It forwards only the exact method-and-path shapes in `awm/httpsfront/board.py`. The mount **strips every `X-Awm-*` header**, `Cookie` and `X-Forwarded-*` from the request. It also removes a node token, a device token or the legacy bearer, so the board never holds a credential that is live elsewhere. The edge claims the whole `/board` mount on every node, wired or not, and a path under it never reaches the gateway.
 
-On every profile the edge overwrites `X-Awm-As` with the session's verified subject (`user:<name>`, `peer:<node>` for a node token, or the bare `peer` for the legacy bearer), so a downstream service may trust that header — except on the tether and board mounts, which have no verified subject and where the header is stripped rather than defaulted. A node that the peer book does not call domestic reaches only `/tools` and `/invoke` (`FEDERATION.md` § *The foreign gate*). `/__auth/login` takes `{username, password}`; a blank username is the shared password. The readable `awm_as` cookie is the username for the pages' user chip and carries no authority.
+On every profile the edge overwrites `X-Awm-As` with the session's verified subject (`user:<name>` for a session or a device token, `peer:<node>` for a node token, or the bare `peer` for the legacy bearer), so a downstream service may trust that header — except on the tether and board mounts, which have no verified subject and where the header is stripped rather than defaulted. A node that the peer book does not call domestic reaches only `/tools` and `/invoke` (`FEDERATION.md` § *The foreign gate*). `/__auth/login` takes `{username, password}`; a blank username is the shared password. The readable `awm_as` cookie is the username for the pages' user chip and carries no authority.
 
 `AWM_HTTPS_PORT` is a clean one-line port knob: set it in the workspace's
 gitignored `$AWM_WORKSPACE/.awm/env` (merged into the gateway env at startup,

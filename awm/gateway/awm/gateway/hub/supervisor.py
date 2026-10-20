@@ -69,6 +69,15 @@ _breaker: dict[str, str] = {}
 # was rejected and scheduled another. That is the amplifier.
 _disconnect_watchdogs: dict[str, "asyncio.Task"] = {}
 
+# How long a live service may go without a ready control channel before the
+# self-heal sweep respawns it. Keep it equal to the orphan reaper's grace
+# (``gateway_ops._READY_GRACE_S``): both judge a slow starter from a stuck one.
+_READY_GRACE_S = 90.0
+# name -> (pid, monotonic time the sweep first saw that pid alive but unready).
+# Timed from the sweep rather than from process age, so a long-lived service
+# that is briefly reconnecting gets the full grace too.
+_unready_since: dict[str, tuple[int, float]] = {}
+
 # Set true while the gateway is tearing down (graceful lifespan shutdown). The
 # crash-respawn watchdog checks this so it does not fight the teardown by
 # resurrecting services the gateway is deliberately stopping. Set as early as
@@ -119,6 +128,7 @@ def reset_breaker_state() -> None:
     """
     _respawn_history.clear()
     _breaker.clear()
+    _unready_since.clear()
     for task in list(_disconnect_watchdogs.values()):
         task.cancel()
     _disconnect_watchdogs.clear()
@@ -267,10 +277,16 @@ def _try_reap(pid: int) -> bool:
     pid from a *previous* gateway, reparented to init, which reaps it) — not
     something to reap here, so liveness falls back to ``os.kill(pid, 0)``."""
     try:
-        wpid, _ = os.waitpid(pid, os.WNOHANG)
+        wpid, status = os.waitpid(pid, os.WNOHANG)
     except (ChildProcessError, OSError):
         return False
-    return wpid == pid
+    if wpid != pid:
+        return False
+    if os.WIFSIGNALED(status):
+        log.info("reaped pid=%d: killed by signal %d", pid, os.WTERMSIG(status))
+    else:
+        log.info("reaped pid=%d: exit status %d", pid, os.waitstatus_to_exitcode(status))
+    return True
 
 
 def kill_pid_group(pid: int, *, grace_s: float = 5.0) -> None:
@@ -506,10 +522,13 @@ def has_ready_control(sid: str | None) -> bool:
 
 
 def pid_alive(pid: int | None) -> bool:
-    """True iff ``pid`` names a live process. ``PermissionError`` (a pid we
-    can't signal) still counts as alive; ``ProcessLookupError`` / other OS
-    errors mean dead."""
+    """True iff ``pid`` names a live process. A child that has exited is reaped
+    here, because its zombie would otherwise pass ``os.kill(pid, 0)``.
+    ``PermissionError`` (a pid we can't signal) still counts as alive;
+    ``ProcessLookupError`` / other OS errors mean dead."""
     if not pid or pid <= 0:
+        return False
+    if _try_reap(pid):
         return False
     try:
         os.kill(pid, 0)
@@ -523,25 +542,29 @@ def pid_alive(pid: int | None) -> bool:
 
 
 async def _self_heal_once() -> None:
-    """One self-heal sweep: re-bootstrap any journaled, enabled, non-overlay
-    service whose last-known PID is dead and which holds no ready control.
+    """One self-heal sweep: re-bootstrap any journaled, enabled service that
+    holds no ready control channel and whose last-known PID is either dead or
+    has stayed unready for longer than ``_READY_GRACE_S``.
 
     Closes the gap the disconnect watchdog leaves open. ``supervise_disconnect``
-    only fires from the control-WS *close* path, so a service that died *before*
-    ever opening its control WS — force-killed pre-handshake, or crashed during
-    register — is never retried and sits ``starting`` with a dead PID forever
-    (the wedge that needed a manual ``services restart``).
+    only fires from the control-WS *close* path, so a service that died or hung
+    *before* ever opening its control WS — force-killed pre-handshake, crashed
+    during register, stuck importing — is never retried by it.
 
     Liveness is checked against the journal's ``last_pid`` — which
     ``_respawn_from_journal`` rewrites to the fresh PID on respawn — so a
-    just-respawned or still-handshaking (PID-alive) service is skipped and the
-    sweep cannot storm-respawn. A deliberate ``awm services stop`` drops the
-    journal entry first, so stopped services are never seen here.
+    just-respawned or still-handshaking service is skipped until its grace runs
+    out, and the sweep cannot storm-respawn. A deliberate ``awm services stop``
+    drops the journal entry first, so stopped services are never seen here.
     """
     if is_shutting_down():
         return
     from awm.gateway.hub import discovery as _discovery
-    for name, entry in list(load_service_journal().items()):
+    journal = load_service_journal()
+    for name in list(_unready_since):
+        if name not in journal:
+            _unready_since.pop(name, None)
+    for name, entry in list(journal.items()):
         if not isinstance(entry, dict):
             continue
         if not _discovery.is_enabled(name):
@@ -551,13 +574,25 @@ async def _self_heal_once() -> None:
             # as well as inside _respawn_from_journal so a tripped service does
             # not re-log a wedge warning on every 45s sweep.
             continue
-        if pid_alive(entry.get("last_pid")):
-            continue
+        pid = entry.get("last_pid")
         if has_ready_control(entry.get("service_id")):
+            _unready_since.pop(name, None)
             continue
-        log.warning(
-            "self-heal: service %s wedged (dead pid=%s, no ready control); "
-            "re-bootstrapping", name, entry.get("last_pid"))
+        if pid_alive(pid):
+            seen_pid, since = _unready_since.get(name, (None, 0.0))
+            if seen_pid != pid:
+                _unready_since[name] = (pid, _time.monotonic())
+                continue
+            if _time.monotonic() - since < _READY_GRACE_S:
+                continue
+            log.warning(
+                "self-heal: service %s not ready within %ds (pid=%s); "
+                "respawning", name, int(_READY_GRACE_S), pid)
+        else:
+            log.warning(
+                "self-heal: service %s wedged (dead pid=%s, no ready control); "
+                "re-bootstrapping", name, pid)
+        _unready_since.pop(name, None)
         await _respawn_from_journal(name, entry)
 
 

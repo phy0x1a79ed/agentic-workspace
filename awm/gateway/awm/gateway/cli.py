@@ -297,7 +297,8 @@ def restart():
 def deploy(
     no_install: bool = typer.Option(
         False, "--no-install",
-        help="Skip the pip reinstall even if the dist set changed."),
+        help="Skip the pip reinstall even if the dist set or a service's "
+             "folder or install inputs changed."),
     no_build: bool = typer.Option(
         False, "--no-build",
         help="Skip the page rebuild even if page source changed."),
@@ -316,7 +317,8 @@ def deploy(
 ):
     """Ship the release worktree to the running (systemd) gateway, safely.
 
-    install (only if the dist set changed) → build (only if page source
+    install (only if the dist set, a service folder or a service's install
+    inputs changed) → build (only if page source
     changed) → restart whichever awm.service unit supervises this gateway →
     reap orphaned adapters → verify every enabled service and built page
     came back. Idempotent: a
@@ -373,7 +375,7 @@ def deploy(
         typer.echo(f"  expected pages:    {', '.join(expected_pages) or '(none)'}")
         return
 
-    # --- 1. install (dist-set membership changed) ---
+    # --- 1. install (dist set, service folder or install inputs changed) ---
     if plan.do_install:
         typer.echo("→ installing dist set (pip -e) …")
         if subprocess.run(["bash", str(root / "gateway" / "install.sh")]).returncode != 0:

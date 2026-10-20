@@ -93,6 +93,44 @@ async def test_the_loop_can_be_switched_off(box, monkeypatch):
 
     monkeypatch.setenv("AWM_CX_LOOP", "0")
     assert "switched off" in (reconcile.Loop().enabled() or "")
+    assert reconcile.Loop().held_back() is None
+
+
+async def test_a_late_start_is_adopted_with_the_pool_switched_off(box, monkeypatch):
+    """Adoption runs only in the tick, and cx refuses to stop or resume a job it
+    holds no record of."""
+    from awm.cx import lifecycle, reconcile, remove, seed
+
+    monkeypatch.setenv("AWM_CX_LOOP", "0")
+    calls = []
+    monkeypatch.setattr(seed, "seed_one", lambda: calls.append("seed"))
+    monkeypatch.setattr(remove, "apply", lambda now=None: calls.append("remove"))
+    monkeypatch.setattr(lifecycle, "adopt_pending", lambda: calls.append("adopt") or [])
+    monkeypatch.setattr(lifecycle, "prune_lineage", lambda: calls.append("prune") or [])
+    await reconcile.Loop().tick()
+    assert calls == ["adopt", "prune"]
+
+
+async def test_a_failing_step_does_not_skip_the_bookkeeping(box, monkeypatch):
+    from awm.cx import lifecycle, reconcile, remove, seed
+
+    monkeypatch.setenv("AWM_CX_ROTATE_AGE_S", "1")
+    calls = []
+
+    async def boom(*a, **k):
+        raise RuntimeError("boom")
+
+    def broken_adopt():
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(seed, "seed_one", boom)
+    monkeypatch.setattr(remove, "apply", boom)
+    monkeypatch.setattr(lifecycle, "adopt_pending", broken_adopt)
+    monkeypatch.setattr(lifecycle, "prune_lineage", lambda: calls.append("prune") or [])
+    loop = reconcile.Loop()
+    await loop.tick()
+    assert calls == ["prune"]
+    assert loop.status()["last_tick"] is not None
 
 
 async def _nothing(now=None):

@@ -13,6 +13,8 @@ Never a token (tokens live solely in ``social.toml``):
   account is in). Written only on the node that owns the account.
 - ``social_keepers`` — the agent the keeper started for each kept seat, with
   the fingerprint of its launch spec.
+- ``social_keeper_state`` — what the keeper must not forget across a restart
+  of social: each seat's breaker and its open restart record, as JSON.
 
 Accounts that act as a person (Slack/Teams via mira, Gmail) keep no local copy:
 the platform is the source of truth and fetch/search query it live. A bot's
@@ -30,7 +32,7 @@ from awm.persistence.dao import BaseDAO
 from awm.persistence.databases import init_service_db
 
 SERVICE = "social"
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 SCHEMA_SQL = """\
 CREATE TABLE IF NOT EXISTS social_accounts (
@@ -94,10 +96,17 @@ CREATE TABLE IF NOT EXISTS social_keepers (
     started_at   TEXT NOT NULL DEFAULT '',
     seen_at      TEXT NOT NULL DEFAULT ''
 );
+
+CREATE TABLE IF NOT EXISTS social_keeper_state (
+    seat         TEXT NOT NULL PRIMARY KEY,
+    state        TEXT NOT NULL DEFAULT '{}',
+    updated_at   TEXT NOT NULL DEFAULT ''
+);
 """
 
 _KEEPERS_AT = SCHEMA_SQL.index("CREATE TABLE IF NOT EXISTS social_keepers")
 _MOUNTS_AT = SCHEMA_SQL.index("CREATE TABLE IF NOT EXISTS social_mounts")
+_STATE_AT = SCHEMA_SQL.index("CREATE TABLE IF NOT EXISTS social_keeper_state")
 HISTORY_DDL = SCHEMA_SQL[SCHEMA_SQL.index("CREATE TABLE IF NOT EXISTS social_history"):_MOUNTS_AT]
 MOUNTS_DDL = SCHEMA_SQL[_MOUNTS_AT:_KEEPERS_AT]
 #: The keepers table as v5 created it; v6 adds `seen_at`.
@@ -123,6 +132,7 @@ DROP TABLE IF EXISTS social_messages;
     (3, 4): MOUNTS_DDL,
     (4, 5): KEEPERS_V5_DDL,
     (5, 6): "ALTER TABLE social_keepers ADD COLUMN seen_at TEXT NOT NULL DEFAULT '';\n",
+    (6, 7): SCHEMA_SQL[_STATE_AT:],
 }
 
 _initialized = False
@@ -412,3 +422,18 @@ class SocialDAO(BaseDAO):
         """Record ``at`` (epoch seconds) as the last moment the seat's agent was alive."""
         self.execute("UPDATE social_keepers SET seen_at = ? WHERE seat = ?",
                      (f"{at:.3f}", seat))
+
+    def keeper_state(self, seat: str) -> dict:
+        row = self.query_one("SELECT state FROM social_keeper_state WHERE seat = ?", (seat,))
+        try:
+            state = json.loads(row["state"]) if row else {}
+        except ValueError:
+            state = {}
+        return state if isinstance(state, dict) else {}
+
+    def set_keeper_state(self, seat: str, state: dict) -> None:
+        self.execute(
+            "INSERT INTO social_keeper_state (seat, state, updated_at) VALUES (?, ?, ?) "
+            "ON CONFLICT (seat) DO UPDATE SET state = excluded.state, "
+            "updated_at = excluded.updated_at",
+            (seat, json.dumps(state, sort_keys=True), _now()))

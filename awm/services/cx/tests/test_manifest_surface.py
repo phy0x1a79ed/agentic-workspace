@@ -20,7 +20,7 @@ def manifest():
 
 
 SERVICE_TOML = Path(__file__).resolve().parents[1] / "service.toml"
-HIDDEN = {"claim", "seed", "remove"}
+HIDDEN = {"adopt", "claim", "seed", "remove"}
 
 
 def test_every_function_projects_into_the_reflection_tool():

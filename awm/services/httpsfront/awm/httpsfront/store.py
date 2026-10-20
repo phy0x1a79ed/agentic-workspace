@@ -63,9 +63,11 @@ def _normalize(tag: str) -> str:
 
 
 class LandingDAO(BaseDAO):
-    """CRUD over ``page_tags`` and ``selected_tags``."""
+    """CRUD over ``page_tags`` and ``selected_tags``, creating them on first use."""
 
     def __init__(self, conn: sqlite3.Connection | None = None) -> None:
+        if conn is None:
+            init()
         super().__init__(SERVICE, conn=conn)
 
     def tags_for_page(self, page: str) -> list[str]:
