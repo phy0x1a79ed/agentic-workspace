@@ -286,7 +286,8 @@ API_MANIFEST: dict[str, Any] = {
             "description": (
                 "Stop a background session on this node and remove its job "
                 "(`claude stop`, then `claude rm`). Works on any session, not "
-                "only ones `start_other` created. Your own session is refused "
+                "only ones `start_other` created, and on a job whose session "
+                "has already exited, by its job id. Your own session is refused "
                 "unless confirm is true, and is then stopped after this call "
                 "returns. A terminal session is refused."
             ),
