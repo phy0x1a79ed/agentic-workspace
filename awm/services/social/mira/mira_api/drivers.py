@@ -92,6 +92,13 @@ class Driver(ABC):
         raise NotImplementedError(
             f"{self.platform} driver does not support file uploads")
 
+    async def react(self, channel: str, message_id: str, name: str,
+                    remove: bool = False) -> dict:
+        """Add the emoji ``name`` to a message, or take it off. Non-abstract:
+        the server surfaces the default as 501."""
+        raise NotImplementedError(
+            f"{self.platform} driver does not support reactions")
+
     async def open_dm(self, user: str) -> dict:
         """Resolve ``user`` (platform id, or name where supported) to a DM and
         open it → ``{id, name, kind}``. Non-abstract: platforms without a DM-open
@@ -125,9 +132,9 @@ class Driver(ABC):
 
 SLACK_PRELUDE = r"""
 window.__awmMira = window.__awmMira || {};
-if (!window.__awmMira.slack || window.__awmMira.slack._v !== 4) {
+if (!window.__awmMira.slack || window.__awmMira.slack._v !== 5) {
   const S = {};
-  S._v = 4;  // bump when adding/changing helpers so a long-lived page self-upgrades
+  S._v = 5;  // bump when adding/changing helpers so a long-lived page self-upgrades
   S._b64 = function (buf) {
     const bytes = new Uint8Array(buf);
     let bin = '';
@@ -227,6 +234,16 @@ if (!window.__awmMira.slack || window.__awmMira.slack._v !== 4) {
     if (thread) p.thread_ts = thread;
     const j = await S._call('chat.postMessage', p);
     return {message_id: j.ts, channel_id: j.channel || channel, ts: j.ts};
+  };
+  S.react = async function (channel, ts, name, remove) {
+    try {
+      await S._call(remove ? 'reactions.remove' : 'reactions.add',
+        {channel: channel, timestamp: ts, name: name});
+    } catch (e) {
+      // Already there, or already gone, is the state asked for.
+      if (!/: (already_reacted|no_reaction)$/.test(e.message)) throw e;
+    }
+    return {channel_id: channel, message_id: ts, emoji: name, removed: !!remove};
   };
   S._bytes = function (b64) {
     const bin = atob(b64);
@@ -359,6 +376,11 @@ class SlackDriver(Driver):
         return await self._run(
             "window.__awmMira.slack.upload", channel, files, text, thread,
             timeout=UPLOAD_TIMEOUT_S, retry=False)
+
+    async def react(self, channel: str, message_id: str, name: str,
+                    remove: bool = False) -> dict:
+        return await self._run("window.__awmMira.slack.react",
+                               channel, message_id, name, remove)
 
     async def open_dm(self, user: str) -> dict:
         res = await self._run("window.__awmMira.slack.openDM", user)

@@ -180,10 +180,9 @@ are skipped rather than erroring the whole call.
 
 - **Discord.** The bot reacts. A Discord user token is a self-bot under
   Discord's terms, so no account reacts as Tony there.
-- **Slack.** The Opal app lacks `reactions:write` until a Workspace Owner
-  reinstalls it from `slack-bot-manifest.json`. Until then every Slack account
-  posts the emoji alone as a message, into `thread` when given, and answers
-  `"as": "message"`. `remove` refuses, because there is no reaction to take off.
+- **Slack.** Every Slack account reacts by name. Adding a reaction already there,
+  or removing one already gone, succeeds. An app without `reactions:write`
+  refuses and names the scope.
 - **Gmail and Teams.** Refuse.
 
 ## Files
@@ -196,10 +195,9 @@ the owner carries the file inline as base64.
 - **Discord.** The bot attaches up to 10 MB per message.
 - **Slack.** Every Slack account uploads through Slack's external upload, as a
   plain file and never a canvas. The reply carries the file ids and permalinks
-  and no message ts, because Slack shares the file after the call returns. The
-  Opal app needs `files:write`, so its uploads refuse until a Workspace Owner
-  reinstalls it from `slack-bot-manifest.json`. Tony's Slack runs through the
-  mira daemon, which takes 8 MB per message.
+  and no message ts, because Slack shares the file after the call returns. An
+  app without `files:write` refuses and names the scope. Tony's Slack runs
+  through the mira daemon, which takes 8 MB per message.
 - **Gmail and Teams.** Refuse. Teams takes files only through SharePoint.
 
 ## Seats

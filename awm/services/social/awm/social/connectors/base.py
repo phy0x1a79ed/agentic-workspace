@@ -149,24 +149,22 @@ def file_size(f: dict) -> int:
     return len(str(f.get("text", "")).encode())
 
 
-async def react_by_message(
-    conn: "Connector", channel: str, emoji: str, *,
-    remove: bool, thread: str | None,
+def slack_reaction(
+    conn: "Connector", channel: str, message_id: str, name: str, *,
+    remove: bool, error: str = "",
 ) -> dict:
-    """Acknowledge with the emoji alone as a message, for a Slack app that
-    lacks ``reactions:write``. Remove has nothing to take back, so it refuses."""
-    from awm.social.emoji import to_char
-
-    if remove:
+    """The ``react`` result once Slack answered ``reactions.add`` or
+    ``reactions.remove`` with ``error`` (empty on success). Adding a reaction
+    already there, or removing one that is not, leaves the state asked for."""
+    if error == "missing_scope":
         raise RuntimeError(
-            f"{conn.platform} posts a reaction as a message until the app holds "
-            "reactions:write, so there is no reaction to remove")
-    char = to_char(emoji)
-    if char is None:
-        raise RuntimeError(
-            f"{emoji!r} has no known character to post. Pass the emoji itself")
-    sent = await conn.send(channel, char, thread=thread)
-    return {"as": "message", "emoji": char, **sent}
+            f"slack account {conn.account.name!r} cannot react until its app "
+            "holds the reactions:write scope")
+    if error and error not in ("already_reacted", "no_reaction"):
+        verb = "remove" if remove else "add"
+        raise RuntimeError(f"slack reactions.{verb}: {error}")
+    return {"as": "reaction", "emoji": name, "removed": remove,
+            "message_id": message_id, "channel_id": channel}
 
 
 class Connector(ABC):
@@ -284,14 +282,11 @@ class Connector(ABC):
             f"{self.platform} connector does not support attachment download")
 
     async def react(
-        self, channel: str, message_id: str, emoji: str, *,
-        remove: bool = False, thread: str | None = None,
+        self, channel: str, message_id: str, emoji: str, *, remove: bool = False,
     ) -> dict:
         """Add ``emoji`` to message ``message_id`` in ``channel``, or take it off.
 
         ``emoji`` is a character, a name or ``:name:`` (see :mod:`awm.social.emoji`).
-        ``thread`` is where a platform that answers with a message instead of a
-        reaction posts it. Returns ``{"as": "reaction" | "message", …}``.
 
         Non-abstract: a platform without reactions leaves this default, which
         raises a clean error.

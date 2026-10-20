@@ -26,8 +26,9 @@ import time
 
 from awm.social.connectors.base import (
     Account, Attachment, Channel, Connector, Identity, InboundMessage,
-    OnMessage, file_bytes, react_by_message,
+    OnMessage, file_bytes, slack_reaction,
 )
+from awm.social.emoji import to_name
 
 log = logging.getLogger("awm.social.connectors.slack")
 
@@ -383,11 +384,20 @@ class SlackConnector(Connector):
         }
 
     async def react(
-        self, channel: str, message_id: str, emoji: str, *,
-        remove: bool = False, thread: str | None = None,
+        self, channel: str, message_id: str, emoji: str, *, remove: bool = False,
     ) -> dict:
-        return await react_by_message(self, channel, emoji,
-                                      remove=remove, thread=thread)
+        from slack_sdk.errors import SlackApiError
+
+        name = to_name(emoji)
+        call = "reactions_remove" if remove else "reactions_add"
+        error = ""
+        try:
+            await self._auth_retry(lambda: getattr(self._web_client(), call)(
+                channel=channel, timestamp=message_id, name=name))
+        except SlackApiError as exc:
+            error = (exc.response or {}).get("error", "") or str(exc)
+        return slack_reaction(self, channel, message_id, name,
+                              remove=remove, error=error)
 
     async def list_channels(self, *, include_dms: bool = False) -> list[Channel]:
         if include_dms:
