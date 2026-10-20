@@ -24,8 +24,9 @@ import logging
 
 from awm.social.connectors.base import (
     Account, Attachment, Channel, Connector, Identity, InboundMessage,
-    OnMessage, file_bytes, react_by_message,
+    OnMessage, file_bytes, slack_reaction,
 )
+from awm.social.emoji import to_name
 
 log = logging.getLogger("awm.social.connectors.mira")
 
@@ -126,14 +127,15 @@ class MiraConnector(Connector):
         }
 
     async def react(
-        self, channel: str, message_id: str, emoji: str, *,
-        remove: bool = False, thread: str | None = None,
+        self, channel: str, message_id: str, emoji: str, *, remove: bool = False,
     ) -> dict:
         if self.platform != "slack":
-            return await super().react(channel, message_id, emoji,
-                                       remove=remove, thread=thread)
-        return await react_by_message(self, channel, emoji,
-                                      remove=remove, thread=thread)
+            return await super().react(channel, message_id, emoji, remove=remove)
+        name = to_name(emoji)
+        await self._post(f"/v1/{self.platform}/react", {
+            "channel": channel, "message_id": message_id, "emoji": name,
+            "remove": remove})
+        return slack_reaction(self, channel, message_id, name, remove=remove)
 
     async def list_channels(self, *, include_dms: bool = False) -> list[Channel]:
         params = {"include_dms": "true"} if include_dms else {}

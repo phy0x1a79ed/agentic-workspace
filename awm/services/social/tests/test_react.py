@@ -1,5 +1,5 @@
-"""``social react``: Discord reactions, the Slack emoji-message stop gap, and
-the refusal on platforms without reactions."""
+"""``social react``: Discord and Slack reactions, and the refusal on platforms
+without reactions."""
 
 from __future__ import annotations
 
@@ -108,34 +108,85 @@ async def test_discord_forbidden_is_a_refusal():
         await conn.react("7", "42", "👀")
 
 
-# -- slack stop gap -----------------------------------------------------------
+# -- slack --------------------------------------------------------------------
 
-def _slack_connectors():
-    return [
-        _build(name="opal", platform="slack", token="xoxb-1", app_token="xapp-1"),
-        _build(name="tony", platform="slack", token="xoxp-1", app_token="xapp-1"),
-        _build(name="mira", platform="slack", token="", source="mira",
-               mira_url="https://h:7822", mira_token="tok"),
-    ]
+def _slack_bot(monkeypatch, error=None):
+    from awm.social.connectors.slack_bot_conn import SlackApiError
+    conn = _build(name="opal", platform="slack", token="xoxb-1", app_token="xapp-1")
+    calls = []
+
+    async def call(method, **params):
+        calls.append((method, params))
+        if error:
+            raise SlackApiError(method, error)
+        return {}
+
+    monkeypatch.setattr(conn, "_call", call)
+    return conn, calls
 
 
-@pytest.mark.parametrize("conn", _slack_connectors(), ids=["bot", "user", "mira"])
-async def test_slack_posts_the_emoji_as_a_message(conn):
-    sent = []
+async def test_slack_bot_adds_and_removes_by_name(monkeypatch):
+    conn, calls = _slack_bot(monkeypatch)
+    r = await conn.react("D1", "1.1", "👀")
+    assert r == {"as": "reaction", "emoji": "eyes", "removed": False,
+                 "message_id": "1.1", "channel_id": "D1"}
+    await conn.react("D1", "1.1", ":eyes:", remove=True)
+    assert calls == [
+        ("reactions.add", {"channel": "D1", "timestamp": "1.1", "name": "eyes"}),
+        ("reactions.remove", {"channel": "D1", "timestamp": "1.1", "name": "eyes"})]
 
-    async def send(channel, text, *, thread=None):
-        sent.append((channel, text, thread))
-        return {"message_id": "9.9", "channel_id": channel, "ts": "9.9"}
 
-    conn.send = send
-    r = await conn.react("D1", "1.1", "eyes", thread="1.0")
-    assert sent == [("D1", "👀", "1.0")]
-    assert r["as"] == "message" and r["message_id"] == "9.9"
-    with pytest.raises(RuntimeError, match="no reaction to remove"):
-        await conn.react("D1", "1.1", "eyes", remove=True)
-    with pytest.raises(RuntimeError, match="no known character"):
-        await conn.react("D1", "1.1", "partyparrot")
-    assert len(sent) == 1
+@pytest.mark.parametrize("error", ["already_reacted", "no_reaction"])
+async def test_slack_reaching_the_asked_state_is_ok(monkeypatch, error):
+    conn, _ = _slack_bot(monkeypatch, error)
+    r = await conn.react("D1", "1.1", "eyes", remove=error == "no_reaction")
+    assert r["as"] == "reaction"
+
+
+async def test_slack_without_reactions_write_refuses(monkeypatch):
+    conn, _ = _slack_bot(monkeypatch, "missing_scope")
+    with pytest.raises(RuntimeError, match="reactions:write"):
+        await conn.react("D1", "1.1", "eyes")
+    conn, _ = _slack_bot(monkeypatch, "message_not_found")
+    with pytest.raises(RuntimeError, match="message_not_found"):
+        await conn.react("D1", "1.1", "eyes")
+
+
+async def test_slack_user_reacts_through_the_sdk(monkeypatch):
+    from slack_sdk.errors import SlackApiError
+    conn = _build(name="tony", platform="slack", token="xoxp-1", app_token="xapp-1")
+    calls = []
+
+    class _Web:
+        async def reactions_add(self, **kw):
+            calls.append(("add", kw))
+            raise SlackApiError("dup", {"ok": False, "error": "already_reacted"})
+
+        async def reactions_remove(self, **kw):
+            calls.append(("remove", kw))
+            return {"ok": True}
+
+    monkeypatch.setattr(conn, "_web_client", lambda: _Web())
+    assert (await conn.react("D1", "1.1", "👀"))["emoji"] == "eyes"
+    assert (await conn.react("D1", "1.1", "👀", remove=True))["removed"]
+    assert calls == [("add", {"channel": "D1", "timestamp": "1.1", "name": "eyes"}),
+                     ("remove", {"channel": "D1", "timestamp": "1.1", "name": "eyes"})]
+
+
+async def test_mira_posts_the_reaction_to_the_daemon(monkeypatch):
+    conn = _build(name="mira", platform="slack", token="", source="mira",
+                  mira_url="https://h:7822", mira_token="tok")
+    posts = []
+
+    async def post(path, body, timeout=30):
+        posts.append((path, body))
+        return {"ok": True}
+
+    monkeypatch.setattr(conn, "_post", post)
+    r = await conn.react("D1", "1.1", ":eyes:", remove=True)
+    assert posts == [("/v1/slack/react", {"channel": "D1", "message_id": "1.1",
+                                          "emoji": "eyes", "remove": True})]
+    assert r["as"] == "reaction" and r["removed"]
 
 
 async def test_gmail_and_teams_refuse():
@@ -155,15 +206,15 @@ async def test_react_verb_passes_through_to_the_connector(monkeypatch):
     calls = []
 
     class _Conn:
-        async def react(self, channel, message_id, emoji, *, remove, thread):
-            calls.append((channel, message_id, emoji, remove, thread))
+        async def react(self, channel, message_id, emoji, *, remove):
+            calls.append((channel, message_id, emoji, remove))
             return {"as": "reaction", "emoji": emoji}
 
     monkeypatch.setitem(hub._connectors, "bot", _Conn())
     r = await hub.HANDLERS["react"]({"account": "bot", "channel": "C1",
                                      "message_id": 5, "emoji": "👀"})
     assert r == {"ok": True, "as": "reaction", "emoji": "👀"}
-    assert calls == [("C1", "5", "👀", False, None)]
+    assert calls == [("C1", "5", "👀", False)]
     fn = next(f for f in hub.API_MANIFEST["functions"] if f["name"] == "react")
     assert fn["effect"] == "write"
     assert {p["name"] for p in fn["params"] if p["required"]} == {

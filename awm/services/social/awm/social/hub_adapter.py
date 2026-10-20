@@ -245,7 +245,7 @@ async def _h_react(args: dict) -> dict:
     conn = _conn(args["account"])
     done = await conn.react(
         args["channel"], str(args["message_id"]), str(args["emoji"]),
-        remove=bool(args.get("remove")), thread=args.get("thread") or None)
+        remove=bool(args.get("remove")))
     return {"ok": True, **done}
 
 
@@ -781,17 +781,14 @@ API_MANIFEST: dict[str, Any] = {
             "tool": "social_react",
             "description": "Put an emoji reaction on a message, or take it off "
                            "with `remove`. `emoji` is a character, a name or "
-                           ":name:. Discord bots react. Slack posts the emoji "
-                           "as a message until the app holds reactions:write, "
-                           "into `thread` when given, and cannot remove. Gmail "
-                           "and Teams refuse.",
+                           ":name:. Discord and Slack react. Gmail and Teams "
+                           "refuse.",
             "params": [
                 {"name": "account", "type": "string", "required": True},
                 {"name": "channel", "type": "string", "required": True},
                 {"name": "message_id", "type": "string", "required": True},
                 {"name": "emoji", "type": "string", "required": True},
                 {"name": "remove", "type": "boolean", "required": False},
-                {"name": "thread", "type": "string", "required": False},
             ],
         },
         {
