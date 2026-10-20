@@ -58,6 +58,12 @@ also accumulated in a per-session service-side inbox so a *polling* consumer
 never races the pump: ``observe_events`` returns everything since its last call
 (consume-once), while the emitter stays the live stream.
 
+A ``session_id`` of the form ``lab:<container>`` addresses an fxlab lab instead
+of the realm: a throwaway server with no seats, reached through the same broker.
+Labs run ``sandbox`` rules and the realm runs ``realm`` rules; the god verbs
+(``teleport``, ``research``, built blueprints, ``sbx`` god verbs, cheat tools)
+are refused under the latter unless the caller holds the admin token.
+
 Single-session for now: ``acquire`` is idempotent (at most one live appliance;
 a second acquire returns the existing session, erroring on a game mismatch). The
 session row carries the container/ports so a service respawn re-adopts rather
@@ -71,15 +77,19 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import hmac
 import inspect
 import json
 import logging
 import os
+import re
 import signal
+import subprocess
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from awm.gatewayclient import ServiceAdapter
@@ -99,6 +109,15 @@ _SEAT_TARGET = [
 _TARGET_DOC = (
     "Pass seat_id, or session_id alone when the session has exactly one seat."
 )
+
+# Rules: the realm runs ``realm`` rules; a lab runs ``sandbox`` unless told
+# otherwise. ``admin_token`` lifts a realm-rules refusal.
+_RULES = [
+    {"name": "rules", "type": "string", "required": False,
+     "description": "sandbox (the lab default) or realm; labs only"},
+    {"name": "admin_token", "type": "string", "required": False,
+     "description": "lifts a refusal under realm rules"},
+]
 
 API_MANIFEST: dict[str, Any] = {
     "functions": [
@@ -608,10 +627,13 @@ API_MANIFEST: dict[str, Any] = {
                 {"name": "direction", "type": "string", "required": False},
                 {"name": "build", "type": "boolean", "required": False},
                 {"name": "clear", "type": "boolean", "required": False},
+                {"name": "build_mode", "type": "string", "required": False,
+                 "description": "ghost (default) or built; built is refused under realm rules"},
                 {"name": "force_build", "type": "boolean", "required": False},
                 {"name": "surface", "type": "string", "required": False},
                 {"name": "budget_ms", "type": "number", "required": False,
                  "description": "raise this command's budget, up to 50 ms"},
+                *_RULES,
             ],
             "timeout": 180.0,
         },
@@ -747,6 +769,7 @@ API_MANIFEST: dict[str, Any] = {
                 {"name": "x", "type": "number", "required": True},
                 {"name": "y", "type": "number", "required": True},
                 {"name": "surface", "type": "string", "required": False},
+                *_RULES,
             ],
         },
         {
@@ -867,7 +890,72 @@ API_MANIFEST: dict[str, Any] = {
             "params": [
                 *_SEAT_TARGET,
                 {"name": "name", "type": "string", "required": True},
+                *_RULES,
             ],
+        },
+        # ---- tool library and lab mod (mod >= 0.6, labs) ----
+        {
+            "name": "tool",
+            "effect": "write",
+            "tool": "factorio_tool",
+            "description": (
+                "Run a library tool by name with args. Returns {ok, r} where r "
+                "is the tool's table, or {ok:false, error: no_tool | "
+                "tool_error, detail}. Needs game-bot-control 0.6. Tools with "
+                "effect cheat are refused under realm rules. Address a lab "
+                "with session_id='lab:<container>'. See tool_list."
+            ),
+            "params": [
+                *_SEAT_TARGET,
+                {"name": "name", "type": "string", "required": True},
+                {"name": "args", "type": "object", "required": False},
+                {"name": "budget_ms", "type": "number", "required": False},
+                *_RULES,
+            ],
+            "timeout": 130.0,
+        },
+        {
+            "name": "tool_list",
+            "effect": "read",
+            "tool": "factorio_tool_list",
+            "description": (
+                "List the world's tools: name, kind, effect, summary, size, "
+                "calls, errors, last_error, defined. Needs game-bot-control 0.6."
+            ),
+            "params": list(_SEAT_TARGET),
+        },
+        {
+            "name": "tool_sync",
+            "effect": "write",
+            "tool": "factorio_tool_sync",
+            "description": (
+                "Define the tool files (RLM_FACTORIO_TOOLS, every *.lua) in the "
+                "world, libs first. Pass names to define only those. Returns "
+                "{defined, errors}. Needs game-bot-control 0.6."
+            ),
+            "params": [
+                *_SEAT_TARGET,
+                {"name": "names", "type": "array", "required": False},
+            ],
+            "timeout": 120.0,
+        },
+        {
+            "name": "sbx",
+            "effect": "write",
+            "tool": "factorio_sbx",
+            "description": (
+                "Call a verb of the fxlab-sbx lab mod: remote.call('sbx', verb, "
+                "args). Lab targets only (session_id='lab:<container>'). Under "
+                "realm rules (rules='realm') the god verbs research, items, evo, "
+                "nest, wave, body, body_tp and sbx_mode mode=god are refused."
+            ),
+            "params": [
+                *_SEAT_TARGET,
+                {"name": "verb", "type": "string", "required": True},
+                {"name": "args", "type": "object", "required": False},
+                *_RULES,
+            ],
+            "timeout": 130.0,
         },
     ],
     "emitters": [
@@ -1011,19 +1099,19 @@ def _run(row: dict, key: str, code: str, *, timeout: float = 60.0,
     return result
 
 
-def _iface_code(fn: str, args: dict) -> str:
-    """``remote.call('game_bot', fn, args)`` with args carried as JSON, so no
+def _iface_code(fn: str, args: dict, mod: str = "game_bot") -> str:
+    """``remote.call(mod, fn, args)`` with args carried as JSON, so no
     argument ever needs a Lua-literal encoding."""
     blob = json.dumps(args).replace("\\", "\\\\").replace("'", "\\'")
     return ("local h=helpers "
-            f"local r=remote.call('game_bot','{fn}',h.json_to_table('{blob}') or {{}}) "
+            f"local r=remote.call('{mod}','{fn}',h.json_to_table('{blob}') or {{}}) "
             "rcon.print(h.table_to_json(r))")
 
 
 def _iface(row: dict, fn: str, args: dict, *, key: str, timeout: float = 60.0,
-           metered: bool = True) -> tuple[dict, float | None]:
-    """Call one game-bot-control function. Returns (result, cost_ms)."""
-    res = _run(row, key, _iface_code(fn, args), timeout=timeout, metered=metered)
+           metered: bool = True, mod: str = "game_bot") -> tuple[dict, float | None]:
+    """Call one remote function of the engine. Returns (result, cost_ms)."""
+    res = _run(row, key, _iface_code(fn, args, mod), timeout=timeout, metered=metered)
     out = res["output"].strip()
     try:
         return json.loads(out), res["cost_ms"]
@@ -1503,6 +1591,72 @@ def _world_load(args: dict) -> dict:
     return result
 
 
+# ---- lab targets and rules --------------------------------------------------
+#
+# ``lab:<container>`` addresses an fxlab lab. A lab is never stored: its row is
+# built from the live container on every call, so a lab that goes away leaves
+# nothing to reconcile.
+
+LAB_PREFIX = "lab:"
+_CONTAINER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
+GOD_VERBS = frozenset({"research", "items", "evo", "nest", "wave", "body", "body_tp"})
+
+
+def _is_lab(args: dict) -> bool:
+    return str(args.get("session_id") or "").strip().startswith(LAB_PREFIX)
+
+
+def _docker_inspect(container: str) -> dict | None:
+    proc = subprocess.run(["docker", "inspect", container], capture_output=True,
+                          text=True, timeout=15)
+    if proc.returncode != 0:
+        return None
+    return json.loads(proc.stdout)[0]
+
+
+def _lab_row(session_id: str) -> dict:
+    """The synthetic session row of a running container labelled ``fxlab=1``."""
+    container = session_id[len(LAB_PREFIX):]
+    if not _CONTAINER_RE.match(container) or container.startswith("rlm-factorio"):
+        raise ValueError(f"{session_id!r} is not a lab container name")
+    info = _docker_inspect(container)
+    if info is None:
+        raise ValueError(f"no such lab container: {container}")
+    if not (info.get("State") or {}).get("Running"):
+        raise ValueError(f"lab container {container} is not running")
+    labels = (info.get("Config") or {}).get("Labels") or {}
+    if labels.get("fxlab") != "1":
+        raise ValueError(
+            f"refusing {session_id}: only containers labelled fxlab=1 are labs")
+    return {"session_id": session_id, "container_name": container,
+            "kind": "lab", "rules": "sandbox"}
+
+
+def _admin_ok(token: Any) -> bool:
+    """Whether ``token`` is the admin token. No token file means no override."""
+    path = os.path.expanduser(os.environ.get(
+        "RLM_FACTORIO_ADMIN_TOKEN_FILE", "~/.config/rlm-factorio/admin-token"))
+    try:
+        expected = Path(path).read_text(encoding="utf-8").strip()
+    except OSError:
+        return False
+    if not expected or not isinstance(token, str):
+        return False
+    return hmac.compare_digest(token.encode(), expected.encode())
+
+
+def _realm_rules(row: dict, args: dict) -> bool:
+    """Whether this call runs under realm rules and has no admin override."""
+    if row.get("kind") == "lab" and args.get("rules") != "realm":
+        return False
+    return not _admin_ok(args.get("admin_token"))
+
+
+def _refuse_under_realm(row: dict, args: dict, what: str) -> None:
+    if _realm_rules(row, args):
+        raise appliance.ApplianceError(f"refused under realm rules: {what}")
+
+
 # ---- act/perceive: addressed by seat -------------------------------------
 
 def _resolve(args: dict, *, need_seat: bool = True) -> tuple[dict, dict | None]:
@@ -1513,9 +1667,13 @@ def _resolve(args: dict, *, need_seat: bool = True) -> tuple[dict, dict | None]:
     to its seat when it has exactly one; with several, ambiguity is an error
     rather than a guess, because guessing means acting as someone else's player.
     """
-    d = dao.FactorioDAO()
     seat_id = str(args.get("seat_id") or "").strip()
     sid = str(args.get("session_id") or "").strip()
+    if sid.startswith(LAB_PREFIX):
+        if seat_id or need_seat:
+            raise ValueError("no seat in a lab")
+        return _lab_row(sid), None
+    d = dao.FactorioDAO()
     seat: dict | None = None
 
     if seat_id:
@@ -1566,16 +1724,20 @@ def _as_list(value: Any) -> list:
     return []
 
 
-def _act(fn: str, *keys: str, need_seat: bool = True, lists: tuple = ()):
+def _act(fn: str, *keys: str, need_seat: bool = True, lists: tuple = (),
+         god: bool = False):
     """Handler factory: resolve the target, name the seat, call the mod.
 
     The seat's player name is what the mod resolves against, and it is never
     supplied by the caller — the service assigned it before the client started,
     so a verb cannot be aimed at a player the caller does not hold. ``lists``
-    names result fields that must stay arrays even when empty.
+    names result fields that must stay arrays even when empty. ``god`` marks a
+    verb that realm rules refuse.
     """
     def handler(args: dict) -> dict:
         row, seat = _resolve(args, need_seat=need_seat)
+        if god:
+            _refuse_under_realm(row, args, fn)
         body = {k: args[k] for k in keys if args.get(k) is not None}
         if seat is not None:
             body["seat"] = seat["player_name"]
@@ -1636,6 +1798,7 @@ def _pause(args: dict) -> dict:
 # limit.
 EXEC_LUA_MAX = 64 * 1024
 EXEC_OUTPUT_DEFAULT = 16 * 1024
+_EXEC_LOG_LOCK = threading.Lock()
 
 
 def _cap_output(output: str, limit: int) -> str:
@@ -1643,6 +1806,27 @@ def _cap_output(output: str, limit: int) -> str:
         return output
     return (output[:limit] + f"\n...[truncated: {limit} of {len(output)} characters "
             "shown; pass max_output to raise the cap, or page with factorio_scan]")
+
+
+def _log_exec(row: dict, seat: dict | None, code: str) -> None:
+    """Append one line about an ``exec_lua`` call to the exec log. Never raises."""
+    try:
+        path = Path(os.path.expanduser(os.environ.get(
+            "RLM_FACTORIO_EXEC_LOG", "~/.local/state/rlm-factorio/exec-lua.jsonl")))
+        raw = code.encode("utf-8")
+        line = json.dumps({
+            "time": datetime.now(timezone.utc).isoformat(),
+            "session_id": row["session_id"],
+            "seat_id": seat["seat_id"] if seat else None,
+            "size": len(raw),
+            "sha1": hashlib.sha1(raw).hexdigest(),
+            "head": code[:200],
+        }) + "\n"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with _EXEC_LOG_LOCK, open(path, "a", encoding="utf-8") as fh:
+            fh.write(line)
+    except Exception:  # noqa: BLE001
+        log.debug("exec log write failed", exc_info=True)
 
 
 def _exec_lua(args: dict) -> dict:
@@ -1667,6 +1851,7 @@ def _exec_lua(args: dict) -> dict:
         raise ValueError(
             f"lua script is {len(code)} bytes, over the {EXEC_LUA_MAX} limit"
         )
+    _log_exec(row, seat, code)
     name = seat["player_name"] if seat else None
     preamble = (f'local seat, player = "{name}", game.players["{name}"]; '
                 if name else "local seat, player = nil, nil; ")
@@ -1890,21 +2075,28 @@ def _blueprint_text(args: dict) -> str:
 
 def _blueprint_stamp(args: dict) -> dict:
     """Stamp a blueprint at a position, as ghosts (a player's move) or built."""
-    row, seat = _resolve(args)
+    row, seat = _resolve(args, need_seat=not _is_lab(args))
+    built = bool(args.get("build")) or args.get("build_mode") == "built"
+    if built:
+        _refuse_under_realm(row, args, "blueprint_stamp build_mode=built")
     text = _blueprint_text(args)
-    upload_id = seat["seat_id"]
+    upload_id = seat["seat_id"] if seat else row["session_id"]
     chunks = [text[i:i + BLUEPRINT_CHUNK]
               for i in range(0, len(text), BLUEPRINT_CHUNK)]
     key = _key(seat)
     for n, chunk in enumerate(chunks):
         _iface(row, "bp_put", {"id": upload_id, "data": chunk, "reset": n == 0},
                key=key)
-    body = {"seat": seat["player_name"], "id": upload_id,
-            "x": args["x"], "y": args["y"]}
-    for key in ("direction", "surface", "build", "force_build", "clear"):
-        if args.get(key) is not None:
-            body[key] = args[key]
-    dao.FactorioDAO().touch_seat(seat["seat_id"])
+    body = {"id": upload_id, "x": args["x"], "y": args["y"]}
+    if seat is not None:
+        body["seat"] = seat["player_name"]
+    for name in ("direction", "surface", "build", "force_build", "clear"):
+        if args.get(name) is not None:
+            body[name] = args[name]
+    if built:
+        body["build"] = True
+    if seat is not None:
+        dao.FactorioDAO().touch_seat(seat["seat_id"])
     result, cost = _iface(row, "blueprint_stamp", body, key=key, timeout=120.0)
     return _budgeted(key, {**result, "chunks": len(chunks), "characters": len(text),
                            "cost_ms": cost},
@@ -1979,9 +2171,157 @@ def _load(args: dict) -> dict:
     return snap
 
 
+# ---- mod 0.6: the tool library and the lab mod -------------------------------
+#
+# A tool is a Lua file under RLM_FACTORIO_TOOLS (CONTRACT.md § Tools). tool_sync
+# defines the files in the world's registry; tool runs one by name.
+
+TOOLS_MOD = (0, 6, 0)
+TOOL_KEYS = ("tool", "kind", "effect", "summary", "args", "returns")
+TOOL_KINDS = ("call", "lib")
+TOOL_EFFECTS = ("read", "act", "cheat")
+_TOOL_HEADER = re.compile(r"^---\s*([a-z]+):\s*(.*?)\s*$")
+_TOOL_EFFECT_CACHE: dict[str, dict[str, str]] = {}
+
+
+def _tools_dir() -> Path:
+    return Path(os.path.expanduser(os.environ.get(
+        "RLM_FACTORIO_TOOLS",
+        "~/agentic_workspace/projects/game-bot/factorio/research/tools")))
+
+
+def _require_tools(row: dict) -> None:
+    version = _mod_version(row)
+    if version < TOOLS_MOD:
+        raise appliance.ApplianceError(
+            "needs game-bot-control 0.6; this world runs "
+            f"{'.'.join(map(str, version))}")
+
+
+def _tool_header(code: str) -> dict:
+    """The ``--- key: value`` lines at the top of a tool file."""
+    out = {}
+    for line in code.splitlines():
+        m = _TOOL_HEADER.match(line)
+        if not m:
+            break
+        out[m[1]] = m[2]
+    return out
+
+
+def _tool_problems(stem: str, header: dict) -> list[str]:
+    errs = [f"missing header key {k}" for k in TOOL_KEYS if k not in header]
+    if "tool" in header and header["tool"] != stem:
+        errs.append(f"tool {header['tool']!r} does not match the file name {stem!r}")
+    if "kind" in header and header["kind"] not in TOOL_KINDS:
+        errs.append(f"kind must be one of {', '.join(TOOL_KINDS)}")
+    if "effect" in header and header["effect"] not in TOOL_EFFECTS:
+        errs.append(f"effect must be one of {', '.join(TOOL_EFFECTS)}")
+    return errs
+
+
+def _tool_listing(row: dict, key: str) -> dict:
+    result, _ = _iface(row, "tool_list", {}, key=key)
+    result["tools"] = _as_list(result.get("tools"))
+    return result
+
+
+def _tool_list(args: dict) -> dict:
+    """The world's tool registry: name, kind, effect, summary, calls, errors."""
+    row, seat = _resolve(args, need_seat=False)
+    _require_tools(row)
+    return _tool_listing(row, _key(seat))
+
+
+def _tool_effect(row: dict, key: str, name: str) -> str | None:
+    """A tool's declared effect, from a per-container cache that tool_sync clears."""
+    container = row["container_name"]
+    known = _TOOL_EFFECT_CACHE.get(container, {})
+    if name not in known:
+        listed = _tool_listing(row, key)["tools"]
+        known = _TOOL_EFFECT_CACHE[container] = {
+            t["name"]: t.get("effect") for t in listed if isinstance(t, dict)}
+    return known.get(name)
+
+
+def _tool(args: dict) -> dict:
+    """Run a library tool: {ok, r} or the mod's error."""
+    row, seat = _resolve(args, need_seat=False)
+    _require_tools(row)
+    name = args.get("name")
+    if not name:
+        raise ValueError("tool needs a name")
+    key = _key(seat)
+    if _realm_rules(row, args) and _tool_effect(row, key, name) == "cheat":
+        raise appliance.ApplianceError(
+            f"refused under realm rules: tool {name} has effect cheat")
+    if seat is not None:
+        dao.FactorioDAO().touch_seat(seat["seat_id"])
+    result, cost = _iface(row, "tool_call", {"name": name, "args": args.get("args") or {}},
+                          key=key, timeout=120.0)
+    return _budgeted(key, result, cost, throttle.command_budget(args.get("budget_ms")))
+
+
+def _tool_sync(args: dict) -> dict:
+    """Define the tool files in the world, libs first. {defined, errors}."""
+    row, seat = _resolve(args, need_seat=False)
+    _require_tools(row)
+    wanted = args.get("names")
+    found: dict[str, tuple[dict, str]] = {}
+    errors: list[dict] = []
+    root = _tools_dir()
+    for path in sorted(root.rglob("*.lua")) if root.is_dir() else []:
+        stem = path.stem
+        if wanted is not None and stem not in wanted:
+            continue
+        code = path.read_text(encoding="utf-8")
+        header = _tool_header(code)
+        problems = _tool_problems(stem, header)
+        if stem in found:
+            problems.append("duplicate tool name")
+        if len(code) > EXEC_LUA_MAX:
+            problems.append(f"{len(code)} characters, over {EXEC_LUA_MAX}")
+        if problems:
+            errors.append({"name": stem, "error": "; ".join(problems)})
+        else:
+            found[stem] = (header, code)
+    for name in wanted or ():
+        if name not in found and not any(e["name"] == name for e in errors):
+            errors.append({"name": name, "error": f"no tool file named {name} under {root}"})
+    key = _key(seat)
+    defined = []
+    for name in sorted(found, key=lambda n: found[n][0]["kind"] != "lib"):
+        header, code = found[name]
+        try:
+            _iface(row, "tool_define",
+                   {"name": name, "code": code, "kind": header["kind"],
+                    "effect": header["effect"], "summary": header["summary"]},
+                   key=key, timeout=60.0)
+            defined.append(name)
+        except appliance.ApplianceError as exc:
+            errors.append({"name": name, "error": str(exc)})
+    _TOOL_EFFECT_CACHE.pop(row["container_name"], None)
+    return {"defined": defined, "errors": errors}
+
+
+def _sbx(args: dict) -> dict:
+    """Call a verb of the fxlab-sbx lab mod. Lab targets only."""
+    if not _is_lab(args):
+        raise ValueError("sbx is lab-only: pass session_id='lab:<container>'")
+    row, _ = _resolve(args, need_seat=False)
+    verb = args.get("verb")
+    if not verb:
+        raise ValueError("sbx needs a verb")
+    body = args.get("args") or {}
+    if verb in GOD_VERBS or (verb == "sbx_mode" and body.get("mode") == "god"):
+        _refuse_under_realm(row, args, f"sbx {verb}")
+    result, _ = _iface(row, verb, body, key=ANON, timeout=120.0, mod="sbx")
+    return result
+
+
 _move = _act("set_target", "x", "y")
 _stop = _act("stop")
-_teleport = _act("teleport", "x", "y", "surface")
+_teleport = _act("teleport", "x", "y", "surface", god=True)
 _respawn = _act("spawn")
 _mine = _act("mine", "x", "y", "name", "count")
 _craft = _act("craft", "recipe", "count")
@@ -1990,7 +2330,7 @@ _insert = _act("insert", "x", "y", "name", "count", "target")
 _take = _act("take", "x", "y", "name", "count", "target")
 # Force-wide, so they need no seat -- but they take one when it is what the
 # caller has in hand.
-_research = _act("research", "name", need_seat=False)
+_research = _act("research", "name", need_seat=False, god=True)
 _recipes = _act("recipes", "search", "limit", need_seat=False,
                 lists=("recipes",))
 _technologies = _act("technologies", "search", "only_unresearched", "limit",
@@ -2044,6 +2384,10 @@ HANDLERS = {
     "wait": _wait,
     "throw": _throw,
     "order": _order,
+    "tool": _tool,
+    "tool_list": _tool_list,
+    "tool_sync": _tool_sync,
+    "sbx": _sbx,
 }
 HANDLERS = {verb: _checked(verb, fn) for verb, fn in HANDLERS.items()}
 

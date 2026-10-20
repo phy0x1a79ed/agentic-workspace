@@ -42,6 +42,7 @@ with open(path, "w") as fh:
     json.dump(data, fh, indent=2)
 PY
 
+rm -f /tmp/.X*-lock /tmp/.X11-unix/X*
 Xvfb "$DISPLAY" -screen 0 "${RESOLUTION}x24" -nolisten tcp &
 for _ in $(seq 100); do
     xdpyinfo >/dev/null 2>&1 && break
