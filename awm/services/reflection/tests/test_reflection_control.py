@@ -389,6 +389,20 @@ def test_stop_of_own_session_with_confirm_runs_after_the_call_returns(world):
     assert rm.calls == [SELF_JOB]
 
 
+@pytest.mark.parametrize("removed,level,text", [
+    (True, "INFO", "stopped and removed own session"),
+    (False, "WARNING", "was not removed: no such job"),
+])
+def test_stop_of_own_session_logs_whether_the_job_went(world, caplog, removed, level, text):
+    spawned = []
+    control.stop(SELF_JOB, caller_pid=ME, confirm=True, remove=Remover(removed=removed),
+                 spawn=spawned.append)
+    with caplog.at_level("INFO", logger="awm.reflection"):
+        spawned[0]()
+    line = next(r for r in caplog.records if SELF_JOB in r.getMessage())
+    assert line.levelname == level and text in line.getMessage()
+
+
 def test_stop_reports_a_failed_removal(world):
     out = control.stop(OTHER_JOB, caller_pid=ME, remove=Remover(removed=False))
     assert out["ok"] is False and out["reason"] == "no such job"

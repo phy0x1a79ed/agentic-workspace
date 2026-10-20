@@ -258,6 +258,14 @@ The `keep` service holds a daemon on every node from boot, in the user unit
 `keep` to ensure the daemon. It refuses with `code: "daemon_down"` only when
 that fails. `awm/services/keep/` holds the unit's launch.
 
+**WARNING** A session outlives its daemon only for its pty host's orphan grace.
+Claude Code's default is 60 s, after which every background session on the node
+dies. keep stretches it to 20 minutes through `CLAUDE_PTY_ORPHAN_CHECK_MS`, but a
+pty host started before that keeps 60 s. A `daemon_hold` therefore expires, at
+most after 20 minutes. Any agent, on any node, brings a daemon back with
+`reflection daemon_ensure peer=<node>`, and with `awm services_restart name=keep
+peer=<node>` when that verb does not answer.
+
 **CAUTION** cx launches each session through the user manager's bus under
 `/run/user/<uid>`, and reaches the daemon's sockets under `/tmp`. A gateway run as
 a sandboxed system unit must see both, so no `ProtectHome=yes` and no
