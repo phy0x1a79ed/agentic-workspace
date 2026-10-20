@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "awm-keep"
+version = "0.1.0"
+requires-python = ">=3.11"
+description = "AWM keep service: keeps the node's Claude Code daemon running in its own systemd user unit."
+dependencies = [
+    "awm-gatewayclient",
+    "awm-claudedaemon",
+]
+
+# PEP 420 namespace package: no top-level awm/__init__.py; the namespace dir is awm/keep/.
+[tool.setuptools.packages.find]
+include = ["awm.keep*"]
+namespaces = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
