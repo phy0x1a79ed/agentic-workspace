@@ -142,7 +142,7 @@ SPECS: dict[str, dict[str, Callable[[str, Any], Any]]] = {
     "blueprint_stamp": {"x": COORD, "y": COORD, "blueprint": text(4 * 1024 * 1024),
                         "path": PATH, "direction": DIRECTION, "build": boolean,
                         "clear": boolean, "force_build": boolean, "surface": SURFACE,
-                        "budget_ms": number(1, 1000),
+                        "force": name, "budget_ms": number(1, 1000),
                         "build_mode": one_of("ghost", "built"), "rules": RULES,
                         "admin_token": ADMIN_TOKEN},
     "blueprint_capture": {"radius": number(1, 200), "x": COORD, "y": COORD,

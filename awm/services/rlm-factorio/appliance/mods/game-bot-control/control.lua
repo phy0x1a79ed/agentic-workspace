@@ -700,7 +700,7 @@ local STR_MAX = {
   seat = 64, name = 128, recipe = 128, surface = 64, target = 128, search = 128,
   id = 64, file = 128, label = 256, direction = 32, item = 128, cond = 16,
   data = BP_CHUNK_MAX, blueprint = 4 * 1024 * 1024, code = SCRIPT_MAX,
-  kind = 16, effect = 16, summary = 256,
+  kind = 16, effect = 16, summary = 256, force = 64,
 }
 
 local function check_args(args)
@@ -800,16 +800,30 @@ end
 -- with `use(name)`. TOOL_COMPILED and LIBS are per-peer caches, rebuilt on
 -- demand and never saved.
 --
--- A lib body runs at a different moment on each peer (at define time on the
--- peers present, on first `use` on a peer that joins later). It sees `storage`
--- through a proxy that raises on any write, so it cannot make the peers differ.
+-- A lib body must not make the peers differ. It sees `storage` through a proxy
+-- that raises on any write, and a cached lib is reused only within the tick it
+-- ran in, so every peer re-runs the bodies at the same tick.
+--
+-- DENY holds the effects the running tool_call refuses. It only ever grows
+-- while calls nest, and the outermost call restores it on every path.
 
 local TOOL_COMPILED = {}
 local LIBS = {}
 local LIB_LOADING = {}
+local DENY = {}
 local LAST_ERROR_MAX = 300
 
-local function write_blocked(real)
+local write_blocked
+
+local function wrapped_next(real)
+  return function(_, k)
+    local nk, v = next(real, k)
+    if type(v) == "table" then v = write_blocked(v) end
+    return nk, v
+  end, nil, nil
+end
+
+write_blocked = function(real)
   return setmetatable({}, {
     __index = function(_, k)
       local v = real[k]
@@ -819,7 +833,31 @@ local function write_blocked(real)
     __newindex = function()
       error("a lib tool must not write storage: its body runs on every peer at a different moment", 0)
     end,
-    __pairs = function() return next, real, nil end,
+    __pairs = function() return wrapped_next(real) end,
+    __ipairs = function()
+      return function(_, i)
+        i = i + 1
+        local v = real[i]
+        if v == nil then return nil end
+        if type(v) == "table" then v = write_blocked(v) end
+        return i, v
+      end, nil, 0
+    end,
+    __len = function() return #real end,
+    __metatable = false,
+  })
+end
+
+-- The environment of a tool body: `_G` is the environment itself, so neither
+-- `_G.storage` nor the metatable reaches the real `storage`.
+local function tool_env(storage_view, use_fn)
+  local env = { storage = storage_view, script = SCRIPT_PROXY, use = use_fn }
+  env._G = env
+  return setmetatable(env, {
+    __index = function(_, k)
+      if k ~= "storage" and k ~= "_G" and k ~= "package" then return _G[k] end
+    end,
+    __metatable = false,
   })
 end
 
@@ -836,8 +874,7 @@ end
 local use
 
 local function lib_env()
-  return setmetatable({ storage = write_blocked(storage), script = SCRIPT_PROXY, use = use },
-                      { __index = _G })
+  return tool_env(write_blocked(storage), use)
 end
 
 -- Run a lib body write-blocked and return the table it yields.
@@ -859,10 +896,13 @@ use = function(name)
   local rec = storage.tools[name]
   if not rec then error("unknown tool: " .. tostring(name), 2) end
   if rec.kind ~= "lib" then error("tool " .. name .. " is not a lib", 2) end
+  if DENY[rec.effect] then
+    error({ denied = rec.effect .. " tool " .. name .. " refused" }, 0)
+  end
   local cached = LIBS[name]
-  if cached and cached.code == rec.code then return cached.lib end
+  if cached and cached.code == rec.code and cached.tick == game.tick then return cached.lib end
   local lib = run_lib(name, rec)
-  LIBS[name] = { code = rec.code, lib = lib }
+  LIBS[name] = { code = rec.code, lib = lib, tick = game.tick }
   return lib
 end
 
@@ -1230,7 +1270,16 @@ local api = {
   -- revives them immediately, which pays no items and is therefore a cheat.
   blueprint_stamp = function(args)
     args = args or {}
-    local p = acting_player(args)
+    -- A seatless stamp needs a surface and works on a lab with no player.
+    local p = args.seat and acting_player(args) or nil
+    local force
+    if p then
+      force = p.force
+    else
+      if not args.surface then error("a stamp without a seat requires 'surface'") end
+      force = game.forces[args.force or "player"]
+      if not force then error("no such force: " .. tostring(args.force)) end
+    end
     local id = tostring(args.id or "default")
     local text = args.blueprint
     if not text then
@@ -1239,7 +1288,7 @@ local api = {
       text = table.concat(buf)
     end
     if args.x == nil or args.y == nil then error("stamp requires x and y") end
-    local surf = args.surface and game.surfaces[args.surface] or p.character.surface
+    local surf = args.surface and game.surfaces[args.surface] or (p and not args.surface and p.character.surface)
     if not surf then error("no such surface: " .. tostring(args.surface)) end
     local dir = defines.direction.north
     if args.direction then
@@ -1269,7 +1318,7 @@ local api = {
       for _, e in pairs(ents or {}) do
         local px, py = args.x + e.position.x, args.y + e.position.y
         if not surf.can_place_entity{
-              name = e.name, position = { x = px, y = py }, force = p.force,
+              name = e.name, position = { x = px, y = py }, force = force,
               direction = e.direction,
               build_check_type = defines.build_check_type.blueprint_ghost } then
           if args.clear then
@@ -1280,7 +1329,7 @@ local api = {
             end
           end
           if not surf.can_place_entity{
-                name = e.name, position = { x = px, y = py }, force = p.force,
+                name = e.name, position = { x = px, y = py }, force = force,
                 direction = e.direction,
                 build_check_type = defines.build_check_type.blueprint_ghost } then
             blocked = blocked + 1
@@ -1317,7 +1366,7 @@ local api = {
                     { x = args.x + x2, y = args.y + y2 } }
       end
       local ghosts = stack.build_blueprint{
-        surface = surf, force = p.force, position = { x = args.x, y = args.y },
+        surface = surf, force = force, position = { x = args.x, y = args.y },
         direction = dir, skip_fog_of_war = false,
         force_build = args.force_build and true or false,
         raise_built = true,
@@ -1360,11 +1409,11 @@ local api = {
       end
     end
     if skipped > 0 then
-      push_event("blueprint_partial", { seat = p.name, placed = result.placed,
+      push_event("blueprint_partial", { seat = p and p.name, placed = result.placed,
                                         skipped = skipped,
                                         ungenerated = not generated })
     end
-    return { ok = true, seat = p.name, position = { x = args.x, y = args.y },
+    return { ok = true, seat = p and p.name, position = { x = args.x, y = args.y },
              entities = result.wanted, placed = result.placed,
              skipped = skipped, built = result.revived,
              cheated = args.build and true or false,
@@ -1724,16 +1773,28 @@ local api = {
     storage.tools[name] = rec
     forget_tool(name)
     compile_tool(name, rec)
-    if lib then LIBS[name] = { code = code, lib = lib } end
+    if lib then LIBS[name] = { code = code, lib = lib, tick = game.tick } end
     return { name = name, size = #code }
   end,
 
   -- Run a call tool with `args` as its `...`. It sees the game's globals,
   -- `use`, the restricted `script`, and `storage` bound to a table of its own.
+  -- `deny` lists effects to refuse for this call and every call nested in it,
+  -- the tool itself and each lib it uses.
   tool_call = function(args)
     local name = args.name
     local rec = storage.tools[name or ""]
     if not rec then return { ok = false, error = "no_tool", detail = tostring(name) } end
+    local outer, deny = DENY, {}
+    for e in pairs(outer) do deny[e] = true end
+    if args.deny ~= nil and type(args.deny) ~= "table" then
+      error("argument deny must be a list of effects")
+    end
+    for _, e in ipairs(args.deny or {}) do deny[e] = true end
+    if deny[rec.effect] then
+      return { ok = false, error = "denied",
+               detail = rec.effect .. " tool " .. name .. " refused" }
+    end
     if rec.kind ~= "call" then
       return { ok = false, error = "tool_error", detail = "lib tools are used, not called" }
     end
@@ -1742,14 +1803,17 @@ local api = {
       data = {}
       storage.tool_data[name] = data
     end
+    DENY = deny
     local ok, r = pcall(function()
-      local env = setmetatable({ storage = data, script = SCRIPT_PROXY, use = use },
-                               { __index = _G })
-      return compile_tool(name, rec)(env, args.args)
+      return compile_tool(name, rec)(tool_env(data, use), args.args)
     end)
+    DENY = outer
     if ok then
       rec.calls = rec.calls + 1
       return { ok = true, r = r }
+    end
+    if type(r) == "table" and r.denied then
+      return { ok = false, error = "denied", detail = r.denied }
     end
     local detail = tostring(r):sub(1, LAST_ERROR_MAX)
     rec.errors = rec.errors + 1

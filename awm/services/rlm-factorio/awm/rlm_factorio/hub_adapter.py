@@ -630,7 +630,10 @@ API_MANIFEST: dict[str, Any] = {
                 {"name": "build_mode", "type": "string", "required": False,
                  "description": "ghost (default) or built; built is refused under realm rules"},
                 {"name": "force_build", "type": "boolean", "required": False},
-                {"name": "surface", "type": "string", "required": False},
+                {"name": "surface", "type": "string", "required": False,
+                 "description": "needed on a lab (default nauvis): no seat to take it from"},
+                {"name": "force", "type": "string", "required": False,
+                 "description": "force that owns the ghosts on a lab (default player)"},
                 {"name": "budget_ms", "type": "number", "required": False,
                  "description": "raise this command's budget, up to 50 ms"},
                 *_RULES,
@@ -902,7 +905,8 @@ API_MANIFEST: dict[str, Any] = {
                 "Run a library tool by name with args. Returns {ok, r} where r "
                 "is the tool's table, or {ok:false, error: no_tool | "
                 "tool_error, detail}. Needs game-bot-control 0.6. Tools with "
-                "effect cheat are refused under realm rules. Address a lab "
+                "effect cheat, and tools that use a cheat lib, are refused under "
+                "realm rules. Address a lab "
                 "with session_id='lab:<container>'. See tool_list."
             ),
             "params": [
@@ -946,8 +950,10 @@ API_MANIFEST: dict[str, Any] = {
             "description": (
                 "Call a verb of the fxlab-sbx lab mod: remote.call('sbx', verb, "
                 "args). Lab targets only (session_id='lab:<container>'). Under "
-                "realm rules (rules='realm') the god verbs research, items, evo, "
-                "nest, wave, body, body_tp and sbx_mode mode=god are refused."
+                "realm rules (rules='realm') only the reads (sandbox_list, verbs, "
+                "slice_list, slice_ports, slice_fingerprint, slice_area_of_base, "
+                "slice_timing, bonuses, wave_status, ledger, view_shot, "
+                "view_booth) and sbx_mode mode=standard run; the rest is refused."
             ),
             "params": [
                 *_SEAT_TARGET,
@@ -1000,6 +1006,8 @@ def _fire(session_id: str, kind: str, data: dict | None = None,
     """Fire one event: append to the session's inbox and emit on the 'factorio'
     topic (threadsafe, best-effort — emit is live signalling, never durable
     delivery). Callable from sync handlers and pump threads alike."""
+    if session_id.startswith(LAB_PREFIX):
+        return
     event: dict[str, Any] = {"kind": kind, "data": data or {}}
     if tick is not None:
         event["tick"] = tick
@@ -1053,6 +1061,8 @@ async def _events_pump(adapter: ServiceAdapter) -> None:
 
 def _require_session(session_id: str) -> dict:
     """Look up a session or raise — used by act/perceive verbs."""
+    if session_id.startswith(LAB_PREFIX):
+        raise ValueError("not available on a lab target")
     row = dao.FactorioDAO().get_session(session_id)
     if row is None:
         raise ValueError(f"unknown session_id: {session_id!r}")
@@ -1074,8 +1084,17 @@ UPS_POLL_S = 1.0
 HANDLER_THREADS = int(os.environ.get("AWM_FACTORIO_HANDLER_THREADS", "64"))
 
 
-def _key(seat: dict | None) -> str:
-    return seat["player_name"] if seat else ANON
+def _key(seat: dict | None, row: dict | None = None) -> str:
+    """The connection and throttle key: the seat, or a seatless caller's own.
+
+    A lab's seatless caller gets a key of its own so it never spends the
+    realm's ``anon`` budget.
+    """
+    if seat:
+        return seat["player_name"]
+    if row is not None and row.get("kind") == "lab":
+        return f"{row['container_name']}/{ANON}"
+    return ANON
 
 
 def _run(row: dict, key: str, code: str, *, timeout: float = 60.0,
@@ -1599,7 +1618,11 @@ def _world_load(args: dict) -> dict:
 
 LAB_PREFIX = "lab:"
 _CONTAINER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
-GOD_VERBS = frozenset({"research", "items", "evo", "nest", "wave", "body", "body_tp"})
+# The only lab-mod verbs a realm-rules call may run: reads, and standard mode.
+SBX_REALM_VERBS = frozenset({
+    "sandbox_list", "verbs", "slice_list", "slice_ports", "slice_fingerprint",
+    "slice_area_of_base", "slice_timing", "bonuses", "wave_status", "ledger",
+    "view_shot", "view_booth"})
 
 
 def _is_lab(args: dict) -> bool:
@@ -1742,7 +1765,7 @@ def _act(fn: str, *keys: str, need_seat: bool = True, lists: tuple = (),
         if seat is not None:
             body["seat"] = seat["player_name"]
             dao.FactorioDAO().touch_seat(seat["seat_id"])
-        key = _key(seat)
+        key = _key(seat, row)
         result, cost = _iface(row, fn, body, key=key)
         for name in lists:
             if name in result:
@@ -1758,7 +1781,7 @@ def _observe(args: dict) -> dict:
     if args.get("radius") is not None:
         body["radius"] = args["radius"]
     dao.FactorioDAO().touch_seat(seat["seat_id"])
-    key = _key(seat)
+    key = _key(seat, row)
     snapshot, cost = _iface(row, "observe", body, key=key)
     for name in _SNAPSHOT_LISTS:
         if name in snapshot:
@@ -1772,6 +1795,8 @@ def _observe(args: dict) -> dict:
 
 def _observe_events(args: dict) -> dict:
     row, _ = _resolve(args, need_seat=False)
+    if row.get("kind") == "lab":
+        return {"events": []}
     sid = row["session_id"]
     _collect_and_fire(row)          # freshness: drain the world buffer now too
     with _EVENTS_LOCK:
@@ -1787,6 +1812,8 @@ def _pause(args: dict) -> dict:
     a script resumes, and the reply says which state it landed in.
     """
     row, _ = _resolve(args, need_seat=False)
+    if row.get("kind") == "lab":
+        raise appliance.ApplianceError("pause is not available on a lab target")
     THROTTLE.forget_ups()
     paused = args.get("paused")
     body = {} if paused is None else {"paused": bool(paused)}
@@ -1826,7 +1853,7 @@ def _log_exec(row: dict, seat: dict | None, code: str) -> None:
         with _EXEC_LOG_LOCK, open(path, "a", encoding="utf-8") as fh:
             fh.write(line)
     except Exception:  # noqa: BLE001
-        log.debug("exec log write failed", exc_info=True)
+        log.warning("exec log write failed", exc_info=True)
 
 
 def _exec_lua(args: dict) -> dict:
@@ -1857,7 +1884,7 @@ def _exec_lua(args: dict) -> dict:
                 if name else "local seat, player = nil, nil; ")
     if seat is not None:
         dao.FactorioDAO().touch_seat(seat["seat_id"])
-    key = _key(seat)
+    key = _key(seat, row)
     if args.get("cache") and _mod_version(row) >= ORDERS_MOD:
         res = _run_stored(row, key, code, name)
     else:
@@ -1881,6 +1908,7 @@ ORDERS_MOD = (0, 5, 0)
 ORDER_POLL_S = 0.25
 ORDER_WAIT_MAX_S = 600.0
 MOD_VERSION_TTL_S = 60.0
+LAB_MOD_VERSION_TTL_S = 5.0
 _MOD_LOCK = threading.Lock()
 _MOD_VERSIONS: dict[str, tuple[float, tuple[int, ...]]] = {}
 _DEFINED: dict[str, set[str]] = {}
@@ -1894,9 +1922,10 @@ def _forget_mod_state(sid: str) -> None:
 
 def _mod_version(row: dict) -> tuple[int, ...]:
     sid = row["session_id"]
+    ttl = LAB_MOD_VERSION_TTL_S if row.get("kind") == "lab" else MOD_VERSION_TTL_S
     with _MOD_LOCK:
         hit = _MOD_VERSIONS.get(sid)
-    if hit and time.monotonic() - hit[0] < MOD_VERSION_TTL_S:
+    if hit and time.monotonic() - hit[0] < ttl:
         return hit[1]
     out = _run(row, SYS, "rcon.print(script.active_mods['game-bot-control'] or '0')",
                timeout=10.0, metered=False)["output"].strip()
@@ -1940,7 +1969,7 @@ def _order_verb(fn: str, *keys: str, need_seat: bool = True, default_timeout: fl
         if seat is not None:
             body["seat"] = seat["player_name"]
             dao.FactorioDAO().touch_seat(seat["seat_id"])
-        key = _key(seat)
+        key = _key(seat, row)
         timeout = min(float(args.get("timeout") or default_timeout), ORDER_WAIT_MAX_S)
         if fn == "wait":
             body["timeout"] = max(1, min(216000, int(timeout * 60)))
@@ -1956,7 +1985,7 @@ def _order_verb(fn: str, *keys: str, need_seat: bool = True, default_timeout: fl
 def _order(args: dict) -> dict:
     row, seat = _resolve(args, need_seat=False)
     _require_orders(row)
-    key = _key(seat)
+    key = _key(seat, row)
     timeout = min(float(args.get("timeout") or 0), ORDER_WAIT_MAX_S)
     return _await_order(row, key, int(args["order"]), timeout, seat)
 
@@ -2041,7 +2070,7 @@ def _screenshot(args: dict) -> dict:
         if args.get(key) is not None:
             body[key] = args[key]
     dao.FactorioDAO().touch_seat(seat["seat_id"])
-    result, _ = _iface(row, "screenshot", body, key=_key(seat))
+    result, _ = _iface(row, "screenshot", body, key=_key(seat, row))
     path = str(out_dir / str(result["file"]))
     size = _wait_for_file(path)
     # How much world the frame covers, so pixels can be reasoned back to tiles:
@@ -2073,6 +2102,12 @@ def _blueprint_text(args: dict) -> str:
     return text.strip()
 
 
+def _upload_id(row: dict) -> str:
+    """A seatless upload id: the mod caps ids at 64 characters, a lab session
+    id can run past that."""
+    return "s" + hashlib.sha1(row["session_id"].encode()).hexdigest()[:16]
+
+
 def _blueprint_stamp(args: dict) -> dict:
     """Stamp a blueprint at a position, as ghosts (a player's move) or built."""
     row, seat = _resolve(args, need_seat=not _is_lab(args))
@@ -2080,19 +2115,21 @@ def _blueprint_stamp(args: dict) -> dict:
     if built:
         _refuse_under_realm(row, args, "blueprint_stamp build_mode=built")
     text = _blueprint_text(args)
-    upload_id = seat["seat_id"] if seat else row["session_id"]
+    upload_id = seat["seat_id"] if seat else _upload_id(row)
     chunks = [text[i:i + BLUEPRINT_CHUNK]
               for i in range(0, len(text), BLUEPRINT_CHUNK)]
-    key = _key(seat)
+    key = _key(seat, row)
     for n, chunk in enumerate(chunks):
         _iface(row, "bp_put", {"id": upload_id, "data": chunk, "reset": n == 0},
                key=key)
     body = {"id": upload_id, "x": args["x"], "y": args["y"]}
     if seat is not None:
         body["seat"] = seat["player_name"]
-    for name in ("direction", "surface", "build", "force_build", "clear"):
+    for name in ("direction", "surface", "build", "force_build", "clear", "force"):
         if args.get(name) is not None:
             body[name] = args[name]
+    if seat is None:
+        body.setdefault("surface", "nauvis")
     if built:
         body["build"] = True
     if seat is not None:
@@ -2117,7 +2154,7 @@ def _blueprint_capture(args: dict) -> dict:
         if args.get(key) is not None:
             body[key] = args[key]
     dao.FactorioDAO().touch_seat(seat["seat_id"])
-    key = _key(seat)
+    key = _key(seat, row)
     result, cost = _iface(row, "blueprint_capture", body, key=key, timeout=120.0)
     over = _over_budget(key, cost, throttle.command_budget(args.get("budget_ms")))
     src = appliance.session_output_dir(row["session_id"]) / str(result["file"])
@@ -2141,7 +2178,7 @@ def _blueprint_capture(args: dict) -> dict:
 def _scan(args: dict) -> dict:
     """Survey entities in pages; see :mod:`awm.rlm_factorio.scan`."""
     row, seat = _resolve(args, need_seat=False)
-    key = _key(seat)
+    key = _key(seat, row)
     if seat is not None:
         dao.FactorioDAO().touch_seat(seat["seat_id"])
 
@@ -2177,11 +2214,11 @@ def _load(args: dict) -> dict:
 # defines the files in the world's registry; tool runs one by name.
 
 TOOLS_MOD = (0, 6, 0)
+DENY_MOD = (0, 6, 1)   # tool_call honours `deny` from here on
 TOOL_KEYS = ("tool", "kind", "effect", "summary", "args", "returns")
 TOOL_KINDS = ("call", "lib")
 TOOL_EFFECTS = ("read", "act", "cheat")
 _TOOL_HEADER = re.compile(r"^---\s*([a-z]+):\s*(.*?)\s*$")
-_TOOL_EFFECT_CACHE: dict[str, dict[str, str]] = {}
 
 
 def _tools_dir() -> Path:
@@ -2230,40 +2267,96 @@ def _tool_list(args: dict) -> dict:
     """The world's tool registry: name, kind, effect, summary, calls, errors."""
     row, seat = _resolve(args, need_seat=False)
     _require_tools(row)
-    return _tool_listing(row, _key(seat))
-
-
-def _tool_effect(row: dict, key: str, name: str) -> str | None:
-    """A tool's declared effect, from a per-container cache that tool_sync clears."""
-    container = row["container_name"]
-    known = _TOOL_EFFECT_CACHE.get(container, {})
-    if name not in known:
-        listed = _tool_listing(row, key)["tools"]
-        known = _TOOL_EFFECT_CACHE[container] = {
-            t["name"]: t.get("effect") for t in listed if isinstance(t, dict)}
-    return known.get(name)
+    return _tool_listing(row, _key(seat, row))
 
 
 def _tool(args: dict) -> dict:
-    """Run a library tool: {ok, r} or the mod's error."""
+    """Run a library tool: {ok, r} or the mod's error.
+
+    Under realm rules the mod refuses a cheat tool, and a cheat lib it uses,
+    for the whole call.
+    """
     row, seat = _resolve(args, need_seat=False)
     _require_tools(row)
     name = args.get("name")
     if not name:
         raise ValueError("tool needs a name")
-    key = _key(seat)
-    if _realm_rules(row, args) and _tool_effect(row, key, name) == "cheat":
-        raise appliance.ApplianceError(
-            f"refused under realm rules: tool {name} has effect cheat")
+    key = _key(seat, row)
+    body = {"name": name, "args": args.get("args") or {}}
+    if _realm_rules(row, args):
+        if _mod_version(row) < DENY_MOD:
+            raise appliance.ApplianceError(
+                "refused under realm rules: this world's mod cannot refuse cheat "
+                "tools before game-bot-control 0.6.1")
+        body["deny"] = ["cheat"]
     if seat is not None:
         dao.FactorioDAO().touch_seat(seat["seat_id"])
-    result, cost = _iface(row, "tool_call", {"name": name, "args": args.get("args") or {}},
-                          key=key, timeout=120.0)
+    result, cost = _iface(row, "tool_call", body, key=key, timeout=120.0)
+    if result.get("error") == "denied":
+        what = str(result.get("detail") or f"cheat tool {name}").removesuffix(" refused")
+        raise appliance.ApplianceError(f"refused under realm rules: {what}")
     return _budgeted(key, result, cost, throttle.command_budget(args.get("budget_ms")))
 
 
+def _tool_uses(header: dict) -> list[str]:
+    return [u.strip() for u in header.get("uses", "").split(",") if u.strip()]
+
+
+def _reaches_cheat(name: str, found: dict[str, tuple[dict, str]]) -> str | None:
+    """The cheat lib that ``name``'s ``uses:`` chain reaches among ``found``."""
+    seen: set[str] = set()
+    todo = _tool_uses(found[name][0])
+    while todo:
+        lib = todo.pop()
+        if lib in seen or lib not in found:
+            continue
+        seen.add(lib)
+        if found[lib][0]["effect"] == "cheat":
+            return lib
+        todo.extend(_tool_uses(found[lib][0]))
+    return None
+
+
+def _lib_order(found: dict[str, tuple[dict, str]]) -> tuple[list[str], list[str]]:
+    """Libs ordered so each follows the libs it uses, then the call tools.
+
+    Returns (order, cyclic): a lib on a ``uses:`` cycle is left out of the order.
+    """
+    libs = sorted(n for n, (h, _) in found.items() if h["kind"] == "lib")
+    order: list[str] = []
+    state: dict[str, int] = {}
+    cyclic: set[str] = set()
+
+    def visit(name: str, path: list[str]) -> bool:
+        if state.get(name) == 2:
+            return name not in cyclic
+        if state.get(name) == 1:
+            cyclic.update(path[path.index(name):])
+            return False
+        state[name] = 1
+        ok = True
+        for dep in _tool_uses(found[name][0]):
+            if dep in found and found[dep][0]["kind"] == "lib":
+                ok = visit(dep, path + [name]) and ok
+        state[name] = 2
+        if ok and name not in cyclic:
+            order.append(name)
+        else:
+            cyclic.add(name)
+        return ok
+
+    for name in libs:
+        visit(name, [])
+    calls = sorted(n for n, (h, _) in found.items() if h["kind"] != "lib")
+    return order + calls, sorted(cyclic)
+
+
 def _tool_sync(args: dict) -> dict:
-    """Define the tool files in the world, libs first. {defined, errors}."""
+    """Define the tool files in the world, libs first. {defined, errors}.
+
+    Libs go in dependency order. A tool whose ``uses:`` chain reaches a cheat
+    lib while the tool is not itself cheat is not defined.
+    """
     row, seat = _resolve(args, need_seat=False)
     _require_tools(row)
     wanted = args.get("names")
@@ -2274,7 +2367,11 @@ def _tool_sync(args: dict) -> dict:
         stem = path.stem
         if wanted is not None and stem not in wanted:
             continue
-        code = path.read_text(encoding="utf-8")
+        try:
+            code = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            errors.append({"name": stem, "error": f"cannot read {path}: {exc}"})
+            continue
         header = _tool_header(code)
         problems = _tool_problems(stem, header)
         if stem in found:
@@ -2288,10 +2385,21 @@ def _tool_sync(args: dict) -> dict:
     for name in wanted or ():
         if name not in found and not any(e["name"] == name for e in errors):
             errors.append({"name": name, "error": f"no tool file named {name} under {root}"})
-    key = _key(seat)
+    for name in sorted(found):
+        cheat = _reaches_cheat(name, found)
+        if cheat and found[name][0]["effect"] != "cheat":
+            errors.append({"name": name, "error": (
+                f"effect {found[name][0]['effect']} but its uses chain reaches "
+                f"cheat lib {cheat}")})
+    rejected = {e["name"] for e in errors}
+    ready = {n: v for n, v in found.items() if n not in rejected}
+    order, cyclic = _lib_order(ready)
+    for name in cyclic:
+        errors.append({"name": name, "error": "lib cycle through uses"})
+    key = _key(seat, row)
     defined = []
-    for name in sorted(found, key=lambda n: found[n][0]["kind"] != "lib"):
-        header, code = found[name]
+    for name in order:
+        header, code = ready[name]
         try:
             _iface(row, "tool_define",
                    {"name": name, "code": code, "kind": header["kind"],
@@ -2300,7 +2408,6 @@ def _tool_sync(args: dict) -> dict:
             defined.append(name)
         except appliance.ApplianceError as exc:
             errors.append({"name": name, "error": str(exc)})
-    _TOOL_EFFECT_CACHE.pop(row["container_name"], None)
     return {"defined": defined, "errors": errors}
 
 
@@ -2313,9 +2420,11 @@ def _sbx(args: dict) -> dict:
     if not verb:
         raise ValueError("sbx needs a verb")
     body = args.get("args") or {}
-    if verb in GOD_VERBS or (verb == "sbx_mode" and body.get("mode") == "god"):
+    allowed = verb in SBX_REALM_VERBS or (
+        verb == "sbx_mode" and body.get("mode") == "standard")
+    if not allowed:
         _refuse_under_realm(row, args, f"sbx {verb}")
-    result, _ = _iface(row, verb, body, key=ANON, timeout=120.0, mod="sbx")
+    result, _ = _iface(row, verb, body, key=_key(None, row), timeout=120.0, mod="sbx")
     return result
 
 
