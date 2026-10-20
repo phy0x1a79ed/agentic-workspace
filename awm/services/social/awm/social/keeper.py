@@ -614,6 +614,9 @@ class Keeper:
         now = self._now()
         if row is not None:
             health = classify(row)
+            if health.alive and _daemon_up(daemon) is False:
+                self._deaf(seat, st, rec, daemon)
+                return
             if health.alive:
                 self._report(seat, health)
                 await self._alive(seat, st, rec, row, spec, want, chats, keeps_history)
@@ -721,6 +724,17 @@ class Keeper:
         st.outage = Outage(down_at=down_at, cause=cause)
         log.warning("keeper: %s (%s) is down since %s: %s", seat.name, rec["job"],
                     _hhmm(down_at), st.outage.describe_cause())
+
+    def _deaf(self, seat: SeatConfig, st: SeatState, rec: dict, daemon: dict | None) -> None:
+        """The session runs, but with no daemon nothing can push a line into it.
+
+        The Pusher drops a line after two minutes of refusals, so the outage
+        record is what tells the seat, once the daemon is back, to read them.
+        """
+        self._open(seat, st, rec, daemon, "the Claude Code daemon on its node stopped")
+        st.outage.action = "deaf"
+        self._report(seat, Health(WAITING, "it runs, but no Claude Code daemon on its "
+                                  "node can push lines into it", rec["job"]))
 
     def _missed(self, seat: SeatConfig, chats: list, keeps_history: bool,
                 since: float, until: float | None = None) -> int | None:
