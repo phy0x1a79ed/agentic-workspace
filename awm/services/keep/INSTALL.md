@@ -5,12 +5,12 @@
 `keep` keeps one Claude Code daemon running on its node, in a user unit of its
 own. Every background session on the node is a child of that daemon. When the
 daemon dies, cx refuses to start, resume or stop a session, and social's
-keeper waits.
+keeper waits. `keep` also warns when the node runs low on memory.
 
 This file holds what the code does not show: why the daemon lives in a
 transient user unit, why the unit carries each of its properties, what a node
 needs before `keep` can launch, what `keep` does with a daemon it did not
-start, and how to stop the daemon on purpose. The verbs are in
+start, how to stop the daemon on purpose, and who hears a low-memory warning. The verbs are in
 `awm reflection --help` (`daemon_status`, `daemon_ensure`, `daemon_hold`,
 `daemon_release`).
 
@@ -48,6 +48,8 @@ Set these in the gateway's environment (`/etc/awm/env` on a system-unit node):
   change applies the next time `keep` launches the unit.
 - `AWM_KEEP=0`: `keep` launches nothing on this node.
 - `AWM_KEEP_CLAUDE`: the `claude` binary, when it is not the default.
+- `AWM_KEEP_MEMORY_LOW`: the fraction of memory that counts as low. Default
+  `0.12`.
 
 ## Why the daemon runs where it runs
 
@@ -129,3 +131,22 @@ Any agent brings a node's daemon back with
 `action: held`, `reflection daemon_release peer=<node>` ends the hold. When the
 verb does not answer at all, `keep` itself is down: run
 `awm services_restart name=keep peer=<node>`.
+
+## Low memory
+
+When available memory stays below `AWM_KEEP_MEMORY_LOW` for 2 min, `keep`
+sends one notice to the operator's DM (`config.operator_dm()`, through social,
+which `AWM_SOCIAL_PEER` locates). The notice names the three processes of its
+user with the most resident memory, and the session that owns each. Each of
+those sessions also gets a line in its own prompt. Both repeat at most once an
+hour.
+
+The warning exists because the kernel picks the victim when memory runs out.
+On 2026-10-19 a 31.9 GB python ran altair out, and the kill took every
+session down. The daemon unit's `OOMScoreAdjust=-200` steers the kernel away
+from the sessions, but the warning is the only step that comes before the
+kill.
+
+**CAUTION** `keep` sees only its own user's processes. On a node whose
+gateway runs as an app user (deneb), a hog of another user goes unnamed. A
+node that runs no social and sets no `AWM_SOCIAL_PEER` only logs the notice.

@@ -8,6 +8,7 @@ version = "0.1.0"
 requires-python = ">=3.11"
 description = "AWM keep service: keeps the node's Claude Code daemon running in its own systemd user unit."
 dependencies = [
+    "awm-config",
     "awm-gatewayclient",
     "awm-claudedaemon",
 ]

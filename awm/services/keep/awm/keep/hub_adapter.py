@@ -4,6 +4,8 @@ The verbs join the `reflection` tool beside cx's session verbs, as
 ``daemon_status``, ``daemon_ensure``, ``daemon_hold`` and ``daemon_release``.
 The supervision loop runs `Keeper.reconcile` from a thread, because a launch
 shells out to systemd and the gateway reaps a service whose event loop stalls.
+A second loop warns the operator, and the sessions that own the biggest
+processes, when the node runs low on memory.
 
 Run via ``run.sh`` (which the gateway spawns and respawns):
     python -m awm.keep.hub_adapter
@@ -13,11 +15,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Any
 
+from awm import config
+from awm import gatewayclient
 from awm.gatewayclient import ServiceAdapter, spawn_supervised
 
-from awm.keep import daemon
+from awm.keep import daemon, memwatch
 
 log = logging.getLogger("awm.keep.hub_adapter")
 
@@ -132,13 +137,60 @@ async def _keep_daemon_running() -> None:
         await asyncio.sleep(daemon.TICK_S)
 
 
+WATCH = memwatch.MemWatch()
+
+
+async def _tell_operator(text: str) -> None:
+    target = config.operator_dm()
+    if target is None:
+        log.warning("keep: no operator DM on this node; %s", text)
+        return
+    account, channel = target
+    await gatewayclient.call_maybe_peer(
+        gatewayclient.peer_env("AWM_SOCIAL_PEER"), "social", "send",
+        {"account": account, "channel": channel, "text": text})
+
+
+async def memory_tick(now: float | None = None) -> None:
+    """Warn once when memory stays low: the operator, then each hog's session."""
+    now = time.time() if now is None else now
+    total, available = await asyncio.to_thread(memwatch.read_meminfo)
+    if not WATCH.tick(now, total, available):
+        return
+    hogs = await asyncio.to_thread(memwatch.top_hogs)
+    node = config.node_name()
+    text = memwatch.render(node, total, available, hogs)
+    log.warning("keep: %s", text)
+    try:
+        await _tell_operator(text)
+    except Exception as exc:  # noqa: BLE001 — the sessions still hear it
+        log.warning("keep: could not tell the operator: %s", exc)
+    for hog in WATCH.jobs_to_warn(now, hogs):
+        try:
+            await gatewayclient.call("reflection", "message", {
+                "job": hog.job, "text": memwatch.session_warning(node, hog, available)})
+        except Exception as exc:  # noqa: BLE001
+            log.warning("keep: could not warn %s: %s", hog.job, exc)
+
+
+async def _watch_memory() -> None:
+    while True:
+        try:
+            await memory_tick()
+        except Exception:  # noqa: BLE001 — a bad tick must not end the loop
+            log.exception("keep: memory watch failed")
+        await asyncio.sleep(daemon.TICK_S)
+
+
 SUPERVISION: asyncio.Task | None = None
+MEMORY: asyncio.Task | None = None
 
 
 def _on_start() -> None:
-    """Arrange for the loop to run, and return None so startup is not blocked on it."""
-    global SUPERVISION
+    """Arrange for the loops to run, and return None so startup is not blocked on them."""
+    global SUPERVISION, MEMORY
     SUPERVISION = spawn_supervised("keep.reconcile", _keep_daemon_running)
+    MEMORY = spawn_supervised("keep.memory", _watch_memory)
 
 
 async def main() -> None:
