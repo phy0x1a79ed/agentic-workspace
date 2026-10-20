@@ -589,6 +589,31 @@ async def test_a_seat_waits_for_its_daemon_and_resumes_the_same_job(kept):
     assert "1 message arrived meanwhile." in line
 
 
+async def test_a_seat_that_runs_through_a_daemon_outage_hears_what_it_missed(kept):
+    """With no daemon nothing is pushed, and the Pusher drops a line after two
+    minutes, so the seat is told to read the backlog once the daemon is back."""
+    k, cx, dao, clock = kept
+    await k.tick()
+    clock.t += 60
+    await k.tick()
+    cx.daemon = {"state": "down", "pid": None, "since": _iso(clock.t + 5), "cause": "signal"}
+    for _ in range(4):
+        clock.t += 60
+        await k.tick()
+    status = k.status(k.seats[0])
+    assert status["health"] == "waiting" and "push" in status["reason"]
+    assert not cx.resumed and len(cx.started) == 1 and not k.pushed
+    _say(dao, "C1", clock.t - 30)
+    cx.revive()
+    clock.t += 60
+    await k.tick()
+    ((_, job, line),) = k.pushed
+    assert job == "job00001" and "stopped by a signal" in line
+    assert "kept running, but no line could be pushed" in line
+    assert "1 message arrived meanwhile." in line
+    assert k.status(k.seats[0])["health"] == "running"
+
+
 async def test_a_resume_refused_for_want_of_a_daemon_spends_nothing(kept):
     k, cx, _, clock = kept
     await k.tick()
