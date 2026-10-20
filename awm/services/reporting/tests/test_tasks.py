@@ -30,11 +30,13 @@ class Env:
         self.ledger = Ledger(tmp_path / "reporting.db")
         self.queue = Queue(tmp_path / "reporting.db")
         self.alive = {200: True}
+        self.job_dirs: set[str] = set()
         self.fed = FakeFed()
         self.cx = FakeCx()
         self.names = {100: "opal", 200: "tty-agent"}
         self.tasks = Tasks(self.ledger, SwarmBoard(self.tri), node="altair",
-                           resolve=self.records.get, job_state=lambda job: self.job, dm=self._dm,
+                           resolve=self.records.get, job_state=lambda job: self.job,
+                           job_exists=self.job_dirs.__contains__, dm=self._dm,
                            alive=lambda pid, start: self.alive.get(pid, False), fetch=self._fetch,
                            queue=self.queue, fed=self.fed, cx=self.cx, agent_name=self.names.get,
                            swarm="tony")
@@ -316,10 +318,15 @@ async def started(env):
     return env.task()
 
 
-async def test_a_stopped_job_closes_its_task_as_done_and_files_the_card_in_the_done_column(env):
+async def test_a_stopped_job_waits_in_review_and_tonys_drag_files_it_in_the_done_column(env):
     note, tonys = env.tonys_note()
     await env.call("claim_task", url=URL.format(note))
     await env.tasks.sweep([row("stopped")])
+    task = env.task()
+    assert task["state"] == "review" and task["ended"] == 1 and not task["closed"]
+    assert sorted(env.tri.parents(note)) == sorted([tonys, env.ids["Pending review"]])
+    env.tri.notes[note]["parents"] = [tonys, env.ids["Done"]]
+    await env.tasks.sweep([])
     task = env.task()
     assert task["state"] == "done" and task["closed"] and env.ledger.open() == []
     ledger_note = env.tri.kids(env.ids["Ledger"])[0]
@@ -454,7 +461,7 @@ async def test_a_job_that_died_without_a_stop_stays_on_the_board_flagged_and_res
     task = await started(env)
     await env.tasks.sweep([row("gone")])
     assert env.task()["ended"] == 1 and env.column(task["note_id"]) == ["Active"]
-    assert "died without a stop" in env.body(task)
+    assert "<strong>Ended:</strong> not running, resumable" in env.body(task)
     await env.tasks.sweep([row("gone")])
     assert [e["kind"] for e in env.ledger.events(task["id"])].count("ended") == 1
     await env.tasks.sweep([row("working")])
@@ -468,15 +475,44 @@ async def test_an_idle_session_waiting_on_slurm_stays_active(env):
     assert env.task()["state"] == "active"
 
 
-async def test_a_job_with_no_row_closes_only_on_the_second_sweep(env):
-    await started(env)
+async def test_a_job_with_no_row_and_no_directory_goes_to_review_only_on_the_second_sweep(env):
+    task = await started(env)
     await env.tasks.sweep([])
     assert env.task()["state"] == "active"
     await env.tasks.sweep([row("working")])
     await env.tasks.sweep([])
-    assert env.task()["state"] == "active"
+    assert env.task()["state"] == "active" and env.task()["ended"] == 0
     await env.tasks.sweep([])
-    assert env.task()["state"] == "done"
+    assert env.task()["state"] == "review" and env.task()["ended"] == 1
+    assert env.column(task["note_id"]) == ["Pending review"] and env.ledger.open() != []
+
+
+@pytest.mark.parametrize("state, column", [("active", "Active"), ("blocked", "Blocked")])
+async def test_a_job_dropped_from_the_roster_keeps_its_column_and_resumes_on_the_same_card(env, state, column):
+    task = await started(env)
+    if state == "blocked":
+        await env.call("request_human", reason="answer me")
+    env.job_dirs.add("job00001")
+    for _ in range(3):
+        await env.tasks.sweep([])
+    after = env.task()
+    assert after["state"] == state and after["ended"] == 1 and not after["closed"]
+    assert env.column(task["note_id"]) == [column]
+    assert "<strong>Ended:</strong> not running, resumable" in env.body(task)
+    assert [e["kind"] for e in env.ledger.events(task["id"])].count("ended") == 1
+    await env.tasks.sweep([row("working")])
+    assert env.task()["id"] == task["id"] and env.task()["ended"] == 0 and env.task()["state"] == state
+    assert "Ended:" not in env.body(task) and len(env.ledger.open()) == 1
+
+
+async def test_a_stopped_blocked_job_moves_to_review_and_keeps_its_question(env):
+    task = await started(env)
+    await env.call("request_human", reason="answer me")
+    await env.tasks.sweep([row("stopped")])
+    after = env.task()
+    assert after["state"] == "review" and after["ended"] == 1 and after["reason"] == "answer me"
+    assert env.column(task["note_id"]) == ["Pending review"]
+    assert "<strong>Ended:</strong> stopped" in env.body(task)
 
 
 async def test_an_interactive_session_that_exits_closes_its_task(env):
@@ -522,14 +558,14 @@ async def test_a_sweep_retries_what_the_board_refused(env):
     assert "alpha" in env.body(task)
 
 
-async def test_a_close_the_board_refused_is_moved_to_done_once_the_board_is_back(env):
+async def test_a_stop_the_board_refused_is_moved_to_review_once_the_board_is_back(env):
     task = await started(env)
     env.tri.fail = RuntimeError("down")
     await env.tasks.sweep([row("stopped")])
-    assert env.task()["state"] == "done" and env.task()["dirty"] == 1
+    assert env.task()["state"] == "review" and env.task()["dirty"] == 1
     env.tri.fail = None
     await env.tasks.sweep([])
-    assert env.task()["dirty"] == 0 and env.column(task["note_id"]) == ["Done"]
+    assert env.task()["dirty"] == 0 and env.column(task["note_id"]) == ["Pending review"]
 
 
 async def test_a_blocked_urgent_task_gets_one_reminder_after_the_delay(env, monkeypatch):
@@ -652,7 +688,7 @@ async def test_the_catch_up_finds_a_post_the_subscription_missed_and_runs_on_a_t
 
 async def test_a_post_for_a_closed_task_is_not_appended(env, tmp_path):
     await in_scope(env, tmp_path)
-    await env.tasks.sweep([row("stopped")])
+    env.ledger.close(env.task()["id"])
     await env.tasks.on_post({"post": post()})
     assert env.ledger.events(env.task()["id"], "journal") == []
 

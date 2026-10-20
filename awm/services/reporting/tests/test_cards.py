@@ -190,15 +190,15 @@ async def test_a_rekeyed_key_is_never_found_by_prefix(env):
     assert again["ok"] and env.task()["key"] == "job00001" and len(env.ledger.open()) == 2
 
 
-async def test_the_sweep_closes_the_rekeyed_task_and_files_its_card(env):
+async def test_the_sweep_moves_the_rekeyed_task_to_review(env):
     await env.call("hook_plan_approved", plan_text="p")
     old = env.task()
     await env.call("hook_session_clear")
     await env.call("hook_plan", plan_text="# New\n\nx")
     for _ in range(2):
         await env.tasks.sweep([row("working")])
-    assert env.ledger.get(old["id"])["state"] == "done"
-    assert env.task()["state"] == "planned"
+    assert env.ledger.get(old["id"])["state"] == "review" and env.ledger.get(old["id"])["ended"] == 1
+    assert env.column(old["note_id"]) == ["Pending review"] and env.task()["state"] == "planned"
 
 
 async def test_a_clear_title_survives_for_the_filed_task(env):
