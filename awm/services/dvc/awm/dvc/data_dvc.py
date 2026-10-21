@@ -742,7 +742,7 @@ def ensure_cache_config(repo_dir: Path) -> None:
     # hardlink first, symlink as the fallback for a cross-device cache. Both
     # mean one physical copy; the default (`copy`) would mean N. Portable, so
     # it belongs in the tracked config where every checkout inherits it.
-    have = _dvc(repo_dir, "config", "cache.type")
+    have = _dvc(repo_dir, "config", "--project", "cache.type")
     if (have.stdout or "").strip().strip('"') != "hardlink,symlink":
         _dvc(repo_dir, "config", "cache.type", "hardlink,symlink")
 
