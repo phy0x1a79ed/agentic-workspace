@@ -538,6 +538,18 @@ def _schema_param_to_signature(
     )
 
 
+def _json_object_option(name: str, text: str) -> dict:
+    """An object-typed option arrives as text: parse it, so the verb receives an object."""
+    flag = f"--{name.replace('_', '-')}"
+    try:
+        value = json.loads(text)
+    except json.JSONDecodeError as e:
+        raise typer.BadParameter(f"not JSON: {e}", param_hint=flag) from None
+    if not isinstance(value, dict):
+        raise typer.BadParameter("must be a JSON object", param_hint=flag)
+    return value
+
+
 def _make_service_cli_handler(tool: dict, api_func: Callable) -> Callable:
     """Create a Typer handler for one service tool that dispatches via
     ``POST /invoke`` and renders the result."""
@@ -545,8 +557,12 @@ def _make_service_cli_handler(tool: dict, api_func: Callable) -> Callable:
     schema = tool.get("inputSchema") or {}
     props: dict = schema.get("properties", {}) or {}
     required = set(schema.get("required", []) or [])
+    objects = {n for n, p in props.items() if p.get("type") == "object"}
 
     def handler(**kwargs):
+        for name in objects & kwargs.keys():
+            if isinstance(kwargs[name], str):
+                kwargs[name] = _json_object_option(name, kwargs[name])
         _invoke_dispatch(tool_name, api_func, kwargs)
 
     # A tool's inputSchema lists params in manifest/display order, which is free

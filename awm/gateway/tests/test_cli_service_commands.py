@@ -267,3 +267,37 @@ def test_a_tether_cli_call_from_a_plain_terminal_names_nobody(monkeypatch, tmp_p
     calls = _run_tether_cli(monkeypatch, tmp_path, recorded_pid=None)
 
     assert "headers" not in calls[0]
+
+
+_OBJECT_TOOL = [{
+    "name": "factorio_tool",
+    "description": "Run a tool",
+    "inputSchema": {"type": "object", "properties": {
+        "name": {"type": "string"}, "args": {"type": "object"}},
+        "required": ["name"]},
+}]
+
+
+def _object_tool_command(calls):
+    def api(method, path, **kwargs):
+        calls.append(kwargs["json"])
+        return _StubResponse(200, {"result": '{"ok": true}'})
+
+    groups = register_service_cli_commands(
+        typer.Typer(), _OBJECT_TOOL, api_func=api, exclude_names=set())
+    return next(c for c in groups["factorio"].registered_commands if c.name == "tool")
+
+
+def test_an_object_option_is_sent_as_an_object():
+    calls = []
+    _object_tool_command(calls).callback(name="look", args='{"x0": 1, "tags": ["a"]}')
+    assert calls == [{"name": "factorio_tool", "args": {
+        "name": "look", "args": {"x0": 1, "tags": ["a"]}}}]
+
+
+@pytest.mark.parametrize("text", ["{not json", "[1, 2]"])
+def test_an_object_option_that_is_not_a_json_object_is_refused(text):
+    calls = []
+    with pytest.raises(typer.BadParameter):
+        _object_tool_command(calls).callback(name="look", args=text)
+    assert calls == []
