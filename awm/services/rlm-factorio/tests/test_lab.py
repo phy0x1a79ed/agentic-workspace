@@ -5,6 +5,7 @@ import hashlib
 import json
 import re
 import sqlite3
+import subprocess
 
 import pytest
 
@@ -139,6 +140,26 @@ def test_a_lab_binds_saves_loads_lab_mods_and_lab_settings():
     assert svc["environment"] == {"BOOT_SAVE": "base", "BOOT_NEW": "", "BOOT_PAUSED": "1"}
     assert appliance.compose_env(row)["FACTORIO_CPUS"] == "2.0"
     assert appliance.compose_files(row)[-1].name == "compose.json"
+
+
+def test_compose_runs_the_world_project_with_its_override(monkeypatch):
+    row = make_world()
+    calls = []
+
+    def run(cmd, **kw):
+        calls.append((cmd, kw["env"]))
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(appliance, "ensure_image", lambda: None)
+    monkeypatch.setattr(appliance.subprocess, "run", run)
+    appliance.compose_up(row, {"create": True, "paused": True})
+    appliance.compose_down(row)
+    (up, env), (down, _) = calls
+    files = [str(appliance.COMPOSE_FILE), str(appliance.world_dir(row["session_id"]) / "compose.json")]
+    assert up == ["docker", "compose", "-p", row["compose_project"], "-f", files[0], "-f", files[1],
+                  "up", "-d", "--force-recreate"]
+    assert down[-1] == "down" and down[:3] == ["docker", "compose", "-p"]
+    assert env["FACTORIO_CONTAINER"] == row["container_name"]
 
 
 def test_lab_config_files_exist():
