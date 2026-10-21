@@ -45,6 +45,9 @@ SHAPES = [
     ("POST", f"/board/cards/{CARD}/messages"),
     ("GET", f"/board/cards/{CARD}/messages"),
     ("GET", f"/board/cards/{CARD}/events"),
+    ("POST", f"/board/cards/{CARD}/files"),
+    ("GET", f"/board/cards/{CARD}/files"),
+    ("GET", f"/board/cards/{CARD}/files/{CARD}"),
     ("GET", "/board/stream"),
 ]
 
@@ -640,3 +643,23 @@ def test_the_upstream_is_closed_when_the_client_walks_away():
 
     asyncio.run(run())
     assert closed == [True]
+
+
+def test_a_file_upload_has_the_larger_cap_and_nothing_else_does():
+    seen, handler = _recorder()
+    with _client(_app(), handler) as c:
+        r = c.post(f"/board/cards/{CARD}/files?name=a.txt&sha256=00", content=b"x" * (board.MAX_BODY + 1))
+        assert r.status_code == 200
+        r = c.post(f"/board/cards/{CARD}/files", content=b"x" * (board.MAX_FILE_BODY + 1))
+        assert r.status_code == 413
+        r = c.post(f"/board/cards/{CARD}/messages", content=b"x" * (board.MAX_BODY + 1))
+        assert r.status_code == 413
+    assert len(seen) == 1
+
+
+def test_a_file_id_must_be_a_minted_id():
+    seen, handler = _recorder()
+    with _client(_app(), handler) as c:
+        assert c.get(f"/board/cards/{CARD}/files/../../stream").status_code == 404
+        assert c.get(f"/board/cards/{CARD}/files/{CARD}/x").status_code == 404
+    assert seen == []

@@ -23,7 +23,7 @@ import uvicorn
 from starlette.applications import Starlette
 from starlette.exceptions import HTTPException
 from starlette.requests import Request
-from starlette.responses import JSONResponse, StreamingResponse
+from starlette.responses import FileResponse, JSONResponse, StreamingResponse
 from starlette.routing import Route
 
 from awm.board import HEARTBEAT_S, PREFIX
@@ -127,6 +127,14 @@ class Door:
         except ValueError:
             return None
         return body if isinstance(body, dict) else None
+
+    @staticmethod
+    def _hex_id(raw: str) -> str | None:
+        try:
+            uuid.UUID(raw)
+        except ValueError:
+            return None
+        return raw
 
     @staticmethod
     def _card_id(request: Request) -> str | None:
@@ -261,6 +269,59 @@ class Door:
         paging = {k: v for k in ("after", "limit") if (v := request.query_params.get(k))}
         return await self._call(self.board.messages, party, card_id, **paging)
 
+    async def post_file(self, request: Request) -> JSONResponse:
+        """Raw bytes in the body; ``name`` and ``sha256`` in the query, which the edge does not touch."""
+        party = await self._party(request)
+        card_id = self._card_id(request)
+        if party is None or card_id is None:
+            return not_found()
+        from awm.board.files import TooLarge
+
+        cap = getattr(getattr(self.board, "files", None), "max_bytes", 0)
+        declared = request.headers.get("content-length", "")
+        if declared.isdigit() and int(declared) > cap:
+            return JSONResponse({"error": f"a file may be at most {cap} bytes"}, status_code=413)
+        chunks, size = [], 0
+        async for chunk in request.stream():
+            size += len(chunk)
+            if size > cap:
+                return JSONResponse({"error": f"a file may be at most {cap} bytes"}, status_code=413)
+            chunks.append(chunk)
+        try:
+            return await self._call(self.board.attach, party, card_id,
+                                    name=request.query_params.get("name") or "",
+                                    data=b"".join(chunks),
+                                    sha256=request.query_params.get("sha256") or "",
+                                    agent=request.query_params.get("agent"),
+                                    node=request.query_params.get("node"))
+        except TooLarge as exc:
+            return JSONResponse({"error": str(exc)}, status_code=413)
+
+    async def list_files(self, request: Request) -> JSONResponse:
+        party = await self._party(request)
+        card_id = self._card_id(request)
+        if party is None or card_id is None:
+            return not_found()
+        return await self._call(self.board.card_files, party, card_id)
+
+    async def get_file(self, request: Request) -> Any:
+        party = await self._party(request)
+        card_id = self._card_id(request)
+        file_id = self._hex_id(request.path_params["file_id"])
+        if party is None or card_id is None or file_id is None:
+            return not_found()
+        NotFound, Forbidden, _, _ = _exceptions()
+        try:
+            meta, path = await asyncio.to_thread(self.board.card_file, party, card_id, file_id)
+        except (NotFound, Forbidden):
+            return not_found()
+        return FileResponse(path, media_type="application/octet-stream", headers={
+            "Content-Disposition": f'attachment; filename="{meta["name"]}"',
+            "X-Content-Type-Options": "nosniff",
+            "X-Board-Sha256": meta["sha256"],
+            "Cache-Control": "no-store",
+        })
+
     async def stream(self, request: Request) -> StreamingResponse | JSONResponse:
         party = await self._party(request)
         if party is None:
@@ -319,6 +380,9 @@ def create_app(
         Route(f"{PREFIX}/cards/{{card_id}}/events", guarded(door.list_events), methods=["GET"]),
         Route(f"{PREFIX}/cards/{{card_id}}/messages", guarded(door.post_message), methods=["POST"]),
         Route(f"{PREFIX}/cards/{{card_id}}/messages", guarded(door.list_messages), methods=["GET"]),
+        Route(f"{PREFIX}/cards/{{card_id}}/files", guarded(door.post_file), methods=["POST"]),
+        Route(f"{PREFIX}/cards/{{card_id}}/files", guarded(door.list_files), methods=["GET"]),
+        Route(f"{PREFIX}/cards/{{card_id}}/files/{{file_id}}", guarded(door.get_file), methods=["GET"]),
         Route(f"{PREFIX}/stream", guarded(door.stream), methods=["GET"]),
     ]
     return Starlette(routes=routes, exception_handlers={HTTPException: _refuse})
