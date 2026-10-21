@@ -12,6 +12,7 @@ from pathlib import Path
 
 from awm import config as _config
 from awm.dvc import data_dvc
+from awm.dvc.backup import has_cache_tag
 
 
 def _git(*args: str) -> subprocess.CompletedProcess:
@@ -104,11 +105,14 @@ def _dvc_wired_projects() -> set[str]:
 
     Wired means the common git config carries awm's merge driver, or any
     worktree tracks a ``.dvc/config``. A project whose worktrees cannot be
-    enumerated counts as wired: the caller then has to name it either way.
+    enumerated counts as wired: the caller then has to name it either way. A
+    no-remote project keeps its own cache, so it is never wired to this one.
     """
     wired: set[str] = set()
     for bare in sorted(_projects_dir().glob("*/.bare")):
         project = bare.parent.name
+        if has_cache_tag(bare.parent):
+            continue
         r = _git("-C", str(bare), "config", "--get", "merge.dvc.driver")
         if r.returncode == 0 and r.stdout.strip():
             wired.add(project)

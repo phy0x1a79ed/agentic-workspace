@@ -70,6 +70,7 @@ from pathlib import Path
 import yaml
 
 from awm import config as _config
+from awm.dvc.backup import has_cache_tag
 from awm.gatewayclient import cancel
 
 log = logging.getLogger("awm.dvc.data_dvc")
@@ -366,9 +367,32 @@ def workspace_root() -> Path:
     return _config.DATA_DIR.parent
 
 
-def cache_dir() -> Path:
-    """The one shared content-addressed cache, for every project on this machine."""
+def cache_dir(repo_dir: Path | None = None) -> Path:
+    """The content-addressed cache a worktree's objects live in.
+
+    Every project shares one, except a no-remote project, which keeps its own
+    beside its worktrees so that the cache sync never carries its bytes.
+    """
+    if repo_dir is not None and no_remote(repo_dir):
+        return project_dir(repo_dir) / CACHE_DIRNAME
     return _config.DATA_DIR / CACHE_DIRNAME
+
+
+def project_dir(repo_dir: Path) -> Path | None:
+    """``projects/<p>/`` for a scope worktree: the directory holding its common git dir."""
+    common = _common_git_dir(repo_dir)
+    return common.parent if common is not None else None
+
+
+def no_remote(repo_dir: Path) -> bool:
+    """Whether this worktree's project opted out of every remote.
+
+    A ``CACHEDIR.TAG`` at ``projects/<p>/`` is the one declaration: the workspace
+    mirror skips the tagged tree, the project's DVC cache lives inside it, and
+    push and pull refuse it.
+    """
+    project = project_dir(repo_dir)
+    return project is not None and has_cache_tag(project)
 
 
 TMPFS = Path("/dev/shm")
@@ -679,7 +703,7 @@ def ensure_cache_config(repo_dir: Path) -> None:
     """
     dvc_dir = repo_dir / ".dvc"
     dvc_dir.mkdir(parents=True, exist_ok=True)
-    cache = cache_dir()
+    cache = cache_dir(repo_dir)
     cache.mkdir(parents=True, exist_ok=True)
 
     local = dvc_dir / "config.local"
@@ -898,7 +922,7 @@ def provision_scope_data(project: str, scope: str, awm_dir: Path) -> dict:
     report: dict = {
         "mode": "dvc",
         "path": str(data_dir(repo_dir)),
-        "cache": str(cache_dir()),
+        "cache": str(cache_dir(repo_dir)),
         "rev": _head_rev(repo_dir),
         "branch": _current_branch(repo_dir),
         "wiring": wiring.get("actions", {}),
@@ -1083,7 +1107,7 @@ def data_status(project: str, scope: str, worktree: Path) -> dict:
         "rev": _head_rev(repo_dir),
         "chunks": pins,
         "mounts": mounts if mounts is not None else "all",
-        "cache": str(cache_dir()),
+        "cache": str(cache_dir(repo_dir)),
         "dvc_bin": dvc_bin(),
     }
     # The one genuinely broken state, and it is silent unless something says so:
