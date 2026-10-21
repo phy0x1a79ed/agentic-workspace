@@ -1,26 +1,30 @@
-"""Lab targets, realm rules, the exec log and the 0.6 tool verbs, against fakes."""
+"""Worlds of every kind, realm rules, seats, blocking verbs and the 0.6 tool
+verbs, against fakes and an in-memory DB. No game runs."""
 
 import hashlib
 import json
 import re
+import sqlite3
 
 import pytest
 
-from awm.rlm_factorio import appliance, hub_adapter as ha, throttle
-
-LAB = "lab:fxlab-t-s"
-LAB_INFO = {"State": {"Running": True}, "Config": {"Labels": {"fxlab": "1"}}}
+from awm.rlm_factorio import appliance, dao, hub_adapter as ha
 
 
 class RespondingBroker:
     """Answers each RCON command from a responder(code) -> output."""
 
-    def __init__(self, respond):
-        self.respond, self.sent = respond, []
+    def __init__(self, respond, cost=0.1):
+        self.respond, self.sent, self.conns, self.cost = respond, [], [], cost
+        self.closed = []
 
     def lua(self, conn, code, *, timeout):
         self.sent.append(code)
-        return {"output": self.respond(code), "cost_ms": 0.1}
+        self.conns.append(conn)
+        return {"output": self.respond(code), "cost_ms": self.cost}
+
+    def close_conn(self, conn):
+        self.closed.append(conn)
 
     def calls(self, fn):
         return [c for c in self.sent if f"'{fn}'" in c]
@@ -43,9 +47,30 @@ def mod_responder(version="0.6.1", tools=(), calls=None):
 def isolated(monkeypatch, tmp_path):
     monkeypatch.setenv("RLM_FACTORIO_EXEC_LOG", str(tmp_path / "exec.jsonl"))
     monkeypatch.setenv("RLM_FACTORIO_ADMIN_TOKEN_FILE", str(tmp_path / "no-token"))
-    monkeypatch.setattr(ha, "THROTTLE", throttle.Throttle())
-    monkeypatch.setattr(ha, "_docker_inspect", lambda c: LAB_INFO)
+    monkeypatch.setattr(appliance, "SERVICES_DIR", tmp_path / "services")
+    monkeypatch.setattr(ha, "_THROTTLES", {})
+    monkeypatch.setattr(ha, "_CONN_USED", {})
+    conn = sqlite3.connect(":memory:", check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    conn.executescript(dao.SCHEMA_SQL)
+    real = dao.FactorioDAO
+    monkeypatch.setattr(ha.dao, "FactorioDAO", lambda: real(conn=conn))
     ha._MOD_VERSIONS.clear()
+    ha._EVENT_BUF.clear()
+
+
+def make_world(kind="lab", name="t", rules=None, status="ready"):
+    d = ha.dao.FactorioDAO()
+    rules = rules or ("sandbox" if kind == "lab" else "realm")
+    row = d.create_session("factorio", kind=kind, rules=rules, name=name,
+                           mods=appliance.world_mods(kind),
+                           **appliance.world_coords(kind, name, set()))
+    return d.set_runtime(row["session_id"], status=status)
+
+
+@pytest.fixture()
+def LAB():
+    return make_world()["session_id"]
 
 
 @pytest.fixture()
@@ -53,6 +78,7 @@ def engine(monkeypatch):
     def install(**kw):
         b = RespondingBroker(mod_responder(**kw))
         monkeypatch.setattr(ha.broker, "for_row", lambda row: b)
+        monkeypatch.setattr(ha.broker, "existing", lambda container: b)
         return b
     return install
 
@@ -61,63 +87,518 @@ def call(handler, /, **args):
     return ha.HANDLERS[handler](args)
 
 
-# ---- the lab: target -------------------------------------------------------
+# ---- world records and coordinates --------------------------------------------
 
-def test_lab_row_is_synthetic():
-    row, seat = ha._resolve({"session_id": LAB}, need_seat=False)
-    assert seat is None
-    assert row == {"session_id": LAB, "container_name": "fxlab-t-s",
-                   "kind": "lab", "rules": "sandbox"}
-
-
-def test_lab_without_label_refused(monkeypatch):
-    monkeypatch.setattr(ha, "_docker_inspect",
-                        lambda c: {"State": {"Running": True}, "Config": {"Labels": {}}})
-    with pytest.raises(ValueError, match="labelled fxlab=1"):
-        ha._resolve({"session_id": LAB}, need_seat=False)
-
-
-def test_lab_must_be_running(monkeypatch):
-    monkeypatch.setattr(ha, "_docker_inspect",
-                        lambda c: {"State": {"Running": False}, "Config": LAB_INFO["Config"]})
-    with pytest.raises(ValueError, match="not running"):
-        ha._resolve({"session_id": LAB}, need_seat=False)
+def test_migration_backfills_old_rows_as_the_headless_realm():
+    conn = sqlite3.connect(":memory:")
+    conn.executescript(dao.MIGRATIONS[(1, 2)])
+    conn.executescript("""CREATE TABLE rlm_sessions (session_id TEXT PRIMARY KEY,
+        game TEXT, status TEXT, container_name TEXT, compose_project TEXT,
+        control_port INTEGER, game_port INTEGER, rcon_port INTEGER,
+        current_world TEXT, created_at TEXT, updated_at TEXT);
+        INSERT INTO rlm_sessions (session_id) VALUES ('old');
+        INSERT INTO rlm_seats (seat_id, session_id) VALUES ('s', 'old');""")
+    conn.executescript(dao.MIGRATIONS[(2, 3)])
+    assert conn.execute("SELECT kind, rules, name, mods FROM rlm_sessions").fetchone() == \
+        ("headless", "realm", "realm", "[]")
+    assert conn.execute("SELECT role FROM rlm_seats").fetchone() == ("player",)
 
 
-def test_lab_container_must_exist(monkeypatch):
-    monkeypatch.setattr(ha, "_docker_inspect", lambda c: None)
-    with pytest.raises(ValueError, match="no such lab container"):
-        ha._resolve({"session_id": LAB}, need_seat=False)
+def test_realm_keeps_its_coordinates_and_others_get_their_own():
+    realm = appliance.world_coords("headless", "realm", set())
+    assert realm == {"compose_project": appliance.PROJECT, "container_name": appliance.CONTAINER,
+                     "control_port": appliance.CONTROL_PORT, "game_port": appliance.GAME_PORT}
+    assert appliance.world_coords("rendered", "realm", set()) == realm
+    lab = appliance.world_coords("lab", "realm", set())
+    assert lab["compose_project"] == "rlm-factorio-lab-realm"
+    taken = {lab["control_port"], lab["game_port"]}
+    other = appliance.world_coords("lab", "b", taken)
+    assert other["control_port"] not in taken and other["game_port"] not in taken
 
 
-@pytest.mark.parametrize("sid", ["lab:rlm-factorio", "lab:-rf", "lab:a b", "lab:"])
-def test_realm_and_odd_names_never_inspected(sid, monkeypatch):
-    monkeypatch.setattr(ha, "_docker_inspect",
-                        lambda c: pytest.fail("inspected " + c))
-    with pytest.raises(ValueError, match="not a lab container name"):
-        ha._resolve({"session_id": sid}, need_seat=False)
+def override(row, boot=None):
+    return json.loads(appliance.write_override(row, boot).read_text())["services"]["factorio"]
 
 
-@pytest.mark.parametrize("verb,args", [
-    ("move", {"x": 1, "y": 2}), ("mine", {"x": 1, "y": 2, "name": "coal"}),
-    ("craft", {"recipe": "pipe"}), ("observe", {}), ("stop", {}),
-    ("teleport", {"x": 1, "y": 2}),
+def test_only_a_rendered_world_publishes_the_game_port():
+    headless = make_world("headless", "realm")
+    rendered = ha.dao.FactorioDAO().set_runtime(headless["session_id"], kind="rendered")
+    assert "ports" not in override(headless)
+    assert override(rendered)["ports"] == [f"{appliance.GAME_PORT}:12140/udp"]
+
+
+def test_a_lab_binds_saves_loads_lab_mods_and_lab_settings():
+    row = make_world()
+    svc = override(row, {"save": "base", "paused": True})
+    vols = svc["volumes"]
+    assert f"{appliance.saves_dir(row)}:/factorio/saves" in vols
+    assert any(v.endswith("lab-server-settings.json:/factorio/config/server-settings.json:ro")
+               for v in vols)
+    for mod in appliance.LAB_MODS:
+        assert f"{appliance.LAB_MODS_DIR / mod}:/opt/factorio/mods/{mod}:ro" in vols
+    assert svc["environment"] == {"BOOT_SAVE": "base", "BOOT_NEW": "", "BOOT_PAUSED": "1"}
+    assert appliance.compose_env(row)["FACTORIO_CPUS"] == "2.0"
+    assert appliance.compose_files(row)[-1].name == "compose.json"
+
+
+def test_lab_config_files_exist():
+    for name in ("lab-server-settings.json", "lab-map-gen-settings.json", "config-camera.ini"):
+        assert (appliance.APPLIANCE_DIR / "config" / name).is_file()
+
+
+def test_stage_save_copies_a_host_zip_into_the_lab(tmp_path):
+    row = make_world()
+    src = tmp_path / "base+cam.zip"
+    src.write_bytes(b"zip")
+    assert appliance.stage_save(row, str(src)) == "base+cam"
+    assert (appliance.saves_dir(row) / "base+cam.zip").read_bytes() == b"zip"
+
+
+# ---- acquire --------------------------------------------------------------------
+
+@pytest.fixture()
+def compose(monkeypatch):
+    seen = {"up": [], "down": [], "running": set()}
+
+    def up(row, boot=None):
+        seen["up"].append((row, boot))
+        seen["running"].add(row["compose_project"])
+    monkeypatch.setattr(appliance, "compose_up", up)
+    monkeypatch.setattr(appliance, "compose_down", lambda row: seen["down"].append(row))
+    monkeypatch.setattr(appliance, "is_container_running",
+                        lambda row: row["compose_project"] in seen["running"])
+    monkeypatch.setattr(appliance, "wait_ready", lambda row: {"current_world": None})
+    monkeypatch.setattr(appliance, "stage_save", lambda row, save: save)
+    return seen
+
+
+def test_acquire_defaults_to_the_headless_realm(compose):
+    out = call("acquire", game="factorio")
+    assert out["kind"] == "headless" and out["rules"] == "realm" and out["name"] == "realm"
+    row, boot = compose["up"][0]
+    assert row["compose_project"] == appliance.PROJECT and boot == {"paused": False, "create": False}
+    again = call("acquire", game="factorio")
+    assert again == {**out, "adopted": True} and len(compose["up"]) == 1
+
+
+def test_acquire_a_lab(compose):
+    out = call("acquire", game="factorio", kind="lab", name="t-s", save="base")
+    assert out["rules"] == "sandbox" and out["saves_dir"].endswith("/saves")
+    row, boot = compose["up"][0]
+    assert boot == {"paused": True, "create": False, "save": "base"}
+    assert json.loads(row["mods"]) == appliance.world_mods("lab")
+    assert row["container_name"] == "rlm-factorio-lab-t-s-appliance"
+
+
+@pytest.mark.parametrize("args,match", [
+    ({"kind": "lab", "save": "x"}, "a lab needs a name"),
+    ({"kind": "lab", "name": "a"}, "boots on a save"),
+    ({"kind": "lab", "name": "a", "save": "x", "create": True}, "not both"),
+    ({"kind": "rendered", "rules": "sandbox"}, "rendered world runs realm rules"),
 ])
-def test_seat_verbs_refused_in_a_lab(verb, args):
-    with pytest.raises(ValueError, match="no seat in a lab"):
-        call(verb, session_id=LAB, **args)
+def test_acquire_refuses(compose, args, match):
+    with pytest.raises(ValueError, match=match):
+        call("acquire", game="factorio", **args)
+    assert compose["up"] == []
 
 
-def test_seat_id_with_a_lab_refused():
-    with pytest.raises(ValueError, match="no seat in a lab"):
-        ha._resolve({"session_id": LAB, "seat_id": "x"}, need_seat=False)
+def test_acquire_refuses_a_kind_change_of_a_live_world(compose):
+    call("acquire", game="factorio")
+    with pytest.raises(ValueError, match="live as headless"):
+        call("acquire", game="factorio", kind="rendered")
 
 
-def test_exec_lua_runs_on_a_lab(engine):
+def test_acquire_restarts_a_world_whose_container_is_gone(compose):
+    first = call("acquire", game="factorio")
+    compose["running"].clear()
+    second = call("acquire", game="factorio", kind="rendered")
+    assert second["session_id"] != first["session_id"] and second["game_port"]
+    assert ha.dao.FactorioDAO().get_session(first["session_id"])["status"] == "stopped"
+
+
+def test_lab_cap_refuses_at_once(compose, monkeypatch):
+    monkeypatch.setattr(ha, "MAX_LABS", 2)
+    a = call("acquire", game="factorio", kind="lab", name="a", create=True)
+    b = call("acquire", game="factorio", kind="lab", name="b", create=True)
+    call("acquire", game="factorio")
+    with pytest.raises(appliance.ApplianceError, match="LAB_CAP"):
+        call("acquire", game="factorio", kind="lab", name="c", create=True)
+    assert len(compose["up"]) == 3
+    rows = {r["session_id"]: r for r in ha.dao.FactorioDAO().live_sessions()}
+    assert rows[a["session_id"]]["control_port"] != rows[b["session_id"]]["control_port"]
+
+
+def test_failed_bring_up_marks_error_and_tears_down(compose, monkeypatch):
+    def fail(row):
+        raise appliance.ApplianceError("no engine")
+    monkeypatch.setattr(appliance, "wait_ready", fail)
+    with pytest.raises(appliance.ApplianceError, match="no engine"):
+        call("acquire", game="factorio", kind="lab", name="a", create=True)
+    assert len(compose["down"]) == 1
+    assert ha.dao.FactorioDAO().live_sessions() == []
+
+
+def test_release_a_lab(compose, engine, monkeypatch):
+    engine()
+    dropped = []
+    monkeypatch.setattr(ha.broker, "drop", dropped.append)
+    sid = call("acquire", game="factorio", kind="lab", name="a", create=True)["session_id"]
+    assert call("release", session_id=sid)["released"]
+    assert dropped == ["rlm-factorio-lab-a-appliance"]
+    assert ha.dao.FactorioDAO().get_session(sid)["status"] == "stopped"
+
+
+# ---- supervisor verbs on a lab ------------------------------------------------------
+
+@pytest.fixture()
+def supervisor(monkeypatch):
+    posts = []
+
+    class Resp:
+        status_code = 200
+
+        def json(self):
+            return {"ok": True, "result": {"paused": True, "saved": "x", "world": "x"}}
+    monkeypatch.setattr(ha.appliance.httpx, "post",
+                        lambda url, json, timeout: posts.append((url, json)) or Resp())
+    return posts
+
+
+@pytest.mark.parametrize("verb,args,path", [
+    ("pause", {"paused": True}, "/pause"), ("world_save", {"name": "x"}, "/save"),
+    ("world_load", {"name": "x"}, "/load"),
+])
+def test_a_lab_reaches_its_own_supervisor(LAB, engine, supervisor, verb, args, path):
+    engine()
+    call(verb, session_id=LAB, **args)
+    port = ha.dao.FactorioDAO().get_session(LAB)["control_port"]
+    assert [url for url, _ in supervisor] == [f"http://127.0.0.1:{port}{path}"]
+
+
+def test_observe_events_on_a_lab(LAB, engine):
+    engine()
+    ha._fire(LAB, "x", {"a": 1})
+    assert call("observe_events", session_id=LAB)["events"][0] == {"kind": "x", "data": {"a": 1}}
+
+
+def test_exec_lua_runs_on_a_lab(LAB, engine):
     b = engine()
     b.respond = lambda code: "123"
     out = call("exec_lua", session_id=LAB, code="rcon.print(game.tick)")
     assert out["output"] == "123" and out["seat"] is None
+
+
+def test_lab_mod_version_is_not_cached_for_long(LAB, engine, monkeypatch):
+    b = engine()
+    clock = [100.0]
+    monkeypatch.setattr(ha.time, "monotonic", lambda: clock[0])
+    row = ha.dao.FactorioDAO().get_session(LAB)
+    ha._mod_version(row)
+    clock[0] += 3
+    ha._mod_version(row)
+    assert len([c for c in b.sent if "active_mods" in c]) == 1
+    clock[0] += 3
+    ha._mod_version(row)
+    assert len([c for c in b.sent if "active_mods" in c]) == 2
+
+
+# ---- seats on every kind -------------------------------------------------------------
+
+@pytest.fixture()
+def seats(monkeypatch):
+    runs = []
+    monkeypatch.setattr(appliance, "seat_run",
+                        lambda container, network, name, **kw: runs.append(
+                            {"container": container, "network": network, "name": name, **kw}))
+    monkeypatch.setattr(appliance, "seat_container_running", lambda c: True)
+    monkeypatch.setattr(appliance, "seat_stop", lambda c: None)
+    return runs
+
+
+def seat_engine(engine):
+    b = engine()
+    b.respond = lambda code: "3" if "game.players[" in code and "connected" in code \
+        else json.dumps({"ok": True})
+    return b
+
+
+def test_a_player_seat_on_a_lab_loads_the_lab_mods_and_spawns(LAB, engine, seats):
+    b = seat_engine(engine)
+    out = call("join", session_id=LAB)
+    assert out["role"] == "player" and out["player_index"] == 3
+    assert seats[0]["mods"] == appliance.world_mods("lab")
+    assert seats[0]["network"] == "rlm-factorio-lab-t_default"
+    assert b.calls("spawn") and not b.calls("view_booth")
+    b.respond = lambda code: json.dumps({"ok": True})
+    call("move", seat_id=out["seat_id"], x=1, y=2)
+    assert f'"seat": "{out["player_name"]}"' in b.calls("set_target")[0]
+
+
+def test_a_camera_seat_parks_in_the_booth(LAB, engine, seats):
+    b = seat_engine(engine)
+    out = call("join", session_id=LAB, role="camera")
+    assert out["player_name"] == ha.CAMERA_NAME and seats[0]["role"] == "camera"
+    assert "remote.call('sbx','view_booth'" in b.calls("view_booth")[0]
+    assert not b.calls("spawn")
+    with pytest.raises(ValueError, match="already has a camera"):
+        call("join", session_id=LAB, role="camera")
+
+
+def test_a_camera_retries_until_the_player_exists(LAB, engine, seats, monkeypatch):
+    b = seat_engine(engine)
+    replies = [{"ok": False, "error": "not_found"}, {"ok": True}]
+    base = b.respond
+    b.respond = lambda code: json.dumps(replies.pop(0)) if "view_booth" in code else base(code)
+    monkeypatch.setattr(ha.time, "sleep", lambda s: None)
+    call("join", session_id=LAB, role="camera")
+    assert len(b.calls("view_booth")) == 2
+
+
+def test_no_camera_under_realm_rules(engine, seats):
+    seat_engine(engine)
+    realm = make_world("headless", "realm")["session_id"]
+    with pytest.raises(appliance.ApplianceError, match="refused under realm rules: a camera seat"):
+        call("join", session_id=realm, role="camera")
+    assert seats == []
+
+
+def test_reaper_leaves_an_idle_camera(LAB, engine, seats, monkeypatch):
+    seat_engine(engine)
+    cam = call("join", session_id=LAB, role="camera")
+    player = call("join", session_id=LAB)
+    monkeypatch.setattr(ha, "_age_s", lambda stamp: 10 ** 6)
+    d = ha.dao.FactorioDAO()
+    assert ha._reap_reason(d.get_seat(cam["seat_id"])) is None
+    assert ha._reap_reason(d.get_seat(player["seat_id"])).startswith("idle")
+
+
+# ---- keys and throttles per world and per caller ---------------------------------------
+
+def test_seatless_calls_key_by_world_and_caller(LAB, engine):
+    b = engine()
+    ha.HANDLERS["exec_lua"]({"session_id": LAB, "code": "rcon.print(1)"}, "agent-1")
+    ha.HANDLERS["exec_lua"]({"session_id": LAB, "code": "rcon.print(1)"}, "agent-2")
+    call("sbx", session_id=LAB, verb="sandbox_list")
+    container = "rlm-factorio-lab-t-appliance"
+    assert b.conns == [f"{container}/agent-1", f"{container}/agent-2", f"{container}/anon"]
+    keys = ha._throttle({"container_name": container}).snapshot()["keys"]
+    assert set(keys) == {f"{container}/agent-1", f"{container}/agent-2", f"{container}/anon"}
+
+
+def test_each_world_has_its_own_throttle(LAB, engine):
+    engine()
+    realm = make_world("headless", "realm")["session_id"]
+    call("exec_lua", session_id=LAB, code="rcon.print(1)")
+    call("exec_lua", session_id=realm, code="rcon.print(1)")
+    assert set(ha._THROTTLES) == {"rlm-factorio-lab-t-appliance", appliance.CONTAINER}
+    assert set(call("load")["worlds"]) == {LAB, realm}
+
+
+def test_ups_is_sampled_per_world_and_a_paused_world_is_no_overload(LAB, engine):
+    b = engine()
+    realm = make_world("headless", "realm")
+    b.respond = lambda code: "100 true"
+    ha._sample_ups()
+    ha._sample_ups()
+    for row in (ha.dao.FactorioDAO().get_session(LAB), realm):
+        assert ha._throttle(row).ups() is None
+        assert ha._throttle(row)._threshold()[0] == 0.0
+
+
+def test_idle_seatless_sockets_close(LAB, engine, monkeypatch):
+    b = engine()
+    clock = [1000.0]
+    monkeypatch.setattr(ha.time, "monotonic", lambda: clock[0])
+    call("exec_lua", session_id=LAB, code="rcon.print(1)")
+    assert ha._close_idle_conns() == []
+    clock[0] += ha.CONN_IDLE_S + 1
+    assert ha._close_idle_conns() == ["rlm-factorio-lab-t-appliance/anon"]
+    assert b.closed == ["rlm-factorio-lab-t-appliance/anon"] and ha._CONN_USED == {}
+
+
+def test_sandbox_rules_never_refuse_on_the_command_budget(LAB, engine):
+    b = engine()
+    b.cost = 100.0
+    out = call("exec_lua", session_id=LAB, code="rcon.print(1)")
+    assert "error" not in out and out["cost_ms"] == 100.0
+    realm = make_world("headless", "realm")["session_id"]
+    assert call("exec_lua", session_id=realm, code="rcon.print(1)")["error"].startswith("OVER_BUDGET")
+
+
+# ---- advance and wait_until ----------------------------------------------------------------
+
+class Clock:
+    def __init__(self):
+        self.t = 1000.0
+
+    def monotonic(self):
+        return self.t
+
+    def sleep(self, s):
+        self.t += max(s, 0.25)
+
+
+@pytest.fixture()
+def clock(monkeypatch):
+    c = Clock()
+    monkeypatch.setattr(ha.time, "monotonic", c.monotonic)
+    monkeypatch.setattr(ha.time, "sleep", c.sleep)
+    return c
+
+
+def ticking_engine(engine, step=300):
+    b = engine()
+    state = {"tick": 0, "paused": True}
+
+    def respond(code):
+        if "tick_paused = false" in code:
+            state["paused"] = False
+        if "tick_paused = true" in code:
+            state["paused"] = True
+        if "rcon.print(game.tick)" in code:
+            if not state["paused"]:
+                state["tick"] += step
+            return str(state["tick"])
+        return ""
+    b.respond = respond
+    return b, state
+
+
+def test_advance_runs_then_pauses(LAB, engine, clock):
+    b, state = ticking_engine(engine)
+    out = call("advance", session_id=LAB, ticks=1200)
+    assert out["ticks"] >= 1200 and state["paused"] and "error" not in out
+    assert any("game.speed = 1000" in c for c in b.sent)
+
+
+def test_advance_refused_under_realm_rules(engine, clock):
+    b = engine()
+    realm = make_world("headless", "realm")["session_id"]
+    with pytest.raises(appliance.ApplianceError, match="refused under realm rules: advance"):
+        call("advance", session_id=realm, ticks=60)
+    assert b.sent == []
+
+
+def test_advance_times_out_paused(LAB, engine, clock):
+    b, state = ticking_engine(engine, step=1)
+    out = call("advance", session_id=LAB, ticks=10 ** 6, timeout_s=5)
+    assert out["error"] == "TIMEOUT" and state["paused"]
+
+
+def ghost_engine(engine, remaining):
+    b = engine()
+    b.respond = lambda code: json.dumps({"remaining": remaining.pop(0) if len(remaining) > 1
+                                         else remaining[0]})
+    return b
+
+
+def test_wait_until_ghosts_built(LAB, engine, clock):
+    ghost_engine(engine, [3, 1, 0])
+    out = call("wait_until", session_id=LAB, timeout_s=60,
+               condition={"ghosts_built": {"area": [[0, 0], [10, 10]]}})
+    assert out["met"] and out["state"] == {"remaining": 0} and out["waited_s"] == 4.0
+
+
+def test_wait_until_times_out_with_the_last_state_and_the_clamp(LAB, engine, clock, monkeypatch):
+    monkeypatch.setattr(ha, "WAIT_MAX_S", 30.0)
+    ghost_engine(engine, [2])
+    out = call("wait_until", session_id=LAB, timeout_s=5000,
+               condition={"ghosts_built": {"ids": [1, 2]}})
+    assert out["error"] == "TIMEOUT" and out["timeout_s"] == 30.0
+    assert out["state"] == {"remaining": 2} and out["waited_s"] <= 30.0
+
+
+def test_wait_until_needs_a_timeout(LAB):
+    with pytest.raises(ValueError, match="needs timeout_s"):
+        call("wait_until", session_id=LAB, condition={"ghosts_built": {"ids": [1]}})
+
+
+@pytest.mark.parametrize("condition", [
+    {}, {"ghosts_built": {}}, {"entities_working": {"area": 1, "unit_numbers": [1]}},
+    {"tool": "x", "ghosts_built": {"ids": [1]}},
+])
+def test_wait_until_condition_shape(LAB, condition):
+    with pytest.raises(ValueError, match="argument condition"):
+        call("wait_until", session_id=LAB, timeout_s=5, condition=condition)
+
+
+def test_wait_until_entities_working_for_a_while(LAB, engine, clock):
+    b = engine()
+    b.respond = lambda code: json.dumps({"total": 2, "working": 2, "idle": {}, "missing": {}})
+    out = call("wait_until", session_id=LAB, timeout_s=60,
+               condition={"entities_working": {"unit_numbers": [4, 5]}, "for_s": 6})
+    assert out["met"] and out["waited_s"] >= 6 and out["state"]["idle"] == []
+
+
+def test_wait_until_a_read_tool_predicate(LAB, engine, clock):
+    b = engine()
+    counts = [1, 2, 5]
+
+    def respond(code):
+        if "active_mods" in code:
+            return "0.6.1"
+        if "'tool_list'" in code:
+            return json.dumps({"tools": [{"name": "count", "effect": "read"},
+                                         {"name": "spawn", "effect": "cheat"}]})
+        return json.dumps({"ok": True, "r": {"n": counts.pop(0) if len(counts) > 1 else counts[0]}})
+    b.respond = respond
+    out = call("wait_until", session_id=LAB, timeout_s=60,
+               condition={"tool": "count", "path": "r.n", "op": "ge", "value": 5})
+    assert out["met"] and out["state"]["r"]["n"] == 5
+    with pytest.raises(ValueError, match="read tools only"):
+        call("wait_until", session_id=LAB, timeout_s=5, condition={"tool": "spawn"})
+
+
+def test_wait_until_ends_when_the_world_is_released(LAB, engine, clock):
+    b = engine()
+
+    def respond(code):
+        ha.dao.FactorioDAO().set_status(LAB, "stopped")
+        return json.dumps({"remaining": 1})
+    b.respond = respond
+    with pytest.raises(appliance.ApplianceError, match="released mid-wait"):
+        call("wait_until", session_id=LAB, timeout_s=60,
+             condition={"ghosts_built": {"ids": [1]}})
+
+
+# ---- seatless blueprint stamps -----------------------------------------------------------
+
+def stamp_bodies(b):
+    out = []
+    for c in b.sent:
+        m = re.search(r"remote\.call\('game_bot','(bp_put|blueprint_stamp)',h\.json_to_table\('(.*)'\)", c)
+        if m:
+            out.append((m[1], json.loads(m[2])))
+    return out
+
+
+def test_lab_stamp_uses_a_short_hashed_upload_id_and_a_surface(LAB, engine):
+    b = engine()
+    call("blueprint_stamp", session_id=LAB, x=1, y=2, blueprint="0abc")
+    sent = stamp_bodies(b)
+    assert [v for v, _ in sent] == ["bp_put", "blueprint_stamp"]
+    ids = {body["id"] for _, body in sent}
+    assert len(ids) == 1 and len(ids.pop()) <= 64
+    stamp = sent[1][1]
+    assert stamp["surface"] == "nauvis" and "seat" not in stamp
+
+
+def test_lab_stamp_passes_surface_force_and_built_mode(LAB, engine):
+    b = engine()
+    call("blueprint_stamp", session_id=LAB, x=1, y=2, blueprint="0abc",
+         surface="fx", force="enemy", build_mode="built")
+    stamp = stamp_bodies(b)[-1][1]
+    assert stamp["surface"] == "fx" and stamp["force"] == "enemy" and stamp["build"] is True
+    with pytest.raises(appliance.ApplianceError, match="refused"):
+        call("blueprint_stamp", session_id=LAB, x=1, y=2, blueprint="0abc",
+             build=True, rules="realm")
+
+
+def test_realm_stamp_needs_a_seat(engine):
+    engine()
+    realm = make_world("headless", "realm")["session_id"]
+    with pytest.raises(ValueError, match="needs a seat"):
+        call("blueprint_stamp", session_id=realm, x=1, y=2, blueprint="0abc")
 
 
 # ---- realm rules ------------------------------------------------------------
@@ -188,7 +669,7 @@ def test_empty_token_file_means_no_override(realm, tmp_path, monkeypatch):
         call("research", session_id="s1", name="automation", admin_token="")
 
 
-def test_lab_runs_sandbox_rules_unless_asked(engine):
+def test_lab_runs_sandbox_rules_unless_asked(LAB, engine):
     b = engine()
     assert call("research", session_id=LAB, name="automation")["ok"]
     with pytest.raises(appliance.ApplianceError, match="refused under realm rules: research"):
@@ -196,20 +677,14 @@ def test_lab_runs_sandbox_rules_unless_asked(engine):
     assert len(b.calls("research")) == 1
 
 
-def test_bad_rules_value_refused_by_validation():
+def test_bad_rules_value_refused_by_validation(LAB):
     with pytest.raises(ValueError, match="argument rules"):
         call("research", session_id=LAB, name="automation", rules="god")
 
 
 # ---- sbx --------------------------------------------------------------------
 
-def test_sbx_is_lab_only(engine):
-    engine()
-    with pytest.raises(ValueError, match="sbx is lab-only"):
-        call("sbx", session_id="s1", verb="sandbox_list")
-
-
-def test_sbx_calls_the_lab_mod(engine):
+def test_sbx_calls_the_lab_mod(LAB, engine):
     b = engine()
     b.respond = lambda code: json.dumps({"ok": True, "sandboxes": []})
     assert call("sbx", session_id=LAB, verb="sandbox_list")["ok"]
@@ -223,7 +698,7 @@ REFUSED_SBX = ["research", "items", "evo", "nest", "wave", "body", "body_tp",
 
 @pytest.mark.parametrize("verb,args", [(v, {}) for v in REFUSED_SBX]
                          + [("sbx_mode", {"mode": "god"}), ("sbx_mode", {})])
-def test_sbx_outside_the_allowlist_refused_under_realm_rules(engine, verb, args):
+def test_sbx_outside_the_allowlist_refused_under_realm_rules(LAB, engine, verb, args):
     b = engine()
     with pytest.raises(appliance.ApplianceError, match="refused under realm rules: sbx"):
         call("sbx", session_id=LAB, verb=verb, args=args, rules="realm")
@@ -231,27 +706,27 @@ def test_sbx_outside_the_allowlist_refused_under_realm_rules(engine, verb, args)
 
 
 @pytest.mark.parametrize("verb", REFUSED_SBX)
-def test_sbx_anything_allowed_in_sandbox_rules(engine, verb):
+def test_sbx_anything_allowed_in_sandbox_rules(LAB, engine, verb):
     b = engine()
     assert call("sbx", session_id=LAB, verb=verb, args={"name": "a"})["ok"]
     assert len(b.calls(verb)) == 1
 
 
-def test_sbx_god_mode_allowed_in_sandbox_rules(engine):
+def test_sbx_god_mode_allowed_in_sandbox_rules(LAB, engine):
     b = engine()
     assert call("sbx", session_id=LAB, verb="sbx_mode", args={"mode": "god"})["ok"]
     assert len(b.calls("sbx_mode")) == 1
 
 
 @pytest.mark.parametrize("verb", sorted(ha.SBX_REALM_VERBS))
-def test_sbx_allowlist_passes_under_realm_rules(engine, verb):
+def test_sbx_allowlist_passes_under_realm_rules(LAB, engine, verb):
     b = engine()
     call("sbx", session_id=LAB, verb=verb, rules="realm")
     call("sbx", session_id=LAB, verb="sbx_mode", args={"mode": "standard"}, rules="realm")
     assert len(b.calls(verb)) == 1 and len(b.calls("sbx_mode")) == 1
 
 
-def test_sbx_admin_token_lifts_the_allowlist(engine, tmp_path, monkeypatch):
+def test_sbx_admin_token_lifts_the_allowlist(LAB, engine, tmp_path, monkeypatch):
     token = tmp_path / "token"
     token.write_text("s3cret\n")
     monkeypatch.setenv("RLM_FACTORIO_ADMIN_TOKEN_FILE", str(token))
@@ -268,14 +743,14 @@ def test_sbx_admin_token_lifts_the_allowlist(engine, tmp_path, monkeypatch):
 @pytest.mark.parametrize("verb,args", [
     ("tool", {"name": "look"}), ("tool_list", {}), ("tool_sync", {}),
 ])
-def test_tool_verbs_need_mod_06(engine, verb, args):
+def test_tool_verbs_need_mod_06(LAB, engine, verb, args):
     b = engine(version="0.5.0")
     with pytest.raises(appliance.ApplianceError, match="needs game-bot-control 0.6"):
         call(verb, session_id=LAB, **args)
     assert len(b.sent) == 1 and "active_mods" in b.sent[0]
 
 
-def test_tool_passes_name_and_args(engine):
+def test_tool_passes_name_and_args(LAB, engine):
     b = engine()
     b.respond = lambda code: ("0.6.1" if "active_mods" in code
                               else json.dumps({"ok": True, "r": {"n": 1}}))
@@ -291,7 +766,7 @@ def tool_calls(b):
             for c in b.calls("tool_call")]
 
 
-def test_tool_under_realm_rules_passes_deny_and_never_lists(engine):
+def test_tool_under_realm_rules_passes_deny_and_never_lists(LAB, engine):
     b = engine()
     call("tool", session_id=LAB, name="look", rules="realm")
     call("tool", session_id=LAB, name="look")
@@ -300,7 +775,7 @@ def test_tool_under_realm_rules_passes_deny_and_never_lists(engine):
     assert not b.calls("tool_list") and not hasattr(ha, "_TOOL_EFFECT_CACHE")
 
 
-def test_denied_tool_maps_to_a_realm_rules_refusal(engine):
+def test_denied_tool_maps_to_a_realm_rules_refusal(LAB, engine):
     def respond(code):
         if "active_mods" in code:
             return "0.6.1"
@@ -313,7 +788,7 @@ def test_denied_tool_maps_to_a_realm_rules_refusal(engine):
         call("tool", session_id=LAB, name="look", rules="realm")
 
 
-def test_deny_is_enforced_by_the_mod_so_sandbox_rules_run_the_tool(engine):
+def test_deny_is_enforced_by_the_mod_so_sandbox_rules_run_the_tool(LAB, engine):
     """The fake mod refuses a cheat-using tool only when `deny` names cheat."""
     def respond(code):
         if "active_mods" in code:
@@ -328,7 +803,7 @@ def test_deny_is_enforced_by_the_mod_so_sandbox_rules_run_the_tool(engine):
     assert call("tool", session_id=LAB, name="reader")["r"] == 1
 
 
-def test_realm_rules_refuse_a_mod_that_cannot_deny(engine):
+def test_realm_rules_refuse_a_mod_that_cannot_deny(LAB, engine):
     b = engine(version="0.6.0")
     with pytest.raises(appliance.ApplianceError, match="0.6.1"):
         call("tool", session_id=LAB, name="look", rules="realm")
@@ -337,7 +812,7 @@ def test_realm_rules_refuse_a_mod_that_cannot_deny(engine):
     assert len(b.calls("tool_call")) == 1
 
 
-def test_tool_list_keeps_an_empty_registry_a_list(engine):
+def test_tool_list_keeps_an_empty_registry_a_list(LAB, engine):
     b = engine()
     b.respond = lambda code: "0.6.1" if "active_mods" in code else '{"tools":{}}'
     assert call("tool_list", session_id=LAB)["tools"] == []
@@ -354,7 +829,7 @@ def header(name, kind="call", effect="read"):
             "args": "none", "returns": "{}"}
 
 
-def test_tool_sync_defines_libs_first_and_reports_errors(engine, tmp_path, monkeypatch):
+def test_tool_sync_defines_libs_first_and_reports_errors(LAB, engine, tmp_path, monkeypatch):
     root = tmp_path / "tools"
     write_tool(root, "read", "a_call", {**header("a_call"), "uses": "geom"})
     write_tool(root, "lib", "geom", header("geom", kind="lib"))
@@ -376,7 +851,7 @@ def test_tool_sync_defines_libs_first_and_reports_errors(engine, tmp_path, monke
     assert '"kind": "lib"' in defines[0] and '"effect": "read"' in defines[1]
 
 
-def test_tool_sync_names_and_define_failure(engine, tmp_path, monkeypatch):
+def test_tool_sync_names_and_define_failure(LAB, engine, tmp_path, monkeypatch):
     root = tmp_path / "tools"
     write_tool(root, "g", "good", header("good"))
     write_tool(root, "g", "bad", header("bad"))
@@ -398,7 +873,7 @@ def test_tool_sync_names_and_define_failure(engine, tmp_path, monkeypatch):
     assert out["errors"][0]["name"] == "ghost"
 
 
-def test_tool_sync_missing_directory_is_empty(engine, tmp_path, monkeypatch):
+def test_tool_sync_missing_directory_is_empty(LAB, engine, tmp_path, monkeypatch):
     monkeypatch.setenv("RLM_FACTORIO_TOOLS", str(tmp_path / "absent"))
     engine()
     assert call("tool_sync", session_id=LAB) == {"defined": [], "errors": []}
@@ -408,7 +883,7 @@ def define_order(calls):
     return [re.search(r'"name": "(\w+)"', c).group(1) for c in calls]
 
 
-def test_tool_sync_orders_libs_by_uses(engine, tmp_path, monkeypatch):
+def test_tool_sync_orders_libs_by_uses(LAB, engine, tmp_path, monkeypatch):
     root = tmp_path / "tools"
     write_tool(root, "a", "b", {**header("b", kind="lib"), "uses": "a"})
     write_tool(root, "z", "a", header("a", kind="lib"))
@@ -421,7 +896,7 @@ def test_tool_sync_orders_libs_by_uses(engine, tmp_path, monkeypatch):
     assert out["defined"] == ["a", "b", "caller"] and out["errors"] == []
 
 
-def test_tool_sync_reports_a_lib_cycle(engine, tmp_path, monkeypatch):
+def test_tool_sync_reports_a_lib_cycle(LAB, engine, tmp_path, monkeypatch):
     root = tmp_path / "tools"
     write_tool(root, "l", "p", {**header("p", kind="lib"), "uses": "q"})
     write_tool(root, "l", "q", {**header("q", kind="lib"), "uses": "p"})
@@ -436,7 +911,7 @@ def test_tool_sync_reports_a_lib_cycle(engine, tmp_path, monkeypatch):
     assert all("cycle" in e["error"] for e in out["errors"])
 
 
-def test_tool_sync_rejects_a_chain_that_reaches_a_cheat_lib(engine, tmp_path, monkeypatch):
+def test_tool_sync_rejects_a_chain_that_reaches_a_cheat_lib(LAB, engine, tmp_path, monkeypatch):
     root = tmp_path / "tools"
     write_tool(root, "l", "spawner", header("spawner", kind="lib", effect="cheat"))
     write_tool(root, "l", "middle", {**header("middle", kind="lib"), "uses": "spawner"})
@@ -453,7 +928,7 @@ def test_tool_sync_rejects_a_chain_that_reaches_a_cheat_lib(engine, tmp_path, mo
     assert "cheat lib spawner" in errors["reader"]
 
 
-def test_tool_sync_survives_an_unreadable_file(engine, tmp_path, monkeypatch):
+def test_tool_sync_survives_an_unreadable_file(LAB, engine, tmp_path, monkeypatch):
     root = tmp_path / "tools"
     write_tool(root, "g", "good", header("good"))
     (root / "g").mkdir(exist_ok=True)
@@ -466,120 +941,9 @@ def test_tool_sync_survives_an_unreadable_file(engine, tmp_path, monkeypatch):
     assert "cannot read" in out["errors"][0]["error"]
 
 
-# ---- a lab never reaches the realm supervisor ---------------------------------
-
-@pytest.fixture()
-def no_supervisor(monkeypatch):
-    def boom(*a, **k):
-        pytest.fail("reached the realm supervisor")
-    monkeypatch.setattr(ha.appliance.httpx, "post", boom)
-    monkeypatch.setattr(ha.appliance.httpx, "get", boom)
-
-
-def test_pause_refused_on_a_lab(engine, no_supervisor):
-    b = engine()
-    with pytest.raises(appliance.ApplianceError, match="not available on a lab target"):
-        call("pause", session_id=LAB)
-    with pytest.raises(appliance.ApplianceError, match="not available on a lab target"):
-        call("pause", session_id=LAB, paused=True)
-    assert b.sent == []
-
-
-def test_control_url_refuses_a_lab_row():
-    with pytest.raises(appliance.ApplianceError, match="not available on a lab target"):
-        appliance.control_url({"kind": "lab", "container_name": "fxlab-t-s"})
-    assert appliance.control_url({"control_port": 1234}).endswith(":1234")
-
-
-@pytest.mark.parametrize("verb,args", [
-    ("world_load", {"name": "x"}), ("world_new", {}), ("world_save", {"name": "x"}),
-    ("reset", {}), ("release", {}),
-])
-def test_world_verbs_refused_on_a_lab(engine, no_supervisor, verb, args):
-    engine()
-    with pytest.raises(ValueError, match="not available on a lab target"):
-        call(verb, session_id=LAB, **args)
-
-
-# ---- a lab keeps off the realm's throttle and events -------------------------
-
-def test_lab_calls_use_their_own_throttle_key(engine):
-    b = engine()
-    seen = []
-    ha.THROTTLE.admit = lambda key, deadline: seen.append(key)
-    call("exec_lua", session_id=LAB, code="rcon.print(1)")
-    call("tool", session_id=LAB, name="look")
-    call("sbx", session_id=LAB, verb="sandbox_list")
-    assert seen == ["fxlab-t-s/anon"] * 3
-    assert ha._key(None) == ha.ANON and ha._key({"player_name": "p"}, {"kind": "lab"}) == "p"
-
-
-def test_lab_calls_leave_the_realm_anon_budget_alone(engine):
-    engine()
-    call("exec_lua", session_id=LAB, code="rcon.print(1)")
-    assert ha.ANON not in ha.THROTTLE.snapshot()["keys"]
-
-
-def test_observe_events_on_a_lab_drains_and_fires_nothing(engine):
-    b = engine()
-    ha._EVENT_BUF.clear()
-    assert call("observe_events", session_id=LAB) == {"events": []}
-    assert b.sent == []
-    ha._fire(LAB, "x", {})
-    assert LAB not in ha._EVENT_BUF
-
-
-def test_lab_mod_version_is_not_cached_for_long(engine, monkeypatch):
-    b = engine()
-    clock = [100.0]
-    monkeypatch.setattr(ha.time, "monotonic", lambda: clock[0])
-    row = {"session_id": LAB, "container_name": "fxlab-t-s", "kind": "lab"}
-    ha._mod_version(row)
-    clock[0] += 3
-    ha._mod_version(row)
-    assert len([c for c in b.sent if "active_mods" in c]) == 1
-    clock[0] += 3
-    ha._mod_version(row)
-    assert len([c for c in b.sent if "active_mods" in c]) == 2
-
-
-# ---- seatless blueprint stamps on a lab -----------------------------------------
-
-def stamp_bodies(b):
-    out = []
-    for c in b.sent:
-        m = re.search(r"remote\.call\('game_bot','(bp_put|blueprint_stamp)',h\.json_to_table\('(.*)'\)", c)
-        if m:
-            out.append((m[1], json.loads(m[2])))
-    return out
-
-
-def test_lab_stamp_uses_a_short_hashed_upload_id_and_a_surface(engine):
-    b = engine()
-    long_lab = "lab:" + "n" * 100
-    call("blueprint_stamp", session_id=long_lab, x=1, y=2, blueprint="0abc")
-    sent = stamp_bodies(b)
-    assert [v for v, _ in sent] == ["bp_put", "blueprint_stamp"]
-    ids = {body["id"] for _, body in sent}
-    assert len(ids) == 1 and len(ids.pop()) <= 64
-    stamp = sent[1][1]
-    assert stamp["surface"] == "nauvis" and "seat" not in stamp
-
-
-def test_lab_stamp_passes_surface_force_and_built_mode(engine):
-    b = engine()
-    call("blueprint_stamp", session_id=LAB, x=1, y=2, blueprint="0abc",
-         surface="fx", force="enemy", build_mode="built")
-    stamp = stamp_bodies(b)[-1][1]
-    assert stamp["surface"] == "fx" and stamp["force"] == "enemy" and stamp["build"] is True
-    with pytest.raises(appliance.ApplianceError, match="refused"):
-        call("blueprint_stamp", session_id=LAB, x=1, y=2, blueprint="0abc",
-             build=True, rules="realm")
-
-
 # ---- the exec log ------------------------------------------------------------
 
-def test_exec_lua_log_line(engine, tmp_path):
+def test_exec_lua_log_line(LAB, engine, tmp_path):
     engine()
     code = "rcon.print('x')" + "-" * 300
     call("exec_lua", session_id=LAB, code=code)
@@ -593,7 +957,7 @@ def test_exec_lua_log_line(engine, tmp_path):
     assert len((tmp_path / "exec.jsonl").read_text().splitlines()) == 2
 
 
-def test_exec_log_failure_never_fails_the_verb(engine, tmp_path, monkeypatch, caplog):
+def test_exec_log_failure_never_fails_the_verb(LAB, engine, tmp_path, monkeypatch, caplog):
     blocker = tmp_path / "file"
     blocker.write_text("")
     monkeypatch.setenv("RLM_FACTORIO_EXEC_LOG", str(blocker / "sub" / "log.jsonl"))
@@ -603,7 +967,7 @@ def test_exec_log_failure_never_fails_the_verb(engine, tmp_path, monkeypatch, ca
     assert any(r.levelname == "WARNING" and "exec log" in r.message for r in caplog.records)
 
 
-def test_exec_log_creates_parent_dir(engine, tmp_path, monkeypatch):
+def test_exec_log_creates_parent_dir(LAB, engine, tmp_path, monkeypatch):
     target = tmp_path / "deep" / "er" / "log.jsonl"
     monkeypatch.setenv("RLM_FACTORIO_EXEC_LOG", str(target))
     engine()

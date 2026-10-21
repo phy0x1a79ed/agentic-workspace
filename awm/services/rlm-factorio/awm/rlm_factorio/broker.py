@@ -158,6 +158,19 @@ def for_row(row: dict) -> Broker:
         return broker
 
 
+def existing(container: str) -> Broker | None:
+    with _BROKERS_LOCK:
+        return _BROKERS.get(container)
+
+
+def drop(container: str) -> None:
+    """Stop and forget a released world's broker."""
+    with _BROKERS_LOCK:
+        broker = _BROKERS.pop(container, None)
+    if broker is not None:
+        broker.stop()
+
+
 def stop_all() -> None:
     with _BROKERS_LOCK:
         brokers = list(_BROKERS.values())

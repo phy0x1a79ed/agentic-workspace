@@ -58,16 +58,17 @@ also accumulated in a per-session service-side inbox so a *polling* consumer
 never races the pump: ``observe_events`` returns everything since its last call
 (consume-once), while the emitter stays the live stream.
 
-A ``session_id`` of the form ``lab:<container>`` addresses an fxlab lab instead
-of the realm: a throwaway server with no seats, reached through the same broker.
-Labs run ``sandbox`` rules and the realm runs ``realm`` rules; the god verbs
-(``teleport``, ``research``, built blueprints, ``sbx`` god verbs, cheat tools)
-are refused under the latter unless the caller holds the admin token.
+Every world is a row with a ``kind`` -- ``headless`` (the game), ``lab`` (a
+throwaway experiment server) or ``rendered`` (the game with its port published,
+so a human can join) -- and ``rules``. The realm runs ``realm`` rules and a lab
+runs ``sandbox``; the god verbs (``teleport``, ``research``, built blueprints,
+``sbx`` god verbs, cheat tools, ``advance``, camera seats) are refused under the
+former unless the caller holds the admin token. Seats, saves, pause, events and
+every other verb work the same on every kind.
 
-Single-session for now: ``acquire`` is idempotent (at most one live appliance;
-a second acquire returns the existing session, erroring on a game mismatch). The
-session row carries the container/ports so a service respawn re-adopts rather
-than duplicating. See :mod:`awm.rlm_factorio.appliance` for the pool seam.
+``acquire`` is idempotent per world name: a second acquire of a live world
+returns it, erroring on a kind or game mismatch. The row carries the
+container/ports so a service respawn re-adopts rather than duplicating.
 
 Run via ``run.sh`` (which the hub spawns and respawns):
     python -m awm.rlm_factorio.hub_adapter
@@ -76,6 +77,7 @@ Run via ``run.sh`` (which the hub spawns and respawns):
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import hashlib
 import hmac
 import inspect
@@ -84,7 +86,6 @@ import logging
 import os
 import re
 import signal
-import subprocess
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -110,14 +111,18 @@ _TARGET_DOC = (
     "Pass seat_id, or session_id alone when the session has exactly one seat."
 )
 
-# Rules: the realm runs ``realm`` rules; a lab runs ``sandbox`` unless told
-# otherwise. ``admin_token`` lifts a realm-rules refusal.
+# Rules: the realm runs ``realm`` rules; a lab runs ``sandbox``. A sandbox call
+# may ask for ``realm`` rules; ``admin_token`` lifts a realm-rules refusal.
 _RULES = [
     {"name": "rules", "type": "string", "required": False,
-     "description": "sandbox (the lab default) or realm; labs only"},
+     "description": "realm, to run a sandbox world's call under realm rules"},
     {"name": "admin_token", "type": "string", "required": False,
      "description": "lifts a refusal under realm rules"},
 ]
+
+# The longest any blocking verb (wait_until, advance) holds its caller. The
+# gateway's timeout for those verbs sits above it.
+WAIT_MAX_S = float(os.environ.get("RLM_FACTORIO_WAIT_MAX_S", "600"))
 
 API_MANIFEST: dict[str, Any] = {
     "functions": [
@@ -127,14 +132,29 @@ API_MANIFEST: dict[str, Any] = {
             "effect": "write",
             "tool": "factorio_acquire",
             "description": (
-                "Acquire a Factorio realm session: bring the appliance container "
-                "up (building the image on first run) and wait for the engine to "
-                "be ready. Returns {session_id}. Idempotent — a second acquire "
-                "returns the existing live session (errors on a game mismatch)."
+                "Acquire a Factorio world: bring its appliance container up "
+                "(building the image on first run) and wait for the engine to be "
+                "ready. kind is headless (the game, the default), lab (a "
+                "throwaway server with the lab mods, sandbox rules and its saves "
+                "in saves_dir) or rendered (the game with its port published so "
+                "a human can join). name picks the world (default 'realm'; a lab "
+                "must name itself). A lab boots on save (a realm save name, or a "
+                "path to a .zip) or on a new world with create=true, paused "
+                "unless live=true. Past the lab cap a lab acquire fails at once "
+                "with LAB_CAP; retry later. Returns {session_id, kind, rules, "
+                "name, adopted}. Idempotent per name: a second acquire returns "
+                "the live world (errors on a kind or game mismatch)."
             ),
             "params": [
                 {"name": "game", "type": "string", "required": True},
-                {"name": "opts", "type": "object", "required": False},
+                {"name": "kind", "type": "string", "required": False,
+                 "description": "headless, lab or rendered"},
+                {"name": "name", "type": "string", "required": False},
+                {"name": "rules", "type": "string", "required": False,
+                 "description": "realm or sandbox; a lab defaults to sandbox"},
+                {"name": "save", "type": "string", "required": False},
+                {"name": "create", "type": "boolean", "required": False},
+                {"name": "live", "type": "boolean", "required": False},
             ],
             # First acquire builds the image (large download) before waiting for
             # the engine — well beyond the proxy's 30s default.
@@ -194,11 +214,18 @@ API_MANIFEST: dict[str, Any] = {
                 "renderable view. Every act verb below is driven through a "
                 "seat. A seat is a LEASE: it is owned by the caller (or by an "
                 "explicit 'owner'), any verb naming it holds it, and one left "
-                "untouched for an hour is reclaimed. Call 'leave' when done."
+                "untouched for an hour is reclaimed. Call 'leave' when done. "
+                "role=camera joins a renderer with no character, parked in the "
+                "lab mod's view booth; sandbox worlds only, one per world, "
+                "never reclaimed for idleness. Its screenshots land in "
+                "output_dir."
             ),
             "params": [
                 {"name": "session_id", "type": "string", "required": True},
                 {"name": "owner", "type": "string", "required": False},
+                {"name": "role", "type": "string", "required": False,
+                 "description": "player (default) or camera"},
+                *_RULES,
             ],
             # Container start + map transfer + world load; ~25s observed, but a
             # large world transfers for longer.
@@ -428,6 +455,52 @@ API_MANIFEST: dict[str, Any] = {
                 *_SEAT_TARGET,
                 {"name": "paused", "type": "boolean", "required": False},
             ],
+        },
+        {
+            "name": "advance",
+            "effect": "write",
+            "tool": "factorio_advance",
+            "description": (
+                "Run a paused world forward by ticks at up to speed (default "
+                "1000x), then pause it again. Sandbox rules only. Returns "
+                "{tick, ticks, wall_s}, or {error: 'TIMEOUT', ...} once "
+                "timeout_s (capped at the service maximum) passes; the world is "
+                "paused either way."
+            ),
+            "params": [
+                *_SEAT_TARGET,
+                {"name": "ticks", "type": "integer", "required": True},
+                {"name": "speed", "type": "number", "required": False},
+                {"name": "timeout_s", "type": "number", "required": False},
+                *_RULES,
+            ],
+            "timeout": WAIT_MAX_S + 60.0,
+        },
+        {
+            "name": "wait_until",
+            "effect": "read",
+            "tool": "factorio_wait_until",
+            "description": (
+                "Block until a condition holds in the world, or until timeout_s "
+                "passes. timeout_s is required and capped at the service maximum "
+                "(the reply names the cap used). condition is one of: "
+                "{entities_working: {unit_numbers | area, surface?}} -- every "
+                "entity is working; {ghosts_built: {area | ids, surface?}} -- no "
+                "ghost is left; {tool, args?, path?, op, value?} -- a read tool's "
+                "reply at path compares true (op eq, ne, lt, le, gt, ge, truthy, "
+                "falsy). Add for_s to require the condition to hold that long. "
+                "Polls every poll_s (default 2). Returns {met: true, waited_s, "
+                "state} or {error: 'TIMEOUT', waited_s, state}; state is the "
+                "last thing observed."
+            ),
+            "params": [
+                *_SEAT_TARGET,
+                {"name": "condition", "type": "object", "required": True},
+                {"name": "timeout_s", "type": "number", "required": True},
+                {"name": "poll_s", "type": "number", "required": False},
+                *_RULES,
+            ],
+            "timeout": WAIT_MAX_S + 60.0,
         },
         {
             "name": "exec_lua",
@@ -896,7 +969,7 @@ API_MANIFEST: dict[str, Any] = {
                 *_RULES,
             ],
         },
-        # ---- tool library and lab mod (mod >= 0.6, labs) ----
+        # ---- tool library and lab mod (mod >= 0.6) ----
         {
             "name": "tool",
             "effect": "write",
@@ -906,8 +979,7 @@ API_MANIFEST: dict[str, Any] = {
                 "is the tool's table, or {ok:false, error: no_tool | "
                 "tool_error, detail}. Needs game-bot-control 0.6. Tools with "
                 "effect cheat, and tools that use a cheat lib, are refused under "
-                "realm rules. Address a lab "
-                "with session_id='lab:<container>'. See tool_list."
+                "realm rules. See tool_list."
             ),
             "params": [
                 *_SEAT_TARGET,
@@ -949,7 +1021,7 @@ API_MANIFEST: dict[str, Any] = {
             "tool": "factorio_sbx",
             "description": (
                 "Call a verb of the fxlab-sbx lab mod: remote.call('sbx', verb, "
-                "args). Lab targets only (session_id='lab:<container>'). Under "
+                "args). Needs a world that loads it: a lab. Under "
                 "realm rules (rules='realm') only the reads (sandbox_list, verbs, "
                 "slice_list, slice_ports, slice_fingerprint, slice_area_of_base, "
                 "slice_timing, bonuses, wave_status, ledger, view_shot, "
@@ -1006,8 +1078,6 @@ def _fire(session_id: str, kind: str, data: dict | None = None,
     """Fire one event: append to the session's inbox and emit on the 'factorio'
     topic (threadsafe, best-effort — emit is live signalling, never durable
     delivery). Callable from sync handlers and pump threads alike."""
-    if session_id.startswith(LAB_PREFIX):
-        return
     event: dict[str, Any] = {"kind": kind, "data": data or {}}
     if tick is not None:
         event["tick"] = tick
@@ -1061,8 +1131,6 @@ async def _events_pump(adapter: ServiceAdapter) -> None:
 
 def _require_session(session_id: str) -> dict:
     """Look up a session or raise — used by act/perceive verbs."""
-    if session_id.startswith(LAB_PREFIX):
-        raise ValueError("not available on a lab target")
     row = dao.FactorioDAO().get_session(session_id)
     if row is None:
         raise ValueError(f"unknown session_id: {session_id!r}")
@@ -1071,39 +1139,54 @@ def _require_session(session_id: str) -> dict:
 
 # ---- game calls ------------------------------------------------------------
 #
-# Every game call names a connection key: a seat's player name, ANON for an
-# agent's seatless call, or SYS for the realm's own bookkeeping (join polling,
-# the events pump, the UPS sampler). Each key is its own engine socket and its
-# own throttle meter; SYS alone is unmetered.
+# Every game call names a connection key: a seat's player name, the world and
+# calling session for a seatless call, or SYS for the realm's own bookkeeping
+# (join polling, the events pump, the UPS sampler). Each key is its own engine
+# socket and its own throttle meter; SYS alone is unmetered. Each world has its
+# own throttle, so one world's UPS never holds another's callers.
 
 SYS = "sys"
 ANON = "anon"
-THROTTLE = throttle.Throttle()
 SCANNER = scan.Scanner()
 UPS_POLL_S = 1.0
 HANDLER_THREADS = int(os.environ.get("AWM_FACTORIO_HANDLER_THREADS", "64"))
+# A seatless caller's socket closes once it has gone this long unused.
+CONN_IDLE_S = float(os.environ.get("AWM_FACTORIO_CONN_IDLE_S", "600"))
+
+_CALLER: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "rlm_factorio_caller", default=None)
+_THROTTLES: dict[str, throttle.Throttle] = {}
+_THROTTLES_LOCK = threading.Lock()
+_CONN_USED: dict[tuple[str, str], float] = {}
 
 
-def _key(seat: dict | None, row: dict | None = None) -> str:
-    """The connection and throttle key: the seat, or a seatless caller's own.
+def _throttle(row: dict) -> throttle.Throttle:
+    container = row.get("container_name") or appliance.CONTAINER
+    with _THROTTLES_LOCK:
+        t = _THROTTLES.get(container)
+        if t is None:
+            t = _THROTTLES[container] = throttle.Throttle()
+        return t
 
-    A lab's seatless caller gets a key of its own so it never spends the
-    realm's ``anon`` budget.
-    """
+
+def _key(seat: dict | None, row: dict) -> str:
+    """The connection and throttle key: the seat, or the seatless caller's own
+    on this world."""
     if seat:
         return seat["player_name"]
-    if row is not None and row.get("kind") == "lab":
-        return f"{row['container_name']}/{ANON}"
-    return ANON
+    return f"{row['container_name']}/{_CALLER.get() or ANON}"
 
 
 def _run(row: dict, key: str, code: str, *, timeout: float = 60.0,
          metered: bool = True) -> dict:
     """Run Lua on ``key``'s socket. Returns {output, cost_ms}."""
     deadline = time.monotonic() + timeout
+    gate = _throttle(row)
+    if "/" in key:
+        _CONN_USED[(row["container_name"], key)] = time.monotonic()
     if metered:
         try:
-            THROTTLE.admit(key, deadline)
+            gate.admit(key, deadline)
         except throttle.Throttled as exc:
             raise appliance.ApplianceError(str(exc)) from None
     try:
@@ -1111,11 +1194,30 @@ def _run(row: dict, key: str, code: str, *, timeout: float = 60.0,
             key, code, timeout=max(1.0, deadline - time.monotonic()))
     except Exception:
         if metered:
-            THROTTLE.release(key)
+            gate.release(key)
         raise
     if metered:
-        THROTTLE.charge(key, result["cost_ms"])
+        gate.charge(key, result["cost_ms"])
     return result
+
+
+def _close_idle_conns() -> list[str]:
+    """Close the sockets of seatless callers that have gone quiet."""
+    now = time.monotonic()
+    closed = []
+    for (container, key), used in list(_CONN_USED.items()):
+        if now - used < CONN_IDLE_S:
+            continue
+        _CONN_USED.pop((container, key), None)
+        conn = broker.existing(container)
+        if conn is None:
+            continue
+        try:
+            conn.close_conn(key)
+            closed.append(key)
+        except Exception:  # noqa: BLE001
+            log.debug("closing idle socket %s failed", key, exc_info=True)
+    return closed
 
 
 def _iface_code(fn: str, args: dict, mod: str = "game_bot") -> str:
@@ -1139,17 +1241,23 @@ def _iface(row: dict, fn: str, args: dict, *, key: str, timeout: float = 60.0,
         raise appliance.ApplianceError(out or f"{fn}: empty reply") from None
 
 
-def _over_budget(key: str, cost_ms: float | None, budget_ms: float) -> str | None:
+def _over_budget(row: dict, key: str, cost_ms: float | None,
+                 budget_ms: float) -> str | None:
+    """The OVER_BUDGET message, or None. Sandbox rules count the overrun and
+    refuse nothing: lab fixtures run heavy Lua on purpose."""
     if cost_ms is None or cost_ms <= budget_ms:
         return None
-    THROTTLE.note_over_budget(key)
+    _throttle(row).note_over_budget(key)
+    if row.get("rules") == "sandbox":
+        return None
     log.info("over budget: %s used %.1f ms (budget %.0f)", key, cost_ms, budget_ms)
     return throttle.over_budget_message(cost_ms, budget_ms)
 
 
-def _budgeted(key: str, result: Any, cost_ms: float | None, budget_ms: float) -> Any:
+def _budgeted(row: dict, key: str, result: Any, cost_ms: float | None,
+              budget_ms: float) -> Any:
     """A verb's result, or the OVER_BUDGET envelope that still carries it."""
-    msg = _over_budget(key, cost_ms, budget_ms)
+    msg = _over_budget(row, key, cost_ms, budget_ms)
     if msg is None:
         return result
     return {"ok": False, "ran": True, "error": msg, "cost_ms": cost_ms,
@@ -1168,68 +1276,120 @@ def _close_conn(seat: dict) -> None:
 
 
 def _sample_ups() -> None:
-    rows = [r for r in dao.FactorioDAO().live_sessions() if r["status"] == "ready"]
-    if not rows:
-        THROTTLE.forget_ups()
-        return
-    out = _run(rows[0], SYS, 'rcon.print(game.tick .. " " .. tostring(game.tick_paused))',
-               timeout=5.0, metered=False)["output"].split()
-    THROTTLE.note_tick(int(out[0]), out[1] == "true")
+    """Feed each ready world's tick to its own throttle. A paused world reports
+    no UPS, so its stillness never reads as overload."""
+    for row in dao.FactorioDAO().live_sessions():
+        if row["status"] != "ready":
+            continue
+        gate = _throttle(row)
+        try:
+            out = _run(row, SYS, 'rcon.print(game.tick .. " " .. tostring(game.tick_paused))',
+                       timeout=5.0, metered=False)["output"].split()
+            gate.note_tick(int(out[0]), out[1] == "true")
+        except Exception:  # noqa: BLE001 — a dark engine just means no gate
+            gate.forget_ups()
 
 
 async def _ups_sampler() -> None:
-    """Feed the throttle's UPS gate, forever."""
+    """Feed the throttles' UPS gates, forever."""
     while True:
         await asyncio.sleep(UPS_POLL_S)
         try:
             await asyncio.to_thread(_sample_ups)
-        except Exception:  # noqa: BLE001 — a dark engine just means no gate
-            THROTTLE.forget_ups()
+        except Exception:  # noqa: BLE001
+            log.debug("UPS sample failed", exc_info=True)
 
 
 # ---- lifecycle -----------------------------------------------------------
 
-def _acquire(args: dict) -> dict:
-    """Bring the appliance up (idempotent) and return its session id.
+MAX_LABS = int(os.environ.get("RLM_FACTORIO_MAX_LABS", "3"))
+_ACQUIRE_LOCK = threading.Lock()
 
-    If a live session already owns a running container, adopt it (erroring on a
-    game mismatch) rather than starting a second appliance. Otherwise mint a row
-    on the fixed single-session coordinates, ``compose up --build``, wait for the
-    engine, and mark it ready.
+
+def _stop_row(d: dao.FactorioDAO, row: dict) -> None:
+    d.set_status(row["session_id"], "stopped")
+    for seat in d.live_seats(row["session_id"]):
+        d.set_seat(seat["seat_id"], status="stopped")
+
+
+def _acquire(args: dict) -> dict:
+    """Bring a world up (idempotent per name) and return its session id.
+
+    A live world of the same name is adopted, erroring on a kind or game
+    mismatch. Otherwise mint a row on fresh coordinates, bring its compose
+    project up and wait for the engine. A lab past the cap is refused at once
+    with LAB_CAP, so the caller decides how long to wait.
     """
     game = str(args.get("game") or "").strip()
+    kind = args.get("kind") or "headless"
+    lab = kind == "lab"
+    name = args.get("name") or ("" if lab else appliance.REALM_NAME)
+    if not name:
+        raise ValueError("a lab needs a name")
+    rules = args.get("rules") or ("sandbox" if lab else "realm")
+    if kind == "rendered" and rules == "sandbox":
+        raise ValueError("a rendered world runs realm rules")
+    save, create = args.get("save"), bool(args.get("create"))
+    if save and create:
+        raise ValueError("pass save or create, not both")
+    if lab and not (save or create):
+        raise ValueError("a lab boots on a save, or on a new world with create=true")
+    live = args.get("live")
+    live = not lab if live is None else bool(live)
     d = dao.FactorioDAO()
 
-    for row in d.live_sessions():
-        env = appliance.compose_env(row)
-        if appliance.is_container_running(row["compose_project"] or appliance.PROJECT, env):
+    with _ACQUIRE_LOCK:
+        rows = d.live_sessions()
+        for row in list(rows):
+            if row["name"] != name or (row["kind"] == "lab") != lab:
+                continue
+            if not appliance.is_container_running(row):
+                _stop_row(d, row)
+                rows.remove(row)
+                continue
+            if row["kind"] != kind:
+                raise ValueError(
+                    f"world {name!r} is live as {row['kind']}; release it "
+                    f"before acquiring it as {kind}")
             if game and row["game"] and row["game"] != game:
                 raise ValueError(
-                    f"appliance already bound to game {row['game']!r}; "
-                    f"release it before acquiring {game!r}"
-                )
+                    f"world {name!r} is bound to game {row['game']!r}; "
+                    f"release it before acquiring {game!r}")
             log.info("acquire: adopting live session %s", row["session_id"])
-            return {"session_id": row["session_id"], "adopted": True}
-
-    row = d.create_session(
-        game,
-        container_name=appliance.CONTAINER,
-        compose_project=appliance.PROJECT,
-        control_port=appliance.CONTROL_PORT,
-        game_port=appliance.GAME_PORT,
-        rcon_port=appliance.RCON_PORT,
-    )
+            return {"session_id": row["session_id"], "adopted": True,
+                    "kind": row["kind"], "rules": row["rules"], "name": name}
+        labs = [r for r in rows if r["kind"] == "lab"]
+        if lab and len(labs) >= MAX_LABS:
+            raise appliance.ApplianceError(
+                f"LAB_CAP: {len(labs)} labs running, cap {MAX_LABS}; retry later")
+        taken = {p for r in rows for p in (r["control_port"], r["game_port"])}
+        row = d.create_session(
+            game, rcon_port=appliance.RCON_PORT, kind=kind, rules=rules,
+            name=name, mods=appliance.world_mods(kind),
+            **appliance.world_coords(kind, name, taken))
     sid = row["session_id"]
-    env = appliance.compose_env(row)
+    boot = {"paused": not live, "create": create}
     try:
-        log.info("acquire: bringing appliance up for session %s", sid)
-        appliance.compose_up(appliance.PROJECT, env)
+        if save:
+            boot["save"] = appliance.stage_save(row, str(save))
+        log.info("acquire: bringing %s world %s up for session %s", kind, name, sid)
+        appliance.compose_up(row, boot)
         st = appliance.wait_ready(row)
-    except Exception as e:
+    except Exception:
         d.set_status(sid, "error")
+        try:
+            appliance.compose_down(row)
+        except Exception:  # noqa: BLE001 — the bring-up error is the one to report
+            log.debug("acquire: tearing down %s failed", sid, exc_info=True)
         raise
     d.set_runtime(sid, status="ready", current_world=st.get("current_world"))
-    return {"session_id": sid, "adopted": False}
+    out = {"session_id": sid, "adopted": False, "kind": kind, "rules": rules,
+           "name": name}
+    if kind == "rendered":
+        out["game_port"] = row["game_port"]
+    if lab:
+        out["saves_dir"] = str(appliance.saves_dir(row))
+    return out
 
 
 def _release(args: dict) -> dict:
@@ -1248,8 +1408,11 @@ def _release(args: dict) -> dict:
             appliance.seat_stop(seat["container_name"])
         d.set_seat(seat["seat_id"], status="stopped")
         released_seats.append(seat["seat_id"])
-    env = appliance.compose_env(row)
-    appliance.compose_down(row["compose_project"] or appliance.PROJECT, env)
+    broker.drop(row["container_name"])
+    with _THROTTLES_LOCK:
+        _THROTTLES.pop(row["container_name"], None)
+    _forget_mod_state(sid)
+    appliance.compose_down(row)
     d.set_status(sid, "stopped")
     return {"released": True, "session_id": sid, "seats": released_seats}
 
@@ -1336,6 +1499,44 @@ def _wait_seat_connected(row: dict, seat: dict, container: str,
     )
 
 
+CAMERA_NAME = os.environ.get("AWM_FACTORIO_CAMERA_NAME", "fxcam")
+ROLES = ("player", "camera")
+
+
+def _park_camera(row: dict, seat: dict, timeout: float = SEAT_JOIN_TIMEOUT) -> None:
+    """Park a camera seat in the lab mod's view booth, which holds no character,
+    so the camera changes nothing the world simulates. Retried while the
+    server has not yet created the joined player."""
+    deadline = time.monotonic() + timeout
+    while True:
+        res, _ = _iface(row, "view_booth", {"player": seat["player_name"]},
+                        key=SYS, metered=False, mod="sbx")
+        if not (isinstance(res, dict) and res.get("ok") is False):
+            return
+        if res.get("error") != "not_found" or time.monotonic() > deadline:
+            raise appliance.ApplianceError(
+                f"camera {seat['seat_id']} could not park: {res.get('error')}")
+        time.sleep(0.5)
+
+
+def _start_seat(row: dict, seat: dict, container: str) -> int:
+    """Run a seat's client, wait for it in-world, and ready it for its role."""
+    appliance.seat_run(container, appliance.seat_network(row["compose_project"]),
+                       seat["player_name"],
+                       output_dir=appliance.seat_output_dir(seat["seat_id"]),
+                       mods=appliance.row_mods(row), role=seat["role"])
+    index = _wait_seat_connected(row, seat, container)
+    if seat["role"] == "camera":
+        _park_camera(row, seat)
+    else:
+        # Connected is not yet able to act: freeplay puts a newly created player
+        # through an intro cutscene, during which it has no character. `spawn`
+        # ends that and guarantees the seat is embodied before join returns.
+        _iface(row, "spawn", {"seat": seat["player_name"]},
+               key=seat["player_name"], metered=False)
+    return index
+
+
 def _join(args: dict, as_: str | None = None) -> dict:
     """Allocate a seat on a session: start the client, wait for it in-world.
 
@@ -1346,30 +1547,32 @@ def _join(args: dict, as_: str | None = None) -> dict:
     force with no protection between players, and a shell has no identity to
     check against anyway. It exists so `seats` can say whose seat this is and
     so a reclaimed seat can be reported against the agent that lost it.
+
+    A ``camera`` seat renders and never plays: it has no character, joins
+    under the camera's fixed name so a save seeded with it loads unchanged,
+    and only a sandbox world allows one.
     """
     sid = args["session_id"]
     row = _require_session(sid)
     if row["status"] in ("stopped", "error"):
         raise ValueError(f"session {sid} is {row['status']}; acquire it first")
-
+    role = args.get("role") or "player"
     d = dao.FactorioDAO()
-    project = row["compose_project"] or appliance.PROJECT
+    player_name = ""
+    if role == "camera":
+        _refuse_under_realm(row, args, "a camera seat")
+        if any(s["role"] == "camera" for s in d.live_seats(sid)):
+            raise ValueError(f"session {sid} already has a camera seat")
+        player_name = CAMERA_NAME
+
     owner = str(args.get("owner") or as_ or "").strip()
-    seat = d.create_seat(sid, owner=owner)
+    seat = d.create_seat(sid, owner=owner, role=role, player_name=player_name)
     seat_id = seat["seat_id"]
-    container = appliance.seat_container_name(project, seat_id)
+    container = appliance.seat_container_name(row["compose_project"], seat_id)
     d.set_seat(seat_id, container_name=container)
 
     try:
-        appliance.seat_run(container, appliance.seat_network(project),
-                           seat["player_name"],
-                           output_dir=appliance.seat_output_dir(seat_id))
-        index = _wait_seat_connected(row, seat, container)
-        # Connected is not yet able to act: freeplay puts a newly created player
-        # through an intro cutscene, during which it has no character. `spawn`
-        # ends that and guarantees the seat is embodied before join returns.
-        _iface(row, "spawn", {"seat": seat["player_name"]},
-               key=seat["player_name"], metered=False)
+        index = _start_seat(row, seat, container)
     except Exception:
         appliance.seat_stop(container)
         d.set_seat(seat_id, status="error")
@@ -1379,28 +1582,23 @@ def _join(args: dict, as_: str | None = None) -> dict:
     d.touch_seat(seat_id)
     _fire(sid, "seat_joined", {"seat_id": seat_id,
                                "player_name": seat["player_name"],
-                               "player_index": index})
-    log.info("join: seat %s connected as %s (index %d) for owner %r",
-             seat_id, seat["player_name"], index, owner)
+                               "player_index": index, "role": role})
+    log.info("join: seat %s connected as %s (index %d, %s) for owner %r",
+             seat_id, seat["player_name"], index, role, owner)
     return {"seat_id": seat_id, "session_id": sid,
             "player_name": seat["player_name"], "player_index": index,
-            "owner": owner}
+            "owner": owner, "role": role,
+            "output_dir": str(appliance.seat_output_dir(seat_id))}
 
 
 def _rejoin_one(row: dict, seat: dict) -> dict:
     d = dao.FactorioDAO()
-    project = row["compose_project"] or appliance.PROJECT
     container = seat["container_name"] or appliance.seat_container_name(
-        project, seat["seat_id"])
+        row["compose_project"], seat["seat_id"])
     _close_conn(seat)
     appliance.seat_stop(container)
     try:
-        appliance.seat_run(container, appliance.seat_network(project),
-                           seat["player_name"],
-                           output_dir=appliance.seat_output_dir(seat["seat_id"]))
-        index = _wait_seat_connected(row, seat, container)
-        _iface(row, "spawn", {"seat": seat["player_name"]},
-               key=seat["player_name"], metered=False)
+        index = _start_seat(row, seat, container)
     except Exception as exc:  # noqa: BLE001
         appliance.seat_stop(container)
         d.set_seat(seat["seat_id"], status="error")
@@ -1539,7 +1737,8 @@ def _reap_reason(seat: dict) -> str | None:
         return None
     if not appliance.seat_container_running(seat["container_name"]):
         return "container gone"
-    if SEAT_IDLE_S > 0 and _age_s(seat["last_seen_at"]) > SEAT_IDLE_S:
+    if (SEAT_IDLE_S > 0 and seat["role"] != "camera"
+            and _age_s(seat["last_seen_at"]) > SEAT_IDLE_S):
         return f"idle > {SEAT_IDLE_S:.0f}s"
     return None
 
@@ -1552,6 +1751,7 @@ def _reap_once() -> list[dict]:
         if reason:
             _reclaim(seat, reason)
             reclaimed.append({"seat_id": seat["seat_id"], "reason": reason})
+    _close_idle_conns()
     return reclaimed
 
 
@@ -1610,49 +1810,13 @@ def _world_load(args: dict) -> dict:
     return result
 
 
-# ---- lab targets and rules --------------------------------------------------
-#
-# ``lab:<container>`` addresses an fxlab lab. A lab is never stored: its row is
-# built from the live container on every call, so a lab that goes away leaves
-# nothing to reconcile.
+# ---- rules -------------------------------------------------------------------
 
-LAB_PREFIX = "lab:"
-_CONTAINER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 # The only lab-mod verbs a realm-rules call may run: reads, and standard mode.
 SBX_REALM_VERBS = frozenset({
     "sandbox_list", "verbs", "slice_list", "slice_ports", "slice_fingerprint",
     "slice_area_of_base", "slice_timing", "bonuses", "wave_status", "ledger",
     "view_shot", "view_booth"})
-
-
-def _is_lab(args: dict) -> bool:
-    return str(args.get("session_id") or "").strip().startswith(LAB_PREFIX)
-
-
-def _docker_inspect(container: str) -> dict | None:
-    proc = subprocess.run(["docker", "inspect", container], capture_output=True,
-                          text=True, timeout=15)
-    if proc.returncode != 0:
-        return None
-    return json.loads(proc.stdout)[0]
-
-
-def _lab_row(session_id: str) -> dict:
-    """The synthetic session row of a running container labelled ``fxlab=1``."""
-    container = session_id[len(LAB_PREFIX):]
-    if not _CONTAINER_RE.match(container) or container.startswith("rlm-factorio"):
-        raise ValueError(f"{session_id!r} is not a lab container name")
-    info = _docker_inspect(container)
-    if info is None:
-        raise ValueError(f"no such lab container: {container}")
-    if not (info.get("State") or {}).get("Running"):
-        raise ValueError(f"lab container {container} is not running")
-    labels = (info.get("Config") or {}).get("Labels") or {}
-    if labels.get("fxlab") != "1":
-        raise ValueError(
-            f"refusing {session_id}: only containers labelled fxlab=1 are labs")
-    return {"session_id": session_id, "container_name": container,
-            "kind": "lab", "rules": "sandbox"}
 
 
 def _admin_ok(token: Any) -> bool:
@@ -1670,7 +1834,7 @@ def _admin_ok(token: Any) -> bool:
 
 def _realm_rules(row: dict, args: dict) -> bool:
     """Whether this call runs under realm rules and has no admin override."""
-    if row.get("kind") == "lab" and args.get("rules") != "realm":
+    if row.get("rules") == "sandbox" and args.get("rules") != "realm":
         return False
     return not _admin_ok(args.get("admin_token"))
 
@@ -1692,10 +1856,6 @@ def _resolve(args: dict, *, need_seat: bool = True) -> tuple[dict, dict | None]:
     """
     seat_id = str(args.get("seat_id") or "").strip()
     sid = str(args.get("session_id") or "").strip()
-    if sid.startswith(LAB_PREFIX):
-        if seat_id or need_seat:
-            raise ValueError("no seat in a lab")
-        return _lab_row(sid), None
     d = dao.FactorioDAO()
     seat: dict | None = None
 
@@ -1770,7 +1930,7 @@ def _act(fn: str, *keys: str, need_seat: bool = True, lists: tuple = (),
         for name in lists:
             if name in result:
                 result[name] = _as_list(result[name])
-        return _budgeted(key, result, cost, throttle.CMD_BUDGET_MS)
+        return _budgeted(row, key, result, cost, throttle.CMD_BUDGET_MS)
     return handler
 
 
@@ -1789,14 +1949,12 @@ def _observe(args: dict) -> dict:
     shot = None
     if args.get("screenshot"):
         shot = _screenshot({"seat_id": seat["seat_id"]})["path"]
-    return _budgeted(key, {"snapshot": snapshot, "screenshot": shot}, cost,
+    return _budgeted(row, key, {"snapshot": snapshot, "screenshot": shot}, cost,
                      throttle.CMD_BUDGET_MS)
 
 
 def _observe_events(args: dict) -> dict:
     row, _ = _resolve(args, need_seat=False)
-    if row.get("kind") == "lab":
-        return {"events": []}
     sid = row["session_id"]
     _collect_and_fire(row)          # freshness: drain the world buffer now too
     with _EVENTS_LOCK:
@@ -1812,9 +1970,7 @@ def _pause(args: dict) -> dict:
     a script resumes, and the reply says which state it landed in.
     """
     row, _ = _resolve(args, need_seat=False)
-    if row.get("kind") == "lab":
-        raise appliance.ApplianceError("pause is not available on a lab target")
-    THROTTLE.forget_ups()
+    _throttle(row).forget_ups()
     paused = args.get("paused")
     body = {} if paused is None else {"paused": bool(paused)}
     return appliance.control_post(row, "/pause", body)
@@ -1891,7 +2047,7 @@ def _exec_lua(args: dict) -> dict:
         res = _run(row, key, preamble + code, timeout=120.0)
     output = _cap_output(res["output"], int(args.get("max_output") or EXEC_OUTPUT_DEFAULT))
     result = {"output": output, "seat": name, "cost_ms": res["cost_ms"]}
-    msg = _over_budget(key, res["cost_ms"], throttle.command_budget(args.get("budget_ms")))
+    msg = _over_budget(row, key, res["cost_ms"], throttle.command_budget(args.get("budget_ms")))
     if msg:
         result.update(ok=False, ran=True, error=msg)
     return result
@@ -2103,14 +2259,15 @@ def _blueprint_text(args: dict) -> str:
 
 
 def _upload_id(row: dict) -> str:
-    """A seatless upload id: the mod caps ids at 64 characters, a lab session
-    id can run past that."""
+    """A seatless upload id: the mod caps ids at 64 characters."""
     return "s" + hashlib.sha1(row["session_id"].encode()).hexdigest()[:16]
 
 
 def _blueprint_stamp(args: dict) -> dict:
     """Stamp a blueprint at a position, as ghosts (a player's move) or built."""
-    row, seat = _resolve(args, need_seat=not _is_lab(args))
+    row, seat = _resolve(args, need_seat=False)
+    if seat is None and row["rules"] != "sandbox":
+        raise ValueError(f"session {row['session_id']} needs a seat to stamp — join it first")
     built = bool(args.get("build")) or args.get("build_mode") == "built"
     if built:
         _refuse_under_realm(row, args, "blueprint_stamp build_mode=built")
@@ -2135,7 +2292,7 @@ def _blueprint_stamp(args: dict) -> dict:
     if seat is not None:
         dao.FactorioDAO().touch_seat(seat["seat_id"])
     result, cost = _iface(row, "blueprint_stamp", body, key=key, timeout=120.0)
-    return _budgeted(key, {**result, "chunks": len(chunks), "characters": len(text),
+    return _budgeted(row, key, {**result, "chunks": len(chunks), "characters": len(text),
                            "cost_ms": cost},
                      cost, throttle.command_budget(args.get("budget_ms")))
 
@@ -2156,7 +2313,7 @@ def _blueprint_capture(args: dict) -> dict:
     dao.FactorioDAO().touch_seat(seat["seat_id"])
     key = _key(seat, row)
     result, cost = _iface(row, "blueprint_capture", body, key=key, timeout=120.0)
-    over = _over_budget(key, cost, throttle.command_budget(args.get("budget_ms")))
+    over = _over_budget(row, key, cost, throttle.command_budget(args.get("budget_ms")))
     src = appliance.session_output_dir(row["session_id"]) / str(result["file"])
     _wait_for_file(str(src))
     text = open(src, encoding="utf-8").read().strip()
@@ -2199,13 +2356,18 @@ def _scan(args: dict) -> dict:
 
 
 def _load(args: dict) -> dict:
-    """The throttle's meters, with each key tied back to its seat."""
-    snap = THROTTLE.snapshot()
-    by_player = {s["player_name"]: s["seat_id"] for s in dao.FactorioDAO().live_seats()}
-    for name, meter in snap["keys"].items():
-        meter["seat_id"] = by_player.get(name)
-        meter["scan_work_cap"] = SCANNER.caps.get(name)
-    return snap
+    """Each live world's throttle meters, with each key tied back to its seat."""
+    d = dao.FactorioDAO()
+    worlds = {}
+    for row in d.live_sessions():
+        snap = _throttle(row).snapshot()
+        by_player = {s["player_name"]: s["seat_id"]
+                     for s in d.live_seats(row["session_id"])}
+        for name, meter in snap["keys"].items():
+            meter["seat_id"] = by_player.get(name)
+            meter["scan_work_cap"] = SCANNER.caps.get(name)
+        worlds[row["session_id"]] = {"name": row["name"], "kind": row["kind"], **snap}
+    return {"worlds": worlds}
 
 
 # ---- mod 0.6: the tool library and the lab mod -------------------------------
@@ -2295,7 +2457,7 @@ def _tool(args: dict) -> dict:
     if result.get("error") == "denied":
         what = str(result.get("detail") or f"cheat tool {name}").removesuffix(" refused")
         raise appliance.ApplianceError(f"refused under realm rules: {what}")
-    return _budgeted(key, result, cost, throttle.command_budget(args.get("budget_ms")))
+    return _budgeted(row, key, result, cost, throttle.command_budget(args.get("budget_ms")))
 
 
 def _tool_uses(header: dict) -> list[str]:
@@ -2412,10 +2574,8 @@ def _tool_sync(args: dict) -> dict:
 
 
 def _sbx(args: dict) -> dict:
-    """Call a verb of the fxlab-sbx lab mod. Lab targets only."""
-    if not _is_lab(args):
-        raise ValueError("sbx is lab-only: pass session_id='lab:<container>'")
-    row, _ = _resolve(args, need_seat=False)
+    """Call a verb of the fxlab-sbx lab mod, which a lab loads."""
+    row, seat = _resolve(args, need_seat=False)
     verb = args.get("verb")
     if not verb:
         raise ValueError("sbx needs a verb")
@@ -2424,8 +2584,189 @@ def _sbx(args: dict) -> dict:
         verb == "sbx_mode" and body.get("mode") == "standard")
     if not allowed:
         _refuse_under_realm(row, args, f"sbx {verb}")
-    result, _ = _iface(row, verb, body, key=_key(None, row), timeout=120.0, mod="sbx")
+    result, _ = _iface(row, verb, body, key=_key(seat, row), timeout=120.0, mod="sbx")
     return result
+
+
+# ---- blocking verbs: advance and wait_until ----------------------------------
+
+ADVANCE_POLL_S = 0.25
+
+
+def _advance(args: dict) -> dict:
+    """Run the world ``ticks`` forward at up to ``speed``, then pause it.
+
+    It slows down over the last few seconds of game time to land close to the
+    target tick, and pauses again even when it fails partway.
+    """
+    row, seat = _resolve(args, need_seat=False)
+    _refuse_under_realm(row, args, "advance")
+    key = _key(seat, row)
+    speed = float(args.get("speed") or 1000.0)
+    timeout = min(float(args.get("timeout_s") or WAIT_MAX_S), WAIT_MAX_S)
+
+    def lua(code: str) -> str:
+        return _run(row, key, code, timeout=30.0)["output"].strip()
+
+    start = int(lua("rcon.print(game.tick)"))
+    target = start + int(args["ticks"])
+    t0 = time.monotonic()
+    now, timed_out = start, False
+    lua(f"game.speed = {speed} game.tick_paused = false")
+    try:
+        while True:
+            now = int(lua("rcon.print(game.tick)"))
+            left = target - now
+            if left <= 0:
+                break
+            if time.monotonic() - t0 > timeout:
+                timed_out = True
+                break
+            if left < 600:
+                lua(f"game.speed = {max(1.0, min(speed, left / 30))}")
+            time.sleep(ADVANCE_POLL_S)
+    finally:
+        now = int(lua("game.tick_paused = true game.speed = 1 rcon.print(game.tick)"))
+        _throttle(row).forget_ups()
+    out = {"tick": now, "ticks": now - start, "wall_s": round(time.monotonic() - t0, 2)}
+    if timed_out:
+        out.update(error="TIMEOUT", timeout_s=timeout)
+    return out
+
+
+WAIT_POLL_MIN_S = 0.5
+
+_WORKING_LUA = """local c = %s
+local ents, missing = {}, {}
+if c.unit_numbers then
+  for _, u in pairs(c.unit_numbers) do
+    local e = game.get_entity_by_unit_number(u)
+    if e and e.valid then ents[#ents + 1] = e else missing[#missing + 1] = u end
+  end
+else
+  local surface = game.surfaces[c.surface or "nauvis"]
+  for _, e in pairs(surface.find_entities_filtered{area = c.area, force = "player"}) do
+    if e.status then ents[#ents + 1] = e end
+  end
+end
+local names = {}
+for k, v in pairs(defines.entity_status) do names[v] = k end
+local working, idle = 0, {}
+for _, e in pairs(ents) do
+  if e.status == defines.entity_status.working then working = working + 1
+  elseif #idle < 10 then
+    idle[#idle + 1] = {unit_number = e.unit_number, name = e.name,
+                       status = names[e.status] or tostring(e.status)}
+  end
+end
+rcon.print(helpers.table_to_json({total = #ents + #missing, working = working,
+                                  idle = idle, missing = missing}))"""
+
+_GHOSTS_LUA = """local c = %s
+if c.ids then
+  local left = {}
+  for _, u in pairs(c.ids) do
+    local e = game.get_entity_by_unit_number(u)
+    if e and e.valid and e.type == "entity-ghost" then left[#left + 1] = u end
+  end
+  rcon.print(helpers.table_to_json({remaining = #left, ids = left}))
+else
+  local n = game.surfaces[c.surface or "nauvis"].count_entities_filtered{
+    area = c.area, type = "entity-ghost"}
+  rcon.print(helpers.table_to_json({remaining = n}))
+end"""
+
+_OPS = {
+    "eq": lambda a, b: a == b, "ne": lambda a, b: a != b,
+    "lt": lambda a, b: a < b, "le": lambda a, b: a <= b,
+    "gt": lambda a, b: a > b, "ge": lambda a, b: a >= b,
+    "truthy": lambda a, b: bool(a), "falsy": lambda a, b: not a,
+}
+
+
+def _at_path(value: Any, path: str) -> Any:
+    for part in [p for p in str(path or "").split(".") if p]:
+        if isinstance(value, list):
+            value = value[int(part)] if part.isdigit() and int(part) < len(value) else None
+        elif isinstance(value, dict):
+            value = value.get(part)
+        else:
+            return None
+    return value
+
+
+def _wait_probe(row: dict, seat: dict | None, args: dict):
+    """The condition as a callable returning (holds, state)."""
+    cond = args["condition"]
+    key = _key(seat, row)
+    if "entities_working" in cond or "ghosts_built" in cond:
+        working = "entities_working" in cond
+        spec = cond["entities_working" if working else "ghosts_built"]
+        code = (_WORKING_LUA if working else _GHOSTS_LUA) % _lua_json(spec)
+
+        def probe() -> tuple[bool, dict]:
+            state = json.loads(_run(row, key, code, timeout=30.0)["output"])
+            for name in ("idle", "missing", "ids"):
+                if name in state:
+                    state[name] = _as_list(state[name])
+            if working:
+                return state["total"] > 0 and state["working"] == state["total"], state
+            return state["remaining"] == 0, state
+        return probe
+    if not cond.get("tool"):
+        raise ValueError("condition needs entities_working, ghosts_built or tool")
+    _require_tools(row)
+    listed = {t.get("name"): t for t in _tool_listing(row, key)["tools"]}
+    tool = listed.get(cond["tool"])
+    if tool is None:
+        raise ValueError(f"no tool named {cond['tool']!r} in this world; run tool_sync")
+    if tool.get("effect") != "read":
+        raise ValueError(f"wait_until polls read tools only; {cond['tool']} is {tool.get('effect')}")
+    op = _OPS.get(cond.get("op") or "truthy")
+    if op is None:
+        raise ValueError(f"op must be one of {', '.join(_OPS)}")
+    call = {k: args[k] for k in ("session_id", "seat_id", "rules", "admin_token")
+            if args.get(k) is not None}
+    call.update(name=cond["tool"], args=cond.get("args") or {})
+
+    def probe() -> tuple[bool, Any]:
+        state = _tool(call)
+        try:
+            return bool(op(_at_path(state, cond.get("path")), cond.get("value"))), state
+        except TypeError:
+            return False, state
+    return probe
+
+
+def _wait_until(args: dict) -> dict:
+    """Poll a condition until it holds for ``for_s``, or until the timeout."""
+    if args.get("timeout_s") is None:
+        raise ValueError(f"wait_until needs timeout_s (at most {WAIT_MAX_S:.0f})")
+    row, seat = _resolve(args, need_seat=False)
+    timeout = min(float(args["timeout_s"]), WAIT_MAX_S)
+    poll = max(WAIT_POLL_MIN_S, float(args.get("poll_s") or 2.0))
+    hold = float(args["condition"].get("for_s") or 0.0)
+    probe = _wait_probe(row, seat, args)
+    d = dao.FactorioDAO()
+    t0 = time.monotonic()
+    since = None
+    while True:
+        current = d.get_session(row["session_id"])
+        if current is None or current["status"] in ("stopped", "error"):
+            raise appliance.ApplianceError(
+                f"world {row['session_id']} was released mid-wait")
+        holds, state = probe()
+        now = time.monotonic()
+        since = (since or now) if holds else None
+        waited = round(now - t0, 2)
+        if since is not None and now - since >= hold:
+            return {"met": True, "waited_s": waited, "state": state, "timeout_s": timeout}
+        if now - t0 + poll > timeout:
+            return {"error": "TIMEOUT", "waited_s": waited, "state": state,
+                    "timeout_s": timeout}
+        if seat is not None:
+            d.touch_seat(seat["seat_id"])
+        time.sleep(poll)
 
 
 _move = _act("set_target", "x", "y")
@@ -2452,7 +2793,11 @@ def _checked(verb: str, handler):
 
     def run(args: dict, as_: str | None = None):
         args = validate.check(verb, args or {})
-        return handler(args, as_) if wants_as else handler(args)
+        token = _CALLER.set(as_)
+        try:
+            return handler(args, as_) if wants_as else handler(args)
+        finally:
+            _CALLER.reset(token)
     return run
 
 
@@ -2476,6 +2821,8 @@ HANDLERS = {
     "world_save": _world_save,
     "world_load": _world_load,
     "pause": _pause,
+    "advance": _advance,
+    "wait_until": _wait_until,
     "exec_lua": _exec_lua,
     "move": _move,
     "stop": _stop,
@@ -2511,14 +2858,10 @@ def _on_start() -> None:
     dao.init()
     d = dao.FactorioDAO()
     for row in d.live_sessions():
-        env = appliance.compose_env(row)
-        project = row["compose_project"] or appliance.PROJECT
-        if not appliance.is_container_running(project, env):
+        if not appliance.is_container_running(row):
             log.info("on_start: reconciling stale session %s -> stopped",
                      row["session_id"])
-            d.set_status(row["session_id"], "stopped")
-            for seat in d.live_seats(row["session_id"]):
-                d.set_seat(seat["seat_id"], status="stopped")
+            _stop_row(d, row)
     # A seat row whose container is gone is stopped, never adopted: the client
     # is stateless, so a lost one is replaced by joining again, not recovered.
     for seat in d.live_seats():
