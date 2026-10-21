@@ -372,6 +372,17 @@ class TestWiring:
         assert dd._dvc(wt, "config", "cache.type").stdout.strip() == "copy"
         assert str(dd.cache_dir()) in (wt / ".dvc" / "config.local").read_text()
 
+    @needs_dvc
+    def test_a_local_link_type_leaves_the_tracked_config_alone(self, dvc_project):
+        """The tracked config is compared at project level, so a local override never rewrites it."""
+        wt = dvc_project["worktree"]
+        dd.ensure_cache_config(wt)
+        tracked = wt / ".dvc" / "config"
+        tracked.write_text("# a note the project keeps\n" + tracked.read_text())
+        dd._dvc(wt, "config", "--local", "cache.type", "copy")
+        dd.ensure_cache_config(wt)
+        assert tracked.read_text().startswith("# a note the project keeps")
+
     def test_site_cache_goes_to_tmpfs_when_there_is_one(self, dvc_project, tmp_path, monkeypatch):
         """DVC's per-worktree index commits row by row, so a busy disk stalls a fresh checkout."""
         wt = dvc_project["worktree"]
