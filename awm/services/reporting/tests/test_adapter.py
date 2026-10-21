@@ -227,6 +227,8 @@ async def test_status_reports_the_task_part_even_with_the_front_door_off(monkeyp
     task, _ = ledger.ensure("altair", "j", "bg")
     ledger.update(task["id"], dirty=1)
     monkeypatch.setattr(hub_adapter, "RUNTIME", SimpleNamespace(
-        queue=queue, tasks=SimpleNamespace(node="altair", subscription=None, ledger=ledger)))
+        queue=queue, tasks=SimpleNamespace(node="altair", subscription=None, ledger=ledger),
+        board_problem=None, subscriber=SimpleNamespace(last_error=None, attached=True)))
     out = await hub_adapter.status({})
     assert out["enabled"] is False and out["tasks"] == {"open": 1, "unsynced": 1, "journals": None}
+    assert out["watch_relay"] == "connected"
