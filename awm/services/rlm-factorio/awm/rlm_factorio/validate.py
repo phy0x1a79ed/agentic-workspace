@@ -118,7 +118,40 @@ def mapping(key: str, v: Any) -> dict:
         raise ArgError(f"argument {key} must be an object, got {type(v).__name__}")
     return v
 
+def world_name(key: str, v: Any) -> str:
+    if not isinstance(v, str) or not re.match(r"^[a-z0-9][a-z0-9-]{0,39}$", v):
+        raise ArgError(f"argument {key} must be 1-40 lowercase letters, digits "
+                       f"or '-', got {v!r}")
+    return v
+
+
+def condition(key: str, v: Any) -> dict:
+    v = mapping(key, v)
+    named = [k for k in ("entities_working", "ghosts_built", "tool") if k in v]
+    if len(named) != 1:
+        raise ArgError(f"argument {key} takes exactly one of entities_working, "
+                       "ghosts_built or tool")
+    if named[0] != "tool":
+        spec = mapping(f"{key}.{named[0]}", v[named[0]])
+        ids = "unit_numbers" if named[0] == "entities_working" else "ids"
+        if (ids in spec) == ("area" in spec):
+            raise ArgError(f"argument {key}.{named[0]} takes exactly one of {ids} or area")
+    if v.get("for_s") is not None:
+        v = {**v, "for_s": number(0, 3600)(f"{key}.for_s", v["for_s"])}
+    return v
+
+
 SPECS: dict[str, dict[str, Callable[[str, Any], Any]]] = {
+    "acquire": {"kind": one_of("headless", "lab", "rendered"), "name": world_name,
+                "rules": RULES, "save": PATH, "create": boolean, "live": boolean},
+    "join": {"role": one_of("player", "camera"), "rules": RULES,
+             "admin_token": ADMIN_TOKEN},
+    "advance": {"ticks": integer(1, 10**8), "speed": number(1, 10000),
+                "timeout_s": number(1, 86400), "rules": RULES,
+                "admin_token": ADMIN_TOKEN},
+    "wait_until": {"condition": condition, "timeout_s": number(1, 86400),
+                   "poll_s": number(0.5, 600), "rules": RULES,
+                   "admin_token": ADMIN_TOKEN},
     "observe": {"radius": number(1, 64), "screenshot": boolean},
     "screenshot": {"x": COORD, "y": COORD, "width": integer(16, 4096),
                    "height": integer(16, 4096), "zoom": number(0.03125, 8),
