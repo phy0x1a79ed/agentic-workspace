@@ -384,7 +384,8 @@ class Queue(Db):
         """Record that ``job`` follows ``target``. True if new.
 
         A target is a card id, ``posted:<agent>``, ``project:<name>`` or
-        ``swarm:<name>`` (cards sent by or to that other swarm).
+        ``swarm:<name>`` (cards sent by or to that other swarm). A project or
+        swarm target hears only what another swarm does.
         """
         conn = self._conn()
         try:

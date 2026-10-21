@@ -65,6 +65,8 @@ API_MANIFEST: dict[str, Any] = {
             "effect": "read",
             "description": (
                 "Whether the front door is enabled on this node and why not, "
+                "`watch_relay` on a node without the door (the board stream that "
+                "carries `board_watch` lines), "
                 "the node's role and swarm, `tasks` (this node's open tasks, how "
                 "many wait for the Swarm board, and the journal subscription), "
                 "the board cursor, the card counts by status, and the state of "
@@ -389,6 +391,8 @@ async def status(args: dict, as_: str | None = None) -> dict:
     }
     if RUNTIME is not None:
         out["tasks"] = await asyncio.to_thread(_task_state, RUNTIME)
+        if why is not None:
+            out["watch_relay"] = _board_state(RUNTIME)
     if why is not None or RUNTIME is None:
         return out
     out["cursor"] = await asyncio.to_thread(RUNTIME.queue.cursor)

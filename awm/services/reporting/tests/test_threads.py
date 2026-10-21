@@ -321,3 +321,19 @@ async def test_a_watch_only_subscriber_ignores_a_replayed_message(queue):
     board.post_event("card.message", event)
     await sub.consume()
     assert len(lines.sent) == 1
+
+
+async def test_a_project_or_swarm_watch_hears_only_the_other_swarm(queue):
+    sub, board, lines, _ = build(queue)
+    queue.watch("w1", "swarm:beta")
+    queue.watch("w2", "project:avatar")
+    queue.watch("w3", "x")
+    card = board.add(make_card(recipient="beta", project="avatar",
+                               sender={"swarm": "tony", "principal": "a", "party": "p"}))
+    queue.watch("w3", card["id"])
+    board.post_event("card.posted", card)
+    board.post_event("card.message", board.say(card, "ours", swarm="tony"))
+    board.post_event("card.message", board.say(card, "theirs", swarm="beta"))
+    await sub.consume()
+    assert sorted(j for j, _ in lines.sent) == ["w1", "w2", "w3", "w3", "w3"]
+    assert all("tony" not in t.split(" from ")[-1] for j, t in lines.sent if j in ("w1", "w2"))

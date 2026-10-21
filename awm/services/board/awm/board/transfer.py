@@ -185,4 +185,4 @@ def landing(card_id: str, file_id: str, name: str) -> Path:
 def seal(path: Path) -> None:
     """Make an arrival read-only and never executable, and its directory closed to others."""
     os.chmod(path, 0o444)
-    os.chmod(path.parent, 0o755)
+    os.chmod(path.parent, 0o700)

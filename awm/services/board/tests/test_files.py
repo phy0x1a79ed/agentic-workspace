@@ -234,6 +234,7 @@ async def test_send_needs_the_checked_hash_and_fetch_lands_read_only(relay, tony
         assert fh.read() == b"step 1\n"
     mode = stat.S_IMODE(os.stat(got["path"]).st_mode)
     assert mode == 0o444 and not mode & 0o111
+    assert stat.S_IMODE(os.stat(os.path.dirname(got["path"])).st_mode) == 0o700
     assert "never execute" in got["notice"]
     again = await hub_adapter.file_fetch({"card_id": card["id"], "file_id": file_id})
     assert again["ok"] and again["path"] == got["path"]

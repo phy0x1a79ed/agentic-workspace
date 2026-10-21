@@ -209,10 +209,24 @@ class Subscriber:
         # A poster is not told of its own post.
         poster = card.get("agent") if ours and type_ != POSTED else None
         other = card.get("recipient") if ours else swarm_of(card.get("sender"))
-        for job in await self.db.watchers_of(card["id"], poster, project=card.get("project"),
-                                             swarm=other if other != OPEN else None):
+        # A project or swarm watch follows the other swarm, not this one's own moves.
+        broad = self._actor(type_, card) != self.swarm
+        for job in await self.db.watchers_of(card["id"], poster,
+                                             project=card.get("project") if broad else None,
+                                             swarm=other if broad and other != OPEN else None):
             if job != skip:
                 await self._tell(job, line)
+
+    @staticmethod
+    def _actor(type_: str, card: dict) -> str:
+        """The swarm that caused the event, as far as the event says."""
+        if type_ == MESSAGE:
+            return swarm_of((card.get("message") or {}).get("sender"))
+        if type_ == POSTED:
+            return swarm_of(card.get("sender"))
+        if type_ in (CLAIMED, COMPLETED, FAILED):
+            return str(card.get("claimant") or "")
+        return ""
 
     # -- the events ------------------------------------------------------------
 
