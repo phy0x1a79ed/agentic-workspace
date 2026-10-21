@@ -166,6 +166,9 @@ def is_container_running(project: str, env: dict[str, str]) -> bool:
 
 
 def control_url(row: dict) -> str:
+    """The supervisor's address. A lab has none: its port is the realm's."""
+    if row.get("kind") == "lab":
+        raise ApplianceError("not available on a lab target")
     port = int(row.get("control_port") or CONTROL_PORT)
     return f"http://127.0.0.1:{port}"
 

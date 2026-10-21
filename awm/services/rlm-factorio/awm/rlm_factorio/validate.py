@@ -109,6 +109,14 @@ DIRECTION = one_of(
     "west", "westnorthwest", "northwest", "northnorthwest")
 SURFACE = name
 PATH = text(4096)
+RULES = one_of("sandbox", "realm")
+ADMIN_TOKEN = text(512)
+
+
+def mapping(key: str, v: Any) -> dict:
+    if not isinstance(v, dict):
+        raise ArgError(f"argument {key} must be an object, got {type(v).__name__}")
+    return v
 
 SPECS: dict[str, dict[str, Callable[[str, Any], Any]]] = {
     "observe": {"radius": number(1, 64), "screenshot": boolean},
@@ -120,20 +128,23 @@ SPECS: dict[str, dict[str, Callable[[str, Any], Any]]] = {
     "technologies": {"search": text(100), "only_unresearched": boolean,
                      "limit": integer(1, 500)},
     "move": {"x": COORD, "y": COORD},
-    "teleport": {"x": COORD, "y": COORD, "surface": SURFACE},
+    "teleport": {"x": COORD, "y": COORD, "surface": SURFACE, "rules": RULES,
+                 "admin_token": ADMIN_TOKEN},
     "mine": {"x": COORD, "y": COORD, "name": name, "count": COUNT},
     "craft": {"recipe": name, "count": integer(1, 1000)},
     "build": {"name": name, "x": COORD, "y": COORD, "direction": DIRECTION},
     "insert": {"x": COORD, "y": COORD, "name": name, "count": COUNT, "target": name},
     "take": {"x": COORD, "y": COORD, "name": name, "count": COUNT, "target": name},
-    "research": {"name": name},
+    "research": {"name": name, "rules": RULES, "admin_token": ADMIN_TOKEN},
     "exec_lua": {"code": text(64 * 1024), "path": PATH,
                  "max_output": integer(256, 1_048_576), "budget_ms": number(1, 1000),
                  "cache": boolean},
     "blueprint_stamp": {"x": COORD, "y": COORD, "blueprint": text(4 * 1024 * 1024),
                         "path": PATH, "direction": DIRECTION, "build": boolean,
                         "clear": boolean, "force_build": boolean, "surface": SURFACE,
-                        "budget_ms": number(1, 1000)},
+                        "force": name, "budget_ms": number(1, 1000),
+                        "build_mode": one_of("ghost", "built"), "rules": RULES,
+                        "admin_token": ADMIN_TOKEN},
     "blueprint_capture": {"radius": number(1, 200), "x": COORD, "y": COORD,
                           "x1": COORD, "y1": COORD, "x2": COORD, "y2": COORD,
                           "label": text(200), "include_tiles": boolean,
@@ -163,6 +174,11 @@ SPECS: dict[str, dict[str, Callable[[str, Any], Any]]] = {
     "world_load": {"name": text(100)},
     "world_new": {"seed": integer(0, 2**32 - 1)},
     "pause": {"paused": boolean},
+    "tool": {"name": name, "args": mapping, "budget_ms": number(1, 1000),
+             "rules": RULES, "admin_token": ADMIN_TOKEN},
+    "tool_sync": {"names": names},
+    "sbx": {"verb": name, "args": mapping, "rules": RULES,
+            "admin_token": ADMIN_TOKEN},
 }
 
 
