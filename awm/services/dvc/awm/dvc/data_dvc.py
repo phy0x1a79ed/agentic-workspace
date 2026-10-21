@@ -678,6 +678,20 @@ def _common_git_dir(repo_dir: Path) -> Path | None:
     return common
 
 
+def _local_cache_type(local: Path) -> str | None:
+    """The ``[cache] type`` a worktree's ``config.local`` sets, if any."""
+    if not local.is_file():
+        return None
+    section = None
+    for raw in local.read_text().splitlines():
+        line = raw.strip()
+        if line.startswith("[") and line.endswith("]"):
+            section = line[1:-1].strip().strip('"')
+        elif section == "cache" and line.partition("=")[0].strip() == "type":
+            return line.partition("=")[2].strip().strip('"') or None
+    return None
+
+
 def ensure_cache_config(repo_dir: Path) -> None:
     """Point this worktree at the shared cache, via the **untracked** local config.
 
@@ -700,6 +714,8 @@ def ensure_cache_config(repo_dir: Path) -> None:
     ``.dvc/.gitignore`` itself, so this is the tool's own intended home for a
     machine-specific setting rather than a convention invented here. The *link
     type* is portable and stays in the tracked config; only the path is local.
+    A ``type`` already in ``config.local`` survives the rewrite: a worktree whose
+    files are edited in place, such as a live data root, sets ``copy`` there.
     """
     dvc_dir = repo_dir / ".dvc"
     dvc_dir.mkdir(parents=True, exist_ok=True)
@@ -714,6 +730,9 @@ def ensure_cache_config(repo_dir: Path) -> None:
         "[cache]\n"
         f"    dir = {cache}\n"
     )
+    link = _local_cache_type(local)
+    if link:
+        body += f"    type = {link}\n"
     site = site_cache_dir()
     if site is not None:
         body += f"[core]\n    site_cache_dir = {site}\n"
