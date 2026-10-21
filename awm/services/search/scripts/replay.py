@@ -323,7 +323,9 @@ def grep(args: argparse.Namespace) -> int:
         answer = call(args.new, "query", {"query": s["literal"], "sources": [s["source"]], "limit": 100,
                                           "passages": 1})
         latencies.append(time.time() - start)
-        exact = [identity(h["source"], str(h["id"]), h.get("url", "")) for h in answer.get("exact") or []]
+        section = answer.get("exact") or []
+        exact = [identity(h["source"], str(h["id"]), h.get("url", ""))
+                 for hits in (section.values() if isinstance(section, dict) else [section]) for h in hits]
         hit = identity(s["source"], s["id"]) in exact
         tally[s["kind"]][0] += hit
         tally[s["kind"]][1] += 1
