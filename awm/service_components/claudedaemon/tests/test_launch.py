@@ -70,6 +70,51 @@ def test_a_running_daemon_is_not_a_refusal(home):
     assert launch.daemon_refusal(roster_file(home, {})) is None
 
 
+def test_a_daemon_in_another_mount_namespace_is_a_refusal_without_a_user_bus(
+        home, monkeypatch):
+    monkeypatch.setattr(launch, "user_manager_env", lambda: None)
+    real = os.readlink
+    monkeypatch.setattr(launch.os, "readlink", lambda p: (
+        "mnt:[1]" if p == f"/proc/{os.getpid()}/ns/mnt" else real(p)))
+    refusal = launch.daemon_refusal(roster_file(home, {}))
+    assert "not reachable" in refusal and "mount namespace" in refusal
+
+
+def test_an_unreadable_namespace_is_a_refusal_without_a_user_bus(home, monkeypatch):
+    monkeypatch.setattr(launch, "user_manager_env", lambda: None)
+
+    def denied(p):
+        raise PermissionError(p)
+
+    monkeypatch.setattr(launch.os, "readlink", denied)
+    assert "not reachable" in launch.daemon_refusal(roster_file(home, {}))
+
+
+def test_a_daemon_in_this_namespace_launches_directly_without_a_user_bus(
+        home, monkeypatch):
+    """A host with no systemd at all still launches."""
+    monkeypatch.setattr(launch, "user_manager_env", lambda: None)
+    assert launch.daemon_refusal(roster_file(home, {})) is None
+
+
+def test_a_user_bus_reaches_the_daemon_from_any_namespace(home, monkeypatch):
+    monkeypatch.setattr(launch, "user_manager_env", lambda: {"XDG_RUNTIME_DIR": "/x"})
+    monkeypatch.setattr(launch, "_shares_mount_namespace", lambda pid: False)
+    assert launch.daemon_refusal(roster_file(home, {})) is None
+
+
+async def test_an_unreachable_daemon_means_nothing_is_spawned(home, spawned, monkeypatch):
+    monkeypatch.setattr(launch, "user_manager_env", lambda: None)
+    monkeypatch.setattr(launch, "_shares_mount_namespace", lambda pid: False)
+    with pytest.raises(launch.Refused, match="not reachable"):
+        await launch.launch(cwd=home, name="n", roster_path=roster_file(home, {}),
+                            jobs_dir=home / "jobs")
+    with pytest.raises(launch.Refused, match="not reachable"):
+        await launch.respawn("abc", roster_path=roster_file(home, {}),
+                             jobs_dir=home / "jobs")
+    assert spawned == []
+
+
 async def test_no_daemon_means_nothing_is_spawned(home, spawned):
     with pytest.raises(launch.Refused, match="no claude code daemon"):
         await launch.launch(cwd=home, name="n", roster_path=home / "none.json",
@@ -152,3 +197,57 @@ async def test_no_new_job_is_a_timeout(home, spawned, monkeypatch):
     with pytest.raises(TimeoutError, match="no new background session"):
         await launch.launch(cwd=home, name="n", claude="/bin/claude",
                             roster_path=path, jobs_dir=home / "jobs", timeout=0.1)
+
+
+# --- respawn ----------------------------------------------------------------
+
+
+def live(pid=None, proc_start=None):
+    from awm.claudedaemon import roster
+
+    pid = pid or os.getpid()
+    return {"replPid": pid, "replProcStart": proc_start or roster.proc_start(pid),
+            "startedAt": 1}
+
+
+async def test_respawn_waits_for_the_same_job_to_come_back(home, spawned, monkeypatch):
+    monkeypatch.setattr(launch, "user_manager_env", lambda: None)
+    path = roster_file(home, {"other": live()})
+    spawned.hooks["on_spawn"] = lambda: roster_file(
+        home, {"other": live(), "seat1": live()})
+    s = await launch.respawn("seat1", claude="/bin/claude", roster_path=path,
+                             jobs_dir=home / "jobs", timeout=2)
+    assert s.short == "seat1"
+    assert spawned[0][0] == ("/bin/claude", "respawn", "seat1")
+
+
+async def test_respawn_refuses_a_live_job(home, spawned):
+    path = roster_file(home, {"seat1": live()})
+    with pytest.raises(launch.Refused, match="running"):
+        await launch.respawn("seat1", roster_path=path, jobs_dir=home / "jobs")
+    assert spawned == []
+
+
+async def test_respawn_waits_past_a_stale_roster_entry(home, spawned, monkeypatch):
+    monkeypatch.setattr(launch, "POLL_S", 0.01)
+    monkeypatch.setattr(launch, "user_manager_env", lambda: None)
+    path = roster_file(home, {"seat1": live(proc_start="dead")})
+    with pytest.raises(TimeoutError, match="seat1 did not come back"):
+        await launch.respawn("seat1", claude="/bin/claude", roster_path=path,
+                             jobs_dir=home / "jobs", timeout=0.1)
+    assert len(spawned) == 1
+
+
+async def test_respawn_needs_a_daemon(home, spawned):
+    with pytest.raises(launch.Refused, match="no claude code daemon"):
+        await launch.respawn("seat1", roster_path=home / "none.json",
+                             jobs_dir=home / "jobs")
+    assert spawned == []
+
+
+def test_respawn_runs_in_a_unit_that_keeps_its_control_group(monkeypatch):
+    monkeypatch.setattr(launch, "user_manager_env", lambda: {"XDG_RUNTIME_DIR": "/x"})
+    argv, _, _ = launch.in_unit(["/bin/claude", "respawn", "j"], cwd="/h", env={},
+                                unit_prefix="awm-cx-resume")
+    assert "--property=KillMode=process" in argv
+    assert argv[argv.index("--") + 1:] == ["/bin/claude", "respawn", "j"]

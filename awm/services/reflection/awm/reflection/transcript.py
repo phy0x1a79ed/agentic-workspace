@@ -102,13 +102,32 @@ def session_id_for(repl_pid: int) -> Optional[str]:
     mints a new id, so an id captured when a wait started can name a transcript
     that has stopped growing.
     """
+    return session_and_cwd_for(repl_pid)[0]
+
+
+def session_and_cwd_for(repl_pid: int) -> tuple[Optional[str], Optional[str]]:
+    """:func:`session_id_for`, plus the cwd the record names; ``None`` for each unknown.
+
+    The cwd decides which directory the transcript lives in, so a change in it
+    is the first sign that a ``/cd`` is about to move the file.
+    """
     try:
         record = json.loads(
             (session_target.SESSIONS_DIR / f"{repl_pid}.json").read_text())
     except (OSError, ValueError):
-        return None
-    session_id = record.get("sessionId")
-    return str(session_id) if session_id else None
+        return None, None
+    if not isinstance(record, dict):
+        return None, None
+    session_id, cwd = record.get("sessionId"), record.get("cwd")
+    return (str(session_id) if session_id else None,
+            str(cwd) if cwd else None)
+
+
+def _mtime(path: Path) -> float:
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return float("-inf")
 
 
 def path_for(session_id: str) -> Optional[Path]:
@@ -117,15 +136,16 @@ def path_for(session_id: str) -> Optional[Path]:
     Claude Code files transcripts under a slug derived from the session's cwd.
     Deriving that slug here would be a second copy of somebody else's rule, and
     a session that changes directory would break it; a glob asks the filesystem
-    instead.
+    instead. Should two directories hold the id, the one written last is the
+    one the session is writing to.
     """
     if not session_id:
         return None
     try:
-        matches = sorted(PROJECTS_DIR.glob(f"*/{session_id}.jsonl"))
+        matches = list(PROJECTS_DIR.glob(f"*/{session_id}.jsonl"))
     except OSError:
         return None
-    return matches[0] if matches else None
+    return max(matches, key=_mtime) if matches else None
 
 
 def _stamp_ms(entry: dict) -> int:
@@ -172,6 +192,7 @@ class Tail:
     def __init__(self, repl_pid: int, *, from_start: bool = False):
         self.repl_pid = repl_pid
         self._session_id: Optional[str] = None
+        self._cwd: Optional[str] = None
         self._path: Optional[Path] = None
         self._offset = 0 if from_start else None
         self._partial = ""
@@ -234,15 +255,23 @@ class Tail:
     # -- reading ------------------------------------------------------------
 
     def _resolve(self) -> Optional[Path]:
-        session_id = session_id_for(self.repl_pid)
+        session_id, cwd = session_and_cwd_for(self.repl_pid)
         if session_id and session_id != self._session_id:
             # A /clear mid-wait: the old file stops growing and a new one starts
             # empty, so follow the new one from its beginning.
             self._session_id = session_id
+            self._cwd = cwd
             self._path = path_for(session_id)
             self._offset = 0
             self._partial = ""
-        elif self._path is None and session_id:
+        elif session_id and (self._path is None or cwd != self._cwd
+                             or not self._path.exists()):
+            # A /cd mid-wait: same conversation, same id, and Claude Code moves
+            # the file into the new cwd's slug directory. A rename keeps the
+            # content, so the offset stands. The record can name the new cwd
+            # before the file has moved, which is why a vanished path also
+            # triggers the search.
+            self._cwd = cwd
             self._path = path_for(session_id)
         return self._path
 

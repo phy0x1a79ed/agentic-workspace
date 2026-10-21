@@ -17,12 +17,17 @@ pytestmark = [pytest.mark.unit, pytest.mark.smoke]
 class Replies:
     def __init__(self) -> None:
         self.sent: list[tuple[str, str, str]] = []
+        self.acks: list[str] = []
+        self.files: list[list[dict]] = []
         self.error: Exception | None = None
 
-    async def __call__(self, account: str, channel: str, text: str) -> None:
+    async def __call__(self, account: str, channel: str, text: str, *, ack_ref: str = "",
+                       files: list[dict] | None = None) -> None:
         if self.error:
             raise self.error
         self.sent.append((account, channel, text))
+        self.acks.append(ack_ref)
+        self.files.append(files or [])
 
 
 def event(command, **over):
@@ -58,6 +63,13 @@ async def test_reject_without_a_reason_gives_one(parts):
     card = fed.add(make_card())
     await commands.handle(event("reject", ref=card["id"][:8], reason=""))
     assert fed.verbs("reject")[0]["reason"] == "rejected by the recipient"
+
+
+async def test_a_reason_typed_after_the_ref_is_kept(parts):
+    commands, fed, _, _ = parts
+    card = fed.add(make_card())
+    await commands.handle(event("reject", ref=f"{card['id'][:8]} testing reject", reason=""))
+    assert fed.verbs("reject") == [{"card_id": card["id"], "reason": "testing reject"}]
 
 
 async def test_reject_answers_in_the_channel_the_command_named(parts):
@@ -100,11 +112,46 @@ async def test_new_agent_starts_a_session_with_remote_control_and_replies_with_i
     await commands.handle(event("new_agent", prompt="hello", reply_to="dm:42"))
     await settle(commands)
     spec = cx.started[0]
-    assert (spec["project"], spec["scope"], spec["remote_control"], spec["prompt"]) == (
-        "awm", "dev", True, "hello")
+    assert (spec["project"], spec["scope"], spec["remote_control"]) == ("awm", "dev", True)
+    assert spec["prompt"].startswith("hello\n\n")
     account, channel, text = replies.sent[0]
     assert (account, channel) == ("discord-bot", "dm:42")
     assert "https://claude.ai/code/session_job0001" in text and spec["name"] in text
+
+
+async def test_new_agent_answer_quotes_its_prompt(parts):
+    commands, _, _, replies = parts
+    await commands.handle(event("new_agent", prompt="fix the tests\nthen deploy"))
+    await settle(commands)
+    lines = replies.sent[0][2].splitlines()
+    assert lines[:2] == ["> fix the tests", "> then deploy"]
+    assert "https://claude.ai/code/session_job0001" in lines[2]
+    assert replies.files[0] == []
+    await commands.handle(event("new_agent", prompt=""))
+    await settle(commands)
+    assert not replies.sent[1][2].startswith(">")
+
+
+async def test_a_long_prompt_is_previewed_and_attached_whole(parts):
+    commands, _, _, replies = parts
+    prompt = "\n".join(f"step {i}" for i in range(10))
+    await commands.handle(event("new_agent", prompt=prompt))
+    await settle(commands)
+    lines = replies.sent[0][2].splitlines()
+    assert lines[:3] == ["> step 0", "> step 1", "> step 2…"]
+    assert "https://claude.ai/code/session_job0001" in lines[3]
+    assert replies.files[0] == [{"filename": "prompt.txt", "text": prompt}]
+    await commands.handle(event("new_agent", prompt="x" * 5000))
+    await settle(commands)
+    assert len(replies.sent[1][2]) < 400
+    assert replies.files[1][0]["text"] == "x" * 5000
+
+
+async def test_new_agent_answers_by_replacing_the_starting_ack(parts):
+    commands, _, _, replies = parts
+    await commands.handle(event("new_agent", reply_to="dm:42", ack_ref="31337"))
+    await settle(commands)
+    assert replies.acks == ["31337"]
 
 
 async def test_new_agent_takes_its_project_scope_and_name_from_the_node(parts, monkeypatch):
@@ -113,12 +160,33 @@ async def test_new_agent_takes_its_project_scope_and_name_from_the_node(parts, m
     await settle(commands)
     spec = cx.started[0]
     assert (spec["project"], spec["scope"], spec["remote_control"]) == ("awm", "dev", True)
-    assert spec["name"].startswith("agent-") and "prompt" not in spec
+    assert spec["name"].startswith("agent-")
+    assert "Wait for Tony's first instruction" in spec["prompt"]
     monkeypatch.setenv("AWM_REPORTING_NEW_AGENT_PROJECT", "cloud")
     monkeypatch.setenv("AWM_REPORTING_NEW_AGENT_SCOPE", "main")
     await commands.handle(event("new_agent"))
     await settle(commands)
     assert (cx.started[1]["project"], cx.started[1]["scope"]) == ("cloud", "main")
+
+
+async def test_a_new_agent_is_told_to_rename_itself_once_it_knows_its_work(parts):
+    commands, _, cx, _ = parts
+    await commands.handle(event("new_agent", prompt="fix the printer"))
+    await settle(commands)
+    spec = cx.started[0]
+    assert spec["name"] in spec["prompt"]
+    assert 'reflection(verb="rename"' in spec["prompt"]
+
+
+async def test_a_new_agent_is_told_who_started_it_and_not_to_answer_on_discord(parts):
+    commands, _, cx, _ = parts
+    await commands.handle(event("new_agent", prompt="fix the printer", reply_to="dm:42"))
+    await settle(commands)
+    spec = cx.started[0]
+    assert spec["started_by"] == "Tony from Discord"
+    assert 'social(verb="send"' not in spec["prompt"]
+    assert "dm:42" not in spec["prompt"]
+    assert "Do not post to Discord" in spec["prompt"]
 
 
 async def test_a_link_that_is_not_ready_is_reported_with_the_reason(parts):

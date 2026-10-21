@@ -11,6 +11,7 @@ is dead time on every session launch, and this sits on that path.
 """
 from __future__ import annotations
 
+import json
 import os
 
 # Claude Code writes one record per live session at ``~/.claude/sessions/<repl-pid>.json``.
@@ -20,6 +21,16 @@ import os
 # stale record squatting a recycled pid fails closed there rather than being
 # mis-targeted here, and this stays a narrowing step, not an authority.
 SESSIONS_DIR = os.path.expanduser("~/.claude/sessions")
+# Verbs a peer serves that act for the calling session. The peer cannot see our
+# pid, so a proxy following a redirect names the session from its own record
+# under `CLAIM_KEY`. The peer's edge supplies the node, and the peer's gateway
+# strips `CLAIM_KEY` from any call that did not come through an edge.
+SESSION_CLAIM_VERBS = {
+    "social": frozenset({"mount", "unmount"}),
+    "tether": frozenset({"invite", "status", "run", "shell", "keys", "resize",
+                         "close", "tasks", "send", "cut", "drain"}),
+}
+CLAIM_KEY = "_caller_session"
 MAX_ANCESTRY_HOPS = 8
 
 
@@ -100,3 +111,44 @@ def resolve_caller_pid(start_pid: int, *, sessions_dir: str | None = None,
             return pid
         pid = ppid_of(pid)
     return start_pid
+
+
+def session_claim(pid: int, *, sessions_dir: str | None = None) -> dict | None:
+    """``{kind, job, name}`` from the session record of ``pid``, or None."""
+    path = os.path.join(sessions_dir or _default_sessions_dir(), f"{pid}.json")
+    try:
+        with open(path, encoding="utf-8") as fp:
+            rec = json.load(fp)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(rec, dict):
+        return None
+    return {"kind": str(rec.get("kind") or ""), "job": str(rec.get("jobId") or ""),
+            "name": str(rec.get("name") or "")}
+
+
+def forwarded_args(name: str, arguments: dict, session_pid: str | int | None, *,
+                   sessions_dir: str | None = None) -> dict:
+    """The arguments a proxy sends to the peer a redirect named.
+
+    ``peer`` is dropped so the far side does not re-route. For a verb in
+    `SESSION_CLAIM_VERBS` the model's own `CLAIM_KEY` is replaced by the claim
+    read from the calling session's record.
+    """
+    forwarded = {k: v for k, v in arguments.items() if k != "peer"}
+    domain, flat, verb = name.partition("_")
+    if domain not in SESSION_CLAIM_VERBS:
+        return forwarded
+    if flat:
+        bag = forwarded
+    else:
+        verb = forwarded.get("verb")
+        inner = forwarded.get("args")
+        bag = dict(inner) if isinstance(inner, dict) else {}
+        forwarded["args"] = bag
+    bag.pop(CLAIM_KEY, None)
+    if verb in SESSION_CLAIM_VERBS[domain] and str(session_pid or "").isdigit():
+        claim = session_claim(int(session_pid), sessions_dir=sessions_dir)
+        if claim:
+            bag[CLAIM_KEY] = claim
+    return forwarded

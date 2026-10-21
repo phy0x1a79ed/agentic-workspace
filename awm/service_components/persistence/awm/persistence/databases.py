@@ -17,8 +17,11 @@ every other service.
 
 from __future__ import annotations
 
+import os
 import sqlite3
+import threading
 import uuid
+from collections import OrderedDict
 from pathlib import Path
 
 try:  # SERVICES_DIR lands in awm.config later (T3); derive it until then.
@@ -63,12 +66,59 @@ def get_connection_at(path: Path) -> sqlite3.Connection:
     """The same connection setup for a DB at an explicit path — a service that
     keeps one DB per user opens its per-user files through here."""
     Path(path).parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(path), timeout=30)
+    conn = _open(path)
+    _hold_open(path)
+    return conn
+
+
+def _open(path: Path, *, check_same_thread: bool = True) -> sqlite3.Connection:
+    conn = sqlite3.connect(str(path), timeout=30, check_same_thread=check_same_thread)
     conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
     conn.execute("PRAGMA busy_timeout=5000")
     conn.execute("PRAGMA foreign_keys=ON")
     conn.row_factory = sqlite3.Row
     return conn
+
+
+# SQLite checkpoints and fsyncs a WAL database when its last connection
+# closes, which costs seconds on a busy disk. One idle connection per recent
+# DB keeps every caller's close from being the last. A DB replaced on disk
+# (new inode) gets a fresh keeper, so the old one never pins a deleted file.
+_KEEPERS_MAX = 16
+_keepers: OrderedDict[str, tuple[int, sqlite3.Connection]] = OrderedDict()
+_keepers_lock = threading.Lock()
+
+
+def _hold_open(path: Path) -> None:
+    key = str(Path(path).resolve())
+    try:
+        inode = os.stat(key).st_ino
+    except OSError:
+        return
+    with _keepers_lock:
+        held = _keepers.get(key)
+        if held is not None and held[0] == inode:
+            _keepers.move_to_end(key)
+            return
+    keeper = _open(key, check_same_thread=False)
+    with _keepers_lock:
+        held = _keepers.pop(key, None)
+        _keepers[key] = (inode, keeper)
+        stale = [held[1]] if held is not None else []
+        while len(_keepers) > _KEEPERS_MAX:
+            stale.append(_keepers.popitem(last=False)[1][1])
+    for conn in stale:
+        conn.close()
+
+
+def release_keepers() -> None:
+    """Close every idle keeper connection, checkpointing each DB."""
+    with _keepers_lock:
+        held = [conn for _, conn in _keepers.values()]
+        _keepers.clear()
+    for conn in held:
+        conn.close()
 
 
 # ---------------------------------------------------------------------------

@@ -159,6 +159,16 @@ def projects_dir() -> Path:
     return awm_config.canonical_workspace() / "projects"
 
 
+#: Claude Code's transcripts: `<dir per working directory>/<session id>.jsonl`.
+def transcripts_dir() -> Path:
+    env = os.environ.get("AWM_CX_TRANSCRIPTS")
+    if env:
+        return Path(env)
+    from awm.claudedaemon import roster
+
+    return roster.claude_home() / "projects"
+
+
 def mcp_source() -> Path:
     """The workspace's own MCP config, which names how to start the awm server."""
     env = os.environ.get("AWM_CX_MCP_SOURCE")

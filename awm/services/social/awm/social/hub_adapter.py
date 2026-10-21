@@ -7,9 +7,10 @@ account, and runs the shared :class:`awm.gatewayclient.ServiceAdapter` loop
 the control WS and projected into the gateway catalog as ``social_*`` tools.
 
 Inbound messages flow: connector → ``_on_message`` → **emit** on
-``/svc/social/emit/message``. Nothing is persisted — the external platforms are
-the source of truth, and ``fetch`` / ``search`` / ``download_attachments`` query
-them live. A small bounded in-memory set dedupes redelivered events (replacing
+``/svc/social/emit/message``. The external platforms are the source of truth,
+and ``fetch`` / ``search`` / ``download_attachments`` query them live. The one
+exception is a bot account, whose connector keeps a synced history that
+``history`` reads (see :mod:`awm.social.history`). A small bounded in-memory set dedupes redelivered events (replacing
 the former DB unique index). ``emit`` no-ops when no live subscriber is attached.
 
 Run via ``run.sh`` (which the hub spawns and respawns):
@@ -19,6 +20,7 @@ Run via ``run.sh`` (which the hub spawns and respawns):
 from __future__ import annotations
 
 import asyncio
+import base64
 import logging
 import os
 import shutil
@@ -29,8 +31,11 @@ from awm.gatewayclient import ServiceAdapter
 from awm.social import buckets as buckets_mod
 from awm.social import config as social_config
 from awm.social import connectors
+from awm.social import keeper as keeper_mod
+from awm.social import seats
 from awm.social.attachments import file_url, sink_dir, write_attachments
 from awm.social.dao import SocialDAO, init as dao_init
+from awm.social.history import History
 
 log = logging.getLogger("awm.social.hub_adapter")
 
@@ -45,6 +50,8 @@ _accounts: dict[str, social_config.AccountConfig] = {}
 _buckets: dict[str, buckets_mod.Bucket] = {}
 _bucket_cfgs: dict[str, social_config.BucketConfig] = {}
 _dao = SocialDAO()
+# The kept-seat keeper, on the owner node when social.toml declares seats.
+_keeper: keeper_mod.Keeper | None = None
 
 # Bounded in-memory dedupe of redelivered inbound events, keyed by
 # (platform, account, message_id) — replaces the old DB unique index now that
@@ -99,6 +106,7 @@ def _msg_to_dict(m: connectors.InboundMessage, awm_user: str = "") -> dict:
         "thread_id": m.thread_id,
         "sender_id": m.sender_id,
         "sender_name": m.sender_name,
+        "sender_bot": m.sender_bot,
         "awm_user": awm_user,
         "text": m.text,
         "ts": m.ts,
@@ -107,10 +115,10 @@ def _msg_to_dict(m: connectors.InboundMessage, awm_user: str = "") -> dict:
     }
 
 
-# -- inbound: emit (no persistence) -----------------------------------------
+# -- inbound: emit -----------------------------------------
 
 async def _on_message(inbound: connectors.InboundMessage) -> None:
-    """Emit one inbound message for live subscribers (nothing is stored)."""
+    """Emit one inbound message for live subscribers."""
     key = (inbound.platform, inbound.account, inbound.message_id)
     if inbound.message_id:
         if key in _seen:
@@ -121,6 +129,9 @@ async def _on_message(inbound: connectors.InboundMessage) -> None:
     if _adapter is not None:
         awm_user = _dao.lookup(inbound.platform, inbound.sender_id) or ""
         await _adapter.emit("message", _msg_to_dict(inbound, awm_user))
+    held = _dao.holder(inbound.account, inbound.channel_id) if inbound.to_holder else None
+    if held:
+        _pusher.push(held["node"], held["job"], seats.push_line(inbound))
 
 
 async def _on_command(cmd: connectors.Command) -> None:
@@ -180,11 +191,81 @@ async def _h_emit_probe(args: dict) -> dict:
 
 # -- handlers ---------------------------------------------------------------
 
+def _send_files(args: dict) -> list[dict]:
+    """The attachments of a send: inline ``files`` plus the local ``file``."""
+    files = list(args.get("files") or [])
+    path = args.get("file")
+    if path:
+        if os.path.isdir(path):
+            raise ValueError(f"send attaches one file, and {path!r} is a folder")
+        if not os.path.isfile(path):
+            raise FileNotFoundError(f"send: no local file {path!r}")
+        files.append({"filename": os.path.basename(path), "path": path})
+    return files
+
+
+def _inline_file(args: dict) -> dict:
+    """Carry ``file`` inside the args, for a peer that cannot read this node's path."""
+    if not args.get("file"):
+        return args
+    rest = {k: v for k, v in args.items() if k != "file"}
+    files = _send_files(args)
+    with open(args["file"], "rb") as fh:
+        files[-1] = {"filename": files[-1]["filename"],
+                     "b64": base64.b64encode(fh.read()).decode()}
+    return {**rest, "files": files}
+
+
 async def _h_send(args: dict) -> dict:
     # Send only — outbound messages are no longer mirrored to a local store.
-    sent = await _conn(args["account"]).send(
-        args["channel"], args["text"], thread=args.get("thread"))
+    conn = _conn(args["account"])
+    files = _send_files(args)
+    text = args.get("text") or ""
+    if not text and not files:
+        raise ValueError("send needs text, a file, or both")
+    if files:
+        if not conn.sends_files:
+            raise RuntimeError(f"{conn.platform} account {args['account']!r} does "
+                               "not take files through social")
+        size = sum(connectors.file_size(f) for f in files)
+        if size > conn.max_file_bytes:
+            raise ValueError(
+                f"the files come to {size} bytes, over the "
+                f"{conn.max_file_bytes} that {args['account']!r} takes per message")
+    extra = {"files": files} if files else {}
+    if args.get("ack_ref"):
+        edited = await conn.edit_ack(str(args["ack_ref"]), text, **extra)
+        if edited is not None:
+            return {"ok": True, "edited": True, **edited}
+    sent = await conn.send(args["channel"], text, thread=args.get("thread"), **extra)
     return {"ok": True, **sent}
+
+
+async def _h_react(args: dict) -> dict:
+    conn = _conn(args["account"])
+    done = await conn.react(
+        args["channel"], str(args["message_id"]), str(args["emoji"]),
+        remove=bool(args.get("remove")))
+    return {"ok": True, **done}
+
+
+async def _h_history(args: dict) -> dict:
+    """A bot account's synced history: the newest ``limit`` messages, or with
+    ``since`` (a message ts) the ``limit`` right after it, oldest first. The
+    catch-up read for a listener that missed pushes."""
+    conn = _conn(args["account"])
+    if not conn.keeps_history:
+        raise RuntimeError(
+            f"account {args['account']!r} keeps no history; use fetch")
+    msgs = _dao.history(
+        args["account"],
+        channel_id=args.get("channel") or None,
+        since=args.get("since") or None,
+        limit=int(args.get("limit", 100)),
+        include_deleted=bool(args.get("include_deleted")),
+    )
+    return {"messages": msgs, "count": len(msgs),
+            "chats": _dao.synced_channels(args["account"])}
 
 
 async def _h_channels(args: dict) -> dict:
@@ -287,6 +368,179 @@ async def _h_search(args: dict) -> dict:
     rows = [_msg_to_dict(m, _dao.lookup(m.platform, m.sender_id) or "")
             for m in msgs]
     return {"messages": rows, "count": len(rows)}
+
+
+
+# -- seats ------------------------------------------------------------------
+
+def _release_gone(node: str, job: str) -> None:
+    for row in _dao.release_holder(node, job):
+        log.info("released seat %s/%s: holder %s is gone",
+                 row["account"], row["channel_id"], seats.holder_label(row))
+
+
+_pusher = seats.Pusher(on_gone=_release_gone)
+
+
+def _holder_dict(row: dict | None) -> dict | None:
+    if not row:
+        return None
+    return {k: row[k] for k in ("node", "job", "session_name", "mounted_at")}
+
+
+async def _find_seat(conn: connectors.Connector, channel: str) -> connectors.Channel:
+    """The seat ``channel`` names, by id or by name."""
+    ref = channel.strip()
+    name = ref.lstrip("#@").lower()
+    chats = await conn.list_seats()
+    hits = [c for c in chats if c.id == ref] or [
+        c for c in chats if c.name and c.name.lower() in (ref.lower(), name)]
+    if len(hits) == 1:
+        return hits[0]
+    if hits:
+        raise seats.SeatError(
+            f"{ref!r} names {len(hits)} seats: "
+            + ", ".join(f"{c.name} ({c.id})" for c in hits) + ". Pass the id.")
+    if ref.startswith("dm:") or any(
+            c.kind == "dm" and (c.id == ref or c.name.lower() == name)
+            for c in await conn.list_channels(include_dms=True)):
+        raise seats.SeatError(
+            f"{conn.platform} DMs are reserved for notifications and cannot be "
+            "mounted, except an operator's DM, which `seats` lists")
+    raise seats.SeatError(
+        f"account {conn.account.name!r} is not in {ref!r}. `seats` lists the chats "
+        "it is in; invite the bot to add one")
+
+
+async def _h_seats(args: dict) -> dict:
+    """Every chat the account is in, each with its holder or None."""
+    conn = _conn(args["account"])
+    held = {r["channel_id"]: r for r in _dao.mounts(args["account"])}
+    return {"seats": [{**vars(c), "holder": _holder_dict(held.get(c.id)),
+                       "kept": _kept_status(args["account"], c.id)}
+                      for c in await conn.list_seats()]}
+
+
+def _kept_status(account: str, channel_id: str) -> dict | None:
+    seat = _keeper.kept(account, channel_id) if _keeper else None
+    return _keeper.status(seat) if seat else None
+
+
+def _kept_seat(args: dict) -> social_config.SeatConfig:
+    seat = _keeper.find(str(args.get("seat") or "")) if _keeper else None
+    if seat is None:
+        known = ", ".join(s.name for s in _keeper.seats) if _keeper else "none"
+        raise ValueError(f"no kept seat {args.get('seat')!r} here; kept seats: {known}")
+    return seat
+
+
+async def _h_keepers(args: dict) -> dict:
+    """Every kept seat with its agent, health and breaker."""
+    return {"keepers": [_keeper.status(s) for s in _keeper.seats] if _keeper else []}
+
+
+async def _h_keep_reset(args: dict) -> dict:
+    return {"ok": True, **_keeper.reset(_kept_seat(args))}
+
+
+async def _h_keep_adopt(args: dict) -> dict:
+    return await _keeper.adopt(_kept_seat(args), str(args.get("job") or ""))
+
+
+def _keeper_forwarding(fn: str, handler: Any) -> Any:
+    """Send a keeper verb to the node that keeps the seats when this one does not."""
+    async def _wrapped(args: dict) -> Any:
+        from awm import gatewayclient
+
+        peer = gatewayclient.peer_env(_SOCIAL_PEER_ENV)
+        if _keeper is None and peer:
+            return await gatewayclient.call_peer(peer, "social", fn, args)
+        return await handler(args)
+
+    _wrapped.__name__ = getattr(handler, "__name__", f"_h_{fn}")
+    _wrapped.__doc__ = handler.__doc__
+    return _wrapped
+
+
+async def _h_mount(args: dict, as_: str | None = None) -> dict:
+    account = args["account"]
+    conn = _conn(account)
+    try:
+        who = seats.caller(args, as_)
+        seat = await _find_seat(conn, str(args["channel"]))
+    except seats.SeatError as exc:
+        return {"ok": False, "error": str(exc)}
+    label = seat.name or seat.id
+    kept = _kept_status(account, seat.id)
+    if kept and (kept["node"], kept["job"]) != (who["node"], who["job"]):
+        return {"ok": False, "kept": kept, "error": (
+            f"{label} is the kept seat {kept['seat']!r}: social keeps its agent "
+            f"({kept['job'] or 'starting'}@{kept['node']}) and holds the seat for "
+            "it. Message that agent, or change [seat." + kept["seat"] + "] in "
+            "social.toml.")}
+    prev = _dao.holder(account, seat.id)
+    evicted = prev if prev and (prev["node"], prev["job"]) != (who["node"], who["job"]) else None
+    if evicted and not args.get("force"):
+        return {"ok": False, "error": (
+            f"{label} is held by {seats.holder_label(evicted)} since "
+            f"{evicted['mounted_at']}. Pass force=true to take it."),
+            "holder": _holder_dict(evicted)}
+    row = _dao.mount(account, seat.id, seat.name, who)
+    if evicted:
+        _pusher.push(evicted["node"], evicted["job"],
+                     f"{conn.platform} seat lost: {label} is now held by "
+                     f"{seats.holder_label(row)}. Nothing more from it reaches you.")
+    return {
+        "ok": True,
+        "seat": {"account": account, "id": seat.id, "name": seat.name,
+                 "kind": seat.kind, "holder": _holder_dict(row)},
+        "evicted": _holder_dict(evicted),
+        "rename": (f"when this is the only seat this session holds, rename the "
+                   f"session to {seats.session_name(conn.platform, seat)!r} with "
+                   f"reflection rename"),
+        "push": (f"each new message here is typed into your prompt as "
+                 f"'{conn.platform} from <sender> [channel=<id> message_id=<id>]: "
+                 f"<text>', with ' ↳<thread ts>' after the sender for a thread reply"),
+        "reply": (f"social send account={account} channel={seat.id} text=<text>; "
+                  f"add thread=<thread ts> to answer in a thread. Before work "
+                  f"that takes a while, react 👀 with `social react "
+                  f"account={account} channel={seat.id} message_id=<id> "
+                  f"emoji=👀`, then post the answer with `social send`. Share "
+                  f"a long document, such as a plan, with file=<path> instead "
+                  f"of pasting it"),
+        "backlog": (f"social history account={account} channel={seat.id}"
+                    if conn.keeps_history else
+                    f"social fetch account={account} channel={seat.id}"),
+        "lasts": "until unmount, a forced mount by another session, or this "
+                 "session's job ending",
+    }
+
+
+async def _h_unmount(args: dict, as_: str | None = None) -> dict:
+    account = args["account"]
+    _conn(account)
+    try:
+        who = seats.caller(args, as_)
+    except seats.SeatError as exc:
+        return {"ok": False, "error": str(exc)}
+    rows = _dao.mounts(account)
+    ref = str(args.get("channel") or "").strip()
+    if ref:
+        name = ref.lstrip("#@").lower()
+        rows = [r for r in rows if r["channel_id"] == ref
+                or r["channel_name"].lower() in (ref.lower(), name)]
+        if not rows:
+            return {"ok": False, "error": f"{ref!r} is not mounted"}
+        others = [r for r in rows if (r["node"], r["job"]) != (who["node"], who["job"])]
+        if others:
+            return {"ok": False, "error": (
+                f"{ref!r} is held by {seats.holder_label(others[0])}, not by you")}
+    else:
+        rows = [r for r in rows if (r["node"], r["job"]) == (who["node"], who["job"])]
+    for r in rows:
+        _dao.unmount(account, r["channel_id"])
+    return {"ok": True, "released": [
+        {"id": r["channel_id"], "name": r["channel_name"]} for r in rows]}
 
 
 def _written_reply(written: list[dict]) -> dict:
@@ -534,12 +788,43 @@ API_MANIFEST: dict[str, Any] = {
             "name": "send",
             "effect": "write",
             "tool": "social_send",
-            "description": "Send a message as a configured account to a channel.",
+            "description": "Send a message as a configured account to a channel. "
+                           "`ack_ref`, from a slash command's event, replaces that "
+                           "command's acknowledgement while the platform still "
+                           "allows it, and sends a new message otherwise. "
+                           "`file` uploads a file from the calling node, such as "
+                           "a plan's .md, with `text` as its message; `text` is "
+                           "optional with a file. `files` attaches inline text "
+                           "files, each {filename, text}. Discord and Slack take "
+                           "files, up to 10 MB on Discord and 8 MB on Tony's "
+                           "Slack. The Opal Slack bot refuses until its app "
+                           "holds files:write. Gmail and Teams refuse.",
+            "timeout": 300,
             "params": [
                 {"name": "account", "type": "string", "required": True},
                 {"name": "channel", "type": "string", "required": True},
-                {"name": "text", "type": "string", "required": True},
+                {"name": "text", "type": "string", "required": False},
                 {"name": "thread", "type": "string", "required": False},
+                {"name": "ack_ref", "type": "string", "required": False},
+                {"name": "file", "type": "string", "required": False,
+                 "file": "in"},
+                {"name": "files", "type": "array", "required": False},
+            ],
+        },
+        {
+            "name": "react",
+            "effect": "write",
+            "tool": "social_react",
+            "description": "Put an emoji reaction on a message, or take it off "
+                           "with `remove`. `emoji` is a character, a name or "
+                           ":name:. Discord and Slack react. Gmail and Teams "
+                           "refuse.",
+            "params": [
+                {"name": "account", "type": "string", "required": True},
+                {"name": "channel", "type": "string", "required": True},
+                {"name": "message_id", "type": "string", "required": True},
+                {"name": "emoji", "type": "string", "required": True},
+                {"name": "remove", "type": "boolean", "required": False},
             ],
         },
         {
@@ -555,6 +840,106 @@ API_MANIFEST: dict[str, Any] = {
                 {"name": "channel", "type": "string", "required": True},
                 {"name": "limit", "type": "number", "required": False},
                 {"name": "before", "type": "string", "required": False},
+            ],
+        },
+        {
+            "name": "history",
+            "effect": "read",
+            "tool": "social_history",
+            "description": "Read a bot account's synced history of every chat "
+                           "the bot is in (edits applied, deletes hidden unless "
+                           "`include_deleted`). Newest `limit` messages, or with "
+                           "`since` (a message ts) the ones after it, oldest "
+                           "first — the catch-up read after `awm services listen "
+                           "social message`. Also lists each chat's sync cursor.",
+            "params": [
+                {"name": "account", "type": "string", "required": True},
+                {"name": "channel", "type": "string", "required": False},
+                {"name": "since", "type": "string", "required": False},
+                {"name": "limit", "type": "number", "required": False},
+                {"name": "include_deleted", "type": "boolean", "required": False},
+            ],
+        },
+        {
+            "name": "seats",
+            "effect": "read",
+            "tool": "social_seats",
+            "description": "List the chats a bot account is in (its seats), each "
+                           "with the session holding it or null. A session "
+                           "mounts a seat to have its messages typed into its "
+                           "prompt. `kept` is set on a seat a [seat.*] table "
+                           "declares: social starts and keeps its agent, with "
+                           "its job, health and restart count.",
+            "params": [
+                {"name": "account", "type": "string", "required": True},
+            ],
+        },
+        {
+            "name": "mount",
+            "effect": "write",
+            "tool": "social_mount",
+            "description": "Hold a seat: every new message in that chat, from "
+                           "anyone but the bot, is typed into your prompt as one "
+                           "line 'slack from <sender> [channel=<id> "
+                           "message_id=<id>]: <text>' (Discord: 'discord from'). "
+                           "Background sessions only. One holder per "
+                           "seat: a held seat is refused unless `force`, which "
+                           "takes it and tells the old holder. A Discord DM is "
+                           "a seat only for an operator, and a kept seat is refused: social holds it for "
+                           "the agent it keeps. The result's `rename` gives the "
+                           "seat's session name, seat:<app>/<server>/<channel>.",
+            "params": [
+                {"name": "account", "type": "string", "required": True},
+                {"name": "channel", "type": "string", "required": True,
+                 "description": "A seat's id or name, as `seats` lists it."},
+                {"name": "force", "type": "boolean", "required": False},
+            ],
+        },
+        {
+            "name": "keepers",
+            "effect": "read",
+            "tool": "social_keepers",
+            "description": "List the kept seats ([seat.*] in social.toml): each "
+                           "one's agent, health (running, waiting, resuming, "
+                           "broken, ...), the reason, since when it is down and "
+                           "why, its recent resumes and restarts, and its last "
+                           "outage.",
+            "params": [],
+        },
+        {
+            "name": "keep_reset",
+            "effect": "write",
+            "tool": "social_keep_reset",
+            "description": "Clear a kept seat's breaker. A seat whose restarts "
+                           "kept failing is broken and is not tried again until "
+                           "this, or until six hours pass.",
+            "params": [
+                {"name": "seat", "type": "string", "required": True,
+                 "description": "The [seat.<name>] name."},
+            ],
+        },
+        {
+            "name": "keep_adopt",
+            "effect": "write",
+            "tool": "social_keep_adopt",
+            "surfaces": _CLI_HTTP,
+            "description": "Make a running background job the agent of a kept "
+                           "seat, keeping its conversation: for a holder started "
+                           "by hand that social keeps from now on.",
+            "params": [
+                {"name": "seat", "type": "string", "required": True},
+                {"name": "job", "type": "string", "required": True},
+            ],
+        },
+        {
+            "name": "unmount",
+            "effect": "write",
+            "tool": "social_unmount",
+            "description": "Release a seat you hold, or every seat you hold on "
+                           "the account when `channel` is omitted.",
+            "params": [
+                {"name": "account", "type": "string", "required": True},
+                {"name": "channel", "type": "string", "required": False},
             ],
         },
         {
@@ -960,10 +1345,10 @@ API_MANIFEST: dict[str, Any] = {
     "sessions": [],
 }
 
-def _forwarding(fn: str, handler: Any) -> Any:
+def _forwarding(fn: str, handler: Any, outbound: Any = None) -> Any:
     """Wrap an account-taking handler so a borrowed account resolves on its owner.
 
-    Applied to the six verbs that name an ``account`` — and only those. All six
+    Applied to the verbs that name an ``account`` — and only those. All of them
     are already coroutine functions, so wrapping them changes nothing about how
     the adapter runs them; a blanket wrap over ``HANDLERS`` would instead turn
     the sync handlers into coroutine functions and move their DB work off the
@@ -976,6 +1361,7 @@ def _forwarding(fn: str, handler: Any) -> Any:
     owner node leaves it unset, so a typo'd account there still fails locally
     with a useful error instead of being bounced to a peer that doesn't have it
     either. That also makes a forward loop impossible — the owner never forwards.
+    ``outbound`` rewrites the args before they leave for the owner.
     """
     async def _wrapped(args: dict) -> Any:
         from awm import gatewayclient
@@ -984,7 +1370,8 @@ def _forwarding(fn: str, handler: Any) -> Any:
         account = (args or {}).get("account")
         if peer and account and account not in _connectors:
             try:
-                return await gatewayclient.call_peer(peer, "social", fn, args)
+                return await gatewayclient.call_peer(
+                    peer, "social", fn, outbound(args) if outbound else args)
             except gatewayclient.PeerError as exc:
                 # Distinguish "couldn't reach the owner" from "the owner said
                 # no" — they have completely different fixes, and a merged
@@ -999,12 +1386,51 @@ def _forwarding(fn: str, handler: Any) -> Any:
     return _wrapped
 
 
+def _seat_forwarding(fn: str, handler: Any) -> Any:
+    """:func:`_forwarding` for a verb that acts for the calling session.
+
+    The owner cannot see a borrower's pid, so the borrower reads its own session
+    record and forwards the job as ``_caller_session``. The owner takes the node
+    from the edge's ``peer:<node>`` stamp, never from the call.
+    """
+    async def _wrapped(args: dict, as_: str | None = None) -> Any:
+        from awm import gatewayclient
+
+        peer = gatewayclient.peer_env(_SOCIAL_PEER_ENV)
+        account = (args or {}).get("account")
+        if peer and account and account not in _connectors:
+            fwd = {k: v for k, v in args.items()
+                   if k not in ("_caller_pid", "_caller_session")}
+            pid = args.get("_caller_pid")
+            if isinstance(pid, int):
+                fwd["_caller_session"] = seats.session_claim(pid)
+            try:
+                return await gatewayclient.call_peer(peer, "social", fn, fwd)
+            except gatewayclient.PeerError as exc:
+                raise RuntimeError(
+                    f"account {account!r} is a fleet singleton owned by peer "
+                    f"{peer!r}, which could not be reached: {exc}") from exc
+        return await handler(args, as_)
+
+    _wrapped.__name__ = getattr(handler, "__name__", f"_h_{fn}")
+    _wrapped.__doc__ = handler.__doc__
+    return _wrapped
+
+
 HANDLERS = {
-    "send": _forwarding("send", _h_send),
+    "send": _forwarding("send", _h_send, outbound=_inline_file),
+    "react": _forwarding("react", _h_react),
+    "seats": _forwarding("seats", _h_seats),
+    "mount": _seat_forwarding("mount", _h_mount),
+    "unmount": _seat_forwarding("unmount", _h_unmount),
+    "keepers": _keeper_forwarding("keepers", _h_keepers),
+    "keep_reset": _keeper_forwarding("keep_reset", _h_keep_reset),
+    "keep_adopt": _keeper_forwarding("keep_adopt", _h_keep_adopt),
     "channels": _forwarding("channels", _h_channels),
     "open_dm": _forwarding("open_dm", _h_open_dm),
     "accounts": _h_accounts,
     "fetch": _forwarding("fetch", _h_fetch),
+    "history": _forwarding("history", _h_history),
     "search": _forwarding("search", _h_search),
     "download_attachments": _forwarding(
         "download_attachments", _h_download_attachments),
@@ -1054,6 +1480,9 @@ def _on_start() -> None:
 
     loop = asyncio.get_event_loop()
     borrowed = _is_borrower()
+    loop.create_task(seats.prune_loop(_dao))
+    if not borrowed:
+        _start_keeper()
     for cfg in accounts:
         _accounts[cfg.name] = cfg
         _dao.upsert_account(
@@ -1076,6 +1505,8 @@ def _on_start() -> None:
         except ValueError as exc:
             log.error("cannot build connector for %s: %s", cfg.name, exc)
             continue
+        if conn.keeps_history:
+            conn.history = History(_dao, cfg.name)
         _connectors[cfg.name] = conn
         loop.create_task(conn.start())
         log.info("account %s (%s) connector launched",
@@ -1097,6 +1528,51 @@ def _on_start() -> None:
             log.error("cannot build bucket %s: %s", bcfg.name, exc)
             continue
         log.info("bucket %s (%s) ready", bcfg.name, bcfg.kind)
+
+
+def _describe_account(account: str) -> tuple[str, bool] | None:
+    conn = _connectors.get(account)
+    return (conn.platform, conn.keeps_history) if conn else None
+
+
+async def _chat(account: str, channel_id: str) -> connectors.Channel:
+    return await _find_seat(_conn(account), channel_id)
+
+
+async def _list_chats(account: str) -> list[connectors.Channel]:
+    return await _conn(account).list_seats()
+
+
+async def _alert_operator(text: str) -> None:
+    """Post a keeper notice to the operator's DM through the bot itself, so it
+    arrives even when the seat that holds that DM is the one down."""
+    target = config.operator_dm()
+    if target is None:
+        raise RuntimeError("this node has no operator DM: set AWM_OPERATOR_DM_CHANNEL")
+    account, channel = target
+    if account not in _connectors:
+        raise RuntimeError(f"the operator DM's account {account!r} is not connected here")
+    await _connectors[account].send(channel, text)
+
+
+def _start_keeper() -> None:
+    """Keep the agents of the ``[seat.*]`` tables. A bad table keeps none and
+    leaves the accounts alone."""
+    global _keeper
+    from awm.gatewayclient import spawn_supervised
+
+    try:
+        kept = social_config.load_seats()
+    except social_config.SocialConfigError as exc:
+        log.error("social.toml [seat] invalid; keeping no seats: %s", exc)
+        return
+    if not kept:
+        return
+    _keeper = keeper_mod.Keeper(_dao, kept, _describe_account, _chat,
+                                push=_pusher.push, list_chats=_list_chats,
+                                alert=_alert_operator)
+    spawn_supervised("social.keeper", _keeper.run)
+    log.info("keeping %d seat(s): %s", len(kept), ", ".join(s.name for s in kept))
 
 
 async def main() -> None:

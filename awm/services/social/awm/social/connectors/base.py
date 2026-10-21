@@ -12,7 +12,9 @@ Adding a platform = one new module implementing this ABC + one line in
 
 from __future__ import annotations
 
+import base64
 import logging
+import os
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Awaitable, Callable
@@ -66,7 +68,9 @@ class InboundMessage:
     """A message received from a platform, normalised across connectors.
 
     ``message_id`` is the platform's own id (used for redelivery dedupe);
-    ``ts`` is the platform timestamp string when available.
+    ``ts`` is the platform timestamp string when available. ``sender_bot`` is
+    True when the platform marks the sender as a bot. ``to_holder`` is False
+    for a message the connector keeps from a seat's holder.
     """
 
     account: str
@@ -81,6 +85,8 @@ class InboundMessage:
     ts: str = ""
     attachments: list = field(default_factory=list, compare=False)
     raw: dict = field(default_factory=dict, compare=False)
+    sender_bot: bool = False
+    to_holder: bool = True
 
 
 @dataclass(frozen=True)
@@ -124,6 +130,43 @@ OnMessage = Callable[[InboundMessage], Awaitable[None]]
 OnCommand = Callable[[Command], Awaitable[None]]
 
 
+def file_bytes(f: dict) -> bytes:
+    """The content of one outbound attachment: inline ``text``, base64 ``b64``,
+    or a ``path`` on this node."""
+    if "path" in f:
+        with open(f["path"], "rb") as fh:
+            return fh.read()
+    if "b64" in f:
+        return base64.b64decode(f["b64"])
+    return str(f.get("text", "")).encode()
+
+
+def file_size(f: dict) -> int:
+    if "path" in f:
+        return os.path.getsize(f["path"])
+    if "b64" in f:
+        return len(f["b64"]) * 3 // 4 - f["b64"][-2:].count("=")
+    return len(str(f.get("text", "")).encode())
+
+
+def slack_reaction(
+    conn: "Connector", channel: str, message_id: str, name: str, *,
+    remove: bool, error: str = "",
+) -> dict:
+    """The ``react`` result once Slack answered ``reactions.add`` or
+    ``reactions.remove`` with ``error`` (empty on success). Adding a reaction
+    already there, or removing one that is not, leaves the state asked for."""
+    if error == "missing_scope":
+        raise RuntimeError(
+            f"slack account {conn.account.name!r} cannot react until its app "
+            "holds the reactions:write scope")
+    if error and error not in ("already_reacted", "no_reaction"):
+        verb = "remove" if remove else "add"
+        raise RuntimeError(f"slack reactions.{verb}: {error}")
+    return {"as": "reaction", "emoji": name, "removed": remove,
+            "message_id": message_id, "channel_id": channel}
+
+
 class Connector(ABC):
     """One live platform connection for one account.
 
@@ -133,6 +176,16 @@ class Connector(ABC):
     """
 
     platform: str = "base"
+    # True for a connector that keeps a synced local history (a bot, which is
+    # the only reader of its chats). The adapter then injects ``history``.
+    keeps_history: bool = False
+    history = None  # awm.social.history.History, set by the adapter
+    # True for a connector whose ``send`` and ``edit_ack`` take ``files``: a list
+    # of attachments, each ``{"filename"}`` plus one of ``text``, ``b64`` or
+    # ``path`` (see :func:`file_bytes`).
+    sends_files: bool = False
+    # The most bytes one message may attach, all files together.
+    max_file_bytes: int = 0
 
     def __init__(
         self,
@@ -162,6 +215,15 @@ class Connector(ABC):
         Returns a small dict describing the sent message (at least
         ``message_id`` when the platform supplies one).
         """
+
+    async def edit_ack(self, ref: str, text: str, *,
+                       files: list[dict] | None = None) -> dict | None:
+        """Rewrite the acknowledgement of the command carrying ``ack_ref=ref``.
+
+        Returns ``None`` when the platform can no longer edit it (expired,
+        unknown, or no command surface at all); the caller then sends anew.
+        """
+        return None
 
     async def fetch(
         self, channel: str, *, limit: int = 50, before: str | None = None
@@ -219,6 +281,19 @@ class Connector(ABC):
         raise NotImplementedError(
             f"{self.platform} connector does not support attachment download")
 
+    async def react(
+        self, channel: str, message_id: str, emoji: str, *, remove: bool = False,
+    ) -> dict:
+        """Add ``emoji`` to message ``message_id`` in ``channel``, or take it off.
+
+        ``emoji`` is a character, a name or ``:name:`` (see :mod:`awm.social.emoji`).
+
+        Non-abstract: a platform without reactions leaves this default, which
+        raises a clean error.
+        """
+        raise NotImplementedError(
+            f"{self.platform} connector does not support reactions")
+
     @abstractmethod
     async def list_channels(self, *, include_dms: bool = False) -> list[Channel]:
         """List channels/conversations visible to this account.
@@ -228,6 +303,14 @@ class Connector(ABC):
         concept (or that can't enumerate them) ignore the flag and return their
         channel list unchanged.
         """
+
+    async def list_seats(self) -> list[Channel]:
+        """The chats this account is in that a session may mount.
+
+        The default is every listed channel and DM. A connector overrides it to
+        list memberships only, or to leave out chats reserved for other uses.
+        """
+        return await self.list_channels(include_dms=True)
 
     async def open_dm(self, user: str) -> Channel:
         """Resolve a platform user (by id, or by name where supported) to a DM

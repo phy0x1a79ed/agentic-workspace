@@ -37,8 +37,9 @@ from pathlib import Path
 from typing import Any
 
 from awm import gatewayclient
-from awm.claudedaemon import launch, roster, sessionmode
-from awm.config import caller_peer, node_name, node_role, peer_relation
+from awm import kept
+from awm.claudedaemon import cli, launch, pins, roster, sessionmode
+from awm.config import caller_peer, node_name, node_role, peer_relation, scope_of
 
 from awm.cx import config, sessions, trust
 
@@ -66,6 +67,8 @@ SCOPE_CREATE_TIMEOUT_S = 1700.0
 #: A lineage record younger than this is never pruned, so a record written the
 #: instant a job registers cannot be collected before the roster shows it.
 PRUNE_GRACE_S = 120.0
+#: The auto-compact window the CLI accepts, in tokens.
+AUTOCOMPACT_MIN, AUTOCOMPACT_MAX = 100_000, 1_000_000
 #: How long a pending record waits for its late job before it is dropped.
 PENDING_TTL_S = 300.0
 
@@ -82,9 +85,68 @@ _JOB = sessionmode.JOB_PATTERN
 #: both pass the check.
 _START_LOCK = asyncio.Lock()
 
+#: Appended to the system prompt of every session `start` launches unpinned, so
+#: it outlives every compaction. A kept seat carries its keeper's brief instead.
+BRIEF = """\
+You are a worker session, started by {started_by}. You started in {project}/{scope}.
+
+**Work in the right scope.** Work that changes files belongs in a scope made for it. A project's `dev` and `release` worktrees are for merging, so do no feature work there. Before your first edit, find the scope with `scope(verb="search")`. Create one with `scope(verb="create")` when none fits, and name it as `PROTOCOLS.md` § Scope naming says. Then move there with `reflection(verb="cd", args={{path:<its worktree>}})`. The move runs when your turn ends, and a follow-up prompt confirms it, so end the turn after that call. Do not create worktrees under `.claude/worktrees/`. Questions and logistics that change no files need no scope.
+
+**Ask Tony through the board.** When you need Tony, call `operations(verb="request_human", args={{kind:"blocked", reason:…}})`. That also moves your card to Blocked.
+
+**Close the session when the work is done.** The work is done when three things hold: what you were asked for is landed and deployed as its project's protocol says, it is verified, and nothing waits on you. A session that waits on Tony, watches a long job or was asked to stay open is not done. When you are not sure, ask. To sign off, run the `retire` skill. Where it is missing, sign off by hand:
+1. Run the `debrief` skill.
+2. Report what you did {report_to}.
+3. Close with `reflection(verb="stop", args={{job:<your job>, confirm:true}})`. `reflection(verb="whoami")` names your job."""
+
+REPORT_TO_PARENT = ("to the session that started you: `SendMessage` it when `ListAgents` lists "
+                    "it, else `reflection(verb=\"message\", args={{job:\"{target}\", text:…}})`")
+REPORT_TO_PROMPT = ("where your first prompt asks. When it names no place, your debrief "
+                    "journal is the report")
+
 
 class Refused(Exception):
     """A start or stop that must not proceed; the message is the reason."""
+
+    code: str | None = None
+
+
+class DaemonDown(Refused):
+    """No daemon runs, and the keep service could not bring one up."""
+
+    code = "daemon_down"
+
+
+#: How long cx waits on the keep service to bring a daemon up.
+ENSURE_TIMEOUT_S = 30.0
+
+
+async def ensure_daemon(action: str, timeout: float = ENSURE_TIMEOUT_S) -> None:
+    """Return once a daemon runs, asking the keep service first; else raise DaemonDown.
+
+    A node without the keep service answers the call with an error, and cx
+    then refuses as it always has.
+    """
+    if sessions.daemon_pid() is not None:
+        return
+    detail = ""
+    try:
+        out = await gatewayclient.call("keep", "ensure", {"timeout": timeout},
+                                       timeout=timeout + 15)
+        if isinstance(out, dict) and not out.get("ok"):
+            detail = f" ({out.get('action') or 'down'}: {out.get('reason') or out.get('error') or ''})"
+    except Exception as exc:  # noqa: BLE001 — no keep service is the old behaviour
+        detail = f" (keep: {type(exc).__name__})"
+    if sessions.daemon_pid() is None:
+        raise DaemonDown(f"no claude code daemon is running — a session {action} now "
+                         f"would land inside awm's control group{detail}")
+
+
+def refusal(exc: Refused) -> dict[str, Any]:
+    out: dict[str, Any] = {"ok": False, "reason": str(exc)}
+    if exc.code:
+        out["code"] = exc.code
+    return out
 
 
 # --- who is asking -----------------------------------------------------------
@@ -127,7 +189,7 @@ async def start(args: dict[str, Any], as_: str | None = None) -> dict[str, Any]:
         return await _start(args, as_)
     except Refused as exc:
         log.info("cx: start refused — %s", exc)
-        return {"ok": False, "reason": str(exc)}
+        return refusal(exc)
     except OSError as exc:
         log.warning("cx: start failed — %s", exc)
         return {"ok": False, "reason": f"start failed: {exc}"}
@@ -142,16 +204,21 @@ async def _start(args: dict[str, Any], as_: str | None) -> dict[str, Any]:
     _refuse_unknown_caller(args)
     if spec["strict_mcp"]:
         spec["mcp_config"] = str(_write_mcp_config())
-    if sessions.daemon_pid() is None:
-        raise Refused("no claude code daemon is running — a session started now "
-                      "would land inside awm's control group")
+    await ensure_daemon("started")
     cwd = await _resolve_worktree(spec["project"], spec["scope"])
     untrusted = await asyncio.to_thread(trust.start_refusal, cwd)
     if untrusted:
         raise Refused(untrusted)
-    parent = _parent_of(args.get("_caller_pid"))
+    tag_warning = await _tag_scope(spec) if spec["tags"] is not None else None
+    caller_rec = _caller_record(args.get("_caller_pid"))
+    parent = _session_ref(caller_rec)
     caller = caller_peer(as_) or as_ or "local"
+    if spec["brief"]:
+        spec["brief_text"] = brief_text(spec, caller_rec)
     async with _START_LOCK:
+        if spec["replaces"]:
+            spec["prompt"] = _with_tail(spec["prompt"], spec["replaces"])
+            await _retire(spec["replaces"])
         if _name_taken(spec["name"]):
             raise Refused(f"a live session is already named {spec['name']!r}")
         record = {
@@ -159,8 +226,13 @@ async def _start(args: dict[str, Any], as_: str | None) -> dict[str, Any]:
             "cwd": str(cwd), "parent": parent, "caller": caller,
             "mode": spec["mode"], "remote_control": spec["remote_control"],
             "model": spec["model"], "started_at": _iso(time.time()),
-            "started_epoch": time.time(),
+            "started_epoch": time.time(), "pinned": spec["pin"],
+            "brief": spec["brief"],
         }
+        if spec["tags"] is not None:
+            record["tags"] = spec["tags"]
+        if spec["replaces"]:
+            record["replaces"] = spec["replaces"]
         _write_pending(record)
         try:
             session = await launch.launch(
@@ -182,13 +254,29 @@ async def _start(args: dict[str, Any], as_: str | None) -> dict[str, Any]:
             raise Refused(f"started {session.short} but could not record it "
                           f"({exc}); the pending record keeps its mode") from exc
         _drop_pending(spec["name"])
-    log.info("cx: started %s as %s in %s (mode %s)", spec["name"], session.short,
-             cwd, spec["mode"])
-    return {"ok": True, "job": session.short, "name": spec["name"],
-            "node": node_name(), "project": spec["project"], "scope": spec["scope"],
-            "cwd": str(cwd), "attach": f"claude attach {session.short}",
-            "parent": parent, "mode": spec["mode"],
-            **await _started_link(session.short, bool(spec["remote_control"]))}
+    pinned = spec["pin"] and await _pin(session.short)
+    log.info("cx: started %s as %s in %s (mode %s%s)", spec["name"], session.short,
+             cwd, spec["mode"], ", pinned" if pinned else "")
+    out = {"ok": True, "job": session.short, "name": spec["name"],
+           "node": node_name(), "project": spec["project"], "scope": spec["scope"],
+           "cwd": str(cwd), "attach": f"claude attach {session.short}",
+           "parent": parent, "mode": spec["mode"], "pinned": pinned,
+           **await _started_link(session.short, bool(spec["remote_control"]))}
+    if tag_warning:
+        out["warning"] = tag_warning
+    return out
+
+
+async def _tag_scope(spec: dict[str, Any]) -> str | None:
+    """Set the scope's tags; a failure is reported, never a reason not to start."""
+    try:
+        await gatewayclient.call("scopes", "scope_tag",
+                                 {"project": spec["project"], "scope": spec["scope"],
+                                  "tags": spec["tags"]})
+    except Exception as exc:  # noqa: BLE001 — any failure is reported
+        log.warning("cx: could not tag %s/%s: %s", spec["project"], spec["scope"], exc)
+        return f"the session started, but its scope was not tagged: {exc}"
+    return None
 
 
 async def _started_link(job: str, remote_control: bool) -> dict[str, Any]:
@@ -212,6 +300,15 @@ async def _started_link(job: str, remote_control: bool) -> dict[str, Any]:
                                     f"{LINK_WAIT_S:g}s; `reflection link` with "
                                     f"job {job} returns the link once it has")}
         await asyncio.sleep(LINK_POLL_S)
+
+
+async def _pin(job: str) -> bool:
+    try:
+        await asyncio.to_thread(pins.pin, job)
+    except (OSError, ValueError, TimeoutError) as exc:
+        log.warning("cx: could not pin %s: %s", job, exc)
+        return False
+    return True
 
 
 def _refuse_unknown_caller(args: dict[str, Any]) -> None:
@@ -247,6 +344,9 @@ def _parse(args: dict[str, Any]) -> dict[str, Any]:
     prompt = args.get("prompt")
     if prompt is not None and not isinstance(prompt, str):
         raise Refused("prompt must be a string")
+    system_prompt = args.get("system_prompt")
+    if system_prompt is not None and not isinstance(system_prompt, str):
+        raise Refused("system_prompt must be a string")
     model = args.get("model") or config.default_model()
     if not isinstance(model, str) or not _MODEL.match(model):
         raise Refused("model is not a model name")
@@ -259,9 +359,21 @@ def _parse(args: dict[str, Any]) -> dict[str, Any]:
     mode = args.get("mode") or DEFAULT_MODE
     if not isinstance(mode, str) or not _MODE.match(mode):
         raise Refused("mode must be a short label")
+    started_by = args.get("started_by")
+    if started_by is not None and (not isinstance(started_by, str) or not started_by.strip()
+                                   or len(started_by) > 120 or not started_by.isprintable()):
+        raise Refused("started_by must be a short printable string")
+    brief = args.get("brief")
+    if brief is not None and not isinstance(brief, bool):
+        raise Refused("brief must be true or false")
+    replaces = args.get("replaces")
+    if replaces is not None and (not isinstance(replaces, str) or not _JOB.match(replaces)):
+        raise Refused("replaces must be a job id")
     return {
         "project": project, "scope": scope, "name": name,
-        "prompt": prompt or None, "model": model, "effort": effort,
+        "prompt": prompt or None, "system_prompt": system_prompt or None,
+        "autocompact": _autocompact(args.get("autocompact")),
+        "model": model, "effort": effort,
         "permission": permission, "mode": mode,
         "disallowed_tools": _tool_list(args.get("disallowed_tools")),
         "allowed_tools": _tool_list(args.get("allowed_tools"), "allowed_tools"),
@@ -269,6 +381,11 @@ def _parse(args: dict[str, Any]) -> dict[str, Any]:
         "restricted": _flag(args.get("restricted"), "restricted"),
         "strict_mcp": _flag(args.get("strict_mcp"), "strict_mcp"),
         "remote_control": _remote_control(args.get("remote_control"), name),
+        "pin": _flag(args.get("pin"), "pin"),
+        "brief": brief is not False and not args.get("pin"),
+        "started_by": started_by.strip() if started_by else None,
+        "replaces": replaces,
+        "tags": _tag_list(args.get("tags")),
     }
 
 
@@ -292,6 +409,25 @@ def _tool_list(value: Any, field: str = "disallowed_tools") -> list[str]:
         raise Refused(f"{field} holds {bad[0]!r}, which is not a tool name or a "
                       "tool rule such as Read(./**) or mcp__awm__*")
     return tools
+
+
+def _tag_list(value: Any) -> list[str] | None:
+    if value is None:
+        return None
+    items = value.split(",") if isinstance(value, str) else value
+    if not isinstance(items, list) or not all(isinstance(t, str) for t in items):
+        raise Refused("tags must be a list of tags")
+    return [t.strip() for t in items if t.strip()]
+
+
+def _autocompact(value: Any) -> int | None:
+    if value is None:
+        return None
+    if (isinstance(value, int) and not isinstance(value, bool)
+            and AUTOCOMPACT_MIN <= value <= AUTOCOMPACT_MAX):
+        return value
+    raise Refused(f"autocompact must be a token count from {AUTOCOMPACT_MIN} "
+                  f"to {AUTOCOMPACT_MAX}")
 
 
 def _remote_control(value: Any, name: str) -> str | None:
@@ -345,6 +481,11 @@ def build_flags(spec: dict[str, Any]) -> list[str]:
         flags.append("--allowedTools=" + ",".join(spec["allowed_tools"]))
     if spec["remote_control"]:
         flags.append(f"--remote-control={spec['remote_control']}")
+    system_prompt = "\n\n".join(p for p in (spec.get("system_prompt"), spec.get("brief_text")) if p)
+    if system_prompt:
+        flags.append(f"--append-system-prompt={system_prompt}")
+    if spec.get("autocompact"):
+        flags.append(f"--autocompact={spec['autocompact']}")
     return [*flags, f"--effort={spec['effort']}", f"--model={spec['model']}"]
 
 
@@ -522,6 +663,26 @@ def prune_lineage(now: float | None = None) -> list[str]:
     return gone
 
 
+def prune_pins() -> list[str]:
+    """Unpin jobs whose daemon record is gone, so the pin list cannot grow stale.
+
+    Nothing is unpinned when the jobs directory cannot be read.
+    """
+    jobs = config.jobs_dir()
+    try:
+        present = set(os.listdir(jobs))
+    except OSError:
+        return []
+    stale = [j for j in pins.pinned() if j not in present]
+    if not stale:
+        return []
+    try:
+        return pins.unpin(stale)
+    except (OSError, ValueError, TimeoutError) as exc:
+        log.warning("cx: could not prune pins: %s", exc)
+        return []
+
+
 def adopt_pending(now: float | None = None) -> list[str]:
     """Give a pending record to the job that outlived its launch timeout.
 
@@ -558,14 +719,19 @@ def adopt_pending(now: float | None = None) -> list[str]:
 
 
 def _parent_of(pid: Any) -> str | None:
-    """The calling session: its job id when a background job, else its session id.
+    """The calling session: its job id when a background job, else its session id."""
+    return _session_ref(_caller_record(pid))
 
-    Taken from the session's own record after checking that the record belongs to
-    the live process, so a stale record cannot name a parent.
-    """
+
+def _caller_record(pid: Any) -> dict[str, Any] | None:
+    """The calling session's own record, checked against the live process, so a
+    stale record cannot name a parent."""
     if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
         return None
-    rec = roster.session_by_pid(pid, sessions_dir=config.sessions_dir())
+    return roster.session_by_pid(pid, sessions_dir=config.sessions_dir()) or None
+
+
+def _session_ref(rec: dict[str, Any] | None) -> str | None:
     if not rec:
         return None
     if rec.get("kind") == "bg" and rec.get("jobId"):
@@ -573,11 +739,174 @@ def _parent_of(pid: Any) -> str | None:
     return str(rec["sessionId"]) if rec.get("sessionId") else None
 
 
+def brief_text(spec: dict[str, Any], caller_rec: dict[str, Any] | None) -> str:
+    """The lifecycle brief for a start, naming who to report to.
+
+    A calling session is the parent the session reports to, and outranks a
+    `started_by` the caller supplied. A background parent is addressed by its job
+    id, which a rename does not change; an interactive one by its name.
+    """
+    parent = _session_ref(caller_rec)
+    if parent:
+        name = str(caller_rec.get("name") or "").strip()
+        started_by = f"the session {name} ({parent})" if name else f"the session {parent}"
+        target = parent if caller_rec.get("kind") == "bg" else (name or parent)
+        report_to = REPORT_TO_PARENT.format(target=target)
+    else:
+        started_by = spec.get("started_by") or "an awm service"
+        report_to = REPORT_TO_PROMPT
+    return BRIEF.format(started_by=started_by, project=spec["project"], scope=spec["scope"],
+                        report_to=report_to)
+
+
+# --- replace -----------------------------------------------------------------
+
+#: How much of the replaced session's conversation a fresh one starts with.
+TAIL_TURNS = 8
+
+
+def _with_tail(prompt: str | None, old: str) -> str | None:
+    """``prompt`` with the last turns of ``old``'s conversation appended."""
+    state = _read_json(config.jobs_dir() / old / "state.json")
+    session_id = state.get("sessionId")
+    if not isinstance(session_id, str) or not re.match(r"^[0-9A-Za-z-]+$", session_id):
+        return prompt
+    found = next(iter(config.transcripts_dir().glob(f"*/{session_id}.jsonl")), None)
+    if found is None:
+        return prompt
+    try:
+        with open(found, errors="replace") as fh:
+            tail = kept.transcript_tail(fh, turns=TAIL_TURNS)
+    except OSError:
+        return prompt
+    if not tail:
+        return prompt
+    return "\n\n".join(p for p in (
+        prompt, f"The session you replace (job {old}) ended with these turns:", tail) if p)
+
+
+async def _retire(old: str) -> None:
+    """Stop and remove the job a fresh start replaces, when cx started it.
+
+    Done here, after its tail is read, because removing a pinned job deletes
+    the state record that names its transcript.
+    """
+    rec = read_lineage(old)
+    if rec is None:
+        return
+    if rec.get("pinned") or old in pins.pinned():
+        out = await _stop_pinned(old)
+    else:
+        ok, detail = await run_claude_stop(old)
+        if ok:
+            await asyncio.to_thread(_record_stop, old)
+        out = {"ok": ok, "reason": detail}
+    if not out.get("ok"):
+        log.info("cx: replacing %s, which would not stop: %s", old, out.get("reason"))
+
+
+# --- adopt -------------------------------------------------------------------
+
+
+async def adopt(args: dict[str, Any], as_: str | None = None) -> dict[str, Any]:
+    """Give a job cx did not start a lineage record, so cx may resume and stop it.
+
+    For a session started by hand that a keeper now keeps.
+    """
+    reason = station_refusal() or caller_refusal(as_)
+    job = args.get("job")
+    if not reason and (not isinstance(job, str) or not _JOB.match(job)):
+        reason = "job must be a job id"
+    if not reason and read_lineage(job) is not None:
+        reason = f"job {job} already has a lineage record"
+    state = {} if reason else _read_json(config.jobs_dir() / job / "state.json")
+    if not reason and not state:
+        reason = f"job {job} has no state record"
+    if reason:
+        return {"ok": False, "reason": reason}
+    project, scope = _project_scope(state.get("cwd"))
+    pinned = job in pins.pinned()
+    record = {
+        "job": job, "name": state.get("name"), "project": project, "scope": scope,
+        "cwd": state.get("cwd"), "parent": None, "caller": caller_peer(as_) or as_ or "local",
+        "mode": DEFAULT_MODE, "remote_control": None, "model": None,
+        "started_at": _iso(time.time()), "started_epoch": time.time(),
+        "pinned": pinned, "brief": False, "adopted": True,
+    }
+    _write_lineage(job, record)
+    log.info("cx: adopted %s (%s)%s", job, record["name"], ", pinned" if pinned else "")
+    return {"ok": True, "job": job, "name": record["name"], "pinned": pinned,
+            "project": project, "scope": scope}
+
+
+# --- resume ------------------------------------------------------------------
+
+
+async def resume(args: dict[str, Any], as_: str | None = None) -> dict[str, Any]:
+    """Bring back a stopped job that `start` created, with its own conversation."""
+    try:
+        return await _resume(args, as_)
+    except Refused as exc:
+        log.info("cx: resume refused — %s", exc)
+        return refusal(exc)
+    except OSError as exc:
+        log.warning("cx: resume failed — %s", exc)
+        return {"ok": False, "reason": f"resume failed: {exc}"}
+
+
+async def _resume(args: dict[str, Any], as_: str | None) -> dict[str, Any]:
+    reason = station_refusal() or caller_refusal(as_)
+    job = args.get("job")
+    if not reason and (not isinstance(job, str) or not _JOB.match(job)):
+        reason = "job must be a job id"
+    if reason:
+        raise Refused(reason)
+    rec = read_lineage(job)
+    if rec is None:
+        raise Refused(f"job {job} was not started by reflection start_other, so it "
+                      "will not be resumed")
+    reason = _caller_refusal_for(args.get("_caller_pid"), rec, "resume")
+    if reason:
+        raise Refused(reason)
+    state = _read_json(config.jobs_dir() / job / "state.json")
+    if not state:
+        raise Refused(f"job {job} has no state record; it was removed")
+    session_id = state.get("sessionId")
+    if not isinstance(session_id, str) or not _transcript_exists(session_id):
+        raise Refused(f"job {job} has no transcript left to resume")
+    await ensure_daemon("resumed")
+    async with _START_LOCK:
+        try:
+            session = await launch.respawn(
+                job, claude=config.claude_bin(), unit_prefix="awm-cx-resume",
+                roster_path=config.roster_path(), jobs_dir=config.jobs_dir())
+        except launch.Refused as exc:
+            raise Refused(str(exc)) from exc
+        except (TimeoutError, OSError) as exc:
+            raise Refused(f"the session did not resume: {exc}") from exc
+    pinned = bool(rec.get("pinned")) and await _pin(job)
+    log.info("cx: resumed %s as %s%s", session.name, job, ", pinned" if pinned else "")
+    return {"ok": True, "job": job, "name": session.name, "node": node_name(),
+            "project": rec.get("project"), "scope": rec.get("scope"),
+            "attach": f"claude attach {job}", "pinned": pinned,
+            **await _started_link(job, bool(rec.get("remote_control")))}
+
+
+def _transcript_exists(session_id: str) -> bool:
+    if not re.match(r"^[0-9A-Za-z-]+$", session_id):
+        return False
+    return any(config.transcripts_dir().glob(f"*/{session_id}.jsonl"))
+
+
 # --- stop --------------------------------------------------------------------
 
 
 async def stop(args: dict[str, Any], as_: str | None = None) -> dict[str, Any]:
-    """Stop a session `start` created. Its conversation is kept."""
+    """Stop a session `start` created.
+
+    An unpinned session keeps its conversation. A pinned one is a kept session
+    that a keeper replaces, so it is unpinned and removed with `claude rm`.
+    """
     reason = caller_refusal(as_)
     job = args.get("job")
     if not reason and (not isinstance(job, str) or not _JOB.match(job)):
@@ -586,21 +915,42 @@ async def stop(args: dict[str, Any], as_: str | None = None) -> dict[str, Any]:
     if not reason and rec is None:
         reason = f"job {job} was not started by reflection start_other, so it will not be stopped"
     if not reason:
-        reason = _stop_caller_refusal(args.get("_caller_pid"), rec)
+        reason = _caller_refusal_for(args.get("_caller_pid"), rec, "stop")
     if reason:
         log.info("cx: stop refused — %s", reason)
         return {"ok": False, "reason": reason}
+    try:
+        # With no daemon a stop cannot reach the session, and `claude rm` on a
+        # pinned job would delete the conversation a resume needs.
+        await ensure_daemon("stopped", timeout=10.0)
+    except DaemonDown as exc:
+        log.info("cx: stop refused — %s", exc)
+        return refusal(exc)
+    if rec.get("pinned") or job in pins.pinned():
+        return await _stop_pinned(job)
     ok, detail = await run_claude_stop(job)
     if not ok:
         return {"ok": False, "job": job, "reason": detail}
+    await asyncio.to_thread(_record_stop, job)
     return {"ok": True, "job": job}
 
 
-def _stop_caller_refusal(caller_pid: Any, rec: dict[str, Any]) -> str | None:
-    """A session with a cx mode may stop only the jobs it started itself.
+async def _stop_pinned(job: str) -> dict[str, Any]:
+    try:
+        await asyncio.to_thread(pins.unpin, job)
+    except (OSError, ValueError, TimeoutError) as exc:
+        return {"ok": False, "job": job, "reason": f"could not unpin {job}: {exc}"}
+    out = await asyncio.to_thread(cli.stop_and_remove, job, claude=config.claude_bin())
+    if not out["removed"]:
+        return {"ok": False, "job": job, "reason": out["detail"]}
+    return {"ok": True, "job": job, "removed": True}
+
+
+def _caller_refusal_for(caller_pid: Any, rec: dict[str, Any], verb: str) -> str | None:
+    """A session with a cx mode may stop or resume only the jobs it started.
 
     No `_caller_pid`, or a pid that is positively not a cx session, is an
-    operator or a service and may stop any job cx started.
+    operator or a service and may act on any job cx started.
     """
     if caller_pid is None:
         return None
@@ -608,11 +958,29 @@ def _stop_caller_refusal(caller_pid: Any, rec: dict[str, Any]) -> str | None:
     if mode is None:
         return None
     if mode == UNKNOWN:
-        return "the caller's mode could not be determined, so it may not stop sessions"
+        return f"the caller's mode could not be determined, so it may not {verb} sessions"
     parent = _parent_of(caller_pid)
     if parent is not None and parent == rec.get("parent"):
         return None
-    return "a session may stop only the jobs it started"
+    return f"a session may {verb} only the jobs it started"
+
+
+def _record_stop(job: str) -> None:
+    """Set the job's state record to ``stopped``, which `claude stop` leaves as it was.
+
+    The roster drops a stopped job, so the record is all that tells a stop from a
+    death once the job leaves `list`.
+    """
+    path = config.jobs_dir() / job / "state.json"
+    state = _read_json(path)
+    if not state:
+        return
+    tmp = path.with_name(".state.json.cx")
+    try:
+        tmp.write_text(json.dumps({**state, "state": "stopped"}, indent=2))
+        os.replace(tmp, path)
+    except OSError as exc:
+        log.warning("cx: could not record the stop of %s: %s", job, exc)
 
 
 async def run_claude_stop(job: str) -> tuple[bool, str]:
@@ -640,9 +1008,12 @@ def collect(project: str | None = None, scope: str | None = None,
     with the tmux session each one sits in.
     """
     lineage = _lineage_records()
+    pending = [rec for _, rec in _pending_records()]
     node = node_name()
-    rows = [_job_row(s, lineage.get(s.short), node) for s in sessions.load()
-            if s.has_record]
+    pinned = set(pins.pinned())
+    rows = [{**_job_row(s, lineage.get(s.short) or _pending_for(s, pending), node),
+             "pinned": s.short in pinned, "recorded": s.short in lineage}
+            for s in sessions.load() if s.has_record]
     panes = _tmux_panes()
     rows += [_interactive_row(rec, panes, node) for rec in _interactive_records()]
     out = [r for r in rows
@@ -652,16 +1023,33 @@ def collect(project: str | None = None, scope: str | None = None,
     return out
 
 
+def _pending_for(s: sessions.Session, pending: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """The pending record of a job whose launch has not returned yet.
+
+    The job runs its first prompt before `start` writes its lineage, and that
+    prompt's hook already asks whether the job carries the brief.
+    """
+    for rec in pending:
+        started = rec.get("started_epoch")
+        started = started if isinstance(started, (int, float)) else 0.0
+        if (rec["name"] in (s.seed_name, s.name)
+                and (s.started_at_ms or 0) / 1000.0 >= started - 5.0):
+            return rec
+    return None
+
+
 def _job_row(s: sessions.Session, rec: dict[str, Any] | None,
              node: str) -> dict[str, Any]:
     rec = rec or {}
-    project, scope = _project_scope(s.cwd)
+    # The live directory wins over the launch record, so a session that ran
+    # `/cd` lists under the scope it is in now.
+    project, scope = (_project_scope(s.cwd) if s.cwd
+                      else (rec.get("project"), rec.get("scope")))
     record = _read_json(config.jobs_dir() / s.short / "state.json")
     state = record.get("state")
     return {
         "job": s.short, "tmux": None, "name": s.name, "node": node,
-        "project": rec.get("project", project), "scope": rec.get("scope", scope),
-        "cwd": s.cwd,
+        "project": project, "scope": scope, "cwd": s.cwd,
         "state": (state or "unknown") if sessions.is_alive(s) or state == "stopped" else "gone",
         "needs": record.get("needs"), "detail": _clip(record.get("detail")),
         "tempo": record.get("tempo"),
@@ -671,6 +1059,8 @@ def _job_row(s: sessions.Session, rec: dict[str, Any] | None,
         "remote_control_label": rec.get("remote_control"), "link": s.link,
         "started_at": rec.get("started_at") or _iso_ms(s.started_at_ms),
         "pool": sessions.is_ours(s) or sessions.was_ours(s),
+        "brief": bool(rec.get("brief")),
+        "tags": rec.get("tags"),
     }
 
 
@@ -693,20 +1083,13 @@ def _interactive_row(rec: dict[str, Any], panes: dict[int, str],
         "remote_control": bool(bridge), "remote_control_label": None,
         "link": roster.bridge_link(bridge),
         "started_at": _iso_ms(rec.get("startedAt")), "pool": False,
+        "pinned": False, "brief": False,
     }
 
 
 def _project_scope(cwd: str | None) -> tuple[str | None, str | None]:
     """Project and scope from a directory under the projects tree, else None."""
-    if not cwd:
-        return None, None
-    try:
-        parts = Path(cwd).resolve().relative_to(config.projects_dir().resolve()).parts
-    except (ValueError, OSError):
-        return None, None
-    if not parts:
-        return None, None
-    return parts[0], ("/".join(parts[1:]) or None)
+    return scope_of(cwd, config.projects_dir())
 
 
 def _interactive_records() -> list[dict[str, Any]]:

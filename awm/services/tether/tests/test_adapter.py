@@ -140,12 +140,13 @@ async def test_an_invite_tells_the_operator_how_to_hear_the_owner(monkeypatch):
     monkeypatch.setattr(paths, "ROLE", paths.OPERATOR)
 
     async def minted(verb, args, timeout):
-        return {"ok": True, "slot": "amber", "words": "amber fox kettle"}
+        return {"ok": True, "slot": 7, "code": "acre fox kettle",
+                "command": "curl -fsSL https://relay.test/tether | sh -s acre fox kettle"}
 
     monkeypatch.setattr(hub_adapter.control, "call", minted)
 
-    answer = await hub_adapter.HANDLERS["invite"]({})
+    answer = await hub_adapter.HANDLERS["invite"]({"os": "unix"})
 
-    assert answer["slot"] == "amber"
+    assert answer["slot"] == 7
     assert answer["listen"]["command"].startswith("awm services listen tether session")
     assert "task." not in answer["listen"]["command"]

@@ -16,13 +16,14 @@ from __future__ import annotations
 
 import logging
 import time
+from dataclasses import replace
 from contextlib import contextmanager
 
 import pytest
 
 pytestmark = [pytest.mark.smoke]
 
-from awm.reflection import inject, pending, session_target, stop_gate, watcher
+from awm.reflection import inject, pending, session_target, watcher
 
 
 LANE = session_target.TmuxLane(pane="%7", session_id="sid-1", repl_pid=4242,
@@ -89,11 +90,18 @@ def _outcomes(*sequence):
     return fake
 
 
+PROMISED_AT_MS = int(time.time() * 1000)
+
+
 def _promise(**over) -> pending.Pending:
-    """A promise stamped *now*, for a session that is alive."""
+    """A promise stamped at one fixed moment, for a session that is alive.
+
+    The stamp is what tells a watcher its promise is still the newest, so two
+    calls must agree on it.
+    """
     base = dict(repl_pid=4242, proc_start="999", session_id="sid-1",
                 text="/compact", followup="resume",
-                injected_at_ms=int(time.time() * 1000), name="test",
+                injected_at_ms=PROMISED_AT_MS, name="test",
                 hosting="tmux")
     base.update(over)
     return pending.Pending(**base)
@@ -137,12 +145,6 @@ def _pending_dir(tmp_path, monkeypatch):
     yield tmp_path / "pending"
 
 
-@pytest.fixture(autouse=True)
-def _gate_dir(tmp_path, monkeypatch):
-    monkeypatch.setattr(stop_gate, "GATE_DIR", str(tmp_path / "stop-gate"))
-    yield tmp_path / "stop-gate"
-
-
 @pytest.fixture
 def lane(monkeypatch):
     """Wire the sender to a fake lane and return the list of texts written."""
@@ -180,25 +182,6 @@ def test_a_deferred_resume_is_written_down_before_the_watcher_starts(lane):
 def test_a_plain_prompt_promises_nothing(lane):
     inject.send("just a prompt", caller_pid=4242, spawn=lambda fn: None)
     assert pending.load_all() == []
-
-
-# ---------------------------------------------------------------------------
-# Disarming the turn-end nag around a queued slash command
-# ---------------------------------------------------------------------------
-
-def test_queuing_a_slash_command_disarms_the_callers_stop_gate(lane, _gate_dir):
-    _gate_dir.mkdir(parents=True, exist_ok=True)
-    (_gate_dir / LANE.session_id).write_text("")
-    inject.send("/compact", caller_pid=4242, spawn=lambda fn: None)
-    assert not (_gate_dir / LANE.session_id).exists()
-
-
-def test_a_plain_prompt_never_touches_the_stop_gate(lane, _gate_dir):
-    _gate_dir.mkdir(parents=True, exist_ok=True)
-    marker = _gate_dir / LANE.session_id
-    marker.write_text("")
-    inject.send("just a prompt", caller_pid=4242, spawn=lambda fn: None)
-    assert marker.exists(), "no queued command, nothing to wait on, nothing to disarm"
 
 
 def test_no_promise_survives_a_command_that_never_went_in(monkeypatch):
@@ -381,34 +364,13 @@ def test_an_unreadable_transcript_does_not_license_a_second_delivery(
     assert pending.load_all() == []
 
 
-def test_a_vanished_session_clears_its_promise_without_typing(lane, monkeypatch,
-                                                              _gate_dir):
+def test_a_vanished_session_clears_its_promise_without_typing(lane, monkeypatch):
     monkeypatch.setattr(watcher, "await_completion",
                         lambda *a, **kw: watcher.VANISHED)
     pending.record(_promise())
     inject._await_and_resume(_promise())
     assert lane == [], "there is nobody left to resume"
     assert pending.load_all() == []
-    assert (_gate_dir / LANE.session_id).exists(), \
-        "the wait is over; the caller's own nag resumes"
-
-
-def test_a_delivered_resume_rearms_the_stop_gate(lane, monkeypatch, _gate_dir):
-    monkeypatch.setattr(watcher, "await_completion",
-                        lambda *a, **kw: watcher.SETTLED_OUTCOME)
-    pending.record(_promise())
-    inject._await_and_resume(_promise())
-    assert (_gate_dir / LANE.session_id).exists()
-
-
-def test_giving_up_after_max_delivery_rounds_still_rearms_the_stop_gate(
-        lane, monkeypatch, _gate_dir):
-    monkeypatch.setattr(watcher, "await_completion",
-                        lambda *a, **kw: watcher.SETTLED_OUTCOME)
-    monkeypatch.setattr(inject, "VERIFY_WAIT_S", 0.0)
-    pending.record(_promise())
-    inject._await_and_resume(_promise(), tail=Tail(in_flight=False, landed=False))
-    assert (_gate_dir / LANE.session_id).exists()
 
 
 # ---------------------------------------------------------------------------
@@ -604,3 +566,258 @@ def test_replay_is_the_same_code_for_both_lanes(monkeypatch):
     pending.record(_promise(repl_pid=2, hosting="background"))
     inject.replay_pending()
     assert sorted(i.hosting for i in armed) == ["background", "tmux"]
+
+
+# ---------------------------------------------------------------------------
+# A resume that says what happened
+# ---------------------------------------------------------------------------
+
+CONTINUE = "Continue with what you were doing."
+EFFORT = pending.Change("effort", "low", "k-effort")
+RENAME = pending.Change("rename", "scout", "k-rename")
+
+
+@pytest.mark.parametrize("changes,link,closing,expected", [
+    ((EFFORT,), None, "",
+     f"The effort change to low succeeded. {CONTINUE}"),
+    ((pending.Change("model", "opus", "k"),), None, "",
+     f"The model change to opus succeeded. {CONTINUE}"),
+    ((RENAME,), None, "", f"The rename to scout succeeded. {CONTINUE}"),
+    ((pending.Change("rc_on", "", "k"),), "https://claude.ai/code/session_01A", "",
+     f"Remote Control is on: https://claude.ai/code/session_01A. {CONTINUE}"),
+    ((pending.Change("rc_on", "", "k"),), None, "",
+     f"Remote Control was turned on; run reflection link to read its link. {CONTINUE}"),
+    ((pending.Change("effort", "low", "k", pending.FAILED, "the cursor was on No"),),
+     None, "",
+     f"The effort change to low did not apply (the cursor was on No). {CONTINUE}"),
+    ((RENAME, EFFORT), None, "",
+     f"The rename to scout and the effort change to low succeeded. {CONTINUE}"),
+    ((RENAME, pending.Change("model", "opus", "k", pending.FAILED, "a hook asked")),
+     None, "",
+     f"The rename to scout succeeded. The model change to opus did not apply "
+     f"(a hook asked). {CONTINUE}"),
+    ((EFFORT,), None, "go on with T3",
+     "The effort change to low succeeded. go on with T3"),
+    ((), None, "", CONTINUE),
+    ((), None, "go on with T3", "go on with T3"),
+])
+def test_the_resume_names_each_change_and_how_it_ended(changes, link, closing, expected):
+    assert pending.render_followup(changes, link, closing) == expected
+
+
+def test_a_settings_command_promises_a_resume_that_names_it(lane):
+    inject.send("/effort low", caller_pid=4242, change=EFFORT, spawn=lambda fn: None)
+    [item] = pending.load_all()
+    assert item.followup == f"The effort change to low succeeded. {CONTINUE}"
+    assert item.changes == (EFFORT,), "the change survives the replay's round trip"
+
+
+def test_compact_and_message_self_keep_the_default_resume(lane):
+    inject.send("/compact", caller_pid=4242, spawn=lambda fn: None)
+    assert [i.followup for i in pending.load_all()] == [CONTINUE]
+
+
+def _resume(item, monkeypatch):
+    monkeypatch.setattr(watcher, "await_completion",
+                        lambda *a, **kw: watcher.SETTLED_OUTCOME)
+    inject._await_and_resume(item, tail=Tail(in_flight=False, landed=None))
+
+
+def test_the_resume_is_worded_from_the_outcome_known_at_delivery(lane, monkeypatch):
+    inject.send("/effort low", caller_pid=4242, change=EFFORT, spawn=lambda fn: None)
+    [item] = pending.load_all()
+    pending.settle(4242, EFFORT.key, pending.FAILED, "the cursor was on No")
+    _resume(item, monkeypatch)
+    assert lane[1:] == [f"The effort change to low did not apply (the cursor was "
+                        f"on No). {CONTINUE}"]
+
+
+def test_a_move_is_followed_by_an_mcp_reconnect_before_its_resume(lane, monkeypatch):
+    move = pending.Change("cd", "/x", "k-cd")
+    inject.send("/cd /x", caller_pid=4242, change=move, spawn=lambda fn: None)
+    [item] = pending.load_all()
+    _resume(item, monkeypatch)
+    assert lane[1:] == [inject.RECONNECT_AFTER_MOVE,
+                        f"The move to /x succeeded. {CONTINUE}"]
+
+
+def test_a_resume_with_no_move_reconnects_nothing(lane, monkeypatch):
+    inject.send("/effort low", caller_pid=4242, change=EFFORT, spawn=lambda fn: None)
+    [item] = pending.load_all()
+    _resume(item, monkeypatch)
+    assert inject.RECONNECT_AFTER_MOVE not in lane
+
+
+def test_an_applied_outcome_reads_as_success(lane, monkeypatch):
+    inject.send("/effort low", caller_pid=4242, change=EFFORT, spawn=lambda fn: None)
+    [item] = pending.load_all()
+    pending.settle(4242, EFFORT.key, pending.APPLIED)
+    _resume(item, monkeypatch)
+    assert lane[1:] == [f"The effort change to low succeeded. {CONTINUE}"]
+
+
+def test_a_replayed_promise_with_no_outcome_falls_back_to_the_plain_change_text(
+        lane, monkeypatch):
+    inject.send("/effort low", caller_pid=4242, change=EFFORT, spawn=lambda fn: None)
+    [replayed] = pending.load_all()
+    assert replayed.changes[0].outcome == ""
+    _resume(replayed, monkeypatch)
+    assert lane[1:] == [f"The effort change to low succeeded. {CONTINUE}"]
+
+
+def test_an_outcome_survives_a_rewrite_by_a_watcher_that_has_not_seen_it(lane):
+    inject.send("/effort low", caller_pid=4242, change=EFFORT, spawn=lambda fn: None)
+    [stale] = pending.load_all()
+    pending.settle(4242, EFFORT.key, pending.FAILED, "no")
+    pending.record(pending.held(stale, "waiting"))
+    [now] = pending.load_all()
+    assert now.changes[0].outcome == pending.FAILED and now.holds == 1
+
+
+def test_settling_a_change_nobody_carries_is_a_no_op(lane):
+    assert pending.settle(4242, "nope", pending.APPLIED) is False
+
+
+# ---------------------------------------------------------------------------
+# One resume per session
+# ---------------------------------------------------------------------------
+
+def _two_self_commands():
+    inject.send("/rename scout", caller_pid=4242, change=RENAME,
+                spawn=lambda fn: None)
+    inject.send("/effort low", caller_pid=4242, change=EFFORT,
+                spawn=lambda fn: None)
+    return pending.read(4242)
+
+
+def _older_than(item, **over):
+    """The first command's promise, as its own watcher still holds it."""
+    return replace(item, injected_at_ms=item.injected_at_ms - 5, **over)
+
+
+MERGED = (f"The rename to scout and the effort change to low succeeded. "
+          f"{CONTINUE}")
+
+
+def test_a_second_self_command_takes_over_the_promise_and_carries_the_first(lane):
+    item = _two_self_commands()
+    assert item.text == "/effort low"
+    assert [c.key for c in item.changes] == [RENAME.key, EFFORT.key]
+    assert item.followup == MERGED
+
+
+def test_two_self_commands_send_exactly_one_resume(lane, monkeypatch):
+    # The observed failure: both watchers delivered, and after the back-off both
+    # delivered again, so the session got four resumes for two commands.
+    newer = _two_self_commands()
+    older = _older_than(newer, text="/rename scout", changes=(RENAME,))
+    tail = Tail(in_flight=False, landed=None)
+    monkeypatch.setattr(watcher, "await_completion",
+                        lambda *a, **kw: watcher.SETTLED_OUTCOME)
+    inject._await_and_resume(older, tail=tail)
+    assert lane[2:] == [], "the older watcher stands down"
+    assert pending.read(4242) is not None, "and leaves the newer promise on disk"
+    inject._await_and_resume(newer, tail=tail)
+    assert lane[2:] == [MERGED]
+
+
+def test_an_older_watcher_that_wakes_after_the_newer_resume_went_in_stays_quiet(
+        lane, monkeypatch):
+    newer = _two_self_commands()
+    tail = Tail(in_flight=False, landed=None)
+    monkeypatch.setattr(watcher, "await_completion",
+                        lambda *a, **kw: watcher.SETTLED_OUTCOME)
+    inject._await_and_resume(newer, tail=tail)
+    assert lane[2:] == [MERGED] and pending.read(4242) is None
+    inject._await_and_resume(_older_than(newer, text="/rename scout"), tail=tail)
+    assert lane[2:] == [MERGED], "no second resume once the first has gone in"
+
+
+def test_a_custom_closing_prompt_is_kept_beside_a_later_settings_change(lane):
+    inject.send("/compact", caller_pid=4242, followup="go on with T3",
+                spawn=lambda fn: None)
+    inject.send("/effort low", caller_pid=4242, change=EFFORT, spawn=lambda fn: None)
+    assert pending.read(4242).followup == "The effort change to low succeeded. go on with T3"
+
+
+# ---------------------------------------------------------------------------
+# A session whose transcript moves under the wait
+# ---------------------------------------------------------------------------
+
+def test_a_verify_that_could_not_read_the_transcript_is_unknown_not_a_miss(
+        monkeypatch):
+    # A tail that read the file once and has lost it since still answers
+    # `landed() is False` from what it read before. That is not evidence the
+    # text failed to arrive, and a False here is what licenses a retype.
+    monkeypatch.setattr(inject, "VERIFY_WAIT_S", 0.0)
+    lost = Tail(in_flight=None, landed=False)
+    assert inject._verify_landed(lost, "resume", sleep=lambda _s: None) is None
+
+
+def test_a_session_that_moves_mid_wait_is_reconnected_and_resumed_once(
+        tmp_path, monkeypatch):
+    # 2026-10-19, avatar-3c: after a self-`/cd`, Claude Code moved the transcript
+    # into the new directory's slug. The tail stayed bound to the old path, every
+    # verify read nothing and called the resume lost, and each round typed the
+    # reconnect and the resume in again.
+    import json
+    from awm.reflection import transcript
+
+    projects = tmp_path / "projects"
+    before, after = projects / "-home-tony-before", projects / "-home-tony-after"
+    before.mkdir(parents=True)
+    after.mkdir()
+    records = tmp_path / "sessions"
+    records.mkdir()
+    record = records / "4242.json"
+    record.write_text(json.dumps({"sessionId": "sid-1", "cwd": "/home/tony/before"}))
+    monkeypatch.setattr(transcript, "PROJECTS_DIR", projects)
+    monkeypatch.setattr(session_target, "SESSIONS_DIR", records)
+    original = before / "sid-1.jsonl"
+    original.write_text(json.dumps(
+        {"type": "user", "message": {"role": "user", "content": "earlier work"}})
+        + "\n")
+
+    seen: list[str] = []
+
+    class TranscribingWriter(Writer):
+        """Each line it is given turns up in the transcript, wherever that is now."""
+
+        def write(self, text):
+            super().write(text)
+            [live] = projects.glob("*/sid-1.jsonl")
+            entry = {"type": "user", "timestamp": "2099-01-01T00:00:00.000Z",
+                     "message": {"role": "user", "content": text}}
+            with live.open("a", encoding="utf-8") as fp:
+                fp.write(json.dumps(entry) + "\n")
+
+    @contextmanager
+    def open_lane(_lane, **_kw):
+        yield TranscribingWriter(seen)
+
+    monkeypatch.setattr(inject, "_open_lane", open_lane)
+    monkeypatch.setattr(session_target, "resolve", lambda pid, **kw: LANE)
+    monkeypatch.setattr(session_target, "_proc_start", lambda pid: "999")
+
+    def wait_then_move(*_a, tail, **_kw):
+        tail.poll()  # the watcher has been reading the old file all along
+        if original.exists():
+            record.write_text(json.dumps({"sessionId": "sid-1",
+                                          "cwd": "/home/tony/after"}))
+            original.rename(after / original.name)
+        return watcher.SETTLED_OUTCOME
+
+    monkeypatch.setattr(watcher, "await_completion", wait_then_move)
+    monkeypatch.setattr(inject, "VERIFY_WAIT_S", 0.05)
+    monkeypatch.setattr(inject, "VERIFY_POLL_S", 0.01)
+
+    move = pending.Change("cd", "/home/tony/after", "k-cd")
+    item = _promise(text="/cd /home/tony/after", changes=(move,))
+    pending.record(item)
+    inject._await_and_resume(item, tail=transcript.Tail(4242),
+                             read_status=lambda _pid: None)
+
+    assert seen.count(inject.RECONNECT_AFTER_MOVE) == 1
+    resumes = [t for t in seen if t != inject.RECONNECT_AFTER_MOVE]
+    assert resumes == [f"The move to /home/tony/after succeeded. {CONTINUE}"]
+    assert pending.load_all() == []

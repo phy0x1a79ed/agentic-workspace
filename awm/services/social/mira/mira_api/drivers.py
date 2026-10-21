@@ -41,6 +41,9 @@ def _call(helper: str, *args: Any) -> str:
     return f"(async()=>{{ return JSON.stringify(await {helper}({arglist})); }})()"
 
 
+UPLOAD_TIMEOUT_S = 150.0
+
+
 class Driver(ABC):
     platform: str = "base"
     #: substring identifying this platform's Opera page target
@@ -51,10 +54,10 @@ class Driver(ABC):
     def __init__(self, page: CDPPage) -> None:
         self.page = page
 
-    async def _run(self, helper: str, *args: Any) -> Any:
+    async def _run(self, helper: str, *args: Any, **eval_kw: Any) -> Any:
         """Assert the prelude, then call ``helper(*args)`` and parse its JSON."""
         expr = self.PRELUDE + "\n" + _call(helper, *args)
-        return await self.page.evaluate_json(expr)
+        return await self.page.evaluate_json(expr, **eval_kw)
 
     @abstractmethod
     async def identity(self) -> dict: ...
@@ -80,6 +83,21 @@ class Driver(ABC):
     @abstractmethod
     async def send(self, channel: str, text: str,
                    thread: str | None = None) -> dict: ...
+
+    async def upload(self, channel: str, files: list[dict], text: str,
+                     thread: str | None = None) -> dict:
+        """Post ``files``, each ``{filename, b64}``, to ``channel`` with ``text``
+        as their message → ``{channel_id, files: [{id, title, permalink}]}``.
+        Non-abstract: the server surfaces the default as 501."""
+        raise NotImplementedError(
+            f"{self.platform} driver does not support file uploads")
+
+    async def react(self, channel: str, message_id: str, name: str,
+                    remove: bool = False) -> dict:
+        """Add the emoji ``name`` to a message, or take it off. Non-abstract:
+        the server surfaces the default as 501."""
+        raise NotImplementedError(
+            f"{self.platform} driver does not support reactions")
 
     async def open_dm(self, user: str) -> dict:
         """Resolve ``user`` (platform id, or name where supported) to a DM and
@@ -114,9 +132,9 @@ class Driver(ABC):
 
 SLACK_PRELUDE = r"""
 window.__awmMira = window.__awmMira || {};
-if (!window.__awmMira.slack || window.__awmMira.slack._v !== 3) {
+if (!window.__awmMira.slack || window.__awmMira.slack._v !== 5) {
   const S = {};
-  S._v = 3;  // bump when adding/changing helpers so a long-lived page self-upgrades
+  S._v = 5;  // bump when adding/changing helpers so a long-lived page self-upgrades
   S._b64 = function (buf) {
     const bytes = new Uint8Array(buf);
     let bin = '';
@@ -216,6 +234,41 @@ if (!window.__awmMira.slack || window.__awmMira.slack._v !== 3) {
     if (thread) p.thread_ts = thread;
     const j = await S._call('chat.postMessage', p);
     return {message_id: j.ts, channel_id: j.channel || channel, ts: j.ts};
+  };
+  S.react = async function (channel, ts, name, remove) {
+    try {
+      await S._call(remove ? 'reactions.remove' : 'reactions.add',
+        {channel: channel, timestamp: ts, name: name});
+    } catch (e) {
+      // Already there, or already gone, is the state asked for.
+      if (!/: (already_reacted|no_reaction)$/.test(e.message)) throw e;
+    }
+    return {channel_id: channel, message_id: ts, emoji: name, removed: !!remove};
+  };
+  S._bytes = function (b64) {
+    const bin = atob(b64);
+    const out = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+    return out;
+  };
+  S.upload = async function (channel, files, text, thread) {
+    if (/^[UW][A-Z0-9]+$/.test(channel)) channel = (await S.openDM(channel)).id;
+    const shared = [];
+    for (const f of files) {
+      const bytes = S._bytes(f.b64);
+      const u = await S._call('files.getUploadURLExternal',
+        {filename: f.filename, length: String(bytes.length)});
+      // The upload host is another origin; the URL is pre-signed, so an opaque
+      // no-cors POST delivers the bytes and completeUploadExternal confirms them.
+      await fetch(u.upload_url, {method: 'POST', body: new Blob([bytes]), mode: 'no-cors'});
+      shared.push({id: u.file_id, title: f.filename});
+    }
+    const p = {files: JSON.stringify(shared), channel_id: channel};
+    if (text) p.initial_comment = text;
+    if (thread) p.thread_ts = thread;
+    const j = await S._call('files.completeUploadExternal', p);
+    return {channel_id: channel, files: (j.files || []).map(x => ({
+      id: x.id || '', title: x.title || '', permalink: x.permalink || ''}))};
   };
   S._resolveUser = async function (user) {
     if (/^[UW][A-Z0-9]+$/.test(user)) return user;     // already a user id
@@ -317,6 +370,17 @@ class SlackDriver(Driver):
     async def send(self, channel: str, text: str,
                    thread: str | None = None) -> dict:
         return await self._run("window.__awmMira.slack.send", channel, text, thread)
+
+    async def upload(self, channel: str, files: list[dict], text: str,
+                     thread: str | None = None) -> dict:
+        return await self._run(
+            "window.__awmMira.slack.upload", channel, files, text, thread,
+            timeout=UPLOAD_TIMEOUT_S, retry=False)
+
+    async def react(self, channel: str, message_id: str, name: str,
+                    remove: bool = False) -> dict:
+        return await self._run("window.__awmMira.slack.react",
+                               channel, message_id, name, remove)
 
     async def open_dm(self, user: str) -> dict:
         res = await self._run("window.__awmMira.slack.openDM", user)

@@ -41,6 +41,7 @@ local WAITS_CAP = 128
 local WAIT_STEP = 5              -- waits are examined on every 5th tick at most
 local SCRIPTS_CAP = 256
 local SCRIPT_MAX = 65536
+local TOOLS_CAP = 256
 local BP_CHUNK_MAX, BP_CHUNKS_MAX, BP_IDS_MAX = 65536, 64, 16
 local GUARD_RADIUS = 24          -- a walk stops when an enemy comes this close
 local GUARD_HP = 0.5             -- ...or the seat's health falls under this share
@@ -74,6 +75,8 @@ local function init_state()
   storage.waits = storage.waits or {}
   storage.scripts = storage.scripts or {}
   storage.script_data = storage.script_data or {}
+  storage.tools = storage.tools or {}
+  storage.tool_data = storage.tool_data or {}
   storage.bot = nil                     -- the pre-seat singleton; gone for good
   -- A save written by an older version can hold a move order whose target is
   -- not a number pair; on_tick would crash on it. Drop such orders on load.
@@ -181,6 +184,30 @@ local function resolve_player(args)
     error("this call needs a 'seat' (the seat's player name)")
   end
   return p
+end
+
+-- Where build_blueprint puts each entity of a stamp at (x, y) turned by dir. A 2.x blueprint keeps its entities'
+-- world positions: the engine turns them about the origin, then centres the turned set on the floor of its tile
+-- box's midpoint. Checked against build_blueprint in all four directions.
+local function stamp_plan(ents, x, y, dir)
+  local turned = {}
+  for _, e in pairs(ents) do
+    local ex, ey = e.position.x, e.position.y
+    if dir == 4 then ex, ey = -ey, ex elseif dir == 8 then ex, ey = -ex, -ey elseif dir == 12 then ex, ey = ey, -ex end
+    turned[#turned + 1] = { name = e.name, x = ex, y = ey, direction = ((e.direction or 0) + dir) % 16 }
+  end
+  local x1, y1, x2, y2 = math.huge, math.huge, -math.huge, -math.huge
+  for _, t in pairs(turned) do
+    local proto = prototypes.entity[t.name]
+    local w, h = proto and proto.tile_width or 1, proto and proto.tile_height or 1
+    if t.direction == 4 or t.direction == 12 then w, h = h, w end
+    t.w, t.h = w, h
+    x1, y1 = math.min(x1, t.x - w / 2), math.min(y1, t.y - h / 2)
+    x2, y2 = math.max(x2, t.x + w / 2), math.max(y2, t.y + h / 2)
+  end
+  local cx, cy = math.floor((x1 + x2) / 2), math.floor((y1 + y2) / 2)
+  for _, t in pairs(turned) do t.x, t.y = x + t.x - cx, y + t.y - cy end
+  return turned
 end
 
 -- Resolve to a player that can actually act: connected, alive, embodied.
@@ -697,6 +724,7 @@ local STR_MAX = {
   seat = 64, name = 128, recipe = 128, surface = 64, target = 128, search = 128,
   id = 64, file = 128, label = 256, direction = 32, item = 128, cond = 16,
   data = BP_CHUNK_MAX, blueprint = 4 * 1024 * 1024, code = SCRIPT_MAX,
+  kind = 16, effect = 16, summary = 256, force = 64,
 }
 
 local function check_args(args)
@@ -785,6 +813,126 @@ local function compiled(name)
     COMPILED[name] = c
   end
   return c.fn
+end
+
+-- ---- the tool registry -----------------------------------------------------
+--
+-- A tool is a stored script with a name, a kind and an effect, kept in
+-- `storage.tools` apart from the scripts so the script LRU never evicts it.
+-- A `call` tool is a function body run with `args` as its `...`. A `lib` tool
+-- runs once per peer and returns a table of functions that other tools fetch
+-- with `use(name)`. TOOL_COMPILED and LIBS are per-peer caches, rebuilt on
+-- demand and never saved.
+--
+-- A lib body must not make the peers differ. It sees `storage` through a proxy
+-- that raises on any write, and a cached lib is reused only within the tick it
+-- ran in, so every peer re-runs the bodies at the same tick.
+--
+-- DENY holds the effects the running tool_call refuses. It only ever grows
+-- while calls nest, and the outermost call restores it on every path.
+
+local TOOL_COMPILED = {}
+local LIBS = {}
+local LIB_LOADING = {}
+local DENY = {}
+local LAST_ERROR_MAX = 300
+
+local write_blocked
+
+local function wrapped_next(real)
+  return function(_, k)
+    local nk, v = next(real, k)
+    if type(v) == "table" then v = write_blocked(v) end
+    return nk, v
+  end, nil, nil
+end
+
+write_blocked = function(real)
+  return setmetatable({}, {
+    __index = function(_, k)
+      local v = real[k]
+      if type(v) == "table" then return write_blocked(v) end
+      return v
+    end,
+    __newindex = function()
+      error("a lib tool must not write storage: its body runs on every peer at a different moment", 0)
+    end,
+    __pairs = function() return wrapped_next(real) end,
+    __ipairs = function()
+      return function(_, i)
+        i = i + 1
+        local v = real[i]
+        if v == nil then return nil end
+        if type(v) == "table" then v = write_blocked(v) end
+        return i, v
+      end, nil, 0
+    end,
+    __len = function() return #real end,
+    __metatable = false,
+  })
+end
+
+-- The environment of a tool body: `_G` is the environment itself, so neither
+-- `_G.storage` nor the metatable reaches the real `storage`.
+local function tool_env(storage_view, use_fn)
+  local env = { storage = storage_view, script = SCRIPT_PROXY, use = use_fn }
+  env._G = env
+  return setmetatable(env, {
+    __index = function(_, k)
+      if k ~= "storage" and k ~= "_G" and k ~= "package" then return _G[k] end
+    end,
+    __metatable = false,
+  })
+end
+
+local function compile_tool(name, rec)
+  local c = TOOL_COMPILED[name]
+  if c and c.code == rec.code then return c.fn end
+  local fn, err = load("local _ENV=(...) return (function(...) " .. rec.code ..
+                       "\nend)(select(2,...))", "=" .. name, "t")
+  if not fn then error("tool " .. name .. " does not compile: " .. tostring(err), 0) end
+  TOOL_COMPILED[name] = { code = rec.code, fn = fn }
+  return fn
+end
+
+local use
+
+local function lib_env()
+  return tool_env(write_blocked(storage), use)
+end
+
+-- Run a lib body write-blocked and return the table it yields.
+local function run_lib(name, rec)
+  if LIB_LOADING[name] then error("lib cycle through " .. name, 0) end
+  LIB_LOADING[name] = true
+  local ok, r = pcall(function()
+    local lib = compile_tool(name, rec)(lib_env())
+    if type(lib) ~= "table" then error("lib " .. name .. " must return a table, got " .. type(lib), 0) end
+    return lib
+  end)
+  LIB_LOADING[name] = nil
+  if not ok then error(r, 0) end
+  return r
+end
+
+use = function(name)
+  if LIB_LOADING[name] then error("lib cycle through " .. tostring(name), 2) end
+  local rec = storage.tools[name]
+  if not rec then error("unknown tool: " .. tostring(name), 2) end
+  if rec.kind ~= "lib" then error("tool " .. name .. " is not a lib", 2) end
+  if DENY[rec.effect] then
+    error({ denied = rec.effect .. " tool " .. name .. " refused" }, 0)
+  end
+  local cached = LIBS[name]
+  if cached and cached.code == rec.code and cached.tick == game.tick then return cached.lib end
+  local lib = run_lib(name, rec)
+  LIBS[name] = { code = rec.code, lib = lib, tick = game.tick }
+  return lib
+end
+
+local function forget_tool(name)
+  TOOL_COMPILED[name] = nil
+  LIBS = {}   -- other libs may hold a table from the old one
 end
 
 local api = {
@@ -1146,7 +1294,16 @@ local api = {
   -- revives them immediately, which pays no items and is therefore a cheat.
   blueprint_stamp = function(args)
     args = args or {}
-    local p = acting_player(args)
+    -- A seatless stamp needs a surface and works on a lab with no player.
+    local p = args.seat and acting_player(args) or nil
+    local force
+    if p then
+      force = p.force
+    else
+      if not args.surface then error("a stamp without a seat requires 'surface'") end
+      force = game.forces[args.force or "player"]
+      if not force then error("no such force: " .. tostring(args.force)) end
+    end
     local id = tostring(args.id or "default")
     local text = args.blueprint
     if not text then
@@ -1155,7 +1312,7 @@ local api = {
       text = table.concat(buf)
     end
     if args.x == nil or args.y == nil then error("stamp requires x and y") end
-    local surf = args.surface and game.surfaces[args.surface] or p.character.surface
+    local surf = args.surface and game.surfaces[args.surface] or (p and not args.surface and p.character.surface)
     if not surf then error("no such surface: " .. tostring(args.surface)) end
     local dir = defines.direction.north
     if args.direction then
@@ -1178,64 +1335,60 @@ local api = {
       -- Where the module will actually land, so the caller can be told which
       -- part of it fell off the edge of the generated world.
       local corners = {}
-      local ents = stack.get_blueprint_entities()
+      local plan = stamp_plan(stack.get_blueprint_entities() or {}, args.x, args.y, dir)
       -- Find every obstruction BEFORE building: one of them means nothing at
       -- all is placed, so an unexplained zero has to come back with a reason.
       local blocked, blocked_at, cleared = 0, {}, 0
-      for _, e in pairs(ents or {}) do
-        local px, py = args.x + e.position.x, args.y + e.position.y
+      -- Clear every footprint first, so no entity is counted blocked by a
+      -- rock that a neighbour's clearing removes later.
+      if args.clear then
+        for _, e in pairs(plan) do
+          for _, obstruction in pairs(surf.find_entities_filtered{
+                area = { { e.x - e.w / 2, e.y - e.h / 2 }, { e.x + e.w / 2, e.y + e.h / 2 } },
+                type = { "tree", "simple-entity" } }) do
+            if obstruction.valid then obstruction.destroy() cleared = cleared + 1 end
+          end
+        end
+      end
+      for _, e in pairs(plan) do
+        local px, py = e.x, e.y
         if not surf.can_place_entity{
-              name = e.name, position = { x = px, y = py }, force = p.force,
+              name = e.name, position = { x = px, y = py }, force = force,
               direction = e.direction,
               build_check_type = defines.build_check_type.blueprint_ghost } then
-          if args.clear then
-            for _, obstruction in pairs(surf.find_entities_filtered{
-                  position = { x = px, y = py }, radius = 2,
-                  type = { "tree", "simple-entity" } }) do
-              if obstruction.valid then obstruction.destroy() cleared = cleared + 1 end
+          blocked = blocked + 1
+          if #blocked_at < 5 then
+            -- Say WHY. Trees and rocks `clear` can remove; a cliff or water
+            -- means move the module or landfill, which is a different job.
+            local why
+            for _, o in pairs(surf.find_entities_filtered{
+                  position = { x = px, y = py }, radius = 1.5 }) do
+              if o.valid and o.type ~= "character" then why = o.name break end
             end
-          end
-          if not surf.can_place_entity{
-                name = e.name, position = { x = px, y = py }, force = p.force,
-                direction = e.direction,
-                build_check_type = defines.build_check_type.blueprint_ghost } then
-            blocked = blocked + 1
-            if #blocked_at < 5 then
-              -- Say WHY. Trees and rocks `clear` can remove; a cliff or water
-              -- means move the module or landfill, which is a different job.
-              local why
-              for _, o in pairs(surf.find_entities_filtered{
-                    position = { x = px, y = py }, radius = 1.5 }) do
-                if o.valid and o.type ~= "character" then why = o.name break end
-              end
-              -- On ungenerated map there is no tile at all, and touching the
-              -- invalid LuaTile throws -- which is exactly the case we are
-              -- here to report on.
-              local tile = surf.get_tile(math.floor(px), math.floor(py))
-              blocked_at[#blocked_at + 1] = {
-                name = e.name, x = px, y = py,
-                tile = (tile and tile.valid) and tile.name or nil,
-                obstruction = why }
-            end
+            -- On ungenerated map there is no tile at all, and touching the
+            -- invalid LuaTile throws -- which is exactly the case we are
+            -- here to report on.
+            local tile = surf.get_tile(math.floor(px), math.floor(py))
+            blocked_at[#blocked_at + 1] = {
+              name = e.name, x = px, y = py,
+              tile = (tile and tile.valid) and tile.name or nil,
+              obstruction = why }
           end
         end
       end
-      if ents and #ents > 0 then
+      if #plan > 0 then
         local x1, y1 = math.huge, math.huge
         local x2, y2 = -math.huge, -math.huge
-        for _, e in pairs(ents) do
-          x1 = math.min(x1, e.position.x); x2 = math.max(x2, e.position.x)
-          y1 = math.min(y1, e.position.y); y2 = math.max(y2, e.position.y)
+        for _, e in pairs(plan) do
+          x1 = math.min(x1, e.x); x2 = math.max(x2, e.x)
+          y1 = math.min(y1, e.y); y2 = math.max(y2, e.y)
         end
-        corners = { { x = args.x + x1, y = args.y + y1 },
-                    { x = args.x + x2, y = args.y + y1 },
-                    { x = args.x + x1, y = args.y + y2 },
-                    { x = args.x + x2, y = args.y + y2 } }
+        corners = { { x = x1, y = y1 }, { x = x2, y = y1 }, { x = x1, y = y2 }, { x = x2, y = y2 } }
       end
       local ghosts = stack.build_blueprint{
-        surface = surf, force = p.force, position = { x = args.x, y = args.y },
+        surface = surf, force = force, position = { x = args.x, y = args.y },
         direction = dir, skip_fog_of_war = false,
-        force_build = args.force_build and true or false,
+        build_mode = args.force_build and defines.build_mode.forced or defines.build_mode.normal,
         raise_built = true,
       }
       local built, revived = 0, 0
@@ -1276,11 +1429,11 @@ local api = {
       end
     end
     if skipped > 0 then
-      push_event("blueprint_partial", { seat = p.name, placed = result.placed,
+      push_event("blueprint_partial", { seat = p and p.name, placed = result.placed,
                                         skipped = skipped,
                                         ungenerated = not generated })
     end
-    return { ok = true, seat = p.name, position = { x = args.x, y = args.y },
+    return { ok = true, seat = p and p.name, position = { x = args.x, y = args.y },
              entities = result.wanted, placed = result.placed,
              skipped = skipped, built = result.revived,
              cheated = args.build and true or false,
@@ -1606,6 +1759,104 @@ local api = {
   script_drop = function(args)
     storage.scripts[args.name or ""] = nil
     COMPILED[args.name or ""] = nil
+    return { ok = true }
+  end,
+
+  -- ---- tools ----
+
+  tool_define = function(args)
+    local name, code, kind, effect = args.name, args.code, args.kind, args.effect
+    if not (name and name:match("^[%w_%-]+$") and #name <= 64) then
+      error("tool name must be 1-64 letters, digits, - _")
+    end
+    if not code then error("tool_define requires 'code'") end
+    if kind ~= "call" and kind ~= "lib" then error("tool kind must be call or lib") end
+    if effect ~= "read" and effect ~= "act" and effect ~= "cheat" then
+      error("tool effect must be read, act or cheat")
+    end
+    if not storage.tools[name] and table_size(storage.tools) >= TOOLS_CAP then
+      error("the tool registry is full (" .. TOOLS_CAP .. "); drop a tool first")
+    end
+    local rec = { code = code, kind = kind, effect = effect, summary = args.summary or "",
+                  defined = game.tick, calls = 0, errors = 0 }
+    TOOL_COMPILED[name] = nil
+    LIBS = {}   -- a dependent lib must re-run against the definition being tried
+    local lib
+    local ok, err = pcall(function()
+      compile_tool(name, rec)
+      if kind == "lib" then lib = run_lib(name, rec) end
+    end)
+    if not ok then
+      TOOL_COMPILED[name] = nil
+      error(err, 0)
+    end
+    storage.tools[name] = rec
+    forget_tool(name)
+    compile_tool(name, rec)
+    if lib then LIBS[name] = { code = code, lib = lib, tick = game.tick } end
+    return { name = name, size = #code }
+  end,
+
+  -- Run a call tool with `args` as its `...`. It sees the game's globals,
+  -- `use`, the restricted `script`, and `storage` bound to a table of its own.
+  -- `deny` lists effects to refuse for this call and every call nested in it,
+  -- the tool itself and each lib it uses.
+  tool_call = function(args)
+    local name = args.name
+    local rec = storage.tools[name or ""]
+    if not rec then return { ok = false, error = "no_tool", detail = tostring(name) } end
+    local outer, deny = DENY, {}
+    for e in pairs(outer) do deny[e] = true end
+    if args.deny ~= nil and type(args.deny) ~= "table" then
+      error("argument deny must be a list of effects")
+    end
+    for _, e in ipairs(args.deny or {}) do deny[e] = true end
+    if deny[rec.effect] then
+      return { ok = false, error = "denied",
+               detail = rec.effect .. " tool " .. name .. " refused" }
+    end
+    if rec.kind ~= "call" then
+      return { ok = false, error = "tool_error", detail = "lib tools are used, not called" }
+    end
+    local data = storage.tool_data[name]
+    if not data then
+      data = {}
+      storage.tool_data[name] = data
+    end
+    DENY = deny
+    local ok, r = pcall(function()
+      return compile_tool(name, rec)(tool_env(data, use), args.args)
+    end)
+    DENY = outer
+    if ok then
+      rec.calls = rec.calls + 1
+      return { ok = true, r = r }
+    end
+    if type(r) == "table" and r.denied then
+      return { ok = false, error = "denied", detail = r.denied }
+    end
+    local detail = tostring(r):sub(1, LAST_ERROR_MAX)
+    rec.errors = rec.errors + 1
+    rec.last_error = detail
+    return { ok = false, error = "tool_error", detail = detail }
+  end,
+
+  tool_list = function()
+    local out = {}
+    for n, rec in pairs(storage.tools) do
+      out[#out + 1] = { name = n, kind = rec.kind, effect = rec.effect, summary = rec.summary,
+                        size = #rec.code, calls = rec.calls, errors = rec.errors,
+                        last_error = rec.last_error, defined = rec.defined }
+    end
+    table.sort(out, function(a, b) return a.name < b.name end)
+    return { tools = out }
+  end,
+
+  tool_drop = function(args)
+    local name = args.name or ""
+    storage.tools[name] = nil
+    storage.tool_data[name] = nil
+    forget_tool(name)
     return { ok = true }
   end,
 

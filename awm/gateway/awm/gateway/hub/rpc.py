@@ -34,6 +34,9 @@ import secrets
 from dataclasses import dataclass, field
 from typing import Any
 
+from awm.config import privacy
+from awm.gateway import private_gate
+
 log = logging.getLogger("awm.hub.rpc")
 
 
@@ -73,6 +76,7 @@ class _Subscriber:
 
     sub_id: str
     queue: asyncio.Queue[Any]
+    peer: bool = False
 
 
 @dataclass
@@ -229,7 +233,8 @@ class ControlChannel:
 
     def add_subscriber(self, topic: str, *, as_: str | None = None) -> _Subscriber:
         sub_id = secrets.token_urlsafe(8)
-        sub = _Subscriber(sub_id=sub_id, queue=asyncio.Queue(maxsize=256))
+        sub = _Subscriber(sub_id=sub_id, queue=asyncio.Queue(maxsize=256),
+                          peer=privacy.from_peer(as_))
         self._subs.setdefault(topic, {})[sub_id] = sub
         env: dict[str, Any] = {"kind": "sub", "topic": topic, "sub_id": sub_id}
         if as_ is not None:
@@ -247,10 +252,18 @@ class ControlChannel:
         self.enqueue({"kind": "unsub", "topic": topic, "sub_id": sub_id})
 
     def handle_emit(self, env: dict[str, Any]) -> None:
+        """Fan an emit out to the topic's subscribers. A peer subscriber does not
+        get an event that carries a private project, scope or path."""
         topic = env.get("topic") or ""
         payload = env.get("payload")
         bucket = self._subs.get(topic, {})
+        hidden: bool | None = None
         for sub in list(bucket.values()):
+            if sub.peer:
+                if hidden is None:
+                    hidden = private_gate.emit_hidden(payload)
+                if hidden:
+                    continue
             try:
                 sub.queue.put_nowait(payload)
             except asyncio.QueueFull:

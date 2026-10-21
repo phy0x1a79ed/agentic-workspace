@@ -7,7 +7,8 @@ which closes the gaps the stream cannot: a cursor the board no longer holds
 
 The door never claims a card and never shows a card's text to an agent. A card
 addressed to this swarm or to ``open``, or posted by this swarm, is queued as
-``proposed`` and Tony gets one direct message with the claim reference. A
+``proposed`` and Tony gets one direct message with the claim reference, unless
+the other party is a swarm in ``AWM_REPORTING_QUIET_SWARMS``. A
 message that fails to send leaves the card unannounced, and the next catch-up
 sends it. An agent takes a card with ``task_claim``, which assigns the card to
 the agent's session.
@@ -15,7 +16,7 @@ the agent's session.
 A message on a card's thread wakes the session the card was assigned to, with
 a line that names the card and sender and carries none of its text. A session
 that cannot take the line gets one more try, from the catch-up the miss asks
-for. After that, or when the card has no session, Tony gets a short message.
+for. After that, or when the card has no session, it waits on the thread.
 Each card's thread cursor moves only once its message reached someone, so a
 catch-up after downtime routes what the stream missed.
 
@@ -40,8 +41,8 @@ import httpx
 
 from awm.board.client import RESYNC, BoardError, BoardRefused
 
-from awm.reporting import ACTIVE, ASSIGNED, DONE, GONE, PROPOSED, REJECTED
-from awm.reporting.intake import (card_dm, card_state, event_line, message_dm, send_dm, swarm_of,
+from awm.reporting import ACTIVE, ASSIGNED, DONE, GONE, PROPOSED, REJECTED, config
+from awm.reporting.intake import (card_dm, card_state, event_line, send_dm, swarm_of,
                                   wake_text)
 from awm.reporting.store import Offloaded, Queue
 
@@ -106,6 +107,13 @@ class Subscriber:
     def _claimable(self, card: dict) -> bool:
         return card.get("recipient") in (self.swarm, OPEN)
 
+    @staticmethod
+    def _quiet(card: dict) -> bool:
+        """A card to or from a swarm in ``AWM_REPORTING_QUIET_SWARMS``: queued, never DMed."""
+        quiet = config.quiet_swarms()
+        return bool(quiet) and (card.get("recipient") in quiet
+                                or swarm_of(card.get("sender")) in quiet)
+
     # -- one card ------------------------------------------------------------
 
     async def _intake(self, card: dict, *, reopen: bool = False, quiet: bool = False) -> None:
@@ -113,6 +121,9 @@ class Subscriber:
         if await self.db.enqueue(card, quiet=quiet, reopen=reopen):
             log.info("reporting: queued %r card %s", card.get("kind"), card["id"])
         if await self.db.needs_dm(card["id"]):
+            if self._quiet(card):
+                await self.db.mark_notified(card["id"])
+                return
             try:
                 await self._dm(card_dm(card, claimable=self._claimable(card)))
             except Exception as exc:  # noqa: BLE001 — the catch-up sends it again
@@ -154,37 +165,23 @@ class Subscriber:
         return held.get("assigned_job") if held and held["status"] == ASSIGNED else None
 
     async def _route(self, card: dict, message: dict) -> bool:
-        """Tell the card's session, else Tony, about a new message. False to retry."""
+        """Wake the card's session about a new message. False to retry. Tony gets no DM."""
         job = await self._assignee(card["id"])
-        note = ""
-        if job:
-            try:
-                await asyncio.to_thread(self._send, job, wake_text(card["id"], message))
-            except Exception as exc:  # noqa: BLE001 — a closed PTY or a dialog is a miss
-                if card["id"] not in self._missed:
-                    self._missed.add(card["id"])
-                    log.info("reporting: %s did not take card %s's message (%s); retrying",
-                             job, card["id"], exc)
-                    self._kick.set()
-                    return False
-                note = f"its agent, job {job}, could not be reached"
-                log.info("reporting: %s is gone; Tony hears of card %s's message", job, card["id"])
-            else:
-                self._missed.discard(card["id"])
-                log.info("reporting: told %s about a message on card %s", job, card["id"])
-                return True
-        else:
-            held = await self.db.get(card["id"])
-            if held is not None and held["status"] == ASSIGNED:
-                note = f"claimed by {held['assigned_to']}, which has no background session to wake"
-        self._missed.discard(card["id"])
+        if not job:
+            return True
         try:
-            await self._dm(message_dm(card, message, note=note))
-        except Exception as exc:  # noqa: BLE001 — the catch-up routes it again
-            log.warning("reporting: could not tell Tony about a message on card %s: %s",
-                        card["id"], exc)
-            self._kick.set()
-            return False
+            await asyncio.to_thread(self._send, job, wake_text(card["id"], message))
+        except Exception as exc:  # noqa: BLE001 — a closed PTY or a dialog is a miss
+            if card["id"] not in self._missed:
+                self._missed.add(card["id"])
+                log.info("reporting: %s did not take card %s's message (%s); retrying",
+                         job, card["id"], exc)
+                self._kick.set()
+                return False
+            log.info("reporting: %s is gone; card %s's message stays on its thread", job, card["id"])
+        else:
+            log.info("reporting: told %s about a message on card %s", job, card["id"])
+        self._missed.discard(card["id"])
         return True
 
     # -- watchers --------------------------------------------------------------

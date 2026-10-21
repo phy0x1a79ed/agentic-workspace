@@ -17,6 +17,7 @@ import shutil
 import subprocess
 import tempfile
 import uuid as _uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -27,10 +28,11 @@ from awm.config import (
     GITHUB_USER,
     VAGRANT_PROJECT,
 )
+from awm.config import privacy
 from awm.scopes.git_utils import run_git, detect_default_branch
 from awm.dvc import data_dvc
 from awm.gatewayclient import cancel
-from awm.scopes import search_index
+from awm.scopes import search_index, tags as _tags
 from awm.scopes.dao import ScopesDAO
 from awm.scopes.identity import (
     agent_id_for_scope,
@@ -1013,9 +1015,11 @@ def create_scope(req: ScopeCreateRequest) -> ScopeActionResponse:
     """Create a new scope: git worktree + .awm/ metadata + agents row.
 
     With ``new_project`` the project is created first when it does not exist,
-    and ``scope`` may then be omitted to create the project alone.
+    and ``scope`` may then be omitted to create the project alone. ``tags`` go
+    on the new scope, or on the project when it is made alone.
     """
     validate_name(req.project, kind="project name")
+    tags = _tags.normalise(req.tags or [])
     if req.scope is None:
         if not req.new_project:
             raise ValueError("scope is required; omit it only with new_project=true, "
@@ -1043,6 +1047,8 @@ def create_scope(req: ScopeCreateRequest) -> ScopeActionResponse:
             name=req.project, clone_url=req.clone_url, fork_url=req.fork_url))
         if req.scope is None:
             main = Path(created.worktree_dir)
+            if tags:
+                _tags.set_tags(req.project, None, tags)
             return ScopeActionResponse(
                 project=req.project, scope=main.name, status="active", session=1,
                 message=f"Created project at projects/{req.project} "
@@ -1100,6 +1106,8 @@ def create_scope(req: ScopeCreateRequest) -> ScopeActionResponse:
             _roll_back_create(bare_dir, repo_dir, feature_branch, req.project, req.scope,
                               checkout.made_at)
         raise
+    if tags:
+        _tags.set_tags(req.project, req.scope, tags)
 
     return ScopeActionResponse(
         project=req.project,
@@ -1506,6 +1514,7 @@ def delete_scope(project: str, scope: str, force: bool = False,
             "UPDATE agents SET status='retired', retired_at=? WHERE id=?",
             (now_ms(), aid_row["id"]),
         )
+    _tags.drop(project, scope)
 
     search_index.index_scope(project, scope)
 
@@ -1581,6 +1590,8 @@ def search_scopes(
     project: str | None = None,
     limit: int = 50,
     offset: int = 0,
+    as_: str | None = None,
+    tag: str | None = None,
 ) -> ScopeListResponse:
     """Search scopes. Defaults to status='active'.
 
@@ -1588,8 +1599,23 @@ def search_scopes(
     ranked by relevance of their goals and ``context.md``. A project's main
     checkout counts as an active scope named for its default branch. With no
     ``project`` the reply also lists every project (see
-    :func:`awm.scopes.projects.search_projects`).
+    :func:`awm.scopes.projects.search_projects`) and every tag in use. With
+    ``tag`` only scopes whose effective tags hold it remain. A peer caller
+    ``as_`` sees no private project or scope.
     """
+    peer = privacy.from_peer(as_)
+    tag_table = _tags.load(project)
+    if tag:
+        tag = _tags.normalise([tag])[0]
+
+    def visible(info: ScopeInfo) -> bool:
+        return not (peer and (privacy.hidden(info.project, info.scope)
+                              or privacy.hidden_path(info.worktree)))
+
+    def shown(info: ScopeInfo) -> bool:
+        return visible(info) and (
+            not tag or tag in _tags.resolve(tag_table, info.project, info.scope))
+
     where, params = "", []
     if status and status != "all":
         if status == "active":
@@ -1615,13 +1641,15 @@ def search_scopes(
     if status in (None, "", "all", "active"):
         found += [m for m in main_checkouts(project).values()
                   if not query or query.lower() in m.scope.lower()]
+    found = [s for s in found if shown(s)]
     merged = sorted(found, key=lambda s: (s.project, s.scope))[offset:offset + limit]
     degraded = None
     if query:
         seen = {f"{s.project}/{s.scope}" for s in merged}
         try:
+            # A tag filter drops hits after ranking, so rank deeper to fill the page.
             res = search_index.search(
-                "scope", query, params=params, limit=offset + limit,
+                "scope", query, params=params, limit=(offset + limit) * (5 if tag else 1),
                 allowed="SELECT p.name || '/' || a.scope FROM agents a"
                         " JOIN projects p ON p.id = a.project_id WHERE 1=1" + where)
             degraded = res.degraded
@@ -1635,14 +1663,40 @@ def search_scopes(
                     _SCOPE_ROW_SQL + " AND p.name = ? AND a.scope = ?" + where
                     + " ORDER BY a.created_at DESC", [proj, scp, *params])
                 if row is not None:
-                    merged.append(_v37_render_scope(row, session=row["session"] or 1))
+                    info = _v37_render_scope(row, session=row["session"] or 1)
+                    if shown(info):
+                        merged.append(info)
         except Exception as exc:  # noqa: BLE001 — reported, then answered by name match
             degraded = {"semantic": "error", "error": repr(exc)[:300], "fallback": "keyword"}
 
-    listing = None
+    for info in merged:
+        info.private = privacy.hidden(info.project, info.scope)
+        info.tags = _tags.resolve(tag_table, info.project, info.scope)
+    listing = in_use = None
     if not project:
         from awm.scopes import projects as projects_mod
         listing = projects_mod.search_projects(query=query, limit=limit if query else None)
+        if peer:
+            listing.projects = [p for p in listing.projects if not privacy.hidden(p.name)]
+        for p in listing.projects:
+            p.tags = _tags.resolve(tag_table, p.name, None)
         degraded = degraded or listing.degraded
+        in_use = _tags_in_use(tag_table, where, params, status, visible)
     return ScopeListResponse(scopes=merged, total=len(merged), degraded=degraded,
-                             projects=listing.projects if listing else None)
+                             projects=listing.projects if listing else None, tags=in_use)
+
+
+def _tags_in_use(table: _tags.Table, where: str, params: list, status: str,
+                 visible: Callable[[ScopeInfo], bool]) -> dict[str, int]:
+    """Each tag the searched status's scopes carry, with how many carry it."""
+    rows = ScopesDAO().query_all(_SCOPE_ROW_SQL + where, params)
+    scopes = {(r["project_name"], r["scope"]): _v37_render_scope(r) for r in rows}
+    if status in (None, "", "all", "active"):
+        scopes.update({(m.project, m.scope): m for m in main_checkouts().values()})
+    counts: dict[str, int] = {}
+    for (proj, scope), info in scopes.items():
+        if not visible(info):
+            continue
+        for found in _tags.resolve(table, proj, scope):
+            counts[found] = counts.get(found, 0) + 1
+    return dict(sorted(counts.items()))

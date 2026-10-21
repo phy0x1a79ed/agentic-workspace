@@ -30,6 +30,11 @@ The service owns its DB at `AWM_DIR/services/journal/journal.db`:
 A post to a literal scope is checked through the `resolveScope` RPC to the scopes
 service. An unreachable scopes service never blocks a post.
 
+A post from a Claude Code session records the session id in `meta.session`. The
+service resolves it from the pid the gateway stamps on the call and drops any
+`session` the caller sends. Reporting relies on it to put a journal post on the
+poster's card only.
+
 ### First-start migration
 
 Before this service existed, `scope_posts` and `scope_subscribers` lived in

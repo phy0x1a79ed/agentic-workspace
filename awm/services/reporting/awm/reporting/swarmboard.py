@@ -6,14 +6,21 @@ only the old one, so a clone on Tony's own board survives. A card the service
 made is a text note labelled ``#agentManaged`` and ``#readOnly`` whose body is
 the record. A card claimed from Tony's own note keeps its body as his and gets
 the record in a ``Record`` child; the ledger notes are Markdown children.
+
+A card carries its scope's tags in ``swarmTags``, comma-joined, and the board's
+"By tag" book holds one saved search per tag, matching the whole tag only.
+
+Done and Rejected list their cards newest first, by the ``cardStateAt`` label
+each card gets on entering a column. Each ends in one "Older (n)" book, labelled
+``#swarmOlder``, that holds the cards finished more than two weeks ago.
 """
 
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Literal
 
 from awm import gatewayclient
 
@@ -30,11 +37,33 @@ RECORD = "Record"
 CHANGED = "changed"
 MANAGED = {"agentManaged": "", "readOnly": ""}
 ARCHIVED = "archived"
-#: The labels a federation card carries, offered as promoted chips on the board root.
-CHIPS = {"cardFrom": "From", "cardTo": "To", "project": "Project", "owner": "Owner"}
+OLDER = "Older"
+OLDER_LABEL = "swarmOlder"
+STATE_AT = "cardStateAt"
+#: Below every ISO time, so the Older book sorts after every card in its column.
+OLDER_AT = "0000"
+SORTED = {"sorted": STATE_AT, "sortDirection": "desc"}
+TAGS_LABEL = "swarmTags"
+BY_TAG = "By tag"
+TAG_SEARCH_LABEL = "swarmTagSearch"
+#: The labels a card carries, offered as promoted chips on the board root.
+CHIPS = {"cardFrom": "From", "cardTo": "To", "project": "Project", "owner": "Owner",
+         TAGS_LABEL: "Tags"}
 #: Columns a board made before they existed lacks. The layout makes them on first use.
 LATE_COLUMNS = (COLUMNS[DONE], COLUMNS[REJECTED])
+#: The columns that sort newest first and fold their old cards into an Older book.
+FOLDING = (COLUMNS[DONE], COLUMNS[REJECTED])
 Call = Callable[..., Awaitable[dict]]
+
+
+def tag_search(tag: str) -> str:
+    """A Trilium search for the cards whose ``swarmTags`` hold ``tag`` whole, so "lab" misses "collab".
+
+    Trilium's search parser breaks a regex that contains a comma, so the tag's
+    edges are lookarounds on the tag alphabet rather than on the separator.
+    """
+    edge = "[a-z0-9._-]"
+    return f"#{TAGS_LABEL} %= '(?<!{edge}){tag.replace('.', '[.]')}(?!{edge})'"
 
 
 class BoardError(RuntimeError):
@@ -46,6 +75,20 @@ class Layout:
     board: str
     ledger: str
     columns: dict[str, str]
+    #: Column title -> its Older book, for the columns that have one yet.
+    older: dict[str, str] = field(default_factory=dict)
+
+    def parts(self) -> set[str]:
+        return {self.board, self.ledger, *self.columns.values(), *self.older.values()}
+
+    def homes(self) -> set[str]:
+        """Every note a card can sit in: the columns and the Older books."""
+        return {*self.columns.values(), *self.older.values()}
+
+
+def state_stamp() -> str:
+    """Now as a ``cardStateAt`` value, in the federation board's form so both boards sort alike."""
+    return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
 
 
 def local_stamp(utc: str | None = None) -> str:
@@ -70,6 +113,20 @@ def ops_body(stamp: str, title: str | None, body: str) -> str:
     return f"Changed: {stamp}\n\n" + "\n".join(lines).lstrip("\n") + "\n"
 
 
+def _iso(utc: str | None) -> str:
+    """A Trilium UTC time as a ``cardStateAt`` value. A time it cannot read is now."""
+    try:
+        when = datetime.strptime((utc or "").strip().replace("Z", "+0000"), "%Y-%m-%d %H:%M:%S.%f%z")
+    except ValueError:
+        return state_stamp()
+    return when.astimezone(timezone.utc).isoformat(timespec="milliseconds")
+
+
+def _own_labels(note: dict, note_id: str) -> set[str]:
+    return {a.get("name") for a in note.get("attributes") or []
+            if a.get("type", "label") == "label" and a.get("noteId") in (None, note_id)}
+
+
 async def _gateway(fn: str, **args: Any) -> dict:
     return await gatewayclient.call("trilium", fn, args, timeout=60.0)
 
@@ -80,6 +137,7 @@ class SwarmBoard:
         self._layout: Layout | None = None
         self._awm: str | None = None
         self._chips = False
+        self._tag_searches: set[str] = set()
 
     async def _call(self, fn: str, **args: Any) -> dict:
         try:
@@ -114,15 +172,24 @@ class SwarmBoard:
             missing.remove(title)
         if missing:
             raise BoardError(f"the Swarm board lacks {', '.join(missing)}; run operations board_ensure")
-        layout = Layout(board, kids[LEDGER], {t: kids[t] for t in COLUMNS.values()})
-        self._layout = layout
+        columns = {t: kids[t] for t in COLUMNS.values()}
+        older = {}
+        for title in FOLDING:
+            found = [k["note_id"] for k in await self._children(columns[title])
+                     if OLDER_LABEL in (k.get("labels") or [])]
+            if found:
+                older[title] = found[0]
+        layout = Layout(board, kids[LEDGER], columns, older)
+        # Until board_ensure makes the Older books, every read looks for them again.
+        self._layout = layout if len(older) == len(FOLDING) else None
         if not self._chips:
+            cached = self._layout
             await self._define_chips(board)
-            self._layout = layout
+            self._layout = cached
         return layout
 
     async def _define_chips(self, board: str) -> None:
-        """Offer From, To, Project and Owner as promoted chips on every card under the board.
+        """Offer From, To, Project, Owner and Tags as promoted chips on every card under the board.
 
         A failure here only costs the chips, so it is logged and tried again on
         the next layout read.
@@ -156,15 +223,46 @@ class SwarmBoard:
         for title in COLUMNS.values():
             await self._child(board, title, type="book")
         await self._child(board, LEDGER, type="book")
+        await self._child(board, BY_TAG, type="book")
         self._chips = False
+        self._layout = None
+        folded = await self._ensure_older(await self.layout())
         ops = await self._find_ops()
         if ops is None:
             ops = await self._child(parent or await self._awm_note(), "Ops", type="book")
             await self._call("note_update", note_id=ops, labels={OPS_LABEL: ""})
         self._layout = None
         lay = await self.layout()
-        return {"board": lay.board, "ledger": lay.ledger, "columns": lay.columns, "ops": ops,
-                "created": not hits}
+        return {"board": lay.board, "ledger": lay.ledger, "columns": lay.columns, "older": lay.older,
+                "ops": ops, "created": not hits, **folded}
+
+    async def _ensure_older(self, lay: Layout) -> dict:
+        """Sort Done and Rejected, give each its Older book, and convert the cards labelled ``#archived``.
+
+        An archived card moves into its column's Older book and loses the label.
+        A card with no ``cardStateAt`` gets one from its Trilium modified time.
+        """
+        folded = stamped = 0
+        for title in FOLDING:
+            column = lay.columns[title]
+            await self._call("note_update", note_id=column, labels=SORTED)
+            older = lay.older.get(title) or (await self._call(
+                "note_create", title=OLDER, parent=column, type="book",
+                labels={OLDER_LABEL: "", STATE_AT: OLDER_AT, **SORTED}))["note_id"]
+            for kid in await self._children(column):
+                labels = kid.get("labels") or []
+                if kid["note_id"] == older or OLDER_LABEL in labels:
+                    continue
+                if STATE_AT not in labels:
+                    note = await self._call("note_get", note_id=kid["note_id"], content=False)
+                    await self._call("note_update", note_id=kid["note_id"],
+                                     labels={STATE_AT: _iso(note.get("utcDateModified"))})
+                    stamped += 1
+                if ARCHIVED in labels:
+                    await self._call("note_place", note_id=kid["note_id"], parents=[older], remove=[column])
+                    await self._call("attr_delete", note_id=kid["note_id"], name=ARCHIVED)
+                    folded += 1
+        return {"folded": folded, "stamped": stamped}
 
     async def _find_ops(self) -> str | None:
         """The one Ops book, found by label so that two nodes never each make their own."""
@@ -183,22 +281,30 @@ class SwarmBoard:
         self._awm = roots[0]
         return self._awm
 
-    async def move(self, note_id: str, column: str | None = None, *, into: str | None = None) -> bool:
+    async def move(self, note_id: str, column: str | None = None, *, into: str | None = None,
+                   stamp: Literal["move", "fill"] | None = None) -> bool:
         """Show the card under ``column`` (or the note ``into``) and under no other swarm column.
 
         True if it moved. Other parents, such as a clone on Tony's board, stay.
+        ``stamp`` "move" sets ``cardStateAt`` to now on a move, and "fill" only on a card that lacks it.
         """
         lay = await self.layout()
-        if note_id in {lay.board, lay.ledger, *lay.columns.values()}:
+        if note_id in lay.parts():
             raise BoardError(f"{note_id} is part of the board, not a card")
         note = await self._call("note_get", note_id=note_id, content=False)
         parents = set(note.get("parentNoteIds") or [])
         target = into or lay.columns[column]
-        stale = (parents & set(lay.columns.values())) - {target}
-        if target in parents and not stale:
-            return False
-        await self._call("note_place", note_id=note_id, parents=[target], remove=sorted(stale))
-        return True
+        stale = (parents & lay.homes()) - {target}
+        moved = target not in parents or bool(stale)
+        if moved:
+            await self._call("note_place", note_id=note_id, parents=[target], remove=sorted(stale))
+        if stamp and ((moved and stamp == "move") or STATE_AT not in _own_labels(note, note_id)):
+            await self.stamp(note_id)
+        return moved
+
+    async def stamp(self, note_id: str) -> None:
+        """Date the card's entry into the column it is in now."""
+        await self._call("note_update", note_id=note_id, labels={STATE_AT: state_stamp()})
 
     async def create_card(self, title: str, column: str) -> str:
         """A managed text note in ``column``, for a task that has no card yet."""
@@ -216,15 +322,30 @@ class SwarmBoard:
             await self._call("note_update", note_id=note_id, labels=missing)
         return bool(missing)
 
-    async def archive(self, note_id: str) -> None:
-        """Hide a finished card from the board without deleting it."""
-        await self._call("note_update", note_id=note_id, labels={ARCHIVED: ""})
+    async def fold(self, note_id: str, column: str) -> bool:
+        """Move a finished card into its column's Older book. False while the column has none."""
+        older = (await self.layout()).older.get(column)
+        if older is None:
+            return False
+        await self.move(note_id, into=older)
+        return True
+
+    async def count_older(self) -> None:
+        """Title each Older book "Older (n)" by the cards in it."""
+        for older in (await self.layout()).older.values():
+            kids = await self._children(older)
+            title = f"{OLDER} ({len(kids)})"
+            if await self.title_of(older) != title:
+                await self._call("note_update", note_id=older, title=title)
 
     async def snapshot(self) -> dict[str, str]:
-        """Every card on the board and the column it is in. Any failed read raises."""
+        """Every card on the board and the column it is in. Any failed read raises.
+
+        A card folded into an Older book is not on the board.
+        """
         lay = await self.layout()
         return {kid["note_id"]: name for name, col in lay.columns.items()
-                for kid in await self._children(col)}
+                for kid in await self._children(col) if OLDER_LABEL not in (kid.get("labels") or [])}
 
     async def upsert_markdown(self, parent: str, title: str, content: str,
                               labels: dict[str, str] | None = None) -> str:
@@ -238,9 +359,10 @@ class SwarmBoard:
                                 type="code", mime=MARKDOWN, labels={**MANAGED, **(labels or {})})
         return made["note_id"]
 
-    async def write_card(self, card: str, html: str, title: str | None = None) -> None:
+    async def write_card(self, card: str, html: str, title: str | None = None,
+                         labels: dict[str, str] | None = None) -> None:
         """Rewrite the body, and the title when given, of a card the service made."""
-        fields: dict[str, Any] = {"content": html, "labels": MANAGED}
+        fields: dict[str, Any] = {"content": html, "labels": {**MANAGED, **(labels or {})}}
         if title:
             fields["title"] = title
         await self._call("note_update", note_id=card, **fields)
@@ -266,6 +388,50 @@ class SwarmBoard:
             for note_id in ids:
                 await self._call("note_delete", note_id=note_id)
         return ids
+
+    async def label(self, note_id: str, labels: dict[str, str]) -> None:
+        await self._call("note_update", note_id=note_id, labels=labels)
+
+    async def ensure_tag_searches(self, tags: set[str]) -> list[str]:
+        """Give each tag a saved search in the board's "By tag" book. Returns the tags given one now.
+
+        Every node adds the tags its own cards carry and none removes one, since
+        another node's cards may still carry it. Two nodes that add one tag at
+        once each make a search, so every node keeps the lowest note id of a
+        title and deletes the rest.
+        """
+        if tags <= self._tag_searches:
+            return []
+        lay = await self.layout()
+        book = next((kid["note_id"] for kid in await self._children(lay.board)
+                     if kid.get("title") == BY_TAG), None)
+        if book is None:
+            raise BoardError(f'the board has no "{BY_TAG}" book; run operations board_ensure')
+        kids = await self._tag_search_notes(book)
+        have = set(kids)
+        for tag in sorted(tags & have - self._tag_searches):
+            await self.label(kids[tag], {"searchString": tag_search(tag)})
+        made = sorted(tags - have)
+        for tag in made:
+            await self._call("note_create", title=tag, parent=book, type="search", content="",
+                             labels={"searchString": tag_search(tag), TAG_SEARCH_LABEL: tag},
+                             relations={"ancestor": lay.board})
+        if made:
+            await self._tag_search_notes(book)
+        self._tag_searches |= tags | have
+        return made
+
+    async def _tag_search_notes(self, book: str) -> dict[str, str]:
+        kept: dict[str, str] = {}
+        for kid in sorted(await self._children(book), key=lambda k: k["note_id"]):
+            if kid.get("title") not in kept:
+                kept[kid.get("title")] = kid["note_id"]
+                continue
+            try:
+                await self._call("note_delete", note_id=kid["note_id"])
+            except BoardError:
+                pass
+        return kept
 
     async def write_ledger(self, node: str, content: str) -> str:
         return await self.upsert_markdown((await self.layout()).ledger, node, content)

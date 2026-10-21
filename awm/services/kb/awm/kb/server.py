@@ -52,6 +52,10 @@ def child_env() -> dict[str, str]:
     `PYTHONPATH` is replaced, not extended: the awm source a dev sandbox puts
     there must never reach the kb interpreter. The LLM key serves only the
     `answer` and `graph` recall modes. Ingest defaults to chunk-only and needs none.
+
+    The env's `lib/` leads `LD_LIBRARY_PATH`. PyMuPDF's wheel looks for
+    `libstdc++` beside itself, then in the system cache. On Ubuntu 22.04 that
+    copy is too old for the env's ICU, and once loaded it breaks `import sqlite3`.
     """
     env = {k: v for k, v in os.environ.items() if k not in ("PYTHONPATH", "DEV_PYTHONPATH")}
     env.update({
@@ -63,6 +67,10 @@ def child_env() -> dict[str, str]:
     for name, path in (("KB_VECTORS", instances.VECTORS), ("KB_LADYBUG", instances.LADYBUG)):
         if name not in env and path.exists():
             env[name] = str(path)
+    py = instances.python()
+    if py:
+        lib = os.path.join(os.path.dirname(os.path.dirname(py)), "lib")
+        env["LD_LIBRARY_PATH"] = os.pathsep.join(filter(None, [lib, env.get("LD_LIBRARY_PATH")]))
     if "KB_ZOTERO_LIBRARY" not in env and instances.ZOTERO_LIBRARY.is_file():
         env["KB_ZOTERO_LIBRARY"] = str(instances.ZOTERO_LIBRARY)
     if not env.get("LLM_API_KEY"):

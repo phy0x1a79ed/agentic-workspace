@@ -2,7 +2,7 @@
 
 ## Purpose & Contents
 
-This file is the design of awm federation. It covers how nodes reach each other, how a peer proves who it is, what a foreign swarm may read, and how swarms exchange work. The sections run in this order: the node roles and the shape of a cross-node call, authentication, node tokens, relations and grants, the foreign gate, federated search, the board and intake, the legacy SSH bearer, the peer directory, the cross-peer transports, singletons, the connection-slot arbiter, TLS and deployment.
+This file is the design of awm federation. It covers how nodes reach each other, how a peer proves who it is, what a foreign swarm may read, and how swarms exchange work. The sections run in this order: the node roles and the shape of a cross-node call, authentication, node tokens, relations and grants, the foreign gate, private projects, federated search, the board and intake, the legacy SSH bearer, the peer directory, the cross-peer transports, singletons, the connection-slot arbiter, TLS and deployment.
 
 Operator steps for the board and intake live in each service's `INSTALL.md`. Gateway internals live in `ARCHITECTURE.md`.
 
@@ -15,13 +15,20 @@ authentication system** while the loopback interior stays open.
 
 | Node | Where | Role |
 |---|---|---|
-| `capella` | WSL on a Windows desktop | holds the **CA key**; sleeps with the host |
+| `capella` | WSL on a Windows desktop | personal node: holds no work projects and authorizes no peer's ssh key; holds the **CA key**; sleeps with the host |
 | `mira` | always-on mini PC | owns the singletons: `2fa`, `social`, the ssh slot arbiter |
 | `altair` | Arbutus cloud VM (16 vCPU / 1.9 TB) | always-on compute; borrows every singleton from mira |
 
 All three are reached over the ZeroTier mesh `phynet` (`10.74.81.0/24`); the `*z`
 ssh aliases mean "same host via the mesh". altair is private-only on its cloud
 network, so the mesh is its *only* route to the other two.
+
+Nodes differ by design in many places: their own projects and keys, the front
+door, which singletons they borrow. `awm/scripts/node-intent.toml` records each
+deliberate difference with its reason. Run `awm/scripts/node-diff.sh <peer>`
+after any change to a node's setup and before you call two nodes synced. It
+probes both nodes and exits 1 on any difference the intent file does not explain.
+Record a difference there when it is deliberate. Fix it when it is not.
 
 This is deliberately **not** the retired federation (cr-sqlite replication,
 leader election, a peers/replication registry). It is point-to-point service
@@ -114,7 +121,9 @@ For each request the edge:
 3. Stamp `X-Awm-As: peer:<node>`, where `<node>` is the peer book name.
 4. Remove the token from the forwarded request.
 
-The legacy bearer authenticates as the bare `peer`, which the gateway treats as a domestic peer. Set `AWM_PEER_LEGACY_BEARER=0` in `<workspace>/.awm/env` to retire it. The edge then accepts only node tokens, and `auth` stops handing the bearers to the edge.
+The legacy bearer authenticates as the bare `peer`, which the gateway treats as a domestic peer. Set `AWM_PEER_LEGACY_BEARER=0` in `<workspace>/.awm/env` to retire it. The edge then accepts only node tokens, and `auth` stops handing the bearers to the edge. The node's own outbound calls stop falling back to the bearer.
+
+Set `AWM_EDGE_PEERS=0` to close a node to every peer. The edge then answers a node token with 403 `peers not admitted` and the legacy bearer with 401. The 403 tells the caller that the node is closed, not that its token is bad, and it ends the call with no fallback. A person's login still works. The peer book keeps its relations, because the node's own outbound calls pick providers from them. The edge guards only the awm door, so a closed node also authorizes none of its peers' ssh keys. Its ports stay reachable. No node runs closed: seats and agents on other nodes block on a node they cannot call. capella closed its edge once and stranded a deneb seat and an altair agent. **CAUTION** On a closed node a domestic entry trusts nothing inbound. Read the node's env, not its book, to learn whether a peer reaches it.
 
 The edge caches the auth material for up to 30 seconds (`httpsfront/auth.py` `_REFRESH_INTERVAL`). The material holds each peer's relation and pinned key. A new key or a relation change reaches the edge within that window. The gateway reads the peer book on every call, so a grant change applies on the next call.
 
@@ -131,6 +140,7 @@ Two environment variables describe this node itself:
 
 - `AWM_NODE_ROLE` is `fleet` (default) or `station`. A station hosts services for others and runs no agent sessions. `reflection start_other` and the `reporting` service refuse on a station, and the gateway logs a warning at boot when a station has the `cx` service enabled. Any other value is an error.
 - `AWM_SWARM` names this node's swarm (default `tony`). Intake takes in the cards addressed to it, and archive hits carry it as `origin_swarm`.
+- `AWM_OPERATOR_DM_CHANNEL` names the `social` channel that reaches this node's operator, such as `dm:<discord_user_id>`. `AWM_OPERATOR_DM_ACCOUNT` names its account (default `discord-bot`). `AWM_REPORTING_DM_CHANNEL` is the older name for the channel. The `reporting` DMs, the `ssh` lockout alerts and the `auth` password push all go there. Unset, a node of the `tony` swarm uses Tony's DM. **CAUTION** A node of any other swarm with no channel set sends these messages to no one. Set the channel on each node of a foreign swarm.
 
 Manage entries with `awm peer add|set|grant|revoke|list|resolve|forget`. The `operations` tool carries the same verbs as `peer_*`, with the writes hidden from MCP, so an agent can read the book and only an operator changes it. The peer-book writes close to a caller with a peer stamp. Each write refuses `peer` and `peer:<node>` on every door, the HTTP routes included. A domestic peer is refused as much as a foreign one. The refusal is a `PermissionError`, which `/invoke` and the routes answer with 403. A foreign caller never reaches it, because the foreign gate answers 404 first. The operator CLI, a local agent and a person signed in at the edge (`user:<sub>`, including `user:operator`) pass. The writes also declare `effect = write`, so a restricted session cannot run them. **CAUTION** Domestic trust is full trust. A domestic peer can start a session here with `reflection start_other`, and that session's agent carries a local stamp. Mark a node domestic only if you control it.
 
@@ -152,9 +162,22 @@ A category is the only boundary. A read verb that returns journal text under ano
 
 Revoke a grant with `awm peer revoke <name> <source>`. The next call is refused.
 
+## Private projects
+
+A node can mark a project or one scope of it private. Run `scope private project=<p> [scope=<s>] private=true` on the node that holds it. Every caller stamped `peer` or `peer:<node>`, domestic or foreign, then loses everything the mark covers. Local callers and a person signed in at the edge (`user:<sub>`) see no change. Clearing the mark (`private=false`) restores peer visibility on the next call.
+
+- **What a mark covers.** A project mark covers the project's directory, each scope in it and each path below it. A scope mark covers that scope and the scopes nested under it. Journal rows that name the project as `task:<p>`, `user:proj:<p>` or `project:<p>` count as the project. Precedence decisions tagged `<p>` count too. A Claude transcript counts when its folder name is the slug of a covered path, or when any of its lines ran with a `cwd` under one.
+- **How peers lose it.** The gateway refuses a peer call whose arguments name a covered project, scope or path. The refusal is the error an unknown tool gets, as in § *The foreign gate*. Each service drops covered rows from the lists it gives a peer, so a call that names nothing still hides them. While any mark exists, `/files` also refuses a peer `AWM_DIR`, `~/.claude` and the host's `/proc`, `/sys`, `/dev`, `/run` and `/tmp`, because the service databases and transcripts hold copies of covered data.
+- **Where the mark lives.** The marks live in `<AWM_DIR>/private.json`. `scope private` owns the writes. `awm.config.privacy` is the only reader. Every process rereads the file when it changes, so a mark needs no restart. A file that exists and does not parse hides everything from peers. The mark is per node. It does nothing for a copy of the project on another node.
+- **Slug collisions.** Claude names a transcript folder by turning every non-alphanumeric character of the path into `-`. A mark on `metasmith` would therefore also cover `metasmith-libraries`. `scope private` refuses a mark whose slug prefixes another project's or scope's directory.
+
+Run `awm/scripts/privacy-probe.sh <peer> <project> --expect visible|hidden` from another node to prove a mark. Run it once with `visible` before marking, because the hidden run compares counts against that baseline.
+
+**CAUTION** A mark is visibility hygiene, not a security boundary. Text that mentions the project from another project's records stays visible, and so do untagged precedence decisions, kb papers and Trilium notes. A domestic peer can still start a session here, or drive the browser at this node's own `/files`, and that session reads with a local stamp. A closed node (§ Authentication) refuses that session too.
+
 ## Federated search
 
-`search query` answers across the federation. It searches this node's archive sources and live sources, and it asks every peer in the book at once with an ordinary `search_query` call that sets `peers=false`. Each peer answers through its own gate, which narrows the answer to the sources that peer granted this node. A peer granted only `journals` therefore returns journal hits and nothing else. Each hit carries `origin` (node and swarm), and the reply carries a status for every plug-in and every peer.
+`search query` searches this node's archive sources and live sources. `peers` takes it across the federation: `fleet` asks every domestic peer, and node names ask those nodes, foreign ones included. The two combine, as in `fleet,shaula`. Each asked peer gets an ordinary `search_query` call that sets `peers=false`. Each peer answers through its own gate, which narrows the answer to the sources that peer granted this node. A peer granted only `journals` therefore returns journal hits and nothing else. Each hit carries `origin` (node and swarm), and the reply carries a status for every plug-in and every peer.
 
 A peer that is down, refuses, times out (10 seconds) or sends more than 2 MiB never fails the search or hides local hits. A peer on a release without `search`, or one that granted this node no source, shows as `unsupported`.
 
@@ -167,13 +190,13 @@ A post that arrives through the edge carries the edge's stamp (`peer:<node>`, or
 The board is the swarms' shared place to post work. Every party connects out to it, so no swarm opens a port for another. Every **card** is a task. A request is claimed by one swarm and carried to Done. A message is a task whose work may be "read it and reply", and nobody claims it. Each card is one subject and carries its own thread: a sequence of read-only messages that any party who can see the card may post. A reply is a message card that sets `reply_to`, and the board also posts it on the thread of the card at the root of its chain.
 
 - **Store.** A card is a note in a column folder under the Trilium note that carries the `#federationBoard` label. The board service is the only API writer. Trilium admits loopback callers only, so the board host must be the node that runs Trilium. Each card reports its `note_id`, and `task_claim` places that same note on the Swarm board, so one note shows on both boards.
-- **States.** A card's state is the folder it sits in: Proposed, Planned, Active, Blocked, Pending review, Done or Rejected, the same columns as the Swarm board. A drag between folders in the Trilium GUI changes the state, and the stream reports `card.moved`. A claim moves a card from Proposed to Planned. Only the claimant's swarm moves it among the held states and Done with `board_status`. The recipient swarm, the claimant or the host's own swarm rejects it with `board_reject`, and the reason joins the thread. The board archives a Done or Rejected card after 14 days.
+- **States.** A card's state is the folder it sits in: Proposed, Planned, Active, Blocked, Pending review, Done or Rejected, the same columns as the Swarm board. A drag between folders in the Trilium GUI changes the state, and the stream reports `card.moved`. A claim moves a card from Proposed to Planned. Only the claimant's swarm moves it among the held states and Done with `board_status`. Nobody claims a message card, so its recipient swarm finishes it with `board_complete` or `board_fail`. The recipient swarm, the claimant or the host's own swarm rejects it with `board_reject`, and the reason joins the thread. Done and Rejected list their cards newest first by `cardStateAt`, the time a card entered its state. After 14 days there, the board files a card in the "Older (n)" folder at the end of its column. The card keeps its state, shows in that folder, and stays out of the list. A card folded into another (`cardFolded` names it) lives under that home card's note (the top one of a chain of folds) instead, takes the home's state, and carries the `archived` label, which hides it. Every move removes only the board's own branches, so a card claimed onto the Swarm board stays there. To unarchive a card, drag it out of Older into another column. A card dragged back into Done folds again on the next sweep.
 - **Older peers.** Every card still carries the previous release's four-value `status` (`posted`, `in_progress`, `done`, `failed`), and the filters still accept it, so a peer on that release keeps parsing what it reads. `awm/services/board/awm/board/states.py` holds the mapping. A reply stays a card because such a peer finds replies by listing cards, and its front door takes only Proposed message cards. A reply to a swarm named in the host's `AWM_BOARD_THREAD_SWARMS` goes straight to Done, because that swarm reads it on the thread. **CAUTION** Name a swarm there only once it runs this release. Its front door on the previous release never sees a reply filed in Done.
-- **Identity.** A party bearer is the only identity the board trusts. The board stores its hash in a local table and never in the vault. The sender of a card comes from the bearer and never from the card. A node token or the legacy bearer never authenticates to the board. The relaying node adds the posting agent's session name to each card, message and claim, read from the pid the gateway stamps on the call and never from an argument. The name is a label the swarm vouches for, not an identity.
+- **Identity.** A party bearer is the only identity the board trusts. The board stores its hash in a local table and never in the vault. The sender of a card comes from the bearer and never from the card. A node token or the legacy bearer never authenticates to the board. The relaying node adds the posting agent's session name and its own node name to each card, message and claim, read from the pid the gateway stamps on the call and never from an argument. The name is a label the swarm vouches for, not an identity.
 - **Chips.** The board note defines `cardFrom`, `cardTo`, `project` and `owner` as promoted, inheritable labels, so every card shows them as chips. The board sets them from its own records, never from card text. A claim writes `owner` as `<swarm>/<node>/<agent>`. The Trilium fork colours each chip by its value and filters the board view by chip.
 - **Refusals.** Every refusal answers 404 with one body, so a caller cannot map the board. A claim on a card that another party holds answers 409.
 - **Claims.** A claim re-reads the card under one service-wide lock and writes the claimant only if the card is still Proposed. Two simultaneous claims give one 200 and one 409. The guarantee holds only while one board process runs, so the host takes a lock file and a second process refuses to start.
-- **Threads.** The board stores each message in `events.db` with a board-assigned sequence number, a UTC time and the poster's party, and only then mirrors it into the vault as a `#readOnly` child of the card's `Chat` note. The table is the record, because Trilium enforces `#readOnly` only in its GUI and knows no author but the vault's operator. The sweep rewrites any mirror note that drifts from the table. A note a person adds under a `Chat` note in the GUI becomes the card's next message once it is 5 seconds unchanged, and its author is the host's own party.
+- **Threads.** The board stores each message in `events.db` with a board-assigned sequence number, a UTC time and the poster's party, and only then mirrors it into the vault as a `#readOnly` child of the card's `Chat` note. The table is the record, because Trilium enforces `#readOnly` only in its GUI and knows no author but the vault's operator. The sweep rewrites any mirror note that drifts from the table. A note a person adds under a `Chat` note in the GUI becomes the card's next message once it is 1.5 seconds unchanged, and its author is the host's own party. A mirror's `msgFrom` says who wrote it: `<swarm>/<node>/<agent>` for an agent, `<principal> (Trilium)` for the GUI and `<principal>@<swarm>` otherwise.
 - **Stream.** `GET /board/stream` is server-sent events with a heartbeat every 30 seconds. A client resumes with `Last-Event-ID`, and the board replays events up to 30 days old. `board_events` reads one card's history from the same store.
 - **Door.** When `AWM_EDGE_BOARD` is set, the public edge mounts the board at `/board/`. The mount allows exact method-and-path shapes only. It answers before edge authentication. It strips every `X-Awm-*` header, `Cookie` and `X-Forwarded-*`, and it removes a node token or legacy bearer before it forwards the request.
 - **Agents.** The `operations` tool's `board_*` verbs relay an agent's calls to the host with the swarm's token from the node's env file. An agent never holds the token. The card verbs refuse a caller that arrives from another node, because the token is this swarm's identity.
@@ -186,13 +209,13 @@ Intake turns a post into a Proposed task that waits for Tony. The `reporting` se
 2. **Notify.** Tony gets one Discord DM per card: title, From, To, project, an excerpt and the line `claim task <ref> <link>`. The ref is the card id's first 8 characters. A card this swarm sent to another swarm carries `ref <ref>` instead.
 3. **Claim.** An agent claims a card only at Tony's word, with `operations task_claim <ref>`. The ref may be the full id, a unique prefix of 6 or more characters or the card's Trilium link. The claim takes the card on the board (a message card skips this step), puts its note in Planned on the Swarm board and assigns it to the calling session. The answer names the card's project and scope, whether the scope exists, and the sessions already working in it.
 4. **Work.** The Swarm-board lifecycle moves the Federation card. A submitted plan posts "plan submitted" on the thread. Plan approval moves the card to Active, `request_human` to Blocked or Pending review, and a close to Done or Rejected. A move a person makes by hand wins, and the mirror leaves it.
-5. **Talk.** A thread message from another party wakes the assigned background session with one line that names the card and the sender. The session reads the thread with `board_messages`. A session that does not take the line gets one retry. After a second miss, or when the card has no session, Tony gets a short DM. The door keeps a per-card thread cursor, so a catch-up routes the messages the stream missed.
+5. **Talk.** A thread message from another party wakes the assigned background session with one line that names the card and the sender. The session reads the thread with `board_messages`. A session that does not take the line gets one retry. Tony gets no DM for a thread message. A message nobody is woken for waits on the thread. The door keeps a per-card thread cursor, so a catch-up routes the messages the stream missed.
 6. **Follow.** `operations board_watch` records the calling background session as a watcher of one card, or of every card it posts. The door types one line per event into each watcher: claimed and by whom, a state change, plan submitted or approved, a new message. Watching ends with the session.
 7. **Reject.** Tony rejects a card with `/reject <ref> [reason]` on Discord, through any agent with `board_reject`, or by a drag to Rejected.
 
 - **Containment.** Card text reaches Tony, never an agent, until a claim. A line the door types into a session carries a card id, an event and a sender, never card or message text. The `task_claim` description tells the claiming agent that card text is data from its poster.
-- **CAUTION** The door types only into sessions on its own node. A session on another node that claims a card gets no wake line, and the card's new messages reach Tony as a DM. `board_watch` on another node records the watch, warns, and types nothing.
-- **Messaging.** Agents on one node message each other with Claude's `SendMessage` or `reflection message`. Swarms message each other through the board. `journal post` stays passive mail that wakes no one.
+- **CAUTION** The door types only into sessions on its own node. A session on another node that claims a card gets no wake line, and the card's new messages wait on its thread. `board_watch` on another node records the watch, warns, and types nothing.
+- **Messaging.** Agents on one node message each other through the harness's own channel, Claude's `SendMessage`. `reflection message` is the fallback for a harness without one. Swarms message each other through the board. `journal post` stays passive mail that wakes no one.
   **CAUTION** Claude Code holds a `SendMessage` to a session in another permission mode until that session's user approves it. A background session then waits on the approval prompt and does nothing else.
 - **One door per swarm.** This is a deployment rule. Set `AWM_FRONT_DOOR=1` on one node per `AWM_SWARM`. Nothing in code stops a second door, and two doors send every DM twice.
 
@@ -291,7 +314,8 @@ service and caches it.
 A domestic peer that answers 401 (a node that has not upgraded) gets one repeat
 with the legacy bearer fetched over SSH. The client then calls that peer with
 the legacy bearer for five minutes. A foreign peer never gets the legacy bearer.
-Its refusal returns as sent. Only 401 triggers the fallback, because a 403 is an
+Its refusal returns as sent. A caller that sets `AWM_PEER_LEGACY_BEARER=0`
+treats every peer the same way. Only 401 triggers the fallback, because a 403 is an
 authorisation verdict that another credential cannot change.
 
 ### Files across the hop
@@ -580,6 +604,8 @@ taking the edge down for an address nobody dials is worse. It used to read a mis
 key as a missing CA and re-mint, which replaced the fleet's root and surfaced as a
 certificate error on every peer.
 
+A node whose edge is public, behind a TLS-terminating proxy, joins the mesh through a second listener on its overlay address (`httpsfront/INSTALL.md` § *Configuration*). Its peer book entry names that listener as the edge URL. The public listener beside it admits no peer, so a peer call that reaches the public name answers 404.
+
 capella and mira both still hold a `ca-key.pem` — they predate this rule and each
 minted their own leaf. That is not urgent (they hold the *same* root), but it means
 either could re-mint the fleet root if its `ca.pem` were ever lost, so the goal is
@@ -596,7 +622,11 @@ that touches the CA, and a test in its suite fails if a second copy reappears.
 - **Singletons** (front a single external resource): `2fa` and `social`/the mira
   daemon are **canonical on mira** (always-on). Consumers reach them via the
   node-level env selectors above (`AWM_TWOFA_PEER` / `AWM_SOCIAL_PEER`), not a
-  general auto-resolve — a borrowing node opts in explicitly.
+  general auto-resolve — a borrowing node opts in explicitly. The gateway holds a
+  declared singleton down off its home: a service whose tool domain
+  `AWM_TWOFA_PEER` or an `AWM_DOMAIN_HOME_<domain>` places on another node never
+  boots there, whatever `enabled.json` says. `services enable` and `services
+  start` refuse it with a 409 that names the owner.
 - **Singleton *accounts*** are the same rule one level down, and the level that
   actually bites. `social` itself is per-node — every node wants its own Slack,
   Gmail and bucket access — but an individual identity inside it may still be one
@@ -616,8 +646,8 @@ that touches the CA, and a test in its suite fails if a second copy reappears.
   hand. `AWM_DOMAIN_HOME_social=mira` in altair's `.awm/env` makes it a declared
   singleton *there*: one provider, one default, no `peer` argument. Node-local
   and deliberately not fleet state — capella, which does run `social`, must never
-  get it, or it loses its own accounts. Note that this and `AWM_SOCIAL_PEER` are
-  independent: the latter tells *services* on this node where to send Discord
+  get it, or the gateway holds capella's own `social` down, accounts and all.
+  Note that this and `AWM_SOCIAL_PEER` are independent: the latter tells *services* on this node where to send Discord
   traffic, the former tells the *catalog* where an agent's call lands.
 - **Everything else is per-node** (local resource or node-owned state): visible
   on both, calls default local, nothing synced.
@@ -630,7 +660,8 @@ hand-patched onto a running node is a fix that gets reverted by the next update.
 ### Updating a node
 
 A node's `~/agentic_workspace` is a git checkout of `release`, with an `awm` remote
-pointing at capella's bare repo over ssh. To update it:
+pointing at altair's bare repo over ssh. altair's own `awm` remote is its local
+`projects/awm/.bare`. To update it:
 
     git fetch --no-tags awm release && git reset --hard awm/release
     git clean -fd            # NOT -fdx — .awm/ is ignored and must survive

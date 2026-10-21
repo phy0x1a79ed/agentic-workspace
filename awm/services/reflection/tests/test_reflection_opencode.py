@@ -367,7 +367,7 @@ def test_a_resume_given_only_one_of_the_pair_rebuilds_the_other(monkeypatch):
     # The rebuild used to be guarded on `tail is None` alone, so a caller that
     # passed a tail and no reader got the Claude reader whatever harness it was
     # watching.
-    from awm.reflection import inject, observation, pending, stop_gate, watcher
+    from awm.reflection import inject, observation, pending, watcher
 
     class Obs:
         def read_status(self, pid): return ("idle", 1)
@@ -377,7 +377,6 @@ def test_a_resume_given_only_one_of_the_pair_rebuilds_the_other(monkeypatch):
         def watch(self, _t): pass
 
     monkeypatch.setattr(observation, "observation_for", lambda pid: Obs())
-    monkeypatch.setattr(stop_gate, "rearm", lambda sid: None)
     got = {}
     monkeypatch.setattr(inject, "_await_and_resume_inner",
                         lambda item, tail, who, **kw: got.update(kw))

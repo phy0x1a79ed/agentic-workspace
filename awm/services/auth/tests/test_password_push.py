@@ -31,7 +31,7 @@ def pushed(monkeypatch):
         validity_hours = 24.0
         mint_cadence_hours = 12.0
         discord_account = "discord-bot"
-        discord_channel = "dm:188743359983124480"
+        discord_channel = "dm:1"
         # 1 attempt / 0 backoff: existing tests exercise a single send, same
         # as before retries existed. Tests of the retry behavior itself
         # override these via monkeypatch.setattr(service, "_settings", ...).
@@ -215,7 +215,7 @@ class _RetrySettings:
     push_discord = True
     validity_hours = 24.0
     discord_account = "discord-bot"
-    discord_channel = "dm:188743359983124480"
+    discord_channel = "dm:1"
     push_retry_attempts = 3
     push_retry_backoff_seconds = 0.0  # keep tests fast
 
@@ -286,3 +286,27 @@ async def test_h_status_reports_the_last_push_outcome(pushed, monkeypatch):
     assert status["push_last_ok"] is True
     assert status["push_last_error"] is None
     assert status["push_last_attempt_at"] is not None
+
+
+async def test_an_unset_target_follows_the_operator_dm(pushed, monkeypatch):
+    from awm.auth import service
+    settings = type(service._settings())
+    monkeypatch.setattr(settings, "discord_account", "")
+    monkeypatch.setattr(settings, "discord_channel", "")
+    monkeypatch.setenv("AWM_OPERATOR_DM_CHANNEL", "dm:42")
+    await service._push_password_to_discord_attempt(PASSWORD)
+    assert pushed[0]["args"]["channel"] == "dm:42"
+    assert pushed[0]["args"]["account"] == "discord-bot"
+
+
+async def test_another_swarm_with_no_target_sends_nothing(pushed, monkeypatch):
+    from awm.auth import service
+    settings = type(service._settings())
+    monkeypatch.setattr(settings, "discord_account", "")
+    monkeypatch.setattr(settings, "discord_channel", "")
+    for var in ("AWM_OPERATOR_DM_CHANNEL", "AWM_REPORTING_DM_CHANNEL"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("AWM_SWARM", "collins")
+    with pytest.raises(RuntimeError, match="AWM_OPERATOR_DM_CHANNEL"):
+        await service._push_password_to_discord_attempt(PASSWORD)
+    assert pushed == []

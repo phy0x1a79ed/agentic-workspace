@@ -397,7 +397,7 @@ def test_export_document_shape(conn):
                     tag=["home"], created="2026-03-04")["id"]
     store.note(conn, did, body="the sink was replaced", kind="context-change")
     (doc,) = export.export_page(conn)["documents"]
-    assert set(doc) == {"id", "title", "text", "ts", "kind"}
+    assert set(doc) == {"id", "title", "text", "ts", "kind", "tags"} and doc["tags"] == ["home"]
     assert doc["title"] == "which sink?" and doc["kind"] == "decision"
     assert doc["ts"] == "2026-03-04T00:00:00+00:00"
     assert "Decision: the deep one" in doc["text"] and "Tags: home" in doc["text"]

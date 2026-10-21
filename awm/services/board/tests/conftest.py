@@ -107,12 +107,44 @@ class FakeTrilium:
         raise KeyError(state)
 
     def state_of(self, card_id: str) -> str | None:
-        """The state of the folder the card sits in, or None when it sits elsewhere."""
+        """The state of the folder the card sits in, or of the column around its `Archived` folder.
+
+        None when it sits elsewhere.
+        """
         (parent,) = self.notes[self.card_note(card_id)]["parentNoteIds"]
+        if self.label(parent, "cardId") is not None:                 # under its home card
+            return self.state_of(self.label(parent, "cardId"))
+        if self.label(parent, "cardArchiveFolder") is not None:
+            (parent,) = self.notes[parent]["parentNoteIds"]
         for a in self.attrs.values():
             if a["noteId"] == parent and a["name"] == "cardColumn":
                 return a["value"]
         return None
+
+    def archive_folder(self, state: str) -> str:
+        """The `Archived` folder inside the column folder for ``state``."""
+        (found,) = [n for n in self.children(self.column(state))
+                    if self.label(n, "cardArchiveFolder") is not None]
+        return found
+
+    def is_filed_archived(self, card_id: str) -> bool:
+        """Whether the card sits in an `Archived` folder."""
+        (parent,) = self.notes[self.card_note(card_id)]["parentNoteIds"]
+        return self.label(parent, "cardArchiveFolder") is not None
+
+    def archives_of_all(self) -> list[str]:
+        """Every `Archived` folder's note id."""
+        return [a["noteId"] for a in self.attrs.values() if a["name"] == "cardArchiveFolder"]
+
+    def chat_of(self, card_id: str) -> str:
+        """The card's `Chat` note."""
+        (chat,) = [n for n in self.children(self.card_note(card_id))
+                   if self.label(n, "chatFolder") is not None]
+        return chat
+
+    def is_under(self, card_id: str, home_id: str) -> bool:
+        """Whether the card's note is a child of the home card's note."""
+        return self.notes[self.card_note(card_id)]["parentNoteIds"] == [self.card_note(home_id)]
 
     def gui_move(self, card_id: str, state: str) -> None:
         """What dragging a card to another column folder does: one branch change, no lock."""
@@ -209,6 +241,27 @@ class FakeTrilium:
             self.fail_move = None
             raise RuntimeError("fault: the move landed and the reply was lost")
         return {"note_id": note_id, "parent": parent}
+
+    def _h_note_place(self, note_id, parents, remove=None):
+        if note_id not in self.notes or any(p not in self.notes for p in parents):
+            raise RuntimeError(f"404 no note {note_id} or one of {parents}")
+        if self.fail_move == "before":
+            self.fail_move = None
+            raise RuntimeError("fault: the move was refused")
+        current = self.notes[note_id]["parentNoteIds"]
+        drop = set(current) - set(parents) if remove is None else set(remove) - set(parents)
+        self.notes[note_id]["parentNoteIds"] = [p for p in current if p not in drop] + \
+            [p for p in parents if p not in current]
+        self.touch(note_id)
+        if self.fail_move == "after":
+            self.fail_move = None
+            raise RuntimeError("fault: the move landed and the reply was lost")
+        return {"note_id": note_id, "parents": self.notes[note_id]["parentNoteIds"]}
+
+    def _h_note_children(self, note_id):
+        kids = self.children(note_id)
+        return {"parent": note_id, "count": len(kids), "children": [
+            {"note_id": k, "title": self.notes[k]["title"]} for k in kids]}
 
     def _h_note_create(self, title, content="", parent="root", type="text", mime=None,
                        labels=None, relations=None):

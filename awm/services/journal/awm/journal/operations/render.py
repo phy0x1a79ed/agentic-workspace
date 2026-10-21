@@ -1,6 +1,6 @@
 """History-render and index-maintenance operation definitions for the gateway manifest."""
 
-from awm.journal import export, render, search_index
+from awm.journal import export, private, render, search_index
 
 _CLI_HTTP = ["cli", "http"]
 
@@ -55,15 +55,17 @@ RENDER_MANIFEST_FUNCTIONS = [
 ]
 
 
-def _handle_render(args: dict) -> dict:
+def _handle_render(args: dict, as_: str | None = None) -> dict:
     project, scope = args["project"], args["scope"]
     write = args.get("write")
     return render.render(project, scope,
-                         write=True if write is None else write in (True, "true", "True", "1", 1))
+                         write=True if write is None else write in (True, "true", "True", "1", 1),
+                         as_=as_)
 
 
-def _handle_export(args: dict) -> dict:
-    return export.export_page(args.get("cursor") or None, args.get("limit"))
+def _handle_export(args: dict, as_: str | None = None) -> dict:
+    return export.export_page(args.get("cursor") or None, args.get("limit"),
+                              private.exclusion(as_))
 
 
 def _handle_reindex(args: dict) -> dict:

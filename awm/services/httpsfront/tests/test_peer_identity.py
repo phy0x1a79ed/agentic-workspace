@@ -51,8 +51,8 @@ def keys():
     return private, peertoken.public_key_of(private)
 
 
-def _gate(*, peers, flag=None) -> AuthGate:
-    gate = AuthGate()
+def _gate(*, peers, flag=None, honour_peers=True) -> AuthGate:
+    gate = AuthGate(peers=honour_peers)
     gate._material = {
         "secret": SECRET,
         "peer_credentials": [LEGACY],
@@ -79,6 +79,17 @@ def test_a_node_token_authenticates_as_peer_colon_node(keys):
     private, public = keys
     token = peertoken.sign(private, iss="mira", aud=ME)
     assert _auth(_gate(peers=[_peer("mira", public)]), token) == (True, None, "peer:mira")
+
+
+def test_the_public_listener_honours_no_node_token(keys):
+    """A public node's mesh listener needs the keys, so they reach its public
+    listener too; that listener must not count them."""
+    private, public = keys
+    token = peertoken.sign(private, iss="mira", aud=ME)
+    gate = _gate(peers=[_peer("mira", public)], honour_peers=False)
+    assert _auth(gate, token) == (False, None, None)
+    assert proxy.build_app(GATEWAY + "/", "/dev/null", profile="public").state.gate._peers is False
+    assert proxy.build_app(GATEWAY + "/", "/dev/null", profile=None).state.gate._peers is True
 
 
 def test_a_foreign_nodes_token_authenticates_too(keys):
@@ -136,6 +147,28 @@ def test_retiring_the_bearer_leaves_node_tokens_and_sessions_alone(monkeypatch, 
     assert _auth(gate, peertoken.sign(private, iss="mira", aud=ME))[2] == "peer:mira"
     cookie = tokens.mint(SECRET, sub="tony", ttl=3600)
     assert _auth(gate, cookie=cookie)[2] == "tony"
+
+
+@pytest.mark.parametrize("relation", ["domestic", "foreign"])
+def test_a_closed_edge_refuses_every_node_token(monkeypatch, keys, relation):
+    monkeypatch.setenv("AWM_EDGE_PEERS", "0")
+    private, public = keys
+    gate = _gate(peers=[_peer("mira", public, relation)])
+    assert _auth(gate, peertoken.sign(private, iss="mira", aud=ME)) == (False, None, None)
+
+
+def test_a_closed_edge_refuses_the_legacy_bearer_too(monkeypatch):
+    monkeypatch.setenv("AWM_EDGE_PEERS", "0")
+    assert _auth(_gate(peers=[]), LEGACY) == (False, None, None)
+
+
+def test_a_closed_edge_still_lets_a_person_in(monkeypatch, keys):
+    monkeypatch.setenv("AWM_EDGE_PEERS", "0")
+    private, public = keys
+    cookie = tokens.mint(SECRET, sub="tony", ttl=3600)
+    gate = _gate(peers=[_peer("mira", public)])
+    assert _auth(gate, cookie=cookie)[2] == "tony"
+    assert _auth(gate, peertoken.sign(private, iss="mira", aud=ME), cookie)[2] == "tony"
 
 
 def test_a_bad_bearer_does_not_hide_a_good_cookie():
@@ -229,7 +262,7 @@ CALLER_HEADERS = {"X-Awm-Caller-Pid": "1", "x-awm-session-pid": "2",
 
 
 class _Gate:
-    async def authenticate(self, *, cookie=None, bearer=None):
+    async def authenticate(self, *, cookie=None, bearer=None, shape=None):
         if bearer in BEARERS:
             return True, None, BEARERS[bearer]
         if cookie == SESSION:
@@ -526,3 +559,37 @@ def test_a_node_token_is_not_forwarded_over_a_websocket(monkeypatch, bearer, for
             pass
     assert dialled
     assert ("authorization" in dialled[0]) is forwarded
+
+
+def test_a_closed_edge_answers_a_node_token_with_403(monkeypatch):
+    """A caller falls back on a 401 and never on a 403, so a closed edge must
+    not look like a bad credential."""
+    monkeypatch.setenv("AWM_EDGE_PEERS", "0")
+    with _edge("awmpt1.unverified.sig") as (c, seen):
+        r = c.post("/invoke", json={})
+    assert r.status_code == 403
+    assert r.json() == {"error": "peers not admitted"}
+    assert seen == []
+
+
+def test_an_open_edge_still_answers_a_bad_node_token_with_401(monkeypatch):
+    monkeypatch.delenv("AWM_EDGE_PEERS", raising=False)
+    with _edge("awmpt1.unverified.sig") as (c, _):
+        assert c.post("/invoke", json={}).status_code == 401
+
+
+def test_a_closed_edge_answers_any_other_bearer_with_401(monkeypatch):
+    monkeypatch.setenv("AWM_EDGE_PEERS", "0")
+    with _edge("not-a-node-token") as (c, _):
+        assert c.post("/invoke", json={}).status_code == 401
+
+
+def test_the_public_listener_never_says_peers_are_not_admitted(monkeypatch):
+    monkeypatch.setenv("AWM_EDGE_PEERS", "0")
+    app = proxy.build_app(GATEWAY + "/", "/dev/null", profile="public")
+    app.state.gate = _Gate()
+    with TestClient(app, base_url="https://public.example",
+                    headers={"Authorization": "Bearer awmpt1.unverified.sig"}) as c:
+        r = c.post("/invoke", json={})
+    assert r.status_code != 403
+    assert "peers" not in r.text

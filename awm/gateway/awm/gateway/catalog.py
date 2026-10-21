@@ -82,7 +82,7 @@ from mcp.types import Tool
 from starlette.concurrency import run_in_threadpool
 
 from awm.config import ARCHIVE_CATEGORY, caller_peer, peer_record, verb_category, verb_effect
-from awm.gateway import aliases, filehop, peer_catalog, surface, usage
+from awm.gateway import aliases, filehop, peer_catalog, private_gate, surface, usage
 from awm.gateway.gateway_ops import GATEWAY_OPERATIONS, bound_caller
 from awm.gateway.hub import discovery, rpc
 from awm.gateway.hub.registry import ServiceRecord, get_registry
@@ -1035,12 +1035,19 @@ async def _dispatch_domain(name: str, args: dict, as_: str | None,
     if entry is None:
         raise ValueError(f"Unknown verb {verb!r} for domain {name!r}")
     usage.record(name, entry["verb"])
-    return await _run_entry(entry, inner, as_, grants)
+    return await _run_entry(entry, inner, as_, grants,
+                            unknown=f"Unknown verb {verb!r} for domain {name!r}")
 
 
 async def _run_entry(entry: dict[str, Any], args: dict, as_: str | None,
-                     grants: frozenset[str] | None = None) -> str:
-    """Run the native op or service function a catalog entry resolved to."""
+                     grants: frozenset[str] | None = None, *, unknown: str) -> str:
+    """Run the native op or service function a catalog entry resolved to.
+
+    A peer caller whose arguments name a private project, scope or path is
+    refused here with ``unknown``, the error the call would get if it named
+    nothing that exists (see :mod:`private_gate`)."""
+    if private_gate.refuses(as_, args):
+        raise ValueError(unknown)
     op = entry.get("op")
     if op is not None:
         with bound_caller(as_):
@@ -1135,7 +1142,7 @@ async def _dispatch_flat(name: str, args: dict, as_: str | None) -> str:
     """Run the flat tool ``name``: a gateway-native op, else a service function."""
     op = _GATEWAY_OPS_BY_NAME.get(name)
     if op is not None:
-        return await _run_entry({"op": op}, args, as_)
+        return await _run_entry({"op": op}, args, as_, unknown=f"Unknown tool: {name}")
 
     rec, fn = _find_service_fn(name)
     if rec is None or fn is None:
@@ -1143,7 +1150,8 @@ async def _dispatch_flat(name: str, args: dict, as_: str | None) -> str:
     spec = _spec_of(rec, fn)
     if spec is not None:
         usage.record(*_split_name(rec, spec))
-    return await _run_entry({"rec": rec, "fn": fn}, args, as_)
+    return await _run_entry({"rec": rec, "fn": fn}, args, as_,
+                            unknown=f"Unknown tool: {name}")
 
 
 async def _dispatch_foreign(name: str, args: dict, as_: str | None,
@@ -1173,7 +1181,7 @@ async def _dispatch_foreign(name: str, args: dict, as_: str | None,
     if entry is None or not _allowed(entry["effect"], entry["category"], grants):
         raise ValueError(f"Unknown tool: {name}")
     try:
-        return await _run_entry(entry, args, as_, grants)
+        return await _run_entry(entry, args, as_, grants, unknown=f"Unknown tool: {name}")
     except rpc.RpcError as exc:
         raise _refusal_as_unknown(exc, f"Unknown tool: {name}") from None
 

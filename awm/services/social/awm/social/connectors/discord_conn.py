@@ -13,15 +13,30 @@ them bubble into the adapter's control-WS loop.
 from __future__ import annotations
 
 import asyncio
+import io
 import logging
+import time
 
 from awm.social import operators
 from awm.social.connectors.base import (
     Account, Attachment, Channel, Command, Connector, Identity, InboundMessage,
-    OnCommand, OnMessage,
+    OnCommand, OnMessage, file_bytes,
 )
 
 log = logging.getLogger("awm.social.connectors.discord")
+
+
+def _natural(message) -> bool:  # noqa: ANN001
+    """Whether a DM message is a person's plain words, the only kind a DM seat's
+    holder hears. A bot post, a system or command message, and text that reads
+    as a failed slash command stay out of the holder's prompt."""
+    import discord
+
+    if not isinstance(message.channel, discord.DMChannel):
+        return True
+    return (not getattr(message.author, "bot", False)
+            and message.type in (discord.MessageType.default, discord.MessageType.reply)
+            and not (message.content or "").lstrip().startswith("/"))
 
 
 def _attachments_of(message) -> list[Attachment]:  # noqa: ANN001
@@ -55,10 +70,21 @@ DM_PREFIX = "dm:"
 # Duo devices a user can target. Mirrors the 2fa service's device names; offered
 # as Discord choices so the slash UI is a pick-list rather than free text.
 DEVICE_CHOICES = ("cwl", "alliance")
+# Discord lets an app edit its interaction response for 15 minutes; stop short.
+ACK_TTL = 14 * 60
+
+
+def _discord_files(files: list[dict] | None) -> list:
+    import discord
+
+    return [discord.File(io.BytesIO(file_bytes(f)), filename=str(f["filename"]))
+            for f in files or ()]
 
 
 class DiscordConnector(Connector):
     platform = "discord"
+    sends_files = True
+    max_file_bytes = 10 * 1024 * 1024
 
     def __init__(self, account: Account, on_message: OnMessage,
                  on_command: OnCommand | None = None) -> None:
@@ -66,6 +92,8 @@ class DiscordConnector(Connector):
         self._client = None  # type: ignore[assignment]
         self._tree = None    # discord.app_commands.CommandTree
         self._ready = asyncio.Event()
+        # Acks a consumer may rewrite with the outcome: ack_ref -> (deadline, interaction).
+        self._acks: dict[str, tuple[float, object]] = {}
 
     def _build_client(self):
         import discord
@@ -77,7 +105,14 @@ class DiscordConnector(Connector):
         # and we log it as a permanent failure.
         intents.message_content = True
         client = discord.Client(intents=intents)
-        tree = app_commands.CommandTree(client)
+        # Every command lives only in the bot's DM: Discord hides it in servers
+        # and group DMs, and `_admit` refuses one that arrives anyway.
+        tree = app_commands.CommandTree(
+            client,
+            allowed_contexts=app_commands.AppCommandContext(
+                guild=False, dm_channel=True, private_channel=False),
+            allowed_installs=app_commands.AppInstallationType(guild=True, user=False),
+        )
         self._tree = tree
         self._register_commands(tree, app_commands)
 
@@ -110,10 +145,12 @@ class DiscordConnector(Connector):
                     thread_id="",
                     sender_id=str(message.author.id),
                     sender_name=str(message.author),
+                    sender_bot=bool(getattr(message.author, "bot", False)),
                     message_id=str(message.id),
                     ts=message.created_at.isoformat() if message.created_at else "",
                     text=message.content or "",
                     attachments=_attachments_of(message),
+                    to_holder=_natural(message),
                 )
                 await self.on_message(inbound)
             except Exception as exc:  # noqa: BLE001 — one bad message never kills the loop
@@ -123,19 +160,24 @@ class DiscordConnector(Connector):
         return client
 
     async def _admit(self, interaction, name: str, options: dict,  # noqa: ANN001
-                     ack: str, *, ephemeral: bool) -> bool:
+                     ack: str, *, ephemeral: bool, editable: bool = False) -> bool:
         """Gate and ack one slash invocation, then hand it to ``on_command``.
 
         Guild invocations and senders absent from the operators table get an
         ephemeral refusal and publish nothing. Otherwise the ack goes out inside
         Discord's 3-second interaction deadline, before the command is emitted.
+        An ``editable`` ack is kept, and the command carries its ``ack_ref`` so
+        the consumer's answer can replace it via :meth:`edit_ack`.
         """
-        async def reply(text: str, *, private: bool) -> None:
+        async def reply(text: str, *, private: bool) -> bool:
             try:
-                await interaction.response.send_message(text, ephemeral=private)
+                await interaction.response.send_message(
+                    text, ephemeral=private, suppress_embeds=True)
+                return True
             except Exception as exc:  # noqa: BLE001
                 log.warning("discord[%s] %s reply failed: %s",
                             self.account.name, name, exc)
+                return False
 
         if interaction.guild is not None:
             await reply("DM me to use this command.", private=True)
@@ -148,7 +190,8 @@ class DiscordConnector(Connector):
                         self.account.name, name, user_id)
             await reply("You are not an operator of this bot.", private=True)
             return False
-        await reply(ack, private=ephemeral)
+        if await reply(ack, private=ephemeral) and editable:
+            options = {**options, "ack_ref": self._keep_ack(interaction)}
         if self.on_command is None:
             return True
         cmd = Command(
@@ -168,6 +211,32 @@ class DiscordConnector(Connector):
             log.warning("discord[%s] on_command handler failed: %s",
                         self.account.name, exc)
         return True
+
+    def _keep_ack(self, interaction) -> str:  # noqa: ANN001
+        now = time.monotonic()
+        self._acks = {k: v for k, v in self._acks.items() if v[0] > now}
+        ref = str(interaction.id)
+        self._acks[ref] = (now + ACK_TTL, interaction)
+        return ref
+
+    async def edit_ack(self, ref: str, text: str, *,
+                       files: list[dict] | None = None) -> dict | None:
+        deadline, interaction = self._acks.pop(ref, (0.0, None))
+        if interaction is None or deadline <= time.monotonic():
+            return None
+        extra = {"attachments": _discord_files(files)} if files else {}
+        try:
+            # The ack went out with embeds suppressed, and an edit keeps the flag.
+            msg = await interaction.edit_original_response(content=text, **extra)
+        except Exception as exc:  # noqa: BLE001 — the caller falls back to a new message
+            log.warning("discord[%s] could not edit ack %s: %s",
+                        self.account.name, ref, exc)
+            return None
+        return {
+            "message_id": str(msg.id),
+            "channel_id": str(msg.channel.id),
+            "ts": msg.created_at.isoformat() if msg.created_at else "",
+        }
 
     def _register_commands(self, tree, app_commands) -> None:
         """Register the bot's slash commands on the command tree.
@@ -217,7 +286,7 @@ class DiscordConnector(Connector):
             await self._admit(
                 interaction, NEW_AGENT_COMMAND,
                 {"prompt": prompt or "", "reply_to": f"{DM_PREFIX}{user_id}"},
-                "⏳ Starting an agent…", ephemeral=True)
+                "⏳ Starting an agent…", ephemeral=False, editable=True)
 
     async def start(self) -> None:
         try:
@@ -249,7 +318,8 @@ class DiscordConnector(Connector):
                 f"discord[{self.account.name}] not connected") from exc
 
     async def send(
-        self, channel: str, text: str, *, thread: str | None = None
+        self, channel: str, text: str, *, thread: str | None = None,
+        files: list[dict] | None = None,
     ) -> dict:
         import discord
 
@@ -257,7 +327,10 @@ class DiscordConnector(Connector):
             raise RuntimeError(f"discord[{self.account.name}] not started")
         await self._wait_ready()
         target = await self._resolve_channel(thread or channel)
-        sent = await target.send(text)
+        # A DM is a notification feed: link previews there are noise.
+        dm = channel.startswith(DM_PREFIX) or isinstance(target, discord.DMChannel)
+        extra = {"files": _discord_files(files)} if files else {}
+        sent = await target.send(text or None, suppress_embeds=dm, **extra)
         return {
             "message_id": str(sent.id),
             "channel_id": str(sent.channel.id),
@@ -316,6 +389,7 @@ class DiscordConnector(Connector):
                 thread_id="",
                 sender_id=str(message.author.id),
                 sender_name=str(message.author),
+                sender_bot=bool(getattr(message.author, "bot", False)),
                 message_id=str(message.id),
                 ts=message.created_at.isoformat() if message.created_at else "",
                 text=message.content or "",
@@ -342,6 +416,36 @@ class DiscordConnector(Connector):
             out.append((getattr(a, "filename", "") or f"attachment-{i}",
                         getattr(a, "content_type", "") or "", data))
         return out
+
+    async def react(
+        self, channel: str, message_id: str, emoji: str, *, remove: bool = False,
+    ) -> dict:
+        import discord
+
+        from awm.social.emoji import to_char
+
+        if self._client is None:
+            raise RuntimeError(f"discord[{self.account.name}] not started")
+        await self._wait_ready()
+        char = to_char(emoji) or emoji.strip()
+        target = await self._resolve_channel(channel)
+        message = await target.fetch_message(int(message_id))
+        try:
+            if remove:
+                await message.remove_reaction(char, self._client.user)
+            else:
+                await message.add_reaction(char)
+        except discord.Forbidden as exc:
+            raise RuntimeError(
+                f"discord[{self.account.name}] may not react in {channel}: "
+                f"{exc.text or exc}") from exc
+        except discord.HTTPException as exc:
+            raise RuntimeError(
+                f"discord[{self.account.name}] rejected {char!r}: "
+                f"{exc.text or exc}") from exc
+        return {"as": "reaction", "emoji": char, "removed": remove,
+                "message_id": str(message.id),
+                "channel_id": str(message.channel.id)}
 
     # `search` is intentionally not implemented: a Discord *bot* token cannot
     # use the user message-search endpoint, so the ABC default raises a clean
@@ -373,6 +477,18 @@ class DiscordConnector(Connector):
                         kind="dm",
                     ))
         return out
+
+    async def list_seats(self) -> list[Channel]:
+        # An operator's DM is a seat: its plain messages reach the holder, while
+        # slash commands and the bot's own notifications never do.
+        seats = await self.list_channels()
+        for row in operators.list_operators(self.platform):
+            try:
+                seats.append(await self.open_dm(row["platform_user_id"]))
+            except Exception as exc:  # noqa: BLE001 — one unreachable operator never hides the rest
+                log.info("discord[%s] cannot open the DM of operator %s: %s",
+                         self.account.name, row["platform_user_id"], exc)
+        return seats
 
     async def identity(self) -> Identity:
         if self._client is None:

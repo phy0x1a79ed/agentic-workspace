@@ -16,9 +16,9 @@ Two parts in one service.
 **Task reporting** runs on every fleet node. Each node keeps a SQLite ledger of
 the tasks its sessions work on and shows them on the Swarm board in Trilium. The
 ledger is the source of truth and the board only displays it. Claude Code hooks
-and two agent verbs (`task_claim` and `request_human`, whose `kind` is `blocked`
-or `review`) drive it. The reconcile loop closes a task when its
-session ends, and journal posts from a task's scope append to its card.
+and three agent verbs (`task_claim`, `task_track` and `request_human`, whose
+`kind` is `blocked` or `review`) drive it. The reconcile loop closes a task when its
+session ends, and a session's journal posts append to its card.
 
 **The front door** runs intake only where `AWM_FRONT_DOOR=1`. It listens to
 the federation board for cards addressed to this swarm, keeps them in a SQLite
@@ -40,15 +40,23 @@ Discord command.
 
 ## The Swarm board
 
-Run `operations board_ensure` once, on any node. It makes "Swarm board" under the
-AWM note, with the columns Proposed, Planned, Active, Blocked, Pending review,
-Done and Rejected and a "Ledger" note. It also makes the private "Ops" book under AWM, labelled
+Run `operations board_ensure` once, on any node, and again after a deploy that
+changes the board's shape. It makes "Swarm board" under the AWM note, with the
+columns Proposed, Planned, Active, Blocked, Pending review, Done and Rejected, a
+"Ledger" note and a "By tag" book. It gives Done and Rejected each an "Older" book, labelled
+`#swarmOlder`, and the newest-first sort. It also makes the private "Ops" book under AWM, labelled
 `#swarmOps`. Every node finds the board and the book by their labels and refuses
 while they are missing, so no node ever makes a second copy. Tony copies tasks
 into Proposed.
 
-The board makes every child book a column, so the Ledger shows as an eighth
-column. Label the Ledger note `#archived` to hide it.
+The board makes every child book a column, so the Ledger and By tag show as
+extra columns. Label either note `#archived` to hide it.
+
+Each sweep writes a card's effective scope tags (`PROTOCOLS.md` § *Scope
+lifecycle*) to its `swarmTags` chip, and gives each tag in use a saved search
+under By tag. A tag change never moves a card. **CAUTION** Trilium's search
+parser breaks a `%=` regex that holds a comma, and the match then reads as a
+substring, so "la" finds "lab". Keep commas out of the tag searches.
 
 A session claims a card in either of two ways. It calls `task_claim(ref)`. Or
 a prompt to it holds `claim task <ref>`, or "claim" or "attach" plus a Trilium
@@ -56,6 +64,31 @@ note URL, which the prompt hook turns into the same claim with no tool call. A
 ref that names a federation card claims that card (`FEDERATION.md` §
 *Intake*), and its note joins Planned. A URL outside the board clones that note
 into Proposed first.
+
+A session with no card gets an owned card on the first of these events:
+
+1. It writes a plan in plan mode, or its plan is approved. The card opens in
+   Planned.
+2. It calls `request_human`.
+3. It calls `task_track`, which opens the card in Active, or returns the card it
+   already has.
+4. A job that cx started with the lifecycle brief (cx `INSTALL.md` §
+   *A worker gets a lifecycle brief*) sends its first prompt. The card opens in
+   Active. The sweep opens it for a briefed job whose first prompt missed the
+   gateway. A kept seat never gets the brief, so it stays off the board.
+
+Tony's own sessions get no card for starting. An event that opens a card returns
+a notice that names the card and the board's protocol. The hook hands it to the
+agent as `additionalContext`.
+
+**CAUTION** A worker can finish inside one sweep, which is why its first prompt
+opens the card. That prompt runs before cx writes the job's lineage record, so
+cx lists the job from its pending record until then.
+
+A card holds one piece of work. A plan written while the card waits in Pending
+review, or after it closed, opens a new card. The reviewed card moves off the
+session's key to `<key>/<session id>-<task id>` and keeps its plan and its
+column. A plan written in Active or Blocked revises the same card.
 
 - A card is a note under a column. A move adds the new column branch and removes
   only the old one, so a clone on Tony's own board stays. The service never calls
@@ -67,13 +100,18 @@ into Proposed first.
   the record goes in a text child called "Record" with the same two labels. The
   per-node notes under "Ledger" are Markdown children, and the notes under the
   private "Ops" book carry the same labels.
-- The record is HTML. A status block comes first (state, scope, peer, job,
+- The record is HTML. A status block comes first (state, agent, scope, peer, job,
   waiting-on reason, started, closed). Plan, Todo, Journal and Removed follow as
   closed `trilium-collapsible` blocks, split by rules; Removed appears only once an item has been removed. A summary is plain text
   and carries a count, as in "Todo — 3/7 done, 1 active". The plan converts
   with `markdown-it-py`, which escapes raw HTML: its first `#` heading is
   dropped and the rest starts at `<h3>`. A journal entry is an `<h4>` and its
   body starts at `<h5>`.
+- While a background session holds an open card, the Agent line names it. The
+  name links to the session's claude.ai page, or shows `claude attach <job>`
+  while Remote Control is off. A change of name or link rewrites only the
+  card's body, never its column, so a drag by Tony stands. An interactive
+  session gets no Agent line.
 - The Todo shows a pending item as an empty box and a completed item as a
   ticked box. An active item is an empty box with a bold subject and "(in
   progress)", because neither Markdown nor Trilium draws a half-state.
@@ -87,10 +125,29 @@ into Proposed first.
 - A card that Tony deletes from the board closes its task as cancelled. A card
   that Tony drags to another column is recorded as an event and left there. A
   drag to Done or Rejected closes the task.
-- A card the service made, or a federation card, is labelled `#archived` 14 days
-  after its task closed in Done or Rejected. Tony's own claimed note stays.
-- A task whose session ended is filed under its node's Ledger note. A background
-  session that died without a stop stays on the board, flagged as ended.
+- Done and Rejected list their cards newest first by `cardStateAt`, which a card
+  gets on entering a column. A federation card keeps the federation board's
+  value. A card the service made, or a federation card, moves into its column's
+  "Older (n)" book 14 days after its task closed there. Tony's own claimed note
+  stays. The sweep keeps the count in each book's title.
+- **CAUTION** A card with no `cardStateAt` sorts first. `board_ensure` dates
+  each undated card in Done and Rejected from its Trilium modified time.
+- The sweep reads a card in an Older book as off the board. An open card that
+  Tony drags into one closes its task as cancelled.
+- The sweep never closes a background task. A job that leaves the daemon's
+  roster while its directory under `~/.claude/jobs` remains keeps its card in
+  its column, flagged "not running, resumable". An idle retire and a daemon
+  death both cause this. A job whose state record says `stopped`, or whose
+  directory is gone, moves to Pending review, flagged "stopped". cx writes
+  `stopped` on `stop_other`, because `claude stop` does not. The flag clears
+  when the job runs again.
+- **CAUTION** A daemon restart drops dead workers from `cx list`. Do not read
+  a missing row as a finished session.
+- A closed task is filed under its node's Ledger note. An interactive session
+  that exits closes its task, except a card in Pending review.
+- A journal post that names its session (`meta.session`, which the journal
+  sets from the gateway's caller pid) joins that session's card only. A post
+  with no session joins every open card in its project and scope.
 
 ## Hooks
 
@@ -123,9 +180,10 @@ deletes it when a result says the task is no longer blocked.
 | `AWM_REPORTING_INTERVAL_S` | seconds between reconcile ticks, which also sweep the tasks (default 60) |
 | `AWM_REPORTING_CATCHUP_S` | seconds between board catch-up reads and between journal catch-ups (default 300) |
 | `AWM_REPORTING_REMIND_S` | seconds an urgent request stays blocked before Tony gets one reminder (default 3600) |
-| `AWM_REPORTING_DM_ACCOUNT`, `AWM_REPORTING_DM_CHANNEL` | the `social` account and channel that carry card DMs and urgent requests (default: the account and DM that `auth` uses for the password push). `AWM_SOCIAL_PEER` names the node that runs `social` |
+| `AWM_REPORTING_DM_ACCOUNT` | the `social` account that carries card DMs and urgent requests (default: the node's operator DM account). `AWM_SOCIAL_PEER` names the node that runs `social` |
+| `AWM_REPORTING_QUIET_SWARMS` | swarms, comma- or space-separated, whose cards with this swarm are queued but never DMed to Tony, such as a standing channel a session already reads (default: none). Thread messages never DM Tony either way |
 | `AWM_REPORTING_TRILIUM_URL` | where Tony opens a note from, without the `#`, for the link in that message (default: this node's edge URL plus `/trilium`) |
-| `AWM_REPORTING_NEW_AGENT_PROJECT`, `AWM_REPORTING_NEW_AGENT_SCOPE` | where `/new-agent` starts a session (default `awm`, `dev`). The agent moves to another scope when its prompt asks it to |
+| `AWM_REPORTING_NEW_AGENT_PROJECT`, `AWM_REPORTING_NEW_AGENT_SCOPE` | where `/new-agent` starts a session (default `awm`, `dev`). The lifecycle brief tells the agent to move to its work's scope |
 | `AWM_REPORTING_MESSAGE_BACKLOG_S` | how old a message card may be and still be queued by a catch-up (default 3 days) |
 
 ## Task identity
@@ -148,9 +206,13 @@ It consumes `social`'s `command` topic. `social` drops a command from anyone
 outside its operators table, so a command that arrives here comes from Tony.
 
 - `/reject <ref> [reason]` rejects the card and posts the reason on its thread.
-- `/new-agent [project] [scope] [name] [prompt]` starts a session through cx
-  `start` (the verb behind `reflection start_other`) with Remote Control on, and answers with the
-  session's `https://claude.ai/code/session_…` link.
+- `/new-agent [prompt]` starts a session named `agent-xxxx` through cx `start` (the verb
+  behind `reflection start_other`) with Remote Control on, and answers with the session's
+  `https://claude.ai/code/session_…` link. The answer overwrites the "Starting an agent…" ack.
+  It quotes the first three lines of the prompt, up to 300 characters. It attaches a longer
+  prompt whole as `prompt.txt`, which Discord shows collapsed. The first prompt holds Tony's
+  words, a hint to rename the session with `reflection rename`, and the account and channel
+  to answer in. cx adds the lifecycle brief, with `started_by` "Tony from Discord".
 
 The reconcile loop holds a non-blocking lock on `<state>/reconcile.lock` for
 the life of the process, so a second copy of the service sweeps nothing.

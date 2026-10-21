@@ -33,6 +33,7 @@ class Net:
     def __init__(self, relation="domestic"):
         self.relation = relation
         self.sign_status = 200
+        self.sign_gate = None              # called before each signing answer
         self.expires_in = 300
         self.refuse = lambda auth: False   # does the edge refuse this credential?
         self.edge_status = 200
@@ -48,6 +49,8 @@ class Net:
             assert "X-Awm-As" not in request.headers, "signing is an operator call"
             aud = json.loads(request.content)["aud"]
             self.minted.append(aud)
+            if self.sign_gate:
+                self.sign_gate()
             if self.sign_status != 200:
                 return httpx.Response(self.sign_status, text="no node key")
             return httpx.Response(200, json={
@@ -78,6 +81,7 @@ def net(monkeypatch):
     monkeypatch.setattr(gc, "peer_token", REAL_PEER_TOKEN)
     monkeypatch.setattr(gc, "peer_token_sync", REAL_PEER_TOKEN_SYNC)
     monkeypatch.setenv("AWM_HUB_URL", "http://gateway.test")
+    monkeypatch.delenv("AWM_PEER_LEGACY_BEARER", raising=False)
     monkeypatch.setattr(gc, "_peer_ca", lambda: "/nonexistent/ca.pem")
     gc._peer_addr_cache.clear()
     gc._peer_token_cache.clear()
@@ -243,6 +247,30 @@ def test_an_entry_whose_relation_is_unknown_fails_closed(net):
     with pytest.raises(gc.GatewayCallError):
         asyncio.run(gc.invoke_peer("hub", "a"))
     assert net.legacy_fetches == []
+
+
+def test_a_node_that_retired_the_legacy_bearer_never_falls_back(net, monkeypatch):
+    """A retired bearer would only cost an ssh fetch per call that the peer
+    refuses anyway; the token's own refusal is the answer."""
+    monkeypatch.setenv("AWM_PEER_LEGACY_BEARER", "0")
+    net.refuse = lambda auth: True
+    with pytest.raises(gc.GatewayCallError) as exc:
+        asyncio.run(gc.invoke_peer("hub", "kb_search"))
+    assert exc.value.status == 401
+    with pytest.raises(gc.GatewayCallError):
+        gc.invoke_peer_sync("hub", "kb_search")
+    assert net.legacy_fetches == []
+    assert gc._peer_token_refused == {}, "no refusal is remembered"
+    assert all(a.startswith("Bearer awmpt1.") for a in _auths(net))
+
+
+def test_a_node_that_retired_the_legacy_bearer_and_cannot_sign_is_a_peer_error(
+        net, monkeypatch):
+    monkeypatch.setenv("AWM_PEER_LEGACY_BEARER", "0")
+    net.sign_status = 500
+    with pytest.raises(gc.PeerError):
+        asyncio.run(gc.invoke_peer("hub", "kb_search"))
+    assert net.legacy_fetches == [] and net.edge_calls == []
 
 
 def test_a_json_looking_scalar_result_stays_a_string(net, monkeypatch):
@@ -461,6 +489,18 @@ def test_a_foreign_subscription_never_gets_the_legacy_bearer(net, ws):
     assert len(ws.auths) == 2 and all(a.startswith("Bearer awmpt1.") for a in ws.auths)
 
 
+def test_a_subscription_from_a_node_that_retired_the_legacy_bearer_never_falls_back(
+        net, ws, monkeypatch):
+    from websockets.exceptions import InvalidStatus
+
+    monkeypatch.setenv("AWM_PEER_LEGACY_BEARER", "0")
+    ws.refuse = lambda b: 401
+    with pytest.raises(InvalidStatus):
+        asyncio.run(_drain(gc.subscribe_peer("hub", "social", "command")))
+    assert net.legacy_fetches == []
+    assert ws.auths == ["Bearer awmpt1.t1.sig"]
+
+
 def test_a_foreign_subscription_without_a_signing_key_is_a_peer_error(net, ws):
     net.relation = "foreign"
     net.sign_status = 500
@@ -620,3 +660,57 @@ def test_a_cached_resolve_costs_no_thread(net, monkeypatch):
 
     monkeypatch.setattr(gc, "resolve_peer", boom)
     asyncio.run(gc.invoke_peer("hub", "b"))
+
+
+# ---------------------------------------------------------------------------
+# A token signed during boot waits for `auth` to register
+# ---------------------------------------------------------------------------
+
+
+class _SignsAfter:
+    """The local gateway 404s the signer until `auth` has registered."""
+
+    def __init__(self, net, misses, status=404):
+        self.left = misses
+        self.status = status
+        self.net = net
+
+    def __call__(self):
+        if self.left:
+            self.left -= 1
+            self.net.sign_status = self.status
+        else:
+            self.net.sign_status = 200
+
+
+@pytest.fixture()
+def booting(net, monkeypatch):
+    monkeypatch.setattr(gc, "_SIGN_RETRY_DELAYS", (0.0, 0.0, 0.0))
+    return net
+
+
+def test_a_subscription_at_boot_waits_for_auth_instead_of_the_legacy_bearer(
+        booting, ws):
+    booting.sign_gate = _SignsAfter(booting, misses=2)
+    assert asyncio.run(_drain(gc.subscribe_peer("hub", "social", "command"))) == [{"n": 1}]
+    assert ws.auths == ["Bearer awmpt1.t3.sig"]
+    assert booting.legacy_fetches == []
+
+
+def test_the_sync_signer_waits_for_auth_too(booting):
+    booting.sign_gate = _SignsAfter(booting, misses=1, status=503)
+    assert gc.peer_token_sync("hub").startswith("awmpt1.")
+
+
+def test_a_signer_that_never_registers_still_falls_back(booting, ws):
+    booting.sign_gate = _SignsAfter(booting, misses=99)
+    assert asyncio.run(_drain(gc.subscribe_peer("hub", "social", "command"))) == [{"n": 1}]
+    assert ws.auths == ["Bearer legacy-bearer"]
+    assert len(booting.minted) == len(gc._SIGN_RETRY_DELAYS) + 1
+
+
+def test_a_real_signing_failure_is_not_retried(booting):
+    booting.sign_gate = _SignsAfter(booting, misses=99, status=500)
+    with pytest.raises(gc.PeerError):
+        gc.peer_token_sync("hub")
+    assert len(booting.minted) == 1

@@ -148,11 +148,12 @@ def test_a_finished_card_is_archived_fourteen_days_after_it_entered_its_state(
 
     trilium.set_attr(note, "cardStateAt", stamp(13))
     board.sweep()
-    assert trilium.label(note, "archived") is None
+    older = trilium.archive_folder({"complete": "done", "fail": "rejected"}[finish])
+    assert older not in trilium.notes[note]["parentNoteIds"]
     trilium.set_attr(note, "cardStateAt", stamp(15))
     board.sweep()
-    assert trilium.label(note, "archived") == ""
-    assert board.list(tony) == []                         # hidden from the board
+    assert trilium.notes[note]["parentNoteIds"] == [older]
+    assert board.list(tony) == []                         # folded into Older
     assert board.get(tony, card["id"])["id"] == card["id"]  # still readable by id
     assert board.sweep() == []
 
@@ -165,11 +166,11 @@ def test_open_cards_are_never_archived_and_the_age_counts_from_entering_the_stat
     card = request(board, tony)
     trilium.set_attr(trilium.card_note(card["id"]), "cardStateAt", old)
     board.sweep()
-    assert trilium.label(trilium.card_note(card["id"]), "archived") is None
+    assert not trilium.is_filed_archived(card["id"])
     board.claim(collins, card["id"])
     board.complete(collins, card["id"], "ok")              # entered Done just now
     board.sweep()
-    assert trilium.label(trilium.card_note(card["id"]), "archived") is None
+    assert not trilium.is_filed_archived(card["id"])
 
 
 # -- agent, owner and project labels ---------------------------------------------------

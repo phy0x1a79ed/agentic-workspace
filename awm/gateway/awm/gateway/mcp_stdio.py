@@ -164,6 +164,7 @@ def _request_with_retry(
     headers: dict[str, str] | None = None,
     params: dict[str, str] | None = None,
     read_timeout: float | None = None,
+    start_core: bool = True,
 ) -> dict:
     """Request the local awm core, reconnecting across restarts.
 
@@ -222,9 +223,9 @@ def _request_with_retry(
             if _is_cancelled():
                 raise RequestCancelled() from e
             last_err = e
-            if first_attempt:
+            if first_attempt and start_core:
                 _ensure_core_running()
-                first_attempt = False
+            first_attempt = False
             time.sleep(0.3)
     raise mcp_http.CoreUnreachable(
         f"awm daemon unreachable after {max_wait}s: {last_err}")
@@ -301,9 +302,43 @@ def _handle_initialize(params: dict) -> dict:
     version = requested if requested in SUPPORTED_PROTOCOLS else SUPPORTED_PROTOCOLS[0]
     return {
         "protocolVersion": version,
-        "capabilities": {"experimental": {}, "tools": {"listChanged": False}},
+        "capabilities": {"experimental": {}, "tools": {"listChanged": True}},
         "serverInfo": {"name": SERVER_NAME, "version": SERVER_VERSION},
     }
+
+
+_watch = mcp_http.ToolListWatch()
+_watcher: threading.Thread | None = None
+_watcher_lock = threading.Lock()
+_watcher_stop = threading.Event()
+
+
+def _fetch_tools(**kwargs) -> dict:
+    return _request_with_retry(
+        "GET", "/tools", params={"view": "domains", "peers": "1"},
+        read_timeout=mcp_http.catalog_read_timeout(), **kwargs)
+
+
+def _watch_tool_list() -> None:
+    """Tell the client when the tool list it was served goes stale."""
+    started = time.monotonic()
+    while not _watcher_stop.wait(mcp_http.watch_delay(time.monotonic() - started)):
+        try:
+            tools = _fetch_tools(max_wait=1.0, start_core=False)["tools"]
+        except Exception:  # noqa: BLE001 — a core that is down changes nothing
+            continue
+        if _watch.changed(tools):
+            _send({"jsonrpc": "2.0", "method": "notifications/tools/list_changed"})
+
+
+def _start_watcher() -> None:
+    """Start the list watcher once, after the client's ``initialized``: MCP
+    forbids a server notification before it."""
+    global _watcher
+    with _watcher_lock:
+        if _watcher is None:
+            _watcher = threading.Thread(target=_watch_tool_list, daemon=True)
+            _watcher.start()
 
 
 def _handle_tools_list() -> dict:
@@ -317,9 +352,8 @@ def _handle_tools_list() -> dict:
     ``peers=1`` makes it fleet-wide from the gateway's background snapshot
     (one loopback GET, not an ssh per peer). Every tool is listed top-level.
     """
-    data = _request_with_retry(
-        "GET", "/tools", params={"view": "domains", "peers": "1"},
-        read_timeout=mcp_http.catalog_read_timeout())
+    data = _fetch_tools()
+    _watch.served(data["tools"])
     # The core emits the optional Tool fields it has nothing to say about as
     # explicit nulls (``annotations``, ``icons``, ``_meta``, …). The SDK proxy
     # dropped them as a side effect of round-tripping through pydantic with
@@ -362,7 +396,7 @@ def _handle_tools_call(params: dict) -> dict:
         if redirect:
             # Followed exactly once; ``peer`` is stripped so the far side does
             # not re-route what we already routed.
-            forwarded = {k: v for k, v in arguments.items() if k != "peer"}
+            forwarded = mcp_caller.forwarded_args(name, arguments, session_pid)
             from awm.gateway import peer_files  # noqa: PLC0415 — peer path only
             hop = peer_files.invoke_with_files(
                 redirect["peer"], redirect, {"name": name, "args": forwarded}, as_)
@@ -413,6 +447,8 @@ def _dispatch(msg: dict) -> None:
     if req_id is None:
         if method == "notifications/cancelled" and params.get("requestId") is not None:
             _cancel_request(params["requestId"])
+        elif method == "notifications/initialized":
+            _start_watcher()
         return
 
     _request_ctx.req_id = req_id
@@ -435,6 +471,7 @@ def _dispatch(msg: dict) -> None:
     except Exception as e:
         _error(req_id, -32603, str(e))
     finally:
+        _request_ctx.req_id = None
         with _inflight_lock:
             _inflight.pop(req_id, None)
             _cancelled.discard(req_id)

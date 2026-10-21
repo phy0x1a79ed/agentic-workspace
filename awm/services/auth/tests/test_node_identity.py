@@ -105,11 +105,12 @@ def test_legacy_bearers_are_withheld_when_retired(auth, monkeypatch):
     assert mat["legacy_bearer"] is False
 
 
-def test_public_profile_verifies_no_peers(auth, awm_workspace, monkeypatch):
+def test_public_profile_withholds_the_bearer_but_not_the_keys(auth, awm_workspace, monkeypatch):
     _book(awm_workspace, {"mira": {"public_key": "x"}})
     monkeypatch.setenv("AWM_AUTH_PROFILE", "public")
     mat = auth.h_edge_material({})
-    assert mat["peers"] == [] and mat["peer_credentials"] == []
+    assert mat["peer_credentials"] == []
+    assert [p["name"] for p in mat["peers"]] == ["mira"]
 
 
 def test_status_never_carries_the_private_key(auth):
@@ -145,11 +146,13 @@ def test_the_handlers_take_the_caller_identity_from_the_adapter():
 
 
 def test_the_edge_fetches_material_with_no_identity():
-    """`AuthGate` calls `gatewayclient.call("auth", "edge_material", {})` with no
-    `as_`, which the gateway delivers as `as_=None`: the one caller admitted."""
+    """`AuthGate` calls `gatewayclient.call("auth", "edge_material", ...)` with
+    no `as_`, which the gateway delivers as `as_=None`: the one caller admitted."""
+    import re
     from pathlib import Path
     src = (Path(__file__).parents[2] / "httpsfront/awm/httpsfront/auth.py").read_text()
-    assert 'call("auth", "edge_material", {})' in src
+    call = re.search(r'gatewayclient\.call\(\s*"auth", "edge_material",[^)]*\)', src)
+    assert call and "as_" not in call.group(0)
 
 
 def test_an_fqdn_node_name_signs_as_its_first_label(auth, monkeypatch):

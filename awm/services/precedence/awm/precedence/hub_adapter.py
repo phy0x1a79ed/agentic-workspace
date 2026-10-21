@@ -28,8 +28,9 @@ import logging
 from typing import Any
 
 from awm.gatewayclient import ServiceAdapter, spawn_supervised
+from awm.persistence import embeddings
 
-from awm.precedence import dao, export, index, store
+from awm.precedence import dao, export, index, store, visibility
 
 log = logging.getLogger("awm.precedence.hub_adapter")
 
@@ -255,7 +256,15 @@ def _bool(v: Any, default: bool = False) -> bool:
     return v in (True, "true", "True", "1", 1)
 
 
-def _handle_search(args: dict) -> dict:
+def _unseen(conn, as_: str | None, decision_id: Any, error: str = "no such decision") -> frozenset[str]:
+    """The ids the caller may not see; raises the missing-id error when ``decision_id`` is one of them."""
+    hidden = visibility.hidden_ids(conn, as_)
+    if decision_id is not None and str(decision_id) in hidden:
+        raise ValueError(f"{error}: {decision_id}")
+    return hidden
+
+
+def _handle_search(args: dict, as_: str | None = None) -> dict:
     conn = dao.connect()
     try:
         return store.search(
@@ -271,23 +280,25 @@ def _handle_search(args: dict) -> dict:
             k=int(args.get("k", 20)),
             explore=args.get("explore"),
             include_superseded=_bool(args.get("include_superseded")),
+            exclude=_unseen(conn, as_, None),
         )
     finally:
         conn.close()
 
 
-def _handle_get(args: dict) -> dict:
+def _handle_get(args: dict, as_: str | None = None) -> dict:
     conn = dao.connect()
     try:
+        _unseen(conn, as_, args["id"])
         return store.get(conn, args["id"])
     finally:
         conn.close()
 
 
-def _handle_stats(args: dict) -> dict:
+def _handle_stats(args: dict, as_: str | None = None) -> dict:
     conn = dao.connect()
     try:
-        return store.stats(conn)
+        return store.stats(conn, _unseen(conn, as_, None))
     finally:
         conn.close()
 
@@ -309,9 +320,10 @@ def _handle_add(args: dict) -> dict:
         conn.close()
 
 
-def _handle_note(args: dict) -> dict:
+def _handle_note(args: dict, as_: str | None = None) -> dict:
     conn = dao.connect()
     try:
+        _unseen(conn, as_, args["id"])
         return store.note(conn, args["id"], body=args["body"],
                           kind=args.get("kind", "comment"),
                           author=args.get("author", "agent"))
@@ -319,17 +331,19 @@ def _handle_note(args: dict) -> dict:
         conn.close()
 
 
-def _handle_vote(args: dict) -> dict:
+def _handle_vote(args: dict, as_: str | None = None) -> dict:
     conn = dao.connect()
     try:
+        _unseen(conn, as_, args["id"])
         return store.vote(conn, args["id"], direction=args["direction"])
     finally:
         conn.close()
 
 
-def _handle_edit(args: dict) -> dict:
+def _handle_edit(args: dict, as_: str | None = None) -> dict:
     conn = dao.connect()
     try:
+        _unseen(conn, as_, args["id"])
         return store.edit(
             conn, args["id"],
             context=args.get("context"),
@@ -343,9 +357,11 @@ def _handle_edit(args: dict) -> dict:
         conn.close()
 
 
-def _handle_supersede(args: dict) -> dict:
+def _handle_supersede(args: dict, as_: str | None = None) -> dict:
     conn = dao.connect()
     try:
+        _unseen(conn, as_, args["id"])
+        _unseen(conn, as_, args.get("by"), "no such replacement decision")
         return store.supersede(conn, args["id"], by=args.get("by"),
                                status=args.get("status", "superseded"),
                                note_body=args.get("note_body"))
@@ -353,18 +369,20 @@ def _handle_supersede(args: dict) -> dict:
         conn.close()
 
 
-def _handle_remove(args: dict) -> dict:
+def _handle_remove(args: dict, as_: str | None = None) -> dict:
     conn = dao.connect()
     try:
+        _unseen(conn, as_, args["id"])
         return store.remove(conn, args["id"])
     finally:
         conn.close()
 
 
-def _handle_merge(args: dict) -> dict:
+def _handle_merge(args: dict, as_: str | None = None) -> dict:
     conn = dao.connect()
     try:
-        return store.merge(conn, args["keeper"], _as_list(args.get("dup")))
+        hidden = _unseen(conn, as_, args["keeper"], "no such keeper")
+        return store.merge(conn, args["keeper"], [d for d in _as_list(args.get("dup")) if d not in hidden])
     finally:
         conn.close()
 
@@ -378,10 +396,11 @@ def _handle_import(args: dict) -> dict:
         conn.close()
 
 
-def _handle_export(args: dict) -> dict:
+def _handle_export(args: dict, as_: str | None = None) -> dict:
     conn = dao.connect()
     try:
-        return export.export_page(conn, args.get("cursor") or None, args.get("limit"))
+        return export.export_page(conn, args.get("cursor") or None, args.get("limit"),
+                                  _unseen(conn, as_, None))
     finally:
         conn.close()
 
@@ -440,6 +459,7 @@ async def _on_start() -> None:
     finally:
         conn.close()
     spawn_supervised("precedence:search-backfill", _backfill_loop)
+    embeddings.warm()
 
 
 async def main() -> None:

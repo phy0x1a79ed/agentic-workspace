@@ -103,6 +103,16 @@ def message_backlog_s() -> float:
     return _float("AWM_REPORTING_MESSAGE_BACKLOG_S", 3 * 86400.0)
 
 
+def quiet_swarms() -> frozenset[str]:
+    """Swarms whose cards with this swarm never DM Tony, from ``AWM_REPORTING_QUIET_SWARMS``.
+
+    A standing channel with another swarm is read by the session that holds it,
+    so a direct message for each card on it is noise.
+    """
+    raw = os.environ.get("AWM_REPORTING_QUIET_SWARMS") or ""
+    return frozenset(s.strip() for s in raw.replace(",", " ").split() if s.strip())
+
+
 def new_agent_target() -> tuple[str, str]:
     """The project and scope `/new-agent` starts in."""
     return (os.environ.get("AWM_REPORTING_NEW_AGENT_PROJECT") or "awm",
@@ -121,13 +131,9 @@ def projects_dir() -> Path:
 
 def project_scope(cwd: str | None) -> tuple[str | None, str | None]:
     """Project and scope from a directory under the projects tree, else None."""
-    if not cwd:
-        return None, None
-    try:
-        parts = Path(cwd).resolve().relative_to(projects_dir().resolve()).parts
-    except (ValueError, OSError):
-        return None, None
-    return (parts[0], "/".join(parts[1:]) or None) if parts else (None, None)
+    from awm import config as awm_config
+
+    return awm_config.scope_of(cwd, projects_dir())
 
 
 def remind_s() -> float:
@@ -135,10 +141,15 @@ def remind_s() -> float:
     return _float("AWM_REPORTING_REMIND_S", 3600.0)
 
 
-def dm_target() -> tuple[str, str]:
-    """The social account and channel that carry an urgent request to Tony."""
-    return (os.environ.get("AWM_REPORTING_DM_ACCOUNT") or "discord-bot",
-            os.environ.get("AWM_REPORTING_DM_CHANNEL") or "dm:188743359983124480")
+def dm_target() -> tuple[str, str] | None:
+    """The social account and channel that carry an urgent request to the operator, or None."""
+    from awm.config import operator_dm
+
+    target = operator_dm()
+    if target is None:
+        return None
+    account, channel = target
+    return os.environ.get("AWM_REPORTING_DM_ACCOUNT") or account, channel
 
 
 def trilium_url() -> str | None:

@@ -297,7 +297,8 @@ def restart():
 def deploy(
     no_install: bool = typer.Option(
         False, "--no-install",
-        help="Skip the pip reinstall even if the dist set changed."),
+        help="Skip the pip reinstall even if the dist set or a service's "
+             "folder or install inputs changed."),
     no_build: bool = typer.Option(
         False, "--no-build",
         help="Skip the page rebuild even if page source changed."),
@@ -316,7 +317,8 @@ def deploy(
 ):
     """Ship the release worktree to the running (systemd) gateway, safely.
 
-    install (only if the dist set changed) → build (only if page source
+    install (only if the dist set, a service folder or a service's install
+    inputs changed) → build (only if page source
     changed) → restart whichever awm.service unit supervises this gateway →
     reap orphaned adapters → verify every enabled service and built page
     came back. Idempotent: a
@@ -332,6 +334,11 @@ def deploy(
     )
     from awm.gateway.hub import discovery
 
+    from awm.config import load_env_file
+
+    # The expected set must be resolved under the env the gateway boots with:
+    # AWM_PROFILES and the singleton homes live in .awm/env.
+    load_env_file()
     root = D.awm_root()
     plan = D.plan_deploy(root, AWM_DIR, force=force, no_install=no_install,
                          no_build=no_build, no_reap=no_reap)
@@ -368,7 +375,7 @@ def deploy(
         typer.echo(f"  expected pages:    {', '.join(expected_pages) or '(none)'}")
         return
 
-    # --- 1. install (dist-set membership changed) ---
+    # --- 1. install (dist set, service folder or install inputs changed) ---
     if plan.do_install:
         typer.echo("→ installing dist set (pip -e) …")
         if subprocess.run(["bash", str(root / "gateway" / "install.sh")]).returncode != 0:
@@ -656,6 +663,10 @@ def services_listen(
     match: str = typer.Option(
         "", "--match",
         help="Comma-separated event `type` prefixes to print (default: all)"),
+    where: str = typer.Option(
+        "", "--where",
+        help="Comma-separated `field=value` pairs an event must all carry, "
+             "such as `session=1-748-3f2a`"),
     peer: Optional[str] = typer.Option(
         None, "--peer", help="Follow the topic on this domestic peer instead"),
 ):
@@ -682,8 +693,14 @@ def services_listen(
         print(line, flush=True)
 
     try:
+        fields = emit_listen.parse_where(where)
+    except ValueError as exc:
+        typer.echo(f"listen: {exc}", err=True)
+        raise typer.Exit(2)
+    try:
         _asyncio.run(emit_listen.listen(stream, match.split(","), _write,
-                                        fatal=(gatewayclient.PeerError,)))
+                                        fatal=(gatewayclient.PeerError,),
+                                        where=fields))
     except gatewayclient.PeerError as exc:
         typer.echo(f"listen: {exc}", err=True)
         raise typer.Exit(1)

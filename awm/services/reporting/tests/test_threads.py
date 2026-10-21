@@ -68,13 +68,12 @@ async def test_a_message_wakes_the_session_the_card_was_assigned_to(queue):
     assert queue.thread_seq(card["id"]) == 1 and told.texts == []
 
 
-async def test_a_message_before_a_claim_sends_tony_a_short_message_without_its_text(queue):
+async def test_a_message_before_a_claim_tells_nobody(queue):
     sub, board, lines, told = build(queue)
     card = proposed(queue, board, title="Rig the thing")
     board.post_event("card.message", board.say(card, "private words", agent="muse"))
     await sub.consume()
-    assert lines.sent == []
-    assert told.texts == [f"new message on {card['id'][:8]} from beta/op (muse): Rig the thing"]
+    assert lines.sent == [] and told.texts == []
     assert queue.thread_seq(card["id"]) == 1 and queue.get(card["id"])["status"] == "proposed"
 
 
@@ -89,20 +88,20 @@ async def test_a_message_from_this_swarm_and_a_replay_tell_nobody(queue):
     assert len(lines.sent) == 1 and told.texts == [] and queue.thread_seq(card["id"]) == 2
 
 
-async def test_a_message_on_a_card_this_swarm_sent_tells_tony(queue):
+async def test_a_message_on_a_card_this_swarm_sent_tells_nobody(queue):
     sub, board, lines, told = build(queue)
     card = board.add(make_card(recipient="beta", sender={"swarm": "tony", "principal": "t", "party": "p"}))
     board.post_event("card.message", board.say(card, swarm="beta"))
     await sub.consume()
-    assert len(told.texts) == 1 and "beta/op" in told.texts[0]
+    assert told.texts == [] and queue.thread_seq(card["id"]) == 1
 
 
-async def test_a_message_on_a_card_to_open_tells_tony(queue):
+async def test_a_message_on_a_card_to_open_tells_nobody(queue):
     sub, board, lines, told = build(queue)
     card = board.add(make_card(recipient="open"))
     board.post_event("card.message", board.say(card))
     await sub.consume()
-    assert len(told.texts) == 1
+    assert told.texts == [] and queue.thread_seq(card["id"]) == 1
 
 
 async def test_a_message_on_someone_elses_card_is_ignored(queue):
@@ -125,36 +124,24 @@ async def test_a_missed_line_is_retried_once_by_the_catch_up_it_asks_for(queue):
     assert queue.thread_seq(card["id"]) == 1 and told.texts == []
 
 
-async def test_a_session_that_misses_twice_hands_the_message_to_tony(queue):
+async def test_a_session_that_misses_twice_leaves_the_message_on_the_thread(queue):
     sub, board, lines, told = build(queue)
     card = assigned(queue, board)
     lines.fail["j1"] = 2
     board.post_event("card.message", board.say(card))
     await sub.consume()
     await sub.catch_up()
-    assert lines.sent == [] and len(told.texts) == 1 and "job j1, could not be reached" in told.texts[0]
+    assert lines.sent == [] and told.texts == []
     assert queue.thread_seq(card["id"]) == 1
 
 
-async def test_a_claim_by_a_session_with_no_job_sends_tony_the_message(queue):
+async def test_a_claim_by_a_session_with_no_job_tells_nobody(queue):
     sub, board, lines, told = build(queue)
     card = board.add(make_card())
     queue.take(card, "terminal-agent", None)
     board.post_event("card.message", board.say(card))
     await sub.consume()
-    assert lines.sent == [] and "no background session to wake" in told.texts[0]
-
-
-async def test_a_message_dm_that_fails_is_retried_by_the_catch_up(queue):
-    sub, board, lines, told = build(queue)
-    card = proposed(queue, board)
-    told.error = OSError("down")
-    board.post_event("card.message", board.say(card))
-    await sub.consume()
-    assert queue.thread_seq(card["id"]) == 0
-    told.error = None
-    await sub.catch_up()
-    assert len(told.texts) == 1 and queue.thread_seq(card["id"]) == 1
+    assert lines.sent == [] and told.texts == [] and queue.thread_seq(card["id"]) == 1
 
 
 async def test_a_catch_up_routes_what_the_stream_missed_once(queue):

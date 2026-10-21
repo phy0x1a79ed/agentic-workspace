@@ -32,7 +32,7 @@ import time
 from typing import Any
 
 import httpx
-from mcp.server import Server
+from mcp.server import NotificationOptions, Server
 from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 
@@ -41,6 +41,8 @@ from awm.gateway import mcp_caller, mcp_http
 from awm.gateway._path import resolve_bin
 
 server = Server("awm")
+_watch = mcp_http.ToolListWatch()
+_watcher: asyncio.Task | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -74,10 +76,34 @@ async def list_tools() -> list[Tool]:
     Every tool is listed top-level; a tool switched off by its service's tier is
     absent.
     """
-    data = await _request_with_retry(
-        "GET", "/tools", params={"view": "domains", "peers": "1"},
-        read_timeout=mcp_http.catalog_read_timeout())
+    global _watcher
+    data = await _fetch_tools()
+    _watch.served(data["tools"])
+    if _watcher is None:
+        # A list request only arrives after the client's ``initialized``, so the
+        # session may notify from here on.
+        _watcher = asyncio.create_task(
+            _watch_tool_list(server.request_context.session))
     return [Tool.model_validate(t) for t in data["tools"]]
+
+
+async def _fetch_tools(**kwargs) -> dict[str, Any]:
+    return await _request_with_retry(
+        "GET", "/tools", params={"view": "domains", "peers": "1"},
+        read_timeout=mcp_http.catalog_read_timeout(), **kwargs)
+
+
+async def _watch_tool_list(session) -> None:
+    """Tell the client when the tool list it was served goes stale."""
+    started = time.monotonic()
+    while True:
+        await asyncio.sleep(mcp_http.watch_delay(time.monotonic() - started))
+        try:
+            tools = (await _fetch_tools(max_wait=1.0, start_core=False))["tools"]
+        except Exception:  # noqa: BLE001 — a core that is down changes nothing
+            continue
+        if _watch.changed(tools):
+            await session.send_tool_list_changed()
 
 
 @server.call_tool()
@@ -122,7 +148,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             # own book, and chaining would let two nodes bounce a call forever.
             # ``peer`` is stripped for the same reason — the far side must not
             # re-route what we already routed.
-            forwarded = {k: v for k, v in arguments.items() if k != "peer"}
+            forwarded = mcp_caller.forwarded_args(name, arguments, session_pid)
             from awm.gateway import peer_files
             hop = await asyncio.to_thread(
                 peer_files.invoke_with_files,
@@ -174,6 +200,7 @@ async def _request_with_retry(
     headers: dict[str, str] | None = None,
     params: dict[str, str] | None = None,
     read_timeout: float | None = None,
+    start_core: bool = True,
 ) -> dict[str, Any]:
     """Make an HTTP request to the local awm daemon, reconnecting across
     restarts.
@@ -217,9 +244,9 @@ async def _request_with_retry(
                 # Connect phase — PoolTimeout included: no connection was ever
                 # handed out, so nothing was sent and replay is safe.
                 last_err = e
-                if first_attempt:
+                if first_attempt and start_core:
                     _ensure_core_running()
-                    first_attempt = False
+                first_attempt = False
                 await asyncio.sleep(0.3)
     raise mcp_http.CoreUnreachable(
         f"awm daemon unreachable after {max_wait}s: {last_err}")
@@ -363,7 +390,8 @@ def _reap_orphan_clients() -> None:
 
 async def _run():
     async with stdio_server() as (read, write):
-        await server.run(read, write, server.create_initialization_options())
+        await server.run(read, write, server.create_initialization_options(
+            NotificationOptions(tools_changed=True)))
 
 
 def main():

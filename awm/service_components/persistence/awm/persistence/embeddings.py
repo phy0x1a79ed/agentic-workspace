@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import logging
 import os
 import re
 import sqlite3
@@ -263,6 +264,32 @@ def use_embedder(embedder: Embedder | None) -> None:
     """Replace the process-wide embedder (tests); ``None`` restores the default."""
     global _embedder
     _embedder = embedder
+
+
+def warm() -> None:
+    """Load the model on a daemon thread, so a service's first query does not wait for it.
+
+    ``AWM_EMBED_WARM=0`` turns it off, and an embedder injected by
+    :func:`use_embedder` is left alone.
+    """
+    if os.environ.get("AWM_EMBED_WARM", "1") == "0":
+        return
+    if _embedder is not None and not isinstance(_embedder, _SentenceTransformer):
+        return
+    threading.Thread(target=_warm, name="embedder-warm", daemon=True).start()
+
+
+def _warm() -> None:
+    log = logging.getLogger(__name__)
+    started = time.monotonic()
+    try:
+        get_embedder().encode(["warm"], query=True)
+    except EmbeddingsUnavailable:
+        return
+    except Exception:  # noqa: BLE001 — a failed warm-up leaves the load to the first query
+        log.warning("embedder warm-up failed", exc_info=True)
+        return
+    log.info("embedder warm in %.1fs", time.monotonic() - started)
 
 
 def _try_embedder() -> Embedder | None:

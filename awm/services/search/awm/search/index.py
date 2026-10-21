@@ -11,8 +11,9 @@ import bisect
 import re
 import sqlite3
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Sequence
 
+from awm.config import privacy
 from awm.persistence import embeddings as engine
 
 from awm.search import store
@@ -21,11 +22,70 @@ from awm.search import store
 CANDIDATES = 1000
 #: The shortest literal the trigram index can find; a shorter one scans.
 TRIGRAM = 3
+#: The journal's spellings of a project ``<p>`` besides its bare name, in the ``project`` column ...
+PROJECT_SPELLINGS = ("task:{}",)
+#: ... and, with an empty ``project``, in the ``scope`` column. ``privacy.canonical`` reads all of them.
+CHANNEL_SPELLINGS = ("user:proj:{}", "project:{}")
+
+
+def _tag_needle(project: str) -> str:
+    return store.tag_field([project])
+
+
+def veil(hidden: Sequence[dict] | None) -> tuple[str, list[Any]]:
+    """SQL that keeps only the documents no private mark in ``hidden`` covers, and its bound values.
+
+    A mark covers a document by its project and scope, in any spelling ``privacy.canonical`` reads,
+    and also by a tag equal to the marked project's name, ignoring case.
+    ``None`` stands for an unreadable marks file: it keeps only documents that name no project,
+    scope or tag.
+    """
+    if hidden is None:
+        return "(project = '' AND scope = '' AND tags = '')", []
+    clauses: list[str] = []
+    params: list[Any] = []
+    for mark in hidden:
+        project, scope = mark["project"], mark["scope"]
+        named = [project] + [s.format(project) for s in PROJECT_SPELLINGS]
+        in_named = f"project IN ({','.join('?' * len(named))})"
+        if scope is None:
+            channels = [s.format(project) for s in CHANNEL_SPELLINGS]
+            clauses.append(f"{in_named} OR (project = '' AND scope IN ({','.join('?' * len(channels))}))")
+            params += named + channels
+        else:
+            clauses.append(f"{in_named} AND (scope = ? OR substr(scope, 1, ?) = ?)")
+            params += named + [scope, len(scope) + 1, scope + "/"]
+    for project in sorted({m["project"] for m in hidden}):
+        clauses.append("instr(tags, ?) > 0")
+        params.append(_tag_needle(project))
+    if not clauses:
+        return "", []
+    return "NOT (" + " OR ".join(f"({c})" for c in clauses) + ")", params
+
+
+def covered(hidden: Sequence[dict] | None, project: str, scope: str, tags: str = "") -> bool:
+    """Whether :func:`veil` would drop a document with this project, scope and stored tags."""
+    if hidden is None:
+        return bool(project or scope or tags)
+    name, named_scope = privacy.canonical(project, scope or None)
+    for mark in hidden:
+        if tags and _tag_needle(mark["project"]) in tags:
+            return True
+        if name != mark["project"]:
+            continue
+        marked = mark["scope"]
+        if marked is None or (named_scope is not None
+                              and (named_scope == marked or named_scope.startswith(marked + "/"))):
+            return True
+    return False
 
 
 @dataclass
 class Filters:
-    """What narrows a query. ``after`` is inclusive and ``before`` exclusive, both normalised."""
+    """What narrows a query. ``after`` is inclusive and ``before`` exclusive, both normalised.
+
+    ``hidden`` holds the private marks the caller may not see past, as :func:`veil` reads them.
+    """
 
     sources: list[str] = field(default_factory=list)
     project: str = ""
@@ -33,6 +93,7 @@ class Filters:
     kinds: list[str] = field(default_factory=list)
     after: str = ""
     before: str = ""
+    hidden: Sequence[dict] | None = ()
 
     def allowed(self) -> tuple[str, list[Any]]:
         """A ``SELECT key`` over the permitted documents, and its bound values."""
@@ -51,6 +112,10 @@ class Filters:
         if self.before:
             clauses.append("ts < ? AND ts != ''")
             params.append(self.before)
+        kept, kept_params = veil(self.hidden)
+        if kept:
+            clauses.append(kept)
+            params += kept_params
         return "SELECT key FROM documents WHERE " + " AND ".join(clauses), params
 
 

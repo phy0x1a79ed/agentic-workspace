@@ -26,7 +26,7 @@ from awm.persistence.databases import get_connection, init_service_db
 from awm.search import passages as cutter
 
 SERVICE = "search"
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 CORPUS = "doc"
 
 _SOURCES = """\
@@ -55,7 +55,8 @@ _DOCUMENTS = ["""CREATE TABLE IF NOT EXISTS documents (
     scope    TEXT NOT NULL DEFAULT '',
     kind     TEXT NOT NULL DEFAULT '',
     ts       TEXT NOT NULL DEFAULT '', -- ISO 8601 UTC, second resolution, so text order is time order
-    url      TEXT NOT NULL DEFAULT ''
+    url      TEXT NOT NULL DEFAULT '',
+    tags     TEXT NOT NULL DEFAULT ''  -- lowercased, one per line, newline-bracketed (tag_field)
 );""",
     "CREATE INDEX IF NOT EXISTS idx_documents_source ON documents(source, doc_id);",
     "CREATE INDEX IF NOT EXISTS idx_documents_filter ON documents(source, project, scope, kind, ts);"]
@@ -117,16 +118,23 @@ CREATE INDEX IF NOT EXISTS idx_judgements_collection ON judgements(collection);
 
 SCHEMA_SQL = _SOURCES + "\n".join(_DOCUMENTS) + _TEXT_INDEXES + _JUDGEMENTS + engine.EMBEDDINGS_DDL
 
-MIGRATIONS = {(2, 3): _JUDGEMENTS, (1, 2): "\n".join([
-    "ALTER TABLE documents RENAME TO documents_v1;",
-    "DROP INDEX IF EXISTS idx_documents_source;",
-    "DROP INDEX IF EXISTS idx_documents_filter;",
-    _DOCUMENTS[0],
-    "INSERT INTO documents (key, source, doc_id, title, text, project, scope, kind, ts, url)"
-    " SELECT key, source, doc_id, title, text, project, scope, kind, ts, url FROM documents_v1;",
-    "DROP TABLE documents_v1;",
-    *_DOCUMENTS[1:],
-]) + _TEXT_INDEXES + "INSERT INTO documents_exact(documents_exact) VALUES ('rebuild');\n"}
+#: v2 adds ``tags``; clearing ``synced_at`` makes every index source due at once, so the tags fill in. v3 gives
+#: documents an integer key for the text indexes and builds them. v4 adds the judgements.
+MIGRATIONS = {
+    (1, 2): "ALTER TABLE documents ADD COLUMN tags TEXT NOT NULL DEFAULT '';\n"
+            "UPDATE sources SET synced_at = NULL;",
+    (2, 3): "\n".join([
+        "ALTER TABLE documents RENAME TO documents_v2;",
+        "DROP INDEX IF EXISTS idx_documents_source;",
+        "DROP INDEX IF EXISTS idx_documents_filter;",
+        _DOCUMENTS[0],
+        "INSERT INTO documents (key, source, doc_id, title, text, project, scope, kind, ts, url, tags)"
+        " SELECT key, source, doc_id, title, text, project, scope, kind, ts, url, tags FROM documents_v2;",
+        "DROP TABLE documents_v2;",
+        *_DOCUMENTS[1:],
+    ]) + _TEXT_INDEXES + "INSERT INTO documents_exact(documents_exact) VALUES ('rebuild');\n",
+    (3, 4): _JUDGEMENTS,
+}
 
 _initialized = False
 
@@ -210,9 +218,15 @@ def record_registry(conn: sqlite3.Connection, sources: dict[str, dict], present:
     return news
 
 
-def source_rows(conn: sqlite3.Connection) -> list[dict[str, Any]]:
-    """Every stored source with its document count, sorted by name."""
-    counts = dict(conn.execute("SELECT source, COUNT(*) FROM documents GROUP BY source").fetchall())
+def source_rows(conn: sqlite3.Connection, kept: tuple[str, list[Any]] = ("", [])) -> list[dict[str, Any]]:
+    """Every stored source with its document count, sorted by name.
+
+    ``kept`` is a SQL condition and its values; only the documents it keeps are counted.
+    """
+    where, params = kept
+    counts = dict(conn.execute(
+        f"SELECT source, COUNT(*) FROM documents {'WHERE ' + where if where else ''} GROUP BY source",
+        params).fetchall())
     out = []
     for r in conn.execute("SELECT * FROM sources ORDER BY name"):
         out.append({**dict(r), "spec": json.loads(r["spec"]), "present": bool(r["present"]),
@@ -234,7 +248,7 @@ def mark_attempt(conn: sqlite3.Connection, name: str, error: str | None,
 
 # -- documents -------------------------------------------------------------
 
-_FIELDS = ("title", "text", "project", "scope", "kind", "ts", "url")
+_FIELDS = ("title", "text", "project", "scope", "kind", "ts", "url", "tags")
 
 
 def key_of(source: str, doc_id: str) -> str:
@@ -248,6 +262,16 @@ def engine_document(row: dict[str, Any]) -> engine.Document:
                            date=row["ts"][:10])
 
 
+def tag_field(tags: Any) -> str:
+    """The stored form of a document's tags: lowercased, one per line, with a newline at each end."""
+    if isinstance(tags, str):
+        tags = [tags]
+    if not isinstance(tags, (list, tuple)):
+        return ""
+    names = sorted({" ".join(str(t).split()).lower() for t in tags if str(t).strip()})
+    return "\n" + "\n".join(names) + "\n" if names else ""
+
+
 def clean(source: str, raw: dict[str, Any]) -> dict[str, Any] | None:
     """A stored row from one exported document, or ``None`` when it has no id or no content."""
     doc_id = str(raw.get("id") or "")
@@ -257,7 +281,7 @@ def clean(source: str, raw: dict[str, Any]) -> dict[str, Any] | None:
     return {"key": key_of(source, doc_id), "source": source, "doc_id": doc_id, "title": title,
             "text": text, "project": str(raw.get("project") or ""), "scope": str(raw.get("scope") or ""),
             "kind": str(raw.get("kind") or ""), "ts": normalize_ts(raw.get("ts")),
-            "url": str(raw.get("url") or "")}
+            "url": str(raw.get("url") or ""), "tags": tag_field(raw.get("tags"))}
 
 
 def _cut(conn: sqlite3.Connection, key: str, title: str, text: str) -> None:
@@ -280,11 +304,11 @@ def put_documents(conn: sqlite3.Connection, rows: Iterable[dict[str, Any]]) -> i
         [r["key"] for r in rows])} if rows else {}
     changed = [r for r in rows if r["key"] not in held or any(held[r["key"]][f] != r[f] for f in _FIELDS)]
     conn.executemany(
-        "INSERT INTO documents (key, source, doc_id, title, text, project, scope, kind, ts, url)"
-        " VALUES (:key,:source,:doc_id,:title,:text,:project,:scope,:kind,:ts,:url)"
+        "INSERT INTO documents (key, source, doc_id, title, text, project, scope, kind, ts, url, tags)"
+        " VALUES (:key,:source,:doc_id,:title,:text,:project,:scope,:kind,:ts,:url,:tags)"
         " ON CONFLICT(key) DO UPDATE SET title=excluded.title, text=excluded.text,"
         " project=excluded.project, scope=excluded.scope, kind=excluded.kind, ts=excluded.ts,"
-        " url=excluded.url", changed)
+        " url=excluded.url, tags=excluded.tags", changed)
     for r in changed:
         old = held.get(r["key"])
         if old is None or (old["title"], old["text"]) != (r["title"], r["text"]):
@@ -294,7 +318,7 @@ def put_documents(conn: sqlite3.Connection, rows: Iterable[dict[str, Any]]) -> i
 
 
 def cut_missing(conn: sqlite3.Connection) -> int:
-    """Cut passages for every stored document that has none, as after the move to schema 2."""
+    """Cut passages for every stored document that has none, as after the move to schema 3."""
     rows = conn.execute("SELECT key, title, text FROM documents"
                         " WHERE key NOT IN (SELECT DISTINCT key FROM passages)").fetchall()
     for r in rows:

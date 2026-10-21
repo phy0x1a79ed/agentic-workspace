@@ -1,9 +1,14 @@
 """One-off migrations of the board's existing cards, run by the host's admin.
 
 `columns` files every card into the column folder for its old `#status`.
+`archive` turns the `Archived` folders of Done and Rejected into visible Older
+folders sorted newest first, files every card labelled `archived` in its
+column's archive folder, and takes the label off each one in an Older folder.
 `threads` folds each chain of reply cards into the thread of the card at its
 root. A reply card that carries `cardThreaded` was posted on the thread too,
-so the plan leaves it out. Both are dry runs until told otherwise, and a second apply changes
+so the plan leaves it out. `homes` moves each archived card that carries
+`cardFolded` from its `Archived` folder under the note of the card it was
+folded into, or of the top card where that one was folded in turn. All are dry runs until told otherwise, and a second apply changes
 nothing.
 
 A thread migration cannot renumber a thread without moving the sequence numbers
@@ -26,7 +31,7 @@ from pathlib import Path
 from .cards import THREADED, Board
 from .names import check_project
 from .states import STATES, TERMINAL
-from .vault import VaultError
+from .vault import FOLDED, VaultError
 
 log = logging.getLogger("awm.board.migrate")
 
@@ -74,6 +79,98 @@ def columns(board: Board, dry_run: bool) -> dict:
                     "cardStateAt": rec["labels"].get("cardUpdated") or _now()})
             board.vault.place(rec, target[rec["note_id"]])
         return {**report, "moved": len(legacy)}
+
+
+# -- archive ------------------------------------------------------------------
+
+
+def archive(board: Board, dry_run: bool) -> dict:
+    with board._guard:
+        archived = [rec for rec in board.vault.list_archived()
+                    if not rec["home_note"] and not rec["labels"].get(FOLDED)]
+        misfiled = [rec for rec in archived if not rec["archived_in"]]
+        target = {rec["note_id"]: board._card({**rec, "content": None})["state"]
+                  for rec in archived}
+        unlabel = [rec for rec in archived if target[rec["note_id"]] in TERMINAL]
+        by_state = Counter(target[rec["note_id"]] for rec in misfiled)
+        report = {"dry_run": dry_run,
+                  "folders_to_create": [s for s in STATES if s not in board.vault.archives()],
+                  "folders_to_convert": sorted({state for state, _, _ in board.vault.older_changes()}),
+                  "already_filed": len(archived) - len(misfiled),
+                  "cards_to_move": len(misfiled),
+                  "labels_to_drop": len(unlabel),
+                  "by_state": {s: by_state[s] for s in STATES if by_state[s]}}
+        if dry_run:
+            return report
+        board.vault.ensure_columns()
+        for rec in misfiled:
+            board.vault.archive(rec, target[rec["note_id"]])
+        for rec in unlabel:
+            board.vault.unlabel_archived(rec["note_id"])
+        return {**report, "moved": len(misfiled), "unlabelled": len(unlabel)}
+
+
+# -- homes --------------------------------------------------------------------
+
+
+def homes(board: Board, dry_run: bool) -> dict:
+    with board._guard:
+        archived = board.vault.list_archived()
+        by_id = {rec["labels"]["cardId"]: rec for rec in archived}
+        moves: list[tuple[dict, dict]] = []
+        per_home: dict[str, dict] = {}
+        report: Counter = Counter()
+        for rec in archived:
+            if not rec["labels"].get(FOLDED):
+                report["without_home"] += 1
+                continue
+            home = _top_home(board, rec, by_id)
+            if home == "cyclic":
+                report["cyclic_skipped"] += 1
+                continue
+            if home is None:
+                report["home_missing"] += 1
+                continue
+            slot = per_home.setdefault(home["labels"]["cardId"],
+                                       {"title": home["title"], "to_move": 0, "already": 0})
+            if rec["home_note"] == home["note_id"]:
+                slot["already"] += 1
+            else:
+                slot["to_move"] += 1
+                moves.append((rec, home))
+        out = {"dry_run": dry_run, "cards_to_move": len(moves),
+               "already_homed": sum(h["already"] for h in per_home.values()),
+               "without_home": report["without_home"], "home_missing": report["home_missing"],
+               "cyclic_skipped": report["cyclic_skipped"],
+               "by_home": dict(sorted(per_home.items(), key=lambda kv: -kv[1]["to_move"]))}
+        if dry_run:
+            return out
+        for rec, home in moves:
+            board.vault.file_under(rec, home)
+        return {**out, "moved": len(moves)}
+
+
+def _top_home(board: Board, rec: dict, by_id: dict[str, dict]) -> dict | str | None:
+    """The card at the top of the chain of `cardFolded` homes above ``rec``.
+
+    A card folded into a card that was itself folded goes under the top one, so
+    a subject's cards sit flat under it. None when the first home is gone,
+    "cyclic" when the chain loops. A chain that breaks higher up ends at the
+    last card found.
+    """
+    seen = {rec["labels"]["cardId"]}
+    top = None
+    cur = rec
+    while cur["labels"].get(FOLDED):
+        target = cur["labels"][FOLDED]
+        if target in seen:
+            return "cyclic"
+        seen.add(target)
+        nxt = by_id.get(target) or board.vault.read(target, content=False)
+        if nxt is None:
+            break
+        top = cur = nxt
+    return top
 
 
 # -- threads ------------------------------------------------------------------
@@ -195,10 +292,9 @@ def _apply(board: Board, subject: dict, report: Counter) -> None:
             replies.append((rec, card))
         replies.sort(key=lambda rc: (rc[1]["created_at"], rc[1]["id"]))
         _fold(board, root_rec, replies, report)
-        for rec, _ in replies:
+        for rec, card in replies:
             if "archived" not in rec["labels"]:
-                board.vault.update(rec["note_id"], labels={
-                    "archived": "", "cardFolded": subject["root"]})
+                board.vault.archive(rec, card["state"], {FOLDED: subject["root"]}, home=root_rec)
                 report["replies_archived"] += 1
         root_rec = board.vault.read(subject["root"])
         root = board._card(root_rec)

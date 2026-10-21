@@ -15,6 +15,7 @@ from typing import Any
 
 from awm import config
 from awm.config.peertoken import node_label
+from awm.search.query import FLEET
 
 from awm.search import hits as hitshape
 
@@ -95,19 +96,28 @@ async def _ask_one(peers: Peers, record: dict[str, Any], args: dict[str, Any], l
                                      "detail": "no search tool there, or no source granted to this node"})
         return PeerResult(name, {"status": "error", "error": _describe(exc)})
     found = hitshape.sections(reply, _origin(record), limit)
-    sources = reply.get("sources")
     return PeerResult(name, {"status": "ok", "hits": hitshape.count(found),
-                             "sources": sorted(sources) if isinstance(sources, dict) else []}, found)
+                             "sources": _served(reply.get("sources"))}, found)
+
+
+def _served(sources: Any) -> list[str]:
+    """The sources a peer searched. A named source it does not serve, or did not grant, comes back absent."""
+    if not isinstance(sources, dict):
+        return []
+    return sorted(n for n, v in sources.items() if not (isinstance(v, dict) and v.get("status") == "absent"))
 
 
 async def ask(peers: Peers, wanted: list[str] | str, args: dict[str, Any],
               limit: int) -> list[PeerResult]:
-    """One result per peer asked. ``wanted`` names the peers, or is ``"fleet"`` for every domestic one."""
+    """One result per peer asked. ``wanted`` names the peers; ``"fleet"``, alone or among the names, stands for
+    every domestic one."""
     book = {r["name"]: r for r in peers.records()}
-    if isinstance(wanted, str):
-        names = sorted(n for n, r in book.items() if r.get("relation", "domestic") == "domestic")
-    else:
-        names = wanted
+    named = [wanted] if isinstance(wanted, str) else wanted
+    names: list[str] = []
+    for name in named:
+        expanded = (sorted(n for n, r in book.items() if r.get("relation", "domestic") == "domestic")
+                    if name == FLEET else [name])
+        names += [n for n in expanded if n not in names]
     unknown = [PeerResult(n, {"status": "error", "error": "not in the peer book"})
                for n in names if n not in book]
     asked = await asyncio.gather(*(_ask_one(peers, book[n], args, limit) for n in names if n in book))

@@ -61,9 +61,11 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from dataclasses import replace
 from typing import Any, Callable, NamedTuple, Optional
 
 from awm import claudedaemon
+from awm.claudedaemon import roster
 from awm.reflection import (
     guards,
     observation,
@@ -71,7 +73,6 @@ from awm.reflection import (
     oc_session,
     pending,
     session_target,
-    stop_gate,
     tmux_inject,
     watcher,
 )
@@ -137,6 +138,12 @@ MAX_DELIVERY_ROUNDS = 4
 # helps than the first, and 30+60+120 carries the last round well past the
 # longest compaction observed.
 ROUND_BACKOFF_S = (30.0, 60.0, 120.0)
+
+# Claude Code 2.1.302 drops a session's MCP servers when `/cd` moves it and does
+# not connect them again, whatever directory it lands in. A session that moved
+# itself would come back without awm, and so without this service, before it
+# could ask for it, so the resume after a move is preceded by this command.
+RECONNECT_AFTER_MOVE = "/mcp reconnect awm"
 
 # How many times a session will be asked to bring its turn to a close before the
 # wait goes quiet and simply keeps holding. A pause request is text arriving
@@ -458,9 +465,16 @@ def _default_spawn(fn: Callable[[], None]) -> Any:
 def send(text: str, *, caller_pid: Optional[int], enter: bool = True,
          delay_ms: int = 0, confirm: bool = False,
          followup: Optional[str] = None, allow_modal: bool = False,
+         change: Optional[pending.Change] = None,
          spawn: Callable[[Callable[[], None]], Any] = _default_spawn,
          **kw) -> dict:
-    """Inject ``text`` into the calling session, whatever is hosting it."""
+    """Inject ``text`` into the calling session, whatever is hosting it.
+
+    ``change`` names the settings command ``text`` is, so the resume can say
+    what became of it. A session keeps one promise, so a command sent while an
+    earlier one is still owed a resume takes that promise over, carrying the
+    earlier changes with it.
+    """
     if not caller_pid:
         raise session_target.ResolveError(
             "could not tell which session is calling, so there is nothing safe "
@@ -498,22 +512,20 @@ def send(text: str, *, caller_pid: Optional[int], enter: bool = True,
     followup_sent = None
     followup_deferred = False
     if submitted and guards.is_slash(text):
-        followup_sent = guards.resume_text(followup)
         followup_deferred = True
-        # The queued command waits for this session's own turn to end, and the
-        # turn-end-open-items Stop hook can block that exact Stop event if the
-        # session is armed with open todos/background jobs. Disarm it before the
-        # wait begins so reflection's own automation cannot stall behind a nag
-        # it has no visibility into; `_await_and_resume` rearms it on every exit
-        # path. If a crash lands between this and `pending.record` below, the
-        # gate is left disarmed with no promise to later rearm it — accepted,
-        # same as `pending.record`'s own best-effort framing.
-        stop_gate.disarm(lane.session_id)
+        proc_start = session_target._proc_start(lane.repl_pid) or ""
+        earlier = pending.read(lane.repl_pid)
+        if earlier is not None and earlier.proc_start != proc_start:
+            earlier = None
+        changes = (earlier.changes if earlier else ()) + (
+            (change,) if change else ())
+        closing = (followup or "").strip() or (earlier.closing if earlier else "")
+        followup_sent = pending.render_followup(changes, None, closing)
         promise = pending.Pending(
-            repl_pid=lane.repl_pid,
-            proc_start=session_target._proc_start(lane.repl_pid) or "",
+            repl_pid=lane.repl_pid, proc_start=proc_start,
             session_id=lane.session_id, text=text, followup=followup_sent,
-            injected_at_ms=injected_at_ms, name=lane.name, hosting=lane.hosting)
+            injected_at_ms=injected_at_ms, name=lane.name, hosting=lane.hosting,
+            changes=changes, closing=closing)
         # Written down BEFORE the watcher starts: the watcher is a thread in this
         # process, and the gateway restarts this process out from under it.
         pending.record(promise)
@@ -567,17 +579,22 @@ def _verify_landed(tail, text: str, *, sleep: Callable[[float], None] = time.sle
     """Did ``text`` reach the session? Read it out of the session's transcript.
 
     ``True`` if the session took it in or queued it, ``False`` if the transcript
-    was readable throughout and never mentioned it, ``None`` if there was no
-    transcript to read. Only ``False`` is evidence of a failure; ``None`` is the
-    absence of evidence and must not license a second delivery.
+    was read in this window and never mentioned it, ``None`` if no read in the
+    window succeeded. Only ``False`` is evidence of a failure; ``None`` is the
+    absence of evidence and must not license a second delivery. A tail that read
+    the file earlier and has lost it since still answers from those old reads,
+    so its answer counts only if some poll here got through.
     """
     deadline = clock() + VERIFY_WAIT_S
-    while clock() < deadline:
-        tail.poll()
+    read = False
+    while True:
+        read = tail.poll() or read
         if tail.landed(text) is True:
             return True
+        if clock() >= deadline:
+            break
         sleep(VERIFY_POLL_S)
-    return tail.landed(text)
+    return tail.landed(text) if read else None
 
 
 def _nudge_text(item: pending.Pending, waited_s: int) -> str:
@@ -642,6 +659,52 @@ def _hold_and_nudge(item: pending.Pending, *, tail=None, read_status=None,
     return item
 
 
+_ACTIVE: dict[int, list[int]] = {}
+_ACTIVE_LOCK = threading.Lock()
+
+
+def _superseded(item: pending.Pending) -> bool:
+    """Has a newer promise replaced ``item`` for its session?
+
+    A session owes one resume. Each self-directed slash command records a promise
+    and starts a watcher, and the file holds only the newest, so an older watcher
+    that carried on would deliver a second resume and clear the first's record.
+    """
+    with _ACTIVE_LOCK:
+        if any(ms > item.injected_at_ms for ms in _ACTIVE.get(item.repl_pid, ())):
+            return True
+    if pending.delivered_ms(item.repl_pid) > item.injected_at_ms:
+        return True
+    on_disk = pending.read(item.repl_pid)
+    return on_disk is not None and on_disk.injected_at_ms != item.injected_at_ms
+
+
+def _rc_link(repl_pid: int) -> Optional[str]:
+    try:
+        job = roster.job_of_pid(repl_pid, sessions_dir=session_target.SESSIONS_DIR)
+        bridge = (roster.job_bridge_id(job, session_target.JOBS_DIR) if job
+                  else roster.pid_bridge_id(
+                      repl_pid, sessions_dir=session_target.SESSIONS_DIR))
+        return roster.bridge_link(bridge)
+    except Exception as exc:  # noqa: BLE001 - the link is a nicety
+        log.warning("reflection: could not read the Remote Control link of pid "
+                    "%s: %s", repl_pid, exc)
+        return None
+
+
+def _resume_text(item: pending.Pending) -> pending.Pending:
+    """``item`` with the resume rendered from what the changes did by now."""
+    if not item.changes:
+        return item
+    on_disk = pending.read(item.repl_pid)
+    if on_disk is not None and on_disk.injected_at_ms == item.injected_at_ms:
+        item = replace(item, changes=on_disk.changes)
+    link = (_rc_link(item.repl_pid)
+            if any(c.kind == "rc_on" for c in item.changes) else None)
+    return replace(item, followup=pending.render_followup(
+        item.changes, link, item.closing))
+
+
 def _await_and_resume(item: pending.Pending, *, tail=None, read_status=None,
                       **kw) -> None:
     """Wait for the command to run, then deliver the resume — and prove it.
@@ -671,13 +734,15 @@ def _await_and_resume(item: pending.Pending, *, tail=None, read_status=None,
     tail.watch(item.text)
     tail.watch(item.followup)
 
+    with _ACTIVE_LOCK:
+        _ACTIVE.setdefault(item.repl_pid, []).append(item.injected_at_ms)
     try:
         _await_and_resume_inner(item, tail, who, read_status=read_status, **kw)
     finally:
-        # Rearms on every exit path below: VANISHED, delivered-and-verified, or
-        # gave up after MAX_DELIVERY_ROUNDS. Covers replay_pending() for free,
-        # since it re-enters this function per surviving promise.
-        stop_gate.rearm(item.session_id)
+        with _ACTIVE_LOCK:
+            _ACTIVE[item.repl_pid].remove(item.injected_at_ms)
+            if not _ACTIVE[item.repl_pid]:
+                del _ACTIVE[item.repl_pid]
 
 
 def _round_backoff(failures: int) -> float:
@@ -704,6 +769,11 @@ def _await_and_resume_inner(item: pending.Pending, tail, who,
                                            injected_at_ms=item.injected_at_ms,
                                            text=item.text, label=who,
                                            read_status=read_status)
+        if _superseded(item):
+            log.info("reflection: a newer command replaced the one session %s "
+                     "was waiting on; its resume is that command's to send",
+                     who)
+            return
         if outcome == watcher.VANISHED:
             pending.clear(item.repl_pid)
             return
@@ -732,10 +802,20 @@ def _await_and_resume_inner(item: pending.Pending, tail, who,
             pending.record(item)
             continue
 
+        # Checked again here, with nothing awaited since the clear below: a
+        # clear that follows a newer promise's record would erase it.
+        if _superseded(item):
+            return
+        # The resume is worded now, not when the command was queued: what a
+        # change did is known only once its dialog has been answered.
+        item = _resume_text(item)
+        tail.watch(item.followup)
+
         # A copy from an earlier round can turn up after its verify gave up on
         # it: a paste queued behind `/compact` shows only when compaction ends.
         tail.poll()
         if tail.landed(item.followup, since_ms=item.injected_at_ms) is True:
+            pending.mark_delivered(item.repl_pid, item.injected_at_ms)
             pending.clear(item.repl_pid)
             log.info("reflection: the resume for session %s arrived from an "
                      "earlier round; not typing it again", who)
@@ -748,7 +828,10 @@ def _await_and_resume_inner(item: pending.Pending, tail, who,
         # working — whereas clearing first can only lose a resume if the process
         # dies inside the delivery itself, which is the same hole every other
         # step has.
+        pending.mark_delivered(item.repl_pid, item.injected_at_ms)
         pending.clear(item.repl_pid)
+        if any(c.kind == "cd" for c in item.changes):
+            _reconnect(item.repl_pid, who, tail=tail, read_status=read_status, **kw)
         try:
             deliver(item.repl_pid, item.followup, enter=True, tail=tail,
                     read_status=read_status, what="the deferred resume", **kw)
@@ -782,6 +865,16 @@ def _await_and_resume_inner(item: pending.Pending, tail, who,
               "after %s failed deliveries; the promise is left in `pending` and "
               "that session will sit idle until something resumes it",
               who, MAX_DELIVERY_ROUNDS)
+
+
+def _reconnect(repl_pid: int, who: str, **kw) -> None:
+    """Type :data:`RECONNECT_AFTER_MOVE`; a failure is logged and the resume still goes in."""
+    try:
+        deliver(repl_pid, RECONNECT_AFTER_MOVE, enter=True,
+                what="the MCP reconnect after a move", **kw)
+    except DeliveryError as exc:
+        log.warning("reflection: could not reconnect awm for session %s after its "
+                    "move: %s", who, exc)
 
 
 def resume_watch(item: pending.Pending, *,

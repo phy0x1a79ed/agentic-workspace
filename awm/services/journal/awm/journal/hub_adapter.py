@@ -21,6 +21,7 @@ from awm.journal import channel, dao, migrate, search_index
 from awm.journal.operations.goals import GOAL_HANDLERS, GOAL_MANIFEST_FUNCTIONS
 from awm.journal.operations.posts import POST_HANDLERS, POST_MANIFEST_FUNCTIONS
 from awm.journal.operations.render import RENDER_HANDLERS, RENDER_MANIFEST_FUNCTIONS
+from awm.persistence import embeddings
 
 log = logging.getLogger("awm.journal.hub_adapter")
 
@@ -48,6 +49,7 @@ async def _on_start() -> None:
     log.info("scopes migration: %s", result)
     await asyncio.to_thread(search_index.ensure_schema)
     spawn_supervised("journal:search-backfill", search_index.backfill_loop)
+    embeddings.warm()
 
 
 async def main() -> None:

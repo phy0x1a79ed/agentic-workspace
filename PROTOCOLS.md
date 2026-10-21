@@ -33,6 +33,10 @@ Nothing enumerable goes here, with one exception: a table that records a decisio
 
 `awm scope heal` repairs scopes. It is idempotent. Run it with `--dry-run` first to preview. It keeps scope-local metadata inside `.awm/` only. It also lists worktrees that no scope row names and live rows whose worktree is gone. It registers and retires neither. Register a listed worktree that has `.awm/context.md` with `scope repair`, and one without it with `scope ensure`. Retire a listed row with `scope complete`.
 
+`scope private` hides a project or scope from every other node. `FEDERATION.md` § *Private projects* covers what it hides.
+
+`scope tag` labels a project, a scope or a scope group such as `metasmith/lab`, and `scope search` and the Swarm board filter by it. A scope takes the tags of its nearest tagged level, and a nearer set replaces a farther one. Tag Tony's own work `tony`. Tag work `lab` when it came in through a Slack seat from someone who is not Tony. Pass `tags` to `scope create` or `reflection start_other` when you start such work, because a new project starts with no tags. A seat added to `social.toml` gets no tags from its keeper, so tag its scope by hand.
+
 ## Scope naming
 
 New scopes take a prefix that names the kind of work:
@@ -106,6 +110,8 @@ The dvc service schedules two nightly jobs. They do different things.
 - **The mirror** copies the rest of the workspace to a sibling remote root. It deletes: a file removed here is removed there on the next run. It skips the cache and the materialised checkouts, because the archive holds those bytes and Globus cannot preserve a hardlink.
 
 Every mirror destination sits under `…/workspace/`. A delete-enabled transfer therefore cannot reach the archive, whatever its exclusion logic does.
+
+Keep a regenerable directory out of the mirror with a `CACHEDIR.TAG` file, per the [Cache Directory Tagging spec](https://bford.info/cachedir/). Tag package caches, run scratch and shard pulls that a pinned file already reassembles. The mirror pays per file, not per byte: about a million small files make a run take most of a day.
 
 Neither job replaces pushing a branch. `dvc(verb="coverage")` reports what exists on no remote.
 

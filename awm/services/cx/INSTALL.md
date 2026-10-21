@@ -10,10 +10,12 @@ launch paints an already-started renderer instead of booting one.
 This file holds what installing and operating the service needs, and the
 reasoning that reading the code does not give: who may start a session and what
 a restricted caller gets, where a session's mode lives, why a session is moved
-exactly once, which of two files answers which question about a session, how a
-session comes by its name, why the service refuses to seed or start on a node
-with no daemon, which trust rule applies to a move and to a start, and what the
-pool deliberately does not do. The verb list is in `awm cx --help`.
+exactly once, which of two files answers which question about a session, what
+standing brief a worker gets, how a session comes by its name, why the service
+refuses to seed or start on a node with no daemon, which trust rule applies to a
+move and to a start, how a stopped session resumes, why a pinned session is
+removed when it stops, and what the pool deliberately does not do. The verb list
+is in `awm cx --help`.
 
 ## Install
 
@@ -48,24 +50,30 @@ the gateway logs a warning at boot if a station enables this service.
 
 ## Operate
 
-    awm reflection list_other           # every session on this node, and the pool summary
-    awm reflection start_other --help   # start a named session in a scope's worktree
-    awm reflection stop_other --help    # stop a session that start_other created
-    awm reflection remove_other         # what the pool may delete, and why. Deletes nothing
-    awm reflection remove_other --apply # delete it
-    awm reflection seed_other           # start one warm session now, or say why it is refused
+    awm reflection list-other           # every session on this node, and the pool summary
+    awm reflection start-other --help   # start a named session in a scope's worktree
+    awm reflection stop-other --help    # stop a session that start_other created
+    awm reflection resume-other --help  # bring a stopped session back with its conversation
+    awm reflection remove-other         # what the pool may delete, and why. Deletes nothing
+    awm reflection remove-other --apply # delete it
+    awm reflection seed-other           # start one warm session now, or say why it is refused
 
-A dead job reads `stopped` in `list_other` when `claude stop` ended it, and `gone`
-when it died. **CAUTION** `reporting` reads this difference: `stopped` closes the
-session's task as done, and `gone` leaves it on the board, flagged as ended.
+`claude stop` drops a job from the roster and leaves its state record as it was.
+`stop_other` therefore sets the record's `state` to `stopped` itself. A dead job
+that the roster still holds reads `stopped` in `list_other` when its record says
+so, and `gone` otherwise. **CAUTION** `reporting` reads this record for a job
+missing from `list_other`. `stopped`, or a removed job directory, moves the
+session's card to Pending review. Any other state keeps the card in its column,
+flagged "not running, resumable".
 
 `list_other` derives the pool summary from the live session records. There is no
 stored pointer to "the current session", because a stored pointer is a second
 thing that has to agree with the records and it is the half that goes stale.
 
 Every knob is an environment variable on the service process. `AWM_CX_WANT=0`
-stops the pool without stopping the service. `AWM_CX_LOOP=0` stops the reconcile
-loop alone. `AWM_CX_ROTATE_AGE_S` sets the age at which a session is replaced.
+stops the pool without stopping the service. `AWM_CX_LOOP=0` stops seeding and
+rotation alone. The reconcile loop keeps adopting late starts, because cx
+refuses to stop or resume a job it holds no lineage record for. `AWM_CX_ROTATE_AGE_S` sets the age at which a session is replaced.
 `AWM_CX_PREFIX`, `AWM_CX_SEED_DIR`, `AWM_CX_MODEL`, `AWM_CX_EFFORT` and
 `AWM_CX_CLAUDE` shape what is seeded. `AWM_CX_PROJECTS` sets the root of the
 scope worktrees that `start_other` uses, and `AWM_CX_MCP_SOURCE` names the MCP config a
@@ -121,6 +129,30 @@ the bridge connects, and `list_other` reports `link` for every session.
 
 The arguments `allowed_tools`, `tools`, `restricted` and `strict_mcp` map to
 `claude --allowedTools`, `--tools`, `--restricted` and `--strict-mcp-config`.
+`system_prompt` and `autocompact` map to `--append-system-prompt` and
+`--autocompact`. Use `system_prompt` for anything the session must keep, because
+a compaction summary rewrites the conversation and never the system prompt.
+
+#### A worker gets a lifecycle brief
+
+cx appends the lifecycle brief (`lifecycle.BRIEF`) after any `system_prompt`.
+The brief tells the session to work in its work's scope, to ask Tony through
+`request_human`, and to sign off with the `retire` skill when the work is done:
+debrief, report back, and stop itself. It spells those steps out for a node
+without `retire`. It rides in the system prompt so that no compaction paraphrases it away.
+
+- A calling session is named as the starter and as the place to report to.
+  `started_by` names the starter only when no session called, such as
+  reporting's `/new-agent`. Without either, the brief says "an awm service".
+- A pinned start gets no brief. A kept seat has its own brief from the keeper,
+  and the keeper's spec hash covers the system prompt.
+- `brief: false` leaves the brief out.
+
+**CAUTION** The lineage record and the `list_other` row carry `brief`.
+Reporting opens a board card for each live job with `brief` set, so a session
+started without the brief stays off the board until it plans, claims or asks.
+A job runs its first prompt before `start` writes its lineage record, so until
+then `list_other` reads the job's fields from its pending record.
 
 **CAUTION** `--restricted` refuses bypass, so a restricted start runs in its
 named mode with no way to reach bypass. A restricted session also ignores user
@@ -225,6 +257,20 @@ refuses to seed or start when no daemon is running. No daemon means nobody is
 using Claude Code on that node, and a cold first launch is the right answer
 there.
 
+The `keep` service holds a daemon on every node from boot, in the user unit
+`awm-claude-daemon.service`. Before cx refuses a start, resume or stop, it asks
+`keep` to ensure the daemon. It refuses with `code: "daemon_down"` only when
+that fails. `awm/services/keep/` holds the unit's launch.
+
+**CAUTION** cx launches each session through the user manager's bus under
+`/run/user/<uid>`, and reaches the daemon's sockets under `/tmp`. A gateway run as
+a sandboxed system unit must see both, so no `ProtectHome=yes` and no
+`PrivateTmp=yes` there. Hidden from cx, `claude --bg` starts inside the gateway's
+unit. That client starts a second daemon, which evicts keep's daemon and
+dies with the next gateway restart, taking every session with it. So with no user
+bus, cx compares the daemon's mount namespace with its own and refuses a start
+when they differ. A node with no systemd and one namespace launches directly.
+
 The transient systemd unit covers the residual race where the daemon dies
 between the check and the launch. It carries `KillMode=process`. Without that,
 tearing the unit down kills its whole control group, which in that race holds
@@ -285,6 +331,36 @@ detach by replacing itself with `claude agents`. That picker does not return on
 its own. Ctrl+Z is the documented way out. An earlier implementation ran a
 watcher beside the attach to signal the picker away, which cost the left-arrow
 route to the agent view; the vendor's behaviour is kept instead.
+
+### A stopped session resumes under its own id
+
+`resume_other` runs `claude respawn <job>`. It brings the job back under the
+same id, with the same transcript, the same `respawnFlags` and a warm prompt
+cache, and it re-pins a job whose lineage says it was pinned. It takes the same
+callers as `stop_other`.
+
+**CAUTION** `claude --bg --resume <session id>` looks like the same operation
+and is not. On Claude Code 2.1.301 it starts a new, empty job under a new id.
+
+`resume_other` refuses a running job, because `claude respawn` restarts a live
+one. It also refuses a job with no `state.json`, which `claude rm` deleted, and
+a job whose transcript is gone. So a stop that keeps the conversation, a crash
+and a daemon retirement leave a job resumable, and a `stop_other` of a pinned
+job does not. The launch runs in the same transient unit as a start, and the
+same daemon guard applies.
+
+### A pinned session is removed when it stops
+
+`start` with `pin=true` adds the job to `~/.claude/jobs/pins.json`, and the
+daemon retires a pinned session last. Social's keeper pins every kept-seat
+agent this way. A pin outlives its job unless something drops it, and dead ids
+then pile up in the file. So a `stop` of a pinned job unpins it and runs
+`claude rm`, and each reconcile tick drops the pins whose job directory is gone.
+
+**CAUTION** The Claude CLI edits the same file under a `pins.json.lock`
+directory that it breaks after five seconds. `awm/claudedaemon/pins.py` takes
+that lock the same way. A write that skips the lock races the CLI and loses
+pins.
 
 ### The claim rides the ordinary gateway
 

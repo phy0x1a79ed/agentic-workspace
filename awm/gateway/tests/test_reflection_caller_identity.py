@@ -103,8 +103,17 @@ def test_other_domains_untouched():
     assert args["args"]["_caller_pid"] == 5
 
     flat = {}
-    _stamp_caller("journal_post", flat, "2488")
+    _stamp_caller("journal_fetch", flat, "2488")
     assert "_caller_pid" not in flat
+
+
+def test_a_journal_post_is_stamped_with_its_session():
+    flat = {"_caller_pid": 5}
+    _stamp_caller("journal_post", flat, "2488")
+    assert flat["_caller_pid"] == 2488
+    domain = {"verb": "post", "args": {}}
+    _stamp_caller("journal", domain, "2488")
+    assert domain["args"]["_caller_pid"] == 2488
 
 
 # ---------------------------------------------------------------------------
@@ -280,7 +289,7 @@ async def test_svc_door_stamps_from_the_header(monkeypatch):
     assert args["_caller_pid"] == 2488
 
 
-async def test_svc_door_ignores_the_header_on_an_edge_request(monkeypatch):
+async def test_svc_door_ignores_the_header_on_an_edge_request(monkeypatch, domestic_peers):
     args = await _post_svc(monkeypatch, "cx", "start", {"_caller_pid": 999},
                            headers={"X-Awm-Session-Pid": "2488"}, as_="peer:capella")
     assert "_caller_pid" not in args
@@ -485,3 +494,23 @@ def test_trilium_reads_are_not_stamped():
     args = {"verb": "note_get", "args": {"_caller_pid": 9}}
     _stamp_caller("trilium", args, "2488")
     assert args["args"] == {"_caller_pid": 9}
+
+
+def test_every_tether_verb_is_stamped_so_a_session_answers_to_its_minter():
+    for verb in ("invite", "drain", "run", "send", "cut", "status"):
+        flat = {}
+        _stamp_caller(f"tether_{verb}", flat, "2488")
+        assert flat["_caller_pid"] == 2488, verb
+    domain = {"verb": "drain", "args": {"_caller_pid": 1}}
+    _stamp_caller("tether", domain, "2488")
+    assert domain["args"]["_caller_pid"] == 2488
+
+
+def test_a_cli_tether_call_is_stamped_with_the_session_it_runs_under(monkeypatch):
+    """The CLI sends its session through the descendant header; the gateway
+    walks it to the session's own pid, as it does for a hook."""
+    from awm.gateway import mcp_caller
+    monkeypatch.setattr(mcp_caller, "resolve_caller_pid", lambda pid: 550415)
+    flat = {}
+    _stamp_caller("tether_run", flat, None, "777")
+    assert flat["_caller_pid"] == 550415

@@ -45,11 +45,32 @@ class Refused(Exception):
 
 
 def daemon_refusal(roster_path: Path | None = None) -> str | None:
-    """Why a launch must not happen right now, or None if it may."""
-    if roster.daemon_pid(roster_path) is None:
+    """Why a launch must not happen right now, or None if it may.
+
+    With no user manager the launch runs straight from this process, and it
+    joins the running daemon only if it can see that daemon's sockets. A
+    gateway under a hardened unit has a mount namespace of its own, so its
+    launch starts a second daemon inside its own control group, which takes
+    the user's sessions down with the next restart.
+    """
+    pid = roster.daemon_pid(roster_path)
+    if pid is None:
         return ("no claude code daemon is running — launching now would put every "
                 "background session on this node inside awm's control group")
+    if user_manager_env() is None and not _shares_mount_namespace(pid):
+        return (f"the claude code daemon (pid {pid}) is not reachable from here: "
+                "there is no user systemd manager, and the daemon runs in another "
+                "mount namespace — launching now would start a second daemon "
+                "inside awm's control group")
     return None
+
+
+def _shares_mount_namespace(pid: int) -> bool:
+    """Whether ``pid`` shares this process's mount namespace; unreadable is no."""
+    try:
+        return os.readlink(f"/proc/{pid}/ns/mnt") == os.readlink("/proc/self/ns/mnt")
+    except OSError:
+        return False
 
 
 def default_claude_bin() -> str:
@@ -93,6 +114,12 @@ def build_argv(*, claude: str, name: str, flags: list[str] | tuple[str, ...],
     cmd = [claude, "--bg", f"--name={name}", *flags]
     if prompt:
         cmd += ["--", prompt]
+    return in_unit(cmd, cwd=cwd, env=env, unit_prefix=unit_prefix)
+
+
+def in_unit(cmd: list[str], *, cwd: str | Path, env: dict[str, str],
+            unit_prefix: str) -> tuple[list[str], str, dict[str, str]]:
+    """``cmd`` wrapped in a transient user unit when there is a user manager."""
     bus = user_manager_env()
     if not bus:
         return cmd, "directly (no user systemd manager)", {}
@@ -156,3 +183,50 @@ async def launch(*, cwd: str | Path, name: str,
                 return s
         await asyncio.sleep(POLL_S)
     raise TimeoutError(f"no new {label} session appeared within {limit:.0f}s")
+
+
+def _alive(s: roster.Session) -> bool:
+    return bool(s.repl_proc_start) and roster.proc_start(s.repl_pid) == s.repl_proc_start
+
+
+async def respawn(job: str, *, claude: str | None = None,
+                  unit_prefix: str = "awm-claude",
+                  roster_path: Path | None = None,
+                  jobs_dir: Path | None = None,
+                  timeout: float | None = None) -> roster.Session:
+    """Bring a stopped background job back under its own id, conversation intact.
+
+    `claude respawn` keeps the job id, the transcript and the launch flags.
+    `claude --bg --resume <session>` does not: it starts a new, empty job. A
+    respawn of a live job restarts it, so a live job is refused. Raises
+    `Refused` for that or for a missing daemon, `TimeoutError` if the job does
+    not come back live.
+    """
+    refusal = daemon_refusal(roster_path)
+    if refusal:
+        raise Refused(refusal)
+    before = next((s for s in roster.load(roster_path, jobs_dir) if s.short == job), None)
+    if before is not None and _alive(before):
+        raise Refused(f"job {job} is running")
+    stale = before.repl_proc_start if before else None
+
+    limit = LAUNCH_TIMEOUT_S if timeout is None else timeout
+    home = Path.home()
+    argv, how, extra_env = in_unit([claude or default_claude_bin(), "respawn", job],
+                                   cwd=home, env={}, unit_prefix=unit_prefix)
+    log.info("claudedaemon: respawning %s %s", job, how)
+    proc = await asyncio.create_subprocess_exec(
+        *argv, cwd=str(home), env={**os.environ, **extra_env, "HOME": str(home)},
+        stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+    try:
+        await asyncio.wait_for(proc.wait(), timeout=limit)
+    except (TimeoutError, asyncio.TimeoutError):
+        proc.kill()
+
+    deadline = asyncio.get_running_loop().time() + limit
+    while asyncio.get_running_loop().time() < deadline:
+        for s in roster.load(roster_path, jobs_dir):
+            if s.short == job and s.repl_proc_start != stale and _alive(s):
+                return s
+        await asyncio.sleep(POLL_S)
+    raise TimeoutError(f"job {job} did not come back within {limit:.0f}s")

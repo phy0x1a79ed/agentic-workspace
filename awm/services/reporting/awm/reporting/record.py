@@ -7,7 +7,7 @@ import time
 
 from markdown_it import MarkdownIt
 
-from awm.reporting.ledger import COLUMNS, DONE
+from awm.reporting.ledger import COLUMNS, DONE, OPEN
 
 TITLE_CHARS = 80
 
@@ -63,6 +63,18 @@ def _line(label: str, value: object) -> list[str]:
     return [f"<li><strong>{label}:</strong> {_esc(value)}</li>"] if value else []
 
 
+def _agent(task: dict) -> list[str]:
+    """The session working an open task: its name, linked to its claude.ai page when it has one."""
+    name, link = task.get("agent"), task.get("agent_link") or ""
+    if not name or task["state"] not in OPEN or task.get("ended"):
+        return []
+    if link.startswith("https://"):
+        value = f'<a href="{_esc(link)}">{_esc(name)}</a>'
+    else:
+        value = _esc(name) + (f" (<code>{_esc(link)}</code>)" if link else "")
+    return [f"<li><strong>Agent:</strong> {value}</li>"]
+
+
 def _block(summary: str, body: str) -> str:
     return f'<details class="trilium-collapsible"><summary>{_esc(summary)}</summary>\n{body}\n</details>'
 
@@ -79,17 +91,24 @@ def _checklist(live: list[dict]) -> str:
     return '<ul class="todo-list">\n' + "\n".join(items) + "\n</ul>"
 
 
-def render_record(task: dict, live: list[dict], removed: list[dict], events: list[dict]) -> str:
+#: Ended details recorded before the detail named the cause, as their cards always showed them.
+_LEGACY_ENDED = {"": "the session died without a stop; resumable",
+                 "the session died without a stop": "the session died without a stop; resumable"}
+
+
+def render_record(task: dict, live: list[dict], removed: list[dict], events: list[dict],
+                  ended: str = "") -> str:
     """The card body: a status block, then Plan, Todo, Journal and, once an item is removed, Removed as closed collapsibles."""
     where = "/".join(p for p in (task.get("project"), task.get("scope")) if p)
     status = [
         *_line("State", COLUMNS.get(task["state"], task["state"])),
+        *_agent(task),
         *_line("Scope", where), *_line("Peer", task["node"]),
         *_line("Job", task["key"] if task["kind"] == "bg" else ""),
         *_line("Session", task.get("session_id")),
         *_line("Model", task.get("model")), *_line("Effort", task.get("effort")),
         *_line("Waiting on", task.get("reason") if task["state"] in ("blocked", "review") else ""),
-        *_line("Ended", "the session died without a stop; resumable" if task.get("ended") else ""),
+        *_line("Ended", _LEGACY_ENDED.get(ended, ended) if task.get("ended") else ""),
         *_line("Started", _at(task["started"])), *_line("Closed", _at(task.get("closed"))),
     ]
     done = sum(1 for i in live if i["status"] == "completed")

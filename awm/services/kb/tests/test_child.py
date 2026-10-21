@@ -40,6 +40,12 @@ def test_child_env_points_the_server_at_the_shipped_indexes_and_graph_that_exist
     assert server.child_env()["KB_VECTORS"] == "/elsewhere"
 
 
+def test_child_env_puts_the_kb_env_lib_first(kb_paths, monkeypatch):
+    monkeypatch.setenv("KB_PYTHON", "/envs/kb/bin/python")
+    monkeypatch.setenv("LD_LIBRARY_PATH", "/opt/lib")
+    assert server.child_env()["LD_LIBRARY_PATH"] == os.pathsep.join(["/envs/kb/lib", "/opt/lib"])
+
+
 def _wait(pred, timeout=10.0):
     deadline = time.time() + timeout
     while time.time() < deadline:

@@ -72,13 +72,15 @@ async def test_the_relay_sends_the_stamped_sessions_name_and_ignores_the_models(
     posted = await hub_adapter.post({"kind": "request", "recipient": "alpha", "title": "t",
                                      "agent": "forged", "_caller_pid": 4242})
     assert posted["ok"] and relay.board.last_post_extra["agent"] == "the real session"
+    assert relay.board.last_post_extra["node"] == "deneb"
     card_id = posted["card"]["id"]
     await hub_adapter.claim({"card_id": card_id, "agent": "forged", "node": "elsewhere",
                              "_caller_pid": 4242})
     assert relay.board.last_claim_extra == {"agent": "the real session", "node": "deneb"}
     sent = await hub_adapter.message_post({"card_id": card_id, "body": "hi", "agent": "forged",
-                                           "_caller_pid": 4242})
+                                           "node": "elsewhere", "_caller_pid": 4242})
     assert sent["message"]["agent"] == "the real session"
+    assert sent["message"]["node"] == "deneb"
 
 
 async def test_a_model_supplied_agent_is_dropped_when_no_session_is_stamped(relay):
@@ -104,7 +106,7 @@ async def test_the_new_verbs_relay_to_the_host(relay):
     assert [e["type"] for e in later["events"]] == ["card.moved"]
     rejected = await hub_adapter.reject({"card_id": card_id, "reason": "no", "_caller_pid": 4242})
     assert rejected["ok"] and rejected["card"]["state"] == "rejected"
-    assert relay.board.last_reject_extra == {"agent": "the real session"}
+    assert relay.board.last_reject_extra == {"agent": "the real session", "node": "deneb"}
 
 
 # -- the migration verbs ---------------------------------------------------------------
@@ -116,6 +118,14 @@ class Recorder:
 
     def migrate_columns(self, dry_run):
         self.calls.append(("columns", dry_run))
+        return {"dry_run": dry_run}
+
+    def migrate_archive(self, dry_run):
+        self.calls.append(("archive", dry_run))
+        return {"dry_run": dry_run}
+
+    def migrate_homes(self, dry_run):
+        self.calls.append(("homes", dry_run))
         return {"dry_run": dry_run}
 
     def migrate_threads(self, dry_run, path):
@@ -137,20 +147,28 @@ async def test_the_migrations_default_to_a_dry_run_and_read_the_default_proposal
     assert (await hub_adapter.migrate_threads({}, None))["ok"] is True
     await hub_adapter.migrate_threads({"dry_run": "false", "proposal_path": "/x/p.json"}, None)
     await hub_adapter.migrate_columns({"dry_run": False}, None)
+    assert (await hub_adapter.migrate_archive({}, None))["dry_run"] is True
+    await hub_adapter.migrate_archive({"dry_run": "false"}, None)
+    assert (await hub_adapter.migrate_homes({}, None))["dry_run"] is True
+    await hub_adapter.migrate_homes({"dry_run": "false"}, None)
     assert host.board.calls == [
         ("columns", True), ("threads", True, str(tmp_path / "thread-proposal.json")),
-        ("threads", False, "/x/p.json"), ("columns", False)]
+        ("threads", False, "/x/p.json"), ("columns", False),
+        ("archive", True), ("archive", False), ("homes", True), ("homes", False)]
 
 
 @pytest.mark.parametrize("caller", ["peer", "peer:shaula", "user:x", "anything"])
 async def test_the_migrations_refuse_every_stamped_caller(host, caller):
     for reply in (await hub_adapter.migrate_columns({"dry_run": False}, caller),
+                  await hub_adapter.migrate_archive({"dry_run": False}, caller),
+                  await hub_adapter.migrate_homes({"dry_run": False}, caller),
                   await hub_adapter.migrate_threads({"dry_run": False}, caller)):
         assert reply["ok"] is False
     assert host.board.calls == []
 
 
-@pytest.mark.parametrize("verb", ["migrate_columns", "migrate_threads"])
+@pytest.mark.parametrize("verb", ["migrate_columns", "migrate_archive", "migrate_threads",
+                                  "migrate_homes"])
 async def test_the_client_role_refuses_the_migrations(monkeypatch, verb):
     monkeypatch.setenv("AWM_BOARD_ROLE", "client")
     monkeypatch.setattr(hub_adapter, "HOST", SimpleNamespace(board=Recorder()))

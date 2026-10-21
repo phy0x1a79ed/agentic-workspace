@@ -20,7 +20,7 @@ import pytest
 pytestmark = [pytest.mark.smoke]
 
 from awm import claudedaemon
-from awm.reflection import (oc_inject, permission_mode, session_target,
+from awm.reflection import (guards, oc_inject, permission_mode, session_target,
                             tmux_inject)
 
 
@@ -67,7 +67,7 @@ class FakeSock:
     # -- assertions helpers ------------------------------------------------
 
     def frames(self) -> list[tuple[int, bytes]]:
-        reader = claudedaemon._FrameReader()
+        reader = claudedaemon.pty._FrameReader()
         out = []
         for blob in self.sent:
             out.extend(reader.feed(blob))
@@ -361,13 +361,36 @@ class FakeModeSession:
 
     label = "fake"
 
-    def __init__(self, cycle):
+    def __init__(self, cycle, lag=0, hidden_until_repaint=False):
         self._cycle = list(cycle)
         self._at = 0
+        self._lag = lag
+        self._stale = 0
+        self._hidden = hidden_until_repaint
         self.presses = 0
+        self.repaints = 0
         self.closed = False
 
+    def repaint(self):
+        if not self._hidden:
+            return False
+        self.repaints += 1
+        self._hidden = False
+        return True
+
+    def glance(self):
+        if self._stale:
+            self._stale -= 1
+            return self._paint(self._cycle[self._at - 1])
+        return self.read()
+
     def read(self):
+        if self._hidden:
+            return "✻ Working… (13m 43s)"
+        return self._paint(self._cycle[self._at])
+
+    @staticmethod
+    def _paint(mode):
         return {"bypassPermissions": "⏵⏵ bypass permissions on",
                 "acceptEdits": "⏵⏵ accept edits on",
                 "plan": "⏸ plan mode on",
@@ -376,7 +399,7 @@ class FakeModeSession:
                 # from a footer we failed to read, which is why it classifies as
                 # unknown rather than as a mode.
                 "default": "❯ ",
-                "unknown": "Esc to cancel"}[self._cycle[self._at]]
+                "unknown": "Esc to cancel"}[mode]
 
     def forget(self):
         self.forgot = getattr(self, "forgot", 0) + 1
@@ -384,13 +407,14 @@ class FakeModeSession:
     def cycle(self):
         self.presses += 1
         self._at = (self._at + 1) % len(self._cycle)
+        self._stale = self._lag
 
     def close(self):
         self.closed = True
 
 
-def _run_mode(cycle, monkeypatch, lane=None):
-    sess = FakeModeSession(cycle)
+def _run_mode(cycle, monkeypatch, lane=None, lag=0, hidden=False):
+    sess = FakeModeSession(cycle, lag=lag, hidden_until_repaint=hidden)
     lane = lane or session_target.TmuxLane(pane="%1", session_id="sid",
                                            repl_pid=1234)
     monkeypatch.setattr(session_target, "resolve", lambda pid, **kw: lane)
@@ -453,17 +477,95 @@ def test_mode_refuses_without_a_caller():
         permission_mode.ensure_bypass(caller_pid=None)
 
 
-def test_mode_discards_buffered_output_before_each_press(monkeypatch):
-    # The daemon transport is an append-only byte stream, so every footer ever
-    # drawn is still in the buffer. `default` draws no indicator at all, so
-    # without discarding first, a session sitting in default reads back as
-    # whichever mode it was in before — observed live, and it can stop the walk
-    # early by looking like it came full circle.
+def test_mode_waits_for_a_slow_repaint_instead_of_pressing_past_it(monkeypatch):
+    # A busy session can take a few polls to repaint its footer. Reading too
+    # early and pressing again is how a walk steps past bypass.
     res, sess = _run_mode(
         ["auto", "default", "acceptEdits", "plan", "bypassPermissions"],
-        monkeypatch)
-    assert res["ok"]
-    assert sess.forgot == sess.presses, "every press must be preceded by a discard"
+        monkeypatch, lag=3)
+    assert res["ok"] and res["mode"] == "bypassPermissions"
+    assert sess.presses == 4
+
+
+def test_mode_repaints_a_footer_the_replay_no_longer_holds(monkeypatch):
+    # Measured on a session 14 minutes into a turn: 260 KB of replayed spinner
+    # frames and no mode label anywhere in them.
+    res, sess = _run_mode(
+        ["auto", "default", "acceptEdits", "plan", "bypassPermissions"],
+        monkeypatch, hidden=True)
+    assert sess.repaints == 1
+    assert res["ok"] and res["mode"] == "bypassPermissions"
+
+
+def test_daemon_repaint_shrinks_a_row_and_restores_it():
+    # A resize to the current size repaints nothing, measured live.
+    sock = FakeSock(HELLO)
+    conn = claudedaemon.connect(target(), opener=opener_for(sock),
+                                sleep=lambda _s: None)
+    conn.repaint(209, 57)
+    sizes = [json.loads(p) for k, p in sock.frames()
+             if b'"resize"' in p]
+    assert sizes == [{"t": "resize", "cols": 209, "rows": 56},
+                     {"t": "resize", "cols": 209, "rows": 57}]
+
+
+def test_a_daemon_session_without_a_known_size_is_not_resized():
+    sock = FakeSock(HELLO)
+    sess = permission_mode._DaemonSession(target(), opener=opener_for(sock),
+                                          sleep=lambda _s: None)
+    assert sess.repaint() is False
+    assert not [p for _k, p in sock.frames() if b'"resize"' in p]
+
+
+def test_mode_reads_a_rendered_screen_not_the_raw_stream():
+    # Measured on a busy background session: spinner repaints after the footer
+    # push it out of the classifier's tail window of the raw stream, so bypass
+    # read as unknown. Rendering the stream puts the footer back on the last row.
+    footer_row = "\x1b[40;1H  ⏵⏵ bypass permissions on · esc to interrupt"
+    spinner = "".join(f"\x1b[30;1H\x1b[2K✻ Working… ({i}s)" for i in range(400))
+    stream = footer_row + spinner
+    assert permission_mode.classify(stream) == "unknown"
+    assert permission_mode.classify(
+        guards.current_screen(stream)) == "bypassPermissions"
+
+
+def test_mode_walks_on_one_session_never_overlap(monkeypatch):
+    # A hook whose HTTP call timed out retried while the first walk was still
+    # pressing keys; the two walks stepped past bypass between them.
+    import threading
+    lane = session_target.TmuxLane(pane="%1", session_id="sid", repl_pid=1234)
+    monkeypatch.setattr(session_target, "resolve", lambda pid, **kw: lane)
+    active, overlapped = [0], []
+
+    def walk(target, **kw):
+        active[0] += 1
+        overlapped.append(active[0] > 1)
+        threading.Event().wait(0.05)
+        active[0] -= 1
+        return {"ok": True}
+
+    monkeypatch.setattr(permission_mode, "_walk", walk)
+    threads = [threading.Thread(
+        target=permission_mode.ensure_bypass, kwargs={"caller_pid": 1234})
+        for _ in range(3)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert overlapped == [False, False, False]
+
+
+def test_mode_refuses_when_another_walk_holds_the_session(monkeypatch):
+    lane = session_target.TmuxLane(pane="%1", session_id="busy", repl_pid=1234)
+    monkeypatch.setattr(session_target, "resolve", lambda pid, **kw: lane)
+    monkeypatch.setattr(permission_mode, "_WALK_WAIT_S", 0.01)
+    lock = permission_mode._walk_lock(lane)
+    lock.acquire()
+    try:
+        res = permission_mode.ensure_bypass(caller_pid=1234)
+    finally:
+        lock.release()
+    assert res["ok"] is False and "still running" in res["error"]
 
 
 def test_daemon_session_forget_clears_the_buffer():

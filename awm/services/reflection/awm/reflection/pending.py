@@ -25,10 +25,13 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
 import time
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Optional
+
+from awm.reflection import guards
 
 log = logging.getLogger("awm.reflection.pending")
 
@@ -57,6 +60,35 @@ def dir_path() -> Path:
     return SERVICES_DIR / "reflection" / "pending"
 
 
+# What a settings change did. Empty until something finds out; a change that is
+# still empty when its resume goes in is reported as having succeeded, because a
+# session that settled without a confirm dialog open has nothing left to answer.
+APPLIED = "applied"
+FAILED = "failed"
+
+_PHRASES = {
+    "effort": "effort change to {value}",
+    "model": "model change to {value}",
+    "rename": "rename to {value}",
+    "cd": "move to {value}",
+}
+
+
+@dataclass(frozen=True)
+class Change:
+    """One settings command a session ran on itself, and how it ended.
+
+    ``key`` names the change across the merge of promises and the detached thread
+    that answers its confirm dialog, so that thread can write the outcome back
+    onto whichever promise now carries the change.
+    """
+    kind: str
+    value: str = ""
+    key: str = ""
+    outcome: str = ""
+    detail: str = ""
+
+
 @dataclass(frozen=True)
 class Pending:
     """A follow-up that has been promised but not yet delivered."""
@@ -79,6 +111,40 @@ class Pending:
     # that has already been asked three times should not be asked three more
     # every time this service is respawned.
     nudges: int = 0
+    # The settings commands this promise reports on, and the caller's own closing
+    # prompt (empty for the default). The delivered text is rendered from these at
+    # delivery time, because a change's outcome is known only after its dialog has
+    # been answered; ``followup`` is the same text rendered without outcomes.
+    changes: tuple = ()
+    closing: str = ""
+
+
+def render_followup(changes, link: Optional[str] = None, closing: str = "") -> str:
+    """The resume prompt for ``changes``: what each did, then the closing prompt.
+
+    Without changes it is the closing prompt alone, or the default. A change
+    with no outcome yet reads as succeeded.
+    """
+    tail = closing.strip() or guards.DEFAULT_FOLLOWUP
+    done, failed, rc = [], [], False
+    for c in changes:
+        if c.kind == "rc_on":
+            rc = True
+            continue
+        phrase = _PHRASES[c.kind].format(value=c.value)
+        if c.outcome == FAILED:
+            failed.append(f"The {phrase} did not apply ({c.detail or 'no reason given'}).")
+        else:
+            done.append(phrase)
+    parts = []
+    if done:
+        parts.append("The " + " and the ".join(done) + " succeeded.")
+    if rc:
+        parts.append(f"Remote Control is on: {link}." if link else
+                     "Remote Control was turned on; run reflection link to read "
+                     "its link.")
+    parts.extend(failed)
+    return " ".join(parts + [tail])
 
 
 def held(pending: Pending, outcome: str) -> Pending:
@@ -100,14 +166,29 @@ def _path(repl_pid: int) -> Path:
     return dir_path() / f"{repl_pid}.json"
 
 
+_LOCK = threading.Lock()
+
+
 def record(pending: Pending) -> None:
     """Write ``pending`` down before its watcher starts.
 
-    Best-effort by design: a service that cannot write its state directory should
-    still inject the command the caller asked for, and degrade to the old
-    thread-only behaviour rather than refuse. The whole point is to lose fewer
-    resumes, not to add a way to lose the command too.
+    An outcome already on disk for a change survives a rewrite from a watcher
+    that has not seen it. Best-effort by design: a service that cannot write its
+    state directory should still inject the command the caller asked for, and
+    degrade to the old thread-only behaviour rather than refuse. The whole point
+    is to lose fewer resumes, not to add a way to lose the command too.
     """
+    with _LOCK:
+        on_disk = read(pending.repl_pid)
+        if on_disk is not None and pending.changes:
+            known = {c.key: c for c in on_disk.changes if c.outcome}
+            pending = replace(pending, changes=tuple(
+                known[c.key] if not c.outcome and c.key in known else c
+                for c in pending.changes))
+        _write(pending)
+
+
+def _write(pending: Pending) -> None:
     try:
         d = dir_path()
         d.mkdir(parents=True, exist_ok=True)
@@ -126,6 +207,86 @@ def clear(repl_pid: int) -> None:
         _path(repl_pid).unlink()
     except OSError:
         pass
+
+
+def _done_path(repl_pid: int) -> Path:
+    return dir_path() / f"{repl_pid}.done"
+
+
+def mark_delivered(repl_pid: int, injected_at_ms: int) -> None:
+    """Note that the promise stamped ``injected_at_ms`` has gone in, or is going in.
+
+    A watcher for an older promise that wakes after the newer one was delivered
+    and cleared finds no file to tell it so; this stamp does.
+    """
+    with _LOCK:
+        try:
+            dir_path().mkdir(parents=True, exist_ok=True)
+            _done_path(repl_pid).write_text(
+                str(max(injected_at_ms, delivered_ms(repl_pid))))
+        except OSError as exc:
+            log.warning("reflection: could not note the delivery for pid %s: %s",
+                        repl_pid, exc)
+
+
+def delivered_ms(repl_pid: int) -> int:
+    """The newest promise stamp delivered to ``repl_pid``, or 0."""
+    try:
+        return int(_done_path(repl_pid).read_text())
+    except (OSError, ValueError):
+        return 0
+
+
+def _parse(data: dict) -> Pending:
+    return Pending(
+        repl_pid=int(data["repl_pid"]),
+        proc_start=str(data["proc_start"]),
+        session_id=str(data.get("session_id") or ""),
+        text=str(data["text"]),
+        followup=str(data["followup"]),
+        injected_at_ms=int(data["injected_at_ms"]),
+        name=data.get("name"),
+        hosting=str(data.get("hosting") or ""),
+        holds=int(data.get("holds") or 0),
+        last_outcome=str(data.get("last_outcome") or ""),
+        nudges=int(data.get("nudges") or 0),
+        changes=tuple(
+            Change(kind=str(c["kind"]), value=str(c.get("value") or ""),
+                   key=str(c.get("key") or ""), outcome=str(c.get("outcome") or ""),
+                   detail=str(c.get("detail") or ""))
+            for c in data.get("changes") or ()),
+        closing=str(data.get("closing") or ""),
+    )
+
+
+def read(repl_pid: int) -> Optional[Pending]:
+    """The promise on disk for ``repl_pid``, or None. No liveness check."""
+    try:
+        return _parse(json.loads(_path(repl_pid).read_text()))
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+def has_change(repl_pid: int, key: str) -> bool:
+    """Whether the promise on disk still reports the change ``key``."""
+    found = read(repl_pid)
+    return bool(found and any(c.key == key for c in found.changes))
+
+
+def settle(repl_pid: int, key: str, outcome: str, detail: str = "") -> bool:
+    """Write how change ``key`` ended onto the promise that carries it.
+
+    False when no promise carries it, which is the normal case once the resume
+    has gone in.
+    """
+    with _LOCK:
+        found = read(repl_pid)
+        if found is None or not any(c.key == key for c in found.changes):
+            return False
+        _write(replace(found, changes=tuple(
+            replace(c, outcome=outcome, detail=detail) if c.key == key else c
+            for c in found.changes)))
+        return True
 
 
 def load_all(*, now_ms: Optional[int] = None, proc_start=None) -> list[Pending]:
@@ -147,24 +308,19 @@ def load_all(*, now_ms: Optional[int] = None, proc_start=None) -> list[Pending]:
     out: list[Pending] = []
     try:
         entries = sorted(dir_path().glob("*.json"))
+        stamps = sorted(dir_path().glob("*.done"))
     except OSError:
         return out
+    for stamp in stamps:
+        if stamp.stem.isdigit() and proc_start(int(stamp.stem)) is None:
+            try:
+                stamp.unlink()
+            except OSError:
+                pass
     for path in entries:
         try:
             data = json.loads(path.read_text())
-            item = Pending(
-                repl_pid=int(data["repl_pid"]),
-                proc_start=str(data["proc_start"]),
-                session_id=str(data.get("session_id") or ""),
-                text=str(data["text"]),
-                followup=str(data["followup"]),
-                injected_at_ms=int(data["injected_at_ms"]),
-                name=data.get("name"),
-                hosting=str(data.get("hosting") or ""),
-                holds=int(data.get("holds") or 0),
-                last_outcome=str(data.get("last_outcome") or ""),
-                nudges=int(data.get("nudges") or 0),
-            )
+            item = _parse(data)
         except (OSError, ValueError, KeyError, TypeError) as exc:
             log.warning("reflection: discarding unreadable pending record %s: %s",
                         path.name, exc)

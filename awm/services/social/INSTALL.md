@@ -7,7 +7,7 @@ management — agents call `social(verb="send", args={…})` etc. (run
 `social(verb="describe")` to list verbs); the operations stay expanded as
 `social_*` on the CLI/HTTP surfaces (`awm social send`, `{name:"social_send"}`). It needs the `awm` conda env to contain its package plus the shared
 component libraries it imports (`config`, `persistence`, `gatewayclient`) and its
-platform SDKs (`discord.py`, `slack_sdk`).
+platform SDKs (`discord.py`, `slack_sdk`, `aiohttp`).
 
 ## Purpose & Contents
 
@@ -38,10 +38,11 @@ the token.
 platform = "discord"           # and violates Discord ToS — not supported).
 token = "..."                  # Bot token from the Discord developer portal.
 
-[account.slack-bot]
-platform = "slack"
-token = "xoxb-..."             # Bot OAuth token (send + list channels).
-app_token = "xapp-..."         # App-level token; REQUIRED for Socket Mode receive.
+[account.slack-bot]            # A Slack app's bot user. An xoxb- token selects the
+platform = "slack"             # plain-HTTPS bot connector (see "Slack bot" below).
+token_file = "social-secrets/slack-opal.bot"     # Bot OAuth token (xoxb-).
+app_token_file = "social-secrets/slack-opal.app" # App-level token (xapp-) for receive.
+singleton = true
 
 [account.slack-me]             # Legitimate "me" identity: a Slack user OAuth token.
 platform = "slack"
@@ -60,6 +61,23 @@ token = "abcd efgh ijkl mnop"  # 16-char App Password (NOT your normal password)
 
 You create the Discord bot / Slack app yourself and paste the tokens here; no
 OAuth-callback server is built.
+
+**Slack bot.** An `xoxb-` account runs `SlackBotConnector`: Web API calls over
+aiohttp, receive over Socket Mode, no `slack_sdk` and no browser. To create one in
+any workspace:
+
+1. Create an app at <https://api.slack.com/apps> → *From a manifest*, pasting
+   `slack-bot-manifest.json`.
+2. Generate an app-level token with the `connections:write` scope. Save it as the
+   `app_token_file`.
+3. Install the app to the workspace. Copy the *Bot User OAuth Token* into the
+   `token_file`.
+
+**CAUTION** A workspace that restricts apps turns step 3 into an install request.
+Only Workspace Owners and app managers receive it, not every admin. **CAUTION**
+Mark the account `singleton = true`. Slack splits events across all open Socket
+Mode connections, so a second node connecting the same app silently halves what
+each one receives.
 
 **Slack as "me" without an app (`creds_cmd` / mira).** A Slack web-session pair (an
 `xoxc-` token + the `d` cookie) lets the service act as *you* with no app or bot —
@@ -83,10 +101,23 @@ line in the text sets the subject. UBC-webmail / WeChat later get their own path
 
 ## Reading messages, searching & attachments
 
-The service keeps **no local message store** — the external platforms are the
-source of truth, and every read queries them live. (Live receive still only
-*emits* messages arriving after connect, for subscribers like the 2fa
-`/approve` flow; it never persists.) The read surface:
+The external platforms are the source of truth, and every read below queries
+them live. Live receive *emits* each message arriving after connect on the
+`message` topic. Follow it with `awm services listen social message --peer
+<owner>`, one JSON line per message.
+
+A bot account (Slack `xoxb-`) is the one exception: it keeps a synced history of
+every chat the bot is in, edits and deletes applied. It delta-syncs at start,
+after each reconnect, every 10 minutes, and on first sight of a chat. Only the
+sync moves a chat's cursor, so a live event that lands first never hides a gap.
+
+**CAUTION** The sync re-reads replies only on threads with activity in the 7
+days below the cursor. A reply that revives an older thread while the socket is
+down stays out of history.
+
+- **`social_history account= [channel=] [since=] [limit=]`** reads that store.
+  With `since` (a message ts) it returns the messages after it, oldest first.
+  Use it to catch up after `listen` prints `listen.reconnected`.
 
 - **`social_fetch account= channel= [limit=] [before=]`** fetches a channel's
   existing messages live from the platform (including ones from before the
@@ -140,6 +171,178 @@ and require the mira host to be running the updated daemon
 (`mira/install-mira.sh`). Teams attachment download is best-effort: hosted-content
 images resolve in-session, but SharePoint-hosted files may need separate auth and
 are skipped rather than erroring the whole call.
+
+## Reactions
+
+`social_react` puts an emoji on a message, or takes it off with `remove`.
+`emoji` is a character, a Slack name or `:name:`. The names live in
+`awm/social/emoji.py`.
+
+- **Discord.** The bot reacts. A Discord user token is a self-bot under
+  Discord's terms, so no account reacts as Tony there.
+- **Slack.** Every Slack account reacts by name. Adding a reaction already there,
+  or removing one already gone, succeeds. An app without `reactions:write`
+  refuses and names the scope.
+- **Gmail and Teams.** Refuse.
+
+## Files
+
+`social_send` attaches a file with `file`, a path on the calling node, and
+inline text files with `files`, each `{filename, text}`. The gateway's file hop
+carries `file` to the node that runs social. A `send` that a borrower forwards to
+the owner carries the file inline as base64.
+
+- **Discord.** The bot attaches up to 10 MB per message.
+- **Slack.** Every Slack account uploads through Slack's external upload, as a
+  plain file and never a canvas. The reply carries the file ids and permalinks
+  and no message ts, because Slack shares the file after the call returns. An
+  app without `files:write` refuses and names the scope. Tony's Slack runs
+  through the mira daemon, which takes 8 MB per message.
+- **Gmail and Teams.** Refuse. Teams takes files only through SharePoint.
+
+## Seats
+
+A seat is one channel or chat a bot account is in. `social_seats` lists them
+with their holders. A Claude Code background session mounts a seat with
+`social_mount`. Each later message in that seat, from anyone but the bot, is
+typed into the holder's prompt through `reflection message`, one line each:
+
+    slack from <sender>[ [bot]][ ↳<thread ts>] [channel=<id> message_id=<id>]: <text>
+
+` [bot]` marks a bot sender, so an agent can tell another swarm's bot from a
+person. The ids are the `channel` and `message_id` arguments of `social_react`
+and `social_send`. They tell a session that holds several seats which chat a
+line came from. Newlines become ` ⏎ `. Text past 1500 characters is cut, and attachments add
+`[+N files]`. A mount replays nothing, so read the backlog with
+`social_history`.
+
+- **One holder.** A mount on a held seat is refused and names the holder.
+  `force=true` takes it, and the old holder gets one line saying it lost the
+  seat. The swarm is cooperative, so force is the recovery path.
+- **Release.** `social_unmount` frees one seat, or every seat the caller holds.
+  The owner prunes every 60 s and frees each seat whose job is gone or stopped.
+  An idle background session retires after about an hour, which frees its seats
+  the same way. A node that does not answer keeps its seats.
+- **Delivery.** Each holder has one ordered queue. A refused line (the holder
+  sits at a dialog) is retried with backoff for 2 minutes, then dropped.
+  History still holds it.
+- **Discord DM.** A Discord DM carries the operator's notifications and slash
+  commands. An operator's DM is also a seat, so a holder hears its plain
+  messages. The holder never hears a bot post, a system or command message, or
+  text that starts with "/". Slash commands go to their consumers.
+  `social_seats` lists guild text channels and the DM of each `social_operators`
+  row. Any other DM is never a seat.
+- **Name.** A holder goes by its seat: `seat:<app>/<server>/<channel>`, or
+  `seat:<app>/DM/<person>` for a DM, such as `seat:discord/Hallam Hive/general`
+  or `seat:slack/arbutus`. A kept seat's agent starts with that name. The mount
+  reply's `rename` tells a session that holds only that seat to take the name.
+- **Acknowledge.** The mount reply and the kept-seat brief tell a holder to
+  react 👀 on the message before work that takes a while, then answer with
+  `social_send`. A reaction marks the request as seen without a message that
+  says only "on it".
+
+The holder is the calling session, never an argument. On the owner node the
+gateway stamps `_caller_pid`. A caller on another node arrives through the
+owner's edge, and its MCP proxy adds `_caller_session` from its own session
+record.
+
+**CAUTION** Two lists must agree for a cross-node mount:
+`SESSION_CLAIM_VERBS` in `awm/gateway/awm/gateway/mcp_caller.py` and the
+`social` entry of `_CALLER_STAMPED` in `server.py` beside it. The owner strips
+`_caller_session` from any call that skips the edge. A proxy started before the deploy sends no
+claim, so restart the session after you deploy.
+
+### Kept seats
+
+A kept seat is a seat whose holder social starts and keeps alive. Declare it
+in the owner's `social.toml`:
+
+    [seat.hallam-general]
+    account = "discord-bot"
+    channel = "1560400515630760049"    # the chat id, as social_seats lists it
+    node    = "altair"                 # where the agent runs: it needs Claude Code
+    scope   = "awm/seat-hallam-general"
+    brief   = """…"""                  # the agent's standing instructions
+    # model = "opus"   effort = "high"  (optional)
+    # compact_at = 200000              (optional: 200k to 960k tokens)
+    # alert_after = 300                (optional: seconds down before the alert)
+
+One agent can hold many chats on one account. Replace `channel` with
+`channels = ["C1", "C2"]`, or with `channels = "all"` and an optional
+`except = [...]`. An "all" seat leaves out every chat that another seat names,
+and it picks up a new chat within 5 minutes.
+
+The seat stays an interface: the agent hears the chat only through pushed
+lines and answers with `social_send`. It runs no Monitor. Social reads the
+tables once, at start, so restart social after you edit one. A bad table is
+logged and disables the kept seats only. The accounts keep running.
+
+The brief and the chat rules go into the agent's system prompt, not its first
+message. A compaction summary rewrites the conversation and never the system
+prompt, so the brief survives every compaction word for word. The agent
+compacts in place once its context reaches `compact_at`.
+
+Every 60 s the keeper lists `cx` sessions on `node` and decides with
+`awm.kept`. That shared component holds the restart record, the decision and
+the breaker. The keeper waits, resumes, or starts a new agent:
+
+1. **Wait** while the node does not answer or cx reports `daemon: down`. A
+   wait spends no budget and never stops the agent. The same job resumes once
+   the daemon is back.
+2. **Resume** an agent that exited, with `cx resume`. The agent keeps its own
+   conversation.
+3. **Start a new agent** when the old one failed on an API error, its spec
+   changed, cx has no record of it, a resume is refused, or three resumes did
+   not last. The new start passes `replaces=<old job>`. cx then gives it the
+   tail of the old transcript and retires the old job.
+4. **Give up** after 4 attempts within an hour that did not reach 10 min of
+   health. Attempts back off 1, 2, 5 and 10 min. A broken seat holds for 6 h,
+   or until `social keep_reset seat=<name>`.
+
+Each outage writes a restart record: the cause, when the seat went down and
+came back, and how many messages arrived meanwhile. A daemon cause comes from
+cx's `daemon` block. The agent's first line after it comes back is that
+record, with the `social history` command that reads what it missed. A seat
+whose session ran through a daemon outage gets the record too: with no daemon,
+nothing can push into it. The breaker and the open record live in
+`social_keeper_state`, so a social restart keeps counting where it left off.
+After its own restart, social tells each live seat how many messages arrived
+while social was down.
+
+**CAUTION** The keeper never calls `cx stop`. On 2026-10-20 the old keeper read
+"no daemon" as a refused resume and stopped the seat's job. A `cx stop` of a
+pinned job runs `claude rm`, so the seat lost its conversation.
+
+The keeper sends one Discord DM to the operator (`config.operator_dm()`) when
+seats stay down past `alert_after`, one when they come back, and one when a
+seat breaks. Seats that change state in the same tick share one message. A
+seat alerts at most once an hour. The DM goes through the bot account, not
+through a seat, so it still arrives when the operator's own seat is down.
+
+Two verbs take over by hand. `social keep_adopt seat=<name> job=<id>` makes a
+running hand-started session the seat's agent and keeps its conversation.
+`social keepers` lists every kept seat with its health, cause and counters.
+The keeper adopts a session by itself only when cx has its lineage and it has
+the seat's name and no parent.
+
+**CAUTION** The spec hash leaves out the session name, so a renamed chat never
+recycles a live agent. An agent keeps the name it started with.
+
+**CAUTION** `compact_at` is where compaction fires, not the window. Claude Code
+compacts 33k tokens below its `--autocompact` window, so the keeper passes
+`compact_at` plus `AUTOCOMPACT_RESERVE` in `keeper.py`. Check that constant
+when Claude Code changes its compaction rule.
+
+`social_mount` on a kept seat is refused and names the agent, except from the
+kept agent itself. `social_seats` shows each kept seat's job and health.
+
+**CAUTION** A new agent opens on the same brief and reads the backlog first.
+Write the brief so that a second reading of a handled backlog posts nothing. A
+brief that says "announce yourself on start" posts again on every new start.
+
+**CAUTION** `cx start` refuses a scope worktree that Claude Code does not
+trust. A scope in a repository that has never run Claude Code is refused on
+every tick. Open one session there by hand first.
 
 ## Cloud-drive buckets (Google Drive, OneDrive/SharePoint)
 
@@ -260,13 +463,20 @@ a **DM to the bot**, and only for a sender in the `social_operators` table.
 | `/new-agent [prompt]` | `reporting` starts a session with Remote Control on and answers with its link |
 
 The commands sync as *global* commands in `on_ready`, because global is the
-only kind that appears in a DM. On invocation the connector checks the sender,
+only kind that appears in a DM. The command tree allows the bot DM context only,
+so Discord hides the commands in servers and group DMs. On invocation the connector checks the sender,
 acks within Discord's 3s deadline and emits a normalised event on the `command`
 emitter topic (`/svc/social/emit/command`) with `{command, account,
 channel_id, operator, …}`. The service does nothing with a command itself.
 
-A guild invocation, or a sender absent from the operators table, gets an
-ephemeral refusal and emits nothing. Add an operator on the node that owns the
+The `/new-agent` ack is public in the DM and carries an `ack_ref` in its event.
+A `send` with that `ack_ref` overwrites the ack with the answer. Discord allows
+the edit for 15 minutes, so after 14 the `send` posts a new message instead.
+Every message into a DM goes out with link previews suppressed.
+A `send` with an `ack_ref` attaches its files to the edited ack.
+
+A guild invocation that slips past the hidden context, or a sender absent from
+the operators table, gets an ephemeral refusal and emits nothing. Add an operator on the node that owns the
 bot account with `social add_operator platform=discord
 platform_user_id=<discord id> awm_user=<name>`.
 

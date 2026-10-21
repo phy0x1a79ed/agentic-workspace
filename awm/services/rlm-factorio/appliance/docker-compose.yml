@@ -6,14 +6,14 @@
 #
 # Networking note: under Docker Desktop on WSL2, `network_mode: host` binds to
 # the Desktop VM namespace rather than the WSL distro's eth0, so we publish
-# ports explicitly instead. Control is bound to loopback (the realm service runs
-# on the same host); the game UDP port is published broadly for Steam-join.
+# ports explicitly instead. Only the control port is published here. A rendered
+# world publishes the game UDP port for Steam-join through its override.
 #
-# Single-session defaults below. The pool seam: the realm service brings each
-# session up under its own `docker compose -p <project>`, which namespaces the
-# volume (and default container name) per project for free — so a pool only
-# varies the FACTORIO_* values per session, no structural change here. The
-# internal ports (12140/12142) are fixed; only the published HOST ports vary.
+# The realm service brings each world up under its own `docker compose -p
+# <project>`, which namespaces the volume and network per world, and adds a
+# generated override (see appliance.write_override) that makes the world its
+# kind. The internal ports (12140/12142) are fixed; only the published HOST
+# ports vary.
 services:
   factorio:
     build:
@@ -45,7 +45,6 @@ services:
     environment:
       FACTORIO_ROLE: host
     ports:
-      - "${FACTORIO_GAME_PORT:-12140}:12140/udp"        # game traffic (Steam-join)
       # Control surface. Published plainly (not 127.0.0.1-bound): Docker Desktop
       # on WSL2 rejects a loopback-specific publish via /forwards/expose (500).
       - "${FACTORIO_CONTROL_PORT:-12142}:12142"         # supervisor control
@@ -58,6 +57,9 @@ services:
       # string back over RCON, which fragments past ~4 KB.
       - ${FACTORIO_OUTPUT_DIR:-./output}:/opt/factorio/script-output
       - ${FACTORIO_MOD_DIR:-./mods/game-bot-control}:/opt/factorio/mods/game-bot-control:ro
+      # Bind-mounted like the mod, so a supervisor change ships with a world
+      # restart instead of an image rebuild.
+      - ./supervise.py:/factorio/supervise.py:ro
 
 volumes:
   factorio-saves:

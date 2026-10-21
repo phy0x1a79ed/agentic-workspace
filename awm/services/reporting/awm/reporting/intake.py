@@ -81,13 +81,6 @@ def card_dm(card: dict, *, claimable: bool) -> str:
     return "\n".join(lines)
 
 
-def message_dm(card: dict, message: dict, *, note: str = "") -> str:
-    """The message that tells Tony a thread has a new message, without its text."""
-    who = party_label(message.get("sender"), message.get("agent"))
-    title = f": {card.get('title')}" if card.get("title") else ""
-    return f"new message on {short_ref(card['id'])} from {who}{title}" + (f" ({note})" if note else "")
-
-
 def wake_text(card_id: str, message: dict) -> str:
     """The line typed into the session a card is assigned to."""
     who = party_label(message.get("sender"), message.get("agent"))
@@ -117,15 +110,23 @@ def event_line(type_: str, card: dict) -> str | None:
     return None
 
 
-async def send_social(account: str, channel: str, text: str) -> None:
+async def send_social(account: str, channel: str, text: str, *, ack_ref: str = "",
+                      files: list[dict] | None = None) -> None:
+    args = {"account": account, "channel": channel, "text": text}
+    if ack_ref:
+        args["ack_ref"] = ack_ref
+    if files:
+        args["files"] = files
     result = await gatewayclient.call_maybe_peer(
-        gatewayclient.peer_env("AWM_SOCIAL_PEER"), "social", "send",
-        {"account": account, "channel": channel, "text": text})
+        gatewayclient.peer_env("AWM_SOCIAL_PEER"), "social", "send", args)
     if isinstance(result, dict) and result.get("ok") is False:
         raise RuntimeError(f"social send refused: {result.get('error') or result}")
 
 
 async def send_dm(text: str) -> None:
-    """Send Tony a direct message."""
-    account, channel = config.dm_target()
+    """Send the operator a direct message."""
+    target = config.dm_target()
+    if target is None:
+        raise RuntimeError("this node has no operator DM: set AWM_OPERATOR_DM_CHANNEL")
+    account, channel = target
     await send_social(account, channel, text)

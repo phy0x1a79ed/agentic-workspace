@@ -129,12 +129,14 @@ API_MANIFEST: dict[str, Any] = {
                 "Hook verb, called by the prompt hook, not by an agent. A prompt "
                 "that says `claim task <ref>`, or says claim or attach and holds "
                 "a Trilium note URL, claims that task exactly as task_claim does. "
-                "Any prompt moves a Blocked card back to Active. The result's "
-                "`blocked` says whether the card is still Blocked."
+                "Any prompt moves a Blocked card back to Active. A briefed cx "
+                "worker's first prompt opens its card in Active, with a `notice`. "
+                "The result's `blocked` says whether the card is still Blocked."
             ),
             "params": [
                 _param("session_id", "string", "The calling session's id.", True),
                 _param("prompt", "string", "The prompt Tony sent.", True),
+                _param("first", "boolean", "This is the session's first prompt.", False),
             ],
         },
         {
@@ -174,6 +176,22 @@ API_MANIFEST: dict[str, Any] = {
             "params": [
                 _param("ref", "string", "The card's id, a unique id prefix, or its Trilium link, or a Trilium note link."),
                 _param("url", "string", "Same as `ref`."),
+            ],
+        },
+        {
+            "name": "track_task",
+            "tool": "operations_task_track",
+            "effect": "write",
+            "description": (
+                "Put your session's work on the Swarm board. Returns your open "
+                "card, or makes one in Active when you have none. A session gets "
+                "a card by itself when it writes a plan, claims a task or calls "
+                "`request_human`, and a worker that cx started gets one at start. "
+                "Call this for work that has none of those. A new card's answer "
+                "carries a `notice` with the board protocol."
+            ),
+            "params": [
+                _param("title", "string", "A new card's title, kept until a plan heading or the session's name gives one."),
             ],
         },
         {
@@ -262,8 +280,10 @@ API_MANIFEST: dict[str, Any] = {
             "description": (
                 "Make the Swarm board under the AWM note: its seven columns "
                 "(Proposed, Planned, Active, Blocked, Pending review, Done, "
-                "Rejected), its card chips and its Ledger note. Idempotent. "
-                "Operator only; run it once, on any node, after the first deploy."
+                "Rejected), its card chips and its Ledger note. Gives Done and "
+                "Rejected an Older book and the newest-first sort, and folds each "
+                "card labelled #archived into its Older book. Idempotent. "
+                "Operator only; run it once, on any node, after a deploy that changes the board."
             ),
             "params": [_param("parent", "string", "The note to make the board under. Default: the one AWM note under the root.")],
             "timeout": 120,
@@ -395,7 +415,7 @@ async def board_ensure(args: dict, as_: str | None = None) -> dict:
 
 
 TASK_VERBS = ("hook_plan", "hook_plan_approved", "hook_todos", "hook_prompt", "hook_session_clear",
-              "claim_task", "request_human", "board_watch", "board_unwatch")
+              "claim_task", "track_task", "request_human", "board_watch", "board_unwatch")
 
 
 def _task_verb(name: str) -> Any:

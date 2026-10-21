@@ -7,7 +7,9 @@ is an append-only list, so a position in that list is a stable cursor.
 
 The routes below were read out of the 0.1.x binary and confirmed with GETs on a
 live workbench. ``POST /api/frames/:id/message`` has only been read, never
-called, so its body shape is unverified live.
+called, so its body shape is unverified live. ``POST /api/projects/:pid/request``
+answers ``{root_frame_id, frame_id, status: "accepted"}`` and runs the first
+turn in the background.
 """
 
 from __future__ import annotations
@@ -80,6 +82,40 @@ def post_message(owner: Owner, frame_id: str, text: str) -> dict[str, Any]:
     sent = owner.post(f"/api/frames/{frame_id}/message",
                       json={"input_data": {"request": text}})
     return {"result": sent, "cursor": page.get("total")}
+
+
+def open_conversation(owner: Owner, text: str, *, project: str,
+                      model: str | None = None, effort: str | None = None
+                      ) -> dict[str, Any]:
+    """Start a new conversation in ``project`` (found or created by name) with
+    ``text`` as its first turn.
+
+    The create is never retried: a request that fails in flight may still have
+    started the conversation, and a second one would start it twice.
+    """
+    proj = owner.post("/api/projects", json={"name": project, "find_or_create": True})
+    pid = proj.get("project_id")
+    if not pid:
+        raise WorkbenchError(f"no project_id for project {project!r}: {proj}")
+    body: dict[str, Any] = {"input_data": {"request": text}}
+    if model:
+        body["model"] = model
+    if effort:
+        body["effort"] = effort
+    try:
+        sent = owner.post(f"/api/projects/{pid}/request", json=body)
+    except WorkbenchError as exc:
+        if exc.status is None:
+            raise WorkbenchError(
+                f"{exc} — the conversation may have started anyway; list the "
+                f"project with `science read` before trying again") from exc
+        raise
+    return {
+        "conversation": {"id": sent.get("root_frame_id"), "project_id": pid,
+                         "project": proj.get("name") or project},
+        "status": sent.get("status"),
+        "cursor": 0,
+    }
 
 
 def _iso(ms: Any) -> str | None:

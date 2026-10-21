@@ -12,8 +12,8 @@ point (an agent calls ``reflection(verb="compact")`` on itself, with no argument
 - ``mode``    — put your own session back into bypass-permissions mode.
 
 Those three act on the caller and on nobody else. The session-control verbs
-(``remote_control``, ``model``, ``effort``, ``rename``, ``interrupt``, ``stop``,
-``link``, ``message``; see :mod:`awm.reflection.control`) take an optional ``job``
+(``remote_control``, ``model``, ``effort``, ``rename``, ``cd``, ``interrupt``,
+``stop``, ``link``, ``message``; see :mod:`awm.reflection.control`) take an optional ``job``
 that names any other session on this node, and act on the caller's own without
 one. They never reach another node.
 
@@ -146,8 +146,8 @@ API_MANIFEST: dict[str, Any] = {
                 "selects 'Disconnect this session' in the modal it opens; it is "
                 "refused if the session is mid-turn or the modal is not the "
                 "expected one. Your own session cannot answer in the same turn: "
-                "the command runs when the turn ends and a follow-up prompt "
-                "resumes you."
+                "the command runs when the turn ends and one follow-up prompt "
+                "resumes you, carrying the link when turning on."
             ),
             "timeout": 60,
             "params": [
@@ -167,7 +167,17 @@ API_MANIFEST: dict[str, Any] = {
             "description": (
                 "Switch a session's model: types `/model <model>` and submits "
                 "it. Queues behind a running turn. Refused while a modal or "
-                "permission prompt is showing."
+                "permission prompt is showing. Claude Code asks 'Switch "
+                "model?' when the conversation already has output; this verb "
+                "answers that dialog with 'Yes, switch to <model>' (it closes "
+                "it with Escape if the cursor is on No, and leaves a dialog a "
+                "PreModelSwitch hook raised alone). Claude Code saves the new "
+                "value as the default for new sessions; this verb puts the "
+                "saved default back in ~/.claude/settings.json, and the "
+                "running session keeps the new value. On your own session the "
+                "command runs when your turn ends, and exactly one follow-up "
+                "prompt then reports whether the change succeeded or did not "
+                "apply."
             ),
             "timeout": 60,
             "params": [
@@ -185,7 +195,17 @@ API_MANIFEST: dict[str, Any] = {
             "description": (
                 "Set a session's effort: types `/effort <level>` and submits "
                 "it. Queues behind a running turn. Refused while a modal or "
-                "permission prompt is showing."
+                "permission prompt is showing. Claude Code asks 'Change "
+                "effort level?' when the conversation already has output; "
+                "this verb answers that dialog with 'Yes, switch to <level>' "
+                "(it closes it with Escape if the cursor is on No, and leaves "
+                "a dialog a PreModelSwitch hook raised alone). Claude Code "
+                "saves the new level as the default for new sessions; this "
+                "verb puts the saved default back in ~/.claude/settings.json, "
+                "and the running session keeps the new level. On your own "
+                "session the command runs when your turn ends, and exactly "
+                "one follow-up prompt then reports whether the change "
+                "succeeded or did not apply."
             ),
             "timeout": 60,
             "params": [
@@ -203,12 +223,43 @@ API_MANIFEST: dict[str, Any] = {
             "description": (
                 "Rename a session: types `/rename <name>` and submits it. "
                 "Queues behind a running turn. Refused while a modal or "
-                "permission prompt is showing."
+                "permission prompt is showing. On your own session, one "
+                "follow-up prompt reports the rename (and any other "
+                "settings change still owed a report) when it has run."
             ),
             "timeout": 60,
             "params": [
                 {"name": "name", "type": "string", "required": True,
                  "description": "The new name, one short line."},
+                {"name": "job", "type": "string",
+                 "description": "A job id, or a session name as `list_other` shows "
+                                "it. Omit to act on your own session."},
+            ],
+        },
+        {
+            "name": "cd",
+            "effect": "write",
+            "tool": "reflection_cd",
+            "description": (
+                "Move a session to another directory: types `/cd <path>` and "
+                "submits it. Claude Code then runs the session's tools from "
+                "there, so later Bash calls stay in it, and loads that "
+                "directory's project settings, MCP servers, skills and "
+                "CLAUDE.md. `list_other` and the Swarm board show the session "
+                "under the scope it moved to. Queues behind a running turn. "
+                "Refused for a path that is not a directory, for one Claude "
+                "Code is not trusted in (the trust dialog would wait on a "
+                "person), and while a modal or permission prompt is showing. "
+                "Claude Code drops the session's MCP servers on a move, so the "
+                "verb types `/mcp reconnect awm` after it; any other MCP server "
+                "stays disconnected. CLAUDE.md files add up across moves: the "
+                "old one stays in context. On your own session, one follow-up "
+                "prompt reports the move when it has run."
+            ),
+            "timeout": 60,
+            "params": [
+                {"name": "path", "type": "string", "required": True,
+                 "description": "An absolute directory on this node."},
                 {"name": "job", "type": "string",
                  "description": "A job id, or a session name as `list_other` shows "
                                 "it. Omit to act on your own session."},
@@ -235,7 +286,8 @@ API_MANIFEST: dict[str, Any] = {
             "description": (
                 "Stop a background session on this node and remove its job "
                 "(`claude stop`, then `claude rm`). Works on any session, not "
-                "only ones `start_other` created. Your own session is refused "
+                "only ones `start_other` created, and on a job whose session "
+                "has already exited, by its job id. Your own session is refused "
                 "unless confirm is true, and is then stopped after this call "
                 "returns. A terminal session is refused."
             ),
@@ -265,6 +317,11 @@ API_MANIFEST: dict[str, Any] = {
             "effect": "write",
             "tool": "reflection_message",
             "description": (
+                "To talk to another agent, use your harness's own channel "
+                "first: in Claude Code, `SendMessage` to a session that "
+                "`ListAgents` shows, and the reply comes back the same way. Use "
+                "this verb when the harness has no such channel, or to drive "
+                "another session's prompt, such as a slash command. "
                 "Type text into another session's prompt and submit it (no "
                 "Escape, so it queues behind its current turn). Same guards as "
                 "`message_self`: destructive commands need confirm, modal "
@@ -451,6 +508,10 @@ def _handle_rename(args: dict) -> dict:
                           caller_pid=_caller_pid(args))
 
 
+def _handle_cd(args: dict) -> dict:
+    return control.cd(args.get("path"), job=_job(args), caller_pid=_caller_pid(args))
+
+
 def _handle_interrupt(args: dict) -> dict:
     return control.interrupt(job=_job(args), caller_pid=_caller_pid(args))
 
@@ -478,6 +539,7 @@ HANDLERS = {verb: _guarded(verb, fn) for verb, fn in {
     "model": _handle_model,
     "effort": _handle_effort,
     "rename": _handle_rename,
+    "cd": _handle_cd,
     "interrupt": _handle_interrupt,
     "stop": _handle_stop,
     "link": _handle_link,

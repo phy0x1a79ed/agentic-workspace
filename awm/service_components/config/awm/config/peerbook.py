@@ -27,6 +27,15 @@ NODE_ROLE_ENV = "AWM_NODE_ROLE"
 NODE_SWARM_ENV = "AWM_SWARM"
 DEFAULT_SWARM = "tony"
 
+OPERATOR_DM_ACCOUNT_ENV = "AWM_OPERATOR_DM_ACCOUNT"
+OPERATOR_DM_CHANNEL_ENV = "AWM_OPERATOR_DM_CHANNEL"
+#: The name ``reporting`` read before the operator DM was one node setting.
+LEGACY_OPERATOR_DM_CHANNEL_ENV = "AWM_REPORTING_DM_CHANNEL"
+DEFAULT_OPERATOR_DM_ACCOUNT = "discord-bot"
+#: Tony's DM with the bot. Only a node of the default swarm falls back to it:
+#: a foreign swarm runs this same code, and its alerts must not reach Tony.
+DEFAULT_SWARM_OPERATOR_DM = "dm:188743359983124480"
+
 
 def node_role() -> str:
     """This node's role, ``fleet`` or ``station`` (``AWM_NODE_ROLE``; default ``fleet``)."""
@@ -39,6 +48,23 @@ def node_role() -> str:
 def node_swarm() -> str:
     """This node's swarm name (``AWM_SWARM``; default ``tony``)."""
     return (os.environ.get(NODE_SWARM_ENV) or "").strip() or DEFAULT_SWARM
+
+
+def operator_dm() -> tuple[str, str] | None:
+    """The social account and channel that reach this node's operator, or None.
+
+    ``AWM_OPERATOR_DM_CHANNEL`` (else ``AWM_REPORTING_DM_CHANNEL``) names the
+    channel. Unset, a node of the default swarm uses Tony's DM and any other
+    swarm has no operator DM.
+    """
+    account = (os.environ.get(OPERATOR_DM_ACCOUNT_ENV) or "").strip() or DEFAULT_OPERATOR_DM_ACCOUNT
+    channel = ((os.environ.get(OPERATOR_DM_CHANNEL_ENV) or "").strip()
+               or (os.environ.get(LEGACY_OPERATOR_DM_CHANNEL_ENV) or "").strip())
+    if channel:
+        return account, channel
+    if node_swarm() == DEFAULT_SWARM:
+        return account, DEFAULT_SWARM_OPERATOR_DM
+    return None
 
 
 def peers_file() -> Path:

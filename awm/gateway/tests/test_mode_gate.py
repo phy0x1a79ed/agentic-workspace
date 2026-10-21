@@ -446,7 +446,7 @@ def test_the_door_does_not_gate_an_ungated_session(door, modes):
     assert door(board, "party_add", headers={}).status_code == 503
 
 
-def test_the_door_does_not_gate_an_edge_stamped_request(door, modes):
+def test_the_door_does_not_gate_an_edge_stamped_request(door, modes, domestic_peers):
     board = _service("board", [{"name": "party_add", "tool": "operations_party_add"}])
     resp = door(board, "party_add", headers={**HEAD, "X-Awm-As": "peer:capella"})
     assert resp.status_code == 503 and modes["lookups"] == []

@@ -538,6 +538,18 @@ def _schema_param_to_signature(
     )
 
 
+def _json_object_option(name: str, text: str) -> dict:
+    """An object-typed option arrives as text: parse it, so the verb receives an object."""
+    flag = f"--{name.replace('_', '-')}"
+    try:
+        value = json.loads(text)
+    except json.JSONDecodeError as e:
+        raise typer.BadParameter(f"not JSON: {e}", param_hint=flag) from None
+    if not isinstance(value, dict):
+        raise typer.BadParameter("must be a JSON object", param_hint=flag)
+    return value
+
+
 def _make_service_cli_handler(tool: dict, api_func: Callable) -> Callable:
     """Create a Typer handler for one service tool that dispatches via
     ``POST /invoke`` and renders the result."""
@@ -545,8 +557,12 @@ def _make_service_cli_handler(tool: dict, api_func: Callable) -> Callable:
     schema = tool.get("inputSchema") or {}
     props: dict = schema.get("properties", {}) or {}
     required = set(schema.get("required", []) or [])
+    objects = {n for n, p in props.items() if p.get("type") == "object"}
 
     def handler(**kwargs):
+        for name in objects & kwargs.keys():
+            if isinstance(kwargs[name], str):
+                kwargs[name] = _json_object_option(name, kwargs[name])
         _invoke_dispatch(tool_name, api_func, kwargs)
 
     # A tool's inputSchema lists params in manifest/display order, which is free
@@ -565,6 +581,30 @@ def _make_service_cli_handler(tool: dict, api_func: Callable) -> Callable:
     return handler
 
 
+#: The tools whose CLI calls name the agent session that ran the CLI, as the MCP
+#: proxy names it for every call. Narrow on purpose: for the other stamped tools
+#: a call that names a session is held to that session's gates, and a CLI call
+#: has always been exempt from them.
+CALLER_NAMING_TOOLS = frozenset({"tether"})
+
+
+def _caller_headers(tool_name: str) -> dict[str, str]:
+    """``X-Awm-Caller-Pid`` naming the agent session this CLI runs under, if any.
+
+    Only a session ancestor is named. A CLI run from a plain terminal sends
+    nothing, so it stays a call from the host rather than from some pid.
+    """
+    if tool_name.partition("_")[0] not in CALLER_NAMING_TOOLS:
+        return {}
+    import os
+
+    from awm.gateway import mcp_caller
+
+    own = os.getpid()
+    session = mcp_caller.resolve_caller_pid(own)
+    return {} if session == own else {"X-Awm-Caller-Pid": str(session)}
+
+
 def _invoke_dispatch(tool_name: str, api_func: Callable, kwargs: dict) -> None:
     """Dispatch a service tool through the by-name ``/invoke`` endpoint — the
     same path the MCP proxy uses — dropping unset (``None``) options."""
@@ -574,8 +614,10 @@ def _invoke_dispatch(tool_name: str, api_func: Callable, kwargs: dict) -> None:
     # was 600s, which sits *under* the longest declared budget (3600s) and so
     # truncated `awm scope create` the same way the MCP proxy did. Shared with
     # the proxies so the two surfaces cannot drift apart again.
+    headers = _caller_headers(tool_name)
     r = api_func("POST", "/invoke", json={"name": tool_name, "args": args},
-                 timeout=mcp_http.read_timeout())
+                 timeout=mcp_http.read_timeout(),
+                 **({"headers": headers} if headers else {}))
     _render_invoke_output(r)
 
 

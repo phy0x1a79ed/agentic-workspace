@@ -5,8 +5,9 @@ A SessionStart on source ``clear`` tells the service to file the session's task 
 so the next plan opens a new card. ``compact`` and ``resume`` also fire SessionStart
 and are ignored.
 
-Pure stdlib, runs under ``python3 -S``, writes nothing to stdout (a UserPromptSubmit
-hook's stdout becomes model context) and exits 0 on every path.
+Pure stdlib, runs under ``python3 -S`` and exits 0 on every path. It writes to stdout
+only when a card opened: the service's ``notice``, as context the agent reads. A
+UserPromptSubmit hook's stdout becomes model context, so a prompt prints nothing else.
 
 The call is synchronous ``POST /invoke`` with ``X-Awm-Caller-Pid``: the gateway walks
 the hook's ancestry to find the session, which a detached hook would break. The
@@ -14,7 +15,9 @@ the hook's ancestry to find the session, which a detached hook would break. The
 
 Each verb result carries ``blocked``. It is mirrored into a marker file so that
 UserPromptSubmit, which runs on every prompt, makes no network call unless the
-prompt holds a Trilium note URL or the session's task is Blocked.
+prompt holds a Trilium note URL or the session's task is Blocked. A background
+job's first prompt is the exception: it asks once whether the job is a briefed
+worker, whose card opens then, and a ``.seen`` marker records that it asked.
 """
 
 from __future__ import annotations
@@ -63,22 +66,37 @@ def call(verb: str, **args) -> dict:
             time.sleep(RETRY_GAP_S)
 
 
-def marker(session_id: str) -> str:
-    return os.path.join(MARKER_DIR, session_id.replace("/", "_") + ".blocked")
+def marker(session_id: str, kind: str = "blocked") -> str:
+    return os.path.join(MARKER_DIR, session_id.replace("/", "_") + "." + kind)
 
 
-def report(session_id: str, verb: str, **args) -> None:
+def report(session_id: str, verb: str, **args) -> dict:
     result = call(verb, session_id=session_id, **args)
     if not isinstance(result.get("blocked"), bool):
-        return
+        return result
     try:
         if result["blocked"]:
-            os.makedirs(MARKER_DIR, exist_ok=True)
-            open(marker(session_id), "w").close()
+            touch(marker(session_id))
         else:
             os.unlink(marker(session_id))
     except OSError:
         pass
+    return result
+
+
+def touch(path: str) -> None:
+    try:
+        os.makedirs(MARKER_DIR, exist_ok=True)
+        open(path, "w").close()
+    except OSError:
+        pass
+
+
+def tell(result: dict, event: str = "PostToolUse") -> None:
+    notice = result.get("notice")
+    if isinstance(notice, str) and notice:
+        print(json.dumps({"hookSpecificOutput": {"hookEventName": event,
+                                                 "additionalContext": notice}}))
 
 
 def read_text(path: str) -> str:
@@ -120,16 +138,22 @@ def handle(p: dict) -> None:
     elif p.get("hook_event_name") == "UserPromptSubmit":
         prompt = p.get("prompt") or ""
         claims = CLAIM_WORDS.search(prompt) and NOTE_URL.search(prompt)
-        if claims or os.path.exists(marker(sid)):
+        first = bool(os.environ.get("CLAUDE_JOB_DIR")) and not os.path.exists(marker(sid, "seen"))
+        if first:
+            result = report(sid, "hook_prompt", prompt=prompt, first=True)
+            if result:
+                touch(marker(sid, "seen"))
+            tell(result, "UserPromptSubmit")
+        elif claims or os.path.exists(marker(sid)):
             report(sid, "hook_prompt", prompt=prompt)
     elif tool in ("Write", "Edit"):
         path = os.path.abspath(str(tool_input.get("file_path") or ""))
         if os.path.dirname(path) == PLANS_DIR and path.endswith(".md") and not p.get("agent_id"):
-            report(sid, "hook_plan", plan_path=path, plan_text=read_text(path))
+            tell(report(sid, "hook_plan", plan_path=path, plan_text=read_text(path)))
     elif tool == "ExitPlanMode" and not p.get("agent_id"):
         response = p.get("tool_response")
         if isinstance(response, dict) and response.get("plan"):
-            report(sid, "hook_plan_approved", plan_text=response["plan"])
+            tell(report(sid, "hook_plan_approved", plan_text=response["plan"]))
     elif tool in ("TaskCreate", "TaskUpdate", "TodoWrite"):
         items = todowrite_items(tool_input.get("todos")) if tool == "TodoWrite" else task_items(sid)
         # An empty list is a wipe only when the event is a deletion; a cleared list is not.

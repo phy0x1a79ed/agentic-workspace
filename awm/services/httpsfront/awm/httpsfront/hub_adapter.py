@@ -42,7 +42,8 @@ log = logging.getLogger("awm.httpsfront.hub_adapter")
 
 HERE = Path(__file__).resolve().parent          # awm/services/httpsfront/awm/httpsfront
 SERVICE_DIR = HERE.parents[1]                    # awm/services/httpsfront
-CERT_DIR = SERVICE_DIR / ".certs"
+# A box whose app user cannot write the checkout keeps the leaf in its state dir.
+CERT_DIR = Path(os.environ.get("AWM_EDGE_CERT_DIR") or SERVICE_DIR / ".certs")
 SANS_FILE = SERVICE_DIR / ".sans"                # host-specific extra SANs (gitignored)
 
 PORT = int(os.environ.get("AWM_HTTPS_PORT", "8443"))
@@ -122,6 +123,13 @@ if PENPOT and VAULT:
             "shell and then fail every request it makes.", ", ".join(_both))
 PENPOT_UPSTREAM = config.PENPOT_URL if PENPOT else None
 
+# A second listener for a node whose main edge is public: peers reach the
+# gateway over the overlay while the internet keeps the narrow door. It binds
+# the overlay address alone, never 0.0.0.0, always speaks TLS with the fleet
+# leaf, and fronts the gateway only.
+MESH_HOST = (os.environ.get("AWM_EDGE_MESH_HOST") or "").strip() or None
+MESH_PORT = int(os.environ.get("AWM_EDGE_MESH_PORT", "12100"))
+
 # Live status, filled once the listener comes up.
 _STATUS: dict[str, Any] = {
     "listener_port": PORT,
@@ -144,6 +152,8 @@ _STATUS: dict[str, Any] = {
     "board_mount": board.PREFIX if BOARD else None,
     "serving": False,
     "profile": PROFILE or "default",
+    "mesh_listener": f"{MESH_HOST}:{MESH_PORT}" if MESH_HOST else None,
+    "mesh_serving": False,
 }
 
 
@@ -185,53 +195,78 @@ def _h_status(args: dict) -> dict:
 HANDLERS = {"status": _h_status}
 
 
-def _serve_forever(info: dict) -> None:
-    """Run the TLS reverse proxy, restarting it on crash. Lives in a daemon
+def _serve_forever(info: dict, *, flag: str = "serving", **listener: Any) -> None:
+    """Run one listener of the front, restarting it on crash. Lives in a daemon
     thread for the life of the process (= the life of the gateway lease)."""
     while True:
         try:
-            _STATUS.update(serving=True, tls=TLS, san=info.get("san"))
+            _STATUS[flag] = True
             proxy.serve(
-                port=PORT,
                 cert=info.get("cert", ""),
                 key=info.get("key", ""),
                 ca=info.get("ca", ""),
                 upstream=UPSTREAM,
-                profile=PROFILE,
-                tls=TLS,
-                vault_upstream=VAULT_UPSTREAM,
-                penpot_upstream=PENPOT_UPSTREAM,
-                tether_upstream=TETHER_UPSTREAM,
-                board_upstream=BOARD_UPSTREAM,
+                **listener,
             )
         except Exception:  # noqa: BLE001
-            log.exception("https front listener crashed; restarting in 2s")
-            _STATUS.update(serving=False)
+            log.exception("https front listener %s crashed; restarting in 2s", flag)
+            _STATUS[flag] = False
             time.sleep(2)
+
+
+def mesh_listener() -> dict | None:
+    """The mesh listener's ``proxy.serve`` arguments, or ``None`` when it is off."""
+    if not MESH_HOST:
+        return None
+    return {"host": MESH_HOST, "port": MESH_PORT, "tls": True, "profile": None}
+
+
+def _certs() -> dict:
+    info = certs.ensure_certs(CERT_DIR, sans=certs.resolve_sans(san_file=SANS_FILE))
+    log.info("certs ready (SAN=%s)", info["san"])
+    return info
 
 
 def _on_start() -> None:
     """Mint/reuse the TLS cert, then launch the HTTPS front in a daemon thread.
 
     Runs once, alongside registration. A cert failure is fatal since
-    the listener can't come up without TLS.
+    the listener can't come up without TLS. ``AWM_EDGE_MESH_HOST`` adds the
+    mesh listener beside the main one.
     """
     store.init()
 
+    mesh = mesh_listener()
     if TLS:
-        sans = certs.resolve_sans(san_file=SANS_FILE)
-        info = certs.ensure_certs(CERT_DIR, sans=sans)
-        log.info("certs ready (SAN=%s)", info["san"])
+        info = _certs()
     else:
         info = {}
         log.info("AWM_EDGE_TLS=0: plain HTTP on loopback, no certs")
+    if mesh and not info:
+        # The public door stays up when only the mesh listener lacks a cert.
+        try:
+            info = _certs()
+        except Exception:  # noqa: BLE001
+            log.exception("no cert for the mesh listener; it stays off")
+            mesh = None
 
-    t = threading.Thread(
-        target=_serve_forever, args=(info,), daemon=True, name="httpsfront"
-    )
-    t.start()
+    _STATUS.update(tls=TLS, san=info.get("san"))
+    threading.Thread(
+        target=_serve_forever, args=(info,), daemon=True, name="httpsfront",
+        kwargs=dict(port=PORT, profile=PROFILE, tls=TLS,
+                    vault_upstream=VAULT_UPSTREAM,
+                    penpot_upstream=PENPOT_UPSTREAM,
+                    tether_upstream=TETHER_UPSTREAM,
+                    board_upstream=BOARD_UPSTREAM),
+    ).start()
     log.info("front thread launched on :%d → %s (tls %s, profile %s)",
              PORT, UPSTREAM, "on" if TLS else "off", PROFILE or "default")
+    if mesh:
+        threading.Thread(
+            target=_serve_forever, args=(info,), daemon=True,
+            name="httpsfront-mesh", kwargs=dict(flag="mesh_serving", **mesh),
+        ).start()
+        log.info("mesh listener launched on %s:%d → %s", MESH_HOST, MESH_PORT, UPSTREAM)
 
 
 async def main() -> None:

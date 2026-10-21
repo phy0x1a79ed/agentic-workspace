@@ -51,6 +51,9 @@ SUPERVISOR = daemon.Supervisor(
 #: would otherwise cut the service name in half (``claude_science_status`` ->
 #: domain ``claude``). Daemon-lifecycle verbs are hidden from MCP with
 #: ``surfaces``.
+#: Where `new` opens a conversation when the caller names no project.
+DEFAULT_PROJECT = "Agents"
+
 API_MANIFEST: dict[str, Any] = {
     "functions": [
         {
@@ -207,6 +210,29 @@ API_MANIFEST: dict[str, Any] = {
                 {"name": "conversation", "type": "string",
                  "description": "Conversation id, id prefix or name. Omit for "
                                 "the latest."},
+            ],
+            "timeout": 120,
+        },
+        {
+            "name": "new",
+            "tool": "science_new",
+            "effect": "write",
+            "description": (
+                "Start a new Claude Science conversation with text as its "
+                "first turn, in a project named by name (found or created). "
+                "Returns the conversation id and a cursor: read from it to "
+                "follow the reply. Never retry a failed call blindly; it may "
+                "have started the conversation."
+            ),
+            "params": [
+                {"name": "text", "type": "string", "required": True,
+                 "description": "The first message: the research request."},
+                {"name": "project", "type": "string",
+                 "description": f"Project name. Default {DEFAULT_PROJECT!r}."},
+                {"name": "model", "type": "string",
+                 "description": "Model id. Omit for the workbench default."},
+                {"name": "effort", "type": "string",
+                 "description": "Effort level. Omit for the workbench default."},
             ],
             "timeout": 120,
         },
@@ -370,6 +396,18 @@ def _message(args: dict) -> dict:
         return {"conversation": conversations.summary(target), **sent}
 
 
+def _new(args: dict) -> dict:
+    """Open a conversation. Runs on a worker thread."""
+    text = (args.get("text") or "").strip()
+    if not text:
+        raise ValueError("text is required")
+    with api.connect(SUPERVISOR.login_url()) as owner:
+        return conversations.open_conversation(
+            owner, text,
+            project=(args.get("project") or "").strip() or DEFAULT_PROJECT,
+            model=args.get("model"), effort=args.get("effort"))
+
+
 def _read(args: dict) -> dict:
     """Read a conversation's transcript. Runs on a worker thread."""
     since = args.get("since")
@@ -386,6 +424,10 @@ def _read(args: dict) -> dict:
 
 async def _h_message(args: dict) -> dict:
     return await asyncio.to_thread(_message, args)
+
+
+async def _h_new(args: dict) -> dict:
+    return await asyncio.to_thread(_new, args)
 
 
 async def _h_read(args: dict) -> dict:
@@ -407,6 +449,7 @@ HANDLERS = {
     "connector": _h_connector,
     "grants": _h_grants,
     "message": _h_message,
+    "new": _h_new,
     "read": _h_read,
     "update_check": _h_update_check,
 }

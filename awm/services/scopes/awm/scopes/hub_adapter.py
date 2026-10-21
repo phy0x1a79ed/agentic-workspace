@@ -19,9 +19,10 @@ import asyncio
 import logging
 from typing import Any
 
-from awm.config import PROJECTS_DIR
+from awm.config import PROJECTS_DIR, privacy
 from awm.gatewayclient import ServiceAdapter, spawn_supervised
-from awm.scopes import dao, search_index
+from awm.persistence import embeddings
+from awm.scopes import dao, search_index, tags as _tags
 from awm.scopes.identity import (
     agent_id_for_scope,
     agent_record_for_scope,
@@ -48,35 +49,45 @@ log = logging.getLogger("awm.scopes.hub_adapter")
 # ---------------------------------------------------------------------------
 
 
-def _handle_resolve_scope(args: dict[str, Any]) -> dict[str, Any]:
-    """resolveScope(project, scope) → {exists, project, scope, status} | not-found.
+def _handle_resolve_scope(args: dict[str, Any], as_: str | None = None) -> dict[str, Any]:
+    """resolveScope(project, scope) → {exists, project, scope, status, private, tags} | not-found.
 
     Validate-only hot read: does this scope exist and is it live?
     Returns the agent's lifecycle status when found; the caller decides
-    whether a ``retired`` scope counts. Never returns an agent_id.
+    whether a ``retired`` scope counts. Never returns an agent_id. A peer
+    caller meets a private scope as not found.
     """
     project: str = args["project"]
     scope: str = args["scope"]
     # active_only=False so retired scopes resolve (status is returned, caller decides)
     rec = agent_record_for_scope(project, scope, active_only=False)
-    if rec is None:
+    if rec is None or (privacy.from_peer(as_) and privacy.hidden(project, scope)):
         return {"exists": False, "project": project, "scope": scope}
     return {
         "exists": True,
         "project": project,
         "scope": scope,
         "status": rec["status"],
+        "private": privacy.hidden(project, scope),
+        "tags": _tags.effective(project, scope),
     }
 
 
-def _handle_resolve_ref(args: dict[str, Any]) -> dict[str, Any] | None:
+def _handle_resolve_ref(args: dict[str, Any], as_: str | None = None) -> dict[str, Any] | None:
     """resolveRef(literal) → {kind, project?, scope?, username?} | null.
 
     Pure lookup — no create_users side effect. Returns None (rendered as {} by
-    the gateway) when the ref does not resolve.
+    the gateway) when the ref does not resolve, or names a scope private from
+    the peer caller ``as_``.
     """
-    literal: str = args["literal"]
+    found = _resolve_ref(args["literal"])
+    if (found and found.get("kind") == "agent" and privacy.from_peer(as_)
+            and privacy.hidden(found["project"], found["scope"])):
+        return None
+    return found
 
+
+def _resolve_ref(literal: str) -> dict[str, Any] | None:
     # Classify the literal form the same way identity.resolve_ref does, but
     # return natural keys instead of internal uuids.
     if not literal or literal == SYSTEM_REF:
@@ -166,7 +177,7 @@ _IDENTITY_FUNCTIONS = [
         "effect": "read",
         "description": (
             "Validate-only read: does this (project, scope) exist and "
-            "what is its status? Returns {exists, project, scope, status} "
+            "what is its status? Returns {exists, project, scope, status, private} "
             "when found, {exists: false, project, scope} when not found."
         ),
         "params": [
@@ -255,6 +266,7 @@ async def _on_start() -> None:
     dao.init()
     await asyncio.to_thread(search_index.ensure_schema)
     spawn_supervised("scopes:search-backfill", search_index.backfill_loop)
+    embeddings.warm()
 
 
 async def main() -> None:

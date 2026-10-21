@@ -1,4 +1,4 @@
-"""Session control: Remote Control, model, effort, rename, interrupt, stop, link, message.
+"""Session control: Remote Control, model, effort, rename, cd, interrupt, stop, link, message.
 
 Every verb here acts on the caller's own session when it names no ``job``, and
 on any other session on this node when it does. ``job`` is a job id or the name
@@ -12,22 +12,34 @@ identity checks that guard a self-call guard these too.
 
 Before it types, a verb refuses when the target's record says it is waiting on
 an answer or its screen shows a modal. A keystroke into a modal answers it.
+
+`effort` and `model` are the exception that answers a modal on purpose. Claude
+Code asks "Change effort level?" / "Switch model?" when a conversation with
+output changes either, and the verb picks "Yes, switch to <the value asked for>"
+rather than leave the session waiting on a person. The caller's own session
+cannot answer in the turn that asks, so a detached thread does, and the resume
+prompt then reports how the change ended.
 """
 from __future__ import annotations
 
 import logging
+import os
 import re
 import time
+import uuid
 from dataclasses import dataclass, replace
 from typing import Any, Callable, Optional
 
-from awm.claudedaemon import cli, roster
+from awm.claudedaemon import cli, roster, trust
+from awm.claudedaemon.sessionmode import JOB_PATTERN
 from awm.reflection import (
     guards,
     inject,
     observation,
+    pending,
     permission_mode,
     session_target,
+    settings_guard,
     watcher,
 )
 
@@ -54,11 +66,11 @@ MAX_MODAL_STEPS = 6
 KEY_SETTLE_S = 0.35
 # Lets `stop` of the caller's own session return its answer first.
 SELF_STOP_DELAY_S = 1.5
+# How long `cd` waits for an idle session's record to show the new directory.
+MOVE_WAIT_S = 8.0
 
 DISCONNECT_OPTION = "disconnect this session"
 
-SELF_ON_FOLLOWUP = ("Remote Control is now on. Run reflection link for its "
-                    "claude.ai link, then continue with what you were doing.")
 SELF_OFF_FOLLOWUP = ("Remote Control is now off. Continue with what you were "
                      "doing.")
 
@@ -233,11 +245,13 @@ def _deliver(t: Target, text: str, *, what: str, attempts: int = inject.ATTEMPTS
 
 def _command(t: Target, text: str, *, what: str, confirm: bool = False,
              followup: Optional[str] = None, allow_modal: bool = False,
+             change: Optional[pending.Change] = None,
              attempts: int = inject.ATTEMPTS) -> dict:
     """Submit ``text`` to the target; the caller's own gets a resume prompt."""
     if t.is_self:
         return {**inject.send(text, caller_pid=t.pid, confirm=confirm,
-                              followup=followup, allow_modal=allow_modal),
+                              followup=followup, allow_modal=allow_modal,
+                              change=change),
                 "self": True, "job": t.job}
     refused = guards.refusal(text, confirm=confirm, allow_modal=allow_modal)
     if refused is not None:
@@ -248,28 +262,131 @@ def _command(t: Target, text: str, *, what: str, confirm: bool = False,
             "confirmed": result.confirmed}
 
 
-def _slash(job: Optional[str], caller_pid: Any, text: str, what: str) -> dict:
+def _slash(job: Optional[str], caller_pid: Any, text: str, what: str, *,
+           change: Optional[pending.Change] = None,
+           answers: Optional[tuple[str, str]] = None,
+           spawn: Callable[[Callable[[], None]], Any] = inject._default_spawn
+           ) -> dict:
+    """Type a settings command. ``answers`` is (kind, value) for one that may ask to confirm."""
     t = resolve(job, caller_pid)
     _require_running(t)
     refused = _check_clear(t)
     if refused:
         return refused
-    return _command(t, text, what=what)
+    inline = answers is not None and not t.is_self and _between_turns(t)
+    guard = _DefaultsGuard(answers)
+    out = _command(t, text, what=what, change=change)
+    if answers is None or not out.get("ok") or not out.get("submitted"):
+        return out
+    kind, value = answers
+    if inline:
+        dialog = _answer_switch_confirm(t, kind, value, MODAL_WAIT_S, POLL_S,
+                                        before_press=guard.refresh)
+        return _with_dialog(out, {**dialog, **guard.restore()})
+    _answer_later(t, kind, value, change, spawn, guard)
+    return {**out, "switch_dialog": {
+        "ok": True, "answered": False, "pending": True,
+        "detail": "the command runs when the turn ends, and the service then "
+                  "answers Claude Code's confirm dialog"
+                  + ("; a follow-up prompt reports the result" if t.is_self else "")}}
+
+
+class _DefaultsGuard:
+    """Holds the user's saved defaults while `/effort` or `/model` runs.
+
+    Both save their value as the default for new sessions; see
+    :mod:`settings_guard`. ``/effort max`` saves nothing, so it needs no guard.
+    """
+
+    def __init__(self, answers: Optional[tuple[str, str]]) -> None:
+        self.on = answers is not None and answers != ("effort", "max")
+        self.snap = settings_guard.snapshot() if self.on else None
+
+    def refresh(self) -> None:
+        """Re-read the defaults; the dialog can open long after the command went in."""
+        if self.on:
+            self.snap = settings_guard.snapshot() or self.snap
+
+    def restore(self) -> dict:
+        if not self.on:
+            return {}
+        out = settings_guard.restore(self.snap, sleep=_sleep, clock=_clock)
+        return {"defaults_restored": out["restored"]} if out["restored"] else {}
+
+
+def _with_dialog(out: dict, dialog: dict) -> dict:
+    out = {**out, "switch_dialog": dialog}
+    if not dialog["ok"]:
+        out["ok"] = False
+        out["reason"] = dialog["reason"]
+    return out
+
+
+def _promise_gone(pid: int, change: pending.Change) -> Callable[[], bool]:
+    """True once the promise that carried ``change`` has been delivered."""
+    seen = [False]
+
+    def gone() -> bool:
+        here = pending.has_change(pid, change.key)
+        seen[0] = seen[0] or here
+        return seen[0] and not here
+    return gone
+
+
+def _answer_later(t: Target, kind: str, value: str,
+                  change: Optional[pending.Change], spawn,
+                  guard: Optional["_DefaultsGuard"] = None) -> None:
+    """Answer the confirm dialog from a detached thread, then record how it ended."""
+    def finish() -> None:
+        give_up = _promise_gone(t.pid, change) if change else None
+        try:
+            out = _answer_switch_confirm(
+                t, kind, value, SELF_MODAL_WAIT_S, SELF_POLL_S, give_up=give_up,
+                before_press=guard.refresh if guard else None)
+        except Exception as exc:  # noqa: BLE001 - runs detached
+            log.warning("reflection: answering the %s dialog of %s failed: %s",
+                        kind, t.label, exc)
+            out = {"ok": False, "reason": f"the service could not read the "
+                                          f"session's screen ({exc})"}
+        log.info("reflection: %s dialog of %s: %s", kind, t.label,
+                 out.get("detail") or out.get("reason") or out.get("ok"))
+        if change:
+            pending.settle(t.pid, change.key,
+                           pending.APPLIED if out["ok"] else pending.FAILED,
+                           out.get("reason", ""))
+        if guard:
+            try:
+                guard.restore()
+            except Exception as exc:  # noqa: BLE001 - runs detached
+                log.warning("reflection: could not restore the defaults after "
+                            "%s: %s", kind, exc)
+
+    spawn(finish)
 
 
 # --- verbs: one-line commands -----------------------------------------------
 
 
-def model(name: str, *, job: Optional[str], caller_pid: Any) -> dict:
+def _change(kind: str, value: str) -> pending.Change:
+    return pending.Change(kind=kind, value=value, key=uuid.uuid4().hex[:12])
+
+
+def model(name: str, *, job: Optional[str], caller_pid: Any,
+          spawn: Callable[[Callable[[], None]], Any] = inject._default_spawn) -> dict:
     if not isinstance(name, str) or not _MODEL.match(name):
         return {"ok": False, "reason": "model must be a model name or alias"}
-    return _slash(job, caller_pid, f"/model {name}", "the model change")
+    return _slash(job, caller_pid, f"/model {name}", "the model change",
+                  change=_change("model", name), answers=("model", name),
+                  spawn=spawn)
 
 
-def effort(level: str, *, job: Optional[str], caller_pid: Any) -> dict:
+def effort(level: str, *, job: Optional[str], caller_pid: Any,
+           spawn: Callable[[Callable[[], None]], Any] = inject._default_spawn) -> dict:
     if level not in EFFORTS:
         return {"ok": False, "reason": f"effort must be one of {', '.join(EFFORTS)}"}
-    return _slash(job, caller_pid, f"/effort {level}", "the effort change")
+    return _slash(job, caller_pid, f"/effort {level}", "the effort change",
+                  change=_change("effort", level), answers=("effort", level),
+                  spawn=spawn)
 
 
 def rename(name: str, *, job: Optional[str], caller_pid: Any) -> dict:
@@ -279,7 +396,91 @@ def rename(name: str, *, job: Optional[str], caller_pid: Any) -> dict:
                                        "one line that does not start with '-'"}
     if "<warm" in name.lower():
         return {"ok": False, "reason": "a name may not carry the warm pool's mark"}
-    return _slash(job, caller_pid, f"/rename {name}", "the rename")
+    return _slash(job, caller_pid, f"/rename {name}", "the rename",
+                  change=_change("rename", name))
+
+
+def cd(path: str, *, job: Optional[str], caller_pid: Any,
+       spawn: Callable[[Callable[[], None]], Any] = inject._default_spawn) -> dict:
+    """Move the target to ``path`` by typing `/cd`, then reconnect its awm server.
+
+    A directory Claude Code has not been trusted in is refused: `/cd` would open
+    the trust dialog, whose default is to stay put, and the next keystroke
+    typed into the session would answer it. The move drops the session's MCP
+    servers (see :data:`inject.RECONNECT_AFTER_MOVE`); the caller's own session
+    gets the reconnect from its resume, any other once its record shows the move.
+    """
+    path = path.strip() if isinstance(path, str) else ""
+    if not path or not path.isprintable() or not os.path.isabs(path):
+        return {"ok": False, "reason": "path must be an absolute directory, on one line"}
+    want = os.path.realpath(path)
+    if not os.path.isdir(want):
+        return {"ok": False, "reason": f"{want} is not a directory on this node"}
+    if not trust.trusted(want):
+        return {"ok": False, "reason": (
+            f"Claude Code is not trusted in {want} or any directory above it, so "
+            f"`/cd` would open its trust dialog and wait on a person. Open "
+            f"`claude` once in {want} and accept the dialog, then retry.")}
+    t = resolve(job, caller_pid)
+    _require_running(t)
+    if _cwd(t) == want:
+        return {"ok": True, **_identify(t), "cwd": want, "changed": False,
+                "detail": f"{t.label} is already in {want}"}
+    refused = _check_clear(t)
+    if refused:
+        return refused
+    out = _command(t, f"/cd {want}", what="the move", change=_change("cd", want))
+    if t.is_self or not out.get("ok") or not out.get("submitted"):
+        return {**out, "cwd": want}
+    if not _between_turns(t):
+        spawn(lambda: _reconnect_once_moved(t, want, SELF_MODAL_WAIT_S, SELF_POLL_S))
+        return {**out, "cwd": want, "moved": False,
+                "detail": f"{t.label} is mid-turn, so the move runs when that turn "
+                          f"ends; its awm server is reconnected after it"}
+    moved = _await_cwd(t, want, MOVE_WAIT_S, POLL_S)
+    out = {**out, "cwd": want, "moved": moved, "mcp_reconnected": moved and _reconnect(t)}
+    if not moved:
+        out["detail"] = (f"the session record does not show {want} after "
+                         f"{MOVE_WAIT_S:g}s; `list_other` shows where it is")
+    return out
+
+
+def _cwd(t: Target) -> Optional[str]:
+    try:
+        cwd = session_target.read_session_record(t.pid).get("cwd")
+    except session_target.ResolveError:
+        return None
+    return os.path.realpath(cwd) if isinstance(cwd, str) and cwd else None
+
+
+def _await_cwd(t: Target, want: str, wait_s: float, poll_s: float) -> bool:
+    deadline = _clock() + wait_s
+    while _cwd(t) != want:
+        if _clock() >= deadline:
+            return False
+        _sleep(poll_s)
+    return True
+
+
+def _reconnect(t: Target) -> bool:
+    try:
+        _deliver(t, inject.RECONNECT_AFTER_MOVE, what="the MCP reconnect after a move")
+    except inject.DeliveryError as exc:
+        log.warning("reflection: could not reconnect awm for %s after its move: %s",
+                    t.label, exc)
+        return False
+    return True
+
+
+def _reconnect_once_moved(t: Target, want: str, wait_s: float, poll_s: float) -> None:
+    try:
+        if _await_cwd(t, want, wait_s, poll_s):
+            _reconnect(t)
+        else:
+            log.warning("reflection: %s never reached %s; awm was not reconnected",
+                        t.label, want)
+    except Exception as exc:  # noqa: BLE001 - runs detached
+        log.warning("reflection: reconnecting awm for %s failed: %s", t.label, exc)
 
 
 def message(job: Optional[str], text: str, *, caller_pid: Any,
@@ -346,7 +547,19 @@ def stop(job: Optional[str], *, caller_pid: Any, confirm: bool = False,
     """
     if not isinstance(job, str) or not job.strip():
         return {"ok": False, "reason": "job is required: the session to stop"}
-    t = resolve(job, caller_pid)
+    try:
+        t = resolve(job, caller_pid)
+    except session_target.ResolveError:
+        # A job whose session has exited has no live row to resolve, and
+        # would otherwise stay in the fleet view as stopped for good.
+        short = job.strip()
+        if not (JOB_PATTERN.match(short) and (session_target.JOBS_DIR / short).is_dir()):
+            raise
+        result = remove(short)
+        out = {"ok": bool(result["removed"]), "job": short, "exited": True, **result}
+        if not out["ok"]:
+            out["reason"] = result["detail"] or "claude rm failed"
+        return out
     if t.kind != "bg" or not t.job:
         return _refused(t, f"{_describe(t)} is a terminal session, not a "
                            f"background job; close its terminal instead")
@@ -357,11 +570,19 @@ def stop(job: Optional[str], *, caller_pid: Any, confirm: bool = False,
     if t.is_self:
         def later() -> None:
             _sleep(SELF_STOP_DELAY_S)
+            # Nobody is left to hear the answer, so the log is the only record.
             try:
-                remove(t.job)
-            except Exception as exc:  # noqa: BLE001 - nobody is left to tell
-                log.warning("reflection: stopping own session %s failed: %s",
-                            t.job, exc)
+                result = remove(t.job)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("reflection: stopping own session %s (%s) failed: %s",
+                            t.job, t.name, exc)
+                return
+            if result.get("removed"):
+                log.info("reflection: stopped and removed own session %s (%s)",
+                         t.job, t.name)
+            else:
+                log.warning("reflection: own session %s (%s) was not removed: %s",
+                            t.job, t.name, result.get("detail"))
         spawn(later)
         return {"ok": True, **_identify(t), "stopping": True}
     result = remove(t.job)
@@ -409,14 +630,14 @@ def _turn_on(t: Target, name: Optional[str]) -> dict:
     text = f"/rc {name}" if name else "/rc"
     if t.is_self:
         # The command queues behind this very turn, so there is nothing to wait
-        # for here; the resume prompt tells the session to read the link.
+        # for here; the resume prompt carries the link.
         sent = _command(t, text, what="the Remote Control command",
-                        followup=SELF_ON_FOLLOWUP, allow_modal=True)
+                        change=_change("rc_on", name or ""), allow_modal=True)
         if not sent.get("ok"):
             return sent
         return {**sent, "link": None,
                 "link_reason": "the command runs when your current turn ends; "
-                               "a follow-up prompt will ask you to read the link"}
+                               "a follow-up prompt will carry the link"}
     # One attempt: a second `/rc` would land in whatever the first opened.
     sent = _command(t, text, what="the Remote Control command",
                     allow_modal=True, attempts=1)
@@ -594,3 +815,115 @@ def _await_cleared(t: Target) -> bool:
         if _clock() >= deadline:
             return False
         _sleep(POLL_S)
+
+
+# --- the effort / model confirm dialog ---------------------------------------
+
+SWITCH_TITLES = {"effort": "change effort level?", "model": "switch model?"}
+# How long a dialog that offers a different switch is left for whoever asked
+# for that one, before it is closed so the session is not left waiting.
+WRONG_OFFER_GRACE_S = 6.0
+_HOOK_ASKED = "a premodelswitch hook asked you to confirm"
+_YES_SWITCH = re.compile(r"^(?:\d+\s*[.)]\s*)?yes,?\s+switch to\s+(.+)$", re.I)
+_NO_OPTION = re.compile(r"^(?:\d+\s*[.)]\s*)?no\b", re.I)
+_EFFORT_ALIASES = {"xhigh": ("xhigh", "extra high", "x-high")}
+_WORDS = re.compile(r"[^a-z0-9]+")
+
+
+def _offer_names(kind: str, value: str, offered: str) -> bool:
+    """Whether "Yes, switch to <offered>" is the switch that was asked for."""
+    offered = offered.strip().lower()
+    if kind == "effort":
+        names = _EFFORT_ALIASES.get(value.lower(), (value.lower(),))
+        return any(re.match(re.escape(n) + r"(?![a-z0-9])", offered) for n in names)
+    # A model is offered under its display name, which an alias or a dated id
+    # only partly spells, so every word of the request must appear in the offer.
+    base = re.sub(r"\[.*?\]", "", value.lower())
+    words = [w for w in _WORDS.split(base)
+             if w and w != "claude" and not (w.isdigit() and len(w) >= 8)]
+    return bool(words) and set(words) <= set(_WORDS.split(offered))
+
+
+def _read_switch_dialog(kind: str, value: str, dialog: str) -> tuple[str, str]:
+    """(verdict, selected option) for the dialog text from its title down.
+
+    The verdict is ``hook``, ``enter`` (Yes to the asked-for switch), ``no``,
+    ``wrong`` (Yes to some other switch) or ``unclear``.
+    """
+    if _HOOK_ASKED in dialog.lower():
+        return "hook", ""
+    picked = selected_option(dialog) or ""
+    yes = _YES_SWITCH.match(picked)
+    if yes:
+        return ("enter" if _offer_names(kind, value, yes.group(1)) else "wrong"), picked
+    return ("no" if _NO_OPTION.match(picked) else "unclear"), picked
+
+
+def _answer_switch_confirm(t: Target, kind: str, value: str, wait_s: float,
+                           poll_s: float, *,
+                           give_up: Optional[Callable[[], bool]] = None,
+                           before_press: Optional[Callable[[], None]] = None
+                           ) -> dict:
+    """Answer Claude Code's "Change effort level?" / "Switch model?" dialog.
+
+    Presses Enter only with the cursor on "Yes, switch to <value>". The cursor on
+    "No" closes the dialog with Escape. A dialog a PreModelSwitch hook raised is
+    left alone: that is the user's own gate. No dialog within ``wait_s`` is
+    success, since a conversation without output switches without asking;
+    ``give_up`` ends the wait early with that same answer, and ``before_press`` runs
+    just before Enter. Returns ``ok``,
+    ``answered`` and a ``detail`` or ``reason``.
+    """
+    title = SWITCH_TITLES[kind]
+    sess = _open_screen(t)
+    try:
+        deadline = _clock() + wait_s
+        wrong_since: Optional[float] = None
+        verdict, picked = "", ""
+        while True:
+            screen = guards.current_screen(sess.read())
+            at = screen.lower().rfind(title)
+            verdict, picked = (_read_switch_dialog(kind, value, screen[at:])
+                               if at >= 0 else ("", ""))
+            if verdict == "enter":
+                if before_press:
+                    before_press()
+                sess.press("Enter")
+                _sleep(KEY_SETTLE_S)
+                return {"ok": True, "answered": True, "dialog": True,
+                        "detail": f"pressed Enter on {picked!r}"}
+            if verdict == "hook":
+                return {"ok": False, "answered": False, "dialog": True,
+                        "reason": "a PreModelSwitch hook asked for the confirmation, "
+                                  "so it was left for you to answer"}
+            if verdict == "no":
+                sess.press("Escape")
+                return {"ok": False, "answered": False, "dialog": True,
+                        "reason": f"the dialog's cursor was on {picked!r}, so it was "
+                                  f"closed with Escape"}
+            now = _clock()
+            if verdict != "wrong":
+                wrong_since = None
+            elif wrong_since is None:
+                wrong_since = now
+            if wrong_since is not None and now - wrong_since >= WRONG_OFFER_GRACE_S:
+                sess.press("Escape")
+                return {"ok": False, "answered": False, "dialog": True,
+                        "reason": f"the dialog offered {picked!r}, not a switch to "
+                                  f"{value}; it was closed with Escape"}
+            if (give_up and give_up()) or now >= deadline:
+                break
+            _sleep(poll_s)
+        if verdict:
+            return {"ok": False, "answered": False, "dialog": True,
+                    "reason": f"the dialog's selection ({picked or 'none'!r}) was "
+                              f"not one to answer; nothing was pressed"}
+        other = guards.modal_on_screen(screen)
+        if other:
+            return {"ok": False, "answered": False, "dialog": False,
+                    "reason": f"a different prompt was showing instead ({other!r}); "
+                              f"nothing was pressed"}
+        return {"ok": True, "answered": False, "dialog": False,
+                "detail": "no confirm dialog appeared"}
+    finally:
+        sess.close()

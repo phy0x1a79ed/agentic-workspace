@@ -59,6 +59,23 @@ Beside the rotating shared password, static per-user passwords:
 
 `verify` with a `username` mints a session as that user; failures count per username and per client IP and lock the key after `lockout_threshold` attempts for `lockout_minutes`. `AWM_AUTH_PROFILE=public` disables the shared path entirely: no minting, no password push, no peer credentials, and a login without a username fails.
 
+## Device tokens
+
+A device token lets an unattended device or app act as one user without storing a password. It is `awmut1.<id>.<secret>`. This service keeps only the SHA-256 of the secret.
+
+    awm awm device-mint --username tony --label kiosk   # prints the token once
+    awm awm device-list [--username tony]               # no secrets
+    awm awm device-revoke --id <id>
+
+1. Send the token on every request to the edge as `Authorization: Bearer awmut1.…`. The edge stamps `X-Awm-As: user:<name>` as for a cookie login and sets no cookie.
+2. Revoke a lost or retired token by its id. The edge honours a revoked token until its next material refresh, at most 30 s later. Disabling the user drops all of that user's tokens the same way.
+
+Pass `--scope avatar-stage` to narrow a token to the avatar stage session: `POST /svc/avatar/session/stage` and the WebSocket it returns. The edge refuses a scoped token on every other path with a 401. Scope a token whose bearer crosses another host, such as the deneb relay, so a leak there does not hand over the whole user. `awm/service_components/config/awm/config/usertoken.py` holds the shapes, and both this service and the edge read them from there.
+
+**CAUTION** This service sends a scoped token only to an edge that names its scope in `edge_material`. An edge that could not read the scope would honour the token everywhere. A node whose `httpsfront` predates scopes therefore refuses scoped tokens.
+
+The operator, on the host, manages any user's tokens. A signed-in user manages only their own, over HTTP through the edge. `last_used_at` is as coarse as the edge's material refresh: the edge reports use on its next fetch, which the next request after the 30 s window triggers.
+
 ## Penpot credentials
 
 Penpot keeps its own accounts and has no "trust the proxy" mode, so this
@@ -94,8 +111,8 @@ password and records the new one, which is the only repair.
 | `lockout_minutes` | `15` | how long the lock holds |
 | `push_enabled` | `true` | push the login password on each mint, to the Ops note under AWM through `reporting ops_post` (`AWM_REPORTING_PEER=<peer>` on a node without reporting) |
 | `push_discord` | `false` | send the push to Discord through `social send` in place of the Ops note |
-| `discord_account` | `discord-bot` | social account id for the Discord push |
-| `discord_channel` | `dm:188743359983124480` | Discord push target: a channel id, or `dm:<user_id>` for the operator's DM with the bot |
+| `discord_account` | empty | social account id for the Discord push. Empty uses the node's operator DM account |
+| `discord_channel` | empty | Discord push target: a channel id, or `dm:<user_id>`. Empty uses the node's operator DM (`AWM_OPERATOR_DM_CHANNEL` in `FEDERATION.md`) |
 
 ## Python dependencies
 

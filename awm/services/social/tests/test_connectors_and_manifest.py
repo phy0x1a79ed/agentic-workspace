@@ -181,9 +181,10 @@ class TestManifest:
         fns = API_MANIFEST["functions"]
         tools = {f.get("tool", f["name"]) for f in fns}
         assert tools == {
-            "social_send", "social_fetch", "social_search",
+            "social_send", "social_react", "social_fetch", "social_history", "social_search",
             "social_download_attachments", "social_accounts", "social_channels",
             "social_open_dm", "social_operators", "social_operator_add",
+            "social_keepers", "social_keep_reset", "social_keep_adopt",
             "social_operator_remove", "social_lookup",
             "social_buckets", "social_bucket_ls", "social_bucket_get",
             "social_bucket_put", "social_bucket_rm", "social_bucket_search",
@@ -192,7 +193,7 @@ class TestManifest:
             "social_bucket_share", "social_bucket_shares",
             "social_bucket_unshare", "social_bucket_resolve",
             "social_bucket_versions", "social_bucket_restore",
-            "social_emit_probe",
+            "social_emit_probe", "social_seats", "social_mount", "social_unmount",
         }
         # Tool names must be globally unique (the catalog warn-and-skips dups).
         tool_names = [f.get("tool", f["name"]) for f in fns]
@@ -204,12 +205,12 @@ class TestManifest:
         assert API_MANIFEST["emitters"] == [
             {"topic": "message"}, {"topic": "command"}]
 
-    def test_send_requires_account_channel_text(self):
+    def test_send_requires_account_and_channel(self):
         from awm.social.hub_adapter import API_MANIFEST
 
         send = next(f for f in API_MANIFEST["functions"] if f["name"] == "send")
         required = {p["name"] for p in send["params"] if p["required"]}
-        assert required == {"account", "channel", "text"}
+        assert required == {"account", "channel"}
 
     def test_fetch_and_search_required_params(self):
         from awm.social.hub_adapter import API_MANIFEST

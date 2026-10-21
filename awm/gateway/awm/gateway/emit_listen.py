@@ -22,10 +22,29 @@ MAX_BACKOFF_S = 15.0
 Stream = Callable[..., AsyncIterator[Any]]
 
 
-def matches(event: object, prefixes: tuple[str, ...]) -> bool:
+def parse_where(text: str) -> dict[str, str]:
+    """``a=1,b=2`` as ``{"a": "1", "b": "2"}``; empty text is no condition."""
+    fields: dict[str, str] = {}
+    for pair in (p.strip() for p in text.split(",")):
+        if not pair:
+            continue
+        key, sep, value = pair.partition("=")
+        if not sep or not key.strip():
+            raise ValueError(f"--where wants field=value, not {pair!r}")
+        fields[key.strip()] = value.strip()
+    return fields
+
+
+def matches(event: object, prefixes: tuple[str, ...],
+            where: dict[str, str] | None = None) -> bool:
+    if not isinstance(event, dict):
+        return not prefixes and not where
+    for key, value in (where or {}).items():
+        if key not in event or str(event[key]) != value:
+            return False
     if not prefixes:
         return True
-    kind = event.get("type") if isinstance(event, dict) else None
+    kind = event.get("type")
     return isinstance(kind, str) and kind.startswith(prefixes)
 
 
@@ -36,6 +55,7 @@ async def listen(
     *,
     backoff_s: float = 1.0,
     fatal: tuple[type[Exception], ...] = (),
+    where: dict[str, str] | None = None,
 ) -> None:
     """Print each matching event as compact JSON, reconnecting. Never returns,
     except to raise a ``fatal`` error met before the first connection."""
@@ -53,7 +73,7 @@ async def listen(
     while True:
         try:
             async for event in stream(on_connect=on_connect):
-                if matches(event, wanted):
+                if matches(event, wanted, where):
                     write(json.dumps(event, separators=(",", ":"), ensure_ascii=False))
         except Exception as exc:  # noqa: BLE001 — every other drop is a reconnect
             if isinstance(exc, fatal) and not connected_before:

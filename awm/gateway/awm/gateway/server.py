@@ -514,6 +514,9 @@ _CALLER_STAMPED: dict[str, frozenset[str] | None] = {
     "trilium": frozenset({
         "note_upsert", "note_create", "note_update", "note_place", "note_delete",
         "note_move", "note_clone", "attr_set", "attr_delete", "attachment_put"}),
+    "social": frozenset({"mount", "unmount"}),
+    "journal": frozenset({"post"}),
+    "tether": None,
 }
 
 
@@ -528,7 +531,8 @@ _SESSION_BOUND: dict[str, frozenset[str]] = {
     "reflection": frozenset({"message_self", "compact", "mode", "whoami"}),
     "operations": frozenset({
         "hook_plan", "hook_plan_approved", "hook_todos", "hook_prompt",
-        "hook_session_clear", "task_claim", "request_human", "board_watch", "board_unwatch"}),
+        "hook_session_clear", "task_claim", "task_track", "request_human", "board_watch",
+        "board_unwatch"}),
 }
 
 
@@ -574,8 +578,12 @@ def _stamp_caller(name: str, args: dict, pid_header: str | None,
     calls (`_CALLER_STAMPED`) are every `reflection` verb, which injects into the
     caller's own prompt and, as `start_other` and `stop_other`, records the caller
     as the parent of the session it starts or stops, every `operations` verb (the
-    reporting ones act for the calling session), and the `trilium` write verbs,
-    which the write gate checks. Their contract with the model requires zero
+    reporting ones act for the calling session), the `trilium` write verbs,
+    which the write gate checks, `social` `mount`/`unmount`, which make the
+    caller a seat's holder, `journal` `post`, which records the posting
+    session so the post joins that session's card, and every `tether` verb,
+    since a tether session answers only to the session that minted it. A call from another node carries the session in
+    `mcp_caller.CLAIM_KEY` instead, so that key survives only on an edge request. Their contract with the model requires zero
     awareness of any of this: calls arrive carrying nothing about who is making
     them, and this is the one place identity is attached before dispatch.
 
@@ -608,6 +616,8 @@ def _stamp_caller(name: str, args: dict, pid_header: str | None,
     inner.pop("_caller", None)
     if as_:
         pid_header = descendant_header = None
+    else:
+        inner.pop(mcp_caller.CLAIM_KEY, None)
     if pid_header and pid_header.isdigit():
         inner["_caller_pid"] = int(pid_header)
     elif descendant_header and descendant_header.isdigit():

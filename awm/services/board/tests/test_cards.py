@@ -30,14 +30,14 @@ def test_post_makes_a_card_note_with_the_contract_shape(board, trilium, board_no
     card = request(board, tony, priority="urgent")
     assert set(card) == {"id", "kind", "sender", "recipient", "claimant", "priority",
                          "status", "state", "title", "body", "reply_to", "result",
-                         "agent", "project", "owner", "note_id",
+                         "agent", "node", "project", "owner", "note_id",
                          "created_at", "updated_at", "last_message"}
     assert card["last_message"] == 0
     assert card["sender"] == {"swarm": "tony", "principal": "agent", "party": tony["party_id"]}
     assert (card["kind"], card["recipient"], card["priority"]) == ("request", "collins", "urgent")
     assert (card["state"], card["status"]) == ("proposed", "posted")
     assert card["claimant"] is None and card["result"] is None
-    assert (card["agent"], card["project"], card["owner"]) == (None, None, None)
+    assert (card["agent"], card["node"], card["project"], card["owner"]) == (None,) * 4
     note_id = trilium.card_note(card["id"])
     assert trilium.notes[note_id]["parentNoteIds"] == [trilium.column("proposed")]
     assert trilium.label(note_id, "status") is None
@@ -205,6 +205,20 @@ def test_a_message_cannot_be_claimed(board, tony, collins, trilium):
     note = trilium.card_note(card["id"])
     assert trilium.state_of(card["id"]) == "proposed" and trilium.label(note, "cardClaimant") == ""
     assert board.get(collins, card["id"])["claimant"] is None
+
+
+def test_the_recipient_finishes_a_message_and_nobody_else_does(board, tony, collins, make_party):
+    mock = make_party("mock")
+    card = message(board, tony)
+    with pytest.raises(Forbidden):
+        board.complete(tony, card["id"], "x")
+    with pytest.raises(NotFound):
+        board.complete(mock, card["id"], "x")
+    assert board.complete(collins, card["id"], "read")["state"] == "done"
+    with pytest.raises(Forbidden):
+        board.complete(collins, card["id"], "again")
+    other = message(board, tony)
+    assert board.fail(collins, other["id"], "not for us")["state"] == "rejected"
 
 
 def test_a_card_held_by_another_swarm_is_a_conflict(board, tony, make_party):

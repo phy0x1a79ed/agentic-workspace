@@ -11,7 +11,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from awm.reflection import control, guards, inject, session_target
+from awm.reflection import (control, guards, inject, pending, session_target,
+                            settings_guard)
 
 SELF_JOB, OTHER_JOB, DEAD_JOB = "aaaaaaaa", "bbbbbbbb", "cccccccc"
 ME, PARENT = os.getpid(), os.getppid()
@@ -96,6 +97,24 @@ class Screen:
 
 PLAIN = "some output\n? for shortcuts"
 PROMPT = "Do you want to proceed?\n❯ 1. Yes\n  2. No\nEsc to cancel"
+
+
+def switch_dialog(title, offer, cursor=0, note=""):
+    """Claude Code's confirm dialog for a changed effort or model."""
+    options = [f"1. Yes, switch to {offer}", "2. No, go back"]
+    return (f"{title}\n{note}This conversation is cached for the current setting. "
+            f"Switching means the next turn re-reads it uncached.\n"
+            + "\n".join(("❯ " if i == cursor else "  ") + o
+                         for i, o in enumerate(options))
+            + "\nEnter to confirm · Esc to cancel")
+
+
+EFFORT_YES = switch_dialog("Change effort level?", "Low")
+EFFORT_NO = switch_dialog("Change effort level?", "Low", cursor=1)
+MODEL_YES = switch_dialog("Switch model?", "Opus 5.5 (1M context)")
+HOOK_ASKED = switch_dialog(
+    "Switch model?", "Opus 5.5",
+    note="A PreModelSwitch hook asked you to confirm this change.\n")
 OPTIONS = ["Show QR code", "Disconnect this session", "Continue"]
 
 
@@ -116,14 +135,29 @@ class Modal:
         self.cursor = (self.cursor + step) % len(self.options)
 
 
+SETTINGS = {
+    "theme": "dark",
+    "model": "opus",
+    "effortLevel": "medium",
+    "modelSettings": {"claude-opus-5-5": {"effortLevel": "high"}},
+    "hooks": {"Stop": []},
+}
+SETTINGS_TEXT = json.dumps(SETTINGS, indent=2) + "\n"
+
+
 @pytest.fixture
 def world(home, monkeypatch):
     """Fakes for the screen, the typing and the clock, with a log of what was typed."""
     clock = Clock()
     monkeypatch.setattr(control, "_sleep", clock.sleep)
     monkeypatch.setattr(control, "_clock", clock)
+    monkeypatch.setattr(pending, "PENDING_DIR", home.root / "pending")
+    settings = home.root / "claude" / "settings.json"
+    settings.parent.mkdir()
+    settings.write_text(SETTINGS_TEXT)
+    monkeypatch.setattr(settings_guard, "settings_path", lambda: settings)
     w = SimpleNamespace(home=home, clock=clock, typed=[], sent=[], screen=Screen(PLAIN),
-                        status="idle", settled=True, opened=[])
+                        status="idle", settled=True, opened=[], settings=settings)
 
     def open_screen(t):
         w.opened.append(t)
@@ -261,7 +295,8 @@ def test_a_bad_argument_types_nothing(world, call):
     assert world.typed == [] and world.sent == [] and world.opened == []
 
 
-@pytest.mark.parametrize("status,screen", [("waiting", PLAIN), ("idle", PROMPT)])
+@pytest.mark.parametrize("status,screen", [
+    ("waiting", PLAIN), ("idle", PROMPT), ("idle", EFFORT_YES), ("idle", MODEL_YES)])
 def test_a_modal_or_prompt_stops_every_typing_verb(world, status, screen):
     world.status, world.screen = status, Screen(screen)
     for out in (control.model("opus", job=OTHER_JOB, caller_pid=ME),
@@ -354,6 +389,20 @@ def test_stop_of_own_session_with_confirm_runs_after_the_call_returns(world):
     assert rm.calls == [SELF_JOB]
 
 
+@pytest.mark.parametrize("removed,level,text", [
+    (True, "INFO", "stopped and removed own session"),
+    (False, "WARNING", "was not removed: no such job"),
+])
+def test_stop_of_own_session_logs_whether_the_job_went(world, caplog, removed, level, text):
+    spawned = []
+    control.stop(SELF_JOB, caller_pid=ME, confirm=True, remove=Remover(removed=removed),
+                 spawn=spawned.append)
+    with caplog.at_level("INFO", logger="awm.reflection"):
+        spawned[0]()
+    line = next(r for r in caplog.records if SELF_JOB in r.getMessage())
+    assert line.levelname == level and text in line.getMessage()
+
+
 def test_stop_reports_a_failed_removal(world):
     out = control.stop(OTHER_JOB, caller_pid=ME, remove=Remover(removed=False))
     assert out["ok"] is False and out["reason"] == "no such job"
@@ -364,6 +413,20 @@ def test_stop_removes_a_job_that_is_already_dead(world):
     rm = Remover()
     assert control.stop("gone", caller_pid=ME, remove=rm)["ok"]
     assert rm.calls == [DEAD_JOB]
+
+
+def test_stop_removes_an_exited_job_that_no_live_row_names(world):
+    (world.home.root / "jobs" / "dddddddd").mkdir()
+    rm = Remover()
+    out = control.stop("dddddddd", caller_pid=ME, remove=rm)
+    assert out["ok"] and out["exited"] and rm.calls == ["dddddddd"]
+
+
+def test_stop_of_an_unknown_job_still_refuses(world):
+    rm = Remover()
+    with pytest.raises(session_target.ResolveError):
+        control.stop("eeeeeeee", caller_pid=ME, remove=rm)
+    assert rm.calls == []
 
 
 def test_stop_refuses_a_terminal_session_and_a_missing_job(world):
@@ -427,7 +490,7 @@ def test_on_for_the_callers_own_session_queues_and_resumes_with_a_pointer_to_lin
     out = control.remote_control(True, name="me-rc", job=None, caller_pid=ME)
     text, kw = world.sent[0]
     assert text == "/rc me-rc" and kw["allow_modal"] is True
-    assert kw["followup"] == control.SELF_ON_FOLLOWUP and "link" in kw["followup"]
+    assert kw["change"].kind == "rc_on" and kw["followup"] is None
     assert out["link"] is None and "turn ends" in out["link_reason"]
 
 
@@ -548,6 +611,332 @@ def test_off_for_the_callers_own_session_queues_rc_and_finishes_later(connected)
     assert connected.typed[-1] == (SELF_JOB, control.SELF_OFF_FOLLOWUP, inject.ATTEMPTS)
 
 
+# --- the effort / model confirm dialog ---------------------------------------
+
+
+@pytest.fixture
+def after_typing(world, monkeypatch):
+    """Show a screen only once the command has been typed; before that it is clear."""
+    original = control._deliver
+
+    def show(screen):
+        shown = Screen(screen)
+
+        def deliver(t, text, **kw):
+            world.screen = shown
+            return original(t, text, **kw)
+
+        monkeypatch.setattr(control, "_deliver", deliver)
+        world.screen = Screen(PLAIN)
+        return shown
+
+    return show
+
+
+def test_an_effort_dialog_with_the_cursor_on_yes_is_answered_with_enter(world, after_typing):
+    shown = after_typing(EFFORT_YES)
+    out = control.effort("low", job=OTHER_JOB, caller_pid=ME)
+    assert out["ok"] and out["switch_dialog"]["answered"] is True
+    assert shown.presses == ["Enter"] and shown.closed
+
+
+def test_a_model_dialog_with_the_cursor_on_yes_is_answered_with_enter(world, after_typing):
+    shown = after_typing(MODEL_YES)
+    out = control.model("opus", job=OTHER_JOB, caller_pid=ME)
+    assert out["ok"] and shown.presses == ["Enter"]
+
+
+def test_an_alias_with_a_context_suffix_still_names_the_offered_model(world, after_typing):
+    shown = after_typing(switch_dialog("Switch model?", "Sonnet 5.5 (1M context)"))
+    assert control.model("sonnet[1m]", job=OTHER_JOB, caller_pid=ME)["ok"]
+    assert shown.presses == ["Enter"]
+
+
+def test_a_dialog_with_the_cursor_on_no_is_closed_with_escape(world, after_typing):
+    shown = after_typing(EFFORT_NO)
+    out = control.effort("low", job=OTHER_JOB, caller_pid=ME)
+    assert out["ok"] is False and "No, go back" in out["reason"]
+    assert shown.presses == ["Escape"]
+
+
+def test_a_dialog_a_hook_raised_is_left_alone(world, after_typing):
+    shown = after_typing(HOOK_ASKED)
+    out = control.model("opus", job=OTHER_JOB, caller_pid=ME)
+    assert out["ok"] is False and "hook" in out["reason"]
+    assert shown.presses == []
+
+
+def test_no_dialog_is_success_because_a_fresh_conversation_does_not_ask(world, after_typing):
+    shown = after_typing(PLAIN)
+    out = control.effort("low", job=OTHER_JOB, caller_pid=ME)
+    assert out["ok"] and out["switch_dialog"]["dialog"] is False
+    assert shown.presses == []
+    assert world.clock.now >= control.MODAL_WAIT_S
+
+
+def test_a_yes_for_another_effort_is_not_taken_for_the_one_asked(world, after_typing):
+    # `high` is a prefix of `xhigh`; the dialog must offer exactly the asked level.
+    shown = after_typing(switch_dialog("Change effort level?", "xhigh"))
+    out = control.effort("high", job=OTHER_JOB, caller_pid=ME)
+    assert out["ok"] is False and "xhigh" in out["reason"]
+    assert shown.presses == ["Escape"], "closed only after the grace, never answered"
+    assert world.clock.now >= control.WRONG_OFFER_GRACE_S
+
+
+def test_a_different_prompt_instead_of_the_dialog_is_not_touched(world, after_typing):
+    shown = after_typing(PROMPT)
+    out = control.effort("low", job=OTHER_JOB, caller_pid=ME)
+    assert out["ok"] is False and "different prompt" in out["reason"]
+    assert shown.presses == []
+
+
+def test_another_job_that_is_mid_turn_is_answered_from_a_thread(world, after_typing):
+    world.settled = False
+    shown = after_typing(EFFORT_YES)
+    spawned = []
+    out = control.effort("low", job=OTHER_JOB, caller_pid=ME, spawn=spawned.append)
+    assert out["ok"] and out["switch_dialog"]["pending"] is True
+    assert shown.presses == [] and len(spawned) == 1
+    spawned[0]()
+    assert shown.presses == ["Enter"]
+
+
+@pytest.fixture
+def own_promise(world):
+    """Write the pending record `send` would have left for the caller's own session."""
+    def make():
+        text, kw = world.sent[-1]
+        pending.record(pending.Pending(
+            repl_pid=ME, proc_start="1", session_id="sid", text=text,
+            followup="x", injected_at_ms=1, changes=(kw["change"],)))
+        return kw["change"]
+    return make
+
+
+def test_the_callers_own_session_is_answered_by_the_spawned_thread(world, own_promise):
+    spawned = []
+    out = control.effort("low", job=None, caller_pid=ME, spawn=spawned.append)
+    assert out["self"] is True and out["switch_dialog"]["pending"] is True
+    change = own_promise()
+    world.screen = Screen(EFFORT_YES)
+    assert world.screen.presses == [] and len(spawned) == 1
+    spawned[0]()
+    assert world.screen.presses == ["Enter"]
+    [settled] = pending.read(ME).changes
+    assert settled.key == change.key and settled.outcome == pending.APPLIED
+
+
+def test_a_refused_dialog_is_written_onto_the_promise_with_its_reason(world, own_promise):
+    spawned = []
+    control.model("opus", job=None, caller_pid=ME, spawn=spawned.append)
+    own_promise()
+    world.screen = Screen(switch_dialog("Switch model?", "Opus 5.5", cursor=1))
+    spawned[0]()
+    assert world.screen.presses == ["Escape"]
+    [settled] = pending.read(ME).changes
+    assert settled.outcome == pending.FAILED and "No, go back" in settled.detail
+
+
+def test_the_thread_stops_waiting_once_the_resume_has_gone_in(world, own_promise):
+    control.effort("low", job=None, caller_pid=ME, spawn=lambda fn: None)
+    change = own_promise()
+    gone = control._promise_gone(ME, change)
+    assert gone() is False
+    pending.clear(ME)
+    assert gone() is True
+
+
+def test_a_promise_that_was_never_written_does_not_end_the_wait(world):
+    gone = control._promise_gone(ME, pending.Change("effort", "low", "k"))
+    assert gone() is False and gone() is False
+
+
+def test_a_rename_asks_no_dialog(world):
+    out = control.rename("new", job=OTHER_JOB, caller_pid=ME)
+    assert out["ok"] and "switch_dialog" not in out and world.screen.presses == []
+
+
+@pytest.mark.parametrize("screen,marker", [
+    ("Change effort level?\nYes, switch to Low", "change effort level?"),
+    ("Switch model?\nYes, switch to Opus", "switch model?")])
+def test_the_switch_dialogs_count_as_a_modal(screen, marker):
+    assert guards.modal_on_screen(screen) == marker
+    assert guards.modal_on_screen("\x1b[1m" + screen + "\x1b[0m") == marker
+
+
+# --- the user's saved defaults ------------------------------------------------
+
+
+def cli_saves(world, edit):
+    """What Claude Code does on Enter: rewrite settings.json with ``edit`` applied."""
+    def on_press(key):
+        if key == "Enter":
+            doc = json.loads(world.settings.read_text())
+            edit(doc)
+            world.settings.write_text(json.dumps(doc, indent=2) + "\n")
+    return on_press
+
+
+def save_effort(doc):
+    doc["modelSettings"]["claude-opus-5-5"]["effortLevel"] = "low"
+
+
+def test_effort_puts_the_saved_default_back_after_the_cli_wrote_it(world, after_typing):
+    shown = after_typing(EFFORT_YES)
+    shown.on_press = cli_saves(world, save_effort)
+    out = control.effort("low", job=OTHER_JOB, caller_pid=ME)
+    assert out["ok"] and shown.presses == ["Enter"]
+    assert out["switch_dialog"]["defaults_restored"] == [
+        "modelSettings.claude-opus-5-5.effortLevel"]
+    assert world.settings.read_text() == SETTINGS_TEXT, "byte for byte, formatting too"
+
+
+def test_model_puts_the_saved_default_back_after_the_cli_wrote_it(world, after_typing):
+    shown = after_typing(switch_dialog("Switch model?", "Sonnet 5.5"))
+    shown.on_press = cli_saves(world, lambda doc: doc.update(model="sonnet"))
+    out = control.model("sonnet", job=OTHER_JOB, caller_pid=ME)
+    assert out["ok"] and out["switch_dialog"]["defaults_restored"] == ["model"]
+    assert json.loads(world.settings.read_text())["model"] == "opus"
+
+
+def test_a_change_to_other_keys_made_meanwhile_is_kept(world, after_typing):
+    def edit(doc):
+        save_effort(doc)
+        doc["theme"] = "light"
+        doc["newKey"] = {"a": 1}
+    shown = after_typing(EFFORT_YES)
+    shown.on_press = cli_saves(world, edit)
+    control.effort("low", job=OTHER_JOB, caller_pid=ME)
+    doc = json.loads(world.settings.read_text())
+    assert doc["theme"] == "light" and doc["newKey"] == {"a": 1}
+    assert doc["modelSettings"]["claude-opus-5-5"]["effortLevel"] == "high"
+    assert list(doc) == list(SETTINGS) + ["newKey"], "order kept"
+
+
+def test_a_dialog_that_was_declined_leaves_the_file_alone(world, after_typing):
+    shown = after_typing(EFFORT_NO)
+    shown.on_press = cli_saves(world, save_effort)
+    out = control.effort("low", job=OTHER_JOB, caller_pid=ME)
+    assert out["ok"] is False and shown.presses == ["Escape"]
+    assert world.settings.read_text() == SETTINGS_TEXT
+
+
+def test_effort_max_is_session_only_and_takes_no_guard(world):
+    assert control._DefaultsGuard(("effort", "max")).on is False
+    assert control._DefaultsGuard(("effort", "low")).on is True
+    assert control._DefaultsGuard(("model", "opus")).on is True
+    assert control._DefaultsGuard(None).on is False
+
+
+def test_no_dialog_still_puts_back_what_the_command_saved(world, after_typing):
+    # A conversation without output switches without asking, and still saves.
+    after_typing(PLAIN)
+    original = control._deliver
+
+    def deliver(t, text, **kw):
+        out = original(t, text, **kw)
+        cli_saves(world, save_effort)("Enter")
+        return out
+
+    control._deliver = deliver
+    try:
+        out = control.effort("low", job=OTHER_JOB, caller_pid=ME)
+    finally:
+        control._deliver = original
+    assert out["ok"] and out["switch_dialog"]["dialog"] is False
+    assert world.settings.read_text() == SETTINGS_TEXT
+
+
+def test_the_callers_own_session_snapshots_again_just_before_the_answer(world):
+    spawned = []
+    control.model("sonnet", job=None, caller_pid=ME, spawn=spawned.append)
+    # The user changes their default while the turn is still running.
+    world.settings.write_text(world.settings.read_text().replace('"opus"', '"haiku"'))
+    shown = Screen(switch_dialog("Switch model?", "Sonnet"))
+    shown.on_press = cli_saves(world, lambda doc: doc.update(model="sonnet"))
+    world.screen = shown
+    spawned[0]()
+    assert shown.presses == ["Enter"]
+    assert json.loads(world.settings.read_text())["model"] == "haiku", \
+        "put back to what it was when the dialog opened, not to the stale value"
+
+
+# --- what is on screen now -----------------------------------------------------
+
+ERASE_LINE = "\x1b[2K\x1b[1A"
+
+
+def inline_frame(text):
+    """Ink's way of painting a region: lines, with the cursor left on the last."""
+    return "\r\n".join(text.split("\n"))
+
+
+def inline_close(lines):
+    """Erase the ``lines``-line region above the cursor, as Ink does before a repaint."""
+    return ERASE_LINE * (lines - 1) + "\x1b[2K\x1b[G"
+
+
+COMPOSER = "╭────────────╮\n│ >          │\n╰────────────╯\n  ? for shortcuts"
+DIALOG_LINES = EFFORT_YES.count("\n") + 1
+
+
+def stale_stream():
+    """The stream of a session whose effort dialog was answered a moment ago."""
+    return (inline_frame(COMPOSER) + "\r\n"
+            + inline_close(COMPOSER.count("\n") + 2)
+            + inline_frame(EFFORT_YES)
+            + inline_close(DIALOG_LINES)
+            + "Set effort level to low (saved as your default for new sessions)\r\n"
+            + inline_frame(COMPOSER))
+
+
+def test_a_dialog_that_was_answered_is_not_a_modal(world):
+    stream = stale_stream()
+    assert "Change effort level?" in stream, "the dialog text is still in the stream"
+    assert guards.modal_on_screen(stream) is None
+
+
+def test_a_dialog_still_open_at_the_end_of_the_stream_is_a_modal(world):
+    stream = (inline_frame(COMPOSER) + "\r\n" + inline_close(COMPOSER.count("\n") + 2)
+              + inline_frame(EFFORT_YES))
+    assert guards.modal_on_screen(stream)
+    assert "Change effort level?" in guards.current_screen(stream)
+
+
+def test_a_typing_verb_is_not_refused_after_the_dialog_was_answered(world):
+    world.screen = Screen(stale_stream())
+    out = control.model("sonnet", job=OTHER_JOB, caller_pid=ME)
+    assert out["ok"] and not out.get("refused")
+    assert world.typed == [(OTHER_JOB, "/model sonnet", inject.ATTEMPTS)]
+
+
+def test_the_frame_sequence_dialog_answer_composer_ends_with_no_modal(world):
+    # The three states a session passes through, read as the lane reads them: the
+    # stream only ever grows.
+    composer = inline_frame(COMPOSER) + "\r\n" + inline_close(COMPOSER.count("\n") + 2)
+    opened = composer + inline_frame(EFFORT_YES)
+    answered = opened + inline_close(DIALOG_LINES) + "Set effort level to low\r\n"
+    idle = answered + inline_frame(COMPOSER)
+    seen = [guards.modal_on_screen(s) is not None
+            for s in (composer, opened, answered, idle)]
+    assert seen == [False, True, False, False]
+
+
+def test_a_cursor_addressed_repaint_clears_a_closed_dialog(world):
+    # Fullscreen paints: absolute positions, then blank rows over the old dialog.
+    rows = EFFORT_YES.split("\n")
+    paint = "\x1b[?1049h" + "".join(f"\x1b[{i + 1};1H{r}" for i, r in enumerate(rows))
+    erase = "".join(f"\x1b[{i + 1};1H\x1b[2K" for i in range(len(rows)))
+    assert guards.modal_on_screen(paint)
+    assert guards.modal_on_screen(paint + erase + "\x1b[1;1H> ") is None
+
+
+def test_the_answering_thread_does_not_press_for_a_dialog_that_is_gone(world, after_typing):
+    shown = after_typing(stale_stream())
+    out = control.effort("low", job=OTHER_JOB, caller_pid=ME)
+    assert out["ok"] and shown.presses == []
+
+
 # --- the modal guard ---------------------------------------------------------
 
 
@@ -596,3 +985,120 @@ def test_a_daemon_press_sends_the_raw_key_bytes():
     for key in ("Escape", "Down", "Up", "Enter"):
         sess.press(key)
     assert sent == [b"\x1b", b"\x1b[B", b"\x1b[A", b"\r"]
+
+
+# --- cd ----------------------------------------------------------------------
+
+
+@pytest.fixture
+def moves(world, monkeypatch, tmp_path):
+    """A trusted target directory, and a record whose cwd follows each `/cd` typed."""
+    monkeypatch.setattr(control.trust, "trusted", lambda path: True)
+    there = tmp_path / "elsewhere" / "scope"
+    there.mkdir(parents=True)
+    original = control._deliver
+
+    def deliver(t, text, **kw):
+        out = original(t, text, **kw)
+        if text.startswith("/cd ") and world.follow:
+            set_cwd(world.home, t.pid, text[len("/cd "):])
+        return out
+
+    world.follow = True
+    monkeypatch.setattr(control, "_deliver", deliver)
+    set_cwd(world.home, PARENT, str(tmp_path))
+    return there
+
+
+def set_cwd(home, pid, cwd):
+    path = home.root / "sessions" / f"{pid}.json"
+    rec = json.loads(path.read_text())
+    path.write_text(json.dumps({**rec, "cwd": cwd}))
+
+
+def test_cd_types_the_resolved_path_and_sees_the_session_arrive(world, moves):
+    out = control.cd(str(moves) + "/", job="other one", caller_pid=ME)
+    assert out["ok"] and out["moved"] is True and out["cwd"] == str(moves)
+    assert out["mcp_reconnected"] is True
+    assert world.typed == [(OTHER_JOB, f"/cd {moves}", inject.ATTEMPTS),
+                           (OTHER_JOB, inject.RECONNECT_AFTER_MOVE, inject.ATTEMPTS)]
+
+
+def test_cd_follows_a_symlink_to_the_directory_it_names(world, moves, tmp_path):
+    link = tmp_path / "shortcut"
+    link.symlink_to(moves)
+    out = control.cd(str(link), job=OTHER_JOB, caller_pid=ME)
+    assert out["ok"] and world.typed[0][1] == f"/cd {moves}"
+
+
+def test_cd_keeps_a_path_with_spaces_whole(world, moves, tmp_path):
+    spaced = tmp_path / "two words"
+    spaced.mkdir()
+    out = control.cd(str(spaced), job=OTHER_JOB, caller_pid=ME)
+    assert out["ok"] and world.typed[0][1] == f"/cd {spaced}"
+
+
+@pytest.mark.parametrize("path", ["", "relative/dir", "/no/such/dir", "/tmp\n/etc"])
+def test_cd_refuses_a_path_that_is_not_an_absolute_directory(world, moves, path):
+    out = control.cd(path, job=OTHER_JOB, caller_pid=ME)
+    assert out["ok"] is False
+    assert world.typed == [] and world.sent == [] and world.opened == []
+
+
+def test_cd_refuses_a_file(world, moves, tmp_path):
+    f = tmp_path / "a-file"
+    f.write_text("x")
+    out = control.cd(str(f), job=OTHER_JOB, caller_pid=ME)
+    assert out["ok"] is False and "not a directory" in out["reason"]
+
+
+def test_cd_refuses_where_the_trust_dialog_would_open(world, moves, monkeypatch):
+    monkeypatch.setattr(control.trust, "trusted", lambda path: False)
+    out = control.cd(str(moves), job=OTHER_JOB, caller_pid=ME)
+    assert out["ok"] is False and "trust dialog" in out["reason"]
+    assert world.typed == [] and world.opened == []
+
+
+def test_cd_to_where_the_session_already_is_types_nothing(world, moves):
+    set_cwd(world.home, PARENT, str(moves))
+    out = control.cd(str(moves), job=OTHER_JOB, caller_pid=ME)
+    assert out["ok"] and out["changed"] is False and world.typed == []
+
+
+def test_cd_into_a_modal_is_refused(world, moves):
+    world.screen = Screen(PROMPT)
+    out = control.cd(str(moves), job=OTHER_JOB, caller_pid=ME)
+    assert out["refused"] and out["kind"] == "modal" and world.typed == []
+
+
+def test_cd_mid_turn_reconnects_awm_once_the_move_has_run(world, moves):
+    world.settled, world.follow, spawned = False, False, []
+    out = control.cd(str(moves), job=OTHER_JOB, caller_pid=ME, spawn=spawned.append)
+    assert out["ok"] and out["moved"] is False and "mid-turn" in out["detail"]
+    assert [text for _, text, _ in world.typed] == [f"/cd {moves}"]
+    set_cwd(world.home, PARENT, str(moves))
+    spawned[0]()
+    assert world.typed[-1][1] == inject.RECONNECT_AFTER_MOVE
+
+
+def test_cd_mid_turn_that_never_lands_reconnects_nothing(world, moves):
+    world.settled, world.follow, spawned = False, False, []
+    control.cd(str(moves), job=OTHER_JOB, caller_pid=ME, spawn=spawned.append)
+    spawned[0]()
+    assert [text for _, text, _ in world.typed] == [f"/cd {moves}"]
+
+
+def test_cd_that_never_lands_says_so_after_the_wait(world, moves):
+    world.follow = False
+    out = control.cd(str(moves), job=OTHER_JOB, caller_pid=ME)
+    assert out["ok"] and out["moved"] is False and "list_other" in out["detail"]
+    assert world.clock.now >= control.MOVE_WAIT_S
+    assert out["mcp_reconnected"] is False and len(world.typed) == 1
+
+
+def test_cd_on_your_own_session_goes_through_the_self_sender(world, moves):
+    out = control.cd(str(moves), job=None, caller_pid=ME)
+    assert out["ok"] and out["self"] is True and world.typed == []
+    text, kw = world.sent[0]
+    assert text == f"/cd {moves}" and kw["change"].kind == "cd"
+    assert pending.render_followup([kw["change"]]).startswith(f"The move to {moves} succeeded.")

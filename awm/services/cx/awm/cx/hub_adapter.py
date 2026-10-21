@@ -22,12 +22,16 @@ Run via ``run.sh`` (which the gateway spawns and respawns):
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+from pathlib import Path
 from typing import Any
 
+from awm.claudedaemon import daemonlog
+from awm.config import privacy
 from awm.gatewayclient import ServiceAdapter, spawn_supervised
 
-from awm.cx import claim, lifecycle, pool, reconcile, remove, seed
+from awm.cx import claim, config, lifecycle, pool, reconcile, remove, seed
 
 log = logging.getLogger("awm.cx.hub_adapter")
 
@@ -64,6 +68,14 @@ API_MANIFEST: dict[str, Any] = {
                  "description": "The scope whose worktree is the session's directory."},
                 {"name": "prompt", "type": "string",
                  "description": "The first task. Without one the session starts empty."},
+                {"name": "system_prompt", "type": "string",
+                 "description": "Text appended to the system prompt "
+                                "(claude --append-system-prompt). Unlike the "
+                                "prompt, a compaction never rewrites it."},
+                {"name": "autocompact", "type": "integer",
+                 "description": "The auto-compact window in tokens, 100000 to "
+                                "1000000. Claude Code compacts about 33k below "
+                                "it. Omitted means the model's own window."},
                 {"name": "name", "type": "string",
                  "description": "The session's name; defaults to the scope."},
                 {"name": "model", "type": "string",
@@ -100,6 +112,30 @@ API_MANIFEST: dict[str, Any] = {
                                 "Off unless true. The result's `link` is the "
                                 "claude.ai link, null with a `link_reason` if "
                                 "it has not connected within a few seconds."},
+                {"name": "pin", "type": "boolean",
+                 "description": "Pin the job, so the daemon's idle retirement "
+                                "passes it over. A pinned job is a kept "
+                                "session: stopping it unpins it and removes it "
+                                "with `claude rm`."},
+                {"name": "brief", "type": "boolean",
+                 "description": "Append the worker lifecycle brief to the system "
+                                "prompt: work in the right scope, ask Tony "
+                                "through the board, sign off and stop when done. "
+                                "Default true. A pinned start never gets it."},
+                {"name": "started_by", "type": "string",
+                 "description": "Who the brief says started the session when no "
+                                "session called, such as 'Tony from Discord'. "
+                                "A calling session is named instead."},
+                {"name": "replaces", "type": "string",
+                 "description": "The job this session replaces. Its last turns "
+                                "are appended to the prompt, it is stopped (and "
+                                "removed when pinned) if cx started it, and the "
+                                "new job's lineage records it."},
+                {"name": "tags", "type": "array",
+                 "description": "Tags to set on the scope (scope tag), such as "
+                                "['lab', '<person>'] for work a lab member asked "
+                                "for. A tagging failure is returned as a warning "
+                                "and does not stop the start."},
             ],
             "timeout": 1800,
             "effect": "write",
@@ -130,12 +166,46 @@ API_MANIFEST: dict[str, Any] = {
             "tool": "reflection_stop_other",
             "description": (
                 "Stop a session that `start_other` created. The conversation is "
-                "kept and `claude attach <job>` reopens it. Refuses a job "
+                "kept and `claude attach <job>` reopens it, except for a pinned "
+                "job, which is unpinned and removed. Refuses a job "
                 "that `start_other` did not create."
             ),
             "params": [
                 {"name": "job", "type": "string", "required": True,
                  "description": "The job id `start_other` returned."},
+            ],
+            "timeout": 30,
+            "effect": "write",
+        },
+        {
+            "name": "resume",
+            "tool": "reflection_resume_other",
+            "description": (
+                "Bring back a stopped or retired job that `start_other` "
+                "created, under the same job id and with its own conversation "
+                "(`claude respawn`), and re-pin it if it was pinned. Refuses a "
+                "running job, a removed job, a job whose transcript is gone, and "
+                "a job that `start_other` did not create."
+            ),
+            "params": [
+                {"name": "job", "type": "string", "required": True,
+                 "description": "The job id `start_other` returned."},
+            ],
+            "timeout": 90,
+            "effect": "write",
+        },
+        {
+            "name": "adopt",
+            "tool": "reflection_adopt_other",
+            "surfaces": ["cli", "http"],
+            "description": (
+                "Give a job that cx did not start a lineage record, so "
+                "`resume_other` and `stop_other` accept it. For a session "
+                "started by hand that a keeper now keeps."
+            ),
+            "params": [
+                {"name": "job", "type": "string", "required": True,
+                 "description": "The job id."},
             ],
             "timeout": 30,
             "effect": "write",
@@ -208,10 +278,13 @@ def _on_start() -> None:
         lifecycle.ensure_starts_dir()
     except lifecycle.Refused as exc:
         log.warning("cx: %s", exc)
-    why = LOOP.enabled()
+    why = LOOP.held_back()
     if why:
         log.info("cx: not reconciling — %s", why)
         return
+    why = LOOP.enabled()
+    if why:
+        log.info("cx: not tending the warm pool — %s", why)
     spawn_supervised("cx.reconcile", LOOP.run)
 
 
@@ -243,7 +316,30 @@ async def _list(args: dict[str, Any], as_: str | None = None) -> dict[str, Any]:
         return {"ok": False, "reason": reason}
     rows = await asyncio.to_thread(
         lifecycle.collect, args.get("project") or None, args.get("scope") or None)
-    return {"sessions": rows, "pool": pool.status(LOOP)}
+    held = pool.status(LOOP)
+    if privacy.from_peer(as_):
+        held["sessions"] = privacy.visible_rows(held["sessions"], as_)
+        shown = {r["session"] for r in held["sessions"]}
+        held["warm"] = [s for s in held["warm"] if s in shown]
+        rows = [r for r in rows if not _entered_mark(r.get("job"))]
+    return {"sessions": privacy.visible_rows(rows, as_), "pool": held,
+            "daemon": await asyncio.to_thread(daemonlog.summary, held.get("daemon_pid"))}
+
+
+def _entered_mark(job: str | None) -> bool:
+    if not job:
+        return False
+    try:
+        state = json.loads((config.jobs_dir() / job / "state.json").read_text())
+    except (OSError, ValueError):
+        return False
+    scanned = state.get("linkScanPath")
+    if not scanned:
+        return False
+    folder = Path(scanned).parent
+    transcripts = {Path(scanned)} | {folder / f"{state[k]}.jsonl" for k in ("sessionId", "resumeSessionId")
+                                     if state.get(k)}
+    return any(privacy.transcript_entered(t) for t in transcripts)
 
 
 async def _start(args: dict[str, Any], as_: str | None = None) -> dict[str, Any]:
@@ -254,10 +350,20 @@ async def _stop(args: dict[str, Any], as_: str | None = None) -> dict[str, Any]:
     return await lifecycle.stop(args, as_)
 
 
+async def _resume(args: dict[str, Any], as_: str | None = None) -> dict[str, Any]:
+    return await lifecycle.resume(args, as_)
+
+
+async def _adopt(args: dict[str, Any], as_: str | None = None) -> dict[str, Any]:
+    return await lifecycle.adopt(args, as_)
+
+
 HANDLERS: dict[str, Any] = {
     "start": _start,
     "list": _list,
     "stop": _stop,
+    "resume": _resume,
+    "adopt": _adopt,
     "claim": _claim,
     "seed": _seed,
     "remove": _remove,

@@ -63,7 +63,8 @@ downloads `SHA256SUMS` and this host's role from the matching GitHub release,
 verifies every file against `SHA256SUMS`, and swaps the binaries in. `run.sh`
 calls it before the adapter registers, so the version a node runs follows the
 pin with no hand-run step. A deploy that changes `RELEASE` restarts the service,
-and the restart fetches.
+and the restart fetches. The operator daemon already running keeps its sessions.
+The adapter replaces it with the new binary once no session is live.
 
 A failed fetch is not fatal. It leaves the binaries already in place untouched
 and leaves the `VERSION` stamp behind the pin, which `awm tether status` reports
@@ -126,17 +127,60 @@ both boundaries out, so a change on either side has to change that file too.
 ## Run
 
 You never invoke the service by hand in normal operation. The gateway discovers
-this folder, starts it with `bash run.sh`, and supervises the child. No auth:
-the registration handshake carries no token.
+this folder, starts it with `bash run.sh`, and supervises it. No auth: the
+registration handshake carries no token.
 
-The child dies with this process, which is deliberate. A tether that outlived
-its supervisor would be the persistence this tool refuses to have.
+The two roles keep their binary differently:
 
-Run `awm tether --help` for the verbs. Three of them answer locally rather than
-reaching the daemon, because they are the three that have to work when the
-daemon is the thing that is wrong: `status` reports the child's process state
-before merging whatever the daemon says, `logs` reads the file, and `drain`
-reads this host's own buffer of what the session did.
+- **The relay is parented.** It dies with the adapter.
+- **The operator daemon is adopted.** It runs in a transient unit of the user's
+  systemd manager, named `awm-tether-operator-<hash>`, outside the gateway's
+  cgroup. A restart of this service or of the gateway leaves it running, with
+  every session it holds. The next adapter attaches to it. The adapter launches
+  a daemon only when none answers on the control socket. It replaces one only
+  for a new release with no session live, or on the `restart` verb. A reboot
+  ends it, because the unit is transient.
+
+Sessions live in the daemon's memory, so this is what keeps a session alive
+through a deploy. Nothing changes on the owner's side. Either person can still
+cut a session, and the owner's client still keeps nothing.
+
+**CAUTION** The daemon reads its environment once, at launch. After a change to
+`AWM_TETHER_ISSUE_TOKEN` or any other variable it reads, run `awm tether
+restart`. A changed env file has no effect until then.
+
+**WARNING** `awm tether restart` ends every live session. It refuses while one
+is live unless you pass `force`.
+
+**CAUTION** A host with no user systemd manager starts the daemon in its own
+session instead. It then outlives a restart of this service but not a restart of
+a gateway that runs as a systemd unit. `awm tether status` shows this as
+`child.unit: null`.
+
+Run `awm tether --help` for the verbs. Four of them answer locally rather than
+reaching the daemon, because they have to work when the daemon is the thing
+that is wrong: `status` reports the daemon's process state before merging
+whatever the daemon says, `logs` reads the file, `drain` reads this host's own
+buffer of what the session did, and `restart` replaces the daemon.
+
+The adapter keeps its place in the daemon's event stream in `stream.json`
+beside the daemon's log: how far it recorded and announced, each caller's
+`drain` cursor, each session's declared `os`, and who minted each session. A
+restarted adapter reads the daemon's whole buffer back, so `drain` answers as
+before, and it neither writes a session's record twice nor announces an event
+twice.
+
+**CAUTION** A session belongs to the agent session that minted it, and every
+verb defaults to the caller's own sessions. The gateway stamps the calling
+session's pid on each `tether` verb. An `awm tether` CLI call names the agent
+session it runs under, found by process ancestry, and a call from a plain
+terminal names none. The adapter keys the owner on the
+background job id, which survives a restart of that session, or on the pid of an
+interactive session. The relay reuses slots, so the adapter gives each mint a
+session id and stamps it on every event as `session`. This keeps operators from
+reading or driving each other's sessions by mistake. It is not a wall: every
+operator on a host runs as the same user and can read the session files or the
+raw `session` topic.
 
 One shape is worth knowing before reading the list. **Asking is a call and
 hearing back is a stream.** `run` and `shell` start something and answer with a
@@ -154,6 +198,18 @@ The owner runs one line and holds no key material:
 Windows has its own launcher at its own address:
 
     & ([scriptblock]::Create((irm https://nexus.tony-xy-liu.com/tether/win))) acre anchor kettle
+
+`invite` requires `os`: `windows` or `unix`. It has no default, because a
+guessed OS hands the owner a line their shell cannot run. `windows` gets the
+PowerShell line. `unix` covers WSL, Linux and macOS and gets the `sh` line. The
+calling agent translates the owner's answer, so the guidance tells it to offer
+WSL as its own option. The daemon builds only the `sh` line, so the adapter
+builds the Windows one from it.
+
+**CAUTION** The declared `os` lives in the adapter's `stream.json`, not in the
+daemon, which has no field for it. The owner's client reports its real platform
+in its `Hello`, which `status` shows beside the declaration. WSL runs the Linux client, so `unix` agrees with every
+report except `windows`.
 
 The launcher fetches the client for that machine from the GitHub release first
 and from the relay only when GitHub is unreachable, verifies the download's

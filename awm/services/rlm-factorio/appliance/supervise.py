@@ -71,6 +71,11 @@ DEFAULT_WORLD = os.environ.get("DEFAULT_WORLD", "world")
 # directly, so a named save is only ever written by an explicit `save <name>`.
 ACTIVE = os.environ.get("ACTIVE_WORLD", "_active")
 
+# What the realm service asks this world to boot on (see appliance.write_override).
+BOOT_SAVE = os.environ.get("BOOT_SAVE", "")
+BOOT_NEW = os.environ.get("BOOT_NEW", "") == "1"
+BOOT_PAUSED = os.environ.get("BOOT_PAUSED", "") == "1"
+
 READY_TIMEOUT = float(os.environ.get("READY_TIMEOUT", "180"))
 SAVE_TIMEOUT = float(os.environ.get("SAVE_TIMEOUT", "60"))
 
@@ -223,6 +228,8 @@ class Engine:
         # Gameplay/perceive ops use this; they must NOT take self.lock (which
         # serializes world re-execs) -- the Rcon's own I/O lock guards them.
         self.rcon = None
+        # Not ready to callers until boot has set the pause state it was asked for.
+        self.booting = True
 
     # -- lifecycle --
 
@@ -413,7 +420,7 @@ class Engine:
     def op_status(self):
         return {
             "running": self.is_running(),
-            "ready": self._ready.is_set(),
+            "ready": self._ready.is_set() and not self.booting,
             "current_world": self.current_world,
             "saves": list_saves(),
             "game_port": GAME_PORT,
@@ -526,13 +533,25 @@ class Engine:
     def boot(self):
         """Bring the engine up at container start on the `_active` scratch file.
 
+          * BOOT_NEW               -> generate a fresh world into `_active`.
+          * BOOT_SAVE names a save -> copy it into `_active`.
           * `_active` exists       -> resume it (normal restart).
           * else a named save exists -> adopt the newest one into `_active`
                                         (cold start / first boot after upgrade,
                                         so an existing world survives).
           * else                    -> generate a fresh default into `_active`.
         """
-        if os.path.exists(save_path(ACTIVE)):
+        if BOOT_NEW:
+            label = None
+            log("BOOT_NEW: creating a fresh world")
+            self._create_map(ACTIVE)
+        elif BOOT_SAVE:
+            if not os.path.exists(save_path(BOOT_SAVE)):
+                raise FileNotFoundError(f"BOOT_SAVE: no save named {BOOT_SAVE!r}")
+            label = BOOT_SAVE
+            log(f"BOOT_SAVE: booting on {BOOT_SAVE!r}")
+            shutil.copy(save_path(BOOT_SAVE), save_path(ACTIVE))
+        elif os.path.exists(save_path(ACTIVE)):
             label = None
             log("resuming live world from _active")
         elif (newest := newest_named_save()) is not None:
@@ -547,8 +566,26 @@ class Engine:
         if self.wait_ready():
             log("engine ready")
             self._connect_rcon()
+            self._set_boot_pause()
         else:
             log("WARNING: engine did not reach ready state within timeout")
+        self.booting = False
+
+    def _set_boot_pause(self):
+        """Pause the world, or unpause it, as asked. A save keeps the pause
+        state it was saved with, so a live world is unpaused explicitly. A
+        fresh world swallows its first console command, so confirm the state."""
+        want = "true" if BOOT_PAUSED else "false"
+        for _ in range(3):
+            try:
+                got = self._rcon_cmd("/silent-command game.tick_paused=%s "
+                                     "rcon.print(tostring(game.tick_paused))" % want)
+            except Exception as e:
+                log(f"setting tick_paused={want} failed: {e}")
+                continue
+            if got.strip() == want:
+                return
+        log(f"WARNING: could not set tick_paused={want}")
 
 
 # --- HTTP control surface -------------------------------------------------

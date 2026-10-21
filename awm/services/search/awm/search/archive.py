@@ -13,9 +13,10 @@ import asyncio
 import logging
 import time
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Callable
+from typing import Any, Callable, Sequence
 
 from awm import config
+from awm.config import privacy
 from awm.gatewayclient import SupervisedSubscription
 from awm.persistence import embeddings as engine
 
@@ -57,10 +58,20 @@ def _drop_vanished(conn, source: str, kept: set[str]) -> int:
     return store.drop_documents(conn, source, store.document_ids(conn, source) - kept)
 
 
-def _live_sections(source: str, raw: Any, origin: dict[str, str], limit: int) -> dict[str, list[dict[str, Any]]]:
+def _unseen(hit: dict[str, Any], hidden: Sequence[dict] | None) -> bool:
+    """Whether a live hit falls under a private mark, by project and scope or by transcript slug."""
+    project = hit.get("project", "")
+    if index.covered(hidden, project, hit.get("scope", "")):
+        return True
+    return bool(hidden) and bool(project) and privacy.hidden_slug(project)
+
+
+def _live_sections(source: str, raw: Any, origin: dict[str, str], limit: int,
+                   hidden: Sequence[dict] | None) -> dict[str, list[dict[str, Any]]]:
     found = hitshape.sections(raw, origin, limit, source=source)
-    for section in found.values():
-        for hit in section:
+    for section in found:
+        found[section] = [h for h in found[section] if not _unseen(h, hidden)]
+        for hit in found[section]:
             hit["ts"] = store.normalize_ts(hit["ts"])
     return found
 
@@ -249,9 +260,14 @@ class Archive:
     def _visible(self, rows: list[dict[str, Any]], grants: frozenset[str] | None) -> list[dict[str, Any]]:
         return [r for r in rows if grants is None or r["name"] in grants]
 
-    async def sources_view(self, grants: frozenset[str] | None = None) -> dict[str, Any]:
+    async def _rows(self, grants: frozenset[str] | None, hidden: Sequence[dict] | None) -> list[dict[str, Any]]:
+        """The stored sources this caller may see, counting only the documents it may see."""
+        return self._visible(await asyncio.to_thread(_with_conn, store.source_rows, index.veil(hidden)), grants)
+
+    async def sources_view(self, grants: frozenset[str] | None = None,
+                           hidden: Sequence[dict] | None = ()) -> dict[str, Any]:
         await self._refresh_if_stale()
-        rows = self._visible(await asyncio.to_thread(_with_conn, store.source_rows), grants)
+        rows = await self._rows(grants, hidden)
         out = []
         for r in rows:
             spec = r["spec"]
@@ -263,9 +279,10 @@ class Archive:
             out.append(entry)
         return {"sources": out}
 
-    async def status_view(self, grants: frozenset[str] | None = None) -> dict[str, Any]:
+    async def status_view(self, grants: frozenset[str] | None = None,
+                          hidden: Sequence[dict] | None = ()) -> dict[str, Any]:
         await self._refresh_if_stale()
-        rows = self._visible(await asyncio.to_thread(_with_conn, store.source_rows), grants)
+        rows = await self._rows(grants, hidden)
         counts = {r["name"]: r["count"] for r in rows if r["mode"] == "index"}
         out: dict[str, Any] = {"documents": sum(counts.values()), "sources": counts}
         if grants is None:
@@ -276,16 +293,16 @@ class Archive:
                 "subscriptions": [sub.health() for sub, _ in self._topics.values()]})
         return out
 
-    async def get(self, source: str, doc_id: str, grants: frozenset[str] | None = None) -> dict[str, Any]:
-        rows = {r["name"]: r for r in self._visible(
-            await asyncio.to_thread(_with_conn, store.source_rows), grants)}
+    async def get(self, source: str, doc_id: str, grants: frozenset[str] | None = None,
+                  hidden: Sequence[dict] | None = ()) -> dict[str, Any]:
+        rows = {r["name"]: r for r in await self._rows(grants, hidden)}
         row = rows.get(source)
         if row is None:
             raise ValueError(f"no source {source!r}")
         if row["mode"] != "index":
             raise ValueError(f"{source!r} is a live source: it holds no stored copy to get")
         doc = await asyncio.to_thread(_with_conn, store.get_document, source, doc_id)
-        if doc is None:
+        if doc is None or index.covered(hidden, doc["project"], doc["scope"], doc["tags"]):
             raise ValueError(f"no document {source}:{doc_id}")
         return {"document": {**{k: doc[k] for k in ("title", "text", "project", "scope", "kind", "ts", "url")
                                 if doc[k]}, "source": source, "id": doc_id, "frozen": not row["present"],
@@ -344,7 +361,7 @@ class Archive:
             raw = await asyncio.wait_for(
                 self.gateway.call(source.service, source.query, args, LIVE_TIMEOUT_S),
                 timeout=LIVE_TIMEOUT_S + 1.0)
-            found = _live_sections(source.name, raw, self.origin(), q.limit)
+            found = _live_sections(source.name, raw, self.origin(), q.limit, q.hidden)
         except (asyncio.TimeoutError, TimeoutError):
             return source, {}, {"status": "error", "error": f"timeout after {LIVE_TIMEOUT_S:g}s"}
         except Exception as exc:  # noqa: BLE001 — one source failing never fails the search
@@ -365,8 +382,7 @@ class Archive:
         """The ``exact``, ``related`` and ``graph`` sections over the picked sources and peers, plus a
         status for every source and peer asked."""
         await self._refresh_if_stale()
-        rows = {r["name"]: r for r in self._visible(
-            await asyncio.to_thread(_with_conn, store.source_rows), q.grants)}
+        rows = {r["name"]: r for r in await self._rows(q.grants, q.hidden)}
         statuses: dict[str, Any] = {}
         if not q.local:
             rows = {}

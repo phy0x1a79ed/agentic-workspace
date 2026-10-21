@@ -8,12 +8,12 @@ the backlog grows is what the shell script did for months.
 from __future__ import annotations
 
 from awm.transcripts import sweep
-from awm.transcripts.layout import ARCHIVE, PROJECTS, sessions
+from awm.transcripts.layout import ARCHIVE, PROJECTS, Hide, sessions
 
 
-def _tally(root, days):
-    all_ = sessions(root)
-    old = sweep.aged(root, days)
+def _tally(root, days, hide):
+    all_ = sessions(root, hide)
+    old = sweep.aged(root, days, hide=hide)
     return {
         "sessions": len(all_),
         "orphans": sum(1 for s in all_ if s.transcript is None),
@@ -24,11 +24,11 @@ def _tally(root, days):
 
 
 def report(*, days: float = sweep.DEFAULT_RETENTION_DAYS,
-           prune_days: float | None = None) -> dict:
+           prune_days: float | None = None, hide: Hide | None = None) -> dict:
     return {
         "live": {"path": str(PROJECTS), "retention_days": days,
-                 **_tally(PROJECTS, days)},
+                 **_tally(PROJECTS, days, hide)},
         "archive": {"path": str(ARCHIVE),
                     "retention_days": prune_days,
-                    **_tally(ARCHIVE, prune_days if prune_days else 1e9)},
+                    **_tally(ARCHIVE, prune_days if prune_days else 1e9, hide)},
     }

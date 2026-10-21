@@ -31,6 +31,8 @@ PREAMBLE = b"retry: 3000\n\n"
 POLL_S = 1.0
 
 SWEEP_S = 5.0
+#: How often the board looks for notes people typed in the GUI. The look is one search.
+SEAL_S = 1.0
 PRUNE_S = 24 * 3600.0
 
 
@@ -210,8 +212,27 @@ async def maintain(
     *,
     sweep_s: float = SWEEP_S,
     prune_s: float = PRUNE_S,
+    seal_s: float = SEAL_S,
 ) -> None:
-    """Sweep stale claims every few seconds and prune the event log daily. Never returns."""
+    """Sweep the board every few seconds, seal GUI messages every second and prune the event log daily.
+
+    Never returns.
+    """
+    async with asyncio.TaskGroup() as group:
+        group.create_task(_seal_loop(board, seal_s))
+        await _sweep_loop(board, events, sweep_s, prune_s)
+
+
+async def _seal_loop(board: Any, seal_s: float) -> None:
+    while True:
+        try:
+            await asyncio.to_thread(board.seal)
+        except Exception:  # noqa: BLE001 — a bad seal must not end the loop
+            log.exception("board: seal failed")
+        await asyncio.sleep(seal_s)
+
+
+async def _sweep_loop(board: Any, events: Any, sweep_s: float, prune_s: float) -> None:
     next_prune = time.monotonic()
     while True:
         try:

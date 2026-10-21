@@ -30,6 +30,13 @@ from awm.ssh.config import (
 log = logging.getLogger("awm.ssh.service")
 
 _CONNECT_TIMEOUT = 120.0
+# Budget for bringing the host's VPN exit up, spent BEFORE the ssh clock above
+# starts. A cold UBC dial is a docker run plus a Duo-approved openconnect login;
+# it must cover the vpn service's own worst case (`vpn.container.UP_BUDGET_S`,
+# 240s) or a slow docker daemon reads here as a dead host. It used to be the
+# gateway's 30s default, and on 2026-10-16 every connect to sockeye after the
+# tunnel dropped gave up while the vpn service was still dialing.
+_VPN_UP_TIMEOUT = 270.0
 _CHECK_POLL_INTERVAL = 1.5
 _CHECK_POLL_ATTEMPTS = 40
 _DISCONNECT_POLL_ATTEMPTS = 8
@@ -59,10 +66,6 @@ _RECONCILE_WAIT_TIMEOUT = 60.0
 # not the OS hostname — mira's hostname is "pavilion", which named a machine
 # nobody in the fleet calls mira.
 _NODE_NAME = config.node_name()
-
-# Discord target for lockout alerts: the operator's DM with the bot.
-_ALERT_ACCOUNT = "discord-bot"
-_ALERT_CHANNEL = "dm:188743359983124480"
 
 # Singleton re-homing selectors (federation). When 2fa / social run as canonical
 # singletons on a peer node, this node borrows them by exporting these to the
@@ -238,6 +241,25 @@ class _AttemptFailed(Exception):
     base failure reason; the caller enriches it with stderr / askpass deviation."""
 
 
+class _DependencyFailed(Exception):
+    """Something the login needs (the VPN exit, the Duo approver) failed before
+    ssh ran. The message names it, because the caller has to know what to wait
+    for; "the host refused" sent agents chasing sockeye when the tunnel was down."""
+
+
+# A ControlMaster outlives the connect that made it, but by default it lives in
+# the cgroup of whoever spawned it, and on a systemd node that is awm.service:
+# every `awm deploy` or gateway restart stops the unit, systemd kills the whole
+# cgroup, and every master on the node dies with it (six times on altair on
+# 2026-10-16). A transient scope of its own takes the master out of that cgroup,
+# and boot reconciliation adopts it again after the restart. `--scope` execs the
+# command in place, so the pid and process group the reap relies on are ssh's.
+# This works only under a user manager that owns our cgroup (altair, mira). On a
+# node whose gateway is a system unit (capella) the probe fails and masters are
+# spawned as before.
+_DETACH_PREFIX = ["systemd-run", "--user", "--scope", "--quiet", "--collect"]
+
+
 class SSHService:
     def __init__(self) -> None:
         self._lock = asyncio.Lock()
@@ -264,6 +286,9 @@ class SSHService:
         # Held open for the process lifetime once acquired, so the flock stays
         # held (releasing on process death). Stored to keep the fd from being GC'd.
         self._singleton_fd: int | None = None
+        # Whether masters can be spawned in their own systemd scope; probed once,
+        # on the first connect.
+        self._can_detach: bool | None = None
 
     def init(self) -> None:
         # Enforce the process singleton BEFORE anything else — if another svc-ssh
@@ -797,11 +822,16 @@ class SSHService:
             lease = await gatewayclient.acquire_lease_maybe_peer(
                 slot_peer, "ssh", cfg.host, node=_NODE_NAME)
         except Exception as e:  # noqa: BLE001 — arbiter unreachable → FAIL CLOSED
+            # Closed, but not held: 'unavailable' means an operator must
+            # /approve, and nothing here needs one — only the peer to come back.
             log.error("connection arbiter %s unreachable for %s: %s",
                       slot_peer, cfg.host, e)
             return self._status_dict(
-                cfg, "unavailable",
-                error=f"{cfg.host} is not available for automated access right now")
+                cfg, "error",
+                error=(f"the connection arbiter (ssh@{slot_peer}) did not answer, "
+                       f"so no login to {cfg.host} was attempted and no MFA "
+                       f"attempt was spent — safe to retry once {slot_peer} "
+                       f"is reachable"))
         async with lease:
             if not lease.granted:
                 log.info("slot arbiter %s refused %s: %s (%s)",
@@ -964,10 +994,27 @@ class SSHService:
         self._truncate_stderr(cfg)
         rec = _AttemptRecord()
         try:
+            log.info("connecting to %s (vpn=%s, 2fa=%s)",
+                     cfg.host, cfg.vpn_profile or "none",
+                     cfg.twofa_device or "none")
+            await self._bring_up_vpn(cfg)
             await asyncio.wait_for(self._attempt_master(cfg, marker, rec),
                                    timeout=_CONNECT_TIMEOUT)
             log.info("connected to %s", cfg.host)
             return self._status_dict(cfg, "connected")
+        except _DependencyFailed as e:
+            # Nothing ran, so nothing was spent: no hold, no page. Say what
+            # failed, since it is not the host.
+            log.warning("connect to %s stopped before any login: %s",
+                        cfg.host, e)
+            result = self._status_dict(
+                cfg, "error",
+                error=(f"{e} — no login to {cfg.host} was attempted and no MFA "
+                       f"attempt was spent, safe to retry"))
+            if gated:
+                result["_lock_reason"] = str(e)
+                result["_preauth"] = True
+            return result
         except _AttemptFailed as e:
             # The poll window (_CHECK_POLL_ATTEMPTS * _CHECK_POLL_INTERVAL) is
             # shorter than the wait_for cap, so a master whose auth completed late
@@ -991,20 +1038,25 @@ class SSHService:
             reason = self._failure_reason(
                 cfg, marker, f"connect exceeded {_CONNECT_TIMEOUT:.0f}s")
         except Exception as e:  # noqa: BLE001
-            log.error("connect to %s failed: %s", cfg.host, e)
-            reason = self._failure_reason(cfg, marker, str(e))
+            detail = str(e) or type(e).__name__
+            log.error("connect to %s failed: %s", cfg.host, detail)
+            reason = self._failure_reason(cfg, marker, detail)
         preauth = (self._is_preauth_failure(cfg, marker, rec)
                    or await self._duo_saw_nothing(cfg, rec))
         if preauth:
             # Nothing was spent, so there is nothing to protect: no hold, no page.
             # Tell the caller it is safe to retry — unlike a held host, this needs
-            # no /approve, and the host is simply refusing connections right now.
+            # no /approve.
             log.warning("pre-auth failure on %s (no MFA attempt spent, breaker "
                         "NOT tripped): %s", cfg.host, reason)
+            if rec.spawned:
+                what = f"{cfg.host} refused the connection before authentication"
+            else:
+                what = (f"connect to {cfg.host} failed before ssh ran "
+                        f"({reason or 'no detail'})")
             result = self._status_dict(
                 cfg, "error",
-                error=(f"{cfg.host} refused the connection before authentication "
-                       f"— no MFA attempt was spent, safe to retry later"))
+                error=f"{what} — no MFA attempt was spent, safe to retry later")
         else:
             # Neutral to the caller — the detailed reason goes to the lock + the
             # operator Discord alert, not to the agent.
@@ -1030,16 +1082,6 @@ class SSHService:
         coroutine can be cancelled and then returns nothing at all — and what it
         got as far as doing is exactly what the caller needs to judge the
         failure."""
-        log.info("connecting to %s (vpn=%s, 2fa=%s)",
-                 cfg.host, cfg.vpn_profile or "none",
-                 cfg.twofa_device or "none")
-
-        if cfg.needs_vpn and cfg.vpn_profile:
-            vpn_result = await gatewayclient.call(
-                "vpn", "up", {"profile": cfg.vpn_profile})
-            log.info("vpn up %s: %s", cfg.vpn_profile,
-                     vpn_result.get("status", "ok"))
-
         if cfg.twofa_device:
             # Always arm +1: this connect is about to fire exactly ONE Duo push, so
             # it must contribute exactly one approval to the device's budget. The
@@ -1050,13 +1092,20 @@ class SSHService:
             # sockeye/sockeye1 both on cwl) would then skip its grant, leaving budget
             # at 1 for 2 pushes — the 2nd push is held, times out, and trips its
             # breaker. That was the original overlapping-login failure.
-            armed = await gatewayclient.call_maybe_peer(
-                gatewayclient.peer_env(_TWOFA_PEER_ENV),
-                "2fa", "burst", {
-                    "device": cfg.twofa_device,
-                    "window": 120,
-                    "count": 1,
-                })
+            twofa_peer = gatewayclient.peer_env(_TWOFA_PEER_ENV)
+            try:
+                armed = await gatewayclient.call_maybe_peer(
+                    twofa_peer, "2fa", "burst", {
+                        "device": cfg.twofa_device,
+                        "window": 120,
+                        "count": 1,
+                    })
+            except Exception as exc:  # noqa: BLE001 — named for the caller
+                # Without an armed approver the push would wait on a phone
+                # nobody is holding, and time out as a failed MFA attempt.
+                raise _DependencyFailed(
+                    f"the Duo auto-approver (2fa@{twofa_peer or _NODE_NAME}) "
+                    f"did not answer: {str(exc) or type(exc).__name__}") from exc
             # Duo's own observation count as of arming. If it has not moved by
             # the time this attempt fails, Duo never heard from the login and no
             # MFA attempt was spent. A 2fa too old to report it leaves this None,
@@ -1099,6 +1148,7 @@ class SSHService:
         if cfg.guarded:
             argv += ["-o", "ProxyCommand=none"]
         argv.append(cfg.host)
+        argv = await self._detach_prefix(cfg) + argv
 
         # Capture ssh stderr to a file (NOT a PIPE — a PIPE makes the forked
         # `-f -N -M` child hang, per the README). This is what makes a failed
@@ -1143,6 +1193,38 @@ class SSHService:
         raise _AttemptFailed(
             f"ControlMaster did not appear within "
             f"{_CHECK_POLL_ATTEMPTS * _CHECK_POLL_INTERVAL:.0f}s")
+
+    async def _bring_up_vpn(self, cfg: HostConfig) -> None:
+        """Ensure the host's VPN exit is up, within its own budget.
+
+        Idempotent on the vpn side: a live exit answers at once, a dead one is
+        re-dialed. Raises :class:`_DependencyFailed` naming the exit."""
+        if not (cfg.needs_vpn and cfg.vpn_profile):
+            return
+        try:
+            result = await gatewayclient.call(
+                "vpn", "up", {"profile": cfg.vpn_profile},
+                timeout=_VPN_UP_TIMEOUT)
+        except Exception as exc:  # noqa: BLE001 — named for the caller
+            raise _DependencyFailed(
+                f"the '{cfg.vpn_profile}' VPN exit could not be brought up: "
+                f"{str(exc) or type(exc).__name__}") from exc
+        log.info("vpn up %s: %s", cfg.vpn_profile,
+                 (result or {}).get("status", "ok"))
+
+    async def _detach_prefix(self, cfg: HostConfig) -> list[str]:
+        """The argv prefix that spawns a master in its own systemd scope, or
+        ``[]`` where that is not possible. See ``_DETACH_PREFIX``."""
+        if self._can_detach is None:
+            self._can_detach = await self._run_check(
+                [*_DETACH_PREFIX, "--", "true"])
+            log.info("ssh: masters %s", "run in their own systemd scope"
+                     if self._can_detach else
+                     "share the service's cgroup (no user systemd scope here)")
+        if not self._can_detach:
+            return []
+        unit = f"awm-ssh-{cfg.host}-{secrets.token_hex(4)}"
+        return [*_DETACH_PREFIX, f"--unit={unit}", "--"]
 
     async def _exit_master(self, host: str) -> bool:
         """Tear down a host's ControlMaster (`ssh -O exit`) and confirm it's gone.
@@ -1660,11 +1742,16 @@ class SSHService:
         send result. Touches no lockfile. The one federated notify wire, shared by
         the swallowing lock alert (:meth:`_alert`) and the result-surfacing
         self-test (:meth:`notify_test`) so both exercise the identical path."""
+        target = config.operator_dm()
+        if target is None:
+            raise RuntimeError(
+                "this node has no operator DM: set AWM_OPERATOR_DM_CHANNEL")
+        account, channel = target
         return await gatewayclient.call_maybe_peer(
             gatewayclient.peer_env(_SOCIAL_PEER_ENV),
             "social", "send", {
-                "account": _ALERT_ACCOUNT,
-                "channel": _ALERT_CHANNEL,
+                "account": account,
+                "channel": channel,
                 "text": text,
             })
 
@@ -1693,11 +1780,12 @@ class SSHService:
             f"real lock."
         )
         result = await self._send_social(text)  # surfaces on failure — no try/except
+        account, channel = config.operator_dm()
         return {
             "sent": True,
             "peer": peer or "local",
-            "account": _ALERT_ACCOUNT,
-            "channel": _ALERT_CHANNEL,
+            "account": account,
+            "channel": channel,
             "result": result,
         }
 

@@ -1,7 +1,8 @@
 """Scope operation definitions for the gateway manifest."""
 
+from awm.config import privacy
 from awm.scopes.models import ScopeCreateRequest, ScopeUpdateRequest
-from awm.scopes import scopes, search_index
+from awm.scopes import private, scopes, search_index, tags
 
 
 # Manifest function descriptors (serializable dicts for API_MANIFEST["functions"])
@@ -62,6 +63,9 @@ SCOPE_MANIFEST_FUNCTIONS = [
              "description": "With new_project: clone this remote as the project's bare repo."},
             {"name": "fork_url", "type": "string", "required": False,
              "description": "With new_project: fork this GitHub repo and clone the fork."},
+            {"name": "tags", "type": "array", "required": False,
+             "description": "Tags for the new scope, or for the project when it is "
+                            "created alone (see scope tag)."},
         ],
         # a cold `dvc checkout` of everything the base branch pins.
         "timeout": 1800.0,
@@ -76,7 +80,9 @@ SCOPE_MANIFEST_FUNCTIONS = [
             "is a scope named for its default branch. "
             "Defaults to status='active'; pass status='all' for the full history. "
             "With no project, the reply also lists every project, matched and "
-            "ranked by the same query, with its scope counts per status."
+            "ranked by the same query, with its scope counts per status, and "
+            "every tag in use with the number of scopes carrying it. Each scope "
+            "and project carries its effective tags (see scope tag)."
         ),
         "params": [
             {"name": "query", "type": "string", "required": False},
@@ -87,6 +93,8 @@ SCOPE_MANIFEST_FUNCTIONS = [
             {"name": "limit", "type": "integer", "required": False},
             {"name": "offset", "type": "integer", "required": False,
              "description": "Skips scopes only; the project list is never paged."},
+            {"name": "tag", "type": "string", "required": False,
+             "description": "Only scopes whose effective tags hold this tag."},
         ],
     },
     {
@@ -173,6 +181,51 @@ SCOPE_MANIFEST_FUNCTIONS = [
         "timeout": 1800.0,
     },
     {
+        "name": "scope_private",
+        "tool": "scope_private",
+        "effect": "write",
+        "description": (
+            "Mark a project, or one scope of it, private on this node, or clear "
+            "the mark. A private project or scope, with every scope nested under "
+            "it and every path under its directory, is invisible to calls from "
+            "other nodes; callers on this node see it as before. Refuses a mark "
+            "whose path would also hide another project's or scope's transcripts "
+            "(projects 'awm' and 'awm-dev', for example). Returns the project's "
+            "marks."
+        ),
+        "params": [
+            {"name": "project", "type": "string", "required": True},
+            {"name": "scope", "type": "string", "required": False,
+             "description": "Mark only this scope. Omit to mark the whole project."},
+            {"name": "private", "type": "boolean", "required": True,
+             "description": "true sets the mark, false clears it."},
+        ],
+    },
+    {
+        "name": "scope_tag",
+        "tool": "scope_tag",
+        "effect": "write",
+        "description": (
+            "Read or set the tags of a project, a scope, or a scope group such as "
+            "'metasmith/lab' (a group needs no scope of its own yet). A scope's "
+            "effective tags are those of the nearest level that has any: the "
+            "scope, then each enclosing group, then the project; a nearer set "
+            "replaces a farther one. Omit tags to read; tags=[] clears the level "
+            "so it inherits again. Tags label and filter only. Returns the "
+            "level's own tags, its effective tags and the level they come from."
+        ),
+        "params": [
+            {"name": "project", "type": "string", "required": True},
+            {"name": "scope", "type": "string", "required": False,
+             "description": "A scope or scope group path. Omit to tag the project."},
+            {"name": "tags", "type": "array", "required": False,
+             "description": "The level's whole tag set, replacing what it had: a list "
+                            "or a comma-separated string. Each tag is lowercase "
+                            "letters, digits, '.', '_' or '-', starts with a letter "
+                            "or digit, and is at most 32 characters."},
+        ],
+    },
+    {
         "name": "scope_repair",
         "tool": "scope_repair",
         "effect": "write",
@@ -249,20 +302,23 @@ def _handle_scope_create(args: dict) -> dict:
         new_project=bool(args.get("new_project", False)),
         clone_url=args.get("clone_url"),
         fork_url=args.get("fork_url"),
+        tags=tags.normalise(args["tags"]) if args.get("tags") is not None else None,
     )
     result = scopes.create_scope(req)
     return result.model_dump()
 
 
-def _handle_scope_search(args: dict) -> dict:
+def _handle_scope_search(args: dict, as_: str | None = None) -> dict:
     result = scopes.search_scopes(
         query=args.get("query"),
         status=args.get("status", "active"),
         project=args.get("project"),
         limit=int(args.get("limit", 50)),
         offset=int(args.get("offset", 0)),
+        as_=as_,
+        tag=args.get("tag") or None,
     )
-    unset = {k for k in ("degraded", "projects") if getattr(result, k) is None}
+    unset = {k for k in ("degraded", "projects", "tags") if getattr(result, k) is None}
     return result.model_dump(exclude=unset or None)
 
 
@@ -285,17 +341,44 @@ def _handle_scope_delete(args: dict) -> dict:
     return result.model_dump()
 
 
-def _handle_scope_heal(args: dict) -> dict:
-    report = scopes.heal_scopes(
-        project=args.get("project"),
-        dry_run=bool(args.get("dry_run", False)),
-    )
+def _handle_scope_heal(args: dict, as_: str | None = None) -> dict:
+    dry_run = bool(args.get("dry_run", False))
+    if args.get("project") and privacy.from_peer(as_) and privacy.hidden(args["project"]):
+        return {"scopes": [], "count": 0, "dry_run": dry_run, "unregistered_worktrees": [],
+                "orphaned_rows": [], "audit_errors": []}
+    report = privacy.visible_rows(
+        scopes.heal_scopes(project=args.get("project"), dry_run=dry_run), as_)
     audit = scopes.audit_worktrees(project=args.get("project"))
     return {"scopes": report, "count": len(report),
-            "dry_run": bool(args.get("dry_run", False)),
-            "unregistered_worktrees": audit["unregistered"],
-            "orphaned_rows": audit["orphaned_rows"],
-            "audit_errors": audit["errors"]}
+            "dry_run": dry_run,
+            "unregistered_worktrees": privacy.visible_rows(audit["unregistered"], as_),
+            "orphaned_rows": privacy.visible_rows(audit["orphaned_rows"], as_),
+            "audit_errors": privacy.visible_rows(audit["errors"], as_)}
+
+
+def _handle_scope_private(args: dict, as_: str | None = None) -> dict:
+    if privacy.from_peer(as_):
+        raise RuntimeError("unknown function 'scope_private'")
+    flag = args["private"]
+    if isinstance(flag, str):
+        flag = {"true": True, "false": False}.get(flag.strip().lower(), flag)
+    if not isinstance(flag, bool):
+        raise ValueError(f"private must be true or false, not {args['private']!r}")
+    return private.set_private(args["project"], args.get("scope"), flag)
+
+
+def _handle_scope_tag(args: dict, as_: str | None = None) -> dict:
+    project, scope = args["project"], args.get("scope") or None
+    if privacy.from_peer(as_):
+        if args.get("tags") is not None:
+            raise ValueError("scope tag: a peer may read tags, not set them")
+        if privacy.hidden(project, scope):
+            raise FileNotFoundError(f"Project '{project}' not found")
+    if project not in private.known_projects():
+        raise FileNotFoundError(f"Project '{project}' not found")
+    if args.get("tags") is None:
+        return tags.describe(project, scope)
+    return tags.set_tags(project, scope, args["tags"])
 
 
 def _handle_scope_repair(args: dict) -> dict:
@@ -341,6 +424,8 @@ SCOPE_HANDLERS = {
     "scope_complete": _handle_scope_complete,
     "scope_delete": _handle_scope_delete,
     "scope_heal": _handle_scope_heal,
+    "scope_private": _handle_scope_private,
+    "scope_tag": _handle_scope_tag,
     "scope_repair": _handle_scope_repair,
     "scope_sync": _handle_scope_sync,
     "scope_gather": _handle_scope_gather,

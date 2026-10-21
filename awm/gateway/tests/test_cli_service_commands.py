@@ -218,3 +218,86 @@ def test_dispatch_error_exits_nonzero():
     with pytest.raises(typer.Exit) as ei:
         search.callback(query="x")
     assert ei.value.exit_code == 1
+
+
+_TETHER = [{
+    "name": "tether_run",
+    "description": "Run a command",
+    "inputSchema": {"type": "object", "properties": {
+        "command": {"type": "string"}, "code": {"type": "string"}}},
+}]
+
+
+def _run_tether_cli(monkeypatch, tmp_path, recorded_pid: int | None) -> list:
+    """Run `awm tether run` in this process, with a session record at ``recorded_pid``."""
+    import json
+    import os
+
+    from awm.gateway import mcp_caller
+
+    if recorded_pid is not None:
+        (tmp_path / f"{recorded_pid}.json").write_text(json.dumps({"kind": "bg"}))
+    monkeypatch.setattr(mcp_caller, "_default_sessions_dir", lambda: str(tmp_path))
+    monkeypatch.setattr(mcp_caller, "_is_opencode", lambda pid: False)
+    calls = []
+
+    def api(method, path, **kwargs):
+        calls.append(kwargs)
+        return _StubResponse(200, {"result": '{"ok": true}'})
+
+    app = typer.Typer()
+    groups = register_service_cli_commands(app, _TETHER, api_func=api, exclude_names=set())
+    run = next(c for c in groups["tether"].registered_commands if c.name == "run")
+    run.callback(command="echo hi", code="1")
+    return calls
+
+
+def test_a_tether_cli_call_names_the_agent_session_it_runs_under(monkeypatch, tmp_path):
+    """An agent sends long scripts through `awm tether run` from its Bash tool.
+    That call must reach tether as the same session its MCP calls come from, or
+    the session it minted refuses it as somebody else's."""
+    import os
+
+    calls = _run_tether_cli(monkeypatch, tmp_path, recorded_pid=os.getppid())
+
+    assert calls[0]["headers"] == {"X-Awm-Caller-Pid": str(os.getppid())}
+
+
+def test_a_tether_cli_call_from_a_plain_terminal_names_nobody(monkeypatch, tmp_path):
+    calls = _run_tether_cli(monkeypatch, tmp_path, recorded_pid=None)
+
+    assert "headers" not in calls[0]
+
+
+_OBJECT_TOOL = [{
+    "name": "factorio_tool",
+    "description": "Run a tool",
+    "inputSchema": {"type": "object", "properties": {
+        "name": {"type": "string"}, "args": {"type": "object"}},
+        "required": ["name"]},
+}]
+
+
+def _object_tool_command(calls):
+    def api(method, path, **kwargs):
+        calls.append(kwargs["json"])
+        return _StubResponse(200, {"result": '{"ok": true}'})
+
+    groups = register_service_cli_commands(
+        typer.Typer(), _OBJECT_TOOL, api_func=api, exclude_names=set())
+    return next(c for c in groups["factorio"].registered_commands if c.name == "tool")
+
+
+def test_an_object_option_is_sent_as_an_object():
+    calls = []
+    _object_tool_command(calls).callback(name="look", args='{"x0": 1, "tags": ["a"]}')
+    assert calls == [{"name": "factorio_tool", "args": {
+        "name": "look", "args": {"x0": 1, "tags": ["a"]}}}]
+
+
+@pytest.mark.parametrize("text", ["{not json", "[1, 2]"])
+def test_an_object_option_that_is_not_a_json_object_is_refused(text):
+    calls = []
+    with pytest.raises(typer.BadParameter):
+        _object_tool_command(calls).callback(name="look", args=text)
+    assert calls == []

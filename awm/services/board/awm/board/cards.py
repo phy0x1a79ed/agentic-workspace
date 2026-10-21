@@ -7,6 +7,11 @@ Active, Blocked, Pending review, Done, Rejected. This process is the only API
 writer; the watcher (`Board.sweep`) notices edits made outside it and turns
 them into `card.moved` events. The event log only feeds stream replay.
 
+An archived card sits in the archive folder inside its column folder, so it
+keeps the state of the column around it. In Done and Rejected that folder is
+the "Older (n)" card at the end of the column. A folded card carries the
+`archived` label, sits under its home card's note and takes the home's state.
+
 Every card also carries `status`, the previous release's four-value vocabulary
 derived from its state, so a peer that has not upgraded keeps reading the board.
 
@@ -48,6 +53,7 @@ import logging
 import os
 import re
 import threading
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -80,11 +86,14 @@ THREADED = "cardThreaded"
 #: Width of the zero-padded `msgSeq` label, so Trilium's text sort is sequence order.
 SEQ_WIDTH = 8
 #: A note a person is still typing is not sealed until it has sat this long unchanged.
-SETTLE_S = 5.0
+SETTLE_S = 1.5
 #: Message notes each sweep checks against the record. The check cycles through all of them.
-VERIFY_BATCH = 20
+#: A note that differs costs one more write, so this also bounds a format change's rewrites per sweep.
+VERIFY_BATCH = 10
 #: A Done or Rejected card is archived this long after it entered that state.
 ARCHIVE_AFTER_S = 14 * 86400.0
+#: How often the sweep recounts the Older folders when it folded nothing, to catch a delete by hand.
+COUNT_OLDER_S = 60.0
 
 _SLUG = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 
@@ -160,16 +169,32 @@ def _public(message: dict) -> dict:
     return {k: v for k, v in message.items() if k != "note_id"}
 
 
+def _author(message: dict) -> str:
+    """Who wrote a message, as a reader of the thread should see it.
+
+    An agent is named by where it ran (``<swarm>/<node>/<agent>``), because its
+    principal is the swarm's shared one. A person typing in the Trilium GUI is
+    the host operator's principal and the one party that can; anyone else
+    posted through the API.
+    """
+    sender, agent = message["sender"], message.get("agent")
+    if agent:
+        return owner_label(sender["swarm"], message.get("node"), agent)
+    if message["origin"] == "gui":
+        return f"{sender['principal']} (Trilium)"
+    return f"{sender['principal']}@{sender['swarm']}"
+
+
 def _mirror_fields(message: dict) -> tuple[str, dict[str, str]]:
     """The title and labels a message's note carries, all derived from its row."""
-    sender, agent = message["sender"], message.get("agent")
-    title = f"{message['seq']} · {sender['swarm']}/{sender['principal']}"
+    author = _author(message)
     labels = {MESSAGE_SEQ: str(message["seq"]).zfill(SEQ_WIDTH), "msgAt": message["at"],
-              "msgFrom": f"{sender['principal']}@{sender['swarm']}", "readOnly": ""}
-    if agent:
-        title += f" · {agent}"
-        labels["msgAgent"] = agent
-    return title, labels
+              "msgFrom": author, "readOnly": ""}
+    if message.get("agent"):
+        labels["msgAgent"] = message["agent"]
+    if message.get("node"):
+        labels["msgNode"] = message["node"]
+    return f"{message['seq']} · {author}", labels
 
 
 def _age_s(utc_modified: str) -> float:
@@ -216,6 +241,7 @@ class Board:
             card_id: {**seen, "status": from_recorded(seen["status"])}
             for card_id, seen in events.seen_all().items()}
         self._verify_cursor = 0
+        self._counted_at = 0.0
 
     def close(self) -> None:
         """Let go of the lock file. The process exiting does the same."""
@@ -262,6 +288,7 @@ class Board:
             "reply_to": reply_to,
             "result": result,
             "agent": labels.get("cardAgent") or None,
+            "node": labels.get("cardNode") or None,
             "project": labels.get("project") or None,
             "owner": labels.get("owner") or None,
             "note_id": rec.get("note_id"),
@@ -314,7 +341,8 @@ class Board:
 
     def post(self, party: dict, *, kind: str, recipient: str, title: str, body: str,
              priority: str = "normal", reply_to: str | None = None,
-             project: str | None = None, agent: str | None = None) -> dict:
+             project: str | None = None, agent: str | None = None,
+             node: str | None = None) -> dict:
         """Post a card to Proposed. A reply also posts a message on its root card's thread."""
         self._live(party)
         if kind not in KINDS:
@@ -336,7 +364,7 @@ class Board:
         if "## Result" in body:
             raise ValueError("body may not hold a '## Result' heading: the board uses it "
                              "to tell the body from the result")
-        project, agent = check_project(project), clean_agent(agent)
+        project, agent, node = check_project(project), clean_agent(agent), clean_node(node)
         with self._guard:
             relations: dict[str, str] = {}
             root_rec = root = None
@@ -362,6 +390,8 @@ class Board:
             }
             if agent:
                 labels["cardAgent"] = agent
+            if node:
+                labels["cardNode"] = node
             if project:
                 labels["project"] = project
             if root is not None:
@@ -376,7 +406,7 @@ class Board:
             sender = {"swarm": party["swarm"], "principal": party["principal"],
                       "party": party["party_id"]}
             message = self._add_message(root_rec, root, sender, "api",
-                                        body.strip() and body or title, agent=agent)
+                                        body.strip() and body or title, agent=agent, node=node)
             return {**card, "folded_into": root["id"], "message": message}
 
     def _root_of(self, rec: dict, card: dict) -> tuple[dict, dict]:
@@ -428,9 +458,13 @@ class Board:
             raise ValueError("result is too long")
         with self._guard:
             rec, card = self._fetch(party, card_id)
-            if card["claimant"] != party["swarm"]:
+            if card["kind"] == "message" and card["recipient"] == party["swarm"]:
+                # Nobody claims a message: its recipient reads it, replies and finishes it.
+                if card["state"] in ("done", "rejected"):
+                    raise Forbidden("the card is finished")
+            elif card["claimant"] != party["swarm"]:
                 raise Forbidden("only the claimant finishes a card")
-            if card["state"] not in HELD:
+            elif card["state"] not in HELD:
                 raise Forbidden("the card is not in progress")
             self._transition(rec, card, state, event,
                              content=(card["body"] or "") + RESULT_MARKER + text, result=text)
@@ -451,7 +485,8 @@ class Board:
                 self._transition(rec, card, state, "card.moved")
             return card
 
-    def reject(self, party: dict, card_id: str, reason, *, agent: str | None = None) -> dict:
+    def reject(self, party: dict, card_id: str, reason, *, agent: str | None = None,
+               node: str | None = None) -> dict:
         """Move an unfinished card to Rejected, with the reason as a message from the party.
 
         The recipient swarm, the claimant and the board's admin may reject.
@@ -461,7 +496,7 @@ class Board:
             raise ValueError("reason must be non-empty text")
         if len(reason) > _MAX_TEXT:
             raise ValueError("reason must be text of at most %d characters" % _MAX_TEXT)
-        agent = clean_agent(agent)
+        agent, node = clean_agent(agent), clean_node(node)
         with self._guard:
             rec, card = self._fetch(party, card_id)
             if party["swarm"] not in (card["recipient"], card["claimant"]) \
@@ -472,7 +507,7 @@ class Board:
             self._transition(rec, card, "rejected", "card.moved")
             sender = {"swarm": party["swarm"], "principal": party["principal"],
                       "party": party["party_id"]}
-            message = self._add_message(rec, card, sender, "api", reason, agent=agent)
+            message = self._add_message(rec, card, sender, "api", reason, agent=agent, node=node)
             return {**card, "message": message}
 
     def get(self, party: dict, card_id: str) -> dict:
@@ -534,7 +569,8 @@ class Board:
 
     # -- a card's thread -------------------------------------------------------
 
-    def message(self, party: dict, card_id: str, body: str, *, agent: str | None = None) -> dict:
+    def message(self, party: dict, card_id: str, body: str, *, agent: str | None = None,
+                node: str | None = None) -> dict:
         """Add a message to the card's thread. Anyone who can see the card may post."""
         self._live(party)
         if not isinstance(body, str) or not body.strip():
@@ -545,7 +581,8 @@ class Board:
             rec, card = self._fetch(party, card_id)
             sender = {"swarm": party["swarm"], "principal": party["principal"],
                       "party": party["party_id"]}
-            return self._add_message(rec, card, sender, "api", body, agent=clean_agent(agent))
+            return self._add_message(rec, card, sender, "api", body, agent=clean_agent(agent),
+                                     node=clean_node(node))
 
     def messages(self, party: dict, card_id: str, *, after: int | None = None,
                  limit: int | None = None) -> list[dict]:
@@ -559,7 +596,8 @@ class Board:
         return [_public(m) for m in self.events.messages(card_id, after, limit)]
 
     def _add_message(self, rec: dict, card: dict, sender: dict, origin: str, body: str,
-                     note_id: str | None = None, agent: str | None = None) -> dict:
+                     note_id: str | None = None, agent: str | None = None,
+                     node: str | None = None) -> dict:
         """Record a message, mirror it into the vault, and log `card.message`.
 
         The row is written first and is the message. A mirror or label write
@@ -568,7 +606,7 @@ class Board:
         """
         message = self.events.message_add(card["id"], at=_now(), sender=sender,
                                           origin=origin, body=body, note_id=note_id,
-                                          agent=agent)
+                                          agent=agent, node=node)
         try:
             self._mirror(rec["note_id"], message)
             self.vault.update(rec["note_id"], labels={LAST_MESSAGE: str(message["seq"])})
@@ -607,11 +645,12 @@ class Board:
         with self._guard:
             self.vault.refresh()
             live = set()
+            folded = False
             for rec in self.vault.list():
                 card_id = rec["labels"]["cardId"]
                 live.add(card_id)
                 card = self._card({**rec, "content": None})
-                self._archive_if_old(rec, card)
+                folded = self._archive_if_old(rec, card) or folded
                 previous = self._seen.get(card_id)
                 if previous is None:
                     self._remember(card)
@@ -632,23 +671,39 @@ class Board:
             for card_id in stale:
                 del self._seen[card_id]
             self.events.seen_drop(stale)
+            if folded or stale or time.monotonic() - self._counted_at >= COUNT_OLDER_S:
+                try:
+                    self.vault.count_older()
+                    self._counted_at = time.monotonic()
+                except VaultError as e:
+                    log.warning("could not count the Older folders: %s", e)
             try:
-                self._seal_gui_messages()
                 self._verify_messages()
             except VaultError as e:
                 log.warning("message sweep stopped early: %s", e)
         return moved
 
-    def _archive_if_old(self, rec: dict, card: dict) -> None:
-        if card["state"] not in TERMINAL or "archived" in rec["labels"]:
-            return
+    def _archive_if_old(self, rec: dict, card: dict) -> bool:
+        """Fold a card that sat in Done or Rejected for `archive_after_s` into its Older folder. True if it moved."""
+        if card["state"] not in TERMINAL or rec["archived_in"]:
+            return False
         since = rec["labels"].get("cardStateAt") or rec["labels"].get("cardUpdated")
         if _iso_age_s(since) < self.archive_after_s:
-            return
+            return False
         try:
-            self.vault.update(rec["note_id"], labels={"archived": ""})
+            self.vault.archive(rec, card["state"])
         except VaultError as e:
             log.warning("could not archive card %s: %s", card["id"], e)
+            return False
+        return True
+
+    def seal(self) -> None:
+        """Seal the notes people added in the GUI. One search when there are none, so a caller can run it every second."""
+        with self._guard:
+            try:
+                self._seal_gui_messages()
+            except VaultError as e:
+                log.warning("sealing stopped early: %s", e)
 
     def _seal_gui_messages(self) -> None:
         """Turn each settled note a person added under a card's chat into the card's next message."""
@@ -718,6 +773,7 @@ class Board:
         while not stop.is_set():
             try:
                 self.sweep()
+                self.seal()
                 if pruned <= 0:
                     self.events.prune()
                     pruned = 3600.0
@@ -732,6 +788,16 @@ class Board:
         """Move every card still directly under the board into the folder for its status."""
         from . import migrate
         return migrate.columns(self, dry_run)
+
+    def migrate_archive(self, dry_run: bool = True) -> dict:
+        """Give Done and Rejected their Older folders, and file every archived card. See `migrate.archive`."""
+        from . import migrate
+        return migrate.archive(self, dry_run)
+
+    def migrate_homes(self, dry_run: bool = True) -> dict:
+        """Move each folded card under the card it was folded into. See `migrate.homes`."""
+        from . import migrate
+        return migrate.homes(self, dry_run)
 
     def migrate_threads(self, dry_run: bool = True, proposal_path: str | Path | None = None) -> dict:
         """Fold reply cards into the threads of their root cards. See `migrate.threads`."""

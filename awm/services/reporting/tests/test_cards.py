@@ -190,15 +190,15 @@ async def test_a_rekeyed_key_is_never_found_by_prefix(env):
     assert again["ok"] and env.task()["key"] == "job00001" and len(env.ledger.open()) == 2
 
 
-async def test_the_sweep_closes_the_rekeyed_task_and_files_its_card(env):
+async def test_the_sweep_moves_the_rekeyed_task_to_review(env):
     await env.call("hook_plan_approved", plan_text="p")
     old = env.task()
     await env.call("hook_session_clear")
     await env.call("hook_plan", plan_text="# New\n\nx")
     for _ in range(2):
         await env.tasks.sweep([row("working")])
-    assert env.ledger.get(old["id"])["state"] == "done"
-    assert env.task()["state"] == "planned"
+    assert env.ledger.get(old["id"])["state"] == "review" and env.ledger.get(old["id"])["ended"] == 1
+    assert env.column(old["note_id"]) == ["Pending review"] and env.task()["state"] == "planned"
 
 
 async def test_a_clear_title_survives_for_the_filed_task(env):
@@ -249,7 +249,7 @@ async def test_convert_rerenders_open_cards_drops_owned_records_and_stamps_ops(e
     assert done["dry_run"] is False
     card = env.tri.notes[owned["note_id"]]
     assert "<details" in card["content"] and card["title"] == "Title"
-    assert card["labels"] == {"agentManaged": "", "readOnly": ""} and stale not in env.tri.notes
+    assert card["labels"].keys() == {"agentManaged", "readOnly", "cardStateAt"} and stale not in env.tri.notes
     assert env.tri.notes[claimed_rec]["type"] == "text" and "<details" in env.tri.notes[claimed_rec]["content"]
     assert env.tri.notes[note]["content"] == "body" and env.tri.notes[note]["title"] == "Tony's task"
     assert env.tri.notes[legacy]["labels"]["changed"] and env.tri.notes[legacy]["content"].startswith("Changed: ")

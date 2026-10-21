@@ -221,6 +221,32 @@ async def test_maintain_sweeps_repeatedly_and_prunes_on_its_own_schedule():
     assert pruned == [30]  # once, at the start, then not again for an hour
 
 
+async def test_maintain_seals_on_its_own_faster_tick():
+    events = StubEvents()
+    board = StubBoard(events)
+    task = asyncio.create_task(stream.maintain(board, events, sweep_s=0.2, seal_s=0.02))
+    await asyncio.sleep(0.3)
+    task.cancel()
+    assert board.sweeps > 0 and board.seals >= 3 * board.sweeps
+
+
+async def test_maintain_survives_a_failing_seal():
+    events = StubEvents()
+    board = StubBoard(events)
+    calls = []
+
+    def flaky():
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("vault down")
+
+    board.seal = flaky
+    task = asyncio.create_task(stream.maintain(board, events, sweep_s=0.02, seal_s=0.02))
+    await asyncio.sleep(0.15)
+    task.cancel()
+    assert len(calls) >= 2 and board.sweeps >= 2
+
+
 async def test_maintain_survives_a_failing_sweep():
     events = StubEvents()
     board = StubBoard(events)

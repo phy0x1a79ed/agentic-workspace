@@ -166,6 +166,7 @@ class Door:
             reply_to=body.get("reply_to") or None,
             project=body.get("project") or None,
             agent=body.get("agent"),
+            node=body.get("node"),
         )
 
     async def list_cards(self, request: Request) -> JSONResponse:
@@ -221,7 +222,7 @@ class Door:
         if body is None:
             return JSONResponse({"error": "body must be a JSON object"}, status_code=400)
         return await self._call(self.board.message, party, card_id, body.get("body"),
-                                agent=body.get("agent"))
+                                agent=body.get("agent"), node=body.get("node"))
 
     async def set_status(self, request: Request) -> JSONResponse:
         party = await self._party(request)
@@ -242,7 +243,7 @@ class Door:
         if body is None:
             return JSONResponse({"error": "body must be a JSON object"}, status_code=400)
         return await self._call(self.board.reject, party, card_id, body.get("reason"),
-                                agent=body.get("agent"))
+                                agent=body.get("agent"), node=body.get("node"))
 
     async def list_events(self, request: Request) -> JSONResponse:
         party = await self._party(request)

@@ -634,3 +634,72 @@ class TestFsRoutes:
         assert "onedrive" in body["storage"]
         assert body["storage"]["onedrive"]["healthy"] is False
         assert set(body["storage"]["onedrive"]["pages"]) == {"tenant", "personal"}
+
+
+class TestUploadEndpoint:
+    async def test_upload_passes_files_text_and_thread(self):
+        import json
+        api = MiraAPI("http://x", [], "secret")
+        drv = _FakeDriver()
+
+        async def upload(channel, files, text, thread=None):
+            drv.uploaded = (channel, files, text, thread)
+            return {"channel_id": channel, "files": [{"id": "F1"}]}
+
+        drv.upload = upload
+        api._platforms["slack"] = Platform("slack", page=None, driver=drv)
+        files = [{"filename": "plan.md", "b64": "eA=="}]
+        resp = await api._h_upload(_JsonReq(
+            "slack", {"channel": "D1", "files": files, "text": "plan", "thread": "1.0"}))
+        assert resp.status == 200
+        assert json.loads(resp.text)["files"] == [{"id": "F1"}]
+        assert drv.uploaded == ("D1", files, "plan", "1.0")
+
+    async def test_upload_needs_channel_and_files(self):
+        api = MiraAPI("http://x", [], "secret")
+        api._platforms["slack"] = Platform("slack", page=None, driver=_FakeDriver())
+        resp = await api._h_upload(_JsonReq("slack", {"channel": "D1"}))
+        assert resp.status == 400
+
+    async def test_teams_upload_is_501(self):
+        from mira_api.drivers import TeamsDriver
+        api = MiraAPI("http://x", [], "secret")
+        api._platforms["teams"] = Platform("teams", page=None, driver=TeamsDriver(None))
+        resp = await api._h_upload(_JsonReq(
+            "teams", {"channel": "x", "files": [{"filename": "a", "b64": ""}]}))
+        assert resp.status == 501
+
+
+class TestReactEndpoint:
+    async def test_react_passes_the_name_and_remove(self):
+        import json
+        api = MiraAPI("http://x", [], "secret")
+        drv = _FakeDriver()
+
+        async def react(channel, ts, name, remove=False):
+            drv.reacted = (channel, ts, name, remove)
+            return {"channel_id": channel, "message_id": ts, "emoji": name,
+                    "removed": remove}
+
+        drv.react = react
+        api._platforms["slack"] = Platform("slack", page=None, driver=drv)
+        resp = await api._h_react(_JsonReq(
+            "slack", {"channel": "D1", "message_id": "1.1", "emoji": "eyes",
+                      "remove": True}))
+        assert resp.status == 200
+        assert json.loads(resp.text)["removed"] is True
+        assert drv.reacted == ("D1", "1.1", "eyes", True)
+
+    async def test_react_needs_channel_message_and_emoji(self):
+        api = MiraAPI("http://x", [], "secret")
+        api._platforms["slack"] = Platform("slack", page=None, driver=_FakeDriver())
+        resp = await api._h_react(_JsonReq("slack", {"channel": "D1", "emoji": "eyes"}))
+        assert resp.status == 400
+
+    async def test_teams_react_is_501(self):
+        from mira_api.drivers import TeamsDriver
+        api = MiraAPI("http://x", [], "secret")
+        api._platforms["teams"] = Platform("teams", page=None, driver=TeamsDriver(None))
+        resp = await api._h_react(_JsonReq(
+            "teams", {"channel": "x", "message_id": "1", "emoji": "eyes"}))
+        assert resp.status == 501

@@ -34,7 +34,8 @@ from awm.board.client import BoardClient, BoardError
 
 log = logging.getLogger("awm.board.hub_adapter")
 
-HOST_ONLY = ("party_add", "party_revoke", "party_list", "migrate_columns", "migrate_threads")
+HOST_ONLY = ("party_add", "party_revoke", "party_list", "migrate_columns", "migrate_archive", "migrate_threads",
+             "migrate_homes")
 CARD_FIELDS = ("sender", "recipient", "claimant", "status", "state", "kind", "reply_to", "project")
 
 #: Set once the host's stores exist. The admin verbs read it.
@@ -232,6 +233,21 @@ API_MANIFEST: dict[str, Any] = {
             "params": [_param("dry_run", "boolean", "Default true. Pass false to apply.")],
         },
         {
+            "name": "migrate_archive",
+            "tool": "operations_board_migrate_archive",
+            "surfaces": ["cli", "http"],
+            "effect": "write",
+            "description": (
+                "Host admin only. Make the archive folder inside each column "
+                "folder, and turn those of Done and Rejected into visible Older "
+                "folders sorted newest first. Move every archived card into the "
+                "one for its column, and take the archived label off each card "
+                "in an Older folder. A card under the board takes the column of "
+                "its old status. A dry run changes nothing and reports the plan."
+            ),
+            "params": [_param("dry_run", "boolean", "Default true. Pass false to apply.")],
+        },
+        {
             "name": "migrate_threads",
             "tool": "operations_board_migrate_threads",
             "surfaces": ["cli", "http"],
@@ -246,6 +262,21 @@ API_MANIFEST: dict[str, Any] = {
                 _param("dry_run", "boolean", "Default true. Pass false to apply the proposal."),
                 _param("proposal_path", "string", "The proposal file. Default: thread-proposal.json in the board's data dir."),
             ],
+        },
+        {
+            "name": "migrate_homes",
+            "tool": "operations_board_migrate_homes",
+            "surfaces": ["cli", "http"],
+            "effect": "write",
+            "description": (
+                "Host admin only. Move each archived card that carries "
+                "cardFolded from its Archived folder under the note of the "
+                "card it was folded into (the top one of a chain of folds), "
+                "and report the counts per home. "
+                "Cards with no home stay where they are. A dry run changes "
+                "nothing and reports the plan."
+            ),
+            "params": [_param("dry_run", "boolean", "Default true. Pass false to apply.")],
         },
         {
             "name": "party_add",
@@ -384,7 +415,7 @@ async def post(args: dict, as_: str | None = None) -> dict:
         kind=args["kind"], recipient=args["recipient"], title=args["title"],
         body=args.get("body") or "", priority=args.get("priority") or "normal",
         reply_to=args.get("reply_to") or None, project=args.get("project") or None,
-        agent=who["agent"],
+        agent=who["agent"], node=who["node"],
     ), as_))
 
 
@@ -409,7 +440,8 @@ async def status(args: dict, as_: str | None = None) -> dict:
 async def reject(args: dict, as_: str | None = None) -> dict:
     who = _who(args)
     return _card_reply(await _relay(
-        lambda c: c.reject(args["card_id"], args["reason"], agent=who["agent"]), as_))
+        lambda c: c.reject(args["card_id"], args["reason"], agent=who["agent"],
+                           node=who["node"]), as_))
 
 
 async def get(args: dict, as_: str | None = None) -> dict:
@@ -424,7 +456,8 @@ async def list_cards(args: dict, as_: str | None = None) -> dict:
 
 async def message_post(args: dict, as_: str | None = None) -> dict:
     who = _who(args)
-    reply = await _relay(lambda c: c.message(args["card_id"], args["body"], agent=who["agent"]), as_)
+    reply = await _relay(lambda c: c.message(args["card_id"], args["body"], agent=who["agent"],
+                                             node=who["node"]), as_)
     return {"ok": True, "message": reply["result"]} if reply.get("ok") else reply
 
 
@@ -513,10 +546,20 @@ async def migrate_columns(args: dict, as_: str | None = None) -> dict:
     return await _migration("migrate_columns", as_, lambda b: b.migrate_columns(dry_run))
 
 
+async def migrate_archive(args: dict, as_: str | None = None) -> dict:
+    dry_run = _flag(args, "dry_run", True)
+    return await _migration("migrate_archive", as_, lambda b: b.migrate_archive(dry_run))
+
+
 async def migrate_threads(args: dict, as_: str | None = None) -> dict:
     dry_run = _flag(args, "dry_run", True)
     path = args.get("proposal_path") or data_dir() / "thread-proposal.json"
     return await _migration("migrate_threads", as_, lambda b: b.migrate_threads(dry_run, path))
+
+
+async def migrate_homes(args: dict, as_: str | None = None) -> dict:
+    dry_run = _flag(args, "dry_run", True)
+    return await _migration("migrate_homes", as_, lambda b: b.migrate_homes(dry_run))
 
 
 HANDLERS: dict[str, Any] = {
@@ -532,7 +575,9 @@ HANDLERS: dict[str, Any] = {
     "messages": messages,
     "events": events,
     "migrate_columns": migrate_columns,
+    "migrate_archive": migrate_archive,
     "migrate_threads": migrate_threads,
+    "migrate_homes": migrate_homes,
     "party_add": party_add,
     "party_revoke": party_revoke,
     "party_list": party_list,
