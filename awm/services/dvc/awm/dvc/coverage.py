@@ -28,6 +28,7 @@ from typing import Any
 
 from awm.config import privacy
 from awm.dvc import cache as cachemod
+from awm.dvc import data_dvc
 from awm.dvc.config import SHARED_CACHE, WORKSPACE_ROOT
 
 log = logging.getLogger("awm.dvc.coverage")
@@ -162,6 +163,9 @@ def _pins(worktree: Path) -> dict[str, Any]:
     """
     if not (worktree / ".dvc").is_dir():
         return {"dvc": False}
+    if data_dvc.no_remote(worktree):
+        # Its pins have no copy anywhere else by decision, and its cache is its own.
+        return {"dvc": True, "no_remote": True}
     try:
         res = cachemod.resolve(worktree, SHARED_CACHE)
     except OSError as exc:

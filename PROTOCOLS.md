@@ -113,6 +113,8 @@ Every mirror destination sits under `…/workspace/`. A delete-enabled transfer 
 
 Keep a regenerable directory out of the mirror with a `CACHEDIR.TAG` file, per the [Cache Directory Tagging spec](https://bford.info/cachedir/). Tag package caches, run scratch and shard pulls that a pinned file already reassembles. The mirror pays per file, not per byte: about a million small files make a run take most of a day.
 
+**WARNING** A `CACHEDIR.TAG` at `projects/<p>/` takes the whole project off every remote. The mirror skips it, its DVC cache moves to `projects/<p>/.dvc_cache` where the archive never looks, and `dvc push` and `pull` refuse it. Use it for data that must never leave the machine, such as licensed assets. A lost disk loses that data. Removing the tag sends the next scope provisioning back to the shared cache.
+
 Neither job replaces pushing a branch. `dvc(verb="coverage")` reports what exists on no remote.
 
 A restore does not return two things:

@@ -137,6 +137,12 @@ def _is_cache_tag(path: str) -> bool:
         return False
 
 
+def has_cache_tag(directory: Path) -> bool:
+    """Whether ``directory`` holds a valid ``CACHEDIR.TAG`` of its own."""
+    tag = directory / CACHEDIR_TAG
+    return tag.is_file() and not tag.is_symlink() and _is_cache_tag(str(tag))
+
+
 def cache_tagged_paths(root: Path, *, skip: list[str] | None = None) -> list[str]:
     """Absolute paths of every directory under ``root`` holding a valid ``CACHEDIR.TAG``.
 
