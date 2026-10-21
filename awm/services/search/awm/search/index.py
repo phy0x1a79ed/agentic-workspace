@@ -164,10 +164,13 @@ def exact_literal(conn: sqlite3.Connection, query: str, filters: Filters, limit:
 
 
 def exact_keyword(conn: sqlite3.Connection, query: str, filters: Filters, limit: int,
-                  per_hit: int, skip: set[str] = frozenset()) -> list[dict[str, Any]]:
+                  per_hit: int, skip: set[str] = frozenset(), every: bool = True) -> list[dict[str, Any]]:
     """Documents with a passage holding every word of the query, best BM25 passage first; ``skip`` names keys to
-    leave out. A document holding only some of the words is left to ``related``, which ranks it by meaning too."""
-    expr = engine.fts_query(query).replace(" OR ", " AND ")
+    leave out. A document holding only some of the words is left to ``related``, which ranks it by meaning too.
+    ``every=False`` asks for any of the words instead."""
+    expr = engine.fts_query(query)
+    if every:
+        expr = expr.replace(" OR ", " AND ")
     if not expr or not filters.sources:
         return []
     allowed, params = filters.allowed()
@@ -233,6 +236,12 @@ def exact(conn: sqlite3.Connection, query: str, filters: Filters, limit: int, pe
     literal_hits = exact_literal(conn, query, filters, limit, per_hit)
     seen = {store.key_of(h["source"], h["id"]) for h in literal_hits}
     return literal_hits + exact_keyword(conn, query, filters, limit - len(literal_hits), per_hit, seen)
+
+
+def words(conn: sqlite3.Connection, query: str, filters: Filters, limit: int, per_hit: int) -> list[dict[str, Any]]:
+    """Documents with a passage holding any word of the query, best BM25 passage first: the word half of
+    ``related`` for the sources whose meaning half comes from kb."""
+    return exact_keyword(conn, query, filters, limit, per_hit, every=False)
 
 
 def search(conn: sqlite3.Connection, query: str, filters: Filters, limit: int,

@@ -59,7 +59,7 @@ def kb(gateway, monkeypatch):
 
 
 async def related_ids(archive, **args):
-    result = await archive.query(parse({"query": "tap replacement", **args}))
+    result = await archive.query(parse({"query": "plumbing overhaul", **args}))
     return [(h["source"], h["id"]) for h in flat(result["related"])], result
 
 
@@ -79,7 +79,7 @@ async def test_kb_entries_become_related_hits_with_their_spans(loaded, kb):
 async def test_the_request_names_the_sources_and_their_zones(loaded, kb):
     await related_ids(loaded, sources=["journals", "precedence"], limit=4)
     args = kb["calls"][0]
-    assert args["text"] == "tap replacement" and args["sources"] == ["journals", "precedence"]
+    assert args["text"] == "plumbing overhaul" and args["sources"] == ["journals", "precedence"]
     assert args["zones"] == ["journal", "precedent"] and args["k"] >= 24
     await related_ids(loaded, sources=["journals"], project="awm")
     assert kb["calls"][1]["k"] == 200 and kb["calls"][1]["zones"] == ["journal"]
@@ -111,6 +111,14 @@ async def test_each_document_is_one_hit_quoting_its_best_entries_first(loaded, k
     ids, result = await related_ids(loaded, sources=["journals"], passages=2)
     assert ids == [("journals", "j1"), ("journals", "j2")]
     assert [p["start"] for p in flat(result["related"])[0]["passages"]] == [11, 0]
+
+
+async def test_a_document_holding_some_of_the_words_joins_the_meaning_matches(loaded, kb):
+    kb["answer"] = [entry("journals", "j2", 0.9, text=SHED)]
+    ids, result = await related_ids(loaded, query="who replaced the leaking tap", sources=["journals"])
+    assert set(ids) == {("journals", "j1"), ("journals", "j2")}
+    assert {h["id"]: h["match"] for h in flat(result["related"])} == {"j1": "keyword", "j2": "meaning"}
+    assert kb["brute"] == []
 
 
 @pytest.mark.parametrize("failure", [GatewayCallError(503, '{"detail":"encoder is loading"}'), KeyError("x")])

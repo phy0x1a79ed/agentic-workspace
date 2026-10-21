@@ -297,17 +297,20 @@ class Archive:
         """``fn(conn, text, filters, limit, ...)`` once for each source, so each has its own ``limit``."""
         conn = store.connect()
         try:
-            return [fn(conn, q.text, q.filters([name]), limit, *([q.passages] if fn is index.exact else []))
+            return [fn(conn, q.text, q.filters([name]), limit,
+                       *([q.passages] if fn in (index.exact, index.words) else []))
                     for name in names]
         finally:
             conn.close()
 
     async def _archive_hits(self, q: Query, names: list[str]) -> tuple[dict[str, list[dict[str, Any]]], Any]:
-        """``exact`` from the archive's text indexes; ``related`` from kb's entry index for the sources it holds,
-        and from the archive's own embeddings for the rest, or for all of them while kb cannot answer."""
+        """``exact`` from the archive's text indexes; ``related`` from kb's entry index fused with any-word BM25
+        for the sources kb holds, and from the archive's own embeddings for the rest, or for all of them while
+        kb cannot answer."""
         kb_names = meaning.covered(names) if any(s.service == "kb" for s in self.sources.values()) else []
         asked = asyncio.ensure_future(
             meaning.ask(self.gateway, q.text, kb_names, q.filters(kb_names), q.limit)) if kb_names else None
+        origin = self.origin()
         try:
             exact = [h for hits in await asyncio.to_thread(self._per_source, index.exact, q, names, q.limit)
                      for h in hits]
@@ -316,8 +319,12 @@ class Archive:
             if asked is not None:
                 try:
                     entries = await asked
-                    by_meaning = await asyncio.to_thread(_with_conn, index.resolve, entries, q.filters(kb_names),
-                                                         q.limit * 2, q.passages)
+                    meant = await asyncio.to_thread(_with_conn, index.resolve, entries, q.filters(kb_names),
+                                                    q.limit * 2, q.passages)
+                    worded = await asyncio.to_thread(self._per_source, index.words, q, kb_names, q.limit * 2)
+                    by_meaning = [h for name, hits in zip(kb_names, worded) for h in merge.fuse(
+                        [[{**m, "origin": origin} for m in meant if m["source"] == name],
+                         [{**w, "origin": origin} for w in hits]], q.limit * 2)]
                     rest = [n for n in names if n not in kb_names]
                 except Exception as exc:  # noqa: BLE001 — the archive's own embeddings answer instead
                     log.warning("search: kb entry index unavailable, using the archive's embeddings: %s",
@@ -327,7 +334,6 @@ class Archive:
                 asked.cancel()
         brute = await asyncio.to_thread(self._per_source, index.related, q, rest, q.limit * 2) if rest else []
         degraded = next((d for _, d in brute if d), None)
-        origin = self.origin()
         related = by_meaning + [h for hits, _ in brute for h in hits]
         return {"exact": [{**h, "origin": origin} for h in exact],
                 "related": [{**h, "origin": origin} for h in related]}, degraded
