@@ -2,10 +2,10 @@
 
 ## Purpose & Contents
 
-This file covers installing, building and running the Factorio realm, the seat
-model the service is built around, how game calls reach the engine and what they
-cost, how a mod change ships, and how a person joins the world from their own
-Factorio client.
+This file covers installing, building and running the Factorio realm, the three
+kinds of world it hosts, the seat model the service is built around, how game
+calls reach the engine and what they cost, how a mod change ships, and how a
+person joins the world from their own Factorio client.
 
 It does not list verbs or their parameters. `awm factorio --help` answers that
 from the running manifest and cannot go stale. What is written here is what
@@ -15,9 +15,9 @@ things must agree.
 ## What this service is
 
 A Python feature service in the `awm.rlm_factorio` namespace, in awm's `rlm-*`
-realm family beside `rlm-browser`. It owns a Factorio appliance — a Docker
-container running a stdlib supervisor that owns the engine — and hands agents
-**seats** in the world it hosts.
+realm family beside `rlm-browser`. It owns Factorio **worlds**, each a Docker
+appliance — a container running a stdlib supervisor that owns the engine — and
+hands agents **seats** in them.
 
 It needs the `awm` conda env to hold its package and the shared component
 libraries it imports (`config`, `persistence`, `gatewayclient`). It needs Docker
@@ -71,6 +71,44 @@ and seats cannot drift out of version or mod sync, which is the failure that
 bites every hand-built Factorio multiplayer setup. The headless build cannot
 serve as a seat at all — its binary has no `--mp-connect`.
 
+## Worlds
+
+A world is one appliance of one of three kinds. `acquire` fixes the kind for the
+life of the world.
+
+- **headless** — the game. It publishes only its control port.
+- **rendered** — the same save with the UDP game port published, so a person can
+  join (§ *Joining the world*). It always runs realm rules.
+- **lab** — a throwaway world for experiments. It loads the lab mods from
+  `RLM_FACTORIO_LAB_MODS`, the lab server and map-gen settings in
+  `appliance/config/`, and a saves folder bound from
+  `worlds/<session_id>/saves`. A realm save is copied in and never written. A lab
+  runs sandbox rules by default, at 2 cores and 4 GiB.
+
+Each world runs under its own compose project, with a generated override at
+`$AWM_WORKSPACE/.awm/services/rlm-factorio/worlds/<session_id>/compose.json`.
+The project namespaces the volume, network and containers. That is what lets
+several worlds run at once and keeps a lab off the realm's saves volume. The realm
+keeps the default project name and ports.
+
+**CAUTION:** a live world cannot change kind. To join the realm from a client,
+save it, `release` it and `acquire` it again with `kind=rendered`.
+
+Past `RLM_FACTORIO_MAX_LABS` live labs, a lab `acquire` fails at once with
+`LAB_CAP`. It does not wait, because a wait would outlast the gateway's call
+timeout. The caller retries.
+
+The supervisor is bind-mounted from `appliance/supervise.py`, so a supervisor
+change ships with a world restart, not an image rebuild. It boots on
+`BOOT_SAVE` or `BOOT_NEW` and reports `ready` only once the boot pause is set,
+so no call sees a lab run before it is paused.
+
+`advance` and `wait_until` block in the service and poll the engine, one
+throttled read per poll. One call lasts at most `RLM_FACTORIO_WAIT_MAX_S`. The
+manifest gives the gateway 60 s more than that for both verbs. **CAUTION:** keep
+the two in step, or the gateway cuts a long wait short and the caller sees a 504
+while the wait runs on.
+
 ## Run
 
 You never start the service by hand. The gateway discovers any folder under
@@ -112,6 +150,13 @@ reaper reclaims a seat whose container died, whose owner went quiet past
 activity, not the session being busy. An agent that leases a seat and then works
 elsewhere for an hour loses it.
 
+A seat of role `camera` renders and never plays. The service joins it under one
+fixed name, `AWM_FACTORIO_CAMERA_NAME` (default `fxcam`), so a save seeded with
+it loads unchanged, and parks it in the lab mod's view booth, which holds no
+character. It mounts the sprite caches from `output/camera-cache/` read-only, so
+cameras run side by side without rebuilding the atlas. Only a sandbox world
+allows one, one per world, and the reaper never reclaims it for idleness.
+
 The reaper sweeps seats only. It never touches a session, so it cannot
 disconnect a person who joined from Steam or close the world under them.
 
@@ -134,8 +179,10 @@ Every game call goes through one broker process per appliance,
 `appliance/rcon_broker.py`, which the realm starts with `docker exec` from the
 source in its own tree. A broker change therefore ships with a realm restart and
 never needs an image rebuild. The broker holds one RCON socket per connection
-key: one per seat, `anon` for a seatless agent call, and `sys` for the realm's
-own bookkeeping. One shared socket used to queue the whole crew behind a lock.
+key: one per seat, `<container>/<caller>` for each seatless caller on each
+world, and `sys` for the realm's own bookkeeping. One shared socket used to
+queue the whole crew behind a lock. A seatless socket closes after
+`AWM_FACTORIO_CONN_IDLE_S` of quiet.
 
 **CAUTION:** Factorio answers each command with exactly one packet, even a
 100 KB reply. Never wait for more, and never send the Source-style empty
@@ -146,7 +193,9 @@ after it runs. Nothing can stop a running command: Factorio's Lua has no clock
 and no debug hook, and a time-based stop would desync every peer. So a command
 over its budget still completes, and returns `OVER_BUDGET` with its output
 attached. A read too large for one command pages through `scan`, whose work cap
-counts entities examined, never time.
+counts entities examined, never time. Under sandbox rules an overrun counts
+against its key but returns no error, because lab fixtures run heavy Lua on
+purpose. Each world has its own throttle and UPS gate.
 
 ## The cost of command text
 
@@ -210,13 +259,13 @@ pre-existing saves volume is `world_new`.
 
 ## Configuration
 
-Defaults suit one session on one host. A test rig must override the first four.
+Defaults suit one realm on one host. A test rig must override the first four.
 
 | Env var | Default | Meaning |
 |---|---|---|
 | `AWM_FACTORIO_PROJECT` | `rlm-factorio` | compose project — namespaces containers and the saves volume |
 | `AWM_FACTORIO_CONTAINER` | `rlm-factorio-appliance` | host container name |
-| `AWM_FACTORIO_GAME_PORT` | `12140` | published UDP game port |
+| `AWM_FACTORIO_GAME_PORT` | `12140` | the realm's UDP game port, published only when rendered |
 | `AWM_FACTORIO_CONTROL_PORT` | `12142` | published supervisor control port |
 | `AWM_FACTORIO_SEAT_CPUS` | `4.0` | per-seat CPU ceiling |
 | `AWM_FACTORIO_SEAT_MEMORY` | `6g` | per-seat memory ceiling |
@@ -230,6 +279,11 @@ Defaults suit one session on one host. A test rig must override the first four.
 | `AWM_FACTORIO_UPS_FLOOR` | `55` | below this UPS, only keys holding half a burst send |
 | `AWM_FACTORIO_CMD_BUDGET_MS` | `15` | per-command budget before `OVER_BUDGET` |
 | `AWM_FACTORIO_CMD_BUDGET_MAX_MS` | `50` | ceiling a call's `budget_ms` may raise it to |
+| `AWM_FACTORIO_CONN_IDLE_S` | `600` | quiet seconds before a seatless socket closes |
+| `AWM_FACTORIO_CAMERA_NAME` | `fxcam` | player name of every camera seat |
+| `RLM_FACTORIO_MAX_LABS` | `3` | live labs before `acquire` refuses with `LAB_CAP` |
+| `RLM_FACTORIO_WAIT_MAX_S` | `600` | longest single `advance` or `wait_until` |
+| `RLM_FACTORIO_LAB_MODS` | game-bot `research/lab/fxlab/mods` | folder holding the lab mods |
 
 **WARNING:** the default project owns `rlm-factorio_factorio-saves`, the volume
 real worlds live in. A rig that leaves these at their defaults runs against it,
@@ -243,10 +297,13 @@ and 2.4 GiB. At 2 cores and 4 GiB a 40-second join stretched past five minutes.
 Squeezing here saves a running seat nothing, and a peer that cannot keep the
 server's tick rate is dropped from the game.
 
-The host container's own ceiling lives in `docker-compose.yml` as `FACTORIO_CPUS`
-and `FACTORIO_MEMORY`.
+The service sets the host container's ceiling per kind through `FACTORIO_CPUS`
+and `FACTORIO_MEMORY`: 2 cores and 4 GiB for a lab, 4 cores and 6 GiB otherwise.
 
 ## Joining the world from a desktop or Steam client
+
+Only a rendered world publishes the game port. Acquire the realm with
+`kind=rendered` first (§ *Worlds*).
 
 `server-settings.json` ships with no password, no account verification, LAN
 visibility on and unlimited players. The only barriers are version and mods, and
