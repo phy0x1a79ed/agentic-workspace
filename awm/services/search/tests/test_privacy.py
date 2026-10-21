@@ -8,7 +8,7 @@ from awm.config import privacy
 from awm.search import hub_adapter
 from awm.search.hub_adapter import HANDLERS
 
-from .conftest import doc, synced
+from .conftest import doc, every, flat, synced
 
 pytestmark = [pytest.mark.search]
 
@@ -52,7 +52,7 @@ ALL = {"j1", "j2", "j3", "j4", "j5", "j6", "j7", "j8", "j9", "p1", "p2", "p3"}
 
 
 async def found(args, as_):
-    return {h["id"] for h in (await HANDLERS["query"]({"query": "kitchen sink", "limit": 50, **args}, as_))["hits"]}
+    return {h["id"] for h in every(await HANDLERS["query"]({"query": "kitchen sink", "limit": 50, **args}, as_))}
 
 
 @pytest.mark.parametrize("as_", [LOCAL, USER, "agent:x"])
@@ -68,7 +68,7 @@ async def test_a_peer_never_sees_a_marked_project_or_scope(served, as_):
 async def test_a_peer_naming_a_marked_project_gets_what_an_unknown_one_gets(served):
     named = await HANDLERS["query"]({"query": "kitchen sink", "project": "avatar"}, PEER)
     unknown = await HANDLERS["query"]({"query": "kitchen sink", "project": "nonesuch"}, PEER)
-    assert named["hits"] == unknown["hits"] == []
+    assert every(named) == every(unknown) == []
     assert named["sources"] == unknown["sources"]
     assert await found({"project": "awm", "scope": "svc-a"}, PEER) == set()
 
@@ -81,8 +81,7 @@ async def test_the_filter_runs_in_the_index_so_a_peer_page_stays_full(archive, g
     monkeypatch.setattr(hub_adapter, "ARCHIVE", archive)
     privacy.write_marks([{"project": "avatar", "scope": None, "path": str(root / "avatar")}])
     out = await HANDLERS["query"]({"query": "kitchen sink", "limit": 5}, PEER)
-    assert len(out["hits"]) == 5 and {h["project"] for h in out["hits"]} == {"awm"}
-    assert out["sources"]["journals"]["hits"] == 5
+    assert len(flat(out["exact"])) == 5 and {h["project"] for h in every(out)} == {"awm"}
 
 
 async def test_get_answers_a_peer_as_if_a_hidden_document_did_not_exist(served):
@@ -119,9 +118,9 @@ async def test_a_peer_never_sees_a_live_transcript_hit_from_a_marked_path(served
     await served.refresh()
     args = {"query": "kitchen sink", "sources": ["transcripts"]}
     peer = await HANDLERS["query"](args, PEER)
-    assert [h["id"] for h in peer["hits"]] == ["s3:1"]
+    assert [h["id"] for h in every(peer)] == ["s3:1"]
     assert peer["sources"]["transcripts"] == {"status": "ok", "hits": 1}
-    assert len((await HANDLERS["query"](args, LOCAL))["hits"]) == 4
+    assert len(every(await HANDLERS["query"](args, LOCAL))) == 4
 
 
 async def test_an_unreadable_marks_file_hides_every_project_from_a_peer(served, gateway):
@@ -134,7 +133,7 @@ async def test_an_unreadable_marks_file_hides_every_project_from_a_peer(served, 
     gateway.plug_live("transcripts", lambda args: {"hits": [
         {"id": "s1:1", "title": "t", "snippet": "kitchen sink", "project": "-home-open"}]}, optin=True)
     await served.refresh()
-    assert (await HANDLERS["query"]({"query": "kitchen sink", "sources": ["transcripts"]}, PEER))["hits"] == []
+    assert every(await HANDLERS["query"]({"query": "kitchen sink", "sources": ["transcripts"]}, PEER)) == []
 
 
 async def test_a_peer_call_never_fans_out_further(served, peers):

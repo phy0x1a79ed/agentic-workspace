@@ -283,7 +283,7 @@ async def test_fleet_among_names_adds_the_domestic_nodes_to_them(loaded, peers):
         result = await loaded.query(parse({"query": "kitchen", "peers": value}))
         assert set(result["peers"]) == {"capella", "shaula"}
         assert sorted(c[0] for c in peers.calls) == ["capella", "shaula"]
-        assert any(h["origin"]["node"] == "local" for h in result["hits"])
+        assert any(h["origin"]["node"] == "local" for h in every(result))
 
 
 async def test_a_peer_is_asked_the_same_question_without_a_further_fan_out(loaded, peers):
