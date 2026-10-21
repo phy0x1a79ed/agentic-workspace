@@ -362,6 +362,16 @@ class TestWiring:
         # DVC gitignores config.local itself, which is why it is the right home.
         assert _git(wt, "check-ignore", ".dvc/config.local").strip() != ""
 
+    @needs_dvc
+    def test_a_local_link_type_survives_the_rewrite(self, dvc_project):
+        """A live data root sets `copy` for itself, so its files are never cache inodes."""
+        wt = dvc_project["worktree"]
+        dd.ensure_cache_config(wt)
+        dd._dvc(wt, "config", "--local", "cache.type", "copy")
+        dd.ensure_cache_config(wt)
+        assert dd._dvc(wt, "config", "cache.type").stdout.strip() == "copy"
+        assert str(dd.cache_dir()) in (wt / ".dvc" / "config.local").read_text()
+
     def test_site_cache_goes_to_tmpfs_when_there_is_one(self, dvc_project, tmp_path, monkeypatch):
         """DVC's per-worktree index commits row by row, so a busy disk stalls a fresh checkout."""
         wt = dvc_project["worktree"]
