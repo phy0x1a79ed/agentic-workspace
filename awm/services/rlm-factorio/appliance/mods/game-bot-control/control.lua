@@ -186,6 +186,30 @@ local function resolve_player(args)
   return p
 end
 
+-- Where build_blueprint puts each entity of a stamp at (x, y) turned by dir. A 2.x blueprint keeps its entities'
+-- world positions: the engine turns them about the origin, then centres the turned set on the floor of its tile
+-- box's midpoint. Checked against build_blueprint in all four directions.
+local function stamp_plan(ents, x, y, dir)
+  local turned = {}
+  for _, e in pairs(ents) do
+    local ex, ey = e.position.x, e.position.y
+    if dir == 4 then ex, ey = -ey, ex elseif dir == 8 then ex, ey = -ex, -ey elseif dir == 12 then ex, ey = ey, -ex end
+    turned[#turned + 1] = { name = e.name, x = ex, y = ey, direction = ((e.direction or 0) + dir) % 16 }
+  end
+  local x1, y1, x2, y2 = math.huge, math.huge, -math.huge, -math.huge
+  for _, t in pairs(turned) do
+    local proto = prototypes.entity[t.name]
+    local w, h = proto and proto.tile_width or 1, proto and proto.tile_height or 1
+    if t.direction == 4 or t.direction == 12 then w, h = h, w end
+    t.w, t.h = w, h
+    x1, y1 = math.min(x1, t.x - w / 2), math.min(y1, t.y - h / 2)
+    x2, y2 = math.max(x2, t.x + w / 2), math.max(y2, t.y + h / 2)
+  end
+  local cx, cy = math.floor((x1 + x2) / 2), math.floor((y1 + y2) / 2)
+  for _, t in pairs(turned) do t.x, t.y = x + t.x - cx, y + t.y - cy end
+  return turned
+end
+
 -- Resolve to a player that can actually act: connected, alive, embodied.
 local function acting_player(args)
   local p = resolve_player(args)
@@ -1311,64 +1335,60 @@ local api = {
       -- Where the module will actually land, so the caller can be told which
       -- part of it fell off the edge of the generated world.
       local corners = {}
-      local ents = stack.get_blueprint_entities()
+      local plan = stamp_plan(stack.get_blueprint_entities() or {}, args.x, args.y, dir)
       -- Find every obstruction BEFORE building: one of them means nothing at
       -- all is placed, so an unexplained zero has to come back with a reason.
       local blocked, blocked_at, cleared = 0, {}, 0
-      for _, e in pairs(ents or {}) do
-        local px, py = args.x + e.position.x, args.y + e.position.y
+      -- Clear every footprint first, so no entity is counted blocked by a
+      -- rock that a neighbour's clearing removes later.
+      if args.clear then
+        for _, e in pairs(plan) do
+          for _, obstruction in pairs(surf.find_entities_filtered{
+                area = { { e.x - e.w / 2, e.y - e.h / 2 }, { e.x + e.w / 2, e.y + e.h / 2 } },
+                type = { "tree", "simple-entity" } }) do
+            if obstruction.valid then obstruction.destroy() cleared = cleared + 1 end
+          end
+        end
+      end
+      for _, e in pairs(plan) do
+        local px, py = e.x, e.y
         if not surf.can_place_entity{
               name = e.name, position = { x = px, y = py }, force = force,
               direction = e.direction,
               build_check_type = defines.build_check_type.blueprint_ghost } then
-          if args.clear then
-            for _, obstruction in pairs(surf.find_entities_filtered{
-                  position = { x = px, y = py }, radius = 2,
-                  type = { "tree", "simple-entity" } }) do
-              if obstruction.valid then obstruction.destroy() cleared = cleared + 1 end
+          blocked = blocked + 1
+          if #blocked_at < 5 then
+            -- Say WHY. Trees and rocks `clear` can remove; a cliff or water
+            -- means move the module or landfill, which is a different job.
+            local why
+            for _, o in pairs(surf.find_entities_filtered{
+                  position = { x = px, y = py }, radius = 1.5 }) do
+              if o.valid and o.type ~= "character" then why = o.name break end
             end
-          end
-          if not surf.can_place_entity{
-                name = e.name, position = { x = px, y = py }, force = force,
-                direction = e.direction,
-                build_check_type = defines.build_check_type.blueprint_ghost } then
-            blocked = blocked + 1
-            if #blocked_at < 5 then
-              -- Say WHY. Trees and rocks `clear` can remove; a cliff or water
-              -- means move the module or landfill, which is a different job.
-              local why
-              for _, o in pairs(surf.find_entities_filtered{
-                    position = { x = px, y = py }, radius = 1.5 }) do
-                if o.valid and o.type ~= "character" then why = o.name break end
-              end
-              -- On ungenerated map there is no tile at all, and touching the
-              -- invalid LuaTile throws -- which is exactly the case we are
-              -- here to report on.
-              local tile = surf.get_tile(math.floor(px), math.floor(py))
-              blocked_at[#blocked_at + 1] = {
-                name = e.name, x = px, y = py,
-                tile = (tile and tile.valid) and tile.name or nil,
-                obstruction = why }
-            end
+            -- On ungenerated map there is no tile at all, and touching the
+            -- invalid LuaTile throws -- which is exactly the case we are
+            -- here to report on.
+            local tile = surf.get_tile(math.floor(px), math.floor(py))
+            blocked_at[#blocked_at + 1] = {
+              name = e.name, x = px, y = py,
+              tile = (tile and tile.valid) and tile.name or nil,
+              obstruction = why }
           end
         end
       end
-      if ents and #ents > 0 then
+      if #plan > 0 then
         local x1, y1 = math.huge, math.huge
         local x2, y2 = -math.huge, -math.huge
-        for _, e in pairs(ents) do
-          x1 = math.min(x1, e.position.x); x2 = math.max(x2, e.position.x)
-          y1 = math.min(y1, e.position.y); y2 = math.max(y2, e.position.y)
+        for _, e in pairs(plan) do
+          x1 = math.min(x1, e.x); x2 = math.max(x2, e.x)
+          y1 = math.min(y1, e.y); y2 = math.max(y2, e.y)
         end
-        corners = { { x = args.x + x1, y = args.y + y1 },
-                    { x = args.x + x2, y = args.y + y1 },
-                    { x = args.x + x1, y = args.y + y2 },
-                    { x = args.x + x2, y = args.y + y2 } }
+        corners = { { x = x1, y = y1 }, { x = x2, y = y1 }, { x = x1, y = y2 }, { x = x2, y = y2 } }
       end
       local ghosts = stack.build_blueprint{
         surface = surf, force = force, position = { x = args.x, y = args.y },
         direction = dir, skip_fog_of_war = false,
-        force_build = args.force_build and true or false,
+        build_mode = args.force_build and defines.build_mode.forced or defines.build_mode.normal,
         raise_built = true,
       }
       local built, revived = 0, 0
