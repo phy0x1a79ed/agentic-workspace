@@ -88,7 +88,7 @@ def test_claim_takes_a_ref_or_the_old_url_and_neither_is_required():
 
 def test_watch_takes_a_card_or_the_posted_flag():
     params = {p["name"] for p in functions()["board_watch"]["params"]}
-    assert params == {"card_id", "posted_by_me"}
+    assert params == {"card_id", "posted_by_me", "project", "swarm"}
 
 
 async def test_convert_writes_only_when_dry_run_is_explicitly_false(monkeypatch):

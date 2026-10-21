@@ -1061,7 +1061,7 @@ async def _board_proxy(request: Request, raw: bytes, up: str) -> Response:
             request.app.state.gate, bearer_of(auths[0]))
         if drop_auth is None:
             return _not_found()
-    body = await _capped_body(request, board.MAX_BODY)
+    body = await _capped_body(request, board.body_cap(request.method, request.url.path))
     if body is None:
         return Response("request body too large", status_code=413)
     client: httpx.AsyncClient = request.app.state.board_client

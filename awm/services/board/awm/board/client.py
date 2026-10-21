@@ -178,6 +178,34 @@ class BoardClient:
         params = {k: int(v) for k, v in (("since", since), ("limit", limit)) if v}
         return await self._send("GET", f"/cards/{card_id}/events", params=params)
 
+    # -- files ---------------------------------------------------------------
+
+    async def attach(self, card_id: str, name: str, data: bytes, sha256: str, *,
+                     agent: str | None = None, node: str | None = None) -> dict:
+        params = {"name": name, "sha256": sha256,
+                  **{k: v for k, v in (("agent", agent), ("node", node)) if v}}
+        return await self._send("POST", f"/cards/{card_id}/files", params=params, content=data,
+                                headers={"Content-Type": "application/octet-stream"},
+                                timeout=httpx.Timeout(self._timeout, write=120.0, read=120.0))
+
+    async def files(self, card_id: str) -> list[dict]:
+        return await self._send("GET", f"/cards/{card_id}/files")
+
+    async def fetch(self, card_id: str, file_id: str, sink: Any, *, max_bytes: int) -> int:
+        """Stream one file's bytes into ``sink.write``; refuse past ``max_bytes``. Returns the size."""
+        size = 0
+        async with self._client().stream("GET", f"/board/cards/{card_id}/files/{file_id}",
+                                         timeout=httpx.Timeout(self._timeout, read=120.0)) as response:
+            if not response.is_success:
+                await response.aread()
+                _raise_for(response)
+            async for chunk in response.aiter_bytes():
+                size += len(chunk)
+                if size > max_bytes:
+                    raise BoardError(413, f"the file is larger than {max_bytes} bytes")
+                sink.write(chunk)
+        return size
+
     # -- the stream ----------------------------------------------------------
 
     async def stream(self, last_event_id: int | None = None, *,

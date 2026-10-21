@@ -20,8 +20,10 @@ for. After that, or when the card has no session, it waits on the thread.
 Each card's thread cursor moves only once its message reached someone, so a
 catch-up after downtime routes what the stream missed.
 
-The jobs that watch a card, or every card an agent posted, are typed one line
-per event.
+The jobs that watch a card, every card an agent posted, a project or another
+swarm are typed one line per event. A node that is not the door runs the
+subscriber with ``intake=False``: it only types those lines, so a session on
+any node with a board token hears its cards' events.
 
 The stream cursor is saved only after the event's card write has committed.
 A failure part way through leaves the cursor behind, and the restart replays
@@ -79,7 +81,8 @@ class Subscriber:
                  catchup_s: float = 300.0,
                  message_backlog_s: float = 3 * 86400.0,
                  send: Callable[[str, str], None] = _send_line,
-                 clock: Callable[[], float] = time.time) -> None:
+                 clock: Callable[[], float] = time.time,
+                 intake: bool = True) -> None:
         self.queue = queue
         self.db = Offloaded(queue)
         self.client = client
@@ -90,6 +93,7 @@ class Subscriber:
         self._backlog_s = message_backlog_s
         self._send = send
         self._clock = clock
+        self.intake = intake
         self._missed: set[str] = set()
         self._lock = asyncio.Lock()
         self._progress = False
@@ -156,6 +160,10 @@ class Subscriber:
         seq = int(message.get("seq") or 0)
         if seq <= await self.db.thread_seq(card["id"]):
             return
+        if not self.intake:
+            await self.db.set_thread_seq(card["id"], seq)
+            await self._tell_watchers(MESSAGE, card)
+            return
         if swarm_of(message.get("sender")) == self.swarm or await self._route(card, message):
             await self.db.set_thread_seq(card["id"], seq)
             await self._tell_watchers(MESSAGE, card, skip=await self._assignee(card["id"]))
@@ -197,8 +205,12 @@ class Subscriber:
         line = event_line(type_, card)
         if line is None:
             return
-        poster = card.get("agent") if swarm_of(card.get("sender")) == self.swarm else None
-        for job in await self.db.watchers_of(card["id"], poster):
+        ours = swarm_of(card.get("sender")) == self.swarm
+        # A poster is not told of its own post.
+        poster = card.get("agent") if ours and type_ != POSTED else None
+        other = card.get("recipient") if ours else swarm_of(card.get("sender"))
+        for job in await self.db.watchers_of(card["id"], poster, project=card.get("project"),
+                                             swarm=other if other != OPEN else None):
             if job != skip:
                 await self._tell(job, line)
 
@@ -208,13 +220,19 @@ class Subscriber:
         if type_ == MESSAGE:
             await self._on_message(card)
             return
+        if not self.intake:
+            if self._mine(card) and not (type_ == POSTED and card.get("reply_to")):
+                await self._tell_watchers(type_, card)
+            return
         if not self._mine(card):
             if await self.db.has(card["id"]):
                 await self._left(card)
             return
-        await self._tell_watchers(type_, card)
         if card.get("reply_to"):
+            if type_ != POSTED:
+                await self._tell_watchers(type_, card)
             return                      # its thread message on the root carries it
+        await self._tell_watchers(type_, card)
         state = card_state(card)
         if state == "proposed" and type_ in (POSTED, MOVED):
             await self._intake(card, reopen=type_ == MOVED)
@@ -244,7 +262,13 @@ class Subscriber:
     # -- catch-up ------------------------------------------------------------
 
     async def catch_up(self) -> int:
-        """Bring the queue in line with the board. Returns the number of cards that failed."""
+        """Bring the queue in line with the board. Returns the number of cards that failed.
+
+        A watch-only subscriber has no queue to mend: the stream's replay from
+        its cursor is its catch-up.
+        """
+        if not self.intake:
+            return 0
         async with self._lock:
             return await self._catch_up()
 
@@ -407,6 +431,9 @@ class Subscriber:
 
     async def run(self) -> None:
         """Subscribe forever. Never returns, never raises."""
+        if not self.intake:
+            await self._stream_loop()
+            return
         periodic = asyncio.create_task(self._periodic(), name="reporting-catchup")
         try:
             await self._stream_loop()

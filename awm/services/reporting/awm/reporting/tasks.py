@@ -683,14 +683,15 @@ class Tasks:
             targets.append(await self._card_id(str(args["card_id"])))
         if args.get("posted_by_me") is True:
             targets.append(f"posted:{self._posting_name(who)}")
+        targets += self._named_targets(args)
         if not targets:
-            raise ValueError("pass card_id or posted_by_me=true")
+            raise ValueError("pass card_id, posted_by_me=true, project or swarm")
         for target in targets:
             await self.qdb.watch(job, target)
         out = {"ok": True, "watching": await self.qdb.watched_by(job)}
-        if config.refusal() is not None:
-            out["warning"] = ("this node does not run the front door, so card events reach this "
-                              "session only if the front door runs here")
+        if isinstance(config.board_target(), str):
+            out["warning"] = ("this node has no board token, so card events reach this "
+                              "session only once AWM_BOARD_URL and AWM_BOARD_TOKEN are set")
         return out
 
     async def board_unwatch(self, who: Who, args: dict) -> dict:
@@ -700,9 +701,21 @@ class Tasks:
             targets.append(await self._card_id(str(args["card_id"])))
         if args.get("posted_by_me") is True:
             targets.append(f"posted:{self._posting_name(who)}")
+        targets += self._named_targets(args)
         for target in targets or [None]:
             await self.qdb.unwatch(job, target)
         return {"ok": True, "watching": await self.qdb.watched_by(job)}
+
+    @staticmethod
+    def _named_targets(args: dict) -> list[str]:
+        out = []
+        for kind in ("project", "swarm"):
+            value = str(args.get(kind) or "").strip()
+            if value:
+                if not value.isprintable() or len(value) > 100 or ":" in value:
+                    raise ValueError(f"{kind} must be a short name")
+                out.append(f"{kind}:{value}")
+        return out
 
     @staticmethod
     def _watcher_job(who: Who) -> str:

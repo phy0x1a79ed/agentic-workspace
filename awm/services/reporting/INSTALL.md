@@ -27,6 +27,10 @@ watched events into this node's sessions, and it consumes the `/reject` and
 `/new-agent` Discord commands. An agent claims a card with `task_claim` and
 completes it on the board. The front door never claims or completes a card.
 
+**The watch relay** runs on every other fleet node that has a board token. It
+follows the same stream watch-only and types `board_watch` lines into this
+node's sessions. It queues no card and sends no DM.
+
 ## When it runs
 
 The service is installed on every node. A station (`AWM_NODE_ROLE=station`)
