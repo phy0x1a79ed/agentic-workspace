@@ -92,6 +92,17 @@ async def test_a_paper_strong_in_two_zones_beats_one_strong_in_one(layer, server
     assert [h["id"] for h in got["related"]][0] == "doi:10.1/at"
 
 
+async def test_a_library_paper_outranks_an_equal_paper_outside_the_library(layer, server):
+    server.entries = [entry("doi:10.1/at", "abstract", 0.9), entry("doi:10.1/cas", "abstract", 0.8),
+                      entry("doi:10.1/old", "abstract", 0.7)]
+    assert [h["id"] for h in (await query(limit=3))["related"]] == ["doi:10.1/at", "doi:10.1/cas", "doi:10.1/old"]
+    conn = layer._delta()
+    conn.execute("INSERT INTO library(zotero_key, paper_id, version) VALUES ('u/K1', 'doi:10.1/old', 1)")
+    conn.commit()
+    conn.close()
+    assert [h["id"] for h in (await query(limit=3))["related"]][0] == "doi:10.1/old"
+
+
 async def test_a_hit_quotes_the_passage_its_entry_overlaps(layer, server):
     server.entries = [entry("doi:10.1/at", "body", 0.9, 1020, 1060),
                       entry("doi:10.1/at", "abstract", 0.8, 0, 28)]

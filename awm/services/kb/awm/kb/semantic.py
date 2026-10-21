@@ -90,7 +90,8 @@ def paper_hits(layer: fastlayer.FastLayer, entries: list[dict[str, Any]], keywor
     """The `related` section: the keyword leg and every zone's papers merged, each paper quoted.
 
     A paper the keyword leg found keeps its quotes beside the meaning matches' ones. ``skip`` holds the papers the
-    `exact` section already shows.
+    `exact` section already shows. A paper in the Zotero library ranks as if it were found twice, so the user's own
+    papers are not lost among the corpus's.
     """
     by_zone = zone_lists(entries, max(limit, ZONE_KEEP))
     by_paper: dict[str, list[dict[str, Any]]] = {}
@@ -98,7 +99,12 @@ def paper_hits(layer: fastlayer.FastLayer, entries: list[dict[str, Any]], keywor
         if e["source"] == "paper":
             by_paper.setdefault(e["doc"], []).append(e)
     keyword_by_id = {h["id"]: h for h in keyword}
-    ranked = [(p, s) for p, s in merge([*by_zone.values(), [h["id"] for h in keyword]]) if p not in skip]
+    ranked = merge([*by_zone.values(), [h["id"] for h in keyword]])
+    mine = layer.library()
+    if mine:
+        order = [p for p, _ in ranked]
+        ranked = merge([order, [p for p in order if p in mine]])
+    ranked = [(p, s) for p, s in ranked if p not in skip]
     conns = [c for c in (fastlayer._open_ro(p) for p in layer._stores()) if c is not None]
     try:
         rows: dict[str, sqlite3.Row] = {}

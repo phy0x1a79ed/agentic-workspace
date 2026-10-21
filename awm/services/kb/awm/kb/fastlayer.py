@@ -336,6 +336,18 @@ class FastLayer:
             stores.append(self.delta_path)
         return stores
 
+    def library(self) -> set[str]:
+        """The paper ids of the Zotero library's items."""
+        conn = _open_ro(self.delta_path)
+        if conn is None:
+            return set()
+        try:
+            return {r[0] for r in conn.execute("SELECT paper_id FROM library")}
+        except sqlite3.OperationalError:
+            return set()
+        finally:
+            conn.close()
+
     def search(self, query: str, filters: Filters, limit: int, per_hit: int) -> dict[str, list[dict[str, Any]]]:
         """``exact``: papers holding the query literally, then papers holding every one of its words.
         ``related``: the other papers holding its rarest words. Each hit quotes its passages.
