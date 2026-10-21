@@ -202,6 +202,22 @@ def compose_files(row: dict) -> list[Path]:
     return [COMPOSE_FILE, override] if override.exists() else [COMPOSE_FILE]
 
 
+def _compose(row: dict, *args: str,
+             timeout: float | None = None) -> subprocess.CompletedProcess:
+    files = [x for f in compose_files(row) for x in ("-f", str(f))]
+    cmd = ["docker", "compose", "-p", row.get("compose_project") or PROJECT, *files, *args]
+    proc = subprocess.run(
+        cmd, capture_output=True, text=True, timeout=timeout,
+        env={**os.environ, **compose_env(row)},
+    )
+    if proc.returncode != 0:
+        raise ApplianceError(
+            f"`{' '.join(cmd)}` failed (exit {proc.returncode}): "
+            f"{proc.stderr.strip() or proc.stdout.strip()}"
+        )
+    return proc
+
+
 def stage_save(row: dict, save: str) -> str:
     """Put ``save`` where a lab's supervisor boots from; return the save's name.
 
