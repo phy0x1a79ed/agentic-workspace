@@ -121,6 +121,11 @@ async def test_a_document_holding_some_of_the_words_joins_the_meaning_matches(lo
     assert kb["brute"] == []
 
 
+async def test_a_word_from_the_documents_scope_counts_beside_its_passages_words(loaded, kb):
+    result = await loaded.query(parse({"query": "yard roof", "sources": ["journals"]}))
+    assert [(h["id"], h["match"]) for h in flat(result["exact"])] == [("j2", "keyword")]
+
+
 @pytest.mark.parametrize("failure", [GatewayCallError(503, '{"detail":"encoder is loading"}'), KeyError("x")])
 async def test_when_kb_cannot_answer_the_archive_ranks_by_its_own_embeddings(loaded, kb, gateway, failure):
     if isinstance(failure, KeyError):

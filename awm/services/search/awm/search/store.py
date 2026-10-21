@@ -4,7 +4,9 @@ Every archive document is one row in ``documents`` keyed ``source:id``. Two FTS5
 indexes serve the exact section. ``documents_exact`` holds trigrams of whole
 documents and finds any literal of three characters or more, even one that
 crosses a passage boundary. ``passages_words`` holds porter-stemmed words of
-passages and ranks keyword matches by BM25. Both are external-content tables
+passages and ranks keyword matches by BM25. Each passage is indexed with its
+document's title, project, scope and kind beside its own words, because a query
+often names the project or the subject while the passage names neither. Both are external-content tables
 kept in step by triggers on an explicit integer key, which no VACUUM renumbers.
 
 Each document is also one entry in the retrieval engine under the single source
@@ -84,16 +86,18 @@ CREATE TABLE IF NOT EXISTS passages (
     start    INTEGER NOT NULL,
     stop     INTEGER NOT NULL,
     section  TEXT NOT NULL DEFAULT '',
+    context  TEXT NOT NULL DEFAULT '',  -- the document's title, project, scope and kind
     text     TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_passages_key ON passages(key, field, start);
 CREATE VIRTUAL TABLE IF NOT EXISTS passages_words USING fts5(
-    text, content='passages', content_rowid='id', tokenize='porter unicode61');
+    context, text, content='passages', content_rowid='id', tokenize='porter unicode61');
 CREATE TRIGGER IF NOT EXISTS passages_words_ai AFTER INSERT ON passages BEGIN
-    INSERT INTO passages_words(rowid, text) VALUES (new.id, new.text);
+    INSERT INTO passages_words(rowid, context, text) VALUES (new.id, new.context, new.text);
 END;
 CREATE TRIGGER IF NOT EXISTS passages_words_ad AFTER DELETE ON passages BEGIN
-    INSERT INTO passages_words(passages_words, rowid, text) VALUES ('delete', old.id, old.text);
+    INSERT INTO passages_words(passages_words, rowid, context, text)
+        VALUES ('delete', old.id, old.context, old.text);
 END;
 """
 
@@ -284,12 +288,17 @@ def clean(source: str, raw: dict[str, Any]) -> dict[str, Any] | None:
             "url": str(raw.get("url") or ""), "tags": tag_field(raw.get("tags"))}
 
 
-def _cut(conn: sqlite3.Connection, key: str, title: str, text: str) -> None:
+_CUT_FIELDS = ("title", "text", "project", "scope", "kind")
+
+
+def _cut(conn: sqlite3.Connection, doc: Any) -> None:
+    key, title, text = doc["key"], doc["title"], doc["text"]
+    context = " ".join(doc[f] for f in ("title", "project", "scope", "kind") if doc[f])
     conn.execute("DELETE FROM passages WHERE key=?", (key,))
-    rows = [(key, "title", 0, len(title), "", title)] if title.strip() else []
-    rows += [(key, "text", p.start, p.end, p.section, text[p.start:p.end]) for p in cutter.split(text)]
-    conn.executemany("INSERT INTO passages (key, field, start, stop, section, text) VALUES (?,?,?,?,?,?)",
-                     rows)
+    rows = [(key, "title", 0, len(title), "", context, title)] if title.strip() else []
+    rows += [(key, "text", p.start, p.end, p.section, context, text[p.start:p.end]) for p in cutter.split(text)]
+    conn.executemany("INSERT INTO passages (key, field, start, stop, section, context, text)"
+                     " VALUES (?,?,?,?,?,?,?)", rows)
 
 
 def put_documents(conn: sqlite3.Connection, rows: Iterable[dict[str, Any]]) -> int:
@@ -311,18 +320,18 @@ def put_documents(conn: sqlite3.Connection, rows: Iterable[dict[str, Any]]) -> i
         " url=excluded.url, tags=excluded.tags", changed)
     for r in changed:
         old = held.get(r["key"])
-        if old is None or (old["title"], old["text"]) != (r["title"], r["text"]):
-            _cut(conn, r["key"], r["title"], r["text"])
+        if old is None or any(old[f] != r[f] for f in _CUT_FIELDS):
+            _cut(conn, r)
     conn.commit()
     return len(changed)
 
 
 def cut_missing(conn: sqlite3.Connection) -> int:
     """Cut passages for every stored document that has none, as after the move to schema 3."""
-    rows = conn.execute("SELECT key, title, text FROM documents"
+    rows = conn.execute(f"SELECT key, {', '.join(_CUT_FIELDS)} FROM documents"
                         " WHERE key NOT IN (SELECT DISTINCT key FROM passages)").fetchall()
     for r in rows:
-        _cut(conn, r["key"], r["title"], r["text"])
+        _cut(conn, r)
     conn.commit()
     return len(rows)
 

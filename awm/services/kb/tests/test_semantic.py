@@ -1,5 +1,7 @@
 """`kb query`'s meaning and graph legs, and the graph, schema and related verbs, with the kb server mocked."""
 
+import sqlite3
+
 import httpx
 import pytest
 
@@ -155,6 +157,18 @@ async def test_without_the_server_encoder_or_index_it_answers_keywords_and_says_
     if isinstance(error, client.KbError):
         assert error.detail in got["degraded"]["semantic"]
     assert server.graph_bodies == []
+
+
+async def test_a_neighbour_with_no_abstract_quotes_its_title(layer, server):
+    db = sqlite3.connect(layer.base_path)
+    db.execute("DELETE FROM passage WHERE paper_id = 'doi:10.1/old' AND zone = 'abstract'")
+    db.commit()
+    db.close()
+    server.entries = [entry("doi:10.1/at", "abstract", 0.9)]
+    server.graph_rows = {"CITES": [["doi:10.1/old", "An ASSEMBLY INDEX survey from long ago", 1999, 0.01]]}
+    graph = (await query(limit=5))["graph"]
+    title = "An ASSEMBLY INDEX survey from long ago"
+    assert graph[0]["passages"] == [{"field": "title", "start": 0, "end": len(title), "text": title}]
 
 
 async def test_a_project_filter_never_reaches_the_server(layer, server):

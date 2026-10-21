@@ -131,7 +131,8 @@ def paper_hits(layer: fastlayer.FastLayer, entries: list[dict[str, Any]], keywor
 
 def describe(layer: fastlayer.FastLayer, found: dict[str, tuple[str, float, str]], filters: fastlayer.Filters,
              limit: int, per_hit: int) -> list[dict[str, Any]]:
-    """Graph neighbours as hits: ``found`` maps a paper id to (via, rank, title); the abstract is the quote."""
+    """Graph neighbours as hits: ``found`` maps a paper id to (via, rank, title); the abstract is the quote, or
+    the title for a paper known only from a citation."""
     conns = [c for c in (fastlayer._open_ro(p) for p in layer._stores()) if c is not None]
     try:
         rows: dict[str, sqlite3.Row] = {}
@@ -145,6 +146,8 @@ def describe(layer: fastlayer.FastLayer, found: dict[str, tuple[str, float, str]
             quote = next((fastlayer._quote(p) for c in conns for p in c.execute(
                 "SELECT * FROM passage WHERE paper_id = ? AND zone = 'abstract' ORDER BY ord LIMIT 1", (paper,))),
                 None)
+            if quote is None and row["title"]:
+                quote = {"field": "title", "start": 0, "end": len(row["title"]), "text": row["title"]}
             out.append(fastlayer._hit(row, via, rank, [quote] if quote and per_hit else []))
             if len(out) == limit:
                 break
