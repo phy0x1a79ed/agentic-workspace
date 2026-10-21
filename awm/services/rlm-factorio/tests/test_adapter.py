@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from awm.rlm_factorio import appliance, hub_adapter as ha, throttle
+from awm.rlm_factorio import appliance, hub_adapter as ha
 
 
 class StubBroker:
@@ -18,7 +18,7 @@ class StubBroker:
 def stub(monkeypatch):
     b = StubBroker()
     monkeypatch.setattr(ha.broker, "for_row", lambda row: b)
-    monkeypatch.setattr(ha, "THROTTLE", throttle.Throttle())
+    monkeypatch.setattr(ha, "_THROTTLES", {})
     return b
 
 
@@ -37,11 +37,18 @@ def test_iface_surfaces_lua_errors(stub):
 
 
 def test_budgeted_wraps_but_keeps_result(stub):
-    assert ha._budgeted("k", {"a": 1}, 3.0, 15) == {"a": 1}
-    env = ha._budgeted("k", {"a": 1}, 20.0, 15)
+    row = {"container_name": "c", "rules": "realm"}
+    assert ha._budgeted(row, "k", {"a": 1}, 3.0, 15) == {"a": 1}
+    env = ha._budgeted(row, "k", {"a": 1}, 20.0, 15)
     assert env["ok"] is False and env["ran"] is True and env["result"] == {"a": 1}
     assert env["error"].startswith("OVER_BUDGET: THIS COMMAND RAN; DO NOT RETRY")
-    assert ha.THROTTLE.snapshot()["keys"]["k"]["over_budget"] == 1
+    assert ha._throttle(row).snapshot()["keys"]["k"]["over_budget"] == 1
+
+
+def test_sandbox_rules_count_an_overrun_and_refuse_nothing(stub):
+    row = {"container_name": "lab", "rules": "sandbox"}
+    assert ha._budgeted(row, "k", {"a": 1}, 20.0, 15) == {"a": 1}
+    assert ha._throttle(row).snapshot()["keys"]["k"]["over_budget"] == 1
 
 
 def test_cap_output_marks_truncation():
@@ -62,6 +69,14 @@ def test_checked_validates_before_handler():
 def test_checked_threads_identity_when_asked():
     run = ha._checked("join", lambda args, as_: as_)
     assert run({"session_id": "s"}, "agent-1") == "agent-1"
+
+
+def test_checked_binds_the_caller_for_seatless_keys():
+    row = {"container_name": "c"}
+    run = ha._checked("status", lambda args: ha._key(None, row))
+    assert run({}, "agent-1") == "c/agent-1"
+    assert run({}) == "c/anon"
+    assert ha._CALLER.get() is None
 
 
 def test_every_handler_is_checked_and_manifested():
@@ -87,7 +102,7 @@ def scripted(monkeypatch):
     def install(outputs):
         b = ScriptedBroker(outputs)
         monkeypatch.setattr(ha.broker, "for_row", lambda row: b)
-        monkeypatch.setattr(ha, "THROTTLE", throttle.Throttle())
+        monkeypatch.setattr(ha, "_THROTTLES", {})
         ha._forget_mod_state("s1")
         return b
     return install

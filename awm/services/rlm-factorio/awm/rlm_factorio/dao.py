@@ -14,6 +14,12 @@ exactly what ``acquire`` brought up and a respawn can re-adopt it), the
 ``current_world`` mirrors the
 supervisor's notion of which named save the live ``_active`` was derived from.
 
+A row is one world of a ``kind``: ``headless`` (the game), ``lab`` (a throwaway
+experiment server) or ``rendered`` (the game with its port published so a human
+can join). ``rules`` is ``realm`` or ``sandbox`` and decides which verbs are
+allowed. ``name`` is the world's identity across acquires. ``mods`` is the JSON
+list of extra mod directories the host loaded, which every seat must load too.
+
 ``rlm_seats`` is one row per seat: a real Factorio client container joined to a
 session's world as a real player. A seat binds three things that only this table
 witnesses — an agent (``owner``), a container (``container_name``), and an
@@ -26,6 +32,7 @@ made by lookup rather than by guessing which new player appeared.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import uuid
 from datetime import datetime, timezone
@@ -34,7 +41,7 @@ from awm.persistence.dao import BaseDAO
 from awm.persistence.databases import init_service_db
 
 SERVICE = "rlm-factorio"
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 # status: acquiring -> ready -> (paused) -> stopped ; error on any failed bring-up.
 SCHEMA_SQL = """\
@@ -49,7 +56,11 @@ CREATE TABLE IF NOT EXISTS rlm_sessions (
     rcon_port       INTEGER NOT NULL DEFAULT 0,
     current_world   TEXT,
     created_at      TEXT NOT NULL DEFAULT '',
-    updated_at      TEXT NOT NULL DEFAULT ''
+    updated_at      TEXT NOT NULL DEFAULT '',
+    kind            TEXT NOT NULL DEFAULT 'headless',
+    rules           TEXT NOT NULL DEFAULT 'realm',
+    name            TEXT NOT NULL DEFAULT 'realm',
+    mods            TEXT NOT NULL DEFAULT '[]'
 );
 CREATE TABLE IF NOT EXISTS rlm_seats (
     seat_id         TEXT NOT NULL PRIMARY KEY,
@@ -61,7 +72,8 @@ CREATE TABLE IF NOT EXISTS rlm_seats (
     owner           TEXT NOT NULL DEFAULT '',
     created_at      TEXT NOT NULL DEFAULT '',
     updated_at      TEXT NOT NULL DEFAULT '',
-    last_seen_at    TEXT NOT NULL DEFAULT ''
+    last_seen_at    TEXT NOT NULL DEFAULT '',
+    role            TEXT NOT NULL DEFAULT 'player'
 );
 CREATE INDEX IF NOT EXISTS idx_rlm_seats_session ON rlm_seats (session_id);
 """
@@ -83,12 +95,21 @@ CREATE TABLE IF NOT EXISTS rlm_seats (
 );
 CREATE INDEX IF NOT EXISTS idx_rlm_seats_session ON rlm_seats (session_id);
 """,
+    # v2 rows were all the one realm: headless, realm rules, player seats.
+    (2, 3): """\
+ALTER TABLE rlm_sessions ADD COLUMN kind TEXT NOT NULL DEFAULT 'headless';
+ALTER TABLE rlm_sessions ADD COLUMN rules TEXT NOT NULL DEFAULT 'realm';
+ALTER TABLE rlm_sessions ADD COLUMN name TEXT NOT NULL DEFAULT 'realm';
+ALTER TABLE rlm_sessions ADD COLUMN mods TEXT NOT NULL DEFAULT '[]';
+ALTER TABLE rlm_seats ADD COLUMN role TEXT NOT NULL DEFAULT 'player';
+""",
 }
 
 # Column list shared by every read so the row shape is stable across methods.
 _COLS = (
     "session_id, game, status, container_name, compose_project, "
-    "control_port, game_port, rcon_port, current_world, created_at, updated_at"
+    "control_port, game_port, rcon_port, current_world, created_at, updated_at, "
+    "kind, rules, name, mods"
 )
 
 _initialized = False
@@ -111,11 +132,12 @@ def _now() -> str:
 _PATCHABLE = {
     "status", "container_name", "compose_project",
     "control_port", "game_port", "rcon_port", "current_world",
+    "kind", "rules", "name", "mods",
 }
 
 _SEAT_COLS = (
     "seat_id, session_id, player_name, player_index, container_name, "
-    "status, owner, created_at, updated_at, last_seen_at"
+    "status, owner, created_at, updated_at, last_seen_at, role"
 )
 
 _SEAT_PATCHABLE = {"status", "player_index", "container_name", "owner"}
@@ -136,6 +158,10 @@ class FactorioDAO(BaseDAO):
         control_port: int = 0,
         game_port: int = 0,
         rcon_port: int = 0,
+        kind: str = "headless",
+        rules: str = "realm",
+        name: str = "realm",
+        mods: list[str] | None = None,
     ) -> dict:
         """Mint a new session row (status 'acquiring') and return it."""
         session_id = f"rlm-factorio-{uuid.uuid4().hex[:12]}"
@@ -144,13 +170,15 @@ class FactorioDAO(BaseDAO):
             """\
             INSERT INTO rlm_sessions (
                 session_id, game, status, container_name, compose_project,
-                control_port, game_port, rcon_port, created_at, updated_at
-            ) VALUES (?, ?, 'acquiring', ?, ?, ?, ?, ?, ?, ?)
+                control_port, game_port, rcon_port, created_at, updated_at,
+                kind, rules, name, mods
+            ) VALUES (?, ?, 'acquiring', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 session_id, str(game or "").strip(), container_name,
                 compose_project, int(control_port), int(game_port),
-                int(rcon_port), now, now,
+                int(rcon_port), now, now, kind, rules, name,
+                json.dumps(mods or []),
             ),
         )
         return self.get_session(session_id)
@@ -208,6 +236,7 @@ class FactorioDAO(BaseDAO):
         player_name: str = "",
         container_name: str = "",
         owner: str = "",
+        role: str = "player",
     ) -> dict:
         """Mint a seat row (status 'joining') and return it.
 
@@ -224,11 +253,11 @@ class FactorioDAO(BaseDAO):
             """\
             INSERT INTO rlm_seats (
                 seat_id, session_id, player_name, player_index, container_name,
-                status, owner, created_at, updated_at, last_seen_at
-            ) VALUES (?, ?, ?, 0, ?, 'joining', ?, ?, ?, ?)
+                status, owner, created_at, updated_at, last_seen_at, role
+            ) VALUES (?, ?, ?, 0, ?, 'joining', ?, ?, ?, ?, ?)
             """,
             (seat_id, str(session_id).strip(), player_name, container_name,
-             owner, now, now, now),
+             owner, now, now, now, role),
         )
         return self.get_seat(seat_id)
 
