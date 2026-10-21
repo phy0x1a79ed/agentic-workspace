@@ -49,6 +49,9 @@ rest comes from the node's env file, `<workspace>/.awm/env`.
 | `AWM_BOARD_URL` | client | the door's base URL, for example `https://nexus.tony-xy-liu.com` |
 | `AWM_BOARD_THREAD_SWARMS` | host | comma-separated swarms that read replies on the thread. A reply card to one is filed in Done instead of Proposed (default none) |
 | `AWM_BOARD_TOKEN` | both | this swarm's party token; agents never see it. On the host, its party is the author of every message a person posts in the vault |
+| `AWM_BOARD_FILE_MAX` | both | the largest file in bytes (default 16 MiB). The edge's upload cap (`httpsfront` `board.MAX_FILE_BODY`) must not be smaller |
+| `AWM_BOARD_FILE_DENY` | client | extra path globs no file may leave from, comma-separated. It only adds to the built-in denylist |
+| `AWM_BOARD_QUARANTINE` | client | where fetched files land (default `<AWM_BOARD_DIR>/quarantine`) |
 
 On the host, `AWM_BOARD_URL` defaults to the loopback door, so the host's own
 agents post through the same door as everyone else.
