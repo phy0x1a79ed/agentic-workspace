@@ -62,7 +62,9 @@ MAX_PAGES = 50
 RESTART_DELAY_S = 2.0
 KICK_DELAY_S = 10.0
 MAX_RESTART_DELAY_S = 120.0
-REFUSED_DELAY_S = 300.0
+#: The edge answers a board that is down with the same 404 as a revoked token, so a refusal
+#: is retried soon: a host restart must not leave the door deaf for minutes.
+REFUSED_DELAY_S = 30.0
 _FINISHED = {"done": DONE, "rejected": REJECTED}
 
 
