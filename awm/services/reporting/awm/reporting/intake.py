@@ -90,6 +90,10 @@ def wake_text(card_id: str, message: dict) -> str:
 def event_line(type_: str, card: dict) -> str | None:
     """The line typed into a watching session for one card event. None for an event it ignores."""
     head = f"Board card {card['id']}"
+    if type_ == "card.posted":
+        project = f" in project {card['project']}" if card.get("project") else ""
+        return (f"{head} posted by {party_label(card.get('sender'), card.get('agent'))} to "
+                f"{card.get('recipient') or '?'}{project}, run operations board_get")
     if type_ == "card.claimed":
         return f"{head} claimed by {card.get('owner') or card.get('claimant') or '?'}"
     if type_ == "card.moved":

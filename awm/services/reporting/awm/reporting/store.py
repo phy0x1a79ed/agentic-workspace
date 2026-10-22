@@ -77,6 +77,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     fed_state  TEXT,
     agent      TEXT,
     agent_link TEXT,
+    tags       TEXT,
     started    REAL NOT NULL,
     updated    REAL NOT NULL,
     closed     REAL,
@@ -107,12 +108,14 @@ CREATE TABLE IF NOT EXISTS todos (
 );
 """
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 _FED_COLUMNS = "    card_id    TEXT,\n    fed_state  TEXT,\n"
 _AGENT_COLUMNS = "    agent      TEXT,\n    agent_link TEXT,\n"
+_TAGS_COLUMN = "    tags       TEXT,\n"
 _TASKS_SCHEMA_V2 = (_TASKS_SCHEMA.replace("    owned      INTEGER NOT NULL DEFAULT 0,\n", "")
-                    .replace(_FED_COLUMNS, "").replace(_AGENT_COLUMNS, ""))
+                    .replace(_FED_COLUMNS, "").replace(_AGENT_COLUMNS, "")
+                    .replace(_TAGS_COLUMN, ""))
 
 _OWNED_MIGRATION = """
 ALTER TABLE tasks ADD COLUMN owned INTEGER NOT NULL DEFAULT 0;
@@ -158,6 +161,9 @@ ALTER TABLE tasks ADD COLUMN agent TEXT;
 ALTER TABLE tasks ADD COLUMN agent_link TEXT;
 """
 
+#: The scope's effective tags, comma-joined, as its card's Tags chip shows them.
+_TAGS_MIGRATION = "ALTER TABLE tasks ADD COLUMN tags TEXT;"
+
 _CURSOR = "cursor"
 
 
@@ -172,7 +178,8 @@ class Db:
                                          (3, 4): _SPEC_HASH_MIGRATION,
                                          (4, 5): _THREADS_MIGRATION,
                                          (5, 6): _INTAKE_MIGRATION,
-                                         (6, 7): _AGENT_MIGRATION})
+                                         (6, 7): _AGENT_MIGRATION,
+                                         (7, 8): _TAGS_MIGRATION})
 
     def _conn(self) -> sqlite3.Connection:
         return databases.get_connection_at(self.path)
@@ -374,7 +381,12 @@ class Queue(Db):
     # -- watchers ------------------------------------------------------------
 
     def watch(self, job: str, target: str) -> bool:
-        """Record that ``job`` follows ``target``: a card id, or ``posted:<agent>``. True if new."""
+        """Record that ``job`` follows ``target``. True if new.
+
+        A target is a card id, ``posted:<agent>``, ``project:<name>`` or
+        ``swarm:<name>`` (cards sent by or to that other swarm). A project or
+        swarm target hears only what another swarm does.
+        """
         conn = self._conn()
         try:
             with conn:
@@ -403,9 +415,12 @@ class Queue(Db):
         finally:
             conn.close()
 
-    def watchers_of(self, card_id: str, posted_by: str | None = None) -> list[str]:
-        """The jobs following a card by id, or following every card ``posted_by`` posted."""
-        targets = [card_id] + ([f"posted:{posted_by}"] if posted_by else [])
+    def watchers_of(self, card_id: str, posted_by: str | None = None, *,
+                    project: str | None = None, swarm: str | None = None) -> list[str]:
+        """The jobs following a card by id, its poster, its project or the other swarm on it."""
+        targets = [card_id] + [f"{kind}:{value}" for kind, value in
+                               (("posted", posted_by), ("project", project), ("swarm", swarm))
+                               if value]
         marks = ",".join("?" for _ in targets)
         conn = self._conn()
         try:

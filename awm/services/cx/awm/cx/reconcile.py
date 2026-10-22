@@ -51,13 +51,22 @@ class Loop:
 
     # -- what the adapter calls -------------------------------------------
 
-    def enabled(self) -> str | None:
-        """Why this process must not run the loop, or None if it may."""
-        if not config.loop_enabled():
-            return "switched off (AWM_CX_LOOP=0)"
+    def held_back(self) -> str | None:
+        """Why this process must not run the loop at all, or None if it may."""
         if os.environ.get("AWM_SERVICE_OVERLAY"):
             return "running as an overlay; the base owns the pool"
         return None
+
+    def enabled(self) -> str | None:
+        """Why this process must not tend the warm pool, or None if it may.
+
+        Switching the pool off leaves the lineage bookkeeping running: a start
+        that outlives its launch is adopted only here, and without it cx refuses
+        to stop or resume that job.
+        """
+        if not config.loop_enabled():
+            return "switched off (AWM_CX_LOOP=0)"
+        return self.held_back()
 
     async def run(self) -> None:
         """Sleep, then work, forever. Never returns; never raises."""
@@ -77,7 +86,8 @@ class Loop:
 
     def status(self) -> dict[str, Any]:
         return {
-            "loop": self.enabled() or ("running" if self._running else "not started"),
+            "loop": self.held_back() or ("running" if self._running else "not started"),
+            "seeding_loop": self.enabled() or "on",
             "holds_lock": self._lock_fd is not None,
             "last_tick": (None if self._last_tick is None
                           else round(time.time() - self._last_tick, 1)),
@@ -86,27 +96,40 @@ class Loop:
     # -- one tick ----------------------------------------------------------
 
     async def tick(self) -> None:
-        if self.enabled() is not None or not self._take_lock():
+        if self.held_back() is not None or not self._take_lock():
             return
-        version = sessions.binary_version()
-        have = len(pool.warm(sessions.load(), version=version))
-        if have < config.want():
-            await self._seed()
-        # Under the pool lock so a claim in flight cannot have its session
-        # deleted out from under it between the move and the reply.
-        async with pool.LOCK:
-            done = await remove.apply()
+        if self.enabled() is None:
+            await self._tend_pool()
+        for step, message in (
+                (lifecycle.adopt_pending, "adopted %s for a start that outlived its launch"),
+                (lifecycle.prune_pins, "unpinned %s, whose job is gone"),
+                (lifecycle.prune_lineage, "dropped the lineage of %s, which was removed")):
+            try:
+                for job in step():
+                    log.info("cx: " + message, job)
+            except Exception:  # noqa: BLE001 — one step must not skip the others
+                log.exception("cx: %s failed", step.__name__)
+        self._last_tick = time.time()
+
+    async def _tend_pool(self) -> None:
+        try:
+            version = sessions.binary_version()
+            have = len(pool.warm(sessions.load(), version=version))
+            if have < config.want():
+                await self._seed()
+        except Exception:  # noqa: BLE001 — the bookkeeping below must still run
+            log.exception("cx: seeding failed")
+        try:
+            # Under the pool lock so a claim in flight cannot have its session
+            # deleted out from under it between the move and the reply.
+            async with pool.LOCK:
+                done = await remove.apply()
+        except Exception:  # noqa: BLE001
+            log.exception("cx: removal failed")
+            return
         for item in done:
             log.info("cx: %s %s (%s)", "removed" if item["removed"] else "kept",
                      item["session"], item["why"])
-        for job in lifecycle.adopt_pending():
-            log.info("cx: adopted %s for a start that outlived its launch", job)
-        for job in lifecycle.prune_pins():
-            log.info("cx: unpinned %s, whose job is gone", job)
-        for job in lifecycle.prune_lineage():
-            log.info("cx: dropped the lineage of %s, which was removed",
-                     job)
-        self._last_tick = time.time()
 
     async def _seed(self) -> None:
         try:

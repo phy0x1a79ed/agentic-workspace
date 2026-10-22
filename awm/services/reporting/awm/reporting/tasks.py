@@ -35,7 +35,7 @@ from awm.reporting.ledger import (ACTIVE, BLOCKED, CANCELLED, CLOSED, COLUMNS, D
 from awm.reporting.record import TITLE_CHARS, cut_at_word, plan_title, render_ledger, render_record
 from awm.reporting.sessions import GONE, STOPPED, CxUnavailable, Cx
 from awm.reporting.store import Offloaded, Queue
-from awm.reporting.swarmboard import BoardError, SwarmBoard
+from awm.reporting.swarmboard import TAGS_LABEL, BoardError, SwarmBoard
 
 log = logging.getLogger("awm.reporting.tasks")
 
@@ -48,6 +48,7 @@ _CARD_REF = re.compile(r"[0-9a-fA-F]{6,32}")
 JOURNAL_SERVICE = "journal"
 JOURNAL_FETCH = "fetch"
 JOURNAL_TOPIC = "posts"
+SCOPES_SERVICE = "scopes"
 #: What a session hears when a card opens for its work, from a plan or `task_track`.
 BOARD_NOTICE = (
     "Your work is now on Tony's Swarm board as the card \"{title}\", in {column}. "
@@ -100,6 +101,15 @@ def _touch_marker(marker) -> None:
     marker.touch()
 
 
+#: Ended-event details, rendered as the card's Ended line.
+NOT_RUNNING = "not running, resumable"
+STOPPED_DETAIL = "stopped"
+
+
+def _job_exists(job: str) -> bool:
+    return (roster.default_jobs_dir() / job).is_dir()
+
+
 def _job_state(job: str) -> dict:
     try:
         data = json.loads((roster.default_jobs_dir() / job / "state.json").read_text())
@@ -142,6 +152,7 @@ class Tasks:
     def __init__(self, ledger: Ledger, board: SwarmBoard, *, node: str | None = None,
                  resolve: Callable[[int], dict | None] = roster.session_by_pid,
                  job_state: Callable[[str], dict] = _job_state,
+                 job_exists: Callable[[str], bool] = _job_exists,
                  dm: Callable[[str], Awaitable[None]] = send_dm,
                  alive: Callable[[int, str], bool] = lambda pid, start: roster.proc_start(pid) == start,
                  fetch: Callable[..., Awaitable[Any]] = gatewayclient.call,
@@ -161,6 +172,7 @@ class Tasks:
         self.node = node or node_name()
         self._resolve = resolve
         self._job_state = job_state
+        self._job_exists = job_exists
         self._dm = dm
         self._alive = alive
         self._unseen: set[int] = set()
@@ -295,19 +307,24 @@ class Tasks:
 
     async def _record(self, task: dict) -> str:
         live, removed = await self.db.todos(task["id"])
-        return render_record(task, live, removed, await self.db.events(task["id"], "journal"))
+        ended = await self.db.events(task["id"], "ended")
+        return render_record(task, live, removed, await self.db.events(task["id"], "journal"),
+                             ended=ended[-1]["detail"] if ended else "")
 
     async def _write_card(self, task: dict, *, dry_run: bool = False) -> list[str]:
         """Put the record on the board: in an owned card's own body, else in the claimed card's Record child."""
         html = await self._record(task)
+        chips = {TAGS_LABEL: task["tags"]} if task.get("tags") is not None else {}
         if not task["owned"]:
             if not dry_run:
                 await self.board.write_record(task["note_id"], html)
+                if chips:
+                    await self.board.label(task["note_id"], chips)
             return ["rewrite Record child"]
         title = await self._title_of(task)
         acts = ["rewrite body"] + ([f"retitle to {title!r}"] if title != task["title"] else [])
         if not dry_run:
-            await self.board.write_card(task["note_id"], html, title)
+            await self.board.write_card(task["note_id"], html, title, chips)
             if title != task["title"]:
                 await self.db.update(task["id"], title=title)
         return acts
@@ -457,8 +474,8 @@ class Tasks:
     async def hook_session_clear(self, who: Who, args: dict) -> dict:
         """The conversation was cleared: file the open task under ``<job>/<old session id>``.
 
-        The next plan in this job then opens a card of its own. The old task
-        closes through the sweep, which no longer finds its key among the jobs.
+        The next plan in this job then opens a card of its own. The sweep, which
+        no longer finds the old task's key among the jobs, moves it to Pending review.
         """
         task = await self.db.find(self.node, who.key)
         if task is None or task["state"] not in OPEN:
@@ -666,14 +683,15 @@ class Tasks:
             targets.append(await self._card_id(str(args["card_id"])))
         if args.get("posted_by_me") is True:
             targets.append(f"posted:{self._posting_name(who)}")
+        targets += self._named_targets(args)
         if not targets:
-            raise ValueError("pass card_id or posted_by_me=true")
+            raise ValueError("pass card_id, posted_by_me=true, project or swarm")
         for target in targets:
             await self.qdb.watch(job, target)
         out = {"ok": True, "watching": await self.qdb.watched_by(job)}
-        if config.refusal() is not None:
-            out["warning"] = ("this node does not run the front door, so card events reach this "
-                              "session only if the front door runs here")
+        if isinstance(config.board_target(), str):
+            out["warning"] = ("this node has no board token, so card events reach this "
+                              "session only once AWM_BOARD_URL and AWM_BOARD_TOKEN are set")
         return out
 
     async def board_unwatch(self, who: Who, args: dict) -> dict:
@@ -683,9 +701,21 @@ class Tasks:
             targets.append(await self._card_id(str(args["card_id"])))
         if args.get("posted_by_me") is True:
             targets.append(f"posted:{self._posting_name(who)}")
+        targets += self._named_targets(args)
         for target in targets or [None]:
             await self.qdb.unwatch(job, target)
         return {"ok": True, "watching": await self.qdb.watched_by(job)}
+
+    @staticmethod
+    def _named_targets(args: dict) -> list[str]:
+        out = []
+        for kind in ("project", "swarm"):
+            value = str(args.get(kind) or "").strip()
+            if value:
+                if not value.isprintable() or len(value) > 100 or ":" in value:
+                    raise ValueError(f"{kind} must be a short name")
+                out.append(f"{kind}:{value}")
+        return out
 
     @staticmethod
     def _watcher_job(who: Who) -> str:
@@ -749,10 +779,10 @@ class Tasks:
     # -- the watcher ---------------------------------------------------------
 
     async def sweep(self, rows: list[dict]) -> None:
-        """One pass over this node's tasks: close the ended, follow Tony's board edits, retry the board.
+        """One pass over this node's tasks: flag the ended, follow Tony's board edits, retry the board.
 
         ``rows`` are the local ``reflection list_other`` rows. A background job with no row on
-        two passes in a row was removed, and counts as stopped.
+        two passes in a row has left the daemon's roster.
         """
         async with self.lock:
             jobs = {r.get("job"): r for r in rows}
@@ -766,6 +796,7 @@ class Tasks:
             for task in await self.db.open(self.node):
                 if task["kind"] == "bg":
                     await self._agent(task, jobs.get(task["key"]))
+            await self._tags()
             await self._finished_cards()
             await self._archive()
             await self._catch_up()
@@ -801,6 +832,45 @@ class Tasks:
             log.warning("reporting: task %s waits for the board: %s", task["id"], exc)
             await self.db.update(task["id"], agent=task.get("agent"), agent_link=task.get("agent_link"))
 
+    async def _tags(self) -> None:
+        """Record each open task's scope tags, for its card's Tags chip and the "By tag" searches.
+
+        Each project and scope is looked up once a sweep. A change rewrites the
+        card, never its column, as ``_agent`` does, and a failed write is tried
+        again on the next sweep.
+        """
+        found: dict[tuple[str, str], str | None] = {}
+        for task in await self.db.open(self.node):
+            if not (task["project"] and task["scope"] and task["note_id"]):
+                continue
+            pair = (task["project"], task["scope"])
+            if pair not in found:
+                found[pair] = await self._scope_tags(*pair)
+            if found[pair] is None or found[pair] == task.get("tags"):
+                continue
+            await self.db.update(task["id"], tags=found[pair])
+            try:
+                await self._write_card(await self.db.get(task["id"]))
+            except BoardError as exc:
+                log.warning("reporting: task %s waits for the board: %s", task["id"], exc)
+                await self.db.update(task["id"], tags=task.get("tags"))
+        in_use = {tag for tags in found.values() if tags for tag in tags.split(",")}
+        if in_use:
+            try:
+                await self.board.ensure_tag_searches(in_use)
+            except BoardError as exc:
+                log.warning("reporting: cannot make the By tag searches: %s", exc)
+
+    async def _scope_tags(self, project: str, scope: str) -> str | None:
+        """The scope's effective tags comma-joined, or None when the scopes service did not answer."""
+        try:
+            reply = await self._fetch(SCOPES_SERVICE, "scope_tag", {"project": project, "scope": scope})
+        except Exception as exc:  # noqa: BLE001 — the chip waits for the next sweep
+            log.info("reporting: no tags for %s/%s: %s", project, scope, exc)
+            return None
+        effective = reply.get("effective") if isinstance(reply, dict) else None
+        return ",".join(effective) if isinstance(effective, list) else None
+
     async def _workers(self, rows: list[dict]) -> None:
         """Open a card in Active for each running worker cx started with the brief.
 
@@ -816,25 +886,46 @@ class Tasks:
             if await self.db.find(self.node, job) is None:
                 await self._open(Who(job, "bg", None, "", row.get("cwd")), ACTIVE)
 
+    def _unlisted_state(self, job: str) -> str:
+        if self._job_exists(job) and self._job_state(job).get("state") != STOPPED:
+            return GONE
+        return STOPPED
+
     async def _ending(self, task: dict, row: dict | None) -> None:
+        """Flag a task whose session stopped running. Only a deliberate stop moves its card.
+
+        A background job missing from cx whose directory remains was dropped from
+        the daemon's roster (an idle retire, a daemon death) and can be resumed, so
+        its card keeps its column. A stopped job, or one whose directory is gone,
+        moves to Pending review. cx records a stop in the job's state record,
+        because the roster drops a stopped job too. The sweep never closes a
+        background task.
+        """
         if task["kind"] == "bg":
             if row is None:
                 self._missing[task["id"]] = self._missing.get(task["id"], 0) + 1
                 if self._missing[task["id"]] < 2:
                     return
             self._missing.pop(task["id"], None)
-            state = row.get("state") if row else None
-            if state == "gone":
+            state = row.get("state") if row else await asyncio.to_thread(self._unlisted_state, task["key"])
+            if state == GONE:
                 if not task["ended"]:
                     await self.db.update(task["id"], ended=1, dirty=1)
-                    await self.db.event(task["id"], "ended", "the session died without a stop")
+                    await self.db.event(task["id"], "ended", NOT_RUNNING)
                 return
-            if state not in (None, "stopped"):
+            if state != STOPPED:
                 if task["ended"]:
                     await self.db.update(task["id"], ended=0, dirty=1)
                     await self.db.event(task["id"], "resumed")
                 return
-        elif await asyncio.to_thread(self._alive, task["pid"], task["key"].split(":", 1)[1]):
+            if task["state"] != REVIEW:
+                # Unfinished work is not reported to a federation card's poster.
+                await self._set(task, REVIEW, "ended", STOPPED_DETAIL, ended=1, fed_state=None)
+            elif not task["ended"]:
+                await self.db.update(task["id"], ended=1, dirty=1)
+                await self.db.event(task["id"], "ended", STOPPED_DETAIL)
+            return
+        if await asyncio.to_thread(self._alive, task["pid"], task["key"].split(":", 1)[1]):
             return
         if task["state"] == REVIEW:
             # The work waits for Tony, who closes it by dragging the card to Done.

@@ -35,8 +35,9 @@ import aiohttp
 
 from awm.social.connectors.base import (
     Account, Attachment, Channel, Connector, Identity, InboundMessage,
-    OnMessage, file_bytes, react_by_message,
+    OnMessage, file_bytes, slack_reaction,
 )
+from awm.social.emoji import to_name
 
 log = logging.getLogger("awm.social.connectors.slack_bot")
 
@@ -386,11 +387,17 @@ class SlackBotConnector(Connector):
                           for f in r.get("files", [])]}
 
     async def react(
-        self, channel: str, message_id: str, emoji: str, *,
-        remove: bool = False, thread: str | None = None,
+        self, channel: str, message_id: str, emoji: str, *, remove: bool = False,
     ) -> dict:
-        return await react_by_message(self, channel, emoji,
-                                      remove=remove, thread=thread)
+        name = to_name(emoji)
+        error = ""
+        try:
+            await self._call("reactions.remove" if remove else "reactions.add",
+                             channel=channel, timestamp=message_id, name=name)
+        except SlackApiError as exc:
+            error = exc.error
+        return slack_reaction(self, channel, message_id, name,
+                              remove=remove, error=error)
 
     async def fetch(
         self, channel: str, *, limit: int = 50, before: str | None = None

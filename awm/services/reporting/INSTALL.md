@@ -27,6 +27,10 @@ watched events into this node's sessions, and it consumes the `/reject` and
 `/new-agent` Discord commands. An agent claims a card with `task_claim` and
 completes it on the board. The front door never claims or completes a card.
 
+**The watch relay** runs on every other fleet node that has a board token. It
+follows the same stream watch-only and types `board_watch` lines into this
+node's sessions. It queues no card and sends no DM.
+
 ## When it runs
 
 The service is installed on every node. A station (`AWM_NODE_ROLE=station`)
@@ -42,15 +46,21 @@ Discord command.
 
 Run `operations board_ensure` once, on any node, and again after a deploy that
 changes the board's shape. It makes "Swarm board" under the AWM note, with the
-columns Proposed, Planned, Active, Blocked, Pending review, Done and Rejected and
-a "Ledger" note. It gives Done and Rejected each an "Older" book, labelled
+columns Proposed, Planned, Active, Blocked, Pending review, Done and Rejected, a
+"Ledger" note and a "By tag" book. It gives Done and Rejected each an "Older" book, labelled
 `#swarmOlder`, and the newest-first sort. It also makes the private "Ops" book under AWM, labelled
 `#swarmOps`. Every node finds the board and the book by their labels and refuses
 while they are missing, so no node ever makes a second copy. Tony copies tasks
 into Proposed.
 
-The board makes every child book a column, so the Ledger shows as an eighth
-column. Label the Ledger note `#archived` to hide it.
+The board makes every child book a column, so the Ledger and By tag show as
+extra columns. Label either note `#archived` to hide it.
+
+Each sweep writes a card's effective scope tags (`PROTOCOLS.md` § *Scope
+lifecycle*) to its `swarmTags` chip, and gives each tag in use a saved search
+under By tag. A tag change never moves a card. **CAUTION** Trilium's search
+parser breaks a `%=` regex that holds a comma, and the match then reads as a
+substring, so "la" finds "lab". Keep commas out of the tag searches.
 
 A session claims a card in either of two ways. It calls `task_claim(ref)`. Or
 a prompt to it holds `claim task <ref>`, or "claim" or "attach" plus a Trilium
@@ -128,9 +138,17 @@ column. A plan written in Active or Blocked revises the same card.
   each undated card in Done and Rejected from its Trilium modified time.
 - The sweep reads a card in an Older book as off the board. An open card that
   Tony drags into one closes its task as cancelled.
-- A task whose session ended is filed under its node's Ledger note. Two cases
-  stay on the board, flagged as ended: a background session that died without
-  a stop, and a card in Pending review, which waits for Tony's drag to Done.
+- The sweep never closes a background task. A job that leaves the daemon's
+  roster while its directory under `~/.claude/jobs` remains keeps its card in
+  its column, flagged "not running, resumable". An idle retire and a daemon
+  death both cause this. A job whose state record says `stopped`, or whose
+  directory is gone, moves to Pending review, flagged "stopped". cx writes
+  `stopped` on `stop_other`, because `claude stop` does not. The flag clears
+  when the job runs again.
+- **CAUTION** A daemon restart drops dead workers from `cx list`. Do not read
+  a missing row as a finished session.
+- A closed task is filed under its node's Ledger note. An interactive session
+  that exits closes its task, except a card in Pending review.
 - A journal post that names its session (`meta.session`, which the journal
   sets from the gateway's caller pid) joins that session's card only. A post
   with no session joins every open card in its project and scope.

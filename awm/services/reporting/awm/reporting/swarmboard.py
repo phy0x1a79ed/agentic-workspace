@@ -7,6 +7,9 @@ made is a text note labelled ``#agentManaged`` and ``#readOnly`` whose body is
 the record. A card claimed from Tony's own note keeps its body as his and gets
 the record in a ``Record`` child; the ledger notes are Markdown children.
 
+A card carries its scope's tags in ``swarmTags``, comma-joined, and the board's
+"By tag" book holds one saved search per tag, matching the whole tag only.
+
 Done and Rejected list their cards newest first, by the ``cardStateAt`` label
 each card gets on entering a column. Each ends in one "Older (n)" book, labelled
 ``#swarmOlder``, that holds the cards finished more than two weeks ago.
@@ -40,13 +43,27 @@ STATE_AT = "cardStateAt"
 #: Below every ISO time, so the Older book sorts after every card in its column.
 OLDER_AT = "0000"
 SORTED = {"sorted": STATE_AT, "sortDirection": "desc"}
-#: The labels a federation card carries, offered as promoted chips on the board root.
-CHIPS = {"cardFrom": "From", "cardTo": "To", "project": "Project", "owner": "Owner"}
+TAGS_LABEL = "swarmTags"
+BY_TAG = "By tag"
+TAG_SEARCH_LABEL = "swarmTagSearch"
+#: The labels a card carries, offered as promoted chips on the board root.
+CHIPS = {"cardFrom": "From", "cardTo": "To", "project": "Project", "owner": "Owner",
+         TAGS_LABEL: "Tags"}
 #: Columns a board made before they existed lacks. The layout makes them on first use.
 LATE_COLUMNS = (COLUMNS[DONE], COLUMNS[REJECTED])
 #: The columns that sort newest first and fold their old cards into an Older book.
 FOLDING = (COLUMNS[DONE], COLUMNS[REJECTED])
 Call = Callable[..., Awaitable[dict]]
+
+
+def tag_search(tag: str) -> str:
+    """A Trilium search for the cards whose ``swarmTags`` hold ``tag`` whole, so "lab" misses "collab".
+
+    Trilium's search parser breaks a regex that contains a comma, so the tag's
+    edges are lookarounds on the tag alphabet rather than on the separator.
+    """
+    edge = "[a-z0-9._-]"
+    return f"#{TAGS_LABEL} %= '(?<!{edge}){tag.replace('.', '[.]')}(?!{edge})'"
 
 
 class BoardError(RuntimeError):
@@ -120,6 +137,7 @@ class SwarmBoard:
         self._layout: Layout | None = None
         self._awm: str | None = None
         self._chips = False
+        self._tag_searches: set[str] = set()
 
     async def _call(self, fn: str, **args: Any) -> dict:
         try:
@@ -171,7 +189,7 @@ class SwarmBoard:
         return layout
 
     async def _define_chips(self, board: str) -> None:
-        """Offer From, To, Project and Owner as promoted chips on every card under the board.
+        """Offer From, To, Project, Owner and Tags as promoted chips on every card under the board.
 
         A failure here only costs the chips, so it is logged and tried again on
         the next layout read.
@@ -205,6 +223,7 @@ class SwarmBoard:
         for title in COLUMNS.values():
             await self._child(board, title, type="book")
         await self._child(board, LEDGER, type="book")
+        await self._child(board, BY_TAG, type="book")
         self._chips = False
         self._layout = None
         folded = await self._ensure_older(await self.layout())
@@ -340,9 +359,10 @@ class SwarmBoard:
                                 type="code", mime=MARKDOWN, labels={**MANAGED, **(labels or {})})
         return made["note_id"]
 
-    async def write_card(self, card: str, html: str, title: str | None = None) -> None:
+    async def write_card(self, card: str, html: str, title: str | None = None,
+                         labels: dict[str, str] | None = None) -> None:
         """Rewrite the body, and the title when given, of a card the service made."""
-        fields: dict[str, Any] = {"content": html, "labels": MANAGED}
+        fields: dict[str, Any] = {"content": html, "labels": {**MANAGED, **(labels or {})}}
         if title:
             fields["title"] = title
         await self._call("note_update", note_id=card, **fields)
@@ -368,6 +388,50 @@ class SwarmBoard:
             for note_id in ids:
                 await self._call("note_delete", note_id=note_id)
         return ids
+
+    async def label(self, note_id: str, labels: dict[str, str]) -> None:
+        await self._call("note_update", note_id=note_id, labels=labels)
+
+    async def ensure_tag_searches(self, tags: set[str]) -> list[str]:
+        """Give each tag a saved search in the board's "By tag" book. Returns the tags given one now.
+
+        Every node adds the tags its own cards carry and none removes one, since
+        another node's cards may still carry it. Two nodes that add one tag at
+        once each make a search, so every node keeps the lowest note id of a
+        title and deletes the rest.
+        """
+        if tags <= self._tag_searches:
+            return []
+        lay = await self.layout()
+        book = next((kid["note_id"] for kid in await self._children(lay.board)
+                     if kid.get("title") == BY_TAG), None)
+        if book is None:
+            raise BoardError(f'the board has no "{BY_TAG}" book; run operations board_ensure')
+        kids = await self._tag_search_notes(book)
+        have = set(kids)
+        for tag in sorted(tags & have - self._tag_searches):
+            await self.label(kids[tag], {"searchString": tag_search(tag)})
+        made = sorted(tags - have)
+        for tag in made:
+            await self._call("note_create", title=tag, parent=book, type="search", content="",
+                             labels={"searchString": tag_search(tag), TAG_SEARCH_LABEL: tag},
+                             relations={"ancestor": lay.board})
+        if made:
+            await self._tag_search_notes(book)
+        self._tag_searches |= tags | have
+        return made
+
+    async def _tag_search_notes(self, book: str) -> dict[str, str]:
+        kept: dict[str, str] = {}
+        for kid in sorted(await self._children(book), key=lambda k: k["note_id"]):
+            if kid.get("title") not in kept:
+                kept[kid.get("title")] = kid["note_id"]
+                continue
+            try:
+                await self._call("note_delete", note_id=kid["note_id"])
+            except BoardError:
+                pass
+        return kept
 
     async def write_ledger(self, node: str, content: str) -> str:
         return await self.upsert_markdown((await self.layout()).ledger, node, content)

@@ -6,7 +6,7 @@ import pytest
 
 from awm.reporting.ledger import Ledger
 from awm.reporting.store import Queue
-from awm.reporting.swarmboard import SwarmBoard
+from awm.reporting.swarmboard import SwarmBoard, tag_search
 from awm.reporting import tasks
 from awm.reporting.tasks import Tasks
 
@@ -30,20 +30,30 @@ class Env:
         self.ledger = Ledger(tmp_path / "reporting.db")
         self.queue = Queue(tmp_path / "reporting.db")
         self.alive = {200: True}
+        self.job_dirs: set[str] = set()
         self.fed = FakeFed()
         self.cx = FakeCx()
         self.names = {100: "opal", 200: "tty-agent"}
         self.tasks = Tasks(self.ledger, SwarmBoard(self.tri), node="altair",
-                           resolve=self.records.get, job_state=lambda job: self.job, dm=self._dm,
+                           resolve=self.records.get, job_state=lambda job: self.job,
+                           job_exists=self.job_dirs.__contains__, dm=self._dm,
                            alive=lambda pid, start: self.alive.get(pid, False), fetch=self._fetch,
                            queue=self.queue, fed=self.fed, cx=self.cx, agent_name=self.names.get,
                            swarm="tony")
         self.fed.names = self.names
         self.posts: list[dict] = []
         self.fetches: list[dict] = []
+        self.scope_tags: dict[tuple[str, str], list[str]] = {}
+        self.tag_lookups: list[tuple[str, str]] = []
+        self.tags_error: Exception | None = None
         self._fed_board: str | None = None
 
     async def _fetch(self, service, fn, args, timeout=0):
+        if service == "scopes":
+            self.tag_lookups.append((args["project"], args["scope"]))
+            if self.tags_error:
+                raise self.tags_error
+            return {"effective": self.scope_tags.get((args["project"], args["scope"]), [])}
         self.fetches.append(args)
         return {"posts": list(self.posts)}
 
@@ -316,10 +326,15 @@ async def started(env):
     return env.task()
 
 
-async def test_a_stopped_job_closes_its_task_as_done_and_files_the_card_in_the_done_column(env):
+async def test_a_stopped_job_waits_in_review_and_tonys_drag_files_it_in_the_done_column(env):
     note, tonys = env.tonys_note()
     await env.call("claim_task", url=URL.format(note))
     await env.tasks.sweep([row("stopped")])
+    task = env.task()
+    assert task["state"] == "review" and task["ended"] == 1 and not task["closed"]
+    assert sorted(env.tri.parents(note)) == sorted([tonys, env.ids["Pending review"]])
+    env.tri.notes[note]["parents"] = [tonys, env.ids["Done"]]
+    await env.tasks.sweep([])
     task = env.task()
     assert task["state"] == "done" and task["closed"] and env.ledger.open() == []
     ledger_note = env.tri.kids(env.ids["Ledger"])[0]
@@ -454,7 +469,7 @@ async def test_a_job_that_died_without_a_stop_stays_on_the_board_flagged_and_res
     task = await started(env)
     await env.tasks.sweep([row("gone")])
     assert env.task()["ended"] == 1 and env.column(task["note_id"]) == ["Active"]
-    assert "died without a stop" in env.body(task)
+    assert "<strong>Ended:</strong> not running, resumable" in env.body(task)
     await env.tasks.sweep([row("gone")])
     assert [e["kind"] for e in env.ledger.events(task["id"])].count("ended") == 1
     await env.tasks.sweep([row("working")])
@@ -468,15 +483,56 @@ async def test_an_idle_session_waiting_on_slurm_stays_active(env):
     assert env.task()["state"] == "active"
 
 
-async def test_a_job_with_no_row_closes_only_on_the_second_sweep(env):
-    await started(env)
+async def test_a_job_with_no_row_and_no_directory_goes_to_review_only_on_the_second_sweep(env):
+    task = await started(env)
     await env.tasks.sweep([])
     assert env.task()["state"] == "active"
     await env.tasks.sweep([row("working")])
     await env.tasks.sweep([])
+    assert env.task()["state"] == "active" and env.task()["ended"] == 0
+    await env.tasks.sweep([])
+    assert env.task()["state"] == "review" and env.task()["ended"] == 1
+    assert env.column(task["note_id"]) == ["Pending review"] and env.ledger.open() != []
+
+
+@pytest.mark.parametrize("state, column", [("active", "Active"), ("blocked", "Blocked")])
+async def test_a_job_dropped_from_the_roster_keeps_its_column_and_resumes_on_the_same_card(env, state, column):
+    task = await started(env)
+    if state == "blocked":
+        await env.call("request_human", reason="answer me")
+    env.job_dirs.add("job00001")
+    for _ in range(3):
+        await env.tasks.sweep([])
+    after = env.task()
+    assert after["state"] == state and after["ended"] == 1 and not after["closed"]
+    assert env.column(task["note_id"]) == [column]
+    assert "<strong>Ended:</strong> not running, resumable" in env.body(task)
+    assert [e["kind"] for e in env.ledger.events(task["id"])].count("ended") == 1
+    await env.tasks.sweep([row("working")])
+    assert env.task()["id"] == task["id"] and env.task()["ended"] == 0 and env.task()["state"] == state
+    assert "Ended:" not in env.body(task) and len(env.ledger.open()) == 1
+
+
+async def test_a_job_cx_stopped_moves_to_review_once_it_leaves_the_roster(env):
+    task = await started(env)
+    env.job_dirs.add("job00001")
+    env.job["state"] = "stopped"
+    await env.tasks.sweep([])
     assert env.task()["state"] == "active"
     await env.tasks.sweep([])
-    assert env.task()["state"] == "done"
+    assert env.task()["state"] == "review" and env.task()["ended"] == 1
+    assert env.column(task["note_id"]) == ["Pending review"]
+    assert "<strong>Ended:</strong> stopped" in env.body(task)
+
+
+async def test_a_stopped_blocked_job_moves_to_review_and_keeps_its_question(env):
+    task = await started(env)
+    await env.call("request_human", reason="answer me")
+    await env.tasks.sweep([row("stopped")])
+    after = env.task()
+    assert after["state"] == "review" and after["ended"] == 1 and after["reason"] == "answer me"
+    assert env.column(task["note_id"]) == ["Pending review"]
+    assert "<strong>Ended:</strong> stopped" in env.body(task)
 
 
 async def test_an_interactive_session_that_exits_closes_its_task(env):
@@ -522,14 +578,14 @@ async def test_a_sweep_retries_what_the_board_refused(env):
     assert "alpha" in env.body(task)
 
 
-async def test_a_close_the_board_refused_is_moved_to_done_once_the_board_is_back(env):
+async def test_a_stop_the_board_refused_is_moved_to_review_once_the_board_is_back(env):
     task = await started(env)
     env.tri.fail = RuntimeError("down")
     await env.tasks.sweep([row("stopped")])
-    assert env.task()["state"] == "done" and env.task()["dirty"] == 1
+    assert env.task()["state"] == "review" and env.task()["dirty"] == 1
     env.tri.fail = None
     await env.tasks.sweep([])
-    assert env.task()["dirty"] == 0 and env.column(task["note_id"]) == ["Done"]
+    assert env.task()["dirty"] == 0 and env.column(task["note_id"]) == ["Pending review"]
 
 
 async def test_a_blocked_urgent_task_gets_one_reminder_after_the_delay(env, monkeypatch):
@@ -652,9 +708,122 @@ async def test_the_catch_up_finds_a_post_the_subscription_missed_and_runs_on_a_t
 
 async def test_a_post_for_a_closed_task_is_not_appended(env, tmp_path):
     await in_scope(env, tmp_path)
-    await env.tasks.sweep([row("stopped")])
+    env.ledger.close(env.task()["id"])
     await env.tasks.on_post({"post": post()})
     assert env.ledger.events(env.task()["id"], "journal") == []
+
+
+# -- the Tags chip -------------------------------------------------------------
+
+
+async def test_a_card_carries_its_scopes_tags_and_follows_a_change(env, tmp_path):
+    await in_scope(env, tmp_path)
+    env.scope_tags[("awm", "feat/x")] = ["ana", "lab"]
+    await env.tasks.sweep([row("working")])
+    task = env.task()
+    card = env.tri.notes[task["note_id"]]
+    assert task["tags"] == "ana,lab" and card["labels"]["swarmTags"] == "ana,lab"
+    env.scope_tags[("awm", "feat/x")] = []
+    await env.tasks.sweep([row("working")])
+    assert env.task()["tags"] == "" and card["labels"]["swarmTags"] == ""
+    assert env.column(task["note_id"]) == ["Active"]
+
+
+async def test_a_tag_change_leaves_tonys_drag_standing(env, tmp_path):
+    await in_scope(env, tmp_path)
+    await env.tasks.sweep([row("working")])
+    note = env.task()["note_id"]
+    env.tri.notes[note]["parents"] = [env.ids["Blocked"]]
+    env.scope_tags[("awm", "feat/x")] = ["lab"]
+    await env.tasks.sweep([row("working")])
+    assert env.column(note) == ["Blocked"]
+
+
+async def test_each_scope_is_looked_up_once_a_sweep(env, tmp_path):
+    await in_scope(env, tmp_path)
+    await env.tasks.sweep([row("working")])
+    assert env.tag_lookups == [("awm", "feat/x")]
+
+
+async def test_an_unanswered_lookup_changes_nothing(env, tmp_path):
+    await in_scope(env, tmp_path)
+    env.scope_tags[("awm", "feat/x")] = ["lab"]
+    await env.tasks.sweep([row("working")])
+    env.tags_error = RuntimeError("scopes is down")
+    await env.tasks.sweep([row("working")])
+    assert env.task()["tags"] == "lab"
+
+
+async def test_a_claimed_card_gets_the_chip_on_its_own_note(env, tmp_path):
+    env.records[100]["cwd"] = str(tmp_path / SCOPE_DIR)
+    (tmp_path / SCOPE_DIR).mkdir(parents=True)
+    note, _ = env.tonys_note()
+    await env.call("claim_task", url=URL.format(note))
+    env.scope_tags[("awm", "feat/x")] = ["lab"]
+    await env.tasks.sweep([row("working")])
+    assert env.tri.notes[note]["labels"]["swarmTags"] == "lab"
+    assert env.tri.notes[note]["content"] == "body"
+
+
+async def test_each_tag_in_use_gets_one_saved_search_on_the_board(env, tmp_path):
+    await in_scope(env, tmp_path)
+    env.scope_tags[("awm", "feat/x")] = ["ana", "lab"]
+    await env.tasks.sweep([row("working")])
+    await env.tasks.sweep([row("working")])
+    board = next(i for i, n in env.tri.notes.items() if "swarmBoard" in n["labels"])
+    book = next(i for i in env.tri.kids(board) if env.tri.notes[i]["title"] == "By tag")
+    searches = {env.tri.notes[i]["title"]: env.tri.notes[i] for i in env.tri.kids(book)}
+    assert sorted(searches) == ["ana", "lab"]
+    lab = searches["lab"]
+    assert lab["type"] == "search" and lab["relations"] == {"ancestor": board}
+    assert lab["labels"]["searchString"] == "#swarmTags %= '(?<![a-z0-9._-])lab(?![a-z0-9._-])'"
+
+
+async def test_a_saved_search_from_an_older_release_gets_the_current_query(env, tmp_path):
+    await in_scope(env, tmp_path)
+    env.scope_tags[("awm", "feat/x")] = ["lab"]
+    await env.tasks.sweep([row("working")])
+    board = next(i for i, n in env.tri.notes.items() if "swarmBoard" in n["labels"])
+    book = next(i for i in env.tri.kids(board) if env.tri.notes[i]["title"] == "By tag")
+    lab = env.tri.kids(book)[0]
+    env.tri.notes[lab]["labels"]["searchString"] = "#swarmTags %= '(^|,)lab(,|$)'"
+    env.tasks.board._tag_searches.clear()
+    await env.tasks.sweep([row("working")])
+    assert env.tri.notes[lab]["labels"]["searchString"] == tag_search("lab")
+    assert env.tri.kids(book) == [lab]
+
+
+
+async def test_two_nodes_racing_on_one_tag_leave_one_search(env, tmp_path):
+    await in_scope(env, tmp_path)
+    env.scope_tags[("awm", "feat/x")] = ["lab"]
+    board = next(i for i, n in env.tri.notes.items() if "swarmBoard" in n["labels"])
+    book = next(i for i in env.tri.kids(board) if env.tri.notes[i]["title"] == "By tag")
+    for _ in range(2):
+        env.tri._note_create("lab", book, type="search", labels={"searchString": tag_search("lab")})
+    keep = min(env.tri.kids(book))
+    await env.tasks.sweep([row("working")])
+    assert env.tri.kids(book) == [keep]
+
+
+async def test_the_sweep_never_makes_the_by_tag_book(env, tmp_path):
+    await in_scope(env, tmp_path)
+    board = next(i for i, n in env.tri.notes.items() if "swarmBoard" in n["labels"])
+    book = next(i for i in env.tri.kids(board) if env.tri.notes[i]["title"] == "By tag")
+    env.tri._note_delete(book)
+    env.scope_tags[("awm", "feat/x")] = ["lab"]
+    await env.tasks.sweep([row("working")])
+    assert not [i for i in env.tri.kids(board) if env.tri.notes[i]["title"] == "By tag"]
+    assert env.task()["tags"] == "lab"
+
+@pytest.mark.parametrize("value,hit", [("lab", True), ("ana,lab", True), ("lab,tony", True),
+                                       ("ana,lab,tony", True), ("collab", False), ("lab2", False),
+                                       ("lab.x", False), ("lab-x", False), ("", False)])
+def test_a_tag_search_matches_the_whole_tag(value, hit):
+    import re
+
+    pattern = tag_search("lab").split("%= ", 1)[1].strip("'")
+    assert bool(re.search(pattern, value)) is hit
 
 
 # -- the Agent line ------------------------------------------------------------

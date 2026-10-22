@@ -106,6 +106,53 @@ def test_an_unknown_session_has_no_transcript(sessions):
     assert transcript.path_for("") is None
 
 
+def test_of_two_files_for_one_session_the_newest_is_the_transcript(sessions):
+    import os
+    stale = sessions.parent.parent / "-a-sorts-first" / sessions.name
+    stale.parent.mkdir()
+    stale.write_text("")
+    os.utime(stale, (1_000_000, 1_000_000))
+    assert transcript.path_for(SESSION) == sessions
+
+
+def test_a_transcript_moved_to_a_new_directory_is_followed_from_where_it_stood(
+        sessions):
+    # A `/cd` keeps the session id and moves the file into the new cwd's slug.
+    # A rename keeps the content, so the tail carries on at the same offset.
+    tail = transcript.Tail(4242)
+    tail.watch("before the move")
+    tail.watch("after the move")
+    append(sessions, user_text("before the move"))
+    assert tail.poll() is True
+    moved = sessions.parent.parent / "-home-tony-elsewhere" / sessions.name
+    moved.parent.mkdir()
+    sessions.rename(moved)
+    append(moved, user_text("after the move"))
+    assert tail.poll() is True
+    assert tail.landed("after the move") is True
+    assert tail._offset == moved.stat().st_size, "nothing was read twice"
+
+
+def test_a_changed_cwd_re_resolves_even_while_the_old_file_remains(sessions):
+    import os
+    from awm.reflection import session_target
+
+    record = session_target.SESSIONS_DIR / "4242.json"
+    record.write_text(json.dumps({"sessionId": SESSION, "cwd": "/home/tony/somewhere"}))
+    tail = transcript.Tail(4242)
+    tail.watch("in the new place")
+    append(sessions, user_text("old"))
+    assert tail.poll() is True
+    os.utime(sessions, (1_000_000, 1_000_000))
+    moved = sessions.parent.parent / "-home-tony-elsewhere" / sessions.name
+    moved.parent.mkdir()
+    moved.write_text(sessions.read_text())
+    record.write_text(json.dumps({"sessionId": SESSION, "cwd": "/home/tony/elsewhere"}))
+    append(moved, user_text("in the new place"))
+    assert tail.poll() is True
+    assert tail.landed("in the new place") is True
+
+
 # -- consumption -----------------------------------------------------------
 
 def test_a_plain_user_message_is_consumption(sessions):

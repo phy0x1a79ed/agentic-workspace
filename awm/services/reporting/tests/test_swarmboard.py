@@ -29,12 +29,14 @@ async def test_ensure_makes_the_board_once_under_awm(tri):
     assert {k: v for k, v in note["labels"].items() if not k.startswith("label:")} == {
         "swarmBoard": "", "board:columnsFrom": "folders"}
     assert [tri.notes[i]["title"] for i in tri.kids(first["board"])] == [
-        "Proposed", "Planned", "Active", "Blocked", "Pending review", "Done", "Rejected", "Ledger"]
+        "Proposed", "Planned", "Active", "Blocked", "Pending review", "Done", "Rejected", "Ledger",
+        "By tag"]
     chips = {k: v for k, v in note["labels"].items() if k.startswith("label:")}
     assert chips == {"label:cardFrom": "promoted,single,text,alias=From",
                      "label:cardTo": "promoted,single,text,alias=To",
                      "label:project": "promoted,single,text,alias=Project",
-                     "label:owner": "promoted,single,text,alias=Owner"}
+                     "label:owner": "promoted,single,text,alias=Owner",
+                     "label:swarmTags": "promoted,single,text,alias=Tags"}
     before = len(tri.notes)
     second = await board.ensure()
     assert second["created"] is False and len(tri.notes) == before
@@ -224,10 +226,11 @@ async def test_the_chips_are_defined_once_and_not_redefined_when_present(tri):
     await board.layout()
     await board.layout()
     sets = [a["name"] for fn, a in tri.calls if fn == "attr_set"]
-    assert sorted(sets) == ["label:cardFrom", "label:cardTo", "label:owner", "label:project"]
+    assert sorted(sets) == ["label:cardFrom", "label:cardTo", "label:owner", "label:project",
+                            "label:swarmTags"]
     again = SwarmBoard(tri)
     await again.layout()
-    assert len([1 for fn, _ in tri.calls if fn == "attr_set"]) == 4, "a second process finds them"
+    assert len([1 for fn, _ in tri.calls if fn == "attr_set"]) == 5, "a second process finds them"
 
 
 async def test_a_chip_definition_failure_costs_only_the_chips(tri, caplog):

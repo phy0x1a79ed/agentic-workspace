@@ -51,7 +51,7 @@ def test_the_service_publishes_exactly_the_scope_tool_verbs():
     visible = {n for n, f in published.items() if "surfaces" not in f}
     assert visible == {
         "scope_resolve", "scope_ensure", "scope_create", "scope_search", "scope_complete",
-        "scope_delete", "scope_heal", "scope_private", "scope_repair", "scope_sync",
+        "scope_delete", "scope_heal", "scope_private", "scope_tag", "scope_repair", "scope_sync",
         "scope_git_gather", "scope_git_scatter",
     }
     hidden = {n for n, f in published.items() if f.get("surfaces") == ["cli", "http"]}

@@ -29,7 +29,7 @@ OLDER_SHOWN = "older"
 _FIELDS = frozenset({
     "session_id", "title", "project", "scope", "model", "effort", "state", "note_id", "shown", "dirty",
     "plan", "reason", "urgent", "blocked_at", "reminded", "ended", "closed", "owned",
-    "card_id", "fed_state", "agent", "agent_link"})
+    "card_id", "fed_state", "agent", "agent_link", "tags"})
 
 
 class Ledger(Db):

@@ -91,7 +91,13 @@ def _checklist(live: list[dict]) -> str:
     return '<ul class="todo-list">\n' + "\n".join(items) + "\n</ul>"
 
 
-def render_record(task: dict, live: list[dict], removed: list[dict], events: list[dict]) -> str:
+#: Ended details recorded before the detail named the cause, as their cards always showed them.
+_LEGACY_ENDED = {"": "the session died without a stop; resumable",
+                 "the session died without a stop": "the session died without a stop; resumable"}
+
+
+def render_record(task: dict, live: list[dict], removed: list[dict], events: list[dict],
+                  ended: str = "") -> str:
     """The card body: a status block, then Plan, Todo, Journal and, once an item is removed, Removed as closed collapsibles."""
     where = "/".join(p for p in (task.get("project"), task.get("scope")) if p)
     status = [
@@ -102,7 +108,7 @@ def render_record(task: dict, live: list[dict], removed: list[dict], events: lis
         *_line("Session", task.get("session_id")),
         *_line("Model", task.get("model")), *_line("Effort", task.get("effort")),
         *_line("Waiting on", task.get("reason") if task["state"] in ("blocked", "review") else ""),
-        *_line("Ended", "the session died without a stop; resumable" if task.get("ended") else ""),
+        *_line("Ended", _LEGACY_ENDED.get(ended, ended) if task.get("ended") else ""),
         *_line("Started", _at(task["started"])), *_line("Closed", _at(task.get("closed"))),
     ]
     done = sum(1 for i in live if i["status"] == "completed")

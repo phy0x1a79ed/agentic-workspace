@@ -88,7 +88,7 @@ def test_claim_takes_a_ref_or_the_old_url_and_neither_is_required():
 
 def test_watch_takes_a_card_or_the_posted_flag():
     params = {p["name"] for p in functions()["board_watch"]["params"]}
-    assert params == {"card_id", "posted_by_me"}
+    assert params == {"card_id", "posted_by_me", "project", "swarm"}
 
 
 async def test_convert_writes_only_when_dry_run_is_explicitly_false(monkeypatch):
@@ -227,6 +227,8 @@ async def test_status_reports_the_task_part_even_with_the_front_door_off(monkeyp
     task, _ = ledger.ensure("altair", "j", "bg")
     ledger.update(task["id"], dirty=1)
     monkeypatch.setattr(hub_adapter, "RUNTIME", SimpleNamespace(
-        queue=queue, tasks=SimpleNamespace(node="altair", subscription=None, ledger=ledger)))
+        queue=queue, tasks=SimpleNamespace(node="altair", subscription=None, ledger=ledger),
+        board_problem=None, subscriber=SimpleNamespace(last_error=None, attached=True)))
     out = await hub_adapter.status({})
     assert out["enabled"] is False and out["tasks"] == {"open": 1, "unsynced": 1, "journals": None}
+    assert out["watch_relay"] == "connected"

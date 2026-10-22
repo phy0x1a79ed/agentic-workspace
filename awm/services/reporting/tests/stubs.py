@@ -259,8 +259,9 @@ class FakeTrilium:
 
     def _note_create(self, title: str, parent: str = "root", type: str = "text", content: str = "",
                      mime: str | None = None, labels: dict | None = None, relations: dict | None = None) -> dict:
-        return {"note_id": self.add(title, parent, type=type, content=content, labels={**(labels or {})},
-                                    mime=mime), "created": True}
+        note_id = self.add(title, parent, type=type, content=content, labels={**(labels or {})}, mime=mime)
+        self.notes[note_id]["relations"] = dict(relations or {})
+        return {"note_id": note_id, "created": True}
 
     def _note_update(self, note_id: str, content: str | None = None, title: str | None = None,
                      labels: dict | None = None, type: str | None = None, mime: str | None = None) -> dict:
@@ -304,7 +305,8 @@ def make_board(tri: FakeTrilium, *, older: bool = True) -> dict[str, str]:
     awm = tri.add("AWM", type="book")
     board = tri.add("Swarm board", awm, type="book", labels={"swarmBoard": ""})
     out = {t: tri.add(t, board, type="book") for t in ("Proposed", "Planned", "Active", "Blocked",
-                                                         "Pending review", "Done", "Rejected", "Ledger")}
+                                                         "Pending review", "Done", "Rejected", "Ledger",
+                                                         "By tag")}
     if older:
         for t in ("Done", "Rejected"):
             out[f"Older {t}"] = tri.add("Older (0)", out[t], type="book",

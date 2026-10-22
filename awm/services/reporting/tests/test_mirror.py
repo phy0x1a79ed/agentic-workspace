@@ -26,6 +26,12 @@ async def claimed(env, **over):
     return card
 
 
+async def tonys_done(env, key="job00001"):
+    task = env.task(key)
+    env.tri.notes[task["note_id"]]["parents"] = [env.ids["Done"]]
+    await env.tasks.sweep([])
+
+
 def state_of(env, card):
     return env.fed.db[card["id"]]["state"]
 
@@ -76,12 +82,12 @@ async def test_block_review_unblock_and_done_follow_the_ledger(env):
     assert env.column(card["note_id"]) == ["Done"]
 
 
-async def test_a_session_that_ends_before_review_leaves_the_federation_card_where_it_is(env):
+async def test_a_session_stopped_before_review_leaves_the_federation_card_where_it_is(env):
     card = await claimed(env)
     await env.call("hook_plan_approved", plan_text="p")
     await env.tasks.sweep([row("stopped")])
-    assert env.task()["state"] == "done" and env.column(card["note_id"]) == ["Done"]
-    assert state_of(env, card) == "active", "an unfinished task is not reported done to the poster"
+    assert env.task()["state"] == "review" and env.column(card["note_id"]) == ["Pending review"]
+    assert state_of(env, card) == "active", "an unfinished task is not reported to the poster"
 
 
 async def test_finishing_with_board_complete_first_is_not_a_conflict(env):
@@ -230,7 +236,7 @@ async def test_the_sweep_asks_about_a_card_only_once_per_catch_up_period(env):
 
 async def test_a_done_card_folds_into_older_after_fourteen_days_and_not_before(env):
     card = await claimed(env)
-    await env.tasks.sweep([row("stopped")])
+    await tonys_done(env)
     task = env.task()
     assert env.column(card["note_id"]) == ["Done"]
     env.ledger.update(task["id"], closed=time.time() - ARCHIVE_AFTER_S + 3600)
@@ -248,7 +254,7 @@ async def test_a_done_card_folds_into_older_after_fourteen_days_and_not_before(e
 
 async def test_a_folded_card_stays_in_older_when_its_task_is_synced_again(env):
     card = await claimed(env)
-    await env.tasks.sweep([row("stopped")])
+    await tonys_done(env)
     env.ledger.update(env.task()["id"], closed=time.time() - ARCHIVE_AFTER_S - 10)
     await env.tasks.sweep([])
     env.ledger.update(env.task()["id"], dirty=1)
@@ -258,7 +264,7 @@ async def test_a_folded_card_stays_in_older_when_its_task_is_synced_again(env):
 
 async def test_a_card_reopened_out_of_older_leaves_it(env):
     card = await claimed(env)
-    await env.tasks.sweep([row("stopped")])
+    await tonys_done(env)
     env.ledger.update(env.task()["id"], closed=time.time() - ARCHIVE_AFTER_S - 10)
     await env.tasks.sweep([])
     env.ledger.update(env.task()["id"], state="active", closed=None, dirty=1)
@@ -269,12 +275,12 @@ async def test_a_card_reopened_out_of_older_leaves_it(env):
 async def test_a_card_the_service_made_folds_but_tonys_own_note_never_does(env):
     await env.call("hook_plan_approved", plan_text="p")
     made = env.task()
-    await env.tasks.sweep([row("stopped")])
+    await tonys_done(env)
     env.ledger.update(made["id"], closed=time.time() - ARCHIVE_AFTER_S - 10)
     note, _ = env.tonys_note()
     env.records[300] = {**env.records[100], "pid": 300, "jobId": "job00003", "sessionId": "s3"}
     await env.call("claim_task", pid=300, url=URL.format(note))
-    await env.tasks.sweep([row("stopped", "job00003")])
+    await tonys_done(env, "job00003")
     env.ledger.update(env.task("job00003")["id"], closed=time.time() - ARCHIVE_AFTER_S - 10)
     await env.tasks.sweep([])
     assert env.column(made["note_id"]) == ["Older Done"]

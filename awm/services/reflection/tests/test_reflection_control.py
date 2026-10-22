@@ -389,6 +389,20 @@ def test_stop_of_own_session_with_confirm_runs_after_the_call_returns(world):
     assert rm.calls == [SELF_JOB]
 
 
+@pytest.mark.parametrize("removed,level,text", [
+    (True, "INFO", "stopped and removed own session"),
+    (False, "WARNING", "was not removed: no such job"),
+])
+def test_stop_of_own_session_logs_whether_the_job_went(world, caplog, removed, level, text):
+    spawned = []
+    control.stop(SELF_JOB, caller_pid=ME, confirm=True, remove=Remover(removed=removed),
+                 spawn=spawned.append)
+    with caplog.at_level("INFO", logger="awm.reflection"):
+        spawned[0]()
+    line = next(r for r in caplog.records if SELF_JOB in r.getMessage())
+    assert line.levelname == level and text in line.getMessage()
+
+
 def test_stop_reports_a_failed_removal(world):
     out = control.stop(OTHER_JOB, caller_pid=ME, remove=Remover(removed=False))
     assert out["ok"] is False and out["reason"] == "no such job"
@@ -399,6 +413,20 @@ def test_stop_removes_a_job_that_is_already_dead(world):
     rm = Remover()
     assert control.stop("gone", caller_pid=ME, remove=rm)["ok"]
     assert rm.calls == [DEAD_JOB]
+
+
+def test_stop_removes_an_exited_job_that_no_live_row_names(world):
+    (world.home.root / "jobs" / "dddddddd").mkdir()
+    rm = Remover()
+    out = control.stop("dddddddd", caller_pid=ME, remove=rm)
+    assert out["ok"] and out["exited"] and rm.calls == ["dddddddd"]
+
+
+def test_stop_of_an_unknown_job_still_refuses(world):
+    rm = Remover()
+    with pytest.raises(session_target.ResolveError):
+        control.stop("eeeeeeee", caller_pid=ME, remove=rm)
+    assert rm.calls == []
 
 
 def test_stop_refuses_a_terminal_session_and_a_missing_job(world):

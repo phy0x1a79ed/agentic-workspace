@@ -738,3 +738,86 @@ def test_a_custom_closing_prompt_is_kept_beside_a_later_settings_change(lane):
                 spawn=lambda fn: None)
     inject.send("/effort low", caller_pid=4242, change=EFFORT, spawn=lambda fn: None)
     assert pending.read(4242).followup == "The effort change to low succeeded. go on with T3"
+
+
+# ---------------------------------------------------------------------------
+# A session whose transcript moves under the wait
+# ---------------------------------------------------------------------------
+
+def test_a_verify_that_could_not_read_the_transcript_is_unknown_not_a_miss(
+        monkeypatch):
+    # A tail that read the file once and has lost it since still answers
+    # `landed() is False` from what it read before. That is not evidence the
+    # text failed to arrive, and a False here is what licenses a retype.
+    monkeypatch.setattr(inject, "VERIFY_WAIT_S", 0.0)
+    lost = Tail(in_flight=None, landed=False)
+    assert inject._verify_landed(lost, "resume", sleep=lambda _s: None) is None
+
+
+def test_a_session_that_moves_mid_wait_is_reconnected_and_resumed_once(
+        tmp_path, monkeypatch):
+    # 2026-10-19, avatar-3c: after a self-`/cd`, Claude Code moved the transcript
+    # into the new directory's slug. The tail stayed bound to the old path, every
+    # verify read nothing and called the resume lost, and each round typed the
+    # reconnect and the resume in again.
+    import json
+    from awm.reflection import transcript
+
+    projects = tmp_path / "projects"
+    before, after = projects / "-home-tony-before", projects / "-home-tony-after"
+    before.mkdir(parents=True)
+    after.mkdir()
+    records = tmp_path / "sessions"
+    records.mkdir()
+    record = records / "4242.json"
+    record.write_text(json.dumps({"sessionId": "sid-1", "cwd": "/home/tony/before"}))
+    monkeypatch.setattr(transcript, "PROJECTS_DIR", projects)
+    monkeypatch.setattr(session_target, "SESSIONS_DIR", records)
+    original = before / "sid-1.jsonl"
+    original.write_text(json.dumps(
+        {"type": "user", "message": {"role": "user", "content": "earlier work"}})
+        + "\n")
+
+    seen: list[str] = []
+
+    class TranscribingWriter(Writer):
+        """Each line it is given turns up in the transcript, wherever that is now."""
+
+        def write(self, text):
+            super().write(text)
+            [live] = projects.glob("*/sid-1.jsonl")
+            entry = {"type": "user", "timestamp": "2099-01-01T00:00:00.000Z",
+                     "message": {"role": "user", "content": text}}
+            with live.open("a", encoding="utf-8") as fp:
+                fp.write(json.dumps(entry) + "\n")
+
+    @contextmanager
+    def open_lane(_lane, **_kw):
+        yield TranscribingWriter(seen)
+
+    monkeypatch.setattr(inject, "_open_lane", open_lane)
+    monkeypatch.setattr(session_target, "resolve", lambda pid, **kw: LANE)
+    monkeypatch.setattr(session_target, "_proc_start", lambda pid: "999")
+
+    def wait_then_move(*_a, tail, **_kw):
+        tail.poll()  # the watcher has been reading the old file all along
+        if original.exists():
+            record.write_text(json.dumps({"sessionId": "sid-1",
+                                          "cwd": "/home/tony/after"}))
+            original.rename(after / original.name)
+        return watcher.SETTLED_OUTCOME
+
+    monkeypatch.setattr(watcher, "await_completion", wait_then_move)
+    monkeypatch.setattr(inject, "VERIFY_WAIT_S", 0.05)
+    monkeypatch.setattr(inject, "VERIFY_POLL_S", 0.01)
+
+    move = pending.Change("cd", "/home/tony/after", "k-cd")
+    item = _promise(text="/cd /home/tony/after", changes=(move,))
+    pending.record(item)
+    inject._await_and_resume(item, tail=transcript.Tail(4242),
+                             read_status=lambda _pid: None)
+
+    assert seen.count(inject.RECONNECT_AFTER_MOVE) == 1
+    resumes = [t for t in seen if t != inject.RECONNECT_AFTER_MOVE]
+    assert resumes == [f"The move to /home/tony/after succeeded. {CONTINUE}"]
+    assert pending.load_all() == []

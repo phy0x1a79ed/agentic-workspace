@@ -418,10 +418,8 @@ class DiscordConnector(Connector):
         return out
 
     async def react(
-        self, channel: str, message_id: str, emoji: str, *,
-        remove: bool = False, thread: str | None = None,
+        self, channel: str, message_id: str, emoji: str, *, remove: bool = False,
     ) -> dict:
-        # A Discord thread is its own channel, so ``channel`` already names it.
         import discord
 
         from awm.social.emoji import to_char

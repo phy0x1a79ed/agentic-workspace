@@ -579,17 +579,22 @@ def _verify_landed(tail, text: str, *, sleep: Callable[[float], None] = time.sle
     """Did ``text`` reach the session? Read it out of the session's transcript.
 
     ``True`` if the session took it in or queued it, ``False`` if the transcript
-    was readable throughout and never mentioned it, ``None`` if there was no
-    transcript to read. Only ``False`` is evidence of a failure; ``None`` is the
-    absence of evidence and must not license a second delivery.
+    was read in this window and never mentioned it, ``None`` if no read in the
+    window succeeded. Only ``False`` is evidence of a failure; ``None`` is the
+    absence of evidence and must not license a second delivery. A tail that read
+    the file earlier and has lost it since still answers from those old reads,
+    so its answer counts only if some poll here got through.
     """
     deadline = clock() + VERIFY_WAIT_S
-    while clock() < deadline:
-        tail.poll()
+    read = False
+    while True:
+        read = tail.poll() or read
         if tail.landed(text) is True:
             return True
+        if clock() >= deadline:
+            break
         sleep(VERIFY_POLL_S)
-    return tail.landed(text)
+    return tail.landed(text) if read else None
 
 
 def _nudge_text(item: pending.Pending, waited_s: int) -> str:

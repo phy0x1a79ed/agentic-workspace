@@ -37,6 +37,7 @@ from pathlib import Path
 from typing import Any
 
 from awm import gatewayclient
+from awm import kept
 from awm.claudedaemon import cli, launch, pins, roster, sessionmode
 from awm.config import caller_peer, node_name, node_role, peer_relation, scope_of
 
@@ -107,6 +108,46 @@ REPORT_TO_PROMPT = ("where your first prompt asks. When it names no place, your 
 class Refused(Exception):
     """A start or stop that must not proceed; the message is the reason."""
 
+    code: str | None = None
+
+
+class DaemonDown(Refused):
+    """No daemon runs, and the keep service could not bring one up."""
+
+    code = "daemon_down"
+
+
+#: How long cx waits on the keep service to bring a daemon up.
+ENSURE_TIMEOUT_S = 30.0
+
+
+async def ensure_daemon(action: str, timeout: float = ENSURE_TIMEOUT_S) -> None:
+    """Return once a daemon runs, asking the keep service first; else raise DaemonDown.
+
+    A node without the keep service answers the call with an error, and cx
+    then refuses as it always has.
+    """
+    if sessions.daemon_pid() is not None:
+        return
+    detail = ""
+    try:
+        out = await gatewayclient.call("keep", "ensure", {"timeout": timeout},
+                                       timeout=timeout + 15)
+        if isinstance(out, dict) and not out.get("ok"):
+            detail = f" ({out.get('action') or 'down'}: {out.get('reason') or out.get('error') or ''})"
+    except Exception as exc:  # noqa: BLE001 — no keep service is the old behaviour
+        detail = f" (keep: {type(exc).__name__})"
+    if sessions.daemon_pid() is None:
+        raise DaemonDown(f"no claude code daemon is running — a session {action} now "
+                         f"would land inside awm's control group{detail}")
+
+
+def refusal(exc: Refused) -> dict[str, Any]:
+    out: dict[str, Any] = {"ok": False, "reason": str(exc)}
+    if exc.code:
+        out["code"] = exc.code
+    return out
+
 
 # --- who is asking -----------------------------------------------------------
 
@@ -148,7 +189,7 @@ async def start(args: dict[str, Any], as_: str | None = None) -> dict[str, Any]:
         return await _start(args, as_)
     except Refused as exc:
         log.info("cx: start refused — %s", exc)
-        return {"ok": False, "reason": str(exc)}
+        return refusal(exc)
     except OSError as exc:
         log.warning("cx: start failed — %s", exc)
         return {"ok": False, "reason": f"start failed: {exc}"}
@@ -163,19 +204,21 @@ async def _start(args: dict[str, Any], as_: str | None) -> dict[str, Any]:
     _refuse_unknown_caller(args)
     if spec["strict_mcp"]:
         spec["mcp_config"] = str(_write_mcp_config())
-    if sessions.daemon_pid() is None:
-        raise Refused("no claude code daemon is running — a session started now "
-                      "would land inside awm's control group")
+    await ensure_daemon("started")
     cwd = await _resolve_worktree(spec["project"], spec["scope"])
     untrusted = await asyncio.to_thread(trust.start_refusal, cwd)
     if untrusted:
         raise Refused(untrusted)
+    tag_warning = await _tag_scope(spec) if spec["tags"] is not None else None
     caller_rec = _caller_record(args.get("_caller_pid"))
     parent = _session_ref(caller_rec)
     caller = caller_peer(as_) or as_ or "local"
     if spec["brief"]:
         spec["brief_text"] = brief_text(spec, caller_rec)
     async with _START_LOCK:
+        if spec["replaces"]:
+            spec["prompt"] = _with_tail(spec["prompt"], spec["replaces"])
+            await _retire(spec["replaces"])
         if _name_taken(spec["name"]):
             raise Refused(f"a live session is already named {spec['name']!r}")
         record = {
@@ -186,6 +229,10 @@ async def _start(args: dict[str, Any], as_: str | None) -> dict[str, Any]:
             "started_epoch": time.time(), "pinned": spec["pin"],
             "brief": spec["brief"],
         }
+        if spec["tags"] is not None:
+            record["tags"] = spec["tags"]
+        if spec["replaces"]:
+            record["replaces"] = spec["replaces"]
         _write_pending(record)
         try:
             session = await launch.launch(
@@ -210,11 +257,26 @@ async def _start(args: dict[str, Any], as_: str | None) -> dict[str, Any]:
     pinned = spec["pin"] and await _pin(session.short)
     log.info("cx: started %s as %s in %s (mode %s%s)", spec["name"], session.short,
              cwd, spec["mode"], ", pinned" if pinned else "")
-    return {"ok": True, "job": session.short, "name": spec["name"],
-            "node": node_name(), "project": spec["project"], "scope": spec["scope"],
-            "cwd": str(cwd), "attach": f"claude attach {session.short}",
-            "parent": parent, "mode": spec["mode"], "pinned": pinned,
-            **await _started_link(session.short, bool(spec["remote_control"]))}
+    out = {"ok": True, "job": session.short, "name": spec["name"],
+           "node": node_name(), "project": spec["project"], "scope": spec["scope"],
+           "cwd": str(cwd), "attach": f"claude attach {session.short}",
+           "parent": parent, "mode": spec["mode"], "pinned": pinned,
+           **await _started_link(session.short, bool(spec["remote_control"]))}
+    if tag_warning:
+        out["warning"] = tag_warning
+    return out
+
+
+async def _tag_scope(spec: dict[str, Any]) -> str | None:
+    """Set the scope's tags; a failure is reported, never a reason not to start."""
+    try:
+        await gatewayclient.call("scopes", "scope_tag",
+                                 {"project": spec["project"], "scope": spec["scope"],
+                                  "tags": spec["tags"]})
+    except Exception as exc:  # noqa: BLE001 — any failure is reported
+        log.warning("cx: could not tag %s/%s: %s", spec["project"], spec["scope"], exc)
+        return f"the session started, but its scope was not tagged: {exc}"
+    return None
 
 
 async def _started_link(job: str, remote_control: bool) -> dict[str, Any]:
@@ -304,6 +366,9 @@ def _parse(args: dict[str, Any]) -> dict[str, Any]:
     brief = args.get("brief")
     if brief is not None and not isinstance(brief, bool):
         raise Refused("brief must be true or false")
+    replaces = args.get("replaces")
+    if replaces is not None and (not isinstance(replaces, str) or not _JOB.match(replaces)):
+        raise Refused("replaces must be a job id")
     return {
         "project": project, "scope": scope, "name": name,
         "prompt": prompt or None, "system_prompt": system_prompt or None,
@@ -319,6 +384,8 @@ def _parse(args: dict[str, Any]) -> dict[str, Any]:
         "pin": _flag(args.get("pin"), "pin"),
         "brief": brief is not False and not args.get("pin"),
         "started_by": started_by.strip() if started_by else None,
+        "replaces": replaces,
+        "tags": _tag_list(args.get("tags")),
     }
 
 
@@ -342,6 +409,15 @@ def _tool_list(value: Any, field: str = "disallowed_tools") -> list[str]:
         raise Refused(f"{field} holds {bad[0]!r}, which is not a tool name or a "
                       "tool rule such as Read(./**) or mcp__awm__*")
     return tools
+
+
+def _tag_list(value: Any) -> list[str] | None:
+    if value is None:
+        return None
+    items = value.split(",") if isinstance(value, str) else value
+    if not isinstance(items, list) or not all(isinstance(t, str) for t in items):
+        raise Refused("tags must be a list of tags")
+    return [t.strip() for t in items if t.strip()]
 
 
 def _autocompact(value: Any) -> int | None:
@@ -683,6 +759,86 @@ def brief_text(spec: dict[str, Any], caller_rec: dict[str, Any] | None) -> str:
                         report_to=report_to)
 
 
+# --- replace -----------------------------------------------------------------
+
+#: How much of the replaced session's conversation a fresh one starts with.
+TAIL_TURNS = 8
+
+
+def _with_tail(prompt: str | None, old: str) -> str | None:
+    """``prompt`` with the last turns of ``old``'s conversation appended."""
+    state = _read_json(config.jobs_dir() / old / "state.json")
+    session_id = state.get("sessionId")
+    if not isinstance(session_id, str) or not re.match(r"^[0-9A-Za-z-]+$", session_id):
+        return prompt
+    found = next(iter(config.transcripts_dir().glob(f"*/{session_id}.jsonl")), None)
+    if found is None:
+        return prompt
+    try:
+        with open(found, errors="replace") as fh:
+            tail = kept.transcript_tail(fh, turns=TAIL_TURNS)
+    except OSError:
+        return prompt
+    if not tail:
+        return prompt
+    return "\n\n".join(p for p in (
+        prompt, f"The session you replace (job {old}) ended with these turns:", tail) if p)
+
+
+async def _retire(old: str) -> None:
+    """Stop and remove the job a fresh start replaces, when cx started it.
+
+    Done here, after its tail is read, because removing a pinned job deletes
+    the state record that names its transcript.
+    """
+    rec = read_lineage(old)
+    if rec is None:
+        return
+    if rec.get("pinned") or old in pins.pinned():
+        out = await _stop_pinned(old)
+    else:
+        ok, detail = await run_claude_stop(old)
+        if ok:
+            await asyncio.to_thread(_record_stop, old)
+        out = {"ok": ok, "reason": detail}
+    if not out.get("ok"):
+        log.info("cx: replacing %s, which would not stop: %s", old, out.get("reason"))
+
+
+# --- adopt -------------------------------------------------------------------
+
+
+async def adopt(args: dict[str, Any], as_: str | None = None) -> dict[str, Any]:
+    """Give a job cx did not start a lineage record, so cx may resume and stop it.
+
+    For a session started by hand that a keeper now keeps.
+    """
+    reason = station_refusal() or caller_refusal(as_)
+    job = args.get("job")
+    if not reason and (not isinstance(job, str) or not _JOB.match(job)):
+        reason = "job must be a job id"
+    if not reason and read_lineage(job) is not None:
+        reason = f"job {job} already has a lineage record"
+    state = {} if reason else _read_json(config.jobs_dir() / job / "state.json")
+    if not reason and not state:
+        reason = f"job {job} has no state record"
+    if reason:
+        return {"ok": False, "reason": reason}
+    project, scope = _project_scope(state.get("cwd"))
+    pinned = job in pins.pinned()
+    record = {
+        "job": job, "name": state.get("name"), "project": project, "scope": scope,
+        "cwd": state.get("cwd"), "parent": None, "caller": caller_peer(as_) or as_ or "local",
+        "mode": DEFAULT_MODE, "remote_control": None, "model": None,
+        "started_at": _iso(time.time()), "started_epoch": time.time(),
+        "pinned": pinned, "brief": False, "adopted": True,
+    }
+    _write_lineage(job, record)
+    log.info("cx: adopted %s (%s)%s", job, record["name"], ", pinned" if pinned else "")
+    return {"ok": True, "job": job, "name": record["name"], "pinned": pinned,
+            "project": project, "scope": scope}
+
+
 # --- resume ------------------------------------------------------------------
 
 
@@ -692,7 +848,7 @@ async def resume(args: dict[str, Any], as_: str | None = None) -> dict[str, Any]
         return await _resume(args, as_)
     except Refused as exc:
         log.info("cx: resume refused — %s", exc)
-        return {"ok": False, "reason": str(exc)}
+        return refusal(exc)
     except OSError as exc:
         log.warning("cx: resume failed — %s", exc)
         return {"ok": False, "reason": f"resume failed: {exc}"}
@@ -718,9 +874,7 @@ async def _resume(args: dict[str, Any], as_: str | None) -> dict[str, Any]:
     session_id = state.get("sessionId")
     if not isinstance(session_id, str) or not _transcript_exists(session_id):
         raise Refused(f"job {job} has no transcript left to resume")
-    if sessions.daemon_pid() is None:
-        raise Refused("no claude code daemon is running — a session resumed now "
-                      "would land inside awm's control group")
+    await ensure_daemon("resumed")
     async with _START_LOCK:
         try:
             session = await launch.respawn(
@@ -765,11 +919,19 @@ async def stop(args: dict[str, Any], as_: str | None = None) -> dict[str, Any]:
     if reason:
         log.info("cx: stop refused — %s", reason)
         return {"ok": False, "reason": reason}
+    try:
+        # With no daemon a stop cannot reach the session, and `claude rm` on a
+        # pinned job would delete the conversation a resume needs.
+        await ensure_daemon("stopped", timeout=10.0)
+    except DaemonDown as exc:
+        log.info("cx: stop refused — %s", exc)
+        return refusal(exc)
     if rec.get("pinned") or job in pins.pinned():
         return await _stop_pinned(job)
     ok, detail = await run_claude_stop(job)
     if not ok:
         return {"ok": False, "job": job, "reason": detail}
+    await asyncio.to_thread(_record_stop, job)
     return {"ok": True, "job": job}
 
 
@@ -803,6 +965,24 @@ def _caller_refusal_for(caller_pid: Any, rec: dict[str, Any], verb: str) -> str 
     return f"a session may {verb} only the jobs it started"
 
 
+def _record_stop(job: str) -> None:
+    """Set the job's state record to ``stopped``, which `claude stop` leaves as it was.
+
+    The roster drops a stopped job, so the record is all that tells a stop from a
+    death once the job leaves `list`.
+    """
+    path = config.jobs_dir() / job / "state.json"
+    state = _read_json(path)
+    if not state:
+        return
+    tmp = path.with_name(".state.json.cx")
+    try:
+        tmp.write_text(json.dumps({**state, "state": "stopped"}, indent=2))
+        os.replace(tmp, path)
+    except OSError as exc:
+        log.warning("cx: could not record the stop of %s: %s", job, exc)
+
+
 async def run_claude_stop(job: str) -> tuple[bool, str]:
     proc = await asyncio.create_subprocess_exec(
         config.claude_bin(), "stop", job,
@@ -832,7 +1012,7 @@ def collect(project: str | None = None, scope: str | None = None,
     node = node_name()
     pinned = set(pins.pinned())
     rows = [{**_job_row(s, lineage.get(s.short) or _pending_for(s, pending), node),
-             "pinned": s.short in pinned}
+             "pinned": s.short in pinned, "recorded": s.short in lineage}
             for s in sessions.load() if s.has_record]
     panes = _tmux_panes()
     rows += [_interactive_row(rec, panes, node) for rec in _interactive_records()]
@@ -880,6 +1060,7 @@ def _job_row(s: sessions.Session, rec: dict[str, Any] | None,
         "started_at": rec.get("started_at") or _iso_ms(s.started_at_ms),
         "pool": sessions.is_ours(s) or sessions.was_ours(s),
         "brief": bool(rec.get("brief")),
+        "tags": rec.get("tags"),
     }
 
 

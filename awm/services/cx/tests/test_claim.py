@@ -6,9 +6,6 @@ import json
 
 import pytest
 
-TRUSTED = "/home/tony/agentic_workspace/projects/awm/svc-cx"
-
-
 @pytest.fixture
 def trust_file(tmp_path, monkeypatch):
     path = tmp_path / "claude.json"
@@ -16,6 +13,17 @@ def trust_file(tmp_path, monkeypatch):
         "hasTrustDialogAccepted": True}}}))
     monkeypatch.setenv("AWM_CX_TRUST_FILE", str(path))
     return path
+
+
+@pytest.fixture
+def trusted(trust_file, tmp_path):
+    """A real directory the trust file trusts, as a claim needs both."""
+    scope = tmp_path / "projects" / "awm" / "svc-cx"
+    scope.mkdir(parents=True)
+    data = json.loads(trust_file.read_text())
+    data["projects"][str(tmp_path)] = {"hasTrustDialogAccepted": True}
+    trust_file.write_text(json.dumps(data))
+    return str(scope)
 
 
 def test_trust_is_inherited_from_an_ancestor(trust_file):
@@ -80,29 +88,29 @@ async def test_an_untrusted_directory_is_refused_without_touching_a_session(
 
 
 async def test_a_claim_moves_the_newest_session_and_returns_it(
-        box, trust_file, monkeypatch):
+        box, trusted, monkeypatch):
     from awm.cx import claim
 
     monkeypatch.setenv("AWM_CX_ROTATE_AGE_S", "999999")
     _moves(monkeypatch, box, claim)
-    out = await claim.claim(TRUSTED)
-    assert out == {"session": "warmfresh", "cwd": TRUSTED}
+    out = await claim.claim(trusted)
+    assert out == {"session": "warmfresh", "cwd": trusted}
 
 
 async def test_two_claims_yield_one_session_and_one_miss(
-        box, trust_file, monkeypatch):
+        box, trusted, monkeypatch):
     from awm.cx import claim
 
     monkeypatch.setenv("AWM_CX_ROTATE_AGE_S", "999999")
     _moves(monkeypatch, box, claim)
-    first = await claim.claim(TRUSTED)
-    second = await claim.claim(TRUSTED)
+    first = await claim.claim(trusted)
+    second = await claim.claim(trusted)
     assert first["session"] == "warmfresh"
     assert second["session"] is None
 
 
 async def test_a_session_that_would_not_move_is_left_idle(
-        box, trust_file, monkeypatch):
+        box, trusted, monkeypatch):
     from awm.cx import claim
 
     monkeypatch.setenv("AWM_CX_ROTATE_AGE_S", "999999")
@@ -110,7 +118,7 @@ async def test_a_session_that_would_not_move_is_left_idle(
     monkeypatch.setattr(claim, "_type_command", lambda s, t: None)
     cleared = []
     monkeypatch.setattr(claim, "_abandon", lambda s: cleared.append(s.short))
-    out = await claim.claim(TRUSTED)
+    out = await claim.claim(trusted)
     assert out["session"] is None
     assert cleared == ["warmfresh"]
 
@@ -134,15 +142,15 @@ def _moves(monkeypatch, box, claim):
 
 
 async def test_a_claim_renames_the_session_out_of_the_pool(
-        box, trust_file, monkeypatch):
+        box, trusted, monkeypatch):
     """The whole point: the session stops advertising itself as a spare."""
     from awm.cx import claim, sessions
 
     monkeypatch.setenv("AWM_CX_ROTATE_AGE_S", "999999")
     typed = _moves(monkeypatch, box, claim)
-    out = await claim.claim(TRUSTED)
+    out = await claim.claim(trusted)
     assert out["session"] == "warmfresh"
-    assert typed == [f"/cd {TRUSTED}", "/rename claimed dunlin"]
+    assert typed == [f"/cd {trusted}", "/rename claimed dunlin"]
     s = {x.short: x for x in sessions.load()}["warmfresh"]
     assert s.name == "claimed dunlin"
     assert not sessions.is_ours(s)
@@ -150,19 +158,19 @@ async def test_a_claim_renames_the_session_out_of_the_pool(
 
 
 async def test_the_rename_comes_after_the_move_has_landed(
-        box, trust_file, monkeypatch):
+        box, trusted, monkeypatch):
     """The recheck between them asks whether the name still carries the pool's
     prefix, and the rename is what takes it away."""
     from awm.cx import claim
 
     monkeypatch.setenv("AWM_CX_ROTATE_AGE_S", "999999")
     typed = _moves(monkeypatch, box, claim)
-    await claim.claim(TRUSTED)
-    assert typed.index(f"/cd {TRUSTED}") < typed.index("/rename claimed dunlin")
+    await claim.claim(trusted)
+    assert typed.index(f"/cd {trusted}") < typed.index("/rename claimed dunlin")
 
 
 async def test_a_rename_that_will_not_type_still_hands_the_session_over(
-        box, trust_file, monkeypatch):
+        box, trusted, monkeypatch):
     """A session under the wrong name beats no session at all."""
     from awm import claudedaemon
 
@@ -178,8 +186,8 @@ async def test_a_rename_that_will_not_type_still_hands_the_session_over(
         real(s, text)
 
     monkeypatch.setattr(claim, "_type_command", refuse_rename)
-    out = await claim.claim(TRUSTED)
-    assert out == {"session": "warmfresh", "cwd": TRUSTED}
+    out = await claim.claim(trusted)
+    assert out == {"session": "warmfresh", "cwd": trusted}
 
 
 def test_the_claimed_name_keeps_the_pool_noun():

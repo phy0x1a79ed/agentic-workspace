@@ -58,17 +58,22 @@ the gateway logs a warning at boot if a station enables this service.
     awm reflection remove-other --apply # delete it
     awm reflection seed-other           # start one warm session now, or say why it is refused
 
-A dead job reads `stopped` in `list_other` when `claude stop` ended it, and `gone`
-when it died. **CAUTION** `reporting` reads this difference: `stopped` closes the
-session's task as done, and `gone` leaves it on the board, flagged as ended.
+`claude stop` drops a job from the roster and leaves its state record as it was.
+`stop_other` therefore sets the record's `state` to `stopped` itself. A dead job
+that the roster still holds reads `stopped` in `list_other` when its record says
+so, and `gone` otherwise. **CAUTION** `reporting` reads this record for a job
+missing from `list_other`. `stopped`, or a removed job directory, moves the
+session's card to Pending review. Any other state keeps the card in its column,
+flagged "not running, resumable".
 
 `list_other` derives the pool summary from the live session records. There is no
 stored pointer to "the current session", because a stored pointer is a second
 thing that has to agree with the records and it is the half that goes stale.
 
 Every knob is an environment variable on the service process. `AWM_CX_WANT=0`
-stops the pool without stopping the service. `AWM_CX_LOOP=0` stops the reconcile
-loop alone. `AWM_CX_ROTATE_AGE_S` sets the age at which a session is replaced.
+stops the pool without stopping the service. `AWM_CX_LOOP=0` stops seeding and
+rotation alone. The reconcile loop keeps adopting late starts, because cx
+refuses to stop or resume a job it holds no lineage record for. `AWM_CX_ROTATE_AGE_S` sets the age at which a session is replaced.
 `AWM_CX_PREFIX`, `AWM_CX_SEED_DIR`, `AWM_CX_MODEL`, `AWM_CX_EFFORT` and
 `AWM_CX_CLAUDE` shape what is seeded. `AWM_CX_PROJECTS` sets the root of the
 scope worktrees that `start_other` uses, and `AWM_CX_MCP_SOURCE` names the MCP config a
@@ -252,19 +257,19 @@ refuses to seed or start when no daemon is running. No daemon means nobody is
 using Claude Code on that node, and a cold first launch is the right answer
 there.
 
-A node that hosts kept seats needs a daemon from boot, so that social's keeper
-can resume them. `systemd/claude-daemon.service` runs one as a user unit, with
-`--origin service`. Only a transient daemon exits when its last client leaves,
-so this one stays up with no sessions. The node needs `loginctl enable-linger`
-for a user unit to run at boot. Install it:
+The `keep` service holds a daemon on every node from boot, in the user unit
+`awm-claude-daemon.service`. Before cx refuses a start, resume or stop, it asks
+`keep` to ensure the daemon. It refuses with `code: "daemon_down"` only when
+that fails. `awm/services/keep/` holds the unit's launch.
 
-1. Copy `systemd/claude-daemon.service` to `~/.config/systemd/user/`.
-2. Run `systemctl --user daemon-reload`.
-3. Run `systemctl --user enable claude-daemon.service`.
-
-**WARNING** Do not start the unit while a daemon runs. A service daemon makes
-a running transient daemon yield, and a takeover brings back only some of its
-sessions. The unit starts at the next boot.
+**CAUTION** cx launches each session through the user manager's bus under
+`/run/user/<uid>`, and reaches the daemon's sockets under `/tmp`. A gateway run as
+a sandboxed system unit must see both, so no `ProtectHome=yes` and no
+`PrivateTmp=yes` there. Hidden from cx, `claude --bg` starts inside the gateway's
+unit. That client starts a second daemon, which evicts keep's daemon and
+dies with the next gateway restart, taking every session with it. So with no user
+bus, cx compares the daemon's mount namespace with its own and refuses a start
+when they differ. A node with no systemd and one namespace launches directly.
 
 The transient systemd unit covers the residual race where the daemon dies
 between the check and the launch. It carries `KillMode=process`. Without that,

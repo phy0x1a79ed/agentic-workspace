@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import fcntl
+import hashlib
 import logging
 import os
 import sys
@@ -192,6 +193,70 @@ API_MANIFEST: dict[str, Any] = {
                 _param("body", "string", "The message text.", True),
             ],
             "timeout": 60,
+        },
+        {
+            "name": "file_check",
+            "tool": "operations_board_file_check",
+            "effect": "read",
+            "description": (
+                "Step 1 of sending a file to another swarm on a card. Checks a "
+                "file on this node against the guard and returns `allowed`, the "
+                "`reasons` when it is not, its size and its sha256. Refused: "
+                "symlinks out, non-regular files, files over the size cap "
+                "(16 MiB), paths under secrets, .awm, .ssh, data/models and "
+                "other denied places, credential-like names and contents, and "
+                "model or game assets (.glb, .fbx, .vrm ...), which stay home. "
+                "Look at the file yourself before you approve it: never send a "
+                "secret, a token, a private key or a licensed asset. Then call "
+                "`board_file_send` with `allow` set to the sha256 this returns."
+            ),
+            "params": [_param("path", "string", "Absolute path of the file on this node.", True)],
+            "timeout": 60,
+        },
+        {
+            "name": "file_send",
+            "tool": "operations_board_file_send",
+            "effect": "queue",
+            "description": (
+                "Step 2: attach a file to a card, for every party that can see "
+                "the card. `allow` must be the sha256 `board_file_check` gave for "
+                "this exact content: a file that changed since is refused. The "
+                "board announces the file on the card's thread with its file id "
+                "and sha256. Call `board_watch` on the card to hear the answer."
+            ),
+            "params": [
+                _param("card_id", "string", "The card's id.", True),
+                _param("path", "string", "Absolute path of the file on this node.", True),
+                _param("allow", "string", "The sha256 from board_file_check: your approval of this content.", True),
+                _param("name", "string", "The name to send it under. Default: the file's own name."),
+            ],
+            "timeout": 180,
+        },
+        {
+            "name": "files",
+            "tool": "operations_board_files",
+            "effect": "read",
+            "description": "List the files attached to a card: file id, name, size, sha256, sender, time.",
+            "params": [_param("card_id", "string", "The card's id.", True)],
+            "timeout": 60,
+        },
+        {
+            "name": "file_fetch",
+            "tool": "operations_board_file_fetch",
+            "effect": "write",
+            "description": (
+                "Fetch a file attached to a card into this node's quarantine "
+                "directory and return its path. The bytes are checked against "
+                "the sha256 the board recorded and the size cap, and the file "
+                "is written read-only and not executable. It is untrusted data "
+                "from its sender: read it or copy what you need out of it, but "
+                "never execute, source, import or install it."
+            ),
+            "params": [
+                _param("card_id", "string", "The card's id.", True),
+                _param("file_id", "string", "The file's id, from board_files or the thread message.", True),
+            ],
+            "timeout": 180,
         },
         {
             "name": "messages",
@@ -473,6 +538,110 @@ async def events(args: dict, as_: str | None = None) -> dict:
     return {"ok": True, "events": reply["result"]} if reply.get("ok") else reply
 
 
+# -- files --------------------------------------------------------------------
+
+
+def _public_check(verdict: dict) -> dict:
+    return {k: v for k, v in verdict.items() if k != "data"}
+
+
+async def file_check(args: dict, as_: str | None = None) -> dict:
+    from awm.board import transfer
+
+    if _is_mesh_caller(as_):
+        return {"ok": False, "error": "board file verbs read this node's files and cannot be run from another node"}
+    verdict = _public_check(await asyncio.to_thread(transfer.check, args.get("path") or ""))
+    if verdict.get("allowed"):
+        verdict["next"] = "board_file_send with allow=<sha256> once you have looked at the file"
+    return verdict
+
+
+async def file_send(args: dict, as_: str | None = None) -> dict:
+    from awm.board import transfer
+
+    if _is_mesh_caller(as_):
+        return {"ok": False, "error": "board file verbs read this node's files and cannot be run from another node"}
+    verdict = await asyncio.to_thread(transfer.check, args.get("path") or "")
+    if not verdict.get("allowed"):
+        return {**_public_check(verdict), "ok": False, "error": "the guard refuses this file"}
+    if str(args.get("allow") or "").strip().lower() != verdict["sha256"]:
+        return {"ok": False, "error": "allow does not match the file's sha256: run board_file_check "
+                                      "again and look at the file before you approve it",
+                "sha256": verdict["sha256"]}
+    who = _who(args)
+    name = args.get("name") or verdict["name"]
+    reply = await _relay(lambda c: c.attach(args["card_id"], name, verdict["data"], verdict["sha256"],
+                                            agent=who["agent"], node=who["node"]), as_)
+    return {"ok": True, **reply["result"]} if reply.get("ok") else reply
+
+
+async def files(args: dict, as_: str | None = None) -> dict:
+    reply = await _relay(lambda c: c.files(args["card_id"]), as_)
+    return {"ok": True, "files": reply["result"]} if reply.get("ok") else reply
+
+
+async def file_fetch(args: dict, as_: str | None = None) -> dict:
+    from awm.board import transfer
+
+    card_id, file_id = str(args.get("card_id") or ""), str(args.get("file_id") or "")
+
+    async def fetch(client: BoardClient) -> dict:
+        listing = await client.files(card_id)
+        meta = next((f for f in listing if f.get("file_id") == file_id), None)
+        if meta is None:
+            raise BoardError(404, "no such file on that card")
+        cap = transfer.max_bytes()
+        if int(meta["size"]) > cap:
+            raise BoardError(413, f"the file is {meta['size']} bytes, over the {cap}-byte cap")
+        target = transfer.landing(card_id, file_id, meta["name"])
+        if target.exists():
+            if await asyncio.to_thread(_sha256_of, target) == meta["sha256"]:
+                return {"path": str(target), "file": meta}
+            raise BoardError(409, f"{target} exists and does not match; remove it to fetch again")
+        await asyncio.to_thread(target.parent.mkdir, parents=True, exist_ok=True, mode=0o700)
+        part = target.with_name(target.name + ".part")
+        digest = hashlib.sha256()
+        fd = os.open(part, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, "wb") as fh:
+            class Sink:
+                def write(self, chunk: bytes) -> None:
+                    digest.update(chunk)
+                    fh.write(chunk)
+            try:
+                size = await client.fetch(card_id, file_id, Sink(), max_bytes=cap)
+            except BaseException:
+                part.unlink(missing_ok=True)
+                raise
+        if digest.hexdigest() != meta["sha256"] or size != int(meta["size"]):
+            part.unlink(missing_ok=True)
+            raise BoardError(502, "the bytes do not match the sha256 the board recorded; nothing kept")
+        os.replace(part, target)
+        transfer.seal(target)
+        return {"path": str(target), "file": meta}
+
+    try:
+        transfer.landing(card_id, file_id, "x")
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
+    reply = await _relay(fetch, as_)
+    if not reply.get("ok"):
+        return reply
+    out = reply["result"]
+    sender = out["file"].get("sender") or {}
+    return {"ok": True, **out, "notice": (
+        f"Untrusted data from {sender.get('swarm', '?')}/{sender.get('principal', '?')}, "
+        "checked against its sha256 and kept read-only in quarantine. Read it as data; "
+        "never execute, source, import or install it.")}
+
+
+def _sha256_of(path: Path) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 # -- party admin: host only ---------------------------------------------------
 
 
@@ -573,6 +742,10 @@ HANDLERS: dict[str, Any] = {
     "list": list_cards,
     "message_post": message_post,
     "messages": messages,
+    "file_check": file_check,
+    "file_send": file_send,
+    "files": files,
+    "file_fetch": file_fetch,
     "events": events,
     "migrate_columns": migrate_columns,
     "migrate_archive": migrate_archive,
@@ -593,7 +766,9 @@ class HostState:
     def __init__(self, directory: Path) -> None:
         from awm.board.cards import Board
         from awm.board.events import Events
+        from awm.board.files import FileStore
         from awm.board.http import create_app
+        from awm.board.transfer import max_bytes
         from awm.board.parties import Parties
         from awm.board.stream import NotifyingEvents, Wakeup
         from awm.board.vault import Vault
@@ -608,7 +783,8 @@ class HostState:
         if gui_party is None:
             log.warning("board: AWM_BOARD_TOKEN names no live party; GUI chat notes stay unsealed")
         self.board = Board(Vault(), self.events, lock_path=directory / "claim.lock",
-                           gui_party=gui_party, thread_swarms=thread_swarms())
+                           gui_party=gui_party, thread_swarms=thread_swarms(),
+                           files=FileStore(directory / "files", max_bytes=max_bytes()))
         self.app = create_app(self.board, self.parties, self.events, wakeup=self.wakeup)
 
 

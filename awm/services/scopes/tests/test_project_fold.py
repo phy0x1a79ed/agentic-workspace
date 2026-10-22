@@ -69,6 +69,13 @@ class TestNewProject:
         assert (projects_dir / "solo" / "main" / ".awm" / "context.md").exists()
         assert sorted(p.name for p in (projects_dir / "solo").iterdir() if p.name != ".bare") == ["main"]
 
+    def test_create_tags_the_scope_or_the_project_made_alone(self, scopes_workspace, seed_repo):
+        from awm.scopes import tags
+        scopes.create_scope(ScopeCreateRequest(
+            project="solo", new_project=True, clone_url=str(seed_repo), tags=["tony"]))
+        scopes.create_scope(ScopeCreateRequest(project="solo", scope="lab/ana", tags=["lab", "ana"]))
+        assert tags.load("solo") == {("solo", ""): ["tony"], ("solo", "lab/ana"): ["ana", "lab"]}
+
     def test_a_scope_is_required_unless_the_project_is_being_created(self, scopes_workspace, seed_repo):
         with pytest.raises(ValueError, match="new_project=true"):
             scopes.create_scope(ScopeCreateRequest(project="solo"))

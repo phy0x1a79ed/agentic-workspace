@@ -25,7 +25,7 @@ TOKEN = "signed.session.token"
 class _StubGate:
     """Accepts exactly one session token; never refreshes."""
 
-    async def authenticate(self, *, cookie=None, bearer=None):
+    async def authenticate(self, *, cookie=None, bearer=None, shape=None):
         return (cookie == TOKEN), None
 
     async def session_ttl_seconds(self) -> float:

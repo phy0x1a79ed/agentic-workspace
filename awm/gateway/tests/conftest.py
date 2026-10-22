@@ -117,3 +117,10 @@ def _isolated_usage_tally(tmp_path, monkeypatch):
     monkeypatch.setattr(usage, "SEED_PATH", tmp_path / "no-seed.txt")
     yield
     usage._reset_for_tests()
+
+
+@pytest.fixture(autouse=True)
+def _no_extra_roots(monkeypatch):
+    """Keep a node's AWM_SERVICE_ROOTS / AWM_PAGE_ROOTS out of discovery tests."""
+    monkeypatch.delenv("AWM_SERVICE_ROOTS", raising=False)
+    monkeypatch.delenv("AWM_PAGE_ROOTS", raising=False)

@@ -6,13 +6,11 @@ The realm owns the substrate. ``acquire`` brings up a ``docker compose`` project
 stdlib supervisor (``appliance/supervise.py``) which owns the engine and exposes
 ``GET /status`` + ``POST /save|/new|/load`` on a control port. These helpers are
 the only place that shells out to Docker or talks to that control port, so the
-handlers in :mod:`hub_adapter` stay thin and the eventual session-pool change
-(per-session ``-p <project>`` + allocated ports) is localized here.
+handlers in :mod:`hub_adapter` stay thin.
 
-Single-session defaults for now: one fixed compose project / container / ports /
-saves-volume. The compose file is parameterized by ``FACTORIO_*`` env vars so a
-pool pass only needs to vary those per session and drop the "at most one" guard
-in the adapter — no contract or schema change.
+Each world is its own ``docker compose -p <project>``. The base compose file is
+shared; a generated per-world override makes the world its kind (published game
+port, lab mods and saves, boot options).
 
 Handlers call these from a worker thread (ServiceAdapter runs sync handlers via
 ``asyncio.to_thread``), so the blocking ``subprocess`` + ``httpx.Client`` calls
@@ -21,7 +19,10 @@ here are safe.
 
 from __future__ import annotations
 
+import json
 import os
+import re
+import shutil
 import subprocess
 import time
 from pathlib import Path
@@ -30,13 +31,13 @@ import httpx
 
 from awm.persistence.databases import SERVICES_DIR
 
-# --- single-session fixed coordinates (the pool seam) ---------------------
+# --- the realm's coordinates ---------------------------------------------
 #
-# Overridable from the environment, and a test rig MUST override them. The
-# default compose project owns `rlm-factorio_factorio-saves`, the volume the
-# user's actual worlds live in, so a harness left on the default project runs
-# its throwaway worlds against the sacred saves and its teardown is one `down
-# -v` away from destroying them.
+# The world named ``realm`` keeps the coordinates it always had, so its compose
+# project still owns `rlm-factorio_factorio-saves`, the volume the user's actual
+# worlds live in. Every other world gets a project, container and control port
+# of its own. A test rig MUST override these: a harness left on the default
+# project runs its throwaway worlds against the sacred saves.
 
 PROJECT = os.environ.get("AWM_FACTORIO_PROJECT", "rlm-factorio")
 CONTAINER = os.environ.get("AWM_FACTORIO_CONTAINER", "rlm-factorio-appliance")
@@ -45,21 +46,40 @@ CONTROL_PORT = int(os.environ.get("AWM_FACTORIO_CONTROL_PORT", "12142"))
 RCON_PORT = 0                       # container-internal only, never published
                                     # (the supervisor owns RCON; see supervise.py)
 SAVES_VOL = "rlm-factorio-saves"    # named volume = the sacred-saves store
+REALM_NAME = "realm"
+REALM_VOLUME = f"{PROJECT}_factorio-saves"
+
+# Control and game ports for every world but the realm come from here.
+PORT_BASE = int(os.environ.get("AWM_FACTORIO_PORT_BASE", "12150"))
+PORT_SLOTS = 50
+
+KINDS = ("headless", "lab", "rendered")
+WORLD_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,39}$")
 
 # appliance/ sits at the service root, beside the awm/ package dir:
 #   awm/services/rlm-factorio/appliance/docker-compose.yml
 #   awm/services/rlm-factorio/awm/rlm_factorio/appliance.py  (this file)
 _SERVICE_ROOT = Path(__file__).resolve().parents[2]
-COMPOSE_FILE = _SERVICE_ROOT / "appliance" / "docker-compose.yml"
-BUILD_SCRIPT = _SERVICE_ROOT / "appliance" / "build.sh"
+APPLIANCE_DIR = _SERVICE_ROOT / "appliance"
+COMPOSE_FILE = APPLIANCE_DIR / "docker-compose.yml"
+BUILD_SCRIPT = APPLIANCE_DIR / "build.sh"
 IMAGE = "rlm-factorio/appliance:2.1.20"   # must match docker-compose.yml
 # The control mod is bind-mounted into the host and every seat from this one
 # directory, so a mod change ships with a container restart instead of an image
 # rebuild. Host and seats must load identical bytes or a seat cannot join.
 MOD_DIR = Path(os.environ.get(
     "AWM_FACTORIO_MOD_DIR",
-    str(_SERVICE_ROOT / "appliance" / "mods" / "game-bot-control")))
+    str(APPLIANCE_DIR / "mods" / "game-bot-control")))
 MOD_MOUNT = "/opt/factorio/mods/game-bot-control"
+MODS_ROOT = "/opt/factorio/mods"
+
+# A lab loads the fxlab mods beside the control mod. They live with the lab
+# tooling in game-bot, which owns them.
+LAB_MODS_DIR = Path(os.path.expanduser(os.environ.get(
+    "RLM_FACTORIO_LAB_MODS",
+    "~/agentic_workspace/projects/game-bot/factorio/research/lab/fxlab/mods")))
+LAB_MODS = ("fxlab-sbx", "fxlab-census")
+CAMERA_CONFIG = APPLIANCE_DIR / "config" / "config-camera.ini"
 
 # Bring-up budget: the engine needs to load (and possibly generate) a world
 # before it reports (InGame). The first-run image build is budgeted separately
@@ -85,13 +105,55 @@ def session_output_dir(session_id: str) -> Path:
     return path
 
 
-def compose_env(row: dict) -> dict[str, str]:
-    """``FACTORIO_*`` env that parameterizes the compose file for this session.
+def world_dir(session_id: str) -> Path:
+    """Host directory holding a world's compose override and, for a lab, its saves."""
+    path = SERVICES_DIR / "rlm-factorio" / "worlds" / session_id
+    path.mkdir(parents=True, exist_ok=True)
+    return path
 
-    Only the container name + published host ports vary per session; the volume
-    (and default container naming) is namespaced by ``docker compose -p`` for
-    free, so it needs no env var here.
+
+def saves_dir(row: dict) -> Path | None:
+    """The host directory a lab's saves are bound to; None for a volume-backed world."""
+    if row.get("kind") != "lab":
+        return None
+    path = world_dir(row["session_id"]) / "saves"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def world_coords(kind: str, name: str, taken_ports: set[int]) -> dict:
+    """Project, container and ports for a new world.
+
+    The realm keeps its fixed coordinates. Every other world takes the first
+    free control port in its range, and the game port beside it.
     """
+    if name == REALM_NAME and kind != "lab":
+        return {"compose_project": PROJECT, "container_name": CONTAINER,
+                "control_port": CONTROL_PORT, "game_port": GAME_PORT}
+    project = f"{PROJECT}-{'lab' if kind == 'lab' else 'world'}-{name}"
+    for slot in range(PORT_SLOTS):
+        control = PORT_BASE + 2 * slot
+        if control not in taken_ports and control + 1 not in taken_ports:
+            return {"compose_project": project, "container_name": f"{project}-appliance",
+                    "control_port": control, "game_port": control + 1}
+    raise ApplianceError(f"no free port pair left in {PORT_BASE}-{PORT_BASE + 2 * PORT_SLOTS}")
+
+
+def world_mods(kind: str) -> list[str]:
+    """Extra mod directories a world of this kind loads beside the control mod."""
+    if kind != "lab":
+        return []
+    return [str(LAB_MODS_DIR / name) for name in LAB_MODS]
+
+
+def row_mods(row: dict) -> list[str]:
+    raw = row.get("mods") or "[]"
+    return list(json.loads(raw) if isinstance(raw, str) else raw)
+
+
+def compose_env(row: dict) -> dict[str, str]:
+    """``FACTORIO_*`` env that parameterizes the compose file for this world."""
+    lab = row.get("kind") == "lab"
     return {
         "FACTORIO_CONTAINER": row.get("container_name") or CONTAINER,
         "FACTORIO_GAME_PORT": str(row.get("game_port") or GAME_PORT),
@@ -99,15 +161,54 @@ def compose_env(row: dict) -> dict[str, str]:
         "FACTORIO_OUTPUT_DIR": str(session_output_dir(
             row.get("session_id") or "default")),
         "FACTORIO_MOD_DIR": str(MOD_DIR),
+        "FACTORIO_CPUS": "2.0" if lab else "4.0",
+        "FACTORIO_MEMORY": "4g" if lab else "6g",
     }
 
 
-def _compose(project: str, env: dict[str, str], *args: str,
+def write_override(row: dict, boot: dict | None = None) -> Path:
+    """Write the compose override that makes this world its kind; return its path.
+
+    Only a rendered world publishes the game port. A lab binds its saves to a
+    host directory, loads the lab mods, and runs the lab's server and map
+    settings. ``boot`` picks the world the supervisor starts on. The file is
+    JSON, which compose reads as YAML.
+    """
+    boot = boot or {}
+    service: dict = {"environment": {
+        "BOOT_SAVE": boot.get("save") or "",
+        "BOOT_NEW": "1" if boot.get("create") else "",
+        "BOOT_PAUSED": "1" if boot.get("paused") else "",
+    }}
+    volumes = []
+    if row.get("kind") == "rendered":
+        service["ports"] = [f"{row.get('game_port') or GAME_PORT}:12140/udp"]
+    if row.get("kind") == "lab":
+        volumes.append(f"{saves_dir(row)}:/factorio/saves")
+        for cfg in ("server-settings", "map-gen-settings"):
+            volumes.append(f"{APPLIANCE_DIR / 'config' / f'lab-{cfg}.json'}"
+                           f":/factorio/config/{cfg}.json:ro")
+    for mod in row_mods(row):
+        volumes.append(f"{mod}:{MODS_ROOT}/{Path(mod).name}:ro")
+    if volumes:
+        service["volumes"] = volumes
+    path = world_dir(row["session_id"]) / "compose.json"
+    path.write_text(json.dumps({"services": {"factorio": service}}, indent=2))
+    return path
+
+
+def compose_files(row: dict) -> list[Path]:
+    override = world_dir(row["session_id"]) / "compose.json"
+    return [COMPOSE_FILE, override] if override.exists() else [COMPOSE_FILE]
+
+
+def _compose(row: dict, *args: str,
              timeout: float | None = None) -> subprocess.CompletedProcess:
-    cmd = ["docker", "compose", "-p", project, "-f", str(COMPOSE_FILE), *args]
+    files = [x for f in compose_files(row) for x in ("-f", str(f))]
+    cmd = ["docker", "compose", "-p", row.get("compose_project") or PROJECT, *files, *args]
     proc = subprocess.run(
         cmd, capture_output=True, text=True, timeout=timeout,
-        env={**os.environ, **env},
+        env={**os.environ, **compose_env(row)},
     )
     if proc.returncode != 0:
         raise ApplianceError(
@@ -115,6 +216,29 @@ def _compose(project: str, env: dict[str, str], *args: str,
             f"{proc.stderr.strip() or proc.stdout.strip()}"
         )
     return proc
+
+
+def stage_save(row: dict, save: str) -> str:
+    """Put ``save`` where a lab's supervisor boots from; return the save's name.
+
+    ``save`` is the name of a save in the realm's volume, or a path to a .zip
+    on this machine. The realm volume is mounted read-only, so a lab can never
+    write a real world.
+    """
+    dest = saves_dir(row)
+    if dest is None:
+        return save
+    src = Path(os.path.expanduser(save))
+    if save.endswith(".zip") and src.is_file():
+        shutil.copy(src, dest / src.name)
+        return src.stem
+    proc = subprocess.run(
+        ["docker", "run", "--rm", "-v", f"{REALM_VOLUME}:/s:ro", "-v", f"{dest}:/o",
+         "alpine:3", "cp", f"/s/{save}.zip", "/o/"],
+        capture_output=True, text=True, timeout=300)
+    if proc.returncode != 0:
+        raise ApplianceError(f"no realm save named {save!r}: {proc.stderr.strip()}")
+    return save
 
 
 def image_exists() -> bool:
@@ -143,23 +267,23 @@ def ensure_image() -> None:
         )
 
 
-def compose_up(project: str, env: dict[str, str]) -> None:
-    """Start the appliance container, detached, building the image if needed."""
+def compose_up(row: dict, boot: dict | None = None) -> None:
+    """Start the world's container, detached, building the image if needed."""
     ensure_image()
-    _compose(project, env, "up", "-d")
+    write_override(row, boot)
+    _compose(row, "up", "-d", "--force-recreate")
 
 
-def compose_down(project: str, env: dict[str, str]) -> None:
+def compose_down(row: dict) -> None:
     """Stop + remove the appliance container. The named saves volume is kept
     (no ``-v``) — it is the sacred-saves store and must survive release."""
-    _compose(project, env, "down", timeout=120)
+    _compose(row, "down", timeout=120)
 
 
-def is_container_running(project: str, env: dict[str, str]) -> bool:
-    """True if the compose project has a running container."""
+def is_container_running(row: dict) -> bool:
+    """True if the world's compose project has a running container."""
     try:
-        proc = _compose(project, env, "ps", "-q", "--status", "running",
-                        timeout=30)
+        proc = _compose(row, "ps", "-q", "--status", "running", timeout=30)
     except ApplianceError:
         return False
     return bool(proc.stdout.strip())
@@ -285,10 +409,35 @@ def seat_container_name(project: str, seat_id: str) -> str:
     return f"{project or PROJECT}-{seat_id}"
 
 
+CAMERA_CPUS, CAMERA_MEMORY = "2", "4g"
+
+
+def camera_cache_root() -> Path:
+    return output_root() / "camera-cache"
+
+
+def _camera_mounts() -> list[str]:
+    """Sprite caches mount read-only, so two cameras never race on a write.
+    Mesa's shader cache is multi-process safe."""
+    cache = camera_cache_root()
+    (cache / "mesa_shader_cache").mkdir(parents=True, exist_ok=True)
+    mounts = ["-v", f"{CAMERA_CONFIG}:/opt/factorio/config/config.ini:ro",
+              "-v", f"{cache / 'mesa_shader_cache'}:/root/.cache/mesa_shader_cache"]
+    for name in ("atlas-cache.dat", "crop-cache.dat"):
+        if (cache / name).exists():
+            mounts += ["-v", f"{cache / name}:/opt/factorio/{name}:ro"]
+    return mounts
+
+
 def seat_run(container: str, network: str, player_name: str,
-             *, output_dir: Path | None = None,
-             env: dict[str, str] | None = None) -> str:
-    """Start a seat container joined to ``network``; return its container id."""
+             *, output_dir: Path | None = None, mods: list[str] = (),
+             role: str = "player", env: dict[str, str] | None = None) -> str:
+    """Start a seat container joined to ``network``; return its container id.
+
+    A seat loads the host's extra ``mods`` too, or it cannot join. A camera
+    seat renders with the camera config and the shared sprite cache.
+    """
+    camera = role == "camera"
     cmd = [
         "docker", "run", "-d",
         "--name", container,
@@ -297,10 +446,14 @@ def seat_run(container: str, network: str, player_name: str,
         "-e", f"SEAT_NAME={player_name}",
         "-e", f"FACTORIO_HOST={SEAT_HOST_ALIAS}",
         "-e", f"FACTORIO_PORT={SEAT_GAME_PORT}",
-        "--cpus", SEAT_CPUS,
-        "--memory", SEAT_MEMORY,
+        "--cpus", CAMERA_CPUS if camera else SEAT_CPUS,
+        "--memory", CAMERA_MEMORY if camera else SEAT_MEMORY,
         "-v", f"{MOD_DIR}:{MOD_MOUNT}:ro",
     ]
+    for mod in mods:
+        cmd += ["-v", f"{mod}:{MODS_ROOT}/{Path(mod).name}:ro"]
+    if camera:
+        cmd += ["-e", "SEAT_UNMAP=1", *_camera_mounts()]
     if output_dir is not None:
         cmd += ["-v", f"{output_dir}:{SEAT_OUTPUT_DIR}"]
     for key, value in (env or {}).items():

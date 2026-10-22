@@ -359,6 +359,45 @@ def test_a_failed_scope_create_is_a_refusal(home, launched, monkeypatch):
     assert launched == []
 
 
+def _scope_calls(monkeypatch, fail=None):
+    from awm.cx import lifecycle
+
+    calls = []
+
+    async def call(service, fn, args=None, **kw):
+        calls.append((service, fn, args))
+        if fail:
+            raise RuntimeError(fail)
+        return {}
+
+    monkeypatch.setattr(lifecycle.gatewayclient, "call", call)
+    return calls
+
+
+def test_tags_go_on_the_scope_and_into_the_lineage(home, launched, monkeypatch):
+    from awm.cx import lifecycle
+
+    calls = _scope_calls(monkeypatch)
+    out = start({**BASE, "tags": "lab, ana"})
+    assert out["ok"] and "warning" not in out
+    assert calls == [("scopes", "scope_tag",
+                      {"project": "awm", "scope": "demo", "tags": ["lab", "ana"]})]
+    assert lifecycle.read_lineage(CHILD_JOB)["tags"] == ["lab", "ana"]
+
+
+def test_a_start_without_tags_leaves_the_scope_alone(home, launched, monkeypatch):
+    calls = _scope_calls(monkeypatch)
+    assert start(BASE)["ok"]
+    assert calls == []
+
+
+def test_a_failed_tag_is_a_warning_not_a_refusal(home, launched, monkeypatch):
+    _scope_calls(monkeypatch, fail="invalid tag 'Bad Tag'")
+    out = start({**BASE, "tags": ["Bad Tag"]})
+    assert out["ok"] is True and "invalid tag" in out["warning"]
+    assert len(launched) == 1
+
+
 # --- refusals ----------------------------------------------------------------
 
 
@@ -605,6 +644,24 @@ def test_adopt_pending_gives_the_late_job_its_record(home, monkeypatch):
     assert lifecycle.mode_of(os.getppid()) == "representative"
 
 
+def test_a_job_is_recorded_only_once_cx_holds_its_lineage(home, monkeypatch):
+    """The keeper adopts only a recorded job, because cx refuses to stop or
+    resume one it has no record of."""
+    from awm.cx import lifecycle
+
+    async def fail(**kw):
+        raise TimeoutError("late")
+
+    monkeypatch.setattr(lifecycle.launch, "launch", fail)
+    start(BASE)
+    home.add(CHILD_JOB, "demo", os.getppid(), started_ms=int(time.time() * 1000))
+    row = next(r for r in lifecycle.collect() if r["job"] == CHILD_JOB)
+    assert row["recorded"] is False
+    lifecycle.adopt_pending()
+    row = next(r for r in lifecycle.collect() if r["job"] == CHILD_JOB)
+    assert row["recorded"] is True
+
+
 def test_adopt_pending_ignores_a_session_older_than_the_start(home, monkeypatch):
     from awm.cx import lifecycle
 
@@ -660,6 +717,13 @@ def test_stop_ends_a_job_start_created(home, launched, stops):
     assert stops == [CHILD_JOB]
 
 
+def test_stop_records_the_stop_in_the_state_record(home, launched, stops):
+    start(BASE)
+    stop({"job": CHILD_JOB})
+    record = json.loads((home.jobs / CHILD_JOB / "state.json").read_text())
+    assert record["state"] == "stopped" and record["name"] == "demo"
+
+
 def test_stop_reports_a_failed_claude_stop(home, launched, monkeypatch):
     from awm.cx import lifecycle
 
@@ -670,6 +734,7 @@ def test_stop_reports_a_failed_claude_stop(home, launched, monkeypatch):
     start(BASE)
     out = stop({"job": CHILD_JOB})
     assert out["ok"] is False and out["reason"] == "no such job"
+    assert json.loads((home.jobs / CHILD_JOB / "state.json").read_text())["state"] == "working"
 
 
 @pytest.mark.parametrize("job", ["", "../x", "ZZZZZZZZ", None, 7, "aaaaaaaaa"])
@@ -1359,8 +1424,9 @@ async def test_the_list_verb_keeps_the_pool_summary(home, launched):
     from awm.cx import hub_adapter
 
     out = await hub_adapter.HANDLERS["list"]({})
-    assert set(out) == {"sessions", "pool"}
+    assert set(out) == {"sessions", "pool", "daemon"}
     assert {"warm", "want", "daemon_pid", "loop"} <= set(out["pool"])
+    assert {"state", "pid", "since", "cause"} <= set(out["daemon"])
 
 
 async def test_the_list_verb_applies_the_peer_refusal(home, launched, peers):
@@ -1470,8 +1536,19 @@ def _fake_cli(monkeypatch, ran, rm_code=0):
         code = rm_code if argv[1] == "rm" else 0
         return subprocess.CompletedProcess(argv, code, b"busy" if code else b"")
 
+    class Probe:
+        """A failed `rm` leaves the job in place."""
+
+        def worker_alive(self, job):
+            return False
+
+        def present(self, job):
+            return bool(rm_code)
+
     monkeypatch.setattr(lifecycle.cli, "stop_and_remove",
-                        lambda job, **kw: real(job, **{**kw, "run": run}))
+                        lambda job, **kw: real(job, **{**kw, "run": run, "probe": Probe(),
+                                                       "sleep": lambda s: None,
+                                                       "clock": iter(range(10**6)).__next__}))
 
 
 def test_stopping_a_pinned_job_unpins_and_removes_it(home, launched, monkeypatch):
@@ -1507,7 +1584,7 @@ def test_the_manifest_declares_effects_and_drops_status():
     from awm.cx.hub_adapter import API_MANIFEST
 
     fns = {f["name"]: f for f in API_MANIFEST["functions"]}
-    assert {"start", "list", "stop", "resume", "claim", "seed", "remove"} == set(fns)
+    assert {"start", "list", "stop", "resume", "adopt", "claim", "seed", "remove"} == set(fns)
     assert "status" not in fns and "wake" not in fns
     assert fns["start"]["effect"] == "write"
     assert fns["stop"]["effect"] == "write"
@@ -1611,3 +1688,74 @@ def test_a_cx_session_may_resume_only_its_own_jobs(home, respawned, monkeypatch)
     stopped_job(home, monkeypatch, parent="someone-else")
     out = resume({"job": CHILD_JOB, "_caller_pid": os.getpid()})
     assert not out["ok"] and "may resume only" in out["reason"] and not respawned
+
+
+def test_resume_without_a_daemon_asks_keep_and_says_daemon_down(home, respawned, monkeypatch,
+                                                                keep_calls):
+    stopped_job(home, monkeypatch)
+    home.set_workers({}, supervisor=2**22 + 12345)
+    out = resume({"job": CHILD_JOB})
+    assert out["ok"] is False and out["code"] == "daemon_down" and not respawned
+    assert keep_calls.calls[0][:2] == ("keep", "ensure")
+
+
+def test_resume_goes_ahead_once_keep_brings_the_daemon_up(home, respawned, monkeypatch,
+                                                          keep_calls):
+    stopped_job(home, monkeypatch)
+    home.set_workers({}, supervisor=2**22 + 12345)
+    keep_calls.answer.update(ok=True, hook=lambda: home.set_workers({}))
+    out = resume({"job": CHILD_JOB})
+    assert out["ok"] is True and respawned[0][0] == CHILD_JOB
+
+
+def test_stop_without_a_daemon_keeps_the_pinned_job(home, launched, stops, monkeypatch):
+    from awm.cx import lifecycle
+
+    removed: list[str] = []
+    monkeypatch.setattr(lifecycle.cli, "stop_and_remove",
+                        lambda job, **kw: removed.append(job) or {"removed": True})
+    monkeypatch.setattr(lifecycle.pins, "unpin", lambda job: removed.append(f"unpin {job}"))
+    start(BASE)
+    home.set_workers(home.workers(), supervisor=2**22 + 12345)
+    out = stop({"job": CHILD_JOB})
+    assert out["ok"] is False and out["code"] == "daemon_down"
+    assert stops == [] and removed == []
+
+
+def _transcript(home, session_id: str, turns: list[tuple[str, str]]) -> None:
+    from awm.cx import config
+
+    folder = config.transcripts_dir() / "-proj"
+    folder.mkdir(parents=True, exist_ok=True)
+    with open(folder / f"{session_id}.jsonl", "w") as fh:
+        for role, text in turns:
+            fh.write(json.dumps({"type": role, "message": {"content": text}}) + "\n")
+
+
+def test_a_replacing_start_carries_the_old_tail_and_retires_the_old_job(home, launched, stops,
+                                                                         monkeypatch):
+    stopped_job(home, monkeypatch, job="dddddddd", transcript=False)
+    _transcript(home, "dddddddd-sid", [("user", "where were we"), ("assistant", "on step 3")])
+    out = start({**BASE, "prompt": "carry on", "replaces": "dddddddd"})
+    assert out["ok"] is True
+    prompt = launched[0]["prompt"]
+    assert prompt.startswith("carry on") and "job dddddddd" in prompt and "on step 3" in prompt
+    assert stops == ["dddddddd"]
+    assert json.loads((home.jobs / "dddddddd" / "state.json").read_text())["state"] == "stopped"
+    from awm.cx import lifecycle
+    assert lifecycle.read_lineage(CHILD_JOB)["replaces"] == "dddddddd"
+
+
+def test_replaces_must_be_a_job_id(home, launched):
+    out = start({**BASE, "replaces": "../x"})
+    assert out["ok"] is False and "replaces" in out["reason"]
+
+
+def test_adopt_records_lineage_for_a_hand_started_job(home, monkeypatch):
+    from awm.cx import lifecycle
+
+    home.add("eeeeeeee", "seat - slack main", os.getpid())
+    out = asyncio.run(lifecycle.adopt({"job": "eeeeeeee"}))
+    assert out["ok"] is True and lifecycle.read_lineage("eeeeeeee")["adopted"] is True
+    again = asyncio.run(lifecycle.adopt({"job": "eeeeeeee"}))
+    assert again["ok"] is False and "already" in again["reason"]

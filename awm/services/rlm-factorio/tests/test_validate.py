@@ -64,3 +64,15 @@ def test_order_verbs_are_bounded():
         validate.check("throw", {"item": "defender-capsule", "count": 500})
     with pytest.raises(validate.ArgError):
         validate.check("order", {"order": 1, "timeout": 3600})
+
+
+def test_rules_and_tool_args_checked():
+    assert validate.check("tool", {"name": "look", "args": {"x": 1}, "rules": "realm"})
+    assert validate.check("sbx", {"verb": "sandbox_list"}) == {"verb": "sandbox_list"}
+    for verb, args in [("tool", {"name": "look", "args": [1]}),
+                       ("sbx", {"verb": "a b"}),
+                       ("research", {"name": "x", "rules": "god"}),
+                       ("blueprint_stamp", {"build_mode": "now"}),
+                       ("tool_sync", {"names": []})]:
+        with pytest.raises(validate.ArgError):
+            validate.check(verb, args)
