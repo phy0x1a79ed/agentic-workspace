@@ -219,7 +219,7 @@ async def test_request_human_picks_its_kind_from_the_arguments_when_none_is_give
     assert (await env.call("request_human", kind="review", reason="done via reason"))["state"] == "review"
     assert (await env.call("request_human", kind="blocked", reason="again", urgent=False))["state"] == "blocked"
     bad = await env.call("request_human", kind="sideways", reason="x")
-    assert bad["ok"] is False and "blocked or review" in bad["error"]
+    assert bad["ok"] is False and "blocked, review or approval" in bad["error"]
     assert (await env.call("request_human", kind="review"))["ok"] is False
 
 

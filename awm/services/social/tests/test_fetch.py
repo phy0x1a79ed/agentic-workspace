@@ -237,3 +237,66 @@ class TestEmitNoPersist:
         assert topic == "message"
         assert payload["text"] == "hi" and payload["direction"] == "in"
         assert payload["attachments"][0]["filename"] == "f.bin"
+
+
+class _SendConn:
+    """Sends, and lets the test deliver an inbound copy while the send is in flight."""
+
+    platform = "slack"
+    sends_files = False
+
+    def __init__(self, during=None):
+        self.during = during
+
+    async def send(self, channel, text, *, thread=None):
+        if self.during is not None:
+            await self.during()
+        return {"message_id": "7.1", "channel_id": "C1", "ts": "7.1"}
+
+
+class _Kind:
+    def __init__(self, kind):
+        self.kind = kind
+
+
+class TestRelayed:
+    @pytest.fixture()
+    def emitted(self, wired, monkeypatch):
+        out = []
+
+        class _Adapter:
+            async def emit(self, topic, payload):
+                out.append(payload)
+
+        monkeypatch.setattr(wired, "_adapter", _Adapter())
+        monkeypatch.setattr(wired, "_relayed", {})
+        monkeypatch.setattr(wired, "_relaying", {})
+        return out
+
+    async def test_copy_of_a_personal_send_is_relayed(self, wired, emitted):
+        wired._connectors["me"] = _SendConn()
+        wired._accounts["me"] = _Kind("user")
+        await wired._h_send({"account": "me", "channel": "C1", "text": "approve"})
+        await wired._on_message(_inbound("bot", channel_id="C1", sender_id="U1",
+                                         text="approve", message_id="7.1", ts="7.1"))
+        await wired._on_message(_inbound("bot", channel_id="C1", sender_id="U1",
+                                         text="approve", message_id="7.2", ts="7.2"))
+        assert [p["relayed"] for p in emitted] == [True, False]
+
+    async def test_copy_arriving_mid_send_is_relayed(self, wired, emitted):
+        async def deliver():
+            await wired._on_message(_inbound("bot", channel_id="C1", sender_id="U1",
+                                             text="approve", message_id="7.1", ts="7.1"))
+        wired._connectors["me"] = _SendConn(during=deliver)
+        wired._accounts["me"] = _Kind("user")
+        await wired._h_send({"account": "me", "channel": "C1", "text": "approve"})
+        assert emitted[0]["relayed"] is True
+        assert wired._relaying["slack"] == 0
+
+    async def test_bot_send_is_not_tracked(self, wired, emitted):
+        wired._connectors["bot"] = _SendConn()
+        wired._accounts["bot"] = _Kind("bot")
+        await wired._h_send({"account": "bot", "channel": "C1", "text": "hi"})
+        await wired._on_message(_inbound("bot", channel_id="C1", sender_id="U1",
+                                         text="approve", message_id="7.1", ts="7.1"))
+        assert emitted[0]["relayed"] is False
