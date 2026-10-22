@@ -22,6 +22,7 @@ from awm.config import caller_peer, peer_relation
 from awm.gatewayclient import ServiceAdapter, spawn_supervised
 
 from awm.reporting import DOMAIN, config
+from awm.reporting.approvals import Approvals
 from awm.reporting.commands import Commands
 from awm.reporting.federation import Federation
 from awm.reporting.ledger import Ledger
@@ -244,10 +245,17 @@ API_MANIFEST: dict[str, Any] = {
                 "moves the card back to Active. `kind` review: the work is "
                 "ready for Tony to look at. The card moves to Pending review "
                 "with your `summary`. Call it as the last step of a task. It "
-                "sends no message: Tony sees the card on his board."
+                "sends no message: Tony sees the card on his board. `kind` "
+                "approval: ask an Arbutus admin to approve the `bundle` you "
+                "wrote in ~/.local/share/arbutus-approvals for "
+                "~/.ssh/awm-admin-approve. It posts the bundle to Slack "
+                "#arbutus and moves the card to Blocked. When Tony or Ryan "
+                "replies approve or deny in that thread, a line is typed into "
+                "your session."
             ),
             "params": [
-                _param("kind", "string", "`blocked` (default) or `review`."),
+                _param("kind", "string", "`blocked` (default), `review` or `approval`."),
+                _param("bundle", "string", "For approval: the bundle's NAME, from NAME.bundle."),
                 _param("reason", "string", "For blocked: what you need from Tony, in one or two sentences."),
                 _param("urgent", "boolean", "For blocked: send a Discord message now. Default false."),
                 _param("summary", "string", "For review: what was done and where to look, in a few sentences."),
@@ -324,6 +332,9 @@ class Runtime:
         self.loop = Loop(self.cx, on_rows=self._on_rows)
         self.subscriber: Subscriber | None = None
         self.commands = Commands(self.fed, self.cx)
+        self.approvals = Approvals(on_decided=self.tasks.approval_decided)
+        if config.approval_channel() is not None:
+            self.tasks.approvals = self.approvals
         self.board_problem: str | None = None
         target = config.board_target()
         if isinstance(target, str):
@@ -351,6 +362,8 @@ class Runtime:
         if not self.door:
             return
         spawn_supervised("reporting-commands", self.commands.run)
+        if self.tasks.approvals is not None:
+            spawn_supervised("reporting-approvals", self.approvals.run)
         if self.subscriber is not None:
             spawn_supervised("reporting-subscribe", self.subscriber.run)
         else:
