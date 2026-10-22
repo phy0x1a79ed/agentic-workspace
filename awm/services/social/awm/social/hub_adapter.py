@@ -24,6 +24,7 @@ import base64
 import logging
 import os
 import shutil
+import time
 from typing import Any
 
 from awm import config
@@ -59,6 +60,17 @@ _keeper: keeper_mod.Keeper | None = None
 # dedupe is best-effort, so a rare re-emit after a clear is acceptable).
 _seen: set[tuple[str, str, str]] = set()
 _SEEN_MAX = 4096
+
+# What social posted through a person's own account (kind "user"), so the copy
+# that comes back in through a bot is never taken for that person typing it.
+# ``_relayed`` holds (platform, channel_id, ts) of finished sends. ``_relaying``
+# counts sends still in flight per platform: the bot's copy can arrive before
+# the send returns its ts, so anything inbound on that platform meanwhile is
+# flagged too. A consumer that acts on a person's word, such as an admin
+# approval, ignores a message flagged ``relayed``.
+_relayed: dict[tuple[str, str, str], float] = {}
+_relaying: dict[str, int] = {}
+_RELAYED_MAX = 4096
 
 
 # ---------------------------------------------------------------------------
@@ -128,7 +140,9 @@ async def _on_message(inbound: connectors.InboundMessage) -> None:
         _seen.add(key)
     if _adapter is not None:
         awm_user = _dao.lookup(inbound.platform, inbound.sender_id) or ""
-        await _adapter.emit("message", _msg_to_dict(inbound, awm_user))
+        payload = _msg_to_dict(inbound, awm_user)
+        payload["relayed"] = _is_relayed(inbound)
+        await _adapter.emit("message", payload)
     held = _dao.holder(inbound.account, inbound.channel_id) if inbound.to_holder else None
     if held:
         _pusher.push(held["node"], held["job"], seats.push_line(inbound))
@@ -237,8 +251,33 @@ async def _h_send(args: dict) -> dict:
         edited = await conn.edit_ack(str(args["ack_ref"]), text, **extra)
         if edited is not None:
             return {"ok": True, "edited": True, **edited}
-    sent = await conn.send(args["channel"], text, thread=args.get("thread"), **extra)
+    cfg = _accounts.get(args["account"])
+    personal = cfg is not None and cfg.kind == "user"
+    if not personal:
+        sent = await conn.send(args["channel"], text, thread=args.get("thread"), **extra)
+        return {"ok": True, **sent}
+    _relaying[conn.platform] = _relaying.get(conn.platform, 0) + 1
+    try:
+        sent = await conn.send(args["channel"], text, thread=args.get("thread"), **extra)
+        _note_relayed(conn.platform, sent)
+    finally:
+        _relaying[conn.platform] -= 1
     return {"ok": True, **sent}
+
+
+def _note_relayed(platform: str, sent: dict) -> None:
+    if len(_relayed) >= _RELAYED_MAX:
+        cutoff = time.monotonic() - 3600
+        for key in [k for k, at in _relayed.items() if at < cutoff] or list(_relayed):
+            del _relayed[key]
+    ts = sent.get("ts") or sent.get("message_id") or ""
+    if ts:
+        _relayed[(platform, str(sent.get("channel_id") or ""), str(ts))] = time.monotonic()
+
+
+def _is_relayed(m: connectors.InboundMessage) -> bool:
+    return (_relaying.get(m.platform, 0) > 0
+            or (m.platform, m.channel_id, m.message_id) in _relayed)
 
 
 async def _h_react(args: dict) -> dict:
