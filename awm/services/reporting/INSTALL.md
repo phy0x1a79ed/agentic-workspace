@@ -190,7 +190,7 @@ deletes it when a result says the task is no longer blocked.
 | `AWM_REPORTING_NEW_AGENT_PROJECT`, `AWM_REPORTING_NEW_AGENT_SCOPE` | where `/new-agent` starts a session (default `awm`, `dev`). The lifecycle brief tells the agent to move to its work's scope |
 | `AWM_REPORTING_MESSAGE_BACKLOG_S` | how old a message card may be and still be queued by a catch-up (default 3 days) |
 | `AWM_APPROVAL_CHANNEL` | `account:channel` where admin approval requests are posted (default on swarm `tony`: `slack-bot:C0C9XNR77ML`, #arbutus). Unset elsewhere, which turns approvals off |
-| `AWM_APPROVAL_ADMINS` | `slack-user-id=name,…`, the people whose reply decides a request (default on swarm `tony`: Tony) |
+| `AWM_APPROVAL_ADMINS` | `slack-user-id=name,…`, the people whose reply decides a request (default on swarm `tony`: Tony and Ryan) |
 | `AWM_ADMIN_APPROVE` | the approve script (default `~/.ssh/awm-admin-approve`). A node without it takes no approvals |
 | `ARB_BUNDLES`, `AWM_APPROVAL_PENDING` | where agents write bundles (default `~/.local/share/arbutus-approvals`) and where the frozen copies wait (default `~/.ssh/admin-approvals/pending`) |
 
