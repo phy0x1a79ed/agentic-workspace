@@ -333,7 +333,7 @@ class Runtime:
         self.subscriber: Subscriber | None = None
         self.commands = Commands(self.fed, self.cx)
         self.approvals = Approvals(on_decided=self.tasks.approval_decided)
-        if config.approval_channel() is not None:
+        if config.approval_channel() is not None and config.admin_approve_cmd().exists():
             self.tasks.approvals = self.approvals
         self.board_problem: str | None = None
         target = config.board_target()
@@ -359,11 +359,11 @@ class Runtime:
     def spawn(self) -> None:
         spawn_supervised("reporting-reconcile", self.loop.run)
         spawn_supervised("reporting-journals", self.tasks.subscribe)
+        if self.tasks.approvals is not None:
+            spawn_supervised("reporting-approvals", self.approvals.run)
         if not self.door:
             return
         spawn_supervised("reporting-commands", self.commands.run)
-        if self.tasks.approvals is not None:
-            spawn_supervised("reporting-approvals", self.approvals.run)
         if self.subscriber is not None:
             spawn_supervised("reporting-subscribe", self.subscriber.run)
         else:
