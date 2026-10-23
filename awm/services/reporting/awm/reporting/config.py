@@ -154,7 +154,7 @@ def dm_target() -> tuple[str, str] | None:
 
 # The tony swarm's Arbutus admins answer approvals in Slack #arbutus.
 DEFAULT_APPROVAL_CHANNEL = "slack-bot:C0C9XNR77ML"
-DEFAULT_APPROVAL_ADMINS = "U01Q4CDSTFX=tony"
+DEFAULT_APPROVAL_ADMINS = "U01Q4CDSTFX=tony,UC7RUF67P=ryan"
 
 
 def approval_channel() -> tuple[str, str] | None:
