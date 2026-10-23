@@ -226,6 +226,10 @@ line came from. Newlines become ` ⏎ `. Text past 1500 characters is cut, and a
 - **Delivery.** Each holder has one ordered queue. A refused line (the holder
   sits at a dialog) is retried with backoff for 2 minutes, then dropped.
   History still holds it.
+- **Quiet threads.** A bot send with `quiet=true` keeps the replies in that
+  message's thread from the holder, for good. `reporting` posts each admin
+  approval request this way, so the #arbutus holder never answers an
+  `approve` meant for the approval handler.
 - **Discord DM.** A Discord DM carries the operator's notifications and slash
   commands. An operator's DM is also a seat, so a holder hears its plain
   messages. The holder never hears a bot post, a system or command message, or

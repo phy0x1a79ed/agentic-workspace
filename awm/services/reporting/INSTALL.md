@@ -227,7 +227,8 @@ the life of the process, so a second copy of the service sweeps nothing.
 for the approve script. It runs on the agent's own node, front door or not,
 because the approve script and the ssh gate it opens live there. The service
 copies the bundle into the pending directory, which the admin-gate hook keeps
-sessions out of, and posts it to the approval channel. An admin's `approve` or
+sessions out of, and posts it to the approval channel as a quiet thread, so
+the channel's seat holder never sees the replies. An admin's `approve` or
 `deny` in that post's thread decides it. Approving runs the approve script on
 the frozen copy with the admin named as approver.
 

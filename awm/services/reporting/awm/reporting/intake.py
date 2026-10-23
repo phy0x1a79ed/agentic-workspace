@@ -111,8 +111,11 @@ def event_line(type_: str, card: dict) -> str | None:
 
 
 async def send_social(account: str, channel: str, text: str, *, ack_ref: str = "",
-                      files: list[dict] | None = None, thread: str = "") -> dict:
+                      files: list[dict] | None = None, thread: str = "",
+                      quiet: bool = False) -> dict:
     args = {"account": account, "channel": channel, "text": text}
+    if quiet:
+        args["quiet"] = True
     if ack_ref:
         args["ack_ref"] = ack_ref
     if files:

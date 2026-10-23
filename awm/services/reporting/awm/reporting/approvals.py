@@ -166,7 +166,7 @@ class Approvals:
                "account": account, "channel": channel, "post_ts": "",
                "created": time.time(), "state": PENDING}
         try:
-            sent = await self._post(account, channel, request_text(req))
+            sent = await self._post(account, channel, request_text(req), quiet=True)
         except Exception:
             shutil.rmtree(frozen, ignore_errors=True)
             raise
