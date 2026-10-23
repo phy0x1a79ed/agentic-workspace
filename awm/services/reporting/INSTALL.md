@@ -17,7 +17,7 @@ Two parts in one service.
 the tasks its sessions work on and shows them on the Swarm board in Trilium. The
 ledger is the source of truth and the board only displays it. Claude Code hooks
 and three agent verbs (`task_claim`, `task_track` and `request_human`, whose
-`kind` is `blocked` or `review`) drive it. The reconcile loop closes a task when its
+`kind` is `blocked`, `review` or `approval`) drive it. The reconcile loop closes a task when its
 session ends, and a session's journal posts append to its card.
 
 **The front door** runs intake only where `AWM_FRONT_DOOR=1`. It listens to
@@ -189,6 +189,10 @@ deletes it when a result says the task is no longer blocked.
 | `AWM_REPORTING_TRILIUM_URL` | where Tony opens a note from, without the `#`, for the link in that message (default: this node's edge URL plus `/trilium`) |
 | `AWM_REPORTING_NEW_AGENT_PROJECT`, `AWM_REPORTING_NEW_AGENT_SCOPE` | where `/new-agent` starts a session (default `awm`, `dev`). The lifecycle brief tells the agent to move to its work's scope |
 | `AWM_REPORTING_MESSAGE_BACKLOG_S` | how old a message card may be and still be queued by a catch-up (default 3 days) |
+| `AWM_APPROVAL_CHANNEL` | `account:channel` where admin approval requests are posted (default on swarm `tony`: `slack-bot:C0C9XNR77ML`, #arbutus). Unset elsewhere, which turns approvals off |
+| `AWM_APPROVAL_ADMINS` | `slack-user-id=name,…`, the people whose reply decides a request (default on swarm `tony`: Tony) |
+| `AWM_ADMIN_APPROVE` | the approve script (default `~/.ssh/awm-admin-approve`). A node without it takes no approvals |
+| `ARB_BUNDLES`, `AWM_APPROVAL_PENDING` | where agents write bundles (default `~/.local/share/arbutus-approvals`) and where the frozen copies wait (default `~/.ssh/admin-approvals/pending`) |
 
 ## Task identity
 
@@ -220,6 +224,27 @@ outside its operators table, so a command that arrives here comes from Tony.
 
 The reconcile loop holds a non-blocking lock on `<state>/reconcile.lock` for
 the life of the process, so a second copy of the service sweeps nothing.
+
+## Admin approvals
+
+`request_human` with `kind: approval` asks an Arbutus admin to approve a bundle
+for the approve script. It runs on the agent's own node, front door or not,
+because the approve script and the ssh gate it opens live there. The service
+copies the bundle into the pending directory, which the admin-gate hook keeps
+sessions out of, and posts it to the approval channel. An admin's `approve` or
+`deny` in that post's thread decides it. Approving runs the approve script on
+the frozen copy with the admin named as approver.
+
+The thread reply is the only grant. No verb approves.
+
+**CAUTION** Agents can post as Tony through his own Slack account. `social`
+marks a message it sent through a person's account as `relayed`, and the
+handler ignores it, so a reply only counts when it comes from Tony's Slack
+client. Driving his Slack in a browser bypasses `social` and this check.
+
+**CAUTION** The handler hears replies on `social`'s live `message` topic. A
+reply sent while the service restarts is lost. The request stays pending
+until an admin replies again or it expires after 24 hours.
 
 ## Ops notices
 
