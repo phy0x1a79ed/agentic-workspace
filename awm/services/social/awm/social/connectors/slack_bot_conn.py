@@ -208,9 +208,13 @@ class SlackBotConnector(Connector):
 
     async def _sync_channel(self, cid: str, name: str = "") -> None:
         """Pull everything in one chat newer than its cursor, threads included."""
+        # An empty chat's first sync stores "0", and Slack rejects an `oldest`
+        # of zero with invalid_ts_oldest, which wedged such a chat for good.
         since = self.history.synced_ts(cid)
-        window = (f"{max(float(since) - THREAD_WINDOW_S, 0.0):.6f}"
-                  if since else None)
+        if since and float(since) <= 0:
+            since = None
+        start = float(since) - THREAD_WINDOW_S if since else 0.0
+        window = f"{start:.6f}" if start > 0 else None
         parents = await self._paged(
             "conversations.history", "messages", channel=cid, oldest=window,
             cap=None if since else BACKFILL_MAX)
