@@ -21,6 +21,8 @@ def door_env(monkeypatch, tmp_path):
     monkeypatch.setenv("AWM_REPORTING_DB", str(tmp_path / "reporting.db"))
     monkeypatch.setenv("AWM_REPORTING_STATE", str(tmp_path / "state"))
     monkeypatch.setenv("AWM_CX_PROJECTS", str(tmp_path / "projects"))
+    (tmp_path / "awm-admin-approve").touch()
+    monkeypatch.setenv("AWM_ADMIN_APPROVE", str(tmp_path / "awm-admin-approve"))
     for name in ("AWM_BOARD_URL", "AWM_BOARD_TOKEN"):
         monkeypatch.delenv(name, raising=False)
 
