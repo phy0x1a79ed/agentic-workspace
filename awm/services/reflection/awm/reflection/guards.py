@@ -138,7 +138,28 @@ def current_screen(screen: str) -> str:
     return termscreen.render(screen) if "\x1b" in screen else screen
 
 
+# The prompt box: a rule, the `❯` input line (more lines for multi-line input),
+# a rule. Claude Code paints a dialog in its place, so a marker above a visible
+# box is transcript text quoting a dialog, and it once deafened every seat whose
+# agent had written "Do you want to …" in a reply.
+_RULE = re.compile(r"^\s*[╭╰]?─{10,}")
+_PROMPT_LINE = re.compile(r"^\s*│?\s*[❯>]")
+_PROMPT_BOX_MAX_LINES = 12
+
+
+def below_prompt_box(screen: str) -> str:
+    """The part of ``screen`` under its last prompt box, or all of it with no box."""
+    lines = screen.split("\n")
+    for top in range(len(lines) - 2, -1, -1):
+        if not (_RULE.match(lines[top]) and _PROMPT_LINE.match(lines[top + 1])):
+            continue
+        for bottom in range(top + 2, min(len(lines), top + 2 + _PROMPT_BOX_MAX_LINES)):
+            if _RULE.match(lines[bottom]):
+                return "\n".join(lines[bottom + 1:])
+    return screen
+
+
 def modal_on_screen(screen: str) -> Optional[str]:
     """The marker that shows a modal or permission prompt on ``screen``, or None."""
-    tail = current_screen(screen)[-_SCREEN_TAIL_CHARS:].lower()
+    tail = below_prompt_box(current_screen(screen))[-_SCREEN_TAIL_CHARS:].lower()
     return next((m for m in _MODAL_MARKERS if m in tail), None)
