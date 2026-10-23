@@ -235,9 +235,14 @@ class Approvals:
     async def _close(self, req: dict, state: str, admin: str, text: str) -> str:
         req.update(state=state, decided_by=admin, decided_at=time.time())
         self._save(req)
-        line = (f"Admin approval {req['name']} (ref {req['ref']}) is {state}, by {admin} in Slack. "
-                + ("Run scripts/tf --approval " + req["name"] + " for its terraform changes."
-                   if state == APPROVED else "Nothing was granted."))
+        line = f"Admin approval {req['name']} (ref {req['ref']}) is {state}, by {admin} in Slack."
+        if state != APPROVED:
+            line += " Nothing was granted."
+        else:
+            if req.get("ssh"):
+                line += f" Its ssh windows are open for {req['minutes']} minutes."
+            if req.get("tf"):
+                line += f" Run scripts/tf --approval {req['name']} for its terraform changes."
         if req.get("job"):
             try:
                 await asyncio.to_thread(self._tell, req["job"], line)
