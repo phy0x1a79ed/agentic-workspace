@@ -58,6 +58,8 @@ class _FakeSlack:
             return web.json_response({"ok": True, "channels": [
                 {"id": "D1", "is_im": True, "user": "U2"}]})
         if method == "conversations.history":
+            if "oldest" in form and float(form["oldest"]) <= 0:
+                return web.json_response({"ok": False, "error": "invalid_ts_oldest"})
             since = float(form.get("oldest") or 0)
             return self._page("messages", self._top_level(form["channel"], since), form)
         if method == "conversations.replies":
@@ -262,3 +264,23 @@ async def test_sync_pages_and_catches_replies_on_old_threads(awm_workspace):
     assert texts == ["old-thread reply missed", "recent-thread reply",
                      "new 0", "new 1", "new 2", "new 3", "new 4"]
     assert store.synced_ts("bot", "D1") == ts(cursor + 14)
+
+
+async def test_a_chat_first_synced_empty_syncs_once_it_has_messages(awm_workspace):
+    from awm.social import dao
+
+    dao.init()
+    store = dao.SocialDAO()
+    fake = _FakeSlack()
+    store.set_synced("bot", "D1", "0")
+
+    await fake.start()
+    conn = _connector(fake, store)
+    try:
+        await conn.sync()
+    finally:
+        await conn.close()
+        await fake.stop()
+
+    assert [r["text"] for r in store.history("bot", channel_id="D1")] == ["old"]
+    assert store.synced_ts("bot", "D1") == "100.000001"
