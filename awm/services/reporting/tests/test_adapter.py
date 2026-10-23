@@ -107,7 +107,7 @@ async def test_convert_writes_only_when_dry_run_is_explicitly_false(monkeypatch)
 
 def test_request_human_takes_a_kind_and_old_arguments_still_pick_one():
     params = {p["name"]: p for p in functions()["request_human"]["params"]}
-    assert set(params) == {"kind", "reason", "urgent", "summary"}
+    assert set(params) == {"kind", "reason", "urgent", "summary", "bundle"}
     assert not any(p.get("required") for p in params.values())
 
 

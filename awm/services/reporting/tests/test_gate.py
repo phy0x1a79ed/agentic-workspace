@@ -66,7 +66,7 @@ async def test_start_with_the_flag_on_follows_the_board_and_the_commands(monkeyp
     spawned = []
     monkeypatch.setattr(hub_adapter, "spawn_supervised", lambda name, *a: spawned.append(name))
     await hub_adapter._on_start()
-    assert spawned == ["reporting-reconcile", "reporting-journals", "reporting-commands",
+    assert spawned == ["reporting-reconcile", "reporting-journals", "reporting-commands", "reporting-approvals",
                        "reporting-subscribe"]
     assert hub_adapter.RUNTIME.door
 
