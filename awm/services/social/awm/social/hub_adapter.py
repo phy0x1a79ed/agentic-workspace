@@ -144,7 +144,8 @@ async def _on_message(inbound: connectors.InboundMessage) -> None:
         payload["relayed"] = _is_relayed(inbound)
         await _adapter.emit("message", payload)
     held = _dao.holder(inbound.account, inbound.channel_id) if inbound.to_holder else None
-    if held:
+    if held and not _dao.is_quiet(inbound.account, inbound.channel_id,
+                                  inbound.thread_id or inbound.message_id):
         _pusher.push(held["node"], held["job"], seats.push_line(inbound))
 
 
@@ -255,6 +256,8 @@ async def _h_send(args: dict) -> dict:
     personal = cfg is not None and cfg.kind == "user"
     if not personal:
         sent = await conn.send(args["channel"], text, thread=args.get("thread"), **extra)
+        if args.get("quiet"):
+            _quiet(args["account"], args["channel"], sent)
         return {"ok": True, **sent}
     _relaying[conn.platform] = _relaying.get(conn.platform, 0) + 1
     try:
@@ -263,6 +266,12 @@ async def _h_send(args: dict) -> dict:
     finally:
         _relaying[conn.platform] -= 1
     return {"ok": True, **sent}
+
+
+def _quiet(account: str, channel: str, sent: dict) -> None:
+    ts = str(sent.get("ts") or sent.get("message_id") or "")
+    if ts:
+        _dao.quiet_thread(account, str(sent.get("channel_id") or channel), ts)
 
 
 def _note_relayed(platform: str, sent: dict) -> None:
@@ -837,7 +846,9 @@ API_MANIFEST: dict[str, Any] = {
                            "files, each {filename, text}. Discord and Slack take "
                            "files, up to 10 MB on Discord and 8 MB on Tony's "
                            "Slack. The Opal Slack bot refuses until its app "
-                           "holds files:write. Gmail and Teams refuse.",
+                           "holds files:write. Gmail and Teams refuse. "
+                           "`quiet` keeps the replies in the sent message's thread "
+                           "from its chat's seat holder. A bot account only.",
             "timeout": 300,
             "params": [
                 {"name": "account", "type": "string", "required": True},
@@ -848,6 +859,7 @@ API_MANIFEST: dict[str, Any] = {
                 {"name": "file", "type": "string", "required": False,
                  "file": "in"},
                 {"name": "files", "type": "array", "required": False},
+                {"name": "quiet", "type": "boolean", "required": False},
             ],
         },
         {

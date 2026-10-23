@@ -30,14 +30,16 @@ def approval_env(monkeypatch, tmp_path):
 class Harness:
     def __init__(self, rc: int = 0) -> None:
         self.posts: list[tuple[str, str, str, str]] = []
+        self.quiet: list[bool] = []
         self.runs: list[tuple[str, Path, str]] = []
         self.lines: list[tuple[str, str]] = []
         self.decided: list[tuple[int, str]] = []
         self.rc = rc
         self.approvals = Approvals(post=self.post, run=self.run, tell=self.tell, on_decided=self.on_decided)
 
-    async def post(self, account, channel, text, *, thread=""):
+    async def post(self, account, channel, text, *, thread="", quiet=False):
         self.posts.append((account, channel, text, thread))
+        self.quiet.append(quiet)
         return {"ts": "100.1", "channel_id": channel}
 
     async def run(self, name, bundles, approved_by):
@@ -72,6 +74,7 @@ async def test_open_freezes_and_posts():
     assert oct(frozen.parent.stat().st_mode)[-3:] == "700"
     account, channel, text, thread = h.posts[0]
     assert (account, channel, thread) == ("slack-bot", "C9", "")
+    assert h.quiet == [True]
     assert "shaula-admin" in text and "approve" in text and "&lt;" not in text
     assert h.state(req["ref"])["post_ts"] == "100.1"
     assert h.state(req["ref"])["task"] == 7

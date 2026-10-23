@@ -158,6 +158,28 @@ async def test_a_message_kept_from_the_holder_is_not_pushed(wired):
     assert wired.pushed == []
 
 
+async def test_replies_under_a_quiet_send_are_kept_from_the_holder(wired, monkeypatch):
+    from awm.social.dao import SocialDAO
+
+    class _Sender:
+        platform = "slack"
+        sends_files = False
+
+        async def send(self, channel, text, *, thread=None):
+            return {"message_id": "20.1", "channel_id": "D1", "ts": "20.1"}
+
+    monkeypatch.setitem(wired._connectors, "bot", _Sender())
+    mine, as_ = _as(ME)
+    wired._dao.mount("bot", "D1", "tony", {"node": "altair", "job": ME["job"]})
+    await wired._h_send({"account": "bot", "channel": "D1", "text": "approve?", "quiet": True})
+    monkeypatch.setattr(wired, "_dao", SocialDAO())
+    await wired._on_message(_msg(thread_id="20.1", message_id="20.2", text="approve"))
+    await wired._on_message(_msg(thread_id="20.1", message_id="20.1", text="approve?"))
+    await wired._on_message(_msg(thread_id="9.5", message_id="20.3", text="other thread"))
+    assert [line for _, _, line in wired.pushed] == [
+        "slack from tony ↳9.5 [channel=D1 message_id=20.3]: other thread"]
+
+
 def test_push_line_marks_thread_replies_and_cuts_long_text():
     from awm.social import seats
     from awm.social.connectors.base import Attachment
