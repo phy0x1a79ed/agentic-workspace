@@ -90,6 +90,17 @@ async def test_admin_approve_runs_on_the_frozen_copy():
     assert h.state(req["ref"])["state"] == "approved"
     assert h.posts[-1][3] == "100.1" and "Approved by tony" in h.posts[-1][2]
     assert h.lines[0][0] == "job1" and "approved" in h.lines[0][1]
+    assert "ssh windows are open for 60 minutes" in h.lines[0][1]
+    assert "scripts/tf --approval grow" in h.lines[0][1]
+
+
+async def test_a_bundle_with_no_tf_lines_names_no_tf_run(tmp_path):
+    (tmp_path / "bundles" / "note.bundle").write_text("reason\tjust a record\nminutes\t5\n")
+    h = Harness()
+    req = await h.approvals.open("note", agent="a", node="altair", job="job1")
+    await h.reply("approve")
+    assert h.state(req["ref"])["state"] == "approved"
+    assert "scripts/tf" not in h.lines[0][1] and "ssh" not in h.lines[0][1]
 
 
 async def test_ryan_counts_and_deny_grants_nothing():
