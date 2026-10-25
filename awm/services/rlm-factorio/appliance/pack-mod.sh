@@ -1,28 +1,33 @@
 #!/bin/bash
-# Package game-bot-control as a portal-shaped zip for a desktop client.
+# Package mods as portal-shaped zips for a desktop client.
 #
-# The mod is private, so the server cannot push it to a joining client and the
-# client must install it by hand. Factorio reads a mod zip only if its top-level
-# folder is named <name>_<version>, so the layout matters more than the contents.
-# Prints the path of the zip it wrote.
+# Usage: pack-mod.sh [OUT [MOD_DIR...]]. OUT defaults to dist, and the mods to
+# game-bot-control. A lab also needs the lab mods (RLM_FACTORIO_LAB_MODS).
+#
+# The mods are private, so the server cannot push them to a joining client and
+# the client must install them by hand. Factorio reads a mod zip only if its
+# top-level folder is named <name>_<version>, so the layout matters more than the
+# contents. Prints the path of each zip it wrote.
 set -euo pipefail
 
-cd "$(dirname "$0")"
-SRC=mods/game-bot-control
-OUT="${1:-dist}"
+HERE="$(cd "$(dirname "$0")" && pwd)"
+OUT="$(realpath -m "${1:-$HERE/dist}")"
+shift || true
+[ $# -gt 0 ] || set -- "$HERE/mods/game-bot-control"
 mkdir -p "$OUT"
 
-python3 - "$SRC" "$OUT" <<'PY'
+python3 - "$OUT" "$@" <<'PY'
 import json, sys, zipfile
 from pathlib import Path
 
-src, out = Path(sys.argv[1]), Path(sys.argv[2])
-info = json.loads((src / "info.json").read_text())
-folder = f"{info['name']}_{info['version']}"
-target = out / f"{folder}.zip"
-with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as z:
-    for f in sorted(src.iterdir()):
-        if f.is_file():
-            z.write(f, f"{folder}/{f.name}")
-print(target.resolve())
+out = Path(sys.argv[1])
+for src in map(Path, sys.argv[2:]):
+    info = json.loads((src / "info.json").read_text())
+    folder = f"{info['name']}_{info['version']}"
+    target = out / f"{folder}.zip"
+    with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as z:
+        for f in sorted(src.rglob("*")):
+            if f.is_file():
+                z.write(f, f"{folder}/{f.relative_to(src)}")
+    print(target.resolve())
 PY
