@@ -2,10 +2,10 @@
 
 ## Purpose & Contents
 
-This file covers installing, building and running the Factorio realm, the three
-kinds of world it hosts, the seat model the service is built around, how game
-calls reach the engine and what they cost, how a mod change ships, and how a
-person joins the world from their own Factorio client.
+This file covers installing, building and running the Factorio realm, the two
+kinds of world it hosts and their headless toggle, the seat model the service is
+built around, how game calls reach the engine and what they cost, how a mod
+change ships, and how a person joins the world from their own Factorio client.
 
 It does not list verbs or their parameters. `awm factorio --help` answers that
 from the running manifest and cannot go stale. What is written here is what
@@ -73,17 +73,20 @@ serve as a seat at all — its binary has no `--mp-connect`.
 
 ## Worlds
 
-A world is one appliance of one of three kinds. `acquire` fixes the kind for the
-life of the world.
+A world is one appliance of one of two kinds:
 
-- **headless** — the game. It publishes only its control port.
-- **rendered** — the same save with the UDP game port published, so a person can
-  join (§ *Joining the world*). It always runs realm rules.
+- **game** — the realm and any other long-lived world. It runs realm rules by
+  default, at 4 cores and 6 GiB.
 - **lab** — a throwaway world for experiments. It loads the lab mods from
   `RLM_FACTORIO_LAB_MODS`, the lab server and map-gen settings in
   `appliance/config/`, and a saves folder bound from
   `worlds/<session_id>/saves`. A realm save is copied in and never written. A lab
   runs sandbox rules by default, at 2 cores and 4 GiB.
+
+Either kind is headless by default and publishes only its control port.
+`acquire` with `headless=false` also publishes the world's UDP game port, so a
+person can join (§ *Joining the world*). The toggle is independent of the rules.
+A sandbox lab a person watches is the usual reason to turn it off.
 
 Each world runs under its own compose project, with a generated override at
 `$AWM_WORKSPACE/.awm/services/rlm-factorio/worlds/<session_id>/compose.json`.
@@ -91,8 +94,9 @@ The project namespaces the volume, network and containers. That is what lets
 several worlds run at once and keeps a lab off the realm's saves volume. The realm
 keeps the default project name and ports.
 
-**CAUTION:** a live world cannot change kind. To join the realm from a client,
-save it, `release` it and `acquire` it again with `kind=rendered`.
+**CAUTION:** a live world cannot change kind or toggle. An `acquire` that passes
+a `headless` value the live world does not have fails. To join the realm from a
+client, save it, `release` it and `acquire` it again with `headless=false`.
 
 Past `RLM_FACTORIO_MAX_LABS` live labs, a lab `acquire` fails at once with
 `LAB_CAP`. It does not wait, because a wait would outlast the gateway's call
@@ -265,7 +269,7 @@ Defaults suit one realm on one host. A test rig must override the first four.
 |---|---|---|
 | `AWM_FACTORIO_PROJECT` | `rlm-factorio` | compose project — namespaces containers and the saves volume |
 | `AWM_FACTORIO_CONTAINER` | `rlm-factorio-appliance` | host container name |
-| `AWM_FACTORIO_GAME_PORT` | `12140` | the realm's UDP game port, published only when rendered |
+| `AWM_FACTORIO_GAME_PORT` | `12140` | the realm's UDP game port, published only when not headless |
 | `AWM_FACTORIO_CONTROL_PORT` | `12142` | published supervisor control port |
 | `AWM_FACTORIO_SEAT_CPUS` | `4.0` | per-seat CPU ceiling |
 | `AWM_FACTORIO_SEAT_MEMORY` | `6g` | per-seat memory ceiling |
@@ -302,8 +306,9 @@ and `FACTORIO_MEMORY`: 2 cores and 4 GiB for a lab, 4 cores and 6 GiB otherwise.
 
 ## Joining the world from a desktop or Steam client
 
-Only a rendered world publishes the game port. Acquire the realm with
-`kind=rendered` first (§ *Worlds*).
+A world publishes its game port only when acquired with `headless=false`
+(§ *Worlds*). The realm's game port is 12140. Every other world takes its own,
+and `acquire` returns it as `game_port`.
 
 `server-settings.json` ships with no password, no account verification, LAN
 visibility on and unlimited players. The only barriers are version and mods, and
@@ -315,27 +320,31 @@ visibility on and unlimited players. The only barriers are version and mods, and
 2. **The Space Age expansion.** The server enables `space-age`, `quality`,
    `elevated-rails` and `recycler`. These are DLC and cannot be downloaded, only
    owned.
-3. **The `game-bot-control` mod.** It is a private local mod, not on the portal,
-   so the server cannot push it. Install it by hand.
+3. **The private mods.** `game-bot-control` is a local mod, not on the portal,
+   so the server cannot push it. A lab also runs `fxlab-sbx` and `fxlab-census`
+   from `RLM_FACTORIO_LAB_MODS`. Install each by hand.
 
-To install the mod, build the zip:
+To install the mods, build the zips. Name an output folder and each lab mod
+directory to include the lab mods:
 
     bash appliance/pack-mod.sh
+    bash appliance/pack-mod.sh dist appliance/mods/game-bot-control \
+        "$RLM_FACTORIO_LAB_MODS"/fxlab-sbx "$RLM_FACTORIO_LAB_MODS"/fxlab-census
 
-Copy the zip it prints into the client's mods folder. Do not unzip it — Factorio
+Copy each zip it prints into the client's mods folder. Do not unzip it — Factorio
 reads mod zips directly. The folder is `%APPDATA%\Factorio\mods` on Windows and
 `~/.factorio/mods` on Linux, under the default
-`use-system-read-write-data-directories=true`. Enable it in that folder's
-`mod-list.json` with `{"name":"game-bot-control","enabled":true}`.
+`use-system-read-write-data-directories=true`. Enable each in that folder's
+`mod-list.json`, for example `{"name":"game-bot-control","enabled":true}`.
 
 **CAUTION:** Factorio rescans the mods folder only at startup. Relaunch the
 client fully after copying. Bumping the mod's version invalidates every
 hand-installed copy, so a version bump means every client reinstalls.
 
-Then connect to `localhost:12140` under *Multiplayer → Connect to address*.
-Docker Desktop forwards the published UDP port to the Windows host's loopback.
-From another device on the LAN use the host's LAN IP and allow inbound UDP 12140
-through its firewall.
+Then connect to `localhost:<game_port>` under *Multiplayer → Connect to
+address*. Docker Desktop forwards the published UDP port to the Windows host's
+loopback. From another device on the LAN use the host's LAN IP and allow inbound
+UDP on the game port through its firewall.
 
 **CAUTION:** Factorio multiplayer is UDP-only on the game port. A `netsh
 portproxy` Windows-to-WSL forward carries TCP only and will not carry the game.

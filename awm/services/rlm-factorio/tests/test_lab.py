@@ -60,11 +60,11 @@ def isolated(monkeypatch, tmp_path):
     ha._EVENT_BUF.clear()
 
 
-def make_world(kind="lab", name="t", rules=None, status="ready"):
+def make_world(kind="lab", name="t", rules=None, status="ready", headless=True):
     d = ha.dao.FactorioDAO()
     rules = rules or ("sandbox" if kind == "lab" else "realm")
     row = d.create_session("factorio", kind=kind, rules=rules, name=name,
-                           mods=appliance.world_mods(kind),
+                           mods=appliance.world_mods(kind), headless=headless,
                            **appliance.world_coords(kind, name, set()))
     return d.set_runtime(row["session_id"], status=status)
 
@@ -90,7 +90,7 @@ def call(handler, /, **args):
 
 # ---- world records and coordinates --------------------------------------------
 
-def test_migration_backfills_old_rows_as_the_headless_realm():
+def test_migration_backfills_old_rows_as_the_headless_realm_game():
     conn = sqlite3.connect(":memory:")
     conn.executescript(dao.MIGRATIONS[(1, 2)])
     conn.executescript("""CREATE TABLE rlm_sessions (session_id TEXT PRIMARY KEY,
@@ -100,16 +100,25 @@ def test_migration_backfills_old_rows_as_the_headless_realm():
         INSERT INTO rlm_sessions (session_id) VALUES ('old');
         INSERT INTO rlm_seats (seat_id, session_id) VALUES ('s', 'old');""")
     conn.executescript(dao.MIGRATIONS[(2, 3)])
-    assert conn.execute("SELECT kind, rules, name, mods FROM rlm_sessions").fetchone() == \
-        ("headless", "realm", "realm", "[]")
+    conn.executescript(dao.MIGRATIONS[(3, 4)])
+    assert conn.execute("SELECT kind, rules, name, mods, headless FROM rlm_sessions"
+                        ).fetchone() == ("game", "realm", "realm", "[]", 1)
     assert conn.execute("SELECT role FROM rlm_seats").fetchone() == ("player",)
 
 
+def test_migration_turns_v3_kinds_into_a_kind_and_the_toggle():
+    conn = sqlite3.connect(":memory:")
+    conn.executescript("""CREATE TABLE rlm_sessions (session_id TEXT PRIMARY KEY, kind TEXT);
+        INSERT INTO rlm_sessions VALUES ('h', 'headless'), ('r', 'rendered'), ('l', 'lab');""")
+    conn.executescript(dao.MIGRATIONS[(3, 4)])
+    rows = conn.execute("SELECT session_id, kind, headless FROM rlm_sessions ORDER BY 1")
+    assert rows.fetchall() == [("h", "game", 1), ("l", "lab", 1), ("r", "game", 0)]
+
+
 def test_realm_keeps_its_coordinates_and_others_get_their_own():
-    realm = appliance.world_coords("headless", "realm", set())
+    realm = appliance.world_coords("game", "realm", set())
     assert realm == {"compose_project": appliance.PROJECT, "container_name": appliance.CONTAINER,
                      "control_port": appliance.CONTROL_PORT, "game_port": appliance.GAME_PORT}
-    assert appliance.world_coords("rendered", "realm", set()) == realm
     lab = appliance.world_coords("lab", "realm", set())
     assert lab["compose_project"] == "rlm-factorio-lab-realm"
     taken = {lab["control_port"], lab["game_port"]}
@@ -121,11 +130,14 @@ def override(row, boot=None):
     return json.loads(appliance.write_override(row, boot).read_text())["services"]["factorio"]
 
 
-def test_only_a_rendered_world_publishes_the_game_port():
-    headless = make_world("headless", "realm")
-    rendered = ha.dao.FactorioDAO().set_runtime(headless["session_id"], kind="rendered")
-    assert "ports" not in override(headless)
-    assert override(rendered)["ports"] == [f"{appliance.GAME_PORT}:12140/udp"]
+@pytest.mark.parametrize("kind,name", [("game", "realm"), ("game", "w"), ("lab", "t")])
+def test_a_world_publishes_its_own_game_port_only_when_not_headless(kind, name):
+    closed = make_world(kind, name)
+    opened = ha.dao.FactorioDAO().set_runtime(closed["session_id"], headless=0)
+    assert "ports" not in override(closed)
+    assert override(opened)["ports"] == [f"{opened['game_port']}:12140/udp"]
+    if name == "realm":
+        assert opened["game_port"] == appliance.GAME_PORT
 
 
 def test_a_lab_binds_saves_loads_lab_mods_and_lab_settings():
@@ -182,6 +194,7 @@ def compose(monkeypatch):
     seen = {"up": [], "down": [], "running": set()}
 
     def up(row, boot=None):
+        appliance.write_override(row, boot)
         seen["up"].append((row, boot))
         seen["running"].add(row["compose_project"])
     monkeypatch.setattr(appliance, "compose_up", up)
@@ -195,7 +208,9 @@ def compose(monkeypatch):
 
 def test_acquire_defaults_to_the_headless_realm(compose):
     out = call("acquire", game="factorio")
-    assert out["kind"] == "headless" and out["rules"] == "realm" and out["name"] == "realm"
+    assert (out["kind"], out["headless"], out["rules"], out["name"]) == \
+        ("game", True, "realm", "realm")
+    assert "game_port" not in out
     row, boot = compose["up"][0]
     assert row["compose_project"] == appliance.PROJECT and boot == {"paused": False, "create": False}
     again = call("acquire", game="factorio")
@@ -215,7 +230,6 @@ def test_acquire_a_lab(compose):
     ({"kind": "lab", "save": "x"}, "a lab needs a name"),
     ({"kind": "lab", "name": "a"}, "boots on a save"),
     ({"kind": "lab", "name": "a", "save": "x", "create": True}, "not both"),
-    ({"kind": "rendered", "rules": "sandbox"}, "rendered world runs realm rules"),
 ])
 def test_acquire_refuses(compose, args, match):
     with pytest.raises(ValueError, match=match):
@@ -223,16 +237,35 @@ def test_acquire_refuses(compose, args, match):
     assert compose["up"] == []
 
 
-def test_acquire_refuses_a_kind_change_of_a_live_world(compose):
-    call("acquire", game="factorio")
-    with pytest.raises(ValueError, match="live as headless"):
-        call("acquire", game="factorio", kind="rendered")
+def test_acquire_an_attached_sandbox_lab(compose):
+    out = call("acquire", game="factorio", kind="lab", name="w", save="base",
+               headless=False)
+    assert out["rules"] == "sandbox" and out["headless"] is False
+    row = ha.dao.FactorioDAO().get_session(out["session_id"])
+    assert out["game_port"] == row["game_port"] != appliance.GAME_PORT
+    compose_json = appliance.world_dir(row["session_id"]) / "compose.json"
+    ports = json.loads(compose_json.read_text())["services"]["factorio"]["ports"]
+    assert ports == [f"{row['game_port']}:12140/udp"]
+
+
+@pytest.mark.parametrize("again,adopts", [(None, True), (False, True), (True, False)])
+def test_acquire_adopts_unless_the_headless_toggle_mismatches(compose, again, adopts):
+    first = call("acquire", game="factorio", kind="lab", name="w", create=True,
+                 headless=False)
+    args = {} if again is None else {"headless": again}
+    if adopts:
+        out = call("acquire", game="factorio", kind="lab", name="w", create=True, **args)
+        assert out == {**first, "adopted": True}
+    else:
+        with pytest.raises(ValueError, match="live with headless=False"):
+            call("acquire", game="factorio", kind="lab", name="w", create=True, **args)
+    assert len(compose["up"]) == 1
 
 
 def test_acquire_restarts_a_world_whose_container_is_gone(compose):
     first = call("acquire", game="factorio")
     compose["running"].clear()
-    second = call("acquire", game="factorio", kind="rendered")
+    second = call("acquire", game="factorio", headless=False)
     assert second["session_id"] != first["session_id"] and second["game_port"]
     assert ha.dao.FactorioDAO().get_session(first["session_id"])["status"] == "stopped"
 
@@ -377,7 +410,7 @@ def test_a_camera_retries_until_the_player_exists(LAB, engine, seats, monkeypatc
 
 def test_no_camera_under_realm_rules(engine, seats):
     seat_engine(engine)
-    realm = make_world("headless", "realm")["session_id"]
+    realm = make_world("game", "realm")["session_id"]
     with pytest.raises(appliance.ApplianceError, match="refused under realm rules: a camera seat"):
         call("join", session_id=realm, role="camera")
     assert seats == []
@@ -408,7 +441,7 @@ def test_seatless_calls_key_by_world_and_caller(LAB, engine):
 
 def test_each_world_has_its_own_throttle(LAB, engine):
     engine()
-    realm = make_world("headless", "realm")["session_id"]
+    realm = make_world("game", "realm")["session_id"]
     call("exec_lua", session_id=LAB, code="rcon.print(1)")
     call("exec_lua", session_id=realm, code="rcon.print(1)")
     assert set(ha._THROTTLES) == {"rlm-factorio-lab-t-appliance", appliance.CONTAINER}
@@ -417,7 +450,7 @@ def test_each_world_has_its_own_throttle(LAB, engine):
 
 def test_ups_is_sampled_per_world_and_a_paused_world_is_no_overload(LAB, engine):
     b = engine()
-    realm = make_world("headless", "realm")
+    realm = make_world("game", "realm")
     b.respond = lambda code: "100 true"
     ha._sample_ups()
     ha._sample_ups()
@@ -442,7 +475,7 @@ def test_sandbox_rules_never_refuse_on_the_command_budget(LAB, engine):
     b.cost = 100.0
     out = call("exec_lua", session_id=LAB, code="rcon.print(1)")
     assert "error" not in out and out["cost_ms"] == 100.0
-    realm = make_world("headless", "realm")["session_id"]
+    realm = make_world("game", "realm")["session_id"]
     assert call("exec_lua", session_id=realm, code="rcon.print(1)")["error"].startswith("OVER_BUDGET")
 
 
@@ -494,7 +527,7 @@ def test_advance_runs_then_pauses(LAB, engine, clock):
 
 def test_advance_refused_under_realm_rules(engine, clock):
     b = engine()
-    realm = make_world("headless", "realm")["session_id"]
+    realm = make_world("game", "realm")["session_id"]
     with pytest.raises(appliance.ApplianceError, match="refused under realm rules: advance"):
         call("advance", session_id=realm, ticks=60)
     assert b.sent == []
@@ -617,7 +650,7 @@ def test_lab_stamp_passes_surface_force_and_built_mode(LAB, engine):
 
 def test_realm_stamp_needs_a_seat(engine):
     engine()
-    realm = make_world("headless", "realm")["session_id"]
+    realm = make_world("game", "realm")["session_id"]
     with pytest.raises(ValueError, match="needs a seat"):
         call("blueprint_stamp", session_id=realm, x=1, y=2, blueprint="0abc")
 
