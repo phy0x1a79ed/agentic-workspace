@@ -4,6 +4,7 @@ verbs, against fakes and an in-memory DB. No game runs."""
 import hashlib
 import json
 import re
+import socket
 import sqlite3
 import subprocess
 
@@ -124,6 +125,15 @@ def test_realm_keeps_its_coordinates_and_others_get_their_own():
     taken = {lab["control_port"], lab["game_port"]}
     other = appliance.world_coords("lab", "b", taken)
     assert other["control_port"] not in taken and other["game_port"] not in taken
+
+
+def test_a_port_another_host_process_holds_is_skipped(monkeypatch):
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as held:
+        held.bind(("0.0.0.0", 0))
+        held.listen()
+        port = held.getsockname()[1]
+        monkeypatch.setattr(appliance, "PORT_BASE", port)
+        assert appliance.world_coords("lab", "b", set())["control_port"] != port
 
 
 def override(row, boot=None):
