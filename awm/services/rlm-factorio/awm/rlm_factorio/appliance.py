@@ -23,6 +23,7 @@ import json
 import os
 import re
 import shutil
+import socket
 import subprocess
 import time
 from pathlib import Path
@@ -125,7 +126,10 @@ def world_coords(kind: str, name: str, taken_ports: set[int]) -> dict:
     """Project, container and ports for a new world.
 
     The realm keeps its fixed coordinates. Every other world takes the first
-    free control port in its range, and the game port beside it.
+    free control port in its range, and the game port beside it. A port that
+    another host process holds is skipped too: Docker Desktop publishes over it
+    without an error, and the service's own readiness poll then reaches the
+    other process.
     """
     if name == REALM_NAME and kind != "lab":
         return {"compose_project": PROJECT, "container_name": CONTAINER,
@@ -133,10 +137,21 @@ def world_coords(kind: str, name: str, taken_ports: set[int]) -> dict:
     project = f"{PROJECT}-{'lab' if kind == 'lab' else 'world'}-{name}"
     for slot in range(PORT_SLOTS):
         control = PORT_BASE + 2 * slot
-        if control not in taken_ports and control + 1 not in taken_ports:
+        if (control not in taken_ports and control + 1 not in taken_ports
+                and host_port_free(control, socket.SOCK_STREAM)
+                and host_port_free(control + 1, socket.SOCK_DGRAM)):
             return {"compose_project": project, "container_name": f"{project}-appliance",
                     "control_port": control, "game_port": control + 1}
     raise ApplianceError(f"no free port pair left in {PORT_BASE}-{PORT_BASE + 2 * PORT_SLOTS}")
+
+
+def host_port_free(port: int, sock_type: int) -> bool:
+    with socket.socket(socket.AF_INET, sock_type) as s:
+        try:
+            s.bind(("0.0.0.0", port))
+        except OSError:
+            return False
+    return True
 
 
 def world_mods(kind: str) -> list[str]:
