@@ -9,8 +9,8 @@ the only place that shells out to Docker or talks to that control port, so the
 handlers in :mod:`hub_adapter` stay thin.
 
 Each world is its own ``docker compose -p <project>``. The base compose file is
-shared; a generated per-world override makes the world its kind (published game
-port, lab mods and saves, boot options).
+shared; a generated per-world override makes the world its kind and toggle
+(published game port, lab mods and saves, boot options).
 
 Handlers call these from a worker thread (ServiceAdapter runs sync handlers via
 ``asyncio.to_thread``), so the blocking ``subprocess`` + ``httpx.Client`` calls
@@ -53,7 +53,7 @@ REALM_VOLUME = f"{PROJECT}_factorio-saves"
 PORT_BASE = int(os.environ.get("AWM_FACTORIO_PORT_BASE", "12150"))
 PORT_SLOTS = 50
 
-KINDS = ("headless", "lab", "rendered")
+KINDS = ("game", "lab")
 WORLD_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,39}$")
 
 # appliance/ sits at the service root, beside the awm/ package dir:
@@ -169,7 +169,7 @@ def compose_env(row: dict) -> dict[str, str]:
 def write_override(row: dict, boot: dict | None = None) -> Path:
     """Write the compose override that makes this world its kind; return its path.
 
-    Only a rendered world publishes the game port. A lab binds its saves to a
+    A world that is not headless publishes its game port. A lab binds its saves to a
     host directory, loads the lab mods, and runs the lab's server and map
     settings. ``boot`` picks the world the supervisor starts on. The file is
     JSON, which compose reads as YAML.
@@ -181,7 +181,7 @@ def write_override(row: dict, boot: dict | None = None) -> Path:
         "BOOT_PAUSED": "1" if boot.get("paused") else "",
     }}
     volumes = []
-    if row.get("kind") == "rendered":
+    if not row.get("headless", 1):
         service["ports"] = [f"{row.get('game_port') or GAME_PORT}:12140/udp"]
     if row.get("kind") == "lab":
         volumes.append(f"{saves_dir(row)}:/factorio/saves")
