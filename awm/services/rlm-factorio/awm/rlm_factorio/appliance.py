@@ -9,8 +9,8 @@ the only place that shells out to Docker or talks to that control port, so the
 handlers in :mod:`hub_adapter` stay thin.
 
 Each world is its own ``docker compose -p <project>``. The base compose file is
-shared; a generated per-world override makes the world its kind (published game
-port, lab mods and saves, boot options).
+shared; a generated per-world override makes the world its kind and toggle
+(published game port, lab mods and saves, boot options).
 
 Handlers call these from a worker thread (ServiceAdapter runs sync handlers via
 ``asyncio.to_thread``), so the blocking ``subprocess`` + ``httpx.Client`` calls
@@ -60,7 +60,7 @@ REALM_VOLUME = f"{PROJECT}_factorio-saves"
 PORT_BASE = int(os.environ.get("AWM_FACTORIO_PORT_BASE", "12150"))
 PORT_SLOTS = 50
 
-KINDS = ("headless", "lab", "rendered")
+KINDS = ("game", "lab")
 WORLD_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,39}$")
 
 # appliance/ sits at the service root, beside the awm/ package dir:
@@ -132,8 +132,10 @@ def world_coords(kind: str, name: str, taken_ports: set[int]) -> dict:
     """Project, container and ports for a new world.
 
     The realm keeps its fixed coordinates. Every other world takes the first
-    control port in its range that neither a world row nor another program on
-    this host holds, and the game port beside it.
+    free control port in its range, and the game port beside it. A port that
+    another host process holds is skipped too: Docker Desktop publishes over it
+    without an error, and the service's own readiness poll then reaches the
+    other process.
     """
     if name == REALM_NAME and kind != "lab":
         return {"compose_project": PROJECT, "container_name": CONTAINER,
@@ -142,17 +144,17 @@ def world_coords(kind: str, name: str, taken_ports: set[int]) -> dict:
     for slot in range(PORT_SLOTS):
         control = PORT_BASE + 2 * slot
         if (control not in taken_ports and control + 1 not in taken_ports
-                and _port_free(control)):
+                and host_port_free(control, socket.SOCK_STREAM)
+                and host_port_free(control + 1, socket.SOCK_DGRAM)):
             return {"compose_project": project, "container_name": f"{project}-appliance",
                     "control_port": control, "game_port": control + 1}
     raise ApplianceError(f"no free port pair left in {PORT_BASE}-{PORT_BASE + 2 * PORT_SLOTS}")
 
 
-def _port_free(port: int) -> bool:
-    """Whether docker can publish ``port`` on this host."""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+def host_port_free(port: int, sock_type: int) -> bool:
+    with socket.socket(socket.AF_INET, sock_type) as s:
         try:
-            sock.bind(("0.0.0.0", port))
+            s.bind(("0.0.0.0", port))
         except OSError:
             return False
     return True
@@ -188,7 +190,7 @@ def compose_env(row: dict) -> dict[str, str]:
 def write_override(row: dict, boot: dict | None = None) -> Path:
     """Write the compose override that makes this world its kind; return its path.
 
-    Only a rendered world publishes the game port. A lab binds its saves to a
+    A world that is not headless publishes its game port. A lab binds its saves to a
     host directory, loads the lab mods, and runs the lab's server and map
     settings. ``boot`` picks the world the supervisor starts on. The file is
     JSON, which compose reads as YAML.
@@ -200,7 +202,7 @@ def write_override(row: dict, boot: dict | None = None) -> Path:
         "BOOT_PAUSED": "1" if boot.get("paused") else "",
     }}
     volumes = []
-    if row.get("kind") == "rendered":
+    if not row.get("headless", 1):
         service["ports"] = [f"{row.get('game_port') or GAME_PORT}:12140/udp"]
     if row.get("kind") == "lab":
         volumes.append(f"{saves_dir(row)}:/factorio/saves")

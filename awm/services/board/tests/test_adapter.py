@@ -23,6 +23,7 @@ EFFECTS = {
     "post": "queue", "claim": "queue", "complete": "queue", "fail": "queue",
     "get": "read", "list": "read", "message_post": "queue", "messages": "read",
     "status": "queue", "reject": "queue", "events": "read",
+    "file_check": "read", "file_send": "queue", "files": "read", "file_fetch": "write",
     "migrate_columns": "write", "migrate_archive": "write", "migrate_threads": "write",
     "migrate_homes": "write",
     "party_add": "secret", "party_revoke": "write", "party_list": "read",

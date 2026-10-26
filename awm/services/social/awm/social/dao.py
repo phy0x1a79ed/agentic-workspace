@@ -15,6 +15,8 @@ Never a token (tokens live solely in ``social.toml``):
   the fingerprint of its launch spec.
 - ``social_keeper_state`` — what the keeper must not forget across a restart
   of social: each seat's breaker and its open restart record, as JSON.
+- ``social_quiet_threads`` — threads whose replies no seat holder is sent,
+  such as an admin approval request's.
 
 Accounts that act as a person (Slack/Teams via mira, Gmail) keep no local copy:
 the platform is the source of truth and fetch/search query it live. A bot's
@@ -32,7 +34,7 @@ from awm.persistence.dao import BaseDAO
 from awm.persistence.databases import init_service_db
 
 SERVICE = "social"
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 SCHEMA_SQL = """\
 CREATE TABLE IF NOT EXISTS social_accounts (
@@ -102,11 +104,20 @@ CREATE TABLE IF NOT EXISTS social_keeper_state (
     state        TEXT NOT NULL DEFAULT '{}',
     updated_at   TEXT NOT NULL DEFAULT ''
 );
+
+CREATE TABLE IF NOT EXISTS social_quiet_threads (
+    account      TEXT NOT NULL,
+    channel_id   TEXT NOT NULL,
+    thread_id    TEXT NOT NULL,
+    quiet_at     TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (account, channel_id, thread_id)
+);
 """
 
 _KEEPERS_AT = SCHEMA_SQL.index("CREATE TABLE IF NOT EXISTS social_keepers")
 _MOUNTS_AT = SCHEMA_SQL.index("CREATE TABLE IF NOT EXISTS social_mounts")
 _STATE_AT = SCHEMA_SQL.index("CREATE TABLE IF NOT EXISTS social_keeper_state")
+_QUIET_AT = SCHEMA_SQL.index("CREATE TABLE IF NOT EXISTS social_quiet_threads")
 HISTORY_DDL = SCHEMA_SQL[SCHEMA_SQL.index("CREATE TABLE IF NOT EXISTS social_history"):_MOUNTS_AT]
 MOUNTS_DDL = SCHEMA_SQL[_MOUNTS_AT:_KEEPERS_AT]
 #: The keepers table as v5 created it; v6 adds `seen_at`.
@@ -132,7 +143,8 @@ DROP TABLE IF EXISTS social_messages;
     (3, 4): MOUNTS_DDL,
     (4, 5): KEEPERS_V5_DDL,
     (5, 6): "ALTER TABLE social_keepers ADD COLUMN seen_at TEXT NOT NULL DEFAULT '';\n",
-    (6, 7): SCHEMA_SQL[_STATE_AT:],
+    (6, 7): SCHEMA_SQL[_STATE_AT:_QUIET_AT],
+    (7, 8): SCHEMA_SQL[_QUIET_AT:],
 }
 
 _initialized = False
@@ -437,3 +449,16 @@ class SocialDAO(BaseDAO):
             "ON CONFLICT (seat) DO UPDATE SET state = excluded.state, "
             "updated_at = excluded.updated_at",
             (seat, json.dumps(state, sort_keys=True), _now()))
+
+    # -- quiet threads -------------------------------------------------------
+
+    def quiet_thread(self, account: str, channel_id: str, thread_id: str) -> None:
+        self.execute(
+            "INSERT OR IGNORE INTO social_quiet_threads (account, channel_id, thread_id, "
+            "quiet_at) VALUES (?, ?, ?, ?)", (account, channel_id, thread_id, _now()))
+
+    def is_quiet(self, account: str, channel_id: str, thread_id: str) -> bool:
+        return self.query_one(
+            "SELECT 1 AS q FROM social_quiet_threads "
+            "WHERE account = ? AND channel_id = ? AND thread_id = ?",
+            (account, channel_id, thread_id)) is not None

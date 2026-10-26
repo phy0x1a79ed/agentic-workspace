@@ -90,6 +90,10 @@ def wake_text(card_id: str, message: dict) -> str:
 def event_line(type_: str, card: dict) -> str | None:
     """The line typed into a watching session for one card event. None for an event it ignores."""
     head = f"Board card {card['id']}"
+    if type_ == "card.posted":
+        project = f" in project {card['project']}" if card.get("project") else ""
+        return (f"{head} posted by {party_label(card.get('sender'), card.get('agent'))} to "
+                f"{card.get('recipient') or '?'}{project}, run operations board_get")
     if type_ == "card.claimed":
         return f"{head} claimed by {card.get('owner') or card.get('claimant') or '?'}"
     if type_ == "card.moved":
@@ -111,16 +115,22 @@ def event_line(type_: str, card: dict) -> str | None:
 
 
 async def send_social(account: str, channel: str, text: str, *, ack_ref: str = "",
-                      files: list[dict] | None = None) -> None:
+                      files: list[dict] | None = None, thread: str = "",
+                      quiet: bool = False) -> dict:
     args = {"account": account, "channel": channel, "text": text}
+    if quiet:
+        args["quiet"] = True
     if ack_ref:
         args["ack_ref"] = ack_ref
     if files:
         args["files"] = files
+    if thread:
+        args["thread"] = thread
     result = await gatewayclient.call_maybe_peer(
         gatewayclient.peer_env("AWM_SOCIAL_PEER"), "social", "send", args)
     if isinstance(result, dict) and result.get("ok") is False:
         raise RuntimeError(f"social send refused: {result.get('error') or result}")
+    return result if isinstance(result, dict) else {}
 
 
 async def send_dm(text: str) -> None:

@@ -951,6 +951,31 @@ def test_allow_modal_does_not_lift_the_destructive_guard():
     assert guards.refusal("/clear", confirm=False, allow_modal=True)["refused"]
 
 
+RULE = "─" * 60
+IDLE_BOX = f"{RULE}\n❯ \n{RULE}\n  ⏵⏵ bypass permissions on (shift+tab to cycle)"
+QUOTING_REPLY = ('● It is stopped on your question "Do you want to paste the reply '
+                 'yourself, or should I DM her?"\n✻ Cooked for 1m 28s')
+
+
+def test_a_quoted_dialog_above_the_prompt_box_is_not_a_modal():
+    assert guards.modal_on_screen(QUOTING_REPLY + "\n" + IDLE_BOX) is None
+
+
+def test_a_quoted_dialog_above_multi_line_input_is_not_a_modal():
+    box = f"{RULE}\n❯ first line\n  second line\n{RULE}\n  ? for shortcuts"
+    assert guards.modal_on_screen(QUOTING_REPLY + "\n" + box) is None
+
+
+def test_a_permission_prompt_in_place_of_the_box_is_a_modal():
+    dialog = (f"{RULE}\n Bash command\n\n   ls\n\n Do you want to proceed?\n"
+              " ❯ 1. Yes\n   2. No, and tell Claude what to do differently (esc)")
+    assert guards.modal_on_screen(QUOTING_REPLY + "\n" + dialog) == "do you want to"
+
+
+def test_a_dialog_below_the_prompt_box_is_a_modal():
+    assert guards.modal_on_screen(IDLE_BOX + "\n" + PROMPT)
+
+
 def test_modal_copy_is_recognised_through_escape_sequences():
     assert guards.modal_on_screen("x\x1b[1mEsc to cancel\x1b[0m")
     assert guards.modal_on_screen(PLAIN) is None

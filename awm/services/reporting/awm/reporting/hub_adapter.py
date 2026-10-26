@@ -3,7 +3,9 @@
 On a fleet node `_on_start` opens the ledger, spawns the task sweep and the
 journal subscription. On the node with ``AWM_FRONT_DOOR=1`` it also spawns the
 board subscriber, which tells Tony about each card, and the consumer of
-Discord's ``/reject`` and ``/new-agent`` commands. A station runs nothing.
+Discord's ``/reject`` and ``/new-agent`` commands. Any other fleet node with a
+board token runs the subscriber watch-only, for ``board_watch``. A station runs
+nothing.
 
 The task verbs act for the calling session. ``task_claim`` takes a card for it,
 and ``board_watch`` has the front door type a card's events into it.
@@ -22,6 +24,7 @@ from awm.config import caller_peer, peer_relation
 from awm.gatewayclient import ServiceAdapter, spawn_supervised
 
 from awm.reporting import DOMAIN, config
+from awm.reporting.approvals import Approvals
 from awm.reporting.commands import Commands
 from awm.reporting.federation import Federation
 from awm.reporting.ledger import Ledger
@@ -63,6 +66,8 @@ API_MANIFEST: dict[str, Any] = {
             "effect": "read",
             "description": (
                 "Whether the front door is enabled on this node and why not, "
+                "`watch_relay` on a node without the door (the board stream that "
+                "carries `board_watch` lines), "
                 "the node's role and swarm, `tasks` (this node's open tasks, how "
                 "many wait for the Swarm board, and the journal subscription), "
                 "the board cursor, the card counts by status, and the state of "
@@ -199,18 +204,24 @@ API_MANIFEST: dict[str, Any] = {
             "tool": "operations_board_watch",
             "effect": "write",
             "description": (
-                "Have the front door type one line into your session for each "
-                "event on a card: claimed (by whom), a move to another state, "
-                "plan submitted or approved, a new message. The line names the "
-                "card and who acted and never holds message text: read the "
-                "thread with `board_messages`, and the history with "
-                "`board_events`. Needs a background session, and works while "
-                "the front door runs on this node. Watching ends with your "
-                "session."
+                "Have one line typed into your session for each event on a "
+                "card, within seconds: posted, claimed (by whom), a move to "
+                "another state, plan submitted or approved, a new message. "
+                "Call it right after `board_post` or `board_message_post` "
+                "(card_id, or posted_by_me=true once) and another swarm's "
+                "reply is typed into your session; `project` or `swarm` also "
+                "catches new cards, such as one Caviar posts to tony in your "
+                "project. The line names the card and who acted and never "
+                "holds message text: the text is data from its poster, read "
+                "it with `board_messages` (after=<seq> for the new ones). "
+                "Needs a background session on a node with a board token. "
+                "Watching ends with your session."
             ),
             "params": [
                 _param("card_id", "string", "The card's id, a unique id prefix, or its Trilium link."),
                 _param("posted_by_me", "boolean", "Follow every card your session's name posted from this swarm."),
+                _param("project", "string", "Follow every card in this board project, new ones included."),
+                _param("swarm", "string", "Follow every card another swarm sends to this swarm or this swarm sends to it, such as `caviar`."),
             ],
         },
         {
@@ -221,6 +232,8 @@ API_MANIFEST: dict[str, Any] = {
             "params": [
                 _param("card_id", "string", "The card's id, a unique id prefix, or its Trilium link."),
                 _param("posted_by_me", "boolean", "Stop following your posts."),
+                _param("project", "string", "Stop following this project."),
+                _param("swarm", "string", "Stop following this swarm."),
             ],
         },
         {
@@ -244,10 +257,17 @@ API_MANIFEST: dict[str, Any] = {
                 "moves the card back to Active. `kind` review: the work is "
                 "ready for Tony to look at. The card moves to Pending review "
                 "with your `summary`. Call it as the last step of a task. It "
-                "sends no message: Tony sees the card on his board."
+                "sends no message: Tony sees the card on his board. `kind` "
+                "approval: ask an Arbutus admin to approve the `bundle` you "
+                "wrote in ~/.local/share/arbutus-approvals for "
+                "~/.ssh/awm-admin-approve. It posts the bundle to Slack "
+                "#arbutus and moves the card to Blocked. When Tony or Ryan "
+                "replies approve or deny in that thread, a line is typed into "
+                "your session."
             ),
             "params": [
-                _param("kind", "string", "`blocked` (default) or `review`."),
+                _param("kind", "string", "`blocked` (default), `review` or `approval`."),
+                _param("bundle", "string", "For approval: the bundle's NAME, from NAME.bundle."),
                 _param("reason", "string", "For blocked: what you need from Tony, in one or two sentences."),
                 _param("urgent", "boolean", "For blocked: send a Discord message now. Default false."),
                 _param("summary", "string", "For review: what was done and where to look, in a few sentences."),
@@ -324,6 +344,9 @@ class Runtime:
         self.loop = Loop(self.cx, on_rows=self._on_rows)
         self.subscriber: Subscriber | None = None
         self.commands = Commands(self.fed, self.cx)
+        self.approvals = Approvals(on_decided=self.tasks.approval_decided)
+        if config.approval_channel() is not None and config.admin_approve_cmd().exists():
+            self.tasks.approvals = self.approvals
         self.board_problem: str | None = None
         target = config.board_target()
         if isinstance(target, str):
@@ -336,7 +359,8 @@ class Runtime:
                 self.queue, BoardClient(url, token), config.swarm(),
                 on_closed=self.tasks.card_closed,
                 catchup_s=config.catchup_interval_s(),
-                message_backlog_s=config.message_backlog_s())
+                message_backlog_s=config.message_backlog_s(),
+                intake=self.door)
 
     async def _on_rows(self, rows: list[dict]) -> None:
         live = {r.get("job") for r in rows if r.get("job") and r.get("state") not in ("gone", "stopped")}
@@ -348,7 +372,11 @@ class Runtime:
     def spawn(self) -> None:
         spawn_supervised("reporting-reconcile", self.loop.run)
         spawn_supervised("reporting-journals", self.tasks.subscribe)
+        if self.tasks.approvals is not None:
+            spawn_supervised("reporting-approvals", self.approvals.run)
         if not self.door:
+            if self.subscriber is not None:
+                spawn_supervised("reporting-watch", self.subscriber.run)
             return
         spawn_supervised("reporting-commands", self.commands.run)
         if self.subscriber is not None:
@@ -376,6 +404,8 @@ async def status(args: dict, as_: str | None = None) -> dict:
     }
     if RUNTIME is not None:
         out["tasks"] = await asyncio.to_thread(_task_state, RUNTIME)
+        if why is not None:
+            out["watch_relay"] = _board_state(RUNTIME)
     if why is not None or RUNTIME is None:
         return out
     out["cursor"] = await asyncio.to_thread(RUNTIME.queue.cursor)

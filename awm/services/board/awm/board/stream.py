@@ -242,6 +242,8 @@ async def _sweep_loop(board: Any, events: Any, sweep_s: float, prune_s: float) -
         if time.monotonic() >= next_prune:
             try:
                 await asyncio.to_thread(events.prune, EVENT_RETENTION_DAYS)
+                if getattr(board, "files", None) is not None:
+                    await asyncio.to_thread(board.files.prune, EVENT_RETENTION_DAYS)
             except Exception:  # noqa: BLE001
                 log.exception("board: event prune failed")
             next_prune = time.monotonic() + prune_s

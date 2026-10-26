@@ -381,7 +381,12 @@ class Queue(Db):
     # -- watchers ------------------------------------------------------------
 
     def watch(self, job: str, target: str) -> bool:
-        """Record that ``job`` follows ``target``: a card id, or ``posted:<agent>``. True if new."""
+        """Record that ``job`` follows ``target``. True if new.
+
+        A target is a card id, ``posted:<agent>``, ``project:<name>`` or
+        ``swarm:<name>`` (cards sent by or to that other swarm). A project or
+        swarm target hears only what another swarm does.
+        """
         conn = self._conn()
         try:
             with conn:
@@ -410,9 +415,12 @@ class Queue(Db):
         finally:
             conn.close()
 
-    def watchers_of(self, card_id: str, posted_by: str | None = None) -> list[str]:
-        """The jobs following a card by id, or following every card ``posted_by`` posted."""
-        targets = [card_id] + ([f"posted:{posted_by}"] if posted_by else [])
+    def watchers_of(self, card_id: str, posted_by: str | None = None, *,
+                    project: str | None = None, swarm: str | None = None) -> list[str]:
+        """The jobs following a card by id, its poster, its project or the other swarm on it."""
+        targets = [card_id] + [f"{kind}:{value}" for kind, value in
+                               (("posted", posted_by), ("project", project), ("swarm", swarm))
+                               if value]
         marks = ",".join("?" for _ in targets)
         conn = self._conn()
         try:

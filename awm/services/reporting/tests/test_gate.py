@@ -55,8 +55,19 @@ async def test_start_with_the_flag_off_runs_no_front_door_tasks(monkeypatch):
     spawned = []
     monkeypatch.setattr(hub_adapter, "spawn_supervised", lambda name, *a: spawned.append(name))
     await hub_adapter._on_start()
-    assert spawned == ["reporting-reconcile", "reporting-journals"]
+    assert spawned == ["reporting-reconcile", "reporting-journals", "reporting-approvals"]
     assert hub_adapter.RUNTIME is not None and not hub_adapter.RUNTIME.door
+
+
+async def test_a_node_without_the_approve_script_takes_no_approvals(monkeypatch, tmp_path):
+    monkeypatch.setenv("AWM_FRONT_DOOR", "0")
+    monkeypatch.setenv("AWM_ADMIN_APPROVE", str(tmp_path / "missing"))
+    monkeypatch.setattr(hub_adapter, "RUNTIME", None)
+    spawned = []
+    monkeypatch.setattr(hub_adapter, "spawn_supervised", lambda name, *a: spawned.append(name))
+    await hub_adapter._on_start()
+    assert spawned == ["reporting-reconcile", "reporting-journals"]
+    assert hub_adapter.RUNTIME.tasks.approvals is None
 
 
 async def test_start_with_the_flag_on_follows_the_board_and_the_commands(monkeypatch):
@@ -66,7 +77,7 @@ async def test_start_with_the_flag_on_follows_the_board_and_the_commands(monkeyp
     spawned = []
     monkeypatch.setattr(hub_adapter, "spawn_supervised", lambda name, *a: spawned.append(name))
     await hub_adapter._on_start()
-    assert spawned == ["reporting-reconcile", "reporting-journals", "reporting-commands",
+    assert spawned == ["reporting-reconcile", "reporting-journals", "reporting-approvals", "reporting-commands",
                        "reporting-subscribe"]
     assert hub_adapter.RUNTIME.door
 

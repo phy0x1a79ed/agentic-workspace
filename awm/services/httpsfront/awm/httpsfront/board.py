@@ -47,12 +47,25 @@ SHAPES: tuple[tuple[frozenset[str], re.Pattern[str]], ...] = (
      re.compile(rf"^{PREFIX}/cards/{_ID}/(?:claim|complete|fail|status|reject)$")),
     (frozenset({"POST", "GET"}), re.compile(rf"^{PREFIX}/cards/{_ID}/messages$")),
     (frozenset({"GET"}), re.compile(rf"^{PREFIX}/cards/{_ID}/events$")),
+    (frozenset({"POST", "GET"}), re.compile(rf"^{PREFIX}/cards/{_ID}/files$")),
+    (frozenset({"GET"}), re.compile(rf"^{PREFIX}/cards/{_ID}/files/{_ID}$")),
     (frozenset({"GET"}), re.compile(rf"^{PREFIX}/stream$")),
 )
 
 #: Largest request body forwarded. The board caps card text at 200,000
 #: characters; this leaves room for JSON escaping and nothing more.
 MAX_BODY = 1024 * 1024
+
+#: Largest file upload forwarded: the board's own per-file cap
+#: (``awm.board.files.DEFAULT_MAX_BYTES``). The board checks it again.
+MAX_FILE_BODY = 16 * 1024 * 1024
+
+_UPLOAD = re.compile(rf"^{PREFIX}/cards/{_ID}/files$")
+
+
+def body_cap(method: str, path: str) -> int:
+    """The body cap for one request: a file upload's, or the card verbs'."""
+    return MAX_FILE_BODY if method.upper() == "POST" and _UPLOAD.fullmatch(path) else MAX_BODY
 
 
 def owns(path: str) -> bool:

@@ -142,7 +142,7 @@ def condition(key: str, v: Any) -> dict:
 
 
 SPECS: dict[str, dict[str, Callable[[str, Any], Any]]] = {
-    "acquire": {"kind": one_of("headless", "lab", "rendered"), "name": world_name,
+    "acquire": {"kind": one_of("game", "lab"), "headless": boolean, "name": world_name,
                 "rules": RULES, "save": PATH, "create": boolean, "live": boolean},
     "join": {"role": one_of("drone", "camera")},
     "advance": {"ticks": integer(1, 10**8), "speed": number(1, 10000),

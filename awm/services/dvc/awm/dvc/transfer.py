@@ -116,6 +116,19 @@ def resolve(scope_path: str) -> dict[str, Any]:
     }
 
 
+def _open_remote_scope(scope_path: str) -> tuple[Path, Path]:
+    """``open_scope``, refusing a scope whose project keeps no remote."""
+    from awm.dvc import data_dvc
+
+    scope, cache = cachemod.open_scope(scope_path)
+    if data_dvc.no_remote(scope):
+        raise cachemod.DvcScopeError(
+            f"{data_dvc.project_dir(scope)} keeps no remote by decision (CACHEDIR.TAG): "
+            "its data never leaves this machine"
+        )
+    return scope, cache
+
+
 def pull(scope_path: str, *, dry_run: bool = False) -> dict[str, Any]:
     """Fetch the objects a scope needs but does not have.
 
@@ -126,7 +139,7 @@ def pull(scope_path: str, *, dry_run: bool = False) -> dict[str, Any]:
     from awm.dvc.config import load
 
     cfg = load()
-    scope, cache = cachemod.open_scope(scope_path)
+    scope, cache = _open_remote_scope(scope_path)
     res = cachemod.resolve(scope, cache)
 
     if res.unresolved:
@@ -178,7 +191,7 @@ def push(scope_path: str, *, dry_run: bool = False) -> dict[str, Any]:
     from awm.dvc.config import load
 
     cfg = load()
-    scope, cache = cachemod.open_scope(scope_path)
+    scope, cache = _open_remote_scope(scope_path)
     res = cachemod.resolve(scope, cache)
 
     if res.unresolved:

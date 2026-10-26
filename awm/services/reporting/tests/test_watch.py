@@ -57,12 +57,26 @@ async def test_watching_needs_a_card_or_the_flag_and_a_card_the_swarm_can_see(en
     assert env.queue.watched_by("job00001") == []
 
 
-async def test_a_node_that_is_not_the_door_says_events_may_not_arrive(env, monkeypatch):
+async def test_a_node_with_no_board_token_says_events_may_not_arrive(env, monkeypatch):
     card = env.federation_card()
-    assert "warning" not in await env.call("board_watch", card_id=card["id"])
+    monkeypatch.setenv("AWM_BOARD_URL", "https://board.example")
+    monkeypatch.setenv("AWM_BOARD_TOKEN", "t")
     monkeypatch.setenv("AWM_FRONT_DOOR", "0")
+    assert "warning" not in await env.call("board_watch", card_id=card["id"])
+    monkeypatch.delenv("AWM_BOARD_TOKEN")
     out = await env.call("board_watch", card_id=card["id"])
-    assert out["ok"] and "front door" in out["warning"]
+    assert out["ok"] and "no board token" in out["warning"]
+
+
+async def test_a_session_watches_a_project_or_another_swarm(env):
+    out = await env.call("board_watch", project="avatar", swarm="caviar")
+    assert out["watching"] == ["project:avatar", "swarm:caviar"]
+    assert env.queue.watchers_of("x", project="avatar") == ["job00001"]
+    assert env.queue.watchers_of("x", swarm="caviar") == ["job00001"]
+    assert env.queue.watchers_of("x", project="other", swarm="beta") == []
+    out = await env.call("board_unwatch", swarm="caviar")
+    assert out["watching"] == ["project:avatar"]
+    assert (await env.call("board_watch", project="a:b"))["ok"] is False
 
 
 async def test_unwatch_removes_one_target_or_all_of_them(env):

@@ -62,16 +62,16 @@ also accumulated in a per-session service-side inbox so a *polling* consumer
 never races the pump: ``observe_events`` returns everything since its last call
 (consume-once), while the emitter stays the live stream.
 
-Every world is a row with a ``kind`` -- ``headless`` (the game), ``lab`` (a
-throwaway experiment server) or ``rendered`` (the game with its port published,
-so a human can join) -- and ``rules``. The realm runs ``realm`` rules and a lab
+Every world is a row with a ``kind`` -- ``game`` or ``lab`` (a throwaway
+experiment server) -- a ``headless`` toggle (off publishes the game port so a
+human can join) and ``rules``. The realm runs ``realm`` rules and a lab
 runs ``sandbox``; the god verbs (``teleport``, ``research``, built blueprints,
 ``sbx`` god verbs, cheat tools, ``advance``) are refused under the former unless
 the caller holds the admin token. Seats, saves, pause, events and
 every other verb work the same on every kind.
 
 ``acquire`` is idempotent per world name: a second acquire of a live world
-returns it, erroring on a kind or game mismatch. The row carries the
+returns it, erroring on a game or headless mismatch. The row carries the
 container/ports so a service respawn re-adopts rather than duplicating.
 
 Run via ``run.sh`` (which the hub spawns and respawns):
@@ -138,21 +138,26 @@ API_MANIFEST: dict[str, Any] = {
             "description": (
                 "Acquire a Factorio world: bring its appliance container up "
                 "(building the image on first run) and wait for the engine to be "
-                "ready. kind is headless (the game, the default), lab (a "
-                "throwaway server with the lab mods, sandbox rules and its saves "
-                "in saves_dir) or rendered (the game with its port published so "
-                "a human can join). name picks the world (default 'realm'; a lab "
-                "must name itself). A lab boots on save (a realm save name, or a "
-                "path to a .zip) or on a new world with create=true, paused "
+                "ready. kind is game (the default) or lab (a throwaway server "
+                "with the lab mods, sandbox rules and its saves in saves_dir). "
+                "headless=false (default true) publishes the world's game port "
+                "so a human can join, on either kind. name picks the world "
+                "(default 'realm'; a lab must name itself). A lab boots on save "
+                "(a realm save name, or a path to a .zip) or on a new world "
+                "with create=true, paused "
                 "unless live=true. Past the lab cap a lab acquire fails at once "
-                "with LAB_CAP; retry later. Returns {session_id, kind, rules, "
-                "name, adopted}. Idempotent per name: a second acquire returns "
-                "the live world (errors on a kind or game mismatch)."
+                "with LAB_CAP; retry later. Returns {session_id, kind, headless, "
+                "rules, name, adopted}, plus game_port when not headless. "
+                "Idempotent per name: a second acquire returns the live world "
+                "(errors on a game mismatch, or a headless mismatch when "
+                "headless is passed)."
             ),
             "params": [
                 {"name": "game", "type": "string", "required": True},
                 {"name": "kind", "type": "string", "required": False,
-                 "description": "headless, lab or rendered"},
+                 "description": "game or lab"},
+                {"name": "headless", "type": "boolean", "required": False,
+                 "description": "false publishes the game port; default true"},
                 {"name": "name", "type": "string", "required": False},
                 {"name": "rules", "type": "string", "required": False,
                  "description": "realm or sandbox; a lab defaults to sandbox"},
@@ -1332,20 +1337,21 @@ def _stop_row(d: dao.FactorioDAO, row: dict) -> None:
 def _acquire(args: dict) -> dict:
     """Bring a world up (idempotent per name) and return its session id.
 
-    A live world of the same name is adopted, erroring on a kind or game
-    mismatch. Otherwise mint a row on fresh coordinates, bring its compose
-    project up and wait for the engine. A lab past the cap is refused at once
+    A live world of the same name and kind is adopted, erroring on a game
+    mismatch, or on a headless mismatch when the caller passed headless.
+    Otherwise mint a row on fresh coordinates, bring its compose project up and
+    wait for the engine. A lab past the cap is refused at once
     with LAB_CAP, so the caller decides how long to wait.
     """
     game = str(args.get("game") or "").strip()
-    kind = args.get("kind") or "headless"
+    kind = args.get("kind") or "game"
     lab = kind == "lab"
+    asked = args.get("headless")
+    headless = True if asked is None else bool(asked)
     name = args.get("name") or ("" if lab else appliance.REALM_NAME)
     if not name:
         raise ValueError("a lab needs a name")
     rules = args.get("rules") or ("sandbox" if lab else "realm")
-    if kind == "rendered" and rules == "sandbox":
-        raise ValueError("a rendered world runs realm rules")
     save, create = args.get("save"), bool(args.get("create"))
     if save and create:
         raise ValueError("pass save or create, not both")
@@ -1358,23 +1364,22 @@ def _acquire(args: dict) -> dict:
     with _ACQUIRE_LOCK:
         rows = d.live_sessions()
         for row in list(rows):
-            if row["name"] != name or (row["kind"] == "lab") != lab:
+            if row["name"] != name or row["kind"] != kind:
                 continue
             if not appliance.is_container_running(row):
                 _stop_row(d, row)
                 rows.remove(row)
                 continue
-            if row["kind"] != kind:
+            if asked is not None and bool(row["headless"]) != headless:
                 raise ValueError(
-                    f"world {name!r} is live as {row['kind']}; release it "
-                    f"before acquiring it as {kind}")
+                    f"world {name!r} is live with headless={bool(row['headless'])}; "
+                    f"release it before acquiring it with headless={headless}")
             if game and row["game"] and row["game"] != game:
                 raise ValueError(
                     f"world {name!r} is bound to game {row['game']!r}; "
                     f"release it before acquiring {game!r}")
             log.info("acquire: adopting live session %s", row["session_id"])
-            return {"session_id": row["session_id"], "adopted": True,
-                    "kind": row["kind"], "rules": row["rules"], "name": name}
+            return _acquired(row, adopted=True)
         labs = [r for r in rows if r["kind"] == "lab"]
         if lab and len(labs) >= MAX_LABS:
             raise appliance.ApplianceError(
@@ -1382,7 +1387,7 @@ def _acquire(args: dict) -> dict:
         taken = {p for r in rows for p in (r["control_port"], r["game_port"])}
         row = d.create_session(
             game, rcon_port=appliance.RCON_PORT, kind=kind, rules=rules,
-            name=name, mods=appliance.world_mods(kind),
+            name=name, mods=appliance.world_mods(kind), headless=headless,
             **appliance.world_coords(kind, name, taken))
     sid = row["session_id"]
     boot = {"paused": not live, "create": create}
@@ -1399,12 +1404,17 @@ def _acquire(args: dict) -> dict:
         except Exception:  # noqa: BLE001 — the bring-up error is the one to report
             log.debug("acquire: tearing down %s failed", sid, exc_info=True)
         raise
-    d.set_runtime(sid, status="ready", current_world=st.get("current_world"))
-    out = {"session_id": sid, "adopted": False, "kind": kind, "rules": rules,
-           "name": name}
-    if kind == "rendered":
+    row = d.set_runtime(sid, status="ready", current_world=st.get("current_world"))
+    return _acquired(row, adopted=False)
+
+
+def _acquired(row: dict, *, adopted: bool) -> dict:
+    out = {"session_id": row["session_id"], "adopted": adopted,
+           "kind": row["kind"], "headless": bool(row["headless"]),
+           "rules": row["rules"], "name": row["name"]}
+    if not row["headless"]:
         out["game_port"] = row["game_port"]
-    if lab:
+    if row["kind"] == "lab":
         out["saves_dir"] = str(appliance.saves_dir(row))
     return out
 

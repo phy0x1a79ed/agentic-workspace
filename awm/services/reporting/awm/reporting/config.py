@@ -152,6 +152,52 @@ def dm_target() -> tuple[str, str] | None:
     return os.environ.get("AWM_REPORTING_DM_ACCOUNT") or account, channel
 
 
+# The tony swarm's Arbutus admins answer approvals in Slack #arbutus.
+DEFAULT_APPROVAL_CHANNEL = "slack-bot:C0C9XNR77ML"
+DEFAULT_APPROVAL_ADMINS = "U01Q4CDSTFX=tony,UC7RUF67P=ryan"
+
+
+def approval_channel() -> tuple[str, str] | None:
+    """The social account and channel that carry admin approval requests, or None.
+
+    ``AWM_APPROVAL_CHANNEL`` is ``account:channel``. Unset, a node of the default
+    swarm uses #arbutus and any other swarm takes no approvals.
+    """
+    from awm.config.peerbook import DEFAULT_SWARM
+
+    raw = (os.environ.get("AWM_APPROVAL_CHANNEL") or "").strip()
+    if not raw and swarm() == DEFAULT_SWARM:
+        raw = DEFAULT_APPROVAL_CHANNEL
+    account, _, channel = raw.partition(":")
+    return (account, channel) if account and channel else None
+
+
+def approval_admins() -> dict[str, str]:
+    """Platform user id → admin name, from ``AWM_APPROVAL_ADMINS`` (``id=name,id=name``)."""
+    from awm.config.peerbook import DEFAULT_SWARM
+
+    raw = os.environ.get("AWM_APPROVAL_ADMINS")
+    if raw is None:
+        raw = DEFAULT_APPROVAL_ADMINS if swarm() == DEFAULT_SWARM else ""
+    pairs = (p.strip().partition("=") for p in raw.replace(",", " ").split())
+    return {uid: name for uid, _, name in pairs if uid and name}
+
+
+def admin_approve_cmd() -> Path:
+    return Path(os.environ.get("AWM_ADMIN_APPROVE") or Path.home() / ".ssh" / "awm-admin-approve")
+
+
+def approval_bundles_dir() -> Path:
+    """Where agents write bundles: the same ``ARB_BUNDLES`` the approve script reads."""
+    return Path(os.environ.get("ARB_BUNDLES") or Path.home() / ".local" / "share" / "arbutus-approvals")
+
+
+def approval_pending_dir() -> Path:
+    """The frozen copies. Under ~/.ssh/admin-approvals, where the admin-gate hook keeps Claude sessions out."""
+    return Path(os.environ.get("AWM_APPROVAL_PENDING")
+                or Path.home() / ".ssh" / "admin-approvals" / "pending")
+
+
 def trilium_url() -> str | None:
     """Where Tony opens a Trilium note from, up to the ``#``, or None when no edge is known."""
     override = (os.environ.get("AWM_REPORTING_TRILIUM_URL") or "").strip()

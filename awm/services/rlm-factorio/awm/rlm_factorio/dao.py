@@ -14,9 +14,9 @@ exactly what ``acquire`` brought up and a respawn can re-adopt it), the
 ``current_world`` mirrors the
 supervisor's notion of which named save the live ``_active`` was derived from.
 
-A row is one world of a ``kind``: ``headless`` (the game), ``lab`` (a throwaway
-experiment server) or ``rendered`` (the game with its port published so a human
-can join). ``rules`` is ``realm`` or ``sandbox`` and decides which verbs are
+A row is one world of a ``kind``: ``game`` or ``lab`` (a throwaway experiment
+server). ``headless`` is 0 when the world publishes its game port so a human can
+join, on either kind. ``rules`` is ``realm`` or ``sandbox`` and decides which verbs are
 allowed. ``name`` is the world's identity across acquires. ``mods`` is the JSON
 list of extra mod directories the host loaded, which every seat must load too.
 
@@ -41,7 +41,7 @@ from awm.persistence.dao import BaseDAO
 from awm.persistence.databases import init_service_db
 
 SERVICE = "rlm-factorio"
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 # status: acquiring -> ready -> (paused) -> stopped ; error on any failed bring-up.
 SCHEMA_SQL = """\
@@ -57,10 +57,11 @@ CREATE TABLE IF NOT EXISTS rlm_sessions (
     current_world   TEXT,
     created_at      TEXT NOT NULL DEFAULT '',
     updated_at      TEXT NOT NULL DEFAULT '',
-    kind            TEXT NOT NULL DEFAULT 'headless',
+    kind            TEXT NOT NULL DEFAULT 'game',
     rules           TEXT NOT NULL DEFAULT 'realm',
     name            TEXT NOT NULL DEFAULT 'realm',
-    mods            TEXT NOT NULL DEFAULT '[]'
+    mods            TEXT NOT NULL DEFAULT '[]',
+    headless        INTEGER NOT NULL DEFAULT 1
 );
 CREATE TABLE IF NOT EXISTS rlm_seats (
     seat_id         TEXT NOT NULL PRIMARY KEY,
@@ -103,13 +104,20 @@ ALTER TABLE rlm_sessions ADD COLUMN name TEXT NOT NULL DEFAULT 'realm';
 ALTER TABLE rlm_sessions ADD COLUMN mods TEXT NOT NULL DEFAULT '[]';
 ALTER TABLE rlm_seats ADD COLUMN role TEXT NOT NULL DEFAULT 'player';
 """,
+    # v3 kinds were headless, lab or rendered; a rendered world is a game that
+    # is not headless.
+    (3, 4): """\
+ALTER TABLE rlm_sessions ADD COLUMN headless INTEGER NOT NULL DEFAULT 1;
+UPDATE rlm_sessions SET headless = 0 WHERE kind = 'rendered';
+UPDATE rlm_sessions SET kind = 'game' WHERE kind IN ('headless', 'rendered');
+""",
 }
 
 # Column list shared by every read so the row shape is stable across methods.
 _COLS = (
     "session_id, game, status, container_name, compose_project, "
     "control_port, game_port, rcon_port, current_world, created_at, updated_at, "
-    "kind, rules, name, mods"
+    "kind, rules, name, mods, headless"
 )
 
 _initialized = False
@@ -132,7 +140,7 @@ def _now() -> str:
 _PATCHABLE = {
     "status", "container_name", "compose_project",
     "control_port", "game_port", "rcon_port", "current_world",
-    "kind", "rules", "name", "mods",
+    "kind", "rules", "name", "mods", "headless",
 }
 
 _SEAT_COLS = (
@@ -158,10 +166,11 @@ class FactorioDAO(BaseDAO):
         control_port: int = 0,
         game_port: int = 0,
         rcon_port: int = 0,
-        kind: str = "headless",
+        kind: str = "game",
         rules: str = "realm",
         name: str = "realm",
         mods: list[str] | None = None,
+        headless: bool = True,
     ) -> dict:
         """Mint a new session row (status 'acquiring') and return it."""
         session_id = f"rlm-factorio-{uuid.uuid4().hex[:12]}"
@@ -171,14 +180,14 @@ class FactorioDAO(BaseDAO):
             INSERT INTO rlm_sessions (
                 session_id, game, status, container_name, compose_project,
                 control_port, game_port, rcon_port, created_at, updated_at,
-                kind, rules, name, mods
-            ) VALUES (?, ?, 'acquiring', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                kind, rules, name, mods, headless
+            ) VALUES (?, ?, 'acquiring', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 session_id, str(game or "").strip(), container_name,
                 compose_project, int(control_port), int(game_port),
                 int(rcon_port), now, now, kind, rules, name,
-                json.dumps(mods or []),
+                json.dumps(mods or []), int(bool(headless)),
             ),
         )
         return self.get_session(session_id)

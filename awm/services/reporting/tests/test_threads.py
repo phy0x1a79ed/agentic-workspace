@@ -257,3 +257,83 @@ async def test_a_card_dragged_to_rejected_tells_the_session_that_holds_it(queue)
     await sub.consume()
     assert queue.get(card["id"])["status"] == "rejected"
     assert lines.sent == [("j1", f"Board card {card['id']} is rejected")]
+
+
+async def test_a_new_card_in_a_watched_project_or_from_a_watched_swarm_is_announced(queue):
+    sub, board, lines, _ = build(queue)
+    queue.watch("w1", "project:avatar")
+    queue.watch("w2", "swarm:beta")
+    card = board.add(make_card(project="avatar", title="the actual words"))
+    board.post_event("card.posted", card)
+    await sub.consume()
+    assert sorted(j for j, _ in lines.sent) == ["w1", "w2"]
+    assert all(t == f"Board card {card['id']} posted by beta/op to tony in project avatar, "
+                    "run operations board_get" for _, t in lines.sent)
+
+
+async def test_a_card_this_swarm_sent_is_followed_by_its_recipient_swarm(queue):
+    sub, board, lines, _ = build(queue)
+    queue.watch("w1", "swarm:beta")
+    card = board.add(make_card(recipient="beta", sender={"swarm": "tony", "principal": "a", "party": "p"}))
+    board.post_event("card.message", board.say(card, "hi", swarm="beta"))
+    await sub.consume()
+    assert [j for j, _ in lines.sent] == ["w1"]
+
+
+async def test_the_poster_is_not_told_of_its_own_post(queue):
+    sub, board, lines, _ = build(queue)
+    queue.watch("w1", "posted:muse")
+    card = board.add(make_card(recipient="beta", agent="muse",
+                               sender={"swarm": "tony", "principal": "a", "party": "p"}))
+    board.post_event("card.posted", card)
+    await sub.consume()
+    assert lines.sent == []
+
+
+async def test_a_watch_only_subscriber_types_lines_and_queues_nothing(queue):
+    board, lines, told = FakeBoard("tony"), Lines(), Told()
+    sub = Subscriber(queue, board, "tony", dm=told, send=lines, intake=False)
+    card = board.add(make_card(project="avatar"))
+    queue.watch("w1", card["id"])
+    queue.watch("w2", "project:avatar")
+    board.post_event("card.posted", card)
+    board.post_event("card.message", board.say(card, "the actual words"))
+    board.post_event("card.message", board.say(card, "again"))
+    await sub.consume()
+    assert queue.get(card["id"]) is None and told.texts == []
+    texts = [t for j, t in lines.sent if j == "w1"]
+    assert texts[0].startswith(f"Board card {card['id']} posted by beta/op")
+    assert [t.split(",")[0] for t in texts[1:]] == [
+        f"Board card {card['id']} has a new message from beta/op"] * 2
+    assert len([j for j, _ in lines.sent if j == "w2"]) == 3
+    assert not any("actual words" in t for _, t in lines.sent)
+    assert queue.thread_seq(card["id"]) == 2 and queue.cursor() == 3
+    assert await sub.catch_up() == 0 and board.message_reads == []
+
+
+async def test_a_watch_only_subscriber_ignores_a_replayed_message(queue):
+    board, lines = FakeBoard("tony"), Lines()
+    sub = Subscriber(queue, board, "tony", dm=Told(), send=lines, intake=False)
+    card = board.add(make_card())
+    queue.watch("w1", card["id"])
+    event = board.say(card, "hello")
+    board.post_event("card.message", event)
+    board.post_event("card.message", event)
+    await sub.consume()
+    assert len(lines.sent) == 1
+
+
+async def test_a_project_or_swarm_watch_hears_only_the_other_swarm(queue):
+    sub, board, lines, _ = build(queue)
+    queue.watch("w1", "swarm:beta")
+    queue.watch("w2", "project:avatar")
+    queue.watch("w3", "x")
+    card = board.add(make_card(recipient="beta", project="avatar",
+                               sender={"swarm": "tony", "principal": "a", "party": "p"}))
+    queue.watch("w3", card["id"])
+    board.post_event("card.posted", card)
+    board.post_event("card.message", board.say(card, "ours", swarm="tony"))
+    board.post_event("card.message", board.say(card, "theirs", swarm="beta"))
+    await sub.consume()
+    assert sorted(j for j, _ in lines.sent) == ["w1", "w2", "w3", "w3", "w3"]
+    assert all("tony" not in t.split(" from ")[-1] for j, t in lines.sent if j in ("w1", "w2"))

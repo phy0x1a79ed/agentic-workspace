@@ -181,6 +181,7 @@ class Tasks:
         self.subscription: gatewayclient.SupervisedSubscription | None = None
         self._missing: dict[int, int] = {}
         self.lock = asyncio.Lock()
+        self.approvals: Any = None
 
     # -- entry ---------------------------------------------------------------
 
@@ -650,7 +651,28 @@ class Tasks:
             return await self._blocked(who, args)
         if kind == "review":
             return await self._review(who, args)
-        raise ValueError("kind must be blocked or review")
+        if kind == "approval":
+            return await self._approval(who, args)
+        raise ValueError("kind must be blocked, review or approval")
+
+    async def _approval(self, who: Who, args: dict) -> dict:
+        if self.approvals is None:
+            raise ValueError("this node takes no admin approvals")
+        req = await self.approvals.open(
+            str(args.get("bundle") or ""), agent=self._agent_name(who.pid) or who.key,
+            node=self.node, job=who.key if who.kind == "bg" else "")
+        out = await self._blocked(who, {"reason": (
+            f"Admin approval {req['name']} (ref {req['ref']}) waits for Tony or Ryan in Slack.")})
+        self.approvals.attach(req["ref"], out["task"])
+        return {**out, "approval": req["ref"],
+                "notice": "A line is typed into this session when an admin decides."}
+
+    async def approval_decided(self, task_id: int, detail: str) -> None:
+        """Move a card that waits on an admin approval back to Active."""
+        async with self.lock:
+            task = await self.db.get(task_id)
+            if task and task["state"] == BLOCKED:
+                await self._set(task, ACTIVE, "approval", detail, reason="", urgent=0)
 
     async def _blocked(self, who: Who, args: dict) -> dict:
         reason = str(args.get("reason") or "").strip()
@@ -683,14 +705,15 @@ class Tasks:
             targets.append(await self._card_id(str(args["card_id"])))
         if args.get("posted_by_me") is True:
             targets.append(f"posted:{self._posting_name(who)}")
+        targets += self._named_targets(args)
         if not targets:
-            raise ValueError("pass card_id or posted_by_me=true")
+            raise ValueError("pass card_id, posted_by_me=true, project or swarm")
         for target in targets:
             await self.qdb.watch(job, target)
         out = {"ok": True, "watching": await self.qdb.watched_by(job)}
-        if config.refusal() is not None:
-            out["warning"] = ("this node does not run the front door, so card events reach this "
-                              "session only if the front door runs here")
+        if isinstance(config.board_target(), str):
+            out["warning"] = ("this node has no board token, so card events reach this "
+                              "session only once AWM_BOARD_URL and AWM_BOARD_TOKEN are set")
         return out
 
     async def board_unwatch(self, who: Who, args: dict) -> dict:
@@ -700,9 +723,21 @@ class Tasks:
             targets.append(await self._card_id(str(args["card_id"])))
         if args.get("posted_by_me") is True:
             targets.append(f"posted:{self._posting_name(who)}")
+        targets += self._named_targets(args)
         for target in targets or [None]:
             await self.qdb.unwatch(job, target)
         return {"ok": True, "watching": await self.qdb.watched_by(job)}
+
+    @staticmethod
+    def _named_targets(args: dict) -> list[str]:
+        out = []
+        for kind in ("project", "swarm"):
+            value = str(args.get(kind) or "").strip()
+            if value:
+                if not value.isprintable() or len(value) > 100 or ":" in value:
+                    raise ValueError(f"{kind} must be a short name")
+                out.append(f"{kind}:{value}")
+        return out
 
     @staticmethod
     def _watcher_job(who: Who) -> str:

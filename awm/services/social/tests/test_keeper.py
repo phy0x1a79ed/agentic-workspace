@@ -546,9 +546,11 @@ def test_a_v4_database_gains_the_keepers_table(awm_workspace):
     assert d.keeper("lab")["job"] == "aaaa1111"
     assert d.holder("bot", "C1")["job"] == "aaaa1111"
     conn = sqlite3.connect(path)
-    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == 7
+    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == dao_mod.SCHEMA_VERSION
     d.keeper_seen("lab", 1234.5)
     assert d.keeper("lab")["seen_at"] == "1234.500"
+    d.quiet_thread("bot", "C1", "20.1")
+    assert d.is_quiet("bot", "C1", "20.1") and not d.is_quiet("bot", "C1", "20.2")
 
 
 # -- the restart record, the breaker and the daemon ----------------------------

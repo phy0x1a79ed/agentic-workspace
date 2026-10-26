@@ -362,6 +362,27 @@ class TestWiring:
         # DVC gitignores config.local itself, which is why it is the right home.
         assert _git(wt, "check-ignore", ".dvc/config.local").strip() != ""
 
+    @needs_dvc
+    def test_a_local_link_type_survives_the_rewrite(self, dvc_project):
+        """A live data root sets `copy` for itself, so its files are never cache inodes."""
+        wt = dvc_project["worktree"]
+        dd.ensure_cache_config(wt)
+        dd._dvc(wt, "config", "--local", "cache.type", "copy")
+        dd.ensure_cache_config(wt)
+        assert dd._dvc(wt, "config", "cache.type").stdout.strip() == "copy"
+        assert str(dd.cache_dir()) in (wt / ".dvc" / "config.local").read_text()
+
+    @needs_dvc
+    def test_a_local_link_type_leaves_the_tracked_config_alone(self, dvc_project):
+        """The tracked config is compared at project level, so a local override never rewrites it."""
+        wt = dvc_project["worktree"]
+        dd.ensure_cache_config(wt)
+        tracked = wt / ".dvc" / "config"
+        tracked.write_text("# a note the project keeps\n" + tracked.read_text())
+        dd._dvc(wt, "config", "--local", "cache.type", "copy")
+        dd.ensure_cache_config(wt)
+        assert tracked.read_text().startswith("# a note the project keeps")
+
     def test_site_cache_goes_to_tmpfs_when_there_is_one(self, dvc_project, tmp_path, monkeypatch):
         """DVC's per-worktree index commits row by row, so a busy disk stalls a fresh checkout."""
         wt = dvc_project["worktree"]
@@ -374,6 +395,57 @@ class TestWiring:
         site = dd.site_cache_dir()
         assert site.parent == tmp_path / "shm"
         assert dd._dvc(wt, "config", "core.site_cache_dir").stdout.strip() == str(site)
+
+
+
+TAG = "Signature: 8a477f597d28d172789f06886806bc55\n# no remote\n"
+
+
+class TestNoRemote:
+    """A CACHEDIR.TAG at projects/<p>/ keeps the project's bytes on this machine."""
+
+    def test_an_untagged_project_uses_the_shared_cache(self, dvc_project):
+        wt = dvc_project["worktree"]
+        assert not dd.no_remote(wt)
+        assert dd.cache_dir(wt) == dd.cache_dir()
+
+    def test_a_tagged_project_keeps_its_own_cache(self, dvc_project):
+        wt = dvc_project["worktree"]
+        (dvc_project["bare"].parent / "CACHEDIR.TAG").write_text(TAG)
+        assert dd.no_remote(wt)
+        own = dvc_project["bare"].parent / ".dvc_cache"
+        assert dd.cache_dir(wt) == own
+        dd.ensure_cache_config(wt)
+        local = (wt / ".dvc" / "config.local").read_text()
+        assert str(own) in local and str(dd.cache_dir()) not in local
+
+    def test_a_tag_without_the_signature_declares_nothing(self, dvc_project):
+        wt = dvc_project["worktree"]
+        (dvc_project["bare"].parent / "CACHEDIR.TAG").write_text("not a tag\n")
+        assert not dd.no_remote(wt)
+
+    @needs_dvc
+    @pytest.mark.parametrize("verb", ["push", "pull"])
+    def test_push_and_pull_refuse_a_tagged_project(self, dvc_project, monkeypatch, verb):
+        from awm.dvc import cache as cachemod
+        from awm.dvc import config as dvc_config
+        from awm.dvc import transfer
+
+        wt = dvc_project["worktree"]
+        (dvc_project["bare"].parent / "CACHEDIR.TAG").write_text(TAG)
+        dd.ensure_cache_config(wt)
+        monkeypatch.setattr(dvc_config, "WORKSPACE_ROOT", dvc_project["workspace"])
+        monkeypatch.setattr(dvc_config, "load", lambda: None)
+        with pytest.raises(cachemod.DvcScopeError, match="keeps no remote"):
+            getattr(transfer, verb)(str(wt), dry_run=True)
+
+    @needs_dvc
+    def test_a_tagged_project_is_not_wired_to_the_shared_cache(self, dvc_project):
+        wt = dvc_project["worktree"]
+        dd.ensure_repo_wiring(wt)
+        assert "p" in scopedata._dvc_wired_projects()
+        (dvc_project["bare"].parent / "CACHEDIR.TAG").write_text(TAG)
+        assert "p" not in scopedata._dvc_wired_projects()
 
 
 def _scope(dvc_project, name: str, branch: str | None = None) -> Path:
