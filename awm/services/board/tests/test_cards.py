@@ -164,6 +164,16 @@ def test_bad_input_is_refused(board, tony, bad):
         board.post(tony, **args)
 
 
+@pytest.mark.parametrize("kind", ["request", "message"])
+def test_a_card_to_the_posters_own_swarm_is_refused(board, trilium, tony, kind):
+    """A swarm's own work goes on its Swarm board; the federation board is for other swarms."""
+    before = len(trilium.notes)
+    with pytest.raises(ValueError, match="Swarm board"):
+        board.post(tony, kind=kind, recipient="tony", title="t", body="b")
+    assert len(trilium.notes) == before
+    assert board.list(tony) == []
+
+
 def test_a_revoked_party_cannot_act(board, tony):
     card = request(board, tony)
     with pytest.raises(Forbidden):

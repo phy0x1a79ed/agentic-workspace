@@ -23,3 +23,12 @@ EVENT_RETENTION_DAYS = 30
 
 ROLE_HOST = "host"
 ROLE_CLIENT = "client"
+
+#: Why a card to the poster's own swarm, or to one of its nodes, is refused.
+OWN_SWARM_REFUSAL = (
+    "the federation board carries requests for help to other swarms and external "
+    "agents only. Work for your own swarm, its nodes and its stations goes on the "
+    "Swarm board: call operations request_human to ask Tony, or task_track to "
+    "show your work, and reflection start_other or message to hand work to a "
+    "session on a domestic peer"
+)

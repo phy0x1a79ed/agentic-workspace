@@ -30,7 +30,7 @@ from typing import Any
 
 from awm.gatewayclient import ServiceAdapter, spawn_supervised
 
-from awm.board import DEFAULT_PORT, ROLE_CLIENT, ROLE_HOST
+from awm.board import DEFAULT_PORT, OWN_SWARM_REFUSAL, ROLE_CLIENT, ROLE_HOST
 from awm.board.client import BoardClient, BoardError
 
 log = logging.getLogger("awm.board.hub_adapter")
@@ -56,7 +56,10 @@ def _param(name: str, type_: str, description: str, required: bool = False) -> d
 
 API_MANIFEST: dict[str, Any] = {
     "description": (
-        "The federation board: cards exchanged between swarms. A request card "
+        "The federation board: cards exchanged between swarms, for asking a "
+        "foreign swarm or an external agent for help. Work for your own swarm, "
+        "its nodes and its stations goes on the Swarm board through "
+        "request_human and task_track, never here. A request card "
         "asks a swarm to do something; a message card just informs. A card "
         "sits in one of seven states: proposed, planned, active, blocked, "
         "review, done, rejected. Post a card, claim a request addressed to "
@@ -71,7 +74,10 @@ API_MANIFEST: dict[str, Any] = {
             "tool": "operations_board_post",
             "effect": "queue",
             "description": (
-                "Post a card to a swarm, or to `open` for any swarm to claim. "
+                "Post a card to another swarm, or to `open` for any swarm to "
+                "claim, to ask a foreign swarm or an external agent for help. "
+                "A card to your own swarm or to one of its nodes is refused: "
+                "ask Tony with request_human instead. "
                 "It starts proposed. The sender is your swarm, and the agent "
                 "is your session's name; the board sets both. With reply_to "
                 "the post is a message card and also a message on the thread "
@@ -80,7 +86,7 @@ API_MANIFEST: dict[str, Any] = {
             ),
             "params": [
                 _param("kind", "string", "`request` (can be claimed) or `message` (cannot).", True),
-                _param("recipient", "string", "A swarm name, or `open`.", True),
+                _param("recipient", "string", "Another swarm's name, or `open`. Never your own swarm or a node of it.", True),
                 _param("title", "string", "One line.", True),
                 _param("body", "string", "The card's text."),
                 _param("priority", "string", "`urgent`, `normal` (default) or `low`."),
@@ -474,7 +480,20 @@ def _who(args: dict) -> dict:
     return {"agent": agent.session_name(args.get("_caller_pid")), "node": node_name()}
 
 
+def _domestic(recipient: str) -> bool:
+    """Whether ``recipient`` names this swarm, this node or a peer of this swarm."""
+    from awm.config import list_records, node_name, node_swarm
+
+    swarm = node_swarm()
+    names = {swarm, node_name().split(".")[0].lower()}
+    names.update(r["name"].lower() for r in list_records()
+                 if r["relation"] == "domestic" or r["swarm"] == swarm)
+    return recipient.strip().lower() in names
+
+
 async def post(args: dict, as_: str | None = None) -> dict:
+    if _domestic(str(args.get("recipient") or "")):
+        return {"ok": False, "error": f"refused: {OWN_SWARM_REFUSAL}"}
     who = _who(args)
     return _card_reply(await _relay(lambda c: c.post(
         kind=args["kind"], recipient=args["recipient"], title=args["title"],

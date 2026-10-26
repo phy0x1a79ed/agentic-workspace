@@ -170,7 +170,13 @@ async def relay(monkeypatch):
     monkeypatch.setenv("AWM_BOARD_ROLE", "client")
     monkeypatch.setenv("AWM_BOARD_URL", server.url)
     monkeypatch.setenv("AWM_BOARD_TOKEN", token)
-    server.beta_token = other
+    monkeypatch.setenv("AWM_SWARM", "alpha")
+    monkeypatch.setenv("AWM_NODE_NAME", "vega.mesh")
+    monkeypatch.setattr("awm.config.list_records", lambda: [
+        {"name": "rigel", "relation": "domestic", "swarm": "alpha"},
+        {"name": "shaula", "relation": "foreign", "swarm": "beta"},
+    ])
+    server.alpha_token, server.beta_token = token, other
     yield server
     await server.stop()
 
@@ -209,8 +215,18 @@ async def test_the_thread_verbs_relay_to_the_host(relay):
     assert hidden["ok"] is False and hidden["status"] == 404
 
 
+async def _from_beta(relay, monkeypatch, title):
+    """A request beta posts to alpha, then the relay acts as alpha again."""
+    monkeypatch.setenv("AWM_BOARD_TOKEN", relay.beta_token)
+    monkeypatch.setenv("AWM_SWARM", "beta")
+    card = (await hub_adapter.post({"kind": "request", "recipient": "alpha", "title": title}))["card"]
+    monkeypatch.setenv("AWM_BOARD_TOKEN", relay.alpha_token)
+    monkeypatch.setenv("AWM_SWARM", "alpha")
+    return card
+
+
 async def test_claim_complete_and_fail_relay_with_the_hosts_status(relay, monkeypatch):
-    posted = (await hub_adapter.post({"kind": "request", "recipient": "alpha", "title": "t"}))["card"]
+    posted = await _from_beta(relay, monkeypatch, "t")
     claimed = await hub_adapter.claim({"card_id": posted["id"]})
     assert claimed["ok"] and claimed["card"]["status"] == "in_progress"
 
@@ -220,10 +236,25 @@ async def test_claim_complete_and_fail_relay_with_the_hosts_status(relay, monkey
     done = await hub_adapter.complete({"card_id": posted["id"], "result": "yes"})
     assert done["card"]["status"] == "done"
 
-    second = (await hub_adapter.post({"kind": "request", "recipient": "alpha", "title": "u"}))["card"]
+    second = await _from_beta(relay, monkeypatch, "u")
     await hub_adapter.claim({"card_id": second["id"]})
     failed = await hub_adapter.fail({"card_id": second["id"], "reason": "no"})
     assert failed["card"]["status"] == "failed"
+
+
+@pytest.mark.parametrize("recipient", ["alpha", "Alpha", "vega", "rigel"])
+async def test_post_refuses_this_swarm_and_its_nodes(relay, recipient):
+    """Work for this swarm, this node or a domestic peer goes on the Swarm board, not the federation."""
+    reply = await hub_adapter.post({"kind": "request", "recipient": recipient, "title": "t"})
+    assert reply["ok"] is False
+    assert "Swarm board" in reply["error"] and "request_human" in reply["error"]
+    assert not relay.board.cards  # nothing reached the host
+
+
+@pytest.mark.parametrize("recipient", ["beta", "open", "shaula"])
+async def test_post_still_reaches_other_swarms_and_open(relay, recipient):
+    reply = await hub_adapter.post({"kind": "request", "recipient": recipient, "title": "t"})
+    assert reply["ok"] is True and reply["card"]["recipient"] == recipient
 
 
 @pytest.mark.parametrize("caller", ["peer", "peer:shaula", "peer:capella"])
