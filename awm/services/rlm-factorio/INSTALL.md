@@ -64,12 +64,13 @@ The same image and the same binary serves both roles, switched by
 
 - **host** — `--start-server`. The full binary initialises no graphics in server
   mode, so the host needs no display.
-- **seat** — `--mp-connect`, under `Xvfb` with Mesa's software rasterizer.
+- **seat** — `--mp-connect`, under `Xvfb` with Mesa's software rasterizer. Only
+  the camera runs this role (§ *Seats*).
 
-This is why there is one Dockerfile and not two. It is also the only reason host
-and seats cannot drift out of version or mod sync, which is the failure that
-bites every hand-built Factorio multiplayer setup. The headless build cannot
-serve as a seat at all — its binary has no `--mp-connect`.
+This is why there is one Dockerfile and not two. It is also the only reason the
+host and the camera cannot drift out of version or mod sync, which is the failure
+that bites every hand-built Factorio multiplayer setup. The headless build cannot
+serve as the camera at all — its binary has no `--mp-connect`.
 
 ## Worlds
 
@@ -125,55 +126,62 @@ skips it at bootstrap.
 
 To drive it against a throwaway gateway, run `scratchpad/rlm_harness.sh
 --docker`. It boots an isolated gateway over a temp services tree holding only
-this service, then runs the full live lifecycle: a world, three seats playing in
-it at once, a screenshot each, a blueprint round trip, and all three ways a seat
-is reclaimed.
+this service, then runs the live lifecycle against Docker.
 
 ## Seats
 
-A seat is a real Factorio client container that joins the host world and mints a
-real `LuaPlayer`. Agents act *as* players: mining sustains, hand-crafting counts
-toward production statistics so craft-item research triggers fire on their own,
-and a seat can render what it sees.
+A seat is a body an agent acts through. It has one of two roles.
 
-A seat is bound by **name**, not by guessing. Each seat container writes its own
-`player-data.json` with a deterministic player name, and the server sets
-`require_user_verification: false`, so the service resolves
-`game.players["<seat_id>"]` rather than watching for whichever player appeared.
-No factorio.com account is needed per seat.
+- **drone** (the default) — a `game-bot-drone` character that the
+  `game-bot-control` mod creates and drives every tick. No client and no container
+  stand behind it, so a join takes under a second. It collides with nothing,
+  walks in a straight line, and reaches, builds and mines 128 tiles out. Every
+  other rule is the game's own: mining takes time, a craft counts toward
+  production statistics and fires craft-item triggers, and a drone that dies
+  drops a corpse with its inventory and respawns at the force's spawn.
+- **camera** — the one client a world runs. It renders every screenshot and
+  never plays. A drone's `screenshot` starts it on demand.
+
+A drone is bound by **name**. The service names the seat, and the mod keys its
+state by that name, so a verb cannot reach a body the caller does not hold.
+
+**CAUTION:** the mod pushes a `speed_violation` event when a drone moves faster
+than its running speed in one tick. Only a script that moves the body directly
+causes one, so treat the event as a broken rule, not as noise.
 
 A seat is a **lease**. `join` records the caller the gateway threads in as its
 owner — a placed agent's identity, absent for a CLI call — or an explicit `owner`
 argument. Ownership is recorded and never enforced: one shared force means there
 is no protection between players anyway, and a shell has no identity to check
-against. Every verb naming a seat refreshes its last-seen stamp, and a background
-reaper reclaims a seat whose container died, whose owner went quiet past
-`AWM_FACTORIO_SEAT_IDLE_S`, or whose join never completed.
+against. Every verb naming a seat refreshes its last-seen stamp. A background
+reaper reclaims a drone whose owner went quiet past `AWM_FACTORIO_SEAT_IDLE_S`,
+a camera whose container died, and a join that never completed.
 
 **CAUTION:** nothing holds a seat except using that seat. Not a teammate's
 activity, not the session being busy. An agent that leases a seat and then works
 elsewhere for an hour loses it.
 
-A seat of role `camera` renders and never plays. The service joins it under one
-fixed name, `AWM_FACTORIO_CAMERA_NAME` (default `fxcam`), so a save seeded with
-it loads unchanged, and parks it in the lab mod's view booth, which holds no
-character. It mounts the sprite caches from `output/camera-cache/` read-only, so
-cameras run side by side without rebuilding the atlas. Only a sandbox world
-allows one, one per world, and the reaper never reclaims it for idleness.
+The camera joins under one fixed name, `AWM_FACTORIO_CAMERA_NAME` (default
+`fxcam`), as a spectator with no character. A lab parks it in the lab mod's view
+booth, off every play surface. The camera mounts its sprite caches read-only from
+`output/camera-cache/<key>/`, where the key holds the image tag and every loaded
+mod's version. The service builds a missing cache once, in a client container
+with no network, in about a minute.
 
-The reaper sweeps seats only. It never touches a session, so it cannot
-disconnect a person who joined from Steam or close the world under them.
+**CAUTION:** a client that finds a cache built for other mods rewrites it. On a
+read-only mount that write stalls the join. Keep every loaded mod in the key.
 
-A realm restart leaves every seat running. SIGTERM (`awm services stop`, a
-deploy, a gateway restart) ends only the service process, and the next start
-adopts each seat whose container still runs. Only the reaper, `leave` and
-`release` tear seats down, so a realm deploy never drops the crew. Disabling the
-service therefore leaves seats running until `release` or the reaper of the next
-start. The host appliance is left up for the same reason: it holds the world, and
-both `acquire` and startup reconciliation re-adopt it.
+The reaper never touches a session, so it cannot disconnect a person who joined
+from Steam or close the world under them.
 
-Screenshots are files, not payloads. A seat renders into its own bind-mounted
-`script-output` directory and the verb returns a path under
+A service restart leaves every seat in place. Drones live in the world, and the
+next start adopts each camera whose container still runs. Only the reaper,
+`leave` and `release` end seats, so a deploy never drops the crew. The host
+appliance stays up for the same reason: it holds the world, and both `acquire`
+and startup reconciliation re-adopt it.
+
+Screenshots are files, not payloads. The camera renders into its own bind-mounted
+`script-output` directory, and the verb returns a path under
 `$AWM_WORKSPACE/.awm/services/rlm-factorio/output/seats/<seat_id>/`. Read the
 file to see it.
 
@@ -221,22 +229,24 @@ by name, which avoids the cost for any script run more than once.
 
 ## Changing the mod
 
-The host, every seat and every desktop client must load identical
-`game-bot-control` bytes. Each reads the mod only at start, and seats bind-mount
-the mod directory of the realm's tree. So a mod change ships only with a world
-reload:
+The host, the camera and every desktop client must load identical
+`game-bot-control` bytes, data stage included. The drone prototype and its
+sprites live in the data stage. Each reads the mod only when its engine starts,
+and the host and the camera bind-mount the mod directory of the realm's tree. So
+a mod change ships only with a world reload, which restarts the engine:
 
 1. Save the world.
-2. Advance the realm's tree to the new mod, then restart the realm.
+2. Advance the realm's tree to the new mod. A deploy does this.
 3. Run `world_load` of that save.
 4. Run `rejoin` for the session.
 5. Install the new zip in every desktop client (§ *Joining the world*).
 
-**WARNING:** between steps 2 and 3, a seat that joins loads the new mod against
-the old engine and is refused. Hold all joins for the window.
+**WARNING:** between steps 2 and 3, a client that joins loads the new mod
+against the old engine and is refused. Hold all joins for the window.
 
-The realm verbs that need a newer mod (`walk`, `wait`, `throw`, `order`) refuse
-an older world with an error naming both versions.
+A new mod version changes the camera cache key, so the first camera after the
+change builds a new cache. A verb that needs a newer mod than the world runs,
+`join` of a drone among them, fails with an error naming both versions.
 
 ## Sacred saves
 
@@ -250,10 +260,10 @@ to clobber unless `overwrite` is true.
 and every client drops. Both discard unsaved progress, exactly as the desktop UI
 does. Snapshot first.
 
-A seat does not reconnect by itself after a reload. Run `rejoin`: it restarts
-each seat's client under its own player name, and the same name brings back the
-same player, so the seat id, character and inventory all survive. `join` would
-mint a new seat and a new player instead.
+Run `rejoin` after a reload. A loaded save holds the drones it was saved with,
+and `rejoin` respawns any the save lacks under the same seat name. The camera's
+client drops with the reload, and `rejoin` starts it again. `join` would mint a
+new seat instead.
 
 Saves are ordinary `.zip` files, interchangeable with a desktop client.
 
@@ -271,11 +281,10 @@ Defaults suit one realm on one host. A test rig must override the first four.
 | `AWM_FACTORIO_CONTAINER` | `rlm-factorio-appliance` | host container name |
 | `AWM_FACTORIO_GAME_PORT` | `12140` | the realm's UDP game port, published only when not headless |
 | `AWM_FACTORIO_CONTROL_PORT` | `12142` | published supervisor control port |
-| `AWM_FACTORIO_SEAT_CPUS` | `4.0` | per-seat CPU ceiling |
-| `AWM_FACTORIO_SEAT_MEMORY` | `6g` | per-seat memory ceiling |
-| `AWM_FACTORIO_SEAT_IDLE_S` | `3600` | idle seconds before the reaper takes a seat (`0` disables) |
+| `AWM_FACTORIO_SEAT_IDLE_S` | `3600` | idle seconds before the reaper takes a drone (`0` disables) |
 | `AWM_FACTORIO_REAP_POLL_S` | `60` | reaper sweep interval |
-| `AWM_FACTORIO_SEAT_JOIN_TIMEOUT` | `240` | seconds to wait for a seat to reach the world |
+| `AWM_FACTORIO_SEAT_JOIN_TIMEOUT` | `240` | seconds to wait for the camera to reach the world |
+| `AWM_FACTORIO_CACHE_BUILD_TIMEOUT` | `900` | seconds to wait for a camera cache build |
 | `AWM_FACTORIO_SCREENSHOT_TIMEOUT` | `60` | seconds to wait for a rendered PNG to settle |
 | `AWM_FACTORIO_EVENTS_POLL_S` | `2` | in-world event pump interval |
 | `AWM_FACTORIO_SEAT_MS_PER_S` | `50` | script ms per second each key may spend |
@@ -284,7 +293,7 @@ Defaults suit one realm on one host. A test rig must override the first four.
 | `AWM_FACTORIO_CMD_BUDGET_MS` | `15` | per-command budget before `OVER_BUDGET` |
 | `AWM_FACTORIO_CMD_BUDGET_MAX_MS` | `50` | ceiling a call's `budget_ms` may raise it to |
 | `AWM_FACTORIO_CONN_IDLE_S` | `600` | quiet seconds before a seatless socket closes |
-| `AWM_FACTORIO_CAMERA_NAME` | `fxcam` | player name of every camera seat |
+| `AWM_FACTORIO_CAMERA_NAME` | `fxcam` | player name of every camera |
 | `RLM_FACTORIO_MAX_LABS` | `3` | live labs before `acquire` refuses with `LAB_CAP` |
 | `RLM_FACTORIO_WAIT_MAX_S` | `600` | longest single `advance` or `wait_until` |
 | `RLM_FACTORIO_LAB_MODS` | game-bot `research/lab/fxlab/mods` | folder holding the lab mods |
@@ -294,12 +303,10 @@ real worlds live in. A rig that leaves these at their defaults runs against it,
 and one `docker compose down -v` in its cleanup destroys them. Set the first four
 and scope every teardown to the rig's own project name.
 
-**CAUTION:** size the seat caps to the **join**, not to play. A joining client
-builds its sprite atlas across 15 threads with a peak near 3.7 GiB, while a seat
-already in the world with its window unmapped sits at about an eighth of a core
-and 2.4 GiB. At 2 cores and 4 GiB a 40-second join stretched past five minutes.
-Squeezing here saves a running seat nothing, and a peer that cannot keep the
-server's tick rate is dropped from the game.
+**CAUTION:** the camera runs at 2 cores and 4 GiB only because it mounts a
+prebuilt sprite cache. A client that builds its own atlas peaks near 3.7 GiB
+across 15 threads, and at 2 cores a 40-second join stretched past five minutes.
+The cache build therefore runs at 4 cores and 6 GiB.
 
 The service sets the host container's ceiling per kind through `FACTORIO_CPUS`
 and `FACTORIO_MEMORY`: 2 cores and 4 GiB for a lab, 4 cores and 6 GiB otherwise.
@@ -342,7 +349,9 @@ client fully after copying. Bumping the mod's version invalidates every
 hand-installed copy, so a version bump means every client reinstalls.
 
 Then connect to `localhost:<game_port>` under *Multiplayer → Connect to
-address*. Docker Desktop forwards the published UDP port to the Windows host's
+address*. On the realm a person plays a normal character. In a lab the lab mod
+removes the joining character, so a person watches and builds without a body,
+with cheat mode on under sandbox rules. Docker Desktop forwards the published UDP port to the Windows host's
 loopback. From another device on the LAN use the host's LAN IP and allow inbound
 UDP on the game port through its firewall.
 
@@ -356,17 +365,22 @@ Verbs are projected into the gateway catalog as `factorio_<verb>`. The service i
 reach every verb (`awm factorio join`), and `awm factorio --help` lists them.
 
 They group as session lifecycle, seats, perception, world lifecycle, and acting
-as a player. Two things about that surface are worth knowing before reading it:
+as a player. These facts about that surface are worth knowing before reading it:
 
 - **Every perceive and act verb is addressed the same way**: by `seat_id`, or by
-  `session_id` alone when that session holds exactly one seat. Naming neither is
+  `session_id` alone when that session holds exactly one drone. Naming neither is
   a usage error and never a default, because picking would act as somebody else's
   character.
-- **`exec_lua` runs in the scenario context**, where the mod's storage is
-  invisible — reach mod state through `remote.call('game_bot', …)`. It returns
+- **Under realm rules, agent Lua runs guarded.** Without the admin token,
+  `exec_lua` and every tool run with a read-only view of the game. Any write or
+  any method outside the read set fails with an error naming the call. The script
+  changes the world only through `act`, the drone verbs of its own seat.
+- **`exec_lua` runs in the scenario context** under other rules, where the mod's
+  storage is invisible — reach mod state through `remote.call('game_bot', …)`. It returns
   what the script *printed*, so a value comes back through `rcon.print(...)` and
   a bare `return` is discarded. It takes a file path as well as an inline string,
-  which is the only form a multi-line script survives shell quoting in.
+  which is the only form a multi-line script survives shell quoting in. The
+  resolved seat is bound as `seat` and its body as `drone`.
 - **`exec_lua cache=true` runs the script in the mod context** as a stored
   script. Its globals last one call, `storage` is a table of its own, and it may
   not register an event handler. A handler added outside `control.lua` is missing
