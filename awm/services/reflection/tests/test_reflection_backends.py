@@ -547,6 +547,27 @@ def test_daemon_repaint_shrinks_a_row_and_restores_it():
                      {"t": "resize", "cols": 209, "rows": 57}]
 
 
+def test_the_size_of_a_spare_claimed_job_is_read_from_its_terminal():
+    # A job claimed from a warm spare records no size at dispatch.
+    import fcntl
+    import os
+    import struct
+    import subprocess
+    import termios
+
+    master, slave = os.openpty()
+    fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 50, 200, 0, 0))
+    child = subprocess.Popen(["sleep", "30"], stdin=slave)
+    try:
+        assert session_target.tty_size(child.pid) == (200, 50)
+    finally:
+        child.kill()
+        child.wait()
+        os.close(master)
+        os.close(slave)
+    assert session_target.tty_size(2 ** 22 + 1) is None
+
+
 def test_a_daemon_session_without_a_known_size_is_not_resized():
     sock = FakeSock(HELLO)
     sess = permission_mode._DaemonSession(target(), opener=opener_for(sock),

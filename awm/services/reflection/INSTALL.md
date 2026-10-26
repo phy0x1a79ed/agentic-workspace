@@ -289,7 +289,9 @@ out of the classifier's window. The daemon also replays only recent output on
 connect, so a session busy for minutes may hold no footer paint at all. The walk
 then asks for a full repaint with a resize to one row short and back, at the
 size the roster recorded at dispatch. A resize to the current size repaints
-nothing. A session with no recorded size gets no repaint and refuses as unknown.
+nothing. A job claimed from a warm spare records no size, so the walk reads the
+size of the terminal its REPL runs on. A session whose size cannot be read gets
+no repaint and refuses as unknown.
 
 This footer walk is now the only place in the service that treats a rendered
 screen as evidence. Every send confirms from the record and the transcript

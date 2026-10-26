@@ -25,9 +25,12 @@ guessing here means typing into a stranger's prompt.
 """
 from __future__ import annotations
 
+import fcntl
 import json
 import logging
 import os
+import struct
+import termios
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -241,7 +244,7 @@ def resolve(repl_pid: int, *, socket: Optional[str] = None, runner=None,
         dispatch = worker.get("dispatch") or {}
         cols, rows = dispatch.get("cols"), dispatch.get("rows")
         geometry = ((cols, rows) if isinstance(cols, int) and isinstance(rows, int)
-                    and cols > 0 and rows > 1 else None)
+                    and cols > 0 and rows > 1 else tty_size(repl_pid))
         return DaemonLane(
             sock=sock, auth=auth, session_id=session_id, repl_pid=repl_pid,
             name=name, cli_version=worker.get("cliVersion"),
@@ -253,3 +256,23 @@ def resolve(repl_pid: int, *, socket: Optional[str] = None, runner=None,
         f"session {name or session_id} (pid {repl_pid}) has an unrecognised "
         f"hosting kind {kind!r}; reflection knows how to reach interactive tmux "
         f"sessions and background daemon sessions")
+
+
+def tty_size(pid: int) -> Optional[tuple[int, int]]:
+    """The (cols, rows) of the terminal ``pid`` reads from, or None.
+
+    A job claimed from the daemon's warm spares records no size at dispatch,
+    and without one a walk cannot ask a busy session to repaint its footer.
+    """
+    try:
+        fd = os.open(f"/proc/{pid}/fd/0", os.O_RDONLY | os.O_NOCTTY | os.O_NONBLOCK)
+    except OSError:
+        return None
+    try:
+        rows, cols, _, _ = struct.unpack(
+            "HHHH", fcntl.ioctl(fd, termios.TIOCGWINSZ, b"\0" * 8))
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+    return (cols, rows) if cols > 0 and rows > 1 else None
