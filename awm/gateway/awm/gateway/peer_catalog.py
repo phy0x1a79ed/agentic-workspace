@@ -342,6 +342,14 @@ async def refresh_loop() -> None:
 #: one sweep each behind the lock.
 _ON_DEMAND_MIN_AGE_S = 2.0
 
+_loaded_at = time.monotonic()
+
+
+def warming_up() -> bool:
+    """Whether this gateway started recently enough that an unread peer
+    probably reflects the boot race rather than a peer that is away."""
+    return time.monotonic() - _loaded_at < _SWEEP_RETRY_FOR_S
+
 
 def catalog_pending(peer: str,
                     snap: Mapping[str, dict[str, Any]] | None = None) -> str | None:

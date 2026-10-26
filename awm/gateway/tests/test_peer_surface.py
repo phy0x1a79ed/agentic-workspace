@@ -455,6 +455,7 @@ async def test_a_peer_still_unread_says_so_instead_of_does_not_provide(
                         "error": "could not sign a node token"}}
     monkeypatch.setattr(peer_catalog, "snapshot", lambda: dict(state))
     monkeypatch.setattr(peer_catalog, "_swept_at", 0.0)
+    monkeypatch.setattr(peer_catalog, "warming_up", lambda: True)
     swept = []
 
     async def _sweep():
@@ -466,7 +467,14 @@ async def test_a_peer_still_unread_says_so_instead_of_does_not_provide(
         await catalog.dispatch("scope", {"verb": "search", "args": {},
                                          "peer": "altair"})
     assert "could not sign a node token" in str(exc.value)
+    assert "just restarted" in str(exc.value)
     assert swept == [1]
+
+    monkeypatch.setattr(peer_catalog, "warming_up", lambda: False)
+    monkeypatch.setattr(peer_catalog, "_swept_at", 0.0)
+    with pytest.raises(ValueError, match="asleep or off the network"):
+        await catalog.dispatch("scope", {"verb": "search", "args": {},
+                                         "peer": "altair"})
 
 
 def test_a_peer_read_once_is_never_pending(snap):
