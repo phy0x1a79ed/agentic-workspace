@@ -466,6 +466,29 @@ def test_an_untrusted_worktree_refuses(home, launched, tmp_path, monkeypatch):
     assert launched == []
 
 
+def test_an_awm_worktree_is_trusted_before_its_start(home, launched, tmp_path, monkeypatch):
+    # A new project's `.bare` has no trust entry, and nobody is there to accept
+    # the dialog for a background start.
+    import subprocess
+
+    git = ["git", "-c", "user.name=t", "-c", "user.email=t@t"]
+    seed = tmp_path / "seed"
+    seed.mkdir()
+    subprocess.run([*git, "init", "-q"], cwd=seed, check=True)
+    subprocess.run([*git, "commit", "-q", "--allow-empty", "-m", "x"], cwd=seed, check=True)
+    bare = home.projects / "game" / ".bare"
+    subprocess.run([*git, "clone", "-q", "--bare", str(seed), str(bare)], check=True)
+    subprocess.run([*git, "worktree", "add", "-q", "-b", "feat/fx",
+                    str(home.projects / "game" / "fx")], cwd=bare, check=True)
+    empty = tmp_path / "empty.json"
+    empty.write_text(json.dumps({"projects": {}}))
+    monkeypatch.setenv("AWM_CX_TRUST_FILE", str(empty))
+    out = start({"project": "game", "scope": "fx"})
+    assert out["ok"], out
+    entries = json.loads(empty.read_text())["projects"]
+    assert entries[str(bare.resolve())] == {"hasTrustDialogAccepted": True}
+
+
 def test_a_taken_name_refuses(home, launched):
     home.add(PARENT_JOB, "demo", os.getpid())
     out = start(BASE)

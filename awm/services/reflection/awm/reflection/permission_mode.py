@@ -48,8 +48,13 @@ log = logging.getLogger("awm.reflection.permission_mode")
 # is internal state with no external setter and no record field. They at least fail
 # safe: an unrecognised footer reads as "unknown", which refuses rather than
 # pressing keys blindly.
+#
+# `default` draws no indicator before Claude Code 2.1.310 and "manual mode on"
+# from it. A session started in plan mode returns to `default` on approval, so a
+# walk that cannot see `default` refuses exactly the sessions it exists for.
 _MODE_MARKERS: dict[str, tuple[str, ...]] = {
-    "bypassPermissions": ("bypass permissions",),
+    "default": ("manual mode on",),
+    "bypassPermissions": ("bypass permissions on",),
     "acceptEdits": ("accept edits on",),
     "plan": ("plan mode on",),
     "auto": ("auto mode on",),
@@ -97,16 +102,25 @@ def classify(screen: str) -> str:
     footer, so after a mode change the old label and the new one are both present
     and only their order says which is current.
 
-    ``"default"`` is not detectable — it is the absence of an indicator, which is
-    indistinguishable from a footer we failed to capture — so it reads as
-    unknown. That is the honest answer, and callers treat unknown as "do not act".
+    Only what lies under the last prompt box counts, where the footer is. Text
+    above it is transcript, and a plan-mode start opens with the notice "Session
+    was started with bypass permissions, so plan mode won't ask…", which read as
+    bypass. No prompt box means a dialog is drawn in its place, which reads as
+    unknown.
+
+    An older CLI draws no indicator for ``"default"``, which is indistinguishable
+    from a footer we failed to capture, so there it reads as unknown. That is the
+    honest answer, and callers treat unknown as "do not act".
 
     Pass a rendered screen (see :func:`_footer`), not a background session's raw
     pty stream. A busy session's spinner repaints push the footer out of the
     tail window of a raw stream, so bypass read as unknown and the walk pressed
     straight past it.
     """
-    tail = screen[-_TAIL_CHARS:].lower()
+    footer = guards.under_prompt_box(screen)
+    if footer is None:
+        return "unknown"
+    tail = footer[-_TAIL_CHARS:].lower()
     best_mode, best_at = "unknown", -1
     for mode, markers in _MODE_MARKERS.items():
         at = max(tail.rfind(m) for m in markers)

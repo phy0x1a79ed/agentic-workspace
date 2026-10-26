@@ -147,8 +147,8 @@ _PROMPT_LINE = re.compile(r"^\s*│?\s*[❯>]")
 _PROMPT_BOX_MAX_LINES = 12
 
 
-def below_prompt_box(screen: str) -> str:
-    """The part of ``screen`` under its last prompt box, or all of it with no box."""
+def under_prompt_box(screen: str) -> Optional[str]:
+    """The part of ``screen`` under its last prompt box, or None with no box."""
     lines = screen.split("\n")
     for top in range(len(lines) - 2, -1, -1):
         if not (_RULE.match(lines[top]) and _PROMPT_LINE.match(lines[top + 1])):
@@ -156,7 +156,13 @@ def below_prompt_box(screen: str) -> str:
         for bottom in range(top + 2, min(len(lines), top + 2 + _PROMPT_BOX_MAX_LINES)):
             if _RULE.match(lines[bottom]):
                 return "\n".join(lines[bottom + 1:])
-    return screen
+    return None
+
+
+def below_prompt_box(screen: str) -> str:
+    """The part of ``screen`` under its last prompt box, or all of it with no box."""
+    under = under_prompt_box(screen)
+    return screen if under is None else under
 
 
 def modal_on_screen(screen: str) -> Optional[str]:

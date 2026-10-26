@@ -1079,9 +1079,29 @@ def test_cd_refuses_a_file(world, moves, tmp_path):
 
 def test_cd_refuses_where_the_trust_dialog_would_open(world, moves, monkeypatch):
     monkeypatch.setattr(control.trust, "trusted", lambda path: False)
+    monkeypatch.setattr(control.trust, "grant_awm_worktree", lambda path, root: [])
     out = control.cd(str(moves), job=OTHER_JOB, caller_pid=ME)
     assert out["ok"] is False and "trust dialog" in out["reason"]
     assert world.typed == [] and world.opened == []
+
+
+def test_cd_trusts_an_awm_worktree_before_moving_into_it(world, moves, monkeypatch, tmp_path):
+    # A background session has nobody to answer the dialog, and awm made the
+    # worktree, so `cd` records the trust a person would have given.
+    trusted = set()
+    monkeypatch.setattr(control.trust, "trusted", lambda path: path in trusted)
+    granted = []
+
+    def grant(path, root):
+        granted.append((path, root))
+        trusted.add(path)
+        return [path]
+
+    monkeypatch.setattr(control.trust, "grant_awm_worktree", grant)
+    monkeypatch.setattr(control, "_projects_root", lambda: tmp_path)
+    out = control.cd(str(moves), job=OTHER_JOB, caller_pid=ME)
+    assert granted == [(str(moves), tmp_path)]
+    assert out["ok"] and world.typed[0][1] == f"/cd {moves}"
 
 
 def test_cd_to_where_the_session_already_is_types_nothing(world, moves):

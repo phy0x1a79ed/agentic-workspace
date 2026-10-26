@@ -57,7 +57,8 @@ API_MANIFEST: dict[str, Any] = {
                 "its job id and the `claude attach` command. Refuses on a "
                 "station, for a caller that is not a domestic peer, when no "
                 "Claude Code daemon runs, when the worktree is untrusted, or "
-                "when a live session already holds the name. The session "
+                "when a live session already holds the name. A worktree of "
+                "an awm project is trusted first, not refused. The session "
                 "defaults to skip-permissions, opus and high effort. "
                 "Every caller gets the same session, whoever it is."
             ),

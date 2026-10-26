@@ -61,7 +61,7 @@ def test_a_start_in_a_git_repo_needs_the_repos_own_trust_entry(tmp_path, monkeyp
     ancestor.write_text(json.dumps({"projects": {str(tmp_path): {
         "hasTrustDialogAccepted": True}}}))
     monkeypatch.setenv("AWM_CX_TRUST_FILE", str(ancestor))
-    assert trust.trusted(repo)
+    assert not trust.trusted(repo)
     why = trust.start_refusal(repo)
     assert why and str(repo.resolve()) in why and "claude" in why
 
