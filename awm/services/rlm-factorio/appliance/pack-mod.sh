@@ -21,8 +21,8 @@ info = json.loads((src / "info.json").read_text())
 folder = f"{info['name']}_{info['version']}"
 target = out / f"{folder}.zip"
 with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as z:
-    for f in sorted(src.iterdir()):
+    for f in sorted(src.rglob("*")):
         if f.is_file():
-            z.write(f, f"{folder}/{f.name}")
+            z.write(f, f"{folder}/{f.relative_to(src)}")
 print(target.resolve())
 PY
