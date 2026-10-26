@@ -594,7 +594,7 @@ async def _choose_target(name: str, requested: str | None,
     why = await peer_catalog.load_pending(peer)
     if why:
         raise ValueError(
-            f"this node has not loaded peer {peer!r}'s tool catalog yet ({why}), "
+            f"this node has not loaded the tool catalog of peer {peer!r} yet ({why}), "
             f"so it cannot route {name!r} there. This gateway may have just "
             f"restarted: retry in about 10 seconds.")
     return peer_catalog.choose_target(name, requested, local)

@@ -462,7 +462,7 @@ async def test_a_peer_still_unread_says_so_instead_of_does_not_provide(
         return state
 
     monkeypatch.setattr(peer_catalog, "sweep", _sweep)
-    with pytest.raises(ValueError, match="has not loaded peer 'altair'") as exc:
+    with pytest.raises(ValueError, match="tool catalog of peer 'altair'") as exc:
         await catalog.dispatch("scope", {"verb": "search", "args": {},
                                          "peer": "altair"})
     assert "could not sign a node token" in str(exc.value)

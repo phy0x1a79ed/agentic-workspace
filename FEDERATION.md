@@ -372,6 +372,13 @@ gets it; anyone else gets `421 Misdirected Request`. A request that cannot be
 honoured **fails loudly** rather than running locally — a silent local fallback is
 precisely the half-route this whole model exists to prevent.
 
+A call that names a peer no sweep has read yet is the one case that sweeps on
+demand. It happens in the seconds after a gateway restart: the first sweep runs
+before `auth` can sign a node token, so every peer reads as having no tools until
+the retry about 10 s later. A refusal in that window used to read "does not
+provide" and sent a session to give up on a working route. The call now sweeps
+once and routes, or says the peer's catalog has not loaded yet.
+
 **Which domains are singletons is declared, never inferred from env-var shape.**
 Of the three selectors above only `AWM_TWOFA_PEER` means "the whole domain lives
 elsewhere", and it seeds the table. `AWM_SOCIAL_PEER` does not — `social` runs
