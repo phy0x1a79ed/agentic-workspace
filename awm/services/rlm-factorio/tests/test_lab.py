@@ -32,7 +32,7 @@ class RespondingBroker:
         return [c for c in self.sent if f"'{fn}'" in c]
 
 
-def mod_responder(version="0.6.1", tools=(), calls=None):
+def mod_responder(version="0.7.0", tools=(), calls=None):
     """A fake engine: version query, tool_list, and anything else echoes ok."""
     def respond(code):
         if "active_mods" in code:
@@ -366,50 +366,104 @@ def test_lab_mod_version_is_not_cached_for_long(LAB, engine, monkeypatch):
     assert len([c for c in b.sent if "active_mods" in c]) == 2
 
 
-# ---- seats on every kind -------------------------------------------------------------
+# ---- seats: drones and the camera ---------------------------------------------------
+
+class Runs(list):
+    """Camera starts, with the containers stopped hung on as .stopped."""
+
 
 @pytest.fixture()
 def seats(monkeypatch):
-    runs = []
-    monkeypatch.setattr(appliance, "seat_run",
+    runs = Runs()
+    monkeypatch.setattr(appliance, "camera_run",
                         lambda container, network, name, **kw: runs.append(
                             {"container": container, "network": network, "name": name, **kw}))
-    monkeypatch.setattr(appliance, "seat_container_running", lambda c: True)
-    monkeypatch.setattr(appliance, "seat_stop", lambda c: None)
+    monkeypatch.setattr(appliance, "seat_container_running", lambda c: bool(c))
+    stopped = []
+    monkeypatch.setattr(appliance, "seat_stop", stopped.append)
+    runs.stopped = stopped
     return runs
 
 
-def seat_engine(engine):
+def world_engine(engine, seats_reply=None):
+    """A fake engine: the camera connects as player 3, spawn reports a body."""
     b = engine()
-    b.respond = lambda code: "3" if "game.players[" in code and "connected" in code \
-        else json.dumps({"ok": True})
+
+    def respond(code):
+        if "active_mods" in code:
+            return "0.7.0"
+        if "game.players[" in code and "connected" in code:
+            return "3"
+        if "'spawn'" in code:
+            return json.dumps({"ok": True, "seat": "x", "created": True,
+                               "position": {"x": 0.5, "y": -2}, "surface": "nauvis"})
+        if "'seats'" in code and seats_reply is not None:
+            return json.dumps(seats_reply)
+        if "'screenshot'" in code:
+            return json.dumps({"ok": True, "file": "shot.png", "zoom": 1,
+                               "resolution": {"x": 64, "y": 32}})
+        return json.dumps({"ok": True})
+    b.respond = respond
     return b
 
 
-def test_a_player_seat_on_a_lab_loads_the_lab_mods_and_spawns(LAB, engine, seats):
-    b = seat_engine(engine)
+def sent_args(b, fn):
+    return [json.loads(re.search(r"h\.json_to_table\('(.*)'\)", c).group(1)
+                       .replace("\\\\", "\\").replace("\\'", "'"))
+            for c in b.calls(fn)]
+
+
+def test_a_drone_seat_spawns_in_the_world_with_no_container(LAB, engine, seats):
+    b = world_engine(engine)
     out = call("join", session_id=LAB)
-    assert out["role"] == "player" and out["player_index"] == 3
+    assert out["role"] == "drone" and out["position"] == {"x": 0.5, "y": -2}
+    assert seats == [] and not b.calls("view_booth")
+    assert sent_args(b, "spawn") == [{"seat": out["player_name"]}]
+    row = ha.dao.FactorioDAO().get_seat(out["seat_id"])
+    assert row["status"] == "ready" and row["container_name"] == ""
+    call("move", seat_id=out["seat_id"], x=1, y=2)
+    assert sent_args(b, "walk")[0] == {"x": 1, "y": 2, "seat": out["player_name"]}
+
+
+def test_a_drone_seat_needs_mod_07(LAB, engine, seats):
+    b = engine(version="0.6.1")
+    with pytest.raises(appliance.ApplianceError, match="need game-bot-control 0.7"):
+        call("join", session_id=LAB)
+    assert not b.calls("spawn") and ha.dao.FactorioDAO().live_seats(LAB) == []
+
+
+def test_leaving_a_drone_despawns_it(LAB, engine, seats):
+    b = world_engine(engine)
+    out = call("join", session_id=LAB)
+    call("leave", seat_id=out["seat_id"])
+    assert sent_args(b, "despawn") == [{"seat": out["player_name"]}]
+    assert seats.stopped == []
+    assert ha.dao.FactorioDAO().get_seat(out["seat_id"])["status"] == "stopped"
+
+
+def test_a_camera_on_a_lab_parks_in_the_booth(LAB, engine, seats):
+    b = world_engine(engine)
+    out = call("join", session_id=LAB, role="camera")
+    assert out["player_name"] == ha.CAMERA_NAME and out["player_index"] == 3
     assert seats[0]["mods"] == appliance.world_mods("lab")
     assert seats[0]["network"] == "rlm-factorio-lab-t_default"
-    assert b.calls("spawn") and not b.calls("view_booth")
-    b.respond = lambda code: json.dumps({"ok": True})
-    call("move", seat_id=out["seat_id"], x=1, y=2)
-    assert f'"seat": "{out["player_name"]}"' in b.calls("set_target")[0]
-
-
-def test_a_camera_seat_parks_in_the_booth(LAB, engine, seats):
-    b = seat_engine(engine)
-    out = call("join", session_id=LAB, role="camera")
-    assert out["player_name"] == ha.CAMERA_NAME and seats[0]["role"] == "camera"
     assert "remote.call('sbx','view_booth'" in b.calls("view_booth")[0]
     assert not b.calls("spawn")
     with pytest.raises(ValueError, match="already has a camera"):
         call("join", session_id=LAB, role="camera")
 
 
+def test_a_camera_on_the_realm_parks_as_a_spectator(engine, seats):
+    b = world_engine(engine)
+    realm = make_world("headless", "realm")["session_id"]
+    call("join", session_id=realm, role="camera")
+    assert sent_args(b, "camera") == [{"player": ha.CAMERA_NAME}]
+    assert "remote.call('game_bot','camera'" in b.calls("camera")[0]
+    assert not b.calls("view_booth") and seats[0]["mods"] == []
+
+
 def test_a_camera_retries_until_the_player_exists(LAB, engine, seats, monkeypatch):
-    b = seat_engine(engine)
+    b = world_engine(engine)
     replies = [{"ok": False, "error": "not_found"}, {"ok": True}]
     base = b.respond
     b.respond = lambda code: json.dumps(replies.pop(0)) if "view_booth" in code else base(code)
@@ -418,22 +472,187 @@ def test_a_camera_retries_until_the_player_exists(LAB, engine, seats, monkeypatc
     assert len(b.calls("view_booth")) == 2
 
 
-def test_no_camera_under_realm_rules(engine, seats):
-    seat_engine(engine)
-    realm = make_world("game", "realm")["session_id"]
-    with pytest.raises(appliance.ApplianceError, match="refused under realm rules: a camera seat"):
-        call("join", session_id=realm, role="camera")
+def test_a_session_resolves_to_its_drone_never_the_camera(LAB, engine, seats):
+    world_engine(engine)
+    call("join", session_id=LAB, role="camera")
+    with pytest.raises(ValueError, match="no seat"):
+        call("stop", session_id=LAB)
+    drone = call("join", session_id=LAB)
+    row, seat = ha._resolve({"session_id": LAB})
+    assert seat["seat_id"] == drone["seat_id"]
+    cam = [s for s in ha.dao.FactorioDAO().live_seats(LAB) if s["role"] == "camera"][0]
+    with pytest.raises(ValueError, match="is the camera"):
+        call("stop", seat_id=cam["seat_id"])
+
+
+def test_a_drone_screenshot_starts_the_camera_once(LAB, engine, seats, monkeypatch):
+    b = world_engine(engine)
+    monkeypatch.setattr(ha, "_wait_for_file", lambda path: 10)
+    drone = call("join", session_id=LAB)
+    first = call("screenshot", seat_id=drone["seat_id"])
+    second = call("screenshot", session_id=LAB, x=5, y=6, zoom=0.5)
+    assert len(seats) == 1
+    cam = [s for s in ha.dao.FactorioDAO().live_seats(LAB) if s["role"] == "camera"][0]
+    assert cam["owner"] == "screenshot"
+    shots = sent_args(b, "screenshot")
+    assert shots[0] == {"camera": ha.CAMERA_NAME, "seat": drone["player_name"]}
+    assert shots[1] == {"camera": ha.CAMERA_NAME, "seat": drone["player_name"],
+                        "x": 5, "y": 6, "zoom": 0.5}
+    assert first["path"] == str(appliance.seat_output_dir(cam["seat_id"]) / "shot.png")
+    assert first["tiles"] == {"width": 2.0, "height": 1.0} and second["seat_id"] == drone["seat_id"]
+
+
+def test_a_seatless_screenshot_needs_a_position(LAB, engine, seats):
+    world_engine(engine)
+    with pytest.raises(ValueError, match="x and y"):
+        call("screenshot", session_id=LAB)
     assert seats == []
 
 
-def test_reaper_leaves_an_idle_camera(LAB, engine, seats, monkeypatch):
-    seat_engine(engine)
+def test_seats_reads_drones_from_the_world(LAB, engine, seats):
+    world_engine(engine, seats_reply={"seats": [
+        {"seat": "nobody", "alive": True},
+    ], "players": {}})
+    drone = call("join", session_id=LAB)
+    b = world_engine(engine, seats_reply={"seats": [
+        {"seat": drone["player_name"], "alive": False, "respawn_at": 900, "surface": "nauvis"},
+    ], "players": {}})
+    out = call("seats", session_id=LAB)["seats"]
+    assert out[0]["in_world"] is True and out[0]["alive"] is False
+    assert out[0]["respawn_at"] == 900 and "container_running" not in out[0]
+    assert len(b.calls("seats")) == 1
+
+
+def test_reaper_takes_an_idle_drone_and_leaves_an_idle_camera(LAB, engine, seats, monkeypatch):
+    b = world_engine(engine)
     cam = call("join", session_id=LAB, role="camera")
-    player = call("join", session_id=LAB)
+    drone = call("join", session_id=LAB)
     monkeypatch.setattr(ha, "_age_s", lambda stamp: 10 ** 6)
+    reclaimed = ha._reap_once()
+    assert reclaimed == [{"seat_id": drone["seat_id"], "reason": f"idle > {ha.SEAT_IDLE_S:.0f}s"}]
+    assert sent_args(b, "despawn") == [{"seat": drone["player_name"]}]
+    monkeypatch.setattr(appliance, "seat_container_running", lambda c: False)
+    assert ha._reap_once() == [{"seat_id": cam["seat_id"], "reason": "container gone"}]
+
+
+def test_on_start_keeps_drones_and_stops_a_dead_camera(LAB, engine, seats, monkeypatch):
+    world_engine(engine)
+    cam = call("join", session_id=LAB, role="camera")
+    drone = call("join", session_id=LAB)
+    monkeypatch.setattr(ha.dao, "init", lambda: None)
+    monkeypatch.setattr(appliance, "is_container_running", lambda row: True)
+    monkeypatch.setattr(appliance, "seat_container_running", lambda c: False)
+    ha._on_start()
     d = ha.dao.FactorioDAO()
-    assert ha._reap_reason(d.get_seat(cam["seat_id"])) is None
-    assert ha._reap_reason(d.get_seat(player["seat_id"])).startswith("idle")
+    assert d.get_seat(drone["seat_id"])["status"] == "ready"
+    assert d.get_seat(cam["seat_id"])["status"] == "stopped"
+
+
+def test_rejoin_respawns_a_drone_and_restarts_the_camera(LAB, engine, seats):
+    b = world_engine(engine)
+    call("join", session_id=LAB, role="camera")
+    call("join", session_id=LAB)
+    out = call("rejoin", session_id=LAB)["seats"]
+    assert {"player_index": 3} .items() <= out[0].items()
+    assert out[1]["position"] == {"x": 0.5, "y": -2}
+    assert len(seats) == 2 and len(b.calls("spawn")) == 2
+
+
+# ---- agent Lua under each rule set --------------------------------------------------
+
+def test_realm_exec_lua_runs_guarded_as_a_stored_script(engine, seats):
+    b = world_engine(engine)
+    realm = make_world("headless", "realm")["session_id"]
+    drone = call("join", session_id=realm)
+    call("exec_lua", seat_id=drone["seat_id"], code="rcon.print(1)")
+    run = [c for c in b.sent if "script_run" in c][-1]
+    assert "guarded=true" in run and f'seat="{drone["player_name"]}"' in run
+    assert "script_define" in run and "local drone = act and act.drone()" in run
+
+
+def test_realm_exec_lua_on_an_old_mod_is_refused(engine, seats):
+    b = engine(version="0.6.1")
+    realm = make_world("headless", "realm")["session_id"]
+    with pytest.raises(appliance.ApplianceError, match="exec_lua runs guarded"):
+        call("exec_lua", session_id=realm, code="rcon.print(1)")
+    assert not [c for c in b.sent if "rcon.print(1)" in c]
+
+
+def test_sandbox_exec_lua_binds_the_drone_in_the_scenario(LAB, engine, seats):
+    b = world_engine(engine)
+    drone = call("join", session_id=LAB)
+    call("exec_lua", seat_id=drone["seat_id"], code="rcon.print(1)")
+    sent = b.sent[-1]
+    assert sent.startswith(f'local seat = "{drone["player_name"]}" local drone = '
+                           'remote.call("game_bot", "drone", {seat = seat}); ')
+    assert "guarded" not in sent
+
+
+def test_a_tool_call_names_its_seat(LAB, engine, seats):
+    b = world_engine(engine)
+    drone = call("join", session_id=LAB)
+    call("tool", seat_id=drone["seat_id"], name="look")
+    assert sent_args(b, "tool_call")[0]["seat"] == drone["player_name"]
+
+
+# ---- the camera's sprite cache ----------------------------------------------------------
+
+def fake_docker(monkeypatch, log="Atlas cache saved in 0.1 seconds.", cp_ok=True):
+    calls = []
+
+    def docker(*args, timeout=120):
+        calls.append(args)
+        out, rc = "", 0
+        if args[0] == "exec":
+            out = log
+        elif args[0] == "cp":
+            rc = 0 if cp_ok else 1
+            if cp_ok:
+                with open(args[2], "w") as fh:
+                    fh.write(args[1])
+        return subprocess.CompletedProcess(args, rc, out, "")
+    monkeypatch.setattr(appliance, "_docker", docker)
+    monkeypatch.setattr(appliance, "seat_container_running", lambda c: True)
+    return calls
+
+
+def test_the_camera_cache_is_built_once_per_mod_set(monkeypatch):
+    calls = fake_docker(monkeypatch)
+    mods = appliance.world_mods("lab")
+    first = appliance.camera_cache(mods)
+    again = appliance.camera_cache(mods)
+    assert first == again and first.parent == appliance.camera_cache_root()
+    assert first.name.startswith("2.1.20-")
+    assert sorted(p.name for p in first.iterdir()) == list(appliance.CACHE_FILES)
+    runs = [c for c in calls if c[0] == "run"]
+    assert len(runs) == 1 and ("--network", "none") == runs[0][4:6]
+    assert [c[0] for c in calls].count("rm") == 1
+    assert appliance.camera_cache_key([]) != appliance.camera_cache_key(mods)
+
+
+def test_the_camera_cache_key_follows_the_mod_version(monkeypatch, tmp_path):
+    mod = tmp_path / "fxlab-x"
+    mod.mkdir()
+    (mod / "info.json").write_text(json.dumps({"name": "fxlab-x", "version": "0.1.0"}))
+    before = appliance.camera_cache_key([str(mod)])
+    (mod / "info.json").write_text(json.dumps({"name": "fxlab-x", "version": "0.1.1"}))
+    assert appliance.camera_cache_key([str(mod)]) != before
+
+
+def test_a_failed_cache_build_mounts_no_cache(monkeypatch):
+    calls = fake_docker(monkeypatch, cp_ok=False)
+    mounts = appliance._camera_mounts([])
+    assert not any("atlas-cache" in m for m in mounts)
+    assert not list(appliance.camera_cache_root().glob("*.partial/*"))
+    assert [c[0] for c in calls].count("rm") == 1
+
+
+def test_a_built_cache_mounts_read_only(monkeypatch):
+    fake_docker(monkeypatch)
+    mounts = appliance._camera_mounts([])
+    cache = appliance.camera_cache_root() / appliance.camera_cache_key([])
+    for name in appliance.CACHE_FILES:
+        assert f"{cache / name}:/opt/factorio/{name}:ro" in mounts
 
 
 # ---- keys and throttles per world and per caller ---------------------------------------
@@ -825,9 +1044,7 @@ def test_tool_passes_name_and_args(LAB, engine):
 
 
 def tool_calls(b):
-    return [json.loads(re.search(r"h\.json_to_table\('(.*)'\)", c).group(1)
-                       .replace("\\\\", "\\").replace("\\'", "'"))
-            for c in b.calls("tool_call")]
+    return sent_args(b, "tool_call")
 
 
 def test_tool_under_realm_rules_passes_deny_and_never_lists(LAB, engine):
@@ -835,14 +1052,15 @@ def test_tool_under_realm_rules_passes_deny_and_never_lists(LAB, engine):
     call("tool", session_id=LAB, name="look", rules="realm")
     call("tool", session_id=LAB, name="look")
     sent = tool_calls(b)
-    assert sent[0]["deny"] == ["cheat"] and "deny" not in sent[1]
+    assert sent[0]["deny"] == ["cheat"] and sent[0]["guarded"] is True
+    assert "deny" not in sent[1] and "guarded" not in sent[1]
     assert not b.calls("tool_list") and not hasattr(ha, "_TOOL_EFFECT_CACHE")
 
 
 def test_denied_tool_maps_to_a_realm_rules_refusal(LAB, engine):
     def respond(code):
         if "active_mods" in code:
-            return "0.6.1"
+            return "0.7.0"
         return json.dumps({"ok": False, "error": "denied",
                            "detail": "cheat tool geom refused"})
     b = engine()
@@ -856,7 +1074,7 @@ def test_deny_is_enforced_by_the_mod_so_sandbox_rules_run_the_tool(LAB, engine):
     """The fake mod refuses a cheat-using tool only when `deny` names cheat."""
     def respond(code):
         if "active_mods" in code:
-            return "0.6.1"
+            return "0.7.0"
         denied = "cheat" in code and '"deny"' in code
         return json.dumps({"ok": False, "error": "denied", "detail": "cheat tool g refused"}
                           if denied else {"ok": True, "r": 1})
@@ -867,9 +1085,9 @@ def test_deny_is_enforced_by_the_mod_so_sandbox_rules_run_the_tool(LAB, engine):
     assert call("tool", session_id=LAB, name="reader")["r"] == 1
 
 
-def test_realm_rules_refuse_a_mod_that_cannot_deny(LAB, engine):
-    b = engine(version="0.6.0")
-    with pytest.raises(appliance.ApplianceError, match="0.6.1"):
+def test_realm_rules_refuse_a_mod_that_cannot_guard(LAB, engine):
+    b = engine(version="0.6.1")
+    with pytest.raises(appliance.ApplianceError, match="before game-bot-control 0.7"):
         call("tool", session_id=LAB, name="look", rules="realm")
     assert not b.calls("tool_call")
     call("tool", session_id=LAB, name="look")
