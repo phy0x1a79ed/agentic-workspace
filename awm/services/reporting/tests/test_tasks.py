@@ -483,7 +483,7 @@ async def test_an_idle_session_waiting_on_slurm_stays_active(env):
     assert env.task()["state"] == "active"
 
 
-async def test_a_job_with_no_row_and_no_directory_goes_to_review_only_on_the_second_sweep(env):
+async def test_a_job_with_no_row_and_no_directory_is_retired_only_on_the_second_sweep(env):
     task = await started(env)
     await env.tasks.sweep([])
     assert env.task()["state"] == "active"
@@ -491,8 +491,41 @@ async def test_a_job_with_no_row_and_no_directory_goes_to_review_only_on_the_sec
     await env.tasks.sweep([])
     assert env.task()["state"] == "active" and env.task()["ended"] == 0
     await env.tasks.sweep([])
-    assert env.task()["state"] == "review" and env.task()["ended"] == 1
-    assert env.column(task["note_id"]) == ["Pending review"] and env.ledger.open() != []
+    assert env.task()["state"] == "done" and env.task()["ended"] == 1 and env.ledger.open() == []
+    assert env.column(task["note_id"]) == ["Done"]
+    assert "<strong>Ended:</strong> retired" in env.body(task)
+
+
+async def test_a_retired_session_files_its_review_card_in_done(env):
+    task = await started(env)
+    await env.call("request_human", kind="review", summary="s")
+    await env.tasks.sweep([row("working")])
+    for _ in range(3):
+        await env.tasks.sweep([])
+    assert env.task()["state"] == "done" and env.task()["closed"]
+    assert env.column(task["note_id"]) == ["Done"]
+    assert [e["kind"] for e in env.ledger.events(task["id"])].count("ended") == 1
+
+
+async def test_a_retired_session_blocked_on_tony_waits_in_review(env):
+    task = await started(env)
+    await env.call("request_human", reason="answer me")
+    for _ in range(2):
+        await env.tasks.sweep([])
+    after = env.task()
+    assert after["state"] == "review" and after["ended"] == 1 and after["reason"] == "answer me"
+    assert env.column(task["note_id"]) == ["Pending review"]
+
+
+async def test_a_card_already_flagged_ended_keeps_its_column_when_its_job_is_removed(env):
+    task = await started(env)
+    await env.call("request_human", kind="review", summary="s")
+    await env.tasks.sweep([row("stopped")])
+    assert env.task()["ended"] == 1
+    for _ in range(3):
+        await env.tasks.sweep([])
+    assert env.task()["state"] == "review" and not env.task()["closed"]
+    assert env.column(task["note_id"]) == ["Pending review"]
 
 
 @pytest.mark.parametrize("state, column", [("active", "Active"), ("blocked", "Blocked")])

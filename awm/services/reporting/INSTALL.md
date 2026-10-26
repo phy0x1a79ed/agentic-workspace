@@ -138,13 +138,18 @@ column. A plan written in Active or Blocked revises the same card.
   each undated card in Done and Rejected from its Trilium modified time.
 - The sweep reads a card in an Older book as off the board. An open card that
   Tony drags into one closes its task as cancelled.
-- The sweep never closes a background task. A job that leaves the daemon's
-  roster while its directory under `~/.claude/jobs` remains keeps its card in
-  its column, flagged "not running, resumable". An idle retire and a daemon
-  death both cause this. A job whose state record says `stopped`, or whose
-  directory is gone, moves to Pending review, flagged "stopped". cx writes
-  `stopped` on `stop_other`, because `claude stop` does not. The flag clears
-  when the job runs again.
+- A job that leaves the daemon's roster while its directory under
+  `~/.claude/jobs` remains keeps its card in its column, flagged "not running,
+  resumable". An idle retire and a daemon death both cause this. The flag
+  clears when the job runs again.
+- A job whose state record says `stopped` moves to Pending review, flagged
+  "stopped". cx writes `stopped` on `stop_other`, because `claude stop` does
+  not. A card filed away by a session clear or a new plan moves there too.
+- A job whose directory is gone was retired: `reflection stop` ran `claude rm`.
+  Its task closes as done, flagged "retired". A task blocked on Tony moves to
+  Pending review instead. A task already flagged ended keeps its column.
+  **CAUTION** The close is not mirrored to a federation card. Only Tony's drag
+  reports done to the card's poster.
 - **CAUTION** A daemon restart drops dead workers from `cx list`. Do not read
   a missing row as a finished session.
 - A closed task is filed under its node's Ledger note. An interactive session

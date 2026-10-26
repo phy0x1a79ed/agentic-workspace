@@ -104,6 +104,9 @@ def _touch_marker(marker) -> None:
 #: Ended-event details, rendered as the card's Ended line.
 NOT_RUNNING = "not running, resumable"
 STOPPED_DETAIL = "stopped"
+RETIRED_DETAIL = "retired"
+#: A job missing from cx whose directory is gone: `reflection stop` ran `claude rm`.
+RETIRED = "retired"
 
 
 def _job_exists(job: str) -> bool:
@@ -909,19 +912,23 @@ class Tasks:
                 await self._open(Who(job, "bg", None, "", row.get("cwd")), ACTIVE)
 
     def _unlisted_state(self, job: str) -> str:
-        if self._job_exists(job) and self._job_state(job).get("state") != STOPPED:
-            return GONE
-        return STOPPED
+        if "/" in job:  # filed away: its session left a job that lives on
+            return STOPPED
+        if not self._job_exists(job):
+            return RETIRED
+        return STOPPED if self._job_state(job).get("state") == STOPPED else GONE
 
     async def _ending(self, task: dict, row: dict | None) -> None:
         """Flag a task whose session stopped running. Only a deliberate stop moves its card.
 
         A background job missing from cx whose directory remains was dropped from
         the daemon's roster (an idle retire, a daemon death) and can be resumed, so
-        its card keeps its column. A stopped job, or one whose directory is gone,
-        moves to Pending review. cx records a stop in the job's state record,
-        because the roster drops a stopped job too. The sweep never closes a
-        background task.
+        its card keeps its column. A stopped job moves to Pending review. cx
+        records a stop in the job's state record, because the roster drops a
+        stopped job too. A job whose directory is gone was retired: nothing can
+        resume it, so its task closes as done, unless it is blocked on Tony. A task
+        already flagged ended keeps its column, so the cards Tony left in Pending
+        review stay there.
         """
         if task["kind"] == "bg":
             if row is None:
@@ -935,7 +942,12 @@ class Tasks:
                     await self.db.update(task["id"], ended=1, dirty=1)
                     await self.db.event(task["id"], "ended", NOT_RUNNING)
                 return
-            if state != STOPPED:
+            if state == RETIRED and not task["ended"] and task["state"] != BLOCKED:
+                # Only Tony's own close reports to a federation card's poster.
+                await self.db.event(task["id"], "ended", RETIRED_DETAIL)
+                await self.close(task, ended=1, fed_state=None)
+                return
+            if state not in (STOPPED, RETIRED):
                 if task["ended"]:
                     await self.db.update(task["id"], ended=0, dirty=1)
                     await self.db.event(task["id"], "resumed")

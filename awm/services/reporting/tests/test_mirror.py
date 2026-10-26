@@ -90,6 +90,16 @@ async def test_a_session_stopped_before_review_leaves_the_federation_card_where_
     assert state_of(env, card) == "active", "an unfinished task is not reported to the poster"
 
 
+async def test_a_retired_session_closes_its_task_but_leaves_the_federation_card_in_review(env):
+    card = await claimed(env)
+    await env.call("hook_plan_approved", plan_text="p")
+    await env.call("request_human", kind="review", summary="s")
+    for _ in range(2):
+        await env.tasks.sweep([])
+    assert env.task()["state"] == "done" and env.column(card["note_id"]) == ["Done"]
+    assert state_of(env, card) == "review", "only Tony's close is reported to the poster"
+
+
 async def test_finishing_with_board_complete_first_is_not_a_conflict(env):
     card = await claimed(env)
     await env.call("hook_plan_approved", plan_text="p")
