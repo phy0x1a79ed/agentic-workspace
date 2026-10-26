@@ -25,6 +25,7 @@ import logging
 import os
 import re
 import shutil
+import socket
 import subprocess
 import threading
 import time
@@ -131,7 +132,8 @@ def world_coords(kind: str, name: str, taken_ports: set[int]) -> dict:
     """Project, container and ports for a new world.
 
     The realm keeps its fixed coordinates. Every other world takes the first
-    free control port in its range, and the game port beside it.
+    control port in its range that neither a world row nor another program on
+    this host holds, and the game port beside it.
     """
     if name == REALM_NAME and kind != "lab":
         return {"compose_project": PROJECT, "container_name": CONTAINER,
@@ -139,10 +141,21 @@ def world_coords(kind: str, name: str, taken_ports: set[int]) -> dict:
     project = f"{PROJECT}-{'lab' if kind == 'lab' else 'world'}-{name}"
     for slot in range(PORT_SLOTS):
         control = PORT_BASE + 2 * slot
-        if control not in taken_ports and control + 1 not in taken_ports:
+        if (control not in taken_ports and control + 1 not in taken_ports
+                and _port_free(control)):
             return {"compose_project": project, "container_name": f"{project}-appliance",
                     "control_port": control, "game_port": control + 1}
     raise ApplianceError(f"no free port pair left in {PORT_BASE}-{PORT_BASE + 2 * PORT_SLOTS}")
+
+
+def _port_free(port: int) -> bool:
+    """Whether docker can publish ``port`` on this host."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        try:
+            sock.bind(("0.0.0.0", port))
+        except OSError:
+            return False
+    return True
 
 
 def world_mods(kind: str) -> list[str]:
