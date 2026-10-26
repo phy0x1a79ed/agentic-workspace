@@ -426,6 +426,58 @@ async def test_non_string_peer_is_rejected(local_registry, snap, no_homes,
         await catalog.dispatch("scope", {"verb": "search", "peer": 7})
 
 
+async def test_a_peer_not_read_yet_is_swept_before_the_call_is_refused(
+        local_registry, no_homes, monkeypatch):
+    """Seconds after a gateway restart the first sweep has failed (auth was not
+    listening yet) and capella refused ``peer=altair`` as "does not provide".
+    The call now sweeps once and routes."""
+    state = {"altair": {"domains": {}, "reachable": False,
+                        "error": "could not sign a node token"}}
+    monkeypatch.setattr(peer_catalog, "snapshot", lambda: dict(state))
+    monkeypatch.setattr(peer_catalog, "_swept_at", 0.0)
+    monkeypatch.setattr("awm.gateway.peers.resolve", lambda name: {"name": name})
+
+    async def _sweep():
+        state["altair"] = {"domains": {"scope": ["search"]},
+                           "reachable": True, "error": None}
+        return state
+
+    monkeypatch.setattr(peer_catalog, "sweep", _sweep)
+    with pytest.raises(peer_catalog.PeerRedirect) as exc:
+        await catalog.dispatch("scope", {"verb": "search", "args": {},
+                                         "peer": "altair"})
+    assert exc.value.peer == "altair"
+
+
+async def test_a_peer_still_unread_says_so_instead_of_does_not_provide(
+        local_registry, no_homes, monkeypatch):
+    state = {"altair": {"domains": {}, "reachable": False,
+                        "error": "could not sign a node token"}}
+    monkeypatch.setattr(peer_catalog, "snapshot", lambda: dict(state))
+    monkeypatch.setattr(peer_catalog, "_swept_at", 0.0)
+    swept = []
+
+    async def _sweep():
+        swept.append(1)
+        return state
+
+    monkeypatch.setattr(peer_catalog, "sweep", _sweep)
+    with pytest.raises(ValueError, match="has not loaded peer 'altair'") as exc:
+        await catalog.dispatch("scope", {"verb": "search", "args": {},
+                                         "peer": "altair"})
+    assert "could not sign a node token" in str(exc.value)
+    assert swept == [1]
+
+
+def test_a_peer_read_once_is_never_pending(snap):
+    """altair is asleep now but was read before: its last map stands, and a tool
+    it lacks is a real "does not provide"."""
+    assert peer_catalog.catalog_pending("altair", snap) is None
+    assert peer_catalog.catalog_pending("mira", snap) is None
+    assert peer_catalog.catalog_pending("capella", snap)
+    assert peer_catalog.catalog_pending("nosuchnode", snap) is None
+
+
 async def test_flat_dispatch_is_untouched_by_routing(
         local_registry, snap, no_homes, monkeypatch):
     """The CLI's by-name ``/invoke`` posts carry no ``verb``, so they never enter

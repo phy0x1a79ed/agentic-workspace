@@ -337,6 +337,43 @@ async def refresh_loop() -> None:
         await asyncio.sleep(next_sweep_in(time.monotonic() - started))
 
 
+#: A call that finds a peer's catalog unread sweeps on demand, unless a sweep
+#: finished this recently: a burst of calls in the warm-up window must not queue
+#: one sweep each behind the lock.
+_ON_DEMAND_MIN_AGE_S = 2.0
+
+
+def catalog_pending(peer: str,
+                    snap: Mapping[str, dict[str, Any]] | None = None) -> str | None:
+    """Why this node does not know ``peer``'s domains yet, or ``None`` once it does.
+
+    A domestic peer no sweep has read has no domain map, so ``resolve`` cannot
+    list it as a provider of anything. That is "not loaded", not "does not
+    provide". It happens in the seconds after a gateway restart: the first sweep
+    runs before the auth service can sign a node token, and the next one comes
+    ``_SWEEP_RETRY_S`` later. A peer read once keeps its last map when it fails
+    later, so only a peer never read is pending.
+    """
+    if peer not in _domestic_peers():
+        return None
+    snap = snapshot() if snap is None else snap
+    info = snap.get(peer)
+    if info is None:
+        return "no catalog sweep has read it yet"
+    if info.get("domains") or info.get("reachable"):
+        return None
+    return info.get("error") or "no catalog sweep has read it yet"
+
+
+async def load_pending(peer: str) -> str | None:
+    """Sweep now if ``peer``'s catalog is pending, and say whether it still is."""
+    if catalog_pending(peer) is None:
+        return None
+    if time.time() - _swept_at >= _ON_DEMAND_MIN_AGE_S:
+        await sweep()
+    return catalog_pending(peer)
+
+
 def next_sweep_in(elapsed: float) -> float:
     never_reached = any(not p.get("reachable") and not p.get("domains")
                         for p in _snapshot.values())

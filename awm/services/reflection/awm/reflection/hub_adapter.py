@@ -15,7 +15,8 @@ Those three act on the caller and on nobody else. The session-control verbs
 (``remote_control``, ``model``, ``effort``, ``rename``, ``cd``, ``interrupt``,
 ``stop``, ``link``, ``message``; see :mod:`awm.reflection.control`) take an optional ``job``
 that names any other session on this node, and act on the caller's own without
-one. They never reach another node.
+one. They never reach another node: the gateway's ``peer`` key does that. A
+``job`` this node does not know gets an error naming the peer that runs it.
 
 This process does not share the caller's environment, but it does not need to:
 the per-session ``awm-mcp`` proxy is a stdio child of the session calling it, so
@@ -42,6 +43,7 @@ from awm.gatewayclient import ServiceAdapter
 from awm import claudedaemon
 from awm.reflection import (
     control,
+    elsewhere,
     inject,
     oc_inject,
     oc_session,
@@ -424,6 +426,13 @@ def _guarded(verb: str, fn):
     def run(args: dict) -> dict:
         try:
             result = fn(args)
+        except control.UnknownSession as exc:
+            # Only a session's own call looks further: a call from a peer has no
+            # caller pid, and must not fan out again from here.
+            reason = str(exc) + (elsewhere.hint(exc.ref) if _caller_pid(args) else "")
+            log.warning("reflection: %s failed for caller pid %s: %s",
+                        verb, _caller_pid(args), reason)
+            return {"ok": False, "error": reason}
         except _FAILURES as exc:
             log.warning("reflection: %s failed for caller pid %s: %s",
                         verb, _caller_pid(args), exc)

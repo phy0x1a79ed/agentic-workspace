@@ -579,6 +579,27 @@ def _local_domain_verbs(
     return {domain: [v["verb"] for v in verbs] for domain, verbs in catalog.items()}
 
 
+async def _choose_target(name: str, requested: str | None,
+                         catalog: dict[str, list[dict[str, Any]]]) -> str:
+    """``peer_catalog.choose_target``, but a refusal that only reflects a peer
+    catalog this node has not read yet waits for one sweep instead of answering
+    "does not provide"."""
+    local = _local_domain_verbs(catalog)
+    try:
+        return peer_catalog.choose_target(name, requested, local)
+    except ValueError:
+        peer = (requested or "").strip()
+        if not peer or peer_catalog.catalog_pending(peer) is None:
+            raise
+    why = await peer_catalog.load_pending(peer)
+    if why:
+        raise ValueError(
+            f"this node has not loaded peer {peer!r}'s tool catalog yet ({why}), "
+            f"so it cannot route {name!r} there. This gateway may have just "
+            f"restarted: retry in about 10 seconds.")
+    return peer_catalog.choose_target(name, requested, local)
+
+
 def _without_verbs(res: dict[str, Any]) -> dict[str, Any]:
     """``res`` with each provider cut to its name, reachability and any error."""
     providers = [
@@ -1017,8 +1038,7 @@ async def _dispatch_domain(name: str, args: dict, as_: str | None,
         requested_peer = args.get("peer")
         if requested_peer is not None and not isinstance(requested_peer, str):
             raise ValueError("'peer' must be a node name string")
-        target = peer_catalog.choose_target(
-            name, requested_peer, _local_domain_verbs(catalog))
+        target = await _choose_target(name, requested_peer, catalog)
         if target != peer_catalog.LOCAL:
             raise peer_catalog.PeerRedirect(target, name, verb)
 

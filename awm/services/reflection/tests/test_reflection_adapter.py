@@ -149,3 +149,52 @@ def test_mode_forwards_the_callers_expected_session(monkeypatch):
     hub_adapter._handle_mode({"_caller_pid": 42})
     assert seen["expect_session"] is None
 
+
+
+# --- a job this node does not know -------------------------------------------
+
+
+def _unknown(_args):
+    from awm.reflection import control
+    raise control.UnknownSession("67212311")
+
+
+def test_an_unknown_job_names_the_peer_that_runs_it(monkeypatch):
+    """capella's deploy session sent `message job=67212311` with no peer and was
+    told only that capella had no such session. The job ran on altair."""
+    from awm.reflection import elsewhere
+
+    asked = []
+    monkeypatch.setattr(elsewhere, "hint",
+                        lambda ref: asked.append(ref) or ". It runs on altair: "
+                        "call again with peer='altair'")
+    res = _run("message", _unknown, {"_caller_pid": 7, "job": "67212311"})
+    assert res["ok"] is False
+    assert res["error"].startswith("no session on this node has the job id")
+    assert "peer='altair'" in res["error"] and asked == ["67212311"]
+
+
+def test_a_call_from_a_peer_does_not_fan_out_again(monkeypatch):
+    from awm.reflection import elsewhere
+
+    monkeypatch.setattr(elsewhere, "hint", lambda ref: pytest.fail("fanned out"))
+    res = _run("message", _unknown, {"job": "67212311"})
+    assert "no session on this node" in res["error"]
+
+
+def test_hint_asks_each_peer_and_names_the_holder():
+    from awm.reflection import elsewhere
+
+    lists = {"altair": [{"job": "67212311", "name": "x"}],
+             "deneb": [{"job": "11111111", "name": "y"}]}
+
+    def lister(peer):
+        if peer == "mira":
+            raise OSError("asleep")
+        return lists[peer]
+
+    peers = ["altair", "deneb", "mira"]
+    assert elsewhere.hint("67212311", peers=peers, lister=lister) == (
+        ". It runs on altair: call again with peer='altair'")
+    assert elsewhere.holders("Y", peers=peers, lister=lister) == ["deneb"]
+    assert elsewhere.hint("nobody", peers=peers, lister=lister) == ""

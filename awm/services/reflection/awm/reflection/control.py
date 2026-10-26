@@ -3,7 +3,7 @@
 Every verb here acts on the caller's own session when it names no ``job``, and
 on any other session on this node when it does. ``job`` is a job id or the name
 `list_other` shows; a name two sessions share is refused with the candidates
-listed. Nothing here reaches another node.
+listed. Nothing here reaches another node; the gateway's ``peer`` key does.
 
 A target is reached the way the caller's own session is: a background job
 through its PTY socket, an interactive session through its tmux pane. Both go
@@ -165,9 +165,16 @@ def resolve(job: Optional[str], caller_pid: Any) -> Target:
                 f"{ref!r} names {len(matches)} sessions: "
                 + "; ".join(_describe(t) for t in matches)
                 + ". Pass the job id.")
-    raise session_target.ResolveError(
-        f"no session on this node has the job id or name {ref!r}; "
-        f"`list_other` shows them")
+    raise UnknownSession(ref)
+
+
+class UnknownSession(session_target.ResolveError):
+    """No session on this node answers to ``ref``."""
+
+    def __init__(self, ref: str) -> None:
+        self.ref = ref
+        super().__init__(f"no session on this node has the job id or name {ref!r}; "
+                         f"`list_other` shows them")
 
 
 def _mark_self(t: Target, caller_pid: Any) -> Target:
