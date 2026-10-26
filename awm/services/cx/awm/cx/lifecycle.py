@@ -206,6 +206,7 @@ async def _start(args: dict[str, Any], as_: str | None) -> dict[str, Any]:
         spec["mcp_config"] = str(_write_mcp_config())
     await ensure_daemon("started")
     cwd = await _resolve_worktree(spec["project"], spec["scope"])
+    await asyncio.to_thread(trust.grant, cwd)
     untrusted = await asyncio.to_thread(trust.start_refusal, cwd)
     if untrusted:
         raise Refused(untrusted)

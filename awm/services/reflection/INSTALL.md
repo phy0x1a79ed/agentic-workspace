@@ -199,9 +199,12 @@ Every verb is on MCP + CLI + HTTP:
   conversation with output also asks "Switch model?" or "Change effort
   level?". The verb presses Enter only on the "Yes, switch to <value>" option
   it asked for, and reports the outcome in its follow-up.
-- **CAUTION** `cd` refuses a directory that neither it nor an ancestor is
-  trusted in `~/.claude.json`. There `/cd` opens a trust dialog whose default
-  answer is to stay put, and the next typed line answers it. A move keeps the
+- **CAUTION** `cd` refuses a directory Claude Code is not trusted in. There
+  `/cd` opens a trust dialog whose default answer is to stay put, and the next
+  typed line answers it. Inside a git repository the trust must be the
+  repository's own, which for a scope worktree is the project's `.bare`. `cd`
+  records that trust itself for a worktree of an awm project under the
+  workspace's `projects/` directory, and only there. A move keeps the
   old directory's CLAUDE.md in context and adds the new one.
 - **CAUTION** Claude Code 2.1.302 disconnects every MCP server on a `/cd` and
   does not connect them again. `cd` types `/mcp reconnect awm` after the move:
@@ -271,7 +274,13 @@ footer it cannot read means a modal is covering it — that refuses without
 pressing anything, for the same reason the modal guard exists.
 
 Footer strings are TUI copy and can move under a CLI update; they fail safe,
-since an unrecognised footer reads as unknown and unknown does not act.
+since an unrecognised footer reads as unknown and unknown does not act. That
+safety once cost the case the walk exists for. From Claude Code 2.1.310 `default`
+paints "manual mode on", where it painted nothing before. A session started in
+plan mode lands in `default` on approval, so every walk refused until the label
+was added. Only the lines under the prompt box are read. A plan-mode start prints
+"Session was started with bypass permissions…" into the transcript above it,
+and with no prompt box on screen the footer reads as unknown.
 
 A background session's lane is a stream of repaint deltas, not a screen. The
 walk replays it onto a grid (`termscreen`) before it reads the footer. Classifying

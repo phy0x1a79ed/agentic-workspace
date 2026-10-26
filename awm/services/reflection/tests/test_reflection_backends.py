@@ -343,17 +343,44 @@ def test_no_roster_entry_does_not_blame_the_pty_host(tmp_path, monkeypatch):
 # Permission mode
 # ---------------------------------------------------------------------------
 
+_BOX = "─" * 40 + "\n❯ \n" + "─" * 40
+
+
 def test_classify_reads_the_most_recent_indicator():
     # Both capture paths return text containing earlier paints of the footer, so
     # after a change the old label is still there and only order distinguishes.
-    screen = "⏸ plan mode on (shift+tab to cycle)\n⏵⏵ bypass permissions on"
+    screen = f"{_BOX}\n⏸ plan mode on (shift+tab to cycle)\n⏵⏵ bypass permissions on"
     assert permission_mode.classify(screen) == "bypassPermissions"
-    screen = "⏵⏵ bypass permissions on\n⏵⏵ auto mode on (shift+tab to cycle)"
+    screen = f"{_BOX}\n⏵⏵ bypass permissions on\n⏵⏵ auto mode on (shift+tab to cycle)"
     assert permission_mode.classify(screen) == "auto"
 
 
 def test_classify_unknown_when_no_indicator_is_visible():
-    assert permission_mode.classify("Enter to select · Esc to cancel") == "unknown"
+    assert permission_mode.classify(f"{_BOX}\nEnter to select · Esc to cancel") == "unknown"
+
+
+def test_classify_unknown_when_a_dialog_replaces_the_prompt_box():
+    # Measured: the `/cd` trust dialog is drawn where the box was, and the
+    # startup notice above it still says "bypass permissions".
+    screen = ("● Session was started with bypass permissions, so plan mode "
+              "won't ask.\n   ❯ No, stay put\n     Yes, move here\n"
+              "⏵⏵ bypass permissions on")
+    assert permission_mode.classify(screen) == "unknown"
+
+
+def test_classify_reads_manual_as_default():
+    # Claude Code 2.1.310 paints `default` as "manual mode on". A plan-mode
+    # start lands there on approval, and an unreadable footer refused the walk.
+    assert permission_mode.classify(
+        f"{_BOX}\n  ⏸ manual mode on · ← 6 agents") == "default"
+
+
+def test_classify_reads_only_the_footer_under_the_prompt_box():
+    # A plan-mode start prints this notice into the transcript, above the box.
+    screen = ("● Session was started with bypass permissions, so plan mode "
+              "won't ask before most edits or commands.\n● hello\n"
+              f"{_BOX}\n  ⏸ manual mode on · ← 6 agents")
+    assert permission_mode.classify(screen) == "default"
 
 
 class FakeModeSession:
@@ -391,15 +418,17 @@ class FakeModeSession:
 
     @staticmethod
     def _paint(mode):
-        return {"bypassPermissions": "⏵⏵ bypass permissions on",
+        if mode == "unknown":
+            return "Esc to cancel"
+        return _BOX + "\n" + {"bypassPermissions": "⏵⏵ bypass permissions on",
                 "acceptEdits": "⏵⏵ accept edits on",
                 "plan": "⏸ plan mode on",
                 "auto": "⏵⏵ auto mode on",
-                # `default` draws no mode indicator at all — indistinguishable
+                "manual": "⏸ manual mode on",
+                # Before 2.1.310 `default` draws no mode indicator at all — indistinguishable
                 # from a footer we failed to read, which is why it classifies as
                 # unknown rather than as a mode.
-                "default": "❯ ",
-                "unknown": "Esc to cancel"}[mode]
+                "default": ""}[mode]
 
     def forget(self):
         self.forgot = getattr(self, "forgot", 0) + 1
@@ -452,6 +481,15 @@ def test_mode_cycles_from_auto_to_bypass(monkeypatch):
     # `default` shows no indicator, so it reads as unknown on the way past —
     # that must not stop the walk.
     assert sess.presses == res["steps"] == 4
+
+
+def test_mode_cycles_from_manual_to_bypass(monkeypatch):
+    # Where an approved plan leaves a session that was started in plan mode.
+    res, sess = _run_mode(
+        ["manual", "acceptEdits", "plan", "bypassPermissions", "auto"],
+        monkeypatch)
+    assert res["ok"] and res["mode"] == "bypassPermissions"
+    assert res["started_as"] == "default" and sess.presses == 3
 
 
 def test_mode_gives_up_when_bypass_is_not_in_the_cycle(monkeypatch):
@@ -521,7 +559,8 @@ def test_mode_reads_a_rendered_screen_not_the_raw_stream():
     # Measured on a busy background session: spinner repaints after the footer
     # push it out of the classifier's tail window of the raw stream, so bypass
     # read as unknown. Rendering the stream puts the footer back on the last row.
-    footer_row = "\x1b[40;1H  ⏵⏵ bypass permissions on · esc to interrupt"
+    footer_row = ("\x1b[37;1H" + "─" * 40 + "\x1b[38;1H❯ \x1b[39;1H" + "─" * 40
+                  + "\x1b[40;1H  ⏵⏵ bypass permissions on · esc to interrupt")
     spinner = "".join(f"\x1b[30;1H\x1b[2K✻ Working… ({i}s)" for i in range(400))
     stream = footer_row + spinner
     assert permission_mode.classify(stream) == "unknown"
@@ -569,7 +608,7 @@ def test_mode_refuses_when_another_walk_holds_the_session(monkeypatch):
 
 
 def test_daemon_session_forget_clears_the_buffer():
-    sock = FakeSock(HELLO + raw("⏵⏵ auto mode on"))
+    sock = FakeSock(HELLO + raw(_BOX + "\r\n⏵⏵ auto mode on"))
     sess = permission_mode._DaemonSession(target(), opener=opener_for(sock))
     assert permission_mode.classify(sess.read()) == "auto"
     sess.forget()

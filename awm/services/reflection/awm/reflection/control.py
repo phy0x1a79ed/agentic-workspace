@@ -28,6 +28,7 @@ import re
 import time
 import uuid
 from dataclasses import dataclass, replace
+from pathlib import Path
 from typing import Any, Callable, Optional
 
 from awm.claudedaemon import cli, roster, trust
@@ -406,7 +407,8 @@ def cd(path: str, *, job: Optional[str], caller_pid: Any,
 
     A directory Claude Code has not been trusted in is refused: `/cd` would open
     the trust dialog, whose default is to stay put, and the next keystroke
-    typed into the session would answer it. The move drops the session's MCP
+    typed into the session would answer it. A worktree of an awm project is
+    trusted first instead, since awm made it. The move drops the session's MCP
     servers (see :data:`inject.RECONNECT_AFTER_MOVE`); the caller's own session
     gets the reconnect from its resume, any other once its record shows the move.
     """
@@ -416,6 +418,10 @@ def cd(path: str, *, job: Optional[str], caller_pid: Any,
     want = os.path.realpath(path)
     if not os.path.isdir(want):
         return {"ok": False, "reason": f"{want} is not a directory on this node"}
+    if not trust.trusted(want):
+        granted = trust.grant_awm_worktree(want, _projects_root())
+        if granted:
+            log.info("reflection: trusted awm worktree %s (%s)", want, ", ".join(granted))
     if not trust.trusted(want):
         return {"ok": False, "reason": (
             f"Claude Code is not trusted in {want} or any directory above it, so "
@@ -443,6 +449,12 @@ def cd(path: str, *, job: Optional[str], caller_pid: Any,
         out["detail"] = (f"the session record does not show {want} after "
                          f"{MOVE_WAIT_S:g}s; `list_other` shows where it is")
     return out
+
+
+def _projects_root() -> Path:
+    from awm import config
+
+    return config.canonical_workspace() / "projects"
 
 
 def _cwd(t: Target) -> Optional[str]:

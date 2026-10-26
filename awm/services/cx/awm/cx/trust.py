@@ -40,7 +40,15 @@ def trusted(path: str | Path) -> bool:
 def start_refusal(path: str | Path) -> str | None:
     """Why `claude --bg` would refuse to start in ``path``, or None.
 
-    Stricter than `trusted`: inside a git repository the repository's own trust
-    entry is required. See `awm.claudedaemon.trust`.
+    The same rule as `trusted`, with a message naming the entry to trust. See
+    `awm.claudedaemon.trust`.
     """
     return _shared.start_refusal(path, trust_file=trust_file())
+
+
+def grant(path: str | Path) -> list[str]:
+    """Trust ``path`` when it is a worktree of an awm project; the entries added."""
+    from awm.cx import config
+
+    return _shared.grant_awm_worktree(path, config.projects_dir(),
+                                      trust_file=trust_file())

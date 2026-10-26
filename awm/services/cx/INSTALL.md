@@ -283,18 +283,20 @@ whose default answer is "No, stay put". A session sitting on that dialog has not
 moved and is not idle, and the next claim's keystrokes answer the dialog instead
 of moving. One untrusted directory therefore cost every claim after it.
 
-The pool asks first. Trust is recorded per directory in `~/.claude.json`. For a
-move, a trusted ancestor counts. An untrusted target is refused in milliseconds
-and the caller launches cold, where the user answers the trust prompt
-themselves.
+The pool asks first. Trust is recorded per directory in `~/.claude.json`.
+Inside a git repository the repository's own trust entry is required, and a
+trusted parent such as the home directory does not count. A scope worktree
+belongs to a bare clone, so the entry is the project's `.bare` directory. Only a
+directory outside git inherits trust from an ancestor. An untrusted target is
+refused in milliseconds and the caller launches cold.
 
-`start_other` applies a stricter rule, because `claude --bg` does. Inside a git
-repository the repository's own trust entry is required, and a trusted parent
-such as the home directory does not count. A scope worktree belongs to a bare
-clone, so the entry is the project's `.bare` directory. A start that fails the
-rule would not error. The daemon refuses with "Workspace not trusted" and the
-caller waits out its launch timeout, so cx checks first and names the directory.
-Both rules live in `awm.claudedaemon.trust`.
+`start_other` and reflection's `cd` record that trust themselves for a worktree
+of an awm project under the workspace's `projects/` directory, because awm made
+it and no person watches a background session. They refuse every other
+untrusted directory. A start that fails the rule would not error. The daemon
+refuses with "Workspace not trusted" and the caller waits out its launch
+timeout, so cx checks first and names the directory. The rule and the grant
+live in `awm.claudedaemon.trust`.
 
 ### Almost nothing is collected once somebody has it
 

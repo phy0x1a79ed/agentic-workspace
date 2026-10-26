@@ -70,7 +70,9 @@ def repos(tmp_path):
 def test_an_ancestor_does_not_trust_a_git_worktree(tmp_path, repos):
     plain, bare, wt = repos
     f = trust_file(tmp_path, {str(tmp_path): {"hasTrustDialogAccepted": True}})
-    assert trust.trusted(wt, trust_file=f)  # the `/cd` rule still inherits
+    # Measured: `/cd` into such a worktree opens "This directory is part of
+    # the repository at …/.bare" under a trusted home.
+    assert not trust.trusted(wt, trust_file=f)
     why = trust.start_refusal(wt, trust_file=f)
     assert why and str(bare) in why and "claude" in why and "accept" in why
 
@@ -125,3 +127,54 @@ def test_a_directory_outside_git_inherits_from_an_ancestor(tmp_path):
 
 def test_an_unreadable_trust_file_refuses_a_start(tmp_path, repos):
     assert trust.start_refusal(repos[2], trust_file=tmp_path / "missing.json")
+
+
+# --- granting trust to awm's own worktrees ----------------------------------
+
+
+def test_an_awm_worktree_is_granted_its_repository_and_itself(tmp_path, repos):
+    plain, bare, wt = repos
+    f = trust_file(tmp_path, {"/elsewhere": {"hasTrustDialogAccepted": True,
+                                             "allowedTools": ["x"]}})
+    added = trust.grant_awm_worktree(wt, tmp_path, trust_file=f)
+    assert added == [str(bare), str(wt)]
+    assert trust.trusted(wt, trust_file=f)
+    assert trust.start_refusal(wt, trust_file=f) is None
+    kept = json.loads(f.read_text())["projects"]["/elsewhere"]
+    assert kept == {"hasTrustDialogAccepted": True, "allowedTools": ["x"]}
+    assert trust.grant_awm_worktree(wt, tmp_path, trust_file=f) == []
+
+
+def test_an_existing_entry_keeps_its_other_fields(tmp_path, repos):
+    plain, bare, wt = repos
+    f = trust_file(tmp_path, {str(bare): {"hasTrustDialogAccepted": False,
+                                          "mcpServers": {"a": 1}}})
+    trust.grant_awm_worktree(wt, tmp_path, trust_file=f)
+    entry = json.loads(f.read_text())["projects"][str(bare)]
+    assert entry == {"hasTrustDialogAccepted": True, "mcpServers": {"a": 1}}
+
+
+def test_nothing_outside_the_projects_root_is_granted(tmp_path, repos):
+    plain, bare, wt = repos
+    f = trust_file(tmp_path, {})
+    elsewhere = tmp_path / "proj"
+    assert trust.grant_awm_worktree(wt, tmp_path / "other", trust_file=f) == []
+    # A plain repository is not an awm project, even under the root.
+    assert trust.grant_awm_worktree(plain, tmp_path, trust_file=f) == []
+    # Nor is the project directory, or the bare repository itself.
+    assert trust.grant_awm_worktree(elsewhere, tmp_path, trust_file=f) == []
+    assert trust.grant_awm_worktree(bare, tmp_path, trust_file=f) == []
+    outside = tmp_path / "notgit"
+    outside.mkdir()
+    assert trust.grant_awm_worktree(outside, tmp_path, trust_file=f) == []
+    assert json.loads(f.read_text()) == {"projects": {}}
+
+
+def test_a_worktree_of_another_projects_repository_is_not_granted(tmp_path, repos):
+    # A worktree under proj-b/ whose repository is proj/.bare is not proj-b's.
+    plain, bare, wt = repos
+    stray = tmp_path / "proj-b" / "scope"
+    stray.parent.mkdir()
+    git("worktree", "add", "-q", "-b", "feat/stray", str(stray), cwd=bare)
+    f = trust_file(tmp_path, {})
+    assert trust.grant_awm_worktree(stray, tmp_path, trust_file=f) == []

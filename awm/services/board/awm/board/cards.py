@@ -58,6 +58,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
+from . import OWN_SWARM_REFUSAL
 from .events import Events
 from .names import check_project, clean_agent, clean_node, owner_label
 from .parties import OPEN, Conflict, Forbidden, NotFound, can_see
@@ -357,6 +358,8 @@ class Board:
         if not isinstance(recipient, str) or (
                 recipient != OPEN and not _SLUG.match(recipient)):
             raise ValueError(f"recipient must be a swarm slug or {OPEN!r}: {recipient!r}")
+        if recipient == party["swarm"]:
+            raise ValueError(OWN_SWARM_REFUSAL)
         if not isinstance(title, str):
             raise ValueError("title must be text")
         title = title.strip()

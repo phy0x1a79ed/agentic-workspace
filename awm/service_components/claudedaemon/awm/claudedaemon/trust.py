@@ -7,21 +7,27 @@ before. That opens a trust dialog — "This session hasn't worked here before. I
 this a directory you created or one you trust?" — whose default answer is "No,
 stay put". A session sitting on that dialog has not moved and is not idle, and
 the next thing typed into it answers the dialog instead of doing what it meant
-to. Trust is recorded per directory in `~/.claude.json` and inherited from any
-trusted ancestor, which is why a fresh directory under a trusted home moves
-without a word while `/tmp` does not.
+to.
 
-`start_refusal` answers for `claude --bg` starting in a directory. There the
-rule is stricter: inside a git repository the workspace-trust entry must be the
-repository's own, and an ancestor such as the home directory does not stand in
-for it. For a linked worktree the entry is the main repository, which here is
-the `.bare` directory; for a plain repository it is the repository root. Only a
-directory outside git inherits from an ancestor. A start that fails this check
-does not error: the daemon refuses with "Workspace not trusted", and the caller
-sees nothing until its wait for a new job times out.
+`start_refusal` answers for `claude --bg` starting in a directory, with the
+same rule and a message that says what to trust. A start that fails it does not
+error: the daemon refuses with "Workspace not trusted", and the caller sees
+nothing until its wait for a new job times out.
 
-The user answers the trust prompt themselves in their own terminal, which is
-where a trust decision belongs. A shape of `~/.claude.json` this module no
+Trust is recorded per directory in `~/.claude.json`. Inside a git repository
+the entry must be the repository's own, and an ancestor such as the home
+directory does not stand in for it. For a linked worktree the entry is the main
+repository, which here is the `.bare` directory; for a plain repository it is
+the repository root. Only a directory outside git inherits from an ancestor,
+which is why a fresh directory under a trusted home moves without a word while
+`/tmp` does not. `/cd` into a worktree of an untrusted `.bare` under a trusted
+home opens the dialog, measured on Claude Code 2.1.310.
+
+Outside awm the user answers the trust prompt themselves in their own
+terminal, which is where a trust decision belongs. `grant_awm_worktree` is the
+one exception: a worktree of an awm project, under the workspace's own projects
+directory, is a directory awm created, so the agent moving into it records the
+trust that a person would only have rubber-stamped. Nothing else is granted. A shape of `~/.claude.json` this module no
 longer recognises reads as untrusted, so a Claude Code update that moves it
 costs the start and nothing else.
 """
@@ -31,6 +37,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import tempfile
 from pathlib import Path
 
 
@@ -53,9 +60,10 @@ def _accepted(trust_file: Path | None) -> dict | None:
 
 def trusted(path: str | Path, *, trust_file: Path | None = None) -> bool:
     """True if `/cd path` would move without opening the trust dialog."""
-    accepted = _accepted(trust_file)
-    if accepted is None:
-        return False
+    return start_refusal(path, trust_file=trust_file) is None
+
+
+def _inherited(path: str | Path, accepted: dict) -> bool:
     p = Path(path).resolve()
     return any(str(cand) in accepted for cand in (p, *p.parents))
 
@@ -103,7 +111,72 @@ def start_refusal(path: str | Path, *, trust_file: Path | None = None) -> str | 
                  f"for the repository itself, not for a parent directory")
         return (f"{where}; {key} is not trusted. Open `claude` once in {path} and "
                 f"accept the trust dialog, then retry.")
-    if accepted is not None and trusted(path, trust_file=trust_file):
+    if accepted is not None and _inherited(path, accepted):
         return None
     return (f"{path} is not trusted. Open `claude` once in {path} and accept the "
             f"trust dialog, then retry.")
+
+
+def awm_worktree_keys(path: str | Path, projects_root: str | Path) -> list[Path]:
+    """The trust entries an awm worktree needs, or [] for any other directory.
+
+    An awm worktree resolves inside ``<projects_root>/<project>/`` and belongs
+    to the bare repository ``<projects_root>/<project>/.bare``. `/cd` keys trust
+    on that repository, `claude --bg` too, so it is the entry that matters; the
+    worktree's own entry is added beside it.
+    """
+    root = Path(projects_root).resolve()
+    p = Path(path).resolve()
+    if not p.is_relative_to(root) or p == root:
+        return []
+    key = workspace_key(p)
+    if key is None or key.name != ".bare" or key.parent.parent != root:
+        return []
+    if not p.is_relative_to(key.parent) or p.is_relative_to(key):
+        return []
+    return [key, p]
+
+
+def grant_awm_worktree(path: str | Path, projects_root: str | Path, *,
+                       trust_file: Path | None = None) -> list[str]:
+    """Record trust for an awm worktree; returns the entries it added.
+
+    Refuses, by adding nothing, for a directory that is not an awm worktree
+    under ``projects_root``. Claude Code rewrites this file whole, through a
+    temporary file and a rename, so this does the same: merge into what is on
+    disk now and replace it in one step.
+    """
+    keys = awm_worktree_keys(path, projects_root)
+    if not keys:
+        return []
+    target = Path(trust_file or default_trust_file())
+    try:
+        data = json.loads(target.read_text())
+    except (OSError, ValueError):
+        return []
+    projects = data.get("projects") if isinstance(data, dict) else None
+    if not isinstance(projects, dict):
+        return []
+    added = []
+    for key in map(str, keys):
+        entry = projects.get(key)
+        if isinstance(entry, dict) and entry.get("hasTrustDialogAccepted"):
+            continue
+        projects[key] = {**(entry if isinstance(entry, dict) else {}),
+                         "hasTrustDialogAccepted": True}
+        added.append(key)
+    if not added:
+        return []
+    fd, tmp = tempfile.mkstemp(prefix=target.name + ".awm.", dir=target.parent)
+    try:
+        with os.fdopen(fd, "w") as fh:
+            json.dump(data, fh, indent=2)
+        os.chmod(tmp, target.stat().st_mode & 0o777)
+        os.replace(tmp, target)
+    except OSError:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        return []
+    return added
