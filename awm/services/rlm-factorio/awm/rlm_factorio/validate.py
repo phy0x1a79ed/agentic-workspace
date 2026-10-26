@@ -144,8 +144,7 @@ def condition(key: str, v: Any) -> dict:
 SPECS: dict[str, dict[str, Callable[[str, Any], Any]]] = {
     "acquire": {"kind": one_of("headless", "lab", "rendered"), "name": world_name,
                 "rules": RULES, "save": PATH, "create": boolean, "live": boolean},
-    "join": {"role": one_of("player", "camera"), "rules": RULES,
-             "admin_token": ADMIN_TOKEN},
+    "join": {"role": one_of("drone", "camera")},
     "advance": {"ticks": integer(1, 10**8), "speed": number(1, 10000),
                 "timeout_s": number(1, 86400), "rules": RULES,
                 "admin_token": ADMIN_TOKEN},
@@ -171,7 +170,7 @@ SPECS: dict[str, dict[str, Callable[[str, Any], Any]]] = {
     "research": {"name": name, "rules": RULES, "admin_token": ADMIN_TOKEN},
     "exec_lua": {"code": text(64 * 1024), "path": PATH,
                  "max_output": integer(256, 1_048_576), "budget_ms": number(1, 1000),
-                 "cache": boolean},
+                 "cache": boolean, "rules": RULES, "admin_token": ADMIN_TOKEN},
     "blueprint_stamp": {"x": COORD, "y": COORD, "blueprint": text(4 * 1024 * 1024),
                         "path": PATH, "direction": DIRECTION, "build": boolean,
                         "clear": boolean, "force_build": boolean, "surface": SURFACE,

@@ -681,7 +681,7 @@ local STR_MAX = {
   seat = 64, name = 128, recipe = 128, surface = 64, target = 128, search = 128,
   id = 64, file = 128, label = 256, direction = 32, item = 128, cond = 16,
   data = BP_CHUNK_MAX, blueprint = 4 * 1024 * 1024, code = SCRIPT_MAX,
-  kind = 16, effect = 16, summary = 256, force = 64, camera = 64, type = 16,
+  kind = 16, effect = 16, summary = 256, force = 64, camera = 64, type = 16, player = 64,
 }
 
 local function check_args(args)
@@ -1098,6 +1098,13 @@ local function act_for(seat)
       return api[verb](check_args(args))
     end
   end
+  -- The seat's own body, to read. Nil while it waits to respawn.
+  verbs.drone = function()
+    local s = storage.seats[seat]
+    local d = s and s.drone
+    if not (d and d.valid) then return nil end
+    return GUARDED and guard(d) or d
+  end
   return write_blocked(verbs, "act is read-only")
 end
 
@@ -1146,6 +1153,26 @@ api = {
     end
     return { ok = true, seat = name, created = created, position = d.position,
              surface = d.surface.name }
+  end,
+
+  -- A seat's drone entity, for scenario-context scripts. Nil while it waits
+  -- to respawn. Not JSON: call it through remote.call, never over the iface.
+  drone = function(args)
+    local d = resolve_seat(args).drone
+    return d and d.valid and d or nil
+  end,
+
+  -- Park the camera client: a spectator with no character, so it draws the
+  -- world and changes nothing the world simulates.
+  camera = function(args)
+    local p = game.get_player(args.player or "")
+    if not p then return { ok = false, error = "not_found" } end
+    local body = p.character
+    if p.controller_type ~= defines.controllers.spectator then
+      p.set_controller{ type = defines.controllers.spectator }
+    end
+    if body and body.valid then body.destroy() end
+    return { ok = true, player = p.name, controller = p.controller_type }
   end,
 
   -- Remove a seat and its drone. The drone's inventory goes with it.

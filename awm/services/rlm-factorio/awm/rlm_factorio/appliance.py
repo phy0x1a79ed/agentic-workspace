@@ -19,17 +19,23 @@ here are safe.
 
 from __future__ import annotations
 
+import hashlib
 import json
+import logging
 import os
 import re
 import shutil
 import subprocess
+import threading
 import time
+import uuid
 from pathlib import Path
 
 import httpx
 
 from awm.persistence.databases import SERVICES_DIR
+
+log = logging.getLogger("awm.rlm_factorio.appliance")
 
 # --- the realm's coordinates ---------------------------------------------
 #
@@ -64,9 +70,9 @@ APPLIANCE_DIR = _SERVICE_ROOT / "appliance"
 COMPOSE_FILE = APPLIANCE_DIR / "docker-compose.yml"
 BUILD_SCRIPT = APPLIANCE_DIR / "build.sh"
 IMAGE = "rlm-factorio/appliance:2.1.20"   # must match docker-compose.yml
-# The control mod is bind-mounted into the host and every seat from this one
+# The control mod is bind-mounted into the host and the camera from this one
 # directory, so a mod change ships with a container restart instead of an image
-# rebuild. Host and seats must load identical bytes or a seat cannot join.
+# rebuild. Host and camera must load identical bytes or the camera cannot join.
 MOD_DIR = Path(os.environ.get(
     "AWM_FACTORIO_MOD_DIR",
     str(APPLIANCE_DIR / "mods" / "game-bot-control")))
@@ -94,7 +100,7 @@ class ApplianceError(RuntimeError):
 
 
 def output_root() -> Path:
-    """Root of everything the engine and its seats write out for us."""
+    """Root of everything the engine and its camera write out for us."""
     return SERVICES_DIR / "rlm-factorio" / "output"
 
 
@@ -353,41 +359,30 @@ def iface(row: dict, fn: str, args: dict,
     return control_post(row, "/iface", {"fn": fn, "args": args}, timeout=timeout)
 
 
-# --- seats ----------------------------------------------------------------
+# --- the camera ---------------------------------------------------------
 #
-# A seat is a transient container running the SAME image in its client role
-# (FACTORIO_ROLE=seat). Seats are not declared in the compose file: they are
-# allocated per agent, come and go independently of the world, and are run
-# directly. They join over the session's own compose network by the host's
-# service DNS name, so seat traffic never leaves Docker and none of the
-# published-port / WSL-forwarding pain applies -- only a human joining from
-# Steam needs the published UDP port.
+# Agents act through drones the world itself holds, so the only client a world
+# runs is its camera: a container running the SAME image in its client role
+# (FACTORIO_ROLE=seat) as a spectator with no character. The server cannot
+# render, and take_screenshot is drawn by the client it names. The camera is
+# run directly, not declared in the compose file, and joins over the world's
+# own compose network by the host's service DNS name, so its traffic never
+# leaves Docker.
 
 SEAT_NETWORK_SUFFIX = "_default"    # docker compose's implicit network
 SEAT_HOST_ALIAS = "factorio"        # the compose service name of the host
 SEAT_GAME_PORT = 12140              # container-internal, fixed
 
-# Where a seat's screenshots land. Factorio writes them inside the peer that
-# rendered them -- a client, not the server -- so each seat bind-mounts its own
-# script-output onto the host and the service reads the file directly. Handing
-# an agent a path beats handing it a base64 blob it has to decode by hand.
+# Where the camera's screenshots land. Factorio writes them inside the peer
+# that rendered them, so the camera bind-mounts its own script-output onto the
+# host and the service reads the file directly.
 SEAT_OUTPUT_DIR = "/opt/factorio/script-output"
 
-# Factorio has no frame-rate setting and Xvfb reports 0 Hz, so nothing paces a
-# client's renderer: with its window mapped it renders flat out across several
-# threads. Unmapping the window is the real lever, but it only takes effect
-# once the client reaches the world, so a seat is briefly unbounded on the way
-# in -- and a seat whose unmap fails would be unbounded forever. These bound
-# that runaway; they are not a diet.
-#
-# Size them to the JOIN, not to play. Building the sprite atlas on the way in
-# is the expensive part -- 15 threads and a ~3.7 GiB peak, measured -- while an
-# in-world seat with its window unmapped settles to ~13% of one core and
-# 2.4 GiB. At 2 cores / 4 GiB the atlas build stretched a 40s join past 300s
-# and pressed against the memory cap. Squeezing here does not save a running
-# seat anything; it only makes joining slow or impossible.
-SEAT_CPUS = os.environ.get("AWM_FACTORIO_SEAT_CPUS", "4.0")
-SEAT_MEMORY = os.environ.get("AWM_FACTORIO_SEAT_MEMORY", "6g")
+CAMERA_CPUS, CAMERA_MEMORY = "2", "4g"
+CACHE_FILES = ("atlas-cache.dat", "crop-cache.dat")
+CACHE_BUILD_TIMEOUT = float(os.environ.get("AWM_FACTORIO_CACHE_BUILD_TIMEOUT", "900"))
+CLIENT_LOG = "/opt/factorio/factorio-current.log"
+_CACHE_LOCK = threading.Lock()
 
 
 def seat_output_root() -> Path:
@@ -395,7 +390,7 @@ def seat_output_root() -> Path:
 
 
 def seat_output_dir(seat_id: str) -> Path:
-    """Host directory holding one seat's rendered output (created on demand)."""
+    """Host directory holding one camera's rendered output (created on demand)."""
     path = seat_output_root() / seat_id
     path.mkdir(parents=True, exist_ok=True)
     return path
@@ -409,80 +404,130 @@ def seat_container_name(project: str, seat_id: str) -> str:
     return f"{project or PROJECT}-{seat_id}"
 
 
-CAMERA_CPUS, CAMERA_MEMORY = "2", "4g"
-
-
 def camera_cache_root() -> Path:
     return output_root() / "camera-cache"
 
 
-def _camera_mounts() -> list[str]:
-    """Sprite caches mount read-only, so two cameras never race on a write.
-    Mesa's shader cache is multi-process safe."""
-    cache = camera_cache_root()
-    (cache / "mesa_shader_cache").mkdir(parents=True, exist_ok=True)
-    mounts = ["-v", f"{CAMERA_CONFIG}:/opt/factorio/config/config.ini:ro",
-              "-v", f"{cache / 'mesa_shader_cache'}:/root/.cache/mesa_shader_cache"]
-    for name in ("atlas-cache.dat", "crop-cache.dat"):
-        if (cache / name).exists():
-            mounts += ["-v", f"{cache / name}:/opt/factorio/{name}:ro"]
+def _mod_mounts(mods: list[str]) -> list[str]:
+    mounts = ["-v", f"{MOD_DIR}:{MOD_MOUNT}:ro"]
+    for mod in mods:
+        mounts += ["-v", f"{mod}:{MODS_ROOT}/{Path(mod).name}:ro"]
     return mounts
 
 
-def seat_run(container: str, network: str, player_name: str,
-             *, output_dir: Path | None = None, mods: list[str] = (),
-             role: str = "player", env: dict[str, str] | None = None) -> str:
-    """Start a seat container joined to ``network``; return its container id.
+def camera_cache_key(mods: list[str]) -> str:
+    """The image tag and every loaded mod's version: a sprite cache built for
+    any other set makes the client rewrite it, which a read-only mount stalls."""
+    versions = []
+    for mod in [str(MOD_DIR), *mods]:
+        try:
+            info = json.loads((Path(mod) / "info.json").read_text())
+            versions.append(f"{info['name']}@{info['version']}")
+        except (OSError, ValueError, KeyError):
+            versions.append(f"{Path(mod).name}@?")
+    digest = hashlib.sha1("\n".join(sorted(versions)).encode()).hexdigest()[:10]
+    return f"{IMAGE.rsplit(':', 1)[-1]}-{digest}"
 
-    A seat loads the host's extra ``mods`` too, or it cannot join. A camera
-    seat renders with the camera config and the shared sprite cache.
-    """
-    camera = role == "camera"
-    cmd = [
-        "docker", "run", "-d",
-        "--name", container,
-        "--network", network,
-        "-e", "FACTORIO_ROLE=seat",
-        "-e", f"SEAT_NAME={player_name}",
-        "-e", f"FACTORIO_HOST={SEAT_HOST_ALIAS}",
-        "-e", f"FACTORIO_PORT={SEAT_GAME_PORT}",
-        "--cpus", CAMERA_CPUS if camera else SEAT_CPUS,
-        "--memory", CAMERA_MEMORY if camera else SEAT_MEMORY,
-        "-v", f"{MOD_DIR}:{MOD_MOUNT}:ro",
-    ]
-    for mod in mods:
-        cmd += ["-v", f"{mod}:{MODS_ROOT}/{Path(mod).name}:ro"]
-    if camera:
-        cmd += ["-e", "SEAT_UNMAP=1", *_camera_mounts()]
-    if output_dir is not None:
-        cmd += ["-v", f"{output_dir}:{SEAT_OUTPUT_DIR}"]
-    for key, value in (env or {}).items():
-        cmd += ["-e", f"{key}={value}"]
-    cmd.append(IMAGE)
-    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+
+def _docker(*args: str, timeout: float = 120) -> subprocess.CompletedProcess:
+    return subprocess.run(["docker", *args], capture_output=True, text=True,
+                          timeout=timeout)
+
+
+def build_camera_cache(dest: Path, mods: list[str]) -> None:
+    """Run a client with no network until it saves its sprite caches, then copy
+    them to ``dest``. The client loads every sprite before it tries to connect,
+    so it needs no world."""
+    container = f"{PROJECT}-camera-cache-{uuid.uuid4().hex[:8]}"
+    proc = _docker(
+        "run", "-d", "--name", container, "--network", "none",
+        "-e", "FACTORIO_ROLE=seat", "-e", "SEAT_NAME=camera-cache",
+        "-e", "FACTORIO_HOST=127.0.0.1", "-e", "SEAT_UNMAP=0",
+        "--cpus", "4", "--memory", "6g", *_mod_mounts(mods),
+        "-v", f"{CAMERA_CONFIG}:/opt/factorio/config/config.ini:ro", IMAGE)
+    if proc.returncode != 0:
+        raise ApplianceError(f"camera cache build failed to start: {proc.stderr.strip()}")
+    try:
+        deadline = time.monotonic() + CACHE_BUILD_TIMEOUT
+        while True:
+            log = _docker("exec", container, "cat", CLIENT_LOG, timeout=30).stdout
+            if "Atlas cache saved" in log:
+                break
+            if time.monotonic() > deadline or not seat_container_running(container):
+                raise ApplianceError(
+                    f"camera cache build saved no atlas cache: {log[-800:]}")
+            time.sleep(2.0)
+        staging = dest.with_name(dest.name + ".partial")
+        shutil.rmtree(staging, ignore_errors=True)
+        staging.mkdir(parents=True)
+        for name in CACHE_FILES:
+            cp = _docker("cp", f"{container}:/opt/factorio/{name}", str(staging / name))
+            if cp.returncode != 0:
+                raise ApplianceError(f"camera cache build wrote no {name}: {cp.stderr.strip()}")
+        staging.rename(dest)
+    finally:
+        _docker("rm", "-f", "-v", container)
+
+
+def camera_cache(mods: list[str]) -> Path | None:
+    """The sprite cache for this mod set, built on first use. None when the
+    build fails: a camera without a cache builds its own, only slower."""
+    dest = camera_cache_root() / camera_cache_key(mods)
+    with _CACHE_LOCK:
+        if not all((dest / name).exists() for name in CACHE_FILES):
+            try:
+                build_camera_cache(dest, mods)
+            except (ApplianceError, OSError, subprocess.SubprocessError) as exc:
+                log.warning("camera cache %s: %s", dest.name, exc)
+                return None
+    return dest
+
+
+def _camera_mounts(mods: list[str]) -> list[str]:
+    """Sprite caches mount read-only, so two cameras never race on a write.
+    Mesa's shader cache is multi-process safe."""
+    shaders = camera_cache_root() / "mesa_shader_cache"
+    shaders.mkdir(parents=True, exist_ok=True)
+    mounts = ["-v", f"{CAMERA_CONFIG}:/opt/factorio/config/config.ini:ro",
+              "-v", f"{shaders}:/root/.cache/mesa_shader_cache"]
+    cache = camera_cache(mods)
+    for name in CACHE_FILES if cache else ():
+        mounts += ["-v", f"{cache / name}:/opt/factorio/{name}:ro"]
+    return mounts
+
+
+def camera_run(container: str, network: str, player_name: str,
+               *, output_dir: Path, mods: list[str] = ()) -> str:
+    """Start the camera joined to ``network``; return its container id. It
+    loads the host's extra ``mods`` too, or it cannot join."""
+    proc = _docker(
+        "run", "-d", "--name", container, "--network", network,
+        "-e", "FACTORIO_ROLE=seat", "-e", f"SEAT_NAME={player_name}",
+        "-e", f"FACTORIO_HOST={SEAT_HOST_ALIAS}", "-e", f"FACTORIO_PORT={SEAT_GAME_PORT}",
+        "-e", "SEAT_UNMAP=1", "--cpus", CAMERA_CPUS, "--memory", CAMERA_MEMORY,
+        *_mod_mounts(list(mods)), *_camera_mounts(list(mods)),
+        "-v", f"{output_dir}:{SEAT_OUTPUT_DIR}", IMAGE)
     if proc.returncode != 0:
         raise ApplianceError(
-            f"seat container {container} failed to start: "
+            f"camera container {container} failed to start: "
             f"{proc.stderr.strip() or proc.stdout.strip()}"
         )
     return proc.stdout.strip()
 
 
 def seat_stop(container: str) -> None:
-    """Remove a seat container. Best-effort: a seat that is already gone is the
+    """Remove a camera container. Best-effort: one that is already gone is the
     outcome we wanted."""
-    subprocess.run(["docker", "rm", "-f", "-v", container],
-                   capture_output=True, text=True, timeout=120)
+    _docker("rm", "-f", "-v", container)
 
 
 def seat_container_running(container: str) -> bool:
-    proc = subprocess.run(
-        ["docker", "inspect", "-f", "{{.State.Running}}", container],
-        capture_output=True, text=True, timeout=30)
+    if not container:
+        return False
+    proc = _docker("inspect", "-f", "{{.State.Running}}", container, timeout=30)
     return proc.returncode == 0 and proc.stdout.strip() == "true"
 
 
 def seat_logs(container: str, tail: int = 40) -> str:
-    proc = subprocess.run(["docker", "logs", "--tail", str(tail), container],
-                          capture_output=True, text=True, timeout=30)
+    proc = _docker("logs", "--tail", str(tail), container, timeout=30)
     return (proc.stdout or "") + (proc.stderr or "")
