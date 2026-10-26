@@ -12,17 +12,19 @@ supervisor's control surface (sacred-saves invariant preserved — only
 ``world_save`` ever writes a named ``.zip``), ``release`` tears the container
 down, seats first (the saves volume survives).
 
-``join`` allocates a SEAT: a container running the same image in its client
-role, which joins the world over the compose network and mints a real
-``LuaPlayer``. Seats are what make the realm a LAN party — several agents in one
-world, one shared force — and what buy back the capabilities a scripted body
-never had. ``leave`` returns one; ``seats`` lists them.
+``join`` allocates a SEAT. A drone seat is a body the world itself holds: the
+``game-bot-control`` mod spawns a ``game-bot-drone`` character for it and drives
+it every tick, so it walks, mines, crafts and fights by the game's rules with no
+client attached. Seats are what make the realm a LAN party — several agents in
+one world, one shared force. The camera seat is the one client a world runs: a
+container in the image's client role, joined as a spectator, that draws every
+screenshot. ``leave`` returns a seat; ``seats`` lists them.
 
 A seat is leased, not given. It records the caller the gateway threads in as its
 owner, every verb naming it refreshes a last-seen stamp, and a background reaper
-reclaims seats whose container has died or whose owner has gone quiet for an
-hour. An agent that dies mid-session must not cost us two cores forever, and
-nothing but this service can notice that it did.
+reclaims drones whose owner has gone quiet for an hour, and a camera whose
+container has died. Nothing but this service can notice an agent that died
+mid-session.
 
 Everything an agent does in the world it does AS a seat. The act verbs —
 ``move`` / ``stop`` / ``mine`` / ``craft`` / ``build`` / ``insert`` / ``take``,
@@ -46,8 +48,10 @@ file on this machine, because a real script does not survive shell quoting. It
 runs in the SCENARIO context, where the mod's ``storage`` is invisible (Factorio
 disables ``load`` in the mod control stage, so there is nowhere else to put it);
 mod state is reachable from there through ``remote.call('game_bot', ...)``. The
-resolved seat is bound as ``seat`` / ``player`` on the script's first line, so a
-file script needs no templating and its line numbers still match.
+resolved seat is bound as ``seat`` / ``drone`` on the script's first line, so a
+file script needs no templating and its line numbers still match. Under realm
+rules the script instead runs as a stored script in the mod, guarded: it reads
+the game, and changes it only through ``act``, its seat's drone verbs.
 
 The ``factorio`` emitter is LIVE: world verbs fire ``world_loaded`` /
 ``world_saved`` / ``error`` directly, and a background pump drains the mod's
@@ -62,8 +66,8 @@ Every world is a row with a ``kind`` -- ``game`` or ``lab`` (a throwaway
 experiment server) -- a ``headless`` toggle (off publishes the game port so a
 human can join) and ``rules``. The realm runs ``realm`` rules and a lab
 runs ``sandbox``; the god verbs (``teleport``, ``research``, built blueprints,
-``sbx`` god verbs, cheat tools, ``advance``, camera seats) are refused under the
-former unless the caller holds the admin token. Seats, saves, pause, events and
+``sbx`` god verbs, cheat tools, ``advance``) are refused under the former unless
+the caller holds the admin token. Seats, saves, pause, events and
 every other verb work the same on every kind.
 
 ``acquire`` is idempotent per world name: a second acquire of a live world
@@ -210,43 +214,42 @@ API_MANIFEST: dict[str, Any] = {
             "effect": "write",
             "tool": "factorio_join",
             "description": (
-                "Join the session's world as a real multiplayer player: start a "
-                "seat container, wait for it to connect, and bind it to the "
-                "in-game player it minted. Returns {seat_id, player_name, "
-                "player_index, owner}. A seat is a full Factorio client, so "
-                "its capabilities are a player's -- mining that sustains, "
-                "crafting that counts toward research triggers, and a "
-                "renderable view. Every act verb below is driven through a "
-                "seat. A seat is a LEASE: it is owned by the caller (or by an "
-                "explicit 'owner'), any verb naming it holds it, and one left "
-                "untouched for an hour is reclaimed. Call 'leave' when done. "
-                "role=camera joins a renderer with no character, parked in the "
-                "lab mod's view booth; sandbox worlds only, one per world, "
-                "never reclaimed for idleness. Its screenshots land in "
-                "output_dir."
+                "Join the session's world with a drone: a body the world holds "
+                "and drives, spawned at the force's spawn in under a second. "
+                "Returns {seat_id, player_name, owner, position}; player_name "
+                "is the seat's name in the world. A drone walks over anything "
+                "in a straight line, reaches 128 tiles, mines, hand-crafts "
+                "(counted toward research triggers), builds, throws capsules "
+                "and fights, all at the game's own rates. When it dies its "
+                "corpse keeps the inventory and a new drone appears at spawn "
+                "10 s later. Every act verb below is driven through a seat. A "
+                "seat is a LEASE: it is owned by the caller (or by an explicit "
+                "'owner'), any verb naming it holds it, and one left untouched "
+                "for an hour is reclaimed. Call 'leave' when done. role=camera "
+                "joins the world's renderer, a client with no body; one per "
+                "world, never reclaimed for idleness. screenshot starts it on "
+                "demand, so joining one is rarely needed."
             ),
             "params": [
                 {"name": "session_id", "type": "string", "required": True},
                 {"name": "owner", "type": "string", "required": False},
                 {"name": "role", "type": "string", "required": False,
-                 "description": "player (default) or camera"},
-                *_RULES,
+                 "description": "drone (default) or camera"},
             ],
-            # Container start + map transfer + world load; ~25s observed, but a
-            # large world transfers for longer.
-            "timeout": 300.0,
+            # A camera's first start builds the sprite cache, then joins.
+            "timeout": 1200.0,
         },
         {
             "name": "rejoin",
             "effect": "write",
             "tool": "factorio_rejoin",
             "description": (
-                "Reconnect seats after a world reload dropped them: restart "
-                "the seat's client under its own player name, so the seat id, "
-                "character and inventory all survive. Pass seat_id for one "
-                "seat, or session_id for every live seat (about a minute "
-                "each; parallel, 1-4, rejoins that many at once). Returns "
-                "{seats: [{seat_id, player_index | error}]}."
+                "Bring seats back after a world reload: a drone the loaded "
+                "save lacks spawns again under the same seat, and the camera "
+                "reconnects. A drone the save holds keeps its body and "
+                "inventory. Pass seat_id for one seat, or session_id for "
+                "every live seat (parallel, 1-4, rejoins that many at once). "
+                "Returns {seats: [{seat_id, position | player_index | error}]}."
             ),
             "params": [
                 {"name": "seat_id", "type": "string", "required": False},
@@ -260,8 +263,8 @@ API_MANIFEST: dict[str, Any] = {
             "effect": "write",
             "tool": "factorio_leave",
             "description": (
-                "Release a seat: disconnect its player and remove the seat "
-                "container. The world and every other seat are untouched."
+                "Release a seat: remove its drone, inventory and all, or stop "
+                "the camera. The world and every other seat are untouched."
             ),
             "params": [
                 {"name": "seat_id", "type": "string", "required": True},
@@ -273,10 +276,11 @@ API_MANIFEST: dict[str, Any] = {
             "effect": "read",
             "tool": "factorio_seats",
             "description": (
-                "List seats, optionally for one session: their player name and "
-                "index, owner, container state, and whether the player is "
-                "currently connected in-world. Also how long since each was "
-                "last used -- the clock the reaper reclaims a seat by."
+                "List seats, optionally for one session: their name, role and "
+                "owner. A drone carries in_world, alive, position and "
+                "respawn_at from the world; the camera carries its container "
+                "state and whether it is connected. Also how long since each "
+                "was last used -- the clock the reaper reclaims a drone by."
             ),
             "params": [
                 {"name": "session_id", "type": "string", "required": False},
@@ -306,6 +310,7 @@ API_MANIFEST: dict[str, Any] = {
                  "description": "1-64 tiles"},
                 {"name": "screenshot", "type": "boolean", "required": False},
             ],
+            "timeout": 1200.0,  # a first screenshot starts the camera
         },
         {
             "name": "screenshot",
@@ -314,19 +319,20 @@ API_MANIFEST: dict[str, Any] = {
             "description": (
                 "Render what the world looks like around a seat and return "
                 "{path} -- a PNG on this machine, which you can read as an "
-                "image. Centred on the seat unless x,y say otherwise. width/"
+                "image. Centred on the seat's drone unless x,y say otherwise; "
+                "with no seat, x,y are required. The world's camera draws it, "
+                "and the first screenshot starts the camera (up to a few "
+                "minutes, once per world). width/"
                 "height (default 1280x720) are rendered offscreen, so image "
-                "quality is not limited by the seat's window; zoom < 1 pulls "
+                "quality is not limited by the camera's window; zoom < 1 pulls "
                 "back for a factory overview, > 1 pushes in. Lit as noon "
                 "unless daytime says otherwise (0 = noon, 0.5 = midnight), so "
                 "a night shot is still readable. show_entity_info draws the "
                 "alt-mode overlay (recipe icons, contents). Returns the "
                 "frame geometry too -- position is the centre, and tiles says "
                 "how many tiles wide and tall the image covers -- so a pixel "
-                "can be reasoned back to a coordinate. NOTE: the engine does "
-                "not draw the rendering seat's OWN character, so you will see "
-                "bare ground where you are standing; every other player IS "
-                "drawn. You are at the centre of the frame."
+                "can be reasoned back to a coordinate. Your drone is the dark "
+                "construction robot at the centre of the frame."
             ),
             "params": [
                 *_SEAT_TARGET,
@@ -344,7 +350,7 @@ API_MANIFEST: dict[str, Any] = {
                 {"name": "surface", "type": "string", "required": False},
                 {"name": "file", "type": "string", "required": False},
             ],
-            "timeout": 120.0,
+            "timeout": 1200.0,  # a first screenshot starts the camera
         },
         {
             "name": "observe_events",
@@ -516,12 +522,20 @@ API_MANIFEST: dict[str, Any] = {
                 "file on this machine (exactly one) -- a real script does not "
                 "survive shell quoting, so scripts belong in files. Returns "
                 "{output} = whatever the script printed; to get a value back "
-                "call rcon.print(...). Runs in the SCENARIO context, so the "
-                "mod's storage is invisible -- reach mod state through "
-                "remote.call('game_bot', <fn>, {seat=seat}). Your script is "
-                "preceded (on the same line, so line numbers still match your "
-                "file) by `local seat, player = ...` bound to the resolved "
-                "seat, so a file script needs no templating per seat. "
+                "call rcon.print(...). `seat` is the resolved seat's name and "
+                "`drone` its body (nil while it waits to respawn). UNDER "
+                "REALM RULES the script runs guarded: it may read anything, "
+                "and every write -- a property assignment, teleport, insert, "
+                "create_entity, remote, debug -- fails with an error naming "
+                "the call. It changes the world only through `act`, the "
+                "seat's drone verbs: act.walk{x=,y=}, act.mine, act.craft, "
+                "act.build, act.ghost, act.unghost, act.insert, act.take, "
+                "act.throw, act.stop, act.wait, act.observe, act.recipes, "
+                "act.drone(). Under sandbox rules it runs in the SCENARIO "
+                "context, where the mod's storage is invisible -- reach mod "
+                "state through remote.call('game_bot', <fn>, {seat=seat}). "
+                "The binding shares your script's first line, so line "
+                "numbers still match your file. "
                 "Returns cost_ms, the engine script time the command used. A "
                 "command over its budget (15 ms by default; one tick is "
                 "16.7 ms) returns ok:false with an OVER_BUDGET error: it RAN, "
@@ -548,6 +562,7 @@ API_MANIFEST: dict[str, Any] = {
                      "script runs in the MOD context: its globals last one "
                      "call, `storage` is a table of its own, and it may not "
                      "register event handlers")},
+                *_RULES,
             ],
             "timeout": 120.0,
         },
@@ -557,8 +572,8 @@ API_MANIFEST: dict[str, Any] = {
             "effect": "write",
             "tool": "factorio_walk",
             "description": (
-                "Walk the seat to (x,y) by engine pathfinding and block until "
-                "the walk ends. Returns the order: status arrived, threat, "
+                "Walk the seat's drone straight to (x,y) -- it flies over water, "
+                "cliffs and buildings -- and block until the walk ends. Returns the order: status arrived, threat, "
                 "blocked, died, stopped or superseded, with result details "
                 "(where it stopped; for threat the reason enemy / worm / hp, "
                 "the enemy and its distance). The guard stops the seat by "
@@ -815,9 +830,9 @@ API_MANIFEST: dict[str, Any] = {
             "effect": "write",
             "tool": "factorio_move",
             "description": (
-                "Walk the seat to (x,y) via engine pathfinding (routes around "
-                "obstacles) and return immediately. Poll observe or watch the "
-                "emitter for 'arrived' / 'path_blocked'. " + _TARGET_DOC
+                "Start the seat's drone walking straight to (x,y) and return "
+                "the walk order at once: walk with block=false. Poll order or "
+                "observe, or watch the emitter for 'arrived'. " + _TARGET_DOC
             ),
             "params": [
                 *_SEAT_TARGET,
@@ -858,9 +873,9 @@ API_MANIFEST: dict[str, Any] = {
             "effect": "write",
             "tool": "factorio_respawn",
             "description": (
-                "Give a seat a body again, now: skips the death countdown and "
-                "ends the freeplay intro cutscene. join already does this, so "
-                "this is the after-you-died verb, not the setup one."
+                "Give a seat a drone again, now, at its force's spawn: skips "
+                "the 10 s respawn delay after a death. A seat whose drone is "
+                "alive is left where it is."
             ),
             "params": list(_SEAT_TARGET),
             "timeout": 60.0,
@@ -982,9 +997,11 @@ API_MANIFEST: dict[str, Any] = {
             "description": (
                 "Run a library tool by name with args. Returns {ok, r} where r "
                 "is the tool's table, or {ok:false, error: no_tool | "
-                "tool_error, detail}. Needs game-bot-control 0.6. Tools with "
-                "effect cheat, and tools that use a cheat lib, are refused under "
-                "realm rules. See tool_list."
+                "tool_error, detail}. Needs game-bot-control 0.6. Under realm "
+                "rules every tool runs guarded like exec_lua: a read tool "
+                "reads, an act tool also gets `act` for the seat, and tools "
+                "with effect cheat, or that use a cheat lib, are refused. See "
+                "tool_list."
             ),
             "params": [
                 *_SEAT_TARGET,
@@ -1452,11 +1469,16 @@ def _status(args: dict) -> dict:
     return {"sessions": out}
 
 
-# ---- seats ---------------------------------------------------------------
+# ---- seats ----------------------------------------------------------------
 
-# How long to wait for a started seat container to appear in-world as a
+# How long to wait for a started camera container to appear in-world as a
 # connected player. Container start + map transfer + world load measured ~25s.
 SEAT_JOIN_TIMEOUT = float(os.environ.get("AWM_FACTORIO_SEAT_JOIN_TIMEOUT", "240"))
+
+CAMERA_NAME = os.environ.get("AWM_FACTORIO_CAMERA_NAME", "fxcam")
+DRONE_MOD = (0, 7, 0)
+_CAMERA_LOCKS: dict[str, threading.RLock] = {}
+_CAMERA_LOCKS_LOCK = threading.Lock()
 
 
 def _require_seat(seat_id: str) -> dict:
@@ -1472,11 +1494,10 @@ def _lua(row: dict, code: str, *, timeout: float = 20.0) -> str:
 
 
 def _player_index(row: dict, player_name: str) -> int:
-    """Resolve a seat's player to an index, or 0 while it is not yet connected.
+    """Resolve the camera's player to an index, or 0 while it is not yet connected.
 
-    The name is asserted by the seat itself before the client starts, so this is
-    a lookup rather than a diff of who appeared -- two seats joining at once
-    cannot be confused for one another.
+    The name is asserted by the camera itself before the client starts, so this
+    is a lookup rather than a diff of who appeared.
     """
     name = player_name.replace('"', '')
     out = _lua(row, f'local p = game.players["{name}"] '
@@ -1493,7 +1514,7 @@ def _wait_seat_connected(row: dict, seat: dict, container: str,
     while time.monotonic() < deadline:
         if not appliance.seat_container_running(container):
             raise appliance.ApplianceError(
-                f"seat container {container} exited before joining: "
+                f"camera container {container} exited before joining: "
                 f"{appliance.seat_logs(container)[-800:]}"
             )
         try:
@@ -1504,23 +1525,20 @@ def _wait_seat_connected(row: dict, seat: dict, container: str,
             return index
         time.sleep(2.0)
     raise appliance.ApplianceError(
-        f"seat {seat['seat_id']} did not join within {timeout:.0f}s: "
+        f"camera {seat['seat_id']} did not join within {timeout:.0f}s: "
         f"{appliance.seat_logs(container)[-800:]}"
     )
 
 
-CAMERA_NAME = os.environ.get("AWM_FACTORIO_CAMERA_NAME", "fxcam")
-ROLES = ("player", "camera")
-
-
 def _park_camera(row: dict, seat: dict, timeout: float = SEAT_JOIN_TIMEOUT) -> None:
-    """Park a camera seat in the lab mod's view booth, which holds no character,
-    so the camera changes nothing the world simulates. Retried while the
-    server has not yet created the joined player."""
+    """Make the camera a spectator with no character, so it changes nothing the
+    world simulates. A lab parks it in the lab mod's view booth, off every play
+    surface. Retried while the server has not yet created the joined player."""
+    fn, mod = ("view_booth", "sbx") if row["kind"] == "lab" else ("camera", "game_bot")
     deadline = time.monotonic() + timeout
     while True:
-        res, _ = _iface(row, "view_booth", {"player": seat["player_name"]},
-                        key=SYS, metered=False, mod="sbx")
+        res, _ = _iface(row, fn, {"player": seat["player_name"]},
+                        key=SYS, metered=False, mod=mod)
         if not (isinstance(res, dict) and res.get("ok") is False):
             return
         if res.get("error") != "not_found" or time.monotonic() > deadline:
@@ -1529,26 +1547,53 @@ def _park_camera(row: dict, seat: dict, timeout: float = SEAT_JOIN_TIMEOUT) -> N
         time.sleep(0.5)
 
 
-def _start_seat(row: dict, seat: dict, container: str) -> int:
-    """Run a seat's client, wait for it in-world, and ready it for its role."""
-    appliance.seat_run(container, appliance.seat_network(row["compose_project"]),
-                       seat["player_name"],
-                       output_dir=appliance.seat_output_dir(seat["seat_id"]),
-                       mods=appliance.row_mods(row), role=seat["role"])
+def _start_camera(row: dict, seat: dict, container: str) -> int:
+    """Run the camera's client, wait for it in-world, and park it."""
+    appliance.camera_run(container, appliance.seat_network(row["compose_project"]),
+                         seat["player_name"],
+                         output_dir=appliance.seat_output_dir(seat["seat_id"]),
+                         mods=appliance.row_mods(row))
     index = _wait_seat_connected(row, seat, container)
-    if seat["role"] == "camera":
-        _park_camera(row, seat)
-    else:
-        # Connected is not yet able to act: freeplay puts a newly created player
-        # through an intro cutscene, during which it has no character. `spawn`
-        # ends that and guarantees the seat is embodied before join returns.
-        _iface(row, "spawn", {"seat": seat["player_name"]},
-               key=seat["player_name"], metered=False)
+    _park_camera(row, seat)
     return index
 
 
+def _require_drones(row: dict) -> None:
+    version = _mod_version(row)
+    if version < DRONE_MOD:
+        raise appliance.ApplianceError(
+            "drone seats need game-bot-control 0.7; this world runs "
+            f"{'.'.join(map(str, version))}, and 0.7 arrives with the next "
+            "appliance restart")
+
+
+def _spawn(row: dict, seat: dict) -> dict:
+    """Give a drone seat its body; the mod creates the seat on first call."""
+    res, _ = _iface(row, "spawn", {"seat": seat["player_name"]}, key=SYS,
+                    metered=False)
+    return res
+
+
+def _despawn(seat: dict) -> None:
+    """Remove a drone from its world. Best-effort: a world that is down or has
+    already lost the seat is the outcome we wanted."""
+    row = dao.FactorioDAO().get_session(seat["session_id"])
+    if row is None or row["status"] in ("stopped", "error"):
+        return
+    try:
+        _iface(row, "despawn", {"seat": seat["player_name"]}, key=SYS,
+               metered=False, timeout=20.0)
+    except Exception:  # noqa: BLE001
+        log.debug("despawning %s failed", seat["player_name"], exc_info=True)
+
+
+def _camera_lock(sid: str) -> threading.RLock:
+    with _CAMERA_LOCKS_LOCK:
+        return _CAMERA_LOCKS.setdefault(sid, threading.RLock())
+
+
 def _join(args: dict, as_: str | None = None) -> dict:
-    """Allocate a seat on a session: start the client, wait for it in-world.
+    """Allocate a seat on a session: spawn a drone, or start the camera.
 
     The gateway threads the calling identity in as ``as_`` (a placed agent's
     placement id; absent for a call that never crossed an edge, i.e. the host's
@@ -1558,57 +1603,81 @@ def _join(args: dict, as_: str | None = None) -> dict:
     check against anyway. It exists so `seats` can say whose seat this is and
     so a reclaimed seat can be reported against the agent that lost it.
 
-    A ``camera`` seat renders and never plays: it has no character, joins
-    under the camera's fixed name so a save seeded with it loads unchanged,
-    and only a sandbox world allows one.
+    The camera joins under the camera's fixed name, so a save seeded with it
+    loads unchanged.
     """
     sid = args["session_id"]
     row = _require_session(sid)
     if row["status"] in ("stopped", "error"):
         raise ValueError(f"session {sid} is {row['status']}; acquire it first")
-    role = args.get("role") or "player"
-    d = dao.FactorioDAO()
-    player_name = ""
-    if role == "camera":
-        _refuse_under_realm(row, args, "a camera seat")
-        if any(s["role"] == "camera" for s in d.live_seats(sid)):
-            raise ValueError(f"session {sid} already has a camera seat")
-        player_name = CAMERA_NAME
-
+    role = args.get("role") or "drone"
     owner = str(args.get("owner") or as_ or "").strip()
-    seat = d.create_seat(sid, owner=owner, role=role, player_name=player_name)
+    d = dao.FactorioDAO()
+    if role == "camera":
+        with _camera_lock(sid):
+            if any(s["role"] == "camera" for s in d.live_seats(sid)):
+                raise ValueError(f"session {sid} already has a camera seat")
+            seat = d.create_seat(sid, owner=owner, role=role, player_name=CAMERA_NAME)
+            container = appliance.seat_container_name(row["compose_project"],
+                                                      seat["seat_id"])
+            d.set_seat(seat["seat_id"], container_name=container)
+            try:
+                index = _start_camera(row, seat, container)
+            except Exception:
+                appliance.seat_stop(container)
+                d.set_seat(seat["seat_id"], status="error")
+                raise
+            d.set_seat(seat["seat_id"], status="ready", player_index=index)
+        out = {"player_index": index,
+               "output_dir": str(appliance.seat_output_dir(seat["seat_id"]))}
+    else:
+        _require_drones(row)
+        seat = d.create_seat(sid, owner=owner, role=role)
+        try:
+            spawned = _spawn(row, seat)
+        except Exception:
+            d.set_seat(seat["seat_id"], status="error")
+            raise
+        d.set_seat(seat["seat_id"], status="ready")
+        out = {"position": spawned.get("position"), "surface": spawned.get("surface")}
     seat_id = seat["seat_id"]
-    container = appliance.seat_container_name(row["compose_project"], seat_id)
-    d.set_seat(seat_id, container_name=container)
-
-    try:
-        index = _start_seat(row, seat, container)
-    except Exception:
-        appliance.seat_stop(container)
-        d.set_seat(seat_id, status="error")
-        raise
-
-    d.set_seat(seat_id, status="ready", player_index=index)
     d.touch_seat(seat_id)
-    _fire(sid, "seat_joined", {"seat_id": seat_id,
-                               "player_name": seat["player_name"],
-                               "player_index": index, "role": role})
-    log.info("join: seat %s connected as %s (index %d, %s) for owner %r",
-             seat_id, seat["player_name"], index, role, owner)
-    return {"seat_id": seat_id, "session_id": sid,
-            "player_name": seat["player_name"], "player_index": index,
-            "owner": owner, "role": role,
-            "output_dir": str(appliance.seat_output_dir(seat_id))}
+    _fire(sid, "seat_joined", {"seat_id": seat_id, "player_name": seat["player_name"],
+                               "role": role})
+    log.info("join: %s seat %s as %s for owner %r", role, seat_id,
+             seat["player_name"], owner)
+    return {"seat_id": seat_id, "session_id": sid, "player_name": seat["player_name"],
+            "owner": owner, "role": role, **out}
+
+
+def _camera_for(row: dict) -> dict:
+    """The world's camera seat, started now when it has none."""
+    sid = row["session_id"]
+    d = dao.FactorioDAO()
+    with _camera_lock(sid):
+        for seat in d.live_seats(sid):
+            if seat["role"] == "camera":
+                return seat
+        joined = _join({"session_id": sid, "role": "camera", "owner": "screenshot"})
+        return d.get_seat(joined["seat_id"])
 
 
 def _rejoin_one(row: dict, seat: dict) -> dict:
     d = dao.FactorioDAO()
+    if seat["role"] == "drone":
+        try:
+            spawned = _spawn(row, seat)
+        except Exception as exc:  # noqa: BLE001
+            return {"seat_id": seat["seat_id"], "error": str(exc)}
+        d.touch_seat(seat["seat_id"])
+        return {"seat_id": seat["seat_id"], "position": spawned.get("position"),
+                "created": spawned.get("created")}
     container = seat["container_name"] or appliance.seat_container_name(
         row["compose_project"], seat["seat_id"])
     _close_conn(seat)
     appliance.seat_stop(container)
     try:
-        index = _start_seat(row, seat, container)
+        index = _start_camera(row, seat, container)
     except Exception as exc:  # noqa: BLE001
         appliance.seat_stop(container)
         d.set_seat(seat["seat_id"], status="error")
@@ -1618,18 +1687,17 @@ def _rejoin_one(row: dict, seat: dict) -> dict:
     d.touch_seat(seat["seat_id"])
     _fire(row["session_id"], "seat_joined", {"seat_id": seat["seat_id"],
                                              "player_name": seat["player_name"],
-                                             "player_index": index, "rejoined": True})
+                                             "role": "camera", "rejoined": True})
     return {"seat_id": seat["seat_id"], "player_index": index}
 
 
 def _rejoin(args: dict) -> dict:
-    """Reconnect seats under their own player names after a world reload.
+    """Bring seats back under their own names after a world reload.
 
-    A reload drops every client. Joining again would mint new seats and new
-    players; a rejoin keeps the seat id, and the same name brings back the same
-    player with its character and inventory. Each join loads the client's
-    sprites on several cores, so ``parallel`` (default 1) bounds how many load
-    at once.
+    A loaded save holds the drones it was saved with, and the mod respawns
+    any it lacks under the same seat name; the camera's client dropped with
+    the reload and starts again. ``parallel`` (default 1) bounds how many
+    rejoin at once.
     """
     if args.get("seat_id"):
         seats = [_require_seat(args["seat_id"])]
@@ -1643,52 +1711,79 @@ def _rejoin(args: dict) -> dict:
         return {"seats": list(pool.map(lambda seat: _rejoin_one(row, seat), seats))}
 
 
+def _end_seat(seat: dict) -> None:
+    """Take a seat out of its world: despawn the drone, or stop the camera."""
+    _close_conn(seat)
+    if seat["role"] == "drone":
+        _despawn(seat)
+    elif seat["container_name"]:
+        appliance.seat_stop(seat["container_name"])
+
+
 def _leave(args: dict) -> dict:
     seat_id = args["seat_id"]
     seat = _require_seat(seat_id)
-    _close_conn(seat)
-    if seat["container_name"]:
-        appliance.seat_stop(seat["container_name"])
+    _end_seat(seat)
     dao.FactorioDAO().set_seat(seat_id, status="stopped")
     _fire(seat["session_id"], "seat_left", {"seat_id": seat_id,
                                             "player_name": seat["player_name"]})
     return {"released": True, "seat_id": seat_id}
 
 
+def _world_seats(session: dict | None) -> dict[str, dict] | None:
+    """The world's own drone registry by seat name, or None when it is dark."""
+    if session is None or session["status"] in ("stopped", "error"):
+        return None
+    try:
+        res, _ = _iface(session, "seats", {}, key=SYS, metered=False, timeout=10.0)
+    except Exception:  # noqa: BLE001 — a dark appliance is not an error here
+        return None
+    return {s["seat"]: s for s in _as_list(res.get("seats"))}
+
+
 def _seats(args: dict) -> dict:
     d = dao.FactorioDAO()
     sid = args.get("session_id")
-    rows = d.list_seats(sid)
+    worlds: dict[str, dict[str, dict] | None] = {}
     out = []
-    for seat in rows:
+    for seat in d.list_seats(sid):
         enriched = dict(seat)
         if seat["status"] not in ("stopped", "error"):
             enriched["idle_s"] = round(_age_s(seat["last_seen_at"]), 1)
-            enriched["container_running"] = appliance.seat_container_running(
-                seat["container_name"])
             session = d.get_session(seat["session_id"])
-            connected = False
-            if session and session["status"] not in ("stopped", "error"):
-                try:
-                    connected = bool(_player_index(session, seat["player_name"]))
-                except Exception:  # noqa: BLE001 — a dark appliance is not an error here
-                    connected = False
-            enriched["connected"] = connected
+            if seat["role"] == "drone":
+                if seat["session_id"] not in worlds:
+                    worlds[seat["session_id"]] = _world_seats(session)
+                world = worlds[seat["session_id"]]
+                body = (world or {}).get(seat["player_name"])
+                enriched["in_world"] = None if world is None else body is not None
+                for key in ("alive", "position", "surface", "health", "respawn_at"):
+                    if body and body.get(key) is not None:
+                        enriched[key] = body[key]
+            else:
+                enriched["container_running"] = appliance.seat_container_running(
+                    seat["container_name"])
+                connected = False
+                if session and session["status"] not in ("stopped", "error"):
+                    try:
+                        connected = bool(_player_index(session, seat["player_name"]))
+                    except Exception:  # noqa: BLE001
+                        connected = False
+                enriched["connected"] = connected
         out.append(enriched)
     return {"seats": out}
 
 
 # ---- the reaper ----------------------------------------------------------
 #
-# A leaked seat is not a leaked browser tab. It is a whole simulated peer --
-# a couple of gigabytes and a share of the box -- still standing in a world
-# nobody is watching, and nothing outside this service can notice: an agent
-# that dies mid-session takes its intent with it while its client plays on. So
-# the service reclaims seats itself, on a sweep.
+# A leaked drone is a body still standing in a world nobody is watching, in
+# the way of every other seat and holding whatever it carried, and nothing
+# outside this service can notice: an agent that dies mid-session takes its
+# intent with it. So the service reclaims seats itself, on a sweep.
 #
-# It sweeps SEATS ONLY, and only seats it started -- their player names are
-# minted here. A session is never touched, so the reaper cannot disconnect a
-# human who joined from Steam, and cannot close the world under one.
+# It sweeps SEATS ONLY, and only seats it started -- their names are minted
+# here. A session is never touched, so the reaper cannot disconnect a human who
+# joined from Steam, and cannot close the world under one.
 
 REAP_POLL_S = float(os.environ.get("AWM_FACTORIO_REAP_POLL_S", "60"))
 
@@ -1699,8 +1794,8 @@ REAP_POLL_S = float(os.environ.get("AWM_FACTORIO_REAP_POLL_S", "60"))
 # has genuinely stopped playing.
 SEAT_IDLE_S = float(os.environ.get("AWM_FACTORIO_SEAT_IDLE_S", "3600"))
 
-# A join in flight owns no container yet, so it cannot be judged by one. Only a
-# join that could not still be running counts as abandoned.
+# A camera join in flight owns no container yet, so it cannot be judged by one.
+# Only a join that could not still be running counts as abandoned.
 STALE_JOIN_S = SEAT_JOIN_TIMEOUT * 2
 
 
@@ -1717,19 +1812,16 @@ def _age_s(stamp: str) -> float:
 
 
 def _reclaim(seat: dict, reason: str) -> None:
-    """Stop a seat's container and mark the row stopped.
+    """Take a seat out of its world and mark the row stopped.
 
-    Best-effort on the container: a row still claiming one that is already gone
-    is exactly the state this exists to clear, so a failed stop must not leave
-    the row live or abort the sweep.
+    Best-effort on the world side: a row still claiming a body or container
+    that is already gone is exactly the state this exists to clear, so a failed
+    stop must not leave the row live or abort the sweep.
     """
-    _close_conn(seat)
-    if seat["container_name"]:
-        try:
-            appliance.seat_stop(seat["container_name"])
-        except Exception:  # noqa: BLE001
-            log.warning("reap: stopping %s failed",
-                        seat["container_name"], exc_info=True)
+    try:
+        _end_seat(seat)
+    except Exception:  # noqa: BLE001
+        log.warning("reap: ending %s failed", seat["seat_id"], exc_info=True)
     dao.FactorioDAO().set_seat(seat["seat_id"], status="stopped")
     log.info("reap: reclaimed seat %s (%s), owner=%r",
              seat["seat_id"], reason, seat["owner"])
@@ -1745,10 +1837,11 @@ def _reap_reason(seat: dict) -> str | None:
         if _age_s(seat["created_at"]) > STALE_JOIN_S:
             return "join never completed"
         return None
-    if not appliance.seat_container_running(seat["container_name"]):
-        return "container gone"
-    if (SEAT_IDLE_S > 0 and seat["role"] != "camera"
-            and _age_s(seat["last_seen_at"]) > SEAT_IDLE_S):
+    if seat["role"] != "drone":
+        if not appliance.seat_container_running(seat["container_name"]):
+            return "container gone"
+        return None
+    if SEAT_IDLE_S > 0 and _age_s(seat["last_seen_at"]) > SEAT_IDLE_S:
         return f"idle > {SEAT_IDLE_S:.0f}s"
     return None
 
@@ -1861,8 +1954,9 @@ def _resolve(args: dict, *, need_seat: bool = True) -> tuple[dict, dict | None]:
 
     A seat id alone is enough — the session hangs off it — so an agent that
     remembers one identifier can drive every verb. A session id alone resolves
-    to its seat when it has exactly one; with several, ambiguity is an error
-    rather than a guess, because guessing means acting as someone else's player.
+    to its drone when it has exactly one; with several, ambiguity is an error
+    rather than a guess, because guessing means acting as someone else's drone.
+    The camera is never the acting seat.
     """
     seat_id = str(args.get("seat_id") or "").strip()
     sid = str(args.get("session_id") or "").strip()
@@ -1880,7 +1974,7 @@ def _resolve(args: dict, *, need_seat: bool = True) -> tuple[dict, dict | None]:
             )
         sid = seat["session_id"]
     elif sid:
-        live = d.live_seats(sid)
+        live = [s for s in d.live_seats(sid) if s["role"] == "drone"]
         if len(live) == 1:
             seat = live[0]
         elif len(live) > 1 and need_seat:
@@ -1894,6 +1988,10 @@ def _resolve(args: dict, *, need_seat: bool = True) -> tuple[dict, dict | None]:
     row = d.get_session(sid)
     if row is None:
         raise ValueError(f"unknown session_id: {sid!r}")
+    if seat is not None and seat["role"] != "drone":
+        if need_seat:
+            raise ValueError(f"seat {seat['seat_id']} is the camera; it draws and cannot act")
+        seat = None
     if need_seat and seat is None:
         raise ValueError(f"session {sid} has no seat — join it first")
     return row, seat
@@ -2023,12 +2121,13 @@ def _log_exec(row: dict, seat: dict | None, code: str) -> None:
 
 
 def _exec_lua(args: dict) -> dict:
-    """Run Lua in the scenario context, from an inline string or a file.
+    """Run Lua from an inline string or a file.
 
     A real script does not survive shell quoting, so ``path`` is the form that
     matters for an agent alternating between MCP and a shell. The seat preamble
     shares the script's first line so a reported line number still matches the
-    file the agent wrote.
+    file the agent wrote. Under realm rules the script runs guarded, as a stored
+    script in the mod, because only the mod can hand it a read-only game.
     """
     row, seat = _resolve(args, need_seat=False)
     code = args.get("code")
@@ -2046,12 +2145,18 @@ def _exec_lua(args: dict) -> dict:
         )
     _log_exec(row, seat, code)
     name = seat["player_name"] if seat else None
-    preamble = (f'local seat, player = "{name}", game.players["{name}"]; '
-                if name else "local seat, player = nil, nil; ")
+    preamble = (f'local seat = "{name}" local drone = remote.call("game_bot", "drone", '
+                f'{{seat = seat}}); ' if name else "local seat, drone = nil, nil; ")
     if seat is not None:
         dao.FactorioDAO().touch_seat(seat["seat_id"])
     key = _key(seat, row)
-    if args.get("cache") and _mod_version(row) >= ORDERS_MOD:
+    if _realm_rules(row, args):
+        if _mod_version(row) < GUARD_MOD:
+            raise appliance.ApplianceError(
+                "refused under realm rules: exec_lua runs guarded, which needs "
+                "game-bot-control 0.7")
+        res = _run_stored(row, key, code, name, guarded=True)
+    elif args.get("cache") and _mod_version(row) >= ORDERS_MOD:
         res = _run_stored(row, key, code, name)
     else:
         res = _run(row, key, preamble + code, timeout=120.0)
@@ -2171,16 +2276,18 @@ def _lua_json(value: Any) -> str:
     return f"helpers.json_to_table('{blob}')"
 
 
-def _run_stored(row: dict, key: str, code: str, seat_name: str | None) -> dict:
+def _run_stored(row: dict, key: str, code: str, seat_name: str | None,
+                *, guarded: bool = False) -> dict:
     """Run ``code`` as a stored script, defining it first when the world lacks it.
 
     The seat binding is an argument, not text, so every seat shares one stored
     copy of a script.
     """
-    body = "local seat = ... local player = seat and game.players[seat] " + code
+    body = "local seat = ... local drone = act and act.drone() " + code
     name = "x:" + hashlib.sha1(body.encode()).hexdigest()[:20]
-    run = (f"remote.call('game_bot','script_run',{{name='{name}',"
-           f"args={json.dumps(seat_name) if seat_name else 'nil'}}})")
+    seat_lua = json.dumps(seat_name) if seat_name else "nil"
+    run = (f"remote.call('game_bot','script_run',{{name='{name}',args={seat_lua},"
+           f"seat={seat_lua}{',guarded=true' if guarded else ''}}})")
     sid = row["session_id"]
     with _MOD_LOCK:
         known = name in _DEFINED.get(sid, ())
@@ -2222,29 +2329,34 @@ def _wait_for_file(path: str, timeout: float = SCREENSHOT_TIMEOUT) -> int:
 
 
 def _screenshot(args: dict) -> dict:
-    """Render the world through one seat and return a PATH to the PNG.
+    """Render the world around a drone, or at x,y, and return a PATH to the PNG.
 
     A path, not a blob: the caller reads the file and actually sees it, and a
-    shell script can pass it onward. The seat renders offscreen at whatever
-    resolution is asked for, so its own window stays tiny and unmapped.
+    shell script can pass it onward. The world's camera draws it offscreen at
+    whatever resolution is asked for, so its own window stays tiny and unmapped.
     """
-    row, seat = _resolve(args)
-    out_dir = appliance.seat_output_dir(seat["seat_id"])
-    body = {"seat": seat["player_name"]}
+    row, seat = _resolve(args, need_seat=False)
+    if seat is None and (args.get("x") is None or args.get("y") is None):
+        raise ValueError("screenshot needs a drone seat, or x and y")
+    camera = _camera_for(row)
+    body: dict[str, Any] = {"camera": camera["player_name"]}
+    if seat is not None:
+        body["seat"] = seat["player_name"]
+        dao.FactorioDAO().touch_seat(seat["seat_id"])
     for key in ("x", "y", "width", "height", "zoom", "surface", "daytime",
                 "show_entity_info", "file"):
         if args.get(key) is not None:
             body[key] = args[key]
-    dao.FactorioDAO().touch_seat(seat["seat_id"])
+    dao.FactorioDAO().touch_seat(camera["seat_id"])
     result, _ = _iface(row, "screenshot", body, key=_key(seat, row))
-    path = str(out_dir / str(result["file"]))
+    path = str(appliance.seat_output_dir(camera["seat_id"]) / str(result["file"]))
     size = _wait_for_file(path)
     # How much world the frame covers, so pixels can be reasoned back to tiles:
     # a tile is 32 px at zoom 1.
     res, zoom = result["resolution"], float(result["zoom"])
     tiles = {"width": res["x"] / (32.0 * zoom), "height": res["y"] / (32.0 * zoom)}
-    return {**result, "path": path, "bytes": size, "seat_id": seat["seat_id"],
-            "tiles": tiles}
+    return {**result, "path": path, "bytes": size,
+            "seat_id": seat["seat_id"] if seat else None, "tiles": tiles}
 
 
 # One RCON command carries the whole chunk, and the channel fragments a large
@@ -2355,9 +2467,13 @@ def _scan(args: dict) -> dict:
 
     def seat_position() -> dict:
         name = seat["player_name"]
-        out = _run(row, key, f'local p = game.players["{name}"] rcon.print('
-                             f'helpers.table_to_json(p.position))')["output"]
-        return json.loads(out)
+        out = _run(row, key, f'local d = remote.call("game_bot", "drone", {{seat = "{name}"}}) '
+                             f'if not d then error("seat {name} has no drone") end '
+                             f'rcon.print(helpers.table_to_json(d.position))')["output"]
+        try:
+            return json.loads(out)
+        except ValueError:
+            raise ValueError(out.strip() or f"seat {name}: no position") from None
 
     try:
         return SCANNER.scan(key, args, run, seat_position if seat else None)
@@ -2386,7 +2502,7 @@ def _load(args: dict) -> dict:
 # defines the files in the world's registry; tool runs one by name.
 
 TOOLS_MOD = (0, 6, 0)
-DENY_MOD = (0, 6, 1)   # tool_call honours `deny` from here on
+GUARD_MOD = (0, 7, 0)  # tool_call and script_run take `guarded` from here on
 TOOL_KEYS = ("tool", "kind", "effect", "summary", "args", "returns")
 TOOL_KINDS = ("call", "lib")
 TOOL_EFFECTS = ("read", "act", "cheat")
@@ -2445,8 +2561,8 @@ def _tool_list(args: dict) -> dict:
 def _tool(args: dict) -> dict:
     """Run a library tool: {ok, r} or the mod's error.
 
-    Under realm rules the mod refuses a cheat tool, and a cheat lib it uses,
-    for the whole call.
+    Under realm rules the mod runs the tool guarded and refuses a cheat tool,
+    and a cheat lib it uses, for the whole call.
     """
     row, seat = _resolve(args, need_seat=False)
     _require_tools(row)
@@ -2456,12 +2572,13 @@ def _tool(args: dict) -> dict:
     key = _key(seat, row)
     body = {"name": name, "args": args.get("args") or {}}
     if _realm_rules(row, args):
-        if _mod_version(row) < DENY_MOD:
+        if _mod_version(row) < GUARD_MOD:
             raise appliance.ApplianceError(
-                "refused under realm rules: this world's mod cannot refuse cheat "
-                "tools before game-bot-control 0.6.1")
-        body["deny"] = ["cheat"]
+                "refused under realm rules: this world's mod cannot guard tools "
+                "before game-bot-control 0.7")
+        body.update(deny=["cheat"], guarded=True)
     if seat is not None:
+        body["seat"] = seat["player_name"]
         dao.FactorioDAO().touch_seat(seat["seat_id"])
     result, cost = _iface(row, "tool_call", body, key=key, timeout=120.0)
     if result.get("error") == "denied":
@@ -2779,7 +2896,7 @@ def _wait_until(args: dict) -> dict:
         time.sleep(poll)
 
 
-_move = _act("set_target", "x", "y")
+_move = _act("walk", "x", "y")
 _stop = _act("stop")
 _teleport = _act("teleport", "x", "y", "surface", god=True)
 _respawn = _act("spawn")
@@ -2872,10 +2989,12 @@ def _on_start() -> None:
             log.info("on_start: reconciling stale session %s -> stopped",
                      row["session_id"])
             _stop_row(d, row)
-    # A seat row whose container is gone is stopped, never adopted: the client
-    # is stateless, so a lost one is replaced by joining again, not recovered.
+    # A camera whose container is gone is stopped, never adopted: the client is
+    # stateless, so a lost one is replaced by starting again. A drone lives in
+    # its world, so it stands or falls with its session.
     for seat in d.live_seats():
-        if not appliance.seat_container_running(seat["container_name"]):
+        if seat["role"] != "drone" and not appliance.seat_container_running(
+                seat["container_name"]):
             log.info("on_start: reconciling stale seat %s -> stopped",
                      seat["seat_id"])
             d.set_seat(seat["seat_id"], status="stopped")
@@ -2896,9 +3015,9 @@ async def main() -> None:
     # thread while it waits, so the pool must outnumber the seats comfortably.
     loop.set_default_executor(ThreadPoolExecutor(max_workers=HANDLER_THREADS))
 
-    # A shutdown leaves seats running. A restart adopts them in on_start, so a
-    # deploy costs the crew nothing; the reaper and leave/release remain the
-    # only ways a seat ends.
+    # A shutdown leaves seats in their worlds. A restart adopts them in
+    # on_start, so a deploy costs the crew nothing; the reaper and
+    # leave/release remain the only ways a seat ends.
     signalled = asyncio.Event()
     for sig in (signal.SIGTERM, signal.SIGINT):
         try:
