@@ -79,8 +79,10 @@ API_MANIFEST: dict[str, Any] = {
         "with `--agree` and those words; the session reads `confirming` "
         "meanwhile. Only whoever read that prompt has the words, so do not "
         "ask for them or guess them. "
-        "To hear the owner between turns, run the `listen.command` that "
-        "`invite` returns under a background watcher such as Monitor. "
+        "After `invite`, run the `listen.command` it returns under a "
+        "background watcher such as Monitor, and wait for the owner to "
+        "connect. Then stop the watcher, unless you were explicitly asked to "
+        "keep watching for the owner's input. "
         "A session belongs to the agent session that minted it: every verb "
         "sees and acts on your own sessions only, so `code` is needed only "
         "when you have more than one open. "
@@ -458,16 +460,20 @@ def _forward(verb: str, timeout: float):
     return handler
 
 
-#: What an operator runs to be woken when the owner speaks or the session
-#: changes phase. Leaves out ``task.output``, whose chunks would flood a watcher,
-#: and every other session's events, which are not this operator's business.
+#: What an operator runs to hear the owner connect, and to hear the owner speak
+#: when asked to keep watching. Leaves out ``task.output``, whose chunks would
+#: flood a watcher, and every other session's events, which are not this
+#: operator's business.
 LISTEN_THEN = (
-    "Run the command under a background watcher, such as Monitor, for the life "
-    "of the session. It prints this session's events only. Each line is a "
-    "doorbell, not the record: call `drain` with `types: owner.` to read what "
-    "the owner said, then answer with `send`. A `listen.reconnected` line "
-    "means events may have been missed, so call `drain`. Stop the watcher when "
-    "the session ends."
+    "Run the command under a background watcher, such as Monitor, and wait "
+    "for the owner to connect. It prints this session's events only. A "
+    "`session.phase` line with `phase: open` means the owner connected: stop "
+    "the watcher then, unless you were explicitly asked to keep watching for "
+    "the owner's input. A `phase: ended` line means the session is over: stop "
+    "the watcher. While you keep watching, each line is a doorbell, not the "
+    "record: call `drain` with `types: owner.` to read what the owner said, "
+    "then answer with `send`. A `listen.reconnected` line means events may "
+    "have been missed, so call `drain`."
 )
 
 #: How long `invite` waits for its own mint to come round on the stream, so it
