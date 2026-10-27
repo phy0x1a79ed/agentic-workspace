@@ -330,6 +330,12 @@ class Etapi:
     def attachments(self, note_id: str) -> list[dict]:
         return self._request("GET", f"/etapi/notes/{note_id}/attachments").json()
 
+    def attachment(self, attachment_id: str) -> dict:
+        return self._request("GET", f"/etapi/attachments/{attachment_id}").json()
+
+    def attachment_content(self, attachment_id: str) -> bytes:
+        return self._request("GET", f"/etapi/attachments/{attachment_id}/content").content
+
     def create_attachment(self, *, owner_id: str, title: str, mime: str,
                           role: str = "file") -> dict:
         """Make an empty attachment. The bytes go in separately: ETAPI

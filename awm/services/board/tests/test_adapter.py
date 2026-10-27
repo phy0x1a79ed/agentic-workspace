@@ -215,6 +215,33 @@ async def test_the_thread_verbs_relay_to_the_host(relay):
     assert hidden["ok"] is False and hidden["status"] == 404
 
 
+async def test_a_card_is_named_by_a_prefix_or_its_trilium_note(relay):
+    posted = (await hub_adapter.post({"kind": "request", "recipient": "beta", "title": "t"}))["card"]
+    assert (await hub_adapter.get({"card_id": posted["id"][:8]}))["card"]["id"] == posted["id"]
+    assert (await hub_adapter.get({"card_id": posted["id"][:8].upper()}))["card"]["id"] == posted["id"]
+    sent = await hub_adapter.message_post({"card_id": posted["id"][:8], "body": "hi"})
+    assert sent["ok"] is True
+    read = await hub_adapter.messages({"card_id": posted["id"][:10]})
+    assert [m["body"] for m in read["messages"]] == ["hi"]
+    if posted.get("note_id"):
+        assert (await hub_adapter.get({"card_id": posted["note_id"]}))["card"]["id"] == posted["id"]
+
+
+async def test_an_ambiguous_prefix_names_the_candidates(relay, monkeypatch):
+    async def two(self, **kw):
+        return [{"id": "abcdef0" + "0" * 25}, {"id": "abcdef1" + "1" * 25}]
+    monkeypatch.setattr(hub_adapter.BoardClient, "list", two)
+    out = await hub_adapter.get({"card_id": "abcdef"})
+    assert out["ok"] is False and out["status"] == 409 and "abcdef0" in out["error"]
+
+
+async def test_a_swarm_board_note_is_pointed_at_the_swarm_verbs(relay):
+    out = await hub_adapter.get({"card_id": "tFvgsByaL6sH"})
+    assert out["ok"] is False and out["status"] == 404 and "swarm_get" in out["error"]
+    out = await hub_adapter.messages({"card_id": "deadbeef"})
+    assert out["ok"] is False and out["status"] == 404
+
+
 async def _from_beta(relay, monkeypatch, title):
     """A request beta posts to alpha, then the relay acts as alpha again."""
     monkeypatch.setenv("AWM_BOARD_TOKEN", relay.beta_token)

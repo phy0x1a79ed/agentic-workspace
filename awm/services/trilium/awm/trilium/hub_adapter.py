@@ -473,6 +473,20 @@ API_MANIFEST: dict[str, Any] = {
             "timeout": 300,
         },
         {
+            "name": "attachment_get",
+            "effect": "read",
+            "tool": "trilium_attachment_get",
+            "description": (
+                "One attachment: its owner note, title, mime and size, and its "
+                "bytes base64-encoded. Refuses an attachment over 16 MiB."
+            ),
+            "params": [
+                {"name": "attachment_id", "type": "string", "required": True,
+                 "description": "The attachment, as note_get lists it under attachments."},
+            ],
+            "timeout": 120,
+        },
+        {
             "name": "slice_expose",
             "effect": "secret",
             "tool": "trilium_slice_expose",
@@ -1050,6 +1064,27 @@ async def _h_attachment_put(args: dict, as_: str | None = None) -> dict:
     return await asyncio.to_thread(_write)
 
 
+ATTACHMENT_GET_MAX = 16 << 20
+
+
+async def _h_attachment_get(args: dict, as_: str | None = None) -> dict:
+    _operator_only(as_, "attachment_get")
+    attachment_id = _note_id(args, "attachment_id")
+
+    def _read() -> dict:
+        c = etapi.client()
+        meta = c.attachment(attachment_id)
+        size = int(meta.get("contentLength") or 0)
+        if size > ATTACHMENT_GET_MAX:
+            raise ValueError(f"attachment {attachment_id} is {size} bytes, over the "
+                             f"{ATTACHMENT_GET_MAX}-byte cap")
+        blob = c.attachment_content(attachment_id)
+        return {"attachment_id": attachment_id, "owner_id": meta.get("ownerId"),
+                "title": meta.get("title"), "mime": meta.get("mime"), "bytes": len(blob),
+                "content_b64": base64.b64encode(blob).decode("ascii")}
+    return await asyncio.to_thread(_read)
+
+
 # -- slices -------------------------------------------------------------
 #
 # A slice opens one note and its descendants to somebody with no awm account.
@@ -1174,6 +1209,7 @@ HANDLERS = {
     "attr_set": _h_attr_set,
     "attr_delete": _h_attr_delete,
     "attachment_put": _h_attachment_put,
+    "attachment_get": _h_attachment_get,
     "slice_expose": _h_slice_expose,
     "slice_list": _h_slice_list,
     "slice_revoke": _h_slice_revoke,

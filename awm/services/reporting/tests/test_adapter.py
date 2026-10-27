@@ -16,8 +16,10 @@ from stubs import FakeCx, make_card
 
 pytestmark = [pytest.mark.unit, pytest.mark.smoke]
 
+SWARM_VERBS = {"swarm_list": "read", "swarm_get": "read", "swarm_messages": "read",
+               "swarm_message_post": "write", "swarm_files": "read", "swarm_file_fetch": "read"}
 EFFECTS = {"status": "read", "board_ensure": "write", "ops_post": "write", "convert": "write",
-           **dict.fromkeys(hub_adapter.TASK_VERBS, "write")}
+           **dict.fromkeys(hub_adapter.TASK_VERBS, "write"), **SWARM_VERBS}
 
 
 def functions() -> dict[str, dict]:
@@ -51,6 +53,7 @@ PUBLISHED = {
     "hook_prompt": "operations_hook_prompt", "hook_session_clear": "operations_hook_session_clear",
     "ops_post": "operations_ops_post", "board_ensure": "operations_board_ensure",
     "convert": "operations_convert",
+    **{name: f"operations_{name}" for name in SWARM_VERBS},
 }
 HIDDEN = {"hook_plan", "hook_plan_approved", "hook_todos", "hook_prompt", "hook_session_clear", "ops_post",
           "board_ensure", "convert"}

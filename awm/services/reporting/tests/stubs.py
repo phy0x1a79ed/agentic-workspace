@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 from datetime import datetime, timezone
 
 from awm.board.client import BoardRefused
@@ -237,8 +238,19 @@ class FakeTrilium:
         else:
             title = query.split("=", 1)[1].strip()
             hits = [i for i, n in self.notes.items() if n["title"] == title]
+        if ancestor is not None:
+            hits = [i for i in hits if self._under(i, ancestor)]
         return {"results": [{"noteId": i, "title": self.notes[i]["title"],
-                             "parentNoteIds": self.parents(i)} for i in hits[:limit]]}
+                             "parentNoteIds": self.parents(i), "attributes": self._attributes(i)}
+                            for i in hits[:limit]]}
+
+    def _under(self, note_id: str, ancestor: str) -> bool:
+        parents = self.parents(note_id)
+        return ancestor in parents or any(self._under(p, ancestor) for p in parents if p in self.notes)
+
+    def _attributes(self, note_id: str) -> list[dict]:
+        return [{"name": k, "value": v, "type": "label", "noteId": note_id}
+                for k, v in self.notes[note_id]["labels"].items()]
 
     def _note_children(self, note_id: str) -> dict:
         return {"children": [{"note_id": i, "title": self.notes[i]["title"], "type": self.notes[i].get("type"),
@@ -250,9 +262,12 @@ class FakeTrilium:
             raise RuntimeError(f"404 {note_id}")
         n = self.notes[note_id]
         out = {"noteId": note_id, "title": n["title"], "parentNoteIds": self.parents(note_id),
+               "mime": n.get("mime") or "text/html",
                "utcDateModified": n.get("modified", "2026-01-02 03:04:05.678Z"),
-               "attributes": [{"name": k, "value": v, "type": "label", "noteId": note_id}
-                              for k, v in n["labels"].items()]}
+               "attributes": self._attributes(note_id),
+               "attachments": [{"attachmentId": a, "title": f["title"], "mime": f["mime"],
+                                "contentLength": len(f["blob"])}
+                               for a, f in n.get("attachments", {}).items()]}
         if content:
             out["content"] = n.get("content", "")
         return out
@@ -291,6 +306,22 @@ class FakeTrilium:
     def _attr_delete(self, note_id: str, name: str) -> dict:
         removed = self.notes[note_id]["labels"].pop(name, None) is not None
         return {"note_id": note_id, "name": name, "removed": int(removed)}
+
+    def attach(self, note_id: str, title: str, blob: bytes, mime: str = "application/pdf") -> str:
+        self._n += 1
+        attachment_id = f"a{self._n:011d}"
+        self.notes[note_id].setdefault("attachments", {})[attachment_id] = {
+            "title": title, "mime": mime, "blob": blob}
+        return attachment_id
+
+    def _attachment_get(self, attachment_id: str) -> dict:
+        for note_id, n in self.notes.items():
+            if attachment_id in n.get("attachments", {}):
+                f = n["attachments"][attachment_id]
+                return {"attachment_id": attachment_id, "owner_id": note_id, "title": f["title"],
+                        "mime": f["mime"], "bytes": len(f["blob"]),
+                        "content_b64": base64.b64encode(f["blob"]).decode()}
+        raise RuntimeError(f"404 {attachment_id}")
 
     def _note_delete(self, note_id: str) -> dict:
         del self.notes[note_id]

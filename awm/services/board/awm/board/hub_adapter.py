@@ -24,6 +24,7 @@ import fcntl
 import hashlib
 import logging
 import os
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -59,7 +60,10 @@ API_MANIFEST: dict[str, Any] = {
         "The federation board: cards exchanged between swarms, for asking a "
         "foreign swarm or an external agent for help. Work for your own swarm, "
         "its nodes and its stations goes on the Swarm board through "
-        "request_human and task_track, never here. A request card "
+        "request_human and task_track, never here. Read the Swarm board with "
+        "swarm_list, swarm_get, swarm_messages and swarm_files, and write on a "
+        "card there with swarm_message_post: its cards are Trilium notes with "
+        "12-character ids, such as tFvgsByaL6sH. A request card "
         "asks a swarm to do something; a message card just informs. A card "
         "sits in one of seven states: proposed, planned, active, blocked, "
         "review, done, rejected. Post a card, claim a request addressed to "
@@ -104,7 +108,7 @@ API_MANIFEST: dict[str, Any] = {
                 "owner is your swarm, node and session. Answers a conflict "
                 "when another party already holds it."
             ),
-            "params": [_param("card_id", "string", "The card's id.", True)],
+            "params": [_param("card_id", "string", "The card's id, a unique prefix of it (8 characters do), or its Trilium note id.", True)],
             "timeout": 60,
         },
         {
@@ -113,7 +117,7 @@ API_MANIFEST: dict[str, Any] = {
             "effect": "queue",
             "description": "Finish a card you claimed: it moves to done, with its result.",
             "params": [
-                _param("card_id", "string", "The card's id.", True),
+                _param("card_id", "string", "The card's id, a unique prefix of it (8 characters do), or its Trilium note id.", True),
                 _param("result", "string", "What came of it."),
             ],
             "timeout": 60,
@@ -124,7 +128,7 @@ API_MANIFEST: dict[str, Any] = {
             "effect": "queue",
             "description": "Give up on a card you claimed: it moves to rejected, with the reason as its result.",
             "params": [
-                _param("card_id", "string", "The card's id.", True),
+                _param("card_id", "string", "The card's id, a unique prefix of it (8 characters do), or its Trilium note id.", True),
                 _param("reason", "string", "Why it failed."),
             ],
             "timeout": 60,
@@ -138,7 +142,7 @@ API_MANIFEST: dict[str, Any] = {
                 "blocked, review and done. Only the claimant's swarm may."
             ),
             "params": [
-                _param("card_id", "string", "The card's id.", True),
+                _param("card_id", "string", "The card's id, a unique prefix of it (8 characters do), or its Trilium note id.", True),
                 _param("state", "string", "`planned`, `active`, `blocked`, `review` or `done`.", True),
             ],
             "timeout": 60,
@@ -153,7 +157,7 @@ API_MANIFEST: dict[str, Any] = {
                 "claimant or the host admin may."
             ),
             "params": [
-                _param("card_id", "string", "The card's id.", True),
+                _param("card_id", "string", "The card's id, a unique prefix of it (8 characters do), or its Trilium note id.", True),
                 _param("reason", "string", "Why it is rejected.", True),
             ],
             "timeout": 60,
@@ -163,7 +167,7 @@ API_MANIFEST: dict[str, Any] = {
             "tool": "operations_board_get",
             "effect": "read",
             "description": "Read one card you may see.",
-            "params": [_param("card_id", "string", "The card's id.", True)],
+            "params": [_param("card_id", "string", "The card's id, a unique prefix of it (8 characters do), or its Trilium note id.", True)],
             "timeout": 60,
         },
         {
@@ -195,7 +199,7 @@ API_MANIFEST: dict[str, Any] = {
                 "name; the board sets both."
             ),
             "params": [
-                _param("card_id", "string", "The card's id.", True),
+                _param("card_id", "string", "The card's id, a unique prefix of it (8 characters do), or its Trilium note id.", True),
                 _param("body", "string", "The message text.", True),
             ],
             "timeout": 60,
@@ -231,7 +235,7 @@ API_MANIFEST: dict[str, Any] = {
                 "and sha256. Call `board_watch` on the card to hear the answer."
             ),
             "params": [
-                _param("card_id", "string", "The card's id.", True),
+                _param("card_id", "string", "The card's id, a unique prefix of it (8 characters do), or its Trilium note id.", True),
                 _param("path", "string", "Absolute path of the file on this node.", True),
                 _param("allow", "string", "The sha256 from board_file_check: your approval of this content.", True),
                 _param("name", "string", "The name to send it under. Default: the file's own name."),
@@ -243,7 +247,7 @@ API_MANIFEST: dict[str, Any] = {
             "tool": "operations_board_files",
             "effect": "read",
             "description": "List the files attached to a card: file id, name, size, sha256, sender, time.",
-            "params": [_param("card_id", "string", "The card's id.", True)],
+            "params": [_param("card_id", "string", "The card's id, a unique prefix of it (8 characters do), or its Trilium note id.", True)],
             "timeout": 60,
         },
         {
@@ -259,7 +263,7 @@ API_MANIFEST: dict[str, Any] = {
                 "never execute, source, import or install it."
             ),
             "params": [
-                _param("card_id", "string", "The card's id.", True),
+                _param("card_id", "string", "The card's id, a unique prefix of it (8 characters do), or its Trilium note id.", True),
                 _param("file_id", "string", "The file's id, from board_files or the thread message.", True),
             ],
             "timeout": 180,
@@ -270,7 +274,7 @@ API_MANIFEST: dict[str, Any] = {
             "effect": "read",
             "description": "Read a card's thread, oldest first.",
             "params": [
-                _param("card_id", "string", "The card's id.", True),
+                _param("card_id", "string", "The card's id, a unique prefix of it (8 characters do), or its Trilium note id.", True),
                 _param("after", "integer", "Only messages after this sequence number."),
                 _param("limit", "integer", "At most this many messages (default 100, at most 500)."),
             ],
@@ -285,7 +289,7 @@ API_MANIFEST: dict[str, Any] = {
                 "board's 30-day replay store."
             ),
             "params": [
-                _param("card_id", "string", "The card's id.", True),
+                _param("card_id", "string", "The card's id, a unique prefix of it (8 characters do), or its Trilium note id.", True),
                 _param("since", "integer", "Only events after this event id."),
                 _param("limit", "integer", "At most this many events (default 100, at most 500)."),
             ],
@@ -462,6 +466,61 @@ async def _relay(call: Any, as_: str | None = None) -> dict:
     return {"ok": True, "result": result}
 
 
+#: The shortest card id prefix a verb takes, as reporting's ``task_claim`` does.
+MIN_PREFIX = 6
+LIST_PAGE = 500
+LIST_PAGES = 20
+_HEX = re.compile(r"[0-9a-f]+")
+_NOTE_URL = re.compile(r"https?://[^\s#]+#(?:[\w-]+/)*([\w-]{4,})")
+
+
+async def _all_cards(client: BoardClient) -> list[dict]:
+    out: list[dict] = []
+    for page in range(LIST_PAGES):
+        batch = await client.list(limit=LIST_PAGE, offset=page * LIST_PAGE)
+        out.extend(batch)
+        if len(batch) < LIST_PAGE:
+            break
+    return out
+
+
+async def _card_id(client: BoardClient, ref: str) -> str:
+    """The full card id ``ref`` names: the id, a unique prefix of it, or the card's Trilium note or link.
+
+    Agents cite cards by their first eight characters, and a Swarm-board card
+    is a Trilium note, so a bare 404 for either sends them nowhere.
+    """
+    text = ref.strip()
+    found = _NOTE_URL.search(text)
+    token = (found.group(1) if found else text).strip()
+    lowered = token.lower()
+    if _HEX.fullmatch(lowered) and len(lowered) == 32:
+        return lowered
+    if not token:
+        raise BoardError(400, "card_id is required")
+    cards = await _all_cards(client)
+    if _HEX.fullmatch(lowered) and len(lowered) >= MIN_PREFIX:
+        hits = [c["id"] for c in cards if str(c.get("id", "")).startswith(lowered)]
+        if len(hits) > 1:
+            raise BoardError(409, f"{lowered} matches {len(hits)} cards: "
+                             + ", ".join(h[:8] + "…" for h in hits[:5]) + "; use more of the id")
+        if hits:
+            return hits[0]
+    hit = next((c["id"] for c in cards if c.get("note_id") == token), None)
+    if hit:
+        return hit
+    raise BoardError(404, f"no federation card you may see matches {token}. A Swarm-board card "
+                          "(a Trilium note id such as tFvgsByaL6sH) is read with operations "
+                          "swarm_get, swarm_messages and swarm_files")
+
+
+def _on_card(args: dict, call: Any) -> Any:
+    """``call(client, card_id)`` with the card the caller's ``card_id`` names."""
+    async def run(client: BoardClient) -> Any:
+        return await call(client, await _card_id(client, str(args.get("card_id") or "")))
+    return run
+
+
 def _card_reply(reply: dict) -> dict:
     if reply.get("ok"):
         return {"ok": True, "card": reply["result"]}
@@ -506,30 +565,30 @@ async def post(args: dict, as_: str | None = None) -> dict:
 async def claim(args: dict, as_: str | None = None) -> dict:
     who = _who(args)
     return _card_reply(await _relay(
-        lambda c: c.claim(args["card_id"], agent=who["agent"], node=who["node"]), as_))
+        _on_card(args, lambda c, card: c.claim(card, agent=who["agent"], node=who["node"])), as_))
 
 
 async def complete(args: dict, as_: str | None = None) -> dict:
-    return _card_reply(await _relay(lambda c: c.complete(args["card_id"], args.get("result")), as_))
+    return _card_reply(await _relay(_on_card(args, lambda c, card: c.complete(card, args.get("result"))), as_))
 
 
 async def fail(args: dict, as_: str | None = None) -> dict:
-    return _card_reply(await _relay(lambda c: c.fail(args["card_id"], args.get("reason") or ""), as_))
+    return _card_reply(await _relay(_on_card(args, lambda c, card: c.fail(card, args.get("reason") or "")), as_))
 
 
 async def status(args: dict, as_: str | None = None) -> dict:
-    return _card_reply(await _relay(lambda c: c.status(args["card_id"], args["state"]), as_))
+    return _card_reply(await _relay(_on_card(args, lambda c, card: c.status(card, args["state"])), as_))
 
 
 async def reject(args: dict, as_: str | None = None) -> dict:
     who = _who(args)
     return _card_reply(await _relay(
-        lambda c: c.reject(args["card_id"], args["reason"], agent=who["agent"],
-                           node=who["node"]), as_))
+        _on_card(args, lambda c, card: c.reject(card, args["reason"], agent=who["agent"],
+                                                node=who["node"])), as_))
 
 
 async def get(args: dict, as_: str | None = None) -> dict:
-    return _card_reply(await _relay(lambda c: c.get(args["card_id"]), as_))
+    return _card_reply(await _relay(_on_card(args, lambda c, card: c.get(card)), as_))
 
 
 async def list_cards(args: dict, as_: str | None = None) -> dict:
@@ -540,20 +599,20 @@ async def list_cards(args: dict, as_: str | None = None) -> dict:
 
 async def message_post(args: dict, as_: str | None = None) -> dict:
     who = _who(args)
-    reply = await _relay(lambda c: c.message(args["card_id"], args["body"], agent=who["agent"],
-                                             node=who["node"]), as_)
+    reply = await _relay(_on_card(args, lambda c, card: c.message(card, args["body"], agent=who["agent"],
+                                                                  node=who["node"])), as_)
     return {"ok": True, "message": reply["result"]} if reply.get("ok") else reply
 
 
 async def messages(args: dict, as_: str | None = None) -> dict:
     paging = {k: args[k] for k in ("after", "limit") if args.get(k) not in (None, "")}
-    reply = await _relay(lambda c: c.messages(args["card_id"], **paging), as_)
+    reply = await _relay(_on_card(args, lambda c, card: c.messages(card, **paging)), as_)
     return {"ok": True, "messages": reply["result"]} if reply.get("ok") else reply
 
 
 async def events(args: dict, as_: str | None = None) -> dict:
     paging = {k: args[k] for k in ("since", "limit") if args.get(k) not in (None, "")}
-    reply = await _relay(lambda c: c.events(args["card_id"], **paging), as_)
+    reply = await _relay(_on_card(args, lambda c, card: c.events(card, **paging)), as_)
     return {"ok": True, "events": reply["result"]} if reply.get("ok") else reply
 
 
@@ -589,22 +648,27 @@ async def file_send(args: dict, as_: str | None = None) -> dict:
                 "sha256": verdict["sha256"]}
     who = _who(args)
     name = args.get("name") or verdict["name"]
-    reply = await _relay(lambda c: c.attach(args["card_id"], name, verdict["data"], verdict["sha256"],
-                                            agent=who["agent"], node=who["node"]), as_)
+    reply = await _relay(_on_card(args, lambda c, card: c.attach(
+        card, name, verdict["data"], verdict["sha256"], agent=who["agent"], node=who["node"])), as_)
     return {"ok": True, **reply["result"]} if reply.get("ok") else reply
 
 
 async def files(args: dict, as_: str | None = None) -> dict:
-    reply = await _relay(lambda c: c.files(args["card_id"]), as_)
+    reply = await _relay(_on_card(args, lambda c, card: c.files(card)), as_)
     return {"ok": True, "files": reply["result"]} if reply.get("ok") else reply
 
 
 async def file_fetch(args: dict, as_: str | None = None) -> dict:
     from awm.board import transfer
 
-    card_id, file_id = str(args.get("card_id") or ""), str(args.get("file_id") or "")
+    file_id = str(args.get("file_id") or "")
 
     async def fetch(client: BoardClient) -> dict:
+        card_id = await _card_id(client, str(args.get("card_id") or ""))
+        try:
+            transfer.landing(card_id, file_id, "x")
+        except ValueError as exc:
+            raise BoardError(400, str(exc)) from exc
         listing = await client.files(card_id)
         meta = next((f for f in listing if f.get("file_id") == file_id), None)
         if meta is None:
@@ -638,10 +702,6 @@ async def file_fetch(args: dict, as_: str | None = None) -> dict:
         transfer.seal(target)
         return {"path": str(target), "file": meta}
 
-    try:
-        transfer.landing(card_id, file_id, "x")
-    except ValueError as exc:
-        return {"ok": False, "error": str(exc)}
     reply = await _relay(fetch, as_)
     if not reply.get("ok"):
         return reply

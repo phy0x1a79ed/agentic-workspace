@@ -17,9 +17,12 @@ each card gets on entering a column. Each ends in one "Older (n)" book, labelled
 
 from __future__ import annotations
 
+import base64
 import logging
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from html.parser import HTMLParser
 from typing import Any, Awaitable, Callable, Literal
 
 from awm import gatewayclient
@@ -49,6 +52,13 @@ TAG_SEARCH_LABEL = "swarmTagSearch"
 #: The labels a card carries, offered as promoted chips on the board root.
 CHIPS = {"cardFrom": "From", "cardTo": "To", "project": "Project", "owner": "Owner",
          TAGS_LABEL: "Tags"}
+#: The card labels a read shows, under the names it shows them by.
+CARD_FIELDS = {"cardFrom": "from", "cardTo": "to", "project": "project", "owner": "owner",
+               TAGS_LABEL: "tags", STATE_AT: "state_at"}
+MESSAGE_LABEL = "swarmMessage"
+MESSAGE_FROM = "messageFrom"
+MESSAGE_AT = "messageAt"
+MAX_MESSAGE = 32_000
 #: Columns a board made before they existed lacks. The layout makes them on first use.
 LATE_COLUMNS = (COLUMNS[DONE], COLUMNS[REJECTED])
 #: The columns that sort newest first and fold their old cards into an Older book.
@@ -66,8 +76,61 @@ def tag_search(tag: str) -> str:
     return f"#{TAGS_LABEL} %= '(?<!{edge}){tag.replace('.', '[.]')}(?!{edge})'"
 
 
+class _Text(HTMLParser):
+    LINE = {"div", "br", "li", "ul", "ol", "tr", "pre", "blockquote"}
+    PARAGRAPH = {"p", "hr", "summary", "details", "h1", "h2", "h3", "h4", "h5", "h6"}
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.text = ""
+
+    def _break(self, blank: bool) -> None:
+        if not self.text:
+            return
+        want = "\n\n" if blank else "\n"
+        while not self.text.endswith(want):
+            self.text += "\n"
+
+    def handle_starttag(self, tag: str, attrs: Any) -> None:
+        if tag in self.LINE or tag in self.PARAGRAPH:
+            self._break(tag in self.PARAGRAPH)
+        if tag == "li":
+            self.text += "- "
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in self.LINE or tag in self.PARAGRAPH:
+            self._break(False)
+
+    def handle_data(self, data: str) -> None:
+        if data.strip() or "\n" not in data:
+            self.text += data
+
+
+def plain(content: str, mime: str | None) -> str:
+    """A note body as text: HTML loses its tags, anything else is already text."""
+    if (mime or HTML) != HTML:
+        return content
+    parser = _Text()
+    parser.feed(content)
+    parser.close()
+    return "\n".join(line.rstrip() for line in parser.text.splitlines()).strip()
+
+
+def column_title(name: str) -> str:
+    """The column a state (``active``) or a title in any case (``pending review``) names."""
+    wanted = name.strip().lower()
+    for state, title in COLUMNS.items():
+        if wanted in (state, title.lower()):
+            return title
+    raise BoardError(f"no column {name!r}; the columns are {', '.join(COLUMNS.values())}")
+
+
 class BoardError(RuntimeError):
     """Trilium could not be reached, refused a call, or the board is not there."""
+
+
+class NotACard(BoardError):
+    """The id names no card on the Swarm board."""
 
 
 @dataclass(frozen=True)
@@ -120,6 +183,18 @@ def _iso(utc: str | None) -> str:
     except ValueError:
         return state_stamp()
     return when.astimezone(timezone.utc).isoformat(timespec="milliseconds")
+
+
+def _fields(note: dict, note_id: str, names: dict[str, str] = CARD_FIELDS) -> dict[str, str]:
+    """The note's own labels among ``names``, under the names a read shows them by."""
+    return {names[a["name"]]: a.get("value") or "" for a in note.get("attributes") or []
+            if a.get("type", "label") == "label" and a.get("noteId") in (None, note_id)
+            and a.get("name") in names}
+
+
+def _file(attachment: dict) -> dict:
+    return {"file_id": attachment.get("attachmentId"), "name": attachment.get("title"),
+            "mime": attachment.get("mime"), "size": attachment.get("contentLength")}
 
 
 def _own_labels(note: dict, note_id: str) -> set[str]:
@@ -438,6 +513,106 @@ class SwarmBoard:
 
     async def title_of(self, note_id: str) -> str:
         return (await self._call("note_get", note_id=note_id, content=False)).get("title") or ""
+
+    # -- reading and writing cards for sessions ---------------------------------
+
+    async def cards(self, column: str | None = None, *, older: bool = False, limit: int = 50) -> list[dict]:
+        """The cards on the board, column by column, with the labels their chips show.
+
+        A card folded into an Older book is listed only with ``older``.
+        """
+        lay = await self.layout()
+        titles = [column_title(column)] if column else list(lay.columns)
+        found: list[tuple[dict, str, bool]] = []
+        for title in titles:
+            kids = await self._children(lay.columns[title])
+            books = [k for k in kids if OLDER_LABEL in (k.get("labels") or [])]
+            found.extend((k, title, False) for k in kids if k not in books)
+            for book in books if older else []:
+                found.extend((k, title, True) for k in await self._children(book["note_id"]))
+        found = found[:max(1, int(limit))]
+        fields = await self._card_fields(lay.board)
+        return [{"card_id": kid["note_id"], "title": kid.get("title"), "column": title,
+                 **({"older": True} if old else {}), **fields.get(kid["note_id"], {})}
+                for kid, title, old in found]
+
+    async def _card_fields(self, board: str) -> dict[str, dict]:
+        """Each dated card's chip labels, from one search rather than a read per card."""
+        hits = (await self._call("note_search", query=f"#{STATE_AT}", ancestor=board,
+                                 limit=5000)).get("results") or []
+        return {hit["noteId"]: _fields(hit, hit["noteId"]) for hit in hits}
+
+    async def _card_note(self, note_id: str, *, content: bool = True) -> tuple[dict, str, bool]:
+        """A card's note, its column, and whether it sits in the column's Older book."""
+        lay = await self.layout()
+        try:
+            note = await self._raw("note_get", note_id=note_id, content=content)
+        except Exception as exc:  # noqa: BLE001 — a missing note and a failed read look alike here
+            raise NotACard(f"no Trilium note {note_id}: {exc}") from exc
+        parents = set(note.get("parentNoteIds") or [])
+        for title, col in lay.columns.items():
+            if col in parents:
+                return note, title, False
+        for title, book in lay.older.items():
+            if book in parents:
+                return note, title, True
+        raise NotACard(f"note {note_id} is not a card on the Swarm board")
+
+    async def card(self, note_id: str) -> dict:
+        """One card: its column, labels and text, its child notes' text, and how many messages it holds."""
+        note, column, old = await self._card_note(note_id)
+        children, messages = [], 0
+        for kid in await self._children(note_id):
+            if MESSAGE_LABEL in (kid.get("labels") or []):
+                messages += 1
+                continue
+            child = await self._call("note_get", note_id=kid["note_id"])
+            children.append({"note_id": kid["note_id"], "title": kid.get("title"),
+                             "text": plain(child.get("content") or "", child.get("mime"))})
+        return {"card_id": note_id, "title": note.get("title"), "column": column,
+                **({"older": True} if old else {}), **_fields(note, note_id),
+                "body": plain(note.get("content") or "", note.get("mime")),
+                "children": children, "messages": messages,
+                "files": [_file(a) for a in note.get("attachments") or []]}
+
+    async def messages(self, note_id: str, after: int = 0) -> list[dict]:
+        """The messages posted on a card, oldest first, numbered from 1."""
+        await self._card_note(note_id, content=False)
+        posts = []
+        for kid in await self._children(note_id):
+            if MESSAGE_LABEL in (kid.get("labels") or []):
+                note = await self._call("note_get", note_id=kid["note_id"])
+                labels = _fields(note, kid["note_id"], {MESSAGE_FROM: "from", MESSAGE_AT: "at"})
+                posts.append({"message_id": kid["note_id"], **labels, "body": note.get("content") or ""})
+        posts.sort(key=lambda m: m.get("at") or "")
+        return [{"seq": i, **m} for i, m in enumerate(posts, 1) if i > after]
+
+    async def post_message(self, note_id: str, sender: str, body: str) -> dict:
+        """Add a message to a card, as a managed Markdown child the card's reader sees under it."""
+        text = body.strip()
+        if not text:
+            raise BoardError("body is empty")
+        if len(text) > MAX_MESSAGE:
+            raise BoardError(f"body is {len(text)} characters; the cap is {MAX_MESSAGE}")
+        await self._card_note(note_id, content=False)
+        at = state_stamp()
+        made = await self._call("note_create", title=f"Message from {sender}", content=text + "\n",
+                                parent=note_id, type="code", mime=MARKDOWN,
+                                labels={**MANAGED, MESSAGE_LABEL: "", MESSAGE_FROM: sender, MESSAGE_AT: at})
+        return {"card_id": note_id, "message_id": made["note_id"], "from": sender, "at": at}
+
+    async def files(self, note_id: str) -> list[dict]:
+        """The files attached to a card's note."""
+        note, _, _ = await self._card_note(note_id, content=False)
+        return [_file(a) for a in note.get("attachments") or []]
+
+    async def file(self, note_id: str, file_id: str) -> tuple[dict, bytes]:
+        """One file attached to a card: its listing entry and its bytes."""
+        meta = next((f for f in await self.files(note_id) if f["file_id"] == file_id), None)
+        if meta is None:
+            raise BoardError(f"card {note_id} has no file {file_id}")
+        got = await self._call("attachment_get", attachment_id=file_id)
+        return meta, base64.b64decode(got.get("content_b64") or "")
 
     async def post_ops(self, kind: str, node: str, title: str, body: str) -> str:
         """Upsert the one managed note for this kind and node in the private Ops book under AWM."""

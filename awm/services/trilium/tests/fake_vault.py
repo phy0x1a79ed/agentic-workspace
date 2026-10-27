@@ -221,6 +221,10 @@ class FakeVault:
             return httpx.Response(201, request=req,
                                   json=self._attachment_pojo(aid))
         attachment_id, _, sub = tail.partition("/")
+        if method == "GET" and not sub:
+            return httpx.Response(200, request=req, json=self._attachment_pojo(attachment_id))
+        if method == "GET" and sub == "content":
+            return httpx.Response(200, request=req, content=self.attachments[attachment_id]["blob"])
         if sub == "content" and method == "PUT":
             self.attachments[attachment_id]["blob"] = kw["content"]
             return httpx.Response(204, request=req)

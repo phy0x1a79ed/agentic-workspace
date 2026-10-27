@@ -63,7 +63,7 @@ OPERATOR_VERBS = ["start", "stop", "restart", "provision", "logs",
                   "note_get", "note_children", "note_search",
                   "note_create", "note_update", "note_delete",
                   "note_move", "note_clone", "note_place",
-                  "attrs_get", "attr_set", "attr_delete", "attachment_put",
+                  "attrs_get", "attr_set", "attr_delete", "attachment_put", "attachment_get",
                   "slice_expose", "slice_list", "slice_revoke",
                   "slice_resolve"]
 

@@ -262,6 +262,14 @@ def test_an_attachment_carries_its_bytes_in_a_second_call(vault):
     assert vault.attachments[out["attachment_id"]]["blob"] == b"%PDF-"
 
 
+def test_an_attachment_reads_back_with_its_bytes(vault):
+    made = call("note_create", title="Paper")["note_id"]
+    put = call("attachment_put", note_id=made, title="p.pdf", content_b64="JVBERi0=")
+    out = call("attachment_get", attachment_id=put["attachment_id"])
+    assert out["owner_id"] == made and out["title"] == "p.pdf"
+    assert out["content_b64"] == "JVBERi0=" and out["bytes"] == 5
+
+
 def test_an_attachment_from_a_path_is_named_and_typed_by_the_file(vault, tmp_path):
     src = tmp_path / "Gruber - nitrogen.pdf"
     src.write_bytes(b"%PDF-1.4")
