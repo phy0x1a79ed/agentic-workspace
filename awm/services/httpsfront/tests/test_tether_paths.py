@@ -37,6 +37,7 @@ TICKET = "0123456789abcdef0123456789abcdef"
     "/tether/claim/999",
     f"/tether/join/7/{TICKET}",                 # the session socket
     f"/tether/release/7/{TICKET}",              # the operator ending its own slot
+    f"/tether/hold/7/{TICKET}",                 # the operator holding it for its owner
     f"/tether/poll/7/{TICKET}",                 # the chair, for a path with no socket
     f"/tether/seat/{TICKET}/recv",              # and the three requests that hold it
     f"/tether/seat/{TICKET}/send",
@@ -67,6 +68,8 @@ def test_the_mount_claims_the_relays_whole_public_surface(path):
     (f"/tether/release/7/{TICKET[:31]}", "a seat token is thirty-two hex"),
     ("/tether/release/7", "a release names a slot and its seat token"),
     (f"/tether/release/0/{TICKET}", "slot 0 is not a slot"),
+    ("/tether/hold/7", "a hold names a slot and its seat token"),
+    (f"/tether/hold/7/{TICKET}/extra", "a hold has nothing after the token"),
     (f"/tether/poll/0/{TICKET}", "slot 0 is not a slot"),
     (f"/tether/poll/7/{TICKET[:31]}", "a ticket is thirty-two hex"),
     (f"/tether/seat/{TICKET}", "a polled chair is asked something"),

@@ -16,7 +16,7 @@ here is a door onto sessions that already exist and are already addressed by a
 number the relay itself issued.
 
 **The mount is an allow-list of exact shapes, not a prefix.** The relay's whole
-public surface is twelve routes and every one of them has a fixed grammar, so the
+public surface is thirteen routes and every one of them has a fixed grammar, so the
 edge can refuse everything else before it has consulted anything at all — which
 is the plan's requirement that a slot the relay never issued be turned away
 before any pairing happens. The shapes have to agree exactly with what the relay
@@ -40,12 +40,14 @@ phrase — the actual credential — never leaves the two machines that hold it,
 the ticket in a join URL is one attempt at one chair on a session already named
 by the slot beside it.
 
-The one qualification is the token on ``/release``, which is the operator's seat
-token rather than a one-shot ticket: it is reusable for the life of its slot, and
+The one qualification is the token on ``/release`` and ``/hold``, which is the
+operator's seat token rather than a one-shot ticket: it is reusable for the life of its slot, and
 anyone holding it could already take that chair. It is minted by the relay, it
 never identifies a person, and it dies with the slot — which that request is
 asking for. Worth knowing when reading an access log, not worth a second
-channel.
+channel. The same goes for the owner's seat token in a join URL once the slot is
+held: it lets the owner back into its own chair, and only the resume secret,
+which never leaves the sealed channel, lets either end speak there.
 """
 
 from __future__ import annotations
@@ -82,6 +84,7 @@ SHAPES = (
     re.compile(rf"^{PREFIX}/poll/{_SLOT}/{_TOKEN}$"),      # the same chair, for a path with no socket
     re.compile(rf"^{PREFIX}/seat/{_POLL_ID}/(?:recv|send|close)$"),  # and its requests
     re.compile(rf"^{PREFIX}/release/{_SLOT}/{_TOKEN}$"),   # the operator ending its own slot
+    re.compile(rf"^{PREFIX}/hold/{_SLOT}/{_TOKEN}$"),      # the operator holding it for a consented owner
     re.compile(rf"^{PREFIX}/issue$"),                      # operator only, at the relay
     re.compile(rf"^{PREFIX}/status$"),                     # operator only, at the relay
 )
