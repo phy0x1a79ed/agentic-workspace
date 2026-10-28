@@ -2,8 +2,10 @@ name: awm
 channels:
   - conda-forge
 dependencies:
-  - python>=3.11
+  - python>=3.11,<3.15
   - pip
+  - av
+  - ffmpeg
   - pip:
     - fastapi
     - uvicorn[standard]
