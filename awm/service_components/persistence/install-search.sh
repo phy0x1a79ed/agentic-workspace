@@ -20,7 +20,7 @@
 set -euo pipefail
 WS="$(git -C "$(dirname "$0")" rev-parse --show-toplevel)"
 ENV="${1:-${AWM_ENV:-awm}}"
-TORCH="${AWM_TORCH_CPU:-2.12.0+cpu}"
+TORCH="${AWM_TORCH_CPU:-2.14.1+cpu}"
 
 echo "+ pip install torch==$TORCH (from the CPU wheel index)"
 mamba run -n "$ENV" pip install \
