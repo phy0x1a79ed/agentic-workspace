@@ -163,14 +163,18 @@ def ensure_project(owner: Owner, project_id: str,
     return folder
 
 
+def _project_dirs(root: Path) -> list[Path]:
+    """Folders a project may own. Dot-folders belong to the sandbox (``.claude``)."""
+    return [d for d in root.iterdir()
+            if d.is_dir() and not d.is_symlink() and not d.name.startswith(".")]
+
+
 def _existing(root: Path) -> dict[str, Path]:
     """``id8 → folder`` for every conversation folder on disk."""
     found: dict[str, Path] = {}
     if not root.is_dir():
         return found
-    for project_dir in root.iterdir():
-        if not project_dir.is_dir() or project_dir.is_symlink():
-            continue
+    for project_dir in _project_dirs(root):
         for conv in project_dir.iterdir():
             if ID8.match(conv.name) and conv.is_dir() and not conv.is_symlink():
                 found[conv.name] = conv
@@ -222,10 +226,8 @@ def sync(owner: Owner, root: Path = OUTPUTS_ROOT) -> dict[str, Any]:
             report["deleted"].append(str(folder.relative_to(root)))
 
     claimed = set(slugs.values())
-    for project_dir in root.iterdir():
-        if (project_dir.is_dir() and not project_dir.is_symlink()
-                and project_dir.name not in claimed
-                and not any(project_dir.iterdir())):
+    for project_dir in _project_dirs(root):
+        if project_dir.name not in claimed and not any(project_dir.iterdir()):
             project_dir.rmdir()
 
     report["folders"] = count_folders(root)

@@ -141,6 +141,7 @@ def test_a_moved_conversation_moves_its_folder(tmp_path):
 
 def test_an_empty_folder_of_a_deleted_project_goes(tmp_path):
     (tmp_path / "gone-project" / "abcdef12").mkdir(parents=True)
+    (tmp_path / ".claude").mkdir()
     (tmp_path / "loose-notes").mkdir()
     (tmp_path / "loose-notes" / "n.txt").write_text("x")
     stub = Stub(PROJECTS, CONVS, frame_status={"abcdef12": 404})
@@ -148,6 +149,7 @@ def test_an_empty_folder_of_a_deleted_project_goes(tmp_path):
         outputs.sync(owner, tmp_path)
     assert not (tmp_path / "gone-project").exists()
     assert (tmp_path / "loose-notes" / "n.txt").exists()
+    assert (tmp_path / ".claude").is_dir()
 
 
 def test_sync_refuses_a_missing_root(tmp_path):
