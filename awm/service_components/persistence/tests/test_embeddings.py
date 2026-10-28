@@ -201,3 +201,25 @@ def test_warm_up_can_be_turned_off(monkeypatch):
     monkeypatch.setenv("AWM_EMBED_WARM", "0")
     E.warm()
     assert started == []
+
+
+def test_awm_search_off_reports_the_stack_unavailable(monkeypatch):
+    monkeypatch.setenv("AWM_SEARCH", "0")
+    assert E.probe() == {"available": False, "missing": ["AWM_SEARCH=0"]}
+    assert "AWM_SEARCH=0" in E.degraded_marker("journal", fallback="keyword")["fix"]
+
+
+def test_awm_search_off_never_builds_the_model(conn, monkeypatch):
+    monkeypatch.setenv("AWM_SEARCH", "0")
+    E.use_embedder(None)
+    started = []
+    monkeypatch.setattr(E.threading, "Thread", lambda **kw: started.append(kw))
+    E.warm()
+    assert started == []
+    with pytest.raises(E.EmbeddingsUnavailable):
+        E.get_embedder()
+    assert E._embedder is None
+    assert E.index_document(conn, "post", E.Document("1", "quantum widget calibration")) == "keyword-only"
+    res = E.search(conn, "widget calibration", source_type="post")
+    assert [h["source_id"] for h in res.hits] == ["1"]
+    assert res.degraded["fallback"] == "keyword"

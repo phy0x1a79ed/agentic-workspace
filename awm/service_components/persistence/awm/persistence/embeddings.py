@@ -19,9 +19,10 @@ labelled query set (see ``awm/services/scopes/scripts/search_eval.py``):
 - **Filter first.** The caller's filter is a SQL subquery over its own tables,
   applied before scoring, so a selective filter never empties the result.
 
-``sentence-transformers`` and ``numpy`` load lazily. Without them, indexing
-still stores chunks for keyword search, and :func:`search` answers from BM25
-with a ``degraded`` block rather than an empty or silently partial list.
+``sentence-transformers`` and ``numpy`` load lazily. Without them, or with
+``AWM_SEARCH=0`` in the environment, indexing still stores chunks for keyword
+search, and :func:`search` answers from BM25 with a ``degraded`` block rather
+than an empty or silently partial list.
 """
 
 from __future__ import annotations
@@ -60,7 +61,7 @@ CHUNKER_VERSION = 1
 
 
 class EmbeddingsUnavailable(RuntimeError):
-    """The semantic-search stack is not installed here.
+    """The semantic-search stack is not installed here, or ``AWM_SEARCH=0`` turned it off.
 
     Distinct from "the search returned nothing": a caller that catches this
     knows its *capability* is missing, not that its query failed, and must say
@@ -68,8 +69,15 @@ class EmbeddingsUnavailable(RuntimeError):
     """
 
 
+def disabled() -> bool:
+    """True when ``AWM_SEARCH=0`` turns semantic search off, whatever is installed."""
+    return os.environ.get("AWM_SEARCH", "1") == "0"
+
+
 def probe() -> dict[str, Any]:
-    """Report whether the search stack is importable, without importing it."""
+    """Report whether the search stack is usable, without importing it."""
+    if disabled():
+        return {"available": False, "missing": ["AWM_SEARCH=0"]}
     missing = [m for m in _SEARCH_MODULES if importlib.util.find_spec(m) is None]
     return {"available": not missing, "missing": missing}
 
@@ -85,11 +93,13 @@ def degraded_marker(service: str, *, fallback: str) -> dict[str, Any]:
     what actually produced the results — ``keyword``, ``fuzzy``, ``listing``, or
     ``none``.
     """
+    fix = ("unset AWM_SEARCH=0 in .awm/env and restart the service" if disabled()
+           else f"run awm/services/{service}/install.sh on this node")
     return {
         "semantic": "unavailable",
         "missing": probe()["missing"],
         "fallback": fallback,
-        "fix": f"run awm/services/{service}/install.sh on this node",
+        "fix": fix,
     }
 
 
@@ -254,6 +264,8 @@ def get_embedder() -> Embedder:
     global _embedder
     with _embedder_lock:
         if _embedder is None:
+            if disabled():
+                raise EmbeddingsUnavailable("semantic search is turned off by AWM_SEARCH=0")
             if not probe()["available"]:
                 raise EmbeddingsUnavailable(f"{', '.join(probe()['missing'])}: {_INSTALL_HINT}")
             _embedder = _SentenceTransformer()
@@ -269,10 +281,10 @@ def use_embedder(embedder: Embedder | None) -> None:
 def warm() -> None:
     """Load the model on a daemon thread, so a service's first query does not wait for it.
 
-    ``AWM_EMBED_WARM=0`` turns it off, and an embedder injected by
-    :func:`use_embedder` is left alone.
+    ``AWM_EMBED_WARM=0`` turns it off, ``AWM_SEARCH=0`` loads nothing at all,
+    and an embedder injected by :func:`use_embedder` is left alone.
     """
-    if os.environ.get("AWM_EMBED_WARM", "1") == "0":
+    if disabled() or os.environ.get("AWM_EMBED_WARM", "1") == "0":
         return
     if _embedder is not None and not isinstance(_embedder, _SentenceTransformer):
         return
