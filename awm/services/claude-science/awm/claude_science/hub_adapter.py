@@ -31,11 +31,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Any
 
 from awm.gatewayclient import ServiceAdapter, spawn_supervised
 
-from awm.claude_science import api, conversations, daemon, front, mcp_bridge
+from awm.claude_science import (api, conversations, daemon, front, mcp_bridge,
+                                outputs)
 
 log = logging.getLogger("awm.claude_science.hub_adapter")
 
@@ -65,8 +67,10 @@ API_MANIFEST: dict[str, Any] = {
                 "running and at what pid/version/port, whether this service "
                 "adopted it or started it, the three install steps (binary, "
                 "provisioned data dir, daemon) named separately, both mesh TLS "
-                "fronts' listener + TLS state, and the MCP bridge's mount and "
-                "allowlist size."
+                "fronts' listener + TLS state, the MCP bridge's mount and "
+                "allowlist size, each conversation with a turn in flight and "
+                "any approval it waits on (pending_approval), and the last "
+                "output-folder sync."
             ),
             "params": [],
         },
@@ -182,7 +186,10 @@ API_MANIFEST: dict[str, Any] = {
                 "The host directories Claude may read or write inside the "
                 "workbench's sandbox. With no arguments, list them. Given a "
                 "path, grant it — idempotent. Symlinks are refused, as is a "
-                "read-only grant nested under an existing read-write one."
+                "read-only grant nested under an existing read-write one, a "
+                "read-write grant overlapping a read-only one, and a "
+                "read-write grant too large for the daemon's credential scan: "
+                "either would stall every conversation on an approval."
             ),
             "params": [
                 {"name": "path", "type": "string",
@@ -220,9 +227,9 @@ API_MANIFEST: dict[str, Any] = {
             "description": (
                 "Start a new Claude Science conversation with text as its "
                 "first turn, in a project named by name (found or created). "
-                "Returns the conversation id and a cursor: read from it to "
-                "follow the reply. Never retry a failed call blindly; it may "
-                "have started the conversation."
+                "Returns the conversation id, its output folder on the host "
+                "and a cursor: read from it to follow the reply. Never retry a "
+                "failed call blindly; it may have started the conversation."
             ),
             "params": [
                 {"name": "text", "type": "string", "required": True,
@@ -244,7 +251,9 @@ API_MANIFEST: dict[str, Any] = {
                 "Read a Claude Science conversation's transcript from a cursor. "
                 "Returns the messages with text, the conversation's status "
                 "('processing' means a reply is still coming) and the next "
-                "cursor to pass as since. With no since, returns the tail."
+                "cursor to pass as since. With no since, returns the tail. A "
+                "conversation blocked on an approval or a question carries "
+                "pending_approval {kind, summary}."
             ),
             "params": [
                 {"name": "conversation", "type": "string",
@@ -287,6 +296,14 @@ API_MANIFEST: dict[str, Any] = {
 # WS and have the gateway take this service for dead.
 
 
+def _active() -> dict:
+    try:
+        with api.connect(SUPERVISOR.login_url()) as owner:
+            return {"conversations": conversations.active(owner)}
+    except Exception as exc:  # noqa: BLE001 — status reports, never fails
+        return {"error": str(exc)}
+
+
 async def _h_status(args: dict) -> dict:
     snap = await asyncio.to_thread(SUPERVISOR.snapshot)
     install = await asyncio.to_thread(SUPERVISOR.install_state)
@@ -296,6 +313,8 @@ async def _h_status(args: dict) -> dict:
         "fronts": front.status(),
         "mcp_bridge": mcp_bridge.status(),
         "origins": daemon.allowed_origins(front.PORT),
+        "active": await asyncio.to_thread(_active) if snap.get("running") else None,
+        "outputs": {"root": str(outputs.OUTPUTS_ROOT), **_LAST_SYNC},
     }
 
 
@@ -371,6 +390,8 @@ def _grants(args: dict) -> dict:
         mode = (args.get("mode") or "ro").strip()
         if mode not in ("ro", "rw"):
             raise ValueError(f"mode must be 'ro' or 'rw', not {mode!r}")
+        if mode == "rw":
+            outputs.check_writable_grant(path, before)
         api.add_grant(owner, path=path, mode=mode)
         after = api.list_grants(owner)
         return {"grants": after, "changed": after != before}
@@ -480,6 +501,35 @@ async def _health_loop() -> None:
             log.exception("claude-science: supervision pass failed")
 
 
+_LAST_SYNC: dict = {}
+
+
+def _sync_outputs() -> dict:
+    with api.connect(SUPERVISOR.login_url()) as owner:
+        return outputs.sync(owner)
+
+
+async def _outputs_loop() -> None:
+    """Keep the output folders in step with the workbench. Never exits."""
+    while True:
+        try:
+            await asyncio.sleep(outputs.SYNC_INTERVAL_S)
+            if not outputs.OUTPUTS_ROOT.is_dir():
+                _LAST_SYNC.update(at=time.time(), error="no output root")
+                continue
+            if not daemon.port_listening(daemon.PORT):
+                continue
+            report = await asyncio.to_thread(_sync_outputs)
+            _LAST_SYNC.clear()
+            _LAST_SYNC.update(report, at=time.time(), error=None)
+            if report["created"] or report["deleted"] or report["moved"]:
+                log.info("claude-science: outputs created=%s moved=%s deleted=%s",
+                         report["created"], report["moved"], report["deleted"])
+        except Exception as exc:  # noqa: BLE001 — never let the loop die
+            _LAST_SYNC.update(at=time.time(), error=str(exc))
+            log.exception("claude-science: output-folder sync failed")
+
+
 async def _on_start() -> None:
     """Adopt-or-start the daemon, raise the fronts and the bridge, then loop.
 
@@ -514,6 +564,7 @@ async def _on_start() -> None:
     # ERROR and respawns, so "absent" cannot masquerade as "quiet".
     spawn_supervised("claude-science:mcp-bridge", mcp_bridge.serve_and_mount)
     spawn_supervised("claude-science:health", _health_loop)
+    spawn_supervised("claude-science:outputs", _outputs_loop)
 
 
 async def main() -> None:

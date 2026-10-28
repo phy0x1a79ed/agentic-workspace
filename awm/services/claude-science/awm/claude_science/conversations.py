@@ -14,10 +14,15 @@ turn in the background.
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
+from awm.claude_science import outputs
 from awm.claude_science.api import Owner, WorkbenchError
+
+log = logging.getLogger("awm.claude_science.conversations")
 
 LIST_LIMIT = 50
 TAIL_LIMIT = 20
@@ -36,8 +41,59 @@ def list_conversations(owner: Owner, *, project_id: str | None = None,
 
 
 def summary(frame: dict[str, Any]) -> dict[str, Any]:
-    return {k: frame.get(k) for k in
-            ("id", "name", "status", "project_id", "updated_at")}
+    out = {k: frame.get(k) for k in
+           ("id", "name", "status", "project_id", "updated_at")}
+    pending = pending_approval(frame)
+    if pending:
+        out["pending_approval"] = pending
+    return out
+
+
+def _describe(request: dict[str, Any]) -> str:
+    kind = request.get("kind")
+    if kind == "grant_scan":
+        grant = request.get("grant")
+        grant = grant.get("path", grant) if isinstance(grant, dict) else grant
+        unscanned = request.get("unscanned_folders")
+        n = len(unscanned) if isinstance(unscanned, list) else unscanned
+        return (f"the granted folder {grant} is too large to check for "
+                f"credential files ({n} folders unchecked); continue?")
+    for key in ("target", "tool", "tool_name", "provider", "alias"):
+        if isinstance(request.get(key), str):
+            return f"{kind} ({request[key]})"
+    questions = request.get("questions")
+    if isinstance(questions, list) and questions:
+        first = questions[0]
+        return str(first.get("question") if isinstance(first, dict) else first)
+    return str(kind)
+
+
+def pending_approval(frame: dict[str, Any]) -> dict[str, Any] | None:
+    """What a blocked conversation waits on, from the frame the daemon marks.
+
+    The daemon writes every live approval request into the asking frame's
+    ``output_data.pending_input_requests``; a request from a sub-agent shows on
+    the root only as ``descendant_awaiting_input`` (bench listings).
+    """
+    out = frame.get("output_data") or {}
+    requests = [r for r in out.get("pending_input_requests") or []
+                if isinstance(r, dict)]
+    if requests:
+        return {"kind": requests[0].get("kind"),
+                "summary": _describe(requests[0]),
+                "count": len(requests)}
+    if out.get("descendant_awaiting_input"):
+        return {"kind": None, "summary": "a sub-agent awaits input", "count": 1}
+    return None
+
+
+def active(owner: Owner) -> list[dict[str, Any]]:
+    """Conversations with a turn in flight, each with any approval it waits on."""
+    busy = [r for r in list_conversations(owner, limit=100)
+            if r.get("status") == "processing"]
+    return [summary(owner.get(f"/api/frames/{r['id']}",
+                              params={"shallow": "true"}))
+            for r in busy]
 
 
 def resolve_conversation(owner: Owner, ref: str | None = None, *,
@@ -78,6 +134,13 @@ def post_message(owner: Owner, frame_id: str, text: str) -> dict[str, Any]:
     ``cursor`` is the transcript length before the send, so a read from it
     returns the sent message and everything after.
     """
+    frame = owner.get(f"/api/frames/{frame_id}", params={"shallow": "true"})
+    pending = pending_approval(frame)
+    if pending:
+        raise WorkbenchError(
+            f"conversation {frame_id[:8]} awaits {pending['kind']}: "
+            f"{pending['summary']} Answer it in the workbench first.",
+            status=409, detail=pending["summary"])
     page = owner.get(f"/api/frames/{frame_id}/messages", params={"limit": 1})
     sent = owner.post(f"/api/frames/{frame_id}/message",
                       json={"input_data": {"request": text}})
@@ -85,10 +148,10 @@ def post_message(owner: Owner, frame_id: str, text: str) -> dict[str, Any]:
 
 
 def open_conversation(owner: Owner, text: str, *, project: str,
-                      model: str | None = None, effort: str | None = None
-                      ) -> dict[str, Any]:
+                      model: str | None = None, effort: str | None = None,
+                      root: Path = outputs.OUTPUTS_ROOT) -> dict[str, Any]:
     """Start a new conversation in ``project`` (found or created by name) with
-    ``text`` as its first turn.
+    ``text`` as its first turn, and make its output folder.
 
     The create is never retried: a request that fails in flight may still have
     started the conversation, and a second one would start it twice.
@@ -97,6 +160,12 @@ def open_conversation(owner: Owner, text: str, *, project: str,
     pid = proj.get("project_id")
     if not pid:
         raise WorkbenchError(f"no project_id for project {project!r}: {proj}")
+    try:
+        project_folder = outputs.ensure_project(owner, pid, root)
+    except (WorkbenchError, OSError) as exc:
+        log.warning("claude-science: no output folder for project %s: %s",
+                    pid, exc)
+        project_folder = None
     body: dict[str, Any] = {"input_data": {"request": text}}
     if model:
         body["model"] = model
@@ -110,11 +179,16 @@ def open_conversation(owner: Owner, text: str, *, project: str,
                 f"{exc} — the conversation may have started anyway; list the "
                 f"project with `science read` before trying again") from exc
         raise
+    folder = None
+    if project_folder is not None and sent.get("root_frame_id"):
+        folder = project_folder / sent["root_frame_id"][:8]
+        folder.mkdir(exist_ok=True)
     return {
         "conversation": {"id": sent.get("root_frame_id"), "project_id": pid,
                          "project": proj.get("name") or project},
         "status": sent.get("status"),
         "cursor": 0,
+        "output_folder": None if folder is None else str(folder),
     }
 
 

@@ -189,7 +189,25 @@ def test_a_new_conversation_finds_its_project_and_sends_the_first_turn():
                                         "effort": "high"}
     assert out == {"conversation": {"id": "eeee5555-0", "project_id": "proj_9",
                                     "project": "Agents"},
-                   "status": "accepted", "cursor": 0}
+                   "status": "accepted", "cursor": 0, "output_folder": None}
+
+
+def test_a_new_conversation_gets_its_output_folder(tmp_path, monkeypatch):
+    seen = []
+
+    def ensure(owner, pid, root):
+        seen.append(pid)
+        (tmp_path / "agents").mkdir(exist_ok=True)
+        return tmp_path / "agents"
+
+    monkeypatch.setattr(conversations.outputs, "ensure_project", ensure)
+    stub = Stub(FRAMES)
+    with stub.owner() as owner:
+        out = conversations.open_conversation(owner, "x", project="Agents",
+                                              root=tmp_path)
+    assert seen == ["proj_9"]
+    assert out["output_folder"] == str(tmp_path / "agents" / "eeee5555")
+    assert (tmp_path / "agents" / "eeee5555").is_dir()
 
 
 def test_a_create_lost_in_flight_is_not_retried_and_says_so():
@@ -283,3 +301,65 @@ def test_reading_an_unknown_conversation_is_a_404_from_the_workbench():
         with pytest.raises(api.WorkbenchError) as err:
             conversations.read_messages(owner, "nope")
     assert err.value.status == 404
+
+
+# ---------------------------------------------------------------------------
+# Pending approvals
+# ---------------------------------------------------------------------------
+
+GRANT_SCAN = {"kind": "grant_scan", "requestId": "r1", "tool_id": "t1",
+              "grant": "ro:/home/tony/agentic_workspace/projects",
+              "unscanned_folders": 4462, "scanned_folders": 5000}
+
+
+def _blocked(fid, requests=None, descendant=False):
+    frame = _frame(fid, "Blocked one", "2026-10-10T00:00:00Z",
+                   status="processing")
+    frame["output_data"] = {"pending_input_requests": requests or []}
+    if descendant:
+        frame["output_data"]["descendant_awaiting_input"] = True
+    return frame
+
+
+def test_a_grant_scan_wait_is_reported_with_its_folder():
+    got = conversations.pending_approval(_blocked("f", [GRANT_SCAN]))
+    assert got["kind"] == "grant_scan" and got["count"] == 1
+    assert "/home/tony/agentic_workspace/projects" in got["summary"]
+    assert "4462" in got["summary"]
+
+
+def test_a_sub_agent_wait_is_reported_without_details():
+    got = conversations.pending_approval(_blocked("f", descendant=True))
+    assert got == {"kind": None, "summary": "a sub-agent awaits input",
+                   "count": 1}
+
+
+def test_an_idle_conversation_has_no_pending_approval():
+    assert conversations.pending_approval(FRAMES[0]) is None
+    assert "pending_approval" not in conversations.summary(FRAMES[0])
+
+
+def test_a_read_of_a_blocked_conversation_says_what_it_waits_on():
+    frames = [*FRAMES, _blocked("ffff6666-0", [GRANT_SCAN])]
+    stub = Stub(frames, {"ffff6666-0": TRANSCRIPT})
+    with stub.owner() as owner:
+        out = conversations.read_messages(owner, "ffff6666-0")
+    assert out["conversation"]["pending_approval"]["kind"] == "grant_scan"
+
+
+def test_a_message_to_a_blocked_conversation_is_refused_before_posting():
+    frames = [*FRAMES, _blocked("ffff6666-0", [GRANT_SCAN])]
+    stub = Stub(frames, {"ffff6666-0": TRANSCRIPT})
+    with stub.owner() as owner:
+        with pytest.raises(api.WorkbenchError, match="awaits grant_scan") as err:
+            conversations.post_message(owner, "ffff6666-0", "hello?")
+    assert err.value.status == 409
+    assert not stub.posts()
+
+
+def test_active_lists_processing_conversations_with_their_waits():
+    frames = [*FRAMES, _blocked("ffff6666-0", [GRANT_SCAN])]
+    with Stub(frames).owner() as owner:
+        got = conversations.active(owner)
+    assert [c["id"] for c in got] == ["ffff6666-0"]
+    assert got[0]["pending_approval"]["kind"] == "grant_scan"
