@@ -9,6 +9,13 @@ on loopback, and runs Claude's Python/R/shell in a bubblewrap sandbox. It is a
 desktop application that happens to run on a server. Everything here is about
 making that fact survive contact with a fleet.
 
+## Purpose & Contents
+
+This file is for whoever installs, operates or changes this service. It holds
+what the code cannot show: why the service has its shape, the upstream
+behaviour each part works around, and how to check a node. Per-verb behaviour
+belongs in the manifest descriptions and the module docstrings.
+
 ## What this replaces
 
 Three hand-written systemd units and a 300-line fork of `awm/services/httpsfront`
@@ -360,9 +367,30 @@ called with no path the verb lists what a node already has.
 |---|---|
 | `<workspace>/projects` | `ro` |
 | `<workspace>/data` | `ro` |
-| the workbench's own working directory | `rw` (outputs) |
+| `<workspace>/science-outputs` | `rw` |
 
-Three things that bite:
+Create `science-outputs` on the node before you grant it. The service keeps one
+empty folder in it per conversation, `<project-slug>/<conversation-id8>/`, and
+deletes the folder with its conversation. Each project's context carries a line
+that tells the agent where its folder is. `outputs.py` says why the layout is
+shallow. A node without the folder skips the sync.
+
+Five things that bite:
+
+- **CAUTION** **A writable grant must not overlap a read grant.** Before
+  sandboxed code runs, the daemon scans each judged grant for credential files,
+  four levels deep and at most 5,000 folders. Every writable grant is judged.
+  A read grant is judged when it overlaps a writable one, was writable earlier
+  in the daemon's life, or has a record in `sandbox-grant-scans.json`. A judged
+  grant whose scan stops short raises a `grant_scan` approval that
+  `--dangerously-skip-approvals` does not answer, and every conversation hangs
+  on its first command. `projects/` is far past the cap. `science grants`
+  refuses an overlapping or oversized writable grant. A grant added in the UI
+  bypasses that check.
+- **A stale judgement outlives the grant.** Removing the overlap is not enough.
+  Stop the daemon, delete the read grant's record from
+  `sandbox-grant-scans.json`, then start it again. The restart also clears the
+  in-memory "was writable" mark.
 
 - **Symlinks do not work.** A grant root must reach the path symlink-free, so a
   curated directory of symlinks into the workspace is refused. Grant real
@@ -385,7 +413,8 @@ Three things that bite:
 ```bash
 # the service, from this node
 awm services list | grep claude-science          # enabled, running, ready
-awm science status                        # daemon + install + fronts + bridge;
+awm science status                        # daemon + install + fronts + bridge +
+                                          #   active conversations + last output sync;
                                           #   skip_approvals proves the flag took
 awm science grants                        # host file access, as the daemon has it
 awm science connector                     # local MCP servers (none is expected)
