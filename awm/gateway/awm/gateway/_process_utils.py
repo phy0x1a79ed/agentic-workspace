@@ -35,6 +35,24 @@ from typing import NamedTuple
 _PROBE_TIMEOUT_S = 1.5
 _KILL_GRACE_S = 2.0
 
+#: Where a system-wide ``awm.service`` lives on the nodes that run one.
+SYSTEM_UNIT_PATHS = (
+    "/etc/systemd/system/awm.service",
+    "/usr/lib/systemd/system/awm.service",
+    "/lib/systemd/system/awm.service",
+)
+
+
+def system_unit_owns_gateway() -> bool:
+    """Whether a system-wide ``awm.service`` supervises this node's gateway.
+
+    On such a node only that unit may start the gateway. A detached
+    ``awm gateway serve`` from an autostart misses the unit's
+    ``EnvironmentFile``, so it runs under the OS hostname instead of
+    ``AWM_NODE_NAME``, and it holds the port so the unit's next start exits.
+    """
+    return any(os.path.exists(p) for p in SYSTEM_UNIT_PATHS)
+
 
 class ProbeResult(NamedTuple):
     state: str  # "free" | "healthy_peer" | "foreign_holder"

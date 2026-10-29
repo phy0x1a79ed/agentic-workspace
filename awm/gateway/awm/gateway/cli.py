@@ -57,6 +57,11 @@ def _ensure_server():
     """Start the server in background if it's not running."""
     if _server_running():
         return
+    from awm.gateway._process_utils import system_unit_owns_gateway
+    if system_unit_owns_gateway():
+        typer.echo("The gateway is not answering, and awm.service owns it on this node. "
+                   "Not starting a second one: run `sudo systemctl start awm.service`.", err=True)
+        return
     typer.echo("Starting AWM server...")
     AWM_DIR.mkdir(parents=True, exist_ok=True)
     log_path = AWM_DIR / "awm.log"

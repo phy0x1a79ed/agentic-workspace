@@ -34,6 +34,7 @@ def _arrange(monkeypatch, port, listening):
     _Socket.attempts, _Socket.listening = [], set(listening)
     monkeypatch.setattr(socket, "socket", _Socket)
     monkeypatch.setattr(mcp_stdio.config, "PORT", port)
+    monkeypatch.setattr("awm.gateway._process_utils.system_unit_owns_gateway", lambda: False)
     spawned = []
     monkeypatch.setattr(subprocess, "run", lambda *a, **kw: spawned.append(a) or SimpleNamespace(returncode=1))
     monkeypatch.setattr(subprocess, "Popen", lambda *a, **kw: spawned.append(a))
@@ -70,3 +71,21 @@ def test_the_post_systemd_recheck_uses_the_configured_port(monkeypatch):
     monkeypatch.setattr(socket, "socket", _Late)
     mcp_stdio._ensure_core_running()
     assert attempts == [("127.0.0.1", 9999), ("127.0.0.1", 9999)]
+
+
+def test_a_node_with_a_system_unit_gets_no_detached_core(monkeypatch):
+    spawned = _arrange(monkeypatch, 9999, set())
+    monkeypatch.setattr("awm.gateway._path.resolve_bin", lambda name: name)
+    monkeypatch.setattr("awm.gateway._process_utils.system_unit_owns_gateway", lambda: True)
+    mcp_stdio._ensure_core_running()
+    assert [a for a in spawned if a and a[0][-1] == "serve"] == []
+
+
+def test_the_system_unit_is_found_by_its_unit_file(monkeypatch, tmp_path):
+    from awm.gateway import _process_utils
+
+    unit = tmp_path / "awm.service"
+    monkeypatch.setattr(_process_utils, "SYSTEM_UNIT_PATHS", (str(unit),))
+    assert not _process_utils.system_unit_owns_gateway()
+    unit.write_text("[Service]\n")
+    assert _process_utils.system_unit_owns_gateway()

@@ -354,7 +354,7 @@ See `ARCHITECTURE.md` for **awm-internal** architecture — the registry overlay
 
 ## Server Lifecycle
 
-The server auto-starts when you run any CLI command. To run manually:
+The server auto-starts when you run any CLI command, or when a session's `awm-mcp` finds it down. A node whose gateway belongs to a system-wide `awm.service` (capella, deneb) never auto-starts one: a detached gateway there misses the unit's `EnvironmentFile`, runs under the OS hostname instead of `AWM_NODE_NAME`, and holds the port so the unit's own start exits. To run manually:
 
 ```bash
 awm gateway serve     # foreground, local-only listener on 127.0.0.1:7819

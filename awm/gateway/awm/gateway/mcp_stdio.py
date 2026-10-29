@@ -510,6 +510,9 @@ def _ensure_core_running() -> None:
         except OSError:
             pass
     from awm.gateway._path import resolve_bin  # noqa: PLC0415
+    from awm.gateway._process_utils import system_unit_owns_gateway  # noqa: PLC0415
+    if system_unit_owns_gateway():
+        return
     subprocess.Popen(
         [resolve_bin("awm"), "gateway", "serve"],
         stdin=subprocess.DEVNULL,
