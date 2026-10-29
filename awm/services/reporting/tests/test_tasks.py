@@ -465,6 +465,145 @@ async def test_only_a_running_briefed_unpinned_worker_gets_a_card_at_start(env, 
     assert env.ledger.open() == []
 
 
+def waiting(job="job00001", needs="approve plan", state="working", **over):
+    """A cx row for a job held at a question or a modal prompt in its own session."""
+    return {"job": job, "state": state, "tempo": "blocked", "needs": needs, "cwd": "/nowhere", **over}
+
+
+async def test_a_job_that_starts_waiting_on_tony_moves_its_card_to_blocked_once(env):
+    task = await started(env)
+    await env.tasks.sweep([waiting(needs="Are they yours?")])
+    after = env.task()
+    assert after["state"] == "blocked" and after["reason"] == "Are they yours?" and after["urgent"] == 0
+    assert env.column(task["note_id"]) == ["Blocked"] and "Are they yours?" in env.body()
+    await env.tasks.sweep([waiting(needs="Are they yours?")])
+    assert [e["kind"] for e in env.ledger.events(task["id"])].count("waiting") == 1
+    assert env.dms == []
+
+
+@pytest.mark.parametrize("state", ["planned", "review"])
+async def test_a_wait_moves_a_planned_or_review_card_to_blocked(env, state):
+    if state == "planned":
+        await env.call("hook_plan", plan_text="p")
+    else:
+        await started(env)
+        await env.call("request_human", kind="review", summary="s")
+    await env.tasks.sweep([waiting()])
+    assert env.task()["state"] == "blocked" and env.column(env.task()["note_id"]) == ["Blocked"]
+
+
+async def test_the_daemons_blocked_state_counts_even_without_a_need(env):
+    await started(env)
+    await env.tasks.sweep([{"job": "job00001", "state": "blocked", "tempo": "blocked", "detail": "Pick one"}])
+    assert env.task()["state"] == "blocked" and env.task()["reason"] == "Pick one"
+
+
+@pytest.mark.parametrize("over", [{"needs": None}, {"needs": ""}, {"tempo": "idle"},
+                                  {"state": "stopped"}, {"state": "gone"}])
+async def test_a_job_that_is_not_waiting_keeps_its_column(env, over):
+    task = await started(env)
+    await env.tasks.sweep([waiting(**over)])
+    assert env.ledger.get(task["id"])["state"] != "blocked"
+
+
+async def test_a_job_that_stops_waiting_moves_back_to_active(env):
+    task = await started(env)
+    await env.tasks.sweep([waiting()])
+    await env.tasks.sweep([row("working")])
+    after = env.task()
+    assert after["state"] == "active" and after["reason"] == "" and after["auto_blocked"] == 0
+    assert env.column(task["note_id"]) == ["Active"]
+    assert ("answered", "") in [(e["kind"], e["detail"]) for e in env.ledger.events(task["id"])]
+
+
+async def test_a_new_question_in_the_same_wait_updates_the_reason_only(env):
+    await started(env)
+    await env.tasks.sweep([waiting(needs="first")])
+    await env.tasks.sweep([waiting(needs="second")])
+    assert env.task()["state"] == "blocked" and env.task()["reason"] == "second" and "second" in env.body()
+
+
+@pytest.mark.parametrize("column, state", [("Active", "active"), ("Planned", "planned")])
+async def test_tonys_drag_of_a_waiting_card_stands_through_the_wait_and_its_end(env, column, state):
+    task = await started(env)
+    await env.tasks.sweep([waiting()])
+    env.tri.notes[task["note_id"]]["parents"] = [env.ids[column]]
+    await env.tasks.sweep([waiting()])
+    assert env.task()["state"] == state and env.column(task["note_id"]) == [column]
+    again = Tasks(env.ledger, SwarmBoard(env.tri), node="altair", job_state=lambda job: env.job,
+                  job_exists=env.job_dirs.__contains__, fetch=env._fetch, queue=env.queue,
+                  fed=env.fed, cx=env.cx, agent_name=env.names.get, swarm="tony")
+    await again.sweep([waiting()])  # a restarted service remembers the wait
+    await again.sweep([row("working")])
+    assert env.task()["state"] == state and env.column(task["note_id"]) == [column]
+
+
+async def test_a_request_human_block_keeps_its_reason_and_waits_for_the_prompt(env):
+    task = await started(env)
+    await env.call("request_human", kind="blocked", reason="need the key")
+    await env.tasks.sweep([waiting(needs="Which key?")])
+    assert env.task()["reason"] == "need the key"
+    await env.tasks.sweep([row("working")])
+    assert env.task()["state"] == "blocked" and env.column(task["note_id"]) == ["Blocked"]
+
+
+async def test_a_request_human_during_an_auto_block_takes_it_over(env):
+    await started(env)
+    await env.tasks.sweep([waiting()])
+    await env.call("request_human", kind="blocked", reason="need the key")
+    await env.tasks.sweep([row("working")])
+    assert env.task()["state"] == "blocked" and env.task()["reason"] == "need the key"
+
+
+@pytest.mark.parametrize("over", [{}, {"pinned": True, "name": "seat:slack/slack-main"}, {"brief": True}])
+async def test_a_waiting_worker_or_kept_seat_with_no_card_gets_one_in_blocked(env, over):
+    await env.tasks.sweep([waiting("job00003", needs="answer: which roles?", **over)])
+    task = env.task("job00003")
+    assert task["state"] == "blocked" and task["owned"] == 1 and task["auto_blocked"] == 1
+    assert task["reason"] == "answer: which roles?" and env.column(task["note_id"]) == ["Blocked"]
+    await env.tasks.sweep([waiting("job00003", needs="answer: which roles?", **over)])
+    assert len(env.ledger.open()) == 1
+    await env.tasks.sweep([worker("job00003", **{"brief": False, **over})])
+    assert env.task("job00003")["state"] == "active"
+
+
+async def test_a_pool_session_gets_no_card_for_waiting(env):
+    await env.tasks.sweep([waiting("job00004", needs="send a prompt to start", pool=True, name="<warm ibis>")])
+    assert env.task("job00004") is None
+
+
+async def test_a_closed_card_stays_closed_until_the_job_waits_again(env):
+    await env.tasks.sweep([waiting("job00003")])
+    first = env.task("job00003")
+    env.tri.notes[first["note_id"]]["parents"] = [env.ids["Done"]]
+    await env.tasks.sweep([waiting("job00003")])
+    assert env.ledger.get(first["id"])["state"] == "done" and env.ledger.open() == []
+    await env.tasks.sweep([worker("job00003", brief=False)])
+    await env.tasks.sweep([waiting("job00003", needs="again")])
+    new = env.task("job00003")
+    assert new["id"] != first["id"] and new["state"] == "blocked" and new["reason"] == "again"
+    assert env.ledger.get(first["id"])["state"] == "done"
+
+
+async def test_a_wait_the_board_refused_is_tried_again(env):
+    env.tri.fail = RuntimeError("down")
+    await env.tasks.sweep([waiting("job00003")])
+    assert env.task("job00003") is None
+    env.tri.fail = None
+    await env.tasks.sweep([waiting("job00003")])
+    assert env.task("job00003")["state"] == "blocked"
+
+
+async def test_a_retired_jobs_wait_is_forgotten(env):
+    await env.tasks.sweep([waiting("job00003")])
+    env.job_dirs.add("job00003")
+    await env.tasks.sweep([])
+    assert "job00003" in env.ledger.waits("altair")
+    env.job_dirs.discard("job00003")
+    await env.tasks.sweep([])
+    assert env.ledger.waits("altair") == {}
+
+
 async def test_a_job_that_died_without_a_stop_stays_on_the_board_flagged_and_resumes(env):
     task = await started(env)
     await env.tasks.sweep([row("gone")])

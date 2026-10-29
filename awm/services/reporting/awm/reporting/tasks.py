@@ -109,6 +109,27 @@ RETIRED_DETAIL = "retired"
 RETIRED = "retired"
 
 
+#: cx's state and tempo for a session held at a question or a modal prompt.
+WAITING = "blocked"
+#: The reason a card shows for a session that waits without saying on what.
+WAITING_UNSAID = "an answer in the session"
+
+
+def waiting_on(row: dict) -> str | None:
+    """What a running job waits on Tony for in its own session, or None when it does not wait.
+
+    Claude Code marks a question, an AskUserQuestion or a modal prompt (a plan
+    approval, a permission, a fallback-model retry) as state or tempo
+    ``blocked``, and says what it needs in ``needs``.
+    """
+    if row.get("state") in (GONE, STOPPED):
+        return None
+    needs = str(row.get("needs") or "").strip()
+    if row.get("state") == WAITING or (row.get("tempo") == WAITING and needs):
+        return needs or str(row.get("detail") or "").strip() or WAITING_UNSAID
+    return None
+
+
 def _job_exists(job: str) -> bool:
     return (roster.default_jobs_dir() / job).is_dir()
 
@@ -401,6 +422,7 @@ class Tasks:
             log.warning("reporting: could not post %r on card %s: %s", text, task["card_id"], exc)
 
     async def _set(self, task: dict, state: str, event: str, detail: str = "", **fields: Any) -> dict:
+        fields.setdefault("auto_blocked", 0)
         await self.db.update(task["id"], state=state, dirty=1, **fields)
         await self.db.event(task["id"], event, detail)
         await self.sync(task["id"])
@@ -818,6 +840,7 @@ class Tasks:
                 await self._ending(task, jobs.get(task["key"]))
             await self._workers(rows)
             await self._board()
+            await self._waits(rows)
             for task in await self.db.open(self.node):
                 if task["kind"] == "bg":
                     await self._agent(task, jobs.get(task["key"]))
@@ -911,6 +934,70 @@ class Tasks:
             if await self.db.find(self.node, job) is None:
                 await self._open(Who(job, "bg", None, "", row.get("cwd")), ACTIVE)
 
+    async def _waits(self, rows: list[dict]) -> None:
+        """Follow each job's wait on Tony in its own session onto its card, on the change only.
+
+        A job that starts waiting moves its open card to Blocked, or gets an owned
+        card there when it has none, unless it is a pool session: one Tony holds
+        in a terminal. A job that stops waiting moves back to Active only while
+        its card sits in Blocked from that move, so a drag by Tony stands. A card
+        already in Blocked keeps its reason and its way out. A board failure
+        leaves the change unrecorded, so the next sweep tries it again.
+        """
+        seen = await self.db.waits(self.node)
+        listed = set()
+        for row in rows:
+            job = row.get("job")
+            if not job or row.get("state") == GONE:
+                continue
+            listed.add(job)
+            needs, was = waiting_on(row), seen.get(job)
+            if needs == was:
+                continue
+            try:
+                if needs is None:
+                    if row.get("state") != STOPPED:
+                        await self._answered(job)
+                    await self.db.unwait(self.node, job)
+                elif was is None:
+                    await self._started_waiting(row, needs)
+                    await self.db.wait(self.node, job, needs)
+                else:
+                    await self._asked_again(job, needs)
+                    await self.db.wait(self.node, job, needs)
+            except BoardError as exc:
+                log.warning("reporting: job %s's wait waits for the board: %s", job, exc)
+        for job in seen.keys() - listed:
+            if not await asyncio.to_thread(self._job_exists, job):
+                await self.db.unwait(self.node, job)
+
+    async def _open_task(self, job: str) -> dict | None:
+        task = await self.db.find(self.node, job)
+        return task if task is not None and task["state"] in OPEN else None
+
+    async def _started_waiting(self, row: dict, needs: str) -> None:
+        task = await self._open_task(row["job"])
+        if task is None:
+            if row.get("pool"):
+                return
+            task = await self._open(Who(row["job"], "bg", None, "", row.get("cwd")), BLOCKED, fresh=True)
+        elif task["state"] == BLOCKED:
+            return
+        await self._set(task, BLOCKED, "waiting", needs, reason=needs, urgent=0,
+                        blocked_at=time.time(), reminded=0, auto_blocked=1)
+
+    async def _asked_again(self, job: str, needs: str) -> None:
+        task = await self._open_task(job)
+        if task is not None and task["state"] == BLOCKED and task["auto_blocked"]:
+            await self.db.update(task["id"], reason=needs, dirty=1)
+            await self.db.event(task["id"], "waiting", needs)
+            await self.sync(task["id"])
+
+    async def _answered(self, job: str) -> None:
+        task = await self._open_task(job)
+        if task is not None and task["state"] == BLOCKED and task["auto_blocked"]:
+            await self._set(task, ACTIVE, "answered", reason="")
+
     def _unlisted_state(self, job: str) -> str:
         if "/" in job:  # filed away: its session left a job that lives on
             return STOPPED
@@ -996,7 +1083,8 @@ class Tasks:
                     if state_of[column] in (DONE, REJECTED):
                         await self.close(task, state_of[column], shown=column)
                     else:
-                        await self.db.update(task["id"], state=state_of[column], shown=column, dirty=1)
+                        await self.db.update(task["id"], state=state_of[column], shown=column, dirty=1,
+                                             auto_blocked=0)
             if (await self.db.get(task["id"]))["dirty"]:
                 await self.sync(task["id"])
         for task in await self.db.closed(self.node):

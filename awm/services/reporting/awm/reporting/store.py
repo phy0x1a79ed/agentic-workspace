@@ -78,6 +78,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     agent      TEXT,
     agent_link TEXT,
     tags       TEXT,
+    auto_blocked INTEGER NOT NULL DEFAULT 0,
     started    REAL NOT NULL,
     updated    REAL NOT NULL,
     closed     REAL,
@@ -106,16 +107,24 @@ CREATE TABLE IF NOT EXISTS todos (
     removed_at REAL,
     PRIMARY KEY (task_id, item_id)
 );
+CREATE TABLE IF NOT EXISTS waits (
+    node  TEXT NOT NULL,
+    job   TEXT NOT NULL,
+    needs TEXT NOT NULL,
+    since REAL NOT NULL,
+    PRIMARY KEY (node, job)
+);
 """
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 _FED_COLUMNS = "    card_id    TEXT,\n    fed_state  TEXT,\n"
 _AGENT_COLUMNS = "    agent      TEXT,\n    agent_link TEXT,\n"
 _TAGS_COLUMN = "    tags       TEXT,\n"
+_AUTO_BLOCKED_COLUMN = "    auto_blocked INTEGER NOT NULL DEFAULT 0,\n"
 _TASKS_SCHEMA_V2 = (_TASKS_SCHEMA.replace("    owned      INTEGER NOT NULL DEFAULT 0,\n", "")
                     .replace(_FED_COLUMNS, "").replace(_AGENT_COLUMNS, "")
-                    .replace(_TAGS_COLUMN, ""))
+                    .replace(_TAGS_COLUMN, "").replace(_AUTO_BLOCKED_COLUMN, ""))
 
 _OWNED_MIGRATION = """
 ALTER TABLE tasks ADD COLUMN owned INTEGER NOT NULL DEFAULT 0;
@@ -164,6 +173,18 @@ ALTER TABLE tasks ADD COLUMN agent_link TEXT;
 #: The scope's effective tags, comma-joined, as its card's Tags chip shows them.
 _TAGS_MIGRATION = "ALTER TABLE tasks ADD COLUMN tags TEXT;"
 
+#: The jobs last seen waiting on Tony in their own session, and the cards the sweep blocked for it.
+_WAITS_MIGRATION = """
+ALTER TABLE tasks ADD COLUMN auto_blocked INTEGER NOT NULL DEFAULT 0;
+CREATE TABLE IF NOT EXISTS waits (
+    node  TEXT NOT NULL,
+    job   TEXT NOT NULL,
+    needs TEXT NOT NULL,
+    since REAL NOT NULL,
+    PRIMARY KEY (node, job)
+);
+"""
+
 _CURSOR = "cursor"
 
 
@@ -179,7 +200,8 @@ class Db:
                                          (4, 5): _THREADS_MIGRATION,
                                          (5, 6): _INTAKE_MIGRATION,
                                          (6, 7): _AGENT_MIGRATION,
-                                         (7, 8): _TAGS_MIGRATION})
+                                         (7, 8): _TAGS_MIGRATION,
+                                         (8, 9): _WAITS_MIGRATION})
 
     def _conn(self) -> sqlite3.Connection:
         return databases.get_connection_at(self.path)

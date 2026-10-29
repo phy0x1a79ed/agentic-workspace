@@ -195,7 +195,7 @@ def test_a_v5_database_becomes_the_intake_queue(tmp_path):
     columns = {r[1] for r in conn.execute("PRAGMA table_info(cards)")}
     task_columns = {r[1] for r in conn.execute("PRAGMA table_info(tasks)")}
     conn.close()
-    assert "sessions" not in tables and "watchers" in tables
+    assert "sessions" not in tables and {"watchers", "waits"} <= tables
     assert not columns & {"body", "priority", "reply_to", "thread_open", "announced_at"}
-    assert {"card_id", "fed_state", "agent", "agent_link", "tags"} <= task_columns
-    assert store.SCHEMA_VERSION == 8
+    assert {"card_id", "fed_state", "agent", "agent_link", "tags", "auto_blocked"} <= task_columns
+    assert store.SCHEMA_VERSION == 9

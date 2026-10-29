@@ -18,7 +18,8 @@ the tasks its sessions work on and shows them on the Swarm board in Trilium. The
 ledger is the source of truth and the board only displays it. Claude Code hooks
 and three agent verbs (`task_claim`, `task_track` and `request_human`, whose
 `kind` is `blocked`, `review` or `approval`) drive it. The reconcile loop closes a task when its
-session ends, and a session's journal posts append to its card.
+session ends and blocks a card while its session waits on Tony. A session's journal posts append
+to its card.
 
 **The front door** runs intake only where `AWM_FRONT_DOOR=1`. It listens to
 the federation board for cards addressed to this swarm, keeps them in a SQLite
@@ -79,7 +80,11 @@ A session with no card gets an owned card on the first of these events:
 4. A job that cx started with the lifecycle brief (cx `INSTALL.md` §
    *A worker gets a lifecycle brief*) sends its first prompt. The card opens in
    Active. The sweep opens it for a briefed job whose first prompt missed the
-   gateway. A kept seat never gets the brief, so it stays off the board.
+   gateway. A kept seat never gets the brief.
+5. A background job starts to wait on Tony in its own session. The card opens
+   in Blocked. A kept seat gets one too, because the board shows everything
+   that waits on Tony. A pool session (cx `pool`) gets none: Tony holds it in a
+   terminal.
 
 Tony's own sessions get no card for starting. An event that opens a card returns
 a notice that names the card and the board's protocol. The hook hands it to the
@@ -142,6 +147,20 @@ column. A plan written in Active or Blocked revises the same card.
   `~/.claude/jobs` remains keeps its card in its column, flagged "not running,
   resumable". An idle retire and a daemon death both cause this. The flag
   clears when the job runs again.
+- A background job waits on Tony when cx lists its state as `blocked`, or its
+  tempo as `blocked` with a `needs` line. This covers a question asked in the
+  session, AskUserQuestion, a plan approval and Claude Code's own modals. The
+  sweep acts on the change only, never on the level:
+  1. A job that starts to wait moves its open card to Blocked. The `needs` line
+     becomes the waiting-on reason. A new `needs` in the same wait updates the
+     reason.
+  2. A job that stops waiting moves its card back to Active. It moves only a
+     card still in Blocked from step 1. A drag by Tony since then stands.
+  3. A card already in Blocked through `request_human` keeps its reason and
+     its way out. A `request_human` during a wait takes the card over.
+
+  The ledger's `waits` table holds the jobs last seen waiting, so a service
+  restart does not repeat a move.
 - A job whose state record says `stopped` moves to Pending review, flagged
   "stopped". cx writes `stopped` on `stop_other`, because `claude stop` does
   not. A card filed away by a session clear or a new plan moves there too.
@@ -174,7 +193,7 @@ lookup is by exact key, never by prefix.
 
 The prompt hook runs on every prompt and calls the gateway only for a claim or
 when the session's task is Blocked. `reporting` writes the marker
-`~/.claude/awm-reporting/<session_id>.blocked` when it blocks a task, and the hook
+`~/.claude/awm-reporting/<session_id>.blocked` when `request_human` blocks a task, and the hook
 deletes it when a result says the task is no longer blocked.
 
 ## Environment

@@ -29,7 +29,7 @@ OLDER_SHOWN = "older"
 _FIELDS = frozenset({
     "session_id", "title", "project", "scope", "model", "effort", "state", "note_id", "shown", "dirty",
     "plan", "reason", "urgent", "blocked_at", "reminded", "ended", "closed", "owned",
-    "card_id", "fed_state", "agent", "agent_link", "tags"})
+    "card_id", "fed_state", "agent", "agent_link", "tags", "auto_blocked"})
 
 
 class Ledger(Db):
@@ -136,6 +136,22 @@ class Ledger(Db):
     def aliases(self, task_id: int) -> list[str]:
         return [r["session_id"] for r in self._all(
             "SELECT session_id FROM task_aliases WHERE task_id=? ORDER BY rowid", (task_id,))]
+
+    # -- waits -------------------------------------------------------------
+
+    def waits(self, node: str) -> dict[str, str]:
+        """The jobs last seen waiting on Tony in their own session, with what each needs."""
+        return {r["job"]: r["needs"] for r in self._all("SELECT job, needs FROM waits WHERE node=?", (node,))}
+
+    def wait(self, node: str, job: str, needs: str) -> None:
+        with self._tx() as conn:
+            conn.execute("INSERT INTO waits (node, job, needs, since) VALUES (?,?,?,?)"
+                         " ON CONFLICT (node, job) DO UPDATE SET needs=excluded.needs",
+                         (node, job, needs, time.time()))
+
+    def unwait(self, node: str, job: str) -> None:
+        with self._tx() as conn:
+            conn.execute("DELETE FROM waits WHERE node=? AND job=?", (node, job))
 
     # -- events --------------------------------------------------------------
 
