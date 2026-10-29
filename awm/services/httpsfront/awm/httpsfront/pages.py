@@ -287,7 +287,12 @@ f.addEventListener('submit',async(ev)=>{{
     const r=await fetch('/__auth/login',{{method:'POST',
       headers:{{'Content-Type':'application/json'}},
       body:JSON.stringify({{username:u.value.trim(),password:p.value}})}});
-    if(r.ok){{ location.replace(location.pathname==='/'?'/':location.href); return; }}
+    if(r.ok){{
+      // reload(), not replace(href): on a URL with a fragment, such as the
+      // vault's /trilium/#root/..., replacing it with itself only scrolls.
+      if(location.pathname==='/') location.replace('/'); else location.reload();
+      return;
+    }}
     if(r.status===429){{
       let s=60; try{{ s=(await r.json()).retry_after||s; }}catch(_){{}}
       e.textContent='Too many attempts. Try again in '+Math.ceil(s/60)+' min.';
