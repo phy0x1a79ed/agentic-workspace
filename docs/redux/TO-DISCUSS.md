@@ -19,6 +19,8 @@ Top of the stack comes first.
 1. **End state.** A year out, what does Tony do with the fleet on an ordinary day, and what does it do without him?
 2. **Why awm exists.** What would Tony lose if awm vanished tomorrow?
 3. **Who uses it.** Tony, lab members through seats, collaborators, the public. What can each do or reach, and what must each never touch?
+   - Today: Tony, and lab members through Slack seats on altair, under his supervision (Tony, 2026-10-30). A survey of current use is in progress.
+   - 3a. **The Slack seat system.** Review how seats work and discuss whether they keep their shape. Tony: "this is another system to review and discuss" (2026-10-30).
 4. **What made it foundational.** Which problem made Tony think "rebuild" rather than "patch"?
 5. **Done.** What makes the redux finished?
 
