@@ -10,16 +10,16 @@ This doc is the stack of open threads for the redux interview. The interview run
 
 ## Current thread
 
-**1. End state.** A year out, what does Tony do with the fleet on an ordinary day, and what does it do without him?
+**1a. The work hierarchy and routing.** How a task Tony states finds its project and scope. Tony: "I'd like the agent to have enough context to create or route the task to a scope" (2026-10-30).
 
-- Tony answered on 2026-10-30. `DESIGN.md` § Goal holds the draft. It waits for his confirmation.
-- His answer raised the sub-threads 1a to 1j below. Each one is a child of thread 1.
+- Tony answered on 2026-10-30. `DESIGN.md` § Requirements R1 to R6 hold the result.
+- Open: what a new session does when it tries to enter a scope that a live session occupies. Tony: "the specific event is when a new agent attempts to enter (and work in) a scope that is already occupied by a live agent session (working, blocked with question or waiting review)."
+
+Parent thread 1 (end state) waits for Tony to confirm `DESIGN.md` § Goal. Its children are 1a to 1j.
 
 ## Stack
 
 Top of the stack comes first.
-
-1a. **The work hierarchy and routing.** How a task Tony states finds its project and scope, and when a new scope or a duplicate scope is made. Tony: "I'd like the agent to have enough context to create or route the task to a scope" and "if a scope is already active with a session, the correct thing to do would actually be to duplicate it and start another session rather than append work to an ongoing session" (2026-10-30).
 
 1b. **The session lifecycle.** How a session closes, and what happens when its result is not good. Tony: "sessions should close with a summary journal and if not good, a new session should be started rather than the old one with filled context being re started. compactions everytime would also be wasteful" (2026-10-30).
 
