@@ -47,7 +47,13 @@ Every interface is a channel onto this loop. awm needs three channels: chat with
 - **R5.** A scope outlives its sessions. It stays until a session removes it. awm never deletes a scope when a session ends, because the worktree can hold DVC pins and uncommitted files. Tony: "At least Im not organized enough yet to allow this automation."
 - **R6.** A hygiene check finds scopes not in use and cleans them up. It triggers infrequently, for example every 10 new scopes, and acts only when action is needed. It is not an agent that churns on each new scope. Tony does not have to remember to run it.
 
-**CAUTION** Today `reflection cd` does not refuse an occupied scope, and `start_other` refuses only a duplicate session name. R3 is not enforced yet.
+- **R7.** A new session can need a scope that a live session occupies. When the scope clearly fits its task, the new session acts as follows:
+  1. It asks Tony on the pending queue.
+  2. It waits in a queue for the scope.
+  3. awm notifies it when its turn comes. It enters the scope.
+  4. It appends to its question that the conflict is now clear. It never withdraws the question. Tony: "these events may cause me to reconsider the scope layout and ask for new scopes."
+
+**CAUTION** Today `reflection cd` does not refuse an occupied scope, and `start_other` refuses only a duplicate session name. R3 and R7 are not built yet.
 
 ## Architecture
 

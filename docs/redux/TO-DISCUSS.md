@@ -10,18 +10,13 @@ This doc is the stack of open threads for the redux interview. The interview run
 
 ## Current thread
 
-**1a. The work hierarchy and routing.** How a task Tony states finds its project and scope. Tony: "I'd like the agent to have enough context to create or route the task to a scope" (2026-10-30).
-
-- Tony answered on 2026-10-30. `DESIGN.md` § Requirements R1 to R6 hold the result.
-- Open: what a new session does when it tries to enter a scope that a live session occupies. Tony: "the specific event is when a new agent attempts to enter (and work in) a scope that is already occupied by a live agent session (working, blocked with question or waiting review)."
+**1b. The session lifecycle.** How a session closes, and what happens when its result is not good. Tony: "sessions should close with a summary journal and if not good, a new session should be started rather than the old one with filled context being re started. compactions everytime would also be wasteful" (2026-10-30).
 
 Parent thread 1 (end state) waits for Tony to confirm `DESIGN.md` § Goal. Its children are 1a to 1j.
 
 ## Stack
 
 Top of the stack comes first.
-
-1b. **The session lifecycle.** How a session closes, and what happens when its result is not good. Tony: "sessions should close with a summary journal and if not good, a new session should be started rather than the old one with filled context being re started. compactions everytime would also be wasteful" (2026-10-30).
 
 1c. **Dependencies between sessions.** A question that surfaces a larger issue spawns tasks. They report back to the asking session and resume it. Tony: "a sort of asyn model like promises" (2026-10-30).
 
@@ -91,4 +86,4 @@ Raised before the redux started. Each enters the stack when a thread reaches it.
 
 ## Closed
 
-(none)
+- 1a. The work hierarchy and routing (2026-10-30). Result: `DESIGN.md` § Requirements, R1 to R7.
