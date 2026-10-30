@@ -16,7 +16,14 @@ This doc is the stack of open threads for the redux interview. The interview run
 
 - Tony answered on 2026-10-30. `DESIGN.md` § Requirements R8 to R11 hold the result.
 - Open: whether a session closes itself when it judges the work done, or waits for Tony to accept it.
-- In progress: the diff of 1a against the systems that exist today.
+- Diff of 1a against today (2026-10-30, read only):
+  - R1 partial. The worker lifecycle brief (`cx/lifecycle.py:90-99`, precedence `909435672ebbd415`) tells a session to find or create its scope and move with `reflection cd`. Only Discord `/new-agent` tells it to rename itself, in the user prompt. Terminal sessions and pinned seats get no brief. The brief never mentions creating a project.
+  - R2 partial. `start_other`, `cx` and plain `claude` all launch straight into a folder, and Bash `cd` works. `reflection cd` is not a single entry point.
+  - R3 missing. No occupancy check exists. Live means "process running" today.
+  - R4 exists: `scope create` with `new_project` and `clone_url` or `fork_url`. `start_other` cannot create a new project, and a cloned scope gets a new `feat/<scope>` branch.
+  - R5 exists with gaps. Nothing deletes scopes automatically. The delete check misses ignored files, `dvc status` drift, unpushed commits and a live session.
+  - R6 missing. `scope heal` is manual and only reports.
+  - R7 mostly missing. `request_human` and card messages cover steps 1 and 4. No per-scope queue or release event exists.
 - Diff of 1b against today (2026-10-30, read only):
   - R8 partial. The `retire` skill debriefs, reports to the starter, then runs `reflection stop`, which deletes the job. A close takes 2 to 4 writes: a journal post, a `request_human` review summary, and a message to the parent or a `social send`. Journal posts already copy onto the session's card.
   - R9 partial. Four ids exist: the 8-hex job id, the Claude session UUID, the card's Trilium id, and the journal post UUID. A terminal session has no short id. No button starts a task from a report. `start_other replaces` reads the old job's state, which retire deletes.
