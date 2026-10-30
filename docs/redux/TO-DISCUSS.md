@@ -6,11 +6,17 @@ This doc is the stack of open threads for the redux interview. The interview run
 
 - Push each new issue Tony raises onto the top of **Stack**, with its date and his words.
 - Work the top thread first.
+- For each thread, dispatch subagents to find the systems that already exist for it. Record the diff between what Tony described and what exists. Ask Tony about each diff whose implementation is unclear (Tony, 2026-10-30).
 - Move a closed thread to **Closed**, with the `DESIGN.md` section that holds its result.
+- Compact the interview session when a thread or a line of questioning closes (Tony, 2026-10-30).
 
 ## Current thread
 
 **1b. The session lifecycle.** How a session closes, and what happens when its result is not good. Tony: "sessions should close with a summary journal and if not good, a new session should be started rather than the old one with filled context being re started. compactions everytime would also be wasteful" (2026-10-30).
+
+- Tony answered on 2026-10-30. `DESIGN.md` § Requirements R8 to R11 hold the result.
+- Open: whether a session closes itself when it judges the work done, or waits for Tony to accept it.
+- In progress: the diff of 1a and 1b against the systems that exist today.
 
 Parent thread 1 (end state) waits for Tony to confirm `DESIGN.md` § Goal. Its children are 1a to 1j.
 

@@ -53,6 +53,15 @@ Every interface is a channel onto this loop. awm needs three channels: chat with
   3. awm notifies it when its turn comes. It enters the scope.
   4. It appends to its question that the conflict is now clear. It never withdraws the question. Tony: "these events may cause me to reconsider the scope layout and ask for new scopes."
 
+### Session lifecycle (thread 1b)
+
+- **R8.** A session closes with the standard agent exit. Retiring stops it fully and leaves a report to whoever started it. The report is the session's journal, written once.
+- **R9.** Each session has a short hash that Tony uses to refer to it. Tony starts a new session from a report easily. A button generates a new task that refers to the previous session's report.
+- **R10.** A closed session stays resumable, but the default is a new session. The new session starts from the old session's journal only.
+- **R11.** Each session chooses whether to deploy. Feature updates and fixes deploy. The deploy follows the project's instructions. An agent asks Tony when it is unsure.
+
+### Not built yet
+
 **CAUTION** Today `reflection cd` does not refuse an occupied scope, and `start_other` refuses only a duplicate session name. R3 and R7 are not built yet.
 
 ## Architecture
