@@ -40,7 +40,7 @@ Run this at session start. Run it again any time to refresh.
 1. Run `journal(verb="render", args={project:<p>, scope:<s>})`. It renders `.awm/history.md` from the journal.
 2. Read `.awm/context.md`. It states why this scope exists.
 3. Read `.awm/history.md`.
-4. Run `journal(verb="fetch", args={scope:<s>, kind:"message"})` for messages addressed to you.
+4. Run `journal(verb="inbox", args={project:<p>, scope:<s>})` for the messages your scope has not read, one line each. Read one in full with `journal(verb="fetch", args={post_id:<id>})`. Run `journal(verb="ack", args={project:<p>, scope:<s>, through:<ack_through>})` once you have read them, so the next session starts after them.
 5. Run `journal(verb="goal_read", args={project:<p>, scope:<s>})` for the goal in force. Read it again before you propose a deliverable. The `goal-alignment` skill sets or revises it.
 
 Never edit `.awm/history.md` by hand. Use the `journal` verbs.

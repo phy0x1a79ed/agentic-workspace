@@ -51,6 +51,10 @@ The `journal` service owns every post and goal, in its own database. It split ou
 
 `journal` validates a literal scope through the `resolveScope` RPC to `scopes`, and an unreachable `scopes` never blocks a post. `journal render` writes a scope's `.awm/history.md`, and `scope heal` calls it over the gateway. The service publishes the `posts` topic with payload `{project, scope, post}`. `awm/services/journal/INSTALL.md` covers the first-start copy of the old tables out of the `scopes` database.
 
+A scope reads its channel through a cursor in `scope_cursors`, one row per channel. The cursor belongs to the scope, not to a session, because seats churn and the scope persists. `journal inbox` lists the posts after it and `journal ack` moves it forward. A post the scope wrote itself never counts as unread.
+
+**CAUTION** A literal scope name repeats across projects: most of them have a `dev`. `journal fetch` therefore refuses a `scope` with no `project`. Without that refusal the filter reads every project's channel of that name as one.
+
 A post is passive mail. It starts no session and wakes no one. Agents on one node message each other with Claude's `SendMessage`, and swarms message each other through the board (`FEDERATION.md` § *Intake*). Only a deliberate post, such as a debrief, enters the channel.
 
 A post that arrives through the edge takes its author from the edge's `X-Awm-As` stamp, never from the `author` argument. The claimed author moves to `meta.claimed_author`. A caller with no stamp may not send an author of the form `peer:…`.

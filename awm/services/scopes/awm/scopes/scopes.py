@@ -355,13 +355,24 @@ def _cleanup_worktree(bare_dir: Path, worktree_dir: Path,
     return guard
 
 
+def _inbox_step(project: str, scope: str) -> str:
+    return (f"3. `journal(verb=\"inbox\", args={{project:\"{project}\", scope:\"{scope}\"}})` "
+            f"— what is waiting for you. Acknowledge with `journal(verb=\"ack\")`.")
+
+
+def _legacy_inbox_step(scope: str) -> str:
+    """The step this template wrote before ``journal inbox``. It names no project, so
+    ``journal fetch`` read every project's channel of that scope name."""
+    return f"3. `journal(verb=\"fetch\", args={{scope:\"{scope}\", kind:\"message\"}})`"
+
+
 def _default_context(project: str, scope: str) -> str:
     return (
         f"# {project}/{scope}\n\n"
         f"## Startup\n\n"
         f"1. `journal(verb=\"render\", args={{project:\"{project}\", scope:\"{scope}\"}})`\n"
         f"2. Read `.awm/history.md` — session history, open issues, resolved items.\n"
-        f"3. `journal(verb=\"fetch\", args={{scope:\"{scope}\", kind:\"message\"}})`\n\n"
+        f"{_inbox_step(project, scope)}\n\n"
         f"## This scope\n\n"
         f"_Why this scope exists._\n\n"
         f"## Working here\n\n"
@@ -600,6 +611,14 @@ def _heal_worktree(worktree_dir: Path, *, project: str, scope: str, dry_run: boo
         if not dry_run:
             awm_dir.mkdir(parents=True, exist_ok=True)
             context_path.write_text(_default_context(project, scope))
+    else:
+        context = context_path.read_text()
+        legacy = _legacy_inbox_step(scope)
+        if legacy + "\n" in context:
+            actions["context_md"] = "updated:inbox-step"
+            if not dry_run:
+                context_path.write_text(
+                    context.replace(legacy + "\n", _inbox_step(project, scope) + "\n", 1))
 
     opencode_cfg = awm_dir / "mcp-opencode.json"
     existing = opencode_cfg.read_text() if opencode_cfg.is_file() else None
