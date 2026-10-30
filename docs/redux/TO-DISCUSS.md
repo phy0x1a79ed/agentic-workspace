@@ -16,7 +16,13 @@ This doc is the stack of open threads for the redux interview. The interview run
 
 - Tony answered on 2026-10-30. `DESIGN.md` § Requirements R8 to R11 hold the result.
 - Open: whether a session closes itself when it judges the work done, or waits for Tony to accept it.
-- In progress: the diff of 1a and 1b against the systems that exist today.
+- In progress: the diff of 1a against the systems that exist today.
+- Diff of 1b against today (2026-10-30, read only):
+  - R8 partial. The `retire` skill debriefs, reports to the starter, then runs `reflection stop`, which deletes the job. A close takes 2 to 4 writes: a journal post, a `request_human` review summary, and a message to the parent or a `social send`. Journal posts already copy onto the session's card.
+  - R9 partial. Four ids exist: the 8-hex job id, the Claude session UUID, the card's Trilium id, and the journal post UUID. A terminal session has no short id. No button starts a task from a report. `start_other replaces` reads the old job's state, which retire deletes.
+  - R10 conflicts. Retire removes the job, so `resume_other` refuses it. `replaces` seeds the new session from the last 8 transcript turns, not from the journal.
+  - R11 mostly exists, but the rule today is "always deploy" (precedence `39821f68`). Nothing names work that does not deploy.
+  - Today the agent decides it is done. A review summary followed by retire lands the card in Done (commit `46b01ace`). Only a Blocked card waits for Tony.
 
 Parent thread 1 (end state) waits for Tony to confirm `DESIGN.md` § Goal. Its children are 1a to 1j.
 
