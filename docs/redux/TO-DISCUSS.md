@@ -34,7 +34,7 @@ This doc is the stack of open threads for the redux interview. The interview run
 
 Question queue for 1b and the 1a follow-ups. Ask the top one. Strike it when Tony answers.
 
-1. 1b: Who decides a session is done: the agent retires itself, it waits in review for Tony's accept, or it stops but stays resumable until he accepts? Precedence `88fd2da392529ca3` already keeps an agent alive while its questions are open.
+1. ~~1b: Who decides a session is done.~~ Answered 2026-10-31: R12.
 2. 1b: What "resumable" keeps: the whole job, the transcript only, or the journal only.
 3. 1b: The session hash, the new-task button and where the follow-up session starts. Which id is the hash, where the button lives, and whether the follow-up goes to the old scope or routes itself.
 4. 1b: Which work skips the deploy.
@@ -51,6 +51,8 @@ Parent thread 1 (end state) waits for Tony to confirm `DESIGN.md` § Goal. Its c
 ## Stack
 
 Top of the stack comes first.
+
+1k. **Automatic dispatch of follow-up work.** Learn from Tony's recorded decisions to dispatch jobs for unforeseen issues on their own. Tony: "Ideally my decisions are recorded in precedent system so taht we can automate this (dyanamic responsive auto dispatch of jobs to address unforseen issues) in the future" (2026-10-31).
 
 1c. **Dependencies between sessions.** A question that surfaces a larger issue spawns tasks. They report back to the asking session and resume it. Tony: "a sort of asyn model like promises" (2026-10-30).
 

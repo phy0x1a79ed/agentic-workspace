@@ -59,6 +59,11 @@ Every interface is a channel onto this loop. awm needs three channels: chat with
 - **R9.** Each session has a short hash that Tony uses to refer to it. Tony starts a new session from a report easily. A button generates a new task that refers to the previous session's report.
 - **R10.** A closed session stays resumable, but the default is a new session. The new session starts from the old session's journal only.
 - **R11.** Each session chooses whether to deploy. Feature updates and fixes deploy. The deploy follows the project's instructions. An agent asks Tony when it is unsure.
+- **R12.** A session closes on its own. Tony does not accept it first.
+  1. When its task is done, the agent debriefs. The debrief writes the journal, which posts to the card. Tony reviews the journal without a live agent.
+  2. With every task done and no pending issue, the agent retires.
+  3. When the agent finds follow-up issues, it stays live. It raises each one with a blocked or review request, so that it reaches Tony's list. Tony queues new work from what he sees.
+  4. Tony's decisions on follow-up issues go into precedence, so that a later awm can dispatch follow-up work on its own.
 
 ### Not built yet
 
