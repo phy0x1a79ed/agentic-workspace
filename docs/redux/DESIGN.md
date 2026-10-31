@@ -30,7 +30,7 @@ The core loop runs like promises:
 3. Sessions run in parallel. Each comes back with a report, or with a blocker or question.
 4. Returns join one pending queue. A separate list shows the active work.
 5. Tony picks items from the queue and acts on each:
-   - He accepts a report. The session closes with a summary journal.
+   - He reads a report. The session closed on its own with its journal (R12).
    - He answers a question. The session continues.
    - He dispatches new tasks. They report back to the asking session and resume it.
 
