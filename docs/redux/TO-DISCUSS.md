@@ -17,11 +17,15 @@ This doc is the stack of open threads for the redux interview. The interview run
 
 **1m. Continuous integration and deploys.** One aggregator for deploys, beside each project's deploy protocol. Tony: "right now, agents run redundant and unrelated tests repeatidly. deployments can also stack and race. Lets talk continuous integration systems, preferrably deterministic but there can be (and might necessarily require agentic elements)" (2026-10-31).
 
-- Results: a new area doc, named once the shape settles.
+- Results: `deploys.md`. The gaps from today are there too.
 
 Question queue for 1m. Ask the top open one. Strike it when Tony answers.
 
-1. Filled in after the survey of today's deploy and test paths.
+1. Who lands a change: each agent under a lock, or a merge queue the agent submits to.
+2. What the aggregator does deterministically, and where an agent steps in.
+3. How the aggregator picks the tests for a change, and how it treats suites that already fail.
+4. The fleet route: which nodes, in what order, and what a failed node does.
+5. How a deploy restart treats live work, such as tether and ssh sessions.
 
 **1a follow-ups. The work hierarchy and routing.** Thread 1a closed with these questions open. They resume when 1m closes. Results: `scopes.md`.
 
