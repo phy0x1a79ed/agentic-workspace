@@ -19,7 +19,7 @@ This doc holds a session's id, its lifecycle from start to retirement, its journ
 
 - **R8.** A session closes with the standard agent exit. Retiring stops it fully and leaves a report to whoever started it. The report is the session's journal, written once.
 - **R10.** A retired session stays resumable through its transcript, by its session id (R9). The job itself is gone. The default follow-up is still a new session, which starts from the old session's journal only. Tony: "In instances where I do ask for a \"resume\", getting the actual session back would be the best."
-- **R11.** Each session chooses whether to deploy. Feature updates and fixes deploy. The deploy follows the project's instructions. An agent asks Tony when it is unsure.
+- **R11.** Each session deploys its work. It skips the deploy only when no deploy is possible, as for a design draft. Tony: "always deploy. if impossible (like design drafts), dont deploy." The deploy follows the project's instructions. An agent asks Tony when it is unsure.
 - **R12.** A session closes on its own. Tony does not accept it first.
   1. When its task is done, the agent debriefs. The debrief writes the journal, which posts to the card. Tony reviews the journal without a live agent.
   2. With every task done and no pending issue, the agent retires.
@@ -52,7 +52,7 @@ Surveyed read only on 2026-10-30 and 2026-10-31.
 - **R8 partial.** The `retire` skill debriefs, reports to the starter, then runs `reflection stop`, which deletes the job. A close takes 2 to 4 writes: a journal post, a `request_human` review summary, and a message to the parent or a `social send`. Journal posts already copy onto the session's card.
 - **R9 partial.** Four ids exist: the 8-hex job id, the Claude session UUID, the card's Trilium id, and the journal post UUID. A Claude Code job id is the first 8 hex digits of the session id it started with. The reporting ledger mints integer task ids, keyed by node plus job, and keeps session ids as aliases (`reporting/ledger.py:1-8`). No button starts a task from a report. Discord `/new-agent` starts a fresh session in `awm/dev` from a free-text prompt, and it takes no report reference (`reporting/commands.py:136`). Board cards carry no action buttons. Moving a card between columns is the only action on the board.
 - **R10 conflicts.** Retire removes the job, so `resume_other` refuses it. `start_other replaces` seeds the new session from the last 8 transcript turns, and reads the old job's state, which retire deletes.
-- **R11 mostly exists.** The rule today is "always deploy" (precedence `39821f68`). Nothing names work that does not deploy.
+- **R11 exists.** The rule today is "always deploy" (precedence `39821f68`).
 - **R12 mostly exists.** The agent decides it is done. A review summary followed by retire lands the card in Done (commit `46b01ace`). Precedence `88fd2da392529ca3` keeps an agent alive while its questions are open.
 - **R14 partial.** The journal service mints a random UUID for each post (`journal/channel.py:234`). The gateway stamps `meta.session` with the posting session's raw Claude UUID, not the R9 form, and drops a caller's own value (`journal/operations/posts.py`, `_with_session`). Nothing limits the posts per session. No citation field exists. `meta` is free-form.
 - **R15 missing.** awm does not record which journals a session reads.

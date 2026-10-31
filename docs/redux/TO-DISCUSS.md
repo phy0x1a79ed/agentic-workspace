@@ -15,20 +15,9 @@ This doc is the stack of open threads for the redux interview. The interview run
 
 ## Current thread
 
-**1b. The session lifecycle.** How a session closes, and what happens when its result is not good. Tony: "sessions should close with a summary journal and if not good, a new session should be started rather than the old one with filled context being re started. compactions everytime would also be wasteful" (2026-10-30).
+**1a follow-ups. The work hierarchy and routing.** Thread 1a closed with these questions open. Results: `scopes.md`.
 
-- Results: `sessions.md`. The gaps from today are there too.
-
-Question queue for 1b. Ask the top open one. Strike it when Tony answers.
-
-1. ~~Who decides a session is done.~~ Answered 2026-10-31: R12.
-2. ~~What "resumable" keeps.~~ Answered 2026-10-31: the transcript only (R10).
-3. ~~Which id is the session hash.~~ Answered 2026-10-31: one platform-prefixed id (R9), and parent links (R13).
-4. ~~Whether a citation can point at a session that has no journal yet.~~ Answered 2026-10-31: no, the citing agent writes that journal first (R17).
-5. ~~Where a follow-up session starts.~~ Answered 2026-10-31: it routes itself, with the old scope as a suggestion (R18).
-6. Which work skips the deploy.
-
-Follow-up questions for 1a. Take them after 1b closes, before the next thread.
+Question queue for the 1a follow-ups. Ask the top open one. Strike it when Tony answers.
 
 1. Where a new session starts before it picks a scope, and how strict "enter only through `reflection cd`" is.
 2. Whether Tony's own terminal sessions follow the brief and the occupancy check.
@@ -96,5 +85,6 @@ Raised before the redux started. Each enters the stack when a thread reaches it.
 
 ## Closed
 
+- 1b. The session lifecycle (2026-10-31). Result: `sessions.md`.
 - 1l. Idea lineage (2026-10-31). Result: `sessions.md` § Journals and lineage.
-- 1a. The work hierarchy and routing (2026-10-30). Result: `scopes.md`. Its follow-up questions sit in the 1b question queue.
+- 1a. The work hierarchy and routing (2026-10-30). Result: `scopes.md`. Its follow-up questions are the current thread.
