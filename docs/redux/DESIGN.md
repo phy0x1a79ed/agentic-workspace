@@ -57,7 +57,7 @@ Every interface is a channel onto this loop. awm needs three channels: chat with
 
 - **R8.** A session closes with the standard agent exit. Retiring stops it fully and leaves a report to whoever started it. The report is the session's journal, written once.
 - **R9.** Each session has a short hash that Tony uses to refer to it. Tony starts a new session from a report easily. A button generates a new task that refers to the previous session's report.
-- **R10.** A closed session stays resumable, but the default is a new session. The new session starts from the old session's journal only.
+- **R10.** A retired session stays resumable through its transcript, by its Claude session id. The job itself is gone. The default follow-up is still a new session, which starts from the old session's journal only. Tony: "In instances where I do ask for a \"resume\", getting the actual session back would be the best."
 - **R11.** Each session chooses whether to deploy. Feature updates and fixes deploy. The deploy follows the project's instructions. An agent asks Tony when it is unsure.
 - **R12.** A session closes on its own. Tony does not accept it first.
   1. When its task is done, the agent debriefs. The debrief writes the journal, which posts to the card. Tony reviews the journal without a live agent.

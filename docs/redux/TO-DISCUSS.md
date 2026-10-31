@@ -35,8 +35,10 @@ This doc is the stack of open threads for the redux interview. The interview run
 Question queue for 1b and the 1a follow-ups. Ask the top one. Strike it when Tony answers.
 
 1. ~~1b: Who decides a session is done.~~ Answered 2026-10-31: R12.
-2. 1b: What "resumable" keeps: the whole job, the transcript only, or the journal only.
-3. 1b: The session hash, the new-task button and where the follow-up session starts. Which id is the hash, where the button lives, and whether the follow-up goes to the old scope or routes itself.
+2. ~~1b: What "resumable" keeps.~~ Answered 2026-10-31: the transcript only (R10).
+3. 1b: Which id is the session hash. It must lead to the Claude session id, which a resume needs.
+3b. 1b: Where the new-task-from-report button lives.
+3c. 1b: Where a follow-up session starts: the old scope, or wherever it routes itself.
 4. 1b: Which work skips the deploy.
 5. 1a: Where a new session starts before it picks a scope, and how strict "enter only through `reflection cd`" is.
 6. 1a: Whether Tony's own terminal sessions follow the brief and the occupancy check.
