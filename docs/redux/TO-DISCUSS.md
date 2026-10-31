@@ -11,6 +11,7 @@ This doc is the stack of open threads for the redux interview. The interview run
 - Move a closed thread to **Closed**, with the area doc that holds its result.
 - Compact the interview session when a thread or a line of questioning closes (Tony, 2026-10-30).
 - Put one question, or a small set of closely related questions, to Tony per message. Keep the rest in the thread's question queue (Tony, 2026-10-31, precedence `ebbb2807fff5986a`).
+- Go top down, depth first. Ask only the current thread's own questions. Move a question that depends on a thread not yet designed into that thread's queue (Tony, 2026-10-31, precedence `33bc8712feec7af7`).
 
 ## Current thread
 
@@ -18,22 +19,24 @@ This doc is the stack of open threads for the redux interview. The interview run
 
 - Results: `sessions.md`. The gaps from today are there too.
 
-Question queue for 1b and the 1a follow-ups. Ask the top one. Strike it when Tony answers.
+Question queue for 1b. Ask the top open one. Strike it when Tony answers.
 
-1. ~~1b: Who decides a session is done.~~ Answered 2026-10-31: R12.
-2. ~~1b: What "resumable" keeps.~~ Answered 2026-10-31: the transcript only (R10).
-3. ~~1b: Which id is the session hash.~~ Answered 2026-10-31: one platform-prefixed id (R9), and parent links (R13).
-3b. 1b: Where the new-task-from-report button lives.
-3c. 1b: Where a follow-up session starts: the old scope, or wherever it routes itself.
-3d. 1l: Whether a citation can point at a session that has no journal yet, such as a live session the agent talked to.
-4. 1b: Which work skips the deploy.
-5. 1a: Where a new session starts before it picks a scope, and how strict "enter only through `reflection cd`" is.
-6. 1a: Whether Tony's own terminal sessions follow the brief and the occupancy check.
-7. 1a: What counts as "live" for R3: the process runs, the card is Active, Blocked or Pending review, or either.
-8. 1a: Which branch a cloned project's scope uses.
-9. 1a: What blocks a scope delete, and what `force` may override.
-10. 1a: What the hygiene check may do, and whether it triggers on a scope count, a time interval, or both.
-11. 1a: The order of the queue for a busy scope, and what a waiting session does when Tony answers before the scope frees.
+1. ~~Who decides a session is done.~~ Answered 2026-10-31: R12.
+2. ~~What "resumable" keeps.~~ Answered 2026-10-31: the transcript only (R10).
+3. ~~Which id is the session hash.~~ Answered 2026-10-31: one platform-prefixed id (R9), and parent links (R13).
+4. ~~Whether a citation can point at a session that has no journal yet.~~ Answered 2026-10-31: no, the citing agent writes that journal first (R17).
+5. Where a follow-up session starts: the old scope, or wherever it routes itself.
+6. Which work skips the deploy.
+
+Follow-up questions for 1a. Take them after 1b closes, before the next thread.
+
+1. Where a new session starts before it picks a scope, and how strict "enter only through `reflection cd`" is.
+2. Whether Tony's own terminal sessions follow the brief and the occupancy check.
+3. What counts as "live" for R3: the process runs, the card is Active, Blocked or Pending review, or either.
+4. Which branch a cloned project's scope uses.
+5. What blocks a scope delete, and what `force` may override.
+6. What the hygiene check may do, and whether it triggers on a scope count, a time interval, or both.
+7. The order of the queue for a busy scope, and what a waiting session does when Tony answers before the scope frees.
 
 Parent thread 1 (end state) waits for Tony to confirm `goal.md`. Its children are 1a to 1j.
 
@@ -46,6 +49,7 @@ Top of the stack comes first.
 1c. **Dependencies between sessions.** A question that surfaces a larger issue spawns tasks. They report back to the asking session and resume it. Tony: "a sort of asyn model like promises" (2026-10-30).
 
 1d. **The pending queue and the active list.** One interface of reports and blockers that Tony picks from, beside a list of active work. Tony: "I should be able to just click and start talking to the agent with the report or issue" and "The Kanban board attempts to do this, but is not reliable and awkward" (2026-10-30). This absorbs the parked board input.
+   - Queued from 1b: where the new-task-from-report button lives (`sessions.md` § Lifecycle).
 
 1e. **Seats as sessions.** Seats, the Discord DM included, become sessions on a channel. Agents use subagents freely and create top-level sessions only with Tony's permission. A seat agent can help Tony work the pending queue (2026-10-30).
 
