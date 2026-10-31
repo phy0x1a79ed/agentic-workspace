@@ -37,6 +37,8 @@ Question queue for 1b and the 1a follow-ups. Ask the top one. Strike it when Ton
 1. ~~1b: Who decides a session is done.~~ Answered 2026-10-31: R12.
 2. ~~1b: What "resumable" keeps.~~ Answered 2026-10-31: the transcript only (R10).
 3. 1b: Which id is the session hash. It must lead to the Claude session id, which a resume needs.
+   - Tony's proposal (2026-10-31): ids of any length, with the first 2 characters reserved for the platform. Claude Code ids read `cc<Claude session id>`. Tony: "since sessions are tied to claude right now, the id should be editable."
+   - Facts: a Claude Code job id is the first 8 hex characters of the session id it started with. The reporting ledger keys a task by node plus job, or node plus pid plus start time, gives it an integer id, and keeps later session ids as aliases (`reporting/ledger.py:1-8`).
 3b. 1b: Where the new-task-from-report button lives.
 3c. 1b: Where a follow-up session starts: the old scope, or wherever it routes itself.
 4. 1b: Which work skips the deploy.
