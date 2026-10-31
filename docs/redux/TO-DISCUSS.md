@@ -15,7 +15,15 @@ This doc is the stack of open threads for the redux interview. The interview run
 
 ## Current thread
 
-**1a follow-ups. The work hierarchy and routing.** Thread 1a closed with these questions open. Results: `scopes.md`.
+**1m. Continuous integration and deploys.** One aggregator for deploys, beside each project's deploy protocol. Tony: "right now, agents run redundant and unrelated tests repeatidly. deployments can also stack and race. Lets talk continuous integration systems, preferrably deterministic but there can be (and might necessarily require agentic elements)" (2026-10-31).
+
+- Results: a new area doc, named once the shape settles.
+
+Question queue for 1m. Ask the top open one. Strike it when Tony answers.
+
+1. Filled in after the survey of today's deploy and test paths.
+
+**1a follow-ups. The work hierarchy and routing.** Thread 1a closed with these questions open. They resume when 1m closes. Results: `scopes.md`.
 
 Question queue for the 1a follow-ups. Ask the top open one. Strike it when Tony answers.
 
