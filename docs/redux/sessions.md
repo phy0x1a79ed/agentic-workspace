@@ -26,11 +26,13 @@ This doc holds a session's id, its lifecycle from start to retirement, its journ
   3. When the agent finds follow-up issues, it stays live. It raises each one with a blocked or review request, so that it reaches Tony's list. Tony queues new work from what he sees.
   4. Tony's decisions on follow-up issues go into precedence, so that a later awm can dispatch follow-up work on its own.
 - Tony starts a new session from a report easily. A button generates a new task that refers to the previous session's report. Its place waits for thread 1d, Tony's interface to the swarm.
+- **R18.** A follow-up session routes itself the same way as any new session (R1). Its start carries the previous session's scope as a suggested route. The prompt tells the agent that it may choose another scope when the work does not fit there.
 
 ### Journals and lineage
 
 - **R14.** A session writes one or more journals. Each journal records the id of the session that wrote it, in the R9 form. Each journal can cite other journals. A session's citations are the union of its journals' citations. Tony: the R9 form "is largely ceremonial now, but crucial when we add other agentic platforms like deepseek."
 - **R17.** A citation points only at a journal. When a source session has no journal, as after a rushed or spot session, the citing agent first writes a journal for that session. It then cites that new journal. This keeps the citation field one type.
+  - A journal post takes an optional session id. It defaults to the posting session. An agent omits it in the usual case, and names another session only to journal for that session.
 - **R15.** The agent chooses its citations at debrief. awm records every journal and session that a session reads, as the candidate list. The agent cites only the sources that shaped its work, each with a one-line reason. Tony: "lets use the debrief."
 - **R16.** The lineage graph has two kinds of edge. A parent link (R13) is a hard edge, "started by". A citation (R14) is a soft edge, "built on". The idea came from John's swarm on shaula.
 
@@ -55,3 +57,4 @@ Surveyed read only on 2026-10-30 and 2026-10-31.
 - **R14 partial.** The journal service mints a random UUID for each post (`journal/channel.py:234`). The gateway stamps `meta.session` with the posting session's raw Claude UUID, not the R9 form, and drops a caller's own value (`journal/operations/posts.py`, `_with_session`). Nothing limits the posts per session. No citation field exists. `meta` is free-form.
 - **R15 missing.** awm does not record which journals a session reads.
 - **R17 missing.** `_with_session` always stamps the posting session, so a journal cannot name another session as the one it covers.
+- **R18 conflicts.** `cx start` requires a project and a scope, and places the session there (`cx/lifecycle.py`). `replaces` keeps the caller's scope. Nothing passes a scope as a suggestion only.

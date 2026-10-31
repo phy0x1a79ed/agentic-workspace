@@ -25,7 +25,7 @@ Question queue for 1b. Ask the top open one. Strike it when Tony answers.
 2. ~~What "resumable" keeps.~~ Answered 2026-10-31: the transcript only (R10).
 3. ~~Which id is the session hash.~~ Answered 2026-10-31: one platform-prefixed id (R9), and parent links (R13).
 4. ~~Whether a citation can point at a session that has no journal yet.~~ Answered 2026-10-31: no, the citing agent writes that journal first (R17).
-5. Where a follow-up session starts: the old scope, or wherever it routes itself.
+5. ~~Where a follow-up session starts.~~ Answered 2026-10-31: it routes itself, with the old scope as a suggestion (R18).
 6. Which work skips the deploy.
 
 Follow-up questions for 1a. Take them after 1b closes, before the next thread.
