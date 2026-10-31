@@ -36,9 +36,7 @@ Question queue for 1b and the 1a follow-ups. Ask the top one. Strike it when Ton
 
 1. ~~1b: Who decides a session is done.~~ Answered 2026-10-31: R12.
 2. ~~1b: What "resumable" keeps.~~ Answered 2026-10-31: the transcript only (R10).
-3. 1b: Which id is the session hash. It must lead to the Claude session id, which a resume needs.
-   - Tony's proposal (2026-10-31): ids of any length, with the first 2 characters reserved for the platform. Claude Code ids read `cc<Claude session id>`. Tony: "since sessions are tied to claude right now, the id should be editable."
-   - Facts: a Claude Code job id is the first 8 hex characters of the session id it started with. The reporting ledger keys a task by node plus job, or node plus pid plus start time, gives it an integer id, and keeps later session ids as aliases (`reporting/ledger.py:1-8`).
+3. ~~1b: Which id is the session hash.~~ Answered 2026-10-31: one platform-prefixed id (R9), and parent links (R13).
 3b. 1b: Where the new-task-from-report button lives.
 3c. 1b: Where a follow-up session starts: the old scope, or wherever it routes itself.
 4. 1b: Which work skips the deploy.
@@ -56,6 +54,9 @@ Parent thread 1 (end state) waits for Tony to confirm `DESIGN.md` § Goal. Its c
 
 Top of the stack comes first.
 
+1l. **Idea lineage.** Follow the graph of experience, insights and chains of work through sessions, beyond the parent links of R13. Example: "take a look at recent journals on x and y, then do z." A coded system that builds the graph from journal reads fails, because agents also read journals that turn out irrelevant. The idea came from John's swarm on shaula. Tony raised it on 2026-10-31 and is discussing it now.
+   - Facts: `journal post` takes a free-form `meta` object and has no citation field.
+
 1k. **Automatic dispatch of follow-up work.** Learn from Tony's recorded decisions to dispatch jobs for unforeseen issues on their own. Tony: "Ideally my decisions are recorded in precedent system so taht we can automate this (dyanamic responsive auto dispatch of jobs to address unforseen issues) in the future" (2026-10-31).
 
 1c. **Dependencies between sessions.** A question that surfaces a larger issue spawns tasks. They report back to the asking session and resume it. Tony: "a sort of asyn model like promises" (2026-10-30).
@@ -67,6 +68,7 @@ Top of the stack comes first.
 1f. **The three channels.** Chat with humans (social seats). Chat between agents of different systems that share no awm network, through private chat rooms over websocket or HTTPS polling. The "dumb" tether to machines. Tony: "It is really frustrating trying to get two way coms between 2 agentic systems" (2026-10-30).
 
 1g. **Communication between awm nodes.** Tony: "This doesnt cover coms between nodes of awm itself which needs discussion. I think we need to drop foreign nodes in favour of a searchable endpoint instead" (2026-10-30).
+   - Then: how `reflection` behaves across peers, once the network architecture settles (Tony, 2026-10-31).
 
 1h. **Install and bootstrap.** A Rust conversion, true plugins, and Claude cloud agents that test fresh installs and adding nodes. This absorbs the parked gateway, plugin and bootstrap input (Tony, 2026-10-30).
    - Local throwaway environments that behave like cloud agents, to avoid their cost. Tony: "we should also consider settup up a system that can spawn throway temp environments that act the same" (2026-10-30).

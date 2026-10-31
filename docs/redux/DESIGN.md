@@ -56,9 +56,15 @@ Every interface is a channel onto this loop. awm needs three channels: chat with
 ### Session lifecycle (thread 1b)
 
 - **R8.** A session closes with the standard agent exit. Retiring stops it fully and leaves a report to whoever started it. The report is the session's journal, written once.
-- **R9.** Each session has a short hash that Tony uses to refer to it. Tony starts a new session from a report easily. A button generates a new task that refers to the previous session's report.
+- **R9.** One id refers to one session, in awm and on its platform alike. Tony: "we have 1 and only 1 id that references each task/session across claude and awm."
+  - The id is hex, of any length. Its first 2 characters name the platform.
+  - A Claude Code session's id is `cc` followed by the hex digits of its full Claude session UUID.
+  - awm accepts incoming ids. It mints no internal ids that map to them.
+  - A short form, such as a unique prefix, is only a lookup on this id.
+  - Tony starts a new session from a report easily. A button generates a new task that refers to the previous session's report.
 - **R10.** A retired session stays resumable through its transcript, by its Claude session id. The job itself is gone. The default follow-up is still a new session, which starts from the old session's journal only. Tony: "In instances where I do ask for a \"resume\", getting the actual session back would be the best."
 - **R11.** Each session chooses whether to deploy. Feature updates and fixes deploy. The deploy follows the project's instructions. An agent asks Tony when it is unsure.
+- **R13.** Each session records the id of the session that started it. A session that clears itself gets a new id, with the old id as its parent. One parent link covers both a clear and a `start_other`.
 - **R12.** A session closes on its own. Tony does not accept it first.
   1. When its task is done, the agent debriefs. The debrief writes the journal, which posts to the card. Tony reviews the journal without a live agent.
   2. With every task done and no pending issue, the agent retires.
