@@ -9,6 +9,7 @@ This doc is the stack of open threads for the redux interview. The interview run
 - For each thread, dispatch subagents to find the systems that already exist for it. Record the diff between what Tony described and what exists. Ask Tony about each diff whose implementation is unclear (Tony, 2026-10-30).
 - Move a closed thread to **Closed**, with the `DESIGN.md` section that holds its result.
 - Compact the interview session when a thread or a line of questioning closes (Tony, 2026-10-30).
+- Put one question, or a small set of closely related questions, to Tony per message. Keep the rest in the thread's question queue (Tony, 2026-10-31, precedence `ebbb2807fff5986a`).
 
 ## Current thread
 
@@ -30,6 +31,20 @@ This doc is the stack of open threads for the redux interview. The interview run
   - R10 conflicts. Retire removes the job, so `resume_other` refuses it. `replaces` seeds the new session from the last 8 transcript turns, not from the journal.
   - R11 mostly exists, but the rule today is "always deploy" (precedence `39821f68`). Nothing names work that does not deploy.
   - Today the agent decides it is done. A review summary followed by retire lands the card in Done (commit `46b01ace`). Only a Blocked card waits for Tony.
+
+Question queue for 1b and the 1a follow-ups. Ask the top one. Strike it when Tony answers.
+
+1. 1b: Who decides a session is done: the agent retires itself, it waits in review for Tony's accept, or it stops but stays resumable until he accepts? Precedence `88fd2da392529ca3` already keeps an agent alive while its questions are open.
+2. 1b: What "resumable" keeps: the whole job, the transcript only, or the journal only.
+3. 1b: The session hash, the new-task button and where the follow-up session starts. Which id is the hash, where the button lives, and whether the follow-up goes to the old scope or routes itself.
+4. 1b: Which work skips the deploy.
+5. 1a: Where a new session starts before it picks a scope, and how strict "enter only through `reflection cd`" is.
+6. 1a: Whether Tony's own terminal sessions follow the brief and the occupancy check.
+7. 1a: What counts as "live" for R3: the process runs, the card is Active, Blocked or Pending review, or either.
+8. 1a: Which branch a cloned project's scope uses.
+9. 1a: What blocks a scope delete, and what `force` may override.
+10. 1a: What the hygiene check may do, and whether it triggers on a scope count, a time interval, or both.
+11. 1a: The order of the queue for a busy scope, and what a waiting session does when Tony answers before the scope frees.
 
 Parent thread 1 (end state) waits for Tony to confirm `DESIGN.md` § Goal. Its children are 1a to 1j.
 
@@ -105,4 +120,4 @@ Raised before the redux started. Each enters the stack when a thread reaches it.
 
 ## Closed
 
-- 1a. The work hierarchy and routing (2026-10-30). Result: `DESIGN.md` § Requirements, R1 to R7.
+- 1a. The work hierarchy and routing (2026-10-30). Result: `DESIGN.md` § Requirements, R1 to R7. Its follow-up questions sit in the 1b question queue.
