@@ -26,8 +26,7 @@ Parent thread 1 (end state) waits for Tony to confirm `goal.md`. Its children ar
 Top of the stack comes first.
 
 1q. **One card tracks several sessions.** A card or task follows all the sessions that work on it. It relates to 1d. Tony: "So now we we want a card/task to track potentially multiple sessions" (2026-11-01).
-   - Question queue:
-     1. How a session that joins a running task, as in `sessions.md` R52 path 3, gives awm its task id (R57).
+   - Question queue: empty.
 
 1p. **A parallel work skill.** A skill for large tasks. Tony: "I think we need a parallel work skill for large tasks, that instructs to plan in waves split across agents, when to scope claim and unclaim, gathering and deploying." (2026-11-01). Each session claims its own scope through `reflection cd` (`scopes.md` R2, R42).
    - Question queue:
