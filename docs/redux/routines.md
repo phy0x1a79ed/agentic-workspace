@@ -55,7 +55,8 @@ This doc holds awm's registered routines: what a routine is, what triggers it, a
   - It takes the current scope implicitly, and no other required argument. It takes no reservation name. The coordinator attaches a reservation when it starts the session, and `deploy` finds it there. Tony: "agents failing to provide the optional reservation name will be a source of error."
   - It pins the scope's head commit at call time. Later work needs a new call.
   - It returns a ticket id at once. The verdict posts to the session's card and journal.
-  - The calling session retires when nothing else is pending (R12). A coordinator that needs the verdict waits on the ticket. Thread 1c designs that wait.
+  - The calling session retires when nothing else is pending (R12). A coordinator that needs the verdict waits on the deploy call itself, as on any Bash command. Tony: "agents can just wait directly on a deploy call (like any bash tool)" (2026-11-01).
+  - When the deploy fails, the coordinator may add guidance to the fixing session (R47). It may also wait on that session with `reflection wait` (`sessions.md` R51). Tony: "if something goes wrong, the coordinator can choose to add additional guidance to the fixer session and/or use reflection pause to wait on them" (2026-11-01).
 - **R27.** `deploy` runs these deterministic steps on a batch. Any failure dispatches an implementation session (R23).
   1. **Pin.** Confirm that each pinned commit exists. The worktrees share one bare repo, so no push is needed.
   2. **Merge.** Merge the batch onto `dev`.
