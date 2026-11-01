@@ -23,13 +23,18 @@ How a session closes and raises follow-up issues belongs in `sessions.md`. What 
   2. A spawn agent button converts a Proposed card into a task and starts its agent on the peer that a dropdown names. Tony: "Need a button spawn agent from these cards which converts them. + dropdown for peer."
   3. A card in Working or Done starts a new task from that card.
 - **R64.** mizar authorizes every action. deneb hosts the board in Trilium and is an untrusted channel. Tony: "Passkey + trusted device arbitraged by mizar with deneb viewed as an untrusted channel seems good." (2026-11-01).
-  1. Each trusted device enrols a passkey once, on mizar directly, never through deneb. mizar keeps its public key.
-  2. mizar issues a challenge that names one action. The device signs it. deneb only carries the challenge and the signature. mizar accepts each signature once, within a short time.
-  3. mizar fetches pending actions from deneb. deneb never connects to mizar.
-  4. mizar weighs risk signals, such as a new device, a new network or an unusual rate. Tony: "Risk signals also seem like somwthing i want."
-  5. The design works on a phone with no standing VPN link. Tony: "This needs to work with phones which dont play well for constant link on a vpn like tailscale."
-  6. The implementation uses existing packages for these standards. Tony: "Since this all seems like established standards, we should use existing packages when implementing".
-  - Encryption alone cannot carry a secret through deneb. deneb serves the page code that would encrypt it.
+  1. Each trusted device enrols a passkey once. A new device enrols only with approval from a trusted device, or over Tailscale, never through deneb alone. mizar keeps each public key.
+  2. mizar weighs risk signals, such as a new device, a new network or an unusual rate. A risk signal asks for the passkey again. Tony: "Risk signals also seem like somwthing i want."
+  3. The design works on a phone with no standing VPN link and with nothing to install. Tony: "This needs to work with phones which dont play well for constant link on a vpn like tailscale." and "Is there no built-in browser mechanism to prevent the install of the app (or executable or softare for linux, mac, windows, android, iphone... this becomes pain)?"
+  4. The implementation uses existing packages for these standards. Tony: "Since this all seems like established standards, we should use existing packages when implementing".
+  - deneb cannot read what passes through it. mizar opens an outbound tunnel to deneb, and deneb forwards the TLS of mizar's address down it unopened. Only mizar holds that address's private key. A CAA record limits certificates for the address to DNS validation, and only mizar holds the DNS credentials.
+- **R65.** The card's action buttons are a light panel from mizar's own origin, embedded in the board page. It holds the device key and a hash chain with mizar, and needs no action from Tony beyond the button. Tony: "Whatever lets the device hold the chain locally, i dont want to have open on every prompt. It just keeps a ledger with mizar to prevent man in the middle attacks" and "Ok,  this looks good." (2026-11-01).
+  1. The panel loads with the page, not at first use. Tony: "The mizar elements should also be light and load with page rather that at use to minimize performance impact."
+  2. The device and mizar each keep only the latest hash. Each action extends it with the action and the device's signature. Tony: "I want a chain on device and mizar" and "the crypto ledger is essentially latest hash only. We dont need history, just need to know when it doesnt match up."
+  3. mizar acks each action with its new hash. The device sends no new action until the last one is acked. Tony: "Some automated ack mechanism prevents advancement on internet drop (device can be ahead, but not behind)."
+  4. After a drop, mizar's hash must equal the device's acked hash or its pending one. mizar refuses a pending action past a short expiry, and the device drops it. Any other mismatch locks the device until the passkey.
+  - Each device keeps its own chain with mizar.
+  - The browser's same-origin rule keeps deneb's page code out of the panel's storage and buttons. deneb cannot sign an entry, so it cannot inject a command.
 
 ## Gap from today
 
