@@ -14,7 +14,7 @@ This doc holds how a change gets from a scope branch to the running fleet: the t
   3. Its end state: the feature branch's changes are in `release`, and every live process built on `release` is refreshed.
   4. Errors go to agents, as R23 describes.
 - **R26.** The signature of `deploy`. Tony: "this looks good" (2026-10-31).
-  - It takes the current scope implicitly, and an optional reservation name.
+  - It takes the current scope implicitly, and no other required argument. It takes no reservation name. The coordinator attaches a reservation when it starts the session, and `deploy` finds it there. Tony: "agents failing to provide the optional reservation name will be a source of error."
   - It pins the scope's head commit at call time. Later work needs a new call.
   - It returns a ticket id at once. The verdict posts to the session's card and journal.
   - The calling session retires when nothing else is pending (R12). A coordinator that needs the verdict waits on the ticket. Thread 1c designs that wait.
@@ -29,12 +29,14 @@ This doc holds how a change gets from a scope branch to the running fleet: the t
   3. The batch goes through when every reservation is submitted or cancelled.
   4. Submissions without a reservation keep flowing in ordinary batches meanwhile.
   5. The coordinator makes the reservations before it starts the sessions. Tony: "the coordinator reserves deployments before even starting the agents."
-  6. A reservation belongs to its session. When the session ends without a submission, the service cancels its reservation and tells the coordinator.
+  6. A reservation belongs to its session, not to its scope. When the session ends without a submission, the service cancels its reservation and tells the coordinator. A later session in the same scope never joins the stale batch. Its work lands in another batch.
 - **R23.** A failed batch dispatches an implementation session, which works like any feature session. It takes the batch's work, fixes the integration and resubmits it as one combined submission. Later batches keep landing meanwhile. The service does not split a failed batch to find one cause. Tony: "I dont think isolating the failing merge will be useful. it will likely be an integration issue" and "failure dispatchs an implenetation agent [...] which acts just like a normal feature with deploy, only it takes the previous work from the batch, fixes the integration, then resubmits a combined (and fixed) deploy."
 
 ## Decisions
 
 - 2026-10-31: Sessions submit to a merge queue rather than land under a lock. Tony: "b makes sense, but I think  functionally we will end up having both." The service still serializes its own merges and deploys.
+
+- 2026-10-31: A batch cannot be edited to take a retry for a session that died. A new session lands the work in another batch. Tony: "under the current architecture, a new session will be able to handle this fine, just in another batch. acceptable."
 
 ## Gap from today
 

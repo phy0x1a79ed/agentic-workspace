@@ -26,7 +26,7 @@ Question queue for 1m. Ask the top open one. Strike it when Tony answers.
 2b. ~~The edges of R22 and R23.~~ Answered 2026-10-31: R22 steps 5 and 6, and R23.
 3. ~~What the submission contract holds.~~ Answered 2026-10-31: `deploy` is a function, with a refresh hook per project (R24, R25).
 3b. ~~The signature of `deploy`.~~ Answered 2026-10-31: R26.
-3c. How a session that holds a reservation is kept from omitting it. Tony: "agents failing to provide the optional reservation name will be a source of error unless we use explicit instructions, like in the debrief protocol."
+3c. ~~How a session that holds a reservation is kept from omitting it.~~ Answered 2026-10-31: the reservation attaches at session start and dies with the session (R22, R26). Tony: "agents failing to provide the optional reservation name will be a source of error unless we use explicit instructions, like in the debrief protocol."
 4. What the deterministic review checks, and when it spawns an integration agent.
 5. How the service picks the tests for a batch, and how it treats suites that already fail.
 6. The fleet route: which nodes, in what order, and what a failed node does.
