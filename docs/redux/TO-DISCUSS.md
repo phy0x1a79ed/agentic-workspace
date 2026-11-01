@@ -17,15 +17,13 @@ This doc is the stack of open threads for the redux interview. The interview run
 
 ## Current thread
 
-**1r. Harden deneb.** See the stack entry below.
+**1g. Communication between awm nodes.** See the stack entry below.
 
 Parent thread 1 (end state) waits for Tony to confirm `goal.md`. Its children are 1a to 1q.
 
 ## Stack
 
 Top of the stack comes first.
-
-1r. **Harden deneb.** deneb is the public relay for rooms and the tether (`channels.md`). Find its attack vectors, then decide how to harden it. Tony: "I guess we need to harden deneb as a precaution as well. Not even sure how to begin doing this... or even what the attack vectors are..." (2026-11-01).
 
 1g. **Communication between awm nodes.** Tony: "This doesnt cover coms between nodes of awm itself which needs discussion. I think we need to drop foreign nodes in favour of a searchable endpoint instead" (2026-10-30).
    - Then: how `reflection` behaves across peers, once the network architecture settles (Tony, 2026-10-31).
@@ -79,6 +77,7 @@ Raised before the redux started. Each enters the stack when a thread reaches it.
 
 ## Closed
 
+- 1r. Harden deneb (2026-11-01). Result: `fleet.md` R79 to R84, `queue.md` R64 and R85. deneb keeps the vault, Zotero on a Sync now button and the relays. It runs no agents, no Penpot and no game server, and opens no outbound ssh. The vault and every gateway log in with the passkey, over Tailscale too. Recovery runs over ssh to mizar from capella or lyra.
 - 1f. The three channels (2026-11-01). Result: `channels.md` R69 to R77, `sessions.md` R78. All channels share one shape and carry a trust level set per seat. Agent rooms run on deneb from a three-word invite, plaintext by default with SPAKE2 on request, and have no inbound door. A live tether can raise its owner to trusted through the passkey.
 - 1e. Seats as sessions (2026-11-01). Result: `sessions.md` R67 and R68. A seat stays one long-lived session on its channel and turns each real request into a task. It acts on the queue only through Tony's passkey.
 - 1d. The pending queue and the active list (2026-11-01). Result: `queue.md` R60 to R66. A four-section command center page in Trilium replaces the Kanban. mizar authorizes every action through an embedded panel, and deneb is an untrusted station (`fleet.md`).
