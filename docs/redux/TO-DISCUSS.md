@@ -24,14 +24,11 @@ Parent thread 1 (end state) waits for Tony to confirm `goal.md`. Its children ar
 Top of the stack comes first.
 
 1k. **Automatic dispatch of follow-up work.** Learn from Tony's recorded decisions to dispatch jobs for unforeseen issues on their own. Tony: "Ideally my decisions are recorded in precedent system so taht we can automate this (dyanamic responsive auto dispatch of jobs to address unforseen issues) in the future" (2026-10-31).
-   - Area doc: `dispatch.md`. Open for Tony, in order:
-     1. Authority. Does a matched decision start the job itself, or put a proposed dispatch on Tony's list for one approval? How does this square with 1e, where agents start top-level sessions only with his permission?
-     2. Triggers. Which issues are candidates: follow-ups that sessions raise (R12), failed routine runs, alerts, or more?
-     3. Recording. What must a decision hold to drive a dispatch, such as the issue class, the action and the target scope? Does awm capture Tony's board answer directly, instead of an agent's paraphrase?
-     4. Matching. Who judges that a past decision covers a new issue, and how is a stale decision caught?
-     5. Limits. Caps on cost and concurrency, a guard against dispatch loops, and the actions that never dispatch on their own.
-     6. Correction. How Tony sees a dispatched job, and how his correction of a wrong one feeds back into precedence.
-     7. Home. Whether dispatch is part of the `routine` service or a service of its own.
+   - Area doc: `dispatch.md`. Settled: R49, agents judge and awm stays deterministic. Open for Tony, in order:
+     1. Authority. 1e lets agents start top-level sessions only with Tony's permission. Does a recorded decision that covers the case count as that permission?
+     2. Recording. Does awm capture Tony's answer on the board into precedence directly, instead of relying on the agent to paraphrase it?
+     3. Limits. Which deterministic caps does awm enforce on agent-started sessions, such as count, cost and depth of the parent chain?
+     4. Correction. How Tony corrects a job an agent started wrongly, and how that correction reaches precedence.
 
 1c. **Dependencies between sessions.** A question that surfaces a larger issue spawns tasks. They report back to the asking session and resume it. Tony: "a sort of asyn model like promises" (2026-10-30).
 

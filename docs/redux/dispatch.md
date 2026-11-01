@@ -2,13 +2,16 @@
 
 ## Purpose & Contents
 
-This doc holds how awm starts work that nobody asked for directly: it notices an issue, matches it against Tony's recorded decisions, and dispatches a job for it. It holds what a decision must record to drive a dispatch, what may trigger one, who has the authority, and how Tony sees and corrects the result. Thread 1k produces it.
+This doc holds how work starts for an issue that nobody planned for. It holds who decides, what authority a recorded decision of Tony's carries, how his decisions reach precedence, and how he sees and corrects the result. Thread 1k produces it.
 
 Timer and agent triggered processes belong in `routines.md`. How a session starts, closes and raises follow-up issues belongs in `sessions.md`.
 
 ## Requirements
 
-None yet. `sessions.md` R12 step 4 already asks for the input: Tony's decisions on follow-up issues go into precedence. `routines.md` R47 covers a routine's own failure, which starts an agent with no precedence match.
+- **R49.** Agents hold the judgment. awm stays deterministic. awm never matches an issue against precedence itself. Tony: "agens hold the intelligence here, awm is deterministic" (2026-10-31).
+  1. When something unexpected comes up in a session, the agent deals with it as it sees fit. It uses the tools available, precedence among them. Tony: "in an agentic session, something unexpected comes up -> then the agent deals with it as it sees fit using the tools available like precedent."
+  2. When a routine meets something unexpected, the routine raises an exception, because routines are deterministic. The exception starts an agent (`routines.md` R47), and step 1 applies. Tony: "exceptions route to agentic sessions, so what I just said applies."
+- `sessions.md` R12 step 4 supplies the input: Tony's decisions on follow-up issues go into precedence.
 
 ## Decisions
 
