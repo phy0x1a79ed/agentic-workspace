@@ -24,7 +24,8 @@ Question queue for 1m. Ask the top open one. Strike it when Tony answers.
 1. ~~Who lands a change.~~ Answered 2026-10-31: sessions submit to a merge queue under a contract (R20).
 2. ~~How a batch forms and fails.~~ Answered 2026-10-31: no cap, reserved batches, an integration agent on failure (R21 to R23).
 2b. ~~The edges of R22 and R23.~~ Answered 2026-10-31: R22 steps 5 and 6, and R23.
-3. What the submission contract holds, and what "prepare for deploy" means for the session.
+3. ~~What the submission contract holds.~~ Answered 2026-10-31: `deploy` is a function, with a refresh hook per project (R24, R25).
+3b. The signature of `deploy`: its arguments beyond the current scope, what it returns, and whether the calling session waits or retires.
 4. What the deterministic review checks, and when it spawns an integration agent.
 5. How the service picks the tests for a batch, and how it treats suites that already fail.
 6. The fleet route: which nodes, in what order, and what a failed node does.
