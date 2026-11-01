@@ -20,7 +20,7 @@ This doc is the stack of open threads for the redux interview. The interview run
 Question queue for the 1a follow-ups. Ask the top open one. Strike it when Tony answers.
 
 1. ~~Where a new session starts, and how strict R2 is.~~ Answered 2026-10-31: a lobby, and a soft R2 (R2, R40).
-2. Whether Tony's own terminal sessions follow the brief and the occupancy check.
+2. ~~Whether Tony's own terminal sessions follow the brief and the occupancy check.~~ Answered 2026-10-31: R41.
 3. What counts as "live" for R3: the process runs, the card is Active, Blocked or Pending review, or either.
 4. Which branch a cloned project's scope uses.
 5. What blocks a scope delete, and what `force` may override.
