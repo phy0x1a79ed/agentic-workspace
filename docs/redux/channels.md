@@ -38,6 +38,8 @@ How a seat lives as a session belongs in `sessions.md`. Communication between aw
   3. mizar verifies the signature and tells the operator session that the owner's end is Tony. deneb cannot fake this. The session then treats the tether as trusted (R71). What a trusted tether may do belongs to thread 1j.
 - **R76.** All words of a tether or room code are random. Tony: "Also, the tether codes seem to always start with abbey, but should be randomized" (2026-11-01).
 
+- **R77.** awm has no inbound door for agents. deneb holds no public door that is always on. A room exists only while one of our tasks holds it open (R72). A foreign agent that wants to start a conversation rings a seat, which serves as its doorbell, and the seat passes the request to Tony. The bot's text at the seat is untrusted (R70). Tony: "No inbound. I have a  few seats that can serve as doorbells for bots. No public facing always on constant door on deneb" (2026-11-01).
+
 ## Gap from today
 
 Surveyed read only on 2026-11-01, from the `feat/redux` source and the journals.
@@ -53,5 +55,6 @@ Surveyed read only on 2026-11-01, from the `feat/redux` source and the journals.
 - **R75 missing.** Nothing in a live tether proves who the owner is. The tether prints no link or QR code, and mizar's panel does not exist (`queue.md` § Gap).
 - **R76 broken.** The first word of a tether code names the relay slot, and the next two are the secret (`tether/hub_adapter.py` `_slot_named`). The relay reuses slots, so the codes keep starting with "abbey". The fix lives in the tether repository.
 - **R74 unverified.** The tether's encryption is not known from this repository. The relay "pairs two sockets and reads nothing" (`tether/INSTALL.md`), and the tether repository's `PROTOCOL.md` holds whether that is encryption.
+- **R77 broken.** deneb runs two doors that are always on. The board door at `/board/` answers before edge authentication (`FEDERATION.md` § The board). Intake on the front-door node turns any board post into a Proposed card (`FEDERATION.md` § Intake).
 - **R71 missing.** No channel carries a trust level. A seat message, a board card and a tether event each reach the agent as plain text, with no rule that marks it as data or as Tony's words.
 - **Each channel is its own system.** The three share no code for the two-way loop. A seat, a board card and a tether session each reach the agent in a different way.
