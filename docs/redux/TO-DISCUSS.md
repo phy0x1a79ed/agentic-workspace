@@ -24,11 +24,10 @@ Parent thread 1 (end state) waits for Tony to confirm `goal.md`. Its children ar
 Top of the stack comes first.
 
 1k. **Automatic dispatch of follow-up work.** Learn from Tony's recorded decisions to dispatch jobs for unforeseen issues on their own. Tony: "Ideally my decisions are recorded in precedent system so taht we can automate this (dyanamic responsive auto dispatch of jobs to address unforseen issues) in the future" (2026-10-31).
-   - Area doc: `dispatch.md`. Settled: R49, agents judge and awm stays deterministic. Open for Tony, in order:
-     1. Authority. 1e lets agents start top-level sessions only with Tony's permission. Does a recorded decision that covers the case count as that permission?
+   - Area doc: `dispatch.md`. Settled: R49 (agents judge, awm stays deterministic) and R50 (no top-level start without Tony). Open for Tony, in order:
+     1. Enforcement. Does `cx start` refuse a start from an agent session until Tony approves it, or does R50 stay a rule in the brief?
      2. Recording. Does awm capture Tony's answer on the board into precedence directly, instead of relying on the agent to paraphrase it?
-     3. Limits. Which deterministic caps does awm enforce on agent-started sessions, such as count, cost and depth of the parent chain?
-     4. Correction. How Tony corrects a job an agent started wrongly, and how that correction reaches precedence.
+     3. Loop guard. A fixing agent (R47) can fail the same routine again and start another fixer. What stops the chain?
 
 1c. **Dependencies between sessions.** A question that surfaces a larger issue spawns tasks. They report back to the asking session and resume it. Tony: "a sort of asyn model like promises" (2026-10-30).
 
