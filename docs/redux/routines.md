@@ -84,6 +84,7 @@ This doc holds awm's registered routines: what a routine is, what triggers it, a
 
 ## Decisions
 
+- 2026-11-01: R47 needs no loop guard. The chain stays linear, with at most one top-level agent running, so a fixer that fails again starts the next fixer. Tony: "the worse that it ever gets is agent -> deploy routine -> fixer agent -> routine -> agent. a linear chain. at most 1 top level agent is running. There is no runaway effect where 1 becomes 2 becomes 4, etc"
 - 2026-10-31: Sessions submit to a merge queue rather than land under a lock. Tony: "b makes sense, but I think  functionally we will end up having both." The service still serializes its own merges and deploys.
 - 2026-10-31: A batch cannot be edited to take a retry for a session that died. A new session lands the work in another batch. Tony: "under the current architecture, a new session will be able to handle this fine, just in another batch. acceptable."
 

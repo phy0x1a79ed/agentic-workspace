@@ -15,17 +15,13 @@ This doc is the stack of open threads for the redux interview. The interview run
 
 ## Current thread
 
-**1k. Automatic dispatch of follow-up work.** See the stack entry below for Tony's words.
+**1c. Dependencies between sessions.** See the stack entry below for Tony's words.
 
-Parent thread 1 (end state) waits for Tony to confirm `goal.md`. Its children are 1a to 1k.
+Parent thread 1 (end state) waits for Tony to confirm `goal.md`. Its children are 1a to 1n.
 
 ## Stack
 
 Top of the stack comes first.
-
-1k. **Automatic dispatch of follow-up work.** Learn from Tony's recorded decisions to dispatch jobs for unforeseen issues on their own. Tony: "Ideally my decisions are recorded in precedent system so taht we can automate this (dyanamic responsive auto dispatch of jobs to address unforseen issues) in the future" (2026-10-31).
-   - Area doc: `dispatch.md`. Settled: R49 (agents judge, awm stays deterministic) and R50 (no top-level start without Tony, kept in the brief). Open for Tony, in order:
-     1. Loop guard. A fixing agent (R47) can fail the same routine again and start another fixer. What stops the chain?
 
 1c. **Dependencies between sessions.** A question that surfaces a larger issue spawns tasks. They report back to the asking session and resume it. Tony: "a sort of asyn model like promises" (2026-10-30).
 
@@ -79,6 +75,7 @@ Raised before the redux started. Each enters the stack when a thread reaches it.
 
 ## Closed
 
+- 1k. Automatic dispatch of follow-up work (2026-11-01). Result: `dispatch.md` R49 and R50, `routines.md` R47 and R48.
 - 1a follow-ups. Liveness, cloned branches, deletes, hygiene and the busy-scope queue (2026-10-31). Result: `scopes.md` R42 to R46.
 - 1m. Routines, continuous integration and deploys (2026-10-31). Result: `routines.md`.
 - 1n. Timer-triggered dispatch (2026-10-31). Merged into 1m. Result: `routines.md` § Routines.
