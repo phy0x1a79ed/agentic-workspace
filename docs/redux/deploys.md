@@ -9,7 +9,13 @@ This doc holds how a change gets from a scope branch to the running fleet: the t
 - **R19.** One aggregator lands changes. It removes redundant and unrelated test runs. It stops deploys from stacking and racing. Tony: "right now, agents run redundant and unrelated tests repeatidly. deployments can also stack and race. Lets talk continuous integration systems, preferrably deterministic but there can be (and might necessarily require agentic elements)" (2026-10-31).
 - Each project keeps its own deploy protocol. The aggregator runs it.
 - **R20.** An implementation session prepares its change and submits it to the landing service under a contract, in effect a pull request. The session tests its feature in isolation before it submits. A deterministic system reviews each submission. It spawns an integration agent only when one is needed. Tony: "implemenation sessions (standard sessions) should prepare for deploy and submit to teh service using some for of contract. essentially a pull request. A deterministic system reviews and spawns an integration agent if needed."
-- **R21.** The service batches submissions that arrive together, and runs the shared checks once per batch, not once per submission. A batch stays small enough that a failure is easy to trace to its cause. Tony: "I want to prevent running abunch of the same checks like the test suite consecuteively each time for each merge" and "we dont want to batch integration like 10 PRs then something goes wrong and it becomes a nightmare to dealwith or track down what happened."
+- **R21.** The service batches submissions that arrive together, and runs the shared checks once per batch, not once per submission. A batch has no size cap. Tony: "I want to prevent running abunch of the same checks like the test suite consecuteively each time for each merge" and "Lets have no cap."
+- **R22.** Coordinating sessions share a reserved batch. Tony: "there should also be a way to specify batches for agetns that are coordinating."
+  1. One agent coordinates the work between the sessions.
+  2. Each session reserves the batch first, under one shared name. A name is unique among live reservations.
+  3. The batch goes through when every reservation is submitted or cancelled.
+  4. Submissions without a reservation keep flowing in ordinary batches meanwhile.
+- **R23.** A failed batch goes to an integration agent, dispatched like any other task. The batch then collapses into a single deployment. The service does not split a failed batch to find one cause. Tony: "I dont think isolating the failing merge will be useful. it will likely be an integration issue."
 
 ## Decisions
 
