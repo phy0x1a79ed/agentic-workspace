@@ -27,7 +27,7 @@ Top of the stack comes first.
 
 1q. **One card tracks several sessions.** A card or task follows all the sessions that work on it. It relates to 1d. Tony: "So now we we want a card/task to track potentially multiple sessions" (2026-11-01).
    - Question queue:
-     1. How a session learns its task id, to put it in its name (`sessions.md` R56, R58).
+     1. How a session that joins a running task, as in `sessions.md` R52 path 3, gives awm its task id (R57).
 
 1p. **A parallel work skill.** A skill for large tasks. Tony: "I think we need a parallel work skill for large tasks, that instructs to plan in waves split across agents, when to scope claim and unclaim, gathering and deploying." (2026-11-01). Each session claims its own scope through `reflection cd` (`scopes.md` R2, R42).
    - Question queue:
@@ -76,7 +76,7 @@ Top of the stack comes first.
 
 Peer writes held until the end of the interview.
 
-- Precedence `f7def9a0d79ac72f`: set the decision to "The task name is a slug of 2 or 3 words, a hyphen, and a task id of 5 URL-safe base64 characters (e.g. redux-naming-k3Xq_). awm mints one task id for each card, and the id points to every session of the task, active or finished. The coordinator takes the task name. Each session it starts is named <task>/<descriptor>, with a descriptor of 1 to 3 words for its concern (e.g. redux-naming-k3Xq_/survey). A session reports to the card of its task, found by the task id in its name prefix. Keep names under about 40 characters as a guideline. Tony: "Id  prefer human readable prefix and session descriptor but fear will get long", "This works", "We can do slug then a 5 character code in base 64" and "it would be easier if awm just mints a task id per card, which points to multiple sessions, active or otherwise" (2026-11-01)."
+- Precedence `f7def9a0d79ac72f`: set the decision to "A task name is a slug of 2 or 3 words (e.g. redux-naming). The coordinator takes the task name. Each session it starts is named <task>/<descriptor>, with a descriptor of 1 to 3 words for its concern (e.g. redux-naming/survey). Keep names under about 40 characters as a guideline. Names serve legibility only. awm tracks sessions by the R9 session id (2-character platform code plus the Claude session id) and tasks by a task id that awm mints for each card: the first 8 characters of a random UUID in URL-safe base64. Tony: "Id  prefer human readable prefix and session descriptor but fear will get long", "lets omit the id in the name. Names can be for legibility only." and "The real tracking is the 2 character claude indicator plus claude session id for sessions and the task ids minted by awm" (2026-11-01)."
 
 ## Parked inputs
 

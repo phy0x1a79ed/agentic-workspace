@@ -13,14 +13,20 @@ This doc holds a session's id, the id of its task, its lifecycle from start to r
   - A Claude Code session's id is `cc` followed by the hex digits of its full Claude session UUID.
   - awm accepts incoming session ids. It mints no session ids of its own that map to them. A task has its own id (R58).
   - A short form, such as a unique prefix, is only a lookup on this id.
-- **R56.** The sessions of one task are identifiable by a common prefix in their names. Tony: "We also need to give guidelines for naming... sessions for a task needs to be identifiable. Use common prefix." and "Id  prefer human readable prefix and session descriptor but fear will get long" (2026-11-01).
-  1. The task name is a slug of 2 or 3 words, a hyphen, and the task id (R58), such as `redux-naming-k3Xq_`. The task id makes the task name unique. Tony: "we should use real ids since the task slug may not have enough uniquiness. We can do slug then a 5 character code in base 64" (2026-11-01).
-  2. The coordinator takes the task name.
-  3. Each session it starts takes `<task>/<descriptor>`, where the descriptor names the concern in 1 to 3 words, such as `redux-naming-k3Xq_/survey`.
-  4. A name stays under about 40 characters. The brief states this as a guideline. Code does not check it.
-  - Tony accepted this format: "This works" (2026-11-01). Precedence `f7def9a0d79ac72f` records it.
-- **R58.** awm mints one task id for each card. The task id points to every session of the task, active or finished. It is 5 characters of the URL-safe base64 alphabet, with `-` and `_`, because the standard alphabet holds `/`, which separates the task from the descriptor (R56). Tony: "Since a task can have multiple sessions, the id is no longer 1 to 1 so awm needs to manage this now" and "it would be easier if awm just mints a task id per card, which points to multiple sessions, active or otherwise" (2026-11-01).
-- **R57.** A session reports to the card of its task. awm finds the task by the task id in the session's name prefix (R56). A session that joins a running task, as in R52 path 3, renames itself onto the task's prefix with `reflection rename`. Tony: "So now we we want a card/task to track potentially multiple sessions" and "A is fine" (2026-11-01).
+  - The session id and the task id (R58) are the only keys awm tracks by. Tony: "The real tracking is the 2 character claude indicator plus claude session id for sessions and the task ids minted by awm" (2026-11-01).
+- **R56.** The sessions of one task share a common prefix in their names, so that Tony can tell them apart. A name serves legibility only. awm tracks sessions by session id (R9) and tasks by task id (R58), never by name. Tony: "We also need to give guidelines for naming... sessions for a task needs to be identifiable. Use common prefix.", "Id  prefer human readable prefix and session descriptor but fear will get long" and "lets omit the id in the name. Names can be for legibility only." (2026-11-01).
+  1. The task name is a slug of 2 or 3 words, such as `redux-naming`. The coordinator takes the task name.
+  2. Each session it starts takes `<task>/<descriptor>`, where the descriptor names the concern in 1 to 3 words, such as `redux-naming/survey`.
+  3. A name stays under about 40 characters. The brief states this as a guideline. Code does not check it.
+  - Precedence `f7def9a0d79ac72f` records this format.
+- **R58.** awm mints one task id for each card. The task id points to every session of the task, active or finished. Tony: "we should use real ids since the task slug may not have enough uniquiness", "Since a task can have multiple sessions, the id is no longer 1 to 1 so awm needs to manage this now" and "it would be easier if awm just mints a task id per card, which points to multiple sessions, active or otherwise" (2026-11-01).
+  - The task id is the first 8 characters of a random UUID in URL-safe base64, with `-` and `_`. Tony: "Lets expand the characters to 8 and use uuids converted to base64" (2026-11-01).
+  - The URL-safe alphabet keeps the id usable in a URL or a path. The standard alphabet holds `/`.
+- **R57.** A session reports to the card of its task. awm joins a session to a task by the task id. Tony: "So now we we want a card/task to track potentially multiple sessions" and "This looks good" (2026-11-01).
+  1. A session that starts new work gets a new card. awm mints the task id then.
+  2. `reflection whoami` reports the session's task id.
+  3. The coordinator passes the task id when it starts a session. awm puts that session on the existing card.
+  4. The coordinator renames itself to the task name with `reflection rename`, for legibility (R56).
 - **R13.** Each session records the id of the session that started it. A session that clears itself gets a new id, with the old id as its parent. One parent link covers both a clear and a `start_other`.
 
 ### Lifecycle
