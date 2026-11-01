@@ -12,6 +12,7 @@ This doc is the stack of open threads for the redux interview. The interview run
 - Compact the interview session when a thread or a line of questioning closes (Tony, 2026-10-30).
 - Put one question, or a small set of closely related questions, to Tony per message. Keep the rest in the thread's question queue (Tony, 2026-10-31, precedence `ebbb2807fff5986a`).
 - Keep the design simple. Add no feature until a path needs it (Tony, 2026-11-01).
+- Commit each change locally only. Push the branch and write precedence on the peers in one sweep when the interview is done. Hold each precedence change in **Pending sweep** until then. Tony: "Local updates only, bring the peers up to date in one sweep when we are done" (2026-11-01).
 - Go top down, depth first. Ask only the current thread's own questions. Move a question that depends on a thread not yet designed into that thread's queue (Tony, 2026-10-31, precedence `33bc8712feec7af7`).
 
 ## Current thread
