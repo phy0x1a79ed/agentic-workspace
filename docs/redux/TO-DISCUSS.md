@@ -24,7 +24,7 @@ Question queue for the 1a follow-ups. Ask the top open one. Strike it when Tony 
 3. ~~What counts as "live" for R3: the process runs, the card is Active, Blocked or Pending review, or either.~~ Answered 2026-10-31: the active session holds the claim (R42).
 4. ~~Which branch a cloned project's scope uses.~~ Answered 2026-10-31: R43.
 5. ~~What blocks a scope delete, and what `force` may override.~~ Answered 2026-10-31: R44.
-6. What the hygiene check may do, and whether it triggers on a scope count, a time interval, or both.
+6. ~~What the hygiene check may do, and whether it triggers on a scope count, a time interval, or both.~~ Answered 2026-10-31: R45.
 7. The order of the queue for a busy scope, and what a waiting session does when Tony answers before the scope frees.
 
 Parent thread 1 (end state) waits for Tony to confirm `goal.md`. Its children are 1a to 1j.

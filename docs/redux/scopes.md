@@ -29,6 +29,10 @@ This doc holds how a session finds its project and scope, enters it, shares it w
   4. The branch has commits that no other branch or remote holds. `force` overrides this.
   - A forced delete lists everything it discarded.
 - **R6.** A hygiene check finds scopes not in use and cleans them up. It triggers infrequently, for example every 10 new scopes, and acts only when action is needed. It is not an agent that churns on each new scope. Tony does not have to remember to run it.
+- **R45.** The hygiene check (R6) runs after every 10 new scopes. Tony: "lets keep scope heal manual. otherwise the 10 scopes hygiene stays as proposed" (2026-10-31).
+  - It removes a scope's worktree only when R44 needs no `force`, the branch is merged, and no session used the scope for an idle period such as 14 days. It keeps the branch so the scope can be restored.
+  - It deletes no other scope. It puts one report on the pending queue that lists each held scope and why.
+  - `scope heal`, the repair of scope files, stays a manual command apart from the hygiene check.
 - **R7.** A new session can need a scope that a live session occupies. When the scope clearly fits its task, the new session acts as follows:
   1. It asks Tony on the pending queue.
   2. It waits in a queue for the scope.
@@ -49,5 +53,5 @@ Surveyed read only on 2026-10-30.
 - **R43 exists.** A cloned scope gets a new `feat/<scope>` branch from the detected default branch (`scopes.py:939`). The clone also adds a worktree on the default branch as a scope of its own (`projects.py:150`).
 - **R5 exists.** Nothing deletes scopes automatically.
 - **R44 partial.** `scope delete` blocks on uncommitted and untracked files, and `force` discards them (`scopes.py:286`). It refuses a folder that holds nested scopes. It keeps the branch unless `delete_branch` is set, and reports the restore commit. It misses ignored files, unique branch commits and a live session. A forced delete reports only a count and a sample.
-- **R6 missing.** `scope heal` is manual and only reports.
+- **R6 missing.** No hygiene check exists. `scope heal` repairs scope files, such as the `AGENTS.md` import, context links and the data link, and reports missing worktrees. It never looks for unused scopes.
 - **R7 mostly missing.** `request_human` and card messages cover steps 1 and 4. No per-scope queue or release event exists.
