@@ -13,7 +13,11 @@ This doc holds a session's id, its lifecycle from start to retirement, its journ
   - A Claude Code session's id is `cc` followed by the hex digits of its full Claude session UUID.
   - awm accepts incoming ids. It mints no internal ids that map to them.
   - A short form, such as a unique prefix, is only a lookup on this id.
-- **R56.** The sessions of one task are identifiable by a common prefix in their names. Thread 1q settles the name format. Tony: "We also need to give guidelines for naming... sessions for a task needs to be identifiable. Use common prefix." (2026-11-01).
+- **R56.** The sessions of one task are identifiable by a common prefix in their names. Tony: "We also need to give guidelines for naming... sessions for a task needs to be identifiable. Use common prefix." and "Id  prefer human readable prefix and session descriptor but fear will get long" (2026-11-01).
+  1. The coordinator takes the task name, a slug of 2 or 3 words, such as `redux-naming`.
+  2. Each session it starts takes `<task>/<descriptor>`, where the descriptor names the concern in 1 to 3 words, such as `redux-naming/survey`.
+  3. A name stays under about 40 characters. The brief states this as a guideline. Code does not check it.
+  - Tony accepted this format: "This works" (2026-11-01). Precedence `f7def9a0d79ac72f` records it.
 - **R13.** Each session records the id of the session that started it. A session that clears itself gets a new id, with the old id as its parent. One parent link covers both a clear and a `start_other`.
 
 ### Lifecycle

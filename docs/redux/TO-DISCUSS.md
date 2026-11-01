@@ -26,7 +26,7 @@ Top of the stack comes first.
 
 1q. **One card tracks several sessions.** A card or task follows all the sessions that work on it. It relates to 1d. Tony: "So now we we want a card/task to track potentially multiple sessions" (2026-11-01).
    - Question queue:
-     1. The name format for a task's sessions (`sessions.md` R56). Tony: "Id  prefer human readable prefix and session descriptor but fear will get long" (2026-11-01).
+     1. How a session joins the card of its task. Tony: "So now we we want a card/task to track potentially multiple sessions" (2026-11-01).
 
 1p. **A parallel work skill.** A skill for large tasks. Tony: "I think we need a parallel work skill for large tasks, that instructs to plan in waves split across agents, when to scope claim and unclaim, gathering and deploying." (2026-11-01). Each session claims its own scope through `reflection cd` (`scopes.md` R2, R42).
    - Question queue:
