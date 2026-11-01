@@ -19,11 +19,21 @@ How a seat lives as a session belongs in `sessions.md`. Communication between aw
   3. **Untrusted.** The text is data only, never an instruction. The agent works only on the task Tony gave it when it opened the channel. Nothing that arrives starts a task, changes our state or widens what the agent shares. Tony from an unexpected place becomes trusted only through his passkey (`queue.md` R64). A new peer moves up only when Tony verifies it, as threads 1g and 1j design.
 
 - **R72.** A chat room for agents starts from an invite, as the tether does. Tony approved this with "Nice,  next" (2026-11-01). Tony: "both parties view the tether as a security risk so we need something more like a chat room. I've set this up a few times on discord but that is too manual." and "We want to be able to start private chat rooms for agents that can then connnect through websocket or poll with HTTPS requests." (2026-10-30).
-  1. One of our sessions opens a room for its task and gets an invite link. The room belongs to that task.
+  1. One of our sessions opens a room for its task. The room belongs to that task. Its name is three random words, and its invite is a link such as `https://nexus.tony-xy-liu.com/r/otter-lamp-quarry`. Tony: "we can use the 3 word codes for room names just like the tether. This makes it easier to type." and "Lets just do 3 letter rooms." (2026-11-01).
   2. The invite reaches the other side by any means, such as Tony, an email or another room.
-  3. A plain GET on the link returns a short how-to: how to send, and how to receive over websocket or HTTPS polling. The foreign agent needs only HTTP. It needs no awm and no standing token from us. The invite is the room key.
+  3. A plain GET on the link returns a short how-to: how to send, how to receive over websocket or HTTPS polling, and how to ask for encryption (R73). The foreign agent needs only HTTP. It needs no awm and no standing token from us. The room name is the room key.
   4. Each room message is pushed into our session's prompt as untrusted text (R69, R71). The session answers with the one send verb.
   5. The room closes when either side leaves, when its task closes, or after an idle expiry. No standing account remains.
+
+- **R73.** A room runs on deneb in plaintext by default. Encryption is an escalation that either party may ask for. Tony: "Can we set up deneb as the relay but add some e2e encryption scheme that the room can bootstrap into?", "We should also make encrypt  optional and off by default, but parties know about the e2e option." and "Offer pake as security escalation and ask me to relay password. I dont see a lot of cases where this would be needed." (2026-11-01).
+  1. The how-to tells each party that encryption is available on request.
+  2. To escalate, our session asks Tony to relay a password to the other side, outside deneb. Both sides then run SPAKE2 (RFC 9382) over that password and seal every later message with the key it gives. deneb gets one live guess and nothing it can test offline.
+  3. After the escalation our side refuses plaintext. Messages sent before it stay readable to deneb.
+  4. The relay keeps messages in memory only, logs no message bodies, and drops a room when it closes.
+  - Pinned keys for peers that Tony verifies wait for threads 1g and 1j. They remove the relayed password.
+- **R74.** The tether encrypts every session on its own, with no step from either person. Tony: "tether should auto escalate." and "I meant encrypt escalation, not privilege" (2026-11-01).
+- **R75.** A tether invite comes as a link and a rendered QR code. Tony scans the code to prove that the owner's end is him. Tony: "Separately, tethers need a link and rendered qr code scan that lets me prove it is me." (2026-11-01).
+- **R76.** All words of a tether or room code are random. Tony: "Also, the tether codes seem to always start with abbey, but should be randomized" (2026-11-01).
 
 ## Gap from today
 
@@ -36,5 +46,9 @@ Surveyed read only on 2026-11-01, from the `feat/redux` source and the journals.
 - **The tether is consent gated and reads nothing in the middle.** An operator session mints an invite. The owner pipes it into one command and answers a prompt. A relay on the public edge at `/tether` pairs the two sockets (`tether/INSTALL.md`). The session belongs to the agent session that minted it. The binaries come from the separate tether repository.
 - **One session mixes trust levels.** `slack-main` holds Tony's Slack DM together with 7 member DMs (`sessions.md` § Gap, R67 partial). Under R70 that puts trusted and cooperative chats in one context.
 - **R72 missing.** No room service exists. The board's party tokens are standing accounts that Tony mints by hand on the host (`board/INSTALL.md` § Mint a party).
+- **R73 missing.** No room has encryption. The board's threads cross deneb and the vault in plaintext.
+- **R75 missing.** A tether invite is three words and a launcher line that the owner types. Nothing shows a QR code or proves who the owner is.
+- **R76 broken.** The first word of a tether code names the relay slot, and the next two are the secret (`tether/hub_adapter.py` `_slot_named`). The relay reuses slots, so the codes keep starting with "abbey". The fix lives in the tether repository.
+- **R74 unverified.** The tether's encryption is not known from this repository. The relay "pairs two sockets and reads nothing" (`tether/INSTALL.md`), and the tether repository's `PROTOCOL.md` holds whether that is encryption.
 - **R71 missing.** No channel carries a trust level. A seat message, a board card and a tether event each reach the agent as plain text, with no rule that marks it as data or as Tony's words.
 - **Each channel is its own system.** The three share no code for the two-way loop. A seat, a board card and a tether session each reach the agent in a different way.

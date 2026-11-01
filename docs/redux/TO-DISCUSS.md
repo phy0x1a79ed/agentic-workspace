@@ -28,6 +28,8 @@ Top of the stack comes first.
 1f. **The three channels.** Chat with humans (social seats). Chat between agents of different systems that share no awm network, through private chat rooms over websocket or HTTPS polling. The "dumb" tether to machines. Tony: "It is really frustrating trying to get two way coms between 2 agentic systems" (2026-10-30).
    - The inter-swarm board goes (`queue.md` § Decisions). Design how foreign agents communicate in its place. Tony: "remove the inter swarm board -> to be discussed with how foreign agents communicate" (2026-11-01).
 
+1r. **Harden deneb.** deneb is the public relay for rooms and the tether (`channels.md`). Find its attack vectors, then decide how to harden it. Tony: "I guess we need to harden deneb as a precaution as well. Not even sure how to begin doing this... or even what the attack vectors are..." (2026-11-01).
+
 1g. **Communication between awm nodes.** Tony: "This doesnt cover coms between nodes of awm itself which needs discussion. I think we need to drop foreign nodes in favour of a searchable endpoint instead" (2026-10-30).
    - Then: how `reflection` behaves across peers, once the network architecture settles (Tony, 2026-10-31).
    - Queued from 1d: which node writes a task's card when its sessions span nodes, given that mizar holds no vault copy (`sessions.md` R58, `queue.md` R64).
