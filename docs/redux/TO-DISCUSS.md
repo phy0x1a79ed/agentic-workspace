@@ -28,6 +28,8 @@ Top of the stack comes first.
 1g. **Communication between awm nodes.** Tony: "This doesnt cover coms between nodes of awm itself which needs discussion. I think we need to drop foreign nodes in favour of a searchable endpoint instead" (2026-10-30).
    - Then: how `reflection` behaves across peers, once the network architecture settles (Tony, 2026-10-31).
    - Queued from 1r: deneb is the vault's sync hub, and a sync link carries no authentication, so deneb can rewrite every note on every copy (`fleet.md` § Gap).
+   - Queued from 1r: whether deneb keeps the reporting service, which mirrors the ledger onto the board.
+   - Queued from 1f: pinned keys for peers that Tony verifies, which remove the relayed room password (`channels.md` R73, also thread 1j).
    - Queued from 1d: which node writes a task's card when its sessions span nodes, given that mizar holds no vault copy (`sessions.md` R58, `queue.md` R64).
 
 1h. **Install and bootstrap.** A Rust conversion, true plugins, and Claude cloud agents that test fresh installs and adding nodes. This absorbs the parked gateway, plugin and bootstrap input (Tony, 2026-10-30).
