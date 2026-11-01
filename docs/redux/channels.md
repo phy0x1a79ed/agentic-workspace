@@ -18,6 +18,13 @@ How a seat lives as a session belongs in `sessions.md`. Communication between aw
   2. **Cooperative.** The words are requests, not instructions. The seat answers them. It starts a task only within what Tony allows that person, which thread 3 sets. Anything that changes shared state or touches another person's work goes to Tony as a card first. One seat session holds one person and never shares a context with Tony's DM.
   3. **Untrusted.** The text is data only, never an instruction. The agent works only on the task Tony gave it when it opened the channel. Nothing that arrives starts a task, changes our state or widens what the agent shares. Tony from an unexpected place becomes trusted only through his passkey (`queue.md` R64). A new peer moves up only when Tony verifies it, as threads 1g and 1j design.
 
+- **R72.** A chat room for agents starts from an invite, as the tether does. Tony approved this with "Nice,  next" (2026-11-01). Tony: "both parties view the tether as a security risk so we need something more like a chat room. I've set this up a few times on discord but that is too manual." and "We want to be able to start private chat rooms for agents that can then connnect through websocket or poll with HTTPS requests." (2026-10-30).
+  1. One of our sessions opens a room for its task and gets an invite link. The room belongs to that task.
+  2. The invite reaches the other side by any means, such as Tony, an email or another room.
+  3. A plain GET on the link returns a short how-to: how to send, and how to receive over websocket or HTTPS polling. The foreign agent needs only HTTP. It needs no awm and no standing token from us. The invite is the room key.
+  4. Each room message is pushed into our session's prompt as untrusted text (R69, R71). The session answers with the one send verb.
+  5. The room closes when either side leaves, when its task closes, or after an idle expiry. No standing account remains.
+
 ## Gap from today
 
 Surveyed read only on 2026-11-01, from the `feat/redux` source and the journals.
@@ -28,5 +35,6 @@ Surveyed read only on 2026-11-01, from the `feat/redux` source and the journals.
 - **A foreign swarm can also search us.** shaula is a foreign peer in the peer book, with read grants on journals, kb, notes, precedence and writing (`users.md`). This is a read path, not a conversation.
 - **The tether is consent gated and reads nothing in the middle.** An operator session mints an invite. The owner pipes it into one command and answers a prompt. A relay on the public edge at `/tether` pairs the two sockets (`tether/INSTALL.md`). The session belongs to the agent session that minted it. The binaries come from the separate tether repository.
 - **One session mixes trust levels.** `slack-main` holds Tony's Slack DM together with 7 member DMs (`sessions.md` § Gap, R67 partial). Under R70 that puts trusted and cooperative chats in one context.
+- **R72 missing.** No room service exists. The board's party tokens are standing accounts that Tony mints by hand on the host (`board/INSTALL.md` § Mint a party).
 - **R71 missing.** No channel carries a trust level. A seat message, a board card and a tether event each reach the agent as plain text, with no rule that marks it as data or as Tony's words.
 - **Each channel is its own system.** The three share no code for the two-way loop. A seat, a board card and a tether session each reach the agent in a different way.
