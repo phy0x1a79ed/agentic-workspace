@@ -2,7 +2,7 @@
 
 ## Purpose & Contents
 
-This doc holds the nodes of the fleet, the role of each, and how each node is hardened. Thread 1r produces the hardening of deneb, the public host. Communication between nodes belongs here once its thread runs.
+This doc holds the nodes of the fleet, the role of each, and how each node is hardened. Thread 1r produces the hardening of deneb, the public host. Thread 1g produces how the nodes communicate.
 
 ## Requirements
 
@@ -31,3 +31,18 @@ Surveyed read only on 2026-11-01, from the cloud project's `VMs/tencent/` README
 - **deneb runs more than a relay and the vault.** It also runs Penpot in Docker, the Zotero sync timer, the reporting service and a game server (`install-awm.sh` `PUBLIC_SERVICES`). R82 broken. The Zotero timer runs every 1200 s (`deneb/README.md` § The bibliography), so R83 is broken. The Zotero docs call its key read only, and `awm zotero status` reports whether it can write (`zotero/INSTALL.md`). The live key is not checked.
 - **Logins over ssh are narrow.** sshd admits `tony` by key only, with passwordless sudo, and `avatar-relay` for one reverse port. fail2ban guards port 22 (`deneb/etc/ssh/90-hardening.conf`).
 - **R64 is not compatible with the Cloudflare proxy.** For deneb to forward mizar's TLS unopened, mizar's name must skip the Cloudflare proxy. Today every public name goes through it.
+
+### Communication between nodes
+
+Surveyed read only on 2026-11-01, from `FEDERATION.md`, the `feat/redux` source and the peer books on mizar and altair.
+
+- **Every node is a full peer.** A cross-node call goes from the caller straight to the other node's edge. It carries a node token that lives 300 seconds and is signed with the caller's Ed25519 key. The edge checks it against the key pinned in its own peer book (`httpsfront/auth.py`). mizar and altair set `AWM_PEER_LEGACY_BEARER=0`, so the shared bearer over ssh no longer works there.
+- **Domestic means full trust.** A domestic peer runs every verb except the peer book writes. It can start a session on the node with `reflection start_other`, and that session acts as a local caller (`FEDERATION.md` § Relations and grants).
+- **deneb is a domestic fleet peer.** Both books mark deneb domestic, with the role `fleet`. Any process on deneb can therefore start a session on mizar or altair. This breaks the station decision above.
+- **Each node keeps its own book by hand, and the books disagree.** mizar's book holds alcor, altair, deneb and mira. altair's book also holds capella, mizar and shaula. mira's role is `station`, but it owns the `2fa`, `social` and ssh arbiter singletons.
+- **The nodes use two meshes and an ssh tunnel.** mizar runs Tailscale only. altair reaches capella, deneb and mira over ZeroTier `phynet` and reaches alcor and mizar over Tailscale. mizar reaches mira on the LAN and reaches deneb's edge through a local ssh forward (`awm-edge-fwd@deneb`). `FEDERATION.md` § Overview still names three nodes and one mesh.
+- **One private CA signs every edge.** Each node verifies its peers against it. capella and mira both still hold the CA key, so either can mint a certificate for any node.
+- **Singletons live on mira.** Every other node reaches `2fa`, `social` and the ssh slot arbiter on mira through env selectors such as `AWM_TWOFA_PEER`.
+- **One foreign peer exists.** shaula, of the `collins` swarm, is in altair's book with read grants on journals, kb, notes, precedence and writing. A foreign node reaches only `/tools` and `/invoke` on a mesh edge, and only the read verbs that its grants name. Federated search asks it when a caller names it.
+- **Nodes share no data, except the vault.** Each node owns its own databases, and a call names a peer to read across. The vault copies sync through deneb with no authentication (§ above).
+- **Agents on two nodes have no direct line.** `SendMessage` reaches sessions on one node only. A journal post wakes nobody. Intake on altair (`AWM_FRONT_DOOR=1`) wakes only sessions on altair.
