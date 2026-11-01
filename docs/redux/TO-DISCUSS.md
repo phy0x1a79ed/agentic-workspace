@@ -15,28 +15,7 @@ This doc is the stack of open threads for the redux interview. The interview run
 
 ## Current thread
 
-**1m. Automations, continuous integration and deploys.** One aggregator for deploys, beside each project's deploy protocol. Tony: "right now, agents run redundant and unrelated tests repeatidly. deployments can also stack and race. Lets talk continuous integration systems, preferrably deterministic but there can be (and might necessarily require agentic elements)" (2026-10-31).
-
-- Results: `automations.md`. The gaps from today are there too.
-
-Question queue for 1m. Ask the top open one. Strike it when Tony answers.
-
-1. ~~Who lands a change.~~ Answered 2026-10-31: sessions submit to a merge queue under a contract (R20).
-2. ~~How a batch forms and fails.~~ Answered 2026-10-31: no cap, reserved batches, an integration agent on failure (R21 to R23).
-2b. ~~The edges of R22 and R23.~~ Answered 2026-10-31: R22 steps 5 and 6, and R23.
-3. ~~What the submission contract holds.~~ Answered 2026-10-31: `deploy` is a function, with a refresh hook per project (R24, R25).
-3b. ~~The signature of `deploy`.~~ Answered 2026-10-31: R26.
-3c. ~~How a session that holds a reservation is kept from omitting it.~~ Answered 2026-10-31: the reservation attaches at session start and dies with the session (R22, R26). Tony: "agents failing to provide the optional reservation name will be a source of error unless we use explicit instructions, like in the debrief protocol."
-4. ~~What the deterministic steps are.~~ Answered 2026-10-31: R27.
-4b. ~~Whether only the service writes `dev` and `release`.~~ Answered 2026-10-31: yes, by instruction only (R29).
-5. ~~Whether a full test suite still runs anywhere.~~ Answered 2026-10-31: as a timer-triggered automation (R30, R34). A check timeout dispatches a session under R27, which fixes the slow integration or trims the smoke set.
-6. ~~The fleet route.~~ Answered 2026-10-31: R31.
-7. ~~How a deploy restart treats live work.~~ Answered 2026-10-31: a supervised restart, and plugins as projects (R32, R33).
-8. ~~How a public release runs.~~ Answered 2026-10-31: as a registered automation, triggered by hand for now (R34, R35). Thread 1n merged into 1m here.
-9. ~~Where an automation is registered and what defines one.~~ Answered 2026-10-31: R36 to R38.
-10. A short name for the automations service. Tony: "is there a shorter word for \"automations\"?"
-
-**1a follow-ups. The work hierarchy and routing.** Thread 1a closed with these questions open. They resume when 1m closes. Results: `scopes.md`.
+**1a follow-ups. The work hierarchy and routing.** Thread 1a closed with these questions open. Results: `scopes.md`.
 
 Question queue for the 1a follow-ups. Ask the top open one. Strike it when Tony answers.
 
@@ -107,7 +86,8 @@ Raised before the redux started. Each enters the stack when a thread reaches it.
 
 ## Closed
 
-- 1n. Timer-triggered dispatch (2026-10-31). Merged into 1m. Result: `automations.md` § Automations.
+- 1m. Routines, continuous integration and deploys (2026-10-31). Result: `routines.md`.
+- 1n. Timer-triggered dispatch (2026-10-31). Merged into 1m. Result: `routines.md` § Routines.
 - 1b. The session lifecycle (2026-10-31). Result: `sessions.md`.
 - 1l. Idea lineage (2026-10-31). Result: `sessions.md` § Journals and lineage.
 - 1a. The work hierarchy and routing (2026-10-30). Result: `scopes.md`. Its follow-up questions are the current thread.
