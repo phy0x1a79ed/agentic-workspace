@@ -15,9 +15,9 @@ This doc is the stack of open threads for the redux interview. The interview run
 
 ## Current thread
 
-**1m. Continuous integration and deploys.** One aggregator for deploys, beside each project's deploy protocol. Tony: "right now, agents run redundant and unrelated tests repeatidly. deployments can also stack and race. Lets talk continuous integration systems, preferrably deterministic but there can be (and might necessarily require agentic elements)" (2026-10-31).
+**1m. Automations, continuous integration and deploys.** One aggregator for deploys, beside each project's deploy protocol. Tony: "right now, agents run redundant and unrelated tests repeatidly. deployments can also stack and race. Lets talk continuous integration systems, preferrably deterministic but there can be (and might necessarily require agentic elements)" (2026-10-31).
 
-- Results: `deploys.md`. The gaps from today are there too.
+- Results: `automations.md`. The gaps from today are there too.
 
 Question queue for 1m. Ask the top open one. Strike it when Tony answers.
 
@@ -29,10 +29,11 @@ Question queue for 1m. Ask the top open one. Strike it when Tony answers.
 3c. ~~How a session that holds a reservation is kept from omitting it.~~ Answered 2026-10-31: the reservation attaches at session start and dies with the session (R22, R26). Tony: "agents failing to provide the optional reservation name will be a source of error unless we use explicit instructions, like in the debrief protocol."
 4. ~~What the deterministic steps are.~~ Answered 2026-10-31: R27.
 4b. ~~Whether only the service writes `dev` and `release`.~~ Answered 2026-10-31: yes, by instruction only (R29).
-5. ~~Whether a full test suite still runs anywhere.~~ Answered 2026-10-31: on the timer service of thread 1n (R30). A check timeout dispatches a session under R27, which fixes the slow integration or trims the smoke set.
+5. ~~Whether a full test suite still runs anywhere.~~ Answered 2026-10-31: as a timer-triggered automation (R30, R34). A check timeout dispatches a session under R27, which fixes the slow integration or trims the smoke set.
 6. ~~The fleet route.~~ Answered 2026-10-31: R31.
 7. ~~How a deploy restart treats live work.~~ Answered 2026-10-31: a supervised restart, and plugins as projects (R32, R33).
-8. How a public release runs, apart from feature deployments (R28).
+8. ~~How a public release runs.~~ Answered 2026-10-31: as a registered automation, triggered by hand for now (R34, R35). Thread 1n merged into 1m here.
+9. Where an automation is registered and what defines one.
 
 **1a follow-ups. The work hierarchy and routing.** Thread 1a closed with these questions open. They resume when 1m closes. Results: `scopes.md`.
 
@@ -51,8 +52,6 @@ Parent thread 1 (end state) waits for Tony to confirm `goal.md`. Its children ar
 ## Stack
 
 Top of the stack comes first.
-
-1n. **Timer-triggered dispatch.** A new awm service. On a timer, it tests conditions and dispatches agents when one holds. The agents and tasks can run on remote peers. The full test suite is one use (R30). Tony: "On a timer do this and on any of these conditions, dispatch agents. this is a new awm service. the full test maintenance is a specific usecase of these timer triggered events. agents and tasks can be on remote peers." (2026-10-31).
 
 1k. **Automatic dispatch of follow-up work.** Learn from Tony's recorded decisions to dispatch jobs for unforeseen issues on their own. Tony: "Ideally my decisions are recorded in precedent system so taht we can automate this (dyanamic responsive auto dispatch of jobs to address unforseen issues) in the future" (2026-10-31).
 
@@ -107,6 +106,7 @@ Raised before the redux started. Each enters the stack when a thread reaches it.
 
 ## Closed
 
+- 1n. Timer-triggered dispatch (2026-10-31). Merged into 1m. Result: `automations.md` § Automations.
 - 1b. The session lifecycle (2026-10-31). Result: `sessions.md`.
 - 1l. Idea lineage (2026-10-31). Result: `sessions.md` § Journals and lineage.
 - 1a. The work hierarchy and routing (2026-10-30). Result: `scopes.md`. Its follow-up questions are the current thread.

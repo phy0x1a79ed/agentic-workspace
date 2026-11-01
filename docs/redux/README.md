@@ -14,7 +14,7 @@ Earlier drafts are inputs, not the frame. They are cloud/tencent `FLEET.md` (07d
 - `sessions.md` — a session's id, lifecycle, journals and lineage.
 - `users.md` — who uses awm, through which channel, and what each can reach.
 - `fleet.md` — the nodes and the role of each.
-- `deploys.md` — how a change reaches the fleet: tests, merges and deploys.
+- `automations.md` — registered automations, and the ones designed so far, such as `deploy`.
 
 ## Conventions
 

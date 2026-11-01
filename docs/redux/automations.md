@@ -1,18 +1,39 @@
-# Deploys
+# Automations
 
 ## Purpose & Contents
 
-This doc holds how a change gets from a scope branch to the running fleet: the tests it passes, the merges, and the deploy to each node. Thread 1m produced it.
+This doc holds awm's registered automations: what an automation is, what triggers it, and what it does on failure. It also holds the automations designed so far: `deploy`, which takes a change from a scope branch to the running fleet, the full test suite, and public releases. Thread 1m produced it.
 
 ## Requirements
 
+### Automations
+
+- **R34.** awm keeps a set of registered automations. An automation makes a recurring process deterministic. A timer or an agent triggers it. Tony: "we can maybe have a series of registerable automations that makes these things deterministic. automations can be trigged by a timer or by agents."
+  - An automation tests its conditions, then dispatches agents when one holds. The agents and tasks can run on remote peers. Tony: "On a timer do this and on any of these conditions, dispatch agents [...] agents and tasks can be on remote peers."
+  - `deploy`, the full test suite and a public release are each an automation. Tony: "We can now use this abstraction to also describe  deployments."
+
+### Deploy
+
 - **R19.** One aggregator lands changes. It removes redundant and unrelated test runs. It stops deploys from stacking and racing. Tony: "right now, agents run redundant and unrelated tests repeatidly. deployments can also stack and race. Lets talk continuous integration systems, preferrably deterministic but there can be (and might necessarily require agentic elements)" (2026-10-31).
 - **R20.** An implementation session tests its feature in isolation, then calls `deploy`. A deterministic system reviews each call. It spawns an agent only when one is needed. Tony: "implemenation sessions (standard sessions) should prepare for deploy and submit to teh service using some for of contract. essentially a pull request. A deterministic system reviews and spawns an integration agent if needed."
+- **R21.** The service batches submissions that arrive together, and runs the shared checks once per batch, not once per submission. A batch has no size cap. Tony: "I want to prevent running abunch of the same checks like the test suite consecuteively each time for each merge" and "Lets have no cap."
+- **R22.** Coordinating sessions share a reserved batch. Tony: "there should also be a way to specify batches for agetns that are coordinating."
+  1. One agent coordinates the work between the sessions.
+  2. Each session reserves the batch first, under one shared name. A name is unique among live reservations.
+  3. The batch goes through when every reservation is submitted or cancelled.
+  4. Submissions without a reservation keep flowing in ordinary batches meanwhile.
+  5. The coordinator makes the reservations before it starts the sessions. Tony: "the coordinator reserves deployments before even starting the agents."
+  6. A reservation belongs to its session, not to its scope. When the session ends without a submission, the service cancels its reservation and tells the coordinator. A later session in the same scope never joins the stale batch. Its work lands in another batch.
+- **R23.** A failed batch dispatches an implementation session, which works like any feature session. It takes the batch's work, fixes the integration and resubmits it as one combined submission. Later batches keep landing meanwhile. The service does not split a failed batch to find one cause. Tony: "I dont think isolating the failing merge will be useful. it will likely be an integration issue" and "failure dispatchs an implenetation agent [...] which acts just like a normal feature with deploy, only it takes the previous work from the batch, fixes the integration, then resubmits a combined (and fixed) deploy."
 - **R24.** `deploy` is one mostly deterministic core function, shared by every project. Its contract is a function signature, not a document. Tony: "I was after something closer to a function signature."
   1. Calling it places the current scope in the queue for an automated merge, feature to `dev` to `release`.
   2. `dev` is the staging branch. Integration is tested and verified there.
   3. Its end state: the feature branch's changes are in `release`, and every live process built on `release` is refreshed.
   4. Errors go to agents, as R23 describes.
+- **R25.** Each project supplies a refresh hook. The hook refreshes that project's live processes after `release` moves. Tony gave three shapes:
+  - Restart a service. For example, Trilium restarts for a core change.
+  - Place an update task on the agentic queue, so that an agent coordinates a restart that disrupts the least. For example, awm.
+  - Hot-update only what changed, in a project that supports it. For example, single awm services.
 - **R26.** The signature of `deploy`. Tony: "this looks good" (2026-10-31).
   - It takes the current scope implicitly, and no other required argument. It takes no reservation name. The coordinator attaches a reservation when it starts the session, and `deploy` finds it there. Tony: "agents failing to provide the optional reservation name will be a source of error."
   - It pins the scope's head commit at call time. Later work needs a new call.
@@ -34,21 +55,15 @@ This doc holds how a change gets from a scope branch to the running fleet: the t
   - How nodes reach each other belongs to thread 1g.
 - **R32.** A sensitive project such as awm restarts under supervision. On each node, a local agent coordinates with the other local agents and supervises the restart. Tony: "for sensitive things like awm, a local agent needs to coordinate with other local agents and supervise the restart."
 - **R33.** awm's plugins move into projects of their own. Each peer installs some of them. Each plugin project has its own refresh hook, apart from awm's. A plugin then hot-updates without touching the core awm process. Tony: "for hot updates, this is actually an infrastructure issues. we need a series of projects to host the plugins for awm (needs migration)." Thread 1h designs the plugins themselves.
+
+### The full test suite
+
+- **R30.** The full test suite runs outside `deploy`, as a timer-triggered automation (R34). Tony: "This is a separate feature."
+
+### Public releases
+
 - **R28.** A public release is not a feature deployment. Examples are a metasmith build and its upload to conda. Tony: "I also want to differentiate public releases (like metasmith uploads and builds to conda, etc) from these feature deployments."
-- **R30.** The full test suite runs outside `deploy`. A timer service runs it, as one use of timer-triggered dispatch (thread 1n). Tony: "This is a separate feature."
-- **R25.** Each project supplies a refresh hook. The hook refreshes that project's live processes after `release` moves. Tony gave three shapes:
-  - Restart a service. For example, Trilium restarts for a core change.
-  - Place an update task on the agentic queue, so that an agent coordinates a restart that disrupts the least. For example, awm.
-  - Hot-update only what changed, in a project that supports it. For example, single awm services.
-- **R21.** The service batches submissions that arrive together, and runs the shared checks once per batch, not once per submission. A batch has no size cap. Tony: "I want to prevent running abunch of the same checks like the test suite consecuteively each time for each merge" and "Lets have no cap."
-- **R22.** Coordinating sessions share a reserved batch. Tony: "there should also be a way to specify batches for agetns that are coordinating."
-  1. One agent coordinates the work between the sessions.
-  2. Each session reserves the batch first, under one shared name. A name is unique among live reservations.
-  3. The batch goes through when every reservation is submitted or cancelled.
-  4. Submissions without a reservation keep flowing in ordinary batches meanwhile.
-  5. The coordinator makes the reservations before it starts the sessions. Tony: "the coordinator reserves deployments before even starting the agents."
-  6. A reservation belongs to its session, not to its scope. When the session ends without a submission, the service cancels its reservation and tells the coordinator. A later session in the same scope never joins the stale batch. Its work lands in another batch.
-- **R23.** A failed batch dispatches an implementation session, which works like any feature session. It takes the batch's work, fixes the integration and resubmits it as one combined submission. Later batches keep landing meanwhile. The service does not split a failed batch to find one cause. Tony: "I dont think isolating the failing merge will be useful. it will likely be an integration issue" and "failure dispatchs an implenetation agent [...] which acts just like a normal feature with deploy, only it takes the previous work from the batch, fixes the integration, then resubmits a combined (and fixed) deploy."
+- **R35.** The metasmith public release is an automation registered on altair. Tony triggers it by hand for now. Tony: "for things like metasmith, the public release can be a registered automation on altair and we trigger that manually for now."
 
 ## Decisions
 
@@ -69,6 +84,7 @@ Surveyed read only on 2026-10-31, from the `feat/redux` source.
 - **Restarts ignore live work.** A deploy restart kills tether sessions and ssh ControlMasters (`d16ecbd1`, `549faf6a`, `cb95f74f`).
 - **Plugins live in the core.** awm's services are dists inside the awm repo. A deploy restarts the one gateway unit that hosts them all.
 - **Public releases are sessions.** A metasmith release runs in a `release` scope by hand. `dev.sh` builds the wheel, the Docker image, the Apptainer image and the conda package. A session uploads them to quay.io and anaconda.org, or leaves the upload commands for Tony (journals `cbc0bd7c`, `8d9360cc`, `667128c5`). One release missed its conda publish.
+- **Three schedulers exist.** The `events` service fires cron and interval schedules as `schedule.tick` events. The `dvc` service runs its own cadence engine, with a vendored copy of `events/cron.py`. `transcripts` uses a systemd timer. None of them dispatches agents on a condition, and no registry lists automations.
 - **Other projects.** `arbutus-infra` runs Terraform and Ansible with `make check`. `cloud` deploys deneb and sirius with rsync scripts. `self-improvement` copies prompt docs with a `--check` drift mode. `game-bot` has no protocol.
 - **No batching.** The `scatter-gather` skill gathers several branches into a hub branch, but runs no tests on the result.
 - **No refresh hook.** `awm deploy` restarts the whole gateway unit. No project declares how its live processes refresh.
