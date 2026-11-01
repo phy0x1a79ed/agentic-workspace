@@ -45,6 +45,10 @@ This doc holds a session's id, its lifecycle from start to retirement, its journ
   - `reflection wait` waits on sessions only. A coordinator waits on a deploy through the deploy call itself (`routines.md` R26). Tony: "pause is strictly for sessions." (2026-11-01).
   - The wake resumes the session itself from its transcript (R10).
   - The session compacts before it calls `reflection wait`. This is a soft instruction, not a check. Tony: "would be good as soft instructions to compact before retiring with "until" set" (2026-11-01).
+- **R52.** Three standard paths cover work that spans sessions. R51 serves only the third. Tony: "we should also try to keep things simple and not add new features until necessary." (2026-11-01).
+  1. **A simple task.** The agent calls `deploy` and retires. Tony: "an agent does a simple task that requires deploy, calls deploy and retires."
+  2. **A complex task.** The agent dispatches subagents to work in several scopes. The top-level agent merges their work into its own feature branch, so all of it lands with one `deploy`. Work that covers several projects gets one `deploy` for each project. Thread 1o designs how subagents claim scopes. Tony: "an agent encounters issues during a task or the initial task is complex and so it dispatches subagents to work in multiple scopes [...] I think in this case the top level agent should coordinate the merging into their feature branch and so all of it gets 1 deploy. The exception is when work covers multiple projects, then the top level agent calls deploy on each."
+  3. **Several top-level agents.** Tony starts an agent while an earlier task still runs, because the scope grew or for another reason. The agents coordinate, and one waits on the others with `reflection wait` (R51). Tony: "I start an agent after an existing task is already running, because I realize the scope is expanded or for whatever reason I get multiple top level agents coordinating. In such cases, an awm wait until [session1, session2, etc] would be useful. Ideally this doesnt happen but real work is messy so that's why we add this so we can ahve the tools ready when needed."
 
 ## Decisions
 

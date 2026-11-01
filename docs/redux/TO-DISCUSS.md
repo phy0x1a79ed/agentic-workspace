@@ -11,20 +11,20 @@ This doc is the stack of open threads for the redux interview. The interview run
 - Move a closed thread to **Closed**, with the area doc that holds its result.
 - Compact the interview session when a thread or a line of questioning closes (Tony, 2026-10-30).
 - Put one question, or a small set of closely related questions, to Tony per message. Keep the rest in the thread's question queue (Tony, 2026-10-31, precedence `ebbb2807fff5986a`).
+- Keep the design simple. Add no feature until a path needs it (Tony, 2026-11-01).
 - Go top down, depth first. Ask only the current thread's own questions. Move a question that depends on a thread not yet designed into that thread's queue (Tony, 2026-10-31, precedence `33bc8712feec7af7`).
 
 ## Current thread
 
-**1c. Dependencies between sessions.** See the stack entry below for Tony's words.
+**1o. Subagents and scopes.** See the stack entry below for Tony's words.
 
-Parent thread 1 (end state) waits for Tony to confirm `goal.md`. Its children are 1a to 1n.
+Parent thread 1 (end state) waits for Tony to confirm `goal.md`. Its children are 1a to 1o.
 
 ## Stack
 
 Top of the stack comes first.
 
-1c. **Dependencies between sessions.** A question that surfaces a larger issue spawns tasks. They report back to the asking session and resume it. Tony: "a sort of asyn model like promises" and "The hard ones are cases where questions surface larger issues and I need to dispatch one or multiple tasks, which should then report back to the original asking session and resume it" (2026-10-30). Area doc: `sessions.md`. Question queue:
-   1. Does `deploy` still return a ticket id at once (R26), now that a coordinator waits on the call itself?
+1o. **Subagents and scopes.** How subagents claim scopes, and how a session tracks its subagents, if at all. It serves path 2 of `sessions.md` R52. Tony: "(I guess we need to think aobut subagents claiming scopes and how sessions track subagents if at all)" (2026-11-01).
 
 1d. **The pending queue and the active list.** One interface of reports and blockers that Tony picks from, beside a list of active work. Tony: "I should be able to just click and start talking to the agent with the report or issue" and "The Kanban board attempts to do this, but is not reliable and awkward" (2026-10-30). This absorbs the parked board input.
    - Queued from 1b: where the new-task-from-report button lives (`sessions.md` § Lifecycle).
@@ -76,6 +76,7 @@ Raised before the redux started. Each enters the stack when a thread reaches it.
 
 ## Closed
 
+- 1c. Dependencies between sessions (2026-11-01). Result: `sessions.md` R51 and R52, `routines.md` R26.
 - 1k. Automatic dispatch of follow-up work (2026-11-01). Result: `dispatch.md` R49 and R50, `routines.md` R47 and R48.
 - 1a follow-ups. Liveness, cloned branches, deletes, hygiene and the busy-scope queue (2026-10-31). Result: `scopes.md` R42 to R46.
 - 1m. Routines, continuous integration and deploys (2026-10-31). Result: `routines.md`.
