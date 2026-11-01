@@ -13,6 +13,11 @@ This doc holds how a change gets from a scope branch to the running fleet: the t
   2. `dev` is the staging branch. Integration is tested and verified there.
   3. Its end state: the feature branch's changes are in `release`, and every live process built on `release` is refreshed.
   4. Errors go to agents, as R23 describes.
+- **R26.** The signature of `deploy`. Tony: "this looks good" (2026-10-31).
+  - It takes the current scope implicitly, and an optional reservation name.
+  - It pins the scope's head commit at call time. Later work needs a new call.
+  - It returns a ticket id at once. The verdict posts to the session's card and journal.
+  - The calling session retires when nothing else is pending (R12). A coordinator that needs the verdict waits on the ticket. Thread 1c designs that wait.
 - **R25.** Each project supplies a refresh hook. The hook refreshes that project's live processes after `release` moves. Tony gave three shapes:
   - Restart a service. For example, Trilium restarts for a core change.
   - Place an update task on the agentic queue, so that an agent coordinates a restart that disrupts the least. For example, awm.
