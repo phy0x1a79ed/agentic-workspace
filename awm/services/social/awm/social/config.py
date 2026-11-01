@@ -599,6 +599,37 @@ def load_seats(path: Path | None = None) -> list[SeatConfig]:
     return seats
 
 
+def load_witnesses(path: Path | None = None) -> list[str]:
+    """The nodes the keeper asks, in order, before it calls a seat's node down.
+
+    ``[keeper] witness = ["deneb", "altair"]``. The keeper's own node can lose
+    its network while the seats' nodes stay up, so a node that does not answer
+    is down only when a witness elsewhere cannot reach it either. Name nodes
+    off the keeper's network, and at least two, since the keeper never asks a
+    node about itself.
+    """
+    path = path if path is not None else _config_file()
+    if not path.exists():
+        return []
+    try:
+        with open(path, "rb") as f:
+            data = tomllib.load(f)
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        raise SocialConfigError(f"could not parse {path}: {exc}") from exc
+    table = data.get("keeper")
+    if table is None:
+        return []
+    if not isinstance(table, dict) or set(table) - {"witness"}:
+        raise SocialConfigError(f"{path}: [keeper] takes only witness")
+    witness = table.get("witness", [])
+    if isinstance(witness, str):
+        witness = [witness]
+    if not isinstance(witness, list) or not all(isinstance(w, str) and w.strip()
+                                                for w in witness):
+        raise SocialConfigError(f"{path}: [keeper].witness must be a list of node names")
+    return list(dict.fromkeys(w.strip() for w in witness))
+
+
 _SEAT_KEYS = {"account", "channel", "channels", "except", "node", "scope", "brief",
               "model", "effort", "compact_at", "alert_after"}
 

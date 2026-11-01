@@ -9,7 +9,12 @@ keeper mounts a chat the account joins on the next tick.
 
 A tick asks cx on each seat's node which sessions exist and whether the node's
 Claude Code daemon runs. It does nothing for a node that does not answer,
-because starting on an unknown state is how duplicates happen. A seat whose
+because starting on an unknown state is how duplicates happen. Nor does it call
+that node down by itself: the keeper's own node may be the one cut off. It asks
+each ``[keeper] witness`` in turn to probe the node. The node is down only when
+a witness answers and cannot reach it either. When a witness reaches it, or no
+witness answers, the keeper has lost contact: no outage, no alert, and on
+return one catch-up line if messages arrived meanwhile. A seat whose
 agent is alive needs nothing, except that an outdated launch spec is replaced
 once the session sits between turns. For any other seat `awm.kept.decide`
 chooses:
@@ -74,6 +79,8 @@ QUIET_S = 600.0
 START_TIMEOUT_S = 240.0
 RESUME_TIMEOUT_S = 120.0
 LIST_TIMEOUT_S = 30.0
+#: Longer than the witness's own probe of the node, so its answer gets back.
+PROBE_TIMEOUT_S = 30.0
 ADOPT_TIMEOUT_S = 30.0
 #: The least time between two alerts about one seat.
 ALERT_EVERY_S = 3600.0
@@ -84,6 +91,8 @@ CHATS_EVERY_S = 300.0
 BLIP_S = 2 * TICK_S
 
 GONE, STOPPED = "gone", "stopped"
+#: What a witness says about a node this keeper cannot reach.
+NODE_DOWN, NODE_UP, CUT_OFF = "down", "up", "cut_off"
 BLOCKED, FAILED, NEEDS_INPUT = "blocked", "failed", "needs_input"
 WAITING, RESUMING, BROKEN = "waiting", "resuming", "broken"
 ACTIVE, WORKING = "active", "working"
@@ -307,13 +316,16 @@ class SeatState:
     unresumable: str | None = None
     last_alert_at: float | None = None
     broken_alerted: bool = False
+    #: Since when this keeper cannot reach the seat's node, which a witness
+    #: did not confirm down. Never an outage.
+    gap: float | None = None
 
     def to_dict(self) -> dict:
         return {"breaker": self.breaker.to_dict(),
                 "outage": self.outage.to_dict() if self.outage else None,
                 "last_outage": self.last_outage, "alive_since": self.alive_since,
                 "unresumable": self.unresumable, "last_alert_at": self.last_alert_at,
-                "broken_alerted": self.broken_alerted}
+                "broken_alerted": self.broken_alerted, "gap": self.gap}
 
     @classmethod
     def from_dict(cls, data: dict) -> "SeatState":
@@ -323,7 +335,8 @@ class SeatState:
                    alive_since=data.get("alive_since"),
                    unresumable=data.get("unresumable"),
                    last_alert_at=data.get("last_alert_at"),
-                   broken_alerted=bool(data.get("broken_alerted")))
+                   broken_alerted=bool(data.get("broken_alerted")),
+                   gap=data.get("gap"))
 
 
 # -- cx on the seat's node ----------------------------------------------------
@@ -352,6 +365,21 @@ class Cx:
         daemon = reply.get("daemon")
         return ([row for row in reply["sessions"] if isinstance(row, dict)],
                 daemon if isinstance(daemon, dict) else None)
+
+    async def probe(self, witness: str, node: str) -> dict:
+        """What ``witness`` sees of ``node``. ``reached`` is whether the witness
+        replied at all; ``answers`` is whether the node answered it, or None
+        when the witness could not say."""
+        try:
+            reply = await self._call(witness, "probe", {"node": node}, PROBE_TIMEOUT_S)
+        except gatewayclient.GatewayCallError as exc:
+            return {"reached": True, "answers": None, "reason": _short(exc)}
+        except Exception as exc:  # noqa: BLE001 — no reply at all
+            return {"reached": False, "answers": None, "reason": _short(exc)}
+        answers = reply.get("answers") if isinstance(reply, dict) else None
+        return {"reached": True,
+                "answers": answers if isinstance(answers, bool) else None,
+                "reason": _short(reply.get("reason") if isinstance(reply, dict) else reply)}
 
     async def _verb(self, node: str, fn: str, args: dict, timeout: float) -> dict:
         try:
@@ -390,8 +418,9 @@ class Keeper:
                  interval_s: float = TICK_S, lock_path: Path | None = None,
                  clock: Callable[[], float] = time.time,
                  push: Push | None = None, list_chats: ListChats | None = None,
-                 alert: Alert | None = None) -> None:
+                 alert: Alert | None = None, witnesses: list[str] = ()) -> None:
         self.dao = dao
+        self.witnesses = list(witnesses)
         self.seats = list(seats)
         self._describe = describe
         self._chat = chat
@@ -504,6 +533,7 @@ class Keeper:
                "restarts": st.breaker.recent(now, "fresh"),
                "next_try": _iso(st.breaker.next_try) if st.breaker.next_try > now else None,
                "broken": st.breaker.tripped(now),
+               "contact_lost_since": _iso(st.gap),
                "last_outage": st.last_outage}
         if not seat.single:
             out["chats"] = [c.id for c in self._held.get(seat.name, [])]
@@ -557,13 +587,16 @@ class Keeper:
         if booting:
             self._booted_at = now
         listings: dict[str, tuple[list[dict], dict | None] | None] = {}
+        verdicts: dict[str, tuple[str, str]] = {}
         for seat in self.seats:
             if seat.node not in listings:
                 try:
                     listings[seat.node] = await self.cx.list(seat.node)
                 except CxUnavailable as exc:
-                    self._note(f"cx:{seat.node}", f"not keeping seats on {seat.node}: {exc}")
                     listings[seat.node] = None
+                    verdicts[seat.node] = await self._witness(seat.node)
+                    self._note(f"cx:{seat.node}", f"not keeping seats on {seat.node}: {exc}; "
+                               f"witness: {' by '.join(filter(None, verdicts[seat.node]))}")
             if booting:
                 rec = self.dao.keeper(seat.name)
                 seen = _seen_epoch(rec) if rec else None
@@ -571,20 +604,56 @@ class Keeper:
                     self._boot_seen[seat.name] = seen
             listing = listings[seat.node]
             if listing is None:
-                self._unreachable(seat)
+                self._unreachable(seat, *verdicts[seat.node])
             else:
                 await self._keep(seat, *listing)
             self._save(seat)
         await self._send_alerts()
         self._last_tick = now
 
-    def _unreachable(self, seat: SeatConfig) -> None:
+    async def _witness(self, node: str) -> tuple[str, str]:
+        """Whether ``node`` is down, as the first witness that can tell sees it,
+        and which witness said so.
+
+        With no witness configured the keeper's own view decides, as it did
+        before witnesses. A witness that replies but cannot tell (an older cx,
+        a refusal) means this keeper is online, so its own view decides again.
+        """
+        if not self.witnesses:
+            return NODE_DOWN, ""
+        reached = False
+        for witness in self.witnesses:
+            if witness in (node, config.node_name()):
+                continue
+            seen = await self.cx.probe(witness, node)
+            reached = reached or bool(seen.get("reached"))
+            if seen.get("answers") is True:
+                return NODE_UP, witness
+            if seen.get("answers") is False:
+                return NODE_DOWN, witness
+        return (NODE_DOWN, "") if reached else (CUT_OFF, "")
+
+    def _unreachable(self, seat: SeatConfig, verdict: str = NODE_DOWN,
+                     witness: str = "") -> None:
         rec = self.dao.keeper(seat.name)
         if rec is None:
             return
         st = self._state(seat)
-        self._open(seat, st, rec, None, "its node did not answer")
-        self._report(seat, Health(WAITING, "its node does not answer", rec["job"]))
+        here = config.node_name()
+        if verdict == NODE_DOWN:
+            cause = (f"its node answered neither {here} nor {witness}" if witness
+                     else "its node did not answer")
+            self._open(seat, st, rec, None, cause)
+            self._report(seat, Health(WAITING, "its node does not answer", rec["job"]))
+            return
+        if st.outage is None and st.gap is None:
+            seen = _seen_epoch(rec)
+            st.gap = min(seen, self._now()) if seen is not None else self._now()
+            log.info("keeper: %s: %s lost contact with %s (%s)", seat.name, here,
+                     seat.node, f"{witness} reaches it" if witness else "no witness answers")
+        why = (f"{here} cannot reach its node, but {witness} can" if verdict == NODE_UP
+               else f"{here} reaches neither its node nor a witness, so it cannot tell")
+        self._report(seat, Health(WAITING, why, rec["job"]))
 
     async def _keep(self, seat: SeatConfig, rows: list[dict], daemon: dict | None) -> None:
         described = self._describe(seat.account)
@@ -684,6 +753,8 @@ class Keeper:
             log.info("keeper: %s settled after %s", seat.name, _span(now - st.alive_since))
         if st.outage is not None:
             self._close(seat, st, row["job"], chats, keeps_history)
+        elif st.gap is not None:
+            self._close_gap(seat, st, row["job"], chats, keeps_history)
         else:
             self._restart_catch_up(seat, row["job"], chats, keeps_history)
 
@@ -705,6 +776,7 @@ class Keeper:
     def _open(self, seat: SeatConfig, st: SeatState, rec: dict, daemon: dict | None,
               own_cause: str) -> None:
         """Open the seat's restart record, or reopen it after an attempt that did not hold."""
+        st.gap = None
         if st.outage is not None:
             st.outage.up_at = st.outage.action = st.outage.missed = None
             return
@@ -761,6 +833,27 @@ class Keeper:
             self._recovered.append((seat, outage))
         st.last_outage = outage.to_dict()
         st.outage = None
+
+    def _close_gap(self, seat: SeatConfig, st: SeatState, job: str, chats: list,
+                   keeps_history: bool) -> None:
+        """The keeper reaches the node again. The seat was never down, but lines
+        meant for it could not be pushed meanwhile."""
+        since, now = st.gap, self._now()
+        st.gap = None
+        here = config.node_name()
+        log.info("keeper: %s: %s reaches %s again after %s", seat.name, here, seat.node,
+                 _span(now - since))
+        missed = self._missed(seat, chats, keeps_history, since)
+        if self._push is None or not (missed or (missed is None and now - since >= BLIP_S)):
+            return
+        count = (f"{missed} message{'s' if missed != 1 else ''} that arrived meanwhile"
+                 if missed else "lines that arrived meanwhile")
+        self._push(seat.node, job, (
+            f"social keeper: social on {here} could not reach {seat.node} from "
+            f"{_hhmm(since)} to {_hhmm(now)}, so {count} may not have been pushed to "
+            "you. This session was not down. "
+            + catch_up_line(seat, keeps_history, since)
+            + " Do not announce this in the chat."))
 
     def _restart_catch_up(self, seat: SeatConfig, job: str, chats: list,
                           keeps_history: bool) -> None:
