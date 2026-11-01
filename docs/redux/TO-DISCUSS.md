@@ -23,7 +23,7 @@ Question queue for 1m. Ask the top open one. Strike it when Tony answers.
 
 1. ~~Who lands a change.~~ Answered 2026-10-31: sessions submit to a merge queue under a contract (R20).
 2. ~~How a batch forms and fails.~~ Answered 2026-10-31: no cap, reserved batches, an integration agent on failure (R21 to R23).
-2b. The edges of R22 and R23: a reservation that never resolves, a batch that fires before every session reserves, and what the queue does while an integration agent works.
+2b. ~~The edges of R22 and R23.~~ Answered 2026-10-31: R22 steps 5 and 6, and R23.
 3. What the submission contract holds, and what "prepare for deploy" means for the session.
 4. What the deterministic review checks, and when it spawns an integration agent.
 5. How the service picks the tests for a batch, and how it treats suites that already fail.

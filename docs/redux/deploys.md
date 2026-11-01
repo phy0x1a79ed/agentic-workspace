@@ -15,7 +15,9 @@ This doc holds how a change gets from a scope branch to the running fleet: the t
   2. Each session reserves the batch first, under one shared name. A name is unique among live reservations.
   3. The batch goes through when every reservation is submitted or cancelled.
   4. Submissions without a reservation keep flowing in ordinary batches meanwhile.
-- **R23.** A failed batch goes to an integration agent, dispatched like any other task. The batch then collapses into a single deployment. The service does not split a failed batch to find one cause. Tony: "I dont think isolating the failing merge will be useful. it will likely be an integration issue."
+  5. The coordinator makes the reservations before it starts the sessions. Tony: "the coordinator reserves deployments before even starting the agents."
+  6. A reservation belongs to its session. When the session ends without a submission, the service cancels its reservation and tells the coordinator.
+- **R23.** A failed batch dispatches an implementation session, which works like any feature session. It takes the batch's work, fixes the integration and resubmits it as one combined submission. Later batches keep landing meanwhile. The service does not split a failed batch to find one cause. Tony: "I dont think isolating the failing merge will be useful. it will likely be an integration issue" and "failure dispatchs an implenetation agent [...] which acts just like a normal feature with deploy, only it takes the previous work from the batch, fixes the integration, then resubmits a combined (and fixed) deploy."
 
 ## Decisions
 
