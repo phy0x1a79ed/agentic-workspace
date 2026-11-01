@@ -18,7 +18,8 @@ Related rules live in other docs:
   2. The skill is an add-on to the planning style in the global `CLAUDE.md`. It says to plan to implement in parallel by coordinating agents, never to do the work itself, and to execute in waves. Tony: "The skill itself should be structured as an addon to planning and essentially just say plan to implement in parallel by coordinating with agents, do not work yourself. Execute in waves." (2026-11-01).
   3. The global `CLAUDE.md` points to the skill for a task with clear parallel streams of work. Tony: "the parallel work skill should be referred to by the global prompt to use if task has clear parallel streams of work" (2026-11-01).
   4. The skill stays short and repeats nothing from the planning style. Tony: "Keep it short since we dont know what needs nudging yet until it actually gets used a few times. It shoukd not he redundant with existing plan instructions" (2026-11-01).
-  - The draft lives at `drafts/parallel-work/SKILL.md`.
+  - The approved draft lives at `drafts/parallel-work/SKILL.md`. Install the skill on each node, with the pointer of step 3, when `reflection wait` (`sessions.md` R51) ships. Step 3 of the skill calls that verb. Tony: "Accept, next" (2026-11-01).
+  - The pointer reads: "**Parallel streams.** When the task has clear parallel streams of work, load the `parallel-work` skill before you write the plan." It goes in the global `CLAUDE.md` § Planning style, after the `write-docs` paragraph.
 
 ## Gap from today
 
