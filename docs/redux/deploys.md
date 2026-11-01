@@ -27,6 +27,7 @@ This doc holds how a change gets from a scope branch to the running fleet: the t
   6. **Report.** Show each submitter one mark. A tick means the batch landed. A cross names the failed step (merge, check failure, check timeout, refresh) and links to the card of the dispatched session. Tony: "maybe as small as a check box."
 - **R29.** Only `deploy` writes `dev` and `release`. Agents never merge or push into either. Instructions carry the rule, with no hook to enforce it. A `reference-transaction` hook in each bare repo is the next step if agents break the rule. Tony: "lets just pick a and escalate if there are issues."
 - **R28.** A public release is not a feature deployment. Examples are a metasmith build and its upload to conda. Tony: "I also want to differentiate public releases (like metasmith uploads and builds to conda, etc) from these feature deployments."
+- **R30.** The full test suite runs outside `deploy`. A timer service runs it, as one use of timer-triggered dispatch (thread 1n). Tony: "This is a separate feature."
 - **R25.** Each project supplies a refresh hook. The hook refreshes that project's live processes after `release` moves. Tony gave three shapes:
   - Restart a service. For example, Trilium restarts for a core change.
   - Place an update task on the agentic queue, so that an agent coordinates a restart that disrupts the least. For example, awm.

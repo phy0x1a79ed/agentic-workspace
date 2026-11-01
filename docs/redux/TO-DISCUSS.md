@@ -29,7 +29,7 @@ Question queue for 1m. Ask the top open one. Strike it when Tony answers.
 3c. ~~How a session that holds a reservation is kept from omitting it.~~ Answered 2026-10-31: the reservation attaches at session start and dies with the session (R22, R26). Tony: "agents failing to provide the optional reservation name will be a source of error unless we use explicit instructions, like in the debrief protocol."
 4. ~~What the deterministic steps are.~~ Answered 2026-10-31: R27.
 4b. ~~Whether only the service writes `dev` and `release`.~~ Answered 2026-10-31: yes, by instruction only (R29).
-5. Whether a full test suite still runs anywhere beyond the smoke checks, and who keeps the smoke checks under 1 minute.
+5. ~~Whether a full test suite still runs anywhere.~~ Answered 2026-10-31: on the timer service of thread 1n (R30). A check timeout dispatches a session under R27, which fixes the slow integration or trims the smoke set.
 6. The fleet route: which nodes, in what order, and what a failed node does.
 7. How a deploy restart treats live work, such as tether and ssh sessions.
 8. How a public release runs, apart from feature deployments (R28).
@@ -51,6 +51,8 @@ Parent thread 1 (end state) waits for Tony to confirm `goal.md`. Its children ar
 ## Stack
 
 Top of the stack comes first.
+
+1n. **Timer-triggered dispatch.** A new awm service. On a timer, it tests conditions and dispatches agents when one holds. The agents and tasks can run on remote peers. The full test suite is one use (R30). Tony: "On a timer do this and on any of these conditions, dispatch agents. this is a new awm service. the full test maintenance is a specific usecase of these timer triggered events. agents and tasks can be on remote peers." (2026-10-31).
 
 1k. **Automatic dispatch of follow-up work.** Learn from Tony's recorded decisions to dispatch jobs for unforeseen issues on their own. Tony: "Ideally my decisions are recorded in precedent system so taht we can automate this (dyanamic responsive auto dispatch of jobs to address unforseen issues) in the future" (2026-10-31).
 
