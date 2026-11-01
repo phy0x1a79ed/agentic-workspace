@@ -33,6 +33,7 @@ This doc holds how a session finds its project and scope, enters it, shares it w
   - It removes a scope's worktree only when R44 needs no `force`, the branch is merged, and no session used the scope for an idle period such as 14 days. It keeps the branch so the scope can be restored.
   - It deletes no other scope. It puts one report on the pending queue that lists each held scope and why.
   - `scope heal`, the repair of scope files, stays a manual command apart from the hygiene check.
+  - The count of new scopes is its only trigger. No timer runs it. Tony: "R45 only after 10, not time based" (2026-10-31).
 - **R7.** A new session can need a scope that a live session occupies. When the scope clearly fits its task, the new session acts as follows:
   1. It asks Tony on the pending queue.
   2. It waits in a queue for the scope.

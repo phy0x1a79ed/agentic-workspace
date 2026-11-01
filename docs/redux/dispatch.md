@@ -8,7 +8,7 @@ Timer and agent triggered processes belong in `routines.md`. How a session start
 
 ## Requirements
 
-None yet. `sessions.md` R12 step 4 already asks for the input: Tony's decisions on follow-up issues go into precedence.
+None yet. `sessions.md` R12 step 4 already asks for the input: Tony's decisions on follow-up issues go into precedence. `routines.md` R47 covers a routine's own failure, which starts an agent with no precedence match.
 
 ## Decisions
 
@@ -25,4 +25,5 @@ Surveyed read only on 2026-10-31, from the `feat/redux` source and the live prec
 - **Answers on the board are not recorded.** An answer to `operations request_human` reaches the asking session only. Nothing adds it to precedence unless that session does.
 - **The scrapers stage candidates only.** `precedence/scrape.py` and `scrape_transcripts.py` mine memories, operator posts, journals and transcripts into a manifest that a person curates before import. They never write the archive.
 - **Schedulers do not start agents.** The `events` service emits `schedule.tick` and `agent.wake`, and only the game bot consumes them. The `routine` service of `routines.md` R34, which tests conditions and dispatches agents, is designed but not built.
+- **A service can start a session.** `cx start` accepts a call with no calling session, as from a service or an operator at the front door (`_refuse_unknown_caller`, `cx/lifecycle.py`). Such a start records no parent session, so R13 lineage is lost. A node with the `station` role refuses every start. `cx start` also needs a fixed project and scope (`sessions.md` R18 conflict).
 - **The standing rule asks for permission.** Thread 1e records that agents create top-level sessions only with Tony's permission. Automatic dispatch needs an exception to it, or a standing permission that a decision grants.

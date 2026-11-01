@@ -17,6 +17,8 @@ This doc holds awm's registered routines: what a routine is, what triggers it, a
   - It has triggers: a timer, a call, or both. Tony runs one through a call, the same as an agent does. Tony: "by hand = agent call."
   - It has deterministic steps, a failure that dispatches a session, and a report of one mark (R27).
   - Its definition lives in its project's repo. Work with no project gets a new repo (R4).
+- **R47.** A failed run of any routine starts an agent to fix the error. It does not wait for Tony. This extends R23 from `deploy` to every routine. Tony: "the expected error handling for routines is to start an agent to address and fix the error" (2026-10-31).
+  - The `routine` service starts it through the same API that the MCP tool calls. The started session records the routine run as its parent (R13).
 - **R37.** The service is an MCP service. `trigger` and `cancel` run and stop a routine. `schedule` and `unschedule` set and clear its timer. Tony: "awm <the service> trigger/cancel (manual trigger), or schedule/unschedule for timers."
 - **R38.** systemd timers drive the timed triggers. Tony: "Good to use established robust mechanisms where possible." A timer fires by calling `trigger`. The service keeps the record of each run, allows one live run per routine, and watches each run to its verdict.
 - **R39.** The service is named `routine`. Each registered process is a routine. Tony: "this is fine, I will use awm routine to clarify and context should be sufficient." Claude Code also calls its scheduled cloud agents routines. Write `awm routine` wherever the context leaves doubt.
