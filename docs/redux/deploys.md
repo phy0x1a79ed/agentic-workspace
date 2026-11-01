@@ -35,7 +35,6 @@ This doc holds how a change gets from a scope branch to the running fleet: the t
 ## Decisions
 
 - 2026-10-31: Sessions submit to a merge queue rather than land under a lock. Tony: "b makes sense, but I think  functionally we will end up having both." The service still serializes its own merges and deploys.
-
 - 2026-10-31: A batch cannot be edited to take a retry for a session that died. A new session lands the work in another batch. Tony: "under the current architecture, a new session will be able to handle this fine, just in another batch. acceptable."
 
 ## Gap from today
