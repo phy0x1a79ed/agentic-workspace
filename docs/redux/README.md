@@ -11,7 +11,7 @@ Earlier drafts are inputs, not the frame. They are cloud/tencent `FLEET.md` (07d
 - `TO-DISCUSS.md` — the interview: its procedure, the current thread, the stack of open threads and the question queue.
 - `goal.md` — the end state Tony wants, the work tiers and the core loop.
 - `scopes.md` — how a session finds, enters, shares and removes a scope.
-- `sessions.md` — a session's id, lifecycle, journals and lineage.
+- `sessions.md` — a session's id, lifecycle, journals and lineage, and how a session waits on others.
 - `users.md` — who uses awm, through which channel, and what each can reach.
 - `fleet.md` — the nodes and the role of each.
 - `routines.md` — registered routines, and the ones designed so far, such as `deploy`.

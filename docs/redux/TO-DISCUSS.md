@@ -23,7 +23,10 @@ Parent thread 1 (end state) waits for Tony to confirm `goal.md`. Its children ar
 
 Top of the stack comes first.
 
-1c. **Dependencies between sessions.** A question that surfaces a larger issue spawns tasks. They report back to the asking session and resume it. Tony: "a sort of asyn model like promises" (2026-10-30).
+1c. **Dependencies between sessions.** A question that surfaces a larger issue spawns tasks. They report back to the asking session and resume it. Tony: "a sort of asyn model like promises" and "The hard ones are cases where questions surface larger issues and I need to dispatch one or multiple tasks, which should then report back to the original asking session and resume it" (2026-10-30). Area doc: `sessions.md`. Question queue:
+   1. While its tasks run, does the asking session stay live and idle, or stop and resume from its transcript (R10)? Does it resume on each report, or once every task reports? From "report back to the original asking session and resume it".
+   2. A task that Tony dispatches records the asking session as the one it reports to. Is that session also its parent (R13)? From "I need to dispatch one or multiple tasks".
+   3. Does a coordinator wait on a deploy ticket the same way as on a task? From `routines.md` R26, "Thread 1c designs that wait".
 
 1d. **The pending queue and the active list.** One interface of reports and blockers that Tony picks from, beside a list of active work. Tony: "I should be able to just click and start talking to the agent with the report or issue" and "The Kanban board attempts to do this, but is not reliable and awkward" (2026-10-30). This absorbs the parked board input.
    - Queued from 1b: where the new-task-from-report button lives (`sessions.md` § Lifecycle).

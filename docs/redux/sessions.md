@@ -2,7 +2,7 @@
 
 ## Purpose & Contents
 
-This doc holds a session's id, its lifecycle from start to retirement, its journals, and the lineage that links sessions. Thread 1b and thread 1l produced it.
+This doc holds a session's id, its lifecycle from start to retirement, its journals, the lineage that links sessions, and how a session waits on the sessions it depends on. Threads 1b, 1l and 1c produce it.
 
 ## Requirements
 
@@ -47,7 +47,7 @@ This doc holds a session's id, its lifecycle from start to retirement, its journ
 
 ## Gap from today
 
-Surveyed read only on 2026-10-30 and 2026-10-31.
+Surveyed read only on 2026-10-30, 2026-10-31 and 2026-11-01.
 
 - **R8 partial.** The `retire` skill debriefs, reports to the starter, then runs `reflection stop`, which deletes the job. A close takes 2 to 4 writes: a journal post, a `request_human` review summary, and a message to the parent or a `social send`. Journal posts already copy onto the session's card.
 - **R9 partial.** Four ids exist: the 8-hex job id, the Claude session UUID, the card's Trilium id, and the journal post UUID. A Claude Code job id is the first 8 hex digits of the session id it started with. The reporting ledger mints integer task ids, keyed by node plus job, and keeps session ids as aliases (`reporting/ledger.py:1-8`). No button starts a task from a report. Discord `/new-agent` starts a fresh session in `awm/dev` from a free-text prompt, and it takes no report reference (`reporting/commands.py:136`). Board cards carry no action buttons. Moving a card between columns is the only action on the board.
@@ -58,3 +58,9 @@ Surveyed read only on 2026-10-30 and 2026-10-31.
 - **R15 missing.** awm does not record which journals a session reads.
 - **R17 missing.** `_with_session` always stamps the posting session, so a journal cannot name another session as the one it covers.
 - **R18 conflicts.** `cx start` requires a project and a scope, and places the session there (`cx/lifecycle.py`). `replaces` keeps the caller's scope. Nothing passes a scope as a suggestion only.
+- **No wait between sessions.** A dispatched session reports to its parent through the lifecycle brief that `cx start` adds (`REPORT_TO_PARENT`, `cx/lifecycle.py`). It uses `SendMessage` when `ListAgents` lists the parent, else `reflection message`, which types the text into the parent's prompt behind its current turn. The parent keeps no record that it waits, and nothing joins the reports of several tasks. The report is free text, and nothing links it to the request that started the task.
+- **A wait lives only in a live job.** The parent receives a report only while its job runs. `retire` deletes the job, and the Claude Code daemon does not restart jobs after a host reboot (parked input), so a report to a gone parent is lost (R10 conflict).
+- **A task that Tony starts has no asking session.** Discord `/new-agent` and other starts with no calling session record no parent, so the task cannot report back to the session whose question raised it. Only `reflection start_other` from the asking session itself records the parent.
+- **The board tracks waits on Tony only.** The reporting ledger's `waits` table holds jobs that wait on Tony in their own session (`reporting/ledger.py`). A card moves to Blocked only through `request_human`. No state says that a session waits on other sessions.
+- **Two delivery paths exist.** `board_watch` types one line into a session for each event on a watched card. The reflection resume after a compaction is a guaranteed delivery of one prompt, with retries and an unbounded wait (`reflection/inject.py`). Either could carry a resume.
+- **No deploy ticket.** The `routine` service is not built, so the ticket of `routines.md` R26 and its wait do not exist.
