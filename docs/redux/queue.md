@@ -2,13 +2,13 @@
 
 ## Purpose & Contents
 
-This doc holds Tony's interface to the swarm: the pending queue of reports and blockers that he picks from, the list of active work beside it, and how one click on an item starts a conversation with its agent. Thread 1d produces it. `goal.md` § Core loop steps 4 and 5 set its frame.
+This doc holds Tony's interface to the swarm: the Swarm board, its stages, what its cards show and how they update, what happens to old cards, and how one click on a card starts a conversation with its agent. Thread 1d produces it. `goal.md` § Core loop steps 4 and 5 set its frame.
 
 How a session closes and raises follow-up issues belongs in `sessions.md`. What holds a scope's claim belongs in `scopes.md`.
 
 ## Requirements
 
-Thread 1d records its requirements here.
+- **R60.** The Kanban stays as Tony's interface. Its cards improve, its stages get fewer, and old session cards get a better mechanism. The change removes more than it adds. Tony: "I want to keep the kanban, but add to the cards, simplify the stages, and add a better mechanism for old session cards." and "I think a lot of this can be done by just improving the cards in terms of what they show and how they are updated and actually removing things rather than adding" (2026-11-01).
 
 ## Gap from today
 
