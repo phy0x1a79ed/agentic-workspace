@@ -26,7 +26,8 @@ How a session closes and raises follow-up issues belongs in `sessions.md`. What 
 - **R66.** Cards update one way. Only awm writes a card's section, tags and chips. Tony changes a card only through the action buttons (R63), and the card follows the task record. Tony writes the body of his own Proposed notes. Tony: "This makes sense." (2026-11-01).
   - Nothing reads a hand move back from the page. The Older books and the separate Ledger notes go. Done's infinite scroll (R61) and the sessions table (R62) replace them.
 - **R64.** mizar authorizes every action. deneb hosts the board in Trilium and is an untrusted channel. Tony: "Passkey + trusted device arbitraged by mizar with deneb viewed as an untrusted channel seems good." (2026-11-01).
-  1. Each trusted device enrols a passkey once. A new device enrols only with approval from a trusted device, or over Tailscale, never through deneb alone. mizar keeps each public key.
+  1. Each trusted device enrols a passkey once. A new device enrols only with approval from a trusted device, or through recovery (R85). mizar keeps each public key.
+  - Every login and every action takes the passkey, over Tailscale too (`fleet.md` R84). Tony: "With r84, i need a passkey even over tailscale" (2026-11-01).
   2. mizar weighs risk signals, such as a new device, a new network or an unusual rate. A risk signal asks for the passkey again. Tony: "Risk signals also seem like somwthing i want."
   3. The design works on a phone with no standing VPN link and with nothing to install. Tony: "This needs to work with phones which dont play well for constant link on a vpn like tailscale." and "Is there no built-in browser mechanism to prevent the install of the app (or executable or softare for linux, mac, windows, android, iphone... this becomes pain)?"
   4. The implementation uses existing packages for these standards. Tony: "Since this all seems like established standards, we should use existing packages when implementing".
@@ -38,6 +39,7 @@ How a session closes and raises follow-up issues belongs in `sessions.md`. What 
   4. After a drop, mizar's hash must equal the device's acked hash or its pending one. mizar refuses a pending action past a short expiry, and the device drops it. Any other mismatch locks the device until the passkey.
   - Each device keeps its own chain with mizar.
   - The browser's same-origin rule keeps deneb's page code out of the panel's storage and buttons. deneb cannot sign an entry, so it cannot inject a command.
+- **R85.** Tony recovers from the loss of every trusted device over ssh to mizar from capella or lyra. One command on mizar prints a one-time enrol link. The same path enrols the first device. Tony: "Losing everything, i should be able to ssh into mizar from capella and lyra" (2026-11-01).
 
 ## Decisions
 
@@ -58,4 +60,5 @@ Surveyed read only on 2026-11-01, from the `feat/redux` source.
 - **deneb is the public host.** deneb is a Tencent VM that serves `nexus.tony-xy-liu.com` (cloud `README.md`). It runs the federation board host (`board/INSTALL.md`) and Discord seat agents (`users.md`), and holds a copy of the vault (`auth/INSTALL.md`, `reporting/INSTALL.md`). `trilium/INSTALL.md` names sirius as the public host and the sync hub. The docs disagree.
 - **The vault trusts every account.** An awm account reaches the whole vault. A writable slice lets anyone with its link create notes inside one subtree. Trilium runs each note's frontend scripts on the awm origin, as the person who reads it (`trilium/INSTALL.md` § What a shared origin costs).
 - **The edge may refuse the embedded panel.** R65 embeds a mizar page in a Trilium page. The awm edge's content security policy must allow mizar's address as a frame source.
+- **R85 partial.** mizar's `authorized_keys` admits capella's key only. lyra has no key into mizar. No enrol command exists.
 - Each card tracks one session. `sessions.md` § Gap, R57 and R58, holds that gap.
