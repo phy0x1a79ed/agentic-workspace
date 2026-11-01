@@ -18,16 +18,21 @@ This doc is the stack of open threads for the redux interview. The interview run
 
 **1o. Subagents and scopes.** See the stack entry below for Tony's words.
 
-Parent thread 1 (end state) waits for Tony to confirm `goal.md`. Its children are 1a to 1p.
+Parent thread 1 (end state) waits for Tony to confirm `goal.md`. Its children are 1a to 1q.
 
 ## Stack
 
 Top of the stack comes first.
 
-1o. **Subagents and scopes.** How subagents claim scopes, and how a session tracks its subagents, if at all. It serves path 2 of `sessions.md` R52. Tony: "(I guess we need to think aobut subagents claiming scopes and how sessions track subagents if at all)" (2026-11-01). The survey is in `scopes.md` § Gap from today. Question queue:
-   1. How does a subagent change its folder to its scope? Tony: "subagents cant change their cwd?  there should be something like an enter worktree or something?" (2026-11-01).
-   2. Does awm track a session's subagents, or does the Claude Code harness alone track them? From "how sessions track subagents if at all".
-   - Answered: the top-level session holds its subagents' claims (`scopes.md` R53), through `scope claim` and `scope unclaim` (R54, R55).
+1q. **One card tracks several sessions.** A card or task follows all the sessions that work on it. It relates to 1d. Tony: "So now we we want a card/task to track potentially multiple sessions" (2026-11-01).
+
+1o. **Subagents and scopes.** How subagents claim scopes, and how a session tracks its subagents, if at all. It serves path 2 of `sessions.md` R52. Tony: "(I guess we need to think aobut subagents claiming scopes and how sessions track subagents if at all)" (2026-11-01). The survey is in `scopes.md` § Gap from today.
+   - Answered: the top-level session holds its subagents' claims (`scopes.md` R53), through `scope claim` and `scope unclaim` (R54, R55). A subagent reaches another folder only through absolute paths or a `cd` at the start of each command. Tony: "ok, I guess subagents will just use abs paths or cd." (2026-11-01).
+   - Then Tony changed the frame, after a test session. Parallel work across scopes goes to top-level sessions. Tony: "Ok, ive played with a test session and i think what im after is actually top level sessions. This changes a few things." and "Agents can spawn other agents for well defined tasks that perform parallel work. Sub agents are reserved for things like explore and parallel implementation tasks that can haplen" and "... that can happen in a single scope. There's some overlap that i cant desceibe quite clearly so we can talk about it to narrow it down if needed." (2026-11-01).
+   - Question queue:
+     1. Does an agent start these top-level sessions on its own, or does it still ask Tony first? `dispatch.md` R50 and the 2026-10-30 decision in `sessions.md` say it asks. From "Agents can spawn other agents for well defined tasks".
+     2. What changes in `sessions.md` R52 path 2 and `scopes.md` R53 to R55, which assume subagents in several scopes? From "This changes a few things."
+     3. Where does subagent work end and top-level session work begin? Ask only if a path needs it. From "There's some overlap that i cant desceibe quite clearly".
 
 1p. **A parallel work skill.** A skill for large tasks. Tony: "I think we need a parallel work skill for large tasks, that instructs to plan in waves split across agents, when to scope claim and unclaim, gathering and deploying." (2026-11-01).
 
