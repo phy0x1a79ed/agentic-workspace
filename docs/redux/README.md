@@ -15,6 +15,7 @@ Earlier drafts are inputs, not the frame. They are cloud/tencent `FLEET.md` (07d
 - `users.md` — who uses awm, through which channel, and what each can reach.
 - `fleet.md` — the nodes and the role of each.
 - `routines.md` — registered routines, and the ones designed so far, such as `deploy`.
+- `dispatch.md` — how awm starts work for an issue on its own, from Tony's recorded decisions.
 
 ## Conventions
 
