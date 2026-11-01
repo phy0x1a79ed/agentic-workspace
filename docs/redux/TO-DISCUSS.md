@@ -17,15 +17,13 @@ This doc is the stack of open threads for the redux interview. The interview run
 
 ## Current thread
 
-**1e. Seats as sessions.** See the stack entry below.
+**1f. The three channels.** See the stack entry below.
 
 Parent thread 1 (end state) waits for Tony to confirm `goal.md`. Its children are 1a to 1q.
 
 ## Stack
 
 Top of the stack comes first.
-
-1e. **Seats as sessions.** Seats, the Discord DM included, become sessions on a channel. Agents use subagents freely and start top-level sessions as `dispatch.md` R50 allows. A seat agent can help Tony work the pending queue (2026-10-30).
 
 1f. **The three channels.** Chat with humans (social seats). Chat between agents of different systems that share no awm network, through private chat rooms over websocket or HTTPS polling. The "dumb" tether to machines. Tony: "It is really frustrating trying to get two way coms between 2 agentic systems" (2026-10-30).
    - The inter-swarm board goes (`queue.md` § Decisions). Design how foreign agents communicate in its place. Tony: "remove the inter swarm board -> to be discussed with how foreign agents communicate" (2026-11-01).
@@ -81,6 +79,7 @@ Raised before the redux started. Each enters the stack when a thread reaches it.
 
 ## Closed
 
+- 1e. Seats as sessions (2026-11-01). Result: `sessions.md` R67 and R68. A seat stays one long-lived session on its channel and turns each real request into a task. It acts on the queue only through Tony's passkey.
 - 1d. The pending queue and the active list (2026-11-01). Result: `queue.md` R60 to R66. A four-section command center page in Trilium replaces the Kanban. mizar authorizes every action through an embedded panel, and deneb is an untrusted station (`fleet.md`).
 - 1p. The parallel work skill (2026-11-01). Result: `parallel-work.md` R59 and the approved draft `drafts/parallel-work/SKILL.md`. The question of where subagent work ends was not needed. `dispatch.md` R50 covers it.
 - 1q. One card tracks several sessions (2026-11-01). Result: `sessions.md` R9, R56, R57 and R58. awm mints a task id for each card, and sessions join a task by that id. Names serve legibility only.
