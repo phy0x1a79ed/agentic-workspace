@@ -2,7 +2,7 @@
 
 ## Purpose & Contents
 
-This doc holds how a session finds its project and scope, enters it, shares it with other sessions, and how a scope is removed. It also holds how a session's subagents use scopes. Threads 1a and 1o produce it.
+This doc holds how a session finds its project and scope, enters it, shares it with other sessions, and how a scope is removed. Threads 1a and 1o produce it.
 
 ## Requirements
 
@@ -19,9 +19,6 @@ This doc holds how a session finds its project and scope, enters it, shares it w
 - **R3.** A scope is one git worktree and holds at most one live session. A session is live while it works, while it is blocked on a question, and while it waits for review.
 - **R42.** An active agent session holds the claim on a scope. No card or other record holds it. The claim ends when the session ends. Tony: "if you are asking about what actually holds a scope as claimed, it is an active agent session. the claim dies with teh session" (2026-10-31).
   - What the board card shows after its session ends belongs to thread 1d.
-- **R53.** One session can claim several scopes. A top-level session holds the claim on each scope that its subagents work in. A subagent claims no scope. Each scope still holds at most one live session (R3). Tony: "this is fine. so 1 session can claim multiple scopes." (2026-11-01).
-- **R54.** `scope claim` claims a list of scopes for the calling session and does not move it. A top-level session calls it before it sends subagents into those scopes. `reflection cd` moves the session and makes the same claim. A claim on a scope that another live session holds fails, and the session follows R7 and R46. Tony: "scope claim works." (2026-11-01).
-- **R55.** `scope unclaim` releases a list of the calling session's claims before the session ends. A large session releases each scope when its work there is done. Tony: "lets add a scope unclaim so that we dont have a blanket claim by a large session." (2026-11-01).
 - **R4.** An agent may create a project, which is a git repo. Example: "try out this new tool `<github link>`" clones the tool as a project and enters a branch as a scope.
 - **R43.** A scope in a cloned project uses a new `feat/<scope>` branch from the upstream default branch. The upstream default branch stays clean for pulls. The project gets `dev` and `release` branches only when it gets a deploy routine (R24). Tony: "sounds reasonable" (2026-10-31).
 - **R5.** A scope outlives its sessions. It stays until a session removes it. awm never deletes a scope when a session ends, because the worktree can hold DVC pins and uncommitted files. Tony: "At least Im not organized enough yet to allow this automation."

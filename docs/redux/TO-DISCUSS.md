@@ -28,21 +28,18 @@ Top of the stack comes first.
    - Question queue:
      1. The name format for a task's sessions (`sessions.md` R56). Tony: "Id  prefer human readable prefix and session descriptor but fear will get long" (2026-11-01).
 
-1o. **Subagents and scopes.** How subagents claim scopes, and how a session tracks its subagents, if at all. It serves path 2 of `sessions.md` R52. Tony: "(I guess we need to think aobut subagents claiming scopes and how sessions track subagents if at all)" (2026-11-01). The survey is in `scopes.md` § Gap from today.
-   - Answered: the top-level session holds its subagents' claims (`scopes.md` R53), through `scope claim` and `scope unclaim` (R54, R55). A subagent reaches another folder only through absolute paths or a `cd` at the start of each command. Tony: "ok, I guess subagents will just use abs paths or cd." (2026-11-01).
-   - Then Tony changed the frame, after a test session. Parallel work across scopes goes to top-level sessions. Tony: "Ok, ive played with a test session and i think what im after is actually top level sessions. This changes a few things." and "Agents can spawn other agents for well defined tasks that perform parallel work. Sub agents are reserved for things like explore and parallel implementation tasks that can haplen" and "... that can happen in a single scope. There's some overlap that i cant desceibe quite clearly so we can talk about it to narrow it down if needed." (2026-11-01).
-   - Answered: an agent starts top-level sessions without Tony's permission, under guidelines (`dispatch.md` R50, reversed 2026-11-01).
-   - Question queue:
-     1. What changes in `sessions.md` R52 path 2 and `scopes.md` R53 to R55, which assume subagents in several scopes? From "This changes a few things."
-     2. Where does subagent work end and top-level session work begin? Ask only if a path needs it. From "There's some overlap that i cant desceibe quite clearly".
+1o. **Subagents and scopes.** How subagents claim scopes, and how a session tracks its subagents, if at all. Tony: "(I guess we need to think aobut subagents claiming scopes and how sessions track subagents if at all)" (2026-11-01). The survey is in `scopes.md` § Gap from today. Results so far: `dispatch.md` R50 and `sessions.md` R11 and R52 path 2. Question queue:
+   1. Path 2 has the coordinator merge the started sessions' branches for one `deploy`. `routines.md` R22 has coordinating sessions each call `deploy` into one reserved batch. Does path 2 keep R22, or does R22 go? From "I agree with you suggestions for [...] path 2." and "there should also be a way to specify batches for agetns that are coordinating."
 
-1p. **A parallel work skill.** A skill for large tasks. Tony: "I think we need a parallel work skill for large tasks, that instructs to plan in waves split across agents, when to scope claim and unclaim, gathering and deploying." (2026-11-01).
+1p. **A parallel work skill.** A skill for large tasks. Tony: "I think we need a parallel work skill for large tasks, that instructs to plan in waves split across agents, when to scope claim and unclaim, gathering and deploying." (2026-11-01). Each session claims its own scope through `reflection cd` (`scopes.md` R2, R42).
+   - Question queue:
+     1. Where does subagent work end and top-level session work begin? Ask only if the skill needs it. Tony: "There's some overlap that i cant desceibe quite clearly so we can talk about it to narrow it down if needed." (2026-11-01).
 
 1d. **The pending queue and the active list.** One interface of reports and blockers that Tony picks from, beside a list of active work. Tony: "I should be able to just click and start talking to the agent with the report or issue" and "The Kanban board attempts to do this, but is not reliable and awkward" (2026-10-30). This absorbs the parked board input.
    - Queued from 1b: where the new-task-from-report button lives (`sessions.md` § Lifecycle).
    - Queued from the 1a follow-ups: what a board card shows after its session ends (R42).
 
-1e. **Seats as sessions.** Seats, the Discord DM included, become sessions on a channel. Agents use subagents freely and create top-level sessions only with Tony's permission (replaced by `dispatch.md` R50 on 2026-11-01). A seat agent can help Tony work the pending queue (2026-10-30).
+1e. **Seats as sessions.** Seats, the Discord DM included, become sessions on a channel. Agents use subagents freely and start top-level sessions as `dispatch.md` R50 allows. A seat agent can help Tony work the pending queue (2026-10-30).
 
 1f. **The three channels.** Chat with humans (social seats). Chat between agents of different systems that share no awm network, through private chat rooms over websocket or HTTPS polling. The "dumb" tether to machines. Tony: "It is really frustrating trying to get two way coms between 2 agentic systems" (2026-10-30).
 

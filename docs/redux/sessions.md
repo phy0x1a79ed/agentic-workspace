@@ -20,7 +20,7 @@ This doc holds a session's id, its lifecycle from start to retirement, its journ
 
 - **R8.** A session closes with the standard agent exit. Retiring stops it fully and leaves a report to whoever started it. The report is the session's journal, written once.
 - **R10.** A retired session stays resumable through its transcript, by its session id (R9). The job itself is gone. The default follow-up is still a new session, which starts from the old session's journal only. Tony: "In instances where I do ask for a \"resume\", getting the actual session back would be the best."
-- **R11.** Each session deploys its work. It skips the deploy only when no deploy is possible, as for a design draft. Tony: "always deploy. if impossible (like design drafts), dont deploy." The deploy follows the project's instructions. An agent asks Tony when it is unsure.
+- **R11.** Each session deploys its work. It skips the deploy only when no deploy is possible, as for a design draft. Tony: "always deploy. if impossible (like design drafts), dont deploy." A session that a coordinator started for a complex task leaves its branch to the coordinator, which deploys (R52 path 2). The deploy follows the project's instructions. An agent asks Tony when it is unsure.
 - **R12.** A session closes on its own. Tony does not accept it first.
   1. When its task is done, the agent debriefs. The debrief writes the journal, which posts to the card. Tony reviews the journal without a live agent.
   2. With every task done and no pending issue, the agent retires.
@@ -46,16 +46,15 @@ This doc holds a session's id, its lifecycle from start to retirement, its journ
   - `reflection wait` waits on sessions only. A coordinator waits on a deploy through the deploy call itself (`routines.md` R26). Tony: "pause is strictly for sessions." (2026-11-01).
   - The wake resumes the session itself from its transcript (R10).
   - The session compacts before it calls `reflection wait`. This is a soft instruction, not a check. Tony: "would be good as soft instructions to compact before retiring with "until" set" (2026-11-01).
-- **R52.** Three standard paths cover work that spans sessions. R51 serves only the third. Tony: "we should also try to keep things simple and not add new features until necessary." (2026-11-01).
+- **R52.** Three standard paths cover work that spans sessions. R51 serves the second and the third. Tony: "we should also try to keep things simple and not add new features until necessary." (2026-11-01).
   1. **A simple task.** The agent calls `deploy` and retires. Tony: "an agent does a simple task that requires deploy, calls deploy and retires."
-  2. **A complex task.** The agent dispatches subagents to work in several scopes. The top-level agent merges their work into its own feature branch, so all of it lands with one `deploy`. Work that covers several projects gets one `deploy` for each project. Thread 1o designs how subagents claim scopes. Tony: "an agent encounters issues during a task or the initial task is complex and so it dispatches subagents to work in multiple scopes [...] I think in this case the top level agent should coordinate the merging into their feature branch and so all of it gets 1 deploy. The exception is when work covers multiple projects, then the top level agent calls deploy on each."
+  2. **A complex task.** The coordinating agent starts one top-level session for each concern (`dispatch.md` R50). Each started session moves into its own scope with `reflection cd`. The coordinator waits on them with `reflection wait` (R51). Each started session finishes on its own branch and retires without a deploy. The coordinator merges their branches into its own feature branch, so all of it lands with one `deploy`. Work that covers several projects gets one `deploy` for each project. How this path relates to the reserved batches of `routines.md` R22 is open in thread 1o. Tony: "I think in this case the top level agent should coordinate the merging into their feature branch and so all of it gets 1 deploy. The exception is when work covers multiple projects, then the top level agent calls deploy on each." and "i think what im after is actually top level sessions" (2026-11-01).
   3. **Several top-level agents.** Tony starts an agent while an earlier task still runs, because the scope grew or for another reason. The agents coordinate, and one waits on the others with `reflection wait` (R51). Tony: "I start an agent after an existing task is already running, because I realize the scope is expanded or for whatever reason I get multiple top level agents coordinating. In such cases, an awm wait until [session1, session2, etc] would be useful. Ideally this doesnt happen but real work is messy so that's why we add this so we can ahve the tools ready when needed."
 
 ## Decisions
 
 - 2026-10-30: New work goes to a new session, never into a live session's context. Tony: "I feel this encourages better performance from agents." See R3 for a scope that a live session occupies.
 - 2026-10-30: A result that is not good gets a new session, not a restart of the old session with its full context.
-- 2026-10-30: Agents use subagents freely. They create top-level sessions only with Tony's permission. Replaced on 2026-11-01 by `dispatch.md` R50.
 - 2026-10-30: Seats are sessions. A seat is a session on a channel.
 
 ## Gap from today

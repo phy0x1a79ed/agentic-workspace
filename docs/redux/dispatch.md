@@ -24,7 +24,6 @@ Timer and agent triggered processes belong in `routines.md`. How a session start
 
 ## Decisions
 
-- 2026-11-01: R50 reversed. On 2026-10-31 it said that an agent never starts a top-level session on its own. Tony: "no, agents still shouldnt be able to start top level agents autonomously. That had a runaway effect before". Tony reversed it after he tried a test session (see R50).
 - 2026-11-01: Precedence does not change for dispatch. Agents keep using it as they do today. Tony: "precedence doesnt need to change? why is this a subject? I didnt ask to talk about this..."
 
 ## Gap from today
