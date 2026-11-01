@@ -15,19 +15,9 @@ This doc is the stack of open threads for the redux interview. The interview run
 
 ## Current thread
 
-**1a follow-ups. The work hierarchy and routing.** Thread 1a closed with these questions open. Results: `scopes.md`.
+**1k. Automatic dispatch of follow-up work.** See the stack entry below for Tony's words.
 
-Question queue for the 1a follow-ups. Ask the top open one. Strike it when Tony answers.
-
-1. ~~Where a new session starts, and how strict R2 is.~~ Answered 2026-10-31: a lobby, and a soft R2 (R2, R40).
-2. ~~Whether Tony's own terminal sessions follow the brief and the occupancy check.~~ Answered 2026-10-31: R41.
-3. ~~What counts as "live" for R3: the process runs, the card is Active, Blocked or Pending review, or either.~~ Answered 2026-10-31: the active session holds the claim (R42).
-4. ~~Which branch a cloned project's scope uses.~~ Answered 2026-10-31: R43.
-5. ~~What blocks a scope delete, and what `force` may override.~~ Answered 2026-10-31: R44.
-6. ~~What the hygiene check may do, and whether it triggers on a scope count, a time interval, or both.~~ Answered 2026-10-31: R45.
-7. The order of the queue for a busy scope, and what a waiting session does when Tony answers before the scope frees.
-
-Parent thread 1 (end state) waits for Tony to confirm `goal.md`. Its children are 1a to 1j.
+Parent thread 1 (end state) waits for Tony to confirm `goal.md`. Its children are 1a to 1k.
 
 ## Stack
 
@@ -87,6 +77,7 @@ Raised before the redux started. Each enters the stack when a thread reaches it.
 
 ## Closed
 
+- 1a follow-ups. Liveness, cloned branches, deletes, hygiene and the busy-scope queue (2026-10-31). Result: `scopes.md` R42 to R46.
 - 1m. Routines, continuous integration and deploys (2026-10-31). Result: `routines.md`.
 - 1n. Timer-triggered dispatch (2026-10-31). Merged into 1m. Result: `routines.md` § Routines.
 - 1b. The session lifecycle (2026-10-31). Result: `sessions.md`.

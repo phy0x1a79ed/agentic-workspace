@@ -38,6 +38,11 @@ This doc holds how a session finds its project and scope, enters it, shares it w
   2. It waits in a queue for the scope.
   3. awm notifies it when its turn comes. It enters the scope.
   4. It appends to its question that the conflict is now clear. It never withdraws the question. Tony: "these events may cause me to reconsider the scope layout and ask for new scopes."
+- **R46.** The queue for a busy scope (R7) is first come, first served, by the time each session asked. Tony: "yes to both" (2026-10-31).
+  - A waiting session follows Tony's answer when it arrives before the scope frees.
+  - Sent to another scope, it leaves the queue and moves there.
+  - Told to wait, it keeps its place.
+  - With its task cancelled, it leaves the queue and ends.
 
 ## Gap from today
 
@@ -54,4 +59,4 @@ Surveyed read only on 2026-10-30.
 - **R5 exists.** Nothing deletes scopes automatically.
 - **R44 partial.** `scope delete` blocks on uncommitted and untracked files, and `force` discards them (`scopes.py:286`). It refuses a folder that holds nested scopes. It keeps the branch unless `delete_branch` is set, and reports the restore commit. It misses ignored files, unique branch commits and a live session. A forced delete reports only a count and a sample.
 - **R6 missing.** No hygiene check exists. `scope heal` repairs scope files, such as the `AGENTS.md` import, context links and the data link, and reports missing worktrees. It never looks for unused scopes.
-- **R7 mostly missing.** `request_human` and card messages cover steps 1 and 4. No per-scope queue or release event exists.
+- **R7 mostly missing.** `request_human` and card messages cover steps 1 and 4. No per-scope queue (R46) or release event exists.
