@@ -25,8 +25,7 @@ Top of the stack comes first.
 
 1k. **Automatic dispatch of follow-up work.** Learn from Tony's recorded decisions to dispatch jobs for unforeseen issues on their own. Tony: "Ideally my decisions are recorded in precedent system so taht we can automate this (dyanamic responsive auto dispatch of jobs to address unforseen issues) in the future" (2026-10-31).
    - Area doc: `dispatch.md`. Settled: R49 (agents judge, awm stays deterministic) and R50 (no top-level start without Tony, kept in the brief). Open for Tony, in order:
-     1. Recording. Does awm capture Tony's answer on the board into precedence directly, instead of relying on the agent to paraphrase it?
-     2. Loop guard. A fixing agent (R47) can fail the same routine again and start another fixer. What stops the chain?
+     1. Loop guard. A fixing agent (R47) can fail the same routine again and start another fixer. What stops the chain?
 
 1c. **Dependencies between sessions.** A question that surfaces a larger issue spawns tasks. They report back to the asking session and resume it. Tony: "a sort of asyn model like promises" (2026-10-30).
 

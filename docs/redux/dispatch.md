@@ -2,7 +2,7 @@
 
 ## Purpose & Contents
 
-This doc holds how work starts for an issue that nobody planned for. It holds who decides, what authority a recorded decision of Tony's carries, how his decisions reach precedence, and how he sees and corrects the result. Thread 1k produces it.
+This doc holds how work starts for an issue that nobody planned for. It holds who decides and what authority a recorded decision of Tony's carries. Thread 1k produces it.
 
 Timer and agent triggered processes belong in `routines.md`. How a session starts, closes and raises follow-up issues belongs in `sessions.md`.
 
@@ -19,19 +19,13 @@ Timer and agent triggered processes belong in `routines.md`. How a session start
 
 ## Decisions
 
-None yet.
+- 2026-11-01: Precedence does not change for dispatch. Agents keep using it as they do today. Tony: "precedence doesnt need to change? why is this a subject? I didnt ask to talk about this..."
 
 ## Gap from today
 
-Surveyed read only on 2026-10-31, from the `feat/redux` source and the live precedence archive on altair.
+Surveyed read only on 2026-10-31, from the `feat/redux` source.
 
 - **No automatic dispatch.** Only `cx start` starts a background session (`cx/lifecycle.py`). Its callers are Tony's Discord `/new-agent`, an agent's `reflection start_other`, and seeded starts (`cx/seed.py`). Each start comes from a person or an agent turn. No event, condition or decision starts one.
-- **Precedence is read by agents, never by awm.** Agents search it before they ask Tony a preference question. No service reads it to act.
-- **Decisions are free text.** A decision is a triple of context, question and decision, with tags, notes and votes (`precedence/db.py`). It has no field for an issue class, an action to take, a target scope, or a scope of authority. Search ranks by embedding relevance, recency and votes.
-- **Every decision is an agent's paraphrase.** The archive holds 105 active decisions, and each has source `agent`. Agents write them on Tony's behalf, usually with his quote inside. None are written by Tony or captured from his answer directly.
-- **Answers on the board are not recorded.** An answer to `operations request_human` reaches the asking session only. Nothing adds it to precedence unless that session does.
-- **The scrapers stage candidates only.** `precedence/scrape.py` and `scrape_transcripts.py` mine memories, operator posts, journals and transcripts into a manifest that a person curates before import. They never write the archive.
 - **Schedulers do not start agents.** The `events` service emits `schedule.tick` and `agent.wake`, and only the game bot consumes them. The `routine` service of `routines.md` R34, which tests conditions and dispatches agents, is designed but not built.
 - **A service can start a session.** `cx start` accepts a call with no calling session, as from a service or an operator at the front door (`_refuse_unknown_caller`, `cx/lifecycle.py`). Such a start records no parent session, so R13 lineage is lost (`routines.md` R47 traces it through the run). A node with the `station` role refuses every start (R48 names the peer instead). `cx start` also needs a fixed project and scope (`sessions.md` R18 conflict).
 - **No brief states R50.** The lifecycle brief that `cx start` adds names who to report to. It does not tell the agent to ask Tony before it starts a top-level session.
-- **Board answers are kept but not searched.** The board stores each card message verbatim, with its party and time (`board/events.py`). `search` indexes journals, kb, notes, precedence and writing, not the board.
