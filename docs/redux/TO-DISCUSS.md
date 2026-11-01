@@ -74,6 +74,9 @@ Peer writes held until the end of the interview.
 
 - Precedence `f7def9a0d79ac72f`: set the decision to "A task name is a slug of 2 or 3 words (e.g. redux-naming). The coordinator takes the task name. Each session it starts is named <task>/<descriptor>, with a descriptor of 1 to 3 words for its concern (e.g. redux-naming/survey). Keep names under about 40 characters as a guideline. Names serve legibility only. awm tracks sessions by the R9 session id (2-character platform code plus the Claude session id) and tasks by a task id that awm mints for each card: the first 8 characters of a random UUID in URL-safe base64. Tony: "Id  prefer human readable prefix and session descriptor but fear will get long", "lets omit the id in the name. Names can be for legibility only." and "The real tracking is the 2 character claude indicator plus claude session id for sessions and the task ids minted by awm" (2026-11-01)."
 
+- Install `drafts/parallel-work/SKILL.md` as `~/.claude/skills/parallel-work/SKILL.md` on each node, once Tony approves the draft (R59).
+- Add this paragraph to the global `CLAUDE.md` § Planning style on each node, after the `write-docs` paragraph: "**Parallel streams.** When the task has clear parallel streams of work, load the `parallel-work` skill before you write the plan." (R59 step 3).
+
 ## Parked inputs
 
 Raised before the redux started. Each enters the stack when a thread reaches it.
