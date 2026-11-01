@@ -21,7 +21,7 @@ Question queue for the 1a follow-ups. Ask the top open one. Strike it when Tony 
 
 1. ~~Where a new session starts, and how strict R2 is.~~ Answered 2026-10-31: a lobby, and a soft R2 (R2, R40).
 2. ~~Whether Tony's own terminal sessions follow the brief and the occupancy check.~~ Answered 2026-10-31: R41.
-3. What counts as "live" for R3: the process runs, the card is Active, Blocked or Pending review, or either.
+3. ~~What counts as "live" for R3: the process runs, the card is Active, Blocked or Pending review, or either.~~ Answered 2026-10-31: the active session holds the claim (R42).
 4. Which branch a cloned project's scope uses.
 5. What blocks a scope delete, and what `force` may override.
 6. What the hygiene check may do, and whether it triggers on a scope count, a time interval, or both.
@@ -39,6 +39,7 @@ Top of the stack comes first.
 
 1d. **The pending queue and the active list.** One interface of reports and blockers that Tony picks from, beside a list of active work. Tony: "I should be able to just click and start talking to the agent with the report or issue" and "The Kanban board attempts to do this, but is not reliable and awkward" (2026-10-30). This absorbs the parked board input.
    - Queued from 1b: where the new-task-from-report button lives (`sessions.md` § Lifecycle).
+   - Queued from the 1a follow-ups: what a board card shows after its session ends (R42).
 
 1e. **Seats as sessions.** Seats, the Discord DM included, become sessions on a channel. Agents use subagents freely and create top-level sessions only with Tony's permission. A seat agent can help Tony work the pending queue (2026-10-30).
 
