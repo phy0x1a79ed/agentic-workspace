@@ -14,10 +14,13 @@ This doc holds a session's id, its lifecycle from start to retirement, its journ
   - awm accepts incoming ids. It mints no internal ids that map to them.
   - A short form, such as a unique prefix, is only a lookup on this id.
 - **R56.** The sessions of one task are identifiable by a common prefix in their names. Tony: "We also need to give guidelines for naming... sessions for a task needs to be identifiable. Use common prefix." and "Id  prefer human readable prefix and session descriptor but fear will get long" (2026-11-01).
-  1. The coordinator takes the task name, a slug of 2 or 3 words, such as `redux-naming`.
-  2. Each session it starts takes `<task>/<descriptor>`, where the descriptor names the concern in 1 to 3 words, such as `redux-naming/survey`.
-  3. A name stays under about 40 characters. The brief states this as a guideline. Code does not check it.
+  1. The task name is a slug of 2 or 3 words, a hyphen, and a code of 5 base64 characters, such as `redux-naming-k3Xq_`. The code makes the task name unique. Tony: "we should use real ids since the task slug may not have enough uniquiness. We can do slug then a 5 character code in base 64" (2026-11-01).
+  2. The coordinator takes the task name.
+  3. Each session it starts takes `<task>/<descriptor>`, where the descriptor names the concern in 1 to 3 words, such as `redux-naming-k3Xq_/survey`.
+  4. The code uses the URL-safe base64 alphabet, with `-` and `_`. The standard alphabet holds `/`, which separates the task from the descriptor.
+  5. A name stays under about 40 characters. The brief states this as a guideline. Code does not check it.
   - Tony accepted this format: "This works" (2026-11-01). Precedence `f7def9a0d79ac72f` records it.
+- **R57.** A session reports to the card of its task. awm finds the task by the session's name prefix (R56). A session that joins a running task, as in R52 path 3, renames itself onto the task's prefix with `reflection rename`. Tony: "So now we we want a card/task to track potentially multiple sessions" and "A is fine" (2026-11-01).
 - **R13.** Each session records the id of the session that started it. A session that clears itself gets a new id, with the old id as its parent. One parent link covers both a clear and a `start_other`.
 
 ### Lifecycle
