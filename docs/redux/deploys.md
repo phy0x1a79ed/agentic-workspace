@@ -32,6 +32,8 @@ This doc holds how a change gets from a scope branch to the running fleet: the t
   - Each other node refreshes itself through the project's refresh hook (R25). The hook fetches `release`, then restarts or queues a coordinated restart.
   - Nodes refresh one at a time, homebase first. A failed node dispatches a session (R27) and stops the rollout before the remaining nodes.
   - How nodes reach each other belongs to thread 1g.
+- **R32.** A sensitive project such as awm restarts under supervision. On each node, a local agent coordinates with the other local agents and supervises the restart. Tony: "for sensitive things like awm, a local agent needs to coordinate with other local agents and supervise the restart."
+- **R33.** awm's plugins move into projects of their own. Each peer installs some of them. Each plugin project has its own refresh hook, apart from awm's. A plugin then hot-updates without touching the core awm process. Tony: "for hot updates, this is actually an infrastructure issues. we need a series of projects to host the plugins for awm (needs migration)." Thread 1h designs the plugins themselves.
 - **R28.** A public release is not a feature deployment. Examples are a metasmith build and its upload to conda. Tony: "I also want to differentiate public releases (like metasmith uploads and builds to conda, etc) from these feature deployments."
 - **R30.** The full test suite runs outside `deploy`. A timer service runs it, as one use of timer-triggered dispatch (thread 1n). Tony: "This is a separate feature."
 - **R25.** Each project supplies a refresh hook. The hook refreshes that project's live processes after `release` moves. Tony gave three shapes:
@@ -65,6 +67,7 @@ Surveyed read only on 2026-10-31, from the `feat/redux` source.
 - **Known failures are rediscovered.** Dists left out of the runner's list never ran (`424240d6`, `ae72fa98`). Suites that already fail on `release` make each agent re-check them by hand (`ca55d138`, `97eadaa3`).
 - **No CI beyond that.** No git hooks, no hosted CI, no watcher. After a deploy, only the gateway's service poll and `promote.sh`'s sha check run. Nothing rolls back. Nothing records who deployed what, when.
 - **Restarts ignore live work.** A deploy restart kills tether sessions and ssh ControlMasters (`d16ecbd1`, `549faf6a`, `cb95f74f`).
+- **Plugins live in the core.** awm's services are dists inside the awm repo. A deploy restarts the one gateway unit that hosts them all.
 - **Other projects.** `arbutus-infra` runs Terraform and Ansible with `make check`. `cloud` deploys deneb and sirius with rsync scripts. `self-improvement` copies prompt docs with a `--check` drift mode. `game-bot` has no protocol.
 - **No batching.** The `scatter-gather` skill gathers several branches into a hub branch, but runs no tests on the result.
 - **No refresh hook.** `awm deploy` restarts the whole gateway unit. No project declares how its live processes refresh.

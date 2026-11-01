@@ -31,7 +31,7 @@ Question queue for 1m. Ask the top open one. Strike it when Tony answers.
 4b. ~~Whether only the service writes `dev` and `release`.~~ Answered 2026-10-31: yes, by instruction only (R29).
 5. ~~Whether a full test suite still runs anywhere.~~ Answered 2026-10-31: on the timer service of thread 1n (R30). A check timeout dispatches a session under R27, which fixes the slow integration or trims the smoke set.
 6. ~~The fleet route.~~ Answered 2026-10-31: R31.
-7. How a deploy restart treats live work, such as tether and ssh sessions.
+7. ~~How a deploy restart treats live work.~~ Answered 2026-10-31: a supervised restart, and plugins as projects (R32, R33).
 8. How a public release runs, apart from feature deployments (R28).
 
 **1a follow-ups. The work hierarchy and routing.** Thread 1a closed with these questions open. They resume when 1m closes. Results: `scopes.md`.
@@ -70,6 +70,7 @@ Top of the stack comes first.
 
 1h. **Install and bootstrap.** A Rust conversion, true plugins, and Claude cloud agents that test fresh installs and adding nodes. This absorbs the parked gateway, plugin and bootstrap input (Tony, 2026-10-30).
    - Local throwaway environments that behave like cloud agents, to avoid their cost. Tony: "we should also consider settup up a system that can spawn throway temp environments that act the same" (2026-10-30).
+   - Plugins as their own projects, each with its own refresh hook, migrated out of the awm repo (Tony, 2026-10-31, R33).
 
 1i. **The Armano box.** A new box for a client, for mass spec automation, set up soon with an agent's help (Tony, 2026-10-30).
 
