@@ -49,6 +49,7 @@ index rebuilds from the copied rows in the first backfill.
 Each function publishes as `journal_<verb>`:
 
 - `post`, `fetch`, `subscribe`, `unsubscribe` — the channel.
+- `inbox`, `ack` — a bounded digest of what a scope has not read, and its read cursor.
 - `goal_set`, `goal_retire`, `goal_read`, `goal_history` — goals, by supersede and
   tombstone only.
 - `render` — writes a scope's `.awm/history.md`. `write=false` returns the text only.

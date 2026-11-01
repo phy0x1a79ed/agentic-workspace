@@ -382,6 +382,34 @@ class TestHealWorktree:
         assert actions["context_md"] is None
         assert (wt / ".awm" / "context.md").read_text() == original
 
+    def test_rewrites_the_legacy_inbox_step(self, tmp_path):
+        """The old template's step 3 fetched by scope alone, which reads every
+        project's channel of that name. Heal swaps that exact line for the inbox."""
+        from awm.scopes.scopes import _default_context, _legacy_inbox_step
+        wt = tmp_path / "wt"
+        (wt / ".awm").mkdir(parents=True)
+        current = _default_context("proj-a", "s1")
+        step = next(line for line in current.splitlines() if line.startswith("3. "))
+        legacy = current.replace(step, _legacy_inbox_step("s1"))
+        assert legacy != current
+        (wt / ".awm" / "context.md").write_text(legacy + "## Notes\nkeep me\n")
+
+        dry = _heal_worktree(wt, project="proj-a", scope="s1", dry_run=True)
+        assert dry["context_md"] == "updated:inbox-step"
+        assert (wt / ".awm" / "context.md").read_text().startswith(legacy)
+
+        actions = _heal_worktree(wt, project="proj-a", scope="s1", dry_run=False)
+        assert actions["context_md"] == "updated:inbox-step"
+        assert (wt / ".awm" / "context.md").read_text() == current + "## Notes\nkeep me\n"
+        again = _heal_worktree(wt, project="proj-a", scope="s1", dry_run=False)
+        assert again["context_md"] is None
+
+    def test_default_context_names_the_project_in_its_inbox_step(self):
+        from awm.scopes.scopes import _default_context
+        ctx = _default_context("proj-a", "s1")
+        assert 'journal(verb="inbox", args={project:"proj-a", scope:"s1"})' in ctx
+        assert 'verb="fetch"' not in ctx
+
     def test_removes_skills_symlink(self, tmp_path):
         wt = tmp_path / "wt"
         (wt / ".awm").mkdir(parents=True)

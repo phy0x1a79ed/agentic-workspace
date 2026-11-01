@@ -9,7 +9,7 @@ import re
 from pathlib import Path
 
 import awm.config as cfg
-from awm.journal import private
+from awm.journal import inbox, private
 from awm.journal.channel import _coerce_meta
 from awm.journal.dao import JournalDAO
 from awm.journal.refs import validate_project, validate_scope
@@ -51,6 +51,12 @@ def generate_history_md(project: str, scope: str, exclude: tuple[str, list] = ("
         f"     To search: `journal(verb=\"fetch\")` with project={project} kind=journal -->\n\n"
         f"# Project History: {project}\n\n"
     )
+    unread = inbox.unread_count(project, scope, exclude=exclude)
+    if unread:
+        preface += (
+            f"**Inbox:** {unread} unread message{'s' if unread != 1 else ''} at render time. "
+            f"Read the digest with `journal(verb=\"inbox\", args={{project:\"{project}\", "
+            f"scope:\"{scope}\"}})`.\n\n")
 
     dao = JournalDAO()
     # Journal entries are scope_posts with kind='journal' (a scope IS the
