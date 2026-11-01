@@ -27,7 +27,7 @@ Top of the stack comes first.
 
 1q. **One card tracks several sessions.** A card or task follows all the sessions that work on it. It relates to 1d. Tony: "So now we we want a card/task to track potentially multiple sessions" (2026-11-01).
    - Question queue:
-     1. Where the 5-character code of a task name comes from (`sessions.md` R56). Tony: "we should use real ids" (2026-11-01).
+     1. How a session learns its task id, to put it in its name (`sessions.md` R56, R58).
 
 1p. **A parallel work skill.** A skill for large tasks. Tony: "I think we need a parallel work skill for large tasks, that instructs to plan in waves split across agents, when to scope claim and unclaim, gathering and deploying." (2026-11-01). Each session claims its own scope through `reflection cd` (`scopes.md` R2, R42).
    - Question queue:
@@ -71,6 +71,12 @@ Top of the stack comes first.
 5. **Done.** What makes the redux finished?
 
 6. **Review the protocol docs.** Add the deploy to the core awm docs, then review every protocol doc. It runs after the other threads settle. Tony: "we should also add the deploy to the core awm docs -> I guess we need to review all protocol docs once we settle everything this session." (2026-11-01).
+
+## Pending sweep
+
+Peer writes held until the end of the interview.
+
+- Precedence `f7def9a0d79ac72f`: set the decision to "The task name is a slug of 2 or 3 words, a hyphen, and a task id of 5 URL-safe base64 characters (e.g. redux-naming-k3Xq_). awm mints one task id for each card, and the id points to every session of the task, active or finished. The coordinator takes the task name. Each session it starts is named <task>/<descriptor>, with a descriptor of 1 to 3 words for its concern (e.g. redux-naming-k3Xq_/survey). A session reports to the card of its task, found by the task id in its name prefix. Keep names under about 40 characters as a guideline. Tony: "Id  prefer human readable prefix and session descriptor but fear will get long", "This works", "We can do slug then a 5 character code in base 64" and "it would be easier if awm just mints a task id per card, which points to multiple sessions, active or otherwise" (2026-11-01)."
 
 ## Parked inputs
 

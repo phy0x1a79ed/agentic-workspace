@@ -2,7 +2,7 @@
 
 ## Purpose & Contents
 
-This doc holds a session's id, its lifecycle from start to retirement, its journals, the lineage that links sessions, and how a session waits on the sessions it depends on. Threads 1b, 1l and 1c produce it.
+This doc holds a session's id, the id of its task, its lifecycle from start to retirement, its journals, the lineage that links sessions, and how a session waits on the sessions it depends on. Threads 1b, 1l and 1c produce it.
 
 ## Requirements
 
@@ -11,16 +11,16 @@ This doc holds a session's id, its lifecycle from start to retirement, its journ
 - **R9.** One id refers to one session, in awm and on its platform alike. Tony: "we have 1 and only 1 id that references each task/session across claude and awm."
   - The id is hex, of any length. Its first 2 characters name the platform.
   - A Claude Code session's id is `cc` followed by the hex digits of its full Claude session UUID.
-  - awm accepts incoming ids. It mints no internal ids that map to them.
+  - awm accepts incoming session ids. It mints no session ids of its own that map to them. A task has its own id (R58).
   - A short form, such as a unique prefix, is only a lookup on this id.
 - **R56.** The sessions of one task are identifiable by a common prefix in their names. Tony: "We also need to give guidelines for naming... sessions for a task needs to be identifiable. Use common prefix." and "Id  prefer human readable prefix and session descriptor but fear will get long" (2026-11-01).
-  1. The task name is a slug of 2 or 3 words, a hyphen, and a code of 5 base64 characters, such as `redux-naming-k3Xq_`. The code makes the task name unique. Tony: "we should use real ids since the task slug may not have enough uniquiness. We can do slug then a 5 character code in base 64" (2026-11-01).
+  1. The task name is a slug of 2 or 3 words, a hyphen, and the task id (R58), such as `redux-naming-k3Xq_`. The task id makes the task name unique. Tony: "we should use real ids since the task slug may not have enough uniquiness. We can do slug then a 5 character code in base 64" (2026-11-01).
   2. The coordinator takes the task name.
   3. Each session it starts takes `<task>/<descriptor>`, where the descriptor names the concern in 1 to 3 words, such as `redux-naming-k3Xq_/survey`.
-  4. The code uses the URL-safe base64 alphabet, with `-` and `_`. The standard alphabet holds `/`, which separates the task from the descriptor.
-  5. A name stays under about 40 characters. The brief states this as a guideline. Code does not check it.
+  4. A name stays under about 40 characters. The brief states this as a guideline. Code does not check it.
   - Tony accepted this format: "This works" (2026-11-01). Precedence `f7def9a0d79ac72f` records it.
-- **R57.** A session reports to the card of its task. awm finds the task by the session's name prefix (R56). A session that joins a running task, as in R52 path 3, renames itself onto the task's prefix with `reflection rename`. Tony: "So now we we want a card/task to track potentially multiple sessions" and "A is fine" (2026-11-01).
+- **R58.** awm mints one task id for each card. The task id points to every session of the task, active or finished. It is 5 characters of the URL-safe base64 alphabet, with `-` and `_`, because the standard alphabet holds `/`, which separates the task from the descriptor (R56). Tony: "Since a task can have multiple sessions, the id is no longer 1 to 1 so awm needs to manage this now" and "it would be easier if awm just mints a task id per card, which points to multiple sessions, active or otherwise" (2026-11-01).
+- **R57.** A session reports to the card of its task. awm finds the task by the task id in the session's name prefix (R56). A session that joins a running task, as in R52 path 3, renames itself onto the task's prefix with `reflection rename`. Tony: "So now we we want a card/task to track potentially multiple sessions" and "A is fine" (2026-11-01).
 - **R13.** Each session records the id of the session that started it. A session that clears itself gets a new id, with the old id as its parent. One parent link covers both a clear and a `start_other`.
 
 ### Lifecycle
@@ -80,5 +80,6 @@ Surveyed read only on 2026-10-30, 2026-10-31 and 2026-11-01.
 - **R51 missing.** Nothing makes a session wait until other sessions finish, or resumes it when they do. `retire` is a skill, not a service verb (`~/.claude/skills/retire`). Its last step is `reflection stop`, which runs `claude rm` and deletes the job. No `reflection wait` verb exists. `resume_other` refuses a removed job (R10 conflict). The lifecycle brief that `cx start` adds tells a started session to message its parent before it retires (`REPORT_TO_PARENT`, `cx/lifecycle.py`). The message goes through `SendMessage`, or `reflection message`, which types it into the parent's prompt. It reaches the parent only while the parent's job runs. `retire` deletes a job, and the Claude Code daemon does not restart jobs after a host reboot (parked input).
 - **The board tracks waits on Tony only.** The reporting ledger's `waits` table holds jobs that wait on Tony in their own session (`reporting/ledger.py`). A card moves to Blocked only through `request_human`. No state says that a session waits on other sessions.
 - **Two delivery paths exist.** `board_watch` types one line into a session for each event on a watched card. The reflection resume after a compaction is a guaranteed delivery of one prompt, with retries and an unbounded wait (`reflection/inject.py`). Either could carry a resume.
-- **R56 partial.** A name is free text of at most 80 printable characters (`start_args` in `cx/lifecycle.py`, `rename` in `reflection/control.py`). `cx start` names a session after its scope when the caller gives no name. Nothing sets a prefix for the sessions of one task. Seats already share one, such as `seat:slack/DM/<person>`. A card takes its title from the session name or the plan heading (`reporting/hub_adapter.py`). Each card tracks one session (R9 gap).
+- **R56 partial.** A name is free text of at most 80 printable characters (`start_args` in `cx/lifecycle.py`, `rename` in `reflection/control.py`). `cx start` names a session after its scope when the caller gives no name. Nothing sets a prefix for the sessions of one task. Seats already share one, such as `seat:slack/DM/<person>`. A card takes its title from the session name or the plan heading (`reporting/hub_adapter.py`).
+- **R57 and R58 missing.** The reporting ledger mints an integer task id for each session, keyed by node plus job (`reporting/ledger.py`). Each card tracks one session. No task id spans sessions, and nothing joins a session to another session's card.
 - **No deploy ticket.** The `routine` service is not built, so the ticket of `routines.md` R26 and its wait do not exist.
