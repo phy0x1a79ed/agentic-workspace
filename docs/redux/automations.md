@@ -11,6 +11,14 @@ This doc holds awm's registered automations: what an automation is, what trigger
 - **R34.** awm keeps a set of registered automations. An automation makes a recurring process deterministic. A timer or an agent triggers it. Tony: "we can maybe have a series of registerable automations that makes these things deterministic. automations can be trigged by a timer or by agents."
   - An automation tests its conditions, then dispatches agents when one holds. The agents and tasks can run on remote peers. Tony: "On a timer do this and on any of these conditions, dispatch agents [...] agents and tasks can be on remote peers."
   - `deploy`, the full test suite and a public release are each an automation. Tony: "We can now use this abstraction to also describe  deployments."
+- **R36.** An automation is defined by its project. Tony: "keeping the scripts with the parent project works [...] this encourages repos for them which adds version tracking which is encouraging good behaviour."
+  - It has a name.
+  - It runs on the node where it is installed. Its definition names no node.
+  - It has triggers: a timer, a call, or both. Tony runs one through a call, the same as an agent does. Tony: "by hand = agent call."
+  - It has deterministic steps, a failure that dispatches a session, and a report of one mark (R27).
+  - Its definition lives in its project's repo. Work with no project gets a new repo (R4).
+- **R37.** The service is an MCP service. `trigger` and `cancel` run and stop an automation. `schedule` and `unschedule` set and clear its timer. Tony: "awm <the service> trigger/cancel (manual trigger), or schedule/unschedule for timers."
+- **R38.** systemd timers drive the timed triggers. Tony: "Good to use established robust mechanisms where possible." A timer fires by calling `trigger`. The service keeps the record of each run, allows one live run per automation, and watches each run to its verdict.
 
 ### Deploy
 
@@ -85,6 +93,7 @@ Surveyed read only on 2026-10-31, from the `feat/redux` source.
 - **Plugins live in the core.** awm's services are dists inside the awm repo. A deploy restarts the one gateway unit that hosts them all.
 - **Public releases are sessions.** A metasmith release runs in a `release` scope by hand. `dev.sh` builds the wheel, the Docker image, the Apptainer image and the conda package. A session uploads them to quay.io and anaconda.org, or leaves the upload commands for Tony (journals `cbc0bd7c`, `8d9360cc`, `667128c5`). One release missed its conda publish.
 - **Three schedulers exist.** The `events` service fires cron and interval schedules as `schedule.tick` events. The `dvc` service runs its own cadence engine, with a vendored copy of `events/cron.py`. `transcripts` uses a systemd timer. None of them dispatches agents on a condition, and no registry lists automations.
+- **dvc left systemd once.** `dvc` moved its backups off a systemd timer on 2026-08-13 (`eb739429`). The timer left only a log line, guarded only one of three submitting processes, and watched no run to its verdict. R38 keeps systemd for the firing and keeps those three duties in the service.
 - **Other projects.** `arbutus-infra` runs Terraform and Ansible with `make check`. `cloud` deploys deneb and sirius with rsync scripts. `self-improvement` copies prompt docs with a `--check` drift mode. `game-bot` has no protocol.
 - **No batching.** The `scatter-gather` skill gathers several branches into a hub branch, but runs no tests on the result.
 - **No refresh hook.** `awm deploy` restarts the whole gateway unit. No project declares how its live processes refresh.

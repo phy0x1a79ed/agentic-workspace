@@ -33,7 +33,8 @@ Question queue for 1m. Ask the top open one. Strike it when Tony answers.
 6. ~~The fleet route.~~ Answered 2026-10-31: R31.
 7. ~~How a deploy restart treats live work.~~ Answered 2026-10-31: a supervised restart, and plugins as projects (R32, R33).
 8. ~~How a public release runs.~~ Answered 2026-10-31: as a registered automation, triggered by hand for now (R34, R35). Thread 1n merged into 1m here.
-9. Where an automation is registered and what defines one.
+9. ~~Where an automation is registered and what defines one.~~ Answered 2026-10-31: R36 to R38.
+10. A short name for the automations service. Tony: "is there a shorter word for \"automations\"?"
 
 **1a follow-ups. The work hierarchy and routing.** Thread 1a closed with these questions open. They resume when 1m closes. Results: `scopes.md`.
 
