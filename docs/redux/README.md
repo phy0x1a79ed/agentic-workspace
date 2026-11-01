@@ -16,6 +16,7 @@ Earlier drafts are inputs, not the frame. They are cloud/tencent `FLEET.md` (07d
 - `fleet.md` — the nodes and the role of each.
 - `routines.md` — registered routines, and the ones designed so far, such as `deploy`.
 - `dispatch.md` — how awm starts work for an issue on its own, from Tony's recorded decisions.
+- `queue.md` — Tony's interface to the swarm: the pending queue, the active list, and one click from an item to its agent.
 - `parallel-work.md` — the parallel work skill: waves across top-level sessions, scope claims, gathering and deploying.
 - `drafts/` — drafts of skills and prompt text that the design produces, held until their area doc says to install them.
 

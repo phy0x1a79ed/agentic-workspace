@@ -17,7 +17,7 @@ This doc is the stack of open threads for the redux interview. The interview run
 
 ## Current thread
 
-**1d. The pending queue and the active list.** See the stack entry below for Tony's words.
+**1d. The pending queue and the active list.** See the stack entry below for Tony's words. The survey and its gap are in `queue.md`.
 
 Parent thread 1 (end state) waits for Tony to confirm `goal.md`. Its children are 1a to 1q.
 
