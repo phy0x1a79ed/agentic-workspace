@@ -16,7 +16,7 @@ This doc is the stack of open threads for the redux interview. The interview run
 
 ## Current thread
 
-**1o. Subagents and scopes.** See the stack entry below for Tony's words.
+**1q. One card tracks several sessions.** See the stack entry below for Tony's words.
 
 Parent thread 1 (end state) waits for Tony to confirm `goal.md`. Its children are 1a to 1q.
 
@@ -27,9 +27,6 @@ Top of the stack comes first.
 1q. **One card tracks several sessions.** A card or task follows all the sessions that work on it. It relates to 1d. Tony: "So now we we want a card/task to track potentially multiple sessions" (2026-11-01).
    - Question queue:
      1. The name format for a task's sessions (`sessions.md` R56). Tony: "Id  prefer human readable prefix and session descriptor but fear will get long" (2026-11-01).
-
-1o. **Subagents and scopes.** How subagents claim scopes, and how a session tracks its subagents, if at all. Tony: "(I guess we need to think aobut subagents claiming scopes and how sessions track subagents if at all)" (2026-11-01). The survey is in `scopes.md` § Gap from today. Results so far: `dispatch.md` R50 and `sessions.md` R11 and R52 path 2. Question queue:
-   1. Path 2 has the coordinator merge the started sessions' branches for one `deploy`. `routines.md` R22 has coordinating sessions each call `deploy` into one reserved batch. Does path 2 keep R22, or does R22 go? From "I agree with you suggestions for [...] path 2." and "there should also be a way to specify batches for agetns that are coordinating."
 
 1p. **A parallel work skill.** A skill for large tasks. Tony: "I think we need a parallel work skill for large tasks, that instructs to plan in waves split across agents, when to scope claim and unclaim, gathering and deploying." (2026-11-01). Each session claims its own scope through `reflection cd` (`scopes.md` R2, R42).
    - Question queue:
@@ -87,6 +84,7 @@ Raised before the redux started. Each enters the stack when a thread reaches it.
 
 ## Closed
 
+- 1o. Subagents and scopes (2026-11-01). Result: `dispatch.md` R50, `sessions.md` R11, R52 path 2 and R56. Coordinated work lands through the coordinator's one `deploy` per project.
 - 1c. Dependencies between sessions (2026-11-01). Result: `sessions.md` R51 and R52, `routines.md` R26.
 - 1k. Automatic dispatch of follow-up work (2026-11-01). Result: `dispatch.md` R49 and R50, `routines.md` R47 and R48.
 - 1a follow-ups. Liveness, cloned branches, deletes, hygiene and the busy-scope queue (2026-10-31). Result: `scopes.md` R42 to R46.

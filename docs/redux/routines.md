@@ -34,13 +34,6 @@ This doc holds awm's registered routines: what a routine is, what triggers it, a
 - **R19.** One aggregator lands changes. It removes redundant and unrelated test runs. It stops deploys from stacking and racing. Tony: "right now, agents run redundant and unrelated tests repeatidly. deployments can also stack and race. Lets talk continuous integration systems, preferrably deterministic but there can be (and might necessarily require agentic elements)" (2026-10-31).
 - **R20.** An implementation session tests its feature in isolation, then calls `deploy`. A deterministic system reviews each call. It spawns an agent only when one is needed. Tony: "implemenation sessions (standard sessions) should prepare for deploy and submit to teh service using some for of contract. essentially a pull request. A deterministic system reviews and spawns an integration agent if needed."
 - **R21.** The service batches submissions that arrive together, and runs the shared checks once per batch, not once per submission. A batch has no size cap. Tony: "I want to prevent running abunch of the same checks like the test suite consecuteively each time for each merge" and "Lets have no cap."
-- **R22.** Coordinating sessions share a reserved batch. Tony: "there should also be a way to specify batches for agetns that are coordinating."
-  1. One agent coordinates the work between the sessions.
-  2. Each session reserves the batch first, under one shared name. A name is unique among live reservations.
-  3. The batch goes through when every reservation is submitted or cancelled.
-  4. Submissions without a reservation keep flowing in ordinary batches meanwhile.
-  5. The coordinator makes the reservations before it starts the sessions. Tony: "the coordinator reserves deployments before even starting the agents."
-  6. A reservation belongs to its session, not to its scope. When the session ends without a submission, the service cancels its reservation and tells the coordinator. A later session in the same scope never joins the stale batch. Its work lands in another batch.
 - **R23.** A failed batch dispatches an implementation session, which works like any feature session. It takes the batch's work, fixes the integration and resubmits it as one combined submission. Later batches keep landing meanwhile. The service does not split a failed batch to find one cause. Tony: "I dont think isolating the failing merge will be useful. it will likely be an integration issue" and "failure dispatchs an implenetation agent [...] which acts just like a normal feature with deploy, only it takes the previous work from the batch, fixes the integration, then resubmits a combined (and fixed) deploy."
 - **R24.** `deploy` is one mostly deterministic core function, shared by every project. Its contract is a function signature, not a document. Tony: "I was after something closer to a function signature."
   1. Calling it places the current scope in the queue for an automated merge, feature to `dev` to `release`.
@@ -52,7 +45,7 @@ This doc holds awm's registered routines: what a routine is, what triggers it, a
   - Place an update task on the agentic queue, so that an agent coordinates a restart that disrupts the least. For example, awm.
   - Hot-update only what changed, in a project that supports it. For example, single awm services.
 - **R26.** The signature of `deploy`. Tony: "this looks good" (2026-10-31).
-  - It takes the current scope implicitly, and no other required argument. It takes no reservation name. The coordinator attaches a reservation when it starts the session, and `deploy` finds it there. Tony: "agents failing to provide the optional reservation name will be a source of error."
+  - It takes the current scope implicitly, and no other required argument.
   - It pins the scope's head commit at call time. Later work needs a new call.
   - It returns a ticket id at once. The verdict posts to the session's card and journal.
   - The calling session retires when nothing else is pending (R12). `deploy` submits to the queue and returns at once. Tony: "right, deploy submits to queue so it should return immediately..." (2026-11-01).
@@ -87,7 +80,6 @@ This doc holds awm's registered routines: what a routine is, what triggers it, a
 
 - 2026-11-01: R47 needs no loop guard. A fix chain stays linear and runs one fixer at a time, so a fixer that fails again starts the next fixer. Tony: "the worse that it ever gets is agent -> deploy routine -> fixer agent -> routine -> agent. a linear chain. at most 1 top level agent is running. There is no runaway effect where 1 becomes 2 becomes 4, etc"
 - 2026-10-31: Sessions submit to a merge queue rather than land under a lock. Tony: "b makes sense, but I think  functionally we will end up having both." The service still serializes its own merges and deploys.
-- 2026-10-31: A batch cannot be edited to take a retry for a session that died. A new session lands the work in another batch. Tony: "under the current architecture, a new session will be able to handle this fine, just in another batch. acceptable."
 
 ## Gap from today
 
