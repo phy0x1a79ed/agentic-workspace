@@ -68,6 +68,7 @@ Surveyed read only on 2026-10-31, from the `feat/redux` source.
 - **No CI beyond that.** No git hooks, no hosted CI, no watcher. After a deploy, only the gateway's service poll and `promote.sh`'s sha check run. Nothing rolls back. Nothing records who deployed what, when.
 - **Restarts ignore live work.** A deploy restart kills tether sessions and ssh ControlMasters (`d16ecbd1`, `549faf6a`, `cb95f74f`).
 - **Plugins live in the core.** awm's services are dists inside the awm repo. A deploy restarts the one gateway unit that hosts them all.
+- **Public releases are sessions.** A metasmith release runs in a `release` scope by hand. `dev.sh` builds the wheel, the Docker image, the Apptainer image and the conda package. A session uploads them to quay.io and anaconda.org, or leaves the upload commands for Tony (journals `cbc0bd7c`, `8d9360cc`, `667128c5`). One release missed its conda publish.
 - **Other projects.** `arbutus-infra` runs Terraform and Ansible with `make check`. `cloud` deploys deneb and sirius with rsync scripts. `self-improvement` copies prompt docs with a `--check` drift mode. `game-bot` has no protocol.
 - **No batching.** The `scatter-gather` skill gathers several branches into a hub branch, but runs no tests on the result.
 - **No refresh hook.** `awm deploy` restarts the whole gateway unit. No project declares how its live processes refresh.
