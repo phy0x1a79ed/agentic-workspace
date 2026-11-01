@@ -41,6 +41,9 @@ This doc holds a session's id, its lifecycle from start to retirement, its journ
 ### Dependencies
 
 - **R51.** A session that depends on other sessions pauses until they finish. When Tony asks, the asking session starts the top-level sessions for the larger issue (R50). It then asks awm to pause it until they finish. Each started session reports with its journal and retires (R8, R12). It does not wait on anything. Tony: "a session delivers its report as a journal and then retires. it does not wait. this was discussed already" and "so we need a pause mechanism of sorts. agents start other top level sessions when asked, and then asks awm to pause them until they finish" (2026-11-01).
+  - A pause is a retire with `until`. `retire` takes an optional `until`, a list of session ids (R9). awm wakes the retired session after every listed session finishes. Tony: "pause should function like retire" and "can we just extend retire to have optional "until" parameter that takes a list of other session ids? to be waken up after they finish?" (2026-11-01).
+  - The wake resumes the session itself from its transcript (R10).
+  - The session compacts before it retires with `until` set. This is a soft instruction, not a check. Tony: "would be good as soft instructions to compact before retiring with "until" set" (2026-11-01).
 
 ## Decisions
 
@@ -62,7 +65,7 @@ Surveyed read only on 2026-10-30, 2026-10-31 and 2026-11-01.
 - **R15 missing.** awm does not record which journals a session reads.
 - **R17 missing.** `_with_session` always stamps the posting session, so a journal cannot name another session as the one it covers.
 - **R18 conflicts.** `cx start` requires a project and a scope, and places the session there (`cx/lifecycle.py`). `replaces` keeps the caller's scope. Nothing passes a scope as a suggestion only.
-- **R51 missing.** Nothing pauses a session until other sessions finish, or resumes it when they do. The lifecycle brief that `cx start` adds tells a started session to message its parent before it retires (`REPORT_TO_PARENT`, `cx/lifecycle.py`). The message goes through `SendMessage`, or `reflection message`, which types it into the parent's prompt. It reaches the parent only while the parent's job runs. `retire` deletes a job, and the Claude Code daemon does not restart jobs after a host reboot (parked input).
+- **R51 missing.** Nothing pauses a session until other sessions finish, or resumes it when they do. `retire` is a skill, not a service verb (`~/.claude/skills/retire`). Its last step is `reflection stop`, which runs `claude rm` and deletes the job. Neither takes `until`. `resume_other` refuses a removed job (R10 conflict). The lifecycle brief that `cx start` adds tells a started session to message its parent before it retires (`REPORT_TO_PARENT`, `cx/lifecycle.py`). The message goes through `SendMessage`, or `reflection message`, which types it into the parent's prompt. It reaches the parent only while the parent's job runs. `retire` deletes a job, and the Claude Code daemon does not restart jobs after a host reboot (parked input).
 - **The board tracks waits on Tony only.** The reporting ledger's `waits` table holds jobs that wait on Tony in their own session (`reporting/ledger.py`). A card moves to Blocked only through `request_human`. No state says that a session waits on other sessions.
 - **Two delivery paths exist.** `board_watch` types one line into a session for each event on a watched card. The reflection resume after a compaction is a guaranteed delivery of one prompt, with retries and an unbounded wait (`reflection/inject.py`). Either could carry a resume.
 - **No deploy ticket.** The `routine` service is not built, so the ticket of `routines.md` R26 and its wait do not exist.
