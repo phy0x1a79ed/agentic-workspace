@@ -25,7 +25,7 @@ Parent thread 1 (end state) waits for Tony to confirm `goal.md`. Its children ar
 
 Top of the stack comes first.
 
-1p. **A parallel work skill.** A skill for large tasks. Tony: "I think we need a parallel work skill for large tasks, that instructs to plan in waves split across agents, when to scope claim and unclaim, gathering and deploying." (2026-11-01). Each session claims its own scope through `reflection cd` (`scopes.md` R2, R42).
+1p. **A parallel work skill.** A skill for large tasks. Tony: "I think we need a parallel work skill for large tasks, that instructs to plan in waves split across agents, when to scope claim and unclaim, gathering and deploying." (2026-11-01). Result goes to `parallel-work.md` (R59).
    - Question queue:
      1. Where does subagent work end and top-level session work begin? Ask only if the skill needs it. Tony: "There's some overlap that i cant desceibe quite clearly so we can talk about it to narrow it down if needed." (2026-11-01).
 
