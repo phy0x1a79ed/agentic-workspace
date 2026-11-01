@@ -26,6 +26,12 @@ This doc holds how a change gets from a scope branch to the running fleet: the t
   5. **Refresh.** Run the project's refresh hook (R25). A failed refresh dispatches a session too, and does not call Tony. Tony: "Calling me is not really productive with no agent to talk to."
   6. **Report.** Show each submitter one mark. A tick means the batch landed. A cross names the failed step (merge, check failure, check timeout, refresh) and links to the card of the dispatched session. Tony: "maybe as small as a check box."
 - **R29.** Only `deploy` writes `dev` and `release`. Agents never merge or push into either. Instructions carry the rule, with no hook to enforce it. A `reference-transaction` hook in each bare repo is the next step if agents break the rule. Tony: "lets just pick a and escalate if there are issues."
+- **R31.** The fleet route. Tony: "this all looks good to me" (2026-10-31).
+  - One `deploy` service per project runs on the node that holds the project's canonical repo. awm's canonical repo moves to mizar, the homebase.
+  - A session on another node pushes its feature branch to the canonical repo before it calls `deploy`.
+  - Each other node refreshes itself through the project's refresh hook (R25). The hook fetches `release`, then restarts or queues a coordinated restart.
+  - Nodes refresh one at a time, homebase first. A failed node dispatches a session (R27) and stops the rollout before the remaining nodes.
+  - How nodes reach each other belongs to thread 1g.
 - **R28.** A public release is not a feature deployment. Examples are a metasmith build and its upload to conda. Tony: "I also want to differentiate public releases (like metasmith uploads and builds to conda, etc) from these feature deployments."
 - **R30.** The full test suite runs outside `deploy`. A timer service runs it, as one use of timer-triggered dispatch (thread 1n). Tony: "This is a separate feature."
 - **R25.** Each project supplies a refresh hook. The hook refreshes that project's live processes after `release` moves. Tony gave three shapes:
@@ -52,6 +58,7 @@ This doc holds how a change gets from a scope branch to the running fleet: the t
 Surveyed read only on 2026-10-31, from the `feat/redux` source.
 
 - **No serialization.** No lock, queue or lease guards a deploy, a merge into `dev` or a merge into `release`. `awm deploy` and `scripts/promote.sh` take no lock. Two runs at once can reset the tree under each other's install, overlap restarts, and race the manifest write. Journals record it happening: concurrent deploys restarted capella mid-heal (`39cdefeb`), `dev` moved under a session mid-merge (`f134b381`), and root resets destroyed work (`e91cd30d`, `cfb2e43c`).
+- **The canonical repo is on altair.** awm's canonical bare repo is `altair:projects/awm/.bare`. Every node resets onto altair's `release`.
 - **No fleet route in code.** `awm deploy` acts on the local node only. It installs, builds, restarts the unit and polls `/hub/services` (`gateway/cli.py:301-458`). `scripts/promote.sh` merges, tests, promotes and deploys, but only on altair, with sirius optional. No root doc names it. Agents update mizar, alcor and deneb by hand.
 - **No test selection.** `gateway/scripts/run-tests.sh` runs pytest per dist, by name, with the cache off. Nothing maps changed files to dists. Nothing records which sha passed which dist. Each agent chooses suites by hand. ARCHITECTURE.md says run the full suite. The global CLAUDE.md says run the tests the change touches.
 - **No smoke tier.** The gateway's `pyproject.toml` defines a `smoke` marker that the runner never selects. No suite has a time budget.

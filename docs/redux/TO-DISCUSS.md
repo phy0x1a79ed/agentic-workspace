@@ -30,7 +30,7 @@ Question queue for 1m. Ask the top open one. Strike it when Tony answers.
 4. ~~What the deterministic steps are.~~ Answered 2026-10-31: R27.
 4b. ~~Whether only the service writes `dev` and `release`.~~ Answered 2026-10-31: yes, by instruction only (R29).
 5. ~~Whether a full test suite still runs anywhere.~~ Answered 2026-10-31: on the timer service of thread 1n (R30). A check timeout dispatches a session under R27, which fixes the slow integration or trims the smoke set.
-6. The fleet route: which nodes, in what order, and what a failed node does.
+6. ~~The fleet route.~~ Answered 2026-10-31: R31.
 7. How a deploy restart treats live work, such as tether and ssh sessions.
 8. How a public release runs, apart from feature deployments (R28).
 
