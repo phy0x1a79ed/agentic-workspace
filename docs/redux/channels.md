@@ -32,7 +32,10 @@ How a seat lives as a session belongs in `sessions.md`. Communication between aw
   4. The relay keeps messages in memory only, logs no message bodies, and drops a room when it closes.
   - Pinned keys for peers that Tony verifies wait for threads 1g and 1j. They remove the relayed password.
 - **R74.** The tether encrypts every session on its own, with no step from either person. Tony: "tether should auto escalate." and "I meant encrypt escalation, not privilege" (2026-11-01).
-- **R75.** A tether invite comes as a link and a rendered QR code. Tony scans the code to prove that the owner's end is him. Tony: "Separately, tethers need a link and rendered qr code scan that lets me prove it is me." (2026-11-01).
+- **R75.** A tether can raise its owner's end to trusted (R70) when Tony proves the owner is him. The invite stays as it is today. Tony: "after a tether is set up, i can prove that it is me on the other side if needed by having the tether print a url, which ks also rendered as qr code. That link lets me authenticate for privilege escalation to trusted. Otherwise proof format is correct" and "The tether invite doesn't change from today" (2026-11-01).
+  1. On request, the tether prints a link on the owner's screen and renders it as a QR code. The link holds a one-time challenge tied to this session.
+  2. Tony opens the link on a trusted device. mizar's panel shows the box's details, such as hostname, OS and network. Tony checks them and confirms with his passkey (`queue.md` R64). The details guard against a QR that someone else sends Tony to scan.
+  3. mizar verifies the signature and tells the operator session that the owner's end is Tony. deneb cannot fake this. The session then treats the tether as trusted (R71). What a trusted tether may do belongs to thread 1j.
 - **R76.** All words of a tether or room code are random. Tony: "Also, the tether codes seem to always start with abbey, but should be randomized" (2026-11-01).
 
 ## Gap from today
@@ -47,7 +50,7 @@ Surveyed read only on 2026-11-01, from the `feat/redux` source and the journals.
 - **One session mixes trust levels.** `slack-main` holds Tony's Slack DM together with 7 member DMs (`sessions.md` § Gap, R67 partial). Under R70 that puts trusted and cooperative chats in one context.
 - **R72 missing.** No room service exists. The board's party tokens are standing accounts that Tony mints by hand on the host (`board/INSTALL.md` § Mint a party).
 - **R73 missing.** No room has encryption. The board's threads cross deneb and the vault in plaintext.
-- **R75 missing.** A tether invite is three words and a launcher line that the owner types. Nothing shows a QR code or proves who the owner is.
+- **R75 missing.** Nothing in a live tether proves who the owner is. The tether prints no link or QR code, and mizar's panel does not exist (`queue.md` § Gap).
 - **R76 broken.** The first word of a tether code names the relay slot, and the next two are the secret (`tether/hub_adapter.py` `_slot_named`). The relay reuses slots, so the codes keep starting with "abbey". The fix lives in the tether repository.
 - **R74 unverified.** The tether's encryption is not known from this repository. The relay "pairs two sockets and reads nothing" (`tether/INSTALL.md`), and the tether repository's `PROTOCOL.md` holds whether that is encryption.
 - **R71 missing.** No channel carries a trust level. A seat message, a board card and a tether event each reach the agent as plain text, with no rule that marks it as data or as Tony's words.
