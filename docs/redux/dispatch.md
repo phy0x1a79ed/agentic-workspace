@@ -14,6 +14,7 @@ Timer and agent triggered processes belong in `routines.md`. How a session start
   2. When a routine meets something unexpected, the routine raises an exception, because routines are deterministic. The exception starts an agent (`routines.md` R47), and step 1 applies. Tony: "exceptions route to agentic sessions, so what I just said applies."
 - **R50.** An agent never starts a top-level session on its own. A recorded decision in precedence that covers the case does not count as Tony's permission. The agent asks Tony on the board, as thread 1e requires. Tony: "no, agents still shouldnt be able to start top level agents autonomously. That had a runaway effect before" (2026-10-31).
   - A routine exception is the one automatic start (`routines.md` R47). The `routine` service starts that agent, not another agent.
+  - R50 stays a rule in the brief. Code cannot enforce it, because Tony can give permission in dialogue. Tony: "R50 is not enforceable by code since permission can be given through dialogue" (2026-10-31).
 - `sessions.md` R12 step 4 supplies the input: Tony's decisions on follow-up issues go into precedence.
 
 ## Decisions
@@ -32,4 +33,5 @@ Surveyed read only on 2026-10-31, from the `feat/redux` source and the live prec
 - **The scrapers stage candidates only.** `precedence/scrape.py` and `scrape_transcripts.py` mine memories, operator posts, journals and transcripts into a manifest that a person curates before import. They never write the archive.
 - **Schedulers do not start agents.** The `events` service emits `schedule.tick` and `agent.wake`, and only the game bot consumes them. The `routine` service of `routines.md` R34, which tests conditions and dispatches agents, is designed but not built.
 - **A service can start a session.** `cx start` accepts a call with no calling session, as from a service or an operator at the front door (`_refuse_unknown_caller`, `cx/lifecycle.py`). Such a start records no parent session, so R13 lineage is lost (`routines.md` R47 traces it through the run). A node with the `station` role refuses every start (R48 names the peer instead). `cx start` also needs a fixed project and scope (`sessions.md` R18 conflict).
-- **R50 is a convention only.** No code enforces it. An agent session can call `cx start` or `reflection start_other` with no approval from Tony. The lifecycle brief that `cx start` adds names who to report to and grants or forbids nothing.
+- **No brief states R50.** The lifecycle brief that `cx start` adds names who to report to. It does not tell the agent to ask Tony before it starts a top-level session.
+- **Board answers are kept but not searched.** The board stores each card message verbatim, with its party and time (`board/events.py`). `search` indexes journals, kb, notes, precedence and writing, not the board.
