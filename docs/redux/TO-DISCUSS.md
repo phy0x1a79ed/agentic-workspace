@@ -21,11 +21,13 @@ This doc is the stack of open threads for the redux interview. The interview run
 
 Question queue for 1m. Ask the top open one. Strike it when Tony answers.
 
-1. Who lands a change: each agent under a lock, or a merge queue the agent submits to.
-2. What the aggregator does deterministically, and where an agent steps in.
-3. How the aggregator picks the tests for a change, and how it treats suites that already fail.
-4. The fleet route: which nodes, in what order, and what a failed node does.
-5. How a deploy restart treats live work, such as tether and ssh sessions.
+1. ~~Who lands a change.~~ Answered 2026-10-31: sessions submit to a merge queue under a contract (R20).
+2. How a batch forms, how large it grows, and how a failed batch finds its cause (R21).
+3. What the submission contract holds, and what "prepare for deploy" means for the session.
+4. What the deterministic review checks, and when it spawns an integration agent.
+5. How the service picks the tests for a batch, and how it treats suites that already fail.
+6. The fleet route: which nodes, in what order, and what a failed node does.
+7. How a deploy restart treats live work, such as tether and ssh sessions.
 
 **1a follow-ups. The work hierarchy and routing.** Thread 1a closed with these questions open. They resume when 1m closes. Results: `scopes.md`.
 

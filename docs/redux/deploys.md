@@ -8,10 +8,12 @@ This doc holds how a change gets from a scope branch to the running fleet: the t
 
 - **R19.** One aggregator lands changes. It removes redundant and unrelated test runs. It stops deploys from stacking and racing. Tony: "right now, agents run redundant and unrelated tests repeatidly. deployments can also stack and race. Lets talk continuous integration systems, preferrably deterministic but there can be (and might necessarily require agentic elements)" (2026-10-31).
 - Each project keeps its own deploy protocol. The aggregator runs it.
+- **R20.** An implementation session prepares its change and submits it to the landing service under a contract, in effect a pull request. The session tests its feature in isolation before it submits. A deterministic system reviews each submission. It spawns an integration agent only when one is needed. Tony: "implemenation sessions (standard sessions) should prepare for deploy and submit to teh service using some for of contract. essentially a pull request. A deterministic system reviews and spawns an integration agent if needed."
+- **R21.** The service batches submissions that arrive together, and runs the shared checks once per batch, not once per submission. A batch stays small enough that a failure is easy to trace to its cause. Tony: "I want to prevent running abunch of the same checks like the test suite consecuteively each time for each merge" and "we dont want to batch integration like 10 PRs then something goes wrong and it becomes a nightmare to dealwith or track down what happened."
 
 ## Decisions
 
-None yet.
+- 2026-10-31: Sessions submit to a merge queue rather than land under a lock. Tony: "b makes sense, but I think  functionally we will end up having both." The service still serializes its own merges and deploys.
 
 ## Gap from today
 
@@ -24,3 +26,4 @@ Surveyed read only on 2026-10-31, from the `feat/redux` source.
 - **No CI beyond that.** No git hooks, no hosted CI, no watcher. After a deploy, only the gateway's service poll and `promote.sh`'s sha check run. Nothing rolls back. Nothing records who deployed what, when.
 - **Restarts ignore live work.** A deploy restart kills tether sessions and ssh ControlMasters (`d16ecbd1`, `549faf6a`, `cb95f74f`).
 - **Other projects.** `arbutus-infra` runs Terraform and Ansible with `make check`. `cloud` deploys deneb and sirius with rsync scripts. `self-improvement` copies prompt docs with a `--check` drift mode. `game-bot` has no protocol.
+- **No batching.** The `scatter-gather` skill gathers several branches into a hub branch, but runs no tests on the result.
