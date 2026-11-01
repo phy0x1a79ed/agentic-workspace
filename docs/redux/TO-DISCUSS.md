@@ -17,16 +17,13 @@ This doc is the stack of open threads for the redux interview. The interview run
 
 ## Current thread
 
-**1q. One card tracks several sessions.** See the stack entry below for Tony's words.
+**1p. A parallel work skill.** See the stack entry below for Tony's words.
 
 Parent thread 1 (end state) waits for Tony to confirm `goal.md`. Its children are 1a to 1q.
 
 ## Stack
 
 Top of the stack comes first.
-
-1q. **One card tracks several sessions.** A card or task follows all the sessions that work on it. It relates to 1d. Tony: "So now we we want a card/task to track potentially multiple sessions" (2026-11-01).
-   - Question queue: empty.
 
 1p. **A parallel work skill.** A skill for large tasks. Tony: "I think we need a parallel work skill for large tasks, that instructs to plan in waves split across agents, when to scope claim and unclaim, gathering and deploying." (2026-11-01). Each session claims its own scope through `reflection cd` (`scopes.md` R2, R42).
    - Question queue:
@@ -90,6 +87,7 @@ Raised before the redux started. Each enters the stack when a thread reaches it.
 
 ## Closed
 
+- 1q. One card tracks several sessions (2026-11-01). Result: `sessions.md` R9, R56, R57 and R58. awm mints a task id for each card, and sessions join a task by that id. Names serve legibility only.
 - 1o. Subagents and scopes (2026-11-01). Result: `dispatch.md` R50, `sessions.md` R11, R52 path 2 and R56. Coordinated work lands through the coordinator's one `deploy` per project.
 - 1c. Dependencies between sessions (2026-11-01). Result: `sessions.md` R51 and R52, `routines.md` R26.
 - 1k. Automatic dispatch of follow-up work (2026-11-01). Result: `dispatch.md` R49 and R50, `routines.md` R47 and R48.
