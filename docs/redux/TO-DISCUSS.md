@@ -28,7 +28,7 @@ Question queue for 1m. Ask the top open one. Strike it when Tony answers.
 3b. ~~The signature of `deploy`.~~ Answered 2026-10-31: R26.
 3c. ~~How a session that holds a reservation is kept from omitting it.~~ Answered 2026-10-31: the reservation attaches at session start and dies with the session (R22, R26). Tony: "agents failing to provide the optional reservation name will be a source of error unless we use explicit instructions, like in the debrief protocol."
 4. ~~What the deterministic steps are.~~ Answered 2026-10-31: R27.
-4b. Whether only the service writes `dev` and `release`, with agents never pushing to either.
+4b. ~~Whether only the service writes `dev` and `release`.~~ Answered 2026-10-31: yes, by instruction only (R29).
 5. Whether a full test suite still runs anywhere beyond the smoke checks, and who keeps the smoke checks under 1 minute.
 6. The fleet route: which nodes, in what order, and what a failed node does.
 7. How a deploy restart treats live work, such as tether and ssh sessions.
