@@ -38,6 +38,10 @@ This doc holds a session's id, its lifecycle from start to retirement, its journ
 
 **CAUTION** awm cannot build citations from journal reads alone. Agents also read journals that turn out irrelevant.
 
+### Dependencies
+
+- **R51.** A session that depends on other sessions pauses until they finish. When Tony asks, the asking session starts the top-level sessions for the larger issue (R50). It then asks awm to pause it until they finish. Each started session reports with its journal and retires (R8, R12). It does not wait on anything. Tony: "a session delivers its report as a journal and then retires. it does not wait. this was discussed already" and "so we need a pause mechanism of sorts. agents start other top level sessions when asked, and then asks awm to pause them until they finish" (2026-11-01).
+
 ## Decisions
 
 - 2026-10-30: New work goes to a new session, never into a live session's context. Tony: "I feel this encourages better performance from agents." See R3 for a scope that a live session occupies.
