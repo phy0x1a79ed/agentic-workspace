@@ -313,7 +313,7 @@ remote seat down for those minutes. Name witnesses off the keeper's network in
     witness = ["deneb", "altair"]
 
 On a failed `cx list` the keeper asks each witness in order, never the node
-itself, to run `awm reflection probe_other node=<node>`:
+itself, to run `awm reflection probe-other --node <node>`:
 
 - The witness cannot reach the node either: the node is down. The outage and
   the alert follow as below.
