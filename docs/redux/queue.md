@@ -22,6 +22,14 @@ How a session closes and raises follow-up issues belongs in `sessions.md`. What 
   1. A new note button in Proposed creates a card with a Markdown body.
   2. A spawn agent button converts a Proposed card into a task and starts its agent on the peer that a dropdown names. Tony: "Need a button spawn agent from these cards which converts them. + dropdown for peer."
   3. A card in Working or Done starts a new task from that card.
+- **R64.** mizar authorizes every action. deneb hosts the board in Trilium and is an untrusted channel. Tony: "Passkey + trusted device arbitraged by mizar with deneb viewed as an untrusted channel seems good." (2026-11-01).
+  1. Each trusted device enrols a passkey once, on mizar directly, never through deneb. mizar keeps its public key.
+  2. mizar issues a challenge that names one action. The device signs it. deneb only carries the challenge and the signature. mizar accepts each signature once, within a short time.
+  3. mizar fetches pending actions from deneb. deneb never connects to mizar.
+  4. mizar weighs risk signals, such as a new device, a new network or an unusual rate. Tony: "Risk signals also seem like somwthing i want."
+  5. The design works on a phone with no standing VPN link. Tony: "This needs to work with phones which dont play well for constant link on a vpn like tailscale."
+  6. The implementation uses existing packages for these standards. Tony: "Since this all seems like established standards, we should use existing packages when implementing".
+  - Encryption alone cannot carry a secret through deneb. deneb serves the page code that would encrypt it.
 
 ## Gap from today
 
