@@ -9,6 +9,19 @@ How a session closes and raises follow-up issues belongs in `sessions.md`. What 
 ## Requirements
 
 - **R60.** The Kanban stays as Tony's interface. Its cards improve, its stages get fewer, and old session cards get a better mechanism. The change removes more than it adds. Tony: "I want to keep the kanban, but add to the cards, simplify the stages, and add a better mechanism for old session cards." and "I think a lot of this can be done by just improving the cards in terms of what they show and how they are updated and actually removing things rather than adding" (2026-11-01).
+- **R61.** The Swarm board is a new page built in Trilium, a command center. It holds four collapsible sections. Tony: "i think actually having a new page (but still built in trillium please) is needed", "This is basically a command center" and "I really want this to be on trillium so that things are harmonized" (2026-11-01).
+  1. **Proposed** holds Tony's notes for future tasks. Tony: "Need a fourth proposed section with button for new note cards that defaults to markdown for me to describe future tasks."
+  2. **Needs you** holds every card that waits on Tony. A status tag on each card says why, such as planned or blocked. Tony: "3 collapseable sections. Needs you, working, done. With status tags like planned, blocked, etc."
+  3. **Working** holds the active cards, with no status tags. Tony: "Working prolly doesnt need status tags."
+  4. **Done** loads older cards as Tony scrolls. Tony: "Done should do the infinite scroll element that loads more previous cards as needed."
+  - Each card carries a dedicated chip for its peer. Tony: "Cards should have a dedicated tag or chip for peer."
+  - The page has a search. Tony: "Search is needed."
+- **R62.** A card shows its title only. A selected card shows its details in a right info panel. Tony: "Cards should be title only, but shows info when selected. This looks like we need a right info panel."
+  - The panel's metadata is a table of every session of the task (R58), each with its status, active or inactive, and a link to each session that has Remote Control. Tony: "The metadata section (what we have now) needs to list all sessions, their status (active, inactive) and link out to the sessions that have remote control. This looks like a table."
+- **R63.** Action buttons act on the selected card. Tony: "Prolly the better way is to make cards selectable and have action buttons, which covers new tasks from done and active."
+  1. A new note button in Proposed creates a card with a Markdown body.
+  2. A spawn agent button converts a Proposed card into a task and starts its agent on the peer that a dropdown names. Tony: "Need a button spawn agent from these cards which converts them. + dropdown for peer."
+  3. A card in Working or Done starts a new task from that card.
 
 ## Gap from today
 
@@ -21,4 +34,6 @@ Surveyed read only on 2026-11-01, from the `feat/redux` source.
 - **A drag is the only action.** Tony acts on a card by dragging it to another column. The sweep reads the drag on its next tick. A drag to Done or Rejected closes the task (`tasks.py` `_board`). No drag reaches the session. A card missing from two sweeps in a row cancels its task. The mirror keeps a hand drag over its own move.
 - **A card starts no session.** A session claims a card when its prompt says `claim task <ref>`, or holds a card link with "claim" or "attach" (`tasks.py` `hook_prompt`). Tony opens a session first and pastes that line. Discord `/new-agent` starts a fresh session from free text and takes no card (`sessions.md` § Gap, R9).
 - **An answer reaches the session through its prompt.** Any prompt to a blocked session moves its card back to Active (`hook_prompt`). A message on a federation card's thread wakes the assigned session with one line (`reporting/subscriber.py`).
+- **No Trilium on mizar.** The vault runs on sirius, the public host and sync hub, with copies on altair and capella. A note on any copy reaches the others within a minute (`trilium/INSTALL.md` § One document, three machines).
+- **The vault trusts every account.** An awm account reaches the whole vault. A writable slice lets anyone with its link create notes inside one subtree. Trilium runs each note's frontend scripts on the awm origin, as the person who reads it (`trilium/INSTALL.md` § What a shared origin costs).
 - Each card tracks one session. `sessions.md` § Gap, R57 and R58, holds that gap.

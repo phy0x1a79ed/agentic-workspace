@@ -26,10 +26,8 @@ Parent thread 1 (end state) waits for Tony to confirm `goal.md`. Its children ar
 Top of the stack comes first.
 
 1d. **The pending queue and the active list.** One interface of reports and blockers that Tony picks from, beside a list of active work. Tony: "I should be able to just click and start talking to the agent with the report or issue" and "The Kanban board attempts to do this, but is not reliable and awkward" (2026-10-30). This absorbs the parked board input.
-   - Tony keeps the Kanban (R60). Asked: which stages stay.
-   - Then: what a card shows, and how it updates.
-   - Then: the mechanism for old session cards, including what a card shows after its session ends (R42).
-   - Queued from 1b: where the new-task-from-report button lives (`sessions.md` § Lifecycle).
+   - Asked: the risk of the command center in the shared vault, and its mitigation. Tony: "Too risky for deneb. Needs to be a page and service on mizar, which uses tailscale for additional security" and "I really want this to be on trillium so that things are harmonized. What is the risk here and how can we mitigate?" (2026-11-01).
+   - Then: how a card updates (R60).
 
 1e. **Seats as sessions.** Seats, the Discord DM included, become sessions on a channel. Agents use subagents freely and start top-level sessions as `dispatch.md` R50 allows. A seat agent can help Tony work the pending queue (2026-10-30).
 

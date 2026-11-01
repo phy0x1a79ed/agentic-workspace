@@ -40,7 +40,7 @@ This doc holds a session's id, the id of its task, its lifecycle from start to r
   2. With every task done and no pending issue, the agent retires.
   3. When the agent finds follow-up issues, it stays live. It raises each one with a blocked or review request, so that it reaches Tony's list. Tony queues new work from what he sees.
   4. Tony's decisions on follow-up issues go into precedence, so that a later awm can dispatch follow-up work on its own.
-- Tony starts a new session from a report easily. A button generates a new task that refers to the previous session's report. Its place waits for thread 1d, Tony's interface to the swarm.
+- Tony starts a new session from a report easily. An action button on the selected card generates a new task that refers to the previous session's report (`queue.md` R63).
 - **R18.** A follow-up session routes itself the same way as any new session (R1). Its start carries the previous session's scope as a suggested route. The prompt tells the agent that it may choose another scope when the work does not fit there.
 
 ### Journals and lineage

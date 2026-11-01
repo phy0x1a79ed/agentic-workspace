@@ -18,7 +18,7 @@ This doc holds how a session finds its project and scope, enters it, shares it w
   - A terminal opened inside a scope folder skips routing, because Tony chose the scope. One opened in the lobby, or outside every scope, gets the brief and routes itself (R1, R40).
 - **R3.** A scope is one git worktree and holds at most one live session. A session is live while it works, while it is blocked on a question, and while it waits for review.
 - **R42.** An active agent session holds the claim on a scope. No card or other record holds it. The claim ends when the session ends. Tony: "if you are asking about what actually holds a scope as claimed, it is an active agent session. the claim dies with teh session" (2026-10-31).
-  - What the board card shows after its session ends belongs to thread 1d.
+  - A card's info panel shows each of its sessions as active or inactive (`queue.md` R62).
 - **R4.** An agent may create a project, which is a git repo. Example: "try out this new tool `<github link>`" clones the tool as a project and enters a branch as a scope.
 - **R43.** A scope in a cloned project uses a new `feat/<scope>` branch from the upstream default branch. The upstream default branch stays clean for pulls. The project gets `dev` and `release` branches only when it gets a deploy routine (R24). Tony: "sounds reasonable" (2026-10-31).
 - **R5.** A scope outlives its sessions. It stays until a session removes it. awm never deletes a scope when a session ends, because the worktree can hold DVC pins and uncommitted files. Tony: "At least Im not organized enough yet to allow this automation."
