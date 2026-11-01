@@ -13,6 +13,7 @@ This doc holds a session's id, its lifecycle from start to retirement, its journ
   - A Claude Code session's id is `cc` followed by the hex digits of its full Claude session UUID.
   - awm accepts incoming ids. It mints no internal ids that map to them.
   - A short form, such as a unique prefix, is only a lookup on this id.
+- **R56.** The sessions of one task are identifiable by a common prefix in their names. Thread 1q settles the name format. Tony: "We also need to give guidelines for naming... sessions for a task needs to be identifiable. Use common prefix." (2026-11-01).
 - **R13.** Each session records the id of the session that started it. A session that clears itself gets a new id, with the old id as its parent. One parent link covers both a clear and a `start_other`.
 
 ### Lifecycle
@@ -40,7 +41,7 @@ This doc holds a session's id, its lifecycle from start to retirement, its journ
 
 ### Dependencies
 
-- **R51.** A session that depends on other sessions waits until they finish. When Tony asks, the asking session starts the top-level sessions for the larger issue (R50). It then asks awm to make it wait until they finish. Each started session reports with its journal and retires (R8, R12). It does not wait on anything. Tony: "a session delivers its report as a journal and then retires. it does not wait. this was discussed already" and "so we need a pause mechanism of sorts. agents start other top level sessions when asked, and then asks awm to pause them until they finish" (2026-11-01).
+- **R51.** A session that depends on other sessions waits until they finish. The asking session starts the top-level sessions for the larger issue, as `dispatch.md` R50 allows. It then asks awm to make it wait until they finish. Each started session reports with its journal and retires (R8, R12). It does not wait on anything. Tony: "a session delivers its report as a journal and then retires. it does not wait. this was discussed already" and "so we need a pause mechanism of sorts. agents start other top level sessions when asked, and then asks awm to pause them until they finish" (2026-11-01).
   - A wait works like a retire. Its last step calls `reflection wait` in place of `reflection stop`. The verb's one parameter is `until`, a required list of session ids (R9). awm wakes the waiting session after every listed session finishes. Tony: "pause should function like retire", "no until would go in reflection stop -> need new verb reflection pause_until" and "lets do reflection wait, and have until be the name of the (now non optional) parameter. pause -> wait, I think this is clearer and fits instructions better: "wait until they finish"" (2026-11-01).
   - `reflection wait` waits on sessions only. A coordinator waits on a deploy through the deploy call itself (`routines.md` R26). Tony: "pause is strictly for sessions." (2026-11-01).
   - The wake resumes the session itself from its transcript (R10).
@@ -54,7 +55,7 @@ This doc holds a session's id, its lifecycle from start to retirement, its journ
 
 - 2026-10-30: New work goes to a new session, never into a live session's context. Tony: "I feel this encourages better performance from agents." See R3 for a scope that a live session occupies.
 - 2026-10-30: A result that is not good gets a new session, not a restart of the old session with its full context.
-- 2026-10-30: Agents use subagents freely. They create top-level sessions only with Tony's permission.
+- 2026-10-30: Agents use subagents freely. They create top-level sessions only with Tony's permission. Replaced on 2026-11-01 by `dispatch.md` R50.
 - 2026-10-30: Seats are sessions. A seat is a session on a channel.
 
 ## Gap from today
