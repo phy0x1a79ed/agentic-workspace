@@ -18,16 +18,18 @@ This doc is the stack of open threads for the redux interview. The interview run
 
 **1o. Subagents and scopes.** See the stack entry below for Tony's words.
 
-Parent thread 1 (end state) waits for Tony to confirm `goal.md`. Its children are 1a to 1o.
+Parent thread 1 (end state) waits for Tony to confirm `goal.md`. Its children are 1a to 1p.
 
 ## Stack
 
 Top of the stack comes first.
 
 1o. **Subagents and scopes.** How subagents claim scopes, and how a session tracks its subagents, if at all. It serves path 2 of `sessions.md` R52. Tony: "(I guess we need to think aobut subagents claiming scopes and how sessions track subagents if at all)" (2026-11-01). The survey is in `scopes.md` § Gap from today. Question queue:
-   1. How does a session claim a scope that only its subagent works in? `reflection cd` makes the claim (R2), and it moves the session. Tony: "then if relfection cd does the claiming, we need a new verb for claiming for subagents?" (2026-11-01).
+   1. How does a subagent change its folder to its scope? Tony: "subagents cant change their cwd?  there should be something like an enter worktree or something?" (2026-11-01).
    2. Does awm track a session's subagents, or does the Claude Code harness alone track them? From "how sessions track subagents if at all".
-   - Answered: the top-level session holds its subagents' claims (`scopes.md` R53).
+   - Answered: the top-level session holds its subagents' claims (`scopes.md` R53), through `scope claim` and `scope unclaim` (R54, R55).
+
+1p. **A parallel work skill.** A skill for large tasks. Tony: "I think we need a parallel work skill for large tasks, that instructs to plan in waves split across agents, when to scope claim and unclaim, gathering and deploying." (2026-11-01).
 
 1d. **The pending queue and the active list.** One interface of reports and blockers that Tony picks from, beside a list of active work. Tony: "I should be able to just click and start talking to the agent with the report or issue" and "The Kanban board attempts to do this, but is not reliable and awkward" (2026-10-30). This absorbs the parked board input.
    - Queued from 1b: where the new-task-from-report button lives (`sessions.md` § Lifecycle).
@@ -65,6 +67,8 @@ Top of the stack comes first.
 4. **What made it foundational.** Which problem made Tony think "rebuild" rather than "patch"?
 
 5. **Done.** What makes the redux finished?
+
+6. **Review the protocol docs.** Add the deploy to the core awm docs, then review every protocol doc. It runs after the other threads settle. Tony: "we should also add the deploy to the core awm docs -> I guess we need to review all protocol docs once we settle everything this session." (2026-11-01).
 
 ## Parked inputs
 
