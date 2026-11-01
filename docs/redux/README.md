@@ -13,7 +13,7 @@ Earlier drafts are inputs, not the frame. They are cloud/tencent `FLEET.md` (07d
 - `scopes.md` — how a session finds, enters, shares and removes a scope.
 - `sessions.md` — a session's id, lifecycle, journals and lineage, how a session waits on others, and seats.
 - `users.md` — who uses awm, through which channel, and what each can reach.
-- `fleet.md` — the nodes and the role of each.
+- `fleet.md` — the nodes, the role of each, and how each is hardened.
 - `routines.md` — registered routines, and the ones designed so far, such as `deploy`.
 - `dispatch.md` — how awm starts work for an issue on its own, from Tony's recorded decisions.
 - `queue.md` — Tony's interface to the swarm: the Swarm board's stages, its cards, old cards, and one click from a card to its agent.
