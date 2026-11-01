@@ -2,7 +2,7 @@
 
 ## Purpose & Contents
 
-This doc holds a session's id, the id of its task, its lifecycle from start to retirement, its journals, the lineage that links sessions, and how a session waits on the sessions it depends on. Threads 1b, 1l and 1c produce it.
+This doc holds a session's id, the id of its task, its lifecycle from start to retirement, its journals, the lineage that links sessions, how a session waits on the sessions it depends on, and what a seat session does. Threads 1b, 1l, 1c and 1e produce it.
 
 ## Requirements
 
@@ -65,11 +65,14 @@ This doc holds a session's id, the id of its task, its lifecycle from start to r
   2. **A complex task.** The coordinating agent starts one top-level session for each concern (`dispatch.md` R50). Each started session moves into its own scope with `reflection cd`. The coordinator waits on them with `reflection wait` (R51). Each started session finishes on its own branch and retires without a deploy. The coordinator merges their branches into its own feature branch, so all of it lands with one `deploy`. Work that covers several projects gets one `deploy` for each project. Tony: "I think in this case the top level agent should coordinate the merging into their feature branch and so all of it gets 1 deploy. The exception is when work covers multiple projects, then the top level agent calls deploy on each." and "i think what im after is actually top level sessions" (2026-11-01).
   3. **Several top-level agents.** Tony starts an agent while an earlier task still runs, because the scope grew or for another reason. The agents coordinate, and one waits on the others with `reflection wait` (R51). Each later agent joins the running task by its task id (R57 step 5). Tony: "I start an agent after an existing task is already running, because I realize the scope is expanded or for whatever reason I get multiple top level agents coordinating. In such cases, an awm wait until [session1, session2, etc] would be useful. Ideally this doesnt happen but real work is messy so that's why we add this so we can ahve the tools ready when needed."
 
+### Seats
+
+- **R67.** A seat is one long-lived session on its channel, such as Tony's Discord DM or a Slack DM. It chats, answers quick questions and helps Tony work the queue when he asks. Each real request becomes a task with its own card and session, started as `dispatch.md` R50 allows. The seat does no task work in its own context. The seat itself has no card. Tony: "the seats then become sessions... I think then socials seats fit into the model completely" and "discord DM also becomes a seat that I can talk to and it is just a channel. the agent should be capable (has access and tooling) to help me with the core pending task/triage list if I ask" (2026-10-30), and "I accept your recommendation. Nothing much changes with seats, its more the stufd around it that changes." (2026-11-01).
+
 ## Decisions
 
 - 2026-10-30: New work goes to a new session, never into a live session's context. Tony: "I feel this encourages better performance from agents." See R3 for a scope that a live session occupies.
 - 2026-10-30: A result that is not good gets a new session, not a restart of the old session with its full context.
-- 2026-10-30: Seats are sessions. A seat is a session on a channel.
 
 ## Gap from today
 
@@ -89,4 +92,6 @@ Surveyed read only on 2026-10-30, 2026-10-31 and 2026-11-01.
 - **Two delivery paths exist.** `board_watch` types one line into a session for each event on a watched card. The reflection resume after a compaction is a guaranteed delivery of one prompt, with retries and an unbounded wait (`reflection/inject.py`). Either could carry a resume.
 - **R56 partial.** A name is free text of at most 80 printable characters (`start_args` in `cx/lifecycle.py`, `rename` in `reflection/control.py`). `cx start` names a session after its scope when the caller gives no name. Nothing sets a prefix for the sessions of one task. Seats already share one, such as `seat:slack/DM/<person>`. A card takes its title from the session name or the plan heading (`reporting/hub_adapter.py`).
 - **R57 and R58 missing.** The reporting ledger mints an integer task id for each session, keyed by node plus job (`reporting/ledger.py`). Each card tracks one session. No task id spans sessions. No verb joins a session to another task, and nothing folds one card into another.
+- **R67 partial.** The `social` keeper keeps each seat as a pinned session. It resumes the session whenever it ends, and starts a new one only when the seat's brief changes (`social/keeper.py`). One session can hold many chats: `slack-main` holds Tony's Slack DM, 7 member DMs and Slackbot. The `opal-seat-holder` skill already hands each real task to a per-person agent. That agent is pinned and long-lived, one per person, not one per task. The ledger skips pinned sessions (`reporting/tasks.py` `_workers`), so lab work reaches no card.
+- **Discord seats run on deneb.** Two Discord seat agents, Tony's DM `tony-dm` among them, run on deneb with the full MCP surface (`users.md`). deneb is now a station that holds no key or token for any other node (`fleet.md`), so these seats move to another node. Thread 3a picks the home of social and the seat agents.
 - **No deploy ticket.** The `routine` service is not built, so the ticket of `routines.md` R26 and its wait do not exist.
