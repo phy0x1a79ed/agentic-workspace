@@ -17,7 +17,7 @@ This doc is the stack of open threads for the redux interview. The interview run
 
 ## Current thread
 
-**1d. The pending queue and the active list.** See the stack entry below for Tony's words. The survey and its gap are in `queue.md`.
+**1e. Seats as sessions.** See the stack entry below.
 
 Parent thread 1 (end state) waits for Tony to confirm `goal.md`. Its children are 1a to 1q.
 
@@ -25,16 +25,14 @@ Parent thread 1 (end state) waits for Tony to confirm `goal.md`. Its children ar
 
 Top of the stack comes first.
 
-1d. **The pending queue and the active list.** One interface of reports and blockers that Tony picks from, beside a list of active work. Tony: "I should be able to just click and start talking to the agent with the report or issue" and "The Kanban board attempts to do this, but is not reliable and awkward" (2026-10-30). This absorbs the parked board input.
-   - Settled: the command center's security, R64 and R65.
-   - Then: how a card updates (R60).
-
 1e. **Seats as sessions.** Seats, the Discord DM included, become sessions on a channel. Agents use subagents freely and start top-level sessions as `dispatch.md` R50 allows. A seat agent can help Tony work the pending queue (2026-10-30).
 
 1f. **The three channels.** Chat with humans (social seats). Chat between agents of different systems that share no awm network, through private chat rooms over websocket or HTTPS polling. The "dumb" tether to machines. Tony: "It is really frustrating trying to get two way coms between 2 agentic systems" (2026-10-30).
+   - The inter-swarm board goes (`queue.md` § Decisions). Design how foreign agents communicate in its place. Tony: "remove the inter swarm board -> to be discussed with how foreign agents communicate" (2026-11-01).
 
 1g. **Communication between awm nodes.** Tony: "This doesnt cover coms between nodes of awm itself which needs discussion. I think we need to drop foreign nodes in favour of a searchable endpoint instead" (2026-10-30).
    - Then: how `reflection` behaves across peers, once the network architecture settles (Tony, 2026-10-31).
+   - Queued from 1d: which node writes a task's card when its sessions span nodes, given that mizar holds no vault copy (`sessions.md` R58, `queue.md` R64).
 
 1h. **Install and bootstrap.** A Rust conversion, true plugins, and Claude cloud agents that test fresh installs and adding nodes. This absorbs the parked gateway, plugin and bootstrap input (Tony, 2026-10-30).
    - Local throwaway environments that behave like cloud agents, to avoid their cost. Tony: "we should also consider settup up a system that can spawn throway temp environments that act the same" (2026-10-30).
@@ -83,6 +81,7 @@ Raised before the redux started. Each enters the stack when a thread reaches it.
 
 ## Closed
 
+- 1d. The pending queue and the active list (2026-11-01). Result: `queue.md` R60 to R66. A four-section command center page in Trilium replaces the Kanban. mizar authorizes every action through an embedded panel, and deneb is an untrusted station (`fleet.md`).
 - 1p. The parallel work skill (2026-11-01). Result: `parallel-work.md` R59 and the approved draft `drafts/parallel-work/SKILL.md`. The question of where subagent work ends was not needed. `dispatch.md` R50 covers it.
 - 1q. One card tracks several sessions (2026-11-01). Result: `sessions.md` R9, R56, R57 and R58. awm mints a task id for each card, and sessions join a task by that id. Names serve legibility only.
 - 1o. Subagents and scopes (2026-11-01). Result: `dispatch.md` R50, `sessions.md` R11, R52 path 2 and R56. Coordinated work lands through the coordinator's one `deploy` per project.

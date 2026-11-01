@@ -8,20 +8,23 @@ How a session closes and raises follow-up issues belongs in `sessions.md`. What 
 
 ## Requirements
 
-- **R60.** The Kanban stays as Tony's interface. Its cards improve, its stages get fewer, and old session cards get a better mechanism. The change removes more than it adds. Tony: "I want to keep the kanban, but add to the cards, simplify the stages, and add a better mechanism for old session cards." and "I think a lot of this can be done by just improving the cards in terms of what they show and how they are updated and actually removing things rather than adding" (2026-11-01).
-- **R61.** The Swarm board is a new page built in Trilium, a command center. It holds four collapsible sections. Tony: "i think actually having a new page (but still built in trillium please) is needed", "This is basically a command center" and "I really want this to be on trillium so that things are harmonized" (2026-11-01).
+- **R60.** The board improves its cards, simplifies its stages and handles old session cards better. The change removes more than it adds. Tony: "add to the cards, simplify the stages, and add a better mechanism for old session cards." and "I think a lot of this can be done by just improving the cards in terms of what they show and how they are updated and actually removing things rather than adding" (2026-11-01).
+- **R61.** The Swarm board is a new page built in Trilium, a command center. It replaces the Kanban. It holds four collapsible sections of card headers. Tony: "we are updating the kanban board to 4 collapsable sections of card headers (title and tags/chips, no content) with info panel on right for sleected card. The kanban is no more.", "i think actually having a new page (but still built in trillium please) is needed", "This is basically a command center" and "I really want this to be on trillium so that things are harmonized" (2026-11-01).
   1. **Proposed** holds Tony's notes for future tasks. Tony: "Need a fourth proposed section with button for new note cards that defaults to markdown for me to describe future tasks."
   2. **Needs you** holds every card that waits on Tony. A status tag on each card says why, such as planned or blocked. Tony: "3 collapseable sections. Needs you, working, done. With status tags like planned, blocked, etc."
   3. **Working** holds the active cards, with no status tags. Tony: "Working prolly doesnt need status tags."
   4. **Done** loads older cards as Tony scrolls. Tony: "Done should do the infinite scroll element that loads more previous cards as needed."
   - Each card carries a dedicated chip for its peer. Tony: "Cards should have a dedicated tag or chip for peer."
   - The page has a search. Tony: "Search is needed."
-- **R62.** A card shows its title only. A selected card shows its details in a right info panel. Tony: "Cards should be title only, but shows info when selected. This looks like we need a right info panel."
+- **R62.** A card shows only its header: its title and its tags and chips, with no content. A selected card shows its details in a right info panel. Tony: "Cards should be title only, but shows info when selected. This looks like we need a right info panel."
   - The panel's metadata is a table of every session of the task (R58), each with its status, active or inactive, and a link to each session that has Remote Control. Tony: "The metadata section (what we have now) needs to list all sessions, their status (active, inactive) and link out to the sessions that have remote control. This looks like a table."
 - **R63.** Action buttons act on the selected card. Tony: "Prolly the better way is to make cards selectable and have action buttons, which covers new tasks from done and active."
   1. A new note button in Proposed creates a card with a Markdown body.
   2. A spawn agent button converts a Proposed card into a task and starts its agent on the peer that a dropdown names. Tony: "Need a button spawn agent from these cards which converts them. + dropdown for peer."
   3. A card in Working or Done starts a new task from that card.
+  4. Closing and rejecting a card are buttons too.
+- **R66.** Cards update one way. Only awm writes a card's section, tags and chips. Tony changes a card only through the action buttons (R63), and the card follows the task record. Tony writes the body of his own Proposed notes. Tony: "This makes sense." (2026-11-01).
+  - Nothing reads a hand move back from the page. The Older books and the separate Ledger notes go. Done's infinite scroll (R61) and the sessions table (R62) replace them.
 - **R64.** mizar authorizes every action. deneb hosts the board in Trilium and is an untrusted channel. Tony: "Passkey + trusted device arbitraged by mizar with deneb viewed as an untrusted channel seems good." (2026-11-01).
   1. Each trusted device enrols a passkey once. A new device enrols only with approval from a trusted device, or over Tailscale, never through deneb alone. mizar keeps each public key.
   2. mizar weighs risk signals, such as a new device, a new network or an unusual rate. A risk signal asks for the passkey again. Tony: "Risk signals also seem like somwthing i want."
@@ -35,6 +38,10 @@ How a session closes and raises follow-up issues belongs in `sessions.md`. What 
   4. After a drop, mizar's hash must equal the device's acked hash or its pending one. mizar refuses a pending action past a short expiry, and the device drops it. Any other mismatch locks the device until the passkey.
   - Each device keeps its own chain with mizar.
   - The browser's same-origin rule keeps deneb's page code out of the panel's storage and buttons. deneb cannot sign an entry, so it cannot inject a command.
+
+## Decisions
+
+- 2026-11-01: The inter-swarm board goes. Thread 1f decides how foreign agents communicate in its place. Tony: "Wr shoukd also remove the inter swarm board -> to be discussed with how foreign agents communicate".
 
 ## Gap from today
 
@@ -50,4 +57,5 @@ Surveyed read only on 2026-11-01, from the `feat/redux` source.
 - **No Trilium on mizar.** One vault runs as copies on several nodes. A note on any copy reaches the others within a minute. A copy's sync link carries no authentication, so every copy can rewrite every note (`trilium/INSTALL.md` § One document, three machines).
 - **deneb is the public host.** deneb is a Tencent VM that serves `nexus.tony-xy-liu.com` (cloud `README.md`). It runs the federation board host (`board/INSTALL.md`) and Discord seat agents (`users.md`), and holds a copy of the vault (`auth/INSTALL.md`, `reporting/INSTALL.md`). `trilium/INSTALL.md` names sirius as the public host and the sync hub. The docs disagree.
 - **The vault trusts every account.** An awm account reaches the whole vault. A writable slice lets anyone with its link create notes inside one subtree. Trilium runs each note's frontend scripts on the awm origin, as the person who reads it (`trilium/INSTALL.md` § What a shared origin costs).
+- **The edge may refuse the embedded panel.** R65 embeds a mizar page in a Trilium page. The awm edge's content security policy must allow mizar's address as a frame source.
 - Each card tracks one session. `sessions.md` § Gap, R57 and R58, holds that gap.
