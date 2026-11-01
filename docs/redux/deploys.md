@@ -43,5 +43,4 @@ Surveyed read only on 2026-10-31, from the `feat/redux` source.
 - **Restarts ignore live work.** A deploy restart kills tether sessions and ssh ControlMasters (`d16ecbd1`, `549faf6a`, `cb95f74f`).
 - **Other projects.** `arbutus-infra` runs Terraform and Ansible with `make check`. `cloud` deploys deneb and sirius with rsync scripts. `self-improvement` copies prompt docs with a `--check` drift mode. `game-bot` has no protocol.
 - **No batching.** The `scatter-gather` skill gathers several branches into a hub branch, but runs no tests on the result.
-
 - **No refresh hook.** `awm deploy` restarts the whole gateway unit. No project declares how its live processes refresh.
