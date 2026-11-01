@@ -38,7 +38,7 @@ Each feature service owns its own SQLite DB. There is no shared `state.db`. Serv
 A feature service keeps its state in SQLite, so the gateway's respawn brings it back whole. A Claude Code session keeps its state in its conversation, and only the daemon can bring that back. Three layers keep a session up:
 
 1. `keep` holds the daemon in its own user unit, outside awm's control group and outside every terminal. `awm/services/keep/INSTALL.md` says why.
-2. `cx` is the session layer. It asks `keep` to ensure the daemon before a start, resume or stop. It refuses with `code: "daemon_down"` only when that fails, and its `list` carries a `daemon` block.
+2. `cx` is the session layer. It asks `keep` to ensure the daemon before a start, resume or stop. It refuses with `code: "daemon_down"` only when that fails, and its `list` carries a `daemon` block. Its `probe` tells a keeper on another node whether a node's cx answers from here, so the keeper can tell its own lost network from the node being down.
 3. `awm.kept` holds the policy every keeper shares: the restart record, the decision (wait, resume, start fresh, give up) and the breaker. It does no I/O. Social's seat keeper is its first user.
 
 **CAUTION** A keeper must read `daemon_down` and `daemon.state` as "wait", never as "the session is gone". Stopping a pinned job runs `claude rm` and loses its conversation. That reading is what destroyed a seat on 2026-10-20.
