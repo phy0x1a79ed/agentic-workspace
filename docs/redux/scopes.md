@@ -2,7 +2,7 @@
 
 ## Purpose & Contents
 
-This doc holds how a session finds its project and scope, enters it, shares it with other sessions, and how a scope is removed. Thread 1a produced it.
+This doc holds how a session finds its project and scope, enters it, shares it with other sessions, and how a scope is removed. It also holds how a session's subagents use scopes. Threads 1a and 1o produce it.
 
 ## Requirements
 
@@ -61,3 +61,11 @@ Surveyed read only on 2026-10-30.
 - **R44 partial.** `scope delete` blocks on uncommitted and untracked files, and `force` discards them (`scopes.py:286`). It refuses a folder that holds nested scopes. It keeps the branch unless `delete_branch` is set, and reports the restore commit. It misses ignored files, unique branch commits and a live session. A forced delete reports only a count and a sample.
 - **R6 missing.** No hygiene check exists. `scope heal` repairs scope files, such as the `AGENTS.md` import, context links and the data link, and reports missing worktrees. It never looks for unused scopes.
 - **R7 mostly missing.** `request_human` and card messages cover steps 1 and 4. No per-scope queue (R46) or release event exists.
+
+Surveyed read only on 2026-11-01 for thread 1o, subagents.
+
+- **awm cannot see a subagent.** A Claude Code subagent runs inside its parent's process. awm names the caller by its Claude Code process (`resolve_caller_pid`, `gateway/mcp_caller.py`), so every awm call that a subagent makes counts as its parent's. awm sees a subagent only as a transcript file in the parent's `subagents/` folder, which the transcripts sweep archives (`transcripts/layout.py`).
+- **A subagent cannot enter a scope on its own.** `reflection cd` types `/cd` into the calling session (`reflection/control.py`, `cd`). Called from a subagent, it moves the parent. A subagent works in another folder only through the paths in its commands.
+- **Harness worktrees conflict with the brief.** The Agent tool's `isolation: "worktree"` and the `EnterWorktree` tool make a git worktree under `.claude/worktrees/` on a new branch. The lifecycle brief forbids worktrees there (`BRIEF`, `cx/lifecycle.py`). The Claude Code prompt for a background job tells the job to call `EnterWorktree` before its first edit.
+- **The harness tracks subagents, awm does not.** A session lists its own subagents with `ListAgents` and continues one with `SendMessage`. No awm record holds a subagent, its scope or its branch.
+- **The lifecycle brief does not mention subagents.** It tells a started session to find or create its scope and to move there with `reflection cd`.

@@ -24,7 +24,10 @@ Parent thread 1 (end state) waits for Tony to confirm `goal.md`. Its children ar
 
 Top of the stack comes first.
 
-1o. **Subagents and scopes.** How subagents claim scopes, and how a session tracks its subagents, if at all. It serves path 2 of `sessions.md` R52. Tony: "(I guess we need to think aobut subagents claiming scopes and how sessions track subagents if at all)" (2026-11-01).
+1o. **Subagents and scopes.** How subagents claim scopes, and how a session tracks its subagents, if at all. It serves path 2 of `sessions.md` R52. Tony: "(I guess we need to think aobut subagents claiming scopes and how sessions track subagents if at all)" (2026-11-01). The survey is in `scopes.md` § Gap from today. Question queue:
+   1. Does a subagent claim the scope it works in, or does its top-level session hold that claim (R3, R42)? From "subagents claiming scopes".
+   2. Does awm track a session's subagents, or does the Claude Code harness alone track them? From "how sessions track subagents if at all".
+   3. How does a subagent reach its scope, given R2? It follows from the answer to question 1.
 
 1d. **The pending queue and the active list.** One interface of reports and blockers that Tony picks from, beside a list of active work. Tony: "I should be able to just click and start talking to the agent with the report or issue" and "The Kanban board attempts to do this, but is not reliable and awkward" (2026-10-30). This absorbs the parked board input.
    - Queued from 1b: where the new-task-from-report button lives (`sessions.md` § Lifecycle).
