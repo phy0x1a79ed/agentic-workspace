@@ -64,6 +64,12 @@ This doc holds the nodes of the fleet, the role of each, and how each node is ha
   2. Windows dev boxes keep Docker Desktop. Their WSL normal account still holds no sudo.
   3. The normal account reads system logs through the `systemd-journal` group.
   4. capella's awm runs as a user unit, so a deploy needs no sudo.
+- **R102.** alcor's browser singleton (R89) gives each attached session its own window. A session attached to a window is a seat. Tony: "a real chrome browser to attach to thay i can also login and do captcha challenges", "agents attach to their own window so they can manage tabs?", "window per agent shape looks right" and "seat is just each attached session to a browser window" (2026-11-02).
+  1. A seat opens, switches and closes the tabs in its own window. The browser verbs confine it to that window. No seat reaches the raw debug port.
+  2. One viewer process shows every window. When a request needs Tony, alcor raises that seat's window first. Tony: "would be great if we can have 1 attachable viewer process rather than 1 per window seat".
+  3. The resident site tabs, such as Teams, Slack, SharePoint and OneDrive, sit in one service window. Only the singleton drives them, one tab per site.
+  4. A seat's access level sets its profile. A trusted session's window uses Tony's profile and his sign-ins. A lab member's seat gets the browser with none of Tony's credentials. Tony: "the browser utility is still needed. so lab seats get the service but not my credentials." and "this can be tied to the access level -> only trusted sessions get my profiles through seats."
+  5. A captcha or a sign-in goes through the approvals queue (R97). The request opens the viewer at that seat's window.
 - **R98.** alcor has two ssh doors. The singleton door does not depend on mizar. Tony: "can we also force ssh through mizar, like how arbutus has bastion?", "The ssh access is not the same as the singleton service access right? machines that need 2fa dont have to have an edge into alcor. So the services should still work with mizar down, we just cant ssh into alcor with mizar down." and "2 ssh doors and singleton ports match what we discussed." (2026-11-02).
   1. Port 22 takes the user and admin logins (R92). alcor's firewall admits it from mizar only. capella and lyra jump through mizar.
   2. A second port takes the singleton calls. It is open to every node. It accepts only service keys, each locked to its command, with no shell and no forwarding.

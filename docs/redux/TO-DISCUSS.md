@@ -92,7 +92,7 @@ Top of the stack comes first.
      - Who the 2 static edge users are.
      - Whether seat scopes are private to foreign peers.
      - An allowlist for who can reach Opal, or anyone in the workspace.
-     - Socials seats never attach to a browser, and cannot look up Tony's personal information. Tony: "socials seats should be instructed to not attach to browsers. socials seats should be restricted from looking up my personal info..." (2026-11-02).
+     - Socials seats cannot look up Tony's personal information. They use the browser without his credentials (`fleet.md` R102). Tony: "socials seats should be instructed to not attach to browsers. socials seats should be restricted from looking up my personal info..." and then "the browser utility is still needed. so lab seats get the service but not my credentials." (2026-11-02).
 
 4. **What made it foundational.** Which problem made Tony think "rebuild" rather than "patch"?
 
