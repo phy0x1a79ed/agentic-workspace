@@ -55,6 +55,7 @@ Top of the stack comes first.
    - Tony (2026-11-02): "we can really lock down alcor then -> can we sandbox the sensitive services from using alcor as supplemental compute? can we also force ssh through mizar, like how arbutus has bastion?"
    - Tony (2026-11-02): "what are the effects of rootless docker? does this make anything harder? Can rootless users still install stuff if needed (what is the line for this)?", "The ssh access is not the same as the singleton service access right? machines that need 2fa dont have to have an edge into alcor. So the services should still work with mizar down, we just cant ssh into alcor with mizar down." and "is there a way to set up more of a dynamic wall between the services and the rest of alcor for compute? I dont want to have to work inside containers on alcor. What is bubblewrap?"
    - Tony (2026-11-02): "test ubc vpn with rootless docker. tony and other normal usage users losing sudo seems to entirely depend on if we can use docker afterwards (like building metasmith or as a build image for rust, or vpn). What does rootless docker actually block? the ports below ~1k are not important to me, I dont use docker for live services -> though having the key singleton services as images will help with robustness and healing? this may be worth considering"
+   - Tony (2026-11-02): "We should also do this for deneb? when we discuss the plugin rework, containers should become an option.", "cross architecture emulation is needed for rust builds. but a once only set up is fine." and "the vpn can use the current mira 2fa service try a real connect to sockeye. do a real test"
    - Queued for the singleton subject: Tony: "Can we move the current opera stuff to the same mechanism? How will captcha and my signins get through? Discuss when we reach this subject" (2026-11-02).
    - Then: how `reflection` behaves across peers, once the network architecture settles (Tony, 2026-10-31).
    - Queued from 1r: deneb is the vault's sync hub, and a sync link carries no authentication, so deneb can rewrite every note on every copy (`fleet.md` § Gap).
@@ -65,6 +66,7 @@ Top of the stack comes first.
 1h. **Install and bootstrap.** A Rust conversion, true plugins, and Claude cloud agents that test fresh installs and adding nodes. This absorbs the parked gateway, plugin and bootstrap input (Tony, 2026-10-30).
    - Local throwaway environments that behave like cloud agents, to avoid their cost. Tony: "we should also consider settup up a system that can spawn throway temp environments that act the same" (2026-10-30).
    - Plugins as their own projects, each with its own refresh hook, migrated out of the awm repo (Tony, 2026-10-31, R33).
+   - Containers become an option for a plugin. Tony: "when we discuss the plugin rework, containers should become an option." (2026-11-02).
 
 1i. **The Armano box.** A new box for a client, for mass spec automation, set up soon with an agent's help (Tony, 2026-10-30).
 

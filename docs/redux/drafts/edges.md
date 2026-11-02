@@ -56,3 +56,4 @@ Group this work into one sitting in the implementation pass. Tony: "For the impl
 - Approve each new key: alcor into mizar, lyra into its edges, and mizar into lyra.
 - Rename lyra's Windows host from `XPS-LAPTOP`.
 - Take Tailscale off altair.
+- Register cross-architecture emulation (qemu binfmt) once on each build node, for Rust builds. Tony: "cross architecture emulation is needed for rust builds. but a once only set up is fine." (2026-11-02).
