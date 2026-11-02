@@ -44,4 +44,4 @@ All routes keep `ControlMaster auto` with `ControlPersist`, except an admin logi
 | any node | sockeye, fir | internet, as today |
 | lyra | any home box | Tailscale |
 | home boxes | lyra | Tailscale |
-| any node | macpro | ZeroTier, until macpro goes |
+| altair | macpro, and back | ZeroTier |

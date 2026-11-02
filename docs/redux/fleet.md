@@ -15,22 +15,24 @@ This doc holds the nodes of the fleet, the role of each, and how each node is ha
 - **R86.** awm drops the foreign and domestic relations. The edge list (R87) replaces them. Tony: "I want to drop the foreign and domestic system because it wasnt used." (2026-11-02).
 - **R87.** An edge from one node to another gives ssh and agent access in that direction only. Across an edge, an agent works with the other node's agents as if they ran on its own machine. The edges match the ssh permissions, and the list is not symmetric. Tony: "agents need to be able to interact with other agents across peers as if they were on the same machine. This should be directional. Peer lists are really edge lists and is expected to be assymmetric.", "Edges should match ssh permissions" and "This is ssh + agentic access." (2026-11-02). Each row is the node that connects out. A ✓ marks an edge.
 
-  | from ↓ / to → | lyra | capella | mizar | alcor | altair | deneb | sockeye | fir |
-  |---|---|---|---|---|---|---|---|---|
-  | **lyra** | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-  | **capella** | ✓ | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-  | **mizar** | ✓ | ✓ | — | ✓ | ✓ | ✓ | ✓ | ✓ |
-  | **alcor** | · | · | ✓ | — | · | · | · | · |
-  | **altair** | · | · | · | · | — | · | ✓ | ✓ |
-  | **deneb** | · | · | · | · | · | — | · | · |
-  | **sockeye** | · | · | · | · | · | · | — | · |
-  | **fir** | · | · | · | · | · | · | · | — |
+  | from ↓ / to → | lyra | capella | mizar | alcor | altair | deneb | sockeye | fir | macpro |
+  |---|---|---|---|---|---|---|---|---|---|
+  | **lyra** | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | · |
+  | **capella** | ✓ | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | · |
+  | **mizar** | ✓ | ✓ | — | ✓ | ✓ | ✓ | ✓ | ✓ | · |
+  | **alcor** | · | · | ✓ | — | · | · | · | · | · |
+  | **altair** | · | · | · | · | — | · | ✓ | ✓ | ✓ |
+  | **deneb** | · | · | · | · | · | — | · | · | · |
+  | **sockeye** | · | · | · | · | · | · | — | · | · |
+  | **fir** | · | · | · | · | · | · | · | — | · |
+  | **macpro** | · | · | · | · | ✓ | · | · | · | — |
 
   1. **lyra and capella** are Tony's laptop and desktop. Each reaches every other node. Only mizar and the other one of the two reach it. Tony: "Lyra/xps is my laptop, capella is my desktop. These should connect out to all other nodes and be reachable from almost none except mizar." (2026-11-02).
   2. **mizar** is homebase. It reaches every node. Only alcor, lyra and capella reach it. Tony: "Mizar is home base, it reaches all and only alcor and my 2 machines can reach it." (2026-11-02).
   3. **alcor** reaches mizar only. Only mizar, lyra and capella reach it. Tony: "So nothing should be able to reach alcor except mizar +my 2 machines" and "Alcor only can see only mizar" (2026-11-02).
-  4. **altair** is Tony's work node. It reaches sockeye and fir only. It knows nothing of deneb. Only mizar, lyra and capella reach it. Tony: "Altair is my work node. It can see sockeye and fir. It shouldnt know about deneb", "Altair sees nothing else. Mizar and my 2 machines see altair." (2026-11-02).
+  4. **altair** is Tony's work node. It reaches sockeye, fir and macpro only. It knows nothing of deneb. Only mizar, lyra and capella reach it. Tony: "Altair is my work node. It can see sockeye and fir. It shouldnt know about deneb", "Altair sees nothing else. Mizar and my 2 machines see altair." (2026-11-02).
   5. **The stations** reach no node (R88). Tony confirmed that the rules above for alcor and altair limit who reaches a station (2026-11-02).
+  6. **macpro** runs a backup task. It and altair reach each other, and no other node reaches it. Tony: "macpro is running a backup task. 2 way edge with altair is sufficient" (2026-11-02).
 - **R88.** deneb, sockeye and fir are stations. A station reaches no node. A station gives extra compute, and deneb also gives the public endpoint and relay. Agents can run on a station, so that the swarm survives a lost node, but they do not run there as the norm. Tony: "Deneb, sockeye, and fir are stations. They reach nothing but should be reachable by all. Agents arent supposed to run on them. They provide supplemental compute and deneb provides public facing endpoint/relay." and "For robustness of the swarm, making agents capable of running on stations but making it not the norm would be beneficial." (2026-11-02).
 - **R89.** Singleton services form an access layer of their own, apart from the edges. alcor and deneb each host services that nearly every node uses, whether or not it has an edge to them. Tony: "We need a separate system for singleton services." and "Alcor and deneb both host services that need to be used by essentially all nodes. This is a separate access layer as stated before" (2026-11-02).
   1. **alcor** gives extra compute to mizar. It takes over mira's jobs, and mira's drive moves to alcor or mizar. alcor hosts the long-running singletons that matter most: the 2fa service, a real Chrome that agents attach to and that Tony logs in to for captchas, and sensitive automations such as Teams and attachment downloads from Google Drive and Gmail. Tony: "Alcor is supplemental compute for mizar. I want to have it take over mira soon. I think i can transfer Mira's drive to either alcor or mizar.", "One of alcor's jobs will be to host long running crucial singleton processes like my 2fa auth, a real chrome browser to attach to thay i can also login and do captcha challenges, other sensitive auromations like ms teams, downloading attachments from google drive gmail, etc" and "all peers need to be able to use alcor's singleton services" (2026-11-02).
