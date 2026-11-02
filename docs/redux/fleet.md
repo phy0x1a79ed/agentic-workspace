@@ -60,7 +60,7 @@ This doc holds the nodes of the fleet, the role of each, and how each node is ha
   4. One Ansible run asks for one grant, which covers every node in the run.
   5. Grants replace the ask-first rule for deneb and the hand-opened admin gates on altair and capella. The request is the ask, and its history is the log.
 - **R101.** The normal account on every node, `tony` included, holds no sudo. Root work runs as the admin account under a grant (R100) or through Ansible. Tony: "tony and other normal usage users losing sudo seems to entirely depend on if we can use docker afterwards (like building metasmith or as a build image for rust, or vpn)." and "windows boxes are my dev machines Id like docker desktop to stay for those. We should still do the sudo/user split though" (2026-11-02).
-  1. On the Linux nodes, the normal account uses rootless Docker and leaves the `docker` group. Builds, Rust images and the UBC VPN container run rootless. The VPN container runs on a network made with MTU 1400.
+  1. On the Linux nodes, the normal account uses rootless Docker and leaves the `docker` group. Builds, Rust images and the UBC VPN container run rootless. The VPN container runs on a network made with MTU 1400. Rootless Docker needs `slirp4netns`, because its fallback network driver accepts a published port but passes no data.
   2. Windows dev boxes keep Docker Desktop. Their WSL normal account still holds no sudo.
   3. The normal account reads system logs through the `systemd-journal` group.
   4. capella's awm runs as a user unit, so a deploy needs no sudo.
@@ -161,6 +161,15 @@ Run on 2026-11-02 from mizar and capella.
 - **alcor holds no ssh key.** The edge from alcor to mizar does not exist yet.
 - **capella reaches `bastion-01` with no Duo prompt.** capella's admin gate refuses the jump on to altair as `tony` until Tony opens a window. The `awmpeer` key is refused by altair.
 - **deneb answers ssh on its public address and on Tailscale.** Tailscale reaches it through the public address, at 34 ms.
+
+### Test of rootless Docker (R101)
+
+Run on 2026-11-02 on mizar and in capella's WSL. Docker Desktop on capella was left unchanged.
+
+- **Builds work rootless.** hello-world, a Rust release build and the UBC VPN image built and ran. Files written into a mounted folder belong to the user.
+- **The real VPN connect works rootless.** On capella the tunnel came up 11 s after the dial, with UBC's exit address. One `hostname` on sockeye answered through the bounce. Two Duo pushes were used, and mira's 2fa approved both.
+- **capella's sockeye path sends an unapproved push.** `awm-sockeye-up.sh` cannot arm mira's 2fa from capella, because `awm 2fa` is no command there and the local fallback returns 404. A plain `awm-ssh sockeye` from capella sends a Duo push that nothing approves, which counts toward the lockout.
+- **Only memory and pids limits work rootless.** The user session delegates no `cpu` or `io` controller, so CPU and disk limits are dropped.
 
 ### Pilot of warm ssh (R93)
 
