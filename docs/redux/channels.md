@@ -34,7 +34,7 @@ How a seat lives as a session belongs in `sessions.md`. Communication between aw
 - **R74.** The tether encrypts every session on its own, with no step from either person. Tony: "tether should auto escalate." and "I meant encrypt escalation, not privilege" (2026-11-01).
 - **R75.** A tether can raise its owner's end to trusted (R70) when Tony proves the owner is him. The invite stays as it is today. Tony: "after a tether is set up, i can prove that it is me on the other side if needed by having the tether print a url, which ks also rendered as qr code. That link lets me authenticate for privilege escalation to trusted. Otherwise proof format is correct" and "The tether invite doesn't change from today" (2026-11-01).
   1. On request, the tether prints a link on the owner's screen and renders it as a QR code. The link holds a one-time challenge tied to this session.
-  2. Tony opens the link on a trusted device. mizar's panel shows the box's details, such as hostname, OS and network. Tony checks them and confirms with his passkey (`queue.md` R64). The details guard against a QR that someone else sends Tony to scan.
+  2. Tony opens the link on a trusted device. alcor's panel shows the box's details, such as hostname, OS and network. Tony checks them and confirms with his passkey (`queue.md` R64). The details guard against a QR that someone else sends Tony to scan.
   3. mizar verifies the signature and tells the operator session that the owner's end is Tony. deneb cannot fake this. The session then treats the tether as trusted (R71). What a trusted tether may do belongs to thread 1j.
 - **R76.** All words of a tether or room code are random. Tony: "Also, the tether codes seem to always start with abbey, but should be randomized" (2026-11-01).
 
