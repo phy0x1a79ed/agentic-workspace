@@ -59,6 +59,11 @@ This doc holds the nodes of the fleet, the role of each, and how each node is ha
   3. The grant is a short-lived ssh certificate for the admin account. It lasts the approved length.
   4. One Ansible run asks for one grant, which covers every node in the run.
   5. Grants replace the ask-first rule for deneb and the hand-opened admin gates on altair and capella. The request is the ask, and its history is the log.
+- **R101.** The normal account on every node, `tony` included, holds no sudo. Root work runs as the admin account under a grant (R100) or through Ansible. Tony: "tony and other normal usage users losing sudo seems to entirely depend on if we can use docker afterwards (like building metasmith or as a build image for rust, or vpn)." and "windows boxes are my dev machines Id like docker desktop to stay for those. We should still do the sudo/user split though" (2026-11-02).
+  1. On the Linux nodes, the normal account uses rootless Docker and leaves the `docker` group. Builds, Rust images and the UBC VPN container run rootless. The VPN container runs on a network made with MTU 1400.
+  2. Windows dev boxes keep Docker Desktop. Their WSL normal account still holds no sudo.
+  3. The normal account reads system logs through the `systemd-journal` group.
+  4. capella's awm runs as a user unit, so a deploy needs no sudo.
 - **R98.** alcor has two ssh doors. The singleton door does not depend on mizar. Tony: "can we also force ssh through mizar, like how arbutus has bastion?", "The ssh access is not the same as the singleton service access right? machines that need 2fa dont have to have an edge into alcor. So the services should still work with mizar down, we just cant ssh into alcor with mizar down." and "2 ssh doors and singleton ports match what we discussed." (2026-11-02).
   1. Port 22 takes the user and admin logins (R92). alcor's firewall admits it from mizar only. capella and lyra jump through mizar.
   2. A second port takes the singleton calls. It is open to every node. It accepts only service keys, each locked to its command, with no shell and no forwarding.
