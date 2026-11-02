@@ -53,6 +53,12 @@ This doc holds the nodes of the fleet, the role of each, and how each node is ha
   1. Any node posts a request to the queue. deneb hosts the page that shows the pending requests and the history of approved, expired and cancelled ones. alcor keeps the log behind it.
   2. Every page that needs an approval embeds the same panel from alcor's address. deneb passes it through unopened. Tony: "would be great if we can have a single passthrough unit/modal for everywhere that needs it".
   3. The node that asked checks the grant itself with alcor's public key. An admin login (R92) uses a short-lived ssh certificate that alcor signs. Each node trusts alcor's key for its admin account, so no gate opens on the target.
+- **R100.** Every admin login (R92), on any node, needs a grant from alcor (R97) that Tony approves on the queue page. A user login on an edge needs no approval, deneb included. Tony: "\"I don’t ssh to deneb without asking\" can we review this instruction?" and "2: lets make the request itself expire in 24hrs. the request can ask for an amount of time from 15(default as you said) to 24hrs" (2026-11-02).
+  1. A request names the node, the reason and the length. The length runs from 15 minutes, the default, to 24 hours.
+  2. A request expires 24 hours after it is made.
+  3. The grant is a short-lived ssh certificate for the admin account. It lasts the approved length.
+  4. One Ansible run asks for one grant, which covers every node in the run.
+  5. Grants replace the ask-first rule for deneb and the hand-opened admin gates on altair and capella. The request is the ask, and its history is the log.
 - **R98.** alcor has two ssh doors. The singleton door does not depend on mizar. Tony: "can we also force ssh through mizar, like how arbutus has bastion?", "The ssh access is not the same as the singleton service access right? machines that need 2fa dont have to have an edge into alcor. So the services should still work with mizar down, we just cant ssh into alcor with mizar down." and "2 ssh doors and singleton ports match what we discussed." (2026-11-02).
   1. Port 22 takes the user and admin logins (R92). alcor's firewall admits it from mizar only. capella and lyra jump through mizar.
   2. A second port takes the singleton calls. It is open to every node. It accepts only service keys, each locked to its command, with no shell and no forwarding.
