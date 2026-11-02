@@ -83,7 +83,7 @@ Surveyed read only on 2026-11-01, from `FEDERATION.md`, the `feat/redux` source 
 
 ### Cross-node use, as observed
 
-Counted on 2026-11-02 from the Claude transcripts on mizar (49, from 2026-10-28) and altair (138, from 2026-10-02), and from the `feat/redux` call sites of `gatewayclient`. The transcripts on capella, alcor, mira and deneb were not read.
+Counted on 2026-11-02 from the Claude transcripts on mizar (49, from 2026-10-28), altair (138, from 2026-10-02), alcor (1) and mira (6), and from the `feat/redux` call sites of `gatewayclient`. The transcripts on capella and deneb were not read. alcor's one session called only mizar, and mira's sessions reached only capella, over ssh.
 
 - **Raw ssh carries most cross-node work.** Agents ran about 600 ssh or scp commands to other nodes from mizar and about 480 from altair. They made about 200 awm calls with a `peer` argument from each.
 - **Each target node has one main use, and the use runs one way.**
@@ -110,3 +110,20 @@ Surveyed read only on 2026-11-02 from mizar, from altair's ssh config, and from 
 - **ZeroTier `phynet` holds altair, capella, mira, deneb, lyra and macpro.** mizar and alcor are not on it. macpro is an OS X 10.11 Mac Pro behind a university NAT. It is reachable only over ZeroTier, and its ZeroTier must stay on 1.6.6 (altair `~/.ssh/config`).
 - **altair already gates admin logins.** A login other than `awmpeer` to a long-lived Arbutus host is refused unless Tony opens a timed window with the unlock script in altair's `~/.ssh`. The gate logs each attempt. shaula has three accounts: `awmpeer` (contained), `jcollins` (John's own) and `ubuntu` (admin).
 - **altair reaches deneb over deneb's public address** (altair `~/.ssh/config`). R87 gives altair no edge to deneb.
+- **The Arbutus project holds more nodes than the fleet knows.** The arbutus-infra Terraform (altair, `dev` worktree) defines `bastion-01`, `worker-01` and `worker-02`, altair (devbox-02), a devbox, the GTDB-Tk gateway and its on-demand workers, showtime, a services map, `macbu-stage` and the `awm-peer` security group that holds shaula. The live list was not read from OpenStack.
+
+### Pilot of warm ssh (R93)
+
+Measured on 2026-11-02 from mizar to alcor. Each call is a `GET /tools?view=domains` on alcor's loopback gateway. That request alone takes about 25 ms on the far gateway.
+
+| Path | Tailscale median | LAN median |
+|---|---|---|
+| Fresh ssh connection per call | 463 ms | 461 ms |
+| `ControlMaster`, new channel per call | 65 ms | 44 ms |
+| Held tunnel, new TCP per request | 56 ms | 38 ms |
+| Held tunnel, keep-alive request | 28 ms | 24 ms |
+| Today: HTTPS edge with a node token, new TLS per call | 35 ms | — |
+
+- A held connection with keep-alive adds almost nothing to the far gateway's own time. It beats today's HTTPS call by about 7 ms.
+- A fresh ssh connection costs about 440 ms, so R93's warm connection is needed.
+- The LAN beats Tailscale by 4 to 20 ms per call, even though Tailscale takes a direct path to alcor.
