@@ -57,6 +57,9 @@ Top of the stack comes first.
    - Tony (2026-11-02): "test ubc vpn with rootless docker. tony and other normal usage users losing sudo seems to entirely depend on if we can use docker afterwards (like building metasmith or as a build image for rust, or vpn). What does rootless docker actually block? the ports below ~1k are not important to me, I dont use docker for live services -> though having the key singleton services as images will help with robustness and healing? this may be worth considering"
    - Tony (2026-11-02): "We should also do this for deneb? when we discuss the plugin rework, containers should become an option.", "cross architecture emulation is needed for rust builds. but a once only set up is fine." and "the vpn can use the current mira 2fa service try a real connect to sockeye. do a real test"
    - Tony (2026-11-02): "journal is a servce with different access than the rest of awm for agents, so it gets treated like one. Im not sure, but I think this expands rather than contradicts your systemd-journal group point."
+   - Tony on the attachable browser (2026-11-02): "1: yes agree, but can we do windows? agents attach to their own window so they can manage tabs?" and "I think opera was choosen because it is lighter than chrome. this is prolly journaled on capella"
+   - Tony (2026-11-02): "window per agent shape looks right -> would be great if we can have 1 attachable viewer process rather than 1 per window seat. I also think we may have to do containers per seat as well for isolation" and "can we run a test to see if memory is a concern between opera and chrome?"
+   - Tony (2026-11-02): "sorry, seat is not a socials seat. seat is just each attached session to a browser window"
    - Queued for the singleton subject: access to awm's own `journal` as a service with its own rules, beside the knowledge port (R90). Tony: "journal is a servce with different access than the rest of awm for agents, so it gets treated like one." and "we align, proceed" (2026-11-02).
    - Queued for the singleton subject: Tony: "Can we move the current opera stuff to the same mechanism? How will captcha and my signins get through? Discuss when we reach this subject" (2026-11-02).
    - Then: how `reflection` behaves across peers, once the network architecture settles (Tony, 2026-10-31).
@@ -64,6 +67,8 @@ Top of the stack comes first.
    - Queued from 1r: whether deneb keeps the reporting service, which mirrors the ledger onto the board.
    - Queued from 1f: pinned keys for peers that Tony verifies, which remove the relayed room password (`channels.md` R73, also thread 1j).
    - Queued from 1d: which node writes a task's card when its sessions span nodes, given that mizar holds no vault copy (`sessions.md` R58, `queue.md` R64).
+
+1s. **Isolated sessions with awm tools.** Tony: "I've started an expedition session out of curiosity. Stuff like that should prolly get some form of isolation as well, but have access to awm tools in its environment -> something to talk about" (2026-11-02).
 
 1h. **Install and bootstrap.** A Rust conversion, true plugins, and Claude cloud agents that test fresh installs and adding nodes. This absorbs the parked gateway, plugin and bootstrap input (Tony, 2026-10-30).
    - Local throwaway environments that behave like cloud agents, to avoid their cost. Tony: "we should also consider settup up a system that can spawn throway temp environments that act the same" (2026-10-30).
@@ -87,6 +92,7 @@ Top of the stack comes first.
      - Who the 2 static edge users are.
      - Whether seat scopes are private to foreign peers.
      - An allowlist for who can reach Opal, or anyone in the workspace.
+     - Socials seats never attach to a browser, and cannot look up Tony's personal information. Tony: "socials seats should be instructed to not attach to browsers. socials seats should be restricted from looking up my personal info..." (2026-11-02).
 
 4. **What made it foundational.** Which problem made Tony think "rebuild" rather than "patch"?
 
