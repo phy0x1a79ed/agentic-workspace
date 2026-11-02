@@ -46,3 +46,19 @@ Surveyed read only on 2026-11-01, from `FEDERATION.md`, the `feat/redux` source 
 - **One foreign peer exists.** shaula, of the `collins` swarm, is in altair's book with read grants on journals, kb, notes, precedence and writing. A foreign node reaches only `/tools` and `/invoke` on a mesh edge, and only the read verbs that its grants name. Federated search asks it when a caller names it.
 - **Nodes share no data, except the vault.** Each node owns its own databases, and a call names a peer to read across. The vault copies sync through deneb with no authentication (§ above).
 - **Agents on two nodes have no direct line.** `SendMessage` reaches sessions on one node only. A journal post wakes nobody. Intake on altair (`AWM_FRONT_DOOR=1`) wakes only sessions on altair.
+
+### Cross-node use, as observed
+
+Counted on 2026-11-02 from the Claude transcripts on mizar (49, from 2026-10-28) and altair (138, from 2026-10-02), and from the `feat/redux` call sites of `gatewayclient`. The transcripts on capella, alcor, mira and deneb were not read.
+
+- **Raw ssh carries most cross-node work.** Agents ran about 600 ssh or scp commands to other nodes from mizar and about 480 from altair. They made about 200 awm calls with a `peer` argument from each.
+- **Each target node has one main use, and the use runs one way.**
+  1. **To alcor: compute.** mizar starts and watches jobs over ssh (`cd`, `tail`, `tmux`, `nohup`, `ps`, `pkill`) and copies results back with scp.
+  2. **To deneb: admin.** Both nodes run `sudo` commands for installs and config.
+  3. **To mira: service admin and the singletons.** Agents deploy and fix services over ssh. Every node's services call `2fa`, Discord and the ssh arbiter on mira.
+  4. **To capella: the desktop.** Agents reach Windows files and programs under `/mnt/c` over ssh and scp. altair reads capella's journals and search archive and starts sessions there.
+  5. **To altair: knowledge and the old hub.** mizar searches altair's archive and precedence, reads its journals, posts on the Swarm board and runs the tether through it. mizar also uses altair as an ssh jump host and git remote.
+- **Agents reach agents across nodes through `reflection`.** About 30 calls from each node list, message, start or stop a session on another node. `SendMessage` (381 on altair, 56 on mizar) reaches only the same node. A Discord or Slack seat reaches its session on another node through `social`, which calls `cx` and `reflection message` there (`social/seats.py`).
+- **The status probes are many and small.** Agents call `awm status`, `services_list` and `daemon_status` on each node to see whether it is up.
+- **No foreign call is in real use.** shaula took part in tests from 2026-10-09 to 2026-10-17. It then fell behind on release, and federated search reported it `unsupported` (journals `6356c138`, `ee9d5e2f`). Caviar uses the board, not the peer book. No agent session made a foreign peer call.
+- **No node logs who called it.** The edge logs at warning level only, and `gateway/access_log.py` is dormant. Nothing records which peer read what, or when.

@@ -26,6 +26,10 @@ Parent thread 1 (end state) waits for Tony to confirm `goal.md`. Its children ar
 Top of the stack comes first.
 
 1g. **Communication between awm nodes.** Tony: "This doesnt cover coms between nodes of awm itself which needs discussion. I think we need to drop foreign nodes in favour of a searchable endpoint instead" (2026-10-30).
+   - Tony stepped back (2026-11-02): "This was to consolidate mechanisms and access patterns since a lot of the mechanisms werent being used or respected. We should go over the access patterns for each peer and look at existing cross peer access patterns and design a system that actually fits how networked awm peers is used."
+   - Tony: "In addition to the decided seats, rooms and tethers, i want a deterministic knowledge port as well. We should hand out timed access keys and use them to log when, how and what acessed." (2026-11-02).
+   - Tony: "I want to drop the foreign and domestic system because it wasnt used. Need survey of current cross peer hsage examples before designing replacement protocol." (2026-11-02).
+   - Tony: "I think basically, agents need to be able to interact with other agents across peers as if they were on the same machine. This should be directional. Peer lists are really edge lists and is expected to be assymmetric. Need to also revise the concept of stations. For robustness of the swarm, making agents capable of running on stations but making it not the norm would be beneficial." (2026-11-02).
    - Then: how `reflection` behaves across peers, once the network architecture settles (Tony, 2026-10-31).
    - Queued from 1r: deneb is the vault's sync hub, and a sync link carries no authentication, so deneb can rewrite every note on every copy (`fleet.md` § Gap).
    - Queued from 1r: whether deneb keeps the reporting service, which mirrors the ledger onto the board.
