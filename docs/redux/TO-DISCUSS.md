@@ -60,6 +60,7 @@ Top of the stack comes first.
    - Tony on the attachable browser (2026-11-02): "1: yes agree, but can we do windows? agents attach to their own window so they can manage tabs?" and "I think opera was choosen because it is lighter than chrome. this is prolly journaled on capella"
    - Tony (2026-11-02): "window per agent shape looks right -> would be great if we can have 1 attachable viewer process rather than 1 per window seat. I also think we may have to do containers per seat as well for isolation" and "can we run a test to see if memory is a concern between opera and chrome?"
    - Tony (2026-11-02): "sorry, seat is not a socials seat. seat is just each attached session to a browser window"
+   - Tony (2026-11-02): "we also need the case where an agent on altair asks to read journals on capella, which should be grantable" and, on routing doors through deneb's relay, "for the relay, can that be used to establish p2p rather than full coms through deneb?"
    - Queued for the singleton subject: access to awm's own `journal` as a service with its own rules, beside the knowledge port (R90). Tony: "journal is a servce with different access than the rest of awm for agents, so it gets treated like one." and "we align, proceed" (2026-11-02).
    - Queued for the singleton subject: Tony: "Can we move the current opera stuff to the same mechanism? How will captcha and my signins get through? Discuss when we reach this subject" (2026-11-02).
    - Then: how `reflection` behaves across peers, once the network architecture settles (Tony, 2026-10-31).
