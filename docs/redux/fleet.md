@@ -182,6 +182,13 @@ Run on 2026-11-02 on mizar and in capella's WSL. Docker Desktop on capella was l
 - **capella's sockeye path sends an unapproved push.** `awm-sockeye-up.sh` cannot arm mira's 2fa from capella, because `awm 2fa` is no command there and the local fallback returns 404. A plain `awm-ssh sockeye` from capella sends a Duo push that nothing approves, which counts toward the lockout.
 - **Only memory and pids limits work rootless.** The user session delegates no `cpu` or `io` controller, so CPU and disk limits are dropped.
 
+### Test of browser memory (R102)
+
+Run on 2026-11-02 on alcor, with Chrome and Opera from their `.deb` packages, two runs each, signed in to nothing.
+
+- **Memory does not decide the browser.** The two differ by less than 150 MB in every state. Six heavy tabs take 1.6 to 1.9 GB in either one. Opera idles 114 MB higher, from start-page extras that no flag turns off. Chrome carries an 88 MB DRM process that Opera on Linux lacks.
+- **The tab count decides the memory.** Three sign-in pages take about 0.9 GB in either browser.
+
 ### Pilot of warm ssh (R93)
 
 Measured on 2026-11-02 from mizar to alcor. Each call is a `GET /tools?view=domains` on alcor's loopback gateway. That request alone takes about 25 ms on the far gateway.
