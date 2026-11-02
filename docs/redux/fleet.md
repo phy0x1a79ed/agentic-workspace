@@ -96,3 +96,17 @@ Counted on 2026-11-02 from the Claude transcripts on mizar (49, from 2026-10-28)
 - **The status probes are many and small.** Agents call `awm status`, `services_list` and `daemon_status` on each node to see whether it is up.
 - **No foreign call is in real use.** shaula took part in tests from 2026-10-09 to 2026-10-17. It then fell behind on release, and federated search reported it `unsupported` (journals `6356c138`, `ee9d5e2f`). Caviar uses the board, not the peer book. No agent session made a foreign peer call.
 - **No node logs who called it.** The edge logs at warning level only, and `gateway/access_log.py` is dormant. Nothing records which peer read what, or when.
+
+### Networks under the edges
+
+Surveyed read only on 2026-11-02 from mizar, from altair's ssh config, and from capella, which was woken for it and shut down after.
+
+- **Four home boxes share one gigabit switch.** mizar is 172.16.0.25, alcor .23, mira .24, and capella's Windows host .21. The router hands out the addresses by DHCP, so an address can change.
+- **mizar reaches every node by its Tailscale address** (`~/.ssh/config`), mira also by LAN as `mira-lan`. The comment there still says deneb is reached over its public address.
+- **Tailscale does not always take the switch.** mizar reaches alcor directly over the LAN, but its link to capella ran through Tailscale's relay in Seattle while both sat on the same switch. capella's Tailscale runs inside WSL, behind WSL's NAT.
+- **ZeroTier reaches capella's WSL only through a Windows port forward.** WSL runs in NAT mode at 172.25.181.70. ZeroTier runs in Windows at 10.74.81.110. Windows forwards ports 22, 12100 to 12150 and 12200 to 12202 from every interface to WSL (`netsh portproxy`), and a task (`PortMon`) refreshes the forward every minute. The Windows build (26200) supports WSL's mirrored mode, which shares the host's addresses with WSL. It is not on.
+- **capella exposes Chrome's debug port.** Windows forwards port 19222 on every interface to Chrome's DevTools port, and the firewall rule `Claude-Chrome-Debugger-WSL` admits it from any address. Whoever reaches capella on the LAN or ZeroTier can drive that Chrome.
+- **Arbutus nodes share a private network.** altair is 192.168.100.142 on the network the Arbutus workers boot onto. It reaches shaula and the workers directly. From outside, capella reaches them through `bastion-01`. Tailscale on altair gives mizar a direct path to altair that skips the bastion.
+- **ZeroTier `phynet` holds altair, capella, mira, deneb, lyra and macpro.** mizar and alcor are not on it. macpro is an OS X 10.11 Mac Pro behind a university NAT. It is reachable only over ZeroTier, and its ZeroTier must stay on 1.6.6 (altair `~/.ssh/config`).
+- **altair already gates admin logins.** A login other than `awmpeer` to a long-lived Arbutus host is refused unless Tony opens a timed window with the unlock script in altair's `~/.ssh`. The gate logs each attempt. shaula has three accounts: `awmpeer` (contained), `jcollins` (John's own) and `ubuntu` (admin).
+- **altair reaches deneb over deneb's public address** (altair `~/.ssh/config`). R87 gives altair no edge to deneb.
