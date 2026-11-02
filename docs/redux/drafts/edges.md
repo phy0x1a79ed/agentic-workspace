@@ -2,7 +2,7 @@
 
 ## Purpose & Contents
 
-This draft turns the edge table (`fleet.md` R87) and the three key levels (R92) into the `authorized_keys` lines and `~/.ssh/config` routes of each node. It holds the shape only. Install nothing from it until `fleet.md` settles the network for each edge (thread 1g). The network column follows the recommendation that Tony has not yet confirmed.
+This draft turns the edge table (`fleet.md` R87) and the three key levels (R92) into the `authorized_keys` lines and `~/.ssh/config` routes of each node. It holds the shape only. Install nothing from it before the implementation phase. The network column follows `fleet.md` R95 and R96.
 
 ## Key lines
 
@@ -37,7 +37,7 @@ All routes keep `ControlMaster auto` with `ControlPersist`, except an admin logi
 | From | To | Network |
 |---|---|---|
 | any home box | mizar, alcor, mira, capella | LAN, at an address the router reserves |
-| any node | capella | port 22 only, forwarded from capella's LAN address to WSL |
+| any home box | capella | LAN, port 22 forwarded from capella's LAN address to `127.0.0.1:22` in WSL |
 | any node outside Arbutus | altair, Arbutus nodes | internet, `ProxyJump bastion-01` |
 | altair | Arbutus nodes | the Arbutus private network, direct |
 | any node | deneb | internet, deneb's public address |
