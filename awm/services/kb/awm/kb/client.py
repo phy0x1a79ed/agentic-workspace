@@ -40,3 +40,23 @@ async def recall(body: dict, *, timeout: float = 600) -> dict:
 async def related(body: dict, *, timeout: float = 10) -> dict:
     """Entry-index hits per zone, and with `nouns` the nearest entities."""
     return await _req("POST", "/related", json=body, timeout=timeout)
+
+
+async def graph(body: dict, *, timeout: float = 70) -> dict:
+    return await _req("POST", "/graph", json=body, timeout=timeout)
+
+
+async def schema() -> dict:
+    return await _req("GET", "/schema", timeout=10)
+
+
+async def zotero_sync() -> dict:
+    return await _req("POST", "/zotero/sync")
+
+
+async def quiesce(timeout: float = 900) -> dict:
+    return await _req("POST", "/quiesce", params={"timeout": timeout}, timeout=timeout + 30)
+
+
+async def resume() -> dict:
+    return await _req("POST", "/resume")

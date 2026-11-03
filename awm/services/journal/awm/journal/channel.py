@@ -329,85 +329,47 @@ def fetch(*, project: str | None = None, scope: str | None = None,
     return [_row_to_post(r) for r in rows]
 
 
-#: The search archive's name for the posts the journal exports to it.
-SEARCH_SOURCE = "journals"
-SEARCH_TIMEOUT_S = 30.0
-#: The most hits search returns per section.
-SEARCH_MAX = 100
-
-
-def ranked(query: str, *, project: str | None, scope: str | None, kind: str | None,
-           before_ts: str | None, want: int) -> tuple[list[dict], dict | None]:
-    """The search service's hits on the journal's own posts, best first: its ``exact``
-    section, then ``related``. Raises when search cannot answer for the source."""
-    from awm.gatewayclient import call_sync
-    args: dict = {"query": query, "sources": [SEARCH_SOURCE], "limit": max(1, min(want, SEARCH_MAX))}
-    if project:
-        args["project"] = project
-    if scope:
-        args["scope"] = scope
-    if kind:
-        args["kind"] = [kind]
-    if before_ts:
-        args["before"] = before_ts
-    res = call_sync("search", "query", args, timeout=SEARCH_TIMEOUT_S)
-    status = (res.get("sources") or {}).get(SEARCH_SOURCE) or {}
-    if status.get("status") not in ("ok", "frozen"):
-        raise RuntimeError(f"search source {SEARCH_SOURCE}: {status.get('status') or 'missing'}"
-                           f" {status.get('error') or ''}".strip())
-    hits, seen = [], set()
-    for section in ("exact", "related", "graph"):
-        for h in (res.get(section) or {}).get(SEARCH_SOURCE) or []:
-            if h.get("id") and h["id"] not in seen:
-                seen.add(h["id"])
-                hits.append(h)
-    return hits, status.get("degraded")
-
-
 def search(*, query: str, project: str | None = None, scope: str | None = None,
            kind: str | None = None, author: str | None = None, limit: int = 50,
            offset: int = 0, before_ts: str | None = None,
            order: str | None = None,
            exclude: tuple[str, list] = ("", [])) -> tuple[list[ScopePost], dict | None, str]:
-    """Posts matching ``query``, best first, a ``degraded`` block, and which engine
-    ranked them: ``search`` (the search service), or ``none`` for a substring match.
+    """Posts matching ``query`` by meaning and keyword, best first, a ``degraded`` block,
+    and which engine ranked them: ``local``, or ``none`` for a substring match.
 
-    The search service ranks; this module then keeps the hits its own filters
-    allow, so the caller's privacy exclusion and ``author`` hold whatever search
-    returned. ``order`` re-sorts the selected posts by time. A kind search does
-    not hold (``system``), or a search that cannot answer, falls back to a
-    substring match.
+    The filters narrow the candidates before ranking. ``order`` re-sorts the
+    selected posts by time. A kind the index does not hold (``system``) falls
+    back to a substring match.
     """
     where, params = _post_filter(project, scope, kind, author, before_ts, exclude)
     degraded = None
     semantic = "none"
-    hits = None
-    if not kind or kind in search_index.INDEXED_KINDS:
-        narrowed = bool(author or exclude[0] or project == "")
+    indexed = not kind or kind in search_index.INDEXED_KINDS
+    if not indexed:
+        ids = None
+    else:
         try:
-            hits, degraded = ranked(query, project=project, scope=scope, kind=kind, before_ts=before_ts,
-                                    want=SEARCH_MAX if narrowed else offset + limit)
-            semantic = "search"
+            res = search_index.search("post", query, allowed=f"SELECT id FROM scope_posts WHERE 1=1{where}",
+                                      params=params, limit=offset + limit)
+            ids, degraded = [h["source_id"] for h in res.hits][offset:], res.degraded
+            matches = {h["source_id"]: h for h in res.hits}
+            semantic = "local"
         except Exception as exc:  # noqa: BLE001 — reported, then answered by keyword
+            ids = None
             degraded = {"semantic": "error", "error": repr(exc)[:300], "fallback": "keyword"}
-    if hits is None:
+    if ids is None:
         rows = JournalDAO().query_all(
             f"SELECT * FROM scope_posts WHERE 1=1{where} AND body LIKE ?"
             " ORDER BY ts DESC LIMIT ? OFFSET ?", [*params, f"%{query}%", limit, offset])
         posts = [_row_to_post(r) for r in rows]
     else:
-        ids = [h["id"] for h in hits]
         marks = ",".join("?" * len(ids))
-        allowed = {r["id"]: r for r in JournalDAO().query_all(
-            f"SELECT * FROM scope_posts WHERE id IN ({marks}){where}", [*ids, *params])} if ids else {}
-        posts = []
-        for h in hits:
-            if h["id"] in allowed:
-                p = _row_to_post(allowed[h["id"]])
-                quote = next((q.get("text") for q in h.get("passages") or [] if q.get("text")), "")
-                p.match = {"score": h.get("score"), "snippet": quote}
-                posts.append(p)
-        posts = posts[offset:offset + limit]
+        by_id = {r["id"]: r for r in JournalDAO().query_all(
+            f"SELECT * FROM scope_posts WHERE id IN ({marks})", ids)} if ids else {}
+        posts = [_row_to_post(by_id[i]) for i in ids if i in by_id]
+        for p in posts:
+            h = matches[p.id]
+            p.match = {"score": h["score"], "snippet": h["snippet"]}
     if order in ("asc", "desc"):
         posts.sort(key=lambda p: p.ts, reverse=order == "desc")
     return posts, degraded, semantic

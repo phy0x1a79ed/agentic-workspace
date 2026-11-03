@@ -24,61 +24,6 @@ def no_scopes_service(monkeypatch):
     monkeypatch.setattr(owners, "require_scope", lambda project, scope: None)
 
 
-class FakeSearch:
-    """Stands in for the search service's ``query`` over the journals source: it reads the
-    post table as the journal exports it and ranks by how many query words a post holds."""
-
-    def __init__(self):
-        self.calls: list[dict] = []
-        self.status: dict = {"status": "ok"}
-        self.error: Exception | None = None
-
-    def __call__(self, service, fn, args=None, **kw):
-        if (service, fn) != ("search", "query"):
-            raise AssertionError(f"unexpected gateway call {service}.{fn}")
-        self.calls.append(dict(args or {}))
-        if self.error is not None:
-            raise self.error
-        import re
-        from awm.journal.dao import JournalDAO
-        from awm.journal.refs import iso_to_ms
-        from awm.journal.search_index import INDEXED_KINDS
-        words = set(re.findall(r"\w+", args["query"].lower()))
-        sql, params = "SELECT * FROM scope_posts WHERE body != ''", []
-        for key, col in (("project", "owner_project"), ("scope", "owner_scope")):
-            if args.get(key):
-                sql += f" AND {col} = ?"
-                params.append(args[key])
-        kinds = [k for k in (args.get("kind") or INDEXED_KINDS) if k in INDEXED_KINDS] or [""]
-        sql += f" AND kind IN ({','.join('?' * len(kinds))})"
-        params += kinds
-        if args.get("before"):
-            sql += " AND ts < ?"
-            params.append(iso_to_ms(args["before"]))
-        exact, related = [], []
-        for r in JournalDAO().query_all(sql, params):
-            body = r["body"]
-            score = len(words & set(re.findall(r"\w+", body.lower())))
-            if not score:
-                continue
-            line = next((ln for ln in body.splitlines() if words & set(re.findall(r"\w+", ln.lower()))), body)
-            hit = {"source": "journals", "id": r["id"], "score": float(score), "passages": [{"text": line[:300]}]}
-            (exact if args["query"].lower() in body.lower() else related).append(hit)
-        limit = int(args.get("limit") or 10)
-        rank = lambda hits: sorted(hits, key=lambda h: -h["score"])[:limit]  # noqa: E731
-        return {"exact": {"journals": rank(exact)}, "related": {"journals": rank(related)}, "graph": {},
-                "sources": {"journals": self.status}}
-
-
-@pytest.fixture(autouse=True)
-def fake_search(monkeypatch):
-    """Every ``journal fetch`` with a query reaches this stand-in, never a gateway."""
-    import awm.gatewayclient as gc
-    fake = FakeSearch()
-    monkeypatch.setattr(gc, "call_sync", fake)
-    return fake
-
-
 @pytest.fixture()
 def journal_workspace(tmp_path, monkeypatch):
     """A temporary workspace with the journal's database and the projects dir redirected."""
