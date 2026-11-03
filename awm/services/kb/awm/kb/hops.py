@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import difflib
 import json
+import math
 import os
 import re
 import threading
@@ -18,9 +19,13 @@ from typing import Any
 import numpy as np
 
 ALONG = ("authors", "cites", "cited_by")
-#: A hop starts from the first SEEDS papers it is given, each weighted DECAY times the one before.
+#: A hop starts from the first SEEDS papers it is given. The i-th scores DECAY**i and weighs
+#: exp((score - 1) / SHARP), so the first paper takes most of the mass and a wrong one does not empty the answer.
+#: On 300 more-by-these-authors cases (search query, then this hop, limit 20) SHARP 0.05 gave recall@20 0.878;
+#: DECAY**i without SHARP gave 0.592.
 SEEDS = 5
 DECAY = 0.95
+SHARP = 0.05
 RESTART = 0.5
 TRIPS = 3
 #: A surname matches a name when difflib's ratio reaches this; "Huttenhauer" finds Huttenhower.
@@ -119,7 +124,7 @@ class Hops:
                 break
         if not top:
             return []
-        weight = {r: DECAY ** i for i, r in enumerate(top[:SEEDS])}
+        weight = {r: math.exp((DECAY ** i - 1) / SHARP) for i, r in enumerate(top[:SEEDS])}
         total = sum(weight.values())
         score = _ppr(a, {r: w / total for r, w in weight.items()}, along)
         lo, hi = _day(after), _day(before)

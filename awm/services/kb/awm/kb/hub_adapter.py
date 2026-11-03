@@ -186,8 +186,8 @@ API_MANIFEST: dict[str, Any] = {
             "description": (
                 "Papers one hop from the given papers: their authors' other papers (`authors`), the "
                 "papers they cite (`cites`) or the papers citing them (`cited_by`), ranked by "
-                "personalized PageRank from the first five, each weighted 0.95 of the one before, and "
-                "never by meaning; ties go to the newest. Feed the ids of a search's paper hits, or "
+                "personalized PageRank from the first five, the first weighted most, and never by "
+                "meaning; ties go to the newest. Feed the ids of a search's paper hits, or "
                 "of an earlier hop, to chain hops."
             ),
             "params": [
