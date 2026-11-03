@@ -12,7 +12,9 @@ A plugin is a folder. Its top level holds one manifest file, `awm-plugin.toml`. 
 
 A folder with a `run.sh` and no `awm-plugin.toml` loads as a legacy plugin. The gateway reads it as one plugin with one service, named after the folder. It reads today's `service.toml` keys `tool`, `tier` and `profiles`. So every service under `awm/services/` loads unchanged, and a lane converts one service at a time.
 
-Plugin roots are an ordered list in the gateway config. The first root that holds a plugin name wins. The gateway logs and ignores a shadowed folder.
+Plugin roots are an ordered list in the gateway config. The built-in core roots are `awm/services` then `awm/plugins`. Put a new core plugin at `awm/plugins/<name>/`. The first root that holds a plugin name wins. The gateway logs and ignores a shadowed folder. Today's Python gateway also scans `awm/plugins` as a built-in root, so a plugin there runs before the cutover.
+
+A tool name on the reserved list of the gateway config belongs only to a plugin from a core root with `trust = "own"`. Any other claim refuses the plugin. The default list is `2fa`, `approver`, `queue-store` and `journal`, plus the singleton door tools that `fleet/edges.yml` names under `singletons`.
 
 ## Manifest
 
@@ -84,7 +86,18 @@ Rules the loader enforces:
 
 A legacy plugin gets the tool UUID `uuid5(NAMESPACE_URL, "awm:tool:<name>")`. A converted service commits that same UUID into its manifest, so a dependent resolves before and after the conversion alike. Keep it forever. A new tool may use any UUID, such as one from `uuidgen -r`.
 
-**open** — a contract that several plugins serve. The harness lane wants one interface, `harness/1`, that cch and dsh both serve, so reflection calls whichever matches a session. The draft answer: each harness plugin keeps its own tool UUID and adds `implements = ["<contract-uuid>@1"]` to its `[[tool]]`. A dependent names `[[needs.contract]] uuid, major` and resolves to every provider, zero or more. A contract UUID never clashes, because many providers are its purpose. This adds to R117, so it waits on the coordinator. The loader accepts the keys now.
+A `[[needs.tool]]` entry may carry `optional = true`. A missing optional tool does not refuse the plugin. Its entry in `AWM_RESOLVED_TOOLS` is absent, and the dependent checks for it before a call. Use it for a dependent that calls whichever of several providers is installed, such as reflection calling the harness plugins cch (`harness-cc`) and dsh (`harness-ds`).
+
+**open** — a contract that several plugins serve. Until Tony decides, build to option (b): the dependent lists each provider's tool UUID in `[[needs.tool]]` with `optional = true`. Option (a), written up for a small switch: each provider keeps its own tool UUID and adds `implements = ["<contract-uuid>@1"]` to its `[[tool]]`. A dependent names `[[needs.contract]] uuid, major` and resolves to every provider, zero or more. A contract UUID never clashes, because many providers are its purpose. The loader accepts both forms.
+
+## Refresh hook
+
+The deploy runs a plugin's `refresh` command when the files of the plugin folder changed between two releases (`routines.md` R33).
+
+1. The deploy runs the command in the plugin folder.
+2. It sets `AWM_REFRESH_FROM` to the old release commit, `AWM_REFRESH_TO` to the new one, and `AWM_NODE_NAME`.
+3. Exit 0 means refreshed. A nonzero exit is a failed refresh, and the deploy dispatches a fixer.
+4. A changed plugin with no `refresh` key falls back to the project hook, `deploy.toml` `[refresh]`.
 
 ## Service wire protocol
 
@@ -93,7 +106,7 @@ The protocol is today's Python gateway protocol, unchanged. `awm.gatewayclient.S
 1. The gateway starts each enabled service with `bash <run>` in the service folder. It sets `AWM_HUB_URL`, `AWM_SERVICE_NAME`, `AWM_SERVICE_ID`, `AWM_PLUGIN` and `AWM_RESOLVED_TOOLS` in the environment.
 2. The service posts `POST /hub/service/register` with `{name, prefix?, pid, start, cwd}`. The reply carries `service_id`, `control_ws_path` and `canonical_workspace`.
 3. The service opens the control WebSocket at `/hub/service/control/<service_id>`. It sends `{"kind":"ready","api":{"functions":[...]}}` first. Each function is `{name, description, params:[{name,type,required,description}], tool?}`.
-4. The gateway sends `{"kind":"call","id","fn","args","as"?}`. The service answers `{"kind":"reply","id","ok":true,"result"}` or `{"kind":"reply","id","ok":false,"error","error_class"}`. The gateway may also send `notify`, `cancel` and `shutdown`.
+4. The gateway sends `{"kind":"call","id","fn","args","as"?,"caller"}`. `caller` is `{"node","lane","session","trust"}`: `lane` is `local`, `edge` or `service`, `session` is the R9 session id or null, and `trust` is `trusted`, `cooperative` or `untrusted`. Only the gateway fills `caller` (R103). It drops any `X-Awm-Trust` or `X-Awm-Lane` header a caller sends. A service that predates `caller` ignores it. The service answers `{"kind":"reply","id","ok":true,"result"}` or `{"kind":"reply","id","ok":false,"error","error_class"}`. The gateway may also send `notify`, `cancel` and `shutdown`.
 5. The service may send `{"kind":"emit","topic","payload"}` and `{"kind":"usage",...}` (see § Usage event).
 6. A closed control WebSocket releases the service. The gateway respawns it after a 10 s window unless the gateway is stopping.
 
@@ -137,6 +150,7 @@ Who records each surface:
 | `page` | the gateway, on each HTML document GET under `/p/<plugin>/<page>/` |
 | `background` | the plugin, as a control-WS frame `{"kind":"usage","surface":"background","name":"<job>","ok":true,"ms":840}` |
 | `code` | the library, as `POST /usage` with the event body, for use straight from another project's code |
+| `page` on its own origin | the plugin, as `POST /usage` with `surface = "page"` and the page `name`, for a page the gateway does not serve, such as the approver panel |
 
 The Python helpers are `awm.usage.record_background(job, ok, ms)` and `awm.usage.record_code(plugin, name)`, in `awm/service_components/usage` (redux-plugins lane). Until the Rust gateway cuts over, the Python gateway sinks these two kinds into the same files.
 
