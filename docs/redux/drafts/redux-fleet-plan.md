@@ -43,7 +43,7 @@ Coordinator, on the lane change:
 - `wake` waits for the target's ssh port and returns the seconds it took, or a timeout result.
 - A handover verb on the restarting node asks its partner to take the standby, and the partner starts a briefed standby session through `reflection start_other`.
 - The partner's watchdog sends Wake-on-LAN when the restarting node stays down past its deadline.
-- A boot runner resumes every pinned job that is not live, through `reflection resume_other` over the gateway, and then releases the partner's standby.
+- A boot runner calls the harness's `revive_pinned` over the gateway once the gateway answers, and then releases the partner's standby with the report.
 - No code in the plugin imports `awm.claudedaemon` or another plugin.
 - Unit tests for the plugin pass under `mamba run -n awm pytest`.
 - `fleet/` holds `ansible.cfg`, `inventory/hosts.yml`, `site.yml`, `requirements.yml` and the roles `wake_node`, `alcor_ssh_door` and `deneb_station`.
@@ -55,7 +55,7 @@ Coordinator, on the lane change:
 
 - T1. Commit this plan (G4).
 - T2. Build the Wake-on-LAN core of the wake plugin (G1, G4).
-- T3. Build the pinned-job resume after boot (G3, G4).
+- T3. Build the boot runner that revives pinned jobs through the harness (G3, G4).
 - T4. Build the standby handover between mizar and alcor (G2, G4).
 - T5. Write the plugin manifest and the legacy run path (G4).
 - T6. Commit a checkpoint and journal the phase (G1, G2, G3).
@@ -85,11 +85,11 @@ A new Python service under `awm/plugins/wake/`, in the shape of today's services
 
 Gotchas: send to both the subnet broadcast and `255.255.255.255`, as the hand script does. capella needs about 82 s to WSL ssh, so the default budget is 180 s. A target that answers before the packet goes out reports `already_up` instead of a wake time. Tests use a fake socket and a fake probe, never the LAN.
 
-### T3. Build the pinned-job resume after boot
+### T3. Build the boot runner that revives pinned jobs through the harness
 
-A `boot` verb and a one-shot entry point (`python -m awm.wake.boot`). It waits for the gateway, reads the pinned set from `reflection list_other`, and calls `reflection resume_other` for each pinned job that is not live. It runs as a systemd user unit after the gateway and the Claude daemon. It reports `resumed`, `already_live` and `failed`, each with its reason. After the run it releases the partner's standby (T4). Calls go through `POST /invoke` with the tool names read from `AWM_RESOLVED_TOOLS`, falling back to the legacy names when the Python gateway sets no such file.
+The harness lane (job b7312951) owns the revival itself: it adds `revive_pinned` to reflection today and to the hidden `harness-cc` tool after the recut. It reads `pins.json`, gives a pinned job a lineage record when it has none, resumes each pinned job whose process is gone, and returns `revived`, `live` and `failed`. The wake plugin adds a `boot` verb and a one-shot entry point (`python -m awm.wake.boot`), run by a systemd user unit after the gateway and the Claude daemon. It waits for the gateway, calls `revive_pinned` once through `POST /invoke`, then releases the partner's standby (T4) with the report. The tool name comes from `AWM_RESOLVED_TOOLS`, with the legacy name `reflection` when the Python gateway sets no such file.
 
-Gotchas: the harness lane (job b7312951) owns reflection and cch. The open question to it is whether `list_other` still lists a pinned job whose process died in the reboot. If not, the boot runner needs a new reflection verb, and this task waits on that answer. `resume_other` refuses a job with no start_other lineage. The daemon takes a while to answer after boot, so the runner retries `daemon_ensure` with a deadline.
+Gotchas: no code here reads `pins.json` or imports `awm.claudedaemon`. Until harness commits `revive_pinned`, the tests use a fake gateway. The gateway takes a while to answer after boot, so the runner retries with a deadline and still releases the standby on failure, naming what failed.
 
 ### T4. Build the standby handover between mizar and alcor
 
@@ -174,7 +174,6 @@ Run the `debrief` skill. Then stop the session.
 
 ## Still unsure about
 
-- Whether the boot resume of pinned jobs belongs in the wake plugin or in cch. Asked the harness lane. The wake plugin builds it until the answer moves it.
 - R83's Sync now button: Tony's button on the bibliography note is an action, and queue.md R64 says alcor authorizes every action. Does the button wait for the R65 panel, or ship as a plain button now? Sent to the coordinator. T11 writes the timer change only.
 - Whether deneb's config moves from the cloud project's `VMs/tencent/deneb` scripts into `fleet/`, so that those scripts retire when the pass lands. T11 writes the role in `fleet/` and leaves the cloud tree alone.
 
