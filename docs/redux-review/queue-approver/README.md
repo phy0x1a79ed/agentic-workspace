@@ -44,6 +44,7 @@ Surveyed read only on mizar, 2026-11-03.
 - 2026-11-03: alcor reaches deneb only through deneb's singleton services, the `trilium` tool and the panel tunnel, which give no edge (`fleet.md` R87 item 3). Tony: "agree".
 - 2026-11-03: Two tools serve the queue: `operations`, which takes in the task queue and the approver, and `trilium` for the vault. `reporting` and `board` go (`queue.md` R145, `install.md` R115 item 4). Tony: "queue and approver go to operations. From what you listed, only 2 tools are sufficient for concerns, which are trillium and operations".
 - 2026-11-03: The `trilium` plugin is core, with its source in awm. Our fork publishes a tarball per release, awm pins one, and a fork change deploys by release, pin bump and awm deploy (`install.md` R115 item 4). Tony: "additional constaints on core is that the source code just lives in awm. trillium is a fork so it cant be core." and "accept if: we publish installable tarball distributions  from our fork that is used by awm changes from the local trillium project (our fork) gets a straightforward deploy route to update live services".
+- 2026-11-03: An urgent request still sends Tony a Discord direct message (`queue.md` R61 item 2). Tony: "i still want urgent requests to ping me via discord dm".
 
 ## Follow-ups for the build
 
@@ -51,4 +52,5 @@ Surveyed read only on mizar, 2026-11-03.
 - Remove `reporting`, `board`, the Kanban, the Ledger and the Older notes at the cutover (R60, R145).
 - Make the fork's release publish a server tarball, and make `trilium/install.sh` install only the pinned tarball. Drop the build mode. Where the tarball is published waits on the fleet-deploy canonical repo question (R115 item 4).
 - Move the Arbutus approval path, `request_human kind:"approval"` on Slack for Ryan, from `reporting/approvals.py` into `operations`. It stays apart from the passkey approvals (`users.md` R123, R145).
+- Keep the urgent Discord DM in `operations` `request_human` (R61 item 2).
 - Make the board writer call the `trilium` tool, and drop its ETAPI token (R87 item 3, R105).
