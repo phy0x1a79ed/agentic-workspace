@@ -33,7 +33,7 @@ Procedure, from dfs-interview § Work the stack:
   - [x] Tony: "what is the trillium tool?  what is the board tool? I sense some redundancies that we should clear up here". Clear the overlap of trilium, board, reporting/operations and the lane's queue, queue-store and approver tools. (answered 2026-11-03)
   - [x] The core operations plugin depends on trilium, which install.md R115 item 4 makes a separate project. Make trilium core? (answered 2026-11-03)
   - [ ] Tony's prompt to a blocked session moves its card from Needs you to Working (R61 item 2)?
-  - [ ] Tony: "is there a hot path for trying out changes to trillium without going through a full build?"
+  - [x] Tony: "is there a hot path for trying out changes to trillium without going through a full build?" (answered 2026-11-03)
 - **channels** (2026-11-03): lets go over each of the major systems architecturally to make sure we are still aligned
 - **fleet-deploy** (2026-11-03): lets go over each of the major systems architecturally to make sure we are still aligned
   - [ ] Which repo is canonical for awm: GitHub (install.md R114, R118) or mizar (routines.md R31)? Today origin is altair.

@@ -45,6 +45,7 @@ Surveyed read only on mizar, 2026-11-03.
 - 2026-11-03: Two tools serve the queue: `operations`, which takes in the task queue and the approver, and `trilium` for the vault. `reporting` and `board` go (`queue.md` R145, `install.md` R115 item 4). Tony: "queue and approver go to operations. From what you listed, only 2 tools are sufficient for concerns, which are trillium and operations".
 - 2026-11-03: The `trilium` plugin is core, with its source in awm. Our fork publishes a tarball per release, awm pins one, and a fork change deploys by release, pin bump and awm deploy (`install.md` R115 item 4). Tony: "additional constaints on core is that the source code just lives in awm. trillium is a fork so it cant be core." and "accept if: we publish installable tarball distributions  from our fork that is used by awm changes from the local trillium project (our fork) gets a straightforward deploy route to update live services".
 - 2026-11-03: An urgent request still sends Tony a Discord direct message (`queue.md` R61 item 2). Tony: "i still want urgent requests to ping me via discord dm".
+- 2026-11-03: A note change, such as the board page, goes live through the `trilium` tool with no build. A fork code change runs first on the fork's dev server on mizar against a vault snapshot copy. The fork moves to mizar (`install.md` R115 item 4). Tony: "is there a hot path for trying out changes to trillium without going through a full build?" and "agree. migrate trillium to mizar".
 
 ## Follow-ups for the build
 
@@ -53,4 +54,5 @@ Surveyed read only on mizar, 2026-11-03.
 - Make the fork's release publish a server tarball, and make `trilium/install.sh` install only the pinned tarball. Drop the build mode. Where the tarball is published waits on the fleet-deploy canonical repo question (R115 item 4).
 - Move the Arbutus approval path, `request_human kind:"approval"` on Slack for Ryan, from `reporting/approvals.py` into `operations`. It stays apart from the passkey approvals (`users.md` R123, R145).
 - Keep the urgent Discord DM in `operations` `request_human` (R61 item 2).
+- Move the fork `projects/trilium` to mizar, as a bare repo with its worktrees, from wherever it lives now. Read altair only. Find the fork's dev server command, and check it against a snapshot copy (R115 item 4).
 - Make the board writer call the `trilium` tool, and drop its ETAPI token (R87 item 3, R105).
