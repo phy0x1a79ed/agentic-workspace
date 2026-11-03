@@ -48,6 +48,8 @@ Which node holds which role belongs in `fleet.md`. How a deploy moves through th
   4. dev and transcripts. Tony: "Keep both dev and transcripts."
   5. rlm-factorio, on mizar. The fxdiff research in game-bot runs its labs through it (`fleet.md` R82 drops only the game server on deneb). Tony: "I ran factorio sessions recently. What did they use?"
   6. engcyc, only on showtime, the Arbutus node that serves engcyc.org. Every other node uninstalls it. altair may keep it for development. Tony: "Engcyc runs on showtime. Uninstall everywhere else.  Altair may keep for dev"
+- **R134.** The redux drops kb, Penpot (its three services and its server), drawio, graphify, compute, stt, virtmic, hpcllm, notes, writing, tts and hermes. A dropped service may come back later as a plugin. Tony: "Others can drop" (2026-11-03).
+- **R135.** Each coding agent harness gets its own integration plugin. cch integrates Claude Code and replaces cx and keep. dsh integrates the DeepSeek harness, an alternative to Claude Code. reflection calls out to the harness plugin of the session it acts on. dsh is web based, so it needs none of cch's tmux parts. The cut between reflection, cch and dsh is open (`TO-DISCUSS.md` thread 4a). Tony: "Dsh is deepseek harness. It is an alternative to claude code. Cx and keep seem to be the awm integrations for claude code (you). So i think we need a cch like dsh. They do different things but both serve to integrate a coding agent harness. Reflection then should call out to them to work. Dsh is web based, so the cch tmux stuff isnt necessary. I think reflection, dsh and cch need to be reworked and recut" (2026-11-03).
 
 ## Gap from today
 
@@ -62,4 +64,6 @@ Surveyed read only on 2026-11-02, from the `feat/redux` source and the deployed 
 - **R33 missing.** No plugin has its own refresh hook or version pin. `awm deploy` restarts the whole gateway. Every Python service shares the one `awm` env.
 - **No test environment exists.** awm has no Dockerfile, no CI, no cloud-agent setup and no fake peer. Rootless Docker works on mizar and in capella's WSL.
 - **R132 broken.** The gateway's usage tally (`.awm/gateway/usage.json`) counts only MCP calls by tool and verb. It misses page visits, CLI calls, direct imports such as game-bot's `fxlab`, and background work. On 2026-11-03 it showed 0 to 5 calls for compute, dev, transcripts, fileviewer and rlm-factorio, which run mostly outside it.
+- **R134 broken.** The dropped services still sit in `awm/services/`. The workspace `AGENTS.md` and the global `CLAUDE.md` tell agents to query `graphify`.
+- **R135 missing.** cx and keep are two services that both serve the `reflection` tool. No cch exists, and reflection reaches Claude Code directly.
 - **mizar has two miniforge installs.** The services run from `~/miniforge3`. `.mcp.json` points at `~/lib/miniforge3`.

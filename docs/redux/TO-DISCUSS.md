@@ -17,13 +17,15 @@ This doc is the stack of open threads for the redux interview. The interview run
 
 ## Current thread
 
-**4. What made it foundational.** See the stack entry below.
+**4a. Recut reflection, cch and dsh.** See the stack entry below. Parent thread 4 waits on it and on Tony's answer about search.
 
 Parent thread 1 (end state) waits for Tony to confirm `goal.md`. Its children 1a to 1t are closed.
 
 ## Stack
 
 Top of the stack comes first.
+
+4a. **Recut reflection, cch and dsh.** Each coding agent harness gets its own integration plugin, and reflection calls out to them (`install.md` R135). Tony: "I think reflection, dsh and cch need to be reworked and recut" (2026-11-03).
 
 4. **What made it foundational.** Which problem made Tony think "rebuild" rather than "patch"?
 
