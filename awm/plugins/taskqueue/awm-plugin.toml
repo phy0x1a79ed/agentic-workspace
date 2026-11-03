@@ -1,0 +1,27 @@
+# The task store singleton (fleet.md R106). Only alcor serves queue-store.
+[plugin]
+name = "taskqueue"
+version = "0.1.0"
+trust = "own"
+
+[placement]
+nodes = ["alcor"]
+
+[[service]]
+name = "taskqueue"
+path = "."
+run = "run.sh"
+install = "install.sh"
+
+[[tool]]
+name = "queue-store"
+uuid = "d38d79bf-4752-445d-a17f-ff90ecbc1425"
+major = 1
+service = "taskqueue"
+tier = "off"
+
+[needs]
+# AWM_QUEUE_ACTION_SECRET is shared with the approver alone. AWM_TRILIUM_ETAPI_TOKEN is
+# the writer's token for deneb's vault (R106 item 2).
+secrets = ["AWM_QUEUE_ACTION_SECRET", "AWM_TRILIUM_ETAPI_TOKEN"]
+network = ["deneb"]

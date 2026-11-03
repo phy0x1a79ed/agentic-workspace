@@ -119,7 +119,7 @@ The approver is plugin `approver`, tool `approver`, `tier = "off"`, placed on al
 
 - **Enrolment.** `enrol-link` is a command that talks to the approver over a local unix socket. It prints a one-time link with a 15-minute expiry. The link page registers a passkey and a non-extractable WebCrypto P-256 device key together. A later device enrols from an approval card that a trusted device approves (R64 item 1).
 - **Chain (R65).** The message is canonical JSON `{device, seq, prev, action, args, ts}`. The device signs it with its device key. The new head is `sha256(prev || sha256(message) || signature)`. alcor acts only if `prev` equals its head and the signature verifies. It stores the new head and the last ack, then returns `{head, sig}` signed with alcor's P-256 key. The browser checks that with WebCrypto. On a reconnect, alcor's head must equal the device's acked head or its pending head. If it equals the pending head, alcor resends the stored ack. If it equals the acked head and the pending message is less than 60 s old, alcor takes the pending message. Any other state locks the device until a passkey assertion, which starts a fresh chain from a head alcor issues.
-- **Passkey and risk.** A passkey assertion opens a panel session. Its challenge binds the head, so a later action cannot replay the session. A new device, a new network (client address or ASN), a burst of more than N actions per minute, or a session older than 12 h makes the approver answer `passkey_required`. The panel then asks for the passkey once and resends the action.
+- **Passkey per request (R64, decided 2026-11-03).** Every approval request takes one passkey assertion. Its challenge is `sha256(head || sha256(canonical request))`, so it binds the chain head and the exact request. A request carries either a batch of actions, applied at once, or a window: a scope of action kinds, card ids (or any) and a length of up to 12 h. Inside an open window the device key signs each in-scope action on the chain with no prompt. An out-of-scope action needs a new request. A risk signal closes the window at once: a new device, a new network (client address), or more than N actions per minute. Tony: "Pass key on every action, but the discussion outcome was to let passkey approval request contain a batch of actions and/or open a window. So still approve on every request but the scope of requests can be large so that i dont have to keep approving".
 - **Grants.** Approve and deny are actions like any other. Approve signs a canonical grant `{grant_id, request_id, kind, node, subject, payload_sha256, not_before, not_after, approved_by_device}` with Ed25519. Kind `admin_ssh` also signs an ssh user certificate with `ssh-keygen -s`. The certificate takes the payload's public key, principals `admin@<node>` for each node in the payload, the approved minutes, and the grant id as key id. `grantlib/verify_grant.py` is pure and ships `test_vectors.json` for redux-trust and the Rust side.
 - **Dispatch.** A verified action becomes one call: a `queue-store` card action, a 2fa verb, or a grant. The approver is the only caller that holds the store's action secret.
 
@@ -167,11 +167,11 @@ Gotchas: none.
 
 Run the `debrief` skill. Journal the lane's state. Send the coordinator one line. Stop.
 
-## Still unsure about
-
-- Does every action take a passkey assertion, or only the login and each risk signal? R64 says "every login and every action takes the passkey", and R65 says the panel "needs no action from Tony beyond the button". The build defaults to passkey at login and on risk, with the device key signing each action. A setting, `passkey_each_action`, switches to an assertion per action. The question went to the coordinator.
-
 ## Callouts
+
+**Passkey scope, settled.** Tony decided on 2026-11-03: a passkey on every request, and a request may carry a batch or open a window (queue.md R64, feat/redux 864a195f). T7 builds that. Nothing switches it off.
+
+**Panel action interface for other pages (sent to redux-fleet for the Zotero Sync now button).** A page embeds `/panel/button?kind=<k>&node=<n>&label=<l>` from the approver origin. A press signs `{action:"order", args:{kind, node, payload}}`. alcor signs an order `{order_id, kind, node, payload, not_after}` in the grant envelope. The target pulls it with `approver order_pull(node, kinds, wait_s)`, checks it with `verify_order`, and reports with `order_done`. The config `allowed_orders` names which kinds go to which nodes. Spawn and new-from use the same orders, and `queue-relay` pulls them.
 
 **Interfaces agreed tonight.**
 

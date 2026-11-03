@@ -1,0 +1,3 @@
+# Today's Python gateway reads this. The redux loader reads awm-plugin.toml instead.
+tool = "queue-store"
+tier = "off"
