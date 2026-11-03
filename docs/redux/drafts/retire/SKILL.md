@@ -37,8 +37,6 @@ Send one line with the journal id and the outcome to whoever started you:
 ## 4. Stop or wait
 
 1. Run `reflection whoami`. It names your session, your job and your task.
-2. When you wait on other sessions, compact first. Then run `reflection wait {until:[<their session ids>]}` as your last call. awm wakes you when every listed session finishes.
-3. Otherwise, for a background session, run `reflection stop {job, confirm:true}` as your last call.
+2. When you wait on other sessions, compact first. Then run `reflection wait {until:[<their session ids>]}` as your last call. It takes no job and acts on you. It stops you the way `stop` does, and awm resumes you when every listed session has stopped.
+3. Otherwise, for a background session, run `reflection stop {job, confirm:true}` as your last call. The job stays resumable by its session id (R10). Never pass `remove:true` when you retire.
 4. For a terminal session, run `reflection message_self {text:"/exit", confirm:true}`, then end the turn.
-
-**WARNING** A background stop also runs `claude rm`. It deletes the job and a clean worktree that Claude Code made for it. The transcript stays, so a later resume brings the session back by its session id.
