@@ -15,6 +15,12 @@ Which node holds which role belongs in `fleet.md`. How a deploy moves through th
   1. A page is a plugin too. Tony: "pages id argue are also plugins."
   2. One plugin may hold several services and pages. Tony: "a plugin can have a combination and multiple services and pages".
   3. A plugin has a version pin and its own refresh hook (`routines.md` R33). It runs on the host with its own env or in a container.
+  4. The core plugins stay in the awm repository, each in its own folder. A plugin is a folder whose top level holds one manifest file that fills out the plugin contract. awm installs it from a git repository or from a folder alike. Tony: "we can also keep core plugins in awm repo itself. then installable is from a folder structure, maybe some file at top level that fills out contract" (2026-11-02).
+- **R116.** Guards keep a plugin from reaching past its own parts. Tony: "your proposals are good" (2026-11-02).
+  1. The manifest lists the plugin's services and pages and what they need, such as secrets, network and other tools. The gateway gives a plugin only what its manifest lists.
+  2. Each install pins a commit and takes Tony's passkey (`queue.md` R64), and so does each move to a new commit. One passkey approves every plugin commit of one change together. Tony: "approved commits are fine if we can batch approve for a full change" (2026-11-02).
+  3. Each plugin's pages get their own origin, so a page reaches only its own plugin's services.
+  4. Tony's own plugins run on the host. A third-party plugin runs in a container at untrusted, as an isolated session does (`fleet.md` R109).
 
 ## Gap from today
 
