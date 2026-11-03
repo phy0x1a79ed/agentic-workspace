@@ -40,6 +40,12 @@ How a seat lives as a session belongs in `sessions.md`. Communication between aw
 
 - **R77.** awm has no inbound door for agents. deneb holds no public door that is always on. A room exists only while one of our tasks holds it open (R72). A foreign agent that wants to start a conversation rings a seat, which serves as its doorbell, and the seat passes the request to Tony. The seat's own trust level applies, so a Discord bot channel stays untrusted (R70). Tony: "No inbound. I have a  few seats that can serve as doorbells for bots. No public facing always on constant door on deneb" (2026-11-01).
   - The reporting service's front door goes. No node takes work from the federation board. A room that a seat opens does that job. Tony: "I think we want to drop the front door entirely. the rooms https seat abstracts that job and functionality" (2026-11-02).
+- **R110.** Rooms and tethers are one awm tool, named `channel`. Tony: "rooms and tether should be the same tool in awm (talk abou tthis later)" and "channel works" (2026-11-02).
+  1. A channel is a room or a machine. Both share the relay on deneb, the three random words (R76), the push of each message into the prompt (R69), the one send verb, the close when the task ends (R72) and the trust level (R70).
+  2. A machine channel adds the shell. Its invite carries the SPAKE2 password, so it is encrypted from the start (R74). A room carries text only. It starts in plaintext, and its password arrives later through Tony (R73).
+  3. A room needs only HTTP on the other side. A machine needs the tether client.
+  4. The verbs are `open` with a kind of room or machine, `send`, `cut`, `status`, `encrypt` for a room, and the shell verbs for a machine.
+- **R111.** An isolated session (`fleet.md` R109) may open and hold both rooms and machine channels for its own task. A machine channel lets our session act on the other machine, never the other side act on ours. Tony: "it should also get tethers and rooms. the tethers dont let the other side execute code locally so should be safe" (2026-11-02).
 
 ## Gap from today
 
@@ -54,8 +60,10 @@ Surveyed read only on 2026-11-01, from the `feat/redux` source and the journals.
 - **R72 missing.** No room service exists. The board's party tokens are standing accounts that Tony mints by hand on the host (`board/INSTALL.md` § Mint a party).
 - **R73 missing.** No room has encryption. The board's threads cross deneb and the vault in plaintext.
 - **R75 missing.** Nothing in a live tether proves who the owner is. The tether prints no link or QR code, and mizar's panel does not exist (`queue.md` § Gap).
-- **R76 broken.** The first word of a tether code names the relay slot, and the next two are the secret (`tether/hub_adapter.py` `_slot_named`). The relay reuses slots, so the codes keep starting with "abbey". The fix lives in the tether repository.
-- **R74 unverified.** The tether's encryption is not known from this repository. The relay "pairs two sockets and reads nothing" (`tether/INSTALL.md`), and the tether repository's `PROTOCOL.md` holds whether that is encryption.
+- **R76 broken.** The first word of a tether code names the relay slot, and the next two are the secret (`tether/hub_adapter.py` `_slot_named`). The relay hands out the smallest free slot, and slot 1 is "abbey" (`tether-relay/src/session.rs:240-255` in the tether repository). The fix is a random free slot in the relay.
+- **R74 met.** The tether runs SPAKE2 over the two secret words of the code, then seals every frame with ChaCha20-Poly1305 (`tether-proto/src/handshake.rs` in the tether repository, v0.2.0). The relay sees only the slot.
+- **R110 partial.** The tether already carries text both ways through its `Say` frame (`tether send`), even before consent. The relay has no `/r/<name>` routes, no plaintext adapter and no how-to page. SPAKE2 runs only at join or resume, so no `encrypt` exists for a live room. The tether pulls its events through a listener under Monitor and `drain` (`tether/hub_adapter.py:472-497`) instead of the push that `social/seats.py` uses. Nothing cuts a tether when its task ends. `seats.py` holds the push queue and the cleanup of finished jobs to copy.
+- **R111 missing.** It rests on the R109 container. The gateway finds a caller by walking host process ids, which fails inside a container, so it needs a token per container session. Nothing pushes a message into a Claude inside a container yet.
 - **R77 broken.** deneb runs two doors that are always on. The board door at `/board/` answers before edge authentication (`FEDERATION.md` § The board). Intake on the front-door node turns any board post into a Proposed card (`FEDERATION.md` § Intake).
 - **R71 missing.** No channel carries a trust level. A seat message, a board card and a tether event each reach the agent as plain text, with no rule that marks it as data or as Tony's words.
 - **Each channel is its own system.** The three share no code for the two-way loop. A seat, a board card and a tether session each reach the agent in a different way.

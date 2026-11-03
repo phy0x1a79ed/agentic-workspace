@@ -17,15 +17,13 @@ This doc is the stack of open threads for the redux interview. The interview run
 
 ## Current thread
 
-**1t. Rooms and the tether as one awm tool.** See the stack entry below.
+**1h. Install and bootstrap.** See the stack entry below.
 
 Parent thread 1 (end state) waits for Tony to confirm `goal.md`. Its children are 1a to 1q.
 
 ## Stack
 
 Top of the stack comes first.
-
-1t. **Rooms and the tether as one awm tool.** Tony: "rooms and tether should be the same tool in awm (talk abou tthis later)" (2026-11-02).
 
 1h. **Install and bootstrap.** A Rust conversion, true plugins, and Claude cloud agents that test fresh installs and adding nodes. This absorbs the parked gateway, plugin and bootstrap input (Tony, 2026-10-30).
    - Local throwaway environments that behave like cloud agents, to avoid their cost. Tony: "we should also consider settup up a system that can spawn throway temp environments that act the same" (2026-10-30).
@@ -76,6 +74,7 @@ Raised before the redux started. Each enters the stack when a thread reaches it.
 
 ## Closed
 
+- 1t. Rooms and the tether as one awm tool (2026-11-02). Result: `channels.md` R110 and R111, `fleet.md` R109 item 2. One `channel` tool opens a room or a machine. They share the relay, the codes, the push, the send verb and the close on task end. Isolated sessions may hold both for their own task.
 - 1s. Isolated sessions with awm tools (2026-11-02). Result: `fleet.md` R103 item 1 and R109. A starter may set a session's trust equal or lower. An untrusted session runs in a rootless container with the host's Claude install, a whitelist of awm tools, no ssh and no messages out. Its login holds only an access token that the host refreshes, so a fault signs out the container, never the host.
 - 1g. Communication between awm nodes (2026-11-02). Result: `fleet.md` R86 to R108, `channels.md` R73 and R77, `queue.md` R64. Foreign and domestic peers give way to a directional edge list that matches ssh, one network per edge, singletons on alcor behind their own door, admin grants in place of sudo, browser seats, trust per session, Trilium only on deneb, one task queue on alcor, and journals as a service.
 - 1r. Harden deneb (2026-11-01). Result: `fleet.md` R79 to R84, `queue.md` R64 and R85. deneb keeps the vault, Zotero on a Sync now button and the relays. It runs no agents, no Penpot and no game server, and opens no outbound ssh. The vault and every gateway log in with the passkey, over Tailscale too. Recovery runs over ssh to mizar from capella or lyra.
