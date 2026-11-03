@@ -41,4 +41,8 @@ Surveyed read only on mizar, 2026-11-03.
 
 ## Decisions
 
+- 2026-11-03: alcor reaches deneb only through deneb's singleton services, the `trilium` tool and the panel tunnel, which give no edge (`fleet.md` R87 item 3). Tony: "agree".
+
 ## Follow-ups for the build
+
+- Make the board writer call the `trilium` tool, and drop its ETAPI token (R87 item 3, R105).
