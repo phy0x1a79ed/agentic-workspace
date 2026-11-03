@@ -57,6 +57,7 @@ class ScopePost:
     meta: dict
     ts: str              # ISO TEXT
     match: dict | None = None  # search hits only: {score, snippet}
+    version: int = 1
 
     def to_dict(self) -> dict:
         d = {
@@ -64,6 +65,8 @@ class ScopePost:
             "author": self.author, "kind": self.kind, "body": self.body,
             "meta": self.meta, "ts": self.ts,
         }
+        if self.version > 1:
+            d["version"] = self.version
         if self.match is not None:
             d["match"] = self.match
         return d
@@ -167,6 +170,7 @@ def _row_to_post(row) -> ScopePost:
         id=row["id"], project=row["owner_project"], scope=row["owner_scope"],
         author=_author_to_display(row["author"]), kind=row["kind"],
         body=row["body"] or "", meta=meta, ts=ms_to_iso(row["ts"]) or "",
+        version=int(row["version"]) if "version" in row.keys() and row["version"] else 1,
     )
 
 
@@ -269,6 +273,8 @@ def _post_filter(project, scope, kind, author, before_ts,
     if kind:
         sql += " AND kind = ?"
         params.append(kind)
+    else:
+        sql += " AND kind != 'folded'"  # an addendum folded into its target (versions.fold)
     if author:
         sql += " AND author = ?"
         params.append(author if edge_origin(author) else _author_to_stored(author))

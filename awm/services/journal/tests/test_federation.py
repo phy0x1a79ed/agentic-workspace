@@ -144,7 +144,7 @@ def test_every_journal_verb_declares_an_effect():
     assert missing == []
 
 
-READS = {"fetch", "goal_read", "goal_history", "export"}
+READS = {"fetch", "history", "goal_read", "goal_history", "export"}
 
 
 def test_only_the_known_reads_are_reads():

@@ -13,12 +13,53 @@ import logging
 from typing import Any
 
 from awm.claudedaemon import roster
-from awm.journal import channel, owners, private, render
+from awm.journal import bounds, channel, owners, private, render, versions
 
 log = logging.getLogger("awm.journal.posts")
 
 
 POST_MANIFEST_FUNCTIONS = [
+    {
+        "name": "edit",
+        "tool": "journal_edit",
+        "effect": "write",
+        "description": (
+            "Correct a post in place. Give old and new to replace one passage, or body for the "
+            "whole text. The journal keeps every earlier version with its diff; reads show "
+            "the latest. Use this instead of posting an addendum."
+        ),
+        "params": [
+            {"name": "post_id", "type": "string", "required": True},
+            {"name": "reason", "type": "string", "required": False},
+            {"name": "old", "type": "string", "required": False,
+             "description": "A passage that occurs exactly once in the post."},
+            {"name": "new", "type": "string", "required": False},
+            {"name": "body", "type": "string", "required": False,
+             "description": "The whole new text. Pass this argument LAST."},
+        ],
+    },
+    {
+        "name": "history",
+        "tool": "journal_history",
+        "effect": "read",
+        "description": "Every version of a post, oldest first, each with its diff from the one before.",
+        "params": [{"name": "post_id", "type": "string", "required": True}],
+    },
+    {
+        "name": "addenda",
+        "tool": "journal_addenda",
+        "effect": "write",
+        "description": (
+            "List the posts that open as an addendum or correction to an earlier post of the "
+            "same scope, with the post each corrects. With apply, fold each into its target as "
+            "a new version and retire the addendum from reads."
+        ),
+        "params": [
+            {"name": "project", "type": "string", "required": False},
+            {"name": "scope", "type": "string", "required": False},
+            {"name": "apply", "type": "boolean", "required": False},
+        ],
+    },
     {
         "name": "post",
         "tool": "journal_post",
@@ -116,6 +157,7 @@ def _with_session(meta: Any, caller_pid: Any) -> Any:
 
 
 def _handle_post(args: dict, as_: str | None = None) -> dict:
+    bounds.write(bounds.of(args, as_), args["project"], args["scope"])
     if private.hides(as_, args["project"], args["scope"]):
         raise ValueError(f"no scope {args['project']}/{args['scope']}")
     post = channel.post(
@@ -140,14 +182,17 @@ def _handle_post(args: dict, as_: str | None = None) -> dict:
 def _handle_fetch(args: dict, as_: str | None = None) -> dict:
     kind = args.get("kind")
     post_id = args.get("post_id")
+    bound = bounds.of(args, as_)
     if post_id:
         p = channel.get_post(post_id)
-        if p is not None and private.hides(as_, p.project, p.scope):
+        if p is not None and (private.hides(as_, p.project, p.scope)
+                              or not bound.may_read(bounds.edges.here(), p.project, p.scope)):
             p = None
         return {"posts": [p.to_dict()] if p else [], "total": 1 if p else 0}
+    project, scope = bounds.narrow(bound, args.get("project"), args.get("scope"))
     common = dict(
-        project=args.get("project"),
-        scope=args.get("scope"),
+        project=project,
+        scope=scope,
         kind=kind,
         author=args.get("author"),
         limit=int(args.get("limit", 50)),
@@ -171,6 +216,7 @@ def _handle_fetch(args: dict, as_: str | None = None) -> dict:
 
 
 def _handle_subscribe(args: dict, as_: str | None = None) -> dict:
+    bounds.write(bounds.of(args, as_), args["project"], args["scope"])
     if private.hides(as_, args["project"], args["scope"]):
         raise ValueError(f"no scope {args['project']}/{args['scope']}")
     sub = channel.subscribe(
@@ -180,12 +226,50 @@ def _handle_subscribe(args: dict, as_: str | None = None) -> dict:
     return {"subscriber": sub.to_dict()}
 
 
-def _handle_unsubscribe(args: dict) -> dict:
+def _handle_unsubscribe(args: dict, as_: str | None = None) -> dict:
+    bounds.write(bounds.of(args, as_), args["project"], args["scope"])
     removed = channel.unsubscribe(args["project"], args["scope"], args["guest"])
     return {"removed": removed}
 
 
+def _post_for_write(args: dict, as_: str | None):
+    p = channel.get_post(args["post_id"])
+    if p is None or private.hides(as_, p.project, p.scope):
+        raise ValueError(f"no post {args['post_id']}")
+    bounds.write(bounds.of(args, as_), p.project, p.scope)
+    return p
+
+
+def _editor(args: dict, as_: str | None) -> str:
+    return channel.edge_origin(as_) or str(args.get("editor") or args.get("_caller_scope") or "system")
+
+
+def _handle_edit(args: dict, as_: str | None = None) -> dict:
+    _post_for_write(args, as_)
+    return versions.edit(args["post_id"], editor=_editor(args, as_), body=args.get("body"),
+                         old=args.get("old"), new=args.get("new"), reason=str(args.get("reason") or ""))
+
+
+def _handle_history(args: dict, as_: str | None = None) -> dict:
+    p = channel.get_post(args["post_id"])
+    if p is None or private.hides(as_, p.project, p.scope):
+        raise ValueError(f"no post {args['post_id']}")
+    bounds.read(bounds.of(args, as_), p.project, p.scope)
+    return versions.history(args["post_id"])
+
+
+def _handle_addenda(args: dict, as_: str | None = None) -> dict:
+    bound = bounds.of(args, as_)
+    if bound.write_scope is not None or as_:
+        raise bounds.Refused("only a trusted session on this node sweeps the addenda")
+    return versions.sweep(args.get("project"), args.get("scope"), apply=bool(args.get("apply")),
+                          editor=_editor(args, as_))
+
+
 POST_HANDLERS = {
+    "edit": _handle_edit,
+    "history": _handle_history,
+    "addenda": _handle_addenda,
     "post": _handle_post,
     "fetch": _handle_fetch,
     "subscribe": _handle_subscribe,
