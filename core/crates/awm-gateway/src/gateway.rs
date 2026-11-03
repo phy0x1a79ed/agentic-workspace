@@ -367,6 +367,12 @@ impl Gateway {
         }
     }
 
+    /// `<workspace>/projects`. The workspace defaults to the parent of the state dir, `<workspace>/.awm`.
+    pub fn projects_dir(&self) -> PathBuf {
+        let ws = self.cfg.workspace.clone().unwrap_or_else(|| self.state.parent().map(Path::to_path_buf).unwrap_or_default());
+        ws.join("projects")
+    }
+
     pub fn status(&self) -> Value {
         let load = self.read_load();
         json!({
@@ -489,6 +495,8 @@ impl Gateway {
         }
         let (service, found) = self.wait_for_verb(tool, verb).await?;
         check_arguments(tool, verb, &found.spec, &inner)?;
+        let mut inner = inner;
+        crate::caller::stamp(&mut inner, &ctx.caller);
         let timeout = found.spec.get("timeout").and_then(Value::as_f64).unwrap_or(DEFAULT_CALL_TIMEOUT_S);
         let value = self
             .hub
@@ -500,6 +508,8 @@ impl Gateway {
     /// `POST /svc/<service>/fn/<fn>`, the door today's Python services call each other through.
     pub async fn call_function(&self, service: &str, function: &str, args: Value, ctx: &CallContext) -> Result<Value, ApiError> {
         let started = Instant::now();
+        let mut args = args;
+        crate::caller::stamp(&mut args, &ctx.caller);
         let result = self
             .hub
             .call(service, function, args, ctx.as_.as_deref(), &ctx.caller, Duration::from_secs_f64(DEFAULT_CALL_TIMEOUT_S))

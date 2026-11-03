@@ -15,11 +15,14 @@ pub enum Lane {
 
 /// The `caller` object of a `call` frame. Only the gateway fills it (R103).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(default)]
 pub struct Caller {
     pub node: String,
     pub lane: Lane,
     pub session: Option<String>,
     pub trust: Option<String>,
+    /// The calling session's own `<project>/<scope>`.
+    pub scope: Option<String>,
 }
 
 /// What the gateway knows about one inbound call.

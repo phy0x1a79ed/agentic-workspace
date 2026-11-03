@@ -1,5 +1,6 @@
 //! The awm gateway (install.md R112): loads plugins, runs their services, and routes every call.
 
+pub mod caller;
 pub mod config;
 pub mod gateway;
 pub mod hub;

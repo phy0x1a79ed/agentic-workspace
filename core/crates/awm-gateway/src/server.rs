@@ -90,6 +90,8 @@ fn header<'a>(h: &'a HeaderMap, name: &str) -> Option<&'a str> {
 
 /// The caller context of an inbound request. `X-Awm-Trust` and `X-Awm-Lane` are never read.
 /// `X-Awm-Caller` counts only with the edge token, which only `awm edge-serve` can read.
+/// A local request that names its session by `X-Awm-Session-Pid` gets that session's id,
+/// trust level and scope.
 fn context(gw: &Gateway, h: &HeaderMap, default: Surface) -> CallContext {
     let plugin = header(h, "x-awm-plugin").map(str::to_string);
     let surface = if plugin.is_some() {
@@ -97,16 +99,21 @@ fn context(gw: &Gateway, h: &HeaderMap, default: Surface) -> CallContext {
     } else {
         header(h, "x-awm-surface").and_then(Surface::parse).unwrap_or(default)
     };
-    let mut caller = Caller { node: gw.node.clone(), lane: Lane::Local, session: None, trust: None };
+    let mut caller = Caller { node: gw.node.clone(), lane: Lane::Local, ..Caller::default() };
+    let mut edge = false;
     if let (Some(raw), Some(token)) = (header(h, "x-awm-caller"), header(h, "x-awm-edge-token")) {
         let expected = std::fs::read_to_string(gw.state.join("edge.token")).unwrap_or_default();
         if !expected.is_empty() && expected.trim() == token {
             if let Ok(c) = serde_json::from_str::<Caller>(raw) {
                 caller = c;
+                edge = true;
             }
         } else {
             tracing::warn!("X-Awm-Caller with a wrong edge token; ignored");
         }
+    }
+    if let Some(pid) = header(h, "x-awm-session-pid").and_then(|p| p.parse::<u32>().ok()).filter(|_| !edge) {
+        crate::caller::fill(&mut caller, pid, &crate::caller::sessions_dir(), &crate::caller::ledger_path(&gw.state), &gw.projects_dir());
     }
     CallContext { caller, as_: header(h, "x-awm-as").map(str::to_string), surface, plugin }
 }

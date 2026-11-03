@@ -142,6 +142,7 @@ impl Gateway {
             .args(["gateway", "serve", "--state"])
             .arg(state)
             .env("AWM_LOG", "info")
+            .env("AWM_CX_SESSIONS", state.join("sessions"))
             .stderr(std::fs::File::create(state.join("gateway.stderr")).unwrap())
             .spawn()
             .unwrap();
@@ -307,6 +308,31 @@ fn gateway_end_to_end() {
         .unwrap();
     let who: Value = serde_json::from_str(edge_reply["result"].as_str().unwrap()).unwrap();
     assert_eq!((who["caller"]["node"].as_str(), who["caller"]["lane"].as_str(), who["as"].as_str()), (Some("elsewhere"), Some("edge"), Some("tony")));
+    assert_eq!((who["trust"].as_str(), who["scope"].as_str()), (Some("high"), None), "an edge caller's trust reaches the args");
+
+    // A local session gets its id, its level from reflection's ledger and its scope from its cwd.
+    // The model's own `_caller_trust` is refused as an unknown argument.
+    let worktree = node.state.parent().unwrap().join("ws/projects/awm/redux-x");
+    std::fs::create_dir_all(worktree.join(".awm")).unwrap();
+    std::fs::create_dir_all(worktree.join("core")).unwrap();
+    let uuid = "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0";
+    let r9 = format!("cc{}", uuid.replace('-', ""));
+    write(&node.state.join("sessions/4242.json"), &json!({"sessionId": uuid, "cwd": worktree.join("core")}).to_string());
+    write(&node.state.join("services/reflection/trust.json"), &json!({&r9: {"level": "cooperative"}}).to_string());
+    let as_session = |args: Value| -> Value {
+        http().post(format!("{url}/invoke")).header("X-Awm-Session-Pid", "4242").json(&json!({"name": "fake", "args": args})).send().unwrap().json().unwrap()
+    };
+    let reply = as_session(json!({"verb": "whoami"}));
+    let who: Value = serde_json::from_str(reply["result"].as_str().unwrap()).unwrap();
+    assert_eq!(who["caller"]["session"], json!(r9), "{who}");
+    assert_eq!((who["caller"]["trust"].as_str(), who["caller"]["scope"].as_str()), (Some("cooperative"), Some("awm/redux-x")), "{who}");
+    assert_eq!((who["trust"].as_str(), who["scope"].as_str()), (Some("cooperative"), Some("awm/redux-x")), "{who}");
+    let reply = as_session(json!({"verb": "whoami", "args": {"_caller_trust": "trusted"}}));
+    assert!(reply["result"].is_null() && reply.to_string().contains("_caller_trust"), "{reply}");
+    write(&node.state.join("services/reflection/trust.json"), "{}");
+    let reply = as_session(json!({"verb": "whoami"}));
+    let who: Value = serde_json::from_str(reply["result"].as_str().unwrap()).unwrap();
+    assert_eq!(who["trust"], "trusted", "a session with no entry is trusted: {who}");
 
     // A plugin calls the tool it needs by the name the gateway resolved for its UUID.
     let resolved: Value = serde_json::from_str(

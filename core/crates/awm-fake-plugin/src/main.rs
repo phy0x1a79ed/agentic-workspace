@@ -60,7 +60,8 @@ async fn main() -> anyhow::Result<()> {
                 (Some(a), Some(b)) => Ok(json!(a + b)),
                 _ => Err("add needs numbers a and b".into()),
             },
-            "whoami" => Ok(json!({"caller": frame["caller"], "as": frame["as"]})),
+            "whoami" => Ok(json!({"caller": frame["caller"], "as": frame["as"],
+                "trust": args["_caller_trust"], "scope": args["_caller_scope"]})),
             "run_job" => {
                 let usage = json!({"kind": "usage", "surface": "background", "name": args["job"], "ok": true, "ms": 5});
                 sink.send(Message::Text(usage.to_string().into())).await?;

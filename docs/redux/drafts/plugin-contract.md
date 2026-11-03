@@ -4,7 +4,7 @@
 
 This file is the contract between a plugin and the Rust gateway of the redux (`install.md` R112, R115 to R117, R132). It holds the manifest format, the wire protocol a service speaks, the call interface a plugin uses to reach another plugin, and the usage event. The redux-core lane (job a92d02bf) owns it. Other lanes build against it. Send a change request to `redux-build/core` with `SendMessage`.
 
-Status: draft v1.5. Build against it.
+Status: draft v1.6. Build against it.
 
 ## Plugin folder
 
@@ -130,11 +130,23 @@ The protocol is today's Python gateway protocol plus one header, the service tok
 1. The gateway starts each enabled service with `bash <run>` in the service folder. It sets `AWM_HUB_URL`, `AWM_SERVICE_NAME`, `AWM_PLUGIN`, `AWM_RESOLVED_TOOLS`, `AWM_NODE_NAME`, `AWM_DIR`, `AWM_WORKSPACE` and `AWM_HUB_TOKEN_FILE` in the environment, plus the install config's `env`. It never sets `AWM_SERVICE_ID`.
 2. The service posts `POST /hub/service/register` with `{name, prefix?, pid, start, cwd}` and the header `X-Awm-Service-Token`, read from `AWM_HUB_TOKEN_FILE`. Each spawn gets a fresh token, so no other local user can take the service's name while it is down. A register with a wrong token gets 403. The reply carries `service_id`, `control_ws_path` and `canonical_workspace`.
 3. The service opens the control WebSocket at `/hub/service/control/<service_id>`. It sends `{"kind":"ready","api":{"functions":[...]}}` first. Each function is `{name, description, params:[{name,type,required,description}], tool?}`.
-4. The gateway sends `{"kind":"call","id","fn","args","as"?,"caller"}`. `caller` is `{"node","lane","session","trust"}`: `lane` is `local`, `edge` or `service`, `session` is the R9 session id or null, and `trust` is `trusted`, `cooperative` or `untrusted`. Only the gateway fills `caller` (R103). It drops any `X-Awm-Trust` or `X-Awm-Lane` header a caller sends. A service that predates `caller` ignores it. The service answers `{"kind":"reply","id","ok":true,"result"}` or `{"kind":"reply","id","ok":false,"error","error_class"}`. The gateway may also send `notify`, `cancel` and `shutdown`.
+4. The gateway sends `{"kind":"call","id","fn","args","as"?,"caller"}`. `caller` is `{"node","lane","session","trust","scope"}`: `lane` is `local`, `edge` or `service`, `session` is the R9 session id or null, `trust` is `trusted`, `cooperative` or `untrusted`, and `scope` is the session's own `<project>/<scope>` or null. Only the gateway fills `caller` (R103). It drops any `X-Awm-Trust` or `X-Awm-Lane` header a caller sends. A service that predates `caller` ignores it, and reads the caller in its args instead (§ Caller arguments). The service answers `{"kind":"reply","id","ok":true,"result"}` or `{"kind":"reply","id","ok":false,"error","error_class"}`. The gateway may also send `notify`, `cancel` and `shutdown`.
 5. The service may send `{"kind":"emit","topic","payload"}` and `{"kind":"usage",...}` (see § Usage event).
 6. A closed control WebSocket releases the service. The gateway respawns it after a 10 s window unless the gateway is stopping.
 
 A second instance of a live service gets 409 on register and stands down.
+
+### Caller arguments
+
+Both gateways also write the caller's trust and scope into the args of every call, for a service that reads args only. The journal and the browser bound every verb by them.
+
+- `_caller_trust` is the calling session's level. The gateway reads it from reflection's ledger, `<AWM_DIR>/services/reflection/trust.json`, keyed by the R9 session id. A session with no entry is `trusted`.
+- `_caller_scope` is `<project>/<scope>` of the session record's `cwd`, as `awm.config.scope_of` reads it. It is absent outside a project.
+- `_caller_session` keeps its meaning: the `{kind, job, name}` claim of a session on another node.
+
+The gateway finds the session from `X-Awm-Session-Pid`, the pid `awm mcp` sends. It drops the two keys a caller sends. A call that names no session carries neither key. The journal reads that as `trusted`, the browser as `cooperative`.
+
+Over an edge, the pair comes from the far node. The Rust gateway takes it from the edge's `caller` frame. The Python gateway keeps the pair only on a request that carries `X-Awm-As`, and its proxy fills the pair from its own node's ledger when it follows a peer redirect. The Rust gateway refuses a `_caller_trust` or `_caller_scope` that a model sends to `/invoke` as an unknown argument of a verb that declares its params.
 
 ### External services
 

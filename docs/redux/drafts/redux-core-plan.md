@@ -143,8 +143,9 @@ Gotchas: `Caller` gains a field, so feat/redux-trust's struct literals in `awm-e
 
 - Tony chose option a for an interface served by several plugins (R117 item 4, feat/redux 840daeae). The contract's § Contracts holds it.
 - Python discovery now scans `awm/plugins` as a built-in root, commit 38dc0f95, for the lanes that add core plugins there.
-- The plugin contract is at v1.5 in `docs/redux/drafts/plugin-contract.md`. Since v1 it gained the caller trust frame, the refresh hook, `platform` and `gpu`, shared tools for legacy folders, `[[external]]` services and the `[fleet]` table.
+- The plugin contract is at v1.6 in `docs/redux/drafts/plugin-contract.md`. Since v1 it gained the caller trust frame, the refresh hook, `platform` and `gpu`, shared tools for legacy folders, `[[external]]` services, the `[fleet]` table, and the caller arguments `_caller_trust` and `_caller_scope`.
 - The Rust gateway needs `awm.gatewayclient` from this branch. Each spawned service gets a fresh token at `AWM_HUB_TOKEN_FILE` and sends it on register. An older adapter gets 403. The services themselves run unchanged.
 - A service under another user's systemd unit (R99, R107) dials the gateway as today. The install config lists it in `[[external]]` with a token file, and the supervisor never spawns it.
 - `feat/redux-trust` builds `EdgePeers` on this branch's `PeerTransport` and changes the `gateway serve` arm. It merges cleanly with this branch, and every test passes on the merge. The final sweep joins the two.
 - `[[peer]] url` in the install config is the HTTP test transport only. Real peers come from the edges file through `EdgePeers`.
+- `Caller` in `awm-proto` gained `scope`. The sweep must add it to feat/redux-trust's struct literals, or the merge does not compile: `awm-edge/src/transport.rs` (`scope: ctx.caller.scope.clone()`), `awm-edge/src/server.rs` (`scope: req.caller.scope`), `awm-cli/src/edge.rs` and `awm-edge/tests/roundtrip.rs` (`scope: None`).
