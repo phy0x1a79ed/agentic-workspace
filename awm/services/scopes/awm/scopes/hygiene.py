@@ -70,7 +70,7 @@ def _idle_since(project: str, scope: str, worktree: Path, bare: Path, branch: st
     """When a session last used the scope, in epoch seconds.
 
     Claims are new, so a scope without one falls back to the newest of its last
-    commit and its ``.awm/`` metadata.
+    commit and its ``.awm/`` folder.
     """
     used = claims.last_used(project, scope)
     if used is not None:
@@ -79,11 +79,10 @@ def _idle_since(project: str, scope: str, worktree: Path, bare: Path, branch: st
     r = run_git(["git", "-C", str(bare), "log", "-1", "--format=%ct", f"refs/heads/{branch}"])
     if r.returncode == 0 and (r.stdout or "").strip().isdigit():
         stamps.append(float(r.stdout.strip()))
-    for p in (worktree / ".awm", worktree / ".awm" / "history.md"):
-        try:
-            stamps.append(p.stat().st_mtime)
-        except OSError:
-            pass
+    try:
+        stamps.append((worktree / ".awm").stat().st_mtime)
+    except OSError:
+        pass
     return max(stamps, default=0.0)
 
 

@@ -2,7 +2,7 @@
 
 A Python feature service in the `awm.journal` namespace. It owns the scope post
 channels: messages, journal (debrief) entries, system notices and goals. It also
-renders each scope's `.awm/history.md`. It needs the `awm` conda env to contain its
+renders each scope's history. It needs the `awm` conda env to contain its
 package plus the shared component libraries it imports (`config`, `persistence`,
 `gatewayclient`). Semantic search reuses the workspace embedding stack
 (`sentence-transformers`, already in the `awm` env).
@@ -52,7 +52,7 @@ Each function publishes as `journal_<verb>`:
 - `inbox`, `ack` — a bounded digest of what a scope has not read, and its read cursor.
 - `goal_set`, `goal_retire`, `goal_read`, `goal_history` — goals, by supersede and
   tombstone only.
-- `render` — writes a scope's `.awm/history.md`. `write=false` returns the text only.
+- `render` — a scope's history as markdown, for the startup ritual.
 - `export`, `reindex` — CLI and HTTP only. `export` pages the indexed posts for the
   search archive; `reindex` rebuilds the post index.
 

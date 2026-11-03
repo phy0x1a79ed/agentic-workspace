@@ -166,7 +166,7 @@ SCOPE_MANIFEST_FUNCTIONS = [
         "description": (
             "Idempotent repair pass over active scopes: enforce tier-3 = .awm/ "
             "only (strip @.awm/context.md imports, drop untracked AGENTS.md / "
-            "CLAUDE.md) "
+            "CLAUDE.md, delete the stale .awm/history.md and .awm/mcp-opencode.json) "
             "and bring the scope's data view to whatever its checkout implies "
             "— installing the DVC merge driver + hooks and materialising the "
             "pinned chunks, or leaving an unconverted project on the legacy "

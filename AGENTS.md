@@ -22,7 +22,6 @@ projects/<project>/
   .bare/                  # bare git repo
   <scope>/                # git worktree and your cwd. <scope> may nest
     .awm/                 # gitignored
-      history.md          # generated session log
       data -> ../data     # compat symlink. The real data/ is repo content
     data/                 # versioned data, see § Data
 ```
@@ -36,12 +35,9 @@ Find projects and scopes live. A list in a doc goes stale within days.
 
 Run this at session start. Run it again any time to refresh. The harness gives you the scope brief, what this scope is for, when you enter a scope. `journal(verb="brief_read")` shows it again.
 
-1. Run `journal(verb="render", args={project:<p>, scope:<s>})`. It renders `.awm/history.md` from the journal.
-2. Read `.awm/history.md`.
-3. Run `journal(verb="inbox", args={project:<p>, scope:<s>})` for the messages your scope has not read, one line each. Read one in full with `journal(verb="fetch", args={post_id:<id>})`. Run `journal(verb="ack", args={project:<p>, scope:<s>, through:<ack_through>})` once you have read them, so the next session starts after them.
-4. Run `journal(verb="goal_read", args={project:<p>, scope:<s>})` for the goal in force. Read it again before you propose a deliverable. The `goal-alignment` skill sets or revises it.
-
-Never edit `.awm/history.md` by hand. Use the `journal` verbs.
+1. Run `journal(verb="render", args={project:<p>, scope:<s>})`. It returns the scope's latest journal entries, then its project's.
+2. Run `journal(verb="inbox", args={project:<p>, scope:<s>})` for the messages your scope has not read, one line each. Read one in full with `journal(verb="fetch", args={post_id:<id>})`. Run `journal(verb="ack", args={project:<p>, scope:<s>, through:<ack_through>})` once you have read them, so the next session starts after them.
+3. Run `journal(verb="goal_read", args={project:<p>, scope:<s>})` for the goal in force. Read it again before you propose a deliverable. The `goal-alignment` skill sets or revises it.
 
 ## MCP tools
 

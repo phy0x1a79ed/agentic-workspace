@@ -4,7 +4,7 @@ Boots the journal as a gateway-registered process: stands up its own DB, copies
 the post log over from the scopes database on first start, then runs the shared
 :class:`awm.gatewayclient.ServiceAdapter` loop (register → ready → serve →
 reconnect). It owns scope posts, subscribers and goals, publishes the ``posts``
-topic, and renders ``history.md``.
+topic, and renders a scope's history.
 
 Run via ``run.sh`` (which the gateway spawns and respawns):
     python -m awm.journal.hub_adapter

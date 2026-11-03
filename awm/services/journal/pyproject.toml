@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "awm-journal"
 version = "0.1.0"
 requires-python = ">=3.11"
-description = "AWM journal service: scope post channels, goals and the history.md render."
+description = "AWM journal service: scope post channels, goals and the scope history render."
 dependencies = [
     "awm-config",
     "awm-persistence",

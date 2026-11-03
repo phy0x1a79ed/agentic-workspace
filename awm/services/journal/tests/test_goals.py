@@ -300,7 +300,7 @@ class TestRender:
 class TestJournalsUnaffected:
     """Goals must be invisible to everything journals drive."""
 
-    def test_goals_do_not_appear_in_history_md(self, journal_workspace):
+    def test_goals_do_not_appear_in_the_history_render(self, journal_workspace):
         from awm.journal import channel, goals
         from awm.journal.render import generate_history_md
         channel.post("awm", "dev", author="agent:awm/dev", kind="journal",
@@ -311,17 +311,6 @@ class TestJournalsUnaffected:
         after = generate_history_md("awm", "dev")
         assert after == before
         assert "GOAL-SHOULD-NOT-RENDER" not in after
-
-    def test_a_goal_post_does_not_trigger_a_refresh(self, journal_workspace, monkeypatch):
-        """Only kind='journal' auto-refreshes history.md."""
-        from awm.journal.operations import posts
-        calls = []
-        monkeypatch.setattr(posts.render, "render", lambda *a, **k: calls.append(a))
-        posts._handle_post({
-            "project": "awm", "scope": "dev", "author": USER,
-            "kind": "goal", "body": "a goal by the raw post path",
-        })
-        assert calls == []
 
     def test_goal_kind_filter_excludes_journals(self, journal_workspace):
         from awm.journal import channel, goals

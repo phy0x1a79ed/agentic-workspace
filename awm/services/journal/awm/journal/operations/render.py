@@ -8,17 +8,14 @@ RENDER_MANIFEST_FUNCTIONS = [
     {
         "name": "render",
         "tool": "journal_render",
-        "effect": "write",
+        "effect": "read",
         "description": (
-            "Render a scope's .awm/history.md from the journal: its own latest "
-            "entries first, then its project's. Returns the text and the path "
-            "written. write=false returns the text without storing it."
+            "A scope's history from the journal, as markdown: its own latest "
+            "journal entries first, then its project's. The startup ritual reads it."
         ),
         "params": [
             {"name": "project", "type": "string", "required": True},
             {"name": "scope", "type": "string", "required": True},
-            {"name": "write", "type": "boolean", "required": False,
-             "description": "Store the render at the scope's .awm/history.md. Default true."},
         ],
     },
     {
@@ -56,11 +53,7 @@ RENDER_MANIFEST_FUNCTIONS = [
 
 
 def _handle_render(args: dict, as_: str | None = None) -> dict:
-    project, scope = args["project"], args["scope"]
-    write = args.get("write")
-    return render.render(project, scope,
-                         write=True if write is None else write in (True, "true", "True", "1", 1),
-                         as_=as_)
+    return render.render(args["project"], args["scope"], as_=as_)
 
 
 def _handle_export(args: dict, as_: str | None = None) -> dict:

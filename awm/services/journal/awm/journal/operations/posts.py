@@ -16,7 +16,7 @@ import logging
 from typing import Any
 
 from awm.gatewayclient import sessions as caller
-from awm.journal import channel, inbox, owners, private, render, sessions
+from awm.journal import channel, inbox, owners, private, sessions
 
 log = logging.getLogger("awm.journal.posts")
 
@@ -201,14 +201,6 @@ def _handle_post(args: dict, as_: str | None = None) -> dict:
         to_scope=args.get("to_scope"),
         origin=channel.edge_origin(as_),
     )
-    # A journal post is a scope's debrief entry; re-render its history.md so the
-    # next session sees it. Best-effort: a render failure (scope dir absent)
-    # must never fail the post.
-    if args.get("kind") == "journal" and args["project"]:
-        try:
-            render.render(args["project"], args["scope"])
-        except Exception as exc:  # noqa: BLE001
-            log.info("history.md not refreshed for %s/%s: %s", args["project"], args["scope"], exc)
     return {"post": post.to_dict()}
 
 

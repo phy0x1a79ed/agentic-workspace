@@ -325,6 +325,22 @@ class TestHealWorktree:
         assert not (wt / ".awm" / "context.md").exists()
         assert not (wt / ".awm" / "mcp-opencode.json").exists()
 
+    def test_deletes_the_files_nothing_reads_and_keeps_context_md(self, tmp_path):
+        """history.md and mcp-opencode.json go (scopes.md R142). The deploy sweep reads context.md."""
+        awm_dir = tmp_path / "wt" / ".awm"
+        awm_dir.mkdir(parents=True)
+        for name in ("history.md", "mcp-opencode.json", "context.md"):
+            (awm_dir / name).write_text("x")
+
+        dry = _heal_worktree(awm_dir.parent, project="proj-a", scope="s1", dry_run=True)
+        assert dry["stale_files"] == "deleted:history.md,mcp-opencode.json"
+        assert (awm_dir / "history.md").exists()
+
+        actions = _heal_worktree(awm_dir.parent, project="proj-a", scope="s1", dry_run=False)
+        assert actions["stale_files"] == "deleted:history.md,mcp-opencode.json"
+        assert not (awm_dir / "history.md").exists() and not (awm_dir / "mcp-opencode.json").exists()
+        assert (awm_dir / "context.md").exists()
+
     def test_removes_skills_symlink(self, tmp_path):
         wt = tmp_path / "wt"
         (wt / ".awm").mkdir(parents=True)
@@ -376,7 +392,7 @@ class TestHealWorktree:
 
         assert second == {
             "import_line": None, "agents_md": None,
-            "claude_md": None, "data": None, "skills_link": None,
+            "claude_md": None, "data": None, "skills_link": None, "stale_files": None,
         }
         assert (wt / "AGENTS.md").read_text() == agents_after
 
@@ -519,5 +535,5 @@ class TestHealScopes:
         second = heal_scopes()
         assert second[0]["actions"] == {
             "import_line": None, "agents_md": None,
-            "claude_md": None, "data": None, "skills_link": None,
+            "claude_md": None, "data": None, "skills_link": None, "stale_files": None,
         }

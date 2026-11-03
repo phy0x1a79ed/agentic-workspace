@@ -130,21 +130,17 @@ def test_a_peer_cannot_post_or_subscribe_to_a_marked_scope(marked):
                          "body": "b"}, None)["post"]["project"] == "avatar"
 
 
-def test_a_peer_render_omits_marked_siblings_and_keeps_the_file_whole(marked, journal_workspace):
+def test_a_peer_render_omits_marked_siblings(marked, journal_workspace):
     from awm.journal.operations.render import _handle_render
     out = _handle_render({"project": "awm", "scope": "dev"}, "peer")
     assert "secret" not in out["content"] and "entry awm dev" in out["content"]
-    stored = (journal_workspace["projects_dir"] / "awm" / "dev" / ".awm" / "history.md").read_text()
-    assert "entry awm secret" in stored
-    assert "entry awm secret" in _handle_render({"project": "awm", "scope": "dev",
-                                                 "write": False}, None)["content"]
+    assert "entry awm secret" in _handle_render({"project": "awm", "scope": "dev"}, None)["content"]
 
 
-def test_a_peer_render_of_a_marked_scope_is_empty_and_never_written(marked, journal_workspace):
+def test_a_peer_render_of_a_marked_scope_is_empty(marked, journal_workspace):
     from awm.journal.operations.render import _handle_render
     out = _handle_render({"project": "avatar", "scope": "Avatar"}, "peer")
     assert "entry avatar" not in out["content"] and "No journal entries yet" in out["content"]
-    assert not (journal_workspace["projects_dir"] / "avatar" / "Avatar" / ".awm").exists()
 
 
 def test_a_peer_export_drops_marked_documents_and_ids(marked):

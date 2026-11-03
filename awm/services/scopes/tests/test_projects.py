@@ -60,7 +60,7 @@ class TestCreateProjectClone:
         # .awm/ scaffolded exactly like a scope.
         awm_dir = worktree / ".awm"
         assert not (awm_dir / "context.md").exists()
-        assert (awm_dir / "history.md").exists()
+        assert not (awm_dir / "history.md").exists()
         assert (awm_dir / "data").is_symlink()
         assert not (awm_dir / "skills").exists()
 

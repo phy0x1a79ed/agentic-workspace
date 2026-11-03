@@ -1,14 +1,11 @@
-"""The ``history.md`` render: a scope's journal entries and its project's, as markdown.
+"""The history render: a scope's journal entries and its project's, as markdown.
 
-Every session's startup reads this file, so its layout is a contract.
+Every session's startup ritual reads this render, so its layout is a contract.
 """
 
 from __future__ import annotations
 
 import re
-from pathlib import Path
-
-import awm.config as cfg
 from awm.journal import inbox, private
 from awm.journal.channel import _coerce_meta
 from awm.journal.dao import JournalDAO
@@ -24,22 +21,22 @@ def _neutralise_title(text: str) -> str:
     contain newlines and — when a tool call was mangled in transport — literal
     tool-call tag fragments (``</invoke>``, ``<meta>…</meta>``). Strip tag-like
     runs and collapse whitespace so neither can smuggle markup or break the line
-    in the generated ``history.md``. Presentation-only; the stored row is intact.
+    in the render. Presentation-only; the stored row is intact.
     """
     text = _TAG_RUN_RE.sub("", text or "")
     text = re.sub(r"\s+", " ", text).strip()
     return (text[:80] + "…") if len(text) > 80 else text
 
 
-# How many of a scope's OWN journal entries always survive into history.md, and
-# how many project-wide entries share the rest of the file. The floor is what
+# How many of a scope's OWN journal entries always survive into the render, and
+# how many project-wide entries share the rest of it. The floor is what
 # stops a busy project from crowding a scope out of its own history.
 _OWN_JOURNAL_FLOOR = 10
 _PROJECT_JOURNAL_WINDOW = 15
 
 
 def generate_history_md(project: str, scope: str, exclude: tuple[str, list] = ("", [])) -> str:
-    """The ``history.md`` text for ``scope``: its own journal entries, then its project's.
+    """The history text for ``scope``: its own journal entries, then its project's.
 
     ``exclude`` is a WHERE fragment from :func:`awm.journal.private.exclusion`.
     """
@@ -144,24 +141,9 @@ def generate_history_md(project: str, scope: str, exclude: tuple[str, list] = ("
     return preface + "\n".join(sections)
 
 
-def history_path(project: str, scope: str) -> Path:
+def render(project: str, scope: str, *, as_: str | None = None) -> dict:
+    """Render ``scope``'s history as the caller ``as_`` may see it."""
     validate_project(project)
     validate_scope(scope)
-    return cfg.PROJECTS_DIR / project / scope / ".awm" / "history.md"
-
-
-def render(project: str, scope: str, *, write: bool = True, as_: str | None = None) -> dict:
-    """Render ``scope``'s history and, with ``write``, store it at its ``.awm/history.md``.
-
-    The caller ``as_`` gets the render it may see. The stored file is always the
-    full render, and a scope hidden from the caller is never written.
-    """
-    path = history_path(project, scope)
-    exclude = private.exclusion(as_)
-    content = generate_history_md(project, scope, exclude)
-    if write and not private.hides(as_, project, scope):
-        full = content if exclude == private.EVERYTHING else generate_history_md(project, scope)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(full)
-    return {"content": content, "path": str(path), "written": write,
-            "history_lines": len(content.splitlines())}
+    content = generate_history_md(project, scope, private.exclusion(as_))
+    return {"content": content, "history_lines": len(content.splitlines())}

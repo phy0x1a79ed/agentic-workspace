@@ -47,7 +47,7 @@ The gateway's crash-loop breaker lives in memory on purpose: a gateway restart i
 
 The `journal` service owns every post and goal, in its own database. It split out of `scopes` so that worktree lifecycle and messaging deploy and fail apart. There are no `rooms`, `messages` or `session_logs` tables. One `scope_posts` table (kind `message`, `journal`, `system`, `goal`, …) and `scope_subscribers`, addressed by `(project, scope)`, carry everything. A non-agent inbox (`user:`, `project:`, `workspace`) is a non-literal channel with `owner_project=''`.
 
-`journal` validates a literal scope through the `resolveScope` RPC to `scopes`, and an unreachable `scopes` never blocks a post. `journal render` writes a scope's `.awm/history.md`, and `scope heal` calls it over the gateway. The service publishes the `posts` topic with payload `{project, scope, post}`. `awm/services/journal/INSTALL.md` covers the first-start copy of the old tables out of the `scopes` database.
+`journal` validates a literal scope through the `resolveScope` RPC to `scopes`, and an unreachable `scopes` never blocks a post. The service publishes the `posts` topic with payload `{project, scope, post}`. `awm/services/journal/INSTALL.md` covers the first-start copy of the old tables out of the `scopes` database.
 
 A scope reads its channel through a cursor in `scope_cursors`, one row per channel. The cursor belongs to the scope, not to a session, because seats churn and the scope persists. `journal inbox` lists the posts after it and `journal ack` moves it forward. A post the scope wrote itself never counts as unread.
 

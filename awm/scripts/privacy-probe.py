@@ -418,8 +418,8 @@ class Probe:
                 f"{len(posts)} posts of {name}"
         self.check_control("fetch", f"0.4 control journal fetch project={name}", fetch)
         self.check_control("render", f"0.5 control journal render {name}/{c['scope']}", lambda: (
-            "content" in self.peer_call("journal", "render", {"project": name, "scope": c["scope"],
-                                                              "write": False}), "rendered"))
+            "content" in self.peer_call("journal", "render", {"project": name, "scope": c["scope"]}),
+            "rendered"))
 
         def files() -> tuple[bool, str]:
             got = self.peer_file(c["file"])
@@ -557,10 +557,10 @@ class Probe:
 
     def journal_render(self) -> tuple[bool, Any, str]:
         out = self.peer_call("journal", "render", {"project": self.project,
-                                                    "scope": self.facts["scope"], "write": False})
+                                                    "scope": self.facts["scope"]})
         content = out.get("content", "")
         seen = bool(re.search(r"^\*\*\[[0-9a-f-]{36}\]", content, re.M))
-        return seen, {k: v for k, v in out.items() if k not in ("content", "path")}, \
+        return seen, {k: v for k, v in out.items() if k != "content"}, \
             f"{'entries' if seen else 'no entries'} in the render"
 
     def dvc_coverage(self) -> tuple[bool, Any, str]:

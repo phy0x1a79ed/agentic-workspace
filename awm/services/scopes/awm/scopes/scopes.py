@@ -4,9 +4,8 @@ A "scope" is represented by a row in the ``agents`` table
 (status ∈ allocated|active|retired) within the scopes service's own DB.
 All SQL goes through ScopesDAO.
 
-A scope IS the channel, held by the journal service: history.md is rendered
-there from the scope's journal posts (``journal_render``), and the vagrant
-session helper subscribes the user to the scope's channel.
+A scope IS the channel, held by the journal service, and the vagrant session
+helper subscribes the user to the scope's channel.
 """
 
 from __future__ import annotations
@@ -435,15 +434,6 @@ def _row_to_info(row) -> ScopeInfo:
     )
 
 
-def _generate_history_md(project: str, scope: str) -> str:
-    """The scope's ``history.md`` text, rendered by the journal service."""
-    from awm.gatewayclient import call_sync
-
-    reply = call_sync("journal", "render",
-                      {"project": project, "scope": scope, "write": False}, timeout=60.0)
-    return reply["content"]
-
-
 def ensure_vagrant_repo() -> Path:
     """Bootstrap the unified vagrant-scopes bare repo + matching data dirs."""
     from awm.persistence.config_service import get_vagrant_scopes_repo_url
@@ -568,10 +558,15 @@ def _strip_context_import(text: str) -> tuple[str, bool]:
     return new, True
 
 
+# Files the scaffold once wrote and nothing reads now (scopes.md R142). A
+# hand-written context.md stays until the deploy sweep turns it into a brief.
+STALE_AWM_FILES = ("history.md", "mcp-opencode.json")
+
+
 def _heal_worktree(worktree_dir: Path, *, project: str, scope: str, dry_run: bool) -> dict:
     actions: dict[str, str | None] = {
         "import_line": None, "agents_md": None,
-        "claude_md": None, "data": None, "skills_link": None,
+        "claude_md": None, "data": None, "skills_link": None, "stale_files": None,
     }
 
     agents_path = worktree_dir / "AGENTS.md"
@@ -620,6 +615,13 @@ def _heal_worktree(worktree_dir: Path, *, project: str, scope: str, dry_run: boo
     # legacy shared symlink is brought to whatever its checkout now says the
     # first time heal runs over it.
     actions["data"] = _heal_data(awm_dir, project=project, scope=scope, dry_run=dry_run)
+
+    stale = [awm_dir / name for name in STALE_AWM_FILES if (awm_dir / name).is_file()]
+    if stale:
+        actions["stale_files"] = "deleted:" + ",".join(p.name for p in stale)
+        if not dry_run:
+            for p in stale:
+                p.unlink()
 
     return actions
 
@@ -854,11 +856,6 @@ def _scaffold_awm_dir(
     data_report = data_dvc.provision_scope_data(project, scope, awm_dir)
     if data_report.get("mode") == "unknown":
         log.warning("scope %s/%s: %s", project, scope, data_report.get("detail"))
-
-    try:
-        (awm_dir / "history.md").write_text(_generate_history_md(project, scope))
-    except Exception as exc:  # noqa: BLE001 — a scope is still usable; `journal render` renders it later
-        log.warning("scope %s/%s: history.md not rendered: %s", project, scope, exc)
     dao = ScopesDAO()
     with dao.transaction() as conn:
         # Ensure the project row exists first — ensure_agent requires it, and
