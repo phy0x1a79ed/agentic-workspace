@@ -151,9 +151,24 @@ def extra_roots(env_var: str) -> list[Path]:
     return roots
 
 
+def plugins_root() -> Path | None:
+    """The built-in core plugins root, ``awm/plugins`` beside ``awm/services``.
+
+    ``None`` when ``AWM_SERVICES_DIR`` overrides the services tree, so a test's
+    temp tree never picks up the checkout's plugins.
+    """
+    if os.environ.get("AWM_SERVICES_DIR"):
+        return None
+    cand = services_root().parent / "plugins"
+    return cand if cand.is_dir() else None
+
+
 def service_roots() -> list[Path]:
-    """The built-in services root, then every ``AWM_SERVICE_ROOTS`` entry."""
-    return [services_root(), *extra_roots(SERVICE_ROOTS_ENV)]
+    """The built-in services root, the core plugins root, then every
+    ``AWM_SERVICE_ROOTS`` entry."""
+    plugins = plugins_root()
+    return [services_root(), *([plugins] if plugins else []),
+            *extra_roots(SERVICE_ROOTS_ENV)]
 
 
 def _valid_name(name: str) -> bool:
