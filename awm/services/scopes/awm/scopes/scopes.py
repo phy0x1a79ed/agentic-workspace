@@ -1178,6 +1178,12 @@ def create_scope(req: ScopeCreateRequest) -> ScopeActionResponse:
     if tags:
         _tags.set_tags(req.project, req.scope, tags)
 
+    try:
+        from awm.scopes import hygiene
+        hygiene.after_create()
+    except Exception as exc:  # noqa: BLE001 — counting must never fail a create
+        log.warning("scope %s/%s: hygiene count failed: %s", req.project, req.scope, exc)
+
     return ScopeActionResponse(
         project=req.project,
         scope=req.scope,
