@@ -4,7 +4,7 @@
 
 This file is the contract between a plugin and the Rust gateway of the redux (`install.md` R112, R115 to R117, R132). It holds the manifest format, the wire protocol a service speaks, the call interface a plugin uses to reach another plugin, and the usage event. The redux-core lane (job a92d02bf) owns it. Other lanes build against it. Send a change request to job a92d02bf with `reflection(verb="message")`.
 
-Status: draft. Items marked **open** wait on the coordinator (job 8162a704). Build against the rest.
+Status: draft v1.2. Build against it.
 
 ## Plugin folder
 
@@ -86,9 +86,17 @@ Rules the loader enforces:
 
 A legacy plugin gets the tool UUID `uuid5(NAMESPACE_URL, "awm:tool:<name>")`. A converted service commits that same UUID into its manifest, so a dependent resolves before and after the conversion alike. Keep it forever. A new tool may use any UUID, such as one from `uuidgen -r`.
 
-A `[[needs.tool]]` entry may carry `optional = true`. A missing optional tool does not refuse the plugin. Its entry in `AWM_RESOLVED_TOOLS` is absent, and the dependent checks for it before a call. Use it for a dependent that calls whichever of several providers is installed, such as reflection calling the harness plugins cch (`harness-cc`) and dsh (`harness-ds`).
+## Contracts
 
-**open** — a contract that several plugins serve. Until Tony decides, build to option (b): the dependent lists each provider's tool UUID in `[[needs.tool]]` with `optional = true`. Option (a), written up for a small switch: each provider keeps its own tool UUID and adds `implements = ["<contract-uuid>@1"]` to its `[[tool]]`. A dependent names `[[needs.contract]] uuid, major` and resolves to every provider, zero or more. A contract UUID never clashes, because many providers are its purpose. The loader accepts both forms.
+An interface that several plugins serve is a contract (`install.md` R117 item 4). Tony: "Option a. Reflection caller doesnt care about details".
+
+1. A contract has a permanent contract UUID and a major version.
+2. Each provider keeps its own tool UUID. It names the contracts it implements on its `[[tool]]`: `implements = ["<contract-uuid>@<major>"]`.
+3. A dependent names the contract, never a provider: `[[needs.contract]] uuid, major`.
+4. The contract resolves to every installed provider, zero or more. A contract UUID never clashes, because many providers are its purpose.
+5. `AWM_RESOLVED_TOOLS` lists the providers of each needed contract under `contracts`: `{"<contract-uuid>": [{name, major, plugin, peer}, ...]}`.
+
+Example: cch serves `harness-cc` and dsh serves `harness-ds`. Each implements the `harness` contract at major 1. reflection needs that contract and dispatches on the platform code of the session.
 
 ## Refresh hook
 
@@ -116,7 +124,7 @@ A second instance of a live service gets 409 on register and stands down.
 
 A plugin calls another plugin only through the gateway (R117 item 1).
 
-1. Read the current name of each tool you need from the JSON file at `AWM_RESOLVED_TOOLS`. It maps each `needs.tool` UUID to `{name, major, plugin, peer}`. The gateway rewrites it when a rename lands, then restarts the dependent.
+1. Read the current name of each tool you need from the JSON file at `AWM_RESOLVED_TOOLS`. Its `tools` key maps each `needs.tool` UUID to `{name, major, plugin, peer}`. Its `contracts` key lists the providers of each `needs.contract` UUID. The gateway rewrites it when a rename lands, then restarts the dependent.
 2. Call `POST $AWM_HUB_URL/invoke` with `{"name":"<tool>","args":{"verb":"<verb>","args":{...},"peer":"<node>"?}}`.
 3. Send `X-Awm-Plugin: <your plugin name>`. The gateway counts the call as surface `plugin` for both plugins.
 4. Send `X-Awm-As: <principal>` when you act for someone, as today.
