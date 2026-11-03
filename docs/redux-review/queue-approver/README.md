@@ -43,9 +43,11 @@ Surveyed read only on mizar, 2026-11-03.
 
 - 2026-11-03: alcor reaches deneb only through deneb's singleton services, the `trilium` tool and the panel tunnel, which give no edge (`fleet.md` R87 item 3). Tony: "agree".
 - 2026-11-03: Two tools serve the queue: `operations`, which takes in the task queue and the approver, and `trilium` for the vault. `reporting` and `board` go (`queue.md` R145, `install.md` R115 item 4). Tony: "queue and approver go to operations. From what you listed, only 2 tools are sufficient for concerns, which are trillium and operations".
+- 2026-11-03: The `trilium` plugin is core, with its source in awm. Our fork publishes a tarball per release, awm pins one, and a fork change deploys by release, pin bump and awm deploy (`install.md` R115 item 4). Tony: "additional constaints on core is that the source code just lives in awm. trillium is a fork so it cant be core." and "accept if: we publish installable tarball distributions  from our fork that is used by awm changes from the local trillium project (our fork) gets a straightforward deploy route to update live services".
 
 ## Follow-ups for the build
 
 - Merge `taskqueue`, `queue-relay` and `approver` into one core plugin, `operations`, with one tool. Move `request_human` and the sessions lane's task verbs onto it. Drop the sessions lane's stand-in store in `reporting`, and keep one task id minter (R145).
 - Remove `reporting`, `board`, the Kanban, the Ledger and the Older notes at the cutover (R60, R145).
+- Make the fork's release publish a server tarball, and make `trilium/install.sh` install only the pinned tarball. Drop the build mode. Where the tarball is published waits on the fleet-deploy canonical repo question (R115 item 4).
 - Make the board writer call the `trilium` tool, and drop its ETAPI token (R87 item 3, R105).
