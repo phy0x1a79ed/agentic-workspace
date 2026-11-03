@@ -149,6 +149,21 @@ def grant_awm_worktree(path: str | Path, projects_root: str | Path, *,
     keys = awm_worktree_keys(path, projects_root)
     if not keys:
         return []
+    return _record_trust(keys, trust_file)
+
+
+def grant_plain_dir(path: str | Path, *, trust_file: Path | None = None) -> list[str]:
+    """Record trust for a directory outside every git repository, such as the lobby.
+
+    Adds nothing for a path inside a repository, whose trust Claude Code keys on
+    the repository instead.
+    """
+    if workspace_key(path) is not None:
+        return []
+    return _record_trust([Path(path).resolve()], trust_file)
+
+
+def _record_trust(keys: list[Path], trust_file: Path | None) -> list[str]:
     target = Path(trust_file or default_trust_file())
     try:
         data = json.loads(target.read_text())

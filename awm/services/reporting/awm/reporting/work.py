@@ -60,14 +60,16 @@ class Work(Ledger):
         """Fold task ``src`` into ``dst``: its sessions join ``dst`` and ``src`` points there."""
         for r in conn.execute("SELECT * FROM work_sessions WHERE task_id=?", (src,)).fetchall():
             role = r["role"] if r["role"] != MAIN else JOINED
-            conn.execute("INSERT OR IGNORE INTO work_sessions (task_id, session, role, node, joined, ended)"
-                         " VALUES (?,?,?,?,?,?)", (dst, r["session"], role, r["node"], now, r["ended"]))
+            conn.execute("INSERT OR IGNORE INTO work_sessions (task_id, session, role, node, joined, ended,"
+                         " name, rc_url) VALUES (?,?,?,?,?,?,?,?)",
+                         (dst, r["session"], role, r["node"], now, r["ended"], r["name"], r["rc_url"]))
         conn.execute("UPDATE work SET folded_into=?, updated=? WHERE task_id=?", (dst, now, src))
         conn.execute("UPDATE work SET updated=? WHERE task_id=?", (now, dst))
 
     # -- the agreed verbs ----------------------------------------------------
 
-    def task_open(self, title: str, session_id: str, node: str = "") -> str:
+    def task_open(self, title: str, session_id: str, node: str = "", *,
+                  name: str | None = None, rc_url: str | None = None) -> str:
         """A new task with ``session_id`` as its main session (R57 step 1)."""
         session, now = session_key(session_id), time.time()
         with self._tx() as conn:
@@ -77,8 +79,8 @@ class Work(Ledger):
                     break
             conn.execute("INSERT INTO work (task_id, title, node, created, updated) VALUES (?,?,?,?,?)",
                          (task_id, title or "", node, now, now))
-            conn.execute("INSERT INTO work_sessions (task_id, session, role, node, joined)"
-                         " VALUES (?,?,?,?,?)", (task_id, session, MAIN, node, now))
+            conn.execute("INSERT INTO work_sessions (task_id, session, role, node, joined, name, rc_url)"
+                         " VALUES (?,?,?,?,?,?,?)", (task_id, session, MAIN, node, now, name, rc_url))
         return task_id
 
     def task_ensure(self, title: str, session_id: str, node: str = "") -> tuple[str, bool]:
@@ -87,7 +89,8 @@ class Work(Ledger):
             have = self._current(conn, session_key(session_id))
         return (have, False) if have else (self.task_open(title, session_id, node), True)
 
-    def task_attach(self, task_id: str, session_id: str, role: str = WORKER, node: str = "") -> dict:
+    def task_attach(self, task_id: str, session_id: str, role: str = WORKER, node: str = "", *,
+                    name: str | None = None, rc_url: str | None = None) -> dict:
         """Put ``session_id`` on ``task_id`` (R57 step 3).
 
         A task the session already had folds in, so a session that opened its
@@ -103,9 +106,11 @@ class Work(Ledger):
             if old and old != target:
                 self._move(conn, old, target, now)
                 folded = old
-            conn.execute("INSERT INTO work_sessions (task_id, session, role, node, joined) VALUES (?,?,?,?,?)"
-                         " ON CONFLICT (task_id, session) DO UPDATE SET role=excluded.role",
-                         (target, session, role, node, now))
+            conn.execute("INSERT INTO work_sessions (task_id, session, role, node, joined, name, rc_url)"
+                         " VALUES (?,?,?,?,?,?,?) ON CONFLICT (task_id, session) DO UPDATE SET"
+                         " role=excluded.role, name=COALESCE(excluded.name, name),"
+                         " rc_url=COALESCE(excluded.rc_url, rc_url)",
+                         (target, session, role, node, now, name, rc_url))
             return {"task_id": target, "main_session_id": self._main(conn, target), "folded_task_id": folded}
 
     def task_join(self, task_id: str, session_id: str, node: str = "") -> dict:
@@ -128,7 +133,7 @@ class Work(Ledger):
         with self._tx() as conn:
             target = self._require(conn, task_id)
             rows = [dict(r) for r in conn.execute(
-                "SELECT session, role, node, joined, ended FROM work_sessions WHERE task_id=?"
+                "SELECT session, role, node, joined, ended, name, rc_url FROM work_sessions WHERE task_id=?"
                 " ORDER BY joined, rowid", (target,))]
         for r in rows:
             r["session_id"] = r.pop("session")

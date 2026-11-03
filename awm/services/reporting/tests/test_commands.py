@@ -112,7 +112,7 @@ async def test_new_agent_starts_a_session_with_remote_control_and_replies_with_i
     await commands.handle(event("new_agent", prompt="hello", reply_to="dm:42"))
     await settle(commands)
     spec = cx.started[0]
-    assert (spec["project"], spec["scope"], spec["remote_control"]) == ("awm", "dev", True)
+    assert ("project" in spec, "scope" in spec, spec["remote_control"]) == (False, False, True)
     assert spec["prompt"].startswith("hello\n\n")
     account, channel, text = replies.sent[0]
     assert (account, channel) == ("discord-bot", "dm:42")
@@ -159,7 +159,7 @@ async def test_new_agent_takes_its_project_scope_and_name_from_the_node(parts, m
     await commands.handle(event("new_agent", prompt=""))
     await settle(commands)
     spec = cx.started[0]
-    assert (spec["project"], spec["scope"], spec["remote_control"]) == ("awm", "dev", True)
+    assert ("scope" not in spec, spec["remote_control"]) == (True, True)
     assert spec["name"].startswith("agent-")
     assert "Wait for Tony's first instruction" in spec["prompt"]
     monkeypatch.setenv("AWM_REPORTING_NEW_AGENT_PROJECT", "cloud")

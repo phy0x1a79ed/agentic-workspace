@@ -20,18 +20,21 @@ HIDDEN = ["cli", "http"]
 
 _SESSION = {"name": "session_id", "type": "string",
             "description": "A session id in R9 form (`cc` + hex) or a Claude session UUID. Default: the calling session."}
+_SHOWN = [{"name": "name", "type": "string", "description": "The session's name, for the board."},
+          {"name": "rc_url", "type": "string", "description": "The session's Remote Control link, for the board."}]
 _TASK = {"name": "task_id", "type": "string", "required": True, "description": "The 8-character task id."}
 
 MANIFEST: list[dict[str, Any]] = [
     {"name": "task_open", "tool": "operations_task_open", "surfaces": HIDDEN, "effect": "write",
      "description": "Open a task with its main session and mint its task id. awm opens one for a "
                     "session that starts new work on its own; this verb is for services.",
-     "params": [{"name": "title", "type": "string", "description": "The task's title."}, _SESSION]},
+     "params": [{"name": "title", "type": "string", "description": "The task's title."}, _SESSION, *_SHOWN]},
     {"name": "task_attach", "tool": "operations_task_attach", "surfaces": HIDDEN, "effect": "write",
      "description": "Put a session on a task, as `cx start` does for a task id the coordinator passed. "
                     "A task the session opened on its own folds into this one.",
      "params": [_TASK, {**_SESSION, "required": True},
-                {"name": "role", "type": "string", "description": f"One of {', '.join(ROLES)}. Default: worker."}]},
+                {"name": "role", "type": "string", "description": f"One of {', '.join(ROLES)}. Default: worker."},
+                *_SHOWN]},
     {"name": "task_join", "tool": "operations_task_join", "effect": "write",
      "description": "Join your session to a running task by its task id, when Tony started you while "
                     "that task was running. Your own card folds into the task's card, and the task's "
@@ -52,6 +55,11 @@ MANIFEST: list[dict[str, Any]] = [
 ]
 
 Resolve = Callable[[int], Any]
+
+
+def _shown(args: dict) -> dict[str, str | None]:
+    """The optional name and Remote Control link a caller passed, for the board."""
+    return {k: (str(args[k]).strip()[:200] or None) if args.get(k) else None for k in ("name", "rc_url")}
 Notify = Callable[[str, str], Awaitable[bool]]
 
 
@@ -93,13 +101,14 @@ class TaskVerbs:
 
     async def task_open(self, args: dict) -> dict:
         session = await self._session(args)
-        task_id = await asyncio.to_thread(self.work.task_open, str(args.get("title") or ""), session, self.node)
+        task_id = await asyncio.to_thread(self.work.task_open, str(args.get("title") or ""), session, self.node,
+                                          **_shown(args))
         return {"ok": True, "task_id": task_id}
 
     async def task_attach(self, args: dict) -> dict:
         session = await self._session(args, required=True)
         out = await asyncio.to_thread(self.work.task_attach, str(args.get("task_id") or ""), session,
-                                      str(args.get("role") or WORKER), self.node)
+                                      str(args.get("role") or WORKER), self.node, **_shown(args))
         return {"ok": True, **out}
 
     async def task_join(self, args: dict) -> dict:

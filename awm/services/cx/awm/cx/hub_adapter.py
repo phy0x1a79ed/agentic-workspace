@@ -52,9 +52,12 @@ API_MANIFEST: dict[str, Any] = {
             "name": "start",
             "tool": "reflection_start_other",
             "description": (
-                "Start a named background Claude Code session in a scope's "
-                "worktree, creating the worktree if it is absent, and return "
-                "its job id and the `claude attach` command. Refuses on a "
+                "Start a named background Claude Code session and return its job "
+                "id, session id and the `claude attach` command. With a scope it "
+                "starts in that scope's worktree, created if absent. Without "
+                "one, or with suggest=true, it starts in the node's lobby and "
+                "routes itself (scopes.md R1, R40). Pass task_id to put the "
+                "session on a running task's card. Refuses on a "
                 "station, for a caller that is not a domestic peer, when no "
                 "Claude Code daemon runs, when the worktree is untrusted, or "
                 "when a live session already holds the name. A worktree of "
@@ -63,10 +66,23 @@ API_MANIFEST: dict[str, Any] = {
                 "Every caller gets the same session, whoever it is."
             ),
             "params": [
-                {"name": "project", "type": "string", "required": True,
-                 "description": "The project the scope belongs to."},
-                {"name": "scope", "type": "string", "required": True,
-                 "description": "The scope whose worktree is the session's directory."},
+                {"name": "project", "type": "string",
+                 "description": "The project the scope belongs to. Without a "
+                                "scope it is only a hint in the brief."},
+                {"name": "scope", "type": "string",
+                 "description": "The scope whose worktree is the session's "
+                                "directory. Omit it to start in the lobby."},
+                {"name": "suggest", "type": "boolean",
+                 "description": "Treat project and scope as a suggested route, "
+                                "as for a follow-up session (sessions.md R18): "
+                                "start in the lobby and let the session choose."},
+                {"name": "task_id", "type": "string",
+                 "description": "The task the session joins (sessions.md R57 "
+                                "step 3). Pass your own from reflection whoami "
+                                "when you start a session for your task."},
+                {"name": "role", "type": "string",
+                 "description": "main or worker on the task. Defaults to worker "
+                                "when a session calls, else main."},
                 {"name": "prompt", "type": "string",
                  "description": "The first task. Without one the session starts empty."},
                 {"name": "system_prompt", "type": "string",
@@ -78,7 +94,9 @@ API_MANIFEST: dict[str, Any] = {
                                 "1000000. Claude Code compacts about 33k below "
                                 "it. Omitted means the model's own window."},
                 {"name": "name", "type": "string",
-                 "description": "The session's name; defaults to the scope."},
+                 "description": "The session's name, <task>/<descriptor> for the "
+                                "sessions of one task (sessions.md R56). Defaults "
+                                "to the scope, or lobby-<hex> in the lobby."},
                 {"name": "model", "type": "string",
                  "description": "A model alias or full name."},
                 {"name": "effort", "type": "string",

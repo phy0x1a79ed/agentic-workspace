@@ -16,6 +16,8 @@ CREATE TABLE IF NOT EXISTS work_sessions (
     node     TEXT NOT NULL DEFAULT '',
     joined   REAL NOT NULL,
     ended    REAL,
+    name     TEXT,
+    rc_url   TEXT,
     PRIMARY KEY (task_id, session)
 );
 CREATE INDEX IF NOT EXISTS work_sessions_by_session ON work_sessions (session);

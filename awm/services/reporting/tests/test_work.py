@@ -137,3 +137,13 @@ async def test_task_for_session_answers_none_for_a_stranger(work):
     verbs = TaskVerbs(work, "mizar", resolve=lambda pid: None)
     out = await verbs.call("task_for_session", {"session_id": B})
     assert out == {"ok": True, "session_id": task_ids.session_key(B), "task_id": None}
+
+
+async def test_open_and_attach_keep_the_name_and_link_for_the_board(work):
+    verbs = TaskVerbs(work, "mizar", resolve=lambda pid: None)
+    opened = await verbs.call("task_open", {"title": "t", "session_id": A, "name": "t/coord"})
+    await verbs.call("task_attach", {"task_id": opened["task_id"], "session_id": B,
+                                     "name": "t/worker", "rc_url": "https://claude.ai/code/session_x"})
+    await verbs.call("task_attach", {"task_id": opened["task_id"], "session_id": B, "role": "worker"})
+    rows = {s["name"]: s["rc_url"] for s in work.task_sessions(opened["task_id"])}
+    assert rows == {"t/coord": None, "t/worker": "https://claude.ai/code/session_x"}
