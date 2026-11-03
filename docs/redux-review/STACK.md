@@ -30,7 +30,7 @@ Procedure, from dfs-interview § Work the stack:
   - [ ] Ryan's Arbutus approvals on Slack (users.md R123) have no home after the cutover drops request_human kind approval. Keep the Slack path as is, beside the queue?
   - [ ] The lane drops the urgent Discord DM, and keeps a Needs you card there after Tony answers. Restore the move back to Working on Tony's prompt (R61 item 2), and drop the DM?
   - [ ] Accept the lane's values: 12 h window cap, burst 1/2/4, 60 s pending expiry (R65 item 4), denied as a history outcome (R97 item 1), spawn body hash check?
-  - [ ] Tony: "what is the trillium tool?  what is the board tool? I sense some redundancies that we should clear up here". Clear the overlap of trilium, board, reporting/operations and the lane's queue, queue-store and approver tools.
+  - [x] Tony: "what is the trillium tool?  what is the board tool? I sense some redundancies that we should clear up here". Clear the overlap of trilium, board, reporting/operations and the lane's queue, queue-store and approver tools. (answered 2026-11-03)
 - **channels** (2026-11-03): lets go over each of the major systems architecturally to make sure we are still aligned
 - **fleet-deploy** (2026-11-03): lets go over each of the major systems architecturally to make sure we are still aligned
   - [ ] Which repo is canonical for awm: GitHub (install.md R114, R118) or mizar (routines.md R31)? Today origin is altair.

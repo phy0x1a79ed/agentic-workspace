@@ -42,7 +42,10 @@ Surveyed read only on mizar, 2026-11-03.
 ## Decisions
 
 - 2026-11-03: alcor reaches deneb only through deneb's singleton services, the `trilium` tool and the panel tunnel, which give no edge (`fleet.md` R87 item 3). Tony: "agree".
+- 2026-11-03: Two tools serve the queue: `operations`, which takes in the task queue and the approver, and `trilium` for the vault. `reporting` and `board` go (`queue.md` R145, `install.md` R115 item 4). Tony: "queue and approver go to operations. From what you listed, only 2 tools are sufficient for concerns, which are trillium and operations".
 
 ## Follow-ups for the build
 
+- Merge `taskqueue`, `queue-relay` and `approver` into one core plugin, `operations`, with one tool. Move `request_human` and the sessions lane's task verbs onto it. Drop the sessions lane's stand-in store in `reporting`, and keep one task id minter (R145).
+- Remove `reporting`, `board`, the Kanban, the Ledger and the Older notes at the cutover (R60, R145).
 - Make the board writer call the `trilium` tool, and drop its ETAPI token (R87 item 3, R105).
