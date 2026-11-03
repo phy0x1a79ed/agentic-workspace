@@ -26,6 +26,9 @@ Procedure, from dfs-interview § Work the stack:
 ## Stack
 
 - **channels** (2026-11-03): lets go over each of the major systems architecturally to make sure we are still aligned
+  - [ ] Persistent rooms: relay lifetime and name length for a room that outlives any task (R72 item 5, R72 item 1, R77)
+  - [ ] Room link path: /r/<name> or /tether/r/<name> (R72 item 1)
+  - [ ] Machine channel shell: where run, shell, keys and drain go under channel's verbs (R110 items 2, 4, 5)
 - **fleet-deploy** (2026-11-03): lets go over each of the major systems architecturally to make sure we are still aligned
   - [ ] Which repo is canonical for awm: GitHub (install.md R114, R118) or mizar (routines.md R31)? Today origin is altair.
   - [ ] fleet.md R109: the harness lane proposes item 7, an access-token login and a caller-token door for isolated sessions. Accept it?
