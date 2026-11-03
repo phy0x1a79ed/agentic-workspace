@@ -39,6 +39,7 @@ def settings() -> dict[str, Any]:
                                            cfg.get("forwarded_header")),
         "allowed_orders": cfg.get("allowed_orders", {"spawn": ["*"], "new_from": ["*"]}),
         "rate_max": int(cfg.get("rate_max", 30)),
+        "peers": cfg.get("peers", []),
         "secret": os.environ.get("AWM_QUEUE_ACTION_SECRET", "").encode(),
     }
 
@@ -98,7 +99,8 @@ async def main() -> None:
     async def on_start() -> None:
         host, port = s["bind"].rsplit(":", 1)
         app = create_app(ap, board_origins=s["board_origins"],
-                         forwarded_header=s["forwarded_header"], usage=tools.usage)
+                         forwarded_header=s["forwarded_header"], peers=s["peers"],
+                         usage=tools.usage)
         cfg = uvicorn.Config(app, host=host, port=int(port), log_level="info",
                              ssl_certfile=s["tls_cert"], ssl_keyfile=s["tls_key"],
                              server_header=False)

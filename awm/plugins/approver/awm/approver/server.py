@@ -18,7 +18,7 @@ from awm.approver.core import Approver, ApproverError
 STATIC = resources.files("awm.approver") / "static"
 PAGES = {"/panel": "panel.html", "/panel/button": "button.html", "/enrol": "enrol.html",
          "/login": "login.html"}
-ASSETS = {"panel.js", "panel.css", "approver.js"}
+ASSETS = {"panel.js", "panel.css", "approver.js"}  # panel.js imports approver.js
 STATUS = {"need_passkey": 401, "locked": 423, "stale_head": 409, "unknown_device": 403,
           "bad_signature": 403, "stale": 403, "unknown_passkey": 403, "bad_passkey": 403, "not_allowed": 403,
           "unknown_request": 404}
@@ -37,7 +37,7 @@ def _client_ip(request: Request, forwarded_header: str | None) -> str | None:
 
 
 def create_app(ap: Approver, *, board_origins: list[str] | None = None,
-               forwarded_header: str | None = None,
+               forwarded_header: str | None = None, peers: list[str] | None = None,
                usage: Callable[[str], Awaitable[None]] | None = None) -> FastAPI:
     app = FastAPI(title="awm approver", docs_url=None, redoc_url=None, openapi_url=None)
     frame_ancestors = " ".join(["'self'", *(board_origins or [])])
@@ -82,7 +82,7 @@ def create_app(ap: Approver, *, board_origins: list[str] | None = None,
     async def keys():
         return {"ack_pub": ap.keys.ack_pub_spki_b64u(), "grant_pub": ap.keys.grant_pub_b64u(),
                 "rp_id": ap.config.rp_id, "origin": ap.config.origin,
-                "board_origins": board_origins or []}
+                "board_origins": board_origins or [], "peers": peers or []}
 
     async def body(request: Request) -> dict[str, Any]:
         data = await request.json()

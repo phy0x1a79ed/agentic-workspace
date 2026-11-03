@@ -178,6 +178,9 @@ Run the `debrief` skill. Journal the lane's state. Send the coordinator one line
 - redux-sessions: the task id format is theirs (8 chars of URL-safe base64 of a UUID4). The queue mints with its own copy and pins the vector `ABEiM0RV`. The calls are `task_open`, `task_attach`, `task_join`, `task_for_session` and `task_sessions`, with these names in both backends. Their ledger-backed shim lives in `reporting` until cutover.
 - redux-trust: the approver signs grants and `admin_ssh` certificates. alcor holds the user CA. redux-trust builds the callers, the node-side checks and `TrustedUserCAKeys`. The grant JSON is canonical (sorted keys, no spaces, integer times). The envelope is `{grant, sig, key_id}`.
 - redux-core: the manifest is `awm-plugin.toml` at `awm/plugins/<name>/`. The names `approver` and `queue-store` are on the reserved list.
+- redux-trust, later: request kind `vault_hold` (R105 item 3) needs only a card and a decision. `approval_get` returns the admin certificate at `ssh_cert`. An `admin_ssh` grant body carries `nodes` beside `node`. trust's Python and Rust checks pass the 12 cases in `grantlib/test_vectors.json` (feat/redux-trust 677a3604).
+- redux-trust and redux-fleet, portal login (fleet.md R84): the portal sends Tony to `/login?site=&node=&return=` on the approver origin. One passkey there yields a 60-second grant of kind `portal_login`, bound to the site and the return URL, in the URL fragment of `return`. The portal checks it with `verify_grant` and sets its own session. fleet owns the portal side and the removal of the password form. auth keeps no user table for passkeys.
+- redux-fleet: the Zotero Sync now puller long-polls `order_pull(node, ["zotero_sync"], 55)` (feat/redux-fleet 58109656). The deneb role takes the approver origin as a config value.
 
 **Host changes to apply in the fleet sweep (none applied).**
 
@@ -188,6 +191,13 @@ Run the `debrief` skill. Journal the lane's state. Send the coordinator one line
 5. alcor: an outbound tunnel unit to deneb for the panel name, and the approver's own user and unix socket. The socket's group lets the admin path run `enrol-link`.
 6. lyra: an ssh key into alcor for recovery (R85, gap Q13), with alcor's firewall admitting it (gap F2).
 7. deneb: an ETAPI token for the writer on alcor, held as a secret on alcor.
+
+**Gaps left in the approver.**
+
+- PROXY protocol: uvicorn cannot read it. Until a front on alcor turns PROXY v2 into a header, the approver reads the client address from `AWM_APPROVER_FORWARDED_HEADER` on loopback connections only. Without that header the address is unknown, and a window opened from an unknown address has no network check. The panel says so beside the window.
+- A Proposed card's body hash: the panel signs the `body_sha256` the board sends, and the spawn order carries it. The store does not yet compare it with the body in Trilium. T11's ETAPI client adds that check.
+- `order_pull` serves any caller that names a node. The orders are signed and only the named node acts on them, so a wrong caller learns the payload and nothing more. The redux gateway's caller identity can close this later.
+- The browser test runs Chromium with libraries from conda-forge in the `awm-queue` env (`nss`, `atk`, `libgbm` and others), because the host lacks them and installing them would be a host change.
 
 **Proposed doc changes (for the coordinator).**
 
