@@ -45,5 +45,5 @@ def test_the_retired_verbs_are_gone():
 def test_service_toml_declares_the_kb_archive_source():
     toml = tomllib.loads((Path(hub_adapter.__file__).parents[2] / "service.toml").read_text())
     assert toml["tool"] == "kb" and toml["tier"] == "off"
-    assert toml["archive"] == [{"name": "kb", "mode": "live", "query": "kb_query"},
-                               {"name": "library", "mode": "live", "query": "kb_library"}]
+    assert toml["archive"] == [{"name": "kb", "mode": "live", "query": "kb_query", "get": "kb_get"},
+                               {"name": "library", "mode": "live", "query": "kb_library", "get": "kb_get"}]

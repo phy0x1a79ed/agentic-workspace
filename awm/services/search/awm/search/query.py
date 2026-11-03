@@ -10,13 +10,10 @@ from awm.config import privacy
 from awm.config.peertoken import node_label
 
 from awm.search import store
-from awm.search.hits import MAX_PASSAGES
 from awm.search.index import Filters
 
 DEFAULT_LIMIT = 10
 MAX_LIMIT = 100
-#: Passages quoted per hit by default.
-DEFAULT_PASSAGES = 1
 #: The ``peers`` word for every domestic node, this one included.
 FLEET = "fleet"
 #: The ``peers`` word for this node in a list of names.
@@ -33,7 +30,6 @@ class Query:
     after: str = ""
     before: str = ""
     limit: int = DEFAULT_LIMIT
-    passages: int = DEFAULT_PASSAGES
     local: bool = True
     peer_names: list[str] | str = field(default_factory=list)
     grants: frozenset[str] | None = None
@@ -56,8 +52,7 @@ class Query:
 
     def forwarded(self) -> dict[str, Any]:
         """The arguments a peer is asked with: the same question, never a further fan-out."""
-        args: dict[str, Any] = {"query": self.text, "limit": self.limit, "passages": self.passages,
-                                "peers": False, **self.raw}
+        args: dict[str, Any] = {"query": self.text, "limit": self.limit, "peers": False, **self.raw}
         if self.sources is not None:
             args["sources"] = self.sources
         return args
@@ -126,7 +121,6 @@ def parse(args: dict[str, Any], as_: str | None = None) -> Query:
         project=str(args.get("project") or ""), scope=str(args.get("scope") or ""),
         kinds=kinds, after=_time(args, "after"), before=_time(args, "before"),
         limit=max(1, min(int(args.get("limit") or DEFAULT_LIMIT), MAX_LIMIT)),
-        passages=max(1, min(int(args.get("passages") or DEFAULT_PASSAGES), MAX_PASSAGES)),
         local=local, peer_names=peer_names, relayed=privacy.from_peer(as_),
         grants=None if grants is None else frozenset(str(g) for g in grants), hidden=hidden_for(as_),
         context=str(args.get("context") or "").strip(), raw=raw)

@@ -299,7 +299,7 @@ class Archive:
         if row is None:
             raise ValueError(f"no source {source!r}")
         if row["mode"] != "index":
-            raise ValueError(f"{source!r} is a live source: it holds no stored copy to get")
+            return await self._get_live(source, doc_id)
         doc = await asyncio.to_thread(_with_conn, store.get_document, source, doc_id)
         if doc is None or index.covered(hidden, doc["project"], doc["scope"], doc["tags"]):
             raise ValueError(f"no document {source}:{doc_id}")
@@ -307,14 +307,28 @@ class Archive:
                                 if doc[k]}, "source": source, "id": doc_id, "frozen": not row["present"],
                              "origin": self.origin()}}
 
+    async def _get_live(self, name: str, doc_id: str) -> dict[str, Any]:
+        source = self.sources.get(name)
+        if source is None or not source.get:
+            raise ValueError(f"{name!r} is a live source that reads no document whole")
+        raw = await asyncio.wait_for(self.gateway.call(source.service, source.get, {"id": doc_id}, LIVE_TIMEOUT_S),
+                                     timeout=LIVE_TIMEOUT_S + 1.0)
+        doc = raw.get("document") if isinstance(raw, dict) else None
+        if not isinstance(doc, dict):
+            raise ValueError(f"no document {name}:{doc_id}")
+        kept = {k: doc[k] for k in ("title", "text", "kind", "ts", "url", "journal")
+                if isinstance(doc.get(k), str) and doc[k]}
+        if isinstance(doc.get("authors"), list):
+            kept["authors"] = [str(a)[:200] for a in doc["authors"][:200]]
+        return {"document": {**kept, "source": name, "id": doc_id, "frozen": False, "origin": self.origin()}}
+
     # -- query ------------------------------------------------------------
 
     def _per_source(self, fn: Callable[..., Any], q: Query, names: list[str], limit: int) -> list[Any]:
         """``fn(conn, text, filters, limit, ...)`` once for each source, so each has its own ``limit``."""
         conn = store.connect()
         try:
-            return [fn(conn, q.text, q.filters([name]), limit,
-                       *([q.passages] if fn in (index.exact, index.words) else []))
+            return [fn(conn, q.text, q.filters([name]), limit, *([0] if fn in (index.exact, index.words) else []))
                     for name in names]
         finally:
             conn.close()
@@ -336,7 +350,7 @@ class Archive:
                 try:
                     entries = await asked
                     meant = await asyncio.to_thread(_with_conn, index.resolve, entries, q.filters(kb_names),
-                                                    q.limit * 2, q.passages)
+                                                    q.limit * 2, 0)
                     worded = await asyncio.to_thread(self._per_source, index.words, q, kb_names, q.limit * 2)
                     own = await asyncio.to_thread(self._per_source, index.related, q, kb_names, q.limit * 2)
                     # Three lists: kb's entry index, any-word BM25 and the archive's own embeddings. The third
@@ -364,7 +378,7 @@ class Archive:
                 "related": [{**h, "origin": origin} for h in related]}, degraded
 
     async def _live(self, source: Source, q: Query) -> tuple[Source, dict[str, list[dict[str, Any]]], dict[str, Any]]:
-        args = {"query": q.text, "limit": q.limit, "passages": q.passages, **q.raw}
+        args = {"query": q.text, "limit": q.limit, **q.raw}
         try:
             raw = await asyncio.wait_for(
                 self.gateway.call(source.service, source.query, args, LIVE_TIMEOUT_S),

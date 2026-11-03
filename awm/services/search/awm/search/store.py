@@ -28,7 +28,7 @@ from awm.persistence.databases import get_connection, init_service_db
 from awm.search import passages as cutter
 
 SERVICE = "search"
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 CORPUS = "doc"
 
 _SOURCES = """\
@@ -120,10 +120,24 @@ CREATE TABLE IF NOT EXISTS judgements (
 CREATE INDEX IF NOT EXISTS idx_judgements_collection ON judgements(collection);
 """
 
-SCHEMA_SQL = _SOURCES + "\n".join(_DOCUMENTS) + _TEXT_INDEXES + _JUDGEMENTS + engine.EMBEDDINGS_DDL
+#: Each ``search get``: who opened which hit for which query. No rank reads it until the journal replay shows
+#: a usage rank beats the plain order (fleet.md R136 item 6).
+_USAGE = """
+CREATE TABLE IF NOT EXISTS usage (
+    ts      REAL NOT NULL,
+    scope   TEXT NOT NULL DEFAULT '',  -- the caller's project/scope
+    query   TEXT NOT NULL DEFAULT '',
+    source  TEXT NOT NULL,
+    doc_id  TEXT NOT NULL,
+    node    TEXT NOT NULL DEFAULT ''   -- the node holding the document; 'local' for this one
+);
+CREATE INDEX IF NOT EXISTS idx_usage_scope ON usage(scope, ts);
+"""
+
+SCHEMA_SQL = _SOURCES + "\n".join(_DOCUMENTS) + _TEXT_INDEXES + _JUDGEMENTS + _USAGE + engine.EMBEDDINGS_DDL
 
 #: v2 adds ``tags``; clearing ``synced_at`` makes every index source due at once, so the tags fill in. v3 gives
-#: documents an integer key for the text indexes and builds them. v4 adds the judgements.
+#: documents an integer key for the text indexes and builds them. v4 adds the judgements, v5 the usage log.
 MIGRATIONS = {
     (1, 2): "ALTER TABLE documents ADD COLUMN tags TEXT NOT NULL DEFAULT '';\n"
             "UPDATE sources SET synced_at = NULL;",
@@ -138,6 +152,7 @@ MIGRATIONS = {
         *_DOCUMENTS[1:],
     ]) + _TEXT_INDEXES + "INSERT INTO documents_exact(documents_exact) VALUES ('rebuild');\n",
     (3, 4): _JUDGEMENTS,
+    (4, 5): _USAGE,
 }
 
 _initialized = False
@@ -354,6 +369,14 @@ def drop_documents(conn: sqlite3.Connection, source: str, doc_ids: Iterable[str]
 def get_document(conn: sqlite3.Connection, source: str, doc_id: str) -> dict[str, Any] | None:
     row = conn.execute("SELECT * FROM documents WHERE key=?", (key_of(source, doc_id),)).fetchone()
     return dict(row) if row else None
+
+
+def log_use(conn: sqlite3.Connection, row: dict[str, Any]) -> None:
+    """Append one get to the usage log."""
+    conn.execute("INSERT INTO usage (ts, scope, query, source, doc_id, node)"
+                 " VALUES (:ts, :scope, :query, :source, :doc_id, :node)",
+                 {"ts": time.time(), "scope": "", "query": "", "node": "", **row})
+    conn.commit()
 
 
 def judge(conn: sqlite3.Connection, row: dict[str, Any]) -> dict[str, Any]:

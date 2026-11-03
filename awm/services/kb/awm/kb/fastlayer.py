@@ -446,6 +446,14 @@ class FastLayer:
             os.replace(tmp, self.library_path)
             return self.library_path
 
+    def paper(self, paper_id: str) -> dict[str, Any] | None:
+        """One paper in full: its row, and its abstract and body as one text, or None when no store holds it."""
+        for path in self._stores():
+            got = _on(path, _paper_whole, paper_id)
+            if got is not None:
+                return got
+        return None
+
     def search_library(self, query: str, filters: Filters, limit: int,
                        per_hit: int) -> dict[str, list[dict[str, Any]]]:
         """:meth:`search` over the library store and the delta, which hold every library paper."""
@@ -619,6 +627,19 @@ def _papers(conn: sqlite3.Connection, ids: list[str]) -> dict[str, sqlite3.Row]:
 def _paper_rows(conn: sqlite3.Connection, ids: list[str]) -> dict[str, sqlite3.Row]:
     return {r["paper_id"]: r for r in conn.execute(
         f"SELECT * FROM paper WHERE paper_id IN ({','.join('?' * len(ids))})", ids)}
+
+
+def _paper_whole(conn: sqlite3.Connection, paper_id: str) -> dict[str, Any] | None:
+    paper = conn.execute("SELECT * FROM paper WHERE paper_id = ?", (paper_id,)).fetchone()
+    if paper is None:
+        return None
+    parts = conn.execute("SELECT zone, section, text FROM passage WHERE paper_id = ? AND zone != 'title'"
+                         " ORDER BY zone, ord",
+                         (paper_id,)).fetchall()
+    parts = sorted(parts, key=lambda p: _ZONE_RANK.get(p["zone"], 2))
+    out = {k: v for k, v in _hit(paper, "", 0.0, []).items() if k in ("id", "title", "ts", "kind", "url")}
+    return {**out, "authors": json.loads(paper["authors"] or "[]"), "journal": paper["journal"],
+            "text": "\n\n".join(p["text"] for p in parts)}
 
 
 def _hit(paper: sqlite3.Row, match: str, score: float, passages: list[dict[str, Any]]) -> dict[str, Any]:
@@ -852,7 +873,7 @@ def _keyword_hits(stores: list[sqlite3.Connection], ranked: list[list[tuple[int,
     readers = readers or [None] * len(stores)
     early = early or [False] * len(stores)
     for conn, ids, read, stop in zip(stores, ranked, readers, early):
-        scored += _walk(conn, ids, filters, limit if per_hit == 1 or stop else None, skip, weighed, read)
+        scored += _walk(conn, ids, filters, limit if per_hit <= 1 or stop else None, skip, weighed, read)
     scored.sort(key=lambda s: -s[0])
     hits = []
     for score, paper, found in scored:

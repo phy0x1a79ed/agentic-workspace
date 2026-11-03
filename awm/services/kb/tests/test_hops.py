@@ -151,7 +151,7 @@ async def test_kb_hop_chains_from_ids(served):
     got = await hub_adapter.HANDLERS["hop"]({"ids": ["g1"], "along": "cited_by"})
     assert got["hits"] == []
     got = await hub_adapter.HANDLERS["hop"]({"ids": "s1", "along": "cited_by"})
-    assert [h["id"] for h in got["hits"]] == ["g1"] and got["hits"][0]["passages"][0]["field"] == "abstract"
+    assert [h["id"] for h in got["hits"]] == ["g1"] and "passages" not in got["hits"][0]
 
 
 async def test_the_author_filter_narrows_every_section(served, tmp_path, monkeypatch):

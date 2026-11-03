@@ -48,10 +48,10 @@ API_MANIFEST: dict[str, Any] = {
                 "on its own: a map from source name to that source's ranked hits, up to `limit` "
                 "each, so papers (source `kb`), journals, precedents and notes are never ranked "
                 "against one another; a source with no hits is absent. A document appears in the "
-                "first section that holds it. Each hit carries source, id, title, ts, score, match, "
-                "origin (node and swarm) and its passages: quotes with their section and their "
-                "start and end offsets in the document's field. Read the answer's `sources` and "
-                "`peers` for the status of each source and peer asked. Fetch a whole hit with `get`. "
+                "first section that holds it. Each hit carries source, id, title, ts (its date), "
+                "project and scope where it has them, score, match and origin (node and swarm), and "
+                "no text: read a hit with `get`, passing the query it answered. Read the answer's "
+                "`sources` and `peers` for the status of each source and peer asked. "
                 "For papers that cite, are cited by or share an author with paper hits, pass their "
                 "ids to `kb hop`. `author` narrows papers to an author."
             ),
@@ -72,7 +72,7 @@ API_MANIFEST: dict[str, Any] = {
                 {"name": "limit", "type": "integer",
                  "description": "Maximum hits per source in each section, 1-100. Default 10."},
                 {"name": "passages", "type": "integer",
-                 "description": "Maximum passages quoted per hit, 1-10. Default 1."},
+                 "description": "Ignored: a hit quotes no text. Accepted from nodes on an older release."},
                 {"name": "peers", "type": "string",
                  "description": "Where to search. Omit it for this node only. `fleet` adds every "
                                 "domestic node. Node names, comma-separated, domestic or foreign, "
@@ -93,15 +93,20 @@ API_MANIFEST: dict[str, Any] = {
             "category": "archive",
             "tool": "search_get",
             "description": (
-                "One archived document in full: title, text, project, scope, kind, ts and url. "
-                "Take `source` and `id` from a hit. For a hit from another node, set `node` to "
-                "the hit's origin node."
+                "One document in full: title, text, project, scope, kind, ts and url; a paper "
+                "adds its authors and journal. Take `source` and `id` from a hit. For a hit from "
+                "another node, set `node` to the hit's origin node. Pass the `query` the hit "
+                "answered: each get is logged with the caller's scope as feedback on search."
             ),
             "params": [
                 {"name": "source", "type": "string", "required": True, "description": "The hit's source."},
                 {"name": "id", "type": "string", "required": True, "description": "The hit's id."},
                 {"name": "node", "type": "string",
                  "description": "The node that holds the document, from the hit's origin. Default: this node."},
+                {"name": "query", "type": "string", "description": "The query whose hit this is."},
+                {"name": "context", "type": "string",
+                 "description": "The scope the get is made from, as project/scope. Default: the calling "
+                                "session's scope."},
             ],
         },
         {
@@ -193,7 +198,22 @@ async def _h_query(args: dict, as_: str | None = None) -> dict:
     return await ARCHIVE.query(request.parse(args, as_))
 
 
+def _log_get(args: dict, node: str) -> None:
+    conn = store.connect()
+    try:
+        store.log_use(conn, {"scope": str(args.get("context") or "").strip(),
+                             "query": str(args.get("query") or "").strip(), "source": str(args["source"]),
+                             "doc_id": str(args["id"]), "node": node})
+    finally:
+        conn.close()
+
+
 async def _h_get(args: dict, as_: str | None = None) -> dict:
+    if not privacy.from_peer(as_):  # the asking node logs a relayed get; the node serving it does not
+        try:
+            await asyncio.to_thread(_log_get, args, str(args.get("node") or "").strip() or request.LOCAL)
+        except Exception as exc:  # noqa: BLE001 — feedback never fails the read
+            log.warning("search: could not log a get: %s", exc)
     node = str(args.get("node") or "").strip()
     if node and node != request.LOCAL and not privacy.from_peer(as_) \
             and node_label(node) != node_label(config.node_name()):

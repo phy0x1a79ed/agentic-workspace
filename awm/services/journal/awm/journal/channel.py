@@ -364,6 +364,19 @@ def ranked(query: str, *, project: str | None, scope: str | None, kind: str | No
     return hits, status.get("degraded")
 
 
+#: Characters of a post's body around the first match, as the hit's snippet.
+SNIPPET_CHARS = 240
+
+
+def _snippet(body: str, query: str) -> str:
+    """The body around the query's first occurrence, else around its first word that occurs, else its start."""
+    low = body.lower()
+    words = [query.strip(), *query.split()]
+    at = next((i for i in (low.find(w.lower()) for w in words if w) if i >= 0), 0)
+    start = max(0, at - SNIPPET_CHARS // 4)
+    return " ".join(body[start:start + SNIPPET_CHARS].split())
+
+
 def search(*, query: str, project: str | None = None, scope: str | None = None,
            kind: str | None = None, author: str | None = None, limit: int = 50,
            offset: int = 0, before_ts: str | None = None,
@@ -404,8 +417,7 @@ def search(*, query: str, project: str | None = None, scope: str | None = None,
         for h in hits:
             if h["id"] in allowed:
                 p = _row_to_post(allowed[h["id"]])
-                quote = next((q.get("text") for q in h.get("passages") or [] if q.get("text")), "")
-                p.match = {"score": h.get("score"), "snippet": quote}
+                p.match = {"score": h.get("score"), "snippet": _snippet(p.body or "", query)}
                 posts.append(p)
         posts = posts[offset:offset + limit]
     if order in ("asc", "desc"):

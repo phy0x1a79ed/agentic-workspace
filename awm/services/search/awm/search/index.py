@@ -345,6 +345,8 @@ def resolve(conn: sqlite3.Connection, entries: list[dict[str, Any]], filters: Fi
             continue
         quotes = []
         for e in best[key]:
+            if len(quotes) >= per_hit:
+                break
             body = row["title"] if e["part"] == "title" else row["text"]
             if e["part"] not in ("title", "text") or e["start"] >= len(body):
                 continue
@@ -353,8 +355,6 @@ def resolve(conn: sqlite3.Connection, entries: list[dict[str, Any]], filters: Fi
             quote = _quote(e["part"], e["start"], min(e["end"], len(body)), cut["section"] if cut else "", body)
             if all((quote["field"], quote["start"]) != (q["field"], q["start"]) for q in quotes):
                 quotes.append(quote)
-            if len(quotes) == per_hit:
-                break
         if taken.get(row["source"], 0) < limit:
             taken[row["source"]] = taken.get(row["source"], 0) + 1
             hits.append(_hit(row, "meaning", best[key][0]["score"], quotes))

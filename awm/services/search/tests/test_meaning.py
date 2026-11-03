@@ -64,15 +64,13 @@ async def related_ids(archive, **args):
     return [(h["source"], h["id"]) for h in flat(result["related"])], result
 
 
-async def test_kb_entries_become_related_hits_with_their_spans(loaded, kb):
+async def test_kb_entries_become_related_hits_with_no_text(loaded, kb):
     kb["answer"] = [entry("journals", "j1", 0.9, start=3, end=20), entry("precedence", "p1", 0.8, part="title",
                                                                        text="Sink choice")]
     ids, result = await related_ids(loaded, sources=["journals", "precedence"])
     assert [i for i in ids if i[0] == "journals"][0] == ("journals", "j1") and ("precedence", "p1") in ids
     first = flat(result["related"])[0]
-    assert first["match"] == "meaning" and first["passages"][0]["text"] == SINK[3:20]
-    assert (first["passages"][0]["field"], first["passages"][0]["start"], first["passages"][0]["end"]) == ("text", 3, 20)
-    assert next(h for h in flat(result["related"]) if h["id"] == "p1")["passages"][0]["field"] == "title"
+    assert first["match"] == "meaning" and not any("passages" in h for h in flat(result["related"]))
     assert kb["brute"] == [["journals"], ["precedence"]]  # the third list of the fusion, one source at a time
     assert "degraded" not in result
 
@@ -100,18 +98,17 @@ async def test_filters_apply_to_the_resolved_documents(loaded, kb):
     assert ids == [("journals", "j1")]
 
 
-async def test_a_span_past_the_end_of_an_edited_document_quotes_nothing_and_the_hit_stays(loaded, kb):
+async def test_a_span_past_the_end_of_an_edited_document_keeps_the_hit(loaded, kb):
     kb["answer"] = [entry("journals", "j2", 0.9, text=SHED, start=900, end=950)]
-    ids, result = await related_ids(loaded, sources=["journals"])
-    assert ids[0] == ("journals", "j2") and flat(result["related"])[0]["passages"] == []
+    ids, _ = await related_ids(loaded, sources=["journals"])
+    assert ids[0] == ("journals", "j2")
 
 
-async def test_each_document_is_one_hit_quoting_its_best_entries_first(loaded, kb):
+async def test_each_document_is_one_hit_at_its_best_entry(loaded, kb):
     kb["answer"] = [entry("journals", "j1", 0.7, start=0, end=10), entry("journals", "j1", 0.9, start=11, end=30),
                     entry("journals", "j2", 0.8, text=SHED)]
-    ids, result = await related_ids(loaded, sources=["journals"], passages=2)
+    ids, _ = await related_ids(loaded, sources=["journals"])
     assert ids == [("journals", "j1"), ("journals", "j2")]
-    assert [p["start"] for p in flat(result["related"])[0]["passages"]] == [11, 0]
 
 
 async def test_a_document_holding_some_of_the_words_joins_the_meaning_matches(loaded, kb):

@@ -25,7 +25,8 @@ _READY = "ready"
 
 @dataclass(frozen=True)
 class Source:
-    """One plug-in. ``export`` and ``query`` are the service-internal function names.
+    """One plug-in. ``export``, ``query`` and ``get`` are the service-internal function names; a live source
+    with no ``get`` holds nothing a caller can read whole.
 
     ``error`` is set when the table is unusable; the source is still listed, so
     the mistake shows in ``search sources`` instead of the source vanishing.
@@ -36,6 +37,7 @@ class Source:
     mode: str
     export: str = ""
     query: str = ""
+    get: str = ""
     topic: str = ""
     optin: bool = False
     error: str = ""
@@ -72,7 +74,11 @@ def _source(service: str, table: dict[str, Any], api: Any) -> Source:
     if not internal:
         reason = f"names {published!r}, which the service does not publish" if published else "names none"
         return Source(**base, error=f"a {mode} source needs a `{verb}` verb, and the table {reason}")
-    return Source(**base, **{verb: internal})
+    reader = str(table.get("get") or "") if mode == "live" else ""
+    get = _internal(api, service, reader) if reader else ""
+    if reader and not get:
+        return Source(**base, error=f"the table's `get` names {reader!r}, which the service does not publish")
+    return Source(**base, **{verb: internal}, get=get)
 
 
 def services_dir() -> Path:

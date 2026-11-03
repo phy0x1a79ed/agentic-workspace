@@ -86,7 +86,7 @@ def paper_hits(layer: fastlayer.FastLayer, entries: list[dict[str, Any]], keywor
     rows = _paper_rows(stores, [p for p, _ in ranked])
     shown = [(p, s) for p, s in ranked if p in rows and filters.admits(rows[p])][:limit]
     quotes = _spread(stores, lambda conns, part: {p: _quotes(conns, p, by_paper.get(p, []), per_hit) for p in part},
-                     [p for p, _ in shown])
+                     [p for p, _ in shown]) if per_hit else {p: [] for p, _ in shown}
     out = []
     for paper, score in shown:
         kept = {(q["field"], q["start"]) for q in quotes[paper]}

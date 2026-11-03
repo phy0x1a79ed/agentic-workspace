@@ -24,12 +24,14 @@ def test_outside_a_scope_there_is_no_context(tmp_path):
     assert mcp_http.scope_of(tmp_path) == ""
 
 
-def test_only_a_local_search_query_without_a_context_is_stamped(tmp_path):
+def test_only_a_local_search_query_or_get_without_a_context_is_stamped(tmp_path):
     cwd = str(_worktree(tmp_path, "projects", "awm", "svc-kb"))
     call = {"verb": "query", "args": {"query": "pagerank"}}
     assert mcp_http.with_search_context("search", call, cwd)["args"]["context"] == "awm/svc-kb"
     assert call["args"] == {"query": "pagerank"}
-    for name, arguments in (("search", {"verb": "get", "args": {"id": "x"}}),
+    got = {"verb": "get", "args": {"source": "kb", "id": "x"}}
+    assert mcp_http.with_search_context("search", got, cwd)["args"]["context"] == "awm/svc-kb"
+    for name, arguments in (("search", {"verb": "sources", "args": {}}),
                             ("journal", {"verb": "query", "args": {"query": "q"}}),
                             ("search", {"verb": "query", "args": {"query": "q"}, "peer": "capella"}),
                             ("search", {"verb": "query", "args": {"query": "q", "context": "bio"}})):

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from awm.search.hits import SECTIONS
+from awm.search.hits import SECTIONS, bare
 
 RRF_K = 60
 
@@ -51,8 +51,8 @@ def fuse_sections(found: list[dict[str, list[dict[str, Any]]]],
     A source is reported on its own: its hits are never ranked against another source's, so papers do not
     crowd out journal posts. A source's lists from several places (this node, a peer, a live source) fuse
     into one. A document is kept only in the first section that holds it: the sections read in order, so a
-    document already quoted as an exact match would only repeat itself further down. A source with no hits in
-    a section has no entry there.
+    document already shown as an exact match would only repeat itself further down. A source with no hits in
+    a section has no entry there. No hit leaves with its passages.
     """
     out: dict[str, dict[str, list[dict[str, Any]]]] = {}
     shown: set[tuple[str, str, str]] = set()
@@ -64,7 +64,7 @@ def fuse_sections(found: list[dict[str, list[dict[str, Any]]]],
                 grouped.setdefault(hit["source"], []).append(hit)
             for source, hits in grouped.items():
                 lists.setdefault(source, []).append(hits)
-        per_source = {s: [h for h in fuse(lists[s], limit * 2) if _identity(h) not in shown][:limit]
+        per_source = {s: [bare(h) for h in fuse(lists[s], limit * 2) if _identity(h) not in shown][:limit]
                       for s in sorted(lists)}
         out[section] = {s: hits for s, hits in per_source.items() if hits}
         shown |= {_identity(h) for hits in out[section].values() for h in hits}

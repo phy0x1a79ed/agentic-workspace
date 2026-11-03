@@ -66,23 +66,17 @@ async def test_a_literal_finds_a_hash_a_path_and_an_error_line(loaded):
         result = await loaded.query(parse({"query": literal, "sources": LOADED}))
         top = flat(result["exact"])[0]
         assert (top["id"], top["match"]) == ("j1", "literal"), literal
-        quote = top["passages"][0]
-        start, end = quote["marks"][0]
-        assert LOG[start:end].lower() == literal.lower()
-        assert quote["text"] == LOG[quote["start"]:quote["end"]]
+        assert "passages" not in top
 
 
 async def test_a_literal_across_two_passages_is_still_found(loaded):
     result = await loaded.query(parse({"query": "3f9a2c1d7e.\n\n## Fix", "sources": LOADED}))
     assert [h["id"] for h in flat(result["exact"])] == ["j1"]
-    quote = flat(result["exact"])[0]["passages"][0]
-    assert "## Fix" in quote["text"] and quote["text"] == LOG[quote["start"]:quote["end"]]
 
 
 async def test_a_case_sensitive_match_ranks_first_and_quotes_strip_one_pair(loaded):
     result = await loaded.query(parse({"query": '"ConnectionRefusedError"', "sources": LOADED}))
     assert [h["id"] for h in flat(result["exact"])[:2]] == ["j1", "j3"]
-    assert flat(result["exact"])[1]["passages"][0]["field"] == "title"
 
 
 async def test_a_short_literal_scans(loaded):
@@ -162,7 +156,7 @@ async def test_grep_parity_on_sampled_substrings(archive, gateway):
 # -- sections from elsewhere -----------------------------------------------
 
 
-async def test_a_live_source_answering_in_sections_keeps_its_passages(loaded, gateway):
+async def test_a_live_source_answering_in_sections_has_its_passages_dropped(loaded, gateway):
     gateway.plug_live("kb", lambda args: {
         "exact": [{"id": "doi:1", "title": "A paper", "passages": [
             {"text": "a quoted line", "start": 10, "end": 23, "section": "Methods", "marks": [[10, 23]],
@@ -171,8 +165,7 @@ async def test_a_live_source_answering_in_sections_keeps_its_passages(loaded, ga
     await loaded.refresh()
     result = await loaded.query(parse({"query": "quoted line", "sources": ["kb"]}))
     assert [h["id"] for h in flat(result["exact"])] == ["doi:1"]
-    assert flat(result["exact"])[0]["passages"] == [{"text": "a quoted line", "start": 10, "end": 23,
-                                               "section": "Methods", "marks": [[10, 23]]}]
+    assert set(flat(result["exact"])[0]) == {"source", "id", "title", "ts", "score", "origin"}
     assert "graph" not in result and "doi:2" not in {h["id"] for h in every(result)}
 
 
@@ -180,7 +173,7 @@ async def test_a_peer_on_an_older_release_answers_in_related(loaded, peers):
     peers.add("capella", lambda args: {"hits": [{"source": "journals", "id": "r1", "snippet": "from afar"}]})
     result = await loaded.query(parse({"query": "zzzz", "sources": ["journals"], "peers": "capella"}))
     assert [h["id"] for h in flat(result["related"])] == ["r1"]
-    assert flat(result["related"])[0]["passages"] == [{"text": "from afar"}]
+    assert "passages" not in flat(result["related"])[0]
 
 
 # -- schema 2 --------------------------------------------------------------

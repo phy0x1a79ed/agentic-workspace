@@ -84,13 +84,7 @@ def searchable(hub: str) -> list[str]:
 
 
 def ask(hub: str, query: str, limit: int, sources: list[str]) -> dict[str, Any]:
-    try:
-        return call(hub, "query", {"query": query, "limit": limit, "passages": 1, "peers": False,
-                                   "sources": sources})
-    except RuntimeError as exc:
-        if "passages" not in str(exc) and "Unknown" not in str(exc):
-            raise
-        return call(hub, "query", {"query": query, "limit": limit, "sources": sources})
+    return call(hub, "query", {"query": query, "limit": limit, "peers": False, "sources": sources})
 
 
 # -- seeding ---------------------------------------------------------------
@@ -214,11 +208,7 @@ def score(rows: list[dict[str, Any]], answer: dict[str, Any]) -> dict[str, Any]:
                      for k in [identity(r["source"], r["doc_id"])] if found[k] and found[k][1] != r["section"]]
     noise = sum(1 for r in rows if r["verdict"] == "irrelevant"
                 and (place.get(identity(r["source"], r["doc_id"])) or (99,))[0] <= 10)
-    sectioned = any(k in answer for k in SECTIONS)
-    bare = sum(1 for _, _, hit, _ in order if sectioned
-               and not all(isinstance(p.get("start"), int) and isinstance(p.get("end"), int)
-                           for p in hit.get("passages") or [{}]))
-    return {"found": found, "wrong_section": wrong_section, "noise": noise, "unquoted": bare}
+    return {"found": found, "wrong_section": wrong_section, "noise": noise}
 
 
 def recall(found: dict[str, Any], cut: int) -> float:
@@ -228,7 +218,7 @@ def recall(found: dict[str, Any], cut: int) -> float:
 def run(args: argparse.Namespace) -> int:
     by_query = judged(args.new, args.set, args.judgements)
     per_set: dict[str, dict[str, list[float]]] = defaultdict(lambda: defaultdict(list))
-    lost, misplaced, unquoted, rows_out = [], [], 0, []
+    lost, misplaced, rows_out = [], [], []
     names = searchable(args.new)
     started = time.time()
     for query, rows in sorted(by_query.items()):
@@ -245,7 +235,6 @@ def run(args: argparse.Namespace) -> int:
             lost += [(query, k) for k, v in old["found"].items() if v and v[0] <= 20 and not
                      (new["found"][k] and new["found"][k][0] <= 20)]
         misplaced += [(query, k) for k in new["wrong_section"]]
-        unquoted += new["unquoted"]
         rows_out.append({"query": query, "set": name, "new": new, "old": old})
     means = {s: {k: round(sum(v) / len(v), 3) for k, v in m.items()} | {"queries": len(m["new@10"])}
              for s, m in sorted(per_set.items())}
@@ -254,15 +243,14 @@ def run(args: argparse.Namespace) -> int:
     gate = {
         "no lost recall (4)": None if not args.old else bool(
             len(every) >= 100 and sum(every) >= sum(every_old) and not lost),
-        "quotes (5)": None if "gold" not in means else bool(
-            means["gold"]["new@20"] >= GOLD_FLOOR and not unquoted),
+        "gold floor": None if "gold" not in means else bool(means["gold"]["new@20"] >= GOLD_FLOOR),
         "sections": not misplaced,
     }
     regressed = sorted(s for s, m in means.items() if "old@10" in m and m["new@10"] < m["old@10"])
     report = {"at": time.strftime("%Y-%m-%dT%H:%M:%S"), "seconds": round(time.time() - started),
               "old": args.old, "new": args.new, "sets": means, "regressed_sets": regressed,
               "lost": lost, "misplaced": misplaced,
-              "unquoted_hits": unquoted, "judged_queries": len(every), "gate": gate, "queries": rows_out}
+              "judged_queries": len(every), "gate": gate, "queries": rows_out}
     if args.out:
         Path(args.out).write_text(json.dumps(report, indent=1, default=str))
     print(json.dumps({k: v for k, v in report.items() if k != "queries"}, indent=1, default=str))

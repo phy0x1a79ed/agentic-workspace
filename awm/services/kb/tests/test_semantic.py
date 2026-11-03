@@ -96,20 +96,27 @@ async def test_library_papers_answer_as_their_own_source_and_get_no_boost_in_kb(
     assert len(server.related_bodies) == 1  # one meaning lookup served both sources
 
 
-async def test_a_hit_quotes_the_passage_its_entry_overlaps(layer, server):
+async def test_a_hit_carries_its_title_date_and_url_and_no_passages(layer, server):
     server.entries = [entry("doi:10.1/at", "body", 0.9, 1020, 1060),
                       entry("doi:10.1/at", "abstract", 0.8, 0, 28)]
-    got = await query(passages=2)
-    quotes = got["related"][0]["passages"]
-    assert [(q["field"], q["start"]) for q in quotes] == [("body", 1000), ("abstract", 0)]
-    assert quotes[0]["text"] == BODY and quotes[0]["section"] == "Results"
-    assert got["related"][0]["url"] == "https://doi.org/10.1/at"
+    got = await query()
+    hit = got["related"][0]
+    assert hit["id"] == "doi:10.1/at" and hit["url"] == "https://doi.org/10.1/at" and hit["title"].startswith("Assembly")
+    assert not any("passages" in h for h in [*got["exact"], *got["related"]])
 
 
-async def test_an_entry_in_no_passage_quotes_nothing_and_the_hit_stays(layer, server):
+async def test_an_entry_in_no_passage_keeps_the_hit(layer, server):
     server.entries = [entry("doi:10.1/at", "body", 0.9, 90000, 90010)]
     got = await query(query="zzqq")
-    assert [(h["id"], h["passages"]) for h in got["related"]] == [("doi:10.1/at", [])]
+    assert [h["id"] for h in got["related"]] == ["doi:10.1/at"]
+
+
+async def test_kb_get_reads_a_paper_whole_and_refuses_one_it_lacks(layer):
+    got = (await hub_adapter.HANDLERS["get"]({"id": "doi:10.1/at"}))["document"]
+    assert got["title"].startswith("Assembly theory") and got["url"] == "https://doi.org/10.1/at"
+    assert got["text"].startswith("We introduce assembly theory.") and BODY in got["text"]
+    with pytest.raises(ValueError, match="no paper"):
+        await hub_adapter.HANDLERS["get"]({"id": "doi:10.1/none"})
 
 
 async def test_exact_papers_are_not_repeated_in_related_and_keyword_matches_join_in(layer, server):
@@ -149,7 +156,7 @@ async def test_without_the_server_encoder_or_index_it_answers_keywords_and_says_
         assert error.detail in got["degraded"]["semantic"]
 
 
-async def test_a_hop_paper_with_no_abstract_quotes_its_title(layer, server, tmp_path, monkeypatch):
+async def test_a_hop_paper_with_no_abstract_is_still_a_hit(layer, server, tmp_path, monkeypatch):
     db = sqlite3.connect(layer.base_path)
     db.execute("DELETE FROM passage WHERE paper_id = 'doi:10.1/old' AND zone = 'abstract'")
     db.commit()
@@ -157,8 +164,8 @@ async def test_a_hop_paper_with_no_abstract_quotes_its_title(layer, server, tmp_
     write_hops(tmp_path / "hops", list(PAPERS), cites=[("doi:10.1/at", "doi:10.1/old")])
     monkeypatch.setattr(hub_adapter, "HOPS", hops.Hops(tmp_path / "hops"))
     graph = (await hub_adapter.HANDLERS["hop"]({"ids": ["doi:10.1/at"], "along": "cites"}))["hits"]
-    title = "An ASSEMBLY INDEX survey from long ago"
-    assert graph[0]["passages"] == [{"field": "title", "start": 0, "end": len(title), "text": title}]
+    assert [(h["id"], h["title"]) for h in graph] == [("doi:10.1/old", "An ASSEMBLY INDEX survey from long ago")]
+    assert "passages" not in graph[0]
 
 
 async def test_a_project_filter_never_reaches_the_server(layer, server):

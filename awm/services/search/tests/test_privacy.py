@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from awm.config import privacy
-from awm.search import hub_adapter
+from awm.search import hub_adapter, store
 from awm.search.hub_adapter import HANDLERS
 
 from .conftest import doc, every, flat, synced
@@ -209,3 +209,15 @@ def test_a_version_1_index_gains_tags_and_resyncs_every_source(tmp_path, monkeyp
         assert conn.execute("SELECT synced_at FROM sources").fetchone()[0] is None
     finally:
         conn.close()
+
+
+async def test_a_get_is_logged_with_the_callers_scope_and_query_and_a_peers_relayed_get_is_not(served):
+    await HANDLERS["get"]({"source": "journals", "id": "j1", "query": "kitchen sink", "context": "awm/dev"}, LOCAL)
+    await HANDLERS["get"]({"source": "journals", "id": "j1"}, PEER)
+    conn = store.connect()
+    try:
+        rows = [dict(r) for r in conn.execute("SELECT scope, query, source, doc_id, node FROM usage")]
+    finally:
+        conn.close()
+    assert rows == [{"scope": "awm/dev", "query": "kitchen sink", "source": "journals", "doc_id": "j1",
+                     "node": "local"}]

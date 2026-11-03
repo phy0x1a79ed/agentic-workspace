@@ -151,14 +151,14 @@ def scope_of(cwd: Path) -> str:
 
 
 def with_search_context(name: str, arguments: dict, cwd: str | None = None) -> dict:
-    """A local ``search query`` without a ``context`` gains the calling session's scope.
+    """A local ``search query`` or ``search get`` without a ``context`` gains the calling session's scope.
 
     The proxy runs in the session's working directory, so the scope is observed here, the
     way the caller's pid is. A call aimed at a ``peer`` is left alone: that node's search
     may predate the argument, and its scopes are not ours.
     """
     args = arguments.get("args")
-    if name != "search" or arguments.get("verb") != "query" or arguments.get("peer") \
+    if name != "search" or arguments.get("verb") not in ("query", "get") or arguments.get("peer") \
             or not isinstance(args, dict) or args.get("context"):
         return arguments
     context = scope_of(Path(cwd or os.getcwd()))

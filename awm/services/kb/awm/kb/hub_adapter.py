@@ -131,15 +131,14 @@ API_MANIFEST: dict[str, Any] = {
                 "Papers for the archive's live `kb` source, in search's sections: `exact` holds "
                 "papers whose title, abstract or body holds the query literally, then papers "
                 "matching its words. `related` holds papers near the query in meaning (the entry "
-                "index's best papers per zone, merged with the keyword matches). Each "
-                "hit quotes its passages with their zone, section and offsets. The answer says in "
+                "index's best papers per zone, merged with the keyword matches). A hit carries its "
+                "id, title, date and url and no passages; `kb get` reads the paper. The answer says in "
                 "`degraded` what it could not use, for example the encoder or the index. "
                 "`search query` calls it; call that instead."
             ),
             "params": [
                 {"name": "query", "type": "string", "required": True, "description": "What to find."},
                 {"name": "limit", "type": "integer", "description": "Maximum hits per section. Default 10."},
-                {"name": "passages", "type": "integer", "description": "Passages per hit. Default 1."},
                 {"name": "kind", "type": "string",
                  "description": "Comma-separated kinds; papers answer only when it names paper."},
                 {"name": "project", "type": "string", "description": "Papers have none, so any value answers nothing."},
@@ -167,6 +166,19 @@ API_MANIFEST: dict[str, Any] = {
             "timeout": 30,
         },
         {
+            "name": "get",
+            "effect": "read",
+            "category": "kb",
+            "tool": "kb_get",
+            "surfaces": ["cli", "http"],
+            "description": (
+                "One paper in full, for `search get` on the `kb` and `library` sources: its title, "
+                "authors, date, journal, url, and its abstract and body as one text."
+            ),
+            "params": [{"name": "id", "type": "string", "required": True, "description": "The paper id."}],
+            "timeout": 30,
+        },
+        {
             "name": "hop",
             "effect": "read",
             "category": "kb",
@@ -184,7 +196,6 @@ API_MANIFEST: dict[str, Any] = {
                 {"name": "after", "type": "string", "description": "Only papers published from this date on."},
                 {"name": "before", "type": "string", "description": "Only papers published before this date."},
                 {"name": "limit", "type": "integer", "description": "Maximum papers, 1-100. Default 20."},
-                {"name": "passages", "type": "integer", "description": "Passages per hit, 0-10. Default 1."},
             ],
             "timeout": 30,
         },
@@ -316,7 +327,7 @@ def _library_filters(filters: fastlayer.Filters) -> fastlayer.Filters:
 
 async def _answer(args: dict) -> dict[str, Any]:
     limit = max(1, min(int(args.get("limit") or 10), 100))
-    per_hit = max(1, min(int(args.get("passages") or 1), 10))
+    per_hit = 0
     filters = fastlayer.Filters.from_args(args)
     author = str(args.get("author") or "").strip()
     if author and not filters.blocked:
@@ -330,7 +341,7 @@ async def _answer(args: dict) -> dict[str, Any]:
     found, theirs = await asyncio.gather(asyncio.to_thread(PAPERS.search, text, filters, limit, per_hit),
                                          asyncio.to_thread(PAPERS.search_library, text, mine, limit, per_hit))
     if meaning is None:
-        return {"kb": found, "library": theirs}
+        return {"kb": _titles(found), "library": _titles(theirs)}
     served, why = await meaning
     degraded: dict[str, str] = {}
     related, own = found["related"], theirs["related"]
@@ -347,7 +358,24 @@ async def _answer(args: dict) -> dict[str, Any]:
     lib = {"exact": theirs["exact"], "related": own, "semantic": status}
     if degraded:
         out["degraded"] = lib["degraded"] = degraded
-    return {"kb": out, "library": lib}
+    return {"kb": _titles(out), "library": _titles(lib)}
+
+
+def _bare(hit: dict[str, Any]) -> dict[str, Any]:
+    return {k: v for k, v in hit.items() if k != "passages"}
+
+
+def _titles(answer: dict[str, Any]) -> dict[str, Any]:
+    """An answer whose hits carry their title and no passages: a caller reads a paper with `get`."""
+    return {k: [_bare(h) for h in v] if k in ("exact", "related") else v for k, v in answer.items()}
+
+
+async def _h_get(args: dict, as_: str | None = None) -> dict:
+    paper_id = str(args.get("id") or "").strip()
+    paper = await asyncio.to_thread(PAPERS.paper, paper_id) if paper_id else None
+    if paper is None:
+        raise ValueError(f"no paper {paper_id!r}")
+    return {"document": paper}
 
 
 async def _h_hop(args: dict, as_: str | None = None) -> dict:
@@ -358,12 +386,11 @@ async def _h_hop(args: dict, as_: str | None = None) -> dict:
         raise ValueError("hop needs paper ids")
     along = str(args.get("along") or "authors")
     limit = max(1, min(int(args.get("limit") or 20), 100))
-    per_hit = max(0, min(int(args.get("passages") if args.get("passages") is not None else 1), 10))
     got = await asyncio.to_thread(HOPS.hop, [str(i) for i in ids], along, str(args.get("after") or ""),
                                   str(args.get("before") or ""), limit)
     hits = await asyncio.to_thread(semantic.describe, PAPERS, {p: (along, s, "") for p, s in got},
-                                   fastlayer.Filters(), limit, per_hit)
-    return {"hits": hits, "along": along}
+                                   fastlayer.Filters(), limit, 0)
+    return {"hits": [_bare(h) for h in hits], "along": along}
 
 
 async def _entries(text: str) -> tuple[dict[str, Any] | None, str]:
@@ -450,6 +477,7 @@ HANDLERS = {
     "recall": _h_recall,
     "query": _h_query,
     "library": _h_library,
+    "get": _h_get,
     "hop": _h_hop,
     "related": _h_related,
     "rank": _h_rank,

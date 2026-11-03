@@ -14,7 +14,7 @@ from .conftest import doc, every, flat, synced
 
 pytestmark = [pytest.mark.search]
 
-HIT_KEYS = {"source", "id", "title", "ts", "score", "match", "passages", "origin"}
+HIT_KEYS = {"source", "id", "title", "ts", "score", "match", "origin"}
 #: The index sources the ``loaded`` fixture registers.
 LOADED = ["journals", "precedence", "kb"]
 
@@ -44,7 +44,7 @@ async def test_one_ranked_list_spans_every_named_source(loaded):
     result = await loaded.query(parse({"query": "kitchen sink", "sources": LOADED}))
     assert {s for s, _ in ids(result)} == {"journals", "precedence", "kb"}
     for h in every(result):
-        assert HIT_KEYS <= set(h)
+        assert HIT_KEYS <= set(h) and "passages" not in h
         assert h["origin"] == {"node": "local", "swarm": "tony"}
     assert result["sources"]["journals"]["status"] == "ok"
     assert result["peers"] == {}
@@ -184,8 +184,7 @@ async def test_filters_reach_a_live_source(loaded, gateway):
     await loaded.refresh()
     await loaded.query(parse({"query": "kitchen", "sources": ["web"], "project": "awm", "after": "2026-01-01",
                                      "passages": 3}))
-    assert last_query(gateway) == {"query": "kitchen", "limit": 10, "passages": 3, "project": "awm",
-                                   "after": "2026-01-01"}
+    assert last_query(gateway) == {"query": "kitchen", "limit": 10, "project": "awm", "after": "2026-01-01"}
 
 
 async def test_a_source_that_turns_live_drops_its_indexed_documents(loaded, gateway):
@@ -310,8 +309,7 @@ async def test_a_peer_is_asked_the_same_question_without_a_further_fan_out(loade
                               "peers": "altair"}))
     (name, tool, args), = peers.calls
     assert (name, tool) == ("altair", "search_query")
-    assert args == {"query": "kitchen", "limit": 4, "passages": 1, "peers": False, "project": "awm",
-                    "sources": ["journals"]}
+    assert args == {"query": "kitchen", "limit": 4, "peers": False, "project": "awm", "sources": ["journals"]}
 
 
 async def test_a_release_without_search_is_no_search_at_home_and_unsupported_abroad(loaded, peers):
@@ -463,3 +461,34 @@ async def test_the_library_is_a_live_source_of_its_own(loaded, gateway):
     assert [h["id"] for h in both["related"]["library"]] == ["doi:10.1/mine"]
     alone = await loaded.query(parse({"query": "kitchen tap", "sources": ["library"]}))
     assert set(alone["related"]) == {"library"} and not alone["exact"]
+
+
+# -- get on a live source ---------------------------------------------------------
+
+
+async def test_a_live_source_with_a_get_verb_reads_a_document_whole(loaded, gateway):
+    gateway.plug_live("papers", lambda args: {"exact": [], "related": []}, service="papers", get="papers_get")
+    gateway.handlers[("papers", "get")] = lambda args: {"document": {
+        "title": "A paper", "text": "The whole paper.", "authors": ["Ann Lee"], "ts": "2021-01-01T00:00:00Z",
+        "injected": True}}
+    await loaded.refresh()
+    got = (await loaded.get("papers", "doi:1"))["document"]
+    assert got == {"title": "A paper", "text": "The whole paper.", "authors": ["Ann Lee"],
+                   "ts": "2021-01-01T00:00:00Z", "source": "papers", "id": "doi:1", "frozen": False,
+                   "origin": {"node": "local", "swarm": "tony"}}
+    assert gateway.calls[-1] == ("papers", "get", {"id": "doi:1"})
+
+
+async def test_a_live_source_without_a_get_verb_reads_nothing_whole(loaded, gateway):
+    gateway.plug_live("web", transcripts)
+    await loaded.refresh()
+    with pytest.raises(ValueError, match="reads no document whole"):
+        await loaded.get("web", "x")
+
+
+async def test_a_get_naming_a_verb_the_service_lacks_is_an_error_source(loaded, gateway):
+    gateway.plug_live("papers", lambda args: {"exact": [], "related": []}, service="papers", get="papers_get")
+    gateway.entries[-1]["api"]["functions"] = [{"name": "query", "tool": "papers_query"}]
+    await loaded.refresh()
+    result = await loaded.query(parse({"query": "kitchen", "sources": ["papers"]}))
+    assert "papers_get" in result["sources"]["papers"]["error"]
