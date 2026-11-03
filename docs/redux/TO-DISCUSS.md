@@ -62,7 +62,7 @@ Top of the stack comes first.
    - Tony (2026-11-02): "sorry, seat is not a socials seat. seat is just each attached session to a browser window"
    - Tony (2026-11-02): "we also need the case where an agent on altair asks to read journals on capella, which should be grantable" and, on routing doors through deneb's relay, "for the relay, can that be used to establish p2p rather than full coms through deneb?"
    - Settled by `fleet.md` R91 item 5: Ryan's access. Tony: "Ryan also needs accesss to shogun at some point" (2026-11-02). arbutus-infra has a `ryan` worktree on altair.
-   - Queued for the singleton subject: access to awm's own `journal` as a service with its own rules, beside the knowledge port (R90). Tony: "journal is a servce with different access than the rest of awm for agents, so it gets treated like one." and "we align, proceed" (2026-11-02).
+   - Settled by `fleet.md` R107: access to awm's own `journal` as a service with its own rules, beside the knowledge port (R90). Tony: "journal is a servce with different access than the rest of awm for agents, so it gets treated like one." and "we align, proceed" (2026-11-02).
    - Settled by `fleet.md` R102: Tony: "Can we move the current opera stuff to the same mechanism? How will captcha and my signins get through? Discuss when we reach this subject" (2026-11-02).
    - Settled by `fleet.md` R104: how `reflection` behaves across peers, once the network architecture settles (Tony, 2026-10-31).
    - Settled (`fleet.md` R105): deneb is the vault's sync hub, and a sync link carries no authentication. Trilium now runs only on deneb, walled, with a nightly copy on mizar behind a tripwire.
