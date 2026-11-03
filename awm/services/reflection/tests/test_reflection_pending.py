@@ -69,6 +69,14 @@ class Tail:
     def queued(self, _text):
         return False
 
+    def taken_up(self, _text, *, since_ms):
+        # Unknown, so the follow-through settles at once. test_reflection_swap
+        # covers what happens after the resume is typed.
+        return None
+
+    def rebind(self, _pid):
+        pass
+
 
 class Stop(Exception):
     """Breaks out of a wait that is now deliberately unbounded."""
@@ -205,23 +213,22 @@ def test_the_promise_is_cleared_once_the_resume_is_delivered(lane, monkeypatch):
     assert pending.load_all() == [], "a delivered resume must not be replayed"
 
 
-def test_an_undeliverable_resume_stays_pending_and_shouts(lane, monkeypatch,
-                                                          caplog):
-    # The one state worth seeing was the one state `pending` could not show. The
-    # promise is cleared before delivery on purpose — that is what stops a boot
-    # replay re-delivering a resume that already landed — but when the delivery
-    # then fails, a session is owed a resume nobody is waiting to give it. It
-    # went out as a WARNING and vanished from disk; it is now an ERROR and stays.
+def test_an_undeliverable_resume_is_listed_lost_and_shouts(lane, monkeypatch,
+                                                           caplog):
+    # A resume that cannot be delivered after every round leaves the session
+    # idle. It must not vanish in a log line: it is listed as lost.
     monkeypatch.setattr(watcher, "await_completion",
                         lambda *a, **kw: watcher.SETTLED_OUTCOME)
     monkeypatch.setattr(inject, "_open_lane",
                         lambda *a, **k: (_ for _ in ()).throw(
                             inject.tmux_inject.TmuxError("pane is gone")))
     pending.record(_promise())
-    with caplog.at_level(logging.ERROR, logger="awm.reflection.inject"):
+    with caplog.at_level(logging.ERROR):
         inject._await_and_resume(_promise())
-    assert [i.followup for i in pending.load_all()] == ["resume"]
-    assert any("sit idle" in r.getMessage() for r in caplog.records)
+    from awm.reflection import alarm
+    assert pending.load_all() == []
+    assert [e["resume"] for e in alarm.recent()] == ["resume"]
+    assert any("LOST" in r.getMessage() for r in caplog.records)
 
 
 def test_a_started_command_is_resumed_without_waiting_for_a_free_session(
@@ -331,9 +338,13 @@ def test_a_delivery_the_session_never_showed_is_tried_again(lane, monkeypatch):
     monkeypatch.setattr(inject, "VERIFY_WAIT_S", 0.0)
     pending.record(_promise())
     inject._await_and_resume(_promise(), tail=Tail(in_flight=False, landed=False))
-    assert lane == ["resume"] * inject.MAX_DELIVERY_ROUNDS
-    [item] = pending.load_all()
-    assert "never showed it arriving" in item.last_outcome
+    assert lane[:-1] == ["resume"] * inject.MAX_DELIVERY_ROUNDS
+    # Once the rounds are spent, the session is told what it lost.
+    assert lane[-1].startswith("[awm reflection] Your `/compact`")
+    from awm.reflection import alarm
+    assert pending.load_all() == []
+    [entry] = alarm.recent()
+    assert "could not be delivered" in entry["reason"]
 
 
 def test_a_resume_that_turns_up_after_its_verify_gave_up_is_not_sent_again(
@@ -391,7 +402,7 @@ def test_consecutive_delivery_rounds_are_separated_in_time(lane, monkeypatch):
     pending.record(_promise())
     inject._await_and_resume(_promise(), tail=Tail(in_flight=False, landed=False),
                              sleep=slept.append)
-    assert lane == ["resume"] * inject.MAX_DELIVERY_ROUNDS
+    assert lane[:-1] == ["resume"] * inject.MAX_DELIVERY_ROUNDS
     holds = [s for s in slept if s >= 30.0]
     assert holds == [30.0, 60.0, 120.0], \
         "one hold before each re-armed round, escalating"

@@ -210,6 +210,8 @@ class Tail:
         self._open_tools: set[str] = set()
         # When each watched line was last seen reaching the session, by any route.
         self._landed_at: dict[str, int] = {}
+        # When each watched line was last taken out of the queue into a turn.
+        self._consumed_at: dict[str, int] = {}
         # The line being typed in right now, and the moment typing began: the one
         # owner a content-less enqueue can have.
         self._expecting: Optional[tuple[str, int]] = None
@@ -239,6 +241,7 @@ class Tail:
         else:
             self._consumed.add(text)
             self._queued.discard(text)
+            self._consumed_at[text] = max(self._consumed_at.get(text, 0), stamp)
         self._landed_at[text] = max(self._landed_at.get(text, 0), stamp)
 
     def _paste_owner(self, stamp: int) -> str:
@@ -402,6 +405,21 @@ class Tail:
         if not self._ever_read:
             return None
         return (text or "").strip() in self._consumed
+
+    def taken_up(self, text: str, *, since_ms: int) -> Optional[bool]:
+        """Was ``text`` taken from the queue into a turn after ``since_ms``? ``None`` if unknown.
+
+        Stricter than :meth:`landed`. An enqueued line lives only in the worker's
+        memory, and a worker swap loses it. A line taken up is in the
+        conversation.
+        """
+        if not self._ever_read:
+            return None
+        return self._consumed_at.get((text or "").strip(), 0) > since_ms
+
+    def rebind(self, repl_pid: int) -> None:
+        """Follow the same session in a new process, from where reading stopped."""
+        self.repl_pid = repl_pid
 
     def started(self, text: str, *, since_ms: Optional[int] = None) -> Optional[bool]:
         """Has the turn that runs ``text`` begun? ``None`` if unknown.

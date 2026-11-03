@@ -14,11 +14,19 @@ had no way to know a resume was ever coming. So the promise is written down
 before the watcher starts, and :func:`load_all` is what the service reads on boot
 to pick the waits back up.
 
-The file is keyed by REPL pid — one per session, because a session can only be
-running one command at a time — and carries the ``procStart`` observed when the
-command was injected. That is the fail-closed check on replay: pids are recycled,
-and a session record can be rewritten by whatever inherits the number, so
-matching the record alone would let a stale promise type into a stranger.
+A promise belongs to a session id. The file is named by the REPL pid, which is
+only where that session lives now, and carries the ``procStart`` observed then.
+Claude Code's daemon can swap a session's worker for a new process under the
+same session id, so a dead pid sends the promise looking for its session under
+a new pid (:func:`rekey`) before anything gives up on it. The ``procStart``
+check stays fail-closed: pids are recycled, so a promise moves only to a live
+process whose own record names its session id.
+
+A promise is kept until the session has taken the resume up, not until the
+resume was typed. ``phase`` says how far it got: ``awaiting_command`` until the
+resume is typed, then ``resume_sent`` until the transcript shows it taken up
+(and, for ``/compact``, the ``compact_boundary``). An enqueued line lives only
+in the worker's memory, so typing it settles nothing.
 """
 from __future__ import annotations
 
@@ -74,6 +82,10 @@ _PHRASES = {
 }
 
 
+AWAITING_COMMAND = "awaiting_command"
+RESUME_SENT = "resume_sent"
+
+
 @dataclass(frozen=True)
 class Change:
     """One settings command a session ran on itself, and how it ended.
@@ -117,6 +129,10 @@ class Pending:
     # been answered; ``followup`` is the same text rendered without outcomes.
     changes: tuple = ()
     closing: str = ""
+    phase: str = AWAITING_COMMAND
+    # How many times the command or the resume was typed again into a session
+    # whose worker was swapped out from under it.
+    reissues: int = 0
 
 
 def render_followup(changes, link: Optional[str] = None, closing: str = "") -> str:
@@ -209,6 +225,14 @@ def clear(repl_pid: int) -> None:
         pass
 
 
+def rekey(old_pid: int, item: Pending) -> None:
+    """Move a promise from ``old_pid`` to the pid ``item`` now names."""
+    with _LOCK:
+        _write(item)
+        if old_pid != item.repl_pid:
+            clear(old_pid)
+
+
 def _done_path(repl_pid: int) -> Path:
     return dir_path() / f"{repl_pid}.done"
 
@@ -256,6 +280,8 @@ def _parse(data: dict) -> Pending:
                    detail=str(c.get("detail") or ""))
             for c in data.get("changes") or ()),
         closing=str(data.get("closing") or ""),
+        phase=str(data.get("phase") or AWAITING_COMMAND),
+        reissues=int(data.get("reissues") or 0),
     )
 
 
@@ -289,14 +315,36 @@ def settle(repl_pid: int, key: str, outcome: str, detail: str = "") -> bool:
         return True
 
 
+def _follow(item: Pending, proc_start) -> Optional[Pending]:
+    """``item`` moved to the live process that holds its session now, or None.
+
+    None means the session has no live process. The promise is then lost, and
+    that is announced, never dropped in silence.
+    """
+    from awm.reflection import alarm, session_target
+    found = session_target.successor(item.session_id, item.repl_pid,
+                                     proc_start=proc_start)
+    if found is None:
+        clear(item.repl_pid)
+        alarm.raise_alarm(item, "the session has no live process any more, so "
+                                "nothing is left to resume")
+        return None
+    pid, started = found
+    log.warning("reflection: session %s moved from pid %s to pid %s (a worker "
+                "swap); its promise follows it", item.name or item.session_id,
+                item.repl_pid, pid)
+    moved = replace(item, repl_pid=pid, proc_start=started)
+    rekey(item.repl_pid, moved)
+    return moved
+
+
 def load_all(*, now_ms: Optional[int] = None, proc_start=None) -> list[Pending]:
     """Every promise still worth keeping, clearing the ones that are not.
 
     Worth keeping means the session is still there: its pid is live and started
-    when the promise says it did. That is the fail-closed test — pids are
-    recycled, and a promise replayed against whatever inherited the number would
-    type into a stranger — and it is the only test. Age is logged, never acted
-    on.
+    when the promise says it did, or its session id lives on in a new process
+    (:func:`_follow`). Pids are recycled, so a promise never stays on a pid whose
+    start time changed. Age is logged, never acted on.
 
     Unreadable and malformed records are removed here rather than left to
     accumulate: nothing else ever sweeps this directory, so a record that
@@ -330,19 +378,11 @@ def load_all(*, now_ms: Optional[int] = None, proc_start=None) -> list[Pending]:
                 pass
             continue
         live = proc_start(item.repl_pid)
-        if live is None:
-            log.info("reflection: session %s (pid %s) is gone; dropping the "
-                     "resume it was owed", item.name or item.session_id,
-                     item.repl_pid)
-            clear(item.repl_pid)
-            continue
-        if item.proc_start and item.proc_start != live:
-            log.warning("reflection: pid %s was recycled since its resume was "
-                        "promised (started %s, now %s); dropping it rather than "
-                        "injecting into whatever holds that pid now",
-                        item.repl_pid, item.proc_start, live)
-            clear(item.repl_pid)
-            continue
+        if live is None or (item.proc_start and item.proc_start != live):
+            moved = _follow(item, proc_start)
+            if moved is None:
+                continue
+            item = moved
         age_ms = now - item.injected_at_ms
         if age_ms > OLD_ENOUGH_TO_MENTION_MS:
             log.info("reflection: session %s has been owed a resume for %ss (%s "
