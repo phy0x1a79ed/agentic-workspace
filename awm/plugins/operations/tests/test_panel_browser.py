@@ -164,18 +164,8 @@ def test_panel_end_to_end(stack):
         frame.locator("#card button.yes", has_text="Approve").click()
         wait_for(lambda: ap.approval_get(req["request_id"])["status"] == "approved")
 
-        # A drop mid-action: the message is lost, the next press resumes and alcor takes it.
-        seq = ap.devices()[0]["seq"]
-        page.route(f"{origin}/api/act", lambda route: route.abort())
-        frame.locator("input[placeholder='New note title']").fill("Lost then found")
-        frame.locator("button", has_text="New note").click()
-        frame.locator("#status[data-kind=error]").wait_for()
-        page.unroute(f"{origin}/api/act")
-        assert ap.devices()[0]["seq"] == seq
-        frame.locator("button", has_text="New note").click()
-        wait_for(lambda: len(store.task_list(section="proposed", q="Lost then found")["cards"]) >= 1)
-        assert len(store.task_list(section="proposed", q="Lost then found")["cards"]) == 1
-        assert not ap.devices()[0]["locked"]
+        # New note lives in the board's Proposed section, not in the panel (R63 item 1).
+        assert frame.locator("button", has_text="New note").count() == 0
 
         # A window: one passkey, then in-scope presses go signed by the device key alone.
         frame.locator("details.window summary").click()
@@ -194,5 +184,21 @@ def test_panel_end_to_end(stack):
         envs = wait_for(lambda: srv.call(ap.order_pull("deneb", ["zotero_sync"])))
         ap.order_done(envs[0]["order"]["order_id"], True, "synced 3 items")
         page.wait_for_selector("#status:has-text('synced 3 items')", timeout=10000)
+
+        # The New note button, as Proposed frames it. A drop mid-action: the message is lost,
+        # the next press resumes and alcor takes it, once.
+        page.goto(f"{origin}/panel/button?action=note_new")
+        seq = ap.devices()[0]["seq"]
+        page.route(f"{origin}/api/act", lambda route: route.abort())
+        page.fill("input[placeholder='New note title']", "Lost then found")
+        page.click("#go")
+        page.wait_for_selector("#status[data-kind=error]")
+        page.unroute(f"{origin}/api/act")
+        assert ap.devices()[0]["seq"] == seq
+        page.click("#go")
+        wait_for(lambda: len(store.task_list(section="proposed", q="Lost then found")["cards"]) >= 1)
+        assert len(store.task_list(section="proposed", q="Lost then found")["cards"]) == 1
+        assert store.task_list(section="proposed", q="Lost then found")["cards"][0]["kind"] == "note"
+        assert not ap.devices()[0]["locked"]
         assert not errors, errors
         browser.close()

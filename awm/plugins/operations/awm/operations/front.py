@@ -14,7 +14,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
-from awm.reflection.ids import normalise
+from awm.gatewayclient.ids import normalise
 
 from awm.operations.relay import Refused, Relay, Unreachable
 

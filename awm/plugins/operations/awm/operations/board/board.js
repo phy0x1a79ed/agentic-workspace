@@ -29,10 +29,13 @@ function el(tag, attrs = {}, ...kids) {
 const quoted = (q) => `"${q.replace(/["\\]/g, " ").trim()}"`;
 const label = (n, name) => n.getLabelValue(name) || "";
 
+// Done pages back on #doneAt as Tony scrolls (R61 item 4). The other sections show every card.
 async function cards(section, before = null) {
-  const order = section === "done" ? "#doneAt" : "#updatedAt";
+  if (section !== "done") {
+    return api.searchForNotes(`#swarmCard #section=${section} orderBy #updatedAt desc`);
+  }
   const cursor = before ? ` #doneAt < ${Number(before)}` : "";
-  return api.searchForNotes(`#swarmCard #section=${section}${cursor} orderBy ${order} desc limit ${PAGE}`);
+  return api.searchForNotes(`#swarmCard #section=done${cursor} orderBy #doneAt desc limit ${PAGE}`);
 }
 
 function header(n) {
@@ -45,56 +48,73 @@ function header(n) {
     peer ? el("span", { class: "awm-chip peer" }, peer) : null);
 }
 
-function section(key, name, notes, more) {
-  const d = el("details", { "data-section": key }, el("summary", {}, `${name} (${notes.length}${more ? "+" : ""})`),
-    ...notes.map(header));
+// The sections are built once, so the New note frame keeps its state and Done keeps its
+// scroll. Each refresh replaces only the count and the card list.
+const parts = {};
+for (const [key, name] of SECTIONS) {
+  const count = el("span", { class: "n" });
+  const list = el("div", { class: "awm-list" });
+  const d = el("details", { "data-section": key }, el("summary", {}, `${name} `, count));
   if (open[key]) d.setAttribute("open", "");
   d.addEventListener("toggle", () => { open[key] = d.open; });
-  if (more) d.append(el("button", { class: "awm-more", onclick: pageBack }, "Older"));
-  return d;
+  if (key === "proposed" && origin) {
+    // The press is signed on alcor's origin like every other action (R63 item 1, R65).
+    d.append(el("iframe", { class: "awm-note", title: "new note",
+                            allow: "publickey-credentials-get; publickey-credentials-create",
+                            src: `${origin}/panel/button?action=note_new` }));
+  }
+  d.append(list);
+  if (key === "done") d.append(el("div", { class: "awm-sentinel" }));
+  parts[key] = { d, count, list };
+}
+$(".awm-sections").replaceChildren(...SECTIONS.map(([key]) => parts[key].d));
+
+function fill(key, notes, more) {
+  parts[key].count.textContent = `(${notes.length}${more ? "+" : ""})`;
+  parts[key].list.replaceChildren(...notes.map(header));
 }
 
 let doneShown = [];
 let doneHasMore = false;
+let paging = false;
 
 async function render() {
   const q = $(".awm-search").value.trim();
-  const parts = [];
   if (q) {
     // A bare quoted phrase is a Trilium full-text search, which matches far more than the card.
     const v = quoted(q);
     const hits = await api.searchForNotes(`#swarmCard and (note.title *=* ${v} or #taskId = ${v} `
-      + `or #peer = ${v} or #status = ${v}) orderBy #updatedAt desc limit 200`);
-    for (const [key, name] of SECTIONS) {
-      parts.push(section(key, name, hits.filter((n) => label(n, "section") === key), false));
-    }
+      + `or #peer = ${v} or #status = ${v}) orderBy #updatedAt desc`);
+    for (const [key] of SECTIONS) fill(key, hits.filter((n) => label(n, "section") === key), false);
   } else {
-    for (const [key, name] of SECTIONS) {
-      if (key === "done") {
-        if (doneCursor === null) {
-          doneShown = await cards("done");
-          doneHasMore = doneShown.length === PAGE;
-        }
-        parts.push(section(key, name, doneShown, doneHasMore));
-      } else {
-        parts.push(section(key, name, await cards(key), false));
+    for (const [key] of SECTIONS) {
+      if (key !== "done") { fill(key, await cards(key), false); continue; }
+      if (doneCursor === null) {
+        doneShown = await cards("done");
+        doneHasMore = doneShown.length === PAGE;
       }
+      fill("done", doneShown, doneHasMore);
     }
   }
-  $(".awm-sections").replaceChildren(...parts);
   heartbeat();
 }
 
 async function pageBack() {
   const last = doneShown[doneShown.length - 1];
-  if (!last) return;
-  doneCursor = label(last, "doneAt");
-  const page = await cards("done", doneCursor);
-  doneHasMore = page.length === PAGE;
-  doneShown = doneShown.concat(page);
-  open.done = true;
-  await render();
+  if (paging || !doneHasMore || !last || $(".awm-search").value.trim()) return;
+  paging = true;
+  try {
+    doneCursor = label(last, "doneAt");
+    const page = await cards("done", doneCursor);
+    doneHasMore = page.length === PAGE;
+    doneShown = doneShown.concat(page);
+    fill("done", doneShown, doneHasMore);
+  } finally { paging = false; }
 }
+
+new IntersectionObserver((seen) => { if (seen.some((e) => e.isIntersecting)) pageBack(); },
+                         { root: $(".awm-sections"), rootMargin: "200px" })
+  .observe(parts.done.d.querySelector(".awm-sentinel"));
 
 function heartbeat() {
   const beat = Number(board && board.getLabelValue("queueHeartbeat")) || 0;

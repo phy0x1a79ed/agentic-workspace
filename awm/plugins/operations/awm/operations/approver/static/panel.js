@@ -155,8 +155,6 @@ async function panel() {
   $("#device").textContent = `${st.name || st.id}`;
   if (st.nonce) renderLock();
   else if (st.inFlight) await run("Reconnect", () => resume(st));
-  const noteTitle = h("input", { placeholder: "New note title" });
-  $("#note").replaceChildren(noteTitle, h("button", { onclick: () => run("New note", () => act("note_new", { title: noteTitle.value })) }, "New note"));
   window.addEventListener("message", (ev) => {
     if (!keys.board_origins.includes(ev.origin)) return;
     const d = ev.data;
@@ -173,12 +171,24 @@ async function panel() {
   document.addEventListener("visibilitychange", () => { if (!document.hidden) tick(); });
 }
 
-// -- the embeddable button (/panel/button?kind=&node=&label=) ---------------------------
+// -- the embeddable button (/panel/button?kind=&node=&label= or ?action=note_new) ----------
+
+// The board's New note button in Proposed (R63 item 1): a title and one signed press.
+function noteButton(b) {
+  const title = h("input", { placeholder: "New note title", maxlength: "200" });
+  b.before(title);
+  b.textContent = "New note";
+  b.addEventListener("click", async () => {
+    const out = await run("New note", () => act("note_new", { title: title.value }));
+    if (out && out.ok && out.result && out.result.ok) title.value = "";
+  });
+}
 
 async function button() {
   const q = new URLSearchParams(location.search);
-  const kind = q.get("kind"), node = q.get("node");
   const b = $("#go");
+  if (q.get("action") === "note_new") return noteButton(b);
+  const kind = q.get("kind"), node = q.get("node");
   b.textContent = q.get("label") || `${kind} on ${node}`;
   b.addEventListener("click", async () => {
     const out = await run(b.textContent, () => act("order", { kind, node, payload: {} }));

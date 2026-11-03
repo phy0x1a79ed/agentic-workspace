@@ -1,10 +1,25 @@
 from __future__ import annotations
 
+import importlib.util
+import os
+import sys
 import time
 from pathlib import Path
 from typing import Any
 
 import pytest
+
+# awm.gatewayclient.ids, the one R9 parser, lands from feat/redux-harness. Until that merge,
+# AWM_TEST_R9_IDS names a copy of the file for the tests.
+try:
+    import awm.gatewayclient.ids  # noqa: F401
+except ImportError:
+    _src = os.environ.get("AWM_TEST_R9_IDS")
+    if not _src:
+        raise
+    _spec = importlib.util.spec_from_file_location("awm.gatewayclient.ids", _src)
+    sys.modules["awm.gatewayclient.ids"] = _mod = importlib.util.module_from_spec(_spec)
+    _spec.loader.exec_module(_mod)
 
 from awm.operations.approver.chain import passkey_challenge
 from awm.operations.approver.core import Approver, Config
