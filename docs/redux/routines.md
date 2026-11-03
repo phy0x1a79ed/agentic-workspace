@@ -65,7 +65,7 @@ This doc holds awm's registered routines: what a routine is, what triggers it, a
   - Nodes refresh one at a time, homebase first. A failed node dispatches a session (R27) and stops the rollout before the remaining nodes.
   - How nodes reach each other belongs to thread 1g.
 - **R32.** A sensitive project such as awm restarts under supervision. On each node, a local agent coordinates with the other local agents and supervises the restart. Tony: "for sensitive things like awm, a local agent needs to coordinate with other local agents and supervise the restart."
-- **R33.** awm's plugins that only some nodes install move into projects of their own (`install.md` R115 item 4). The core plugins stay in the awm repo. Each plugin project has its own refresh hook, apart from awm's. A plugin then hot-updates without touching the core awm process. Tony: "for hot updates, this is actually an infrastructure issues. we need a series of projects to host the plugins for awm (needs migration)." Thread 1h designs the plugins themselves.
+- **R33.** awm's plugins other than the core plugins move into projects of their own (`install.md` R115 item 4). The core plugins stay in the awm repo. Each plugin project has its own refresh hook, apart from awm's. A plugin then hot-updates without touching the core awm process. Tony: "for hot updates, this is actually an infrastructure issues. we need a series of projects to host the plugins for awm (needs migration)." Thread 1h designs the plugins themselves.
 
 ### The full test suite
 

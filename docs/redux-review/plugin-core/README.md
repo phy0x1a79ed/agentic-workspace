@@ -37,4 +37,4 @@ Surveyed read only on mizar, 2026-11-03.
 
 ## Decisions
 
-- 2026-11-03: A plugin that every node installs, or that gates trust, is core and stays in the awm repo. A plugin that only some nodes install is a project of its own (`install.md` R115 item 4, `routines.md` R33). Tony: "Yes, good choices".
+- 2026-11-03: The core plugins stay in the awm repo. They are the plugins every node installs, the ones that gate trust, and rlm-browser, vpn, dev, transcripts, dsh and social. Every other plugin is a project of its own (`install.md` R115 item 4, `routines.md` R33). Tony: "Yes, good choices" and "the browser VPN, dev, transcripts, DSH, and social, I'd argue, are also core plugins."
