@@ -36,8 +36,17 @@ from awm.reporting.record import TITLE_CHARS, cut_at_word, plan_title, render_le
 from awm.reporting.sessions import GONE, STOPPED, CxUnavailable, Cx
 from awm.reporting.store import Offloaded, Queue
 from awm.reporting.swarmboard import TAGS_LABEL, BoardError, SwarmBoard
+from awm.reporting.task_ids import session_key
 
 log = logging.getLogger("awm.reporting.tasks")
+
+
+def _same_session(value: Any) -> str:
+    """A session id in one form, so a journal's R9 stamp matches a card's Claude UUID."""
+    try:
+        return session_key(value)
+    except ValueError:
+        return str(value or "")
 
 #: A Trilium note URL: the note is the last segment of the fragment.
 NOTE_URL = re.compile(r"https?://[^\s#]+#(?:[\w-]+/)*([\w-]{4,})")
@@ -1167,7 +1176,8 @@ class Tasks:
         if session:
             if "/" in task["key"]:  # filed away: the session has moved on to another card
                 return False
-            return session == task["session_id"] or session in await self.db.aliases(task["id"])
+            mine = {_same_session(task["session_id"])} | {_same_session(a) for a in await self.db.aliases(task["id"])}
+            return _same_session(session) in mine
         return (task["project"], task["scope"]) == (post.get("project"), post.get("scope"))
 
     async def _catch_up(self) -> None:

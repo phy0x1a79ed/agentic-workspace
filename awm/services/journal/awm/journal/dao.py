@@ -15,7 +15,7 @@ from awm.persistence.databases import init_service_db
 from awm.persistence.embeddings import EMBEDDINGS_DDL
 
 SERVICE = "journal"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 SCHEMA_SQL = """\
 -- One append-only post log per channel. The owner is addressed by natural key
@@ -51,6 +51,21 @@ CREATE TABLE IF NOT EXISTS scope_subscribers (
 CREATE INDEX IF NOT EXISTS idx_scope_subscribers_ref ON scope_subscribers(guest_kind, guest_ref);
 """
 
+READS_SQL = """\
+-- The journals each session read through fetch: its citation candidates
+-- (sessions.md R15). session is the reader's R9 id.
+CREATE TABLE IF NOT EXISTS session_reads (
+    session     TEXT NOT NULL,
+    post_id     TEXT NOT NULL,
+    first_read  INTEGER NOT NULL,
+    last_read   INTEGER NOT NULL,
+    times       INTEGER NOT NULL DEFAULT 1,
+    PRIMARY KEY (session, post_id)
+);
+"""
+
+MIGRATIONS = {(1, 2): READS_SQL}
+
 _initialized = False
 
 
@@ -58,7 +73,8 @@ def init() -> None:
     """Idempotently create the journal DB, its tables and the embeddings store."""
     global _initialized
     if not _initialized:
-        init_service_db(SERVICE, SCHEMA_SQL + EMBEDDINGS_DDL, schema_version=SCHEMA_VERSION)
+        init_service_db(SERVICE, SCHEMA_SQL + READS_SQL + EMBEDDINGS_DDL,
+                        schema_version=SCHEMA_VERSION, migrations=MIGRATIONS)
         _initialized = True
 
 

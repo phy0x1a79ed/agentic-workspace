@@ -861,6 +861,15 @@ async def test_a_post_that_names_its_session_lands_only_on_that_sessions_card(en
     assert len(env.ledger.events(other["id"], "journal")) == 2
 
 
+async def test_a_journal_stamped_in_r9_form_lands_on_the_card_of_its_claude_session(env, tmp_path):
+    await in_scope(env, tmp_path)
+    uuid = "abcdef01-2345-6789-abcd-ef0123456789"
+    mine = env.task()
+    env.ledger.alias(mine["id"], uuid)
+    await env.tasks.on_post({"post": post("a", scope="elsewhere", meta={"session": "cc" + uuid.replace("-", "")})})
+    assert len(env.ledger.events(mine["id"], "journal")) == 1
+
+
 async def test_the_same_post_twice_is_appended_once(env, tmp_path):
     await in_scope(env, tmp_path)
     for _ in range(2):
