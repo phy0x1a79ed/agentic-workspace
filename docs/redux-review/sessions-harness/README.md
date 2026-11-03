@@ -63,3 +63,28 @@ Surveyed read only on mizar, 2026-11-03. "release" is `origin/release` at 266f4b
 - 2026-11-03: The retire triggers the wake from `reflection stop`. The sweep goes (`sessions.md` R51). Tony: "we dont want sweep, we want active triggers from reflection stop".
 - 2026-11-03: Retire states that its last step is `reflection stop` (`sessions.md` R8). Tony: "retire then explicitly state that reflection stop must be called. a session that just ends and sits would be detrimental."
 - 2026-11-03: A worker on another node wakes its waiter through that node's reflection. A failed wake raises an alarm and keeps the wait. reflection reads the waits once at start and raises an alarm for a wait on a lost session, which is recovered by hand. A wait clears when its waiter wakes, is resumed or retires (`sessions.md` R51). Tony: "otherwise agree".
+- 2026-11-03: A citation candidate is a `journal fetch` or a `search get` of a journal post. Transcript reads, the injected brief and `brief_read` are not (`sessions.md` R15). Tony: "makes sense. but since context are jurnals and are injeted, they  should effectively stay out of this".
+
+## Follow-ups for the build
+
+- Land the harness lane first. Rebase it on release's R141 fix (5453644f) and drop its own patch (38a8c1b1). Then merge the sessions lane into it, moving its `cx/` files under `cch/`.
+- Use one R9 parser, `reflection/ids.py`, in journal, reporting and queue-relay. Accept ids of any length (R9).
+- Make the harness lane's journal write the R9 id and accept a named session (R14, R17).
+- Record a `search get` of a journal post as a read (R15).
+- Rework `reflection wait` (R10, R51):
+  - Make retire delete the job, and keep the job only for a wait.
+  - Count a listed session as finished only when it retires.
+  - Let a terminal session wait.
+  - Wake from `reflection stop`, across nodes, and drop the sweep.
+  - Alarm on a failed wake and once at start for a wait on a lost session.
+  - Clear a wait when its waiter wakes, is resumed or retires.
+- Make the retire skill end with `reflection stop` and say why (R8). Land the retire draft.
+- Fix whoami's call to `reporting task_for_session`, which sends `session` where the verb reads `session_id` (R57 step 2). Make cch read `task_id`, `role` and `suggest` (R57 step 3, R18). Tell a terminal main session about a join (R57 step 5).
+- Make the local seat check the only mode (R78).
+- Key the harness contract by the name `harness@1`, in the code and in `drafts/harness-contract.md`. Drop the hard-coded provider list (R117 items 2 and 4).
+- Move the cx and keep verbs out of reflection into cch. Stop importing `awm.claudedaemon` outside cch (R135 items 4 and 6).
+- Make dsh name the calling session (R135 item 3).
+- Add a start hook that carries the brief to the harness contract in R135 item 3 (`scopes.md` R143).
+- Reword R135 items 2 and 3: the harness names the calling session, and reflection applies trust and mode to it.
+- Rewrite the R18 and R51 gap rows in `sessions.md` for cch. Add a gap row for R141.
+- Drop the OpenCode line from `AGENTS.md` with the R143 rewrite (R135 item 5).

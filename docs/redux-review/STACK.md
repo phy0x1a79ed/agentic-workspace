@@ -21,14 +21,10 @@ Procedure, from dfs-interview § Work the stack:
 
 ## Current topic
 
-**sessions-harness**. Its result: `sessions-harness/README.md`.
+**queue-approver**. Its result: `queue-approver/README.md`.
 
 ## Stack
 
-- **sessions-harness** (2026-11-03): lets go over each of the major systems architecturally to make sure we are still aligned
-  - [x] R10 and R51: does a retire delete the job (design) or keep it (harness lane), given wake and resume both start from the transcript? (answered 2026-11-03)
-  - [x] R51: does a session that itself waits count as finished for its parent's wait, and may a terminal session wait? (answered 2026-11-03)
-  - [ ] R15: which reads make the citation candidate list: journal fetch only, or also search get and transcript reads?
 - **queue-approver** (2026-11-03): lets go over each of the major systems architecturally to make sure we are still aligned
 - **channels** (2026-11-03): lets go over each of the major systems architecturally to make sure we are still aligned
 - **fleet-deploy** (2026-11-03): lets go over each of the major systems architecturally to make sure we are still aligned
@@ -44,3 +40,4 @@ Procedure, from dfs-interview § Work the stack:
 - **scopes-awm** (closed 2026-11-03): `scopes-awm/README.md`
 - **brief-inject** (closed 2026-11-03): `brief-inject/README.md`
 - **plugin-core** (closed 2026-11-03): `plugin-core/README.md`
+- **sessions-harness** (closed 2026-11-03): `sessions-harness/README.md`

@@ -54,6 +54,8 @@ This doc holds a session's id, the id of its task, its lifecycle from start to r
 - **R17.** A citation points only at a journal. When a source session has no journal, as after a rushed or spot session, the citing agent first writes a journal for that session. It then cites that new journal. This keeps the citation field one type.
   - A journal post takes an optional session id. It defaults to the posting session. An agent omits it in the usual case, and names another session only to journal for that session.
 - **R15.** The agent chooses its citations at debrief. awm records every journal and session that a session reads, as the candidate list. The agent cites only the sources that shaped its work, each with a one-line reason. Tony: "lets use the debrief."
+  - A read is a `journal fetch`, or a `search get` that opens a journal post. A transcript read is not a candidate, because a citation points only at a journal (R17).
+  - The brief that the harness injects (`scopes.md` R143) and a `brief_read` are not candidates. Tony: "makes sense. but since context are jurnals and are injeted, they  should effectively stay out of this" (2026-11-03).
 - **R16.** The lineage graph has two kinds of edge. A parent link (R13) is a hard edge, "started by". A citation (R14) is a soft edge, "built on". The idea came from John's swarm on shaula.
 
 **CAUTION** awm cannot build citations from journal reads alone. Agents also read journals that turn out irrelevant.
