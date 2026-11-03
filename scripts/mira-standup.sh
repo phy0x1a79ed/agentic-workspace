@@ -138,7 +138,7 @@ json.dump(state, open(p, "w"), indent=2, sort_keys=True)
 print("wrote", p, "->", state)
 PY
 echo "REVIEW with operator: are any services capella-only and to be disabled here?"
-echo "  (e.g. host-bound mic/tts/stt if mira has no such hardware role) — if so:"
+echo "  (e.g. host-bound mic if mira has no such hardware role) — if so:"
 echo "  awm services disable <name>"
 
 step "PHASE 7 — social.toml: point social@mira at the LOCAL daemon"

@@ -976,9 +976,9 @@ def dev_shadow(
         ...,
         help="One or more targets to bring up on the hub in ONE process. Each is "
              "either 'pages/<name>' (a built page from awm/pages/<name>/dist) or a "
-             "path to a service folder / its run.sh (e.g. awm/services/stt). "
-             "Example: awm dev shadow --port 7821 pages/stt awm/services/stt "
-             "awm/services/tts",
+             "path to a service folder / its run.sh (e.g. awm/services/mic). "
+             "Example: awm dev shadow --port 7821 pages/mic awm/services/mic "
+             "awm/services/fileviewer",
     ),
     port: int = typer.Option(
         7821, "--port", "-p",

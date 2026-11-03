@@ -19,8 +19,6 @@ The tree is a set of pip dists under `awm/` that merge into the PEP 420 `awm` na
 - **Frontend source** — `awm/ui_components/` and `awm/pages/`. See § *Frontend*.
 - **Feature services** — `awm/services/<name>/`, each with its own dist, DB and `run.sh`. `awm services list` reports the live set. Each folder's `INSTALL.md` is its contract.
 
-**CAUTION** `compute` acts on processes it does not own. It kills and renices agent-launched jobs. Add anything new that agents launch and must keep (a long-lived server, a tunnel, an MCP shim) to its `PROTECTED` list.
-
 The `awm/gateway/awm/gateway/` nesting is intentional. It is a PEP 420 layout that lets several uninstalled worktrees each shadow `awm.gateway` through `PYTHONPATH`. Do not flatten it.
 
 ### Ownership and identity
@@ -112,7 +110,7 @@ A service publishes under one tool. Its `service.toml` names the tool with `tool
 - **Enforcement.** `surface.check_registration` runs when a service registers (`api/hub.py`). It refuses a function not named `<tool>_<verb>` and a verb that another service already holds in the same tool, and it names every offender. A refused service registers nothing and is not respawned. `gateway/tests/test_tool_rule.py` applies the rule to every manifest in the tree, and `LEGACY_ALLOWLIST` is empty. Keep it empty.
 - **Shared tools.** Two services may share a tool. `reflection` serves the `reflection` and `cx` services, `operations` serves `reporting`, `board` and the gateway's native peer book, and `awm` serves the gateway's native ops and `auth`. The `scopes` service keeps worktree lifecycle and `dvc` owns the data verbs (`mount`, `gc`, `scope_status`). `scopes` imports `awm.dvc.data_dvc` for provisioning.
 - **Internal names.** A manifest function's `name` is the service-internal handle that `/svc/<service>/fn/<name>` and caller stamping dispatch on. It keeps its value when the published name changes. The frozen identity RPCs (`FROZEN_RPCS`: `resolveScope`, `resolveRef`, `project_ensure`, `scope_ensure`) are exempt from the rule.
-- **Tool names.** A tool name holds letters, digits and hyphens. The catalog splits a published name at the tool prefix (`surface.split_published`), so `penpot-plugins_status` is tool `penpot-plugins`, verb `status`. An underscore in a tool name would make that split ambiguous.
+- **Tool names.** A tool name holds letters, digits and hyphens. The catalog splits a published name at the tool prefix (`surface.split_published`), so `my-tool_status` is tool `my-tool`, verb `status`. An underscore in a tool name would make that split ambiguous.
 
 A manifest function may carry these keys:
 
@@ -199,7 +197,7 @@ The mode gate finds the caller through its pid: `X-Awm-Session-Pid` (set by `awm
 
 The gateway declares its native ops once, as `GATEWAY_OPERATIONS` in `gateway_ops.py`: status, restart, mcp-sync, the registry list and deregister, the service lifecycle, config, provider lookup and the peer book. Three generators in `operations.py` project them: `operations_to_mcp_tools` onto MCP, `register_fastapi_routes` onto HTTP and `register_cli_commands` onto the CLI. Add a new control op as one `Operation`. Never hand-write a CLI command, an HTTP route and an MCP tool separately.
 
-Native ops publish into two tools. `awm` carries the core infrastructure API, with auth's verbs, and `awm status` folds gateway, service health, auth rotation, node role and the compute watchdog into one answer. `operations` carries the peer book as `peer_*`. An op's CLI group (`gateway`, `services`, `peer`) is independent of its tool, so `awm services list` and the `awm` tool's `services_list` are the same op.
+Native ops publish into two tools. `awm` carries the core infrastructure API, with auth's verbs, and `awm status` folds gateway, service health, auth rotation and node role into one answer. `operations` carries the peer book as `peer_*`. An op's CLI group (`gateway`, `services`, `peer`) is independent of its tool, so `awm services list` and the `awm` tool's `services_list` are the same op.
 
 ### The search archive
 
@@ -451,7 +449,7 @@ What is singular is the resource, not always the service:
 
 ## File map
 
-When you need something not mapped here, query the `graphify` tool (`find`, `refs`, `query`, `affected`) before an Explore agent. It indexes the deployed tree, so it lags uncommitted edits. Paths are under `awm/gateway/awm/gateway/`.
+Paths are under `awm/gateway/awm/gateway/`.
 
 - **Service discovery** — `hub/discovery.py`.
 - **Registry and kinds** — `hub/registry.py`: one `_stacks` dict per prefix, `replace_overlays`, `register_page`.

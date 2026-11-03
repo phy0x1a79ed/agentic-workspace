@@ -1,4 +1,4 @@
-"""Provisioning tests for the virtmic service, with ``pactl`` stubbed.
+"""Provisioning tests for mic's PulseAudio upkeep, with ``pactl`` stubbed.
 
 Everything goes through ``audio._run``, so a single fake process runner stands
 in for ``pactl`` / ``systemctl`` / ``pulseaudio``. That lets these tests model a
@@ -17,7 +17,7 @@ import subprocess
 
 import pytest
 
-from awm.virtmic import audio
+from awm.mic import audio
 
 
 class FakePulse:

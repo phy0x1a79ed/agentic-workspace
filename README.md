@@ -196,8 +196,8 @@ To live-test local changes without evicting the running bases, bring your
 worktree's pages **and** services up against a hub in one command:
 
 ```bash
-awm dev shadow --port 7821 pages/tts \
-  awm/services/tts awm/services/stt
+awm dev shadow --port 7821 pages/mic \
+  awm/services/mic awm/services/fileviewer
 ```
 
 `--port` selects the hub (**default `7821`, the dev sandbox**) — the CLI
@@ -305,8 +305,8 @@ Pages and components never hand-roll `fetch` against `/svc/<name>/…`. Use
   responses into a typed `HttpError` so callers can branch on failure without
   regex-parsing the message. The hub is loopback and unauthenticated — there
   is no cookie, identity header, or login flow to wire up.
-- `svc('tts').fn('listEngines')` / `svc('tts').session('call', {…})` /
-  `svc('tts').ws(sessionId)` — wraps the `/svc/<name>/{fn,session}/…`
+- `svc('mic').fn('status')` / `svc('mic').session('stream', {…})` /
+  `svc('mic').ws(sessionId)` — wraps the `/svc/<name>/{fn,session}/…`
   surface every service exposes.
 
 ### Hub-service control plane

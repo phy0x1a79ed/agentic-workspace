@@ -104,8 +104,7 @@ def _book_writer_only(verb: str) -> None:
 
 async def _op_status() -> dict[str, Any]:
     """The node's status in one call: the gateway process and its base URL,
-    every service's state, auth's credential rotation, the node role and the
-    compute watchdog.
+    every service's state, auth's credential rotation and the node role.
 
     The first keys are what ``GET /status`` has always answered (the startup
     probe reads them), so the payload only grows. ``active_scopes`` stays 0 until
@@ -132,10 +131,7 @@ async def _op_status() -> dict[str, Any]:
     status["services"] = {row["name"]: row["status"] for row in rows}
     status["services_down"] = [row["name"] for row in rows
                                if row["enabled"] and row["status"] != "ready"]
-    auth, compute = await asyncio.gather(
-        _service_reading("auth", "status"), _service_reading("compute", "status"))
-    status["auth"] = auth
-    status["compute"] = compute
+    status["auth"] = await _service_reading("auth", "status")
     return status
 
 
@@ -416,7 +412,7 @@ class ReapRequest(BaseModel):
 
 # Matches the ``awm.<svc>.hub_adapter`` module token in a process cmdline (the
 # only thing a feature service is ever launched as), e.g.
-# ``python -m awm.stt.hub_adapter``. The gateway itself is ``awm.gateway
+# ``python -m awm.mic.hub_adapter``. The gateway itself is ``awm.gateway
 # serve`` and the MCP proxy is ``awm-mcp`` — neither matches.
 _HUB_ADAPTER_RE = re.compile(r"awm\.[\w.]*hub_adapter")
 
@@ -987,7 +983,7 @@ GATEWAY_OPERATIONS: list[Operation] = [
         name="awm_status",
         tool="awm", verb="status",
         description="This node's status in one call: gateway and its base URL, every service's state, "
-                    "auth rotation, node role and the compute watchdog.",
+                    "auth rotation and node role.",
         service_func=_op_status,
         http_method="GET", http_path="/status",
         cli_group="gateway", cli_command="status",

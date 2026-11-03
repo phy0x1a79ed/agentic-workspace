@@ -14,8 +14,8 @@ hub's pooled client has handed that socket to a different request, which fails
 with ``RemoteProtocolError`` and used to escape as a gateway ``500``.
 
 So the upstream here is a stdlib ``ThreadingHTTPServer`` that deliberately
-never touches ``rfile`` on ``GET``: the shape of the drawio view listener, the
-one live ``kind=url`` mount this actually broke.
+never touches ``rfile`` on ``GET``: the shape of the ``kind=url`` mount this
+actually broke.
 
 A sequential "issue N GETs and assert 200" loop does **not** catch this —
 httpcore sees the poisoned socket as readable at next checkout and dials a

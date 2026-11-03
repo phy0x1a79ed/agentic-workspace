@@ -13,9 +13,8 @@
 #      superset of dev: fixes sometimes land on release directly); the
 #      workspace-root checkout fast-forwards from the local bare; dev,
 #      release and <feat> go to origin
-#   4. `awm deploy` in the root checkout (install/build/restart as needed;
-#      a changed drawio client patch also re-runs that service's install.sh,
-#      which `awm deploy` does not notice)
+#   4. `awm deploy` in the root checkout (install/build/restart as needed),
+#      then trilium's install.sh, which `awm deploy` does not notice
 #   5. pages built in the root checkout, then the sirius deploy script from
 #      the cloud repository (the host's provisioning tree left awm)
 # It ends by printing the sha at every hop and refuses to finish unless they
@@ -101,18 +100,11 @@ main() {
     echo "   bare release @ $(sha "$BARE" release)  root @ $(sha "$WSROOT")  origin/release @ $(git -C "$BARE" rev-parse --short origin/release)"
 
     step "4. altair deploy"
-    before=$(git -C "$WSROOT" rev-parse HEAD@{1} 2>/dev/null || true)
     (cd "$WSROOT" && awm deploy)
-    if [ -n "$before" ] && [ -n "$(git -C "$WSROOT" diff --name-only "$before" HEAD -- awm/services/drawio/patches 2>/dev/null)" ]; then
-        echo "   drawio client patches changed: re-running its install.sh"
-        (cd "$WSROOT" && bash awm/services/drawio/install.sh)
-    fi
-    # trilium falls into the same trap as drawio — `awm deploy` re-runs a service's
-    # install only when the *set* of installed dists changes, so a rebuilt or
-    # re-downloaded server bundle never lands — but it cannot be caught the same
-    # way. The Trilium fork is a *separate repository* (projects/trilium), so no
-    # diff over this checkout can see it move, and `before` is read from the reflog
-    # and is empty whenever stage 3 was a no-op. So this is unconditional. The
+    # `awm deploy` re-runs a service's install only when the *set* of installed
+    # dists changes, so a rebuilt or re-downloaded Trilium server bundle never
+    # lands. The Trilium fork is a *separate repository* (projects/trilium), so no
+    # diff over this checkout can see it move. So this is unconditional. The
     # install is stamped on the fork HEAD, its dirty flag and its lockfile (or the
     # asset name, on a tarball node) and costs seconds when nothing moved.
     if [ -z "${PROMOTE_SKIP_TRILIUM:-}" ] && [ -f "$WSROOT/awm/services/trilium/install.sh" ]; then

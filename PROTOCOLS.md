@@ -66,7 +66,7 @@ A hub scope integrates a set of peripheral scopes with two local git operations.
 
 | Hub | Branch | Peripherals |
 |-----|--------|-------------|
-| `feat-dag` | `feat/feat-dag` | `svc-events`, `web-stt`, `web-tts`, `web-ui` |
+| `feat-dag` | `feat/feat-dag` | `svc-events`, `web-ui` |
 | `feat-gamebot` | `feat/feat-gamebot` | `svc-effector`, `svc-events`, `rlm-browser`, `rlm-factorio`, `rlm-chess` |
 | `dev` | `dev` | all promotable scopes |
 
@@ -81,8 +81,6 @@ Per-user data is a scope in project `userdata`, at scope `<name>` on branch `use
 - `userroot.state_dir(service, user)` returns the service's index for that user.
 - `userroot.wrap_handlers` binds the caller for every verb.
 - `awm.config.autocommit` commits the service's subdirectory.
-
-Notes and drawio are the reference implementations.
 
 Shared data never goes in `userdata`. `userroot.users()` treats every subdirectory of `projects/userdata/` as a person, so a shared store there becomes a phantom user. Put shared data in a scope of the project whose code serves it, DVC-pinned under `data/`. One path then moves on a deploy instead of two. The Trilium vault is the worked example: its database and pinned chunks live in `projects/trilium/release` beside the fork that serves them. A node that runs the service without that checkout gets a plain directory at the same path and pins nothing.
 

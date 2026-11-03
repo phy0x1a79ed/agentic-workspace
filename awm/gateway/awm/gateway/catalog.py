@@ -1137,7 +1137,7 @@ async def dispatch(name: str, args: dict, as_: str | None = None) -> str:
     by-name ``/invoke`` posts keep working.
 
     A tool **no local service provides** but a peer does routes here too, so a
-    peer-only tool (``hpcllm``, ``orch``, …) is callable by its plain name
+    peer-only tool (``orch``, …) is callable by its plain name
     rather than needing a ``<tool>@<peer>`` twin.
 
     A foreign caller (``X-Awm-As`` naming a peer the book does not call domestic)

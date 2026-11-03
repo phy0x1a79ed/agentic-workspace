@@ -235,7 +235,7 @@ class ServiceRegisterRequest(BaseModel):
                                       "the prefix (last connect wins).")
     origin: str | None = Field(None,
                                description="Human 'who' label for an overlay "
-                                           "(e.g. 'stt-shadow @ web-stt'), used "
+                                           "(e.g. 'mic-shadow @ web-mic'), used "
                                            "as the evictor identity in the notice "
                                            "sent to an overlay this one evicts.")
 
@@ -611,7 +611,7 @@ class ShadowRegisterRequest(BaseModel):
                                     "exist for this prefix.")
     origin: str | None = Field(None,
                                description="Human 'who' label for this overlay "
-                                           "(e.g. 'shadow:stt:web-stt'), used as "
+                                           "(e.g. 'shadow:mic:web-mic'), used as "
                                            "the evictor identity in the notice "
                                            "sent to an overlay this one evicts.")
     page: dict = Field(...,

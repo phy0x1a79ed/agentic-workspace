@@ -306,7 +306,7 @@ class _Reading:
         return self.answers.get(service)
 
 
-async def test_status_adds_services_auth_node_role_and_compute(monkeypatch):
+async def test_status_adds_services_auth_and_node_role(monkeypatch):
     from awm.gateway import gateway_ops as go
 
     async def listing():
@@ -316,8 +316,7 @@ async def test_status_adds_services_auth_node_role_and_compute(monkeypatch):
             {"name": "dev", "enabled": False, "running": False, "status": "stopped", "pid": None},
             {"name": "ssh", "enabled": True, "running": True, "status": "starting", "pid": 2}]}
 
-    reading = _Reading({"auth": {"valid_generations": 2},
-                        "compute": {"armed": "shadow"}})
+    reading = _Reading({"auth": {"valid_generations": 2}})
     monkeypatch.setattr(go, "_op_services_list", listing)
     monkeypatch.setattr(go, "_service_reading", reading)
     monkeypatch.setenv("AWM_NODE_ROLE", "station")
@@ -327,9 +326,8 @@ async def test_status_adds_services_auth_node_role_and_compute(monkeypatch):
                                "ssh": "starting"}
     assert out["services_down"] == ["kb", "ssh"], "a disabled service is not down"
     assert out["auth"] == {"valid_generations": 2}
-    assert out["compute"] == {"armed": "shadow"}
     assert out["node_role"] == "station" and out["swarm"]
-    assert sorted(reading.asked) == [("auth", "status"), ("compute", "status")]
+    assert reading.asked == [("auth", "status")]
 
 
 async def test_status_survives_a_service_that_is_down_or_slow(monkeypatch):
@@ -358,17 +356,16 @@ async def test_status_survives_a_service_that_is_down_or_slow(monkeypatch):
             raise RuntimeError("boom")
 
     recs = {"auth": ServiceRecord(name="auth", prefix="/svc/auth", kind="service",
-                                  service_id="sid-auth"),
-            "compute": ServiceRecord(name="compute", prefix="/svc/compute", kind="service",
-                                     service_id="sid-compute")}
-    channels = {"sid-auth": Slow(), "sid-compute": Broken()}
+                                  service_id="sid-auth")}
+    channels = {"sid-auth": Slow()}
     monkeypatch.setattr(go, "_op_services_list", listing)
     monkeypatch.setattr("awm.gateway.hub.registry.get_registry", lambda: Stub(recs))
     monkeypatch.setattr(rpc, "get_control", lambda sid: channels.get(sid))
     out = await go._op_status()
     assert out["status"] == "ok"
     assert out["auth"] == {"error": "TimeoutError"}
-    assert out["compute"] == {"error": "boom"}
+    channels["sid-auth"] = Broken()
+    assert (await go._op_status())["auth"] == {"error": "boom"}
     monkeypatch.setattr("awm.gateway.hub.registry.get_registry", lambda: Stub({}))
     assert (await go._op_status())["auth"] is None
 

@@ -78,7 +78,7 @@ REFUSED = [
     _shape("GET", "/svc/avatar/session/" + "a" * 65, websocket=True),
     _shape("GET", SOCKET + "/x", websocket=True),
     _shape("GET", "/svc/avatar/emit/live", websocket=True),
-    _shape("GET", "/svc/drawio/emit/abcdefghijk", websocket=True),
+    _shape("GET", "/svc/journal/emit/abcdefghijk", websocket=True),
     _shape("GET", SOCKET, query=b"a=b", websocket=True),
 ]
 
@@ -227,6 +227,6 @@ def test_the_session_socket_is_dialled_as_the_user(monkeypatch):
 
 
 @pytest.mark.parametrize("path", ["/svc/avatar/emit/live", OPEN,
-                                  "/svc/drawio/emit/abcdefghijk", SOCKET + "?a=b"])
+                                  "/svc/journal/emit/abcdefghijk", SOCKET + "?a=b"])
 def test_no_other_socket_is_dialled(monkeypatch, path):
     assert _ws(monkeypatch, _gate([]), path) == []

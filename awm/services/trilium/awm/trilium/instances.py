@@ -37,8 +37,7 @@ STATE_DIR = Path(os.environ.get("TRILIUM_STATE_DIR") or (AWM_DIR / "services" / 
 LOG_DIR = STATE_DIR / "logs"
 
 #: Per-service *install* artifacts: the unpacked server tarball, the recorded
-#: node bin, the tarball stamp. Beside the service and gitignored, the way
-#: drawio keeps its patched webapp.
+#: node bin, the tarball stamp. Beside the service and gitignored.
 #:
 #: Not in STATE_DIR, and the reason is sirius. There the install runs as the
 #: dev user and the gateway runs as the application account, which owns the

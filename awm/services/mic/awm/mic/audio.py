@@ -1,14 +1,12 @@
-"""PulseAudio ownership — the WSL virtual microphone (``virtmic``).
+"""PulseAudio upkeep for mic: the daemon and the ``virtmic`` null-sink.
 
-This module is the whole point of the ``virtmic`` service: it owns the
-PulseAudio daemon and the ``module-null-sink`` whose ``.monitor`` is WSL's
-default capture source. Anything that records — ``arecord``, ``/voice``, the
-awm ``stt`` stack, the ``mic`` service's ``pacat`` bridge — reads that monitor,
-so if the sink is missing they all silently record silence.
+mic owns the PulseAudio daemon and the ``module-null-sink`` named ``virtmic``,
+whose ``.monitor`` is WSL's default capture source. Anything that records,
+``arecord``, ``/voice`` and mic's own ``pacat`` bridge, reads that monitor, so
+if the sink is missing they all silently record silence.
 
-Ported from the ``mic`` service's ``audio.py`` (which provisioned the sink
-exactly once at startup) and hardened into **three independent durability
-layers**, each covering the others' gap:
+The sink upkeep has **three independent durability layers**, each covering the
+others' gap:
 
 1. **Config** (``~/.config/pulse/daemon.conf``) — ``exit-idle-time = -1`` stops
    PulseAudio exiting when the last client disconnects. This is the root cause
@@ -44,7 +42,7 @@ import os
 import subprocess
 import time
 
-log = logging.getLogger("awm.virtmic.audio")
+log = logging.getLogger("awm.mic.audio")
 
 DEFAULT_SINK = "virtmic"
 
@@ -53,13 +51,14 @@ DEFAULT_SINK = "virtmic"
 #: from the old ``mic`` implementation — changing it would append a duplicate
 #: stanza on every host that already ran the old code.
 _ASOUNDRC_MARKER = "remote-audio bridge"
+#: Already written into hosts' PulseAudio configs by the old virtmic service, so they keep its name.
 _DAEMON_MARKER = "awm virtmic: keep PulseAudio resident"
 _DEFAULT_PA_MARKER = "awm virtmic: declare the virtual microphone sink"
 
 #: Bounded so a wedged PulseAudio can't hang the health loop's worker thread.
 _PACTL_TIMEOUT_S = 10.0
 
-#: Rolling provisioning state, surfaced by the ``virtmic_status`` verb.
+#: Rolling provisioning state, surfaced by the ``mic_status`` verb.
 _STATE: dict = {
     "last_ok_ts": None,     # last pass that ended with a healthy sink
     "last_heal_ts": None,   # last pass that actually repaired something
@@ -212,7 +211,7 @@ def _append_stanza(path: str, marker: str, body: str,
     chunks: list[str] = []
     if existing is None and system_include and os.path.exists(system_include):
         chunks.append(
-            f"# Created by the awm virtmic service. A user config file replaces\n"
+            f"# Created by the awm mic service. A user config file replaces\n"
             f"# the system one outright, so pull the system defaults back in\n"
             f"# first and override below.\n"
             f".include {system_include}\n"

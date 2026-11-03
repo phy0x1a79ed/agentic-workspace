@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "awm-mic"
 version = "0.1.0"
 requires-python = ">=3.11"
-description = "AWM mic service: remote microphone — a phone browser captures its mic and streams s16le PCM over a direct hub session into a PulseAudio virtmic null-sink, giving the host a microphone."
+description = "AWM mic service: remote microphone — a phone browser captures its mic and streams s16le PCM over a direct hub session into a PulseAudio null-sink it keeps alive, giving the host a microphone."
 dependencies = [
     "awm-config",
     "awm-gatewayclient",

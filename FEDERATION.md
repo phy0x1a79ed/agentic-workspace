@@ -528,7 +528,7 @@ WS** to `ssh@<arbiter>` and the OPEN socket *is* the lease (ZooKeeper-ephemeral 
 etcd-keepalive style): held for exactly as long as the connection is alive, so a
 live socket is proof of work in progress and a dead requester frees (or trips) its
 slot the instant its socket drops. This reuses the gateway's existing
-direct-session mechanism (which the `tts` and `stt` audio bridges also use) and
+direct-session mechanism (which the `mic` audio bridge also uses) and
 the edge's catch-all peer WS proxy — **no gateway or edge change**. The
 client helpers `acquire_lease` / `acquire_lease_peer` / `acquire_lease_maybe_peer`
 are the direct-session analogue of `call_peer` / `subscribe_peer`.
@@ -710,8 +710,7 @@ unit symlink reports enabled-but-bad and cannot be started.
 
 ## Not done
 
-**Cross-node data sync.** Each node owns its own `notes` / `writing` / `drawio` /
-`precedence` / `scopes` databases and nothing reconciles them — replication is
-deliberately out of scope (see the top of this file). So "my notes" means "this
-node's notes"; reach across explicitly with the `peer` argument when you need to. Worth
-designing before a second node becomes a real writing surface.
+**Cross-node data sync.** Each node owns its own `precedence` and `scopes`
+databases and nothing reconciles them. Replication is deliberately out of scope
+(see the top of this file). Reach across explicitly with the `peer` argument when
+you need to.

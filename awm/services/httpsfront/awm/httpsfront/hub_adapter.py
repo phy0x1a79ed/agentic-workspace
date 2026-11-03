@@ -36,7 +36,7 @@ from typing import Any
 from awm import config
 from awm.gatewayclient import ServiceAdapter
 
-from awm.httpsfront import board, certs, penpot, proxy, store, tether, vault
+from awm.httpsfront import board, certs, proxy, store, tether, vault
 
 log = logging.getLogger("awm.httpsfront.hub_adapter")
 
@@ -59,12 +59,6 @@ TLS = os.environ.get("AWM_EDGE_TLS", "1").strip().lower() not in ("0", "false", 
 # awm.trilium, where the child is bound, rather than here.
 VAULT = os.environ.get("AWM_EDGE_VAULT", "1").strip().lower() not in ("0", "false", "no")
 VAULT_UPSTREAM = config.VAULT_URL if VAULT else None
-
-# Penpot on this same listener. Off by default, unlike the vault: it needs a
-# running container stack and a `PENPOT_PUBLIC_URI` that agrees with the mount
-# (see awm.httpsfront.penpot), so enabling it stays an explicit choice rather
-# than something a bare upgrade should flip on.
-PENPOT = os.environ.get("AWM_EDGE_PENPOT", "0").strip().lower() not in ("0", "false", "no")
 
 # The tether relay on this same listener. Off by default, and the most
 # deliberate of the three: its paths are the only ones on this edge reachable
@@ -101,28 +95,6 @@ def _board_upstream() -> str | None:
 BOARD_UPSTREAM = _board_upstream()
 BOARD = BOARD_UPSTREAM is not None
 
-
-def _claimed_by_both() -> list[str]:
-    """Paths both the vault and Penpot claim on this listener.
-
-    Derived, never asserted. Both mount under a prefix of their own, so the
-    intersection is empty and stays empty — but it is computed rather than
-    declared so that a future mount that *does* collide says so at startup
-    instead of failing as one app silently swallowing the other's traffic.
-    """
-    candidates = {vault.SHELL, vault.SHELL_BARE, penpot.SHELL, penpot.SHELL_BARE}
-    return sorted(p for p in candidates if vault.owns(p) and penpot.owns(p))
-
-
-if PENPOT and VAULT:
-    _both = _claimed_by_both()
-    if _both:
-        log.warning(
-            "AWM_EDGE_PENPOT and AWM_EDGE_VAULT both claim %s on this "
-            "listener. The vault is resolved first, so Penpot will load its "
-            "shell and then fail every request it makes.", ", ".join(_both))
-PENPOT_UPSTREAM = config.PENPOT_URL if PENPOT else None
-
 # A second listener for a node whose main edge is public: peers reach the
 # gateway over the overlay while the internet keeps the narrow door. It binds
 # the overlay address alone, never 0.0.0.0, always speaks TLS with the fleet
@@ -137,15 +109,12 @@ _STATUS: dict[str, Any] = {
     "san": None,
     "upstream": UPSTREAM,
     # The extra upstreams on this listener, and the only place an operator can
-    # see whether the edge thinks it is serving the vault or Penpot at all.
+    # see whether the edge thinks it is serving the vault at all.
     "vault_upstream": VAULT_UPSTREAM,
-    "penpot_upstream": PENPOT_UPSTREAM,
     "tether_upstream": TETHER_UPSTREAM,
     "board_upstream": BOARD_UPSTREAM,
-    # Where each mounted app answers, so an operator can see the mount the
-    # containers' own PENPOT_PUBLIC_URI has to agree with.
+    # Where each mounted app answers.
     "vault_mount": vault.SHELL if VAULT else None,
-    "penpot_mount": penpot.SHELL if PENPOT else None,
     # The address the operator reads out. Worth surfacing because it is the one
     # string a person has to say correctly over a phone.
     "tether_mount": tether.PREFIX if TETHER else None,
@@ -255,7 +224,6 @@ def _on_start() -> None:
         target=_serve_forever, args=(info,), daemon=True, name="httpsfront",
         kwargs=dict(port=PORT, profile=PROFILE, tls=TLS,
                     vault_upstream=VAULT_UPSTREAM,
-                    penpot_upstream=PENPOT_UPSTREAM,
                     tether_upstream=TETHER_UPSTREAM,
                     board_upstream=BOARD_UPSTREAM),
     ).start()

@@ -1,4 +1,4 @@
-"""Hub adapter for the kb service: opt-in Cognee recall over the Zotero library, and the papers feed for `search`.
+"""Hub adapter for the kb service: recall over the Zotero library, and the papers feed for `search`.
 
 The recall itself runs in the kb server, a process from the `kb` project in its
 own env (see `server`). This adapter supervises it, relays its routes as
@@ -34,9 +34,8 @@ _tasks: set[asyncio.Task] = set()
 
 API_MANIFEST: dict[str, Any] = {
     "description": (
-        "Opt-in Cognee recall over the Zotero library (papers, with PDF full text where a PDF "
-        "is stored). `search query` covers papers by default; use `kb recall` for mode=graph "
-        "or mode=answer, which write one LLM answer from the top chunks."
+        "Recall over the Zotero library (papers, with PDF full text where a PDF is stored). "
+        "`search query` covers papers by default."
     ),
     "functions": [
         {
@@ -57,17 +56,13 @@ API_MANIFEST: dict[str, Any] = {
             "tool": "kb_recall",
             "description": (
                 "Ranked paper hits for a query, each with its Zotero key, title, year and DOI. "
-                "mode=hybrid (default) combines meaning and keywords and makes no LLM call. mode=answer writes "
-                "one answer from the top chunks and costs about $0.001."
+                "mode=hybrid (default) combines meaning and keywords."
             ),
             "params": [
                 {"name": "query", "type": "string", "required": True, "description": "What to find."},
                 {"name": "mode", "type": "string",
-                 "description": "hybrid (default), vector, lexical, graph or answer."},
+                 "description": "hybrid (default), vector or lexical."},
                 {"name": "limit", "type": "integer", "description": "Maximum hits, 1-100. Default 10."},
-                {"name": "search_type", "type": "string",
-                 "description": "For graph or answer mode: a Cognee search type. Default "
-                                "RAG_COMPLETION for answer, GRAPH_COMPLETION for graph."},
             ],
             "timeout": 600,
         },
@@ -171,9 +166,8 @@ async def _h_status(args: dict, as_: str | None = None) -> dict:
     return out
 
 
-#: The modes that rank rows from kb's own store and so honour `sources`. graph and answer run
-#: cognee with access control off, where `datasets` does not scope, and answer spends LLM budget.
-_PLAIN_MODES = ("hybrid", "vector", "lexical")
+#: The recall modes, each ranking rows from kb's own store.
+_MODES = ("hybrid", "vector", "lexical")
 
 
 def _foreign(as_: str | None) -> bool:
@@ -183,10 +177,10 @@ def _foreign(as_: str | None) -> bool:
 
 
 async def _h_recall(args: dict, as_: str | None = None) -> dict:
-    body = {k: args[k] for k in ("query", "mode", "limit", "search_type") if args.get(k) is not None}
+    body = {k: args[k] for k in ("query", "mode", "limit") if args.get(k) is not None}
     body["sources"] = ["papers"]
-    if _foreign(as_) and (body.get("mode", "hybrid") not in _PLAIN_MODES or "search_type" in body):
-        raise PermissionError("a foreign peer may use only the hybrid, vector and lexical modes")
+    if body.get("mode", "hybrid") not in _MODES:
+        raise ValueError(f"mode must be one of {', '.join(_MODES)}")
     return await client.recall(body)
 
 

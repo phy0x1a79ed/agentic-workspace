@@ -47,7 +47,7 @@ Never edit `.awm/history.md` by hand. Use the `journal` verbs.
 
 ## MCP tools
 
-The `awm-mcp` server is registered in `<workspace>/.mcp.json`. Its surface comes live from the running feature services: sixteen top-level tools, such as `scope`, `journal`, `search` and `awm`. Call each with `{ "verb": "<name>", "args": { … } }`.
+The `awm-mcp` server is registered in `<workspace>/.mcp.json`. Its surface comes live from the running feature services: one top-level tool per domain, such as `scope`, `journal`, `search` and `awm`. Call each with `{ "verb": "<name>", "args": { … } }`.
 
 Discover the catalog. Do not memorize it.
 
@@ -57,10 +57,9 @@ Discover the catalog. Do not memorize it.
 
 Check for a tool before you hand a task to the user. Sending a message, approving a login, capturing audio and restarting a VPN each look like human jobs, and each has a domain. A restricted session's mode limits which verbs it may call, and the server rejects the rest.
 
-Five tools change how you work:
+Four tools change how you work:
 
 - `search` — one ranked search over journals, precedence decisions, papers and other archives, on this node and its peers. Query it before you ask what the swarm already knows. Read a whole hit with `get`.
-- `graphify` — an AST graph of the awm source tree. Query it before you start an Explore agent on "where is X, what calls Y, what does changing Z affect" in awm. It indexes the deployed tree. Use Explore for uncommitted code and for other projects.
 - `precedence` — an archive of past user decisions on preferences. Search it before you ask the user a preference question. Add to it when the user makes or overrides such a decision.
 - `reflection` — acts on your own session. `reflection(verb="compact", args={followup:"<next task>"})` queues a compaction after this turn, then sends the follow-up prompt. A full context is a seam to cross, not a reason to stop.
 - `operations` — keeps your task on Tony's Swarm board. When you need Tony in a background session, call `operations(verb="request_human", args={kind:"blocked", reason:<why>})` instead of `AskUserQuestion`, because nobody watches that terminal. Call it with `kind:"review"` when the work is ready to look at.

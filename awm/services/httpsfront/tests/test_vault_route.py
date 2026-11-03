@@ -114,7 +114,7 @@ def test_the_same_names_at_the_site_root_are_not_the_vaults(path):
         assert c.get(path).status_code == 404
 
 
-@pytest.mark.parametrize("path", ["/ui/drawio/", "/svc/drawio/fn/save"])
+@pytest.mark.parametrize("path", ["/ui/trilium/", "/svc/trilium/fn/status"])
 def test_awm_paths_still_go_to_the_gateway(path):
     seen, handler = _recorder()
     with _client(_app(), handler) as c:
@@ -141,10 +141,10 @@ def test_no_request_can_choose_the_upstream():
     seen, handler = _recorder()
     with _client(_app(), handler) as c:
         for req in (
-            {"url": "/ui/drawio/?upstream=" + VAULT},
-            {"url": "/ui/drawio/", "headers": {"X-Awm-As": "user:steven"}},
-            {"url": "/ui/drawio/", "headers": {"X-Forwarded-Host": "vault"}},
-            {"url": "/ui/drawio/", "headers": {"Host": "vault"}},
+            {"url": "/ui/trilium/?upstream=" + VAULT},
+            {"url": "/ui/trilium/", "headers": {"X-Awm-As": "user:steven"}},
+            {"url": "/ui/trilium/", "headers": {"X-Forwarded-Host": "vault"}},
+            {"url": "/ui/trilium/", "headers": {"Host": "vault"}},
         ):
             seen.clear()
             c.get(req["url"], headers=req.get("headers"))
@@ -271,7 +271,7 @@ def test_the_gateway_being_down_is_still_a_502():
         raise httpx.ConnectError("refused", request=request)
 
     with _client(_app(), handler) as c:
-        r = c.get("/ui/drawio/")
+        r = c.get("/ui/trilium/")
     assert r.status_code == 502
 
 
@@ -314,7 +314,7 @@ def test_the_vaults_socket_follows_its_shell(monkeypatch):
 
 
 def test_an_awm_socket_still_reaches_the_gateway(monkeypatch):
-    seen = _ws_target(monkeypatch, _app(profile=None), "/svc/drawio/emit/drawio:tony:x")
+    seen = _ws_target(monkeypatch, _app(profile=None), "/svc/journal/emit/posts")
     assert seen["url"].startswith("ws://127.0.0.1:7819")
 
 
@@ -361,7 +361,7 @@ def test_the_query_string_survives_alongside_it():
 @pytest.mark.parametrize("path", [
     "/trilium/api/%2e%2e/etapi/app-info",
     "/trilium/%2e%2e/%2e%2e/etc/passwd",
-    "/ui/drawio/%2e%2e/hub/services",
+    "/ui/trilium/%2e%2e/hub/services",
 ])
 def test_a_path_that_climbs_out_is_refused(profile, path):
     """This was live. `/trilium/api/%2e%2e/etapi/app-info` decodes to a path
@@ -390,7 +390,7 @@ def test_an_unencoded_dot_dot_is_refused_too():
     "/trilium/api%2Fnotes",
     "/trilium/api%2fnotes",
     "/trilium/api%5cnotes",
-    "/ui/drawio%2f..%2fhub",
+    "/ui/trilium%2f..%2fhub",
 ])
 def test_an_encoded_separator_is_refused(path):
     """One segment to the router, two to the upstream. Nothing this edge serves
