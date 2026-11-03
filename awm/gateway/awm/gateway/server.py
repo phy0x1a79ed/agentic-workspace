@@ -11,6 +11,7 @@ register into the catalog/hub. See `catalog.py` for the registration contract.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
 import shutil
@@ -38,7 +39,7 @@ from awm.config import (
     IDLE_SHUTDOWN_SECONDS,
 )
 from awm.config import modes as session_modes
-from awm.gateway import catalog, filehop, mcp_caller, peer_catalog
+from awm.gateway import catalog, filehop, isolated, mcp_caller, peer_catalog
 from awm.gateway.gateway_ops import GATEWAY_OPERATIONS, bound_caller
 from awm.gateway.operations import register_fastapi_routes
 
@@ -386,7 +387,19 @@ async def lifespan(app: FastAPI):
     except Exception as exc:  # noqa: BLE001
         print(f"[awm] mcp-sync skipped: {exc}")
 
+    door, door_task = None, None
+    door_addr = isolated.listen_address()
+    if door_addr:
+        door = isolated.door_server(*door_addr)
+        door_task = asyncio.create_task(door.serve())
+        log.info("isolated door on %s:%s", *door_addr)
+
     yield
+
+    if door is not None:
+        door.should_exit = True
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(door_task, 5)
 
     # ----- Graceful shutdown backstop ---------------------------------------
     # On Linux the signal override above has already drained services in-band
@@ -457,6 +470,7 @@ async def _refuse_permission(request, exc):
 # (catalog) and the CLI command (cli.py). Add a new control op as an Operation,
 # not a hand-written route here.
 register_fastapi_routes(app, GATEWAY_OPERATIONS)
+isolated.mount(app)
 
 
 # ---------------------------------------------------------------------------
@@ -643,6 +657,7 @@ def _stamp_trust(name: str, args: dict, pid_header: str | None,
         if not isinstance(bag, dict):
             bag = {}
             args["args"] = bag
+    bag.pop(isolated.SESSION_KEY, None)
     if as_:
         return
     bag.pop(mcp_caller.TRUST_KEY, None)
@@ -883,6 +898,8 @@ async def invoke_tool(request: Request):
 
 
 async def _invoke(payload: dict, request: Request):
+    if request.headers.get(isolated.TOKEN_HEADER):
+        raise HTTPException(403, "an isolated session calls awm only through /mcp")
     name = payload.get("name")
     args = payload.get("args")
     if not name:
@@ -1062,6 +1079,14 @@ class HubRoutingMiddleware:
         as_ = headers.get("X-Awm-As")
 
         stamp = _svc_stamp(rec.name, headers, as_)
+
+        if headers.get(isolated.TOKEN_HEADER):
+            if scope["type"] == "http":
+                await JSONResponse({"error": "an isolated session calls awm only through /mcp"},
+                                   status_code=403)(scope, receive, send)
+            else:
+                await send({"type": "websocket.close", "code": 4403})
+            return
 
         if scope["type"] == "http":
             request = Request(scope, receive=receive)
