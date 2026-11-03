@@ -334,10 +334,9 @@ home link raises no seat alarm. Alerts it held go out once the box is back.
 
     [keeper]
     online = ["1.1.1.1:443", "8.8.8.8:443", "9.9.9.9:443"]   # the default; [] turns it off
-    local_only = true                                         # keep only this node's seats
 
-`local_only` is off by default. Turn it on once social runs on every seat's
-node, so that each box keeps its own seats.
+Each node's keeper keeps only the seats on its own node, so social runs on
+every node that hosts a seat.
 
 Each outage writes a restart record: the cause, when the seat went down and
 came back, and how many messages arrived meanwhile. A daemon cause comes from

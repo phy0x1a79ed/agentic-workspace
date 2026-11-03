@@ -16,8 +16,8 @@ a witness answers and cannot reach it either. When a witness reaches it, or no
 witness answers, the keeper has lost contact: no outage, no alert, and on
 return one catch-up line if messages arrived meanwhile. A tick first checks the
 keeper's own box can reach the internet. A box that cannot holds every seat in
-lost contact and sends no alert (sessions.md R78). With ``[keeper] local_only``
-the keeper keeps only its own node's seats. A seat whose
+lost contact and sends no alert (sessions.md R78). The keeper keeps only its own
+node's seats: each node's social keeps the seats it hosts. A seat whose
 agent is alive needs nothing, except that an outdated launch spec is replaced
 once the session sits between turns. For any other seat `awm.kept.decide`
 chooses:
@@ -449,11 +449,10 @@ class Keeper:
                  clock: Callable[[], float] = time.time,
                  push: Push | None = None, list_chats: ListChats | None = None,
                  alert: Alert | None = None, witnesses: list[str] = (),
-                 online: Callable[[], Awaitable[bool]] | None = None,
-                 local_only: bool = False) -> None:
+                 online: Callable[[], Awaitable[bool]] | None = None) -> None:
         self.dao = dao
         self.witnesses = list(witnesses)
-        self.seats = [s for s in seats if not local_only or s.node == config.node_name()]
+        self.seats = [s for s in seats if s.node == config.node_name()]
         self._online = online
         self._describe = describe
         self._chat = chat

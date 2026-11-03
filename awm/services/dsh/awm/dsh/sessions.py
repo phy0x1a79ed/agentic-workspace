@@ -153,10 +153,7 @@ def resolve(pid: Any, fork_pid: Optional[int]) -> dict:
     seen = 0
     while pid > 1 and seen < 64:
         if fork_pid and pid == fork_pid:
-            return {"ok": True, "mine": True, "session_id": None,
-                    "error": ("the call came through the DeepSeek harness's one "
-                              "MCP client, which carries no session id, so dsh "
-                              "cannot tell which session called")}
+            return _the_running_session(pid)
         fork_id = _environ(pid).get("DSH_SESSION_ID")
         if fork_id:
             sid = r9(fork_id)
@@ -164,6 +161,30 @@ def resolve(pid: Any, fork_pid: Optional[int]) -> dict:
                     "fork_session_id": fork_id, "pid": pid, "job": None}
         pid, seen = _ppid(pid), seen + 1
     return {"ok": True, "mine": False}
+
+
+def _the_running_session(fork_pid: int) -> dict:
+    """The caller behind the fork's one MCP client: the only session with a turn running.
+
+    The client carries no session id. A tool call happens inside a turn, so when
+    exactly one session runs, it is the caller. With none or several, dsh cannot tell.
+    """
+    try:
+        running = [r for r in rows() if r["state"] == "busy"]
+    except ForkError as exc:
+        running, why = [], f"the fork did not list its sessions: {exc}"
+    else:
+        why = (f"{len(running)} sessions have a turn running" if running
+               else "no session has a turn running")
+    if len(running) == 1:
+        row = running[0]
+        return {"ok": True, "mine": True, "session_id": row["session_id"], "hosting": "web",
+                "fork_session_id": row["fork_session_id"], "name": row["name"],
+                "cwd": row["cwd"], "pid": fork_pid, "job": None}
+    return {"ok": True, "mine": True, "session_id": None,
+            "error": ("the call came through the DeepSeek harness's one MCP client, "
+                      f"which carries no session id, and {why}, so dsh cannot tell "
+                      "which session called")}
 
 
 # --- verbs ----------------------------------------------------------------------

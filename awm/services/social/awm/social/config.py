@@ -610,8 +610,6 @@ class KeeperConfig:
 
     #: The nodes the keeper asks, in order, before it calls a seat's node down.
     witness: tuple[str, ...] = ()
-    #: Keep only the seats whose node is this node (sessions.md R78).
-    local_only: bool = False
     #: ``host:port`` targets for the box's own internet check. Empty turns it off.
     online: tuple[str, ...] = ONLINE_TARGETS
 
@@ -635,17 +633,14 @@ def load_keeper(path: Path | None = None) -> KeeperConfig:
     table = data.get("keeper")
     if table is None:
         return KeeperConfig()
-    if not isinstance(table, dict) or set(table) - {"witness", "local_only", "online"}:
-        raise SocialConfigError(f"{path}: [keeper] takes only witness, local_only and online")
+    if not isinstance(table, dict) or set(table) - {"witness", "online"}:
+        raise SocialConfigError(f"{path}: [keeper] takes only witness and online")
     witness = _names(table.get("witness", []), f"{path}: [keeper].witness must be a list of node names")
-    local_only = table.get("local_only", False)
-    if not isinstance(local_only, bool):
-        raise SocialConfigError(f"{path}: [keeper].local_only must be true or false")
     online = _names(table.get("online", list(ONLINE_TARGETS)),
                     f"{path}: [keeper].online must be a list of host:port targets")
     if any(not t.rpartition(":")[2].isdigit() or not t.rpartition(":")[0] for t in online):
         raise SocialConfigError(f"{path}: [keeper].online must be a list of host:port targets")
-    return KeeperConfig(witness=witness, local_only=local_only, online=online)
+    return KeeperConfig(witness=witness, online=online)
 
 
 def _names(value: object, error: str) -> tuple[str, ...]:

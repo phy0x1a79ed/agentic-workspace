@@ -1628,11 +1628,11 @@ def _start_keeper() -> None:
     _keeper = keeper_mod.Keeper(_dao, kept, _describe_account, _chat,
                                 push=_pusher.push, list_chats=_list_chats,
                                 alert=_alert_operator, witnesses=list(kc.witness),
-                                online=online, local_only=kc.local_only)
+                                online=online)
     spawn_supervised("social.keeper", _keeper.run)
-    log.info("keeping %d seat(s): %s; witnesses: %s; online check: %s%s", len(_keeper.seats),
-             ", ".join(s.name for s in _keeper.seats), ", ".join(kc.witness) or "none",
-             ", ".join(kc.online) or "off", "; local seats only" if kc.local_only else "")
+    log.info("keeping %d seat(s) on this node: %s; witnesses: %s; online check: %s",
+             len(_keeper.seats), ", ".join(s.name for s in _keeper.seats),
+             ", ".join(kc.witness) or "none", ", ".join(kc.online) or "off")
 
 
 async def main() -> None:

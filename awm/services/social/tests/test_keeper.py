@@ -125,6 +125,12 @@ class Clock:
         return self.t
 
 
+@pytest.fixture(autouse=True)
+def _on_the_seats_node(monkeypatch):
+    """The keeper keeps only its own node's seats, and the test seats are on altair."""
+    monkeypatch.setenv("AWM_NODE_NAME", "altair")
+
+
 @pytest.fixture()
 def kept(awm_workspace, tmp_path):
     from awm.social.dao import SocialDAO, init
@@ -952,12 +958,13 @@ async def test_a_seat_that_ended_during_lost_contact_gets_a_real_outage(witnesse
     assert k.status(k.seats[0])["contact_lost_since"] is None
 
 
-async def test_lost_contact_survives_a_restart_of_social(witnessed, tmp_path):
+async def test_lost_contact_survives_a_restart_of_social(witnessed, tmp_path, monkeypatch):
     from awm.social.keeper import Keeper
     k, cx, dao, clock = witnessed
     cx.seen["deneb"] = SEEN_UP
     await _cut(k, cx, clock, 3)
     since = k.status(k.seats[0])["contact_lost_since"]
+    monkeypatch.setenv("AWM_NODE_NAME", "altair")
     k2 = Keeper(dao, k.seats, k._describe, k._chat, cx=cx,
                 lock_path=tmp_path / "keeper2.lock", clock=clock,
                 push=lambda *a: None, witnesses=k.witnesses)
@@ -1055,33 +1062,29 @@ async def test_a_held_alert_goes_out_on_return(offline):
     assert "lab on altair is down since" in alert
 
 
-def test_local_only_keeps_only_this_nodes_seats(kept, monkeypatch, tmp_path):
+def test_the_keeper_keeps_only_this_nodes_seats(kept, monkeypatch, tmp_path):
     from awm.social.keeper import Keeper
     k, cx, dao, clock = kept
-    monkeypatch.setenv("AWM_NODE_NAME", "altair")
     seats = [_seat(), _seat(name="far", channel="C2", node="deneb")]
     assert [s.name for s in Keeper(dao, seats, k._describe, k._chat, cx=cx,
-                                   lock_path=tmp_path / "k.lock").seats] == ["lab", "far"]
-    assert [s.name for s in Keeper(dao, seats, k._describe, k._chat, cx=cx,
-                                   lock_path=tmp_path / "k.lock", local_only=True).seats] == ["lab"]
+                                   lock_path=tmp_path / "k.lock").seats] == ["lab"]
 
 
-def test_the_keeper_table_sets_local_only_and_the_online_targets(tmp_path):
+def test_the_keeper_table_sets_the_online_targets(tmp_path):
     from awm.social.config import ONLINE_TARGETS, load_keeper
     path = tmp_path / "social.toml"
     path.write_text(SEAT_TOML)
     kc = load_keeper(path)
-    assert (kc.witness, kc.local_only, kc.online) == ((), False, ONLINE_TARGETS)
-    path.write_text(SEAT_TOML + '\n[keeper]\nlocal_only = true\nonline = ["10.0.0.1:53"]\n')
-    kc = load_keeper(path)
-    assert (kc.local_only, kc.online) == (True, ("10.0.0.1:53",))
+    assert (kc.witness, kc.online) == ((), ONLINE_TARGETS)
+    path.write_text(SEAT_TOML + '\n[keeper]\nonline = ["10.0.0.1:53"]\n')
+    assert load_keeper(path).online == ("10.0.0.1:53",)
     path.write_text(SEAT_TOML + '\n[keeper]\nonline = []\n')
     assert load_keeper(path).online == ()
 
 
-@pytest.mark.parametrize("bad", ['local_only = "yes"', 'online = ["nohost"]', 'online = [":53"]',
+@pytest.mark.parametrize("bad", ['local_only = true', 'online = ["nohost"]', 'online = [":53"]',
                                  'online = 5'])
-def test_a_bad_online_or_local_only_is_refused(tmp_path, bad):
+def test_a_bad_online_target_or_a_dropped_key_is_refused(tmp_path, bad):
     from awm.social.config import SocialConfigError, load_keeper
     path = tmp_path / "social.toml"
     path.write_text(SEAT_TOML + f"\n[keeper]\n{bad}\n")

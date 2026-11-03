@@ -142,11 +142,37 @@ def test_resolve_reads_the_bash_tools_session_id(monkeypatch):
     assert out["mine"] and out["session_id"] == R9
 
 
-def test_resolve_owns_the_fork_pid_but_cannot_name_the_session(monkeypatch):
+def _fork_rows(monkeypatch, *running):
+    items = [{"sessionId": f"session-{u}", "running": u in running, "cwd": "/w"}
+             for u in ("0" * 8 + "-0000-4000-8000-" + "0" * 12,
+                       "1" * 8 + "-1111-4111-8111-" + "1" * 12)]
+    monkeypatch.setattr(sessions, "all_sessions", lambda: items)
+    return items
+
+
+def test_resolve_owns_the_fork_pid_but_cannot_name_an_idle_caller(monkeypatch):
     monkeypatch.setattr(sessions, "_environ", lambda pid: {})
     monkeypatch.setattr(sessions, "_ppid", lambda pid: {60: 50}.get(pid, 0))
+    _fork_rows(monkeypatch)
     out = sessions.resolve(60, fork_pid=50)
     assert out["mine"] and out["session_id"] is None and "MCP client" in out["error"]
+
+
+def test_the_only_running_session_is_the_mcp_caller(monkeypatch):
+    monkeypatch.setattr(sessions, "_environ", lambda pid: {})
+    monkeypatch.setattr(sessions, "_ppid", lambda pid: {60: 50}.get(pid, 0))
+    items = _fork_rows(monkeypatch, "1" * 8 + "-1111-4111-8111-" + "1" * 12)
+    out = sessions.resolve(60, fork_pid=50)
+    assert out["mine"] and out["session_id"] == sessions.r9(items[1]["sessionId"])
+
+
+def test_two_running_sessions_name_no_caller(monkeypatch):
+    monkeypatch.setattr(sessions, "_environ", lambda pid: {})
+    monkeypatch.setattr(sessions, "_ppid", lambda pid: {60: 50}.get(pid, 0))
+    _fork_rows(monkeypatch, "0" * 8 + "-0000-4000-8000-" + "0" * 12,
+               "1" * 8 + "-1111-4111-8111-" + "1" * 12)
+    out = sessions.resolve(60, fork_pid=50)
+    assert out["session_id"] is None and "2 sessions" in out["error"]
 
 
 def test_resolve_disowns_a_stranger(monkeypatch):
