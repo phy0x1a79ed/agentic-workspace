@@ -55,3 +55,30 @@ Surveyed read only on mizar, 2026-11-03.
 - Run the auth migration that drops `awm_penpot` (R134).
 - Let reflection's own-session verbs work through the isolated door, not the caller's pid. Remove the OpenCode exporter from the gateway (R135).
 - Fix `plugin-contract.md:192`, which cites R117 item 6 for the start order rule. The rule is item 7.
+
+## Build result
+
+Reported by the redux-plugins lane on 2026-11-03. Local commits only. `feat/redux-core` is at 21c2b302: 48de7a4a, 341dd669, 21c2b302. `feat/redux-plugins` is at 34fd7bf4 and carries all of core: 079d3f7c, 264fe6cf, 14639f7b, 3ad110fa, 3f897b14, 973da43b, 34fd7bf4.
+
+- **Built.**
+  - Unique tool names in place of UUIDs, and contracts written `name@major` (contract v1.8). One live name table, read on every call.
+  - Hot reload (`awm reload`): an unchanged plugin keeps its pid, and peers hear the change.
+  - A service gets only its `needs.secrets`, and none of the gateway's env. Install from a folder rolls back as one change, with pins in `installed.toml` (v1.9). The git source and the passkey approver are seams that refuse for now.
+  - The install test, with images and a fake fleet. Python discovery enforces the contract at load.
+  - auth and search manifests, the `awm_penpot` drop (auth schema v6), and the OpenCode exporter removed.
+- **Tests pass.** Rust workspace green 15 runs in a row, `test/install/run.sh` passes under rootless docker, gateway 1315, auth 92, search 112.
+- **For the trust lane.**
+  - `Caller.scope` must be added to its struct literals.
+  - `PeerTransport::tools()` now reads the peer's `GET /hub/table`.
+  - `table_changed` must post `/hub/table/changed` over the edge, or peers keep stale tables.
+- **Open for Tony.**
+  - Python discovery scans `awm/plugins` as a built-in root (38dc0f95).
+  - The isolated door's port 8765 and its fixed ceiling list.
+  - auth adds verbs to the core `awm` tool, or moves to its own `auth` tool.
+  - Which quay org the test images use. They are tagged `quay.io/hallamlab/awm-test-*:dev` and not pushed.
+- **For the cleanup pass.**
+  - The legacy branches that go at the cutover: `loader.rs:221,427`, `manifest.rs:166`, `discovery.py:366,632` and `test_plugin_contract.py:25`.
+  - `isolated.rs:18` hard-codes `harness-cc`.
+  - Cross imports: claude-science and dsh import httpsfront, reporting imports board, scopes imports dvc.
+  - The `/svc` door (`server.rs:47,237`), and auth's `/svc` call to reporting (`auth/service.py:319`).
+  - `scopes.py:507,522,604` still write `mcp-opencode.json`. `AGENTS.md:5` and `mcp_server_sdk.py:63` still name OpenCode.
