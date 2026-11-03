@@ -144,6 +144,13 @@ This doc holds the nodes of the fleet, the role of each, and how each node is ha
   4. shogun holds the admin keys for the Arbutus nodes. An admin login of ours still needs a grant from alcor (R100).
   5. Ryan is an admin of shogun. He holds a user key and an admin key there. The user key changes the rest of Arbutus through Terraform. The admin key changes shogun itself. The grants of R100 bind our sessions only, not Ryan. Tony: "Ryan is an admin, he gets an admin + user key. user allows modifications through terraform for the rest of arbutus. admin allows mods to shogun itself (same pattern elsewhere). Ryan can do as he pleases. all of this discussion is for us only." (2026-11-02).
   6. mizar holds a backup that bootstraps outside Arbutus when Arbutus is down. It mirrors the arbutus-infra repo, and keeps the Terraform state and the OpenStack credentials encrypted for mizar's admin account. It also copies altair's journals and projects. Tony: "I want to add that mizar should hold a backup somehow so that if arbutus goes down, we have a way to bootstrap outside of arbutus" and "we want journals + project to be backed up to mizar." (2026-11-02).
+- **R120.** A collaborator's machine can join for the length of a project as a temporary Windows station, together with a tether. The first case is Armando's metabolomics facility at UBC: one or more of its machines join to investigate automation of its data processing. Prepare for it now. Settle the details after Tony meets Armando and they look at the machines together. Tony: "Armando runs a metabolomics facility at UBC and our lab collaborates with them consistently. In the near future, I will be connecting 1 or more of his machines to investigate automation options for his metabolomics data processing", "all we can do now is prepare for the event. so windows station node + tether." and "i have a meeting with him so we will get more information and maybe look at the machine(s) together when teh time comes" (2026-11-02).
+  1. The node runs natively on Windows, not in WSL. Tony: "I dont think wsl will be an option" (2026-11-02).
+  2. The node is temporary. Removal leaves the machine as it was before the install. Tony: "We may want to also consider setting them up as actual awm nodes to be removed later." (2026-11-02).
+  3. The node is a station (R88). It reaches no node.
+  4. The machine joins the tailnet. Tony: "The machines will need tailscale..." (2026-11-02).
+  5. The tether stays run and done (`channels.md` R110). Tony opens it at the machine's keyboard. No tether persists across restarts. Tony: "I will be at the keyboard." and "a temporary nodes is enough. a persistent node doesnt fit the run and done format of a tether." (2026-11-02).
+  6. Install, removal and reinstall repeat through cycles of investigation and blind builds. Tony: "we may have to try multiple times in dev cycles of investigate and blind builds" (2026-11-02).
 
 ## Decisions
 
@@ -163,6 +170,7 @@ Surveyed read only on 2026-11-01, from the cloud project's `VMs/tencent/` README
 - **deneb runs more than a relay and the vault.** It also runs Penpot in Docker, the Zotero sync timer, the reporting service and a game server (`install-awm.sh` `PUBLIC_SERVICES`). R82 broken. The Zotero timer runs every 1200 s (`deneb/README.md` § The bibliography), so R83 is broken. The Zotero docs call its key read only, and `awm zotero status` reports whether it can write (`zotero/INSTALL.md`). The live key is not checked.
 - **Logins over ssh are narrow.** sshd admits `tony` by key only, with passwordless sudo, and `avatar-relay` for one reverse port. fail2ban guards port 22 (`deneb/etc/ssh/90-hardening.conf`).
 - **R64 is not compatible with the Cloudflare proxy.** For deneb to forward alcor's TLS unopened, alcor's name must skip the Cloudflare proxy. Today every public name goes through it.
+- **R120 missing.** awm runs only on Linux. Only the tether's owner side runs on Windows: `tether invite` takes `os: windows`. A tether session lives only in the operator daemon's memory, and a dropped link resumes only within 10 minutes.
 
 ### Communication between nodes
 

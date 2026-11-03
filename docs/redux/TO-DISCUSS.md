@@ -17,15 +17,13 @@ This doc is the stack of open threads for the redux interview. The interview run
 
 ## Current thread
 
-**1i. The Armando box.** See the stack entry below.
+**1j. IT services through the tether, and proof of ownership.** See the stack entry below.
 
 Parent thread 1 (end state) waits for Tony to confirm `goal.md`. Its children are 1a to 1q.
 
 ## Stack
 
 Top of the stack comes first.
-
-1i. **The Armando box.** A new box for a client, for mass spec automation, set up soon with an agent's help (Tony, 2026-10-30).
 
 1j. **IT services through the tether, and proof of ownership.** Agents debug boxes faster than Tony, but this can trigger security concerns. Tony: "We need ways to prove I own the box like the current permissions screen that requires me to be at the keyboard or have prexisting ssh access. Need to be careful here" (2026-10-30).
 
@@ -68,9 +66,11 @@ Raised before the redux started. Each enters the stack when a thread reaches it.
 - One always-on shared Chrome on alcor or mizar for agents, and for Tony to solve captchas (Tony, 2026-10-30).
 - Three workstream sessions on altair (`c4455c36`, `bc32a23b`, `e75d93a3`) disappeared after 2026-10-30 03:07Z. Resume them or leave them stopped.
 - The Claude Code daemon does not restart pinned jobs after a host reboot.
+- Armando's machines, after Tony meets him (`fleet.md` R120). Open items: the Windows version, admin rights and UBC IT policy for Tailscale and the node, instrument PCs kept offline, which plugins a Windows station runs (a third-party plugin needs a Linux container, `install.md` R116), a smoke test of a blind build on a Windows runner, the tailnet tag and its access rules, and an exception for these machines to the rule against ssh to UBC hosts. The interview proposed the last four. Tony has not decided them.
 
 ## Closed
 
+- 1i. The Armando box (2026-11-02). Result: `fleet.md` R120. One or more machines of Armando's metabolomics facility at UBC join for a project as temporary Windows stations, native and not in WSL, on the tailnet, with a run-and-done tether that Tony opens at the keyboard. Install and removal repeat through cycles of investigation and blind builds. The details wait for Tony's meeting with Armando.
 - 1h. Install and bootstrap (2026-11-02). Result: `install.md` R112 to R119. A Rust core built in a container on mizar, plugins as projects with a manifest and guards, dependencies through tool UUIDs, an install test that runs on request in a Claude cloud agent first, and public images on quay.io.
 - 1t. Rooms and the tether as one awm tool (2026-11-02). Result: `channels.md` R110 and R111, `fleet.md` R109 item 2. One `channel` tool opens a room or a machine. They share the relay, the codes, the capped push, the verbs `open`, `close`, `write` and `status`, and the close on task end. A room adds `encrypt`. Isolated sessions may hold both for their own task.
 - 1s. Isolated sessions with awm tools (2026-11-02). Result: `fleet.md` R103 item 1 and R109. A starter may set a session's trust equal or lower. An untrusted session runs in a rootless container with the host's Claude install, a whitelist of awm tools, no ssh and no messages out. Its login holds only an access token that the host refreshes, so a fault signs out the container, never the host.
