@@ -133,6 +133,7 @@ class ScopeActionResponse(BaseModel):
     status: str
     message: str
     session: int | None = None
+    discarded: dict | None = None
 
 
 # ---------------------------------------------------------------------------
