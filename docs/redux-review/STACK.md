@@ -26,7 +26,7 @@ Procedure, from dfs-interview § Work the stack:
 ## Stack
 
 - **brief-inject** (2026-11-03): Can we inject the brief when an agent is started? And also update the docs for mandatory reading to remove rhe brief?
-  - [ ] When does the harness inject the brief: on each entry to a scope, at start and on reflection cd?
+  - [x] When does the harness inject the brief: on each entry to a scope, at start and on reflection cd? (answered 2026-11-03)
   - [ ] Does the AGENTS.md startup ritual drop the brief step now, or when the injection ships?
 - **plugin-core** (2026-11-03): lets go over each of the major systems architecturally to make sure we are still aligned
 - **sessions-harness** (2026-11-03): lets go over each of the major systems architecturally to make sure we are still aligned

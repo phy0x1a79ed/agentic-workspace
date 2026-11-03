@@ -10,3 +10,7 @@ This doc holds the review of how an agent receives its scope brief (`scopes.md` 
 - A `SessionStart` hook already runs for every Claude Code session (`~/.claude/settings.json`, the reporting hook). A start hook can add text to the agent's context.
 - R40 starts a new session in a lobby with no scope. The session enters its scope later with `reflection cd`.
 - R135 puts all message injection in the harness plugin of the session.
+
+## Decisions
+
+- 2026-11-03: The harness plugin gives the brief to a session each time it enters a scope: through the start hook for a session started in a scope, and in the followup message of `reflection cd` (`scopes.md` R143). Tony: "Good choices. Reflection cd has a followup message. Natural place to inject".
