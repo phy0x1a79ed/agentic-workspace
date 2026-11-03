@@ -47,6 +47,7 @@ Which node holds which role belongs in `fleet.md`. How a deploy moves through th
   3. fileviewer, as a core plugin. Tony visits it, not agents. Tony: "Fileviewer also required and should be core. I visit, not agents."
   4. dev and transcripts. Tony: "Keep both dev and transcripts."
   5. rlm-factorio, on mizar. The fxdiff research in game-bot runs its labs through it (`fleet.md` R82 drops only the game server on deneb). Tony: "I ran factorio sessions recently. What did they use?"
+  6. engcyc, only on showtime, the Arbutus node that serves engcyc.org. Every other node uninstalls it. altair may keep it for development. Tony: "Engcyc runs on showtime. Uninstall everywhere else.  Altair may keep for dev"
 
 ## Gap from today
 
