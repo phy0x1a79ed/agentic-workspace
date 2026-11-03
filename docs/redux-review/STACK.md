@@ -21,13 +21,10 @@ Procedure, from dfs-interview § Work the stack:
 
 ## Current topic
 
-**plugin-core**. Its result: `plugin-core/README.md`.
+**sessions-harness**. Its result: `sessions-harness/README.md`.
 
 ## Stack
 
-- **plugin-core** (2026-11-03): lets go over each of the major systems architecturally to make sure we are still aligned
-  - [x] Which plugins are core and stay in the awm repo (R115 item 4), and which move into projects of their own (routines.md R33)? (answered 2026-11-03)
-  - [x] Does resolving tool UUIDs at gateway start, with a restart on rename, meet R117 item 3, which compiles names in at install? (answered 2026-11-03)
 - **sessions-harness** (2026-11-03): lets go over each of the major systems architecturally to make sure we are still aligned
 - **queue-approver** (2026-11-03): lets go over each of the major systems architecturally to make sure we are still aligned
 - **channels** (2026-11-03): lets go over each of the major systems architecturally to make sure we are still aligned
@@ -42,3 +39,4 @@ Procedure, from dfs-interview § Work the stack:
 - **search** (closed 2026-11-03): `search/README.md`
 - **scopes-awm** (closed 2026-11-03): `scopes-awm/README.md`
 - **brief-inject** (closed 2026-11-03): `brief-inject/README.md`
+- **plugin-core** (closed 2026-11-03): `plugin-core/README.md`

@@ -50,3 +50,8 @@ Surveyed read only on mizar, 2026-11-03.
 - Build the install from a git repo (R115, R116 item 2).
 - Replace the tool UUIDs with unique names: drop `uuid` from the manifests, `resolved-tools.json`, `AWM_RESOLVED_TOOLS` and `/hub/uuids`. Name contracts, such as `harness@1`. Drop `rename` from the install config (R117).
 - Load, update and remove a plugin without a gateway restart (R144).
+- Enforce the R116 guards: the manifest's secrets and network, the commit pin with passkey approval, a page origin per plugin, and a container for a third-party plugin.
+- Build the install test and its images (R118, R119).
+- Run the auth migration that drops `awm_penpot` (R134).
+- Let reflection's own-session verbs work through the isolated door, not the caller's pid. Remove the OpenCode exporter from the gateway (R135).
+- Fix `plugin-contract.md:192`, which cites R117 item 6 for the start order rule. The rule is item 7.
