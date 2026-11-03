@@ -1,0 +1,30 @@
+# Plugin contract draft v1 (docs/redux/drafts/plugin-contract.md on feat/redux-core).
+[plugin]
+name = "wake"
+version = "0.1.0"
+trust = "own"
+
+[placement]
+nodes = ["mizar", "alcor"]
+
+[[service]]
+name = "wake"
+path = "."
+run = "run.sh"
+install = "install.sh"
+
+[[tool]]
+name = "wake"
+uuid = "7c1d4b8e-2f5a-4e93-a6b0-9d3e8f21c5a7"
+major = 1
+service = "wake"
+tier = "on"
+
+[needs]
+secrets = []
+network = ["udp:9 broadcast", "tcp:22 lan"]
+
+# reflection: start_other, message, revive_pinned. uuid5(NAMESPACE_URL, "awm:tool:reflection").
+[[needs.tool]]
+uuid = "550c10ed-c2cb-5175-acfa-b17e97b52d6c"
+major = 1

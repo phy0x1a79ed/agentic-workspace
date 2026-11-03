@@ -1,0 +1,3 @@
+# Legacy loader keys, read by today's Python gateway. awm-plugin.toml is the redux manifest.
+tool = "wake"
+tier = "on"
