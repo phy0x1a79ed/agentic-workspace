@@ -24,7 +24,7 @@ just not what it was written for.
 
 **The allowlist is the point.** awm has no per-caller mode and no read-only
 credential: anything that can reach the loopback bus gets the whole surface —
-``ssh``, ``compute``, ``social``, gateway control, agent write verbs. The
+``ssh``, ``social``, gateway control, agent write verbs. The
 ``agent`` domain's own verb gate says in a comment that it is defence in depth
 and *not* a trust boundary, because the identity it keys on is spoofable. So
 handing this connector "all of awm" would not be a shortcut, it would be the
@@ -69,13 +69,10 @@ PROTOCOL_VERSION = "2025-06-18"
 #: than the same domain grants over MCP.
 #:   scope write                — mutates branches
 #:   services / gateway control — can stop the very service serving this
-#:   compute                    — schedules jobs on shared machines
 DEFAULT_ALLOWLIST: dict[str, tuple[str, ...]] = {
     "scope": ("search", "resolve"),
     "journal": ("fetch",),
     "search": ("query", "get"),
-    "drawio": ("list", "info", "read", "cells", "export", "url", "view_url"),
-    "graphify": ("find", "refs", "query", "path", "affected"),
     "dvc": ("coverage", "scope_status"),
     "precedence": ("search",),
 }

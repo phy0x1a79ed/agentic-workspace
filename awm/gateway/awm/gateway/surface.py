@@ -1,6 +1,6 @@
 """The one-service-one-tool registration rule.
 
-A service publishes under the ``tool`` its ``service.toml`` names (the folder
+A service publishes under the ``tool`` its manifest names (the folder
 name when absent), and every function it registers is published as
 ``<tool>_<verb>``. The published name is the manifest entry's ``tool`` key, else
 ``<service>_<name>``; ``name`` itself stays the service-internal handle and is

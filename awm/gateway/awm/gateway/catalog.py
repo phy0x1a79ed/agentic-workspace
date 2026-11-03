@@ -120,7 +120,7 @@ def _serialize(obj: Any) -> str:
 
 # ---------------------------------------------------------------------------
 # Gateway control ops — generated from the declarative GATEWAY_OPERATIONS
-# registry (the gateway's own control plane: status / restart / mcp-sync /
+# registry (the gateway's own control plane: status / restart /
 # hub list+deregister / services lifecycle). Their MCP tools + HTTP routes +
 # CLI commands all come from one Operation each — see gateway_ops.py.
 # ---------------------------------------------------------------------------
@@ -163,7 +163,7 @@ def _tool_name(rec: ServiceRecord, fn: dict) -> str:
     ``name`` stays the service-internal handle that ``/svc/<service>/fn/<name>``
     dispatches on, while the published name is what every surface shows. Under the
     registration rule (see ``surface``) it is ``<tool>_<verb>``, where ``<tool>``
-    is the service's ``service.toml`` ``tool``. :func:`list_tools` enforces global
+    is the tool the service's manifest names. :func:`list_tools` enforces global
     uniqueness by warn-and-skip, so two services must not publish one name."""
     return surface.published_name(rec.name, fn)
 
@@ -375,7 +375,7 @@ async def _rpc_call(rec: ServiceRecord, fn: str, args: dict, as_: str | None,
 # The expanded ``list_tools()`` projection above stays exactly as-is (the CLI
 # generator and the flat ``/invoke`` dispatch both depend on it). This second,
 # *parallel* projection folds that same surface by **tool**: each service
-# publishes under the ``tool`` its ``service.toml`` names, and a published name is
+# publishes under the ``tool`` its manifest names, and a published name is
 # ``<tool>_<verb>`` (see ``surface``). Gateway-native ops group by their ``tool``
 # and ``verb`` (their CLI group and command, when those are not set). The MCP
 # stdio proxy requests this view, so a client carries a few dozen generic tools instead of
@@ -1137,7 +1137,7 @@ async def dispatch(name: str, args: dict, as_: str | None = None) -> str:
     by-name ``/invoke`` posts keep working.
 
     A tool **no local service provides** but a peer does routes here too, so a
-    peer-only tool (``hpcllm``, ``orch``, …) is callable by its plain name
+    peer-only tool (``orch``, …) is callable by its plain name
     rather than needing a ``<tool>@<peer>`` twin.
 
     A foreign caller (``X-Awm-As`` naming a peer the book does not call domestic)

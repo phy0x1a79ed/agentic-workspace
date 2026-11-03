@@ -17,13 +17,6 @@ Owns two things in the service's own SQLite DB:
   the failed-attempt counters that back the lockout, keyed ``u:<name>`` and
   ``ip:<addr>``.
 
-* **Penpot credentials** — ``awm_penpot`` holds, per awm username, the Penpot
-  profile awm signs in as on that person's behalf. Stored in the clear, not
-  hashed: this is a credential awm must *present* to a foreign service, not one
-  it verifies. The password is also what a rotation offers Penpot as its *old*
-  password, so this table and Penpot's own profile row are two halves of one
-  fact — see :mod:`awm.auth.penpot` for what to do when they disagree.
-
 * **Device tokens** — ``awm_device_tokens`` holds, per minted token, its owner,
   a label, an optional scope and the SHA-256 of its secret. The secret itself is never stored. A
   revoked row stays, with ``revoked_at`` set, so a listing can still name it.
@@ -42,7 +35,7 @@ from typing import Any
 from awm.persistence.databases import get_connection, init_service_db
 
 SERVICE = "auth"
-_SCHEMA_VERSION = 5
+_SCHEMA_VERSION = 6
 
 _SCHEMA = """
 CREATE TABLE awm_secret (
@@ -70,13 +63,6 @@ CREATE TABLE awm_login_fail (
     locked_until REAL NOT NULL DEFAULT 0,
     last_at      REAL NOT NULL DEFAULT 0
 );
-CREATE TABLE awm_penpot (
-    username   TEXT PRIMARY KEY,
-    email      TEXT NOT NULL,
-    password   TEXT NOT NULL,
-    rotated_at REAL NOT NULL,
-    created_at REAL NOT NULL
-);
 CREATE TABLE awm_device_tokens (
     id            TEXT PRIMARY KEY,
     username      TEXT NOT NULL,
@@ -86,16 +72,6 @@ CREATE TABLE awm_device_tokens (
     last_used_at  REAL,
     revoked_at    REAL,
     scope         TEXT
-);
-"""
-
-_PENPOT_TABLE = """\
-CREATE TABLE IF NOT EXISTS awm_penpot (
-    username   TEXT PRIMARY KEY,
-    email      TEXT NOT NULL,
-    password   TEXT NOT NULL,
-    rotated_at REAL NOT NULL,
-    created_at REAL NOT NULL
 );
 """
 
@@ -128,9 +104,13 @@ CREATE TABLE IF NOT EXISTS awm_login_fail (
     last_at      REAL NOT NULL DEFAULT 0
 );
 """,
-    (2, 3): _PENPOT_TABLE,
+    # v3 added the retired Penpot credential table. The step stays so the
+    # version chain holds, and creates nothing.
+    (2, 3): "",
     (3, 4): _DEVICE_TOKENS_TABLE,
     (4, 5): "ALTER TABLE awm_device_tokens ADD COLUMN scope TEXT;",
+    # awm_penpot held Penpot passwords in plaintext (install.md R134).
+    (5, 6): "DROP TABLE IF EXISTS awm_penpot;",
 }
 
 
@@ -354,87 +334,6 @@ def fail_clear(key: str) -> None:
     try:
         conn.execute("DELETE FROM awm_login_fail WHERE key = ?", (key,))
         conn.commit()
-    finally:
-        conn.close()
-
-
-# --- Penpot credentials ------------------------------------------------------
-
-
-def _penpot_row(row: Any) -> dict[str, Any]:
-    return {
-        "username": row["username"],
-        "email": row["email"],
-        "password": row["password"],
-        "rotated_at": row["rotated_at"],
-        "created_at": row["created_at"],
-    }
-
-
-def penpot_get(username: str) -> dict[str, Any] | None:
-    conn = get_connection(SERVICE)
-    try:
-        row = conn.execute(
-            "SELECT * FROM awm_penpot WHERE username = ?", (username,)).fetchone()
-        return _penpot_row(row) if row is not None else None
-    finally:
-        conn.close()
-
-
-def penpot_list() -> list[dict[str, Any]]:
-    conn = get_connection(SERVICE)
-    try:
-        rows = conn.execute("SELECT * FROM awm_penpot ORDER BY username").fetchall()
-        return [_penpot_row(r) for r in rows]
-    finally:
-        conn.close()
-
-
-def penpot_upsert(username: str, *, email: str, password: str,
-                  now: float | None = None) -> dict[str, Any]:
-    """Record the Penpot credential awm holds for ``username``.
-
-    Replaces both the email and the password on an existing row: re-recording
-    is how a credential that drifted out of step with Penpot's own profile row
-    is put back, and that repair is worthless if it cannot overwrite.
-    """
-    now = time.time() if now is None else now
-    conn = get_connection(SERVICE)
-    try:
-        conn.execute(
-            "INSERT INTO awm_penpot (username, email, password, rotated_at, created_at) "
-            "VALUES (?, ?, ?, ?, ?) "
-            "ON CONFLICT(username) DO UPDATE SET email = excluded.email, "
-            "password = excluded.password, rotated_at = excluded.rotated_at",
-            (username, email, password, now, now),
-        )
-        conn.commit()
-    finally:
-        conn.close()
-    return penpot_get(username)  # type: ignore[return-value]
-
-
-def penpot_set_password(username: str, password: str,
-                        now: float | None = None) -> bool:
-    """Store a rotated password. Called only after Penpot has confirmed it."""
-    now = time.time() if now is None else now
-    conn = get_connection(SERVICE)
-    try:
-        cur = conn.execute(
-            "UPDATE awm_penpot SET password = ?, rotated_at = ? WHERE username = ?",
-            (password, now, username))
-        conn.commit()
-        return cur.rowcount > 0
-    finally:
-        conn.close()
-
-
-def penpot_delete(username: str) -> bool:
-    conn = get_connection(SERVICE)
-    try:
-        cur = conn.execute("DELETE FROM awm_penpot WHERE username = ?", (username,))
-        conn.commit()
-        return cur.rowcount > 0
     finally:
         conn.close()
 

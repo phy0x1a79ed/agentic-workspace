@@ -732,7 +732,7 @@ def test_the_door_refuses_a_reader_post_it_cannot_inspect(door, modes):
 
 
 @pytest.mark.parametrize("mode", ["fixed", "fixed2", "unknown", "reader"])
-@pytest.mark.parametrize("name", ["awm_restart", "awm_mcp_sync"])
+@pytest.mark.parametrize("name", ["awm_restart"])
 def test_a_flat_native_op_is_judged_as_its_tool_and_verb(client, dispatched, modes,
                                                              catalog_of_services, mode, name):
     modes[PID] = mode
@@ -807,7 +807,8 @@ def test_missing_or_null_args_still_dispatch(client, dispatched, modes):
     assert client.post("/invoke", json={"name": "cx_list"}, headers=HEAD).status_code == 200
     assert client.post("/invoke", json={"name": "cx_list", "args": None},
                        headers=HEAD).status_code == 200
-    assert dispatched[0][1] == {} and dispatched[1][1] == {}
+    # Only the gateway's own keys, such as the caller's trust, are added.
+    assert all(not any(not k.startswith("_") for k in d[1]) for d in dispatched[:2])
 
 
 # --- small refusals ---------------------------------------------------------------
@@ -854,10 +855,7 @@ def test_the_proxy_walk_reads_session_records_where_the_gate_does(tmp_path, monk
     sessions.mkdir()
     (sessions / "4242.json").write_text("{}")
     monkeypatch.setenv("AWM_CX_SESSIONS", str(sessions))
-    assert mcp_caller.resolve_caller_pid(4242, ppid_of=lambda p: None,
-                                         is_opencode=lambda p: False) == 4242
-    assert mcp_caller.resolve_caller_pid(77, ppid_of={77: 4242}.get,
-                                         is_opencode=lambda p: False) == 4242
+    assert mcp_caller.resolve_caller_pid(4242, ppid_of=lambda p: None) == 4242
+    assert mcp_caller.resolve_caller_pid(77, ppid_of={77: 4242}.get) == 4242
     monkeypatch.setenv("AWM_CX_SESSIONS", str(tmp_path / "nowhere"))
-    assert mcp_caller.resolve_caller_pid(77, ppid_of={77: 4242}.get,
-                                         is_opencode=lambda p: False) == 77
+    assert mcp_caller.resolve_caller_pid(77, ppid_of={77: 4242}.get) == 77

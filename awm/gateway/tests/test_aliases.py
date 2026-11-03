@@ -123,7 +123,6 @@ def test_the_published_renames_are_in_the_table():
         ("auth_node_key", "awm_node_key"), ("auth_status", "awm_auth_status"),
         ("rlm_browser_acquire", "browser_acquire"),
         ("rlm_factorio_world_new", "factorio_world_new"),
-        ("penpot_plugins_status", "penpot-plugins_status"),
     }
     assert expected <= pairs
 
@@ -172,7 +171,7 @@ def _tree_published():
 
 def test_every_row_this_branch_owns_lands_on_a_name_the_tree_publishes():
     published = _tree_published()
-    owned = {"awm", "browser", "factorio", "penpot-plugins"}
+    owned = {"awm", "browser", "factorio"}
     missing = [a.flat_new for a in aliases.ALIASES
                if a.new_tool in owned or a.flat_new.startswith("operations_peer_")
                if a.flat_new not in published]

@@ -1,0 +1,23 @@
+[plugin]
+name = "transcripts"
+version = "0.1.0"
+trust = "own"
+
+[[service]]
+name = "transcripts"
+
+[[service.archive]]
+name = "transcripts"
+mode = "live"
+query = "transcripts_query"
+optin = true
+
+[[tool]]
+name = "transcripts"
+major = 1
+tier = "off"
+
+[needs]
+secrets = []
+network = []
+platform = ["linux"]

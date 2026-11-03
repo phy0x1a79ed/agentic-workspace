@@ -6,7 +6,7 @@ systemd units and a forked copy of awm's own reverse proxy becomes a service
 like any other: visible in ``awm services list``, health as a verb, and
 reachable from any node in the fleet.
 
-Like ``virtmic``, this service's real job is owning something it did not write.
+Like ``mic`` with PulseAudio, this service's real job is owning something it did not write.
 Unlike every other one, it owns it *at arm's length*: the workbench daemon is
 adopted rather than parented, so an awm deploy cannot interrupt a conversation.
 See ``daemon`` for that argument in full.

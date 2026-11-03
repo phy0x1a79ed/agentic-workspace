@@ -46,12 +46,9 @@ env with `AWM_ENV`.
 
 ## Harness Integration
 
-AWM drives Claude Code and OpenCode. Each harness loads three context tiers: the workspace `AGENTS.md`, the repo `AGENTS.md` at the scope worktree root, and the scope brief `.awm/context.md`.
+AWM drives Claude Code. It supports no OpenCode harness (`docs/redux/install.md` R135 item 5). A session loads three context tiers: the workspace `AGENTS.md`, the repo `AGENTS.md` at the scope worktree root, and the scope brief `.awm/context.md`. Claude Code loads both `AGENTS.md` tiers by its native walk-up from the cwd. The startup ritual in `AGENTS.md` has the agent read `.awm/context.md`. A `reflection start_other` session loads context the same way.
 
-- **Claude Code** loads both `AGENTS.md` tiers by its native walk-up from the cwd. The startup ritual in `AGENTS.md` has the agent read `.awm/context.md`. A `reflection start_other` session loads context the same way.
-- **OpenCode** walks up for `AGENTS.md` only as far as the worktree root, so it finds the repo tier alone. `awm scope create` writes `<scope>/.awm/mcp-opencode.json`, whose `instructions` array loads the workspace `AGENTS.md` and `.awm/context.md`. awm does not start OpenCode sessions.
-
-`<workspace>/.mcp.json` is the MCP registry. The gateway fans it out to `.awm/spawn-mcp.json` for claude and `.awm/mcp-opencode.json` for opencode, at startup and on `awm gateway mcp-sync`. Every registered server is advertised even when its upstream is down.
+`<workspace>/.mcp.json` is the MCP registry. Every registered server is advertised even when its upstream is down.
 
 ### Set up Claude Code
 
@@ -60,38 +57,11 @@ AWM drives Claude Code and OpenCode. Each harness loads three context tiers: the
 
 **CAUTION** Claude Code truncates SessionStart hook output at about 10K characters and drops the middle without a warning. A context hook loses orientation text for any scope with a long brief.
 
-### Set up OpenCode
-
-1. Put the `opencode` CLI on `PATH`.
-2. Register the awm MCP proxy in `~/.config/opencode/opencode.jsonc`:
-
-   ```jsonc
-   {
-     "mcp": {
-       "awm": {
-         "type": "local",
-         "enabled": true,
-         "command": ["/home/<you>/lib/miniforge3/envs/awm/bin/awm-mcp"],
-         "environment": { "AWM_WORKSPACE": "/home/<you>/agentic_workspace" }
-       }
-     }
-   }
-   ```
-
-3. Symlink `~/.config/opencode/AGENTS.md` to `~/.claude/CLAUDE.md`. Both harnesses then share one set of global rules.
-4. Launch `opencode` in a scope with `OPENCODE_CONFIG=<scope>/.awm/mcp-opencode.json`.
-
-**CAUTION** Do not add the repo `AGENTS.md` to the `instructions` array. OpenCode's walk-up already loads it, so a second entry injects it twice.
-
 ### Verify the setup
 
 ```bash
 jq '.hooks.SessionStart // "absent"' ~/.claude/settings.json   # expect "absent"
-awm gateway mcp-sync
-ls <workspace>/.awm/spawn-mcp.json <workspace>/.awm/mcp-opencode.json
-jq .instructions <scope>/.awm/mcp-opencode.json                 # expect the workspace AGENTS.md and .awm/context.md
 cd <scope> && claude -p "List the AGENTS.md files loaded into your context, by absolute path."
-cd <scope> && opencode run "list your loaded instructions"
 ```
 
 Run `awm scope heal` to bring scopes that predate this wiring to the current shape. Add `--dry-run` to preview the changes.
@@ -112,7 +82,7 @@ auth — ever.**
 | `run.sh` | **yes**, executable | The *only* thing the gateway ever runs to start the service: `bash run.sh`. Self-contained — it must launch the process with no extra arguments and no inherited assumptions. |
 | `INSTALL.md` | **yes** | Human install notes: deps, env, anything an operator needs. |
 | `install.sh` | optional | Editable-installs the service's deps and writes the `.runtime-env` sidecar (see below). Picked up automatically by the install loop. |
-| `service.toml` | optional | `tool` (the MCP tool the service publishes under, default the folder name), `tier` (`on` or `off`) and `[[archive]]` tables that plug the service into `search`. Every function the service registers is published as `<tool>_<verb>`. |
+| `awm-plugin.toml` | **yes** | The plugin manifest: the service, the MCP tool it publishes under with its unique name, major and tier (`on` or `off`), its pages, its `[needs]`, and `[[service.archive]]` tables that plug it into `search`. Every function the service registers is published as `<tool>_<verb>`. The format is `docs/redux/drafts/plugin-contract.md`. A few legacy folders still use `service.toml` (see `ARCHITECTURE.md` § *The plugin manifest*). |
 
 ### The three injected env vars (and *only* these)
 
@@ -196,8 +166,8 @@ To live-test local changes without evicting the running bases, bring your
 worktree's pages **and** services up against a hub in one command:
 
 ```bash
-awm dev shadow --port 7821 pages/tts \
-  awm/services/tts awm/services/stt
+awm dev shadow --port 7821 pages/mic \
+  awm/services/mic awm/services/fileviewer
 ```
 
 `--port` selects the hub (**default `7821`, the dev sandbox**) — the CLI
@@ -305,8 +275,8 @@ Pages and components never hand-roll `fetch` against `/svc/<name>/…`. Use
   responses into a typed `HttpError` so callers can branch on failure without
   regex-parsing the message. The hub is loopback and unauthenticated — there
   is no cookie, identity header, or login flow to wire up.
-- `svc('tts').fn('listEngines')` / `svc('tts').session('call', {…})` /
-  `svc('tts').ws(sessionId)` — wraps the `/svc/<name>/{fn,session}/…`
+- `svc('mic').fn('status')` / `svc('mic').session('stream', {…})` /
+  `svc('mic').ws(sessionId)` — wraps the `/svc/<name>/{fn,session}/…`
   surface every service exposes.
 
 ### Hub-service control plane
@@ -368,7 +338,7 @@ awm gateway refresh   # restart server to pick up source changes (dev mode)
 
 The server auto-shuts down after 30 minutes of inactivity (configurable via `AWM_IDLE_SHUTDOWN` env var; set to `0` to disable).
 
-`awm <command> --help` lists every subcommand. Beyond the gateway-control groups, the CLI generates an `awm <tool> <verb>` command for every registered feature-service verb (`awm scope create`, `awm reflection list-other`, …) from the same live catalog the MCP surface reads. Note the surfaces are projected differently from one shared catalog: the **CLI and HTTP** stay fully expanded, hidden verbs included (one `awm <tool> <verb>` command and one `POST /invoke {name:"<tool>_<verb>"}` route per verb), while the **MCP** surface collapses to one generic `{verb,args,peer}` tool per service tool (`GET /tools?view=domains`, with a `describe` verb for parameter schemas), all top-level, to keep the tool count small for agents. A service's `service.toml` sets its `tool` and its `tier` (`on` or `off`), and an off tool stays on the CLI and HTTP. So shell usage is unchanged; only what an MCP client sees is collapsed. For agent-facing usage (scopes, the journal), see `AGENTS.md` and `PROTOCOLS.md` — those workflows are typically driven from inside an MCP-equipped agent, not the shell.
+`awm <command> --help` lists every subcommand. Beyond the gateway-control groups, the CLI generates an `awm <tool> <verb>` command for every registered feature-service verb (`awm scope create`, `awm reflection list-other`, …) from the same live catalog the MCP surface reads. Note the surfaces are projected differently from one shared catalog: the **CLI and HTTP** stay fully expanded, hidden verbs included (one `awm <tool> <verb>` command and one `POST /invoke {name:"<tool>_<verb>"}` route per verb), while the **MCP** surface collapses to one generic `{verb,args,peer}` tool per service tool (`GET /tools?view=domains`, with a `describe` verb for parameter schemas), all top-level, to keep the tool count small for agents. A service's `awm-plugin.toml` sets its `tool` and its `tier` (`on` or `off`), and an off tool stays on the CLI and HTTP. So shell usage is unchanged; only what an MCP client sees is collapsed. For agent-facing usage (scopes, the journal), see `AGENTS.md` and `PROTOCOLS.md` — those workflows are typically driven from inside an MCP-equipped agent, not the shell.
 
 ### Per-workspace env file
 
@@ -517,7 +487,6 @@ awm/                          # nested tree of pip dists (PEP 420 namespace layo
   services/enabled.json       # per-service enable/disable state
   state/services.json         # PID journal for respawn
   awm.pid  awm.log
-  spawn-mcp.json / mcp-opencode.json   # MCP exporter fan-out
 .mcp.json                     # MCP server registration
 ```
 

@@ -16,7 +16,9 @@ from __future__ import annotations
 import json
 import logging
 import sys
+import time
 
+from awm import usage
 from awm.transcripts import runs, sweep
 
 
@@ -25,9 +27,12 @@ def main() -> int:
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
+    start = time.monotonic()
     runs.init()
     result = sweep.archive(days=sweep.DEFAULT_RETENTION_DAYS)
     result["run"] = runs.RunsDAO().record("sweep", result, trigger="timer")
+    usage.record_background("nightly", not result["failed"],
+                            round((time.monotonic() - start) * 1000), plugin="transcripts")
     print(json.dumps(result))
     return 1 if result["failed"] else 0
 

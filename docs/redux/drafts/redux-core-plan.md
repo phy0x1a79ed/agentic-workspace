@@ -1,0 +1,194 @@
+# redux-core plan
+
+## Context
+
+The redux rewrites the core of awm in Rust (`install.md` R112). This lane builds the build container, then the core: one binary that holds the bootstrap, the CLI, the gateway with its plugin loader, and the MCP proxy. The gateway must run today's Python services unchanged, so each service can move to the plugin contract one at a time. The contract that other lanes build against is `docs/redux/drafts/plugin-contract.md`.
+
+## What you said
+
+> Build, in this order: 1. mizar's Rust build container with a cargo cache volume (R113). 2. The core as a Cargo workspace in your worktree: the bootstrap binary, the CLI, the gateway with its plugin loader, and the MCP proxy (R112). 3. Usage per plugin in the gateway (R132). 4. Tests that start the gateway in a temp dir, load a fake plugin and a real Python service, and route an MCP call and a CLI call through it.
+
+> It must load today's Python services through that contract unchanged, so the swap can go one service at a time.
+
+> Keep the MCP surface compatible with today's (tools with verb and args, describe, the peer key).
+
+> Local updates only, bring the peers up to date in one sweep when we are done
+
+## Issues
+
+- I1. No node has a Rust toolchain, and no build container exists.
+- I2. The core is Python, and nothing in Rust can load a plugin.
+- I3. Nothing reads a plugin manifest, so a plugin cannot ship its tools, pages and dependencies in one folder.
+- I4. The usage tally counts only MCP calls, so pages, CLI use, direct code use and background runs go uncounted.
+- I5. No test starts a gateway with a plugin end to end.
+
+## High-level goals
+
+- G1. Rust builds run in a container on mizar and stay fast.
+- G2. One Rust binary does the jobs of today's gateway, CLI and MCP proxy, for the parts other lanes need first.
+- G3. Today's Python services run under the Rust gateway with no change.
+- G4. The gateway shows which plugins are used, by the way each one is used.
+- G5. A test proves the whole path works.
+
+## Acceptance criteria
+
+- `scripts/rust-build.sh` builds image `awm-rust-build` and runs cargo in it with a named volume `awm-cargo-cache`. A second build of an unchanged tree takes under 30 s.
+- `core/` is a Cargo workspace with `members = ["crates/*"]`. `cargo build --release --target x86_64-unknown-linux-musl` gives one static `awm` binary.
+- `awm gateway serve --state <dir>` loads plugins from its configured roots. It reads `awm-plugin.toml` and legacy `run.sh` folders. It refuses a tool-name clash, a UUID clash, a missing needed UUID, a reserved name outside a core root, and a path that leaves the plugin.
+- The gateway speaks the service wire protocol of the contract: register, control WebSocket, ready, call, reply, shutdown, usage frame. `/svc/<service>/fn/<fn>` works for today's service-to-service calls.
+- `GET /tools?view=domains` returns one tool per domain with input `{verb, args, peer}`. `verb = "describe"` answers verb schemas. `peer` naming a configured peer forwards the call there.
+- `awm mcp` answers MCP `initialize`, `tools/list` and `tools/call` over stdio.
+- `awm <tool> <verb> --key value` runs a verb and prints its result.
+- Usage events for `mcp`, `cli`, `http`, `plugin`, `page`, `code` and `background` land in `<state>/usage/<date>.jsonl`. `awm usage` prints the tally per plugin and surface.
+- `cargo test` in the container starts the gateway in a temp dir with a fake plugin and the real Python `journal` service, and routes an MCP call and a CLI call to each.
+
+## Tasks
+
+- T1. Build the Rust build container and its cache volume (G1)
+- T2. Lay out the Cargo workspace and the shared protocol crate (G2)
+- T3. Build the plugin loader (G2, G3)
+- T4. Build the gateway: hub protocol, supervisor, catalog, invoke, pages (G2, G3)
+- T5. Commit a checkpoint
+- T6. Compact
+- T7. Build usage per plugin (G4)
+- T8. Build the MCP proxy, the CLI and the bootstrap (G2)
+- T9. Write the end-to-end tests (G5)
+- T10. Commit, journal and report to the coordinator
+- T11. Debrief
+
+Follow-up for redux-build/trust (the first sweep bullet of its plan § Callouts):
+
+- T12. Stamp the caller's trust and scope in the Python gateway and its proxy (G3)
+- T13. Fill the caller's session, trust and scope in the Rust gateway (G2, G3)
+- T14. Document the two arguments in the contract, v1.6
+- T15. Commit, report to the coordinator and debrief
+
+Follow-up for redux-build/harness, the gateway door for isolated sessions (`fleet.md` R109, `install.md` R135):
+
+- T16. Build the token door in the Rust gateway: resolve, whitelist, pin, serve MCP over HTTP (G2)
+- T17. Build the same door in the Python gateway, for the containers that start before the cutover (G3)
+- T18. Test both doors with a fake token provider (G5)
+- T19. Document the door in the contract, v1.7
+- T20. Commit, report to the coordinator and debrief
+
+## Approach by task
+
+### T1. Build the Rust build container and its cache volume
+
+Add `core/Dockerfile` from `rust:1-bookworm` with the musl target and `musl-tools`. Add `scripts/rust-build.sh`, which builds the image when absent and runs cargo with the worktree mounted at its host path, the volume `awm-cargo-cache` on the cargo registry and a `target` folder kept in the worktree. The script mounts the host's `~/miniforge3` read only, so the tests can start a real Python service. This is a local image and volume, not a host change.
+
+Gotchas: rootless Docker maps uid 0 in the container to Tony's uid, so files in `target/` stay his. Conda Python needs glibc, which bookworm has.
+
+### T2. Lay out the Cargo workspace and the shared protocol crate
+
+Crates: `awm-proto` (manifest types, wire frames, usage event, `CallContext`), `awm-gateway`, `awm-mcp`, `awm-cli` and the `awm` binary crate that joins them. The trust lane adds `awm-trust` and `awm-edge` under `crates/` on its own branch.
+
+Gotchas: keep `awm-proto` free of async deps, so other lanes can depend on it cheaply. Use rustls only, so the musl build needs no OpenSSL.
+
+### T3. Build the plugin loader
+
+Scan each root in order. Read `awm-plugin.toml`, or synthesise a legacy plugin from `run.sh` and `service.toml`. Apply the install config's `plugins`, `exclude` and `rename`, the reserved list, the clash rules and UUID resolution. Placement lives in the install config, not the manifest (`fleet.md` R140). Write `resolved-tools.json` per plugin and pass its path as `AWM_RESOLVED_TOOLS`. Resolve `implements` and `needs.contract` (R117 item 4, Tony chose option a).
+
+Gotchas: legacy UUID is `uuid5(NAMESPACE_URL, "awm:tool:<name>")`, the same as the plugins lane. A page with no `dir` resolves by name in the page roots.
+
+### T4. Build the gateway
+
+axum on loopback. Routes: `/status`, `/tools`, `/invoke`, `/usage`, `/hub/service/register`, `/hub/service/control/{id}`, `/hub/resolve/{uuid}`, `/svc/{service}/fn/{fn}`, `/p/{plugin}/{page}/...`. The supervisor starts each enabled service with `bash run.sh`, respawns after a 10 s silence, and sends `shutdown` on stop. The catalog projects each `ready` manifest into `<tool>_<verb>` and collapsed domain tools. `PeerTransport` is a trait with an HTTP implementation.
+
+Gotchas: a duplicate register gets 409. A call to a tool that is not up waits up to 10 s, then fails 503. The Python adapter sends `ready` before its `on_start` finishes, so calls may be slow at first. Out of scope for tonight: filehop, aliases, mode gates, the private gate, overlays and dev shadow, sessions and bridges.
+
+### T5. Commit a checkpoint
+
+Commit the workspace with passing unit tests.
+
+### T6. Compact
+
+Handoff: the contract file, this plan and `core/` are on disk. The todo list holds the task state. Re-read `build-rules.md` and `lanes.md`, then continue with T7.
+
+### T7. Build usage per plugin
+
+The gateway records each `/invoke` by `X-Awm-Surface` and `X-Awm-Plugin`, each HTML GET under `/p/`, each `usage` frame, and each `POST /usage`. It appends JSONL per day and keeps a 60-day tally. `GET /usage` returns the tally.
+
+Gotchas: a plugin-to-plugin call counts for both plugins. Asset GETs under `/p/` are not visits.
+
+### T8. Build the MCP proxy, the CLI and the bootstrap
+
+`awm mcp` is a stdio JSON-RPC loop that reads `/tools?view=domains` and posts `/invoke` with `X-Awm-Surface: mcp`. It follows a `peer_redirect`. `awm <tool> <verb>` parses `--key value` pairs, with JSON values where they parse. `awm bootstrap` writes the state dir and a default config and prints what is still manual.
+
+Gotchas: MCP clients send `notifications/initialized` with no id, which gets no reply.
+
+### T9. Write the end-to-end tests
+
+An integration test builds a temp state dir with three roots: a fake plugin written as a bash plus Python-free stub is not possible, so the fake plugin is a tiny Rust test service binary built in the workspace. The real Python service is `journal`, started through `DEV_PYTHONPATH` with the host's conda env. The test routes an MCP `tools/call` through `awm mcp` and a CLI call through `awm`. It also loads `mic` from the plugins worktree when that folder exists, to check the manifest parse.
+
+Gotchas: the journal service writes its DB under `AWM_WORKSPACE`, which the test points at the temp dir. Skip the Python part with a clear message when conda is absent.
+
+### T10. Commit, journal and report to the coordinator
+
+Commit on `feat/redux-core`. Post a journal entry. Send one line to job 8162a704.
+
+### T11. Debrief
+
+Run the `debrief` skill, then `retire`.
+
+### T12. Stamp the caller's trust and scope in the Python gateway and its proxy
+
+`/invoke` and the `/svc` door strip any `_caller_trust` and `_caller_scope` the model sent. A call from a session then gets the session's level from reflection's ledger, `<AWM_DIR>/services/reflection/trust.json`, keyed by the R9 session id, with no entry read as `trusted`. It gets the session's scope from the `cwd` of its record, through `awm.config.scope_of`. Every call is stamped, not only `_CALLER_STAMPED`: the journal bounds every verb and the browser every verb. An edge request keeps the two keys as the far proxy sent them, as it keeps `_caller_session`. The proxy fills them when it follows a peer redirect.
+
+Gotchas: a call with no session pid gets neither key, so the journal reads it as trusted and the browser as cooperative. That matches what feat/redux-trust 5ae958f1 expects.
+
+### T13. Fill the caller's session, trust and scope in the Rust gateway
+
+`context()` reads `X-Awm-Session-Pid` on a local request and fills `caller.session`, `caller.trust` and a new `caller.scope` from the same record and ledger. The call path writes `_caller_trust` and `_caller_scope` into the args for services that predate `caller`.
+
+Gotchas: `Caller` gains a field, so feat/redux-trust's struct literals in `awm-edge` and `awm-cli/src/edge.rs` need `scope` at the sweep.
+
+### T14. Document the two arguments in the contract, v1.6
+
+### T15. Commit, report to the coordinator and debrief
+
+### T16. Build the token door in the Rust gateway
+
+An isolated session runs in a container and has no host pid, so it names itself by the `X-Awm-Caller-Token` header that cch wrote into its MCP config. The gateway serves `POST /mcp`, MCP over streamable HTTP with JSON replies, on the loopback listener and on an optional second listener, `isolated_listen`, that serves `/mcp` and nothing else. The door asks `harness-cc caller_of_token {token}` who holds the token and keeps a positive answer for 10 s. It admits a call only when:
+
+1. The tool and verb are on the holder's `tools`, or the verb is `describe`. `tools/list` and `describe` show only those.
+2. The tool is not on the gateway's ceiling: no `ssh`, no `harness-*`, and no `reflection` verb but the session's own (`whoami`, `compact`, `message_self`, `pending`, `mode`). The ceiling holds whatever a token record says.
+3. `peer` is absent or names this node.
+4. `project`, `scope` and `to_scope` name the session's own, when the caller sends them. A verb that declares `project` or `scope` gets the session's value filled in.
+
+The call then runs with the caller `{lane: local, session: <R9 id>, trust, scope}`, and the args carry `_caller_trust`, `_caller_scope` and a new `_caller_session_id`. Trust is `untrusted` unless the record says `cooperative`. Any `_caller_*` key the model sent is dropped.
+
+Gotchas: the loopback `/invoke` must stay out of the container's reach, because a request there is a trusted local caller. The door listener therefore serves `/mcp` only. reflection and operations find "your own session" by `_caller_pid` today, so their self verbs fail for a token caller until they read `_caller_session_id`.
+
+### T17. Build the same door in the Python gateway
+
+Every node runs the Python gateway until the cutover, and the sweep lands isolated sessions before it, so the containers meet the Python gateway first. The same rules go into a module beside `server.py`. `/mcp` mounts on the main app. `AWM_ISOLATED_LISTEN` starts a second uvicorn server in the lifespan with a door-only app. Dispatch goes through `catalog.dispatch` with the stamps applied by the door, never by `_stamp_caller`.
+
+Gotchas: `_stamp_caller` and `_stamp_trust` read pid headers. The door must not run them, or a forged `X-Awm-Session-Pid` from the container would win.
+
+### T18. Test both doors with a fake token provider
+
+The fake plugin gains `caller_of_token` and a scoped echo, so it can serve as `harness-cc` with tokens from its environment. The Rust e2e test starts a second fake as `harness-cc` and drives `/mcp` on the door listener. The Python tests stub `catalog.dispatch` and the token lookup.
+
+Gotchas: the fake must answer the shape `_caller_of_token` in cch's `hub_adapter.py` returns: `known`, `session_id`, `project`, `scope`, `trust`, `tools`.
+
+### T19. Document the door in the contract, v1.7
+
+Add § Isolated sessions: the header, the provider verb, the rules, `_caller_session_id`, the listener and its port.
+
+### T20. Commit, report to the coordinator and debrief
+
+## Callouts
+
+- Tony chose option a for an interface served by several plugins (R117 item 4, feat/redux 840daeae). The contract's § Contracts holds it.
+- Python discovery now scans `awm/plugins` as a built-in root, commit 38dc0f95, for the lanes that add core plugins there.
+- The plugin contract is at v1.7 in `docs/redux/drafts/plugin-contract.md`. Since v1 it gained the caller trust frame, the refresh hook, `platform` and `gpu`, shared tools for legacy folders, `[[external]]` services, the `[fleet]` table, the caller arguments `_caller_trust` and `_caller_scope`, and the isolated door with `_caller_session_id`.
+- The Rust gateway needs `awm.gatewayclient` from this branch. Each spawned service gets a fresh token at `AWM_HUB_TOKEN_FILE` and sends it on register. An older adapter gets 403. The services themselves run unchanged.
+- A service under another user's systemd unit (R99, R107) dials the gateway as today. The install config lists it in `[[external]]` with a token file, and the supervisor never spawns it.
+- `feat/redux-trust` builds `EdgePeers` on this branch's `PeerTransport` and changes the `gateway serve` arm. It merges cleanly with this branch, and every test passes on the merge. The final sweep joins the two.
+- `[[peer]] url` in the install config is the HTTP test transport only. Real peers come from the edges file through `EdgePeers`.
+- `Caller` in `awm-proto` gained `scope`. The sweep must add it to feat/redux-trust's struct literals, or the merge does not compile: `awm-edge/src/transport.rs` (`scope: ctx.caller.scope.clone()`), `awm-edge/src/server.rs` (`scope: req.caller.scope`), `awm-cli/src/edge.rs` and `awm-edge/tests/roundtrip.rs` (`scope: None`).
+- The isolated door needs three things at the sweep before a container session reaches awm:
+  - reflection's own-session verbs and the operations verbs on the whitelist must read `_caller_session_id` when `_caller_pid` is absent. Until then `whoami`, `compact`, `message_self`, `mode` and `track` fail for an isolated session. journal, search and precedence work as they are.
+  - Each node that runs isolated sessions sets `AWM_ISOLATED_LISTEN` (Python) or `isolated_listen` (Rust) to an address its containers reach, with port 8765 for cch's default URL. The route from a rootless container to the host is unverified (redux-harness plan § Callouts). Keep rootlesskit's host-loopback block on, so the loopback `/invoke` stays out of reach.
+  - The harness lane asked for `harness-*` calls to be accepted only from plugins (`X-Awm-Plugin`). The door refuses every `harness-*` tool to a token. The loopback rule is not built, because reflection does not send `X-Awm-Plugin` yet.

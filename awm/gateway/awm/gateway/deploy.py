@@ -89,7 +89,7 @@ def installable_units(root: Path) -> list[str]:
 
 
 # The files whose change means a service's install.sh must run again.
-INSTALL_INPUTS = ("install.sh", "pyproject.toml", "service.toml")
+INSTALL_INPUTS = ("install.sh", "pyproject.toml", "service.toml", "awm-plugin.toml")
 
 
 def install_inputs_hash(folder: Path) -> str:

@@ -10,33 +10,21 @@ opens a ``stream`` session, the gateway byte-relays it to this process, and
 ``bridge`` pipes the PCM into the ``virtmic`` null-sink. mic used to run its own
 off-host HTTPS listener because ``getUserMedia`` needs a secure context;
 ``httpsfront`` supplies that for every awm page now, so mic mints no certificates
-and binds no port. That is also why it can start on a node that holds only the
-public half of the fleet CA — which it could not before.
+and binds no port.
 
-**mic does not own the audio plumbing.** PulseAudio and the ``virtmic``
-null-sink belong to the ``virtmic`` service; mic is a consumer that pipes PCM
-into the sink with ``pacat``. It used to provision the sink itself at startup —
-once, never re-checked — which is why a PulseAudio idle-exit destroyed the sink
-permanently while mic went on reporting ``ready`` and recording silence. Two
-things follow from the split:
-
-- ``mic_status`` reports the sink's **real** health by asking ``virtmic``,
-  rather than a bare ``ready`` that says nothing about the audio path.
-- The dependency is explicit rather than temporal. The gateway guarantees no
-  start order between services, so mic may well boot before virtmic; instead of
-  provisioning at startup, ``bridge.start_stream`` calls ``virtmic ensure``
-  immediately before spawning ``pacat``.
+mic also owns the audio plumbing: PulseAudio and the null-sink (``audio``). A
+separate virtmic service held it until the redux folded it in here. It is kept
+alive three ways: the PulseAudio config files, a pass in ``on_start``, and the
+health loop below. ``bridge.start_stream`` also ensures the sink right before
+it spawns ``pacat``.
 
 Run via ``run.sh`` (which the gateway spawns and respawns):
     python -m awm.mic.hub_adapter
 
 Functions:
   - status       (tool ``mic_status``) — sink name, active stream count, last
-                 PCM timestamp, plus the virtmic sink's health as reported by
-                 the virtmic service.
-  - ensure_sink  (tool ``mic_ensure_sink``) — **deprecated**; forwards to
-                 ``virtmic_ensure``. Kept for one release so existing scripts
-                 and muscle memory don't break.
+                 PCM timestamp, and the sink's health.
+  - ensure_sink  (tool ``mic_ensure_sink``) — run one reconcile pass now.
 
 Sessions:
   - kind="stream", transport="direct" — browser mic capture. Opened with
@@ -49,15 +37,20 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from typing import Any
 
-from awm import gatewayclient
+from awm import usage
 from awm.gatewayclient import ServiceAdapter, SessionContext
 
-from awm.mic import bridge
+from awm.mic import audio, bridge
 
 log = logging.getLogger("awm.mic.hub_adapter")
 
+#: How often the health loop reconciles. Short enough that a PulseAudio
+#: restart is repaired well before anyone notices a dead capture source,
+#: cheap enough to ignore (a handful of `pactl` probes).
+HEALTH_INTERVAL_S = float(os.environ.get("MIC_HEALTH_INTERVAL_S", "20"))
 
 API_MANIFEST: dict[str, Any] = {
     "functions": [
@@ -66,8 +59,9 @@ API_MANIFEST: dict[str, Any] = {
             "effect": "read",
             "description": (
                 "Report the active stream count, last PCM timestamp, and the "
-                "virtmic sink's health (sink presence and default capture "
-                "source, from the virtmic service)."
+                "audio path's health: PulseAudio reachability, whether the "
+                "virtmic sink is loaded, the default capture source, which "
+                "durability layers are installed, and the last heal time."
             ),
             "params": [],
         },
@@ -75,8 +69,9 @@ API_MANIFEST: dict[str, Any] = {
             "name": "ensure_sink",
             "effect": "write",
             "description": (
-                "DEPRECATED — use virtmic_ensure. Forwards to the virtmic "
-                "service, which owns PulseAudio and the null-sink."
+                "Run one reconcile pass now: ensure the PulseAudio config, "
+                "daemon, virtmic null-sink and default capture source are all "
+                "in place. Idempotent."
             ),
             "params": [],
         },
@@ -90,46 +85,26 @@ API_MANIFEST: dict[str, Any] = {
 
 # -- function handlers ------------------------------------------------------
 #
-# Async, because both of them talk to virtmic over the gateway and the audio
-# now shares this process's single event loop. The blocking `call_sync` these
-# used to make was correct only while every stream had its own thread.
+# Both shell out to `pactl`, so they hop to a worker thread: a blocking probe
+# on the event loop would stall the control WS and every live audio stream.
 
 
 async def _h_status(args: dict) -> dict:
-    """Bridge state plus the audio path's real health.
-
-    The old implementation reported a bare listener status, so mic looked
-    perfectly healthy while the sink underneath it was gone. Surfacing
-    virtmic's view is what makes that failure visible.
-    """
     st = bridge.status()
     try:
-        vm = await gatewayclient.call("virtmic", "status", timeout=10.0)
-        # A None result comes back as {}, so it can't be used as a not-found
-        # signal — key off a field virtmic always sets instead.
-        if vm and "sink_present" in vm:
-            st["virtmic"] = vm
-            st["sink_present"] = vm.get("sink_present")
-            st["default_source"] = vm.get("default_source")
-            st["audio_path_ok"] = bool(
-                vm.get("sink_present") and vm.get("default_source_ok"))
-        else:
-            st["virtmic"] = None
-            st["audio_path_ok"] = None
-            st["virtmic_error"] = "virtmic returned no status"
-    except Exception as e:  # noqa: BLE001 — virtmic down must not 500 mic_status
-        log.warning("virtmic status unavailable: %s", e)
-        st["virtmic"] = None
-        st["audio_path_ok"] = None
-        st["virtmic_error"] = str(e)
+        sink = await asyncio.to_thread(audio.status, bridge.SINK)
+    except Exception as e:  # noqa: BLE001 — a broken PulseAudio must not 500 mic_status
+        log.warning("sink status unavailable: %s", e)
+        st.update(audio=None, audio_path_ok=None, audio_error=str(e))
+        return st
+    st.update(audio=sink, sink_present=sink.get("sink_present"),
+              default_source=sink.get("default_source"),
+              audio_path_ok=bool(sink.get("sink_present") and sink.get("default_source_ok")))
     return st
 
 
 async def _h_ensure_sink(args: dict) -> dict:
-    """Deprecated alias — virtmic owns provisioning now."""
-    log.info("mic_ensure_sink is deprecated; forwarding to virtmic_ensure")
-    res = await gatewayclient.call("virtmic", "ensure", timeout=30.0)
-    return {"deprecated": "use virtmic_ensure", **(res or {})}
+    return await asyncio.to_thread(audio.ensure_once, bridge.SINK)
 
 
 HANDLERS = {
@@ -148,11 +123,38 @@ async def _run_stream_session(ctx: SessionContext) -> None:
 SESSION_HANDLERS = {"stream": _run_stream_session}
 
 
+# -- the health loop --------------------------------------------------------
+
+
+async def _health_loop() -> None:
+    """Durability layer 3: reconcile forever. Sleeps first, so the ``on_start``
+    pass is not repeated at once."""
+    while True:
+        try:
+            await asyncio.sleep(HEALTH_INTERVAL_S)
+            res = await asyncio.to_thread(audio.ensure_once, bridge.SINK)
+            if res.get("healed"):
+                log.warning("mic: repaired %s", ", ".join(res["repairs"]))
+                usage.record_background("sink-repair")
+        except asyncio.CancelledError:
+            return
+        except Exception:  # noqa: BLE001 — never let the loop die
+            log.exception("mic: sink health pass failed")
+
+
+async def _on_start() -> None:
+    """Provision once, then hand off to the loop. A failure still registers,
+    so ``mic_status`` can say why the audio path is broken."""
+    try:
+        res = await asyncio.to_thread(audio.ensure_once, bridge.SINK)
+        log.info("mic ready: sink=%s default_source=%s repairs=%s",
+                 res["sink"], res["default_source"], res["repairs"] or "none")
+    except Exception:  # noqa: BLE001
+        log.exception("mic: initial sink provisioning failed; the loop will retry")
+    asyncio.get_running_loop().create_task(_health_loop())
+
+
 # -- boot -------------------------------------------------------------------
-#
-# No `on_start`: there is nothing to provision. That is the ideal end state
-# under the ready-ASAP contract, and it is what makes mic startable on a node
-# that cannot sign certificates.
 
 
 async def main() -> None:
@@ -165,6 +167,7 @@ async def main() -> None:
         API_MANIFEST,
         HANDLERS,
         session_handlers=SESSION_HANDLERS,
+        on_start=_on_start,
     ).run()
 
 

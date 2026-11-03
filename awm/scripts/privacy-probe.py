@@ -40,7 +40,7 @@ FREE_TEXT = {"title", "snippet", "text", "body", "content", "rendered", "descrip
              "modified_sample", "untracked_sample", "claimed_author", "context",
              "question", "decision", "fallback", "stop_line", "noise", "cmdline"}
 # Search sources whose documents carry no project field, so no mark can hide them.
-OUT_OF_SCOPE_SOURCES = {"precedence", "kb", "writing", "notes", "trilium"}
+OUT_OF_SCOPE_SOURCES = {"precedence", "kb", "trilium"}
 SVC_NOT_FOUND = {"error": "not found"}
 TIMEOUT = httpx.Timeout(120.0, connect=10.0)
 
@@ -623,12 +623,6 @@ class Probe:
         grown = [k for k in counts if counts[k] >= base[k]]
         return bool(grown), {}, f"journals {counts} against the visible baseline {base}"
 
-    def compute_decisions(self) -> tuple[bool, Any, str]:
-        rows = self.peer_flat("compute_decisions", {"limit": 1000}).get("decisions", [])
-        own = [r for r in rows if self.path_mentioned(r.get("cmdline")) or self.under_project(r.get("cwd"))
-               or self.under_project((r.get("detail") or {}).get("cwd"))]
-        return bool(own), rows, f"{len(own)} of {len(rows)} decisions under {self.project_dir}"
-
     def posts_topic(self) -> tuple[bool, Any, str]:
         token = uuid.uuid4().hex[:12]
         got: list[dict] = []
@@ -730,7 +724,6 @@ class Probe:
                                                       "run --expect visible first")
         else:
             self.check("12 search sources/status journals count", self.archive_counts)
-        self.check("13 compute decisions", self.compute_decisions, may_be_vacuous=True)
         tail = f" ({self.warnings} warnings)" if self.warnings else ""
         if self.skipped:
             print(f"OK ({len(self.skipped)} skipped: {', '.join(self.skipped)}) "

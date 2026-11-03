@@ -17,9 +17,6 @@ Verbs:
                         gateway's ``awm status`` embeds it).
   - ``user_add`` / ``user_passwd`` / ``user_disable`` / ``user_list``
                         static per-user accounts (CLI/HTTP only).
-  - ``penpot_record`` / ``penpot_session`` / ``penpot_rotate`` / ``penpot_list``
-                        the Penpot credential awm holds per person, and the
-                        session the edge exchanges it for (CLI/HTTP only).
   - ``device_mint`` / ``device_list`` / ``device_revoke``
                         revocable per-device user tokens (CLI/HTTP only).
   - ``config_get``/``config_set`` from the config contract.
@@ -171,54 +168,6 @@ API_MANIFEST: dict[str, Any] = {
             "params": [],
         },
         {
-            "name": "penpot_record",
-            "tool": "awm_penpot_record",
-            "effect": "secret",
-            "surfaces": _CLI_HTTP,
-            "description": "Record the Penpot credential awm holds on a user's "
-                           "behalf. Overwrites an existing one, which is how a "
-                           "credential that drifted from Penpot's own profile "
-                           "is repaired. Returns no password.",
-            "params": [
-                {"name": "username", "type": "string", "required": True},
-                {"name": "email", "type": "string", "required": True},
-                {"name": "password", "type": "string", "required": True},
-            ],
-        },
-        {
-            "name": "penpot_session",
-            "tool": "awm_penpot_session",
-            "effect": "secret",
-            "surfaces": _CLI_HTTP,
-            "description": "Log in to Penpot as a named user and return the "
-                           "session cookie for the edge to set. Cached per "
-                           "user; pass stale_token to re-login only if the "
-                           "cache still holds that dead value, or refresh to "
-                           "re-login unconditionally.",
-            "params": [
-                {"name": "username", "type": "string", "required": True},
-                {"name": "stale_token", "type": "string"},
-                {"name": "refresh", "type": "boolean"},
-            ],
-        },
-        {
-            "name": "penpot_rotate",
-            "tool": "awm_penpot_rotate",
-            "effect": "secret",
-            "surfaces": _CLI_HTTP,
-            "description": "Replace the stored Penpot password for one user, "
-                           "or for everyone when username is omitted.",
-            "params": [{"name": "username", "type": "string"}],
-        },
-        {
-            "name": "penpot_list",
-            "tool": "awm_penpot_list",
-            "effect": "read",
-            "surfaces": _CLI_HTTP,
-            "description": "List the recorded Penpot credentials (no secrets).",
-            "params": [],
-        },
-        {
             "name": "device_mint",
             "tool": "awm_device_mint",
             "effect": "secret",
@@ -277,10 +226,6 @@ HANDLERS: dict[str, Any] = {
     "user_passwd": service.h_user_passwd,
     "user_disable": service.h_user_disable,
     "user_list": service.h_user_list,
-    "penpot_record": service.h_penpot_record,
-    "penpot_session": service.h_penpot_session,
-    "penpot_rotate": service.h_penpot_rotate,
-    "penpot_list": service.h_penpot_list,
     "device_mint": service.h_device_mint,
     "device_list": service.h_device_list,
     "device_revoke": service.h_device_revoke,

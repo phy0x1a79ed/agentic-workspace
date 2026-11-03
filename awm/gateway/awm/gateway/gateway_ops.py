@@ -104,8 +104,7 @@ def _book_writer_only(verb: str) -> None:
 
 async def _op_status() -> dict[str, Any]:
     """The node's status in one call: the gateway process and its base URL,
-    every service's state, auth's credential rotation, the node role and the
-    compute watchdog.
+    every service's state, auth's credential rotation and the node role.
 
     The first keys are what ``GET /status`` has always answered (the startup
     probe reads them), so the payload only grows. ``active_scopes`` stays 0 until
@@ -132,10 +131,7 @@ async def _op_status() -> dict[str, Any]:
     status["services"] = {row["name"]: row["status"] for row in rows}
     status["services_down"] = [row["name"] for row in rows
                                if row["enabled"] and row["status"] != "ready"]
-    auth, compute = await asyncio.gather(
-        _service_reading("auth", "status"), _service_reading("compute", "status"))
-    status["auth"] = auth
-    status["compute"] = compute
+    status["auth"] = await _service_reading("auth", "status")
     return status
 
 
@@ -172,14 +168,6 @@ def _op_restart() -> Any:
     from awm.gateway.core import restart_core
 
     return restart_core()
-
-
-def _op_mcp_sync() -> Any:
-    """Read workspace ``.mcp.json`` and regenerate the backend-specific MCP
-    configs under ``.awm/``."""
-    from awm.gateway.exports import sync_mcp_configs
-
-    return sync_mcp_configs()
 
 
 async def _op_gateway_list() -> dict[str, Any]:
@@ -416,7 +404,7 @@ class ReapRequest(BaseModel):
 
 # Matches the ``awm.<svc>.hub_adapter`` module token in a process cmdline (the
 # only thing a feature service is ever launched as), e.g.
-# ``python -m awm.stt.hub_adapter``. The gateway itself is ``awm.gateway
+# ``python -m awm.mic.hub_adapter``. The gateway itself is ``awm.gateway
 # serve`` and the MCP proxy is ``awm-mcp`` — neither matches.
 _HUB_ADAPTER_RE = re.compile(r"awm\.[\w.]*hub_adapter")
 
@@ -987,7 +975,7 @@ GATEWAY_OPERATIONS: list[Operation] = [
         name="awm_status",
         tool="awm", verb="status",
         description="This node's status in one call: gateway and its base URL, every service's state, "
-                    "auth rotation, node role and the compute watchdog.",
+                    "auth rotation and node role.",
         service_func=_op_status,
         http_method="GET", http_path="/status",
         cli_group="gateway", cli_command="status",
@@ -1004,16 +992,6 @@ GATEWAY_OPERATIONS: list[Operation] = [
         # op from being an unlabelled CLI entry.
         cli_group="gateway", cli_command="restart",
         output=JsonOutput(), surfaces=_HTTP,
-        effect="write",
-    ),
-    Operation(
-        name="awm_mcp_sync",
-        tool="awm", verb="mcp_sync",
-        description="Read workspace .mcp.json and regenerate backend-specific MCP configs under .awm/.",
-        service_func=_op_mcp_sync,
-        http_method="POST", http_path="/mcp-sync",
-        cli_group="gateway", cli_command="mcp-sync",
-        output=JsonOutput(), surfaces=_CLI_HTTP,
         effect="write",
     ),
     Operation(

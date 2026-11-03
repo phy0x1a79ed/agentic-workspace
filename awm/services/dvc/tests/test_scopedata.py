@@ -52,13 +52,13 @@ def test_gc_still_requires_the_caller_to_name_its_projects():
     assert "DRY RUN BY DEFAULT" in gc["description"]
 
 
-def test_service_toml_names_the_tool_and_turns_it_on():
+def test_the_plugin_manifest_names_the_tool_and_turns_it_on():
     import tomllib
     from pathlib import Path
 
     toml = tomllib.loads(
-        (Path(ha.__file__).parents[2] / "service.toml").read_text())
-    assert toml == {"tool": "dvc", "tier": "on"}
+        (Path(ha.__file__).parents[2] / "awm-plugin.toml").read_text())
+    assert [(t["name"], t["tier"]) for t in toml["tool"]] == [("dvc", "on")]
 
 
 @pytest.mark.parametrize("bad", ["", "../x", ".hidden", "a\\b", "a/b", "a\x00"])

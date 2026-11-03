@@ -1,0 +1,19 @@
+[plugin]
+name = "hello"
+version = "0.0.0"
+trust = "own"
+
+[[service]]
+name = "hello"
+
+[[tool]]
+name = "hello"
+major = 1
+
+[[needs.tool]]
+name = "2fa"
+major = 1
+
+[[needs.tool]]
+name = "social"
+major = 1

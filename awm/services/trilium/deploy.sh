@@ -8,8 +8,7 @@
 #      running gateway imports the previous code and reports success.
 #   2. The Trilium fork has to be rebuilt when its revision moved. `awm deploy`
 #      re-runs a service's install.sh only when the *set* of installed dists
-#      changes, so a rebuilt bundle never lands after the first deploy — the
-#      same trap that leaves drawio serving a stale client patch.
+#      changes, so a rebuilt bundle never lands after the first deploy.
 #   3. The service has to be restarted to pick up any of it.
 #
 # What this does NOT do: push to GitHub, to capella's bare, or to mira. Those

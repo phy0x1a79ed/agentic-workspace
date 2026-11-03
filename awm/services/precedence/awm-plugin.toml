@@ -1,0 +1,22 @@
+[plugin]
+name = "precedence"
+version = "0.1.0"
+trust = "own"
+
+[[service]]
+name = "precedence"
+
+[[service.archive]]
+name = "precedence"
+mode = "index"
+export = "precedence_export"
+
+[[tool]]
+name = "precedence"
+major = 1
+tier = "on"
+
+[needs]
+secrets = []
+network = []
+platform = ["linux"]

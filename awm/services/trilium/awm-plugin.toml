@@ -1,0 +1,20 @@
+[plugin]
+name = "trilium"
+version = "0.1.0"
+trust = "own"
+
+[[service]]
+name = "trilium"
+
+[[tool]]
+name = "trilium"
+major = 1
+tier = "on"
+
+[[page]]
+name = "trilium"
+
+[needs]
+secrets = []
+network = []
+platform = ["linux"]

@@ -23,7 +23,6 @@ CHECK=0
 # name | source under awm/ | file in ~/.claude/hooks | nodes | extra file (same dir as source)
 HOOKS=(
   "cx-name|services/cch/hooks/name_on_prompt.py|awm-cx-name-hook.py|local miraz|"
-  "compute|services/compute/hooks/compute_hook.py|awm-compute-hook.py|local|"
   "reflection|services/cch/hooks/plan_mode_hook.py|awm-reflection-mode.py|local|"
   "reporting|services/reporting/hooks/reporting_hook.py|awm-reporting-hook.py|local|awm-reporting-settings.json"
 )
@@ -32,7 +31,6 @@ HOOKS=(
 # settings file. $HOME becomes the node's home.
 declare -A ENTRIES=(
   [cx-name]='{"UserPromptSubmit":{"hooks":[{"type":"command","command":"python3 -S $HOME/.claude/hooks/awm-cx-name-hook.py 2>/dev/null || true","timeout":5}]}}'
-  [compute]='{"PreToolUse":{"matcher":"Bash","hooks":[{"type":"command","command":"python3 -S $HOME/.claude/hooks/awm-compute-hook.py 2>/dev/null || true","timeout":5,"statusMessage":"Compute watchdog"}]},"PostToolUse":{"matcher":"Bash","hooks":[{"type":"command","command":"python3 -S $HOME/.claude/hooks/awm-compute-hook.py 2>/dev/null || true","timeout":5,"statusMessage":"Compute watchdog"}]}}'
   [reflection]='{"PostToolUse":{"matcher":"ExitPlanMode","hooks":[{"type":"command","command":"python3 -S $HOME/.claude/hooks/awm-reflection-mode.py 2>/dev/null || true","timeout":20}]}}'
   [reporting]='@awm-reporting-settings.json'
 )

@@ -14,7 +14,7 @@ Storage is a single JSON blob per contract, in a dedicated
 ``awm_settings(key, value, updated_at)`` table created lazily on first use.
 There is deliberately **no** ``init_service_db`` schema-version coupling, so the
 contract drops into any service untouched — and the distinct table name never
-collides with a service that already owns a ``config`` table (e.g. tts presets).
+collides with a service that already owns a ``config`` table.
 
 The settings *shape* is a Pydantic v2 model the caller passes in. This module
 stays pydantic-free: it only calls ``model_json_schema`` / ``model_validate`` /

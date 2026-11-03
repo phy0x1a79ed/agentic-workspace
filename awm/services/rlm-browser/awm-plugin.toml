@@ -1,0 +1,18 @@
+[plugin]
+name = "rlm-browser"
+version = "0.1.0"
+trust = "own"
+
+[[service]]
+name = "rlm-browser"
+profiles = ["gamebot"]
+
+[[tool]]
+name = "browser"
+major = 1
+tier = "on"
+
+[needs]
+secrets = []
+network = []
+platform = ["linux"]

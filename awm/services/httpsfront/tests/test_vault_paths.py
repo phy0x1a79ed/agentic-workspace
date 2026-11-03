@@ -40,7 +40,7 @@ VAULT_PATHS = [
 #: these — or a future awm mount that fell inside the vault's — would shadow the
 #: other silently, which is the failure this module exists to prevent.
 AWM_PREFIXES = [
-    "/ui/", "/svc/", "/files/", "/__auth/", "/__landing/", "/drawio-app/",
+    "/ui/", "/svc/", "/files/", "/__auth/", "/__landing/",
     "/hub/", "/invoke", "/tools", "/ca.crt", "/ca.pem", "/robots.txt",
     "/api/", "/assets/", "/src/", "/favicon.ico", "/bootstrap",
 ]
@@ -115,7 +115,7 @@ def test_root_is_never_the_vaults():
 def test_the_mount_is_stripped_and_nothing_else_is():
     assert vault.upstream_path(vault.SHELL) == "/"
     assert vault.upstream_path(vault.SHELL + "api/tree") == "/api/tree"
-    for path in ("/", "/ui/drawio/", "/svc/trilium/fn/status"):
+    for path in ("/", "/ui/trilium/", "/svc/trilium/fn/status"):
         assert vault.upstream_path(path) == path
 
 

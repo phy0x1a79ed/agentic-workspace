@@ -167,12 +167,6 @@ AWM_HTTPS_PORT=8444
 AWM_AUTH_PROFILE=public
 AWM_USER_ROOT_STRICT=1
 AWM_DVC_BIN=/opt/miniforge3/envs/dvc/bin/dvc
-PENPOT_BASE_URL=http://127.0.0.1:9001
-PENPOT_EXPORTER_URL=http://127.0.0.1:9001
-PENPOT_PUBLIC_URI=https://nexus.tony-xy-liu.com/penpot
-PENPOT_INTERNAL_URI=http://penpot-frontend-internal:8080
-AWM_EDGE_PENPOT=1
-AWM_PENPOT_ROTATION_HOUR=4
 ZOTERO_MAY_CREATE_ROOT=0
 ZOTERO_SYNC_ENABLED=1
 AWM_TETHER_ROLE=relay
@@ -187,29 +181,13 @@ ENV
 # because the mirror goes under whichever note carries #zoteroLibrary: on a
 # vault somebody uses, refusing to find that note is better than building a
 # library at the top of their tree.
-# PENPOT_INTERNAL_URI is not a second spelling of PENPOT_PUBLIC_URI and the
-# two must not be collapsed. The public one is what the backend and the
-# frontend stamp on browser-bound URLs, and penpot-view strips its /penpot
-# mount off them. The internal one is the origin the exporter's own browser
-# rendered against, and penpot-view accepts it only as a recognition token --
-# it rebases every URL onto PENPOT_BASE_URL before a socket opens, because
-# that hostname does not resolve on the host at all. It has to match the
-# exporter's PENPOT_PUBLIC_URI in the compose overlay byte for byte;
-# `awm penpot-view status` prints both so the comparison is one command.
 #
 # The loop is add-once *per key*, not per file, so a key added to that block
 # does reach a box whose /etc/awm/env already exists -- as long as no line
 # already starts with that key. What it will never do is *change* a value
 # somebody set, which is the point: a hand edit on the box survives a re-run.
-# So to move the rotation hour on a provisioned box, edit the line, do not
-# expect this script to.
-#
-# /etc/awm/penpot.env below is the sharper case and does not work this way at
-# all: it is written once, as a whole, and never revisited. A key added there
-# has to be appended by hand:
-#
-#     printf 'KEY=value\n' | sudo tee -a /etc/awm/penpot.env
-#     sudo systemctl restart penpot-stack
+# So to change a value on a provisioned box, edit the line, do not expect this
+# script to.
 
 # AWM_TETHER_PORT is in that block even though both sides already default to
 # it, because the two sides are two languages: awm.config carries one default
@@ -279,110 +257,6 @@ fi
 systemctl is-enabled -q docker-user-rules || {
     systemctl enable -q --now docker-user-rules; note "docker-user-rules enabled"; }
 systemctl is-active -q docker-user-rules || systemctl start docker-user-rules
-
-# ------------------------------------------------------------------ 7. penpot
-# The container stack is systemd's, not the awm gateway's. Docker socket
-# access is root-equivalent whoever holds it, and this box's whole shape is an
-# app user that cannot write the code it runs -- so nobody is put in the
-# `docker` group, and only `penpot-view` (a plain HTTP client, no
-# orchestration) is installed as an awm service. Same split the vault already
-# uses, where the lifecycle verbs are refused through the edge and run here.
-step "penpot stack"
-PENPOT_COMPOSE="docker compose -p awm-penpot \
-    -f /etc/awm/penpot/docker-compose.yml \
-    -f /etc/awm/penpot/docker-compose.sirius.yml"
-install -d -m 755 /etc/awm/penpot
-# `if put` rather than `put || true`: the return value is the whole point
-# here. A corrected overlay on disk changes nothing by itself -- the running
-# containers keep the environment they were created with -- so the signal is
-# what the reconcile below is driven by. Throwing it away is how a fixed
-# compose file came to sit on this box beside the containers it was meant to
-# correct.
-compose_changed=0
-if put "$ETC/penpot/docker-compose.yml" \
-       /etc/awm/penpot/docker-compose.yml 644; then compose_changed=1; fi
-if put "$ETC/penpot/docker-compose.sirius.yml" \
-       /etc/awm/penpot/docker-compose.sirius.yml 644; then compose_changed=1; fi
-
-# Penpot's own secret. Generated on the box and never rewritten -- the same
-# add-once rule /etc/awm/env follows, so a re-run cannot invalidate every live
-# Penpot session by minting a new one.
-if [ ! -f /etc/awm/penpot.env ]; then
-    { printf 'PENPOT_SECRET_KEY=%s\n' "$(openssl rand -hex 32)"
-      printf 'PENPOT_PUBLIC_URI=https://nexus.tony-xy-liu.com/penpot\n'
-      printf 'PENPOT_VERSION=2.16\n'; } > /etc/awm/penpot.env
-    chmod 640 /etc/awm/penpot.env; chown "root:$APP_USER" /etc/awm/penpot.env
-    note "/etc/awm/penpot.env"
-fi
-
-# `if put` rather than `put && ...`: put returns 1 when the file is already
-# correct, which under `set -e` would abort the re-run this script promises is
-# a no-op.
-if put "$ETC/systemd/penpot-stack.service" \
-       /etc/systemd/system/penpot-stack.service 644; then
-    systemctl daemon-reload
-fi
-systemctl is-enabled -q penpot-stack || { systemctl enable -q penpot-stack; note "penpot-stack enabled"; }
-systemctl is-active -q penpot-stack || { systemctl start penpot-stack; note "penpot-stack started"; }
-
-# The overlay moved, so the containers created from the old one have to be
-# replaced. `up -d` recreates only the services whose config hash changed;
-# `systemctl restart` would take the whole stack down and cold-start six
-# containers on two cores. The same command the unit's ExecStart runs, with
-# the unit's EnvironmentFile sourced into a subshell -- compose interpolates
-# PENPOT_VERSION and PENPOT_PUBLIC_URI out of it, and refuses without them.
-if [ "$compose_changed" -eq 1 ]; then
-    ( set -a; . /etc/awm/penpot.env; set +a
-      $PENPOT_COMPOSE up -d --remove-orphans )
-    note "penpot stack reconciled with the overlay"
-fi
-
-# penpot-view's own account is deliberately outside the nightly rotation that
-# replaces every *person's* Penpot password. Its credential lives in
-# /etc/awm/env, which is root-owned and which the app user cannot write, so the
-# auth service could change the password in Penpot and then be unable to record
-# what it changed it to -- wedging the render service permanently. Bringing it
-# in is a separate decision (it needs a writable home for the credential
-# first), not a side effect of this one.
-#
-# penpot-view does not merely serve Penpot's content -- it logs in to fetch
-# it, so it needs a Penpot account of its own. Locally that account is a demo
-# user, which is exactly the thing `enable-demo-users` must not ship for; so
-# without this step the render service has no way to authenticate on this box
-# and every diagram in every note is blank.
-#
-# Driven over the backend's PREPL, which `enable-prepl-server` turns on and
-# which binds container-localhost only (prepl-host defaults to "localhost" in
-# backend/src/app/main.clj), so this opens no network port. Add-once, like
-# every other credential here.
-if ! grep -q '^PENPOT_SERVICE_USERNAME=' /etc/awm/env; then
-    step "penpot service account"
-    # Wait for the backend's PREPL, not merely for the container to accept an
-    # exec. `docker exec` succeeds as soon as the container is running, while
-    # manage.py needs a backend that has finished its migrations and opened
-    # 6063 -- minutes apart on two cores. Waiting on the container alone is
-    # what made this step fail on the first run, with `[Errno 111] Connection
-    # refused` and a stack that was in fact perfectly healthy a minute later.
-    # `search-profile` on an address nobody has exits 0 once the PREPL answers.
-    for _ in $(seq 1 90); do
-        $PENPOT_COMPOSE exec -T penpot-backend python3 manage.py search-profile \
-            -e readiness-probe@invalid >/dev/null 2>&1 && break
-        sleep 5
-    done
-    PENPOT_SVC_USER="penpot-view@nexus.tony-xy-liu.com"
-    PENPOT_SVC_PASS="$(openssl rand -hex 24)"
-    if $PENPOT_COMPOSE exec -T penpot-backend \
-            python3 manage.py create-profile \
-            -e "$PENPOT_SVC_USER" -n "awm render service" \
-            -p "$PENPOT_SVC_PASS" --skip-tutorial --skip-walkthrough; then
-        printf 'PENPOT_SERVICE_USERNAME=%s\n' "$PENPOT_SVC_USER" >> /etc/awm/env
-        printf 'PENPOT_SERVICE_PASSWORD=%s\n' "$PENPOT_SVC_PASS" >> /etc/awm/env
-        note "penpot service account $PENPOT_SVC_USER"
-    else
-        echo "  !! create-profile failed -- penpot-view will not render." >&2
-        echo "     Re-run this script once the stack is healthy." >&2
-    fi
-fi
 
 step "nginx"
 install -d -m 755 /var/www/nexus

@@ -1,7 +1,6 @@
 {
   // GATING type-check scope: the shared component libraries under
-  // ui_components/* (@awm/client, @awm/primitives, @awm/stt-composer,
-  // @awm/tts-history, and any future @awm/<x>).
+  // ui_components/* (@awm/client, @awm/primitives, and any future @awm/<x>).
   //
   // These are the contract-bearing surface every page imports, so this is the
   // pass `npm run typecheck` grades on. The `include` globs existing dirs, so

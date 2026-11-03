@@ -4,10 +4,8 @@
 #
 # Three halves, because this service has three kinds of dependency:
 #
-#   1. Python — the adapter, the per-user supervisor and the per-user mesh
-#      fronts. Installs the component libraries it imports first, then
-#      httpsfront (a front is a *configuration* of that component, not a copy
-#      of it), then the service.
+#   1. Python — the adapter and the per-user supervisor. Installs the
+#      component libraries it imports first, then the service.
 #
 #   2. The server bundle. Two ways to get one, and the choice is the whole
 #      difference between a build node and a serving node:
@@ -39,6 +37,7 @@ ENV="${AWM_ENV:-awm}"
 # and `.awm/`. Run from a scope worktree they differ, and using the git toplevel
 # for a `projects/` path silently addresses a directory that does not exist.
 REPO="$(git -C "$HERE" rev-parse --show-toplevel)"
+AWM="${AWM_ROOT:-$REPO/awm}"
 workspace_root() {
     [ -n "${AWM_WORKSPACE:-}" ] && { printf '%s\n' "$AWM_WORKSPACE"; return; }
     local d="$1"
@@ -78,10 +77,9 @@ MODE="${TRILIUM_INSTALL_MODE:-auto}"
 
 run() { echo "+ pip install -e $*"; mamba run -n "$ENV" pip install -e "$@"; }
 
-run "$REPO/awm/service_components/config" --no-deps
-run "$REPO/awm/service_components/gatewayclient" --no-deps
-run "$REPO/awm/services/httpsfront" --no-deps
-run "$REPO/awm/services/trilium"
+run "$AWM/service_components/config" --no-deps
+run "$AWM/service_components/gatewayclient" --no-deps
+run "$HERE"
 
 # Bake the target env's absolute interpreter into a gitignored `.runtime-env`
 # sidecar so the hub supervisor can respawn this service under systemd's

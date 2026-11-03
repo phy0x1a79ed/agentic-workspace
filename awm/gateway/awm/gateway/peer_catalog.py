@@ -528,7 +528,7 @@ def fleet_domains(local_domains: Mapping[str, list[str]],
     """Every domain name callable from this node — local ∪ every peer's.
 
     The union is what keeps the collapsed surface honest: a domain only a peer
-    runs (``hpcllm``, ``orch``, …) still appears exactly once, so nothing that is
+    runs (``orch``, …) still appears exactly once, so nothing that is
     reachable today stops being nameable. A declared singleton's domain is
     included even if this node runs no such service.
     """

@@ -2,7 +2,7 @@
 
 ## Purpose & Contents
 
-This file is the reference for agents that change awm itself. It covers the gateway, the feature-service contract and lifecycle, kept Claude Code sessions, the one-tool-per-service rule and the catalog that renders services onto MCP, HTTP and the CLI, the on and off tiers, ranked describe, the verb gates, the search archive, dev sandboxes, the data-layer internals, the frontend component system, federation pitfalls, a file map, and how to run tests.
+This file is the reference for agents that change awm itself. It covers the gateway, the feature-service contract, the plugin manifest and the service lifecycle, kept Claude Code sessions, the one-tool-per-service rule and the catalog that renders services onto MCP, HTTP and the CLI, the on and off tiers, ranked describe, usage per plugin, the verb gates, the search archive, dev sandboxes, the data-layer internals, the frontend component system, federation pitfalls, a file map, and how to run tests.
 
 Agent orientation goes in `AGENTS.md`. Workspace procedures go in `PROTOCOLS.md`. Human install and service authoring go in `README.md` § *Authoring a service*. Cross-node design goes in `FEDERATION.md`.
 
@@ -15,11 +15,9 @@ awm is a modular **gateway** plus a set of out-of-process **feature services**. 
 The tree is a set of pip dists under `awm/` that merge into the PEP 420 `awm` namespace:
 
 - **Gateway** — `awm.gateway`. It discovers, bootstraps and supervises services, and renders their APIs onto MCP, HTTP and the CLI.
-- **Shared Python components** — `awm/service_components/`: `awm.config`, `awm.persistence`, `awm.gatewayclient`, `awm.claudedaemon`. These are imported source with no `install.sh`.
+- **Shared Python components** — `awm/service_components/`: `awm.config`, `awm.persistence`, `awm.gatewayclient`, `awm.claudedaemon`, `awm.usage`. These are imported source with no `install.sh`.
 - **Frontend source** — `awm/ui_components/` and `awm/pages/`. See § *Frontend*.
 - **Feature services** — `awm/services/<name>/`, each with its own dist, DB and `run.sh`. `awm services list` reports the live set. Each folder's `INSTALL.md` is its contract.
-
-**CAUTION** `compute` acts on processes it does not own. It kills and renices agent-launched jobs. Add anything new that agents launch and must keep (a long-lived server, a tunnel, an MCP shim) to its `PROTECTED` list.
 
 The `awm/gateway/awm/gateway/` nesting is intentional. It is a PEP 420 layout that lets several uninstalled worktrees each shadow `awm.gateway` through `PYTHONPATH`. Do not flatten it.
 
@@ -82,6 +80,17 @@ A backend is a folder under `awm/services/<name>/` with a self-contained executa
 - **Out-of-process.** The supervisor spawns each service and records its PID in a journal. The control-WS lease is liveness. Each service is a `run.sh` plus a small `hub_adapter.py` built on `awm.gatewayclient.ServiceAdapter`, which handles register, ready, serve, dispatch and reconnect. `awm.gatewayclient` also has `call`, `call_sync` and `RefCache` for service-to-service calls. The `/svc/*` control plane is unauthenticated and loopback-only. `awm/services/dev/` is the smallest complete example to copy.
 - **Install.** Install each module through its own `install.sh`, never with hand-rolled `pip`. `awm/gateway/install.sh` is the composition root. It installs `config`, `persistence` and every feature dist with `--no-deps`, then the gateway with its third-party deps. Set `AWM_ENV` to change the target env.
 
+### The plugin manifest
+
+Each service folder declares itself in `awm-plugin.toml`: its services, the tool it publishes by its unique name with its major and tier, its pages, and what it needs (secrets, network, platform, the tools and contracts it calls by name). The redux plugin contract defines the format (`docs/redux/drafts/plugin-contract.md`). A manifest names no host. The install config places plugins on nodes.
+
+- **Checked at load.** Discovery refuses a folder whose manifest breaks the contract, so the supervisor never starts it. `discovery.plugin_refusals()` names each refused folder and the reason. The rules match the Rust loader's.
+- **Legacy folders.** A folder whose tool another folder also publishes keeps `service.toml`, because a manifest plugin may not share a tool. `LEGACY` in `gateway/tests/test_plugin_contract.py` names each such folder and why. The legacy path and its shared tools go at the cutover, after the harness merge.
+- **One file.** Discovery reads the manifest first and falls back to `service.toml` key by key. A folder never carries both. Delete `service.toml` when you add a manifest.
+- **The guard.** `test_plugin_contract.py` walks the tree. It fails a refused folder, a folder with no manifest and no `LEGACY` reason, a secret the code reads but `[needs]` does not declare, an import of another plugin's code, and a script that names its own `awm/services/<name>` path. `CROSS_IMPORTS` lists the old cross-plugin imports by name. Remove a pair when its debt is paid.
+
+**CAUTION** A plugin's `install.sh` and `run.sh` find their own folder from `$0`, and awm's tree from `$AWM_ROOT`. A path such as `$WS/awm/services/<name>` breaks the plugin the moment it loads from a root outside the tree.
+
 ### Roots outside the tree
 
 A node can run services and pages that live outside the awm checkout, so a private project keeps them in its own repo and they never reach GitHub or a peer. List the extra roots in the node-local `.awm/env`, beside `AWM_PROFILES`:
@@ -89,11 +98,11 @@ A node can run services and pages that live outside the awm checkout, so a priva
 - `AWM_SERVICE_ROOTS` — `:`-separated directories, each laid out like `awm/services/`.
 - `AWM_PAGE_ROOTS` — `:`-separated directories, each laid out like `awm/pages/`.
 
-A folder under an extra root follows the whole contract of an in-tree one: `run.sh`, `service.toml`, `enabled.json` and a page that follows its same-named service. `discovery.service_folder` resolves a name to the first root that holds a folder of that name. The built-in root comes first, so it wins a clash. Discovery logs the shadowed folder and ignores it. It also logs and skips an entry that is not a directory.
+A folder under an extra root follows the whole contract of an in-tree one: `run.sh`, `awm-plugin.toml`, `enabled.json` and a page that follows its same-named service. `discovery.service_folder` resolves a name to the first root that holds a folder of that name. The built-in root comes first, so it wins a clash. Discovery logs the shadowed folder and ignores it. It also logs and skips an entry that is not a directory.
 
 `awm deploy` loads `.awm/env` before it plans, so the extra roots reach every step:
 
-1. `gateway/install.sh` runs each extra service's `install.sh` with `AWM_ROOT` (this `awm/` tree) and `AWM_ENV` exported. Deploy records each service's resolved folder and a hash of its `install.sh`, `pyproject.toml` and `service.toml`. It runs the install when a service appears, moves to another root under the same name, or changes one of those files. A name set alone misses the move, and the moved service then starts with no `.runtime-env`.
+1. `gateway/install.sh` runs each extra service's `install.sh` with `AWM_ROOT` (this `awm/` tree) and `AWM_ENV` exported. Deploy records each service's resolved folder and a hash of its `install.sh`, `pyproject.toml`, `awm-plugin.toml` and `service.toml`. It runs the install when a service appears, moves to another root under the same name, or changes one of those files. A name set alone misses the move, and the moved service then starts with no `.runtime-env`.
 2. `scripts/build.sh` builds each extra page with this tree's `vite.config.ts` and `node_modules`. The page imports `@awm/*` exactly as an in-tree page does. Its `dist/` lands in its own folder.
 3. Verify waits for the extra services and pages too.
 
@@ -111,12 +120,12 @@ A service declares its API as a serializable `ready.api` manifest with `function
 
 #### One tool per service
 
-A service publishes under one tool. Its `service.toml` names the tool with `tool` (default: the folder name), and every function it registers is published as `<tool>_<verb>`. A tool never takes its name from a function's prefix, so one service cannot publish several tools and no hand-kept table has to paper over a mismatch.
+A service publishes under one tool. Its manifest names the tool in `[[tool]]` (a legacy `service.toml` uses `tool`, default the folder name), and every function it registers is published as `<tool>_<verb>`. A tool never takes its name from a function's prefix, so one service cannot publish several tools and no hand-kept table has to paper over a mismatch.
 
 - **Enforcement.** `surface.check_registration` runs when a service registers (`api/hub.py`). It refuses a function not named `<tool>_<verb>` and a verb that another service already holds in the same tool, and it names every offender. A refused service registers nothing and is not respawned. `gateway/tests/test_tool_rule.py` applies the rule to every manifest in the tree, and `LEGACY_ALLOWLIST` is empty. Keep it empty.
 - **Shared tools.** Two services may share a tool. `reflection` serves the `reflection` and `cx` services, `operations` serves `reporting`, `board` and the gateway's native peer book, and `awm` serves the gateway's native ops and `auth`. The `scopes` service keeps worktree lifecycle and `dvc` owns the data verbs (`mount`, `gc`, `scope_status`). `scopes` imports `awm.dvc.data_dvc` for provisioning.
 - **Internal names.** A manifest function's `name` is the service-internal handle that `/svc/<service>/fn/<name>` and caller stamping dispatch on. It keeps its value when the published name changes. The frozen identity RPCs (`FROZEN_RPCS`: `resolveScope`, `resolveRef`, `project_ensure`, `scope_ensure`) are exempt from the rule.
-- **Tool names.** A tool name holds letters, digits and hyphens. The catalog splits a published name at the tool prefix (`surface.split_published`), so `penpot-plugins_status` is tool `penpot-plugins`, verb `status`. An underscore in a tool name would make that split ambiguous.
+- **Tool names.** A tool name holds letters, digits and hyphens. The catalog splits a published name at the tool prefix (`surface.split_published`), so `my-tool_status` is tool `my-tool`, verb `status`. An underscore in a tool name would make that split ambiguous.
 
 A manifest function may carry these keys:
 
@@ -164,11 +173,24 @@ An agent learns the surface in one call and corrects a wrong call in one more.
 
 ### Tiers
 
-A service folder's `service.toml` sets `tier = "on"` (the default) or `tier = "off"`. An off tool is absent from every MCP listing and from `describe`, and its service still runs and answers on the CLI and over HTTP. The legacy values `core` and `more` read as on. The tier decides only what MCP advertises. It never decides whether a service runs, and `profiles` never decides the tier.
+A service folder's manifest sets `tier = "on"` (the default) or `tier = "off"` on its tool. An off tool is absent from every MCP listing and from `describe`, and its service still runs and answers on the CLI and over HTTP. The legacy values `core` and `more` read as on. The tier decides only what MCP advertises. It never decides whether a service runs, and `profiles` never decides the tier.
 
 Every on tool is top-level, so no index hides a verb, and each tool's own `peer` metadata answers where it runs. Hide a verb with `surfaces`, and switch off a tool with its tier.
 
-**CAUTION** `service.toml` is also the profile gate. `discovery._read_profiles` must treat a file with no `profiles` key as baseline, enabled everywhere. Reading the absence as "gated off" would switch off every service that carries only a `tier`.
+**CAUTION** The manifest is also the profile gate, through `profiles` on its `[[service]]` entry. `discovery._read_profiles` must treat a file with no `profiles` key as baseline, enabled everywhere. Reading the absence as "gated off" would switch off every service that carries only a `tier`. A manifest that does not parse gates its profiles off but never switches its tool off.
+
+### Usage per plugin
+
+The gateway counts each plugin's use by surface (`docs/redux/drafts/plugin-contract.md` § *Usage event*). It sees tool calls and the pages it serves by itself. A plugin reports the two kinds the gateway cannot see through `awm.usage`:
+
+- **Background runs.** `record_background` or `background_run` sends `{"kind": "usage", ...}` on the service's control WS. Outside a service, or for another plugin, it posts to `POST /usage`.
+- **Code use.** `record_code` posts a `code` event when another project calls a plugin's code directly.
+
+The Python gateway appends each event to `<AWM_DIR>/usage/<YYYY-MM-DD>.jsonl` (`usage_log.py`). The Rust gateway writes the same files after its cutover. This log is separate from the ranked-describe tally in `usage.py`.
+
+- **CAUTION** The control frame carries no plugin. The gateway takes the plugin from the service record, so a service cannot count use against another plugin.
+- **CAUTION** Report a run of real work, never an idle tick. A loop that ticks every few seconds floods the log.
+- **WARNING** A plugin's tests must capture its events, as the `usage_events` fixture in `transcripts`, `mic` and `rlm-factorio` does. An uncaptured event posts to the gateway on `AWM_PORT`, which on a node is the live one.
 
 ### The timeout ladder
 
@@ -203,13 +225,13 @@ The mode gate finds the caller through its pid: `X-Awm-Session-Pid` (set by `awm
 
 The gateway declares its native ops once, as `GATEWAY_OPERATIONS` in `gateway_ops.py`: status, restart, mcp-sync, the registry list and deregister, the service lifecycle, config, provider lookup and the peer book. Three generators in `operations.py` project them: `operations_to_mcp_tools` onto MCP, `register_fastapi_routes` onto HTTP and `register_cli_commands` onto the CLI. Add a new control op as one `Operation`. Never hand-write a CLI command, an HTTP route and an MCP tool separately.
 
-Native ops publish into two tools. `awm` carries the core infrastructure API, with auth's verbs, and `awm status` folds gateway, service health, auth rotation, node role and the compute watchdog into one answer. `operations` carries the peer book as `peer_*`. An op's CLI group (`gateway`, `services`, `peer`) is independent of its tool, so `awm services list` and the `awm` tool's `services_list` are the same op.
+Native ops publish into two tools. `awm` carries the core infrastructure API, with auth's verbs, and `awm status` folds gateway, service health, auth rotation and node role into one answer. `operations` carries the peer book as `peer_*`. An op's CLI group (`gateway`, `services`, `peer`) is independent of its tool, so `awm services list` and the `awm` tool's `services_list` are the same op.
 
 ### The search archive
 
 `search` owns the `search` tool and the archive: a registry of plug-ins over one hybrid index. Agents get one ranked answer over everything the swarm knows, locally and across peers, and a new source joins without a change to `search`. `awm/services/search/INSTALL.md` § *Joining the archive* is the contract a plug-in meets. This section holds the reasons.
 
-- **Plug-ins.** A service joins with one `[[archive]]` table per source in its `service.toml`. The `name` is also the federation grant, and the `mode` is `index` or `live`. The gateway lists the tables as `ServiceRecord.archive`, shown under `archive` in each `awm registry_list` entry, and `search` reads them there.
+- **Plug-ins.** A service joins with one `[[service.archive]]` table per source in its manifest (`[[archive]]` in a legacy `service.toml`). The `name` is also the federation grant, and the `mode` is `index` or `live`. The gateway lists the tables as `ServiceRecord.archive`, shown under `archive` in each `awm registry_list` entry, and `search` reads them there.
 - **index mode.** The service's hidden `<tool>_export` verb pages `{documents, next_cursor, done, ids}` in ascending key order. `ids` is the full key set and appears only on the last page. `search` drops stored documents whose key is missing from it. A push topic, when the table names one, schedules a debounced full pass, and an hourly pass runs regardless.
 - **live mode.** The table names a query verb that `search` calls at query time. A source marked `optin` runs only when a caller names it. `transcripts` is the live source.
 - **One corpus.** Every document sits under one source type with a `source:id` key, and a side table holds source, project, scope, kind and ts for filtering. The engine normalises scores per call, so separate corpora would not rank against each other.
@@ -455,14 +477,14 @@ What is singular is the resource, not always the service:
 
 ## File map
 
-When you need something not mapped here, query the `graphify` tool (`find`, `refs`, `query`, `affected`) before an Explore agent. It indexes the deployed tree, so it lags uncommitted edits. Paths are under `awm/gateway/awm/gateway/`.
+Paths are under `awm/gateway/awm/gateway/`.
 
 - **Service discovery** — `hub/discovery.py`.
 - **Registry and kinds** — `hub/registry.py`: one `_stacks` dict per prefix, `replace_overlays`, `register_page`.
 - **RPC layer** — `hub/rpc.py`: `ControlChannel` per service, the `_pending` call table, subscribers, sessions, bridge ids.
 - **Service translator and bridge** — `hub/proxy.py`: `proxy_service_http`, `open_session_via_http`, `proxy_session_ws`, `proxy_service_emit_ws`.
 - **Supervisor and journal** — `hub/supervisor.py`: `reconcile_journaled_services`, `bootstrap`, `spawn_service`, `kill_pid_group`, `supervise_disconnect`. State is at `<AWM_DIR>/state/services.json`.
-- **Catalog** — `catalog.py`: `_tool_name`, `list_tools` and `dispatch` for the expanded surface, `list_domain_tools`, `_describe_domain` and `_dispatch_domain` for the collapsed one. `describe_overview` builds the ranked describe, and `_peer_phrase` builds the `peer` metadata. The foreign gate (`foreign_grants`, `_dispatch_foreign`) lives here. `surface.py` holds the one-tool rule, `aliases.py` the old-name table and `usage.py` the 60-day tally. `hub/discovery.py` reads `tool`, `tier` and `[[archive]]` from `service.toml`.
+- **Catalog** — `catalog.py`: `_tool_name`, `list_tools` and `dispatch` for the expanded surface, `list_domain_tools`, `_describe_domain` and `_dispatch_domain` for the collapsed one. `describe_overview` builds the ranked describe, and `_peer_phrase` builds the `peer` metadata. The foreign gate (`foreign_grants`, `_dispatch_foreign`) lives here. `surface.py` holds the one-tool rule, `aliases.py` the old-name table and `usage.py` the 60-day tally. `hub/discovery.py` reads the tool, tier, profiles and archive tables from `awm-plugin.toml`, else `service.toml`. `usage_log.py` writes the usage events plugins report.
 - **Mode gate** — `server.py` (`_caller_mode`, `_call_refusal`, `_door_refusal`) applies the policies in `awm/service_components/config/awm/config/modes.py`. `awm/service_components/claudedaemon/awm/claudedaemon/sessionmode.py` answers `mode_of`.
 - **Federation directory** — `peers.py` maps a name to its peer record (edge address, relation, swarm, role, pinned key, grants) and owns the writes. `awm.config.peerbook` is the one reader. `peer_catalog.py` maps a name to the domains of its domestic peers, holds the default-provider rules and raises `PeerRedirect` instead of relaying. `peer_files.py` turns `files[]` a peer returned into local copies over the peer's `/files` mount. It is its own module because both MCP proxies must call it, or the rollback proxy hands back paths that exist only on the peer.
 - **MCP proxies** — `mcp_server.py` picks `mcp_stdio.py` (default) or `mcp_server_sdk.py` (`AWM_MCP_SDK=1`). `mcp_http.py` holds the timeout ladder both share.

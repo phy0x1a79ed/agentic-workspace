@@ -56,14 +56,14 @@ def local_registry(monkeypatch):
 def snap():
     """mira reachable with four domains; altair asleep but last known to have two.
 
-    ``2fa`` lives only on mira, ``orch`` only on mira, ``hpcllm`` on both — the
+    ``2fa`` lives only on mira, ``orch`` only on mira, ``batch`` on both — the
     three shapes that exercise every resolution rule.
     """
     return {
-        "altair": {"domains": {"scope": ["search"], "hpcllm": ["ask"]},
+        "altair": {"domains": {"scope": ["search"], "batch": ["ask"]},
                    "reachable": False, "error": "ssh: timed out"},
         "mira": {"domains": {"scope": ["search", "create"], "2fa": ["approve"],
-                             "orch": ["run"], "hpcllm": ["ask"]},
+                             "orch": ["run"], "batch": ["ask"]},
                  "reachable": True, "error": None},
     }
 
@@ -170,13 +170,13 @@ def test_ambiguous_domain_refuses_without_peer_and_names_options(
         local_registry, snap, no_homes):
     """Two peers, no local, no declared home → no default. Guessing would bind
     the call to whichever node happened to sort first."""
-    res = peer_catalog.resolve("hpcllm", _local(), snap)
+    res = peer_catalog.resolve("batch", _local(), snap)
     assert res["reason"] == peer_catalog.REASON_AMBIGUOUS
     assert res["default"] is None
     with pytest.raises(ValueError) as exc:
-        peer_catalog.choose_target("hpcllm", None, _local(), snap)
+        peer_catalog.choose_target("batch", None, _local(), snap)
     assert "altair" in str(exc.value) and "mira" in str(exc.value)
-    assert peer_catalog.choose_target("hpcllm", "altair", _local(), snap) == "altair"
+    assert peer_catalog.choose_target("batch", "altair", _local(), snap) == "altair"
 
 
 def test_unknown_tool_is_unknown(local_registry, snap, no_homes):
@@ -233,7 +233,7 @@ def test_fleet_view_has_one_tool_per_domain_and_no_at_names(
     assert len(names) == len(set(names)), "a domain must appear exactly once"
     assert not any("@" in n for n in names), "peer-suffixed twins are gone"
     # peer-only domains are present, so nothing reachable stopped being nameable
-    assert {"scope", "2fa", "orch", "hpcllm"} <= set(names)
+    assert {"scope", "2fa", "orch", "batch"} <= set(names)
 
 
 def test_fleet_view_is_not_multiplied_by_peer_count(
@@ -242,7 +242,7 @@ def test_fleet_view_is_not_multiplied_by_peer_count(
     monkeypatch.setattr(peer_catalog, "snapshot", lambda: snap)
     before = len(catalog.list_domain_tools(peers=True))
     widened = dict(snap)
-    widened["cosmos"] = {"domains": {"scope": ["search"], "hpcllm": ["ask"]},
+    widened["cosmos"] = {"domains": {"scope": ["search"], "batch": ["ask"]},
                          "reachable": True, "error": None}
     monkeypatch.setattr(peer_catalog, "snapshot", lambda: widened)
     assert len(catalog.list_domain_tools(peers=True)) == before
@@ -253,7 +253,7 @@ def test_default_view_stays_local_only(local_registry, snap, monkeypatch):
     peers, the fleet would advertise transitive nodes nobody can dial."""
     monkeypatch.setattr(peer_catalog, "snapshot", lambda: snap)
     names = {t.name for t in catalog.list_domain_tools()}
-    assert "orch" not in names and "hpcllm" not in names
+    assert "orch" not in names and "batch" not in names
     assert "scope" in names
 
 
@@ -264,7 +264,7 @@ def test_fleet_descriptions_say_where_a_call_lands(
     assert "singleton owned by 'mira'" in tools["2fa"].description
     assert "this node by default" in tools["scope"].description
     assert "only provider" in tools["orch"].description
-    assert "no default" in tools["hpcllm"].description
+    assert "no default" in tools["batch"].description
 
 
 def test_every_fleet_tool_carries_the_peer_key(
@@ -285,7 +285,7 @@ def test_peer_argument_enumerates_the_serving_nodes_and_names_the_default(
     assert orch["properties"]["peer"]["enum"] == ["mira"]
     assert "Default: mira" in orch["properties"]["peer"]["description"]
     assert tools["2fa"].inputSchema["properties"]["peer"]["enum"] == ["mira"]
-    hpc = tools["hpcllm"].inputSchema
+    hpc = tools["batch"].inputSchema
     assert hpc["required"] == ["verb", "peer"]
     assert hpc["properties"]["peer"]["enum"] == ["altair", "mira"]
 
@@ -514,7 +514,7 @@ async def test_providers_of_whole_fleet(local_registry, snap, twofa_on_mira,
                                         monkeypatch):
     monkeypatch.setattr(peer_catalog, "snapshot", lambda: snap)
     out = json.dumps(await catalog._providers_of())
-    for domain in ("scope", "2fa", "orch", "hpcllm"):
+    for domain in ("scope", "2fa", "orch", "batch"):
         assert f'"tool": "{domain}"' in out
 
 

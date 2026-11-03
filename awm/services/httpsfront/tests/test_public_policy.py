@@ -193,16 +193,16 @@ def test_logout_clears_both_cookies():
 DENIED = [
     "/hub/services", "/invoke", "/tools", "/svc/scopes/fn/scope_search",
     "/svc/auth/fn/password", "/svc/auth/fn/verify",
-    "/svc/drawio/fn/export", "/svc/drawio/fn/autopublish_status",
-    "/drawio-app/view/x.svg", "/__auth/link", "/ca.crt", "/ca.pem",
+    "/__auth/link", "/ca.crt", "/ca.pem",
     "/ui/agents/", "/files/", "/files/projects/awm/dev/x",
-    "/__landing/tags", "/svc/notes/session/x",
-    # notes left the public host. These are here rather than merely absent
-    # because they are the paths whose verdict *changed*: an allow-list that
-    # only records what is open cannot fail when something is re-opened by
-    # accident, and this is the door.
-    "/ui/notes/", "/ui/notes/assets/x.js", "/svc/notes/fn/list",
-    "/svc/notes/fn/collab_open", "/svc/notes/emit/note:tony:1",
+    "/__landing/tags",
+    # notes and drawio left the public host, then awm (install.md R134). These
+    # are here rather than merely absent because they are the paths whose
+    # verdict *changed*: an allow-list that only records what is open cannot
+    # fail when something is re-opened by accident, and this is the door.
+    "/ui/notes/", "/svc/notes/fn/list", "/svc/notes/emit/note:tony:1",
+    "/ui/drawio/", "/drawio-app/index.html", "/svc/drawio/fn/save",
+    "/svc/drawio/emit/drawio:tony:x.drawio",
     # The vault's own surface that a browser must never reach through us. Each
     # is a live Trilium route; see awm.httpsfront.vault.NOT_FORWARDED.
     "/etapi/app-info", "/custom/x", "/mcp", "/share/abc",
@@ -210,20 +210,14 @@ DENIED = [
     # …and the vault verbs that act on everyone's knowledge base at once.
     "/svc/trilium/fn/restore", "/svc/trilium/fn/stop",
     "/svc/trilium/fn/logs", "/svc/trilium/fn/export",
-    # Adjacent to the plugin mount, not inside it. The prefix is a
+    # Adjacent to an open mount, not inside it. The prefix is a
     # ``startswith`` against a deny-by-default door, so writing it bare would
     # hand this path to the internet on the strength of its name alone.
-    "/penpot-pluginsXYZ", "/penpot-plugins-admin/x",
+    "/ui/triliumXYZ", "/ui/trilium-admin/x",
 ]
 ALLOWED = [
-    "/ui/drawio/", "/drawio-app/index.html", "/svc/drawio/fn/save",
     "/ui/trilium", "/ui/trilium/", "/svc/trilium/fn/status",
     "/svc/trilium/fn/snapshots",
-    # The manifest URL Penpot's Plugin Manager fetches, and the assets the
-    # panel loads beside it. OPEN, so any authenticated session reaches them —
-    # they are a manifest and a script we wrote, not a person's design files.
-    "/penpot-plugins/penpot-view-link/manifest.json",
-    "/penpot-plugins/penpot-view-link/index.html",
 ]
 
 
@@ -246,10 +240,10 @@ def test_allowed_paths_proxy_when_signed_in(path):
 
 def test_allowed_paths_want_a_login_when_signed_out():
     with _client(_app("public"), token=None) as c:
-        r = c.get("/ui/drawio/", headers={"Accept": "text/html"})
+        r = c.get("/ui/trilium/", headers={"Accept": "text/html"})
         assert r.status_code == 200 and "username" in r.text
         assert "ca.crt" not in r.text
-        assert c.get("/svc/drawio/fn/save").status_code == 401
+        assert c.get("/svc/trilium/fn/status").status_code == 401
 
 
 def test_user_scoped_paths_admit_only_their_user():
@@ -260,12 +254,8 @@ def test_user_scoped_paths_admit_only_their_user():
         assert c.get("/files/projects/userdata/tony").status_code == 200
 
 
-def test_emit_topics_must_carry_the_users_prefix():
-    assert policy.allows("/svc/drawio/emit/drawio:tony:x.drawio", "tony")
-    assert not policy.allows("/svc/drawio/emit/drawio:steven:x.drawio", "tony")
-    assert not policy.allows("/svc/drawio/emit/drawio:x", "tony")
-    assert not policy.allows("/svc/drawio/emit/drawio:tony:x", None)
-    # notes has no emit surface on the public host any more.
+def test_no_emit_topic_is_public():
+    assert not policy.allows("/svc/drawio/emit/drawio:tony:x.drawio", "tony")
     assert not policy.allows("/svc/notes/emit/note:tony:abc", "tony")
 
 

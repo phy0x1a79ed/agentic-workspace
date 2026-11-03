@@ -140,13 +140,6 @@ CAUTION: this is deliberately *not* `userroot.wrap_handlers`. That answers
 "whose store?", which a shared vault never asks, and under
 `AWM_USER_ROOT_STRICT=1` it raises for exactly the caller we need to admit.
 
-**The children are on `compute`'s PROTECTED list.** The child is spawned in its
-own session, so the `awm-service` pattern does not cover it, and a long-lived
-node process that is idle until someone types is exactly the shape of a reaper
-victim. The entry matches the bundle path, because nothing on the command line is
-called `trilium`. Changing how `server.py` spawns the child without changing that
-pattern makes it reapable again, and nothing reports it.
-
 **Backend scripting and the SQL console are switched off explicitly.** Both
 default off on a server build. They are set anyway, because a `config.ini` in the
 data directory can turn either on, and on a public host either is arbitrary code
@@ -796,8 +789,7 @@ VMs/digital_ocean/sirius/deploy.sh release
 the tree the editable install resolves `awm` to, it runs this service's
 `install.sh`, and it builds the page. The install matters because `awm deploy`
 re-runs a service's install script only when the *set* of installed dists
-changes — a rebuilt bundle never lands after the first deploy, the same trap that
-leaves drawio serving a stale client patch.
+changes — a rebuilt bundle never lands after the first deploy.
 
 `scripts/promote.sh` closes the same gap for a fleet promotion, and closes it
 *unconditionally* rather than on a pathspec: the fork lives in a separate

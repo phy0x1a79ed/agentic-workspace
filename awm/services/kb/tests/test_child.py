@@ -7,23 +7,20 @@ import pytest
 from awm.kb import server
 
 
-def test_child_env_replaces_pythonpath_and_adds_keys(kb_paths, monkeypatch):
+def test_child_env_replaces_pythonpath_and_adds_no_llm_key(kb_paths, monkeypatch):
     monkeypatch.setenv("PYTHONPATH", "/awm/worktree")
     monkeypatch.setenv("DEV_PYTHONPATH", "/awm/worktree")
     kb_paths.ZOTERO_LIBRARY.write_text("{}")
     env = server.child_env()
     assert env["PYTHONPATH"] == str(kb_paths.CHECKOUT / "src")
     assert "DEV_PYTHONPATH" not in env
-    assert env["LLM_API_KEY"] == "sk-or-test"
+    assert "LLM_API_KEY" not in env
     assert env["KB_ZOTERO_LIBRARY"] == str(kb_paths.ZOTERO_LIBRARY)
     assert env["KB_PORT"] == str(kb_paths.PORT) and env["KB_HOST"] == "127.0.0.1"
 
 
-def test_child_env_keeps_an_explicit_key_and_skips_a_missing_library(kb_paths, monkeypatch):
-    monkeypatch.setenv("LLM_API_KEY", "sk-explicit")
-    env = server.child_env()
-    assert env["LLM_API_KEY"] == "sk-explicit"
-    assert "KB_ZOTERO_LIBRARY" not in env
+def test_child_env_skips_a_missing_library(kb_paths):
+    assert "KB_ZOTERO_LIBRARY" not in server.child_env()
 
 
 def test_child_env_puts_the_kb_env_lib_first(kb_paths, monkeypatch):

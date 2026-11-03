@@ -99,7 +99,6 @@ def _rows() -> list[Alias]:
 
     for verb in ("status", "restart"):
         add("gateway", verb, "awm", verb, old_flat=f"awm_{verb}")
-    add("gateway", "mcp-sync", "awm", "mcp_sync", old_flat="awm_mcp_sync")
     add("gateway", "list", "awm", "registry_list")
     add("gateway", "deregister", "awm", "registry_deregister")
     for verb in ("list", "start", "stop", "restart", "enable", "disable", "reap"):
@@ -112,8 +111,7 @@ def _rows() -> list[Alias]:
 
     for verb in ("password", "peer_credential", "verify", "edge_material", "node_key",
                  "sign_peer_token", "rotate", "user_add", "user_passwd", "user_disable",
-                 "user_list", "penpot_record", "penpot_session", "penpot_rotate",
-                 "penpot_list"):
+                 "user_list"):
         add("auth", verb, "awm", verb)
     add("auth", "status", "awm", "auth_status")
 
@@ -127,7 +125,6 @@ def _rows() -> list[Alias]:
                  "blueprint_capture", "scan", "load", "move", "stop", "teleport",
                  "respawn", "mine", "craft", "build", "insert", "take", "research"):
         add("rlm", f"factorio_{verb}", "factorio", verb)
-    add("penpot", "plugins_status", "penpot-plugins", "status")
     return rows
 
 

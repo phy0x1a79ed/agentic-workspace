@@ -97,6 +97,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from awm import usage
 from awm.gatewayclient import ServiceAdapter
 from awm.rlm_factorio import appliance, broker, dao, scan, throttle, validate
 
@@ -1403,6 +1404,8 @@ def _acquire(args: dict) -> dict:
             appliance.compose_down(row)
         except Exception:  # noqa: BLE001 — the bring-up error is the one to report
             log.debug("acquire: tearing down %s failed", sid, exc_info=True)
+        if lab:
+            _lab_ran(row, ok=False)
         raise
     row = d.set_runtime(sid, status="ready", current_world=st.get("current_world"))
     return _acquired(row, adopted=False)
@@ -1441,7 +1444,18 @@ def _release(args: dict) -> dict:
     _forget_mod_state(sid)
     appliance.compose_down(row)
     d.set_status(sid, "stopped")
+    if row["kind"] == "lab":
+        _lab_ran(row, ok=True)
     return {"released": True, "session_id": sid, "seats": released_seats}
+
+
+def _lab_ran(row: dict, *, ok: bool) -> None:
+    """Count one lab run, bring-up to release, as background use (R132)."""
+    try:
+        ms = round((datetime.now(timezone.utc) - datetime.fromisoformat(row["created_at"])).total_seconds() * 1000)
+    except (KeyError, TypeError, ValueError):
+        ms = None
+    usage.record_background("lab", ok, ms)
 
 
 def _reset(args: dict) -> dict:

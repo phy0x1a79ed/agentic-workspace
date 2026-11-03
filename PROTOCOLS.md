@@ -2,7 +2,7 @@
 
 ## Purpose & Contents
 
-This file holds the procedures for operating the workspace. Read it by path when a task needs one. It covers the workspace layout, the scope lifecycle, scope naming, hub integration, per-user and shared data, data and backups, retiring a project, pushing to a peer, submodules, and the CLI.
+This file holds the procedures for operating the workspace. Read it by path when a task needs one. It covers the workspace layout, the scope lifecycle, scope naming, hub integration, per-user and shared data, counting use of a plugin, data and backups, retiring a project, pushing to a peer, submodules, and the CLI.
 
 Agent orientation goes in `AGENTS.md`. awm internals go in `ARCHITECTURE.md`. Cross-node behaviour goes in `FEDERATION.md`. What a project is for goes in that project's own files.
 
@@ -66,7 +66,7 @@ A hub scope integrates a set of peripheral scopes with two local git operations.
 
 | Hub | Branch | Peripherals |
 |-----|--------|-------------|
-| `feat-dag` | `feat/feat-dag` | `svc-events`, `web-stt`, `web-tts`, `web-ui` |
+| `feat-dag` | `feat/feat-dag` | `svc-events`, `web-ui` |
 | `feat-gamebot` | `feat/feat-gamebot` | `svc-effector`, `svc-events`, `rlm-browser`, `rlm-factorio`, `rlm-chess` |
 | `dev` | `dev` | all promotable scopes |
 
@@ -82,9 +82,17 @@ Per-user data is a scope in project `userdata`, at scope `<name>` on branch `use
 - `userroot.wrap_handlers` binds the caller for every verb.
 - `awm.config.autocommit` commits the service's subdirectory.
 
-Notes and drawio are the reference implementations.
-
 Shared data never goes in `userdata`. `userroot.users()` treats every subdirectory of `projects/userdata/` as a person, so a shared store there becomes a phantom user. Put shared data in a scope of the project whose code serves it, DVC-pinned under `data/`. One path then moves on a deploy instead of two. The Trilium vault is the worked example: its database and pinned chunks live in `projects/trilium/release` beside the fork that serves them. A node that runs the service without that checkout gets a plain directory at the same path and pins nothing.
+
+## Counting use of a plugin
+
+The gateway counts each tool call by itself. A project that uses a plugin some other way reports the use, so the plugin's count stays true:
+
+1. Install the library into the project's env: `mamba run -n <env> pip install -e <awm>/service_components/usage`.
+2. Call `awm.usage.record_code("<plugin>", "<part>")` each time the project's code calls the plugin's code directly.
+3. Wrap a job the project runs for a plugin in `with awm.usage.background_run("<job>", plugin="<plugin>"):`.
+
+The events land in `<AWM_DIR>/usage/<YYYY-MM-DD>.jsonl`. `ARCHITECTURE.md` § *Usage per plugin* has the internals.
 
 ## Data
 

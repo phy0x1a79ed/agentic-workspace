@@ -19,7 +19,6 @@ def manifest():
     return API_MANIFEST
 
 
-SERVICE_TOML = Path(__file__).resolve().parents[1] / "service.toml"
 PLUGIN_TOML = Path(__file__).resolve().parents[1] / "awm-plugin.toml"
 CONTRACT_VERBS = {"platform", "resolve", "find", "status", "list", "send",
                   "interrupt", "start", "stop", "resume", "set", "compact"}
@@ -37,8 +36,6 @@ def test_every_function_projects_into_the_hidden_harness_tool():
 def test_the_service_is_hidden_and_implements_the_harness_contract():
     import tomllib
 
-    cfg = tomllib.loads(SERVICE_TOML.read_text())
-    assert (cfg["tool"], cfg["tier"]) == ("harness-cc", "off")
     plugin = tomllib.loads(PLUGIN_TOML.read_text())
     [tool] = plugin["tool"]
     assert tool["name"] == "harness-cc" and tool["tier"] == "off"

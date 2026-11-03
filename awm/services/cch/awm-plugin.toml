@@ -17,6 +17,8 @@ tier = "off"
 implements = ["harness@1"]
 
 [needs]
+secrets = []
+network = []
 platform = ["linux"]
 
 [[needs.tool]]

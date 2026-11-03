@@ -1,0 +1,17 @@
+[plugin]
+name = "search"
+version = "0.1.0"
+trust = "own"
+
+[[service]]
+name = "search"
+
+[[tool]]
+name = "search"
+major = 1
+tier = "on"
+
+[needs]
+secrets = []
+network = []
+platform = ["linux"]

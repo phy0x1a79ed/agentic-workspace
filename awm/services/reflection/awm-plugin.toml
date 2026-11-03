@@ -15,6 +15,11 @@ major = 1
 service = "reflection"
 tier = "on"
 
+[needs]
+secrets = []
+network = []
+
 # Every harness plugin: cch (harness-cc), dsh (harness-ds). See harness-contract.md.
 [[needs.contract]]
+name = "harness"
 major = 1
