@@ -25,7 +25,7 @@ Surveyed read only on 2026-11-02, from the `feat/redux` source and the deployed 
 - **A fresh node starts every service** unless an explicit `enabled.json` limits it.
 - **Install still needs sudo** for the `/usr/local/bin` links, apt packages and linger. This breaks `fleet.md` R101.
 - **The plugin contract is already blind to language and place.** A plugin is a folder with a `run.sh` that connects to the gateway. `AWM_SERVICE_ROOTS` (commit 041102fa) loads services from outside the repo, but no node sets it. All 44 services sit in `awm/services/`. tether is the nearest to an outside plugin: a pinned release with Rust binaries from GitHub.
-- **R115 missing.** Services and pages are registered in awm's own tree. A page needs awm code to be served.
+- **R115 partial.** The gateway discovers services from `awm/services/` and pages from a separate folder of built bundles (`AWM_PAGES_DIR`, `awm/gateway/awm/gateway/server.py` step 2b). Nothing installs either from a plugin's own repository, and one plugin cannot ship a service and its page together.
 - **R33 missing.** No plugin has its own refresh hook or version pin. `awm deploy` restarts the whole gateway. Every Python service shares the one `awm` env.
 - **No test environment exists.** awm has no Dockerfile, no CI, no cloud-agent setup and no fake peer. Rootless Docker works on mizar and in capella's WSL.
 - **mizar has two miniforge installs.** The services run from `~/miniforge3`. `.mcp.json` points at `~/lib/miniforge3`.
