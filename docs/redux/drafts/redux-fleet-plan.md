@@ -2,7 +2,7 @@
 
 ## Context
 
-The redux build runs one lane per area overnight. This lane builds the machine side of the fleet: a plugin that wakes the home boxes and hands Tony to a standby agent while mizar or alcor restarts, and the Ansible tree that the one-pass fleet config run (fleet.md R108) applies later. Everything lands as code and config on `feat/redux-fleet`. No host changes tonight.
+The redux build runs one lane per area overnight. This lane builds the machine side of the fleet: a plugin that wakes the home boxes and hands Tony to a standby agent while mizar or alcor restarts, and the Ansible tree that the one-pass fleet config run (fleet.md R108) applies later. fleet.md R140 splits the work in two. The wake plugin is awm product code on awm's `feat/redux-fleet`. The Ansible tree, the node config and the plugin placement are Tony's machines, so they land in the cloud project's scope `cloud/redux-fleet` under `homelab/`, also on a branch `feat/redux-fleet`. No host changes tonight.
 
 ## What you said
 
@@ -18,6 +18,14 @@ Coordinator, on the lane change:
 
 > You keep R139 wake and standby, R98 item 1, and gain deneb hardening config (fleet.md R79 to R84) and the config pass (R108); redux-build/trust (job 563d3f5a) writes its ssh, firewall, users and sudo config into your pass.
 
+Coordinator, on R140 (2026-11-03):
+
+> Move the R108 config pass out of awm's fleet/ tree into the cloud project. Create a scope there with scope create, project cloud, scope redux-fleet. It is a local branch with local commits only. Put the pass under homelab/, next to VMs/.
+
+> deneb's machine setup stays in the cloud project. Ansible there replaces its provision.sh. Keep the cloud project's README rule: main means what is on the box. Write the new setup, but do not retire the old scripts or apply anything.
+
+> Keep only product code in awm/redux-fleet: the wake plugin and the standby code.
+
 ## Issues
 
 - I1. No awm code wakes a machine. Tony or an agent runs `wakeonlan` by hand from mizar (`~/handoff/wol-run.sh`).
@@ -25,6 +33,7 @@ Coordinator, on the lane change:
 - I3. Pinned jobs do not come back after a reboot (`adopted=0 respawned=0 dead=2`).
 - I4. alcor's firewall admits port 22 from all of `100.64.0.0/10`, `172.16.0.0/24` and `10.0.0.0/24`. Only the authorized keys limit logins to mizar.
 - I5. No Ansible tree for the swarm exists. The 2026-11-02 proof of concept left only an inventory and one read-only check in a job tmp folder.
+- I7. No file says which plugins each node runs. Each node's install picks its own set by hand, and deneb's `install-awm.sh` holds its own list.
 - I6. deneb runs agent sessions, holds an ssh key into altair, runs Penpot and the game server, syncs Zotero on a timer, and posts the day's login password into the Ops note.
 
 ## High-level goals
@@ -35,6 +44,7 @@ Coordinator, on the lane change:
 - G4. The new pieces fit the redux plugin contract and still run under today's gateway.
 - G5. The fleet has one Ansible tree that the config pass can apply in one run, with sibling lanes adding their roles to it.
 - G6. deneb's hardening decisions exist as config, ready for that run.
+- G7. One place in the cloud project says which plugins each node runs.
 
 ## Acceptance criteria
 
@@ -46,9 +56,12 @@ Coordinator, on the lane change:
 - A boot runner calls the harness's `revive_pinned` over the gateway once the gateway answers, and then releases the partner's standby with the report.
 - No code in the plugin imports `awm.claudedaemon` or another plugin.
 - Unit tests for the plugin pass under `mamba run -n awm pytest`.
-- `fleet/` holds `ansible.cfg`, `inventory/hosts.yml`, `site.yml`, `requirements.yml` and the roles `wake_node`, `alcor_ssh_door` and `deneb_station`.
-- `ansible-playbook --syntax-check fleet/site.yml` passes, and each of my roles converges in check mode and then for real against a throwaway Ubuntu container.
-- A test fails when the inventory's hosts and the managed nodes of `fleet/edges.yml` disagree.
+- The cloud scope's `homelab/` holds `ansible.cfg`, `inventory/hosts.yml`, `site.yml`, `requirements.yml` and the roles `awm_config`, `wake_node`, `alcor_ssh_door` and `deneb_station`.
+- `awm/redux-fleet` holds no inventory, host name list or role. Only the wake plugin and its tests change there.
+- `ansible-playbook --syntax-check homelab/site.yml` passes, and each of my roles converges in check mode and then for real against a throwaway Ubuntu container.
+- A test fails when the inventory's hosts and the managed nodes of `homelab/edges.yml` disagree, and when any play targets mira.
+- `homelab/inventory/group_vars/all/plugins.yml` names the plugins of every managed node, and a test fails when a plugin dropped by R134 appears in it.
+- deneb_station covers each step of `VMs/tencent/deneb/provision.sh`, and the old scripts stay in place unchanged.
 - No secret, password or token is in the tree.
 
 ## Tasks
@@ -60,10 +73,11 @@ Coordinator, on the lane change:
 - T5. Write the plugin manifest and the legacy run path (G4).
 - T6. Commit a checkpoint and journal the phase (G1, G2, G3).
 - T7. Compact.
-- T8. Lay out the fleet Ansible tree (G5).
+- T8. Lay out the homelab Ansible tree in the cloud scope (G5).
+- T8b. Write the plugin placement and the awm_config role (G5, G7).
 - T9. Write the wake_node role (G1, G3, G5).
 - T10. Write the alcor_ssh_door role with the ufw defaults (G5).
-- T11. Write the deneb_station role (G6).
+- T11. Write the deneb_station role that replaces deneb's provision.sh (G6).
 - T11b. Build the Zotero Sync now order puller against the approval panel (G6).
 - T12. Test the tree in throwaway containers (G5, G6).
 - T13. Commit a checkpoint and journal the phase (G5, G6).
@@ -112,13 +126,19 @@ Gotchas: commit only this lane's files.
 
 ### T7. Compact
 
-Handoff: the plugin lives at `awm/plugins/wake/` (13ea967a), its 26 tests pass with `PYTHONPATH=<plugin>:<ws>/awm/service_components/gatewayclient mamba run -n awm python -m pytest awm/plugins/wake/tests`, and today's gateway finds it with `AWM_SERVICE_ROOTS=<ws>/awm/plugins`, which wake_node must set in the node's `.awm/env`. Comms with siblings go through SendMessage by session name (build-rules rule 0), never reflection message. The harness lane will message when `revive_pinned` lands on `feat/redux-harness`. and the plan file names the next task. Re-read `build-rules.md` and `lanes.md` in `/home/tony/.claude/jobs/8162a704/tmp/` after the compaction. Agreed with trust (job 563d3f5a): `fleet/roles/<role>`, `fleet/site.yml`, `fleet/inventory/hosts.yml` mine, `fleet/edges.yml` theirs, ufw defaults and alcor port 22 mine. Run `reflection(verb="compact", args={followup:"continue with T8 of docs/redux/drafts/redux-fleet-plan.md"})`.
+Handoff: the plugin lives at `awm/plugins/wake/` (13ea967a), its 26 tests pass with `PYTHONPATH=<plugin>:<ws>/awm/service_components/gatewayclient mamba run -n awm python -m pytest awm/plugins/wake/tests`, and today's gateway finds it with `AWM_SERVICE_ROOTS=<ws>/awm/plugins`, which wake_node must set in the node's `.awm/env`. Comms with siblings go through SendMessage by session name (build-rules rule 0), never reflection message. The harness lane will message when `revive_pinned` lands on `feat/redux-harness`. and the plan file names the next task. Re-read `build-rules.md` and `lanes.md` in `/home/tony/.claude/jobs/8162a704/tmp/` after the compaction. Agreed with trust (job 563d3f5a): `fleet/roles/<role>`, `fleet/site.yml`, `fleet/inventory/hosts.yml` mine, `homelab/edges.yml` theirs, ufw defaults and alcor port 22 mine. Run `reflection(verb="compact", args={followup:"continue with T8 of docs/redux/drafts/redux-fleet-plan.md"})`.
 
-### T8. Lay out the fleet Ansible tree
+### T8. Lay out the homelab Ansible tree in the cloud scope
 
-Lift the POC's `ansible.cfg` conventions (BatchMode, ControlPersist) into `fleet/ansible.cfg`. The inventory names mizar (local), alcor, mira, capella, lyra, deneb and shogun, with mizar's ssh aliases and `ansible_python_interpreter=/usr/bin/python3` pinned everywhere (the POC found alcor's discovery picks the awm env). Groups: `swarm`, `home_lan`, `stations`, `wsl`. `requirements.yml` pins `ansible.posix` 2.2.2 and `community.general` 13.2.0, as arbutus-infra does. `site.yml` holds one play per role, with host limits. mira is in the inventory for facts only, and no play targets it before the trial week ends (R89 item 1). A Python test checks the inventory against `fleet/edges.yml`.
+The tree lives at `cloud/redux-fleet/homelab/`, next to `VMs/`. Lift the POC's `ansible.cfg` conventions (BatchMode, ControlPersist) into `homelab/ansible.cfg`. The inventory names mizar (local), alcor, mira, capella, lyra, deneb and shogun, with mizar's ssh aliases and `ansible_python_interpreter=/usr/bin/python3` pinned everywhere (the POC found alcor's discovery picks the awm env). Groups: `swarm`, `home_lan`, `stations`, `wsl`. `requirements.yml` pins `ansible.posix` 2.2.2 and `community.general` 13.2.0, as arbutus-infra does. `site.yml` holds one play per role, with host limits. mira is in the inventory for facts only, and no play targets it before the trial week ends (R89 item 1). The inventory takes each node's ssh address from `homelab/edges.yml`, so the addresses live in one file. A Python test checks the inventory against it.
 
-Gotchas: shogun manages altair (R91), so altair is not in this inventory. The test skips with a clear reason until trust commits `fleet/edges.yml`.
+Gotchas: shogun manages altair (R91), so altair is not in this inventory. The test skips with a clear reason until trust's `homelab/edges.yml` is merged. Trust commits it on its own scope `cloud/redux-trust`, and T15 merges it.
+
+### T8b. Write the plugin placement and the awm_config role
+
+R140 puts the install config that places plugins on nodes in the cloud project. `homelab/inventory/group_vars/all/plugins.yml` lists the plugins every node runs, and host_vars add or remove per node: rlm-factorio on mizar only, engcyc on altair for dev only, and the singletons homed by `edges.yml`. The `awm_config` role writes the node's plugin list and copies `edges.yml` to `{{ awm_dir }}/edges.yml`, where awm reads it. It also removes the plugins R134 drops and the compute Claude Code hook, gated behind `awm_sweep_drop`, false by default.
+
+Gotchas: the plugins lane names showtime and sirius, which `edges.yml` does not list, so their placement waits on trust adding them. altair is managed by shogun, so its placement is a file for shogun's run, not a play here.
 
 ### T9. Write the wake_node role
 
@@ -128,13 +148,13 @@ Gotchas: both NICs read `Wake-on: g` today, and the BIOS setting on mizar was ne
 
 ### T10. Write the alcor_ssh_door role with the ufw defaults
 
-On alcor: set ufw defaults (deny incoming, allow outgoing), admit 22/tcp only from the LAN and Tailscale addresses of the nodes that hold an edge into alcor in `fleet/edges.yml` (mizar, capella, lyra), and delete the three blanket 22/tcp rules. Keep the gateway port rules as they are, because the trust lane decides them.
+On alcor: set ufw defaults (deny incoming, allow outgoing), admit 22/tcp only from the LAN and Tailscale addresses of the nodes that hold an edge into alcor in `homelab/edges.yml` (mizar, capella, lyra), and delete the three blanket 22/tcp rules. Keep the gateway port rules as they are, because the trust lane decides them.
 
 Gotchas: lyra is not on the tailnet yet and capella's LAN address comes from DHCP, so the role asserts that each source address is set and refuses to run otherwise. Add the new rules before deleting the old ones, so a run cut in the middle never locks mizar out. **WARNING** for the later live run: the rule set must admit the controller's own address.
 
-### T11. Write the deneb_station role
+### T11. Write the deneb_station role that replaces deneb's provision.sh
 
-Write it from the cloud project's `VMs/tencent/deneb` tree, read only, with no login to deneb.
+Port each step of `VMs/tencent/deneb/provision.sh` and `install-awm.sh` into tasks, read from the cloud tree with no login to deneb. The old scripts stay, and the README rule holds: `main` means what is on the box, so this role reaches `main` only after it runs against deneb with no changes. Then layer the hardening decisions on top.
 
 1. R79: drop `cx`, `reflection` and `keep` from deneb's service set, stop the awm account's Claude daemon unit, remove the `awm-client.conf` key route into altair, and add an nftables rule that drops new outbound tcp/22. All of it is behind `deneb_agents_moved`, false by default, because the Discord seats move to mizar first (users.md R129).
 2. R80: keep `trilium` in the service set.
@@ -143,7 +163,7 @@ Write it from the cloud project's `VMs/tencent/deneb` tree, read only, with no l
 5. R83: set `ZOTERO_SYNC_ENABLED=0` and `ZOTERO_STREAM_ENABLED=0`, and check that `awm zotero status` reports a key that cannot write.
 6. R84: nothing yet. It needs the passkey of queue.md R64.
 
-Gotchas: deneb's live service list may differ from the cloud tree, so the role states the wanted set and the play diffs it in check mode. Removing the altair key route touches F6, which the trust lane may also claim, so check with it before T13.
+Gotchas: deneb's live service list may differ from the cloud tree, so the role states the wanted set and the play diffs it in check mode. Removing the altair key route touches F6, which the trust lane may also claim, so check with it before T13. A step of provision.sh that needs a secret reads it on deneb at run time, never from this tree.
 
 ### T11b. Build the Zotero Sync now order puller against the approval panel
 
@@ -163,7 +183,7 @@ Commit T8 to T12. Journal the tree layout and the test results.
 
 ### T14. Compact
 
-Handoff: the tree under `fleet/` passes its tests, and the next step is merging trust's roles. Run `reflection(verb="compact", args={followup:"continue with T15 of docs/redux/drafts/redux-fleet-plan.md"})`.
+Handoff: the tree under `homelab/` passes its tests, and the next step is merging trust's roles. Run `reflection(verb="compact", args={followup:"continue with T15 of docs/redux/drafts/redux-fleet-plan.md"})`.
 
 ### T15. Merge the trust lane's roles when they land and rerun the tree tests
 
@@ -178,10 +198,6 @@ Send one line to job 8162a704 with `reflection(verb="message")`: what landed, th
 ### T17. Debrief
 
 Run the `debrief` skill. Then stop the session.
-
-## Still unsure about
-
-- Whether deneb's config moves from the cloud project's `VMs/tencent/deneb` scripts into `fleet/`, so that those scripts retire when the pass lands. T11 writes the role in `fleet/` and leaves the cloud tree alone.
 
 ## Callouts
 
