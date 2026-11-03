@@ -34,6 +34,10 @@ This doc holds a session's id, the id of its task, its lifecycle from start to r
 
 - **R8.** A session closes with the standard agent exit. Retiring stops it fully and leaves a report to whoever started it. The report is the session's journal, written once.
 - **R10.** A retired session stays resumable through its transcript, by its session id (R9). The job itself is gone. The default follow-up is still a new session, which starts from the old session's journal only. Tony: "In instances where I do ask for a \"resume\", getting the actual session back would be the best."
+  - A retire deletes the job. The session is finished and frees its scope.
+  - A wait (R51) keeps the job, because the session comes back. The wake resumes that job.
+  - A resume of a retired session starts a new job from its transcript, with the same session id.
+  - Tony: "Yes" (2026-11-03), to keeping the job only for a wait.
 - **R11.** Each session deploys its work. It skips the deploy only when no deploy is possible, as for a design draft. Tony: "always deploy. if impossible (like design drafts), dont deploy." A session that a coordinator started for a complex task leaves its branch to the coordinator, which deploys (R52 path 2). The deploy follows the project's instructions. An agent asks Tony when it is unsure.
 - **R12.** A session closes on its own. Tony does not accept it first.
   1. When its task is done, the agent debriefs. The debrief writes the journal, which posts to the card. Tony reviews the journal without a live agent.
@@ -59,7 +63,7 @@ This doc holds a session's id, the id of its task, its lifecycle from start to r
 - **R51.** A session that depends on other sessions waits until they finish. The asking session starts the top-level sessions for the larger issue, as `dispatch.md` R50 allows. It then asks awm to make it wait until they finish. Each started session reports with its journal and retires (R8, R12). It does not wait on anything. Tony: "a session delivers its report as a journal and then retires. it does not wait. this was discussed already" and "so we need a pause mechanism of sorts. agents start other top level sessions when asked, and then asks awm to pause them until they finish" (2026-11-01).
   - A wait works like a retire. Its last step calls `reflection wait` in place of `reflection stop`. The verb's one parameter is `until`, a required list of session ids (R9). awm wakes the waiting session after every listed session finishes. Tony: "pause should function like retire", "no until would go in reflection stop -> need new verb reflection pause_until" and "lets do reflection wait, and have until be the name of the (now non optional) parameter. pause -> wait, I think this is clearer and fits instructions better: "wait until they finish"" (2026-11-01).
   - `reflection wait` waits on sessions only. A coordinator waits on a deploy through the deploy call itself (`routines.md` R26). Tony: "pause is strictly for sessions." (2026-11-01).
-  - The wake resumes the session itself from its transcript (R10).
+  - The wake resumes the session's kept job (R10).
   - The session compacts before it calls `reflection wait`. This is a soft instruction, not a check. Tony: "would be good as soft instructions to compact before retiring with "until" set" (2026-11-01).
 - **R52.** Three standard paths cover work that spans sessions. R51 serves the second and the third. Tony: "we should also try to keep things simple and not add new features until necessary." (2026-11-01).
   1. **A simple task.** The agent calls `deploy` and retires. Tony: "an agent does a simple task that requires deploy, calls deploy and retires."

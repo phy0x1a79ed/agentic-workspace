@@ -55,3 +55,7 @@ Surveyed read only on mizar, 2026-11-03. "release" is `origin/release` at 266f4b
   - R135 item 2 puts "who is calling" in reflection, and item 3 puts "which session is calling" in the harness.
   - `AGENTS.md` still says OpenCode loads it through `mcp-opencode.json`, against R135 item 5.
   - The R18 and R51 gap rows still describe cx. `sessions.md` has no row for R141.
+
+## Decisions
+
+- 2026-11-03: A retire deletes the job. A wait keeps it, and the wake resumes it. A resume of a retired session starts a new job from its transcript, with the same session id (`sessions.md` R10, R51). Tony: "Yes".
