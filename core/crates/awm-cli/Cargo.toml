@@ -1,0 +1,27 @@
+[package]
+name = "awm-cli"
+description = "The awm binary: CLI, gateway, MCP proxy and bootstrap in one static executable."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "awm"
+path = "src/main.rs"
+
+[dependencies]
+awm-proto.workspace = true
+awm-gateway.workspace = true
+awm-mcp.workspace = true
+anyhow.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+tokio.workspace = true
+reqwest.workspace = true
+clap.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+serde_json.workspace = true
