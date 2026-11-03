@@ -65,6 +65,9 @@ service = "fake"
 [[page]]
 name = "ui"
 dir = "ui"
+
+[needs]
+secrets = ["FAKE_SECRET"]
 "#,
     );
     write(&core.join("fake/run.sh"), &format!("exec '{}'\n", fake.display()));
@@ -93,6 +96,7 @@ major = 1
     // A plugin another user's systemd unit runs: the gateway serves it but does not spawn it.
     write(&core.join("ext/run.sh"), "exit 1\n");
     write(&state.join("ext.token"), "ext-secret\n");
+    write(&state.join("secrets.env"), "# node secrets\nFAKE_SECRET=s3cret\nOTHER_SECRET=not-yours\n");
 
     let python = awm_python();
     let mut env = String::new();
@@ -135,6 +139,7 @@ impl Gateway {
             .args(["gateway", "serve", "--state"])
             .arg(state)
             .env("AWM_LOG", "info")
+            .env("GATEWAY_ONLY_SECRET", "leaked")
             .env("AWM_CX_SESSIONS", state.join("sessions"))
             .stderr(std::fs::File::create(state.join("gateway.stderr")).unwrap())
             .spawn()
@@ -327,6 +332,17 @@ fn gateway_end_to_end() {
     let who: Value = serde_json::from_str(reply["result"].as_str().unwrap()).unwrap();
     assert_eq!(who["trust"], "trusted", "a session with no entry is trusted: {who}");
 
+    // A plugin gets the secrets its manifest lists, and nothing else of the node's (R116 item 1).
+    let env_of = |tool: &str, name: &str| -> String {
+        let (code, out, errout) = cli(&url, &[tool, "env", "--name", name]);
+        assert_eq!(code, 0, "{errout}");
+        out.trim().to_string()
+    };
+    assert_eq!(env_of("fake", "FAKE_SECRET"), "s3cret");
+    assert_eq!(env_of("fake", "OTHER_SECRET"), "null");
+    assert_eq!(env_of("caller", "FAKE_SECRET"), "null", "a plugin got a secret it does not declare");
+    assert_eq!(env_of("fake", "GATEWAY_ONLY_SECRET"), "null", "the gateway's own environment leaked into a service");
+
     // A plugin calls the tool it needs by its name, looked up at call time.
     let owner: Value = http().get(format!("{url}/hub/tool/fake")).send().unwrap().json().unwrap();
     assert_eq!((owner["plugin"].as_str(), owner["peer"].as_str()), (Some("fake"), None), "{owner}");
@@ -404,6 +420,40 @@ fn gateway_end_to_end() {
     let r = reload();
     assert_eq!((r["added"].as_array().map(Vec::len), r["updated"].as_array().map(Vec::len)), (Some(0), Some(0)), "{r}");
     assert_eq!(fake_pid(&url), before, "a reload restarted a plugin it did not change");
+
+    // An install copies a folder into the state's installed root, pins it and loads it hot.
+    // A refused plugin rolls the whole change back.
+    let src = node.state.parent().unwrap().join("src");
+    let plugin_at = |dir: &Path, name: &str, tool: &str, needs: &str| {
+        write(&dir.join("awm-plugin.toml"), &format!("[plugin]\nname = \"{name}\"\n\n[[service]]\nname = \"{name}\"\n\n[[tool]]\nname = \"{tool}\"\n{needs}"));
+        write(&dir.join("run.sh"), &format!("export FAKE_TOOL={tool}\nexec '{}'\n", fake_bin().display()));
+    };
+    plugin_at(&src.join("inst"), "inst", "inst", "");
+    let (code, out, errout) = cli(&url, &["install", src.join("inst").to_str().unwrap()]);
+    assert_eq!(code, 0, "{out} {errout}");
+    let (code, out, _) = cli(&url, &["inst", "echo", "--text", "installed"]);
+    assert!(code == 0 && out.contains("installed"), "{out}");
+    let pins = std::fs::read_to_string(node.state.join("installed.toml")).unwrap();
+    assert!(pins.contains("name = \"inst\"") && pins.contains("folder:"), "{pins}");
+    plugin_at(&src.join("inst"), "inst", "inst-two", "");
+    let (code, _, _) = cli(&url, &["inst-two", "echo", "--text", "x"]);
+    assert_ne!(code, 0, "an edit of the source must change nothing before the next install");
+    let (code, out, errout) = cli(&url, &["install", src.join("inst").to_str().unwrap()]);
+    assert_eq!(code, 0, "{out} {errout}");
+    let (code, out, _) = cli(&url, &["inst-two", "echo", "--text", "updated"]);
+    assert!(code == 0 && out.contains("updated"), "{out}");
+    plugin_at(&src.join("fake"), "fake", "fake-again", "");
+    let (code, out, _) = cli(&url, &["install", src.join("fake").to_str().unwrap()]);
+    assert!(code != 0 && out.contains("already loaded"), "a core plugin's name must not install: {out}");
+    plugin_at(&src.join("inst"), "inst", "inst-three", "\n[[needs.tool]]\nname = \"nobody\"\n");
+    let (code, out, _) = cli(&url, &["install", src.join("inst").to_str().unwrap()]);
+    assert!(code != 0 && out.contains("nobody"), "{out}");
+    let (code, out, _) = cli(&url, &["inst-two", "echo", "--text", "still here"]);
+    assert!(code == 0 && out.contains("still here"), "a refused install must leave the old plugin: {out}");
+    let (code, out, errout) = cli(&url, &["uninstall", "inst"]);
+    assert_eq!(code, 0, "{out} {errout}");
+    assert_eq!(http().get(format!("{url}/hub/tool/inst-two")).send().unwrap().status().as_u16(), 404);
+    assert!(!node.state.join("installed/inst").exists());
 
     // Usage per plugin and surface, not MCP calls alone (R132).
     let (code, out, _) = cli(&url, &["usage", "--days", "1"]);

@@ -19,13 +19,15 @@ use crate::usage::UsageStore;
 
 pub const DESCRIBE: &str = "describe";
 pub const NATIVE_TOOL: &str = "awm";
-const NATIVE_VERBS: [(&str, &str); 6] = [
+const NATIVE_VERBS: [(&str, &str); 8] = [
     ("status", "The gateway's status: node, uptime, plugins and services."),
     ("plugins", "Every plugin the loader read: loaded, refused with the reason, and skipped."),
     ("services", "Every service the hub knows, with its status."),
     ("usage", "Usage per plugin and surface over the last `days` days (default 60)."),
     ("table", "The live name table: each tool's owner plugin and node, and each contract's providers."),
     ("reload", "Read the plugin roots and the install config again. Starts added plugins, restarts changed ones and stops removed ones, with no gateway restart."),
+    ("install", "Install or update plugins from `sources` (a list) or `source`: each a plugin folder. All of them load as one change, or none does."),
+    ("uninstall", "Remove an installed plugin by `name` and stop its services."),
 ];
 const DEFAULT_CALL_TIMEOUT_S: f64 = 120.0;
 
@@ -45,6 +47,9 @@ pub struct Gateway {
     /// The tools each peer serves, refreshed when a peer says its table changed.
     pub peer_tools: RwLock<BTreeMap<String, Vec<RemoteTool>>>,
     reloading: tokio::sync::Mutex<()>,
+    installing: tokio::sync::Mutex<()>,
+    /// Passes a change whose source needs approval (R116 item 2).
+    pub approver: Box<dyn crate::install::Approver>,
     me: Weak<Gateway>,
 }
 
@@ -112,6 +117,7 @@ impl Gateway {
     pub async fn open_with(state: &Path, cfg: Config, peers: Arc<dyn PeerTransport>) -> anyhow::Result<Arc<Self>> {
         std::fs::create_dir_all(state)?;
         let state = state.canonicalize()?;
+        std::fs::create_dir_all(crate::install::installed_root(&state))?;
         let node = cfg.node_name();
         let peer_tools = fetch_peer_tools(&state, peers.as_ref()).await;
         let load = load_plugins(&state, &cfg, &peer_tools);
@@ -136,6 +142,8 @@ impl Gateway {
             tokens: TokenCache::default(),
             peer_tools: RwLock::new(peer_tools),
             reloading: tokio::sync::Mutex::new(()),
+            installing: tokio::sync::Mutex::new(()),
+            approver: Box::new(crate::install::NoPasskeyYet),
             me: me.clone(),
         }))
     }
@@ -258,6 +266,104 @@ impl Gateway {
                 false
             }
         }
+    }
+
+    /// Fetch each source, pass the change through the approver, and load it as one change.
+    /// A plugin the loader refuses rolls the whole change back.
+    pub async fn install(&self, sources: &[String]) -> Result<Value, ApiError> {
+        use crate::install::{installed_root, source_of, Pending, Pin, Pins};
+        if sources.is_empty() {
+            return Err(ApiError::new(400, "install needs `source` or `sources`"));
+        }
+        let _one_at_a_time = self.installing.lock().await;
+        let root = installed_root(&self.state);
+        let stage = root.join(format!(".staging-{}", uuid::Uuid::new_v4().simple()));
+        let cleanup = |dir: &Path| {
+            let _ = std::fs::remove_dir_all(dir);
+        };
+        let mut fetched = Vec::new();
+        let mut needs_approval = false;
+        for (i, raw) in sources.iter().enumerate() {
+            let source = source_of(raw).map_err(|e| ApiError::new(400, e))?;
+            let dest = stage.join(i.to_string());
+            let got = source.fetch(&dest).map_err(|e| {
+                cleanup(&stage);
+                ApiError::new(400, e)
+            })?;
+            if let Some(p) = self.read_load().plugins.iter().find(|p| p.name == got.name && !p.dir.starts_with(&root)) {
+                cleanup(&stage);
+                return Err(ApiError::new(409, format!("plugin {:?} is already loaded from {}", got.name, p.dir.display())));
+            }
+            if fetched.iter().any(|(_, f, _): &(PathBuf, crate::install::Fetched, String)| f.name == got.name) {
+                cleanup(&stage);
+                return Err(ApiError::new(400, format!("plugin {:?} appears twice in one change", got.name)));
+            }
+            needs_approval |= source.needs_approval();
+            fetched.push((dest, got, source.spec()));
+        }
+        if needs_approval {
+            let change: Vec<Pending> = fetched
+                .iter()
+                .map(|(_, f, spec)| Pending { name: f.name.clone(), source: spec.clone(), commit: f.commit.clone() })
+                .collect();
+            if let Err(e) = self.approver.approve(&change) {
+                cleanup(&stage);
+                return Err(ApiError::new(403, e));
+            }
+        }
+        let mut moved = Vec::new();
+        for (dest, f, _) in &fetched {
+            let live = root.join(&f.name);
+            let old = root.join(format!(".old-{}", f.name));
+            cleanup(&old);
+            let had = live.exists() && std::fs::rename(&live, &old).is_ok();
+            std::fs::rename(dest, &live).map_err(|e| ApiError::new(500, format!("{}: {e}", live.display())))?;
+            moved.push((f.name.clone(), live, old, had));
+        }
+        cleanup(&stage);
+        let report = self.reload().await?;
+        let refused: Vec<String> = report["refused"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|r| moved.iter().any(|(n, ..)| r["plugin"] == json!(n)))
+            .map(|r| format!("{}: {}", r["plugin"].as_str().unwrap_or("?"), r["reason"].as_str().unwrap_or("?")))
+            .collect();
+        if !refused.is_empty() {
+            for (_, live, old, had) in &moved {
+                cleanup(live);
+                if *had {
+                    let _ = std::fs::rename(old, live);
+                }
+            }
+            self.reload().await?;
+            return Err(ApiError::new(409, format!("install refused, nothing changed: {}", refused.join("; "))));
+        }
+        let mut pins = Pins::load(&self.state);
+        let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        for ((name, _, old, _), (_, f, spec)) in moved.iter().zip(&fetched) {
+            cleanup(old);
+            pins.set(Pin { name: name.clone(), source: spec.clone(), commit: f.commit.clone(), image: None, installed_at: now.clone() });
+        }
+        pins.save(&self.state).map_err(|e| ApiError::new(500, e.to_string()))?;
+        Ok(json!({"installed": moved.iter().map(|(n, ..)| n).collect::<Vec<_>>(), "reload": report}))
+    }
+
+    /// Remove an installed plugin: its folder, its pin and its services.
+    pub async fn uninstall(&self, name: &str) -> Result<Value, ApiError> {
+        use crate::install::{installed_root, Pins};
+        let _one_at_a_time = self.installing.lock().await;
+        let mut pins = Pins::load(&self.state);
+        if !pins.plugin.iter().any(|p| p.name == name) {
+            return Err(ApiError::new(404, format!("no installed plugin {name:?}")));
+        }
+        let dir = installed_root(&self.state).join(name);
+        if dir.exists() {
+            std::fs::remove_dir_all(&dir).map_err(|e| ApiError::new(500, format!("{}: {e}", dir.display())))?;
+        }
+        pins.plugin.retain(|p| p.name != name);
+        pins.save(&self.state).map_err(|e| ApiError::new(500, e.to_string()))?;
+        Ok(json!({"uninstalled": name, "reload": self.reload().await?}))
     }
 
     /// Load the plugins again and apply the difference, with no gateway restart (R144).
@@ -489,11 +595,26 @@ impl Gateway {
     async fn native(&self, verb: &str, args: &Value, ctx: &CallContext) -> Result<Value, ApiError> {
         match verb {
             "table" => Ok(self.table_view()),
-            "reload" => {
+            "reload" | "install" | "uninstall" => {
                 if ctx.caller.lane != Lane::Local || ctx.caller.trust.as_deref().is_some_and(|t| t != crate::caller::DEFAULT_TRUST) {
-                    return Err(ApiError::new(403, "reload takes a trusted caller on this node"));
+                    return Err(ApiError::new(403, format!("{verb} takes a trusted caller on this node")));
                 }
-                self.reload().await
+                match verb {
+                    "reload" => self.reload().await,
+                    "install" => {
+                        let mut sources: Vec<String> = args
+                            .get("sources")
+                            .and_then(Value::as_array)
+                            .map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect())
+                            .unwrap_or_default();
+                        sources.extend(args.get("source").and_then(Value::as_str).map(str::to_string));
+                        self.install(&sources).await
+                    }
+                    _ => {
+                        let name = args.get("name").and_then(Value::as_str).unwrap_or_default();
+                        self.uninstall(name).await
+                    }
+                }
             }
             "status" => Ok(self.status()),
             "plugins" => Ok(self.load_snapshot()),
@@ -842,10 +963,12 @@ fn load_plugins(state: &Path, cfg: &Config, peer_tools: &BTreeMap<String, Vec<Re
         .unwrap_or_default();
     let reserved = cfg.reserved_names(state);
     let wants = |p: &str| cfg.wants(p);
+    let mut plugin_roots = cfg.plugin_roots.clone();
+    plugin_roots.push(crate::install::installed_root(state));
     loader::load(&loader::LoadInput {
         wants: &wants,
         core_roots: &cfg.core_roots,
-        plugin_roots: &cfg.plugin_roots,
+        plugin_roots: &plugin_roots,
         page_roots: &cfg.page_roots,
         profiles: &cfg.profiles,
         reserved: &reserved,

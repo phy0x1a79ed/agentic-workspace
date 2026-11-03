@@ -49,9 +49,14 @@ pub struct Config {
     /// Its `singletons[].tool` names join the reserved list. A missing file is an empty fleet.
     #[serde(default)]
     pub edges_file: Option<PathBuf>,
-    /// Extra environment for every service, such as `DEV_PYTHONPATH`.
+    /// Extra environment for every service, such as `DEV_PYTHONPATH`. Never a secret:
+    /// every service sees it.
     #[serde(default)]
     pub env: BTreeMap<String, String>,
+    /// The node's secrets, as `NAME=value` lines. Default: `<state>/secrets.env`.
+    /// A service gets only the names its plugin's `needs.secrets` lists.
+    #[serde(default)]
+    pub secrets_file: Option<PathBuf>,
     #[serde(default)]
     pub peer: Vec<PeerConfig>,
     /// Services this gateway serves but does not spawn: another user's systemd unit runs them (R99).
@@ -130,6 +135,10 @@ impl Config {
 
     pub fn external(&self, service: &str) -> Option<&ExternalService> {
         self.external.iter().find(|e| e.service == service)
+    }
+
+    pub fn secrets_path(&self, state: &Path) -> PathBuf {
+        self.secrets_file.clone().unwrap_or_else(|| state.join("secrets.env"))
     }
 
     pub fn edges_path(&self, state: &Path) -> PathBuf {

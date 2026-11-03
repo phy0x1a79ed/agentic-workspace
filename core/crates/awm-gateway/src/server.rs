@@ -42,6 +42,8 @@ pub fn router(gw: Arc<Gateway>) -> Router {
         .route("/hub/contract/{contract}", get(contract_providers))
         .route("/hub/plugins", get(plugins))
         .route("/hub/reload", post(reload))
+        .route("/hub/install", post(install))
+        .route("/hub/uninstall", post(uninstall))
         .route("/svc/{service}/fn/{function}", post(svc_fn))
         .route("/p/{plugin}/{page}", get(page_root))
         .route("/p/{plugin}/{page}/", get(page_root))
@@ -337,6 +339,26 @@ async fn plugins(State(gw): Gw) -> Json<Value> {
 async fn reload(State(gw): Gw, h: HeaderMap) -> Result<Json<Value>, ApiError> {
     refuse_token(&h)?;
     gw.reload().await.map(Json)
+}
+
+#[derive(Deserialize)]
+struct InstallBody {
+    sources: Vec<String>,
+}
+
+async fn install(State(gw): Gw, h: HeaderMap, Json(body): Json<InstallBody>) -> Result<Json<Value>, ApiError> {
+    refuse_token(&h)?;
+    gw.install(&body.sources).await.map(Json)
+}
+
+#[derive(Deserialize)]
+struct UninstallBody {
+    name: String,
+}
+
+async fn uninstall(State(gw): Gw, h: HeaderMap, Json(body): Json<UninstallBody>) -> Result<Json<Value>, ApiError> {
+    refuse_token(&h)?;
+    gw.uninstall(&body.name).await.map(Json)
 }
 
 async fn svc_fn(

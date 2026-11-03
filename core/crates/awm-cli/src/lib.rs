@@ -37,6 +37,10 @@ pub enum Command {
     Plugins,
     /// Load the plugins again and apply the change, with no gateway restart (R144).
     Reload,
+    /// Install or update plugins from folders, as one change.
+    Install { sources: Vec<String> },
+    /// Remove an installed plugin.
+    Uninstall { name: String },
     /// Run a verb of a tool: awm <tool> <verb> [--key value]... [--json '{..}'] [--peer <node>]
     #[command(external_subcommand)]
     Tool(Vec<String>),
@@ -85,14 +89,25 @@ pub async fn run(cli: Cli) -> anyhow::Result<i32> {
         Command::Usage { days } => get_and_print(&format!("/usage?days={days}")).await,
         Command::Status => get_and_print("/status").await,
         Command::Plugins => get_and_print("/hub/plugins").await,
-        Command::Reload => post_and_print("/hub/reload").await,
+        Command::Reload => post_and_print("/hub/reload", json!({})).await,
+        Command::Install { sources } => {
+            let sources: Vec<String> = sources
+                .into_iter()
+                .map(|s| match std::path::Path::new(&s).canonicalize() {
+                    Ok(p) if !s.contains(':') => p.display().to_string(),
+                    _ => s,
+                })
+                .collect();
+            post_and_print("/hub/install", json!({"sources": sources})).await
+        }
+        Command::Uninstall { name } => post_and_print("/hub/uninstall", json!({"name": name})).await,
         Command::Tool(words) => run_tool(&words).await,
     }
 }
 
-async fn post_and_print(path: &str) -> anyhow::Result<i32> {
+async fn post_and_print(path: &str, body: Value) -> anyhow::Result<i32> {
     let url = format!("{}{path}", gateway_url());
-    let resp = reqwest::Client::new().post(&url).send().await.map_err(|e| anyhow::anyhow!("awm gateway unreachable at {url}: {e}"))?;
+    let resp = reqwest::Client::new().post(&url).json(&body).send().await.map_err(|e| anyhow::anyhow!("awm gateway unreachable at {url}: {e}"))?;
     let ok = resp.status().is_success();
     let body: Value = resp.json().await?;
     println!("{}", serde_json::to_string_pretty(&body)?);

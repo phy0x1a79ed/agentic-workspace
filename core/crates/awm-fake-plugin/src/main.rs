@@ -5,7 +5,7 @@
 //! `run_job(job)` (reports a background run), and `call_needed(verb, args)` (calls the first
 //! `[[needs.tool]]` of its own `awm-plugin.toml` by name through `/invoke`). As a fake harness plugin it also answers
 //! `caller_of_token(token)` from the JSON map in `FAKE_TOKENS`, and `scoped(project?, scope?,
-//! to_scope?)` returns the args it got.
+//! to_scope?)` returns the args it got. `env(name)` returns one variable of its environment.
 
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
@@ -46,6 +46,7 @@ async fn main() -> anyhow::Result<()> {
         f("call_needed", "Call the first needed tool.", json!([{"name": "verb", "required": true}, {"name": "args", "type": "object"}])),
         f("caller_of_token", "The isolated session that holds a caller token.", json!([{"name": "token", "required": true}])),
         f("scoped", "Return the args as received.", json!([{"name": "project"}, {"name": "scope"}, {"name": "to_scope"}])),
+        f("env", "One variable of the service's environment, or null.", json!([{"name": "name", "required": true}])),
     ]});
     let tokens: Value = std::env::var("FAKE_TOKENS").ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or(json!({}));
     sink.send(Message::Text(json!({"kind": "ready", "api": manifest}).to_string().into())).await?;
@@ -77,6 +78,7 @@ async fn main() -> anyhow::Result<()> {
                 None => json!({"ok": true, "known": false}),
             }),
             "scoped" => Ok(args.clone()),
+            "env" => Ok(args["name"].as_str().and_then(|n| std::env::var(n).ok()).map(Value::from).unwrap_or(Value::Null)),
             "run_job" => {
                 let usage = json!({"kind": "usage", "surface": "background", "name": args["job"], "ok": true, "ms": 5});
                 sink.send(Message::Text(usage.to_string().into())).await?;
