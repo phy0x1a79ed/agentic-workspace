@@ -585,6 +585,12 @@ def stop(job: Optional[str], *, caller_pid: Any, confirm: bool = False,
             out["reason"] = result["detail"] or (
             "claude stop failed" if result.get("kept") else "claude rm failed")
         return out
+    if (t.kind != "bg" or not t.job) and t.is_self and confirm:
+        # A terminal session retires too: the caller learns of it, so the
+        # sessions that wait on it wake. Its terminal closes it, not this service.
+        return {"ok": True, **_identify(t), "terminal": True, "stopped": False,
+                "note": "a terminal session is retired but still open: type /exit "
+                        "into it, or end the turn and let its owner close it"}
     if t.kind != "bg" or not t.job:
         return _refused(t, f"{_describe(t)} is a terminal session, not a "
                            f"background job; close its terminal instead")

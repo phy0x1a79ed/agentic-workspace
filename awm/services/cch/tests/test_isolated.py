@@ -212,14 +212,14 @@ def test_the_contract_verbs_reach_an_isolated_session_by_its_id(host):
     assert "--resume" in argv and "--session-id" not in argv
 
 
-def test_stop_revokes_the_token_and_without_keep_removes_the_session(host):
+def test_stop_revokes_the_token_and_keeps_the_transcript(host):
     out = run("start", {"project": "awm", "scope": "x", "isolated": True})
     cfg = isolated.config_dir(out["claude_session_id"])
     token = json.loads((cfg / "awm-mcp.json").read_text())["mcpServers"]["awm"][
         "headers"]["X-Awm-Caller-Token"]
     run("stop", {"session_id": out["session_id"], "keep": False})
     assert run("caller_of_token", {"token": token}) == {"ok": True, "known": False}
-    assert not isolated.session_dir(out["claude_session_id"]).exists()
+    assert isolated.session_dir(out["claude_session_id"]).exists()
 
 
 def test_no_host_login_refuses_the_start_and_leaves_no_token(host):

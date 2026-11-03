@@ -1,6 +1,6 @@
 ---
 name: retire
-description: End this session for good — run when the user says "retire", "retire this session" or "close this session", or when your work is done. Debriefs, points whoever started the session at the journal, then stops the session, or parks it with reflection wait when it waits on other sessions. Ends the session only, never the scope or its goal.
+description: End this session for good — run when the user says "retire", "retire this session" or "close this session", or when your work is done. Debriefs, points whoever started the session at the journal, then ends with reflection stop, or with reflection wait when it waits on other sessions. Ends the session only, never the scope or its goal.
 ---
 
 # Retire
@@ -36,7 +36,9 @@ Send one line with the journal id and the outcome to whoever started you:
 
 ## 4. Stop or wait
 
+Your last call is always `reflection stop` or `reflection wait`. A session that ends its work and sits idle never wakes the sessions that wait on it: only `reflection stop` tells them you retired.
+
 1. Run `reflection whoami`. It names your session, your job and your task.
-2. When you wait on other sessions, compact first. Then run `reflection wait {until:[<their session ids>]}` as your last call. It takes no job and acts on you. It stops you the way `stop` does, and awm resumes you when every listed session has stopped.
-3. Otherwise, for a background session, run `reflection stop {job, confirm:true}` as your last call. The job stays resumable by its session id (R10). Never pass `remove:true` when you retire.
-4. For a terminal session, run `reflection message_self {text:"/exit", confirm:true}`, then end the turn.
+2. When you wait on other sessions, compact first. Then run `reflection wait {until:[<their session ids>]}` as your last call. It takes no job and acts on you. A background session stops and keeps its job. A terminal session stays open. awm wakes you when every listed session has retired.
+3. Otherwise, run `reflection stop {job, confirm:true}` as your last call. For a background session it removes the job, frees the scope and wakes the sessions that wait on you. The transcript stays, so a later resume by session id still works.
+4. A terminal session has no job: pass your session id as `job`. First run `reflection message_self {text:"/exit", confirm:true}`, which runs when the turn ends. Then run `reflection stop` as above, so that your waiters wake.

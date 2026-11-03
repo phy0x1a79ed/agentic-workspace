@@ -437,6 +437,15 @@ def test_stop_refuses_a_terminal_session_and_a_missing_job(world):
     assert rm.calls == []
 
 
+def test_a_terminal_session_retires_itself_and_is_left_open(world, monkeypatch):
+    monkeypatch.setattr(control, "resolve", lambda job, pid: control.Target(
+        pid=ME, kind="interactive", job=None, name="term", alive=True, is_self=True))
+    rm = Remover()
+    out = control.stop("term", caller_pid=ME, confirm=True, remove=rm)
+    assert out["ok"] and out["terminal"] and not out["stopped"]
+    assert rm.calls == []
+
+
 # --- Remote Control: on ------------------------------------------------------
 
 

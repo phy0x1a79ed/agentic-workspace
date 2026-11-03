@@ -133,8 +133,8 @@ API_MANIFEST: dict[str, Any] = {
                 _p("isolated", "boolean", "Run the session in a rootless container "
                    "with a whitelist of awm verbs (fleet.md R109).")],
             timeout=1800),
-        _verb("stop", "Stop a session. With keep (the default) it stays "
-            "resumable; without, its job is removed.", _TARGET + [
+        _verb("stop", "Stop a session and remove its job. With keep, the job "
+            "stays and a resume brings it back: only a wait keeps it.", _TARGET + [
                 _p("keep", "boolean"), _p("confirm", "boolean")], timeout=30),
         _verb("resume", "Bring back a stopped session from its transcript.",
             _TARGET + [_p("prompt"), _p("adopt_lineage", "boolean",
@@ -448,20 +448,26 @@ async def _stop(args: dict, as_: str | None = None) -> dict:
     """Stop a session. A job that `start` created goes through its lineage policy."""
     rec = await asyncio.to_thread(_isolated, args)
     if rec is not None:
-        return await asyncio.to_thread(isolated.stop, rec,
-                                       keep=_bool(args.get("keep"), True))
+        # The container goes either way. The transcript stays, so a retired
+        # isolated session is still resumable (sessions.md R10).
+        return await asyncio.to_thread(isolated.stop, rec, keep=True)
     ref, pid = _ref(args), _pid(args)
     confirm = _bool(args.get("confirm"))
-    if not _bool(args.get("keep"), True):
-        return await asyncio.to_thread(control.stop, ref, caller_pid=pid, confirm=confirm)
     try:
         t = await asyncio.to_thread(control.resolve, ref, pid)
     except session_target.ResolveError:
         t = None
-    if t is not None and t.job and not t.is_self and lifecycle.read_lineage(t.job):
-        return await lifecycle.stop({"job": t.job, "_caller_pid": pid}, as_)
-    return await asyncio.to_thread(control.stop, ref, caller_pid=pid, confirm=confirm,
-                                   remove=_stop_keeping)
+    if not _bool(args.get("keep")):
+        out = await asyncio.to_thread(control.stop, ref, caller_pid=pid, confirm=confirm)
+    elif t is not None and t.job and not t.is_self and lifecycle.read_lineage(t.job):
+        out = await lifecycle.stop({"job": t.job, "_caller_pid": pid}, as_)
+    else:
+        out = await asyncio.to_thread(control.stop, ref, caller_pid=pid, confirm=confirm,
+                                      remove=_stop_keeping)
+    # reflection wakes the sessions that wait on this one by its id (sessions.md R51).
+    if isinstance(out, dict) and t is not None and t.session_id and "session_id" not in out:
+        out = {**out, "session_id": events.r9(t.session_id)}
+    return out
 
 
 def _ensure_lineage(job: str, origin: str, **extra: Any) -> Optional[str]:

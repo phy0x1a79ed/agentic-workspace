@@ -173,10 +173,8 @@ def test_list_other_merges_every_harness(fakes):
     assert fakes.cc.calls[-1] == ("list", {"project": "awm"})
 
 
-def test_stop_keeps_the_job_unless_asked_to_remove_it(fakes):
+def test_stop_retires_the_session_and_removes_its_job(fakes):
     run("stop", {"_caller_pid": ME, "job": "j1", "confirm": True})
-    assert fakes.cc.calls[-1][1]["keep"] is True
-    run("stop", {"_caller_pid": ME, "job": "j1", "remove": True})
     assert fakes.cc.calls[-1][1]["keep"] is False
 
 
@@ -366,9 +364,16 @@ def test_scope_of(cwd, want):
 # --- wait (sessions.md R51) -----------------------------------------------------
 
 OTHER = "cc" + "2" * 32
+THIRD = "cc" + "3" * 32
 
 
-def test_wait_records_the_wait_then_stops_the_caller_keeping_its_job(fakes):
+@pytest.fixture
+def lonely(monkeypatch):
+    """No peers: every wait and retire stays on this node."""
+    monkeypatch.setattr(hub_adapter, "_peers", lambda: [])
+
+
+def test_wait_records_the_wait_then_stops_the_caller_keeping_its_job(fakes, lonely):
     out = run("wait", {"_caller_pid": ME, "until": [OTHER]})
     assert out["ok"] and out["waiting"]
     assert fakes.cc.calls[-1] == ("stop", {"ref": "j1", "pid": ME, "keep": True,
@@ -378,61 +383,112 @@ def test_wait_records_the_wait_then_stops_the_caller_keeping_its_job(fakes):
     assert (row["project"], row["scope"]) == ("awm", "redux-harness")
 
 
-def test_wait_takes_session_uuids_and_refuses_names(fakes):
+def test_wait_takes_session_uuids_and_refuses_names(fakes, lonely):
     uuid = "22222222-2222-2222-2222-222222222222"
     assert run("wait", {"_caller_pid": ME, "until": [uuid]})["until"] == [OTHER]
     out = run("wait", {"_caller_pid": ME, "until": ["builder"]})
     assert out["ok"] is False and "session ids" in out["reason"]
 
 
-def test_a_wait_whose_stop_fails_is_not_left_behind(fakes):
+def test_a_wait_whose_stop_fails_is_not_left_behind(fakes, lonely):
     fakes.cc.answers["stop"] = {"ok": False, "reason": "claude stop failed"}
     out = run("wait", {"_caller_pid": ME, "until": [OTHER]})
     assert out["ok"] is False and run("waits", {})["waits"] == []
 
 
-def test_a_terminal_session_cannot_wait(fakes):
+def test_a_terminal_session_waits_without_stopping(fakes, lonely):
     fakes.cc.sessions["j1"] = {**fakes.cc.sessions["j1"], "job": None}
     out = run("wait", {"_caller_pid": ME, "until": [OTHER]})
-    assert out["ok"] is False and "terminal" in out["reason"]
-
-
-def test_the_sweep_resumes_the_waiter_then_wakes_it(fakes):
-    from awm.reflection import waits
-
-    run("wait", {"_caller_pid": ME, "until": [OTHER]})
-    live = {MY_ID: "stopped", OTHER: "live"}
-    resumed, sent = [], []
-
-    def sweep():
-        return waits.sweep(state=live.get,
-                           resume=lambda row: resumed.append(row) or {"ok": True},
-                           send=lambda row, text: sent.append(text) or {"ok": True})
-
-    assert sweep() == [] and resumed == []
-    live[OTHER] = "gone"
-    assert sweep() == [] and len(resumed) == 1
-    live[MY_ID] = "live"
-    assert sweep() == [MY_ID]
-    assert OTHER in sent[0] and run("waits", {})["waits"] == []
-
-
-def test_a_waiter_that_cannot_be_resumed_is_given_up_on_loudly(fakes):
-    from awm.reflection import waits
-
-    run("wait", {"_caller_pid": ME, "until": [OTHER]})
-    for _ in range(waits.MAX_RESUME_FAILURES):
-        waits.sweep(state=lambda sid: "stopped",
-                    resume=lambda row: {"ok": False, "reason": "no transcript"},
-                    send=lambda row, text: pytest.fail("woke a stopped session"))
+    assert out["ok"] and out["waiting"] and out["terminal"]
+    assert "stop" not in fakes.cc.verbs()
+    run("retired", {"session_id": OTHER})
+    assert fakes.cc.calls[-1][0] == "send"
+    assert fakes.cc.calls[-1][1]["session_id"] == MY_ID
     assert run("waits", {})["waits"] == []
+
+
+def test_the_last_retire_resumes_the_waiter_with_the_wake_line(fakes, lonely):
+    run("wait", {"_caller_pid": ME, "until": [OTHER, THIRD]})
+    fakes.cc.sessions["w2"] = {"session_id": OTHER, "name": "w2", "job": "w2"}
+    fakes.cc.answers["stop"] = {"ok": True, "session_id": OTHER}
+    assert run("stop", {"job": "w2"})["woken"] == []
+    assert "resume" not in fakes.cc.verbs()
+    assert run("waits", {})["waits"][0]["retired"] == [OTHER]
+    fakes.cc.answers["stop"] = {"ok": True, "session_id": THIRD}
+    assert run("stop", {"job": THIRD})["woken"] == [MY_ID]
+    verb, args = fakes.cc.calls[-1]
+    assert verb == "resume" and args["ref"] == "j1" and OTHER in args["prompt"]
+    assert run("waits", {})["waits"] == []
+
+
+def test_a_waiter_that_itself_waits_has_not_finished(fakes, lonely):
+    from awm.reflection import waits
+
+    waits.add(session_id=OTHER, until=[THIRD], tool="harness-cc", job="w2")
+    run("wait", {"_caller_pid": ME, "until": [OTHER]})
+    run("retired", {"session_id": THIRD})
+    rows = {w["session_id"]: w for w in run("waits", {})["waits"]}
+    assert OTHER not in rows and rows[MY_ID]["retired"] == []
+
+
+def test_a_session_already_retired_is_not_waited_on(fakes, lonely):
+    from awm.reflection import waits
+
+    waits.retired(OTHER, wake=lambda row: pytest.fail("no waiter yet"))
+    out = run("wait", {"_caller_pid": ME, "until": [OTHER]})
+    assert out["ok"] and out["waiting"] is False
+    assert "stop" not in fakes.cc.verbs() and run("waits", {})["waits"] == []
+
+
+def test_a_failed_wake_raises_an_alarm_and_keeps_the_wait(fakes, lonely):
+    run("wait", {"_caller_pid": ME, "until": [OTHER]})
+    fakes.cc.answers["resume"] = {"ok": False, "reason": "no transcript"}
+    assert run("retired", {"session_id": OTHER})["woken"] == []
     assert "no transcript" in alarm.recent()[0]["reason"]
+    assert len(run("waits", {})["waits"]) == 1
 
 
-def test_an_unknown_answer_holds_the_wait(fakes):
+def test_a_retiring_waiter_clears_its_wait(fakes, lonely):
+    from awm.reflection import waits
+
+    waits.add(session_id=OTHER, until=[THIRD], tool="harness-cc", job="w2")
+    waits.retired(OTHER, wake=lambda row: pytest.fail("woke"))
+    assert run("waits", {})["waits"] == []
+
+
+def test_a_resume_by_hand_clears_the_wait(fakes, lonely):
+    run("wait", {"_caller_pid": ME, "until": [OTHER]})
+    run("resume_other", {"job": "j1"})
+    assert run("waits", {})["waits"] == []
+
+
+def test_a_retire_tells_every_peer(fakes, monkeypatch):
+    told = []
+    monkeypatch.setattr(hub_adapter, "_peers", lambda: ["altair", "alcor"])
+    from awm import gatewayclient
+    monkeypatch.setattr(gatewayclient, "call_peer_sync",
+                        lambda peer, svc, fn, a, timeout: told.append((peer, fn, a)))
+    hub_adapter._tell_peers(OTHER)
+    assert told == [("altair", "retired", {"session_id": OTHER}),
+                    ("alcor", "retired", {"session_id": OTHER})]
+
+
+def test_the_start_check_alarms_once_for_a_lost_session(fakes, lonely):
+    from awm.reflection import waits
+
+    run("wait", {"_caller_pid": ME, "until": [OTHER, THIRD]})
+    state = {OTHER: "gone", THIRD: "live"}
+    lost = waits.check(state=state.get, retired_elsewhere=lambda s: [],
+                       wake=lambda row: pytest.fail("woke"))
+    assert lost == [OTHER] and OTHER in alarm.recent()[0]["reason"]
+    assert len(run("waits", {})["waits"]) == 1
+
+
+def test_the_start_check_counts_a_retire_it_missed(fakes, lonely):
     from awm.reflection import waits
 
     run("wait", {"_caller_pid": ME, "until": [OTHER]})
-    waits.sweep(state=lambda sid: None, resume=lambda row: pytest.fail("resumed"),
-                send=lambda row, text: pytest.fail("sent"))
-    assert len(run("waits", {})["waits"]) == 1
+    woke = []
+    waits.check(state=lambda s: pytest.fail("asked"), retired_elsewhere=lambda s: [OTHER],
+                wake=lambda row: woke.append(row["session_id"]) or {"ok": True})
+    assert woke == [MY_ID] and run("waits", {})["waits"] == []

@@ -37,7 +37,6 @@ API_MANIFEST: dict[str, Any] = {
 }
 
 SWEEP_EVERY_S = 300
-WAIT_SWEEP_S = 60
 
 
 def _bool(v: Any, default: bool = False) -> bool:
@@ -200,8 +199,41 @@ def _interrupt(args: dict) -> dict:
 
 
 def _stop(args: dict) -> dict:
-    return _on_target("stop", "stop", args, {
-        "keep": not _bool(args.get("remove")), "confirm": _bool(args.get("confirm"))})
+    p, named = harness.target(_job(args), _caller_pid(args))
+    if _job(args):
+        policy.check_steer(_actor_id(args), "stop", named.get("session_id"))
+    out = harness.call(p, "stop", {**named, "keep": False,
+                                   "confirm": _bool(args.get("confirm"))})
+    return _after_retire(out, named.get("session_id"))
+
+
+def _after_retire(out: dict, session_id: Optional[str]) -> dict:
+    """A retired session wakes its waiters, here and on every domestic peer (R51)."""
+    sid = out.get("session_id") or session_id
+    if out.get("ok") and isinstance(sid, str) and ids.is_r9(sid):
+        out = {**out, "woken": waits.retired(sid, wake=_wake)}
+        threading.Thread(target=_tell_peers, args=(sid,), name="reflection-retired",
+                         daemon=True).start()
+    return out
+
+
+def _tell_peers(session_id: str) -> None:
+    for peer in _peers():
+        try:
+            from awm import gatewayclient
+            gatewayclient.call_peer_sync(peer, "reflection", "retired",
+                                         {"session_id": session_id}, timeout=15.0)
+        except Exception as exc:  # noqa: BLE001 - that node checks again at its start
+            log.warning("reflection: could not tell %s that %s retired: %s",
+                        peer, session_id, exc)
+
+
+def _peers() -> list[str]:
+    try:
+        return elsewhere._domestic_peers()
+    except Exception as exc:  # noqa: BLE001
+        log.info("reflection: cannot read the peer book: %s", exc)
+        return []
 
 
 def _link(args: dict) -> dict:
@@ -334,12 +366,25 @@ async def _on_job(verb: str, steer: str, args: dict, as_: str | None,
 
 
 async def _stop_other(args: dict, as_: str | None = None) -> dict:
-    return await _on_job("stop", "stop_other", args, as_, {"keep": True})
+    job = _job(args)
+    named = {}
+    if job:
+        try:
+            named = (await asyncio.to_thread(harness.for_ref, job))[1]
+        except harness.HarnessError:
+            named = {}
+    out = await _on_job("stop", "stop_other", args, as_, {"keep": False})
+    return await asyncio.to_thread(_after_retire, out, named.get("session_id"))
 
 
 async def _resume_other(args: dict, as_: str | None = None) -> dict:
-    return await _on_job("resume", "resume_other", args, as_,
-                         {"prompt": args.get("prompt")})
+    out = await _on_job("resume", "resume_other", args, as_,
+                        {"prompt": args.get("prompt")})
+    if out.get("ok"):
+        waits.drop_job(_job(args) or "")
+        if isinstance(out.get("session_id"), str):
+            waits.drop(out["session_id"])
+    return out
 
 
 async def _adopt_other(args: dict, as_: str | None = None) -> dict:
@@ -362,7 +407,7 @@ def _wait(args: dict) -> dict:
     if not until:
         return {"ok": False, "reason": "until is required: the session ids to wait for"}
     try:
-        until = [ids.normalise(u) for u in until]
+        until = list(dict.fromkeys(ids.normalise(u) for u in until))
     except ids.BadSessionId as exc:
         return {"ok": False, "reason": f"{exc}; wait takes session ids, as "
                                        f"start_other returns them"}
@@ -371,21 +416,80 @@ def _wait(args: dict) -> dict:
     sid = who.get("session_id") or ""
     if sid in until:
         return {"ok": False, "reason": "a session cannot wait on itself"}
-    if not who.get("job"):
-        return {"ok": False, "reason": "a terminal session cannot wait: it has no job "
-                                       "to resume. Exit it instead"}
-    row = waits.add(session_id=sid, until=until, tool=p.tool, job=who.get("job"),
-                    name=who.get("name") or "", cwd=who.get("cwd"))
-    out = harness.call(p, "stop", {"ref": who["job"], "pid": pid, "keep": True,
+    already = set(waits.retired_among(until)) | set(_retired_elsewhere(until))
+    if set(until) <= already:
+        return {"ok": True, "waiting": False, "until": until,
+                "reason": "every session in until has already retired; carry on"}
+    job = who.get("job")
+    row = waits.add(session_id=sid, until=until, tool=p.tool, job=job,
+                    name=who.get("name") or "", cwd=who.get("cwd"), retired=already)
+    if not job:
+        return {"ok": True, "waiting": True, "until": row["until"],
+                "retired": row["retired"], "terminal": True,
+                "note": "a terminal session stays open; the wake line is typed in "
+                        "when every listed session has retired. End your turn now"}
+    out = harness.call(p, "stop", {"ref": job, "pid": pid, "keep": True,
                                    "confirm": True})
     if not out.get("ok"):
         waits.drop(sid)
         return {**out, "waiting": False}
-    return {**out, "ok": True, "waiting": True, "until": row["until"]}
+    return {**out, "ok": True, "waiting": True, "until": row["until"],
+            "retired": row["retired"]}
 
 
 def _waits(args: dict) -> dict:
     return {"ok": True, "waits": waits.load()}
+
+
+def _retired(args: dict) -> dict:
+    sid = ids.to_r9(args.get("session_id"))
+    if sid is None:
+        return {"ok": False, "reason": "session_id is required: an R9 session id"}
+    return {"ok": True, "woken": waits.retired(sid, wake=_wake, local=False)}
+
+
+def _retired_among(args: dict) -> dict:
+    asked = [i for i in (ids.to_r9(s) for s in args.get("session_ids") or []) if i]
+    gone = set(waits.retired_among(asked))
+    known = [s for s in asked if s not in gone and _session_state(s) in ("live", "stopped")]
+    return {"ok": True, "retired": sorted(gone), "known": known}
+
+
+def _ask_peers(session_ids: list[str]) -> list[dict]:
+    from awm import gatewayclient
+
+    out = []
+    for peer in _peers():
+        try:
+            reply = gatewayclient.call_peer_sync(peer, "reflection", "retired_among",
+                                                 {"session_ids": session_ids},
+                                                 timeout=10.0)
+        except Exception as exc:  # noqa: BLE001 - a silent peer cannot say
+            log.info("reflection: %s did not answer retired_among: %s", peer, exc)
+            out.append({"peer": peer, "answered": False})
+            continue
+        if isinstance(reply, dict):
+            out.append({**reply, "peer": peer, "answered": True})
+    return out
+
+
+def _retired_elsewhere(session_ids: list[str]) -> list[str]:
+    if not session_ids:
+        return []
+    return sorted({s for r in _ask_peers(session_ids) for s in r.get("retired") or []})
+
+
+def _state_anywhere(session_id: str) -> Optional[str]:
+    """``live`` or ``stopped`` when some node knows it, ``gone`` when every node said no."""
+    here = _session_state(session_id)
+    if here in ("live", "stopped"):
+        return here
+    replies = _ask_peers([session_id])
+    if any(session_id in (r.get("known") or []) for r in replies):
+        return "stopped"
+    if here is None or not all(r.get("answered") for r in replies):
+        return None
+    return "gone"
 
 
 def _session_state(session_id: str) -> Optional[str]:
@@ -399,14 +503,13 @@ def _session_state(session_id: str) -> Optional[str]:
     return "live" if out.get("live") else "stopped"
 
 
-def _resume_waiter(row: dict) -> dict:
+def _wake(row: dict) -> dict:
+    """Resume a waiter that kept its job, or type the line into a terminal waiter."""
     p = harness.for_platform(row["session_id"][:2])
-    return harness.call(p, "resume", {"ref": row.get("job") or row["session_id"],
-                                      "adopt_lineage": True})
-
-
-def _wake(row: dict, text: str) -> dict:
-    p = harness.for_platform(row["session_id"][:2])
+    text = waits.wake_text(row)
+    if row.get("job"):
+        return harness.call(p, "resume", {"ref": row["job"], "adopt_lineage": True,
+                                          "prompt": text})
     return harness.call(p, "send", {"session_id": row["session_id"], "text": text})
 
 
@@ -445,6 +548,8 @@ HANDLERS = {verb: _guarded(verb, fn) for verb, fn in {
     "daemon_release": _claude("daemon_release"),
     "wait": _wait,
     "waits": _waits,
+    "retired": _retired,
+    "retired_among": _retired_among,
     "harness_event": _harness_event,
     "revive_pinned": _claude("revive_pinned"),
 }.items()}
@@ -461,25 +566,26 @@ def _held(tool: str) -> Optional[list[str]]:
     return None
 
 
-def _sweep_forever() -> None:
-    last_tickets = time.monotonic()
+def _sweep_tickets() -> None:
     while True:
-        time.sleep(WAIT_SWEEP_S)
-        try:
-            waits.sweep(state=_session_state, resume=_resume_waiter, send=_wake)
-        except Exception:  # noqa: BLE001 - a bad sweep must not end the loop
-            log.exception("reflection: wait sweep failed")
-        if time.monotonic() - last_tickets < SWEEP_EVERY_S:
-            continue
-        last_tickets = time.monotonic()
+        time.sleep(SWEEP_EVERY_S)
         try:
             ledger.sweep(_held)
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001 - a bad sweep must not end the loop
             log.exception("reflection: ticket sweep failed")
 
 
+def _check_waits() -> None:
+    try:
+        waits.check(state=_state_anywhere, retired_elsewhere=_retired_elsewhere,
+                    wake=_wake)
+    except Exception:  # noqa: BLE001
+        log.exception("reflection: the start check of the waits failed")
+
+
 def _on_start() -> None:
-    threading.Thread(target=_sweep_forever, name="reflection-sweep",
+    threading.Thread(target=_check_waits, name="reflection-waits", daemon=True).start()
+    threading.Thread(target=_sweep_tickets, name="reflection-tickets",
                      daemon=True).start()
 
 

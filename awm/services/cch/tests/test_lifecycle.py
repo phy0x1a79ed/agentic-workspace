@@ -1785,9 +1785,9 @@ def test_adopt_records_lineage_for_a_hand_started_job(home, monkeypatch):
     assert again["ok"] is False and "already" in again["reason"]
 
 
-def test_a_started_session_that_retires_itself_can_be_resumed(home, launched, respawned,
+def test_a_started_session_that_waits_can_be_resumed(home, launched, respawned,
                                                               monkeypatch):
-    """start_other, retire, resume_other: the retire keeps the job, so its lineage
+    """start_other, a kept stop, resume_other: a wait keeps the job, so its lineage
     survives the prune and the resume finds it (live a92d02bf and c63d29b9)."""
     import threading
 
@@ -1808,7 +1808,7 @@ def test_a_started_session_that_retires_itself_can_be_resumed(home, launched, re
         pid=os.getppid(), kind="bg", job=CHILD_JOB, name="demo", alive=True,
         is_self=True))
     retired = asyncio.run(hub_adapter.HANDLERS["stop"](
-        {"ref": CHILD_JOB, "pid": os.getppid(), "confirm": True}, None))
+        {"ref": CHILD_JOB, "pid": os.getppid(), "confirm": True, "keep": True}, None))
     assert retired["ok"] and retired["stopping"]
     assert stopped.wait(5)
 

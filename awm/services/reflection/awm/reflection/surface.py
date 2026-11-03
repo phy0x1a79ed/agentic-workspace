@@ -206,12 +206,15 @@ FUNCTIONS: list[dict[str, Any]] = [{'name': 'message_self',
  {'name': 'stop',
   'effect': 'write',
   'tool': 'reflection_stop',
-  'description': 'Stop a background session on this node. It stays resumable by its '
-                 'session id; pass remove=true to remove its job as well (`claude '
-                 'rm`). Works on any session, not only ones `start_other` created, and '
-                 'on a job whose session has already exited, by its job id. Your own '
-                 'session is refused unless confirm is true, and is then stopped after '
-                 'this call returns. A terminal session is refused.',
+  'description': 'Retire a background session on this node: stop it and remove its '
+                 'job (`claude stop`, then `claude rm`). The transcript stays, so the '
+                 'session is still resumable by its session id. A retire wakes each '
+                 'session that waits on it (`wait`), on any node. Retiring is the last '
+                 'step of every finished session: one that ends its work and sits idle '
+                 'never wakes its waiters. Works on any session, and on a job whose '
+                 'session has already exited, by its job id. Your own session is '
+                 'refused unless confirm is true, and is then stopped after this call '
+                 'returns. A terminal session is refused.',
   'timeout': 60,
   'params': [{'name': 'job',
               'type': 'string',
@@ -219,12 +222,7 @@ FUNCTIONS: list[dict[str, Any]] = [{'name': 'message_self',
               'description': 'A job id, or a session name as `list_other` shows it.'},
              {'name': 'confirm',
               'type': 'boolean',
-              'description': 'Required to stop your own session.'},
-             {'name': 'remove',
-              'type': 'boolean',
-              'description': 'Also remove the job, so it cannot be resumed (default '
-                             'false: a stopped session stays resumable by its session '
-                             'id).'}]},
+              'description': 'Required to stop your own session.'}]},
  {'name': 'link',
   'effect': 'read',
   'tool': 'reflection_link',
@@ -428,10 +426,10 @@ FUNCTIONS: list[dict[str, Any]] = [{'name': 'message_self',
   'effect': 'read'},
  {'name': 'stop_other',
   'tool': 'reflection_stop_other',
-  'description': 'Stop a session that `start_other` created. The conversation is kept '
-                 'and `claude attach <job>` reopens it, except for a pinned job, which '
-                 'is unpinned and removed. Refuses a job that `start_other` did not '
-                 'create.',
+  'description': 'Retire a session that `start_other` created: stop it and remove its '
+                 'job, as `stop` does. A pinned job is unpinned first. The retire wakes '
+                 'each session that waits on it. Refuses a job that `start_other` did '
+                 'not create.',
   'params': [{'name': 'job',
               'type': 'string',
               'required': True,
@@ -440,11 +438,11 @@ FUNCTIONS: list[dict[str, Any]] = [{'name': 'message_self',
   'effect': 'write'},
  {'name': 'resume_other',
   'tool': 'reflection_resume_other',
-  'description': 'Bring back a stopped or retired job that `start_other` created, '
-                 'under the same job id and with its own conversation (`claude '
-                 'respawn`), and re-pin it if it was pinned. Refuses a running job, a '
-                 'removed job, a job whose transcript is gone, and a job that '
-                 '`start_other` did not create.',
+  'description': 'Bring back a waiting job that `start_other` created, under the same '
+                 'job id and with its own conversation (`claude respawn`), and re-pin '
+                 'it if it was pinned. A resume by hand clears the job\'s wait. Refuses '
+                 'a running job, a removed job, a job whose transcript is gone, and a '
+                 'job that `start_other` did not create.',
   'params': [{'name': 'job',
               'type': 'string',
               'required': True,
@@ -584,11 +582,14 @@ FUNCTIONS: list[dict[str, Any]] = [{'name': 'message_self',
   'tool': 'reflection_wait',
   'effect': 'write',
   'timeout': 60,
-  'description': 'Stop your own session until every session in `until` has stopped, '
-                 'then resume it with a line that says so. The wait is recorded first, '
-                 'so it survives restarts. Use it at the end of a turn, after the work '
-                 'you hand off has started. A terminal session cannot wait: it has no '
-                 'job to resume.',
+  'description': 'Pause your own session until every session in `until` has retired, '
+                 'then wake it with a line that says so. A wait works like a retire, in '
+                 'place of `stop`: compact first, then call it as the last step of a '
+                 'turn, after the sessions you hand work to have started. A background '
+                 'session stops and keeps its job, and the wake resumes it. A terminal '
+                 'session stays open and gets the line typed in. A listed session that '
+                 'itself waits has not finished, so nested waits hold. The wait '
+                 'clears when you wake, are resumed by hand, or retire.',
   'params': [{'name': 'until',
               'type': 'array',
               'required': True,
@@ -598,6 +599,22 @@ FUNCTIONS: list[dict[str, Any]] = [{'name': 'message_self',
   'tool': 'reflection_waits',
   'effect': 'read',
   'surfaces': ['cli', 'http'],
-  'description': 'Every recorded wait: who waits, on whom, since when, and in which '
-                 'scope.',
-  'params': []}]
+  'description': 'Every recorded wait: who waits, on whom, which of them have '
+                 'retired, since when, and in which scope.',
+  'params': []},
+ {'name': 'retired',
+  'tool': 'reflection_retired',
+  'effect': 'write',
+  'surfaces': ['cli', 'http'],
+  'description': 'A peer tells this node that a session retired there, so a wait here '
+                 'that lists it can wake its waiter.',
+  'params': [{'name': 'session_id', 'type': 'string', 'required': True,
+              'description': 'The R9 id of the session that retired.'}]},
+ {'name': 'retired_among',
+  'tool': 'reflection_retired_among',
+  'effect': 'read',
+  'surfaces': ['cli', 'http'],
+  'description': 'Which of these sessions retired on this node, and which this node '
+                 'still knows as live or stopped.',
+  'params': [{'name': 'session_ids', 'type': 'array', 'required': True,
+              'description': 'R9 session ids.'}]}]

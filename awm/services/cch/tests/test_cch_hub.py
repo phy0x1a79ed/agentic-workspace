@@ -80,7 +80,7 @@ def test_set_with_one_key_answers_as_that_verb(monkeypatch):
     assert out["ok"] and out["model"] == "opus" and "model" in out["applied"]
 
 
-def test_stop_keeps_the_job_by_default_and_stops_the_caller_later(monkeypatch):
+def test_stop_with_keep_keeps_the_job_and_stops_the_caller_later(monkeypatch):
     calls = {}
     monkeypatch.setattr(control, "resolve", lambda ref, pid: _target(is_self=True))
 
@@ -89,11 +89,11 @@ def test_stop_keeps_the_job_by_default_and_stops_the_caller_later(monkeypatch):
         return {"ok": True, "stopping": True}
 
     monkeypatch.setattr(control, "stop", stop)
-    out = run("stop", {"ref": "abcd1234", "pid": 4242, "confirm": True})
+    out = run("stop", {"ref": "abcd1234", "pid": 4242, "confirm": True, "keep": True})
     assert out["stopping"] and calls["remove"] is hub_adapter._stop_keeping
 
 
-def test_stop_of_a_started_job_goes_through_its_lineage(monkeypatch):
+def test_a_kept_stop_of_a_started_job_goes_through_its_lineage(monkeypatch):
     monkeypatch.setattr(control, "resolve", lambda ref, pid: _target())
     monkeypatch.setattr(lifecycle, "read_lineage", lambda job: {"job": job})
 
@@ -101,7 +101,7 @@ def test_stop_of_a_started_job_goes_through_its_lineage(monkeypatch):
         return {"ok": True, "via": "lifecycle", **args}
 
     monkeypatch.setattr(lifecycle, "stop", lstop)
-    out = run("stop", {"ref": "abcd1234", "pid": 9})
+    out = run("stop", {"ref": "abcd1234", "pid": 9, "keep": True})
     assert out["via"] == "lifecycle" and out["job"] == "abcd1234"
 
 
@@ -111,6 +111,17 @@ def test_stop_without_keep_removes_the_job(monkeypatch):
                         lambda ref, caller_pid, confirm, **kw: calls.update(kw) or {"ok": True})
     run("stop", {"ref": "abcd1234", "keep": False})
     assert "remove" not in calls
+
+
+def test_stop_removes_the_job_by_default_and_names_the_session(monkeypatch):
+    calls = {}
+    monkeypatch.setattr(control, "resolve", lambda ref, pid: _target(
+        session_id="0e384a75-a06e-43fa-a19e-298e409a2730"))
+    monkeypatch.setattr(control, "stop",
+                        lambda ref, caller_pid, confirm, **kw: calls.update(kw) or {"ok": True})
+    out = run("stop", {"ref": "abcd1234"})
+    assert "remove" not in calls
+    assert out["session_id"] == "cc0e384a75a06e43faa19e298e409a2730"
 
 
 def test_a_job_that_already_stopped_counts_as_stopped(monkeypatch):
