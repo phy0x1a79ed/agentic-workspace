@@ -51,6 +51,15 @@ tool the service publishes under; the folder name when absent), ``tier``
 as ``"on"``) and ``[[archive]]`` tables (the search sources the service plugs
 in). All are independent of ``profiles`` and never affect whether the service
 runs.
+
+Plugin manifest: a folder may instead carry ``awm-plugin.toml``, the plugin
+contract the Rust gateway loads (``docs/redux/drafts/plugin-contract.md`` on the
+redux-core branch). Its ``[[service]]`` entry for the folder gives ``profiles``
+and ``[[service.archive]]``, and that service's first ``[[tool]]`` gives ``tool``
+and ``tier``. A key the manifest leaves out falls back to ``service.toml``, so a
+folder may keep its ``[[archive]]`` tables there while the search service still
+reads them from that file. A manifest that does not parse counts like a
+``service.toml`` that does not parse.
 """
 
 from __future__ import annotations
@@ -223,6 +232,7 @@ def load_enabled() -> dict[str, bool]:
 # ---------------------------------------------------------------------------
 
 PROFILE_MARKER = "service.toml"
+PLUGIN_MANIFEST = "awm-plugin.toml"
 
 
 def active_profiles() -> set[str]:
@@ -234,19 +244,31 @@ def active_profiles() -> set[str]:
 
 def _read_profiles(folder: Path) -> list[str] | None:
     """The service's committed profile marker: the ``profiles`` list from
-    ``service.toml``. ``None`` = not profile-gated (baseline, enabled
-    everywhere): no file, or a file with no ``profiles`` key. A file that does
-    not parse, or whose ``profiles`` is not a list, returns ``[]`` —
-    marked-but-unmatched (disabled), never fail-open."""
+    ``awm-plugin.toml``'s service entry, else from ``service.toml``. ``None`` =
+    not profile-gated (baseline, enabled everywhere): no file, or no
+    ``profiles`` key. A file that does not parse, or whose ``profiles`` is not
+    a list, returns ``[]`` — marked-but-unmatched (disabled), never fail-open."""
+    data: dict | None = None
+    plugin = folder / PLUGIN_MANIFEST
+    if plugin.is_file():
+        try:
+            entry = plugin_service(folder, _load_toml(plugin))
+        except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
+            log.warning("could not parse %s: %s — treating as profile-gated off",
+                        plugin, exc)
+            return []
+        if entry is not None and "profiles" in entry:
+            data = entry
     path = folder / PROFILE_MARKER
-    if not path.is_file():
-        return None
-    try:
-        data = tomllib.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
-        log.warning("could not parse %s: %s — treating as profile-gated off",
-                    path, exc)
-        return []
+    if data is None:
+        if not path.is_file():
+            return None
+        try:
+            data = _load_toml(path)
+        except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
+            log.warning("could not parse %s: %s — treating as profile-gated off",
+                        path, exc)
+            return []
     if "profiles" not in data:
         return None
     profiles = data["profiles"]
@@ -269,24 +291,68 @@ TIER_OFF = "off"
 _manifest_cache: dict[tuple[str, int, int], dict] = {}
 
 
-def _read_manifest(folder: Path) -> dict:
-    """The parsed ``service.toml`` of ``folder``; empty when it is missing or does
-    not parse."""
-    path = folder / PROFILE_MARKER
-    try:
-        st = path.stat()
-    except OSError:
-        return {}
+def _load_toml(path: Path) -> dict:
+    """``path`` parsed, cached on its mtime and size. Raises when it is
+    missing or does not parse."""
+    st = path.stat()
     key = (str(path), st.st_mtime_ns, st.st_size)
     cached = _manifest_cache.get(key)
-    if cached is not None:
-        return cached
-    try:
-        data = tomllib.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
-        log.warning("could not read %s: %s — defaults", path, exc)
-        data = {}
-    _manifest_cache[key] = data
+    if cached is None:
+        cached = tomllib.loads(path.read_text(encoding="utf-8"))
+        _manifest_cache[key] = cached
+    return cached
+
+
+def plugin_service(folder: Path, manifest: dict) -> dict | None:
+    """The ``[[service]]`` entry of a plugin manifest that runs from ``folder``:
+    the one named after the folder, else the one whose ``path`` is ``"."``,
+    else the only one."""
+    services = [s for s in manifest.get("service") or [] if isinstance(s, dict)]
+    for svc in services:
+        if svc.get("name") == folder.name:
+            return svc
+    here = [s for s in services if (s.get("path") or ".") in (".", "./")]
+    if len(here) == 1:
+        return here[0]
+    return services[0] if len(services) == 1 else None
+
+
+def _plugin_keys(folder: Path, manifest: dict) -> dict:
+    """The ``service.toml``-shaped keys a plugin manifest gives ``folder``."""
+    svc = plugin_service(folder, manifest)
+    if svc is None:
+        return {}
+    name = svc.get("name")
+    tools = [t for t in manifest.get("tool") or [] if isinstance(t, dict)]
+    mine = [t for t in tools if t.get("service") == name]
+    if not mine and len(manifest.get("service") or []) == 1:
+        mine = [t for t in tools if "service" not in t]
+    out: dict = {}
+    if mine:
+        for key in ("tool", "tier"):
+            value = mine[0].get("name" if key == "tool" else key)
+            if value is not None:
+                out[key] = value
+    for key, src in (("profiles", "profiles"), ("archive", "archive")):
+        if src in svc:
+            out[key] = svc[src]
+    return out
+
+
+def _read_manifest(folder: Path) -> dict:
+    """The surface keys of ``folder``: its ``service.toml``, overlaid with what
+    its ``awm-plugin.toml`` says. Empty when neither exists or parses."""
+    data: dict = {}
+    for name in (PROFILE_MARKER, PLUGIN_MANIFEST):
+        path = folder / name
+        if not path.is_file():
+            continue
+        try:
+            parsed = _load_toml(path)
+        except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
+            _log_once(f"could not read {path}: {exc} — defaults")
+            continue
+        data = {**data, **(parsed if name == PROFILE_MARKER else _plugin_keys(folder, parsed))}
     return data
 
 

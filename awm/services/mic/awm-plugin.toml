@@ -3,9 +3,6 @@ name = "mic"
 version = "0.1.0"
 trust = "own"
 
-[placement]
-nodes = ["*"]
-
 [[service]]
 name = "mic"
 
@@ -21,7 +18,5 @@ name = "mic"
 [needs]
 secrets = []
 network = []
+platform = ["linux"]
 
-[[needs.tool]]
-uuid = "947d5088-6717-5c6e-b445-dde00eb50c04"   # virtmic, which keeps the PulseAudio sink mic streams into
-major = 1
