@@ -38,6 +38,14 @@ def fuse(lists: list[list[dict[str, Any]]], limit: int) -> list[dict[str, Any]]:
     return [{**first[k], "score": round(scores[k], 5)} for k in ordered[:limit]]
 
 
+def within(fused: list[dict[str, Any]], anchor: list[dict[str, Any]], cut: int) -> list[dict[str, Any]]:
+    """``anchor``'s first ``cut`` hits in ``fused``'s order, then the rest of ``fused``: fusion reorders the
+    anchor's head and adds below it, and never pushes one of those hits out of the first ``cut``."""
+    head = {_identity(h) for h in anchor[:cut]}
+    first = [h for h in fused if _identity(h) in head]
+    return first + [h for h in fused if _identity(h) not in head]
+
+
 def by_rank(hits: list[dict[str, Any]], ranks: list[float | None]) -> list[dict[str, Any]]:
     """``hits`` reordered by their place in the section fused with their place by PageRank; never refiltered."""
     if not hits or all(r is None for r in ranks):

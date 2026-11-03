@@ -345,10 +345,15 @@ class Archive:
                     own = await asyncio.to_thread(self._per_source, index.related, q, kb_names, q.limit * 2)
                     # Three lists: kb's entry index, any-word BM25 and the archive's own embeddings. The third
                     # raised real-ask recall@10 from 0.342 to 0.488 and lost no judged set (journal b73eb9b5).
-                    by_meaning = [h for name, hits, (mine, _) in zip(kb_names, worded, own) for h in merge.fuse(
-                        [[{**m, "origin": origin} for m in meant if m["source"] == name],
-                         [{**w, "origin": origin} for w in hits], [{**m, "origin": origin} for m in mine]],
-                        q.limit * 2)]
+                    # The released engine ranked by the archive's own embeddings alone, and journal recall must
+                    # not fall below it (fleet.md R136 item 4): fusion reorders that list's head and adds below it.
+                    by_meaning = []
+                    for name, hits, (mine, _) in zip(kb_names, worded, own):
+                        anchor = [{**m, "origin": origin} for m in mine]
+                        lists = [[{**m, "origin": origin} for m in meant if m["source"] == name],
+                                 [{**w, "origin": origin} for w in hits], anchor]
+                        fused = merge.fuse(lists, sum(map(len, lists)))
+                        by_meaning += merge.within(fused, anchor, q.limit)[:q.limit * 2]
                     rest = [n for n in names if n not in kb_names]
                 except Exception as exc:  # noqa: BLE001 — the archive's own embeddings answer instead
                     log.warning("search: kb entry index unavailable, using the archive's embeddings: %s",

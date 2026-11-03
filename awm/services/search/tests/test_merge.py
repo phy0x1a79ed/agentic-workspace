@@ -57,3 +57,20 @@ def test_pagerank_never_overturns_a_close_section_order():
 def test_no_ranks_leave_the_section_as_it_was():
     hits = [hit("j", "a"), hit("j", "b")]
     assert merge.by_rank(hits, [None, None]) == hits and merge.by_rank([], []) == []
+
+
+def test_fusion_orders_the_anchors_head_and_adds_below_it():
+    a, b, c, d, e = (hit("journals", x) for x in "abcde")
+    kept = merge.within([e, a, b, c, d], [d, c, b, a], 2)
+    assert [h["id"] for h in kept] == ["c", "d", "e", "a", "b"]
+
+
+def test_an_anchor_hit_fusion_dropped_stays_dropped():
+    a, b, c = (hit("journals", x) for x in "abc")
+    assert [h["id"] for h in merge.within([a, b], [c, b, a], 3)] == ["a", "b"]
+
+
+def test_an_anchor_hit_only_the_anchor_holds_keeps_its_place_in_the_head():
+    lists = [[hit("journals", x) for x in "abc"], [hit("journals", x) for x in "abc"], [hit("journals", x) for x in "dz"]]
+    fused = merge.fuse(lists, sum(map(len, lists)))
+    assert [h["id"] for h in merge.within(fused, lists[2], 2)][:2] == ["d", "z"]
