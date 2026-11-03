@@ -17,15 +17,13 @@ This doc is the stack of open threads for the redux interview. The interview run
 
 ## Current thread
 
-**3a. The Slack seat system.** See the stack entry below.
+**4. What made it foundational.** See the stack entry below.
 
 Parent thread 1 (end state) waits for Tony to confirm `goal.md`. Its children 1a to 1t are closed.
 
 ## Stack
 
 Top of the stack comes first.
-
-3a. **The Slack seat system.** Review how seats work and discuss whether they keep their shape. Tony: "this is another system to review and discuss" (2026-10-30). The survey of today's seats is in `users.md`. Open for Tony:
 
 4. **What made it foundational.** Which problem made Tony think "rebuild" rather than "patch"?
 
@@ -55,6 +53,7 @@ Raised before the redux started. Each enters the stack when a thread reaches it.
 
 ## Closed
 
+- 3a. The Slack seat system (2026-11-03). Result: `channels.md` R125 and R127, `users.md` R126 and R128 to R130, `fleet.md` R86 and R88 item 1. R125 defines the cooperative level: a lab seat runs on the host with any tool its edges and trust level allow, minus `social`, new top-level agents and cards, and may still request Tony. No agent writes to Slack as Tony. The main seat keeps the first-contact flow, and Opal never messages first. Seats get their own workspace, `agentic-commons`, with local git repos per seat. Foreign peers and static edge users go. Tony: "I think seats need their own workspace."
 - 3. Who uses it (2026-11-02). Result: `users.md` R121 to R124. awm's users are its four interface boundaries: seats for humans, the queue for the owner, rooms for agents and swarms, and bash, ssh and the tether for machines. A foreign swarm comes in through rooms. Ryan approves Arbutus changes through Slack, a set apart from Tony's. The public never calls in directly. Tony: "public shouldnt be able to call into awm directly. that is a major overwhelm risk"
 - 2. Why awm exists (2026-11-02). Result: `goal.md` § Why awm exists. awm is the infrastructure for how Tony works with agents across machines. It queues work to him in one line, holds his ideas for later, turns intent into parallel steps, keeps private and lab work apart, and keeps what each run learns. Tony: "Kindof like hyperthreading a CPU by some perspectives."
 - 1j. IT services through the tether, and proof of ownership (2026-11-02). Result: `channels.md` R75. Tony dropped the thread. Consent is the owner's yes to the operator, whoever that is. The QR challenge goes, because tethers mostly run one way, outbound from the agent. Tony: "Lets just drop this and move on."
