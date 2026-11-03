@@ -33,7 +33,12 @@ This doc holds a session's id, the id of its task, its lifecycle from start to r
 ### Lifecycle
 
 - **R8.** A session closes with the standard agent exit. Retiring stops it fully and leaves a report to whoever started it. The report is the session's journal, written once.
+  - The retire instructions state that the last step is `reflection stop`. A session that ends its work and sits idle never wakes the sessions that wait on it (R51). Tony: "retire then explicitly state that reflection stop must be called. a session that just ends and sits would be detrimental." (2026-11-03).
 - **R10.** A retired session stays resumable through its transcript, by its session id (R9). The job itself is gone. The default follow-up is still a new session, which starts from the old session's journal only. Tony: "In instances where I do ask for a \"resume\", getting the actual session back would be the best."
+  - A retire deletes the job. The session is finished and frees its scope.
+  - A wait (R51) keeps the job, because the session comes back. The wake resumes that job.
+  - A resume of a retired session starts a new job from its transcript, with the same session id.
+  - Tony: "Yes" (2026-11-03), to keeping the job only for a wait.
 - **R11.** Each session deploys its work. It skips the deploy only when no deploy is possible, as for a design draft. Tony: "always deploy. if impossible (like design drafts), dont deploy." A session that a coordinator started for a complex task leaves its branch to the coordinator, which deploys (R52 path 2). The deploy follows the project's instructions. An agent asks Tony when it is unsure.
 - **R12.** A session closes on its own. Tony does not accept it first.
   1. When its task is done, the agent debriefs. The debrief writes the journal, which posts to the card. Tony reviews the journal without a live agent.
@@ -49,16 +54,26 @@ This doc holds a session's id, the id of its task, its lifecycle from start to r
 - **R17.** A citation points only at a journal. When a source session has no journal, as after a rushed or spot session, the citing agent first writes a journal for that session. It then cites that new journal. This keeps the citation field one type.
   - A journal post takes an optional session id. It defaults to the posting session. An agent omits it in the usual case, and names another session only to journal for that session.
 - **R15.** The agent chooses its citations at debrief. awm records every journal and session that a session reads, as the candidate list. The agent cites only the sources that shaped its work, each with a one-line reason. Tony: "lets use the debrief."
+  - A read is a `journal fetch`, or a `search get` that opens a journal post. A transcript read is not a candidate, because a citation points only at a journal (R17).
+  - The brief that the harness injects (`scopes.md` R143) and a `brief_read` are not candidates. Tony: "makes sense. but since context are jurnals and are injeted, they  should effectively stay out of this" (2026-11-03).
 - **R16.** The lineage graph has two kinds of edge. A parent link (R13) is a hard edge, "started by". A citation (R14) is a soft edge, "built on". The idea came from John's swarm on shaula.
 
 **CAUTION** awm cannot build citations from journal reads alone. Agents also read journals that turn out irrelevant.
 
 ### Dependencies
 
+- **R141.** A lost compaction or follow-up is never silent. reflection keeps each owed follow-up on disk until the transcript shows the session took it up. When the Claude Code daemon swaps a worker during `/compact`, reflection follows the session to its new process and sends again. Each give-up reaches the session, its scope's journal and the log. Tony: "it looks like compaction fails sometimes. Altair compaction failed for the search session, which isbwhy it was never delivered. We gotta investigate and fix this." and "Deploy it now" (2026-11-03).
 - **R51.** A session that depends on other sessions waits until they finish. The asking session starts the top-level sessions for the larger issue, as `dispatch.md` R50 allows. It then asks awm to make it wait until they finish. Each started session reports with its journal and retires (R8, R12). It does not wait on anything. Tony: "a session delivers its report as a journal and then retires. it does not wait. this was discussed already" and "so we need a pause mechanism of sorts. agents start other top level sessions when asked, and then asks awm to pause them until they finish" (2026-11-01).
   - A wait works like a retire. Its last step calls `reflection wait` in place of `reflection stop`. The verb's one parameter is `until`, a required list of session ids (R9). awm wakes the waiting session after every listed session finishes. Tony: "pause should function like retire", "no until would go in reflection stop -> need new verb reflection pause_until" and "lets do reflection wait, and have until be the name of the (now non optional) parameter. pause -> wait, I think this is clearer and fits instructions better: "wait until they finish"" (2026-11-01).
   - `reflection wait` waits on sessions only. A coordinator waits on a deploy through the deploy call itself (`routines.md` R26). Tony: "pause is strictly for sessions." (2026-11-01).
-  - The wake resumes the session itself from its transcript (R10).
+  - The wake resumes the session's kept job (R10).
+  - A listed session counts as finished only when it retires. A session that itself waits is not finished, so a wait holds through every level of nesting.
+  - A terminal session may wait. Tony: "Agree on both" (2026-11-03).
+  - The retire triggers the wake. When a session retires, `reflection stop` reads the waits that list it and wakes each waiter whose listed sessions have all retired. No loop polls the waits. Tony: "we dont want sweep, we want active triggers from reflection stop" (2026-11-03).
+  - A worker on another node wakes its waiter through reflection on the waiter's node.
+  - A failed wake raises an alarm at once and keeps the wait. It does not retry.
+  - At start, reflection reads the waits once. It raises one alarm for each wait that lists a session that is neither live nor retired, such as a worker lost to a reboot. An agent or Tony recovers it by hand.
+  - A wait clears when its waiter wakes, is resumed by hand, or retires. Tony: "otherwise agree" (2026-11-03).
   - The session compacts before it calls `reflection wait`. This is a soft instruction, not a check. Tony: "would be good as soft instructions to compact before retiring with "until" set" (2026-11-01).
 - **R52.** Three standard paths cover work that spans sessions. R51 serves the second and the third. Tony: "we should also try to keep things simple and not add new features until necessary." (2026-11-01).
   1. **A simple task.** The agent calls `deploy` and retires. Tony: "an agent does a simple task that requires deploy, calls deploy and retires."
