@@ -16,7 +16,7 @@ This doc holds how a session finds its project and scope, enters it, shares it w
   - A terminal session holds its scope like any live session. awm starts no agent into that scope.
   - Tony opening a scope that an agent holds gets a warning. He is not blocked or queued.
   - A terminal opened inside a scope folder skips routing, because Tony chose the scope. One opened in the lobby, or outside every scope, gets the brief and routes itself (R1, R40).
-- **R3.** A scope is one git worktree and holds at most one live session. A session is live while it works, while it is blocked on a question, and while it waits for review.
+- **R3.** A scope is one git worktree and holds at most one live session. A session is live while it works, while it is blocked on a question, while it waits for review, and while it waits on other sessions (`sessions.md` R51). A waiting session keeps its claim on the scope. Tony: "Waiting sessions  hold scope" (2026-11-03).
 - **R42.** An active agent session holds the claim on a scope. No card or other record holds it. The claim ends when the session ends. Tony: "if you are asking about what actually holds a scope as claimed, it is an active agent session. the claim dies with teh session" (2026-10-31).
   - A card's info panel shows each of its sessions as active or inactive (`queue.md` R62).
 - **R4.** An agent may create a project, which is a git repo. Example: "try out this new tool `<github link>`" clones the tool as a project and enters a branch as a scope.
@@ -25,9 +25,24 @@ This doc holds how a session finds its project and scope, enters it, shares it w
 - **R44.** These conditions block a scope delete. Tony: "ok" (2026-10-31).
   1. A live session holds the claim (R42). `force` never overrides this.
   2. The worktree has uncommitted or untracked files. `force` overrides this.
-  3. The worktree has ignored files outside `.awm/`. `force` overrides this.
-  4. The branch has commits that no other branch or remote holds. `force` overrides this.
+  3. A `.dvc` pin is uncommitted, or data under a committed pin differs from its pin (`dvc status`). `force` overrides this.
+  4. The branch has commits that no other branch or remote holds. This blocks even when the delete keeps the branch. `force` overrides this. Tony: "always, for unmerged commits or dirty files" (2026-11-03).
   - A forced delete lists everything it discarded.
+  - A delete fails only where work is lost. A gitignored file is marked as losable, so it never blocks a delete. Secrets are not a scope concern. DVC holds the data. Tony: "basic motivation is that scope delete should fail where work is lost. gitignored items are marked as loosable. secrets are out of the concern for scopes dvc handles data" (2026-11-03).
+- **R142.** A scope keeps nothing it cannot lose outside git and DVC. The `.awm/` folder goes. Tony: "agree" (2026-11-03).
+  - The scope brief moves into the journal, next to the scope's goal. It is not a file in the branch, because every scope's own copy would conflict at each merge.
+  - Notes an agent writes by hand go into the scope's committed `docs/` or into a journal post.
+  - `history.md`, `mcp-opencode.json` and the `data` link go. The startup ritual reads the journal directly. DVC holds the data.
+  - Local state for the DVC hooks sits in the worktree's git directory.
+- **R143.** The scope brief gets an agent going and points it at the right places. It is not comprehensive. Tony: "it shoul get the agent going and looking at the right places. it doesnt need to be comprehensive" (2026-11-03).
+  - The journal holds one brief per scope. `brief_read` returns it. `brief_set` writes a new brief, and `brief_edit` replaces one passage of it. Each write supersedes the last, like a goal.
+  - The instructions for the brief live in the descriptions of these verbs, not in the `debrief` skill. Tony: "dont use debrief as in we put the instructions on the tool, not the debrief skill" (2026-11-03).
+  - The brief holds nothing the journal already holds, such as session history or decisions. Tony: "this should not be redundant with journals"
+  - The brief is at most two sentences. A brief over 400 characters is refused. Tony: "the size should also be capped", "I think 2 sentences max is enough. 400 cap seems good" (2026-11-03).
+  - The brief holds only what the scope is for. Rules go into the repo docs. The repo docs, `AGENTS.md`, the goal and the journal hold everything else. Tony: "rules go into the repo docs", "please consider that this works in conjunction with repo-level readmes, agents.md and other docs, AND the session specific journals so information is only about the scope." (2026-11-03).
+  - The description of `brief_set` and `brief_edit` reads, in full: "The scope brief tells an agent what this scope is for within its project. It informs. It does not instruct: write no steps, commands or rules. Write at most two sentences, such as "for <the work this scope holds>". Name the scope's role: what its branch is for, the part of the project it works on, or whom it serves. When the work lives in a narrower part of the repo than the whole, give that path relative to the worktree. Do not describe the project, the goal, the plan or what done looks like. The repo's docs, AGENTS.md, the goal and the journal hold those. This is not a log. Change the brief only when the scope's role changes. A brief over 400 characters is refused." A test on 9 of mizar's scopes produced briefs of 80 to 167 characters. Tony: "Need to be more informational. Can use phrasing like for doing this", "These are good, next" (2026-11-03).
+  - The harness plugin (R135) gives the brief to a session each time the session enters a scope. A session started in a scope gets it from the harness's start hook. A session that moves with `reflection cd` gets it in the cd's followup message. `brief_read` stays for a reread. Tony: "Reflection cd has a followup message. Natural place to inject" (2026-11-03).
+  - The startup ritual in `AGENTS.md` names no brief step. Its `.awm/` steps are rewritten in the same change that ships the injection, so no deployed doc drops a step before its replacement runs. Tony: "Make all changes in 1 go at the end" (2026-11-03).
 - **R6.** A hygiene check finds scopes not in use and cleans them up. It triggers infrequently, for example every 10 new scopes, and acts only when action is needed. It is not an agent that churns on each new scope. Tony does not have to remember to run it.
 - **R45.** The hygiene check (R6) runs after every 10 new scopes. Tony: "lets keep scope heal manual. otherwise the 10 scopes hygiene stays as proposed" (2026-10-31).
   - It removes a scope's worktree only when R44 needs no `force`, the branch is merged, and no session used the scope for an idle period such as 14 days. It keeps the branch so the scope can be restored.
@@ -58,7 +73,7 @@ Surveyed read only on 2026-10-30.
 - **R4 exists.** `scope create` takes `new_project` with `clone_url` or `fork_url`. `start_other` cannot create a new project.
 - **R43 exists.** A cloned scope gets a new `feat/<scope>` branch from the detected default branch (`scopes.py:939`). The clone also adds a worktree on the default branch as a scope of its own (`projects.py:150`).
 - **R5 exists.** Nothing deletes scopes automatically.
-- **R44 partial.** `scope delete` blocks on uncommitted and untracked files, and `force` discards them (`scopes.py:286`). It refuses a folder that holds nested scopes. It keeps the branch unless `delete_branch` is set, and reports the restore commit. It misses ignored files, unique branch commits and a live session. A forced delete reports only a count and a sample.
+- **R44 partial.** `scope delete` blocks on uncommitted and untracked files, and `force` discards them (`scopes.py:286`). It refuses a folder that holds nested scopes. It keeps the branch unless `delete_branch` is set, and reports the restore commit. It misses DVC drift, unique branch commits and a live session. A forced delete reports only a count and a sample.
 - **R6 missing.** No hygiene check exists. `scope heal` repairs scope files, such as the `AGENTS.md` import, context links and the data link, and reports missing worktrees. It never looks for unused scopes.
 - **R7 mostly missing.** `request_human` and card messages cover steps 1 and 4. No per-scope queue (R46) or release event exists.
 
