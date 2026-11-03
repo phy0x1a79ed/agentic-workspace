@@ -48,9 +48,9 @@ from awm.cch import (
 log = logging.getLogger("awm.cch.hub_adapter")
 
 TOOL = "harness-cc"
-CONTRACT = "8ca45e2d-96cb-497f-8e00-e4cb25ba0fd3@1"
+CONTRACT = "harness@1"
 OPTIONAL_VERBS = ("mode", "remote_control", "link", "adopt", "revive_pinned",
-                  "pending", "caller_of_token", "pool_claim", "pool_seed", "pool_remove",
+                  "pending", "live_session_ids", "caller_of_token", "pool_claim", "pool_seed", "pool_remove",
                   "daemon_status", "daemon_ensure", "daemon_hold", "daemon_release")
 
 _HOSTING = {"tmux": "terminal", "daemon": "background"}
@@ -154,6 +154,9 @@ API_MANIFEST: dict[str, Any] = {
         _verb("revive_pinned", "Resume each pinned job whose process is gone.",
             [], timeout=600),
         _verb("pending", "The follow-ups cch still owes.", [], effect="read"),
+        _verb("live_session_ids", "The Claude session UUIDs a running Claude Code "
+            "process holds. Refuses when a record cannot be read, so a caller never "
+            "acts on a shorter list than the truth.", [], effect="read", timeout=30),
         _verb("caller_of_token", "The isolated session that holds a caller token, "
             "and the verbs it may call.", [_p("token", required=True)], effect="read",
             timeout=10),
@@ -470,6 +473,16 @@ async def _stop(args: dict, as_: str | None = None) -> dict:
     return out
 
 
+def _live_session_ids(args: dict) -> dict:
+    from awm.cch import live
+    from awm.claudedaemon import roster
+
+    try:
+        return {"ok": True, "session_ids": sorted(live.session_ids())}
+    except roster.Unreadable as exc:
+        return {"ok": False, "reason": f"unreadable {exc.path}: {exc}"}
+
+
 def _ensure_lineage(job: str, origin: str, **extra: Any) -> Optional[str]:
     """Give ``job`` a lineage record when it has none, so `resume` takes it. Returns an error."""
     if lifecycle.read_lineage(job) is not None:
@@ -610,6 +623,7 @@ HANDLERS = {verb: _guarded(verb, fn) for verb, fn in {
     "adopt": _adopt,
     "revive_pinned": _revive_pinned,
     "pending": _pending,
+    "live_session_ids": _live_session_ids,
     "caller_of_token": _caller_of_token,
     "pool_claim": cx_adapter._claim,
     "pool_seed": cx_adapter._seed,

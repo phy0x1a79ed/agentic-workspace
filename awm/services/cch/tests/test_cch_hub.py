@@ -26,7 +26,7 @@ def _target(**kw):
 
 def test_platform_names_claude_code_and_the_contract():
     out = run("platform", {})
-    assert out["code"] == "cc" and out["contract"].startswith("8ca45e2d")
+    assert out["code"] == "cc" and out["contract"] == "harness@1"
     assert "revive_pinned" in out["capabilities"]
 
 

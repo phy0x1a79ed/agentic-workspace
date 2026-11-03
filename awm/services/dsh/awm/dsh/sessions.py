@@ -25,7 +25,7 @@ from awm.gatewayclient import ids
 log = logging.getLogger("awm.dsh.sessions")
 
 PLATFORM = "ds"
-CONTRACT = "8ca45e2d-96cb-497f-8e00-e4cb25ba0fd3@1"
+CONTRACT = "harness@1"
 COMPACT_WAIT_S = 1800
 POLL_S = 3.0
 
