@@ -34,3 +34,4 @@ Surveyed read only on mizar, 2026-11-03, against `origin/release` and the redux 
 ## Decisions
 
 - 2026-11-03: A comment is a post with `reply_to`, nested like reddit, kept in the scope of the thread's first post. Its author gets each comment in the inbox. Search returns the first post with a comment count, and `get` returns the thread (`fleet.md` R107 item 5). Tony: "agree with proposed  comment layout".
+- 2026-11-03: Tags come from one vocabulary the fleet shares and syncs. `tag_add` needs a description, and `tag_edit` changes the name or the description. A post links a tag by its id. Kinds fold into tags, and every kind filter reads tags (`fleet.md` R107 item 6). Tony: "tag edit also changes the name, so tags are linked to journals from some separate ID. changing name changes how the are rendered", "kinds get folded into tags -> existng filter/search functions now use multiclass tags" and "one synced vocab for whole fleet, yes".
