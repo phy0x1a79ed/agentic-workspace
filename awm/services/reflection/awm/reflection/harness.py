@@ -1,9 +1,9 @@
 """Find the harness plugin of a session and call it (harness-contract.md).
 
-A provider is a tool that implements the harness contract. Under the plugin
-loader the gateway lists them in ``AWM_RESOLVED_TOOLS`` under ``contracts``, and
-a call goes through ``POST /invoke``. Under today's gateway the providers are the
-known services, and a call goes through ``/svc/<service>/fn/<verb>``.
+A provider is a tool that implements the contract ``harness@1``. The gateway
+lists them live at ``GET /hub/contract/harness@1``, and each says its platform
+code through the contract's ``platform`` verb. A call goes through
+``POST /invoke``. reflection names no provider itself (install.md R117 item 4).
 """
 from __future__ import annotations
 
@@ -19,19 +19,14 @@ from awm.gatewayclient import ids
 
 log = logging.getLogger("awm.reflection.harness")
 
-CONTRACT_UUID = "8ca45e2d-96cb-497f-8e00-e4cb25ba0fd3"
-CONTRACT_MAJOR = 1
+CONTRACT = "harness@1"
 PLUGIN = "reflection"
-
-# Today's gateway: the tool, the service that serves it, its platform code, and
-# the prefix of its internal function names. dsh serves its own verbs too, so its
-# contract verbs are `harness_<verb>` behind `/svc/dsh/fn/`.
-KNOWN = (("harness-cc", "cch", ids.PLATFORM_CLAUDE, ""),
-         ("harness-ds", "dsh", ids.PLATFORM_DEEPSEEK, "harness_"))
 
 # A provider that fails a call is skipped for this long, so a node without dsh
 # does not pay a failed call on every reflection verb.
 DOWN_FOR_S = 60.0
+# The provider list and each provider's platform code are read again after this.
+TABLE_FOR_S = 30.0
 
 
 class HarnessError(RuntimeError):
@@ -45,44 +40,77 @@ class Ambiguous(HarnessError):
 @dataclass(frozen=True)
 class Provider:
     tool: str
-    service: Optional[str]
     code: Optional[str]
     peer: Optional[str] = None
-    prefix: str = ""
 
 
 # Overridable for tests: (provider, verb, args, as_) -> result dict.
 _call: Optional[Callable[[Provider, str, dict, Optional[str]], dict]] = None
 
 _down: dict[str, float] = {}
+_codes: dict[tuple[str, Optional[str]], str] = {}
+_table: tuple[float, list[dict]] = (0.0, [])
 _lock = threading.Lock()
 
 
-def _resolved_providers() -> Optional[list[Provider]]:
-    path = os.environ.get("AWM_RESOLVED_TOOLS")
-    if not path:
-        return None
+def _hub() -> str:
+    return os.environ.get("AWM_HUB_URL", "http://127.0.0.1:8765").rstrip("/")
+
+
+def _contract_rows() -> list[dict]:
+    """The live providers of the contract, read at most every ``TABLE_FOR_S``."""
+    global _table
+    with _lock:
+        at, rows = _table
+    if rows and time.monotonic() - at < TABLE_FOR_S:
+        return rows
+    import httpx
+
     try:
-        data = json.loads(open(path, encoding="utf-8").read())
-    except (OSError, ValueError) as exc:
-        log.warning("reflection: cannot read AWM_RESOLVED_TOOLS %s: %s", path, exc)
+        resp = httpx.get(f"{_hub()}/hub/contract/{CONTRACT}",
+                         headers={"X-Awm-Plugin": PLUGIN}, timeout=10.0)
+        resp.raise_for_status()
+        got = resp.json()
+    except Exception as exc:  # noqa: BLE001 - no table is no provider
+        log.warning("reflection: cannot list the providers of %s: %s", CONTRACT, exc)
+        return rows
+    rows = [r for r in got if isinstance(r, dict) and r.get("name")
+            and int(r.get("major") or 1) == 1] if isinstance(got, list) else []
+    with _lock:
+        _table = (time.monotonic(), rows)
+    return rows
+
+
+def _code_of(tool: str, peer: Optional[str]) -> Optional[str]:
+    """The platform code ``tool`` serves, from its own ``platform`` verb."""
+    key = (tool, peer)
+    if key in _codes:
+        return _codes[key]
+    try:
+        out = call(Provider(tool, None, peer), "platform", {})
+    except HarnessError as exc:
+        log.info("reflection: %s", exc)
         return None
-    rows = (data.get("contracts") or {}).get(CONTRACT_UUID) or []
-    codes = {tool: code for tool, _svc, code, _pre in KNOWN}
-    return [Provider(r["name"], None, codes.get(r["name"]), r.get("peer"))
-            for r in rows
-            if isinstance(r, dict) and r.get("name")
-            and int(r.get("major") or CONTRACT_MAJOR) == CONTRACT_MAJOR]
+    code = out.get("code")
+    if isinstance(code, str) and code in ids.PLATFORMS:
+        _codes[key] = code
+        return code
+    return None
 
 
 def providers() -> list[Provider]:
     """Every harness plugin reflection may call, the ones marked down left out."""
-    found = _resolved_providers()
-    if found is None:
-        found = [Provider(tool, svc, code, None, pre) for tool, svc, code, pre in KNOWN]
     now = time.monotonic()
-    with _lock:
-        return [p for p in found if _down.get(p.tool, 0.0) <= now]
+    out = []
+    for row in _contract_rows():
+        tool, peer = str(row["name"]), row.get("peer") or None
+        with _lock:
+            if _down.get(tool, 0.0) > now:
+                continue
+        code = _code_of(tool, peer)
+        if code:
+            out.append(Provider(tool, code, peer))
+    return out
 
 
 def for_platform(code: str) -> Provider:
@@ -101,9 +129,11 @@ def _invoke(p: Provider, verb: str, args: dict, as_: Optional[str]) -> dict:
     headers = {"Content-Type": "application/json", "X-Awm-Plugin": PLUGIN}
     if as_:
         headers["X-Awm-As"] = as_
-    hub = os.environ.get("AWM_HUB_URL", "http://127.0.0.1:8765").rstrip("/")
-    resp = httpx.post(f"{hub}/invoke", json={"name": p.tool, "args": body},
+    resp = httpx.post(f"{_hub()}/invoke", json={"name": p.tool, "args": body},
                       headers=headers, timeout=_timeout(verb))
+    if resp.status_code == 503 or (resp.status_code >= 500 and "not up" in resp.text):
+        # The table lists a provider whether or not it runs here: this one is down.
+        raise ConnectionError(f"HTTP {resp.status_code}: {resp.text[:200]}")
     if resp.status_code >= 300:
         raise HarnessError(f"{p.tool} {verb}: HTTP {resp.status_code}: "
                            f"{resp.text[:300]}")
@@ -122,10 +152,6 @@ def call(p: Provider, verb: str, args: dict, *, as_: Optional[str] = None) -> di
     try:
         if _call is not None:
             out = _call(p, verb, clean, as_)
-        elif p.service:
-            from awm.gatewayclient import call_sync
-            out = call_sync(p.service, p.prefix + verb, clean, as_=as_,
-                            timeout=_timeout(verb))
         else:
             out = _invoke(p, verb, clean, as_)
     except HarnessError:
@@ -147,8 +173,24 @@ def _ask_all(verb: str, args: dict) -> list[tuple[Provider, dict]]:
     return out
 
 
-def for_caller(pid: Any) -> tuple[Provider, dict]:
-    """The provider that owns the caller pid, and what it says about the caller."""
+def for_session(session_id: str) -> tuple[Provider, dict]:
+    """The provider of an R9 ``session_id``, and what it says about that session."""
+    p = for_platform(session_id[:2])
+    who = call(p, "status", {"session_id": session_id})
+    if who.get("ok") is False:
+        raise HarnessError(who.get("reason") or who.get("error")
+                           or f"{p.tool} does not know session {session_id}")
+    return p, {**who, "session_id": session_id}
+
+
+def for_caller(pid: Any, session_id: Optional[str] = None) -> tuple[Provider, dict]:
+    """The provider that owns the caller, and what it says about the caller.
+
+    An isolated session has no host pid: the gateway names it by its R9
+    ``session_id`` (plugin-contract.md § Isolated sessions).
+    """
+    if session_id:
+        return for_session(session_id)
     if not pid:
         raise HarnessError(
             "could not tell which session is calling, so there is no session of "
@@ -192,12 +234,16 @@ def _unknown(ref: str):
     raise UnknownSession(ref)
 
 
-def target(job: Optional[str], pid: Any) -> tuple[Provider, dict]:
+def target(job: Optional[str], pid: Any,
+           session_id: Optional[str] = None) -> tuple[Provider, dict]:
     """The provider and target arguments for a verb that takes an optional ``job``."""
     ref = job.strip() if isinstance(job, str) else ""
     if ref:
         p, named = for_ref(ref)
         return p, {**named, "pid": pid}
+    if session_id:
+        p, _who = for_session(session_id)
+        return p, {"session_id": session_id}
     p, _who = for_caller(pid)
     return p, {"pid": pid}
 

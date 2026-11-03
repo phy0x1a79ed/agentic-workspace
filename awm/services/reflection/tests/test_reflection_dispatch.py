@@ -13,8 +13,8 @@ import pytest
 
 from awm.reflection import alarm, elsewhere, harness, hub_adapter, ledger, policy, surface
 
-CC = harness.Provider("harness-cc", "cch", "cc")
-DS = harness.Provider("harness-ds", "dsh", "ds", None, "harness_")
+CC = harness.Provider("harness-cc", "cc")
+DS = harness.Provider("harness-ds", "ds")
 ME = 4242
 MY_ID = "cc" + "0e38" * 8
 
@@ -320,18 +320,54 @@ def test_a_failure_is_logged_without_the_callers_text(fakes, caplog):
     assert "message_self failed for caller pid 4242" in caplog.text
 
 
-def test_resolved_tools_name_the_providers(monkeypatch, tmp_path):
-    path = tmp_path / "resolved.json"
-    path.write_text(json.dumps({"contracts": {harness.CONTRACT_UUID: [
-        {"name": "harness-cc", "major": 1, "plugin": "cch"},
-        {"name": "harness-ds", "major": 2, "plugin": "dsh"}]}}))
-    monkeypatch.setenv("AWM_RESOLVED_TOOLS", str(path))
-    assert harness.providers() == [harness.Provider("harness-cc", None, "cc")]
+def test_the_providers_come_from_the_live_contract_table(monkeypatch):
+    """No provider is named in reflection: the table lists them, each says its code."""
+    import httpx
+
+    monkeypatch.setattr(harness, "_table", (0.0, []))
+    monkeypatch.setattr(harness, "_codes", {})
+    asked = []
+
+    class Reply:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return [{"name": "harness-cc", "major": 1, "plugin": "cch", "peer": None},
+                    {"name": "harness-ds", "major": 2, "plugin": "dsh", "peer": None},
+                    {"name": "harness-x", "major": 1, "plugin": "x", "peer": "altair"}]
+
+    monkeypatch.setattr(httpx, "get", lambda url, **kw: asked.append(url) or Reply())
+    codes = {"harness-cc": "cc", "harness-x": "ds"}
+    monkeypatch.setattr(harness, "_call", lambda p, verb, args, as_: {"ok": True,
+                        "code": codes[p.tool]} if verb == "platform" else {})
+    assert harness.providers() == [harness.Provider("harness-cc", "cc"),
+                                   harness.Provider("harness-x", "ds", "altair")]
+    assert asked[0].endswith("/hub/contract/harness@1")
 
 
-def test_without_resolved_tools_the_known_services_serve(monkeypatch):
-    monkeypatch.delenv("AWM_RESOLVED_TOOLS", raising=False)
-    assert [p.service for p in harness.providers()] == ["cch", "dsh"]
+def test_no_contract_table_is_no_provider(monkeypatch):
+    import httpx
+
+    monkeypatch.setattr(harness, "_table", (0.0, []))
+
+    def down(url, **kw):
+        raise httpx.ConnectError("refused")
+
+    monkeypatch.setattr(httpx, "get", down)
+    assert harness.providers() == []
+    with pytest.raises(harness.HarnessError):
+        harness.for_platform("cc")
+
+
+def test_an_isolated_caller_is_named_by_its_session_id(fakes):
+    out = run("whoami", {"_caller_session_id": MY_ID})
+    assert out["session_id"] == MY_ID
+    assert ("status", {"session_id": MY_ID}) in fakes.cc.calls
+    assert "resolve" not in fakes.cc.verbs()
+    run("compact", {"_caller_session_id": MY_ID})
+    assert fakes.cc.calls[-1][0] == "compact"
+    assert fakes.cc.calls[-1][1]["session_id"] == MY_ID and "pid" not in fakes.cc.calls[-1][1]
 
 
 def test_hint_asks_each_peer_and_names_the_holder():

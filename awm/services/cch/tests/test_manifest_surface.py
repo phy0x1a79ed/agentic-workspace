@@ -42,7 +42,7 @@ def test_the_service_is_hidden_and_implements_the_harness_contract():
     plugin = tomllib.loads(PLUGIN_TOML.read_text())
     [tool] = plugin["tool"]
     assert tool["name"] == "harness-cc" and tool["tier"] == "off"
-    assert tool["implements"] == ["8ca45e2d-96cb-497f-8e00-e4cb25ba0fd3@1"]
+    assert tool["implements"] == ["harness@1"] and "uuid" not in tool
 
 
 def test_it_serves_every_contract_verb_and_lists_its_optional_ones():

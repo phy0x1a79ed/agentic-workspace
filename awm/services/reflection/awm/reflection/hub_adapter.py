@@ -57,6 +57,22 @@ def _caller_pid(args: dict) -> Any:
     return args.get("_caller_pid")
 
 
+def _caller_sid(args: dict) -> Optional[str]:
+    """The R9 id of an isolated caller, which has no host pid. Stamped by the gateway's
+    isolated door and stripped from every other call (plugin-contract.md)."""
+    return ids.to_r9(args.get("_caller_session_id"))
+
+
+def _caller(args: dict) -> tuple[harness.Provider, dict]:
+    return harness.for_caller(_caller_pid(args), _caller_sid(args))
+
+
+def _me(args: dict) -> dict:
+    """How a plugin names the caller's own session: by session id when isolated, else by pid."""
+    sid = _caller_sid(args)
+    return {"session_id": sid} if sid else {"pid": _caller_pid(args)}
+
+
 def _job(args: dict) -> Optional[str]:
     return args.get("job") or None
 
@@ -102,9 +118,8 @@ def _guarded(verb: str, fn):
 
 
 def _own(verb: str, args: dict, extra: dict) -> tuple[harness.Provider, dict, dict]:
-    pid = _caller_pid(args)
-    p, who = harness.for_caller(pid)
-    return p, who, harness.call(p, verb, {"pid": pid, **extra})
+    p, who = _caller(args)
+    return p, who, harness.call(p, verb, {**_me(args), **extra})
 
 
 def _with_ticket(p: harness.Provider, who: dict, out: dict) -> dict:
@@ -150,7 +165,7 @@ def _session_of(args: dict) -> dict:
 
 
 def _whoami(args: dict) -> dict:
-    p, who = harness.for_caller(_caller_pid(args))
+    p, who = _caller(args)
     sid = who.get("session_id") or ""
     return {**who, "ok": True, "harness": p.tool, "platform": p.code,
             "trust": policy.level_of(sid), "task_id": _task_of(sid) if sid else None,
@@ -161,6 +176,8 @@ def _whoami(args: dict) -> dict:
 
 
 def _actor_id(args: dict) -> Optional[str]:
+    if _caller_sid(args):
+        return _caller_sid(args)
     pid = _caller_pid(args)
     if not pid:
         return None
@@ -171,7 +188,7 @@ def _actor_id(args: dict) -> Optional[str]:
 
 
 def _on_target(verb: str, steer: Optional[str], args: dict, extra: dict) -> dict:
-    p, named = harness.target(_job(args), _caller_pid(args))
+    p, named = harness.target(_job(args), _caller_pid(args), _caller_sid(args))
     if steer and _job(args):
         policy.check_steer(_actor_id(args), steer, named.get("session_id"))
     return harness.call(p, verb, {**named, **extra})
@@ -199,7 +216,7 @@ def _interrupt(args: dict) -> dict:
 
 
 def _stop(args: dict) -> dict:
-    p, named = harness.target(_job(args), _caller_pid(args))
+    p, named = harness.target(_job(args), _caller_pid(args), _caller_sid(args))
     if _job(args):
         policy.check_steer(_actor_id(args), "stop", named.get("session_id"))
     out = harness.call(p, "stop", {**named, "keep": False,
@@ -263,7 +280,7 @@ def _scopes_call(fn: str, args: dict) -> Optional[dict]:
 def _cd(args: dict) -> dict:
     """Move a session, claiming the scope it moves into (sessions lane, scope claims)."""
     pid = _caller_pid(args)
-    p, named = harness.target(_job(args), pid)
+    p, named = harness.target(_job(args), pid, _caller_sid(args))
     if _job(args):
         policy.check_steer(_actor_id(args), "cd", named.get("session_id"))
     before = harness.call(p, "status", named)
@@ -412,7 +429,7 @@ def _wait(args: dict) -> dict:
         return {"ok": False, "reason": f"{exc}; wait takes session ids, as "
                                        f"start_other returns them"}
     pid = _caller_pid(args)
-    p, who = harness.for_caller(pid)
+    p, who = _caller(args)
     sid = who.get("session_id") or ""
     if sid in until:
         return {"ok": False, "reason": "a session cannot wait on itself"}

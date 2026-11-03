@@ -2,7 +2,7 @@
 
 ## Purpose & Contents
 
-This file is the contract between the `reflection` tool and a harness plugin (`install.md` R135). A harness plugin integrates one coding agent harness: `cch` for Claude Code, `dsh` for the DeepSeek harness. The file holds the contract UUID, the verbs a harness plugin serves with their arguments and results, the events it sends back to reflection, and what each harness serves today. The redux-harness lane owns it. The plugin manifest and the call path are in `plugin-contract.md` (redux-core lane).
+This file is the contract between the `reflection` tool and a harness plugin (`install.md` R135). A harness plugin integrates one coding agent harness: `cch` for Claude Code, `dsh` for the DeepSeek harness. The file holds the contract name, the verbs a harness plugin serves with their arguments and results, the events it sends back to reflection, and what each harness serves today. The redux-harness lane owns it. The plugin manifest and the call path are in `plugin-contract.md` (redux-core lane).
 
 ## The cut
 
@@ -23,28 +23,27 @@ Each harness plugin serves one hidden tool and declares that it implements the c
 > ```
 > [[tool]]
 > name = "harness-cc"          # dsh: "harness-ds"
-> uuid = "<the plugin's own tool UUID>"
 > major = 1
 > service = "cch"
 > tier = "off"
-> implements = ["8ca45e2d-96cb-497f-8e00-e4cb25ba0fd3@1"]
+> implements = ["harness@1"]
 > ```
 
-reflection names the contract and reads its providers from `AWM_RESOLVED_TOOLS` under `contracts`:
+reflection names the contract, never a provider. It lists the providers live from `GET /hub/contract/harness@1` and asks each for its platform code with `platform`:
 
 > ```
 > [[needs.contract]]
-> uuid = "8ca45e2d-96cb-497f-8e00-e4cb25ba0fd3"
+> name = "harness"
 > major = 1
 > ```
 
-The contract UUID never changes. A breaking change to a verb below raises the major version (`install.md` R117 item 4).
+The contract name `harness` never changes. A breaking change to a verb below raises the major version (`install.md` R117 items 2 and 4).
 
 ## Addressing
 
 1. A session is named by its R9 id. Its first two characters are the platform code, and they pick the harness plugin. Each plugin answers `platform` with its code: `cc` for cch, `ds` for dsh.
    The harness plugin mints the R9 ids of its sessions and maps them back to its harness's own ids. reflection reads only the platform code.
-2. A caller arrives at reflection as a pid that the gateway stamped. reflection asks each provider `resolve {pid}`. A provider that does not own the pid answers `{mine: false}`. Exactly one provider may answer `{mine: true}`.
+2. A caller arrives at reflection as a pid that the gateway stamped, or, from an isolated session, as the R9 id the gateway's isolated door stamped (`_caller_session_id`). An id picks its provider by platform code. For a pid, reflection asks each provider `resolve {pid}`. A provider that does not own the pid answers `{mine: false}`. Exactly one provider may answer `{mine: true}`.
 3. A job id, a name or a unique prefix of an R9 id is a lookup. reflection asks each provider `find {ref}`, and refuses a ref that two sessions match.
 4. A verb that acts on a session names it with `session_id` or `ref`. With neither, it acts on the session at `pid`, the caller pid that the gateway stamped on reflection's own call. reflection passes `pid` on every such verb, so the plugin can also tell when a session acts on itself.
 
