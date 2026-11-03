@@ -27,11 +27,10 @@ The kb project builds these files and ships them to the state directory (`KB_STA
 | file | built by | read by |
 |---|---|---|
 | `papers.db` | `kb.fastlayer` | `awm.kb.fastlayer`, for both sources and `kb get` |
-| `hops/` | `kb.hops` | `awm.kb.hops`, for `kb hop` and the author filter |
-| `graph/graph.db` | `kb.graph` | `awm.kb.graphrank`, for `kb rank` |
+| `hops/` | `kb.hops`, from `kb.graph`'s `graph.db` | `awm.kb.hops`, for `kb hop` and the author filter |
 | `w2/vectors/` | `kb.vectors` | the kb server, for `kb related` |
 
-**CAUTION** Land a format change in both repositories together. A reader refuses a `papers.db` or a `graph.db` whose `meta.schema` it does not know, and the verbs that read the file then answer nothing.
+**CAUTION** Land a format change in both repositories together. A reader refuses a `papers.db` whose `meta.schema` it does not know, and the verbs that read the file then answer nothing.
 
 `papers_delta.db` is the one file this service writes. It holds the Zotero items that `papers.db` lacks. The service polls the zotero service on `KB_ZOTERO_PEER` (default `mira`) for items that moved, and re-maps the held items each time a new base ships.
 
@@ -43,9 +42,9 @@ The kb project builds these files and ships them to the state directory (`KB_STA
 
 ## A foreign peer
 
-A foreign peer holding the `kb` grant may call the `kb` read verbs (`FEDERATION.md` § *The foreign gate*), with two exceptions and one cut:
+A foreign peer holding the `kb` grant may call the `kb` read verbs (`FEDERATION.md` § *The foreign gate*), with one exception and one cut:
 
-- `related` and `rank` refuse a foreign caller. They serve this node's `search` and domestic callers only.
+- `related` refuses a foreign caller. It serves this node's `search` only.
 - `status` tells a foreign caller only whether the server is up.
 
 A refusal raises `PermissionError`, which the gateway returns as the same 404 an unknown tool gets. The lifecycle verbs are operator-only and refuse every edge caller.

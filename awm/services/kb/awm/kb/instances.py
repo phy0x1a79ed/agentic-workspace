@@ -33,8 +33,6 @@ URL = f"http://{HOST}:{PORT}"
 #: delta this service fills from Zotero.
 PAPERS_BASE = Path(os.environ.get("KB_PAPERS_BASE") or (STATE_DIR / "papers.db"))
 PAPERS_DELTA = Path(os.environ.get("KB_PAPERS_DELTA") or (STATE_DIR / "papers_delta.db"))
-#: The one graph and its PageRank profiles, as the kb project's `kb.graph` builds them.
-GRAPH = Path(os.environ.get("KB_GRAPH") or (STATE_DIR / "graph" / "graph.db"))
 HOPS = Path(os.environ.get("KB_HOPS") or (STATE_DIR / "hops"))
 #: What the kb server serves read-only: the entry and noun indexes (`entries/`, `nouns/`, each a `current` link to a
 #: generation). The server finds a missing one unavailable and keeps running.

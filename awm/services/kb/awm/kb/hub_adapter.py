@@ -1,4 +1,4 @@
-"""Hub adapter for the kb service: the papers feed for `search`, kb's hop and rank, and the kb server.
+"""Hub adapter for the kb service: the papers feed for `search`, kb's hop, and the kb server.
 
 The kb server, a process from the `kb` project in its own env (see `server`), encodes text and serves the
 entry and noun indexes. This adapter supervises it and answers the paper verbs from papers.db itself.
@@ -23,15 +23,13 @@ from awm import config
 from awm import gatewayclient
 from awm.gatewayclient import ServiceAdapter, spawn_supervised
 
-from awm.kb import client, fastlayer, graphrank, hops, instances, semantic, server
+from awm.kb import client, fastlayer, hops, instances, semantic, server
 
 log = logging.getLogger("awm.kb.hub_adapter")
 
 CHILD = server.CHILD
 PAPERS = fastlayer.FastLayer(instances.PAPERS_BASE, instances.PAPERS_DELTA)
-RANKS = graphrank.Ranks(instances.GRAPH)
 HOPS = hops.Hops(instances.HOPS)
-MAX_RANKED = 1000
 _tasks: set[asyncio.Task] = set()
 
 API_MANIFEST: dict[str, Any] = {
@@ -179,25 +177,6 @@ API_MANIFEST: dict[str, Any] = {
                 {"name": "sources", "type": "array", "description": "Only these sources."},
             ],
             "timeout": 15,
-        },
-        {
-            "name": "rank",
-            "effect": "read",
-            "category": "kb",
-            "tool": "kb_rank",
-            "surfaces": ["cli", "http"],
-            "description": (
-                "PageRank scores for search hits, from the one graph over papers, authors, posts, scopes "
-                "and projects. With a context, the scope's profile blends with its project's. "
-                "`search query` calls it to order each section; domestic callers only."
-            ),
-            "params": [
-                {"name": "hits", "type": "array", "required": True,
-                 "description": "Hits as {source, id, project, scope}; source kb is a paper."},
-                {"name": "context", "type": "string",
-                 "description": "The calling scope as project/scope, or a project. Default: the global rank."},
-            ],
-            "timeout": 10,
         },
     ],
     "emitters": [],
@@ -348,16 +327,6 @@ async def _h_related(args: dict, as_: str | None = None) -> dict:
     return await client.related(body)
 
 
-async def _h_rank(args: dict, as_: str | None = None) -> dict:
-    if _foreign(as_):
-        raise PermissionError("rank is for domestic callers")
-    hits = args.get("hits") or []
-    if not isinstance(hits, list) or len(hits) > MAX_RANKED or \
-            not all(isinstance(h, dict) and h.get("id") for h in hits):
-        raise ValueError(f"hits must be a list of at most {MAX_RANKED} {{source, id}} objects")
-    return await asyncio.to_thread(RANKS.score, hits, str(args.get("context") or ""))
-
-
 async def _h_start(args: dict, as_: str | None = None) -> dict:
     _operator_only(as_, "start")
     return await asyncio.to_thread(CHILD.start)
@@ -386,7 +355,6 @@ HANDLERS = {
     "get": _h_get,
     "hop": _h_hop,
     "related": _h_related,
-    "rank": _h_rank,
     "start": _h_start,
     "stop": _h_stop,
     "restart": _h_restart,

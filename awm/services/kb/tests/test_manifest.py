@@ -24,8 +24,8 @@ async def test_operator_verbs_refuse_an_edge_caller(verb):
 
 def test_the_retired_verbs_are_gone():
     by_name = {f["name"]: f for f in hub_adapter.API_MANIFEST["functions"]}
-    assert not {"sweep", "export", "graph", "schema", "sync", "recall", "snapshot"} & set(by_name)
-    assert not {"recall", "snapshot"} & set(hub_adapter.HANDLERS)
+    assert not {"sweep", "export", "graph", "schema", "sync", "recall", "snapshot", "rank"} & set(by_name)
+    assert not {"recall", "snapshot", "rank"} & set(hub_adapter.HANDLERS)
 
 
 def test_service_toml_declares_the_kb_archive_source():
