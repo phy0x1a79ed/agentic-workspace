@@ -166,7 +166,7 @@ The code is on `feat/redux-routines` (commits `0e9a8840` and `a95afeb1`). It dif
 - The merge step moves no ref. `dev` and `release` move together in the promote step, in one `update-ref` transaction that checks both old values. A batch that fails its check leaves `dev` untouched, so `dev` never holds a merge that failed.
 - When `release` holds commits that `dev` lacks, the batch merges `release` first, so the promote stays a fast-forward of both refs.
 - A batch whose refresh fails ends in its own state, `refresh-failed`. Its tickets count as landed, because `release` already holds them. The fixing session gets the failed node and the batch's branches.
-- `deploy.toml` gained `[fleet] canonical`. A `deploy` called on any other node forwards to the canonical node, so a session never needs to know where the engine runs.
+- The node list and the canonical node live in the node's install config, `<AWM_DIR>/config.toml`, in a `[fleet]` table that the cloud project writes (fleet.md R140). `home` names home base, `nodes` gives the rollout order with home base first, and `[fleet.project.<name>]` overrides both for a project landed elsewhere. `deploy.toml` names no host and refuses a `[fleet]` table. A `deploy` called on a node other than the canonical one forwards there, so a session never needs to know where the engine runs.
 - awm refreshes with the `queue` kind: a session on each node runs `awm deploy` and watches the services come back. A `restart` command would restart the routine plugin that runs the batch.
 - The routine plugin declares no refresh hook of its own, for the same reason. It refreshes with awm.
 - The card half of the R26 verdict is a stub. No board verb writes to a session's card yet, so the verdict reaches the submitter's journal only.
@@ -180,7 +180,7 @@ routines.md, requirements:
 - R26 and R27: name the verbs as built. `routine deploy` returns a ticket. `routine deploys <id>` reads a ticket or a batch. The six steps stay, with one change: promote moves `dev` and `release` together, and merge moves neither.
 - R27: add the `refresh-failed` outcome. The release landed, a node did not refresh, and the fixer gets the node.
 - R29: add that the engine refuses a ref that moved under it and reports it as a promote failure, never overwrites it.
-- R31: add the `[fleet] canonical` forwarding. A session calls `deploy` on its own node. Pushing the branch to the canonical repo stays the session's job, and the deploy refuses an unknown commit with "Push first".
+- R31: add that the install config's `[fleet]` table names home base, the rollout order and each project's canonical node, and that a deploy forwards to the canonical node. A session calls `deploy` on its own node. Pushing the branch to the canonical repo stays the session's job, and the deploy refuses an unknown commit with "Push first".
 - R32: name the `queue` refresh kind as the mechanism for awm's supervised restart.
 - R33: point at the `refresh` key of `awm-plugin.toml` in the plugin contract. A `hot` refresh runs each changed plugin's hook, and falls back to the project hook for any change outside a plugin or in a plugin with no hook.
 - Add one line naming `deploy.toml` at a project's repo root as the deploy config, with `awm/plugins/routine/awm/routine/deployconf.py` as the source of truth for its keys. Do not list the keys in the doc.
@@ -188,7 +188,7 @@ routines.md, requirements:
 routines.md, gap from today. Once the plugin is live on every node, remove these lines, because the build closes them in code:
 
 - **No serialization.** One worker per project drains a queue. Promote checks both old ref values.
-- **No fleet route in code.** The refresh step walks `[fleet] nodes` in order and stops at the first failure.
+- **No fleet route in code.** The refresh step walks the install config's `[fleet] nodes` in order and stops at the first failure.
 - **No test selection.** `run-tests.sh --changed <base>` maps changed paths to dists.
 - **Known failures are rediscovered.** `scripts/full-tests.sh` keeps a known-failures file and fails only on a new failure.
 - **No batching.** Every ticket waiting when a batch starts joins it.
@@ -198,7 +198,7 @@ Rewrite these lines rather than remove them:
 
 - **No smoke tier.** `--smoke` now selects the marker, but few tests carry it. The gateway's smoke tier took 136 s against the 60 s budget, until redux-core's `silent_core` fixture fix (see Callouts).
 - **Three schedulers exist.** The routine registry and its systemd timers exist. `events`, `dvc` and `transcripts` still run their own schedulers.
-- **The canonical repo is on altair.** Unchanged, and now a cutover prerequisite: awm's `deploy.toml` names mizar.
+- **The canonical repo is on altair.** Unchanged, and now a cutover prerequisite: the cloud project's install config is to name mizar as home base.
 - **Public releases are sessions.** The draft routine below replaces the hand-run build. The upload pull request per release stays with a session.
 
 install.md: no change. The `refresh` key is already in the plugin contract, as redux-core adopted it at `38dc0f95`.
@@ -255,7 +255,7 @@ Gotchas:
 ## Callouts
 
 - The gateway smoke tier took 136 s against the 60 s check budget, so any batch that touched the gateway would fail its check. Four 30 s fixture teardowns in `awm/gateway/tests/test_mcp_proxy_timeouts.py` caused it. redux-core fixed it on `feat/redux-core` (`ThreadingHTTPServer` with daemon threads, now 9 s). This branch does not merge `feat/redux-core`. The final sweep brings the two together.
-- awm's `deploy.toml` lists the nodes mizar, alcor, altair and capella, homebase first. It leaves out mira and lyra. Nobody verified the list against the nodes that run awm today. Check it at cutover.
+- The real `[fleet]` table belongs to redux-build/fleet, in the cloud project's install config. This lane proposed home mizar and the order mizar, alcor, altair, capella, leaving out mira and lyra. Nobody verified that list against the nodes that run awm today. `AWM_INSTALL_CONFIG` overrides the config path, so redux-core can fold it into the contract or drop it.
 - The three old schedulers (`events`, `dvc`, `transcripts`) move onto routines only after this service is live on every node (gap T11). This build does not move them.
 - Restarts that spare tether sessions and ssh ControlMasters (T8, R32) depend on the harness and channels lanes. The `queue` refresh kind gives the supervising session a place to do it.
 - The deploy runs one engine per project on the canonical node (R31). Until the canonical repo moves to mizar, a real deploy here would act on a mirror. Nothing tonight runs one.

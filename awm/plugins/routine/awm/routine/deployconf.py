@@ -1,7 +1,8 @@
 """A project's deploy config: `deploy.toml` at its repo root (routines.md R27, R31, R33).
 
 The engine reads it from the commit it is about to land, so a change to the
-check or the node list deploys with the code that needs it.
+check deploys with the code that needs it. It names no node: the install
+config holds the fleet (fleetconf, fleet.md R140).
 """
 
 from __future__ import annotations
@@ -33,8 +34,6 @@ class DeployConfig:
     check: str = ""
     check_timeout: float = CHECK_BUDGET
     refresh: Refresh = field(default_factory=Refresh)
-    nodes: tuple[str, ...] = ()
-    canonical: str = ""
     fixer_peer: str = "local"
     fixer_prompt: str = ""
 
@@ -42,7 +41,6 @@ class DeployConfig:
 _SECTIONS = {
     "deploy": {"check", "check_timeout"},
     "refresh": {"kind", "command", "sync", "prompt", "timeout"},
-    "fleet": {"nodes", "canonical"},
     "fixer": {"peer", "prompt"},
 }
 
@@ -53,6 +51,8 @@ def parse(text: str) -> DeployConfig:
     except tomllib.TOMLDecodeError as e:
         raise ConfigError(f"{FILE}: {e}") from e
     for sec, body in raw.items():
+        if sec == "fleet":
+            raise ConfigError(f"{FILE}: [fleet] belongs in the node's install config")
         if sec not in _SECTIONS:
             raise ConfigError(f"{FILE}: unknown section [{sec}]")
         if extra := set(body) - _SECTIONS[sec]:
@@ -65,11 +65,6 @@ def parse(text: str) -> DeployConfig:
         raise ConfigError(f"{FILE}: a restart refresh needs a command")
     if kind == "queue" and not r.get("prompt"):
         raise ConfigError(f"{FILE}: a queue refresh needs a prompt")
-    nodes = raw.get("fleet", {}).get("nodes", [])
-    if not isinstance(nodes, list) or not all(isinstance(n, str) and n for n in nodes):
-        raise ConfigError(f"{FILE}: [fleet] nodes must be a list of node names")
-    if len(set(nodes)) != len(nodes):
-        raise ConfigError(f"{FILE}: [fleet] nodes lists a node twice")
     fx = raw.get("fixer", {})
     return DeployConfig(
         check=d.get("check", ""),
@@ -77,6 +72,5 @@ def parse(text: str) -> DeployConfig:
         refresh=Refresh(kind=kind, command=r.get("command", ""), sync=r.get("sync", ""),
                         prompt=r.get("prompt", ""),
                         timeout=float(r.get("timeout", 600.0))),
-        nodes=tuple(nodes), canonical=raw.get("fleet", {}).get("canonical", ""),
         fixer_peer=fx.get("peer", "local"),
         fixer_prompt=fx.get("prompt", ""))

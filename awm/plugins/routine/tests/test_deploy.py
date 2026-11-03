@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from awm.routine import deployconf
+from awm.routine import deployconf, fleetconf
 from awm.routine.deploy import Deployer
 from awm.routine.hub_adapter import DEPLOY_FUNCTIONS, DeployVerbs
 from awm.routine.refresh import Refresher, plugin_folders
@@ -17,8 +17,9 @@ from tests.conftest import git
 pytestmark = pytest.mark.smoke
 
 
-def make(store, out, ws, node="mizar") -> Deployer:
-    ref = Refresher(out, node=node, checkout_root=lambda p: ws.proj / "release")
+def make(store, out, ws, node="mizar", fleet: str = "") -> Deployer:
+    ref = Refresher(out, node=node, checkout_root=lambda p: ws.proj / "release",
+                    fleet_config=lambda: fleetconf.parse(fleet))
     return Deployer(store, out, workspace=ws.root, refresher=ref)
 
 
@@ -173,8 +174,14 @@ FLEET = """
 [refresh]
 kind = "restart"
 command = "echo $AWM_NODE_NAME $AWM_REFRESH_TO >> {log}"
+"""
+
+# A fixture install config: the real one is the cloud project's (fleet.md R140).
+INSTALL = """
+plugins = ["*"]
 
 [fleet]
+home = "mizar"
 nodes = ["mizar", "altair", "capella"]
 """
 
@@ -182,7 +189,7 @@ nodes = ["mizar", "altair", "capella"]
 async def test_refresh_runs_homebase_then_peers_in_order(store, out, ws, tmp_path):
     log = tmp_path / "refresh.log"
     ws.scope("a", {"deploy.toml": FLEET.format(log=log)})
-    [t] = await land(make(store, out, ws), "a")
+    [t] = await land(make(store, out, ws, fleet=INSTALL), "a")
     assert t["state"] == "landed"
     assert log.read_text().split() == ["mizar", ws.rev("release")]
     assert [(c[0], c[1], c[3]) for c in out.calls] == [("routine", "refresh", "altair"),
@@ -195,7 +202,7 @@ async def test_refresh_runs_homebase_then_peers_in_order(store, out, ws, tmp_pat
 async def test_refresh_stops_at_first_failed_node(store, out, ws, tmp_path):
     ws.scope("a", {"deploy.toml": FLEET.format(log=tmp_path / "r.log")})
     out.invoke_results[("routine", "refresh", "altair")] = {"ok": False, "detail": "boom"}
-    [t] = await land(make(store, out, ws), "a")
+    [t] = await land(make(store, out, ws, fleet=INSTALL), "a")
     assert [c[3] for c in out.calls] == ["altair"]
     batch = store.get_batch(t["batch_id"])
     assert batch["state"] == "refresh-failed" and batch["failed_step"] == "refresh"
@@ -207,7 +214,7 @@ async def test_refresh_stops_at_first_failed_node(store, out, ws, tmp_path):
 async def test_unreachable_peer_fails_refresh(store, out, ws, tmp_path):
     ws.scope("a", {"deploy.toml": FLEET.format(log=tmp_path / "r.log")})
     out.invoke_results[("routine", "refresh", "altair")] = RuntimeError("no route")
-    [t] = await land(make(store, out, ws), "a")
+    [t] = await land(make(store, out, ws, fleet=INSTALL), "a")
     assert "no route" in store.get_batch(t["batch_id"])["error"]
 
 
@@ -267,7 +274,7 @@ async def test_peer_refresh_verb_reads_its_own_config(store, out, ws, tmp_path):
     ("[refresh]\nkind = 'reboot'", "kind must be"),
     ("[refresh]\nkind = 'restart'", "needs a command"),
     ("[refresh]\nkind = 'queue'", "needs a prompt"),
-    ("[fleet]\nnodes = ['a', 'a']", "twice"),
+    ("[fleet]\nnodes = ['a']", "install config"),
     ("[deploy]\nnode = 'x'", "unknown keys"),
     ("[mesh]\n", "unknown section"),
 ])
@@ -297,17 +304,46 @@ async def test_deploy_verb_takes_scope_from_caller_cwd(store, out, ws, monkeypat
     assert [t["id"] for t in batch["tickets"]] == [res["ticket"]]
 
 
+FORWARD = '[fleet]\nhome = "mizar"\n[fleet.project.proj]\ncanonical = "altair"\n'
+
+
 async def test_deploy_forwards_to_canonical_node(store, out, ws):
-    (ws.proj / "release" / "deploy.toml").write_text('[fleet]\ncanonical = "altair"\n')
     ws.scope("a", {"a.txt": "a\n"})
     out.invoke_results[("routine", "deploy", "altair")] = {"ticket": "t1"}
-    verbs = DeployVerbs(make(store, out, ws, node="mizar"))
+    verbs = DeployVerbs(make(store, out, ws, node="mizar", fleet=FORWARD))
     res = await verbs.deploy({"project": "proj", "scope": "a"})
     assert res == {"ticket": "t1"}
     [(tool, verb, args, peer)] = out.calls
     assert (verb, peer, args["sha"]) == ("deploy", "altair", ws.rev("feat/a"))
     assert store.list_tickets("proj") == []
     # On the canonical node itself the ticket is local.
-    local = await DeployVerbs(make(store, out, ws, node="altair")).deploy(
+    local = await DeployVerbs(make(store, out, ws, node="altair", fleet=FORWARD)).deploy(
         {"project": "proj", "scope": "a"})
     assert store.get_ticket(local["ticket"])["state"] == "queued"
+
+
+# -- the install config's [fleet] table ---------------------------------------
+
+def test_fleetconf_reads_home_and_overrides():
+    f = fleetconf.parse(INSTALL + '[fleet.project.metasmith]\ncanonical = "altair"\n'
+                        'nodes = ["altair"]\n')
+    assert f.canonical("awm") == "mizar"
+    assert f.rollout("awm") == ("mizar", "altair", "capella")
+    assert (f.canonical("metasmith"), f.rollout("metasmith")) == ("altair", ("altair",))
+
+
+def test_fleetconf_absent_is_this_node_alone(tmp_path):
+    f = fleetconf.load(tmp_path / "config.toml")
+    assert f.canonical("awm") == "" and f.rollout("awm") == ()
+
+
+@pytest.mark.parametrize("text, msg", [
+    ('[fleet]\nhome = "a"\nnodes = ["b", "a"]', "must start with 'a'"),
+    ('[fleet]\nnodes = ["a", "a"]', "twice"),
+    ('[fleet]\nhomebase = "a"', "unknown keys"),
+    ('[fleet.project.p]\ncanonical = "b"\nnodes = ["a", "b"]', "must start with 'b'"),
+    ('[fleet.project.p]\npeer = "b"', "only canonical and nodes"),
+])
+def test_fleetconf_rejects(text, msg):
+    with pytest.raises(fleetconf.FleetConfigError, match=msg):
+        fleetconf.parse(text)

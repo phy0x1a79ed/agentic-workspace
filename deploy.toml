@@ -1,5 +1,6 @@
 # awm's deploy config, read by the routine plugin's deploy engine from the
-# commit it is about to land (docs/redux/routines.md R27, R31, R32).
+# commit it is about to land (docs/redux/routines.md R27, R31, R32). It names no
+# host: each node's install config lists the fleet (fleet.md R140).
 
 [deploy]
 # Only the dists the batch touched, only their smoke tests. Exit 5 (nothing
@@ -15,11 +16,3 @@ prompt = """Update this node's awm checkout to the new release and restart it, \
 as FEDERATION.md § Updating a node says: fetch and reset onto awm/release, \
 `git clean -fd` (never -x), then `awm deploy`. Confirm every enabled service \
 came back. If one did not, fix it before you stop."""
-
-[fleet]
-# The homebase first. A node fails, the rollout stops before the rest.
-canonical = "mizar"
-nodes = ["mizar", "alcor", "altair", "capella"]
-
-[fixer]
-peer = "mizar"

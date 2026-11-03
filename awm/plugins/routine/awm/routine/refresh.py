@@ -15,8 +15,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
-from awm.routine import deployconf, proc
-from awm.routine.deployconf import DeployConfig, Refresh
+from awm.routine import deployconf, fleetconf, proc
+from awm.routine.deployconf import Refresh
 from awm.routine.outbound import Outbound
 
 log = logging.getLogger("awm.routine.refresh")
@@ -99,10 +99,12 @@ def plugin_folders(root: Path, paths: list[str]) -> tuple[dict[str, str | None],
 
 class Refresher:
     def __init__(self, out: Outbound, *, node: str,
-                 checkout_root: Callable[[str], Path]) -> None:
+                 checkout_root: Callable[[str], Path],
+                 fleet_config: Callable[[], fleetconf.Fleet] = fleetconf.Fleet) -> None:
         self.out = out
         self.node = node
         self.checkout_root = checkout_root
+        self.fleet_config = fleet_config
 
     def _env(self, frm: str, to: str) -> dict[str, str]:
         return {"AWM_REFRESH_FROM": frm, "AWM_REFRESH_TO": to, "AWM_NODE_NAME": self.node}
@@ -186,13 +188,12 @@ class Refresher:
                 return r
         return NodeResult(self.node, True, "" if hooks else "nothing to refresh", hooks)
 
-    async def fleet(self, project: str, cfg: DeployConfig, frm: str,
-                    to: str) -> FleetResult:
+    async def fleet(self, project: str, frm: str, to: str) -> FleetResult:
         """Refresh each node in order, stopping at the first failure (R31).
 
-        The node list in `[fleet] nodes` starts with the homebase. An empty list
-        means this node only."""
-        nodes = list(cfg.nodes) or [self.node]
+        The install config names the nodes, home base first (fleetconf). An
+        empty list means this node only."""
+        nodes = list(self.fleet_config().rollout(project)) or [self.node]
         done: list[dict[str, Any]] = []
         for node in nodes:
             if node == self.node:

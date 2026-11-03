@@ -21,7 +21,12 @@ def test_awm_deploy_toml_parses():
     cfg = deployconf.parse((REPO / "deploy.toml").read_text())
     assert cfg.check_timeout == 60 and "--smoke" in cfg.check
     assert cfg.refresh.kind == "queue"
-    assert cfg.nodes[0] == cfg.canonical == "mizar"
+    assert cfg.fixer_peer == "local"
+
+
+def test_awm_deploy_toml_names_no_host():
+    # fleet.md R140: the node list lives in each node's install config.
+    assert "[fleet]" not in (REPO / "deploy.toml").read_text()
 
 
 def test_full_tests_routine_parses():

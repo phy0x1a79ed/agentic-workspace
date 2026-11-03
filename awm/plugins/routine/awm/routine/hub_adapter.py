@@ -14,7 +14,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from awm.routine import deployconf, timers
+from awm.routine import fleetconf, timers
 from awm.routine.deploy import Deployer
 from awm.routine.outbound import GatewayOutbound, Outbound
 from awm.routine.refresh import Refresher, default_checkout_root
@@ -223,13 +223,8 @@ class DeployVerbs:
         return {"deploy": self.deploy, "deploys": self.deploys, "refresh": self.refresh}
 
     def canonical(self, project: str) -> str:
-        """The node that lands ``project`` (R31), from this node's checkout."""
-        try:
-            root = self.deployer.refresher.checkout_root(project)
-            p = root / deployconf.FILE
-            return deployconf.parse(p.read_text()).canonical if p.is_file() else ""
-        except (FileNotFoundError, deployconf.ConfigError):
-            return ""
+        """The node that lands ``project`` (R31), from the install config."""
+        return self.deployer.refresher.fleet_config().canonical(project)
 
     async def deploy(self, args: dict[str, Any], as_: str | None = None) -> dict[str, Any]:
         cwd = ""
@@ -274,11 +269,13 @@ class DeployVerbs:
 
 
 def build_deployer(store: Store, out: Outbound) -> Deployer:
-    from awm.config import canonical_workspace, node_name
+    from awm.config import AWM_DIR, canonical_workspace, node_name
     ws = canonical_workspace()
+    install_config = Path(os.environ.get("AWM_INSTALL_CONFIG") or AWM_DIR / fleetconf.FILE)
     return Deployer(store, out, workspace=ws,
                     refresher=Refresher(out, node=node_name(),
-                                        checkout_root=default_checkout_root(ws)))
+                                        checkout_root=default_checkout_root(ws),
+                                        fleet_config=lambda: fleetconf.load(install_config)))
 
 
 if __name__ == "__main__":

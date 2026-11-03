@@ -15,11 +15,12 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from awm.routine import fleetconf
 from awm.routine.deploy import Deployer
 from awm.routine.refresh import Refresher
 from awm.routine.store import Store
 
-NODES = ["mizar", "alcor", "altair"]
+NODES = ["home", "peer-a", "peer-b"]
 
 
 def git(cwd: Path, *args: str) -> str:
@@ -64,11 +65,13 @@ def build(root: Path) -> tuple[Path, Path]:
     (seed / "app.txt").write_text("base\n")
     (seed / "deploy.toml").write_text(
         '[deploy]\ncheck = "test -f app.txt && ! grep -q BROKEN *.txt"\n'
-        f'[refresh]\nkind = "restart"\ncommand = "echo $AWM_NODE_NAME >> {log}"\n'
-        f'[fleet]\ncanonical = "mizar"\nnodes = {json.dumps(NODES)}\n')
+        f'[refresh]\nkind = "restart"\ncommand = "echo $AWM_NODE_NAME >> {log}"\n')
     git(seed, "add", "-A")
     git(seed, "commit", "-q", "-m", "base")
     git(seed, "branch", "release")
+    # A fixture install config. The fleet's real one is the cloud project's.
+    (root / "config.toml").write_text(
+        f'plugins = ["*"]\n\n[fleet]\nhome = "{NODES[0]}"\nnodes = {json.dumps(NODES)}\n')
     proj.mkdir(parents=True)
     git(root, "clone", "-q", "--bare", str(seed), str(proj / ".bare"))
     git(proj / ".bare", "worktree", "add", "-q", str(proj / "release"), "release")
@@ -90,7 +93,8 @@ async def run(root: Path) -> list[str]:
     out = Recorder()
 
     def refresher(node: str) -> Refresher:
-        return Refresher(out, node=node, checkout_root=lambda _p: proj / "release")
+        return Refresher(out, node=node, checkout_root=lambda _p: proj / "release",
+                         fleet_config=lambda: fleetconf.load(root / "config.toml"))
 
     out.peers = {n: refresher(n) for n in NODES[1:]}
     store = Store(root / "routine.db")

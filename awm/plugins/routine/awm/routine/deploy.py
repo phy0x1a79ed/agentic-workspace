@@ -193,8 +193,7 @@ class Deployer:
             _git(bare, "worktree", "remove", "--force", str(wt))
             _git(bare, "worktree", "prune")
             shutil.rmtree(tmp, ignore_errors=True)
-        fleet = await self.refresher.fleet(project, cfg, state["release_before"],
-                                           state["head"])
+        fleet = await self.refresher.fleet(project, state["release_before"], state["head"])
         self.store.update_batch(bid, nodes=fleet.nodes)
         self.store.record_batch_step(bid, {"step": "refresh", "ok": fleet.ok,
                                            "failed_node": fleet.failed_node})
