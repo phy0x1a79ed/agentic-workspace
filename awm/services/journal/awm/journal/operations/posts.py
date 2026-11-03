@@ -102,6 +102,17 @@ POST_MANIFEST_FUNCTIONS = [
         ],
     },
     {
+        "name": "note_read",
+        "tool": "journal_note_read",
+        "effect": "write",
+        "description": (
+            "Record that the calling session read one journal post through another "
+            "service, such as search get (sessions.md R15). For services, not agents."
+        ),
+        "params": [{"name": "post_id", "type": "string", "required": True}],
+        "surfaces": ["cli", "http"],
+    },
+    {
         "name": "subscribe",
         "tool": "journal_subscribe",
         "effect": "write",
@@ -275,6 +286,14 @@ def _handle_fetch(args: dict, as_: str | None = None) -> dict:
     return out
 
 
+def _handle_note_read(args: dict, as_: str | None = None) -> dict:
+    post = channel.get_post(str(args["post_id"]))
+    if post is None or private.hides(as_, post.project, post.scope):
+        return {"ok": True, "recorded": 0}
+    return {"ok": True, "recorded": sessions.record_reads(
+        _caller_session(args.get("_caller_pid")), [post])}
+
+
 def _note_reads(args: dict, posts: list) -> None:
     """Record the journals this fetch handed the calling session (R15). Never fails the fetch."""
     try:
@@ -334,6 +353,7 @@ POST_HANDLERS = {
     "post": _handle_post,
     "fetch": _handle_fetch,
     "reads": _handle_reads,
+    "note_read": _handle_note_read,
     "subscribe": _handle_subscribe,
     "unsubscribe": _handle_unsubscribe,
     "inbox": _handle_inbox,

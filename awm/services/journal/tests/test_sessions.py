@@ -90,6 +90,16 @@ def test_a_fetch_records_the_journals_a_session_read(posts):
     assert [(r["journal"], r["times"], r["title"]) for r in out["reads"]] == [(a["id"], 2, "first")]
 
 
+def test_a_read_another_service_notes_is_a_read(posts):
+    """search get of a journal post (sessions.md R15)."""
+    a = _post(posts, scope="other", pid=7, body="found by search")
+    msg = _post(posts, scope="other", pid=7, kind="message", body="chatter")
+    assert posts._handle_note_read({"post_id": a["id"], "_caller_pid": 42})["recorded"] == 1
+    assert posts._handle_note_read({"post_id": msg["id"], "_caller_pid": 42})["recorded"] == 0
+    assert posts._handle_note_read({"post_id": "nope", "_caller_pid": 42})["recorded"] == 0
+    assert [r["journal"] for r in posts._handle_reads({"_caller_pid": 42})["reads"]] == [a["id"]]
+
+
 def test_a_fetch_without_a_session_or_from_a_peer_records_nothing(posts, monkeypatch):
     import awm.config as cfg
     monkeypatch.setattr(cfg, "peer_record",

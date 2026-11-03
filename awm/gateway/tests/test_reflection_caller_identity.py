@@ -103,7 +103,7 @@ def test_other_domains_untouched():
     assert args["args"]["_caller_pid"] == 5
 
     flat = {}
-    _stamp_caller("journal_fetch", flat, "2488")
+    _stamp_caller("journal_goal_read", flat, "2488")
     assert "_caller_pid" not in flat
 
 
@@ -503,3 +503,11 @@ def test_a_cli_tether_call_is_stamped_with_the_session_it_runs_under(monkeypatch
     flat = {}
     _stamp_caller("tether_run", flat, None, "777")
     assert flat["_caller_pid"] == 550415
+
+
+@pytest.mark.parametrize("name", ["journal_fetch", "search_get"])
+def test_the_reads_that_feed_citations_are_stamped(name):
+    """journal fetch and search get record what a session read (sessions.md R15)."""
+    flat = {"_caller_pid": 1}
+    _stamp_caller(name, flat, "2488")
+    assert flat["_caller_pid"] == 2488

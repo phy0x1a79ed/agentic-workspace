@@ -221,4 +221,4 @@ def test_every_published_tool_is_journal_prefixed_and_hidden_verbs_leave_mcp():
     for name, fn in _functions().items():
         assert fn["tool"] == f"journal_{name}"
     hidden = {n for n, f in _functions().items() if f.get("surfaces") == ["cli", "http"]}
-    assert hidden == {"export", "reindex"}
+    assert hidden == {"export", "reindex", "note_read"}
