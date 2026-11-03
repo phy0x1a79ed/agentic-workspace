@@ -152,7 +152,7 @@ def test_describe_trims_a_pydantic_native_verb():
         "peer_set", catalog._to_mcp_tool(ops["operations_peer_set"]))
     assert out["required"] == ["name"]
     assert out["params"]["name"] == {}
-    assert out["params"]["relation"] == {}
+    assert out["params"]["public_key"] == {}
     reap = catalog._describe_verb(
         "services_reap", catalog._to_mcp_tool(ops["awm_services_reap"]))
     assert reap["params"] == {"dry_run": {"type": "boolean", "default": False}}

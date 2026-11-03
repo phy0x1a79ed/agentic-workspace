@@ -55,7 +55,7 @@ API_MANIFEST: dict[str, Any] = {
                 "Start a named background Claude Code session in a scope's "
                 "worktree, creating the worktree if it is absent, and return "
                 "its job id and the `claude attach` command. Refuses on a "
-                "station, for a caller that is not a domestic peer, when no "
+                "station, for a peer caller that holds no edge to this node, when no "
                 "Claude Code daemon runs, when the worktree is untrusted, or "
                 "when a live session already holds the name. A worktree of "
                 "an awm project is trusted first, not refused. The session "

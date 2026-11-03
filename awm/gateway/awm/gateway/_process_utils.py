@@ -55,7 +55,7 @@ def system_unit_owns_gateway() -> bool:
 
 
 class ProbeResult(NamedTuple):
-    state: str  # "free" | "healthy_peer" | "foreign_holder"
+    state: str  # "free" | "healthy_peer" | "other_holder"
     holder_pid: int | None
     holder_cmd: str | None
     detail: str | None
@@ -72,7 +72,7 @@ def probe_existing_awm(host: str, port: int, expected_workspace_root: str) -> Pr
         serving the same workspace_root — caller should exit 0 so systemd
         records a success.
 
-        ``ProbeResult("foreign_holder", pid, cmd, detail)`` if the port is
+        ``ProbeResult("other_holder", pid, cmd, detail)`` if the port is
         bound but the holder is not a healthy peer — caller should log
         ``detail`` and exit non-zero.
     """
@@ -92,15 +92,15 @@ def probe_existing_awm(host: str, port: int, expected_workspace_root: str) -> Pr
             body = resp.read().decode("utf-8", errors="replace")
             status_code = resp.status
     except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError) as exc:
-        return _foreign_holder(host, port, f"port bound but /status unreachable: {exc}")
+        return _other_holder(host, port, f"port bound but /status unreachable: {exc}")
 
     if status_code != 200:
-        return _foreign_holder(host, port, f"/status returned HTTP {status_code}")
+        return _other_holder(host, port, f"/status returned HTTP {status_code}")
 
     try:
         payload = json.loads(body)
     except json.JSONDecodeError:
-        return _foreign_holder(host, port, "/status did not return JSON")
+        return _other_holder(host, port, "/status did not return JSON")
 
     if not (
         isinstance(payload, dict)
@@ -108,11 +108,11 @@ def probe_existing_awm(host: str, port: int, expected_workspace_root: str) -> Pr
         and isinstance(payload.get("workspace_root"), str)
         and isinstance(payload.get("active_scopes"), int)
     ):
-        return _foreign_holder(host, port, "/status payload missing expected fields")
+        return _other_holder(host, port, "/status payload missing expected fields")
 
     peer_root = payload["workspace_root"]
     if peer_root != expected_workspace_root:
-        return _foreign_holder(
+        return _other_holder(
             host, port,
             f"/status workspace_root={peer_root!r} != expected {expected_workspace_root!r}",
         )
@@ -120,9 +120,9 @@ def probe_existing_awm(host: str, port: int, expected_workspace_root: str) -> Pr
     return ProbeResult("healthy_peer", None, None, peer_root)
 
 
-def _foreign_holder(host: str, port: int, detail: str) -> ProbeResult:
+def _other_holder(host: str, port: int, detail: str) -> ProbeResult:
     pid, cmd = _find_port_holder(host, port)
-    return ProbeResult("foreign_holder", pid, cmd, detail)
+    return ProbeResult("other_holder", pid, cmd, detail)
 
 
 def _find_port_holder(host: str, port: int) -> tuple[int | None, str | None]:
@@ -173,7 +173,7 @@ def exit_if_healthy_peer(host: str, port: int, expected_workspace_root: str) -> 
     """Run the pre-bind probe; exit the process if appropriate.
 
     - Healthy peer → log + ``sys.exit(0)``
-    - Foreign holder → log + ``sys.exit(1)``
+    - Other holder → log + ``sys.exit(1)``
     - Free → return (caller proceeds with the bind)
     """
     result = probe_existing_awm(host, port, expected_workspace_root)
@@ -186,7 +186,7 @@ def exit_if_healthy_peer(host: str, port: int, expected_workspace_root: str) -> 
             flush=True,
         )
         sys.exit(0)
-    # foreign_holder
+    # other_holder
     holder = (
         f"pid={result.holder_pid} cmd={result.holder_cmd!r}"
         if result.holder_pid is not None

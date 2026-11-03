@@ -15,7 +15,7 @@ from awm.gateway.hub import discovery
 from awm.gateway.hub.registry import ServiceRecord
 from awm.gateway.operations import register_service_cli_commands
 
-pytestmark = pytest.mark.usefixtures("domestic_peers")
+pytestmark = pytest.mark.usefixtures("edge_peers")
 
 
 _NATIVE = {"awm", "operations"}
@@ -37,7 +37,7 @@ class _Channel:
     def __init__(self):
         self.calls = []
 
-    async def call(self, fn, args, as_=None, timeout=None, grants=None):
+    async def call(self, fn, args, as_=None, timeout=None):
         self.calls.append((fn, args))
         return {"ran": fn}
 

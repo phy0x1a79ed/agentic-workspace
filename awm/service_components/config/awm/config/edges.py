@@ -78,8 +78,19 @@ def nodes() -> dict[str, dict[str, Any]]:
     return dict(load().get("nodes") or {})
 
 
+def label(name: str | None) -> str:
+    """A node name as the edge list writes it: the first DNS label, lowercased.
+
+    ``node_name()`` and a peer-book key may be an FQDN on one node and a bare
+    name on another; ``awm.config.peertoken.node_label`` is the same rule.
+    """
+    return (name or "").strip().split(".")[0].lower()
+
+
 def reaches(src: str, dst: str) -> bool:
-    """Whether ``src`` holds an edge to ``dst``. A node always reaches itself."""
+    """Whether ``src`` holds an edge to ``dst``, names compared by :func:`label`.
+    A node always reaches itself."""
+    src, dst = label(src), label(dst)
     if src == dst:
         return True
     return dst in ((load().get("edges") or {}).get(src) or {})
@@ -126,17 +137,21 @@ def role(name: str) -> str | None:
 def here() -> str:
     """This node's name, as the edge list names it (``awm.config.node_name``)."""
     import awm.config as config
-    return config.node_name()
+    return label(config.node_name())
 
 
 def admits(as_: str | None) -> bool:
     """Whether this node takes a call stamped ``as_`` (an ``X-Awm-As`` value).
 
     A ``peer:<node>`` stamp passes only when ``<node>`` holds an edge to this
-    node; ``peer:`` naming no node fails closed. Any other stamp is not a peer
-    node and passes, the bare legacy ``peer`` included.
+    node. A stamp that names no node, the bare legacy ``peer`` included, fails
+    closed. Case and surrounding space are ignored, as the gateway's peer-stamp
+    check ignores them. Any other stamp is not a peer node and passes.
     """
-    if not (isinstance(as_, str) and as_.startswith("peer:")):
+    stamp = as_.strip() if isinstance(as_, str) else ""
+    if stamp.lower() == "peer":
+        return False
+    if not stamp.lower().startswith("peer:"):
         return True
-    node = as_[len("peer:"):].strip()
+    node = label(stamp[len("peer:"):])
     return bool(node) and reaches(node, here())

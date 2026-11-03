@@ -42,7 +42,6 @@ API_MANIFEST: dict[str, Any] = {
         {
             "name": "status",
             "effect": "read",
-            "category": "kb",
             "tool": "kb_status",
             "description": (
                 "Whether the kb server is up, how many papers it holds, and its ingest queue "
@@ -53,7 +52,6 @@ API_MANIFEST: dict[str, Any] = {
         {
             "name": "recall",
             "effect": "read",
-            "category": "kb",
             "tool": "kb_recall",
             "description": (
                 "Ranked paper hits for a query, each with its Zotero key, title, year and DOI. "
@@ -129,13 +127,12 @@ API_MANIFEST: dict[str, Any] = {
         {
             "name": "export",
             "effect": "read",
-            "category": "kb",
             "tool": "kb_export",
             "surfaces": ["cli", "http"],
             "description": (
                 "Page the Zotero library as search documents (id, title, text, ts, kind, url) for "
                 "the archive's `kb` source. The last page also returns `ids`, every paper id. "
-                "Local callers only."
+                "For the local search service."
             ),
             "params": [
                 {"name": "cursor", "type": "string",
@@ -157,11 +154,6 @@ def _operator_only(as_: str | None, verb: str) -> None:
 
 
 async def _h_status(args: dict, as_: str | None = None) -> dict:
-    if _foreign(as_):
-        try:
-            return {"kb": {"counts": (await client.status()).get("counts")}}
-        except Exception:  # noqa: BLE001 — a foreign caller gets no detail
-            return {"kb": {"error": "unavailable"}}
     out: dict[str, Any] = {"server": await asyncio.to_thread(CHILD.snapshot)}
     if out["server"]["listening"]:
         try:
@@ -171,28 +163,13 @@ async def _h_status(args: dict, as_: str | None = None) -> dict:
     return out
 
 
-#: The modes that rank rows from kb's own store and so honour `sources`. graph and answer run
-#: cognee with access control off, where `datasets` does not scope, and answer spends LLM budget.
-_PLAIN_MODES = ("hybrid", "vector", "lexical")
-
-
-def _foreign(as_: str | None) -> bool:
-    """A peer node outside this swarm. An unknown peer counts as foreign; a non-peer caller does not."""
-    node = config.caller_peer(as_)
-    return node is not None and config.peer_relation(node) != "domestic"
-
-
 async def _h_recall(args: dict, as_: str | None = None) -> dict:
     body = {k: args[k] for k in ("query", "mode", "limit", "search_type") if args.get(k) is not None}
     body["sources"] = ["papers"]
-    if _foreign(as_) and (body.get("mode", "hybrid") not in _PLAIN_MODES or "search_type" in body):
-        raise PermissionError("a foreign peer may use only the hybrid, vector and lexical modes")
     return await client.recall(body)
 
 
 async def _h_export(args: dict, as_: str | None = None) -> dict:
-    if _foreign(as_):
-        raise PermissionError("export is for the local search service")
     return await asyncio.to_thread(papers.export_page, instances.ZOTERO_LIBRARY,
                                    args.get("cursor"), args.get("limit"))
 

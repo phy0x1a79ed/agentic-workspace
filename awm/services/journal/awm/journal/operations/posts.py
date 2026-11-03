@@ -51,7 +51,6 @@ POST_MANIFEST_FUNCTIONS = [
         "tool": "journal_fetch",
         "effect": "read",
         "timeout": 60,
-        "category": "journals",
         "description": (
             "Fetch or search a scope's posts — messages and journal entries. "
             "Pass scope for one channel; add query to rank posts by relevance "
@@ -139,18 +138,10 @@ def _handle_post(args: dict, as_: str | None = None) -> dict:
 
 
 def _handle_fetch(args: dict, as_: str | None = None) -> dict:
-    # The verb's category grants journals; a foreign caller sees no other kind.
-    foreign = channel.is_foreign(as_)
     kind = args.get("kind")
-    if foreign:
-        if kind and kind != "journal":
-            raise PermissionError("peers may read journal posts only")
-        kind = "journal"
     post_id = args.get("post_id")
     if post_id:
         p = channel.get_post(post_id)
-        if p is not None and foreign and p.kind != "journal":
-            p = None  # answer as for a post that does not exist, so ids cannot be probed
         if p is not None and private.hides(as_, p.project, p.scope):
             p = None
         return {"posts": [p.to_dict()] if p else [], "total": 1 if p else 0}

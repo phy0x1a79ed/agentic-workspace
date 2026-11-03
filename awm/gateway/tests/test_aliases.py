@@ -35,7 +35,7 @@ class _Channel:
     def __init__(self):
         self.calls = []
 
-    async def call(self, fn, args, as_=None, timeout=None, grants=None):
+    async def call(self, fn, args, as_=None, timeout=None):
         self.calls.append((fn, args))
         return {"ran": fn}
 
@@ -68,7 +68,7 @@ def world(monkeypatch, awm_workspace):
         _rec("board", post=("operations_board_post", {"effect": "queue"}),
              list=("operations_board_list", {"effect": "read"})),
         _rec("journal", post=("journal_post", {"effect": "write"}),
-             fetch=("journal_fetch", {"effect": "read", "category": "journals"})),
+             fetch=("journal_fetch", {"effect": "read"})),
     ]
     stub = _Registry(records)
     monkeypatch.setattr(catalog, "get_registry", lambda: stub)
@@ -118,7 +118,7 @@ def test_the_published_renames_are_in_the_table():
         ("project_create", "scope_create"),
         ("gateway_list", "awm_registry_list"), ("services_list", "awm_services_list"),
         ("services_reap", "awm_services_reap"), ("peer_providers", "awm_providers"),
-        ("peer_grant", "operations_peer_grant"), ("config_set", "awm_config_set"),
+        ("peer_join", "operations_peer_join"), ("config_set", "awm_config_set"),
         ("config_contracts", "awm_config_contracts"),
         ("auth_node_key", "awm_node_key"), ("auth_status", "awm_auth_status"),
         ("rlm_browser_acquire", "browser_acquire"),
@@ -303,37 +303,15 @@ def test_the_old_name_in_a_domain_call_is_gated_by_its_successor(client, world, 
 # -- a peer on the previous release -------------------------------------------
 
 
-def _foreign(tmp, monkeypatch, *grants):
-    import awm.config.peerbook as peerbook
-
-    path = tmp / "peers.json"
-    path.write_text(json.dumps({"shaula": {"edge_url": "https://shaula:12100",
-                                           "relation": "foreign", "grants": list(grants)}}))
-    monkeypatch.setattr(peerbook, "peers_file", lambda: path)
-
-
-def test_a_foreign_peer_reaches_a_renamed_read_by_its_old_name(client, world, tmp_path,
-                                                                monkeypatch):
-    _foreign(tmp_path, monkeypatch, "journals")
-    headers = {"X-Awm-As": "peer:shaula"}
+def test_an_edge_peer_reaches_a_renamed_verb_by_its_old_name(client, world):
+    headers = {"X-Awm-As": "peer:mira"}
     resp = _invoke(client, "scope_fetch", {}, headers)
     assert resp.status_code == 200 and world.calls[-1][0] == "fetch"
     resp = _invoke(client, "scope", {"verb": "fetch", "args": {}}, headers)
     assert resp.status_code == 200
 
 
-def test_a_foreign_peer_cannot_reach_a_write_through_an_alias(client, world, tmp_path,
-                                                               monkeypatch):
-    _foreign(tmp_path, monkeypatch, "journals")
-    headers = {"X-Awm-As": "peer:shaula"}
-    for old in ("scope_post", "board_post", "cx_start", "gateway_list"):
-        resp = _invoke(client, old, {}, headers)
-        assert resp.status_code == 404, old
-    assert world.calls == []
-
-
-def test_a_foreign_peer_without_the_grant_gets_the_unknown_tool_error(client, world,
-                                                                       tmp_path, monkeypatch):
-    _foreign(tmp_path, monkeypatch, "kb")
+def test_a_peer_without_an_edge_gets_the_unknown_tool_error_for_an_old_name(client, world):
     resp = _invoke(client, "scope_fetch", {}, {"X-Awm-As": "peer:shaula"})
     assert resp.status_code == 404 and "Unknown tool" in resp.json()["detail"]
+    assert world.calls == []

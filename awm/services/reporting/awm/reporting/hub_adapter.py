@@ -22,7 +22,7 @@ import os
 import re
 from typing import Any
 
-from awm.config import caller_peer, peer_relation
+from awm.config import caller_peer, edges
 from awm.gatewayclient import ServiceAdapter, spawn_supervised
 
 from awm.reporting import DOMAIN, config
@@ -371,7 +371,7 @@ API_MANIFEST: dict[str, Any] = {
                 "Write an operations notice, such as a login password minted on "
                 "a node, to the private Ops book under the AWM note. One note "
                 "holds the latest notice per kind and node, and a new one "
-                "replaces it. For services and domestic peers; agents have no "
+                "replaces it. For services and peers that reach this node; agents have no "
                 "use for it."
             ),
             "params": [
@@ -549,8 +549,8 @@ def _task_verb(name: str) -> Any:
 async def ops_post(args: dict, as_: str | None = None) -> dict:
     if as_ is not None:
         node = caller_peer(as_)
-        if node is None or peer_relation(node) != "domestic":
-            return {"ok": False, "error": "ops_post takes only this node's services and domestic peers"}
+        if node is None or not edges.admits(as_):
+            return {"ok": False, "error": "ops_post takes only this node's services and peers that reach this node"}
     if RUNTIME is None:
         return {"ok": False, "error": "reporting is not running on this node"}
     fields = {k: args.get(k) for k in ("kind", "node", "title", "body")}
@@ -581,13 +581,12 @@ _NOTE_REF = re.compile(r"[A-Za-z0-9_]{4,32}")
 
 
 def _swarm_refusal(as_: str | None) -> str | None:
-    """Why a caller may not use the Swarm board verbs: only this node and its domestic peers may."""
+    """Why a caller may not use the Swarm board verbs: only this node and peers that reach it may."""
     if as_ is None:
         return None
-    node = caller_peer(as_)
-    if node is not None and peer_relation(node) == "domestic":
+    if caller_peer(as_) is not None and edges.admits(as_):
         return None
-    return "the Swarm board is for this swarm's own sessions and domestic peers"
+    return "the Swarm board is for this node's own sessions and peers that reach this node"
 
 
 def _note_ref(args: dict) -> str:

@@ -1,4 +1,4 @@
-"""Querying: ranking, filters, live sources, grants, and the fan-out to peers."""
+"""Querying: ranking, filters, live sources, and the fan-out to peers."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from awm.gatewayclient import GatewayCallError
 from awm.search import federation
 from awm.search.query import parse
 
-from .conftest import doc, synced
+from .conftest import HERE, doc, synced
 
 pytestmark = [pytest.mark.search]
 
@@ -43,7 +43,7 @@ async def test_one_ranked_list_spans_every_source(loaded):
     assert {s for s, _ in ids(result)} == {"journals", "precedence", "kb"}
     for h in result["hits"]:
         assert HIT_KEYS <= set(h)
-        assert h["origin"] == {"node": "local", "swarm": "tony"}
+        assert h["origin"] == {"node": "local"}
     assert result["sources"]["journals"]["status"] == "ok"
     assert result["peers"] == {}
 
@@ -152,39 +152,13 @@ async def test_filters_reach_a_live_source(loaded, gateway):
     assert gateway.calls[-1][2] == {"query": "kitchen", "limit": 10, "project": "awm", "after": "2026-01-01"}
 
 
-# -- grants ----------------------------------------------------------------
-
-
-async def test_a_grant_limits_every_read_to_its_sources(loaded):
-    result = await loaded.query(parse({"query": "kitchen", "_grants": ["journals"]}, "peer:shaula"))
-    assert {s for s, _ in ids(result)} == {"journals"}
-    assert set(result["sources"]) == {"journals"}
-    listed = await loaded.sources_view(frozenset({"journals"}))
-    assert [s["name"] for s in listed["sources"]] == ["journals"]
-    status = await loaded.status_view(frozenset({"journals"}))
-    assert status["sources"] == {"journals": 3} and "registry" not in status
-
-
-async def test_a_named_source_outside_the_grants_looks_absent(loaded):
-    result = await loaded.query(parse({"query": "kitchen", "sources": ["precedence"], "_grants": ["journals"]},
-                                      "peer:shaula"))
-    assert result["hits"] == [] and result["sources"] == {"precedence": {"status": "absent"}}
-    with pytest.raises(ValueError, match="no source"):
-        await loaded.get("precedence", "p1", frozenset({"journals"}))
-
-
-async def test_no_grants_list_means_every_source(loaded):
-    assert parse({"query": "x"}).grants is None
-    assert parse({"query": "x", "_grants": []}).grants == frozenset()
-
-
 # -- peers -----------------------------------------------------------------
 
 
 def peer_hits(*docs, sources=("journals",)):
     return lambda args: {"hits": [{"source": "journals", "id": d, "title": f"remote {d}",
                                    "snippet": "from afar", "ts": "2026-06-01T00:00:00Z", "score": 0.9,
-                                   "origin": {"node": "liar", "swarm": "elsewhere"}, "secret": "x"}
+                                   "origin": {"node": "liar"}, "secret": "x"}
                                   for d in docs],
                          "sources": {s: {"status": "ok"} for s in sources}, "peers": {}}
 
@@ -200,20 +174,20 @@ async def test_no_peers_named_searches_this_node_only(loaded, peers):
 
 async def test_named_peers_are_asked_apart_and_their_hits_join_the_list(loaded, peers):
     peers.add("altair", peer_hits("r1", "r2"))
-    peers.add("shaula", peer_hits("r3"), relation="foreign", swarm="other")
+    peers.add("shaula", peer_hits("r3"))
     result = await loaded.query(parse({"query": "kitchen", "sources": ["journals"],
                                        "peers": "local,altair,shaula"}))
     assert result["peers"]["altair"] == {"status": "ok", "hits": 2, "sources": ["journals"]}
     remote = {h["id"]: h for h in result["hits"] if h["origin"]["node"] != "local"}
     assert set(remote) == {"r1", "r2", "r3"}
-    assert remote["r1"]["origin"] == {"node": "altair", "swarm": "tony"}
-    assert remote["r3"]["origin"] == {"node": "shaula", "swarm": "other"}
+    assert remote["r1"]["origin"] == {"node": "altair"}
+    assert remote["r3"]["origin"] == {"node": "shaula"}
     assert "secret" not in remote["r1"]
     assert any(h["origin"]["node"] == "local" for h in result["hits"])
 
 
 async def test_a_named_peer_alone_runs_the_query_there_only(loaded, peers):
-    peers.add("shaula", peer_hits("r3"), relation="foreign", swarm="other")
+    peers.add("shaula", peer_hits("r3"))
     result = await loaded.query(parse({"query": "kitchen", "peers": "shaula"}))
     assert [h["id"] for h in result["hits"]] == ["r3"]
     assert result["sources"] == {}
@@ -224,15 +198,15 @@ async def test_a_peers_sources_leave_out_the_ones_it_answered_absent(loaded, pee
         return {"hits": [], "peers": {},
                 "sources": {"journals": {"status": "ok"}, "kb": {"status": "absent"}}}
 
-    peers.add("shaula", gated, relation="foreign", swarm="other")
+    peers.add("shaula", gated)
     result = await loaded.query(parse({"query": "kitchen", "sources": ["journals", "kb"], "peers": "shaula"}))
     assert result["peers"]["shaula"]["sources"] == ["journals"]
 
 
-async def test_fleet_asks_every_domestic_node_and_never_a_foreign_one(loaded, peers):
+async def test_fleet_asks_every_node_this_one_has_an_edge_to_and_no_other(loaded, peers):
     peers.add("capella", peer_hits("r1"))
     peers.add("mira", peer_hits("r2"), role="station")
-    peers.add("shaula", peer_hits("r3"), relation="foreign", swarm="other")
+    peers.add("shaula", peer_hits("r3"), edge=False)
     result = await loaded.query(parse({"query": "kitchen", "peers": "fleet"}))
     assert result["peers"] == {"capella": {"status": "ok", "hits": 1, "sources": ["journals"]},
                                "mira": {"status": "station"}}
@@ -240,15 +214,26 @@ async def test_fleet_asks_every_domestic_node_and_never_a_foreign_one(loaded, pe
     assert any(h["origin"]["node"] == "local" for h in result["hits"])
 
 
-async def test_fleet_among_names_adds_the_domestic_nodes_to_them(loaded, peers):
+async def test_fleet_among_names_adds_the_nodes_with_an_edge_to_them(loaded, peers):
     peers.add("capella", peer_hits("r1"))
-    peers.add("shaula", peer_hits("r3"), relation="foreign", swarm="other")
+    peers.add("shaula", peer_hits("r3"), edge=False)
     for value in ("fleet,shaula", ["shaula", "fleet", "capella"]):
         peers.calls.clear()
         result = await loaded.query(parse({"query": "kitchen", "peers": value}))
         assert set(result["peers"]) == {"capella", "shaula"}
-        assert sorted(c[0] for c in peers.calls) == ["capella", "shaula"]
+        assert result["peers"]["shaula"]["status"] == "error"
+        assert result["peers"]["shaula"]["error"] == f"no edge from {HERE} to shaula"
+        assert [c[0] for c in peers.calls] == ["capella"]
         assert any(h["origin"]["node"] == "local" for h in result["hits"])
+
+
+async def test_a_named_peer_without_an_edge_is_an_error_and_is_not_asked(loaded, peers):
+    peers.add("altair", peer_hits("r1"))
+    peers.add("shaula", peer_hits("r3"), edge=False)
+    result = await loaded.query(parse({"query": "kitchen", "peers": "local,altair,shaula"}))
+    assert result["peers"]["shaula"] == {"status": "error", "error": f"no edge from {HERE} to shaula"}
+    assert [c[0] for c in peers.calls] == ["altair"]
+    assert "r3" not in {h["id"] for h in result["hits"]}
 
 
 async def test_a_peer_is_asked_the_same_question_without_a_further_fan_out(loaded, peers):
@@ -260,15 +245,13 @@ async def test_a_peer_is_asked_the_same_question_without_a_further_fan_out(loade
     assert args == {"query": "kitchen", "limit": 4, "peers": False, "project": "awm", "sources": ["journals"]}
 
 
-async def test_a_release_without_search_is_no_search_at_home_and_unsupported_abroad(loaded, peers):
+async def test_a_peer_without_the_search_tool_is_no_search(loaded, peers):
     def missing(args):
         return GatewayCallError(404, '{"detail":"Unknown tool: search_query"}')
 
     peers.add("capella", missing)
-    peers.add("shaula", missing, relation="foreign", swarm="other")
-    result = await loaded.query(parse({"query": "kitchen", "peers": "local,capella,shaula"}))
-    assert result["peers"]["capella"]["status"] == "no-search"
-    assert result["peers"]["shaula"]["status"] == "unsupported"
+    result = await loaded.query(parse({"query": "kitchen", "peers": "local,capella"}))
+    assert result["peers"]["capella"] == {"status": "no-search", "detail": "its release has no search tool"}
     assert any(h["origin"]["node"] == "local" for h in result["hits"])
 
 
@@ -308,8 +291,7 @@ async def test_named_peers_are_asked_and_unknown_ones_reported(loaded, peers):
 
 
 async def test_get_with_a_node_reads_that_peers_archive(peers):
-    peers.add("shaula", lambda args: {"document": {"title": "far", "text": "body", "origin": {"node": "liar"}}},
-              relation="foreign", swarm="other")
+    peers.add("shaula", lambda args: {"document": {"title": "far", "text": "body", "origin": {"node": "liar"}}})
     got = await federation.fetch(peers, "shaula", "journals", "r3")
-    assert got["document"]["origin"] == {"node": "shaula", "swarm": "other"}
+    assert got["document"]["origin"] == {"node": "shaula"}
     assert peers.calls == [("shaula", "search_get", {"source": "journals", "id": "r3"})]

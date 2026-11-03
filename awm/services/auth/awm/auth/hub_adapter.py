@@ -86,7 +86,7 @@ API_MANIFEST: dict[str, Any] = {
             "effect": "secret",
             "surfaces": _CLI_HTTP,
             "description": "Signing secret + currently-valid peer credentials + "
-                           "each book peer's name, public key and relation + "
+                           "each book peer's name and public key + "
                            "live device-token digests + session-lifetime "
                            "knobs, for the httpsfront edge to enforce auth "
                            "offline. device_used reports the device tokens "

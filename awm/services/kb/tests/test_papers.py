@@ -63,10 +63,7 @@ def test_missing_library_raises_rather_than_reporting_an_empty_set(tmp_path):
         papers.export_page(tmp_path / "absent.json", None, None)
 
 
-async def test_export_handler_serves_local_callers_and_refuses_foreign(library, monkeypatch):
+async def test_export_handler_pages_the_library(library, monkeypatch):
     monkeypatch.setattr(hub_adapter.instances, "ZOTERO_LIBRARY", library)
-    monkeypatch.setattr(hub_adapter.config, "peer_relation", lambda n: "foreign")
     out = await hub_adapter.HANDLERS["export"]({"limit": 2}, as_=None)
     assert [d["id"] for d in out["documents"]] == ["AAA", "BBB"] and out["next_cursor"] == "BBB"
-    with pytest.raises(PermissionError):
-        await hub_adapter.HANDLERS["export"]({}, as_="peer:x")

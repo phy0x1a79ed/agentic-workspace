@@ -673,7 +673,7 @@ def services_listen(
         help="Comma-separated `field=value` pairs an event must all carry, "
              "such as `session=1-748-3f2a`"),
     peer: Optional[str] = typer.Option(
-        None, "--peer", help="Follow the topic on this domestic peer instead"),
+        None, "--peer", help="Follow the topic on this peer instead"),
 ):
     """Print one compact JSON line per event a service emits, until stopped.
 

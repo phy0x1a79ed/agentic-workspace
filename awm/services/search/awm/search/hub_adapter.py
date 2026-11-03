@@ -1,11 +1,8 @@
-"""Hub adapter for the search service: one ranked search over everything the swarm knows.
+"""Hub adapter for the search service: one ranked search over everything the fleet knows.
 
 Boots the service as a gateway-registered process: stands up its database, then
 runs the shared :class:`awm.gatewayclient.ServiceAdapter` loop (register → ready
-→ serve → reconnect) beside the archive's sync loop. The read verbs declare
-``category: "archive"``, which lets a foreign peer holding at least one grant
-reach them; the gateway hands the grants in as ``args["_grants"]`` and the
-archive answers only those sources.
+→ serve → reconnect) beside the archive's sync loop.
 
 Run via ``run.sh`` (which the gateway spawns and respawns):
     python -m awm.search.hub_adapter
@@ -35,14 +32,13 @@ API_MANIFEST: dict[str, Any] = {
         {
             "name": "query",
             "effect": "read",
-            "category": "archive",
             "tool": "search_query",
             "timeout": 60,
             "description": (
-                "One ranked search over everything the swarm knows: journals, precedents, "
+                "One ranked search over everything the fleet knows: journals, precedents, "
                 "papers and any other source in `search sources`. It searches this node "
                 "only, unless `peers` names other nodes. Each hit carries source, id, title, "
-                "snippet, ts, score and origin (node and swarm). Read the answer's `sources` "
+                "snippet, ts, score and origin (the node that holds it). Read the answer's `sources` "
                 "and `peers` for the status of each source and peer asked. Fetch a whole hit "
                 "with `get`."
             ),
@@ -62,16 +58,15 @@ API_MANIFEST: dict[str, Any] = {
                 {"name": "limit", "type": "integer", "description": "Maximum hits, 1-100. Default 10."},
                 {"name": "peers", "type": "string",
                  "description": "Where to search. Omit it for this node only. `fleet` adds every "
-                                "domestic node. Node names, comma-separated, domestic or foreign, "
+                                "node this node has an edge to. Node names, comma-separated, "
                                 "search only those nodes. Add `local` to the names to include "
-                                "this node. `fleet` among the names adds every domestic node to "
-                                "them, as in `fleet,shaula`."},
+                                "this node. `fleet` among the names adds every node this node "
+                                "has an edge to, as in `fleet,shaula`."},
             ],
         },
         {
             "name": "get",
             "effect": "read",
-            "category": "archive",
             "tool": "search_get",
             "description": (
                 "One archived document in full: title, text, project, scope, kind, ts and url. "
@@ -88,7 +83,6 @@ API_MANIFEST: dict[str, Any] = {
         {
             "name": "sources",
             "effect": "read",
-            "category": "archive",
             "tool": "search_sources",
             "description": (
                 "Every source the archive holds: its service, mode (index or live), document "
@@ -100,7 +94,6 @@ API_MANIFEST: dict[str, Any] = {
         {
             "name": "status",
             "effect": "read",
-            "category": "archive",
             "tool": "search_status",
             "description": (
                 "The archive's health: documents per source, whether semantic ranking is "
@@ -131,11 +124,6 @@ API_MANIFEST: dict[str, Any] = {
 ARCHIVE = Archive()
 
 
-def _grants(args: dict) -> frozenset[str] | None:
-    grants = args.get("_grants")
-    return None if grants is None else frozenset(str(g) for g in grants)
-
-
 async def _h_query(args: dict, as_: str | None = None) -> dict:
     return await ARCHIVE.query(request.parse(args, as_))
 
@@ -145,15 +133,15 @@ async def _h_get(args: dict, as_: str | None = None) -> dict:
     if node and node != request.LOCAL and not privacy.from_peer(as_) \
             and node_label(node) != node_label(config.node_name()):
         return await federation.fetch(ARCHIVE.peers, node, str(args["source"]), str(args["id"]))
-    return await ARCHIVE.get(str(args["source"]), str(args["id"]), _grants(args), request.hidden_for(as_))
+    return await ARCHIVE.get(str(args["source"]), str(args["id"]), request.hidden_for(as_))
 
 
 async def _h_sources(args: dict, as_: str | None = None) -> dict:
-    return await ARCHIVE.sources_view(_grants(args), request.hidden_for(as_))
+    return await ARCHIVE.sources_view(request.hidden_for(as_))
 
 
 async def _h_status(args: dict, as_: str | None = None) -> dict:
-    return await ARCHIVE.status_view(_grants(args), request.hidden_for(as_))
+    return await ARCHIVE.status_view(request.hidden_for(as_))
 
 
 async def _h_reindex(args: dict) -> dict:

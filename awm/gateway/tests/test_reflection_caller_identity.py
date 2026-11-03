@@ -247,7 +247,7 @@ class _FakeChannel:
     def function_spec(self, fn):
         return {}
 
-    async def call(self, fn, args, as_=None, timeout=30.0, grants=None):
+    async def call(self, fn, args, as_=None, timeout=30.0):
         self.calls.append((fn, args))
         return {"ok": True}
 
@@ -289,7 +289,7 @@ async def test_svc_door_stamps_from_the_header(monkeypatch):
     assert args["_caller_pid"] == 2488
 
 
-async def test_svc_door_ignores_the_header_on_an_edge_request(monkeypatch, domestic_peers):
+async def test_svc_door_ignores_the_header_on_an_edge_request(monkeypatch, edge_peers):
     args = await _post_svc(monkeypatch, "cx", "start", {"_caller_pid": 999},
                            headers={"X-Awm-Session-Pid": "2488"}, as_="peer:capella")
     assert "_caller_pid" not in args

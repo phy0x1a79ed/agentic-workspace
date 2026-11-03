@@ -198,3 +198,20 @@ def test_hint_asks_each_peer_and_names_the_holder():
         ". It runs on altair: call again with peer='altair'")
     assert elsewhere.holders("Y", peers=peers, lister=lister) == ["deneb"]
     assert elsewhere.hint("nobody", peers=peers, lister=lister) == ""
+
+
+def test_the_hint_asks_only_book_peers_this_node_reaches(tmp_path, monkeypatch):
+    import yaml
+    from awm.config import peerbook
+    from awm.reflection import elsewhere
+
+    edges = tmp_path / "edges.yml"
+    edges.write_text(yaml.safe_dump({
+        "nodes": {n: {"role": "homebase"} for n in ("here", "altair", "deneb", "mira")},
+        "edges": {"here": {"altair": "lan", "mira": "lan"}, "deneb": {"here": "lan"}},
+    }))
+    monkeypatch.setenv("AWM_EDGES_FILE", str(edges))
+    monkeypatch.setenv("AWM_NODE_NAME", "here")
+    monkeypatch.setattr(peerbook, "list_records",
+                        lambda: [{"name": n} for n in ("here", "altair", "deneb", "vega")])
+    assert elsewhere._reached_peers() == ["altair"]

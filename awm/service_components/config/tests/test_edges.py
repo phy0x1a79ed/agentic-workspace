@@ -64,3 +64,30 @@ def test_missing_file_is_empty_fleet(tmp_path, monkeypatch):
     monkeypatch.setenv(edges.EDGES_FILE_ENV, str(tmp_path / "none.yml"))
     assert edges.reachable_from("home") == []
     assert not edges.reaches("home", "spare")
+
+
+def test_admits_a_peer_only_over_an_edge_to_this_node(monkeypatch):
+    monkeypatch.setenv("AWM_NODE_NAME", "work")
+    assert edges.here() == "work"
+    assert edges.admits("peer:home")
+    assert not edges.admits("peer:spare")
+    assert not edges.admits("peer:")
+    assert not edges.admits("peer:  ")
+    assert not edges.admits(" PEER:Spare ")
+    assert edges.admits(" Peer:HOME ")
+    assert not edges.admits("peer")
+    assert not edges.admits(" Peer ")
+    for stamp in (None, "", "user:operator", "agent:awm/dev"):
+        assert edges.admits(stamp), stamp
+
+
+def test_role_of_a_listed_and_an_unlisted_node():
+    assert edges.role("relay") == "station"
+    assert edges.role("nowhere") is None
+
+
+def test_names_compare_by_first_label(monkeypatch):
+    monkeypatch.setenv("AWM_NODE_NAME", "Work.example.org")
+    assert edges.here() == "work"
+    assert edges.reaches("HOME.lan", "work")
+    assert edges.admits("peer:home.example.org")

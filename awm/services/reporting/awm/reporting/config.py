@@ -19,14 +19,14 @@ def flag_on() -> bool:
 
 
 def task_refusal() -> str | None:
-    """Why this process must not track tasks, or None if it may. Every fleet node may."""
-    from awm.config import node_role
+    """Why this process must not track tasks, or None if it may. Every fleet node but a station may."""
+    from awm.config import edges
 
     try:
-        role = node_role()
+        station = edges.is_station(edges.here())
     except ValueError as exc:
-        return f"the node role is invalid: {exc}"
-    if role == "station":
+        return f"the fleet edge list is invalid: {exc}"
+    if station:
         return "this node is a station; a station tracks no tasks"
     return None
 
@@ -42,18 +42,21 @@ def refusal() -> str | None:
 
 
 def role() -> str:
-    from awm.config import node_role
+    """This node's role in the fleet edge list, or ``unknown`` when the list does not name it."""
+    from awm.config import edges
 
     try:
-        return node_role()
+        return edges.role(edges.here()) or "unknown"
     except ValueError:
         return "invalid"
 
 
-def swarm() -> str:
-    from awm.config import node_swarm
+#: The party the Swarm board belongs to.
+SWARM = "tony"
 
-    return node_swarm()
+
+def swarm() -> str:
+    return SWARM
 
 
 def db_path() -> Path:
@@ -160,25 +163,18 @@ DEFAULT_APPROVAL_ADMINS = "U01Q4CDSTFX=tony,UC7RUF67P=ryan"
 def approval_channel() -> tuple[str, str] | None:
     """The social account and channel that carry admin approval requests, or None.
 
-    ``AWM_APPROVAL_CHANNEL`` is ``account:channel``. Unset, a node of the default
-    swarm uses #arbutus and any other swarm takes no approvals.
+    ``AWM_APPROVAL_CHANNEL`` is ``account:channel``, else #arbutus.
     """
-    from awm.config.peerbook import DEFAULT_SWARM
-
-    raw = (os.environ.get("AWM_APPROVAL_CHANNEL") or "").strip()
-    if not raw and swarm() == DEFAULT_SWARM:
-        raw = DEFAULT_APPROVAL_CHANNEL
+    raw = (os.environ.get("AWM_APPROVAL_CHANNEL") or "").strip() or DEFAULT_APPROVAL_CHANNEL
     account, _, channel = raw.partition(":")
     return (account, channel) if account and channel else None
 
 
 def approval_admins() -> dict[str, str]:
     """Platform user id → admin name, from ``AWM_APPROVAL_ADMINS`` (``id=name,id=name``)."""
-    from awm.config.peerbook import DEFAULT_SWARM
-
     raw = os.environ.get("AWM_APPROVAL_ADMINS")
     if raw is None:
-        raw = DEFAULT_APPROVAL_ADMINS if swarm() == DEFAULT_SWARM else ""
+        raw = DEFAULT_APPROVAL_ADMINS
     pairs = (p.strip().partition("=") for p in raw.replace(",", " ").split())
     return {uid: name for uid, _, name in pairs if uid and name}
 

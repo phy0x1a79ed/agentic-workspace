@@ -14,10 +14,10 @@ from awm.reporting.store import Queue  # noqa: E402
 
 @pytest.fixture(autouse=True)
 def door_env(monkeypatch, tmp_path):
-    """A fleet node of swarm `tony` with the door switched on and every path in tmp."""
+    """A node absent from an empty fleet, the door switched on and every path in tmp."""
     monkeypatch.setenv("AWM_FRONT_DOOR", "1")
-    monkeypatch.setenv("AWM_NODE_ROLE", "fleet")
-    monkeypatch.setenv("AWM_SWARM", "tony")
+    monkeypatch.setenv("AWM_NODE_NAME", "testnode")
+    monkeypatch.setenv("AWM_EDGES_FILE", str(tmp_path / "edges.yml"))
     monkeypatch.setenv("AWM_REPORTING_DB", str(tmp_path / "reporting.db"))
     monkeypatch.setenv("AWM_REPORTING_STATE", str(tmp_path / "state"))
     monkeypatch.setenv("AWM_CX_PROJECTS", str(tmp_path / "projects"))
@@ -31,6 +31,20 @@ def door_env(monkeypatch, tmp_path):
 def no_live_claude(monkeypatch, tmp_path):
     """Nothing here may read a real Claude Code job."""
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude"))
+
+
+@pytest.fixture
+def fleet(tmp_path):
+    """Write the edge list: ``nodes`` is {name: role}, ``edges`` is {src: [dst, ...]}."""
+    import yaml
+
+    def write(nodes: dict[str, str], edges: dict[str, list[str]] | None = None) -> None:
+        (tmp_path / "edges.yml").write_text(yaml.safe_dump({
+            "nodes": {n: {"role": r} for n, r in nodes.items()},
+            "edges": {s: {d: "lan" for d in ds} for s, ds in (edges or {}).items()},
+        }))
+
+    return write
 
 
 @pytest.fixture

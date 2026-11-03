@@ -3,7 +3,7 @@
 What these pin: the key file is 0600 and survives a re-run; ``node_key`` returns
 the public half only; ``sign_peer_token`` produces a token the matching public
 key verifies for the named audience; ``edge_material`` carries each book peer's
-public key and relation, keeps the legacy bearers until
+public key, keeps the legacy bearers until
 ``AWM_PEER_LEGACY_BEARER=0``, and never carries the private key; and every verb
 declares an effect.
 """
@@ -82,15 +82,13 @@ def test_sign_requires_an_audience(auth):
 def test_edge_material_lists_book_peers_without_secrets(auth, awm_workspace):
     peer_public = peertoken.public_key_of(peertoken.generate_private_key())
     _book(awm_workspace, {
-        "mira": {"relation": "domestic", "public_key": peer_public},
-        "shaula": {"relation": "foreign"},
+        "mira": {"public_key": peer_public},
+        "shaula": {},
     })
     mat = auth.h_edge_material({})
     peers = {p["name"]: p for p in mat["peers"]}
-    assert peers["mira"] == {"name": "mira", "public_key": peer_public,
-                             "relation": "domestic"}
-    assert peers["shaula"]["public_key"] is None
-    assert peers["shaula"]["relation"] == "foreign"
+    assert peers["mira"] == {"name": "mira", "public_key": peer_public}
+    assert peers["shaula"] == {"name": "shaula", "public_key": None}
     assert mat["peer_credentials"]
     assert auth.ensure_node_key() not in json.dumps(mat)
 

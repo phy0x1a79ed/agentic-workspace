@@ -297,16 +297,3 @@ async def test_an_unset_target_follows_the_operator_dm(pushed, monkeypatch):
     await service._push_password_to_discord_attempt(PASSWORD)
     assert pushed[0]["args"]["channel"] == "dm:42"
     assert pushed[0]["args"]["account"] == "discord-bot"
-
-
-async def test_another_swarm_with_no_target_sends_nothing(pushed, monkeypatch):
-    from awm.auth import service
-    settings = type(service._settings())
-    monkeypatch.setattr(settings, "discord_account", "")
-    monkeypatch.setattr(settings, "discord_channel", "")
-    for var in ("AWM_OPERATOR_DM_CHANNEL", "AWM_REPORTING_DM_CHANNEL"):
-        monkeypatch.delenv(var, raising=False)
-    monkeypatch.setenv("AWM_SWARM", "collins")
-    with pytest.raises(RuntimeError, match="AWM_OPERATOR_DM_CHANNEL"):
-        await service._push_password_to_discord_attempt(PASSWORD)
-    assert pushed == []

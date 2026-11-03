@@ -100,7 +100,6 @@ class Operation:
     peer_only: bool = False
     tags: list[str] = field(default_factory=list)
     effect: str = "write"
-    category: str | None = None
     tool: str = ""
     verb: str = ""
 

@@ -152,8 +152,8 @@ def test_a_peer_bearer_is_not_a_person():
     """The vault is a human's knowledge base; a peer is another node's process."""
     assert policy.allows(vault.SHELL, "tony")
     assert not policy.allows(vault.SHELL, "peer")
-    # …and a verified node is no more a person than the bearer was, domestic
-    # or foreign: the verdict is about machines, not about which swarm.
+    # …and a verified node is no more a person than the bearer was, edge or
+    # no edge: the verdict is about machines, not about which node.
     assert not policy.allows(vault.SHELL, "peer:mira")
     assert not policy.allows(vault.SHELL, "peer:shaula")
     assert not policy.allows(vault.SHELL, "operator")

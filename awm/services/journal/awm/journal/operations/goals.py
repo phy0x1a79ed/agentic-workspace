@@ -149,14 +149,7 @@ def _handle_goal_retire(args: dict, as_: str | None = None) -> dict:
     return {"tombstone": tombstone.to_dict(), "retired": args["goal_id"]}
 
 
-def _refuse_foreign(as_: str | None) -> None:
-    """Goals are not journals: the verbs carry no category, so the foreign gate never lets a foreign caller reach them. This refusal backs the gate."""
-    if channel.is_foreign(as_):
-        raise PermissionError("goals are not readable by foreign peers")
-
-
 def _handle_goal_read(args: dict, as_: str | None = None) -> dict:
-    _refuse_foreign(as_)
     levels = args.get("levels")
     if isinstance(levels, str):  # a harness may hand a comma list through
         levels = [x.strip() for x in levels.split(",") if x.strip()]
@@ -168,7 +161,6 @@ def _handle_goal_read(args: dict, as_: str | None = None) -> dict:
 
 
 def _handle_goal_history(args: dict, as_: str | None = None) -> dict:
-    _refuse_foreign(as_)
     _refuse_hidden(args["goal_id"], as_, "")
     chain = goals.history(args["goal_id"])
     return {"chain": [g.to_dict() for g in chain], "total": len(chain)}

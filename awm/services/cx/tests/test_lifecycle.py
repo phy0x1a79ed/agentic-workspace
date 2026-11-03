@@ -95,7 +95,6 @@ def home(tmp_path, monkeypatch):
                 "env": {"AWM_WORKSPACE": "/ws"}, "extra": "dropped"},
         "other": {"command": "npx"}}}))
     monkeypatch.setenv("AWM_CX_MCP_SOURCE", str(h.mcp_source))
-    monkeypatch.delenv("AWM_NODE_ROLE", raising=False)
     monkeypatch.setenv("AWM_NODE_NAME", "testnode")
     return h
 
@@ -159,12 +158,10 @@ def parent_session(home, mode=None):
 
 
 @pytest.fixture
-def peers(monkeypatch):
-    from awm.cx import lifecycle
-
-    book = {"capella": "domestic", "john": "foreign"}
-    monkeypatch.setattr(lifecycle, "peer_relation", lambda name: book.get(name))
-    return book
+def peers(fleet):
+    """capella reaches this node; john is in the fleet but holds no edge here."""
+    fleet({"testnode": "homebase", "capella": "homebase", "john": "homebase"},
+          {"capella": ["testnode"], "testnode": ["john"]})
 
 
 def start(args, as_=None):
@@ -401,8 +398,8 @@ def test_a_failed_tag_is_a_warning_not_a_refusal(home, launched, monkeypatch):
 # --- refusals ----------------------------------------------------------------
 
 
-def test_a_station_refuses(home, launched, monkeypatch):
-    monkeypatch.setenv("AWM_NODE_ROLE", "station")
+def test_a_station_refuses(home, launched, fleet):
+    fleet({"testnode": "station"})
     out = start(BASE)
     assert out["ok"] is False and "station" in out["reason"]
     assert launched == []
@@ -414,9 +411,9 @@ def test_the_legacy_bare_peer_is_refused(home, launched, peers):
     assert launched == []
 
 
-def test_a_foreign_peer_is_refused(home, launched, peers):
+def test_a_peer_with_no_edge_here_is_refused(home, launched, peers):
     out = start(BASE, "peer:john")
-    assert out["ok"] is False and "foreign" in out["reason"]
+    assert out["ok"] is False and "no edge" in out["reason"]
     assert launched == []
 
 
@@ -425,7 +422,7 @@ def test_a_peer_outside_the_book_is_refused(home, launched, peers):
     assert out["ok"] is False and launched == []
 
 
-def test_a_domestic_peer_may_start_and_is_recorded_as_the_caller(home, launched, peers):
+def test_a_peer_that_reaches_here_may_start_and_is_recorded_as_the_caller(home, launched, peers):
     out = start(BASE, "peer:capella")
     assert out["ok"] is True
     from awm.cx import lifecycle
@@ -766,7 +763,7 @@ def test_stop_rejects_a_malformed_job(home, stops, job):
     assert stops == []
 
 
-def test_a_foreign_peer_cannot_stop(home, launched, stops, peers):
+def test_a_peer_with_no_edge_here_cannot_stop(home, launched, stops, peers):
     start(BASE)
     assert stop({"job": CHILD_JOB}, "peer:john")["ok"] is False
     assert stop({"job": CHILD_JOB}, "peer")["ok"] is False

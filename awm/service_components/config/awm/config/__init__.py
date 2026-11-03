@@ -272,21 +272,13 @@ def load_env_file(path: Path = ENV_FILE) -> int:
 # ---------------------------------------------------------------------------
 
 from awm.config.effects import (  # noqa: E402,F401
-    ARCHIVE_CATEGORY,
     EFFECTS,
-    verb_category,
     verb_effect,
 )
 from awm.config.peerbook import (  # noqa: E402,F401
-    LEGACY_GRANTS,
-    RELATIONS,
-    ROLES,
     caller_peer,
     list_records,
     load_book,
-    node_role,
-    node_swarm,
     operator_dm,
     peer_record,
-    peer_relation,
 )

@@ -226,10 +226,10 @@ def _operator_only(as_: str | None, verb: str) -> None:
 
 
 def _edge_peers() -> list[dict[str, Any]]:
-    """Each book peer's name, public key and relation, for the edge to verify
-    node tokens against. Never carries a secret."""
-    return [{"name": r["name"], "public_key": r.get("public_key"),
-             "relation": r["relation"]} for r in config.list_records()]
+    """Each book peer's name and public key, for the edge to verify node
+    tokens against. Never carries a secret."""
+    return [{"name": r["name"], "public_key": r.get("public_key")}
+            for r in config.list_records()]
 
 
 # ---------------------------------------------------------------------------

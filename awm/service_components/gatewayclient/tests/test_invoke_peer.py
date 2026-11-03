@@ -8,9 +8,9 @@ What is pinned here:
 
 * the token goes first, with ``aud`` = the peer's node label, cached until
   shortly before it expires;
-* a domestic peer whose edge refuses the token (or a node that cannot sign one)
-  gets the legacy ssh bearer exactly once;
-* a foreign peer never does.
+* a peer this node holds an edge to whose front refuses the token (or a node
+  that cannot sign one) gets the legacy ssh bearer exactly once;
+* a peer with no edge from this node never does.
 """
 
 from __future__ import annotations
@@ -30,8 +30,12 @@ EDGE = "https://hub.example:12100"
 
 
 class Net:
-    def __init__(self, relation="domestic"):
-        self.relation = relation
+    """The fake network. ``edge`` says whether this node (``me``) holds an edge
+    to the peer in the fleet edge list; setting it rewrites the list."""
+
+    def __init__(self, edges_path):
+        self.edges_path = edges_path
+        self.edge = True
         self.sign_status = 200
         self.sign_gate = None              # called before each signing answer
         self.expires_in = 300
@@ -40,11 +44,23 @@ class Net:
         self.minted = []                   # aud of every sign_peer_token call
         self.edge_calls = []               # (path, Authorization, json body)
 
+    @property
+    def edge(self) -> bool:
+        return self._edge
+
+    @edge.setter
+    def edge(self, value: bool) -> None:
+        self._edge = value
+        targets = "{hub: lan, mira: lan}" if value else "{}"
+        self.edges_path.write_text(
+            "nodes: {me: {role: homebase}, hub: {role: homebase}, mira: {role: homebase}}\n"
+            f"edges: {{me: {targets}}}\n")
+
     def handler(self, request: httpx.Request) -> httpx.Response:
         path = request.url.path
         if path.startswith("/peers/"):
             return httpx.Response(200, json={"peer": {
-                "edge_url": EDGE, "ssh_alias": "hub-ssh", "relation": self.relation}})
+                "edge_url": EDGE, "ssh_alias": "hub-ssh"}})
         if path == "/svc/auth/fn/sign_peer_token":
             assert "X-Awm-As" not in request.headers, "signing is an operator call"
             aud = json.loads(request.content)["aud"]
@@ -71,8 +87,10 @@ class Net:
 
 
 @pytest.fixture()
-def net(monkeypatch):
-    n = Net()
+def net(monkeypatch, tmp_path_factory):
+    n = Net(tmp_path_factory.mktemp("fleet") / "edges.yml")
+    monkeypatch.setenv("AWM_EDGES_FILE", str(n.edges_path))
+    monkeypatch.setenv("AWM_NODE_NAME", "me")
     transport = httpx.MockTransport(n.handler)
     real_async, real_sync = httpx.AsyncClient, httpx.Client
     monkeypatch.setattr(httpx, "AsyncClient",
@@ -166,11 +184,11 @@ def test_each_peer_gets_its_own_token(net):
 
 
 # ---------------------------------------------------------------------------
-# Domestic fallback
+# Fallback for a peer this node holds an edge to
 # ---------------------------------------------------------------------------
 
 
-def test_a_domestic_peer_that_refuses_the_token_gets_the_legacy_bearer_once(net):
+def test_an_edge_peer_that_refuses_the_token_gets_the_legacy_bearer_once(net):
     net.refuse = lambda auth: auth.startswith("Bearer awmpt1.")
     net.edge_status = 200
     assert asyncio.run(gc.invoke_peer("hub", "kb_search")) == {"hits": [1, 2]}
@@ -187,7 +205,7 @@ def test_the_legacy_bearer_is_refetched_once_on_a_401(net):
     assert len(net.edge_calls) == 3, "token, legacy, forced legacy: no further tries"
 
 
-def test_a_domestic_node_that_cannot_sign_falls_back_without_calling_the_edge_twice(net):
+def test_an_edge_peer_node_that_cannot_sign_falls_back_without_calling_the_edge_twice(net):
     net.sign_status = 500
     net.edge_status = 200
     assert asyncio.run(gc.invoke_peer("hub", "kb_search")) == {"hits": [1, 2]}
@@ -232,21 +250,13 @@ def test_a_refused_token_logs_the_audience_it_named(net, caplog):
     assert "aud='hub'" in caplog.text
 
 
-def test_a_foreign_peer_is_retried_with_a_token_every_time(net):
-    net.relation = "foreign"
+def test_an_edgeless_peer_is_retried_with_a_token_every_time(net):
+    net.edge = False
     net.refuse = lambda auth: True
     for _ in range(2):
         with pytest.raises(gc.GatewayCallError):
             asyncio.run(gc.invoke_peer("hub", "a"))
     assert len(net.edge_calls) == 2 and gc._peer_token_refused == {}
-
-
-def test_an_entry_whose_relation_is_unknown_fails_closed(net):
-    net.relation = None
-    net.refuse = lambda auth: True
-    with pytest.raises(gc.GatewayCallError):
-        asyncio.run(gc.invoke_peer("hub", "a"))
-    assert net.legacy_fetches == []
 
 
 def test_a_node_that_retired_the_legacy_bearer_never_falls_back(net, monkeypatch):
@@ -286,7 +296,7 @@ def test_a_json_looking_scalar_result_stays_a_string(net, monkeypatch):
         assert asyncio.run(gc.invoke_peer("hub", "x")) == text
 
 
-def test_call_peer_uses_the_token_then_falls_back_when_domestic(net):
+def test_call_peer_uses_the_token_then_falls_back_for_an_edge_peer(net):
     net.edge_status = 200
     assert asyncio.run(gc.call_peer("hub", "kb", "get", {"id": 1})) == {"ok": True}
     assert net.edge_calls[0] == ("/svc/kb/fn/get", "Bearer awmpt1.t1.sig", {"id": 1})
@@ -299,12 +309,12 @@ def test_call_peer_uses_the_token_then_falls_back_when_domestic(net):
 
 
 # ---------------------------------------------------------------------------
-# Foreign: never the legacy bearer
+# No edge from here: never the legacy bearer
 # ---------------------------------------------------------------------------
 
 
-def test_a_foreign_peer_that_refuses_the_token_is_not_offered_the_legacy_bearer(net):
-    net.relation = "foreign"
+def test_an_edgeless_peer_that_refuses_the_token_is_not_offered_the_legacy_bearer(net):
+    net.edge = False
     net.refuse = lambda auth: True
     with pytest.raises(gc.GatewayCallError) as exc:
         asyncio.run(gc.invoke_peer("hub", "kb_search"))
@@ -313,8 +323,8 @@ def test_a_foreign_peer_that_refuses_the_token_is_not_offered_the_legacy_bearer(
     assert _auths(net) == ["Bearer awmpt1.t1.sig"]
 
 
-def test_a_foreign_peer_that_cannot_be_signed_for_is_a_peer_error(net):
-    net.relation = "foreign"
+def test_an_edgeless_peer_that_cannot_be_signed_for_is_a_peer_error(net):
+    net.edge = False
     net.sign_status = 500
     with pytest.raises(gc.PeerError):
         asyncio.run(gc.invoke_peer("hub", "kb_search"))
@@ -323,8 +333,8 @@ def test_a_foreign_peer_that_cannot_be_signed_for_is_a_peer_error(net):
     assert net.legacy_fetches == [] and net.edge_calls == []
 
 
-def test_a_foreign_peers_refusal_of_a_verb_is_a_gateway_call_error(net):
-    net.relation = "foreign"
+def test_an_edgeless_peers_refusal_of_a_verb_is_a_gateway_call_error(net):
+    net.edge = False
     net.edge_status = 404
     with pytest.raises(gc.GatewayCallError) as exc:
         asyncio.run(gc.invoke_peer("hub", "kb_add"))
@@ -332,8 +342,8 @@ def test_a_foreign_peers_refusal_of_a_verb_is_a_gateway_call_error(net):
     assert net.legacy_fetches == []
 
 
-def test_call_peer_never_falls_back_for_a_foreign_peer(net):
-    net.relation = "foreign"
+def test_call_peer_never_falls_back_for_an_edgeless_peer(net):
+    net.edge = False
     net.refuse = lambda auth: True
     with pytest.raises(gc.GatewayCallError):
         gc.call_peer_sync("hub", "kb", "get", {})
@@ -369,17 +379,17 @@ def test_a_file_fetch_sends_the_token_and_lands_the_bytes(net, tmp_path):
     assert net.legacy_fetches == []
 
 
-def test_a_file_fetch_from_a_domestic_peer_falls_back_to_the_legacy_bearer(net, tmp_path):
+def test_a_file_fetch_from_an_edge_peer_falls_back_to_the_legacy_bearer(net, tmp_path):
     net.refuse = lambda auth: auth.startswith("Bearer awmpt1.")
     got = gc.fetch_peer_file_sync("hub", "/files/tmp/a.txt", dest_dir=str(tmp_path))
     assert open(got, "rb").read()
     assert _auths(net) == ["Bearer awmpt1.t1.sig", "Bearer legacy-bearer"]
 
 
-def test_a_file_fetch_from_a_foreign_peer_fails_cleanly_without_the_legacy_bearer(
+def test_a_file_fetch_from_an_edgeless_peer_fails_cleanly_without_the_legacy_bearer(
         net, tmp_path):
-    net.relation = "foreign"
-    net.edge_status = 404          # a foreign edge serves only /tools and /invoke
+    net.edge = False
+    net.edge_status = 404          # a peer with no edge from here refuses it
     with pytest.raises(gc.PeerError, match="no file"):
         gc.fetch_peer_file_sync("hub", "/files/tmp/a.txt", dest_dir=str(tmp_path))
     net.refuse = lambda auth: True
@@ -469,17 +479,17 @@ def test_a_subscription_connects_with_the_token(net, ws):
     assert net.legacy_fetches == []
 
 
-def test_a_domestic_subscription_falls_back_when_the_token_is_refused(net, ws):
+def test_an_edge_peer_subscription_falls_back_when_the_token_is_refused(net, ws):
     ws.refuse = lambda b: 401 if b.startswith("awmpt1.") else None
     assert asyncio.run(_drain(gc.subscribe_peer("hub", "social", "command"))) == [{"n": 1}]
     assert ws.auths == ["Bearer awmpt1.t1.sig", "Bearer legacy-bearer"]
 
 
-def test_a_foreign_subscription_never_gets_the_legacy_bearer(net, ws):
+def test_an_edgeless_subscription_never_gets_the_legacy_bearer(net, ws):
     from websockets.exceptions import InvalidStatus
 
-    net.relation = "foreign"
-    ws.refuse = lambda b: 404          # the foreign edge has no /svc door
+    net.edge = False
+    ws.refuse = lambda b: 404          # a peer with no edge from here refuses it
     with pytest.raises(InvalidStatus):
         asyncio.run(_drain(gc.subscribe_peer("hub", "social", "command")))
     ws.refuse = lambda b: 403
@@ -501,8 +511,8 @@ def test_a_subscription_from_a_node_that_retired_the_legacy_bearer_never_falls_b
     assert ws.auths == ["Bearer awmpt1.t1.sig"]
 
 
-def test_a_foreign_subscription_without_a_signing_key_is_a_peer_error(net, ws):
-    net.relation = "foreign"
+def test_an_edgeless_subscription_without_a_signing_key_is_a_peer_error(net, ws):
+    net.edge = False
     net.sign_status = 500
     with pytest.raises(gc.PeerError):
         asyncio.run(_drain(gc.subscribe_peer("hub", "social", "command")))
@@ -553,7 +563,7 @@ def test_a_lease_opens_with_a_token_on_both_legs(net, lease_ws):
     assert net.legacy_fetches == []
 
 
-def test_a_lease_from_an_unupgraded_domestic_peer_uses_the_legacy_bearer_on_both_legs(
+def test_a_lease_from_an_unupgraded_edge_peer_uses_the_legacy_bearer_on_both_legs(
         net, lease_ws):
     net.refuse = lambda auth: auth.startswith("Bearer awmpt1.")
     lease_ws.refuse = lambda b: 401 if b.startswith("awmpt1.") else None
@@ -562,8 +572,8 @@ def test_a_lease_from_an_unupgraded_domestic_peer_uses_the_legacy_bearer_on_both
     assert lease_ws.auths == ["Bearer legacy-bearer"], "the socket gets the credential that worked"
 
 
-def test_a_lease_from_a_foreign_peer_never_sends_the_legacy_bearer(net, lease_ws):
-    net.relation = "foreign"
+def test_a_lease_from_an_edgeless_peer_never_sends_the_legacy_bearer(net, lease_ws):
+    net.edge = False
     net.refuse = lambda auth: True
     with pytest.raises(gc.GatewayCallError):
         asyncio.run(gc.acquire_lease_peer("hub", "ssh", "fir"))
@@ -573,10 +583,10 @@ def test_a_lease_from_a_foreign_peer_never_sends_the_legacy_bearer(net, lease_ws
     from websockets.exceptions import InvalidStatus
     with pytest.raises(InvalidStatus):
         asyncio.run(gc.acquire_lease_peer("hub", "ssh", "fir"))
-    assert net.legacy_fetches == [] and len(lease_ws.auths) == 1, "no retry for a foreign peer"
+    assert net.legacy_fetches == [] and len(lease_ws.auths) == 1, "no retry for a peer with no edge from here"
 
 
-def test_a_lease_with_no_signing_key_still_works_domestically(net, lease_ws):
+def test_a_lease_with_no_signing_key_still_works_over_an_edge(net, lease_ws):
     net.sign_status = 500
     assert asyncio.run(gc.acquire_lease_peer("hub", "ssh", "fir")).granted
     assert _auths(net) == ["Bearer legacy-bearer"]

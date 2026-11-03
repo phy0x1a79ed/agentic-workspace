@@ -112,7 +112,7 @@ _HIDDEN = {
     "awm_restart", "awm_mcp_sync", "awm_registry_deregister", "awm_services_reap",
     "awm_services_enable", "awm_services_disable", "awm_providers", "awm_config_set",
     "operations_peer_join", "operations_peer_add", "operations_peer_set",
-    "operations_peer_grant", "operations_peer_revoke", "operations_peer_forget",
+    "operations_peer_forget",
 }
 
 
@@ -131,7 +131,7 @@ def test_every_native_op_is_a_verb_of_awm_or_operations():
         assert {"http"} <= op.surfaces, "a hidden verb still answers over HTTP"
     assert {op.name for op in GATEWAY_OPERATIONS if op.mcp_tool == "operations"} == {
         f"operations_peer_{v}" for v in
-        ("join", "add", "set", "grant", "revoke", "list", "resolve", "forget")}
+        ("join", "add", "set", "list", "resolve", "forget")}
 
 
 def test_services_op_schema_requires_name():
@@ -306,7 +306,7 @@ class _Reading:
         return self.answers.get(service)
 
 
-async def test_status_adds_services_auth_node_role_and_compute(monkeypatch):
+async def test_status_adds_services_auth_role_and_compute(monkeypatch, tmp_path):
     from awm.gateway import gateway_ops as go
 
     async def listing():
@@ -320,7 +320,10 @@ async def test_status_adds_services_auth_node_role_and_compute(monkeypatch):
                         "compute": {"armed": "shadow"}})
     monkeypatch.setattr(go, "_op_services_list", listing)
     monkeypatch.setattr(go, "_service_reading", reading)
-    monkeypatch.setenv("AWM_NODE_ROLE", "station")
+    fleet = tmp_path / "edges.yml"
+    fleet.write_text("nodes: {relay: {role: station}}\nedges: {}\n")
+    monkeypatch.setenv("AWM_EDGES_FILE", str(fleet))
+    monkeypatch.setenv("AWM_NODE_NAME", "relay")
     out = await go._op_status()
     assert out["status"] == "ok" and out["core_pid"] and "workspace_root" in out
     assert out["services"] == {"scopes": "ready", "kb": "stopped", "dev": "stopped",
@@ -328,7 +331,7 @@ async def test_status_adds_services_auth_node_role_and_compute(monkeypatch):
     assert out["services_down"] == ["kb", "ssh"], "a disabled service is not down"
     assert out["auth"] == {"valid_generations": 2}
     assert out["compute"] == {"armed": "shadow"}
-    assert out["node_role"] == "station" and out["swarm"]
+    assert out["role"] == "station" and "swarm" not in out
     assert sorted(reading.asked) == [("auth", "status"), ("compute", "status")]
 
 

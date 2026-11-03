@@ -1,6 +1,6 @@
 """The gateway's private-mark gate: what a peer-stamped caller may not reach.
 
-A peer caller (``peer`` or ``peer:<node>``, domestic included) never reaches a
+A peer caller (``peer`` or ``peer:<node>``, over an edge included) never reaches a
 project, scope or path this node marks private (:mod:`awm.config.privacy`).
 Every door a peer can come through asks here: the catalog dispatch, the
 ``/svc/<svc>`` door, the emit fan-out and the static mounts. A refusal is

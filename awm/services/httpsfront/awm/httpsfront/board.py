@@ -1,7 +1,7 @@
 """Which paths belong to the federation board, and why they need no awm session.
 
 The board is the one upstream on this edge that other swarms call as themselves.
-A foreign party posts a card, claims one and follows the stream, and it does so
+Another swarm's party posts a card, claims one and follows the stream, and it does so
 with a bearer the board issued to that party. The edge therefore has no identity
 to offer and none to check: **the board is what authenticates**, with its own
 party table, and it answers every refusal with the same 404 so its surface

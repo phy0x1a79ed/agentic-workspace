@@ -14,7 +14,7 @@ from awm.search.index import Filters
 
 DEFAULT_LIMIT = 10
 MAX_LIMIT = 100
-#: The ``peers`` word for every domestic node, this one included.
+#: The ``peers`` word for every node this one has an edge to, this one included.
 FLEET = "fleet"
 #: The ``peers`` word for this node in a list of names.
 LOCAL = "local"
@@ -32,16 +32,12 @@ class Query:
     limit: int = DEFAULT_LIMIT
     local: bool = True
     peer_names: list[str] | str = field(default_factory=list)
-    grants: frozenset[str] | None = None
     hidden: Sequence[dict] | None = ()
     raw: dict[str, str] = field(default_factory=dict)
 
     @property
     def fan_out(self) -> bool:
         return bool(self.peer_names)
-
-    def allows(self, source: str) -> bool:
-        return self.grants is None or source in self.grants
 
     def filters(self, sources: list[str]) -> Filters:
         return Filters(sources, self.project, self.scope, self.kind, self.after, self.before, self.hidden)
@@ -83,7 +79,7 @@ def hidden_for(as_: str | None) -> list[dict] | None:
 
 def _peers(value: Any) -> tuple[bool, list[str] | str]:
     """``(search this node?, the peers to ask)``. Nothing named is this node alone, ``fleet`` adds every
-    domestic node, and a list of names asks only those, with ``local`` standing for this node."""
+    node this one has an edge to, and a list of names asks only those, with ``local`` standing for this node."""
     if value is None or value is False:
         return True, []
     if value is True:
@@ -107,12 +103,11 @@ def parse(args: dict[str, Any], as_: str | None = None) -> Query:
     local, peer_names = _peers(args.get("peers"))
     if privacy.from_peer(as_):
         local, peer_names = True, []  # a peer's call searches this node only, never fanning out again
-    grants = args.get("_grants")
     return Query(
         text=text, sources=names(args.get("sources")),
         project=str(args.get("project") or ""), scope=str(args.get("scope") or ""),
         kind=str(args.get("kind") or ""), after=_time(args, "after"), before=_time(args, "before"),
         limit=max(1, min(int(args.get("limit") or DEFAULT_LIMIT), MAX_LIMIT)),
         local=local, peer_names=peer_names,
-        grants=None if grants is None else frozenset(str(g) for g in grants), hidden=hidden_for(as_),
+        hidden=hidden_for(as_),
         raw={k: str(args[k]) for k in ("project", "scope", "kind", "after", "before") if args.get(k)})

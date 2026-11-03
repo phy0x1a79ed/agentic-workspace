@@ -10,7 +10,7 @@ pytestmark = [pytest.mark.search]
 
 
 def hit(source, doc_id, ts="2026-01-01T00:00:00Z", node="local"):
-    return {"source": source, "id": doc_id, "ts": ts, "origin": {"node": node, "swarm": "tony"}}
+    return {"source": source, "id": doc_id, "ts": ts, "origin": {"node": node}}
 
 
 def test_a_hit_in_two_lists_outranks_a_hit_first_in_one():

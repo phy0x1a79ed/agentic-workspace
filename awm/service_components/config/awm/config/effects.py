@@ -1,4 +1,4 @@
-"""Verb effect and category declarations shared by the gateway and service manifests."""
+"""Verb effect declarations shared by the gateway and service manifests."""
 
 from __future__ import annotations
 
@@ -6,11 +6,6 @@ from typing import Any
 
 EFFECTS = ("read", "queue", "write", "secret")
 DEFAULT_EFFECT = "write"
-
-#: The grant category of a read verb that filters its answer by the caller's grants
-#: itself (``search query``). The gateway lets any foreign caller holding a grant
-#: reach it and hands the service the grant list.
-ARCHIVE_CATEGORY = "archive"
 
 
 def check_effect(effect: str, *, where: str = "verb") -> str:
@@ -23,8 +18,3 @@ def verb_effect(spec: dict[str, Any]) -> str:
     """The manifest function's declared effect; ``write`` when it declares none."""
     effect = spec.get("effect") or DEFAULT_EFFECT
     return check_effect(effect, where=f"function {spec.get('name')!r}")
-
-
-def verb_category(spec: dict[str, Any]) -> str | None:
-    """The manifest function's grant category, or ``None`` when it declares none."""
-    return spec.get("category") or None

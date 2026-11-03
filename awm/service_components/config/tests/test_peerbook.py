@@ -1,4 +1,4 @@
-"""Peer book reader, node role/swarm env, and verb effect/category helpers."""
+"""Peer book reader, operator DM setting, and the verb effect helper."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ pytestmark = [pytest.mark.unit, pytest.mark.smoke]
 
 @pytest.fixture(autouse=True)
 def clean_env(monkeypatch, tmp_path):
-    for var in ("AWM_NODE_ROLE", "AWM_SWARM", "AWM_OPERATOR_DM_ACCOUNT",
+    for var in ("AWM_OPERATOR_DM_ACCOUNT",
                 "AWM_OPERATOR_DM_CHANNEL", "AWM_REPORTING_DM_CHANNEL"):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setattr(config, "AWM_DIR", tmp_path)
@@ -27,45 +27,18 @@ def _write_book(tmp_path, book):
 
 
 def test_reexports():
-    for name in ("node_role", "node_swarm", "peer_record", "peer_relation",
-                 "caller_peer", "RELATIONS", "ROLES", "LEGACY_GRANTS",
-                 "ARCHIVE_CATEGORY", "EFFECTS", "verb_effect", "verb_category"):
+    for name in ("peer_record", "caller_peer", "list_records", "load_book",
+                 "operator_dm", "EFFECTS", "verb_effect"):
         assert hasattr(config, name)
-    assert config.RELATIONS == ("domestic", "foreign")
-    assert config.ROLES == ("fleet", "station")
-    assert config.LEGACY_GRANTS == ("journals", "kb")
+    for gone in ("ROLES", "ARCHIVE_CATEGORY", "verb_category"):
+        assert not hasattr(config, gone), gone
 
 
-def test_node_role_default_and_values(monkeypatch):
-    assert config.node_role() == "fleet"
-    monkeypatch.setenv("AWM_NODE_ROLE", " station ")
-    assert config.node_role() == "station"
-    monkeypatch.setenv("AWM_NODE_ROLE", "")
-    assert config.node_role() == "fleet"
-
-
-def test_node_role_rejects_other_values(monkeypatch):
-    monkeypatch.setenv("AWM_NODE_ROLE", "admiral")
-    with pytest.raises(ValueError):
-        config.node_role()
-
-
-def test_node_swarm_default_and_strip(monkeypatch):
-    assert config.node_swarm() == "tony"
-    monkeypatch.setenv("AWM_SWARM", "  blue ")
-    assert config.node_swarm() == "blue"
-    monkeypatch.setenv("AWM_SWARM", "   ")
-    assert config.node_swarm() == "tony"
-
-
-def test_operator_dm_falls_back_to_tony_only_in_his_swarm(monkeypatch):
+def test_operator_dm_falls_back_to_tonys_dm():
     assert config.operator_dm() == ("discord-bot", "dm:188743359983124480")
-    monkeypatch.setenv("AWM_SWARM", "collins")
-    assert config.operator_dm() is None
 
 
-def test_operator_dm_setting_wins_in_any_swarm(monkeypatch):
-    monkeypatch.setenv("AWM_SWARM", "collins")
+def test_operator_dm_setting_wins(monkeypatch):
     monkeypatch.setenv("AWM_REPORTING_DM_CHANNEL", "dm:2")
     assert config.operator_dm() == ("discord-bot", "dm:2")
     monkeypatch.setenv("AWM_OPERATOR_DM_CHANNEL", " dm:1 ")
@@ -83,41 +56,33 @@ def test_missing_or_corrupt_book_is_empty(tmp_path):
     assert config.peer_record("mira") is None
 
 
-def test_old_entry_normalised_with_defaults(tmp_path, monkeypatch):
-    monkeypatch.setenv("AWM_SWARM", "blue")
+def test_old_entry_normalised_with_defaults(tmp_path):
     _write_book(tmp_path, {"mira": {
         "name": "mira", "edge_url": "https://mira:12100", "ssh_alias": "mira",
         "added_at": 1.0, "updated_at": 2.0}})
     rec = config.peer_record("mira")
     assert rec == {
         "name": "mira", "edge_url": "https://mira:12100", "ssh_alias": "mira",
-        "relation": "domestic", "swarm": "blue", "principal": None,
-        "role": "fleet", "public_key": None, "key_fingerprint": None,
-        "grants": [],
+        "public_key": None, "key_fingerprint": None,
         "added_at": 1.0, "updated_at": 2.0,
     }
-    assert config.peer_relation("mira") == "domestic"
 
 
-def test_full_entry_kept(tmp_path):
+def test_retired_trust_fields_are_dropped(tmp_path):
     _write_book(tmp_path, {"envoy": {
         "name": "envoy", "edge_url": "https://envoy:1", "ssh_alias": "e",
-        "relation": "foreign", "swarm": "other", "principal": "ann",
+        "relation": "old", "swarm": "other", "principal": "ann",
         "role": "station", "public_key": "AAAA", "key_fingerprint": "SHA256:x",
-        "grants": ["journals", "future-category"]}})
+        "grants": ["journals"]}})
     rec = config.peer_record("envoy")
-    assert rec["relation"] == "foreign"
-    assert rec["principal"] == "ann"
-    assert rec["role"] == "station"
-    assert rec["public_key"] == "AAAA"
-    assert rec["grants"] == ["journals", "future-category"]
-    assert config.peer_relation("envoy") == "foreign"
+    assert rec["public_key"] == "AAAA" and rec["ssh_alias"] == "e"
+    for gone in ("relation", "swarm", "principal", "role", "grants"):
+        assert gone not in rec, gone
 
 
 def test_unknown_peer(tmp_path):
     _write_book(tmp_path, {})
     assert config.peer_record("nobody") is None
-    assert config.peer_relation("nobody") is None
 
 
 def test_path_resolves_at_call_time(tmp_path, monkeypatch):
@@ -137,24 +102,21 @@ def test_caller_peer_returns_node_name_without_book_lookup(tmp_path):
         assert config.caller_peer(value) is None
 
 
-def test_verb_effect_and_category():
+def test_verb_effect():
     assert config.EFFECTS == ("read", "queue", "write", "secret")
     assert config.verb_effect({"name": "x"}) == "write"
     assert config.verb_effect({"name": "x", "effect": None}) == "write"
     assert config.verb_effect({"name": "x", "effect": "read"}) == "read"
     with pytest.raises(ValueError):
         config.verb_effect({"name": "x", "effect": "delete"})
-    assert config.verb_category({"name": "x"}) is None
-    assert config.verb_category({"name": "x", "category": "kb"}) == "kb"
 
 
 def test_list_records_normalises_and_sorts(tmp_path):
-    _write_book(tmp_path, {"b": {"edge_url": "https://b"}, "a": {"relation": "foreign"},
+    _write_book(tmp_path, {"b": {"edge_url": "https://b"}, "a": {"relation": "old"},
                            "junk": "not-a-dict"})
     recs = config.list_records()
     assert [r["name"] for r in recs] == ["a", "b"]
-    assert recs[0]["relation"] == "foreign" and recs[1]["relation"] == "domestic"
-    assert recs[1]["grants"] == []
+    assert "relation" not in recs[0] and recs[1]["ssh_alias"] == "b"
 
 
 def test_fingerprint_of_raw_key_bytes():

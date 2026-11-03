@@ -244,8 +244,9 @@ def _peer_invoke(peer_name: str, base_name: str, arguments: dict,
     already costs a token signing or an ssh, so the import is free by
     comparison and stays off every launch.
 
-    The call carries a signed node token. A domestic peer that refuses it gets
-    the legacy ssh-fetched bearer instead; a foreign peer never does (see
+    The call carries a signed node token. A peer this node holds an edge to that
+    refuses it gets the legacy ssh-fetched bearer instead; any other peer never
+    does (see
     ``gatewayclient.peer_send_sync``).
     """
     import httpx  # noqa: PLC0415 — deferred on purpose; see module docstring

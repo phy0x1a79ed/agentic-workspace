@@ -347,7 +347,7 @@ class CxUnavailable(RuntimeError):
 
 
 class Cx:
-    """`cx list`, `start`, `resume` and `adopt` on a node, local or a domestic peer."""
+    """`cx list`, `start`, `resume` and `adopt` on a node, local or a node this node has an edge to."""
 
     async def _call(self, node: str, fn: str, args: dict, timeout: float) -> Any:
         if node == config.node_name():

@@ -89,19 +89,42 @@ def awm_workspace(tmp_path, monkeypatch):
     }
 
 
+#: The peers the hand-built snapshots in the surface tests name. The fleet edge
+#: list every test runs under gives this node an edge to each of them and each
+#: of them an edge back.
+EDGE_PEERS = ("altair", "mira", "cosmos", "capella", "fir")
+
+
+@pytest.fixture(autouse=True)
+def fleet_edges(tmp_path_factory, monkeypatch):
+    """A fleet edge list (``AWM_EDGES_FILE``) joining this node and
+    :data:`EDGE_PEERS` both ways. A node it does not name has no edge."""
+    import awm.config as config
+    from awm.config import edges
+
+    here = edges.label(config.node_name())
+    names = sorted({here, *EDGE_PEERS})
+    lines = ["nodes:"] + [f"  {n}: {{role: homebase}}" for n in names] + ["edges:"]
+    lines.append(f"  {here}: {{{', '.join(f'{p}: lan' for p in EDGE_PEERS if p != here)}}}")
+    lines += [f"  {p}: {{{here}: lan}}" for p in EDGE_PEERS if p != here]
+    path = tmp_path_factory.mktemp("fleet") / "edges.yml"
+    path.write_text("\n".join(lines) + "\n")
+    monkeypatch.setenv(edges.EDGES_FILE_ENV, str(path))
+    return path
+
+
 @pytest.fixture()
-def domestic_peers(tmp_path, monkeypatch):
-    """A peer book listing the peers the hand-built snapshots in the surface tests
-    name, all domestic. The provider directory keeps only peers the book calls
-    domestic, so a snapshot naming a peer the book lacks reads as empty."""
+def edge_peers(tmp_path, monkeypatch):
+    """A peer book listing :data:`EDGE_PEERS`. The provider directory keeps only
+    book peers this node holds an edge to, so a snapshot naming a peer the book
+    lacks reads as empty."""
     import json
 
     import awm.config.peerbook as peerbook
 
-    path = tmp_path / "domestic-peers.json"
+    path = tmp_path / "edge-peers.json"
     path.write_text(json.dumps({
-        name: {"edge_url": f"https://{name}:12100", "relation": "domestic"}
-        for name in ("altair", "mira", "cosmos", "capella", "fir")}))
+        name: {"edge_url": f"https://{name}:12100"} for name in EDGE_PEERS}))
     monkeypatch.setattr(peerbook, "peers_file", lambda: path)
     return path
 
