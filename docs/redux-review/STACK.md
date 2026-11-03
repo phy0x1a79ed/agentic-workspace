@@ -26,10 +26,14 @@ Procedure, from dfs-interview § Work the stack:
 ## Stack
 
 - **sessions-harness** (2026-11-03): lets go over each of the major systems architecturally to make sure we are still aligned
+  - [ ] R10 and R51: does a retire delete the job (design) or keep it (harness lane), given wake and resume both start from the transcript?
+  - [ ] R51: does a session that itself waits count as finished for its parent's wait, and may a terminal session wait?
+  - [ ] R15: which reads make the citation candidate list: journal fetch only, or also search get and transcript reads?
 - **queue-approver** (2026-11-03): lets go over each of the major systems architecturally to make sure we are still aligned
 - **channels** (2026-11-03): lets go over each of the major systems architecturally to make sure we are still aligned
 - **fleet-deploy** (2026-11-03): lets go over each of the major systems architecturally to make sure we are still aligned
   - [ ] Which repo is canonical for awm: GitHub (install.md R114, R118) or mizar (routines.md R31)? Today origin is altair.
+  - [ ] fleet.md R109: the harness lane proposes item 7, an access-token login and a caller-token door for isolated sessions. Accept it?
 - **trust-users** (2026-11-03): lets go over each of the major systems architecturally to make sure we are still aligned
 
 ## Parked
