@@ -64,6 +64,8 @@ This doc holds a session's id, the id of its task, its lifecycle from start to r
   - A wait works like a retire. Its last step calls `reflection wait` in place of `reflection stop`. The verb's one parameter is `until`, a required list of session ids (R9). awm wakes the waiting session after every listed session finishes. Tony: "pause should function like retire", "no until would go in reflection stop -> need new verb reflection pause_until" and "lets do reflection wait, and have until be the name of the (now non optional) parameter. pause -> wait, I think this is clearer and fits instructions better: "wait until they finish"" (2026-11-01).
   - `reflection wait` waits on sessions only. A coordinator waits on a deploy through the deploy call itself (`routines.md` R26). Tony: "pause is strictly for sessions." (2026-11-01).
   - The wake resumes the session's kept job (R10).
+  - A listed session counts as finished only when it retires. A session that itself waits is not finished, so a wait holds through every level of nesting.
+  - A terminal session may wait. Tony: "Agree on both" (2026-11-03).
   - The session compacts before it calls `reflection wait`. This is a soft instruction, not a check. Tony: "would be good as soft instructions to compact before retiring with "until" set" (2026-11-01).
 - **R52.** Three standard paths cover work that spans sessions. R51 serves the second and the third. Tony: "we should also try to keep things simple and not add new features until necessary." (2026-11-01).
   1. **A simple task.** The agent calls `deploy` and retires. Tony: "an agent does a simple task that requires deploy, calls deploy and retires."
