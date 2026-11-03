@@ -51,7 +51,10 @@ def call(hub: str, fn: str, args: dict[str, Any], timeout: float = 120.0, tries:
 
 
 def identity(source: str, doc_id: str, url: str = "") -> str:
-    """One name for a document on both engines: ``doi:<doi>`` for a paper, else ``source:id``."""
+    """One name for a document on both engines: ``doi:<doi>`` for a paper, else ``source:id``. A library paper is
+    a paper: the judgements name it under ``kb``."""
+    if source == "library":
+        source = "kb"
     for text in (doc_id, url):
         found = DOI.search(text or "")
         if found:

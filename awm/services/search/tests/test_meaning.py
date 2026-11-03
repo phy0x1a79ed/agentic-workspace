@@ -37,7 +37,8 @@ async def loaded(archive, gateway):
 
 @pytest.fixture()
 def kb(gateway, monkeypatch):
-    """kb's `related` verb: whatever is in `answer`, or an error; the archive's embeddings must stay unused."""
+    """kb's `related` verb: whatever is in `answer`, or an error; `brute` records each call of the archive's
+    own embeddings, by the sources it ranked."""
     state = {"answer": [], "error": None, "calls": []}
 
     def related(args):
@@ -67,12 +68,12 @@ async def test_kb_entries_become_related_hits_with_their_spans(loaded, kb):
     kb["answer"] = [entry("journals", "j1", 0.9, start=3, end=20), entry("precedence", "p1", 0.8, part="title",
                                                                        text="Sink choice")]
     ids, result = await related_ids(loaded, sources=["journals", "precedence"])
-    assert ids == [("journals", "j1"), ("precedence", "p1")]
+    assert [i for i in ids if i[0] == "journals"][0] == ("journals", "j1") and ("precedence", "p1") in ids
     first = flat(result["related"])[0]
     assert first["match"] == "meaning" and first["passages"][0]["text"] == SINK[3:20]
     assert (first["passages"][0]["field"], first["passages"][0]["start"], first["passages"][0]["end"]) == ("text", 3, 20)
-    assert flat(result["related"])[1]["passages"][0]["field"] == "title"
-    assert kb["brute"] == []
+    assert next(h for h in flat(result["related"]) if h["id"] == "p1")["passages"][0]["field"] == "title"
+    assert kb["brute"] == [["journals"], ["precedence"]]  # the third list of the fusion, one source at a time
     assert "degraded" not in result
 
 
@@ -88,7 +89,7 @@ async def test_the_request_names_the_sources_and_their_zones(loaded, kb):
 async def test_a_document_the_archive_no_longer_holds_is_dropped(loaded, kb):
     kb["answer"] = [entry("journals", "gone", 0.99), entry("journals", "j2", 0.5, text=SHED)]
     ids, _ = await related_ids(loaded, sources=["journals"])
-    assert ids == [("journals", "j2")]
+    assert ids[0] == ("journals", "j2") and ("journals", "gone") not in ids
 
 
 async def test_filters_apply_to_the_resolved_documents(loaded, kb):
@@ -102,7 +103,7 @@ async def test_filters_apply_to_the_resolved_documents(loaded, kb):
 async def test_a_span_past_the_end_of_an_edited_document_quotes_nothing_and_the_hit_stays(loaded, kb):
     kb["answer"] = [entry("journals", "j2", 0.9, text=SHED, start=900, end=950)]
     ids, result = await related_ids(loaded, sources=["journals"])
-    assert ids == [("journals", "j2")] and flat(result["related"])[0]["passages"] == []
+    assert ids[0] == ("journals", "j2") and flat(result["related"])[0]["passages"] == []
 
 
 async def test_each_document_is_one_hit_quoting_its_best_entries_first(loaded, kb):
@@ -116,9 +117,10 @@ async def test_each_document_is_one_hit_quoting_its_best_entries_first(loaded, k
 async def test_a_document_holding_some_of_the_words_joins_the_meaning_matches(loaded, kb):
     kb["answer"] = [entry("journals", "j2", 0.9, text=SHED)]
     ids, result = await related_ids(loaded, query="who replaced the leaking tap", sources=["journals"])
-    assert set(ids) == {("journals", "j1"), ("journals", "j2")}
-    assert {h["id"]: h["match"] for h in flat(result["related"])} == {"j1": "keyword", "j2": "meaning"}
-    assert kb["brute"] == []
+    assert set(ids) >= {("journals", "j1"), ("journals", "j2")}
+    match = {h["id"]: h["match"] for h in flat(result["related"])}
+    assert match["j1"] == "keyword" and match["j2"] == "meaning"
+    assert kb["brute"] == [["journals"]]
 
 
 async def test_a_word_from_the_documents_scope_counts_beside_its_passages_words(loaded, kb):
@@ -144,7 +146,7 @@ async def test_sources_kb_does_not_hold_keep_the_archives_embeddings(loaded, kb,
     ids, result = await related_ids(loaded, query="tap washer", sources=["journals", "extra"])
     assert ("journals", "j1") in ids
     assert ("extra", "x1") in [(h["source"], h["id"]) for h in every(result)]
-    assert kb["brute"] == [["extra"]]
+    assert kb["brute"] == [["journals"], ["extra"]]
     assert kb["calls"][0]["sources"] == ["journals"]
 
 

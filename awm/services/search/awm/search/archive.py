@@ -325,8 +325,8 @@ class Archive:
 
     async def _archive_hits(self, q: Query, names: list[str]) -> tuple[dict[str, list[dict[str, Any]]], Any]:
         """``exact`` from the archive's text indexes; ``related`` from kb's entry index fused with any-word BM25
-        for the sources kb holds, and from the archive's own embeddings for the rest, or for all of them while
-        kb cannot answer."""
+        and the archive's own embeddings for the sources kb holds, and from the archive's own embeddings alone
+        for the rest, or for all of them while kb cannot answer."""
         kb_names = meaning.covered(names) if any(s.service == "kb" for s in self.sources.values()) else []
         asked = asyncio.ensure_future(
             meaning.ask(self.gateway, q.text, kb_names, q.filters(kb_names), q.limit)) if kb_names else None
@@ -342,9 +342,13 @@ class Archive:
                     meant = await asyncio.to_thread(_with_conn, index.resolve, entries, q.filters(kb_names),
                                                     q.limit * 2, q.passages)
                     worded = await asyncio.to_thread(self._per_source, index.words, q, kb_names, q.limit * 2)
-                    by_meaning = [h for name, hits in zip(kb_names, worded) for h in merge.fuse(
+                    own = await asyncio.to_thread(self._per_source, index.related, q, kb_names, q.limit * 2)
+                    # Three lists: kb's entry index, any-word BM25 and the archive's own embeddings. The third
+                    # raised real-ask recall@10 from 0.342 to 0.488 and lost no judged set (journal b73eb9b5).
+                    by_meaning = [h for name, hits, (mine, _) in zip(kb_names, worded, own) for h in merge.fuse(
                         [[{**m, "origin": origin} for m in meant if m["source"] == name],
-                         [{**w, "origin": origin} for w in hits]], q.limit * 2)]
+                         [{**w, "origin": origin} for w in hits], [{**m, "origin": origin} for m in mine]],
+                        q.limit * 2)]
                     rest = [n for n in names if n not in kb_names]
                 except Exception as exc:  # noqa: BLE001 — the archive's own embeddings answer instead
                     log.warning("search: kb entry index unavailable, using the archive's embeddings: %s",

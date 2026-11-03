@@ -5,3 +5,8 @@ tier = "off"
 name = "kb"
 mode = "live"
 query = "kb_query"
+
+[[archive]]
+name = "library"
+mode = "live"
+query = "kb_library"

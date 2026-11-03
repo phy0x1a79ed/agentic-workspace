@@ -45,3 +45,13 @@ def kb_paths(tmp_path, monkeypatch):
     monkeypatch.delenv("LLM_API_KEY", raising=False)
     monkeypatch.delenv("KB_ZOTERO_LIBRARY", raising=False)
     return instances
+
+
+@pytest.fixture(autouse=True)
+def fresh_answers():
+    """kb_query and kb_library share an answer for a few seconds; no test may see another's."""
+    from awm.kb import hub_adapter
+
+    hub_adapter._answers.clear()
+    yield
+    hub_adapter._answers.clear()

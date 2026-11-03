@@ -95,15 +95,18 @@ async def test_a_paper_strong_in_two_zones_beats_one_strong_in_one(layer, server
     assert [h["id"] for h in got["related"]][0] == "doi:10.1/at"
 
 
-async def test_a_library_paper_outranks_an_equal_paper_outside_the_library(layer, server):
+async def test_library_papers_answer_as_their_own_source_and_get_no_boost_in_kb(layer, server):
     server.entries = [entry("doi:10.1/at", "abstract", 0.9), entry("doi:10.1/cas", "abstract", 0.8),
                       entry("doi:10.1/old", "abstract", 0.7)]
-    assert [h["id"] for h in (await query(limit=3))["related"]] == ["doi:10.1/at", "doi:10.1/cas", "doi:10.1/old"]
     conn = layer._delta()
     conn.execute("INSERT INTO library(zotero_key, paper_id, version) VALUES ('u/K1', 'doi:10.1/old', 1)")
     conn.commit()
     conn.close()
-    assert [h["id"] for h in (await query(limit=3))["related"]][0] == "doi:10.1/old"
+    hub_adapter._answers.clear()
+    assert [h["id"] for h in (await query(limit=3))["related"]] == ["doi:10.1/at", "doi:10.1/cas", "doi:10.1/old"]
+    mine = await hub_adapter.HANDLERS["library"]({"query": "molecular joining steps lineages", "limit": 3})
+    assert [h["id"] for h in mine["related"]] == ["doi:10.1/old"] and mine["graph"] == []
+    assert len(server.related_bodies) == 1  # one meaning lookup served both sources
 
 
 async def test_a_hit_quotes_the_passage_its_entry_overlaps(layer, server):

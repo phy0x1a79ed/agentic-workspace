@@ -46,4 +46,5 @@ def test_export_is_hidden_and_the_posts_feed_is_gone():
 def test_service_toml_declares_the_kb_archive_source():
     toml = tomllib.loads((Path(hub_adapter.__file__).parents[2] / "service.toml").read_text())
     assert toml["tool"] == "kb" and toml["tier"] == "off"
-    assert toml["archive"] == [{"name": "kb", "mode": "live", "query": "kb_query"}]
+    assert toml["archive"] == [{"name": "kb", "mode": "live", "query": "kb_query"},
+                               {"name": "library", "mode": "live", "query": "kb_library"}]

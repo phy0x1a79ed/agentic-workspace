@@ -481,3 +481,13 @@ async def test_pagerank_never_reorders_paper_hits(loaded, gateway):
     gateway.handlers[("kb", "rank")] = rank
     await loaded.query(parse({"query": "kitchen tap"}))
     assert asked and all(h["source"] not in ("kb", "library") for h in asked[-1]["hits"])
+
+
+async def test_the_library_is_a_live_source_of_its_own(loaded, gateway):
+    gateway.plug_live("library", lambda args: {"exact": [], "related": [
+        {"id": "doi:10.1/mine", "title": "My paper", "ts": "2021-01-01T00:00:00Z"}], "graph": []}, service="kb")
+    await loaded.refresh()
+    both = await loaded.query(parse({"query": "kitchen tap"}))
+    assert [h["id"] for h in both["related"]["library"]] == ["doi:10.1/mine"]
+    alone = await loaded.query(parse({"query": "kitchen tap", "sources": ["library"]}))
+    assert set(alone["related"]) == {"library"} and not alone["exact"]

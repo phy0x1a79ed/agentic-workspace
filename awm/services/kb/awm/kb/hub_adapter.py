@@ -169,6 +169,20 @@ API_MANIFEST: dict[str, Any] = {
             "timeout": 30,
         },
         {
+            "name": "library",
+            "effect": "read",
+            "category": "kb",
+            "tool": "kb_library",
+            "surfaces": ["cli", "http"],
+            "description": (
+                "The Zotero library's papers for the archive's live `library` source, in search's sections, "
+                "found the way `kb query` finds papers but among the library's alone. The same papers can "
+                "also appear in the `kb` source, unboosted. `search query` calls it; call that instead."
+            ),
+            "params": [],  # kb_query's, set below
+            "timeout": 30,
+        },
+        {
             "name": "hop",
             "effect": "read",
             "category": "kb",
@@ -288,6 +302,10 @@ API_MANIFEST: dict[str, Any] = {
 }
 
 
+_FNS = {f["name"]: f for f in API_MANIFEST["functions"]}
+_FNS["library"]["params"] = _FNS["query"]["params"]
+
+
 def _operator_only(as_: str | None, verb: str) -> None:
     """Refuse a verb that arrived through an edge listener; see the trilium service's twin."""
     if as_ is not None:
@@ -373,7 +391,45 @@ def chain(start: list[tuple[str, float]], plan: list[dict[str, Any]]) -> dict[st
     return {p: (along, score, "") for p, score in got} if plan else {}
 
 
+#: kb_query and kb_library share one computation for this long: search asks both for one question at once.
+SHARED_S = 5.0
+_answers: dict[str, tuple[float, "asyncio.Future[dict[str, Any]]"]] = {}
+
+
+def _key(args: dict) -> str:
+    return json.dumps({k: v for k, v in sorted(args.items()) if not k.startswith("_")}, sort_keys=True, default=str)
+
+
+async def _shared(args: dict) -> dict[str, Any]:
+    """Both sources' answers to ``args``: computed once, and handed to every caller within :data:`SHARED_S`."""
+    now = time.monotonic()
+    for k in [k for k, (at, _) in _answers.items() if now - at > SHARED_S]:
+        del _answers[k]
+    key = _key(args)
+    if key not in _answers:
+        _answers[key] = (now, asyncio.ensure_future(_answer(args)))
+    try:
+        return await asyncio.shield(_answers[key][1])
+    except BaseException:
+        _answers.pop(key, None)
+        raise
+
+
 async def _h_query(args: dict, as_: str | None = None) -> dict:
+    return (await _shared(args))["kb"]
+
+
+async def _h_library(args: dict, as_: str | None = None) -> dict:
+    return (await _shared(args))["library"]
+
+
+def _library_filters(filters: fastlayer.Filters) -> fastlayer.Filters:
+    mine = PAPERS.library()
+    papers_ = mine if filters.papers is None else mine & filters.papers
+    return fastlayer.Filters(filters.kinds, filters.after, filters.before, filters.blocked or not papers_, papers_)
+
+
+async def _answer(args: dict) -> dict[str, Any]:
     limit = max(1, min(int(args.get("limit") or 10), 100))
     per_hit = max(1, min(int(args.get("passages") or 1), 10))
     filters = fastlayer.Filters.from_args(args)
@@ -384,20 +440,24 @@ async def _h_query(args: dict, as_: str | None = None) -> dict:
         if filters.papers is None:
             raise ValueError("the author filter needs kb's hop arrays, which this node does not have")
         filters.blocked = not filters.papers
+    mine = await asyncio.to_thread(_library_filters, filters)
     text = str(args.get("query") or "")
     meaning = None if filters.blocked or not text.strip() else asyncio.ensure_future(_entries(text))
-    found = await asyncio.to_thread(PAPERS.search, text, filters, limit, per_hit)
+    found, theirs = await asyncio.gather(asyncio.to_thread(PAPERS.search, text, filters, limit, per_hit),
+                                         asyncio.to_thread(PAPERS.search, text, mine, limit, per_hit))
     if meaning is None:
-        return {**found, "graph": []}
+        return {"kb": {**found, "graph": []}, "library": {**theirs, "graph": []}}
     served, why = await meaning
     degraded: dict[str, str] = {}
-    related, graph = found["related"], []
+    related, graph, own = found["related"], [], theirs["related"]
     if served is None:
         degraded["semantic"] = f"meaning matches unavailable, keyword only: {why}"
     else:
         exact_ids = {h["id"] for h in found["exact"]}
         related = await asyncio.to_thread(semantic.paper_hits, PAPERS, served["hits"], found["related"],
                                           exact_ids, filters, limit, per_hit)
+        own = await asyncio.to_thread(semantic.paper_hits, PAPERS, served["hits"], theirs["related"],
+                                      {h["id"] for h in theirs["exact"]}, mine, limit, per_hit)
     start = seeds(found["exact"], related)
     try:
         if plan:
@@ -413,11 +473,13 @@ async def _h_query(args: dict, as_: str | None = None) -> dict:
         if plan:
             raise
         degraded["graph"] = str(exc)[:200]
-    out = {"exact": found["exact"], "related": related, "graph": graph}
-    out["semantic"] = {"status": "ok" if served else "unavailable", "generation": (served or {}).get("generation")}
+    status = {"status": "ok" if served else "unavailable", "generation": (served or {}).get("generation")}
+    out = {"exact": found["exact"], "related": related, "graph": graph, "semantic": status}
+    lib = {"exact": theirs["exact"], "related": own, "graph": [], "semantic": status}
     if degraded:
         out["degraded"] = degraded
-    return out
+        lib["degraded"] = {k: v for k, v in degraded.items() if k != "graph"}
+    return {"kb": out, "library": lib}
 
 
 async def _h_hop(args: dict, as_: str | None = None) -> dict:
@@ -548,6 +610,7 @@ HANDLERS = {
     "status": _h_status,
     "recall": _h_recall,
     "query": _h_query,
+    "library": _h_library,
     "hop": _h_hop,
     "graph": _h_graph,
     "schema": _h_schema,
