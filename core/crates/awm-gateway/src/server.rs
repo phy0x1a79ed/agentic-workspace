@@ -121,7 +121,7 @@ fn header<'a>(h: &'a HeaderMap, name: &str) -> Option<&'a str> {
 /// `X-Awm-Caller` counts only with the edge token, which only `awm edge-serve` can read.
 /// A local request that names its session by `X-Awm-Session-Pid` gets that session's id,
 /// trust level and scope.
-fn context(gw: &Gateway, h: &HeaderMap, default: Surface) -> CallContext {
+async fn context(gw: &Gateway, h: &HeaderMap, default: Surface) -> CallContext {
     let plugin = header(h, "x-awm-plugin").map(str::to_string);
     let surface = if plugin.is_some() {
         Surface::Plugin
@@ -142,7 +142,8 @@ fn context(gw: &Gateway, h: &HeaderMap, default: Surface) -> CallContext {
         }
     }
     if let Some(pid) = header(h, "x-awm-session-pid").and_then(|p| p.parse::<u32>().ok()).filter(|_| !edge) {
-        crate::caller::fill(&mut caller, pid, &crate::caller::sessions_dir(), &crate::caller::ledger_path(&gw.state), &gw.projects_dir());
+        let answer = gw.session_of(pid).await;
+        crate::caller::fill(&mut caller, answer.as_ref(), &gw.projects_dir());
     }
     CallContext { caller, as_: header(h, "x-awm-as").map(str::to_string), surface, plugin }
 }
@@ -176,7 +177,7 @@ async fn invoke(State(gw): Gw, h: HeaderMap, body: Option<Json<Value>>) -> Resul
         return Err(ApiError::new(400, "missing 'name' in payload"));
     };
     let args = body.get("args").cloned().filter(|a| !a.is_null()).unwrap_or_else(|| json!({}));
-    let ctx = context(&gw, &h, Surface::Http);
+    let ctx = context(&gw, &h, Surface::Http).await;
     let result = gw.invoke(name, args, &ctx).await?;
     Ok(Json(json!({"result": result})))
 }
@@ -369,7 +370,7 @@ async fn svc_fn(
 ) -> Result<Json<Value>, ApiError> {
     refuse_token(&h)?;
     let args = body.map(|Json(v)| v).unwrap_or_else(|| json!({}));
-    let ctx = context(&gw, &h, Surface::Plugin);
+    let ctx = context(&gw, &h, Surface::Plugin).await;
     gw.call_function(&service, &function, args, &ctx).await.map(Json)
 }
 
