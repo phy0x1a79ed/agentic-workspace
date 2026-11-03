@@ -145,6 +145,8 @@ Wrap the background loops of transcripts (sweep and nightly), rlm-factorio (lab 
 
 Gotchas: a loop that ticks every few seconds floods the log. Report a run of real work, not an idle tick.
 
+Done: transcripts reports its timer sweep as `nightly`, rlm-factorio each lab from bring-up to release as `lab`, and mic each sink repair as `sink-repair`. A sweep, prune or acquire made through a tool call is already counted by the gateway, so it adds no background event. dev and vpn run no background loop: every action they take is a tool call. A caller outside the service passes `plugin=`, as the fxlab example in rlm-factorio's `INSTALL.md` shows. Each emitting plugin's tests capture its events in a `usage_events` fixture, so no test posts to the live gateway.
+
 ### T14. Run the full Python test suite and commit
 
 As T5, with the new tests included.

@@ -42,7 +42,7 @@ from fastapi import (
 )
 from pydantic import BaseModel, Field, model_validator
 
-from awm.gateway import surface
+from awm.gateway import surface, usage_log
 from awm.gateway.hub import discovery, rpc
 from awm.gateway.hub.lease import LeaseAlreadyHeld, get_lease_manager
 from awm.gateway.hub.registry import (
@@ -541,9 +541,21 @@ def _route_inbound(ch: "rpc.ControlChannel", service_id: str,
         ch.handle_session_frame(env)
     elif kind == "session.close":
         ch.handle_session_close(env)
+    elif kind == "usage":
+        _record_usage(service_id, env)
     else:
         log.debug("ignored inbound envelope kind=%s on service %s",
-                  kind, rec.name)
+                  kind, service_id)
+
+
+def _record_usage(service_id: str, env: dict[str, Any]) -> None:
+    """A background run the service reports. The plugin is the service itself,
+    never a name the frame claims."""
+    rec = get_registry().get_by_id(service_id)
+    if rec is None:
+        return
+    usage_log.append({"plugin": rec.name, "surface": "background",
+                      **{k: env.get(k) for k in ("name", "ok", "ms")}})
 
 
 @router.websocket("/service/bridge/{service_id}/{bridge_id}")

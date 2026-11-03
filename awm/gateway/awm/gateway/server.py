@@ -38,7 +38,7 @@ from awm.config import (
     IDLE_SHUTDOWN_SECONDS,
 )
 from awm.config import modes as session_modes
-from awm.gateway import catalog, filehop, mcp_caller, peer_catalog
+from awm.gateway import catalog, filehop, mcp_caller, peer_catalog, usage_log
 from awm.gateway.gateway_ops import GATEWAY_OPERATIONS, bound_caller
 from awm.gateway.operations import register_fastapi_routes
 
@@ -816,6 +816,22 @@ async def _dispatch_while_connected(request: Request, call):
     finally:
         if not task.done():
             task.cancel()
+
+
+@app.post("/usage")
+async def usage_event(request: Request):
+    """Record one usage event: ``code`` from a library, ``page`` from a page on
+    its own origin, ``background`` from a job outside a service."""
+    try:
+        body = await request.json()
+        if not isinstance(body, dict):
+            raise ValueError("body must be a JSON object")
+        usage_log.event(body)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    if not await run_in_threadpool(usage_log.append, body):
+        raise HTTPException(500, "usage event not written")
+    return {"ok": True}
 
 
 @app.post("/invoke")

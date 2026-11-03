@@ -161,6 +161,9 @@ class ServiceAdapter:
         a self-registered service and a bootstrap-spawned one are identical.
     """
 
+    #: The adapter whose ``run()`` serves this process, for ``awm.usage``.
+    current: "ServiceAdapter | None" = None
+
     def __init__(
         self,
         name: str,
@@ -181,6 +184,9 @@ class ServiceAdapter:
         # The currently-connected control WS, or None between reconnects. Held
         # so the service can originate `emit` frames (pub/sub) on it.
         self._control_ws: Any | None = None
+        #: The event loop ``run()`` serves on, so another thread can schedule
+        #: a frame onto it.
+        self.loop: asyncio.AbstractEventLoop | None = None
         # Set once ``on_start`` has finished (or failed, recorded below). Every
         # inbound envelope waits on it, which is what lets the adapter announce
         # readiness before initialisation has run.
@@ -259,6 +265,22 @@ class ServiceAdapter:
                 {"kind": "emit", "topic": topic, "payload": payload}))
         except Exception as exc:  # noqa: BLE001
             log.debug("%s: emit on %s dropped: %s", self.name, topic, exc)
+
+    async def send_usage(self, name: str, ok: bool | None = None,
+                         ms: float | None = None) -> bool:
+        """Report one background run on the control WS (contract § Usage
+        event). The gateway stamps the plugin from this service. Returns False
+        when no control WS is connected, so the caller can post it instead."""
+        ws = self._control_ws
+        if ws is None:
+            return False
+        try:
+            await ws.send(json.dumps({"kind": "usage", "surface": "background",
+                                      "name": name, "ok": ok, "ms": ms}))
+        except Exception as exc:  # noqa: BLE001
+            log.debug("%s: usage frame for %s dropped: %s", self.name, name, exc)
+            return False
+        return True
 
     # -- dispatch ----------------------------------------------------------
 
@@ -625,6 +647,8 @@ class ServiceAdapter:
         up when prod has no ``dev`` base to overlay) never stops the base loop,
         and the base resumes on prod when this process exits (overlay WS drop).
         """
+        ServiceAdapter.current = self
+        self.loop = asyncio.get_running_loop()
         hub_url = os.environ.get("AWM_HUB_URL", "").rstrip("/")
         # A hub-ASSIGNED sid (the supervisor respawn-by-sid path) is reconnected
         # by sid and never re-registered; a SELF-MINTED one (empty env) is minted

@@ -40,6 +40,7 @@ import logging
 import os
 from typing import Any
 
+from awm import usage
 from awm.gatewayclient import ServiceAdapter, SessionContext
 
 from awm.mic import audio, bridge
@@ -134,6 +135,7 @@ async def _health_loop() -> None:
             res = await asyncio.to_thread(audio.ensure_once, bridge.SINK)
             if res.get("healed"):
                 log.warning("mic: repaired %s", ", ".join(res["repairs"]))
+                usage.record_background("sink-repair")
         except asyncio.CancelledError:
             return
         except Exception:  # noqa: BLE001 — never let the loop die

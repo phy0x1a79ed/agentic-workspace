@@ -25,7 +25,7 @@ set -uo pipefail
 WS="$(git -C "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" rev-parse --show-toplevel)"
 cd "$WS"
 
-COMP="$WS/awm/service_components/config:$WS/awm/service_components/persistence:$WS/awm/service_components/gatewayclient:$WS/awm/service_components/claudedaemon:$WS/awm/service_components/kept"
+COMP="$WS/awm/service_components/config:$WS/awm/service_components/persistence:$WS/awm/service_components/gatewayclient:$WS/awm/service_components/claudedaemon:$WS/awm/service_components/kept:$WS/awm/service_components/usage"
 
 # dist name -> "<source-root-dir>::<test-dir>"
 declare -A DISTS=(
@@ -34,6 +34,7 @@ declare -A DISTS=(
   [config]="$WS/awm/service_components/config::$WS/awm/service_components/config/tests"
   [persistence]="$WS/awm/service_components/persistence::$WS/awm/service_components/persistence/tests"
   [telemetry]="$WS/awm/service_components/telemetry::$WS/awm/service_components/telemetry/tests"
+  [usage]="$WS/awm/service_components/usage::$WS/awm/service_components/usage/tests"
   [claudedaemon]="$WS/awm/service_components/claudedaemon::$WS/awm/service_components/claudedaemon/tests"
   [kept]="$WS/awm/service_components/kept::$WS/awm/service_components/kept/tests"
   [keep]="$WS/awm/services/keep::$WS/awm/services/keep/tests"
@@ -70,7 +71,7 @@ declare -A DISTS=(
 )
 
 # Stable run order.
-ORDER=(gateway gatewayclient config persistence telemetry claudedaemon kept scopes journal search events precedence social 2fa ssh auth httpsfront rlm-browser rlm-factorio fileviewer mic vpn reflection dvc claude-science dsh engcyc trilium zotero cx keep dev tether kb board reporting reporting-hooks transcripts)
+ORDER=(gateway gatewayclient config persistence telemetry usage claudedaemon kept scopes journal search events precedence social 2fa ssh auth httpsfront rlm-browser rlm-factorio fileviewer mic vpn reflection dvc claude-science dsh engcyc trilium zotero cx keep dev tether kb board reporting reporting-hooks transcripts)
 
 # Allow selecting a subset on the command line.
 if [ "$#" -gt 0 ]; then

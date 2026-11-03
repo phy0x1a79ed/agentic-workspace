@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Canonical install for the awm-mic service (editable, into the `awm` env).
 #
-# Installs the component libraries it imports (config, gatewayclient) first,
+# Installs the component libraries it imports (config, gatewayclient, usage) first,
 # then the service itself. mic is a thin pipe into `pacat` (no whisper/numpy),
 # so the dependency surface is small. The one system dep, pulseaudio-utils for
 # pacat, is NOT pip-installable — see INSTALL.md. Override the target env with
@@ -14,6 +14,7 @@ run() { echo "+ pip install -e $*"; mamba run -n "$ENV" pip install -e "$@"; }
 
 run "$AWM/service_components/config" --no-deps
 run "$AWM/service_components/gatewayclient" --no-deps
+run "$AWM/service_components/usage" --no-deps
 run "$HERE"
 
 # Bake the target env's absolute interpreter into a gitignored `.runtime-env`

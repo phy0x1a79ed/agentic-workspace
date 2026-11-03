@@ -10,6 +10,7 @@ description = "AWM mic service: remote microphone — a phone browser captures i
 dependencies = [
     "awm-config",
     "awm-gatewayclient",
+    "awm-usage",
 ]
 
 [project.optional-dependencies]

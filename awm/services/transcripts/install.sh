@@ -17,6 +17,7 @@ run "$AWM/service_components/claudedaemon" --no-deps
 run "$AWM/service_components/config" --no-deps
 run "$AWM/service_components/persistence" --no-deps
 run "$AWM/service_components/gatewayclient" --no-deps
+run "$AWM/service_components/usage" --no-deps
 run "$HERE"
 
 PYBIN="$(mamba run -n "$ENV" python -c 'import sys; print(sys.executable)')"

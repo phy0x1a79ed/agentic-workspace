@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Canonical install for the awm-rlm-factorio service (editable, into the `awm` env).
 #
-# Installs the component libraries it imports (config, persistence, gatewayclient)
+# Installs the component libraries it imports (config, persistence, gatewayclient, usage)
 # first, then the service itself. Components have no install.sh of their own — they
 # are pulled in here as plain editable dependencies. Override the target env with
 # AWM_ENV=<name>.
@@ -14,6 +14,7 @@ run() { echo "+ pip install -e $*"; mamba run -n "$ENV" pip install -e "$@"; }
 run "$AWM/service_components/config" --no-deps
 run "$AWM/service_components/persistence" --no-deps
 run "$AWM/service_components/gatewayclient" --no-deps
+run "$AWM/service_components/usage" --no-deps
 run "$HERE"
 
 # Bake the target env's absolute interpreter into a gitignored `.runtime-env`
