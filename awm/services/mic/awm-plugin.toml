@@ -8,7 +8,6 @@ name = "mic"
 
 [[tool]]
 name = "mic"
-uuid = "58208b27-34c3-524b-9fcb-f48709550e2d"
 major = 1
 tier = "off"
 

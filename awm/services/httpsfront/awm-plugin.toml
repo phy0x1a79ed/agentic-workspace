@@ -8,7 +8,6 @@ name = "httpsfront"
 
 [[tool]]
 name = "httpsfront"
-uuid = "f14ddef4-e6e2-5449-a4b3-f5e1425f5bb9"
 major = 1
 tier = "off"
 

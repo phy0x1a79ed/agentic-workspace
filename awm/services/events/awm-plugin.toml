@@ -8,7 +8,6 @@ name = "events"
 
 [[tool]]
 name = "events"
-uuid = "d007df6e-fba5-5a97-9b96-70b523e407b1"
 major = 1
 tier = "off"
 

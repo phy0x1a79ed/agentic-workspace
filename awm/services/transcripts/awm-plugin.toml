@@ -14,7 +14,6 @@ optin = true
 
 [[tool]]
 name = "transcripts"
-uuid = "2acbc8d6-7ed1-5e3b-92a2-58d8ec31d418"
 major = 1
 tier = "off"
 

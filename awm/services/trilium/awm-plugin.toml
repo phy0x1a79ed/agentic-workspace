@@ -8,7 +8,6 @@ name = "trilium"
 
 [[tool]]
 name = "trilium"
-uuid = "7dd4203f-d8a2-5e25-95bf-f5277813e8d5"
 major = 1
 tier = "on"
 

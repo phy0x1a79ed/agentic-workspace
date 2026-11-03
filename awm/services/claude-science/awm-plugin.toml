@@ -9,7 +9,6 @@ profiles = ["claude-science"]
 
 [[tool]]
 name = "science"
-uuid = "eb2a13d7-f078-589d-8289-1d3f884c5464"
 major = 1
 tier = "on"
 

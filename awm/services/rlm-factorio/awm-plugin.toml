@@ -9,7 +9,6 @@ profiles = ["gamebot"]
 
 [[tool]]
 name = "factorio"
-uuid = "dc60865f-94ba-5f8e-bac8-0c6734e49bd8"
 major = 1
 tier = "off"
 

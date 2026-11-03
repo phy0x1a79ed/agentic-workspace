@@ -11,7 +11,6 @@ import ast
 import re
 import shutil
 import tomllib
-import uuid
 from pathlib import Path
 
 import pytest
@@ -56,10 +55,6 @@ def _manifest(folder: Path) -> dict:
 
 def _plugins() -> list[Path]:
     return [f for f in FOLDERS if (f / discovery.PLUGIN_MANIFEST).is_file()]
-
-
-def _legacy_uuid(tool: str) -> str:
-    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"awm:tool:{tool}"))
 
 
 def _package_of(folder: Path) -> set[str]:
@@ -170,7 +165,7 @@ def test_each_manifest_fills_the_contract(folder):
     for tool in m["tool"]:
         assert TOOL_NAME.fullmatch(tool["name"]), tool["name"]
         assert tool["name"] != "awm", "the awm tool belongs to the core"
-        assert tool["uuid"] == _legacy_uuid(tool["name"]), "a converted tool keeps its legacy UUID"
+        assert "uuid" not in tool, "a tool's unique name is its id (R117 item 2)"
         assert isinstance(tool["major"], int) and tool["tier"] in ("on", "off")
         assert not ("service" in tool and "services" in tool)
         named = tool.get("services") or [tool["service"]] if ("service" in tool or "services" in tool) else []
@@ -182,28 +177,24 @@ def test_each_manifest_fills_the_contract(folder):
     needs = m["needs"]
     assert all(isinstance(x, str) for x in needs["secrets"] + needs["network"])
     assert set(needs.get("platform", [])) <= PLATFORMS
-    for dep in needs.get("tool", []):
-        uuid.UUID(dep["uuid"])
+    for dep in needs.get("tool", []) + needs.get("contract", []):
+        assert set(dep) <= {"name", "major"} and TOOL_NAME.fullmatch(dep["name"]), dep
         assert isinstance(dep["major"], int)
 
 
-def test_tool_names_and_uuids_are_unique_and_every_dependency_resolves():
+def test_tool_names_are_unique_and_every_dependency_resolves():
     served: dict[str, tuple[str, int]] = {}
-    names: dict[str, str] = {}
     for folder in _plugins():
         for tool in _manifest(folder)["tool"]:
-            assert tool["uuid"] not in served, (folder.name, tool["name"])
-            assert tool["name"] not in names, (folder.name, names.get(tool["name"]))
-            served[tool["uuid"]] = (tool["name"], tool["major"])
-            names[tool["name"]] = folder.name
+            assert tool["name"] not in served, (folder.name, served.get(tool["name"]))
+            served[tool["name"]] = (folder.name, tool["major"])
     for folder in FOLDERS:
         if folder.name in LEGACY:
-            tool = discovery.read_tool(folder)
-            served.setdefault(_legacy_uuid(tool), (tool, 1))
+            served.setdefault(discovery.read_tool(folder), (folder.name, 1))
     for folder in _plugins():
         for dep in _manifest(folder)["needs"].get("tool", []):
-            assert dep["uuid"] in served, (folder.name, dep["uuid"])
-            assert dep["major"] == served[dep["uuid"]][1], (folder.name, served[dep["uuid"]])
+            assert dep["name"] in served, (folder.name, dep["name"])
+            assert dep["major"] == served[dep["name"]][1], (folder.name, served[dep["name"]])
 
 
 @pytest.mark.parametrize("folder", FOLDERS, ids=lambda f: f.name)

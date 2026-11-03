@@ -9,7 +9,6 @@ profiles = ["gamebot"]
 
 [[tool]]
 name = "browser"
-uuid = "752a1029-efd6-5c8f-8b5e-3a31f03a8813"
 major = 1
 tier = "on"
 

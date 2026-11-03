@@ -8,7 +8,6 @@ name = "ssh"
 
 [[tool]]
 name = "ssh"
-uuid = "186a8088-21f3-561e-9764-609b55766646"
 major = 1
 tier = "on"
 
@@ -18,13 +17,13 @@ network = []
 platform = ["linux"]
 
 [[needs.tool]]
-uuid = "892549fc-e262-5e5e-b420-c69134c77945"  # 2fa
+name = "2fa"
 major = 1
 
 [[needs.tool]]
-uuid = "2bfe60e2-3d54-5c59-9224-50b42b51b8f5"  # social
+name = "social"
 major = 1
 
 [[needs.tool]]
-uuid = "6f44bf94-92a9-5a38-a42c-42f892660641"  # vpn
+name = "vpn"
 major = 1

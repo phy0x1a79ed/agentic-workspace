@@ -8,7 +8,6 @@ name = "dev"
 
 [[tool]]
 name = "dev"
-uuid = "bee9b516-9609-5913-900c-458b4eaedebf"
 major = 1
 tier = "off"
 

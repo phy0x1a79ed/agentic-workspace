@@ -8,7 +8,6 @@ name = "zotero"
 
 [[tool]]
 name = "zotero"
-uuid = "642d0afc-f7d5-54a5-994d-430edb99f182"
 major = 1
 tier = "off"
 
@@ -18,5 +17,5 @@ network = []
 platform = ["linux"]
 
 [[needs.tool]]
-uuid = "7dd4203f-d8a2-5e25-95bf-f5277813e8d5"  # trilium
+name = "trilium"
 major = 1

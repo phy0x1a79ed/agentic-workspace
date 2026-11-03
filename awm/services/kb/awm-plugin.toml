@@ -13,7 +13,6 @@ export = "kb_export"
 
 [[tool]]
 name = "kb"
-uuid = "6ba61d47-6d89-543a-ad4c-d6f7816f7565"
 major = 1
 tier = "off"
 

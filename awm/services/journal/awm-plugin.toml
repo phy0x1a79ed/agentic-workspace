@@ -14,7 +14,6 @@ topic = "posts"
 
 [[tool]]
 name = "journal"
-uuid = "17fe8c12-3c76-5412-a796-9e88a3a5e1ce"
 major = 1
 tier = "on"
 
@@ -24,5 +23,5 @@ network = []
 platform = ["linux"]
 
 [[needs.tool]]
-uuid = "b138a5f6-d866-52cb-8ad8-1243a84aaf5e"  # scope
+name = "scope"
 major = 1

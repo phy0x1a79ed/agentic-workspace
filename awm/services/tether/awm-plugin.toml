@@ -8,7 +8,6 @@ name = "tether"
 
 [[tool]]
 name = "tether"
-uuid = "e3ac43f1-7166-5f97-8eb8-4808718b370b"
 major = 1
 tier = "on"
 
