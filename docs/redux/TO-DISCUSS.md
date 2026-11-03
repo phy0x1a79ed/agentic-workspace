@@ -25,6 +25,8 @@ Parent thread 1 (end state) waits for Tony to confirm `goal.md`. Its children 1a
 
 Top of the stack comes first.
 
+4c. **Remote start and an always-on answerer.** A service starts machines such as capella, mira, alcor and mizar from afar. At least one machine stays on at all times and can answer requests through an agent, so a mizar restart needs juggling. Tony: "I think id also like a service to remote start machines like capella, mira, alcor and mizar. there needs to be some way to ensure that at least 1 machine is always on and can answer requests through an agent so mizar restarts need a bit of juggling" (2026-11-03).
+
 4b. **The new search.** This session adopts the svc-kb search work (`fleet.md` R136). Read its plan and the open questions on card HaY7mBwx912w, settle what the redux needs, and apply it with everything else at the end. Tony: "lets adopt search into this session. we can talk about we need to and apply it with everything in the end" (2026-11-03).
 
 4. **What made it foundational.** Which problem made Tony think "rebuild" rather than "patch"?
