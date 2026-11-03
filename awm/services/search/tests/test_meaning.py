@@ -153,7 +153,7 @@ async def test_sources_kb_does_not_hold_keep_the_archives_embeddings(loaded, kb,
 async def test_without_kb_registered_no_call_is_made(archive, gateway, kb):
     gateway.plug("journals", {"j1": doc("Kitchen refit", SINK, "2026-03-01T10:00:00Z")})
     await synced(archive, gateway)
-    result = await archive.query(parse({"query": "kitchen sink refit"}))
+    result = await archive.query(parse({"query": "kitchen sink refit", "sources": ["journals"]}))
     assert kb["calls"] == [] and kb["brute"] == [["journals"]]
     assert [h["id"] for h in every(result)] == ["j1"]
 
@@ -161,6 +161,6 @@ async def test_without_kb_registered_no_call_is_made(archive, gateway, kb):
 async def test_kb_papers_keep_the_degraded_note_the_live_source_sends(archive, gateway):
     gateway.plug_live("kb", lambda args: {"exact": [], "related": [{"id": "p", "title": "T", "passages": []}],
                                           "graph": [], "degraded": {"semantic": "keyword only: encoder is loading"}})
-    result = await archive.query(parse({"query": "anything"}))
+    result = await archive.query(parse({"query": "anything", "sources": ["kb"]}))
     assert result["sources"]["kb"]["degraded"] == {"semantic": "keyword only: encoder is loading"}
     assert [h["id"] for h in flat(result["related"])] == ["p"]

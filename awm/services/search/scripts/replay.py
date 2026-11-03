@@ -78,13 +78,19 @@ def ranked(answer: dict[str, Any]) -> list[tuple[str, str, dict[str, Any], int]]
     return out
 
 
-def ask(hub: str, query: str, limit: int) -> dict[str, Any]:
+def searchable(hub: str) -> list[str]:
+    """Every source ``hub`` holds: a query names its sources, and the replay asks all of them."""
+    return [s["name"] for s in call(hub, "sources", {})["sources"]]
+
+
+def ask(hub: str, query: str, limit: int, sources: list[str]) -> dict[str, Any]:
     try:
-        return call(hub, "query", {"query": query, "limit": limit, "passages": 1, "peers": False})
+        return call(hub, "query", {"query": query, "limit": limit, "passages": 1, "peers": False,
+                                   "sources": sources})
     except RuntimeError as exc:
         if "passages" not in str(exc) and "Unknown" not in str(exc):
             raise
-        return call(hub, "query", {"query": query, "limit": limit})
+        return call(hub, "query", {"query": query, "limit": limit, "sources": sources})
 
 
 # -- seeding ---------------------------------------------------------------
@@ -223,12 +229,13 @@ def run(args: argparse.Namespace) -> int:
     by_query = judged(args.new, args.set, args.judgements)
     per_set: dict[str, dict[str, list[float]]] = defaultdict(lambda: defaultdict(list))
     lost, misplaced, unquoted, rows_out = [], [], 0, []
+    names = searchable(args.new)
     started = time.time()
     for query, rows in sorted(by_query.items()):
         if not any(r["verdict"] == "relevant" for r in rows):
             continue
-        new = score(rows, ask(args.new, query, 20))
-        old = score(rows, ask(args.old, query, 20)) if args.old else None
+        new = score(rows, ask(args.new, query, 20, names))
+        old = score(rows, ask(args.old, query, 20, names)) if args.old else None
         name = rows[0]["collection"] or "marks"
         per_set[name]["new@10"].append(recall(new["found"], 10))
         per_set[name]["new@20"].append(recall(new["found"], 20))

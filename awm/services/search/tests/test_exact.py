@@ -38,6 +38,10 @@ async def loaded(archive, gateway):
     return archive
 
 
+#: The sources the ``loaded`` fixture registers.
+LOADED = ["journals", "precedence"]
+
+
 def test_passages_are_exact_spans_with_their_sections():
     cut = passages.split(LOG)
     assert [p.section for p in cut] == ["Deploy notes", "Fix"]
@@ -59,7 +63,7 @@ def test_a_long_block_is_cut_under_the_cap_at_sentence_ends():
 
 async def test_a_literal_finds_a_hash_a_path_and_an_error_line(loaded):
     for literal in ("3f9a2c1d7e", "/etc/awm/env", "[Errno 111] Connection refused", "PORT=84"):
-        result = await loaded.query(parse({"query": literal}))
+        result = await loaded.query(parse({"query": literal, "sources": LOADED}))
         top = flat(result["exact"])[0]
         assert (top["id"], top["match"]) == ("j1", "literal"), literal
         quote = top["passages"][0]
@@ -69,14 +73,14 @@ async def test_a_literal_finds_a_hash_a_path_and_an_error_line(loaded):
 
 
 async def test_a_literal_across_two_passages_is_still_found(loaded):
-    result = await loaded.query(parse({"query": "3f9a2c1d7e.\n\n## Fix"}))
+    result = await loaded.query(parse({"query": "3f9a2c1d7e.\n\n## Fix", "sources": LOADED}))
     assert [h["id"] for h in flat(result["exact"])] == ["j1"]
     quote = flat(result["exact"])[0]["passages"][0]
     assert "## Fix" in quote["text"] and quote["text"] == LOG[quote["start"]:quote["end"]]
 
 
 async def test_a_case_sensitive_match_ranks_first_and_quotes_strip_one_pair(loaded):
-    result = await loaded.query(parse({"query": '"ConnectionRefusedError"'}))
+    result = await loaded.query(parse({"query": '"ConnectionRefusedError"', "sources": LOADED}))
     assert [h["id"] for h in flat(result["exact"])[:2]] == ["j1", "j3"]
     assert flat(result["exact"])[1]["passages"][0]["field"] == "title"
 
@@ -87,7 +91,7 @@ async def test_a_short_literal_scans(loaded):
 
 
 async def test_keywords_follow_literals_and_no_document_repeats_across_sections(loaded):
-    result = await loaded.query(parse({"query": "gateway 8443"}))
+    result = await loaded.query(parse({"query": "gateway 8443", "sources": LOADED}))
     matches = [h["match"] for h in flat(result["exact"])]
     assert matches == sorted(matches, key=lambda m: m != "literal")
     assert "keyword" in matches
@@ -96,17 +100,17 @@ async def test_keywords_follow_literals_and_no_document_repeats_across_sections(
 
 
 async def test_a_document_holding_only_some_of_the_words_is_related_not_exact(loaded):
-    result = await loaded.query(parse({"query": "gateway restart unit caps"}))
+    result = await loaded.query(parse({"query": "gateway restart unit caps", "sources": LOADED}))
     assert flat(result["exact"]) == []
     assert {h["id"] for h in flat(result["related"])} >= {"j1", "j2", "j3", "p1"}
-    both = await loaded.query(parse({"query": "restart unit"}))
+    both = await loaded.query(parse({"query": "restart unit", "sources": LOADED}))
     assert [(h["id"], h["match"]) for h in flat(both["exact"])] == [("j1", "keyword")]
 
 
 async def test_kind_takes_a_list(loaded):
-    result = await loaded.query(parse({"query": "gateway", "kind": ["message", "decision"]}))
+    result = await loaded.query(parse({"query": "gateway", "sources": LOADED, "kind": ["message", "decision"]}))
     assert {h["id"] for h in every(result)} == {"j2", "p1"}
-    result = await loaded.query(parse({"query": "gateway", "kind": "journal,message"}))
+    result = await loaded.query(parse({"query": "gateway", "sources": LOADED, "kind": "journal,message"}))
     assert {h["id"] for h in every(result)} <= {"j1", "j2", "j3"}
 
 
@@ -120,8 +124,8 @@ async def test_an_edit_recuts_the_passages(archive, gateway):
     await synced(archive, gateway)
     exporter.docs["j1"] = doc("Notes", "replaced body with deadbeefcafe")
     assert (await archive.sweep("journals"))["changed"] == 1
-    assert (await archive.query(parse({"query": "3f9a2c1d7e"})))["exact"] == {}
-    assert (await archive.query(parse({"query": "deadbeefcafe"})))["exact"]["journals"][0]["id"] == "j1"
+    assert (await archive.query(parse({"query": "3f9a2c1d7e", "sources": ["journals"]})))["exact"] == {}
+    assert (await archive.query(parse({"query": "deadbeefcafe", "sources": ["journals"]})))["exact"]["journals"][0]["id"] == "j1"
     conn = store.connect()
     try:
         assert {r[0] for r in conn.execute("SELECT text FROM passages")} == {"Notes", "replaced body with deadbeefcafe"}
@@ -151,7 +155,7 @@ async def test_grep_parity_on_sampled_substrings(archive, gateway):
         needle = text[at:at + n]
         if not needle.strip() or needle != needle.strip():
             continue
-        result = await archive.query(parse({"query": needle, "limit": 100}))
+        result = await archive.query(parse({"query": needle, "sources": ["journals"], "limit": 100}))
         assert key in {h["id"] for h in flat(result["exact"]) if h["match"] == "literal"}, needle
 
 
@@ -174,7 +178,7 @@ async def test_a_live_source_answering_in_sections_keeps_its_passages(loaded, ga
 
 async def test_a_peer_on_an_older_release_answers_in_related(loaded, peers):
     peers.add("capella", lambda args: {"hits": [{"source": "journals", "id": "r1", "snippet": "from afar"}]})
-    result = await loaded.query(parse({"query": "zzzz", "peers": "capella"}))
+    result = await loaded.query(parse({"query": "zzzz", "sources": ["journals"], "peers": "capella"}))
     assert [h["id"] for h in flat(result["related"])] == ["r1"]
     assert flat(result["related"])[0]["passages"] == [{"text": "from afar"}]
 

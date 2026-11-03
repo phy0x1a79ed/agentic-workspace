@@ -15,6 +15,8 @@ from .conftest import doc, every, flat, synced
 pytestmark = [pytest.mark.search]
 
 HIT_KEYS = {"source", "id", "title", "ts", "score", "match", "passages", "origin"}
+#: The index sources the ``loaded`` fixture registers.
+LOADED = ["journals", "precedence", "kb"]
 
 
 @pytest.fixture()
@@ -38,8 +40,8 @@ def ids(result):
     return [(h["source"], h["id"]) for h in every(result)]
 
 
-async def test_one_ranked_list_spans_every_source(loaded):
-    result = await loaded.query(parse({"query": "kitchen sink"}))
+async def test_one_ranked_list_spans_every_named_source(loaded):
+    result = await loaded.query(parse({"query": "kitchen sink", "sources": LOADED}))
     assert {s for s, _ in ids(result)} == {"journals", "precedence", "kb"}
     for h in every(result):
         assert HIT_KEYS <= set(h)
@@ -84,7 +86,7 @@ async def test_a_bad_date_is_refused():
 
 
 async def test_limit_is_clamped(loaded):
-    result = await loaded.query(parse({"query": "kitchen", "limit": 1}))
+    result = await loaded.query(parse({"query": "kitchen", "limit": 1, "sources": LOADED}))
     assert all(len(hits) == 1 for s in ("exact", "related") for hits in result[s].values())
     assert result["exact"] and result["related"]
     assert parse({"query": "x", "limit": 5000}).limit == 100
@@ -132,28 +134,41 @@ def transcripts(args):
                       "ts": "2026-06-01T00:00:00+00:00", "project": "awm"}]}
 
 
-async def test_a_live_source_runs_only_when_named_if_it_is_opt_in(loaded, gateway):
-    gateway.plug_live("transcripts", transcripts, optin=True)
+async def test_a_query_without_sources_is_refused_and_names_the_searchable_ones(loaded, gateway):
+    gateway.plug_live("web", transcripts)
     await loaded.refresh()
-    default = await loaded.query(parse({"query": "kitchen"}))
-    assert "transcripts" not in default["sources"]
+    with pytest.raises(ValueError, match="needs `sources`") as refused:
+        await loaded.query(parse({"query": "kitchen"}))
+    assert "Searchable here: " + ", ".join(sorted(LOADED + ["web"])) in str(refused.value)
+    assert not any(fn == "query" for _, fn, _ in gateway.calls)
+
+
+@pytest.mark.parametrize("optin", [True, False])
+async def test_a_live_source_runs_only_when_named(loaded, gateway, optin):
+    gateway.plug_live("transcripts", transcripts, optin=optin)
+    await loaded.refresh()
+    others = await loaded.query(parse({"query": "kitchen", "sources": LOADED}))
+    assert "transcripts" not in others["sources"] and ("transcripts", "s1:7") not in ids(others)
+    assert not any(fn == "query" for _, fn, _ in gateway.calls)
     named = await loaded.query(parse({"query": "kitchen", "sources": ["transcripts"]}))
     assert ids(named) == [("transcripts", "s1:7")]
     assert named["sources"]["transcripts"] == {"status": "ok", "hits": 1}
     assert last_query(gateway)["query"] == "kitchen"
 
 
-async def test_a_live_source_that_is_not_opt_in_joins_the_default_search(loaded, gateway):
+async def test_a_relayed_query_without_sources_keeps_the_old_default(loaded, gateway):
     gateway.plug_live("web", transcripts)
+    gateway.plug_live("transcripts", transcripts, optin=True)
     await loaded.refresh()
-    result = await loaded.query(parse({"query": "kitchen"}))
-    assert ("web", "s1:7") in ids(result)
+    result = await loaded.query(parse({"query": "kitchen"}, "peer:altair"))
+    assert set(result["sources"]) == {*LOADED, "web"}
+    assert ("web", "s1:7") in ids(result) and ("transcripts", "s1:7") not in ids(result)
 
 
 async def test_a_failing_live_source_never_hides_the_archive(loaded, gateway):
     gateway.plug_live("web", lambda args: RuntimeError("boom"))
     await loaded.refresh()
-    result = await loaded.query(parse({"query": "kitchen"}))
+    result = await loaded.query(parse({"query": "kitchen", "sources": [*LOADED, "web"]}))
     assert result["sources"]["web"]["status"] == "error" and "boom" in result["sources"]["web"]["error"]
     assert ids(result)
 
@@ -161,13 +176,14 @@ async def test_a_failing_live_source_never_hides_the_archive(loaded, gateway):
 async def test_a_malformed_live_reply_is_an_error_status(loaded, gateway):
     gateway.plug_live("web", lambda args: {"results": []})
     await loaded.refresh()
-    assert (await loaded.query(parse({"query": "kitchen"})))["sources"]["web"]["status"] == "error"
+    assert (await loaded.query(parse({"query": "kitchen", "sources": ["web"]})))["sources"]["web"]["status"] == "error"
 
 
 async def test_filters_reach_a_live_source(loaded, gateway):
     gateway.plug_live("web", transcripts)
     await loaded.refresh()
-    await loaded.query(parse({"query": "kitchen", "project": "awm", "after": "2026-01-01", "passages": 3}))
+    await loaded.query(parse({"query": "kitchen", "sources": ["web"], "project": "awm", "after": "2026-01-01",
+                                     "passages": 3}))
     assert last_query(gateway) == {"query": "kitchen", "limit": 10, "passages": 3, "project": "awm",
                                    "after": "2026-01-01"}
 
@@ -175,7 +191,7 @@ async def test_filters_reach_a_live_source(loaded, gateway):
 async def test_a_source_that_turns_live_drops_its_indexed_documents(loaded, gateway):
     gateway.plug("papers", {"z1": doc("Old abstract", "kitchen sink abstract")})
     await synced(loaded, gateway)
-    assert ("papers", "z1") in ids(await loaded.query(parse({"query": "kitchen sink"})))
+    assert ("papers", "z1") in ids(await loaded.query(parse({"query": "kitchen sink", "sources": ["papers"]})))
     gateway.stop("papers")
     gateway.plug_live("papers", lambda args: {"exact": [{"source": "papers", "id": "doi:1", "title": "New"}]})
     await loaded.refresh()
@@ -227,7 +243,9 @@ def peer_hits(*docs, sources=("journals",)):
 async def test_no_peers_named_searches_this_node_only(loaded, peers):
     peers.add("altair", peer_hits("r1"))
     for value in (None, False, "", "local", ["local"]):
-        args = {"query": "kitchen"} if value is None else {"query": "kitchen", "peers": value}
+        args = {"query": "kitchen", "sources": LOADED}
+        if value is not None:
+            args["peers"] = value
         result = await loaded.query(parse(args))
         assert result["peers"] == {} and every(result)
     assert peers.calls == []
@@ -249,7 +267,7 @@ async def test_named_peers_are_asked_apart_and_their_hits_join_the_list(loaded, 
 
 async def test_a_named_peer_alone_runs_the_query_there_only(loaded, peers):
     peers.add("shaula", peer_hits("r3"), relation="foreign", swarm="other")
-    result = await loaded.query(parse({"query": "kitchen", "peers": "shaula"}))
+    result = await loaded.query(parse({"query": "kitchen", "sources": ["journals"], "peers": "shaula"}))
     assert [h["id"] for h in every(result)] == ["r3"]
     assert result["sources"] == {}
 
@@ -268,7 +286,7 @@ async def test_fleet_asks_every_domestic_node_and_never_a_foreign_one(loaded, pe
     peers.add("capella", peer_hits("r1"))
     peers.add("mira", peer_hits("r2"), role="station")
     peers.add("shaula", peer_hits("r3"), relation="foreign", swarm="other")
-    result = await loaded.query(parse({"query": "kitchen", "peers": "fleet"}))
+    result = await loaded.query(parse({"query": "kitchen", "sources": LOADED, "peers": "fleet"}))
     assert result["peers"] == {"capella": {"status": "ok", "hits": 1, "sources": ["journals"]},
                                "mira": {"status": "station"}}
     assert [c[0] for c in peers.calls] == ["capella"]
@@ -280,7 +298,7 @@ async def test_fleet_among_names_adds_the_domestic_nodes_to_them(loaded, peers):
     peers.add("shaula", peer_hits("r3"), relation="foreign", swarm="other")
     for value in ("fleet,shaula", ["shaula", "fleet", "capella"]):
         peers.calls.clear()
-        result = await loaded.query(parse({"query": "kitchen", "peers": value}))
+        result = await loaded.query(parse({"query": "kitchen", "sources": LOADED, "peers": value}))
         assert set(result["peers"]) == {"capella", "shaula"}
         assert sorted(c[0] for c in peers.calls) == ["capella", "shaula"]
         assert any(h["origin"]["node"] == "local" for h in every(result))
@@ -302,7 +320,7 @@ async def test_a_release_without_search_is_no_search_at_home_and_unsupported_abr
 
     peers.add("capella", missing)
     peers.add("shaula", missing, relation="foreign", swarm="other")
-    result = await loaded.query(parse({"query": "kitchen", "peers": "local,capella,shaula"}))
+    result = await loaded.query(parse({"query": "kitchen", "sources": LOADED, "peers": "local,capella,shaula"}))
     assert result["peers"]["capella"]["status"] == "no-search"
     assert result["peers"]["shaula"]["status"] == "unsupported"
     assert any(h["origin"]["node"] == "local" for h in every(result))
@@ -318,7 +336,7 @@ async def test_a_failing_or_slow_peer_is_a_status(loaded, peers, monkeypatch):
     peers.add("junk", lambda args: {"detail": "nope"})
     peers.add("big", lambda args: "x" * (federation.MAX_REPLY_BYTES + 1))
     peers.add("slow", slow)
-    result = await loaded.query(parse({"query": "kitchen", "peers": "fleet"}))
+    result = await loaded.query(parse({"query": "kitchen", "sources": LOADED, "peers": "fleet"}))
     assert "refused" in result["peers"]["down"]["error"]
     assert "no hits" in result["peers"]["junk"]["error"]
     assert "exceeds" in result["peers"]["big"]["error"]
@@ -337,7 +355,7 @@ async def test_a_call_from_a_peer_searches_this_node_only(loaded, peers):
 async def test_named_peers_are_asked_and_unknown_ones_reported(loaded, peers):
     peers.add("altair", peer_hits("r1"))
     peers.add("deneb", peer_hits("r2"))
-    result = await loaded.query(parse({"query": "kitchen", "peers": ["altair", "ghost"]}))
+    result = await loaded.query(parse({"query": "kitchen", "sources": LOADED, "peers": ["altair", "ghost"]}))
     assert set(result["peers"]) == {"altair", "ghost"}
     assert result["peers"]["ghost"]["error"] == "not in the peer book"
     assert [c[0] for c in peers.calls] == ["altair"]
@@ -348,7 +366,8 @@ async def test_a_peer_answering_with_one_list_per_source_joins_each_source_apart
         "exact": {"journals": [{"source": "journals", "id": "far1", "title": "Kitchen elsewhere"}],
                   "kb": [{"source": "kb", "id": "doi:9", "title": "A far paper"}]},
         "related": {}, "graph": {}})
-    result = await loaded.query(parse({"query": "kitchen", "peers": ["altair", "local"], "limit": 5}))
+    result = await loaded.query(parse({"query": "kitchen", "sources": ["journals", "kb"], "peers": ["altair", "local"],
+                                       "limit": 5}))
     assert {h["id"] for h in result["exact"]["journals"]} >= {"far1", "j1"}
     assert [h["origin"]["node"] for h in result["exact"]["kb"] if h["id"] == "doi:9"] == ["altair"]
 
@@ -369,7 +388,9 @@ async def test_a_domain_homed_elsewhere_is_asked_of_its_home_alone(loaded, peers
     peers.add("altair", papers_home)
     await loaded.refresh_homes(force=True)
     assert loaded.homed == {"papers": "altair"}
-    result = await loaded.query(parse({"query": "kitchen"}))
+    with pytest.raises(ValueError, match="Searchable here: journals, kb, papers, precedence"):
+        await loaded.query(parse({"query": "kitchen"}))
+    result = await loaded.query(parse({"query": "kitchen", "sources": [*LOADED, "papers"]}))
     assert ("papers", "doi:1") in ids(result)
     assert result["sources"]["papers"] == {"status": "ok", "hits": 1, "via": "altair"}
     assert result["peers"] == {}
@@ -393,7 +414,7 @@ async def test_an_unreachable_home_keeps_its_sources_and_reports_the_error(loade
     peers.answers["altair"] = lambda args: ConnectionError("no route to host")
     await loaded.refresh_homes(force=True)
     assert loaded.homed == {"papers": "altair"}
-    result = await loaded.query(parse({"query": "kitchen"}))
+    result = await loaded.query(parse({"query": "kitchen", "sources": [*LOADED, "papers"]}))
     assert result["sources"]["papers"]["status"] == "error" and result["sources"]["papers"]["via"] == "altair"
     assert ids(result)
 
@@ -410,7 +431,7 @@ async def test_get_with_a_node_reads_that_peers_archive(peers):
 
 
 async def test_kb_ranks_each_section_for_the_context_and_never_changes_its_hits(loaded, gateway):
-    plain = await loaded.query(parse({"query": "kitchen"}))
+    plain = await loaded.query(parse({"query": "kitchen", "sources": LOADED}))
     asked = []
 
     def rank(args):
@@ -418,7 +439,7 @@ async def test_kb_ranks_each_section_for_the_context_and_never_changes_its_hits(
         return {"profile": "scope:awm/dev + project:awm", "scores": [float(i) for i in range(len(args["hits"]))]}
 
     gateway.handlers[("kb", "rank")] = rank
-    ranked = await loaded.query(parse({"query": "kitchen", "context": "awm/dev"}))
+    ranked = await loaded.query(parse({"query": "kitchen", "sources": LOADED, "context": "awm/dev"}))
     assert asked[-1]["context"] == "awm/dev"
     assert set(asked[-1]["hits"][0]) == {"source", "id", "project", "scope"}
     assert ranked["rank"] == {"profile": "scope:awm/dev + project:awm"}
@@ -429,14 +450,14 @@ async def test_kb_ranks_each_section_for_the_context_and_never_changes_its_hits(
 
 async def test_a_failed_rank_leaves_the_answer_in_its_section_order(loaded, gateway):
     gateway.handlers[("kb", "rank")] = lambda args: RuntimeError("no graph")
-    result = await loaded.query(parse({"query": "kitchen"}))
+    result = await loaded.query(parse({"query": "kitchen", "sources": LOADED}))
     assert "no graph" in result["rank"]["error"] and ids(result)
 
 
 async def test_no_kb_asks_for_no_rank(archive, gateway):
     gateway.plug("journals", {"j1": doc("Kitchen", "kitchen sink", kind="journal")})
     await synced(archive, gateway)
-    result = await archive.query(parse({"query": "kitchen"}))
+    result = await archive.query(parse({"query": "kitchen", "sources": ["journals"]}))
     assert "rank" not in result and not any(fn == "rank" for _, fn, _ in gateway.calls)
 
 
@@ -466,7 +487,7 @@ async def test_a_live_paper_source_and_a_peer_are_asked_with_the_steps_and_the_a
 
 
 async def test_an_author_filter_leaves_the_archived_sources_empty(loaded):
-    result = await loaded.query(parse({"query": "kitchen", "author": "Lee"}))
+    result = await loaded.query(parse({"query": "kitchen", "sources": LOADED, "author": "Lee"}))
     assert not every(result)
     assert result["sources"]["journals"] == {"status": "ok", "hits": 0}
 
@@ -479,7 +500,7 @@ async def test_pagerank_never_reorders_paper_hits(loaded, gateway):
         return {"profile": "global", "scores": [1.0] * len(args["hits"])}
 
     gateway.handlers[("kb", "rank")] = rank
-    await loaded.query(parse({"query": "kitchen tap"}))
+    await loaded.query(parse({"query": "kitchen tap", "sources": LOADED}))
     assert asked and all(h["source"] not in ("kb", "library") for h in asked[-1]["hits"])
 
 
@@ -487,7 +508,7 @@ async def test_the_library_is_a_live_source_of_its_own(loaded, gateway):
     gateway.plug_live("library", lambda args: {"exact": [], "related": [
         {"id": "doi:10.1/mine", "title": "My paper", "ts": "2021-01-01T00:00:00Z"}], "graph": []}, service="kb")
     await loaded.refresh()
-    both = await loaded.query(parse({"query": "kitchen tap"}))
+    both = await loaded.query(parse({"query": "kitchen tap", "sources": [*LOADED, "library"]}))
     assert [h["id"] for h in both["related"]["library"]] == ["doi:10.1/mine"]
     alone = await loaded.query(parse({"query": "kitchen tap", "sources": ["library"]}))
     assert set(alone["related"]) == {"library"} and not alone["exact"]

@@ -398,9 +398,14 @@ class Archive:
         await self._refresh_if_stale()
         rows = {r["name"]: r for r in await self._rows(q.grants, q.hidden)}
         statuses: dict[str, Any] = {}
+        searchable = sorted({*rows, *self.homed})
         if not q.local:
             rows = {}
-        if q.sources is None:
+        if q.sources is None and not q.relayed:
+            # Every source is opt in (fleet.md R136 item 4): the caller names what to search.
+            raise ValueError("search query needs `sources`: names from `search sources`. Searchable here: "
+                             + (", ".join(searchable) or "none"))
+        if q.sources is None:  # a peer that predates opt-in sources relays a query without them
             picked = [n for n, r in rows.items() if r["mode"] == "index" or not r["spec"].get("optin")]
         else:
             picked = [n for n in q.sources if n in rows]

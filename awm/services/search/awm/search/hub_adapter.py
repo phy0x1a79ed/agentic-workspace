@@ -39,8 +39,9 @@ API_MANIFEST: dict[str, Any] = {
             "tool": "search_query",
             "timeout": 60,
             "description": (
-                "One search over everything the swarm knows: journals, precedents, papers "
-                "and any other source in `search sources`. It searches this node only, unless "
+                "One search over the sources you name in `sources`: journals, precedents, papers "
+                "or any other source `search sources` lists. No source is searched unless named. "
+                "It searches this node only, unless "
                 "`peers` names other nodes. The answer has three ranked sections, read in "
                 "order: `exact` (the query as a literal substring, case-insensitive, then "
                 "keyword matches), `related` (nearest in meaning) and `graph` (linked through "
@@ -61,9 +62,9 @@ API_MANIFEST: dict[str, Any] = {
             "params": [
                 {"name": "query", "type": "string", "required": True,
                  "description": "What to find, in words."},
-                {"name": "sources", "type": "array",
-                 "description": "Only these sources (names from `sources`). Default: every "
-                                "index source and every live source that is not opt-in."},
+                {"name": "sources", "type": "array", "required": True,
+                 "description": "The sources to search: names from `search sources`, such as "
+                                "journals, precedence or kb (papers)."},
                 {"name": "project", "type": "string", "description": "Only this project's documents."},
                 {"name": "scope", "type": "string", "description": "Only this scope's documents."},
                 {"name": "kind", "type": "array",

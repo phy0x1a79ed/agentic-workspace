@@ -52,7 +52,8 @@ ALL = {"j1", "j2", "j3", "j4", "j5", "j6", "j7", "j8", "j9", "p1", "p2", "p3"}
 
 
 async def found(args, as_):
-    return {h["id"] for h in every(await HANDLERS["query"]({"query": "kitchen sink", "limit": 50, **args}, as_))}
+    args = {"query": "kitchen sink", "sources": ["journals", "precedence"], "limit": 50, **args}
+    return {h["id"] for h in every(await HANDLERS["query"](args, as_))}
 
 
 @pytest.mark.parametrize("as_", [LOCAL, USER, "agent:x"])
