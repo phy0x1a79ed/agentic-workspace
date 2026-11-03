@@ -44,6 +44,10 @@ RARE_BUDGET = 50_000
 #: literal's word lookup and the AND leg's scan in id order. Cold, a posting list costs about a random read per
 #: page, so past this the AND leg is the champion lists' intersection alone.
 READ_BUDGET = 150_000
+#: Both budgets grow this many times on a base of 64 KB pages, as kb's build writes it: vacuumed, each posting
+#: list lies in ascending pages and the kernel reads ahead. On altair, cold, an AND over 3M postings took 1.2 s
+#: there and 66 s on 4 KB pages.
+BIG_PAGE_BUDGET = 64
 #: A BM25 lookup that scores more passages than this is split by passage id into up to :data:`SHARDS`
 #: ranges, one thread each.
 SHARD_PASSAGES = 40_000
@@ -645,13 +649,14 @@ def _literal_rows(conn: sqlite3.Connection, needle: str) -> list[sqlite3.Row]:
         df = document_frequency(conn, terms(phrase))
         if df and min(df.values()) == 0:
             return []
+        rare_budget, read_budget = _budgets(conn)
         rare, spent = [], 0
         for w in sorted(df, key=df.__getitem__):
-            if rare and spent + df[w] > READ_BUDGET:
+            if rare and spent + df[w] > read_budget:
                 break
             rare.append(w)
             spent += df[w]
-        if rare and df[rare[0]] <= RARE_BUDGET:
+        if rare and df[rare[0]] <= rare_budget:
             ids = [r[0] for r in conn.execute("SELECT rowid FROM passage_bm25 WHERE passage_bm25 MATCH ? LIMIT ?",
                                               (" AND ".join(f'"{w}"' for w in rare), CANDIDATES))]
             if len(ids) < CANDIDATES:
@@ -676,6 +681,12 @@ def _literal_rows(conn: sqlite3.Connection, needle: str) -> list[sqlite3.Row]:
     if len(ids) < CANDIDATES or len(ordered) <= 2 * PROBE_GRAMS:
         return _passages_by_id(conn, ids) if ids else []
     return _passages_by_id(conn, ids) if wild else conn.execute(*like).fetchall()
+
+
+def _budgets(conn: sqlite3.Connection) -> tuple[int, int]:
+    """:data:`RARE_BUDGET` and :data:`READ_BUDGET` for ``conn``'s store, by its page size."""
+    scale = BIG_PAGE_BUDGET if conn.execute("PRAGMA page_size").fetchone()[0] >= 65536 else 1
+    return RARE_BUDGET * scale, READ_BUDGET * scale
 
 
 def _read_ids(conn: sqlite3.Connection, ids: list[int]) -> list[sqlite3.Row]:
@@ -832,7 +843,7 @@ def _champion_legs(conn: sqlite3.Connection, every: list[str],
     if not every:
         return [], related
     found: set[int] = set()
-    if sum(document_frequency(conn, every).values()) <= READ_BUDGET:
+    if sum(document_frequency(conn, every).values()) <= _budgets(conn)[1]:
         expr = " AND ".join(f'"{w}"' for w in every)
         found = {r[0] for r in conn.execute("SELECT rowid FROM passage_bm25 WHERE passage_bm25 MATCH ? LIMIT ?",
                                             (expr, CANDIDATES))}
