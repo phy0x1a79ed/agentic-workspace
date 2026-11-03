@@ -63,3 +63,29 @@ Surveyed read only on mizar, 2026-11-03.
 - Serve rooms at `/room/<name>` on the edge and the relay, in place of `/tether/r/<name>` and the relay's `/r/<name>`.
 - Move `run`, `shell`, `keys` and `drain` from the `tether` tool onto `channel` (`write` targets and `drain`). Remove the `tether` tool.
 - Keep Caviar's listener and the muse link on the board until persistent rooms carry them.
+
+## Build result
+
+Reported by the redux-channels lane on 2026-11-03. Local commits only. awm `feat/redux-channels`: 5dccb5b3, b8116164, 3a8f7e05, 43235b4a, 9a7b1af4. tether `feat/redux-channels`: the four overnight commits plus 9b7bc7e and 94a30f2, ready to push and release. awm still pins tether v0.2.0, so the `/room/` paths work live only after the release and the pin bump.
+
+- **Built.**
+  - Rooms at `/room/<name>`. A websocket upgrade forwards the client address.
+  - Task and persistent rooms. Holders are keyed by R9 session, and a room closes when its session ends.
+  - The tether folded into `channel` (`awm.channel.tether`): `write` takes the `say` and `shell` targets, and `drain` reads the tool log. `awm/services/tether` is deleted.
+  - An epoch reset ends the machine channel and resets its cursor.
+  - The plugin loads through the plugins lane's discovery.
+- **Tests pass.** Relay 116, channel plugin 92 against the real relay, gateway 1125, httpsfront 962. `spake2` 0.9 installs through the plugin's `install.sh`.
+- **Waiting.** The R69 shared push loop waits on the trust lane's `seats.py`.
+- **Open for Tony.**
+  1. R73 item 2: the build uses the `spake2` crates' suite, not RFC 9382.
+  2. Relay limits: 64 rooms, persistent rooms included, 64 KiB per message, and a backlog of 256 messages or 1 MiB.
+  3. Rooms live in the relay's memory, so a relay restart or a deneb deploy ends every persistent room.
+  4. No verb restarts the tether daemon, and logs and resize are gone, because R110's verb list leaves them out.
+  5. An isolated session (R111) cannot hold a channel. It has an R9 id but no job to push into.
+- **For the cleanup pass.**
+  - `channel/holders.py:159` Pusher duplicates `social/seats.py:125` (R69).
+  - `holders.py:41` `r9()` duplicates `gateway/mcp_caller.py:141`.
+  - Owner bookkeeping in `tether/stream.py` that nothing else reads.
+  - The dead restart code in `tether/daemon.py`.
+  - The plugin's legacy `service.toml`, `tether-dev.sh`, and the tether lines in `scripts/sirius/`.
+  - The tether counts in `gateway/usage_seed.txt:86-97`, and the tether topic used in `test_emit_listen.py`.
