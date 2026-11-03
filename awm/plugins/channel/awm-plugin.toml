@@ -1,0 +1,32 @@
+[plugin]
+name = "channel"
+version = "0.1.0"
+trust = "own"
+
+[[service]]
+name = "channel"
+path = "."
+run = "run.sh"
+install = "install.sh"
+
+[[tool]]
+name = "channel"
+uuid = "57bc3d19-3003-5735-b0fc-850a5bad6321"
+major = 1
+service = "channel"
+tier = "on"
+
+[needs]
+secrets = ["AWM_TETHER_ISSUE_TOKEN"]
+network = ["nexus.tony-xy-liu.com"]
+
+# reflection: `message` pushes each line into the holder's prompt, `list`
+# (served by cx) tells which holders are gone.
+[[needs.tool]]
+uuid = "550c10ed-c2cb-5175-acfa-b17e97b52d6c"
+major = 1
+
+# tether: a machine channel drives the operator daemon through it.
+[[needs.tool]]
+uuid = "e3ac43f1-7166-5f97-8eb8-4808718b370b"
+major = 1
