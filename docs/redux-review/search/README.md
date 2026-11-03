@@ -30,3 +30,5 @@ Surveyed read only on 2026-11-03. The paths are on altair: awm `feat/svc-kb` at 
 - `fleet.md` § Gap says no code exists for the approved plan. T1 to T7 are done.
 
 ## Decisions
+
+- 2026-11-03: Drop the prior and the graph section. Search returns exact and related. A hop is its own `kb hop` call on paper ids, and `then` goes (`fleet.md` R136 item 5). Tony: "accept drop both".
