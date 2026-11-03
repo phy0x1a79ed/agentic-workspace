@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 pub const CONFIG_FILE: &str = "config.toml";
 pub const DEFAULT_LISTEN: &str = "127.0.0.1:7819";
-pub const DEFAULT_RESERVED: [&str; 4] = ["2fa", "approver", "queue-store", "journal"];
+pub const DEFAULT_RESERVED: [&str; 5] = ["awm", "2fa", "approver", "queue-store", "journal"];
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]

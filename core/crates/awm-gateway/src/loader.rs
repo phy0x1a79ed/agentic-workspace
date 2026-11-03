@@ -45,7 +45,7 @@ pub struct ToolSpec {
     pub declared: String,
     pub uuid: Uuid,
     pub major: u32,
-    pub service: String,
+    pub services: Vec<String>,
     pub tier: Tier,
     pub implements: Vec<(Uuid, u32)>,
     pub plugin: String,
@@ -161,8 +161,9 @@ pub fn load(input: &LoadInput) -> LoadResult {
     }
 
     let reserved: BTreeSet<&str> = input.reserved.iter().map(String::as_str).collect();
-    let mut tool_names: HashMap<String, String> = HashMap::new();
-    let mut tool_uuids: HashMap<Uuid, String> = HashMap::new();
+    // tool name or uuid → (owner plugin, owner is legacy)
+    let mut tool_names: HashMap<String, (String, bool)> = HashMap::new();
+    let mut tool_uuids: HashMap<Uuid, (String, bool)> = HashMap::new();
     let mut service_names: HashMap<String, String> = HashMap::new();
     let mut plugins = Vec::new();
 
@@ -187,8 +188,8 @@ pub fn load(input: &LoadInput) -> LoadResult {
             continue;
         }
         for t in &plugin.tools {
-            tool_names.insert(t.name.clone(), name.clone());
-            tool_uuids.insert(t.uuid, name.clone());
+            tool_names.entry(t.name.clone()).or_insert((name.clone(), plugin.legacy));
+            tool_uuids.entry(t.uuid).or_insert((name.clone(), plugin.legacy));
         }
         for s in &plugin.services {
             service_names.insert(s.name.clone(), name.clone());
@@ -267,6 +268,7 @@ fn read_folder(dir: &Path) -> Option<Result<(Manifest, bool), String>> {
             name: tool,
             major: 1,
             service: Some(name),
+            services: vec![],
             tier: Tier::from_legacy(legacy.tier.as_deref()),
             implements: vec![],
         }],
@@ -324,15 +326,19 @@ fn build_plugin(cand: &Candidate, input: &LoadInput, warnings: &mut Vec<String>)
         if !valid_tool_name(&t.name) {
             return Err(format!("tool {:?} must be letters, digits and hyphens", t.name));
         }
-        let service = match (&t.service, services.len()) {
-            (Some(s), _) => s.clone(),
-            (None, 1) => services[0].name.clone(),
-            (None, n) => return Err(format!("tool {:?} names no service and the plugin has {n}", t.name)),
+        let served_by: Vec<String> = match (&t.service, t.services.is_empty(), services.len()) {
+            (Some(_), false, _) => return Err(format!("tool {:?} sets both service and services", t.name)),
+            (Some(s), true, _) => vec![s.clone()],
+            (None, false, _) => t.services.clone(),
+            (None, true, 1) => vec![services[0].name.clone()],
+            (None, true, n) => return Err(format!("tool {:?} names no service and the plugin has {n}", t.name)),
         };
-        let Some(svc) = services.iter_mut().find(|s| s.name == service) else {
-            return Err(format!("tool {:?} names service {service:?}, which the plugin does not declare", t.name));
-        };
-        svc.tools.push(t.name.clone());
+        for service in &served_by {
+            let Some(svc) = services.iter_mut().find(|s| &s.name == service) else {
+                return Err(format!("tool {:?} names service {service:?}, which the plugin does not declare", t.name));
+            };
+            svc.tools.push(t.name.clone());
+        }
         let mut implements = Vec::new();
         for raw in &t.implements {
             implements.push(parse_implements(raw).ok_or_else(|| format!("tool {:?}: bad implements {raw:?}", t.name))?);
@@ -342,7 +348,7 @@ fn build_plugin(cand: &Candidate, input: &LoadInput, warnings: &mut Vec<String>)
             declared: t.name.clone(),
             uuid: t.uuid,
             major: t.major,
-            service,
+            services: served_by,
             tier: t.tier,
             implements,
             plugin: name.clone(),
@@ -387,8 +393,8 @@ fn find_page(roots: &[PathBuf], name: &str) -> Option<PathBuf> {
 fn claim(
     p: &Plugin,
     reserved: &BTreeSet<&str>,
-    tool_names: &HashMap<String, String>,
-    tool_uuids: &HashMap<Uuid, String>,
+    tool_names: &HashMap<String, (String, bool)>,
+    tool_uuids: &HashMap<Uuid, (String, bool)>,
     service_names: &HashMap<String, String>,
 ) -> Result<(), String> {
     let mut own = BTreeSet::new();
@@ -399,11 +405,17 @@ fn claim(
         if reserved.contains(t.name.as_str()) && !(p.core && p.trust == Trust::Own) {
             return Err(format!("tool {:?} is reserved for core plugins", t.name));
         }
-        if let Some(owner) = tool_names.get(&t.name) {
-            return Err(format!("tool {:?} is already served by plugin {owner:?}", t.name));
+        // Legacy folders share a tool as today (cx, keep and reflection all publish
+        // `reflection`). The hub refuses a verb two services both publish.
+        if let Some((owner, legacy)) = tool_names.get(&t.name) {
+            if !(p.legacy && *legacy) {
+                return Err(format!("tool {:?} is already served by plugin {owner:?}", t.name));
+            }
         }
-        if let Some(owner) = tool_uuids.get(&t.uuid) {
-            return Err(format!("tool uuid {} is already served by plugin {owner:?}", t.uuid));
+        if let Some((owner, legacy)) = tool_uuids.get(&t.uuid) {
+            if !(p.legacy && *legacy) {
+                return Err(format!("tool uuid {} is already served by plugin {owner:?}", t.uuid));
+            }
         }
     }
     for s in &p.services {
@@ -421,15 +433,17 @@ struct Provider {
 }
 
 fn tool_index(plugins: &[Plugin], peers: &BTreeMap<String, Vec<RemoteTool>>) -> Vec<Provider> {
-    let mut index: Vec<Provider> = plugins
-        .iter()
-        .flat_map(|p| p.tools.iter())
-        .map(|t| Provider {
+    let mut index: Vec<Provider> = Vec::new();
+    for t in plugins.iter().flat_map(|p| p.tools.iter()) {
+        if index.iter().any(|p| p.uuid == t.uuid) {
+            continue; // a shared legacy tool resolves to its first plugin
+        }
+        index.push(Provider {
             uuid: t.uuid,
             tool: ResolvedTool { name: t.name.clone(), major: t.major, plugin: t.plugin.clone(), peer: None },
             implements: t.implements.clone(),
-        })
-        .collect();
+        });
+    }
     for (peer, tools) in peers {
         for t in tools {
             if index.iter().any(|p| p.uuid == t.uuid) {
@@ -518,6 +532,7 @@ mod tests {
         let (core, other) = (t.path().join("core"), t.path().join("other"));
         legacy(&core, "journal", Some("tool = \"journal\"\ntier = \"on\"\n"));
         legacy(&core, "cx", Some("tool = \"reflection\"\n"));
+        legacy(&core, "keep", Some("tool = \"reflection\"\n"));
         legacy(&core, "game", Some("profiles = [\"nope\"]\n"));
         legacy(&core, "off-svc", None);
         legacy(&core, "_hidden", None);
@@ -535,12 +550,21 @@ mod tests {
         plugin(&other, "escape", "[plugin]\nname='escape'\n[[service]]\nname='escape'\npath='..'\n");
         plugin(&other, "elsewhere", "[plugin]\nname='elsewhere'\n[placement]\nnodes=['showtime']\n");
         plugin(&core, "clash1", &format!("[plugin]\nname='clash1'\n[[service]]\nname='clash1'\n[[tool]]\nname='clash'\nuuid='{U3}'\n"));
+        let two = core.join("ops");
+        fs::create_dir_all(two.join("board")).unwrap();
+        fs::create_dir_all(two.join("reporting")).unwrap();
+        fs::write(two.join("board/run.sh"), "").unwrap();
+        fs::write(two.join("reporting/run.sh"), "").unwrap();
+        fs::write(two.join(MANIFEST_FILE), "[plugin]\nname='ops'\n[[service]]\nname='board'\npath='board'\n[[service]]\nname='reporting'\npath='reporting'\n[[tool]]\nname='operations'\nuuid='44444444-4444-4444-8444-444444444444'\nservices=['board','reporting']\n").unwrap();
+        plugin(&other, "steals-reflection", "[plugin]\nname='steals-reflection'\n[[service]]\nname='steals-reflection'\n[[tool]]\nname='reflection'\nuuid='55555555-5555-4555-8555-555555555555'\n");
         plugin(&other, "windows-only", "[plugin]\nname='windows-only'\n[needs]\nplatform=['windows']\n");
         plugin(&other, "bad-toml", "[plugin]\nname='bad-toml'\nbogus=1\n");
 
         let r = run(&core, &other, "mizar");
         let names: Vec<_> = r.plugins.iter().map(|p| p.name.as_str()).collect();
-        assert_eq!(names, ["clash1", "cx", "dependent", "game", "journal", "off-svc", "provider"]);
+        assert_eq!(names, ["clash1", "cx", "dependent", "game", "journal", "keep", "off-svc", "ops", "provider"]);
+        let ops = r.plugins.iter().find(|p| p.name == "ops").unwrap();
+        assert!(ops.services.iter().all(|s| s.tools == ["operations"]));
         let clash = &r.plugins[0].tools[0];
         assert_eq!((clash.name.as_str(), clash.declared.as_str()), ("clash-two", "clash"));
         let refused: BTreeMap<_, _> = r.refused.iter().map(|x| (x.plugin.as_str(), x.reason.as_str())).collect();
@@ -552,6 +576,7 @@ mod tests {
         assert!(refused["escape"].contains("leaves the plugin folder"));
         assert!(refused.contains_key("bad-toml"));
         assert!(refused["windows-only"].contains("platform"));
+        assert!(refused["steals-reflection"].contains("already served"));
         assert_eq!(r.skipped, ["elsewhere"]);
         assert_eq!(r.shadowed.len(), 1);
 

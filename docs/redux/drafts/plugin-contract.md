@@ -4,7 +4,7 @@
 
 This file is the contract between a plugin and the Rust gateway of the redux (`install.md` R112, R115 to R117, R132). It holds the manifest format, the wire protocol a service speaks, the call interface a plugin uses to reach another plugin, and the usage event. The redux-core lane (job a92d02bf) owns it. Other lanes build against it. Send a change request to job a92d02bf with `reflection(verb="message")`.
 
-Status: draft v1.3. Build against it.
+Status: draft v1.4. Build against it.
 
 ## Plugin folder
 
@@ -14,7 +14,7 @@ A folder with a `run.sh` and no `awm-plugin.toml` loads as a legacy plugin. The 
 
 Plugin roots are an ordered list in the gateway config. The built-in core roots are `awm/services` then `awm/plugins`. Put a new core plugin at `awm/plugins/<name>/`. The first root that holds a plugin name wins. The gateway logs and ignores a shadowed folder. Today's Python gateway also scans `awm/plugins` as a built-in root, so a plugin there runs before the cutover.
 
-A tool name on the reserved list of the gateway config belongs only to a plugin from a core root with `trust = "own"`. Any other claim refuses the plugin. The default list is `2fa`, `approver`, `queue-store` and `journal`, plus the singleton tools of the edge list (§ Install config).
+A tool name on the reserved list of the gateway config belongs only to a plugin from a core root with `trust = "own"`. Any other claim refuses the plugin. The `awm` tool belongs to the core: the gateway serves its verbs itself. A legacy core service that publishes into `awm` today, such as `auth`, adds its verbs to it until it moves to a tool of its own. The default list is `awm`, `2fa`, `approver`, `queue-store` and `journal`, plus the singleton tools of the edge list (§ Install config).
 
 ## Manifest
 
@@ -72,12 +72,12 @@ Example, for a plugin that serves one MCP tool, one hidden tool and one page:
 Rules the loader enforces:
 
 1. A tool name is letters, digits and hyphens. It holds no dot and no underscore. Use `harness-cc`, never `harness.cc`.
-2. A tool name that two plugins claim refuses the second plugin (R116 item 5). Tony settles the clash by renaming one in the install config.
+2. A tool name that two plugins claim refuses the second plugin (R116 item 5). Legacy folders are the exception while they convert: several may share a tool, as `cx`, `keep` and `reflection` share `reflection` today. Tony settles the clash by renaming one in the install config.
 3. A tool UUID that two plugins serve refuses the second plugin (R117 item 3).
 4. A `needs.tool` UUID that no plugin serves, on this node or a peer, refuses the plugin. The refusal names the UUID.
 5. A `needs.tool` major that differs from the provider's major refuses the plugin.
 6. `tier = "off"` keeps a tool off the MCP surface. Plugins and the CLI still call it through the gateway.
-7. Each `[[tool]]` names one `[[service]]` of the same plugin. A service publishes each function of its `ready` manifest as `<tool>_<verb>`, as today. A service with one tool may omit `service` on the tool.
+7. Each `[[tool]]` names the services of the same plugin that serve it: `service = "<name>"`, or `services = ["board", "reporting"]` when several share it. A plugin with one service may omit both. A service publishes each function of its `ready` manifest as `<tool>_<verb>`, as today. Two services that publish one verb of a tool refuse the later one at `ready`.
 8. A plugin whose `needs.platform` excludes this node's operating system is refused.
 9. A `page.dir` or `service.path` that leaves the plugin folder refuses the plugin. A page with no `dir` resolves by name in the gateway's page roots, because the core pages still build to `awm/pages/<name>/dist`.
 10. `needs.secrets` and `needs.network` are recorded now. The gateway enforces them in a later change (R116 item 1).
