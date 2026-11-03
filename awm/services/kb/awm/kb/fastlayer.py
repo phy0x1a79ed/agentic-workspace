@@ -38,6 +38,12 @@ TRIGRAM = 3
 #: the :data:`PROBE_GRAMS` rarest, and twice as many while the passages found fill :data:`CANDIDATES`.
 LONG_LITERAL = 12
 PROBE_GRAMS = 6
+#: A long literal's word lookup runs when its rarest word is in at most RARE_BUDGET passages.
+RARE_BUDGET = 50_000
+#: The passages, summed over its words, that a schema-4 base's AND may read posting lists for: the long
+#: literal's word lookup and the AND leg's scan in id order. Cold, a posting list costs about a random read per
+#: page, so past this the AND leg is the champion lists' intersection alone.
+READ_BUDGET = 150_000
 #: A BM25 lookup that scores more passages than this is split by passage id into up to :data:`SHARDS`
 #: ranges, one thread each.
 SHARD_PASSAGES = 40_000
@@ -514,20 +520,41 @@ def _bounded_phrase(needle: str) -> str:
 def _literal_rows(conn: sqlite3.Connection, needle: str) -> list[sqlite3.Row]:
     """Passages that may hold ``needle``; the caller checks the literal on each.
 
-    A short literal is a LIKE, which the trigram index narrows to the passages holding all its trigrams and
-    SQLite then checks on the text. A longer one with two whole words inside is looked up as their phrase in
-    the word index. Any other, and any with a LIKE wildcard, is looked up by trigrams alone: its
-    :data:`PROBE_GRAMS` rarest, then twice as many. A lookup that leaves fewer passages than
-    :data:`CANDIDATES` has every passage that can hold the literal. One that fills the cap may have cut the
-    true ones off, as with a phrase made of common words, and the LIKE, which checks, decides.
+    On a store with champion lists, which counts its words, nothing is read one passage at a time. A literal
+    with two whole words inside is looked up first as an AND of its rarest words within
+    :data:`READ_BUDGET`: a phrase would read the position list of every word in it, common ones included,
+    and cold that costs tens of seconds. Else, or when that leaves :data:`CANDIDATES` passages or more, it is
+    looked up by its trigrams, the two rarest, the :data:`PROBE_GRAMS` rarest, twice as many, then all. The passages
+    found are read concurrently, at most :data:`CANDIDATES` of them.
+
+    On an older store, a short literal is a LIKE, which the trigram index narrows to the passages holding all
+    its trigrams and SQLite then checks on the text; a longer one with two whole words inside is looked up as
+    their phrase; any other, and any with a LIKE wildcard, by trigrams alone, as above, and a lookup that
+    still fills the cap falls back to the LIKE, which checks.
     """
     wild = re.search(r"[%_]", needle)
     like = ("SELECT p.* FROM passage_tri JOIN passage p ON p.id = passage_tri.rowid"
             " WHERE passage_tri.text LIKE ? LIMIT ?", (f"%{needle}%", CANDIDATES))
-    if len(needle) <= LONG_LITERAL and not wild:
+    counted = _has(conn, "term_df")
+    if len(needle) <= LONG_LITERAL and not wild and not counted:
         return conn.execute(*like).fetchall()
     phrase = _bounded_phrase(needle)
-    if phrase:
+    if phrase and counted:
+        df = document_frequency(conn, terms(phrase))
+        if df and min(df.values()) == 0:
+            return []
+        rare, spent = [], 0
+        for w in sorted(df, key=df.__getitem__):
+            if rare and spent + df[w] > READ_BUDGET:
+                break
+            rare.append(w)
+            spent += df[w]
+        if rare and df[rare[0]] <= RARE_BUDGET:
+            ids = [r[0] for r in conn.execute("SELECT rowid FROM passage_bm25 WHERE passage_bm25 MATCH ? LIMIT ?",
+                                              (" AND ".join(f'"{w}"' for w in rare), CANDIDATES))]
+            if len(ids) < CANDIDATES:
+                return _read_ids(conn, ids)
+    elif phrase:
         ids = [r[0] for r in conn.execute("SELECT rowid FROM passage_bm25 WHERE passage_bm25 MATCH ? LIMIT ?",
                                           (phrase, CANDIDATES))]
         if len(ids) < CANDIDATES:
@@ -537,11 +564,22 @@ def _literal_rows(conn: sqlite3.Connection, needle: str) -> list[sqlite3.Row]:
     if len(df) < len(grams):
         return [] if wild else conn.execute(*like).fetchall()
     ordered = sorted(grams, key=df.__getitem__)
-    for count in (PROBE_GRAMS, 2 * PROBE_GRAMS):
+    rounds = (2, PROBE_GRAMS, 2 * PROBE_GRAMS, len(ordered)) if counted else (PROBE_GRAMS, 2 * PROBE_GRAMS)
+    for count in rounds:
         ids = _trigram_ids(conn, ordered[:count])
         if len(ids) < CANDIDATES or count >= len(ordered):
-            return _passages_by_id(conn, ids) if ids else []
+            break
+    if counted:
+        return _read_ids(conn, ids)
+    if len(ids) < CANDIDATES or len(ordered) <= 2 * PROBE_GRAMS:
+        return _passages_by_id(conn, ids) if ids else []
     return _passages_by_id(conn, ids) if wild else conn.execute(*like).fetchall()
+
+
+def _read_ids(conn: sqlite3.Connection, ids: list[int]) -> list[sqlite3.Row]:
+    """The passages ``ids`` of ``conn``'s store, read concurrently (:func:`_rows`), in id order."""
+    got = _rows(Path(conn.execute("PRAGMA database_list").fetchone()[2]), ids)
+    return [got[i] for i in sorted(got)]
 
 
 def _literal_hits(stores: list[sqlite3.Connection], needle: str, filters: Filters, limit: int,
@@ -679,8 +717,9 @@ def _champion_legs(conn: sqlite3.Connection, every: list[str],
 
     The OR sums each passage's ranks over the champion lists of the words ``either`` and keeps the best
     :data:`OR_CANDIDATES`. The AND takes the passages that hold every word ``every``: those in every list,
-    whose sum is their exact rank, and the first :data:`CANDIDATES` in id order, the titles and abstracts
-    first, each ranked by its sum with a cut list's last rank standing in where it is missing."""
+    whose sum is their exact rank, and, within :data:`READ_BUDGET`, the first :data:`CANDIDATES` in id order,
+    the titles and abstracts first, each ranked by its sum with a cut list's last rank standing in where it is
+    missing."""
     stem = stems(every)
     lists = _champion_lists(conn, sorted({stem[w] for w in every if w in stem}))
     sums: dict[int, float] = {}
@@ -690,9 +729,11 @@ def _champion_legs(conn: sqlite3.Connection, every: list[str],
     related = sorted(sums.items(), key=lambda r: r[1])[:OR_CANDIDATES]
     if not every:
         return [], related
-    expr = " AND ".join(f'"{w}"' for w in every)
-    found = {r[0] for r in conn.execute("SELECT rowid FROM passage_bm25 WHERE passage_bm25 MATCH ? LIMIT ?",
-                                        (expr, CANDIDATES))}
+    found: set[int] = set()
+    if sum(document_frequency(conn, every).values()) <= READ_BUDGET:
+        expr = " AND ".join(f'"{w}"' for w in every)
+        found = {r[0] for r in conn.execute("SELECT rowid FROM passage_bm25 WHERE passage_bm25 MATCH ? LIMIT ?",
+                                            (expr, CANDIDATES))}
     held = [lists[stem[w]] for w in every]
     found |= set.intersection(*(set(m) for m, _ in held))
     ranked = sorted(((p, sum(m.get(p, floor) for m, floor in held)) for p in found), key=lambda r: r[1])
