@@ -59,5 +59,4 @@ Group this work into one sitting in the implementation pass. Tony: "For the impl
 - Join shogun to Tailscale.
 - Turn on Tailnet Lock, and sign each node in.
 - Write the tailnet's access rules to mirror R87 and open the singleton doors.
-- Install Tailscale on the Windows side of capella, in place of the one inside WSL.
 - Register cross-architecture emulation (qemu binfmt) once on each build node, for Rust builds. Tony: "cross architecture emulation is needed for rust builds. but a once only set up is fine." (2026-11-02).
