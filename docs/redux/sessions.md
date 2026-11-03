@@ -33,6 +33,7 @@ This doc holds a session's id, the id of its task, its lifecycle from start to r
 ### Lifecycle
 
 - **R8.** A session closes with the standard agent exit. Retiring stops it fully and leaves a report to whoever started it. The report is the session's journal, written once.
+  - The retire instructions state that the last step is `reflection stop`. A session that ends its work and sits idle never wakes the sessions that wait on it (R51). Tony: "retire then explicitly state that reflection stop must be called. a session that just ends and sits would be detrimental." (2026-11-03).
 - **R10.** A retired session stays resumable through its transcript, by its session id (R9). The job itself is gone. The default follow-up is still a new session, which starts from the old session's journal only. Tony: "In instances where I do ask for a \"resume\", getting the actual session back would be the best."
   - A retire deletes the job. The session is finished and frees its scope.
   - A wait (R51) keeps the job, because the session comes back. The wake resumes that job.
@@ -67,6 +68,10 @@ This doc holds a session's id, the id of its task, its lifecycle from start to r
   - A listed session counts as finished only when it retires. A session that itself waits is not finished, so a wait holds through every level of nesting.
   - A terminal session may wait. Tony: "Agree on both" (2026-11-03).
   - The retire triggers the wake. When a session retires, `reflection stop` reads the waits that list it and wakes each waiter whose listed sessions have all retired. No loop polls the waits. Tony: "we dont want sweep, we want active triggers from reflection stop" (2026-11-03).
+  - A worker on another node wakes its waiter through reflection on the waiter's node.
+  - A failed wake raises an alarm at once and keeps the wait. It does not retry.
+  - At start, reflection reads the waits once. It raises one alarm for each wait that lists a session that is neither live nor retired, such as a worker lost to a reboot. An agent or Tony recovers it by hand.
+  - A wait clears when its waiter wakes, is resumed by hand, or retires. Tony: "otherwise agree" (2026-11-03).
   - The session compacts before it calls `reflection wait`. This is a soft instruction, not a check. Tony: "would be good as soft instructions to compact before retiring with "until" set" (2026-11-01).
 - **R52.** Three standard paths cover work that spans sessions. R51 serves the second and the third. Tony: "we should also try to keep things simple and not add new features until necessary." (2026-11-01).
   1. **A simple task.** The agent calls `deploy` and retires. Tony: "an agent does a simple task that requires deploy, calls deploy and retires."
