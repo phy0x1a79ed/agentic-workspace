@@ -216,3 +216,22 @@ Run the `debrief` skill.
 
 - The HTTPS node-token transport stays in the Python tree until the Rust gateway takes peer calls through `awm-edge`. Deleting it first would cut cross-node calls before the sweep.
 - R91 shogun, R94 lyra and R96's Tailscale moves need Tony at the keyboard. They go on the batch list in `docs/redux/drafts/edges.md`.
+- The sweep must land these together, or a lane breaks:
+  - The Python gateway passes the caller's trust level to services as `_caller_trust` and the caller's own scope as `_caller_scope`, next to `_caller_session`. It reads the level from reflection's ledger, `<AWM_DIR>/services/reflection/trust.json`, where a session with no entry is trusted. The browser treats a missing level as cooperative. The journal treats it as trusted, as the ledger does. Core has finished, so the sweep owns this.
+  - The social keeper passes `trust` to `cx start`. harness's `start_other` accepts it from its next commit.
+  - The fleet config pass applies the roles in `cloud/redux-trust` and writes one `[[external]]` line per singleton into `config.toml`. The singletons then leave the gateway's spawned services.
+  - `rlm-browser` retires when the browser singleton runs: both publish the tool `browser` (gap F38).
+- The bare `peer` stamp is now refused everywhere. The legacy bearer still authenticates but reaches nothing. Delete it from `auth` and `httpsfront` once every node runs the edges.
+- The journal's goal verbs and `render` carry no trust bound yet. The journal database moves to `/var/lib/awm/journal` when the journal runs as its own user. That move needs a copy of today's `<AWM_DIR>/services/journal.db`.
+- A per-seat browser container needs Docker. The browser singleton runs as a system user, so it needs rootless Docker of its own, not the `docker` group (R99 item 2).
+
+## Doc changes for the sweep
+
+The interview session owns the area docs. These are the changes this lane's work makes due, for whoever lands the docs.
+
+- `FEDERATION.md`: replace the foreign and domestic peer model with the edge list. A node serves a peer only over an edge (`awm.config.edges.admits`). Delete the sections on swarms, principals, read grants and the grant category. Lines now wrong: 72–74, 115, 124–161, 167, 176, 180, 190, 223, 229, 273, 289–291, 303, 317, 319, 406–407, 425. Add the edge transport: `awm edge-serve` over one warm ssh channel per peer, and the service door `awm port` on port 2201.
+- `ARCHITECTURE.md`: lines 123, 188–191, 461 and 463 describe the peer book's roles and grants. Replace them with the edge list, `awm.trustpolicy` and the `awm-trust` and `awm-edge` crates.
+- `docs/redux/fleet.md` line 201 describes the gap that this lane closed.
+- Service INSTALL docs that name domestic peers or grants: cx 48 and 100, httpsfront 123, reporting 37, 204 and 277, kb 7 and 41–49, search 9, 21, 36 and 39.
+- The journal's docs gain `journal_edit`, `journal_history` and `journal_addenda`. AGENTS.md's startup ritual gains no step.
+- `users.md` R130: the auth service has no user accounts. Device tokens belong to the operator.
