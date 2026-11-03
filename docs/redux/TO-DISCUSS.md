@@ -17,7 +17,7 @@ This doc is the stack of open threads for the redux interview. The interview run
 
 ## Current thread
 
-**1h. Install and bootstrap.** See the stack entry below.
+**1i. The Armando box.** See the stack entry below.
 
 Parent thread 1 (end state) waits for Tony to confirm `goal.md`. Its children are 1a to 1q.
 
@@ -25,12 +25,7 @@ Parent thread 1 (end state) waits for Tony to confirm `goal.md`. Its children ar
 
 Top of the stack comes first.
 
-1h. **Install and bootstrap.** A Rust conversion, true plugins, and Claude cloud agents that test fresh installs and adding nodes. This absorbs the parked gateway, plugin and bootstrap input (Tony, 2026-10-30).
-   - Local throwaway environments that behave like cloud agents, to avoid their cost. Tony: "we should also consider settup up a system that can spawn throway temp environments that act the same" (2026-10-30).
-   - Plugins as their own projects, each with its own refresh hook, migrated out of the awm repo (Tony, 2026-10-31, R33).
-   - Containers become an option for a plugin. Tony: "when we discuss the plugin rework, containers should become an option." (2026-11-02).
-
-1i. **The Armano box.** A new box for a client, for mass spec automation, set up soon with an agent's help (Tony, 2026-10-30).
+1i. **The Armando box.** A new box for a client, for mass spec automation, set up soon with an agent's help (Tony, 2026-10-30).
 
 1j. **IT services through the tether, and proof of ownership.** Agents debug boxes faster than Tony, but this can trigger security concerns. Tony: "We need ways to prove I own the box like the current permissions screen that requires me to be at the keyboard or have prexisting ssh access. Need to be careful here" (2026-10-30).
 
@@ -76,6 +71,7 @@ Raised before the redux started. Each enters the stack when a thread reaches it.
 
 ## Closed
 
+- 1h. Install and bootstrap (2026-11-02). Result: `install.md` R112 to R119. A Rust core built in a container on mizar, plugins as projects with a manifest and guards, dependencies through tool UUIDs, an install test that runs on request in a Claude cloud agent first, and public images on quay.io.
 - 1t. Rooms and the tether as one awm tool (2026-11-02). Result: `channels.md` R110 and R111, `fleet.md` R109 item 2. One `channel` tool opens a room or a machine. They share the relay, the codes, the capped push, the verbs `open`, `close`, `write` and `status`, and the close on task end. A room adds `encrypt`. Isolated sessions may hold both for their own task.
 - 1s. Isolated sessions with awm tools (2026-11-02). Result: `fleet.md` R103 item 1 and R109. A starter may set a session's trust equal or lower. An untrusted session runs in a rootless container with the host's Claude install, a whitelist of awm tools, no ssh and no messages out. Its login holds only an access token that the host refreshes, so a fault signs out the container, never the host.
 - 1g. Communication between awm nodes (2026-11-02). Result: `fleet.md` R86 to R108, `channels.md` R73 and R77, `queue.md` R64. Foreign and domestic peers give way to a directional edge list that matches ssh, one network per edge, singletons on alcor behind their own door, admin grants in place of sudo, browser seats, trust per session, Trilium only on deneb, one task queue on alcor, and journals as a service.
