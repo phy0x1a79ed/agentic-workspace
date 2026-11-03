@@ -4,11 +4,11 @@
 
 This file is the contract between a plugin and the Rust gateway of the redux (`install.md` R112, R115 to R117, R132). It holds the manifest format, the wire protocol a service speaks, the call interface a plugin uses to reach another plugin, and the usage event. The redux-core lane (job a92d02bf) owns it. Other lanes build against it. Send a change request to `redux-build/core` with `SendMessage`.
 
-Status: draft v1.8. Build against it. v1.8 drops the tool UUIDs (`install.md` R117 item 2) and adds the live name table and the hot reload (R117 item 3, R144).
+Status: draft v1.9. Build against it. v1.8 dropped the tool UUIDs (`install.md` R117 item 2) and added the live name table and the hot reload (R117 item 3, R144). v1.9 enforces `needs.secrets` and adds the install from a folder with its pin record (R116 items 1 and 2).
 
 ## Plugin folder
 
-A plugin is a folder. Its top level holds one manifest file, `awm-plugin.toml`. The gateway loads a plugin from any plugin root, in the awm repository or outside it. A git install clones the repository at a pinned commit into a root, then loads the folder the same way.
+A plugin is a folder. Its top level holds one manifest file, `awm-plugin.toml`. The gateway loads a plugin from any plugin root, in the awm repository or outside it. An install copies a plugin folder into the state's installed root, then loads it the same way (§ Install).
 
 A folder with a `run.sh` and no `awm-plugin.toml` loads as a legacy plugin. The gateway reads it as one plugin with one service, named after the folder. It reads today's `service.toml` keys `tool`, `tier` and `profiles`. So every service under `awm/services/` loads unchanged, and a lane converts one service at a time.
 
@@ -78,7 +78,7 @@ Rules the loader enforces:
 7. Each `[[tool]]` names the services of the same plugin that serve it: `service = "<name>"`, or `services = ["board", "reporting"]` when several share it. A plugin with one service may omit both. A service publishes each function of its `ready` manifest as `<tool>_<verb>`, as today. Two services that publish one verb of a tool refuse the later one at `ready`.
 8. A plugin whose `needs.platform` excludes this node's operating system is refused.
 9. A `page.dir` or `service.path` that leaves the plugin folder refuses the plugin. A page with no `dir` resolves by name in the gateway's page roots, because the core pages still build to `awm/pages/<name>/dist`.
-10. `needs.secrets` and `needs.network` are recorded now. The gateway enforces them in a later change (R116 item 1).
+10. A service gets only the secrets its plugin's `needs.secrets` lists (§ Service wire protocol, step 1). `needs.network` is recorded, not enforced.
 
 
 ## Contracts
@@ -92,6 +92,17 @@ An interface that several plugins serve is a contract (`install.md` R117 item 4)
 5. `GET /hub/contract/<name>@<major>` lists the providers now, as `[{name, major, plugin, peer}, ...]`.
 
 Example: cch serves `harness-cc` and dsh serves `harness-ds`. Each implements the `harness` contract at major 1. reflection needs that contract and dispatches on the platform code of the session.
+
+## Install
+
+1. `awm install <folder>...` (`POST /hub/install {sources}`, the `awm` tool's `install` verb) copies each folder into `<AWM_DIR>/installed/<plugin>`. The copy leaves out `.git` and the folders a stamp skips. A later edit of the source changes nothing until the next install.
+2. All the folders of one install load as one change. A plugin the loader refuses rolls the whole change back, and the refusal names the reason.
+3. A plugin name that a core root or another plugin root already loads is refused.
+4. `<AWM_DIR>/installed.toml` pins each installed plugin: `name`, `source`, `commit` (the folder's git HEAD, when it has one), `image` and `installed_at`.
+5. `awm uninstall <name>` removes the folder and the pin, then reloads.
+6. A source that needs approval passes the gateway's approver first. One approval covers the whole change (R116 item 2). The approver refuses every such change until the passkey flow exists (`queue.md` R64). A local folder needs no approval. A git source waits on the fleet-deploy review topic.
+
+Only a trusted caller on this node may install or uninstall.
 
 ## Refresh hook
 
@@ -126,7 +137,8 @@ The loader warns on a `[placement]` table and ignores it.
 
 The protocol is today's Python gateway protocol plus one header, the service token in step 2. `awm.gatewayclient.ServiceAdapter` on `feat/redux-core` speaks it. An older adapter gets 403 from the Rust gateway.
 
-1. The gateway starts each enabled service with `bash <run>` in the service folder. It sets `AWM_HUB_URL`, `AWM_SERVICE_NAME`, `AWM_PLUGIN`, `AWM_NODE_NAME`, `AWM_DIR`, `AWM_WORKSPACE` and `AWM_HUB_TOKEN_FILE` in the environment, plus the install config's `env`. It never sets `AWM_SERVICE_ID`.
+1. The gateway starts each enabled service with `bash <run>` in the service folder. It sets `AWM_HUB_URL`, `AWM_SERVICE_NAME`, `AWM_PLUGIN`, `AWM_NODE_NAME`, `AWM_DIR`, `AWM_WORKSPACE` and `AWM_HUB_TOKEN_FILE` in the environment, plus the install config's `env`. It never sets `AWM_SERVICE_ID`. The service inherits nothing else of the gateway's environment but `PATH`, `HOME`, the user, shell, locale and time zone, `TMPDIR`, `XDG_RUNTIME_DIR`, `TERM` and `AWM_CONDA_ROOT`. It also gets each secret its plugin's `needs.secrets` names. The value comes from the secrets file, `secrets_file` in the install config (default `<AWM_DIR>/secrets.env`, `NAME=value` lines), else from the gateway's own environment.
+   **CAUTION** Every service sees the install config's `env`. Put a secret in the secrets file, never in `env`.
 2. The service posts `POST /hub/service/register` with `{name, prefix?, pid, start, cwd}` and the header `X-Awm-Service-Token`, read from `AWM_HUB_TOKEN_FILE`. Each spawn gets a fresh token, so no other local user can take the service's name while it is down. A register with a wrong token gets 403. The reply carries `service_id`, `control_ws_path` and `canonical_workspace`.
 3. The service opens the control WebSocket at `/hub/service/control/<service_id>`. It sends `{"kind":"ready","api":{"functions":[...]}}` first. Each function is `{name, description, params:[{name,type,required,description}], tool?}`.
 4. The gateway sends `{"kind":"call","id","fn","args","as"?,"caller"}`. `caller` is `{"node","lane","session","trust","scope"}`: `lane` is `local`, `edge` or `service`, `session` is the R9 session id or null, `trust` is `trusted`, `cooperative` or `untrusted`, and `scope` is the session's own `<project>/<scope>` or null. Only the gateway fills `caller` (R103). It drops any `X-Awm-Trust` or `X-Awm-Lane` header a caller sends. A service that predates `caller` ignores it, and reads the caller in its args instead (§ Caller arguments). The service answers `{"kind":"reply","id","ok":true,"result"}` or `{"kind":"reply","id","ok":false,"error","error_class"}`. The gateway may also send `notify`, `cancel` and `shutdown`.

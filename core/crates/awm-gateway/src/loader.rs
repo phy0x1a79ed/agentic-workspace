@@ -36,6 +36,8 @@ pub struct ServiceSpec {
     pub run: String,
     pub enabled: bool,
     pub tools: Vec<String>,
+    /// The plugin's `needs.secrets`: the only secrets its processes get (R116 item 1).
+    pub secrets: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -303,6 +305,7 @@ fn build_plugin(cand: &Candidate, input: &LoadInput, warnings: &mut Vec<String>)
             run: s.run.clone(),
             enabled,
             tools: vec![],
+            secrets: m.needs.secrets.clone(),
         });
     }
 
@@ -370,7 +373,7 @@ fn build_plugin(cand: &Candidate, input: &LoadInput, warnings: &mut Vec<String>)
 
 /// Folders a stamp skips: build output, caches and VCS state, which change without the
 /// plugin changing.
-const UNSTAMPED: [&str; 6] = [".git", "node_modules", "target", "__pycache__", ".venv", ".pytest_cache"];
+pub const UNSTAMPED: [&str; 6] = [".git", "node_modules", "target", "__pycache__", ".venv", ".pytest_cache"];
 
 fn stamp(dir: &Path) -> String {
     use std::hash::{Hash, Hasher};

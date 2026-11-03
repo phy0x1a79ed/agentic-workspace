@@ -15,6 +15,10 @@ use crate::loader::ServiceSpec;
 const CRASH_WINDOW: Duration = Duration::from_secs(60);
 const CRASH_LIMIT: usize = 5;
 const GRACE: Duration = Duration::from_secs(8);
+/// The gateway's own variables a service inherits. Everything else, secrets the gateway
+/// was started with included, stays out of the service (R116 item 1).
+const INHERITED: [&str; 12] =
+    ["PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "LC_ALL", "TZ", "TMPDIR", "XDG_RUNTIME_DIR", "TERM", "AWM_CONDA_ROOT"];
 
 #[derive(Default)]
 pub struct Supervisor {
@@ -164,9 +168,16 @@ fn spawn(gw: &Gateway, spec: &ServiceSpec) -> std::io::Result<tokio::process::Ch
     let log = std::fs::OpenOptions::new().create(true).append(true).open(logs.join(format!("{}.log", spec.name)))?;
     let token = new_service_token(&gw.state, &spec.name)?;
     let mut cmd = tokio::process::Command::new("bash");
+    cmd.env_clear();
+    for name in INHERITED {
+        if let Some(v) = std::env::var_os(name) {
+            cmd.env(name, v);
+        }
+    }
     cmd.arg(&spec.run)
         .current_dir(&spec.cwd)
         .envs(&gw.cfg.env)
+        .envs(granted_secrets(&gw.cfg.secrets_path(&gw.state), &spec.secrets))
         .env("AWM_HUB_URL", gw.hub_url())
         .env("AWM_SERVICE_NAME", &spec.name)
         .env("AWM_PLUGIN", &spec.plugin)
@@ -186,6 +197,29 @@ fn spawn(gw: &Gateway, spec: &ServiceSpec) -> std::io::Result<tokio::process::Ch
         cmd.env("AWM_WORKSPACE", ws);
     }
     cmd.spawn()
+}
+
+/// The values of the secrets a plugin declares: from the secrets file, else from the
+/// gateway's own environment. A secret the plugin does not declare is never read.
+pub fn granted_secrets(file: &Path, wanted: &[String]) -> Vec<(String, String)> {
+    if wanted.is_empty() {
+        return vec![];
+    }
+    let text = std::fs::read_to_string(file).unwrap_or_default();
+    let from_file: HashMap<&str, &str> = text
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .filter_map(|l| l.strip_prefix("export ").unwrap_or(l).split_once('='))
+        .map(|(k, v)| (k.trim(), v.trim().trim_matches('"')))
+        .collect();
+    wanted
+        .iter()
+        .filter_map(|name| {
+            let value = from_file.get(name.as_str()).map(|v| v.to_string()).or_else(|| std::env::var(name).ok())?;
+            Some((name.clone(), value))
+        })
+        .collect()
 }
 
 /// The token file a spawned service registers with. Each spawn gets a fresh token,
