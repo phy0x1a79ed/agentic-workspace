@@ -296,6 +296,18 @@ def _scopes_call(fn: str, args: dict) -> Optional[dict]:
     return out if isinstance(out, dict) else None
 
 
+def _brief_line(project: str, scope: str) -> str:
+    """The line a move's follow-up carries: the brief of the scope it enters (scopes.md R143)."""
+    try:
+        from awm.gatewayclient import call_sync
+        got = call_sync("journal", "brief_read", {"project": project, "scope": scope}, timeout=5.0)
+    except Exception as exc:  # noqa: BLE001 - a move never waits on the brief
+        log.info("reflection: no brief for %s/%s: %s", project, scope, exc)
+        return ""
+    text = ((got or {}).get("brief") or {}).get("text") if isinstance(got, dict) else None
+    return f"The brief of {project}/{scope}: {text}" if text else ""
+
+
 def _cd(args: dict) -> dict:
     """Move a session, claiming the scope it moves into (sessions lane, scope claims)."""
     pid = _caller_pid(args)
@@ -321,7 +333,9 @@ def _cd(args: dict) -> dict:
                             "reason": got.get("reason") or
                             f"{project}/{scope} is held by {got.get('holder')}"}
                 warning = got.get("reason") or f"{project}/{scope} is held"
-    out = harness.call(p, "set", {**named, "cwd": args.get("path")})
+    line = _brief_line(*where) if where else ""
+    out = harness.call(p, "set", {**named, "cwd": args.get("path"),
+                                  **({"brief": line} if line else {})})
     old = alarm.scope_of(before.get("cwd"))
     if out.get("ok") and old and old != where and sid and claim != "unavailable":
         _scopes_call("scope_release", {"project": old[0], "scope": old[1],

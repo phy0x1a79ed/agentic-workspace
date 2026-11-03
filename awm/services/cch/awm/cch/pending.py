@@ -99,6 +99,8 @@ class Change:
     key: str = ""
     outcome: str = ""
     detail: str = ""
+    #: A line the follow-up carries once the change applied, such as a move's scope brief.
+    note: str = ""
 
 
 @dataclass(frozen=True)
@@ -144,7 +146,7 @@ def render_followup(changes, link: Optional[str] = None, closing: str = "") -> s
     with no outcome yet reads as succeeded.
     """
     tail = closing.strip() or guards.DEFAULT_FOLLOWUP
-    done, failed, rc = [], [], False
+    done, failed, notes, rc = [], [], [], False
     for c in changes:
         if c.kind == "rc_on":
             rc = True
@@ -154,6 +156,8 @@ def render_followup(changes, link: Optional[str] = None, closing: str = "") -> s
             failed.append(f"The {phrase} did not apply ({c.detail or 'no reason given'}).")
         else:
             done.append(phrase)
+            if c.note:
+                notes.append(c.note)
     parts = []
     if done:
         parts.append("The " + " and the ".join(done) + " succeeded.")
@@ -162,7 +166,7 @@ def render_followup(changes, link: Optional[str] = None, closing: str = "") -> s
                      "Remote Control was turned on; run reflection link to read "
                      "its link.")
     parts.extend(failed)
-    return " ".join(parts + [tail])
+    return " ".join(parts + notes + [tail])
 
 
 def held(pending: Pending, outcome: str) -> Pending:
@@ -279,7 +283,7 @@ def _parse(data: dict) -> Pending:
         changes=tuple(
             Change(kind=str(c["kind"]), value=str(c.get("value") or ""),
                    key=str(c.get("key") or ""), outcome=str(c.get("outcome") or ""),
-                   detail=str(c.get("detail") or ""))
+                   detail=str(c.get("detail") or ""), note=str(c.get("note") or ""))
             for c in data.get("changes") or ()),
         closing=str(data.get("closing") or ""),
         phase=str(data.get("phase") or AWAITING_COMMAND),

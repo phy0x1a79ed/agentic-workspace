@@ -33,10 +33,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from awm.journal import channel
+from awm.journal import channel, kinds
 from awm.journal.dao import JournalDAO
 
-GOAL_KIND = "goal"
+GOAL_KIND = kinds.GOAL
 
 LEVELS = ("workspace", "project", "scope")
 _LEVEL_ORDER = {name: i for i, name in enumerate(LEVELS)}

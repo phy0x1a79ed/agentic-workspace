@@ -64,6 +64,7 @@ class Fake:
 
 @pytest.fixture
 def fakes(monkeypatch, tmp_path):
+    monkeypatch.setattr(hub_adapter, "_brief_line", lambda project, scope: "")
     cc = Fake(CC, {"j1": {"session_id": MY_ID, "name": "me", "pid": ME, "job": "j1",
                           "cwd": "/w/projects/awm/redux-harness"}})
     ds = Fake(DS, {})
@@ -266,6 +267,24 @@ def test_cd_claims_the_new_scope_and_releases_the_old(fakes, monkeypatch):
     assert [c[0] for c in calls] == ["scope_claim", "scope_release"]
     assert calls[0][1]["scope"] == "new" and calls[1][1]["scope"] == "old"
     assert fakes.cc.calls[-1] == ("set", {"pid": ME, "cwd": "/w/projects/awm/new"})
+
+
+def test_cd_hands_the_new_scopes_brief_to_the_harness(fakes, monkeypatch):
+    monkeypatch.setattr(hub_adapter, "_scopes_call", lambda fn, a: {"ok": True, "claimed": True})
+    monkeypatch.setattr(hub_adapter, "_brief_line",
+                        lambda project, scope: f"The brief of {project}/{scope}: For x.")
+    run("cd", {"_caller_pid": ME, "path": "/w/projects/awm/new"})
+    assert fakes.cc.calls[-1] == ("set", {"pid": ME, "cwd": "/w/projects/awm/new",
+                                          "brief": "The brief of awm/new: For x."})
+
+
+def test_the_brief_line_reads_the_journal(monkeypatch):
+    import awm.gatewayclient as gc
+    monkeypatch.setattr(gc, "call_sync", lambda svc, fn, a, timeout=None: {
+        "brief": {"text": "For the scopes service."}} if (svc, fn) == ("journal", "brief_read") else {})
+    assert hub_adapter._brief_line("awm", "s") == "The brief of awm/s: For the scopes service."
+    monkeypatch.setattr(gc, "call_sync", lambda *a, **k: {"brief": None})
+    assert hub_adapter._brief_line("awm", "s") == ""
 
 
 def test_a_background_session_does_not_move_into_a_held_scope(fakes, monkeypatch):

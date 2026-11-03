@@ -13,18 +13,14 @@ import json
 from typing import Any, Iterable
 
 from awm.gatewayclient import ids
+from awm.journal import kinds
 from awm.journal.dao import JournalDAO
 from awm.journal.refs import now_ms
 
 MAX_REASON = 200
 
-#: The kind that marks a journal post. Kinds are to become tags (fleet.md R107),
-#: so every journal test in this module goes through ``is_journal``.
-JOURNAL_KIND = "journal"
-
-
-def is_journal(kind: Any) -> bool:
-    return kind == JOURNAL_KIND
+JOURNAL_KIND = kinds.JOURNAL
+is_journal = kinds.is_journal
 
 
 def r9(raw: Any) -> str | None:

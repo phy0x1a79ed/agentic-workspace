@@ -46,7 +46,7 @@ env with `AWM_ENV`.
 
 ## Harness Integration
 
-AWM drives Claude Code. It supports no OpenCode harness (`docs/redux/install.md` R135 item 5). A session loads three context tiers: the workspace `AGENTS.md`, the repo `AGENTS.md` at the scope worktree root, and the scope brief `.awm/context.md`. Claude Code loads both `AGENTS.md` tiers by its native walk-up from the cwd. The startup ritual in `AGENTS.md` has the agent read `.awm/context.md`. A `reflection start_other` session loads context the same way.
+AWM drives Claude Code. It supports no OpenCode harness (`docs/redux/install.md` R135 item 5). A session loads three context tiers: the workspace `AGENTS.md`, the repo `AGENTS.md` at the scope worktree root, and the scope brief. Claude Code loads both `AGENTS.md` tiers by its native walk-up from the cwd. The brief lives in the journal (`journal brief_read`). cch's SessionStart hook adds it to a session that starts in a scope, and `reflection cd` carries it in the move's follow-up (`docs/redux/scopes.md` R143).
 
 `<workspace>/.mcp.json` is the MCP registry. Every registered server is advertised even when its upstream is down.
 

@@ -1156,3 +1156,12 @@ def test_cd_on_your_own_session_goes_through_the_self_sender(world, moves):
     text, kw = world.sent[0]
     assert text == f"/cd {moves}" and kw["change"].kind == "cd"
     assert pending.render_followup([kw["change"]]).startswith(f"The move to {moves} succeeded.")
+
+
+def test_the_move_follow_up_carries_the_brief(world, moves):
+    control.cd(str(moves), job=None, caller_pid=ME, brief="The brief of p/s: For x.")
+    change = world.sent[0][1]["change"]
+    assert pending.render_followup([change], closing="go on") == (
+        f"The move to {moves} succeeded. The brief of p/s: For x. go on")
+    failed = pending.Change(kind="cd", value="/x", outcome=pending.FAILED, note="The brief")
+    assert "The brief" not in pending.render_followup([failed])

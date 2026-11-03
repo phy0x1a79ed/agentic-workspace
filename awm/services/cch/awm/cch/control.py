@@ -375,8 +375,8 @@ def _answer_later(t: Target, kind: str, value: str,
 # --- verbs: one-line commands -----------------------------------------------
 
 
-def _change(kind: str, value: str) -> pending.Change:
-    return pending.Change(kind=kind, value=value, key=uuid.uuid4().hex[:12])
+def _change(kind: str, value: str, note: str = "") -> pending.Change:
+    return pending.Change(kind=kind, value=value, key=uuid.uuid4().hex[:12], note=note)
 
 
 def model(name: str, *, job: Optional[str], caller_pid: Any,
@@ -408,7 +408,7 @@ def rename(name: str, *, job: Optional[str], caller_pid: Any) -> dict:
                   change=_change("rename", name))
 
 
-def cd(path: str, *, job: Optional[str], caller_pid: Any,
+def cd(path: str, *, job: Optional[str], caller_pid: Any, brief: str = "",
        spawn: Callable[[Callable[[], None]], Any] = inject._default_spawn) -> dict:
     """Move the target to ``path`` by typing `/cd`, then reconnect its awm server.
 
@@ -418,6 +418,7 @@ def cd(path: str, *, job: Optional[str], caller_pid: Any,
     trusted first instead, since awm made it. The move drops the session's MCP
     servers (see :data:`inject.RECONNECT_AFTER_MOVE`); the caller's own session
     gets the reconnect from its resume, any other once its record shows the move.
+    ``brief`` rides the caller's own follow-up once the move applied (scopes.md R143).
     """
     path = path.strip() if isinstance(path, str) else ""
     if not path or not path.isprintable() or not os.path.isabs(path):
@@ -442,7 +443,7 @@ def cd(path: str, *, job: Optional[str], caller_pid: Any,
     refused = _check_clear(t)
     if refused:
         return refused
-    out = _command(t, f"/cd {want}", what="the move", change=_change("cd", want))
+    out = _command(t, f"/cd {want}", what="the move", change=_change("cd", want, brief or ""))
     if t.is_self or not out.get("ok") or not out.get("submitted"):
         return {**out, "cwd": want}
     if not _between_turns(t):

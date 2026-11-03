@@ -55,7 +55,10 @@ SCOPE_MANIFEST_FUNCTIONS = [
             {"name": "branch_name", "type": "string", "required": False,
              "description": "Branch to check out. Default feat/<scope>. It may "
                             "already exist locally or on a remote."},
-            {"name": "context", "type": "string", "required": False},
+            {"name": "context", "type": "string", "required": False,
+             "description": "The scope brief: what the scope is for, in at most two "
+                            "sentences and 400 characters. It goes to the journal as "
+                            "brief_set would write it; see brief_set for what it holds."},
             {"name": "new_project", "type": "boolean", "required": False,
              "description": "Create the project first when it does not exist. "
                             "Default false: an unknown project is an error."},
@@ -163,7 +166,7 @@ SCOPE_MANIFEST_FUNCTIONS = [
         "description": (
             "Idempotent repair pass over active scopes: enforce tier-3 = .awm/ "
             "only (strip @.awm/context.md imports, drop untracked AGENTS.md / "
-            "CLAUDE.md, recreate context.md and the per-scope opencode config) "
+            "CLAUDE.md) "
             "and bring the scope's data view to whatever its checkout implies "
             "— installing the DVC merge driver + hooks and materialising the "
             "pinned chunks, or leaving an unconverted project on the legacy "

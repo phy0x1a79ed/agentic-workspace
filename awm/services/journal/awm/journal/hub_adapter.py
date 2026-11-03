@@ -18,6 +18,7 @@ from typing import Any
 
 from awm.gatewayclient import ServiceAdapter, spawn_supervised
 from awm.journal import channel, dao, migrate, search_index
+from awm.journal.operations.briefs import BRIEF_HANDLERS, BRIEF_MANIFEST_FUNCTIONS
 from awm.journal.operations.goals import GOAL_HANDLERS, GOAL_MANIFEST_FUNCTIONS
 from awm.journal.operations.posts import POST_HANDLERS, POST_MANIFEST_FUNCTIONS
 from awm.journal.operations.render import RENDER_HANDLERS, RENDER_MANIFEST_FUNCTIONS
@@ -26,7 +27,8 @@ from awm.persistence import embeddings
 log = logging.getLogger("awm.journal.hub_adapter")
 
 API_MANIFEST: dict[str, Any] = {
-    "functions": POST_MANIFEST_FUNCTIONS + GOAL_MANIFEST_FUNCTIONS + RENDER_MANIFEST_FUNCTIONS,
+    "functions": (POST_MANIFEST_FUNCTIONS + GOAL_MANIFEST_FUNCTIONS + BRIEF_MANIFEST_FUNCTIONS
+                  + RENDER_MANIFEST_FUNCTIONS),
     "emitters": [
         {
             "topic": "posts",
@@ -40,7 +42,7 @@ API_MANIFEST: dict[str, Any] = {
     "sessions": [],
 }
 
-HANDLERS: dict[str, Any] = {**POST_HANDLERS, **GOAL_HANDLERS, **RENDER_HANDLERS}
+HANDLERS: dict[str, Any] = {**POST_HANDLERS, **GOAL_HANDLERS, **BRIEF_HANDLERS, **RENDER_HANDLERS}
 
 
 async def _on_start() -> None:

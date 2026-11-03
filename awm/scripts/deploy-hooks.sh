@@ -24,6 +24,7 @@ CHECK=0
 HOOKS=(
   "cx-name|services/cch/hooks/name_on_prompt.py|awm-cx-name-hook.py|local miraz|"
   "reflection|services/cch/hooks/plan_mode_hook.py|awm-reflection-mode.py|local|"
+  "brief|services/cch/hooks/brief_on_start.py|awm-brief-hook.py|local|"
   "reporting|services/reporting/hooks/reporting_hook.py|awm-reporting-hook.py|local|awm-reporting-settings.json"
 )
 
@@ -32,6 +33,7 @@ HOOKS=(
 declare -A ENTRIES=(
   [cx-name]='{"UserPromptSubmit":{"hooks":[{"type":"command","command":"python3 -S $HOME/.claude/hooks/awm-cx-name-hook.py 2>/dev/null || true","timeout":5}]}}'
   [reflection]='{"PostToolUse":{"matcher":"ExitPlanMode","hooks":[{"type":"command","command":"python3 -S $HOME/.claude/hooks/awm-reflection-mode.py 2>/dev/null || true","timeout":20}]}}'
+  [brief]='{"SessionStart":{"hooks":[{"type":"command","command":"python3 -S $HOME/.claude/hooks/awm-brief-hook.py 2>/dev/null || true","timeout":6}]}}'
   [reporting]='@awm-reporting-settings.json'
 )
 

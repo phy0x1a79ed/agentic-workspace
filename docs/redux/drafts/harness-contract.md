@@ -63,7 +63,7 @@ Every verb takes JSON and returns JSON with `ok`. *target* below is `session_id`
 | `start` | `project?`, `scope?`, `prompt?`, `name?`, `model?`, `effort?`, `trust?`, `task_id?`, `role?`, `started_by?`, `pin?`, `suggest?`, `isolated?`, `pid?` | `{session_id, job, name, cwd}` |
 | `stop` | target, `keep?`, `confirm?` | `{stopped}`. With `keep` (the default) the session stays resumable by its id (`sessions.md` R10). Without it, the plugin removes the session's job. The caller's own session needs `confirm`. |
 | `resume` | target, `prompt?` | `{session_id, job, live}`. Brings back a stopped session from its transcript. |
-| `set` | target, `model?`, `effort?`, `name?`, `cwd?` | `{applied: {key: outcome}}` |
+| `set` | target, `model?`, `effort?`, `name?`, `cwd?`, `brief?` | `{applied: {key: outcome}}`. With `cwd`, `brief` is the line the caller's own follow-up carries once the move applied: reflection passes the new scope's brief (`scopes.md` R143). |
 | `compact` | target, `followup?`, `delay_ms?` | `{submitted, ticket?}`. The plugin runs the compaction, then delivers `followup`, and signals the end with a `harness_event` (§ Events). |
 
 Optional verbs, listed in `capabilities` when served:

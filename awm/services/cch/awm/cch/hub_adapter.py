@@ -140,7 +140,10 @@ API_MANIFEST: dict[str, Any] = {
             _TARGET + [_p("prompt"), _p("adopt_lineage", "boolean",
                        "Resume a job that start did not create.")], timeout=90),
         _verb("set", "Set a session's model, effort, name or folder.", _TARGET + [
-            _p("model"), _p("effort"), _p("name"), _p("cwd")], timeout=120),
+            _p("model"), _p("effort"), _p("name"), _p("cwd"),
+            _p("brief", description="With cwd: the line the caller's own follow-up "
+               "carries once the move applied, such as the new scope's brief.")],
+            timeout=120),
         _verb("compact", "Compact the caller's own session, then type followup.",
             _TARGET + [_p("followup"), _p("delay_ms", "integer")], timeout=60),
         _verb("mode", "Put the caller's own session back into bypass permissions.",
@@ -538,7 +541,7 @@ def _set(args: dict) -> dict:
         "model": lambda v: control.model(v, job=ref, caller_pid=pid),
         "effort": lambda v: control.effort(v, job=ref, caller_pid=pid),
         "name": lambda v: control.rename(v, job=ref, caller_pid=pid),
-        "cwd": lambda v: control.cd(v, job=ref, caller_pid=pid),
+        "cwd": lambda v: control.cd(v, job=ref, caller_pid=pid, brief=args.get("brief") or ""),
     }
     asked = [k for k in actions if args.get(k)]
     if not asked:
