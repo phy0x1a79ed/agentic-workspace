@@ -33,11 +33,13 @@ def _approver_call(verb: str, args: dict) -> Any:
 
 
 def grant_key(awm_dir: Path | None = None) -> bytes:
-    """alcor's raw Ed25519 grant key: base64 in ``<AWM_DIR>/grant-key.pub``, written by the fleet's config."""
+    """alcor's raw Ed25519 grant key: the approver's ``grant_pub`` (base64url) in
+    ``<AWM_DIR>/grant-key.pub``, written by the fleet's config."""
     if awm_dir is None:
         import awm.config as config
         awm_dir = config.AWM_DIR
-    raw = base64.b64decode((awm_dir / GRANT_KEY_FILE).read_text().strip())
+    text = (awm_dir / GRANT_KEY_FILE).read_text().strip()
+    raw = base64.urlsafe_b64decode(text.replace("+", "-").replace("/", "_") + "=" * (-len(text) % 4))
     if len(raw) != 32:
         raise ValueError(f"{awm_dir / GRANT_KEY_FILE}: expected a 32-byte Ed25519 key")
     return raw

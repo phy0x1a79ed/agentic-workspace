@@ -24,6 +24,10 @@ pub enum GrantError {
     Mismatch { field: &'static str, got: String, want: String },
     #[error("grant does not cover this request")]
     WrongPayload,
+    #[error("grant does not cover node {0:?}")]
+    WrongNode(String),
+    #[error("a signed time is a float, and signed times are integers")]
+    FloatTime,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -32,7 +36,11 @@ pub struct Grant {
     #[serde(default)]
     pub request_id: String,
     pub kind: String,
-    pub node: String,
+    /// One node, or `None` when `nodes` lists them (an admin_ssh grant for a run).
+    #[serde(default)]
+    pub node: Option<String>,
+    #[serde(default)]
+    pub nodes: Vec<String>,
     pub subject: String,
     pub payload_sha256: String,
     pub not_before: i64,
@@ -44,7 +52,7 @@ pub struct Grant {
 /// What a grant must name to pass.
 #[derive(Debug, Default)]
 pub struct Expect<'a> {
-    pub kind: &'a str,
+    pub kind: Option<&'a str>,
     pub node: Option<&'a str>,
     pub subject: Option<&'a str>,
     pub payload: Option<&'a Value>,
@@ -107,6 +115,9 @@ pub fn verify_grant(envelope: &Value, public_key: &[u8; 32], expect: &Expect, no
         .and_then(|b| Signature::from_slice(&b).ok())
         .ok_or(GrantError::BadSignature)?;
     let key = VerifyingKey::from_bytes(public_key).map_err(|_| GrantError::WrongKey)?;
+    if body.as_object().is_some_and(|m| m.values().any(Value::is_f64)) {
+        return Err(GrantError::FloatTime);
+    }
     key.verify(&canonical(body), &sig).map_err(|_| GrantError::BadSignature)?;
     let grant: Grant = serde_json::from_value(body.clone()).map_err(|_| GrantError::Missing)?;
     if !(grant.not_before <= now && now < grant.not_after) {
@@ -116,8 +127,12 @@ pub fn verify_grant(envelope: &Value, public_key: &[u8; 32], expect: &Expect, no
         Some(w) if w != got => Err(GrantError::Mismatch { field, got: got.into(), want: w.into() }),
         _ => Ok(()),
     };
-    check("kind", &grant.kind, Some(expect.kind))?;
-    check("node", &grant.node, expect.node)?;
+    check("kind", &grant.kind, expect.kind)?;
+    if let Some(n) = expect.node {
+        if grant.node.as_deref() != Some(n) && !grant.nodes.iter().any(|g| g == n) {
+            return Err(GrantError::WrongNode(n.into()));
+        }
+    }
     check("subject", &grant.subject, expect.subject)?;
     if let Some(p) = expect.payload {
         if grant.payload_sha256 != payload_digest(p) {
@@ -158,10 +173,10 @@ pub(crate) mod tests {
             "subject": "s1", "payload_sha256": payload_digest(&payload), "not_before": 100, "not_after": 200,
             "approved_by_device": "d"});
         let env = sign(&sk, grant);
-        let ok = Expect { kind: "trust_raise", node: Some("home"), subject: Some("s1"), payload: Some(&payload) };
+        let ok = Expect { kind: Some("trust_raise"), node: Some("home"), subject: Some("s1"), payload: Some(&payload) };
         assert_eq!(verify_grant(&env, &pk, &ok, 150).unwrap().grant_id, "g1");
         assert_eq!(verify_grant(&env, &pk, &ok, 200).unwrap_err(), GrantError::Expired);
-        let other = Expect { kind: "invite", ..Default::default() };
+        let other = Expect { kind: Some("invite"), ..Default::default() };
         assert!(matches!(verify_grant(&env, &pk, &other, 150), Err(GrantError::Mismatch { .. })));
         let mut forged = env.clone();
         forged["grant"]["subject"] = json!("s2");

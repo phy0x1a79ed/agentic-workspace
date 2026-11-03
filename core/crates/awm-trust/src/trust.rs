@@ -73,7 +73,7 @@ pub fn level_for_start(starter: Level, requested: Option<Level>, raise: Option<R
     }
     let r = raise.ok_or(TrustError::NoGrant { from: starter.as_str(), to: want.as_str() })?;
     let payload = json!({"session_id": r.session_id, "from": starter.as_str(), "to": want.as_str()});
-    let expect = Expect { kind: "trust_raise", node: Some(r.node), subject: Some(r.session_id), payload: Some(&payload) };
+    let expect = Expect { kind: Some("trust_raise"), node: Some(r.node), subject: Some(r.session_id), payload: Some(&payload) };
     verify_grant(r.envelope, r.key, &expect, r.now)?;
     Ok(want)
 }
