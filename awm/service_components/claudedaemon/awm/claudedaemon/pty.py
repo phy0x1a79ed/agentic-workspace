@@ -14,6 +14,13 @@ unauthenticated; *writing* is not, so a control frame carrying the session's
 ``ptyAuth`` must be sent before any raw frame or the input is dropped and an
 ``auth-required`` control frame comes back.
 
+The client speaks first. Since Claude Code 2.1.316 a host that holds an input
+token greets nobody until the client has sent a frame, and drops a client that
+stays silent for five seconds; this module had waited for the greeting, so the
+two sides sat in silence until the host hung up. The opening frame is a
+``pong``: the host treats it as a heartbeat reply and nothing more, and it gives
+nothing away to a socket that has not yet said whose it is.
+
 This is a private protocol, read out of the Claude Code bundle rather than a
 documented interface. It is version-checked on connect so that a CLI update which
 moves it degrades to a clear "background reflection unavailable" rather than
@@ -98,6 +105,9 @@ _QUIET_S = 0.6
 # 0.3 keeps the constant honest about what it can express.
 _ACCEPT_CHECK_S = 1.0
 _ACCEPT_QUIET_S = 0.3
+
+# What the client sends to make the host greet it. See the module docstring.
+_OPENING_FRAME = json.dumps({"t": "pong"}).encode()
 
 # Ctrl-U: kill the prompt line. Only ever sent before a *retry*, to wipe whatever
 # a failed attempt left in the box so the next paste cannot concatenate onto it.
@@ -276,12 +286,14 @@ class Connection:
         so a socket that connected and then said nothing sailed through, and
         authentication proceeded into a host that had never identified itself.
         """
+        self._send(_CTL, _OPENING_FRAME)
         self._pump(until_live=True)
         if not self.hello:
             raise DaemonError(
                 f"the background session's PTY host never greeted us on "
-                f"{self._target.sock}; the roster entry is stale, or that socket "
-                f"is no longer being served — refusing to type into it blind")
+                f"{self._target.sock}, even after we spoke first; the socket is "
+                f"not being served, or this Claude Code build changed the PTY "
+                f"protocol — refusing to type into it blind")
         version = self.hello.get("version")
         if "replPid" not in self.hello:
             raise DaemonError(

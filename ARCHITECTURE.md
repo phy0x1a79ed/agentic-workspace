@@ -38,7 +38,7 @@ Each feature service owns its own SQLite DB. There is no shared `state.db`. Serv
 A feature service keeps its state in SQLite, so the gateway's respawn brings it back whole. A Claude Code session keeps its state in its conversation, and only the daemon can bring that back. Three layers keep a session up:
 
 1. `keep` holds the daemon in its own user unit, outside awm's control group and outside every terminal. `awm/services/keep/INSTALL.md` says why.
-2. `cx` is the session layer. It asks `keep` to ensure the daemon before a start, resume or stop. It refuses with `code: "daemon_down"` only when that fails, and its `list` carries a `daemon` block.
+2. `cx` is the session layer. It asks `keep` to ensure the daemon before a start, resume or stop. It refuses with `code: "daemon_down"` only when that fails, and its `list` carries a `daemon` block. Its `probe` tells a keeper on another node whether a node's cx answers from here, so the keeper can tell its own lost network from the node being down.
 3. `awm.kept` holds the policy every keeper shares: the restart record, the decision (wait, resume, start fresh, give up) and the breaker. It does no I/O. Social's seat keeper is its first user.
 
 **CAUTION** A keeper must read `daemon_down` and `daemon.state` as "wait", never as "the session is gone". Stopping a pinned job runs `claude rm` and loses its conversation. That reading is what destroyed a seat on 2026-10-20.
@@ -50,6 +50,10 @@ The gateway's crash-loop breaker lives in memory on purpose: a gateway restart i
 The `journal` service owns every post and goal, in its own database. It split out of `scopes` so that worktree lifecycle and messaging deploy and fail apart. There are no `rooms`, `messages` or `session_logs` tables. One `scope_posts` table (kind `message`, `journal`, `system`, `goal`, …) and `scope_subscribers`, addressed by `(project, scope)`, carry everything. A non-agent inbox (`user:`, `project:`, `workspace`) is a non-literal channel with `owner_project=''`.
 
 `journal` validates a literal scope through the `resolveScope` RPC to `scopes`, and an unreachable `scopes` never blocks a post. `journal render` writes a scope's `.awm/history.md`, and `scope heal` calls it over the gateway. The service publishes the `posts` topic with payload `{project, scope, post}`. `awm/services/journal/INSTALL.md` covers the first-start copy of the old tables out of the `scopes` database.
+
+A scope reads its channel through a cursor in `scope_cursors`, one row per channel. The cursor belongs to the scope, not to a session, because seats churn and the scope persists. `journal inbox` lists the posts after it and `journal ack` moves it forward. A post the scope wrote itself never counts as unread.
+
+**CAUTION** A literal scope name repeats across projects: most of them have a `dev`. `journal fetch` therefore refuses a `scope` with no `project`. Without that refusal the filter reads every project's channel of that name as one.
 
 A post is passive mail. It starts no session and wakes no one. Agents on one node message each other with Claude's `SendMessage`, and swarms message each other through the board (`FEDERATION.md` § *Intake*). Only a deliberate post, such as a debrief, enters the channel.
 
