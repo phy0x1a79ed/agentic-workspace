@@ -684,8 +684,8 @@ def _literal_rows(conn: sqlite3.Connection, needle: str) -> list[sqlite3.Row]:
 
     On a store with champion lists, which counts its words, nothing is read one passage at a time. A literal
     with two whole words inside is looked up first as an AND of its rarest words within
-    :data:`READ_BUDGET`: a phrase would read the position list of every word in it, common ones included,
-    and cold that costs tens of seconds. Else, or when that leaves :data:`CANDIDATES` passages or more, it is
+    :data:`READ_BUDGET`, and those words within the literal's span of each other: a phrase would read the
+    position list of every word in it, common ones included, and cold that costs tens of seconds. Else, or when that leaves :data:`CANDIDATES` passages or more, it is
     looked up by its trigrams, the two rarest, the :data:`PROBE_GRAMS` rarest, twice as many, then all. The passages
     found are read concurrently, at most :data:`CANDIDATES` of them.
 
@@ -714,7 +714,7 @@ def _literal_rows(conn: sqlite3.Connection, needle: str) -> list[sqlite3.Row]:
             spent += df[w]
         if rare and df[rare[0]] <= rare_budget:
             ids = [r[0] for r in conn.execute("SELECT rowid FROM passage_bm25 WHERE passage_bm25 MATCH ? LIMIT ?",
-                                              (" AND ".join(f'"{w}"' for w in rare), CANDIDATES))]
+                                              (_near(rare, phrase), CANDIDATES))]
             if len(ids) < CANDIDATES:
                 return _read_ids(conn, ids)
     elif phrase:
@@ -737,6 +737,15 @@ def _literal_rows(conn: sqlite3.Connection, needle: str) -> list[sqlite3.Row]:
     if len(ids) < CANDIDATES or len(ordered) <= 2 * PROBE_GRAMS:
         return _passages_by_id(conn, ids) if ids else []
     return _passages_by_id(conn, ids) if wild else conn.execute(*like).fetchall()
+
+
+def _near(words: list[str], phrase: str) -> str:
+    """An FTS5 query for the passages holding ``words`` within ``phrase``'s own span of each other. Every passage
+    holding the literal matches, since its words lie that close there; a 64 KB-page base reads the position
+    lists in order, so this costs about what the AND does and leaves far fewer passages to read."""
+    quoted = " ".join(f'"{w}"' for w in words)
+    span = len(re.findall(r"[A-Za-z0-9]+", phrase))
+    return f"NEAR({quoted}, {span})" if len(words) > 1 else quoted
 
 
 def _budgets(conn: sqlite3.Connection) -> tuple[int, int]:

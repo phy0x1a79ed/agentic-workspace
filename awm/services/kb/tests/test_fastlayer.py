@@ -349,3 +349,17 @@ def test_a_library_search_reads_the_library_copy_and_follows_the_library(layer):
     layer.take_items([{"library": "u", "key": "K2", "version": 2, "doi": "10.1/old", "title": "An ASSEMBLY INDEX survey"}])
     got = layer.search_library("assembly", fastlayer.Filters(papers=layer.library()), 10, 1)
     assert {h["id"] for h in got["exact"]} == {"doi:10.1/at", "doi:10.1/old"}
+
+
+def test_a_literal_whose_words_a_stopword_parts_is_found_and_far_apart_words_are_not_read(tmp_path):
+    papers = {**PAPERS,
+              "doi:10.1/th": ("10.1/th", "Probes", 2024, "We show the potential for theranostic use.", ""),
+              "doi:10.1/far": ("10.1/far", "Imaging", 2024,
+                               "Theranostic agents are new. " + "Many other words sit here. " * 3 + "Potential gain.", "")}
+    _base(tmp_path / "papers.db", papers)
+    _champion(tmp_path / "papers.db", depth=1000)
+    conn = fastlayer._open_ro(tmp_path / "papers.db")
+    assert {r["paper_id"] for r in fastlayer._literal_rows(conn, "potential for theranostic")} == {"doi:10.1/th"}
+    layer = fastlayer.FastLayer(tmp_path / "papers.db", tmp_path / "d.db")
+    found = exact(layer, "potential for theranostic", fastlayer.Filters(), 10, 1)
+    assert found[0]["id"] == "doi:10.1/th" and found[0]["match"] != found[-1]["match"]
