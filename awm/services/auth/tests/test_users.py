@@ -156,3 +156,24 @@ def test_v1_db_migrates_in_place(awm_workspace):
     assert store.ensure_secret() == "keep-me"
     assert store.user_list() == []
     assert store.fail_get("u:x")["fails"] == 0
+
+
+def test_the_migration_drops_the_plaintext_penpot_table(awm_workspace):
+    from awm.auth import store
+    from awm.persistence.databases import service_db_path
+    store.init()
+    path = service_db_path("auth")
+    conn = sqlite3.connect(path)
+    conn.executescript(
+        "CREATE TABLE awm_penpot (username TEXT PRIMARY KEY, email TEXT NOT NULL, password TEXT NOT NULL,"
+        " rotated_at REAL NOT NULL, created_at REAL NOT NULL);"
+        "INSERT INTO awm_penpot VALUES ('tony', 't@x', 'plaintext', 0, 0);"
+        "UPDATE schema_version SET version = 5;")
+    conn.commit(); conn.close()
+    store.init()
+    conn = sqlite3.connect(path)
+    tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+    version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
+    conn.close()
+    assert "awm_penpot" not in tables
+    assert version == 6

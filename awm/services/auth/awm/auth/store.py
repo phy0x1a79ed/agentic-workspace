@@ -35,7 +35,7 @@ from typing import Any
 from awm.persistence.databases import get_connection, init_service_db
 
 SERVICE = "auth"
-_SCHEMA_VERSION = 5
+_SCHEMA_VERSION = 6
 
 _SCHEMA = """
 CREATE TABLE awm_secret (
@@ -104,19 +104,13 @@ CREATE TABLE IF NOT EXISTS awm_login_fail (
     last_at      REAL NOT NULL DEFAULT 0
 );
 """,
-    # The retired Penpot credential table. Kept so the version chain stays
-    # intact. Nothing reads or writes it, and a fresh DB does not create it.
-    (2, 3): """\
-CREATE TABLE IF NOT EXISTS awm_penpot (
-    username   TEXT PRIMARY KEY,
-    email      TEXT NOT NULL,
-    password   TEXT NOT NULL,
-    rotated_at REAL NOT NULL,
-    created_at REAL NOT NULL
-);
-""",
+    # v3 added the retired Penpot credential table. The step stays so the
+    # version chain holds, and creates nothing.
+    (2, 3): "",
     (3, 4): _DEVICE_TOKENS_TABLE,
     (4, 5): "ALTER TABLE awm_device_tokens ADD COLUMN scope TEXT;",
+    # awm_penpot held Penpot passwords in plaintext (install.md R134).
+    (5, 6): "DROP TABLE IF EXISTS awm_penpot;",
 }
 
 

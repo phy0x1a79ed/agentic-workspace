@@ -23,8 +23,8 @@ FOLDERS = sorted(p.parent for p in SERVICES.glob("*/run.sh"))
 #: Folders that stay on ``service.toml`` until they stop sharing a tool. A
 #: manifest plugin may not share a tool across plugins (contract rule 2).
 LEGACY = {
-    "board": "shares `operations` with reporting until the two folders merge",
-    "reporting": "shares `operations` with board until the two folders merge",
+    "board": "shares `operations` with reporting until both go at the cutover (queue.md R145)",
+    "reporting": "shares `operations` with board until both go at the cutover (queue.md R145)",
     "cx": "shares `reflection` until the harness recut (R135)",
     "keep": "shares `reflection` until the harness recut (R135)",
     "reflection": "shares `reflection` with cx and keep until the harness recut (R135)",
