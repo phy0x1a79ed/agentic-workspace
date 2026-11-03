@@ -16,6 +16,8 @@ How a channel works belongs in `channels.md`. The owner's queue belongs in `queu
 - **R122.** A foreign swarm, such as shaula, reaches awm through rooms. An agent of ours in the room may give it access to journals. Access goes through that agent, not through a standing read grant on a peer edge. Tony: "shaula can use rooms. through that an agent can give access to journals" (2026-11-02).
 - **R123.** A seat user may hold approval rights over a system that is theirs. Ryan requests and approves Arbutus changes through Slack. The Arbutus admin access is awm's own admin system, extended to Arbutus (`fleet.md` R91 item 5, R100). Ryan's approvals and Tony's passkey approvals (`queue.md` R64) cover sets that do not overlap. Tony: "Ryan approval is for shogun stuff. there is overlap, but not the same. subset? maybe really just non-overlapping set. the admin access on arbutus is the same system as ours, we are just extending it. Ryan can request and approve arbutus changes through the slack, it is his right to do so." (2026-11-02).
 - **R124.** The public never calls into awm directly. Tony: "public shouldnt be able to call into awm directly. that is a major overwhelm risk" (2026-11-02).
+- **R126.** The Slack seat system keeps its first-contact flow. A main Slack seat watches for new DMs to Opal. On the first DM from someone other than Tony, it notifies Tony and starts a seat for that person, at the cooperative level (`channels.md` R125). Tony: "the current system works. a main slack seat monitors for new DMs. it notifies me and spawns a seat on first DM by someone else." (2026-11-02).
+  1. Opal never messages a person first. Tony: "lets also enforce some small tweaks to make that go smoother. like no reaching out first" (2026-11-02).
 
 ## Gap from today
 
