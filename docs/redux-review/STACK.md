@@ -26,7 +26,7 @@ Procedure, from dfs-interview § Work the stack:
 ## Stack
 
 - **journals** (2026-11-03): for journals, I want to talk about making journals commentable (threads, like reddit posts). also want to talk about adding tags to journals with a set ontology (by the agents. 1 degree of separate helps with consistency since harder to just add rando tags). tags for existing uses, but then also would allow for complaint posts like bug reports. then journals need a way of also marking "closed", kind of like issues.  This would allow meta imrpovements to be more systematized in awm
-  - [ ] Tag descriptions. Tony: "each tag should also get a description when adding and is editable"
+  - [x] Tag descriptions. Tony: "each tag should also get a description when adding and is editable" (answered 2026-11-03)
   - [ ] Precedence folds into the journal. Tony: "and prescedent can then fold into the same journal system once updated?"
 - **search-filters** (2026-11-03): can we make parameterized search possible? then we can do search with empty terms and only sql (if that's what hop takes) with source as kb for hop. Then we can also make searching journals possible to filter to only reports etc
   - [ ] kb tool surface: does hop become a search filter so the kb tool goes (Tony: kb becomes a b2b service only for search)
