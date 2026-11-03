@@ -25,8 +25,6 @@ Parent thread 1 (end state) waits for Tony to confirm `goal.md`. Its children 1a
 
 Top of the stack comes first.
 
-4c. **Remote start and an always-on answerer.** A service starts machines such as capella, mira, alcor and mizar from afar. At least one machine stays on at all times and can answer requests through an agent, so a mizar restart needs juggling. Tony: "I think id also like a service to remote start machines like capella, mira, alcor and mizar. there needs to be some way to ensure that at least 1 machine is always on and can answer requests through an agent so mizar restarts need a bit of juggling" (2026-11-03).
-
 4b. **The new search.** This session adopts the svc-kb search work (`fleet.md` R136). Read its plan and the open questions on card HaY7mBwx912w, settle what the redux needs, and apply it with everything else at the end. Tony: "lets adopt search into this session. we can talk about we need to and apply it with everything in the end" (2026-11-03).
 
 4. **What made it foundational.** Which problem made Tony think "rebuild" rather than "patch"?
@@ -57,6 +55,7 @@ Raised before the redux started. Each enters the stack when a thread reaches it.
 
 ## Closed
 
+- 4c. Remote start and an always-on answerer (2026-11-03). Result: `fleet.md` R139, R98 item 1 and R88 item 1. alcor is mizar's standby, and each wakes the other with Wake-on-LAN. capella and lyra ssh to alcor directly. Nobody touches or tests mira until the trial week ends, and Tony is present for the test. Tony: "Alcor should be standby."
 - 4a. Recut reflection, cch and dsh (2026-11-03). Result: `install.md` R135. One `reflection` tool calls the harness plugin of the session, which does the injection. cch holds Claude Code, dsh the DeepSeek harness, and no OpenCode. Other services, social seats among them, call the harness plugin through the gateway. Tony: "the cut makes sense to me."
 - 3a. The Slack seat system (2026-11-03). Result: `channels.md` R125 and R127, `users.md` R126 and R128 to R130, `fleet.md` R86 and R88 item 1. R125 defines the cooperative level: a lab seat runs on the host with any tool its edges and trust level allow, minus `social`, new top-level agents and cards, and may still request Tony. No agent writes to Slack as Tony. The main seat keeps the first-contact flow, and Opal never messages first. Seats get their own workspace, `agentic-commons`, with local git repos per seat. Foreign peers and static edge users go. Tony: "I think seats need their own workspace."
 - 3. Who uses it (2026-11-02). Result: `users.md` R121 to R124. awm's users are its four interface boundaries: seats for humans, the queue for the owner, rooms for agents and swarms, and bash, ssh and the tether for machines. A foreign swarm comes in through rooms. Ryan approves Arbutus changes through Slack, a set apart from Tony's. The public never calls in directly. Tony: "public shouldnt be able to call into awm directly. that is a major overwhelm risk"
