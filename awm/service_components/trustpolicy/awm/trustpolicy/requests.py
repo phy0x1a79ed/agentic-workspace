@@ -49,6 +49,18 @@ def _minutes(minutes: int) -> int:
     return int(minutes)
 
 
+def file_request(kind: str, *, node: str, reason: str, minutes: int = MIN_MINUTES,
+                 payload: dict | None = None, call: Call = _approver_call) -> str:
+    """File a request without waiting for the answer. Returns its id."""
+    if not reason.strip():
+        raise ValueError("a request needs a reason Tony can read")
+    filed = call("approval_request", {
+        "kind": kind, "node": node, "reason": reason, "minutes": _minutes(minutes),
+        "payload": payload or {}, "requester_session": os.environ.get("AWM_SESSION_ID", ""),
+    })
+    return filed["request_id"]
+
+
 def request(kind: str, *, node: str, reason: str, minutes: int = MIN_MINUTES,
             payload: dict | None = None, session: str | None = None,
             wait_s: float = 24 * 3600, call: Call = _approver_call) -> dict:
