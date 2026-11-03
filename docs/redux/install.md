@@ -21,6 +21,7 @@ Which node holds which role belongs in `fleet.md`. How a deploy moves through th
   2. Each install pins a commit and takes Tony's passkey (`queue.md` R64), and so does each move to a new commit. One passkey approves every plugin commit of one change together. Tony: "approved commits are fine if we can batch approve for a full change" (2026-11-02).
   3. Each plugin's pages get their own origin, so a page reaches only its own plugin's services.
   4. Tony's own plugins run on the host. A third-party plugin runs in a container at untrusted, as an isolated session does (`fleet.md` R109).
+  5. A namespace records which plugin owns a name. It never appears in a call: a tool keeps its flat name, such as `journal`. The manifest claims the tool names the plugin serves, and the gateway keeps one table from each name to its owner. An install that claims a taken name is refused, and Tony settles the clash by renaming one in the install config. Names that gate trust, such as `2fa` and the approver, belong only to core plugins. Page origins, secret grants and the audit log use the owner's name. Tony: "we dont want namespace = tools and we dont want to have to do \"awm namespace/tool\"" and "this works" (2026-11-02).
 
 ## Gap from today
 
