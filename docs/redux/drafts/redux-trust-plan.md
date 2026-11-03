@@ -223,6 +223,7 @@ Run the `debrief` skill.
   - `rlm-browser` retires when the browser singleton runs: both publish the tool `browser` (gap F38).
 - The bare `peer` stamp is now refused everywhere. The legacy bearer still authenticates but reaches nothing. Delete it from `auth` and `httpsfront` once every node runs the edges.
 - The journal's goal verbs and `render` carry no trust bound yet. The journal database moves to `/var/lib/awm/journal` when the journal runs as its own user. That move needs a copy of today's `<AWM_DIR>/services/journal.db`.
+- altair's two static accounts go when altair's auth runs the 5→6 migration. No node config is needed. The same migration revokes every unscoped device token, so a device that used one needs a new scoped token. `scripts/sirius/add-user.sh` still calls `awm auth user-add` and fails at that step.
 - A per-seat browser container needs Docker. The browser singleton runs as a system user, so it needs rootless Docker of its own, not the `docker` group (R99 item 2).
 
 ## Doc changes for the sweep
@@ -234,4 +235,6 @@ The interview session owns the area docs. These are the changes this lane's work
 - `docs/redux/fleet.md` line 201 describes the gap that this lane closed.
 - Service INSTALL docs that name domestic peers or grants: cx 48 and 100, httpsfront 123, reporting 37, 204 and 277, kb 7 and 41–49, search 9, 21, 36 and 39.
 - The journal's docs gain `journal_edit`, `journal_history` and `journal_addenda`. AGENTS.md's startup ritual gains no step.
-- `users.md` R130: the auth service has no user accounts. Device tokens belong to the operator.
+- `users.md` R130: the auth service has no user accounts. A device token speaks for one device as `device:<id>` and carries a scope.
+- `awm/services/auth/INSTALL.md`: delete § User accounts (lines 51–60). In § Device tokens, lines 64–77 describe per-user tokens. The settings table, line 110, says the lockout counts per username.
+- `awm/services/httpsfront/INSTALL.md` line 123 says `/__auth/login` takes a username.
