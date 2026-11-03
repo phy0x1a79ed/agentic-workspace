@@ -1,5 +1,6 @@
 //! Starts each enabled service as `bash <run>` in its folder, respawns it, and stops it.
 
+use std::path::{Path, PathBuf};
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
@@ -42,6 +43,13 @@ pub fn start_all(gw: &Arc<Gateway>) {
         .plugins
         .iter()
         .flat_map(|p| p.services.iter().filter(|s| s.enabled).cloned())
+        .filter(|s| {
+            let external = gw.cfg.external(&s.name).is_some();
+            if external {
+                tracing::info!("service {}: external, waiting for it to register", s.name);
+            }
+            !external
+        })
         .collect();
     let mut tasks = gw.supervisor.tasks.lock().unwrap_or_else(|p| p.into_inner());
     for spec in specs {
@@ -110,6 +118,7 @@ fn spawn(gw: &Gateway, spec: &ServiceSpec) -> std::io::Result<tokio::process::Ch
     let logs = gw.state.join("logs");
     std::fs::create_dir_all(&logs)?;
     let log = std::fs::OpenOptions::new().create(true).append(true).open(logs.join(format!("{}.log", spec.name)))?;
+    let token = new_service_token(&gw.state, &spec.name)?;
     let mut cmd = tokio::process::Command::new("bash");
     cmd.arg(&spec.run)
         .current_dir(&spec.cwd)
@@ -120,6 +129,7 @@ fn spawn(gw: &Gateway, spec: &ServiceSpec) -> std::io::Result<tokio::process::Ch
         .env("AWM_RESOLVED_TOOLS", resolved_path(&gw.state, &spec.plugin))
         .env("AWM_NODE_NAME", &gw.node)
         .env("AWM_DIR", &gw.state)
+        .env("AWM_HUB_TOKEN_FILE", token)
         .env_remove("AWM_SERVICE_ID")
         .stdin(std::process::Stdio::null())
         .stdout(log.try_clone()?)
@@ -133,6 +143,23 @@ fn spawn(gw: &Gateway, spec: &ServiceSpec) -> std::io::Result<tokio::process::Ch
         cmd.env("AWM_WORKSPACE", ws);
     }
     cmd.spawn()
+}
+
+/// The token file a spawned service registers with. Each spawn gets a fresh token,
+/// so no other local user can take over the service's name while it is down.
+pub fn service_token_path(state: &Path, service: &str) -> PathBuf {
+    state.join("tokens").join(format!("{service}.token"))
+}
+
+fn new_service_token(state: &Path, service: &str) -> std::io::Result<PathBuf> {
+    use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+    let dir = state.join("tokens");
+    std::fs::DirBuilder::new().recursive(true).mode(0o700).create(&dir)?;
+    let path = service_token_path(state, service);
+    let _ = std::fs::remove_file(&path);
+    let mut f = std::fs::OpenOptions::new().create_new(true).write(true).mode(0o600).open(&path)?;
+    std::io::Write::write_all(&mut f, uuid::Uuid::new_v4().simple().to_string().as_bytes())?;
+    Ok(path)
 }
 
 fn kill_group(pgid: i32, signal: i32) {

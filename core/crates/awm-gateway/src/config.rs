@@ -53,6 +53,12 @@ pub struct Config {
     pub env: BTreeMap<String, String>,
     #[serde(default)]
     pub peer: Vec<PeerConfig>,
+    /// Services this gateway serves but does not spawn: another user's systemd unit runs them (R99).
+    #[serde(default)]
+    pub external: Vec<ExternalService>,
+    /// The fleet rollout table. The routine plugin reads it. The gateway ignores it.
+    #[serde(default)]
+    pub fleet: Option<toml::Value>,
     /// Seconds a call waits for a tool that is not up yet (R117 item 7).
     #[serde(default = "default_wait")]
     pub tool_wait_s: f64,
@@ -67,6 +73,15 @@ pub struct PeerConfig {
     pub name: String,
     /// The peer gateway's base URL, for the HTTP transport.
     pub url: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExternalService {
+    pub service: String,
+    /// A file holding the token the service must send as `X-Awm-Service-Token` to register.
+    #[serde(default)]
+    pub token_file: Option<PathBuf>,
 }
 
 fn default_listen() -> String {
@@ -110,6 +125,10 @@ impl Config {
 
     pub fn wants(&self, plugin: &str) -> bool {
         !self.exclude.iter().any(|p| p == plugin) && self.plugins.iter().any(|p| p == "*" || p == plugin)
+    }
+
+    pub fn external(&self, service: &str) -> Option<&ExternalService> {
+        self.external.iter().find(|e| e.service == service)
     }
 
     pub fn edges_path(&self, state: &Path) -> PathBuf {

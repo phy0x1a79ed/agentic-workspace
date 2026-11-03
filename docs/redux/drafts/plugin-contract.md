@@ -2,9 +2,9 @@
 
 ## Purpose & Contents
 
-This file is the contract between a plugin and the Rust gateway of the redux (`install.md` R112, R115 to R117, R132). It holds the manifest format, the wire protocol a service speaks, the call interface a plugin uses to reach another plugin, and the usage event. The redux-core lane (job a92d02bf) owns it. Other lanes build against it. Send a change request to job a92d02bf with `reflection(verb="message")`.
+This file is the contract between a plugin and the Rust gateway of the redux (`install.md` R112, R115 to R117, R132). It holds the manifest format, the wire protocol a service speaks, the call interface a plugin uses to reach another plugin, and the usage event. The redux-core lane (job a92d02bf) owns it. Other lanes build against it. Send a change request to `redux-build/core` with `SendMessage`.
 
-Status: draft v1.4. Build against it.
+Status: draft v1.5. Build against it.
 
 ## Plugin folder
 
@@ -115,6 +115,9 @@ The keys that place plugins:
 2. `exclude` lists the plugin names this node never loads.
 3. `rename` maps a declared tool name to its public name, to settle a clash (R116 item 5).
 4. `plugin_roots` adds roots after the core roots. `profiles` and `env` pass through to services.
+5. `[[external]]` names a service the gateway serves but does not spawn, as `{service, token_file?}`. Another user's systemd unit runs it (R99, R107). See § External services.
+
+The `[fleet]` table holds the rollout order: `home`, `nodes` (starting with `home`), and an optional `[fleet.project.<name>]` with `canonical` and `nodes`. The routine plugin reads it. The gateway ignores it. The routine plugin also honours `AWM_INSTALL_CONFIG` as an override of the path, for tests and dry runs. The gateway reads only `<AWM_DIR>/config.toml`.
 
 The edge list is node config too. The gateway reads `AWM_EDGES_FILE`, else `<AWM_DIR>/edges.yml`. It adds `[s.tool for s in singletons]` to the reserved list. A missing file is an empty fleet.
 
@@ -122,16 +125,25 @@ The loader warns on a `[placement]` table and ignores it.
 
 ## Service wire protocol
 
-The protocol is today's Python gateway protocol, unchanged. `awm.gatewayclient.ServiceAdapter` already speaks it.
+The protocol is today's Python gateway protocol plus one header, the service token in step 2. `awm.gatewayclient.ServiceAdapter` on `feat/redux-core` speaks it. An older adapter gets 403 from the Rust gateway.
 
-1. The gateway starts each enabled service with `bash <run>` in the service folder. It sets `AWM_HUB_URL`, `AWM_SERVICE_NAME`, `AWM_SERVICE_ID`, `AWM_PLUGIN` and `AWM_RESOLVED_TOOLS` in the environment.
-2. The service posts `POST /hub/service/register` with `{name, prefix?, pid, start, cwd}`. The reply carries `service_id`, `control_ws_path` and `canonical_workspace`.
+1. The gateway starts each enabled service with `bash <run>` in the service folder. It sets `AWM_HUB_URL`, `AWM_SERVICE_NAME`, `AWM_PLUGIN`, `AWM_RESOLVED_TOOLS`, `AWM_NODE_NAME`, `AWM_DIR`, `AWM_WORKSPACE` and `AWM_HUB_TOKEN_FILE` in the environment, plus the install config's `env`. It never sets `AWM_SERVICE_ID`.
+2. The service posts `POST /hub/service/register` with `{name, prefix?, pid, start, cwd}` and the header `X-Awm-Service-Token`, read from `AWM_HUB_TOKEN_FILE`. Each spawn gets a fresh token, so no other local user can take the service's name while it is down. A register with a wrong token gets 403. The reply carries `service_id`, `control_ws_path` and `canonical_workspace`.
 3. The service opens the control WebSocket at `/hub/service/control/<service_id>`. It sends `{"kind":"ready","api":{"functions":[...]}}` first. Each function is `{name, description, params:[{name,type,required,description}], tool?}`.
 4. The gateway sends `{"kind":"call","id","fn","args","as"?,"caller"}`. `caller` is `{"node","lane","session","trust"}`: `lane` is `local`, `edge` or `service`, `session` is the R9 session id or null, and `trust` is `trusted`, `cooperative` or `untrusted`. Only the gateway fills `caller` (R103). It drops any `X-Awm-Trust` or `X-Awm-Lane` header a caller sends. A service that predates `caller` ignores it. The service answers `{"kind":"reply","id","ok":true,"result"}` or `{"kind":"reply","id","ok":false,"error","error_class"}`. The gateway may also send `notify`, `cancel` and `shutdown`.
 5. The service may send `{"kind":"emit","topic","payload"}` and `{"kind":"usage",...}` (see § Usage event).
 6. A closed control WebSocket releases the service. The gateway respawns it after a 10 s window unless the gateway is stopping.
 
 A second instance of a live service gets 409 on register and stands down.
+
+### External services
+
+A service in the install config's `[[external]]` list runs under its own system user, apart from the gateway's user. The gateway never spawns it. It waits for the service to register, then serves it like any other.
+
+1. Run the service's `run.sh` from its unit, with `WorkingDirectory` set to the service folder. Set `AWM_HUB_URL` to the gateway's URL and `AWM_SERVICE_NAME` to the service name.
+2. Set `AWM_HUB_TOKEN_FILE` to a file that holds the service's token.
+3. Point the entry's `token_file` at a file with the same token, readable by the gateway's user.
+4. Read resolved tools from `GET /hub/plugins/<plugin>/resolved`. The service cannot read `AWM_RESOLVED_TOOLS` in the gateway's state.
 
 ## Calling another plugin
 

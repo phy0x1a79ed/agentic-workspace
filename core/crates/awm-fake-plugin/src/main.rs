@@ -17,8 +17,13 @@ async fn main() -> anyhow::Result<()> {
     let plugin = std::env::var("AWM_PLUGIN").unwrap_or_else(|_| name.clone());
     let http = reqwest::Client::new();
 
+    let token = match std::env::var("AWM_HUB_TOKEN_FILE") {
+        Ok(path) => std::fs::read_to_string(path)?.trim().to_string(),
+        Err(_) => String::new(),
+    };
     let reg: Value = http
         .post(format!("{hub}/hub/service/register"))
+        .header("X-Awm-Service-Token", token)
         .json(&json!({"name": name, "pid": std::process::id(), "start": ["bash", "run.sh"], "cwd": "."}))
         .send()
         .await?

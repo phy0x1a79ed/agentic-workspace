@@ -38,6 +38,7 @@ pub fn router(gw: Arc<Gateway>) -> Router {
         .route("/hub/uuids", get(uuids))
         .route("/hub/resolve/{uuid}", get(resolve))
         .route("/hub/plugins", get(plugins))
+        .route("/hub/plugins/{plugin}/resolved", get(resolved_tools))
         .route("/svc/{service}/fn/{function}", post(svc_fn))
         .route("/p/{plugin}/{page}", get(page_root))
         .route("/p/{plugin}/{page}/", get(page_root))
@@ -163,9 +164,21 @@ struct RegisterReq {
     overlay: bool,
 }
 
-async fn register(State(gw): Gw, Json(req): Json<RegisterReq>) -> Result<Json<Value>, ApiError> {
+async fn register(State(gw): Gw, h: HeaderMap, Json(req): Json<RegisterReq>) -> Result<Json<Value>, ApiError> {
     if req.overlay {
         return Err(ApiError::new(409, "the Rust gateway does not run shadow overlays"));
+    }
+    let token_file = match gw.cfg.external(&req.name) {
+        Some(external) => external.token_file.clone(),
+        None => Some(supervisor::service_token_path(&gw.state, &req.name)).filter(|p| p.exists()),
+    };
+    if let Some(path) = token_file {
+        let expected = std::fs::read_to_string(&path).unwrap_or_default();
+        let sent = header(&h, "x-awm-service-token").unwrap_or_default();
+        if expected.trim().is_empty() || expected.trim() != sent {
+            tracing::warn!("service {}: register without its service token; refused", req.name);
+            return Err(ApiError::new(403, format!("service {:?} needs its service token", req.name)));
+        }
     }
     let plugin = gw.plugin_of_service(&req.name);
     let Ok(id) = gw.hub.register(&req.name, &plugin, req.pid) else {
@@ -252,6 +265,16 @@ async fn resolve(State(gw): Gw, Path(uuid): Path<String>) -> Result<Json<Value>,
 
 async fn plugins(State(gw): Gw) -> Json<Value> {
     Json(gw.load_snapshot())
+}
+
+/// A plugin's resolved tools, for a service that cannot read `AWM_RESOLVED_TOOLS` in the gateway's state.
+async fn resolved_tools(State(gw): Gw, Path(plugin): Path<String>) -> Result<Json<Value>, ApiError> {
+    if !gw.read_load().plugins.iter().any(|p| p.name == plugin) {
+        return Err(ApiError::new(404, format!("no plugin {plugin:?} loaded")));
+    }
+    let text = std::fs::read_to_string(crate::gateway::resolved_path(&gw.state, &plugin))
+        .map_err(|_| ApiError::new(404, format!("no plugin {plugin:?} loaded")))?;
+    Ok(Json(serde_json::from_str(&text).map_err(|e| ApiError::new(500, e.to_string()))?))
 }
 
 async fn svc_fn(

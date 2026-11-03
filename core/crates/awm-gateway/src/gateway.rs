@@ -137,7 +137,7 @@ impl Gateway {
         self.url.get().cloned().unwrap_or_else(|| format!("http://{}", self.cfg.listen))
     }
 
-    fn read_load(&self) -> std::sync::RwLockReadGuard<'_, LoadResult> {
+    pub fn read_load(&self) -> std::sync::RwLockReadGuard<'_, LoadResult> {
         self.load.read().unwrap_or_else(|p| p.into_inner())
     }
 

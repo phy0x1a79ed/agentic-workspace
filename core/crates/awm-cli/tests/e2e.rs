@@ -97,6 +97,10 @@ major = 1
     );
     write(&third.join("caller/run.sh"), &format!("exec '{}'\n", fake.display()));
 
+    // A plugin another user's systemd unit runs: the gateway serves it but does not spawn it.
+    write(&core.join("ext/run.sh"), "exit 1\n");
+    write(&state.join("ext.token"), "ext-secret\n");
+
     let python = awm_python();
     let mut env = String::new();
     if let Some(py) = &python {
@@ -117,10 +121,11 @@ major = 1
     write(
         &state.join("config.toml"),
         &format!(
-            "node = \"e2e\"\nlisten = \"127.0.0.1:0\"\nworkspace = \"{}\"\ncore_roots = [\"{}\"]\nplugin_roots = [\"{}\"]\ntool_wait_s = 90\n{env}",
+            "node = \"e2e\"\nlisten = \"127.0.0.1:0\"\nworkspace = \"{}\"\ncore_roots = [\"{}\"]\nplugin_roots = [\"{}\"]\ntool_wait_s = 90\n[[external]]\nservice = \"ext\"\ntoken_file = \"{}\"\n[fleet]\nhome = \"e2e\"\nnodes = [\"e2e\"]\n{env}",
             ws.display(),
             core.display(),
-            third.display()
+            third.display(),
+            state.join("ext.token").display()
         ),
     );
     Node { _tmp: tmp, state, journal: python.is_some() }
@@ -329,6 +334,26 @@ fn gateway_end_to_end() {
         let (text, err) = mcp.call("journal", json!({"verb": "fetch", "args": {"project": "e2e", "scope": "t"}}));
         assert!(!err && text.contains("hello from the rust gateway"), "journal fetch: {text}");
     }
+
+    // An external service registers with its token. The supervisor never ran its run.sh.
+    assert!(!node.state.join("logs/ext.log").exists(), "the supervisor spawned an external service");
+    let refused = http().post(format!("{url}/hub/service/register")).json(&json!({"name": "ext"})).send().unwrap();
+    assert_eq!(refused.status().as_u16(), 403, "an external service must not register without its token");
+    let hijack = http().post(format!("{url}/hub/service/register")).json(&json!({"name": "fake"})).send().unwrap();
+    assert_eq!(hijack.status().as_u16(), 403, "a spawned service's name must need the token the supervisor gave it");
+    let mut ext = Command::new(fake_bin())
+        .env("AWM_HUB_URL", &url)
+        .env("AWM_SERVICE_NAME", "ext")
+        .env("AWM_HUB_TOKEN_FILE", node.state.join("ext.token"))
+        .spawn()
+        .unwrap();
+    let (code, out, errout) = cli(&url, &["ext", "echo", "--text", "from outside"]);
+    let _ = ext.kill();
+    let _ = ext.wait();
+    assert!(code == 0 && out.contains("from outside"), "{}", fail(&format!("external echo: {out} {errout}")));
+    let resolved: Value = http().get(format!("{url}/hub/plugins/caller/resolved")).send().unwrap().json().unwrap();
+    assert_eq!(resolved["tools"][FAKE_UUID]["name"], "fake");
+    assert_eq!(http().get(format!("{url}/hub/plugins/..%2Fx/resolved")).send().unwrap().status().as_u16(), 404);
 
     // Usage per plugin and surface, not MCP calls alone (R132).
     let (code, out, _) = cli(&url, &["usage", "--days", "1"]);

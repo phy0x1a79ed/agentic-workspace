@@ -96,7 +96,8 @@ class FakeClient:
     async def __aexit__(self, *exc):
         return False
 
-    async def post(self, url, json=None):
+    async def post(self, url, json=None, headers=None):
+        self.headers = headers or {}
         return self._resp
 
 
@@ -127,6 +128,16 @@ def test_register_2xx_returns_service_id(monkeypatch):
         lambda *a, **k: FakeClient(FakeResp(200, payload={"service_id": "sid-7"})))
     sid = asyncio.run(_register(_adapter(), "http://hub"))
     assert sid == "sid-7"
+
+
+def test_register_sends_the_service_token(monkeypatch, tmp_path):
+    client = FakeClient(FakeResp(200, payload={"service_id": "sid-8"}))
+    monkeypatch.setattr(adapter_mod.httpx, "AsyncClient", lambda *a, **k: client)
+    token = tmp_path / "svc.token"
+    token.write_text("s3cret\n")
+    monkeypatch.setenv("AWM_HUB_TOKEN_FILE", str(token))
+    assert asyncio.run(_register(_adapter(), "http://hub")) == "sid-8"
+    assert client.headers == {"X-Awm-Service-Token": "s3cret"}
 
 
 def test_register_500_is_retryable_not_giveup(monkeypatch):
