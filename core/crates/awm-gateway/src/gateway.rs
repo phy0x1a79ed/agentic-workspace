@@ -661,6 +661,10 @@ impl Gateway {
                 return Ok(found.clone());
             }
             if self.tool_settled(tool) {
+                // The service may have turned ready since the snapshot above.
+                if let Some(found) = self.tools().get(tool).and_then(|e| e.verbs.iter().find(|(_, v)| v.verb == verb).cloned()) {
+                    return Ok(found);
+                }
                 return Err(ApiError::new(404, format!("Unknown verb {verb:?} for domain {tool:?}")));
             }
             let left = deadline.saturating_duration_since(Instant::now());
@@ -706,6 +710,8 @@ impl Gateway {
         if !inner.is_object() {
             return Err(ApiError::new(400, "'args' must be an object"));
         }
+        // A tool no local plugin serves runs where the name table says it lives (R117 item 3).
+        let peer = peer.or_else(|| if tools.contains_key(&tool) { None } else { self.owner(&tool).and_then(|o| o.peer) });
         if let Some(peer) = peer.filter(|p| p != "local" && *p != self.node) {
             let envelope = json!({"verb": verb, "args": inner});
             return Ok(self.peers.invoke(&peer, &tool, envelope, ctx).await?);

@@ -1,0 +1,11 @@
+[plugin]
+name = "2fa"
+version = "0.0.0"
+trust = "own"
+
+[[service]]
+name = "2fa"
+
+[[tool]]
+name = "2fa"
+major = 1

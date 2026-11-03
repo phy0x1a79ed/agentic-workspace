@@ -431,8 +431,8 @@ fn gateway_end_to_end() {
     plugin_at(&src.join("inst"), "inst", "inst", "");
     let (code, out, errout) = cli(&url, &["install", src.join("inst").to_str().unwrap()]);
     assert_eq!(code, 0, "{out} {errout}");
-    let (code, out, _) = cli(&url, &["inst", "echo", "--text", "installed"]);
-    assert!(code == 0 && out.contains("installed"), "{out}");
+    let (code, out, errout) = cli(&url, &["inst", "echo", "--text", "installed"]);
+    assert!(code == 0 && out.contains("installed"), "{}", fail(&format!("inst echo: {out} {errout}")));
     let pins = std::fs::read_to_string(node.state.join("installed.toml")).unwrap();
     assert!(pins.contains("name = \"inst\"") && pins.contains("folder:"), "{pins}");
     plugin_at(&src.join("inst"), "inst", "inst-two", "");
