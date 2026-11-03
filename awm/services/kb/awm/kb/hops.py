@@ -1,14 +1,13 @@
-"""Hop steps, the author filter and the graph section, over kb's hop arrays (``kb.hops`` builds them).
+"""``kb hop`` and the author filter, over kb's hop arrays (``kb.hops`` builds them).
 
 Every array is memory-mapped, so a hop pages in only the rows it walks. A hop ranks by personalized PageRank
-from its seeds and breaks ties by the prior. It never re-ranks by meaning (precedence 5db3b97b404c877a).
+from its seeds and breaks ties by date, newest first. It never re-ranks by meaning (precedence 5db3b97b404c877a).
 """
 
 from __future__ import annotations
 
 import difflib
 import json
-import math
 import os
 import re
 import threading
@@ -19,11 +18,9 @@ from typing import Any
 import numpy as np
 
 ALONG = ("authors", "cites", "cited_by")
-#: Seeds are the top hits, each weighted exp((score / best - 1) / SHARP), so a clear first hit takes most of
-#: the mass and a wrong one does not empty the answer. 0.05 gave recall@20 0.618 on 300 cases, against 0.569
-#: for the first hit's authors alone.
+#: A hop starts from the first SEEDS papers it is given, each weighted DECAY times the one before.
 SEEDS = 5
-SHARP = 0.05
+DECAY = 0.95
 RESTART = 0.5
 TRIPS = 3
 #: A surname matches a name when difflib's ratio reaches this; "Huttenhauer" finds Huttenhower.
@@ -31,7 +28,8 @@ SURNAME_RATIO = 0.8
 TRIGRAM = 3
 #: Papers a surname filter may name before it stops narrowing.
 AUTHOR_PAPERS = 20_000
-_ARRAYS = ("paper_id", "date", "prior", "trajectory", "pa_ptr", "pa_idx", "ap_ptr", "ap_idx", "ct_ptr", "ct_idx",
+#: A build before 2026-11-03 also holds ``prior`` and ``trajectory``; they are not read.
+_ARRAYS = ("paper_id", "date", "pa_ptr", "pa_idx", "ap_ptr", "ap_idx", "ct_ptr", "ct_idx",
            "cb_ptr", "cb_idx", "surname", "sp_ptr", "sp_idx", "trigram", "ts_ptr", "ts_idx")
 
 
@@ -104,60 +102,33 @@ class Hops:
 
     # -- hops -------------------------------------------------------------
 
-    def hop(self, seeds: list[tuple[str, float]], along: str, after: str = "", before: str = "",
+    def hop(self, paper_ids: list[str], along: str, after: str = "", before: str = "",
             limit: int = 20) -> list[tuple[str, float]]:
-        """Papers one ``along`` hop from ``seeds`` ((paper id, score), best first), by personalized PageRank
-        from the top :data:`SEEDS`, ties by the prior, the seeds left out; ``after`` and ``before`` bound
-        the publication date."""
+        """Papers one ``along`` hop from ``paper_ids`` (best first), by personalized PageRank from the first
+        :data:`SEEDS` the arrays hold, ties by date, newest first, the seeds left out; ``after`` and ``before``
+        bound the publication date."""
         if along not in ALONG:
             raise ValueError(f"along must be one of {', '.join(ALONG)}")
         a = self._arrays()
         if a is None:
             raise RuntimeError(f"no hop arrays at {self.root}")
-        top: list[tuple[int, float]] = []
-        for paper, s in seeds:
-            for r in self.rows([paper]):
-                top.append((r, float(s)))
-            if len(top) == SEEDS:
+        top: list[int] = []
+        for paper in paper_ids:
+            top += [r for r in self.rows([paper]) if r not in top]
+            if len(top) >= SEEDS:
                 break
         if not top:
             return []
-        best = top[0][1] or 1.0
-        weight = {r: math.exp((s / best - 1) / SHARP) if best > 0 else 1.0 for r, s in top}
+        weight = {r: DECAY ** i for i, r in enumerate(top[:SEEDS])}
         total = sum(weight.values())
         score = _ppr(a, {r: w / total for r, w in weight.items()}, along)
         lo, hi = _day(after), _day(before)
-        date, prior = a["date"], a["prior"]
+        date = a["date"]
         kept = [(r, v) for r, v in score.items() if r not in weight
                 and (not lo or date[r] >= lo) and (not hi or (date[r] and date[r] < hi))]
-        kept.sort(key=lambda rv: (-rv[1], -float(prior[rv[0]])))
+        kept.sort(key=lambda rv: (-rv[1], -int(date[rv[0]])))
         rows = [r for r, _ in kept[:limit]]
         return list(zip(self.ids(rows), (v for _, v in kept[:limit])))
-
-    def neighbours(self, seeds: list[str], limit: int) -> dict[str, tuple[str, float]]:
-        """The graph section: papers that cite, are cited by or share an author with ``seeds``, by the prior."""
-        a = self._arrays()
-        if a is None:
-            return {}
-        rows = set(self.rows(seeds))
-        found: dict[int, str] = {}
-        for r in rows:
-            for c in (*_adj(a, "ct", r), *_adj(a, "cb", r)):
-                found.setdefault(int(c), "cited-by or cites")
-        for r in rows:
-            for au in _adj(a, "pa", r):
-                for q in _adj(a, "ap", int(au)):
-                    found.setdefault(int(q), "shares an author")
-        prior = a["prior"]
-        ranked = sorted((r for r in found if r not in rows), key=lambda r: -float(prior[r]))[:limit * 3]
-        return {p: (found[r], float(prior[r])) for p, r in zip(self.ids(ranked), ranked)}
-
-    def prior(self, paper_ids: list[str]) -> dict[str, float]:
-        a = self._arrays()
-        if a is None:
-            return {}
-        rows = self.rows(paper_ids)
-        return {p: float(a["prior"][r]) for p, r in zip(self.ids(rows), rows)}
 
     # -- author filter ----------------------------------------------------
 

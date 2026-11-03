@@ -131,9 +131,7 @@ API_MANIFEST: dict[str, Any] = {
                 "Papers for the archive's live `kb` source, in search's sections: `exact` holds "
                 "papers whose title, abstract or body holds the query literally, then papers "
                 "matching its words. `related` holds papers near the query in meaning (the entry "
-                "index's best papers per zone, merged with the keyword matches) and `graph` the "
-                "papers that cite, are cited by or share an author with the top hits, ordered by the "
-                "prior, or, when `then` is given, the end of that chain of hops. Each "
+                "index's best papers per zone, merged with the keyword matches). Each "
                 "hit quotes its passages with their zone, section and offsets. The answer says in "
                 "`degraded` what it could not use, for example the encoder or the index. "
                 "`search query` calls it; call that instead."
@@ -151,9 +149,6 @@ API_MANIFEST: dict[str, Any] = {
                 {"name": "author", "type": "string",
                  "description": "Only papers with an author of this surname, matched loosely, so "
                                 "'Huttenhauer' finds Huttenhower."},
-                {"name": "then", "type": "array",
-                 "description": "Hop steps applied in order to the paper hits, ending in `graph`: each "
-                                "{hop: authors | cites | cited_by, after?, before?, limit?}."},
             ],
             "timeout": 30,
         },
@@ -179,8 +174,9 @@ API_MANIFEST: dict[str, Any] = {
             "description": (
                 "Papers one hop from the given papers: their authors' other papers (`authors`), the "
                 "papers they cite (`cites`) or the papers citing them (`cited_by`), ranked by "
-                "personalized PageRank from them and never by meaning. Feed the ids of a search's "
-                "hits, or of an earlier hop, to chain hops."
+                "personalized PageRank from the first five, each weighted 0.95 of the one before, and "
+                "never by meaning; ties go to the newest. Feed the ids of a search's paper hits, or "
+                "of an earlier hop, to chain hops."
             ),
             "params": [
                 {"name": "ids", "type": "array", "required": True, "description": "Paper ids, best first."},
@@ -280,44 +276,6 @@ async def _h_recall(args: dict, as_: str | None = None) -> dict:
     return await client.recall(body)
 
 
-def steps(value: Any) -> list[dict[str, Any]]:
-    """A `then` chain as a list of hop steps; a JSON string or a single step is read too."""
-    if not value:
-        return []
-    if isinstance(value, str):
-        value = json.loads(value)
-    if isinstance(value, dict):
-        value = [value]
-    out = []
-    for step in value:
-        along = str(step.get("hop") or step.get("along") or "")
-        if along not in hops.ALONG:
-            raise ValueError(f"then: hop must be one of {', '.join(hops.ALONG)}, not {along!r}")
-        out.append({"hop": along, "after": str(step.get("after") or ""), "before": str(step.get("before") or ""),
-                    "limit": max(1, min(int(step.get("limit") or 20), 100))})
-    return out
-
-
-def seeds(exact: list[dict[str, Any]], related: list[dict[str, Any]]) -> list[tuple[str, float]]:
-    """The hits a hop starts from, with scores the seed weights sharpen. Without exact hits, related's own
-    scores carry how clear its first hit is. Exact and related scores share no scale, so with both the
-    reading order stands in: each hit scores 0.95 of the one before."""
-    if not exact:
-        return [(h["id"], float(h["score"])) for h in related]
-    return [(h["id"], 0.95 ** i) for i, h in enumerate([*exact, *related])]
-
-
-def chain(start: list[tuple[str, float]], plan: list[dict[str, Any]]) -> dict[str, tuple[str, float, str]]:
-    """The papers at the end of the hop steps ``plan`` from ``start``: paper id -> (hop, score, "")."""
-    got, along = start, ""
-    for step in plan:
-        along = step["hop"]
-        got = HOPS.hop(got, along, step["after"], step["before"], step["limit"])
-        if not got:
-            break
-    return {p: (along, score, "") for p, score in got} if plan else {}
-
-
 #: kb_query and kb_library share one computation for this long: search asks both for one question at once.
 SHARED_S = 5.0
 _answers: dict[str, tuple[float, "asyncio.Future[dict[str, Any]]"]] = {}
@@ -360,7 +318,6 @@ async def _answer(args: dict) -> dict[str, Any]:
     limit = max(1, min(int(args.get("limit") or 10), 100))
     per_hit = max(1, min(int(args.get("passages") or 1), 10))
     filters = fastlayer.Filters.from_args(args)
-    plan = steps(args.get("then"))
     author = str(args.get("author") or "").strip()
     if author and not filters.blocked:
         filters.papers = await asyncio.to_thread(HOPS.by_author, author)
@@ -373,10 +330,10 @@ async def _answer(args: dict) -> dict[str, Any]:
     found, theirs = await asyncio.gather(asyncio.to_thread(PAPERS.search, text, filters, limit, per_hit),
                                          asyncio.to_thread(PAPERS.search_library, text, mine, limit, per_hit))
     if meaning is None:
-        return {"kb": {**found, "graph": []}, "library": {**theirs, "graph": []}}
+        return {"kb": found, "library": theirs}
     served, why = await meaning
     degraded: dict[str, str] = {}
-    related, graph, own = found["related"], [], theirs["related"]
+    related, own = found["related"], theirs["related"]
     if served is None:
         degraded["semantic"] = f"meaning matches unavailable, keyword only: {why}"
     else:
@@ -385,27 +342,11 @@ async def _answer(args: dict) -> dict[str, Any]:
                                           exact_ids, filters, limit, per_hit)
         own = await asyncio.to_thread(semantic.paper_hits, PAPERS, served["hits"], theirs["related"],
                                       {h["id"] for h in theirs["exact"]}, mine, limit, per_hit)
-    start = seeds(found["exact"], related)
-    try:
-        if plan:
-            near = await asyncio.to_thread(chain, start, plan)
-        else:
-            shown = {h["id"] for h in [*found["exact"], *related]}
-            near = {p: (via, rank, "") for p, (via, rank) in
-                    (await asyncio.to_thread(HOPS.neighbours, [p for p, _ in start[:semantic.SEEDS]], limit)).items()
-                    if p not in shown}
-        graph = await asyncio.to_thread(semantic.describe, PAPERS, near, filters, limit if not plan else 100,
-                                        per_hit)
-    except (OSError, RuntimeError, ValueError) as exc:
-        if plan:
-            raise
-        degraded["graph"] = str(exc)[:200]
     status = {"status": "ok" if served else "unavailable", "generation": (served or {}).get("generation")}
-    out = {"exact": found["exact"], "related": related, "graph": graph, "semantic": status}
-    lib = {"exact": theirs["exact"], "related": own, "graph": [], "semantic": status}
+    out = {"exact": found["exact"], "related": related, "semantic": status}
+    lib = {"exact": theirs["exact"], "related": own, "semantic": status}
     if degraded:
-        out["degraded"] = degraded
-        lib["degraded"] = {k: v for k, v in degraded.items() if k != "graph"}
+        out["degraded"] = lib["degraded"] = degraded
     return {"kb": out, "library": lib}
 
 
@@ -418,7 +359,7 @@ async def _h_hop(args: dict, as_: str | None = None) -> dict:
     along = str(args.get("along") or "authors")
     limit = max(1, min(int(args.get("limit") or 20), 100))
     per_hit = max(0, min(int(args.get("passages") if args.get("passages") is not None else 1), 10))
-    got = await asyncio.to_thread(HOPS.hop, [(str(i), 1.0) for i in ids], along, str(args.get("after") or ""),
+    got = await asyncio.to_thread(HOPS.hop, [str(i) for i in ids], along, str(args.get("after") or ""),
                                   str(args.get("before") or ""), limit)
     hits = await asyncio.to_thread(semantic.describe, PAPERS, {p: (along, s, "") for p, s in got},
                                    fastlayer.Filters(), limit, per_hit)

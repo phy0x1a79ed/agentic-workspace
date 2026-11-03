@@ -1,11 +1,9 @@
-"""`kb query`'s meaning and graph legs: the entry index's hits as paper hits with quotes, and graph neighbours.
+"""`kb query`'s meaning leg: the entry index's hits as paper hits with quotes; and `kb hop`'s papers as hits.
 
 The kb server answers `/related` with entries: a paragraph, an abstract or a title of a paper, with the offsets of its
 text in papers.db's passage rows. This module keeps each zone's best papers apart, merges them with the keyword leg
 by reciprocal rank (so a paper strong in one zone is not lost to a fusion that cut every zone to 20 first), and
 quotes each paper from papers.db by the overlap of the entry's span with a passage's span.
-
-The graph section's hops come from ``awm.kb.hops``; this module only quotes what they find.
 """
 
 from __future__ import annotations
@@ -23,7 +21,6 @@ RRF_K = 60
 #: Entries asked of the index per zone.
 ENTRY_K = 60
 NOUNS = 3
-SEEDS = 5
 RELATED_TIMEOUT_S = 10.0
 
 def zone_lists(entries: list[dict[str, Any]], keep: int) -> dict[str, list[str]]:
@@ -138,8 +135,8 @@ def _abstracts(conns: list[sqlite3.Connection], papers: list[str]) -> dict[str, 
 
 def describe(layer: fastlayer.FastLayer, found: dict[str, tuple[str, float, str]], filters: fastlayer.Filters,
              limit: int, per_hit: int) -> list[dict[str, Any]]:
-    """Graph neighbours as hits: ``found`` maps a paper id to (via, rank, title); the abstract is the quote, or
-    the title for a paper known only from a citation."""
+    """Hop papers as hits: ``found`` maps a paper id to (via, rank, title), in hop order; the abstract is the
+    quote, or the title for a paper known only from a citation."""
     stores = layer._stores()
     rows = _paper_rows(stores, list(found))
     shown = [(p, v) for p, v in sorted(found.items(), key=lambda kv: -kv[1][1])

@@ -1,4 +1,4 @@
-"""`kb query`'s meaning and graph legs, and the related verb, with the kb server mocked."""
+"""`kb query`'s meaning leg, `kb hop`'s hits and the related verb, with the kb server mocked."""
 
 import sqlite3
 
@@ -92,7 +92,7 @@ async def test_library_papers_answer_as_their_own_source_and_get_no_boost_in_kb(
     hub_adapter._answers.clear()
     assert [h["id"] for h in (await query(limit=3))["related"]] == ["doi:10.1/at", "doi:10.1/cas", "doi:10.1/old"]
     mine = await hub_adapter.HANDLERS["library"]({"query": "molecular joining steps lineages", "limit": 3})
-    assert [h["id"] for h in mine["related"]] == ["doi:10.1/old"] and mine["graph"] == []
+    assert [h["id"] for h in mine["related"]] == ["doi:10.1/old"] and "graph" not in mine
     assert len(server.related_bodies) == 1  # one meaning lookup served both sources
 
 
@@ -143,50 +143,36 @@ async def test_without_the_server_encoder_or_index_it_answers_keywords_and_says_
     server.related_error = error
     got = await query(query="assembly index of a molecule and its DNA")
     assert [h["id"] for h in got["related"]] == ["doi:10.1/at"] and got["related"][0]["match"] == "keyword"
-    assert got["graph"] == [] and got["semantic"]["status"] == "unavailable"
+    assert "graph" not in got and got["semantic"]["status"] == "unavailable"
     assert "keyword only" in got["degraded"]["semantic"]
     if isinstance(error, client.KbError):
         assert error.detail in got["degraded"]["semantic"]
 
 
-async def test_a_neighbour_with_no_abstract_quotes_its_title(layer, server, tmp_path, monkeypatch):
+async def test_a_hop_paper_with_no_abstract_quotes_its_title(layer, server, tmp_path, monkeypatch):
     db = sqlite3.connect(layer.base_path)
     db.execute("DELETE FROM passage WHERE paper_id = 'doi:10.1/old' AND zone = 'abstract'")
     db.commit()
     db.close()
     write_hops(tmp_path / "hops", list(PAPERS), cites=[("doi:10.1/at", "doi:10.1/old")])
     monkeypatch.setattr(hub_adapter, "HOPS", hops.Hops(tmp_path / "hops"))
-    server.entries = [entry("doi:10.1/at", "abstract", 0.9)]
-    graph = (await query(limit=5))["graph"]
+    graph = (await hub_adapter.HANDLERS["hop"]({"ids": ["doi:10.1/at"], "along": "cites"}))["hits"]
     title = "An ASSEMBLY INDEX survey from long ago"
     assert graph[0]["passages"] == [{"field": "title", "start": 0, "end": len(title), "text": title}]
 
 
 async def test_a_project_filter_never_reaches_the_server(layer, server):
     got = await query(project="awm")
-    assert got["exact"] == got["related"] == got["graph"] == [] and server.related_bodies == []
+    assert got["exact"] == got["related"] == [] and server.related_bodies == []
 
 
-async def test_graph_neighbours_are_ordered_by_the_prior_and_skip_what_is_shown(layer, server, tmp_path,
-                                                                                 monkeypatch):
-    write_hops(tmp_path / "hops", list(PAPERS), authored=[("doi:10.1/at", "A1"), ("doi:10.1/cas", "A1")],
-               cites=[("doi:10.1/at", "doi:10.1/old"), ("doi:10.1/lone", "doi:10.1/at")],
-               prior={"doi:10.1/cas": 0.05, "doi:10.1/old": 0.01, "doi:10.1/lone": 0.9})
-    monkeypatch.setattr(hub_adapter, "HOPS", hops.Hops(tmp_path / "hops"))
-    server.entries = [entry("doi:10.1/at", "abstract", 0.9), entry("doi:10.1/lone", "abstract", 0.5)]
-    graph = (await query(limit=5))["graph"]
-    assert [h["id"] for h in graph] == ["doi:10.1/cas", "doi:10.1/old"]
-    assert [h["match"] for h in graph] == ["shares an author", "cited-by or cites"]
-    assert graph[0]["score"] > graph[1]["score"] and graph[0]["passages"][0]["field"] == "abstract"
-
-
-async def test_without_hop_arrays_the_graph_is_empty_and_the_rest_answers(layer, server, tmp_path, monkeypatch):
+async def test_without_hop_arrays_a_query_answers_and_a_hop_says_why_not(layer, server, tmp_path, monkeypatch):
     monkeypatch.setattr(hub_adapter, "HOPS", hops.Hops(tmp_path / "nowhere"))
     server.entries = [entry("doi:10.1/at", "abstract", 0.9)]
     got = await query()
-    assert [h["id"] for h in got["related"]] == ["doi:10.1/at"] and got["graph"] == []
+    assert [h["id"] for h in got["related"]] == ["doi:10.1/at"]
     with pytest.raises(RuntimeError, match="no hop arrays"):
-        await query(then=[{"hop": "authors"}])
+        await hub_adapter.HANDLERS["hop"]({"ids": ["doi:10.1/at"]})
     with pytest.raises(ValueError, match="hop arrays"):
         await query(author="Cronin")
 

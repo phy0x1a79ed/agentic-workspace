@@ -220,7 +220,7 @@ async def test_the_query_verb_answers_in_sections(layer, monkeypatch):
     monkeypatch.setattr(hub_adapter, "PAPERS", layer)
     monkeypatch.setattr(hub_adapter.client, "related", no_server)
     out = await hub_adapter.HANDLERS["query"]({"query": "shortest construction path", "limit": 3})
-    assert {"exact", "related", "graph"} <= set(out)
+    assert {"exact", "related"} <= set(out) and "graph" not in out
     assert out["exact"][0]["id"] == "doi:10.1/at"
     assert "keyword only" in out["degraded"]["semantic"]
 
