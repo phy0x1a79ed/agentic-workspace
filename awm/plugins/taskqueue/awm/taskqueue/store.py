@@ -17,7 +17,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from awm.taskqueue.canon import canon
 from awm.taskqueue.ids import is_task_id, mint_task_id
@@ -80,6 +80,10 @@ CREATE TABLE IF NOT EXISTS applied_ops (
     result TEXT NOT NULL,
     ts REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS kv (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS used_actions (
     mac TEXT PRIMARY KEY,
     ts REAL NOT NULL
@@ -96,6 +100,8 @@ class Store:
     path: Path
     action_secret: bytes = b""
     clock: Any = time.time
+    # note id -> body text. The writer sets it, so a spawn checks the body Tony saw.
+    body_reader: Callable[[str], str] | None = None
 
     def __post_init__(self) -> None:
         self.path = Path(self.path)
@@ -348,10 +354,21 @@ class Store:
         return {"cards": cards, "next_before": nxt}
 
     def events_since(self, after: int = 0, limit: int = 500) -> list[dict[str, Any]]:
-        rows = self._db.execute("SELECT * FROM events WHERE id>? ORDER BY id LIMIT ?",
-                                (after, limit)).fetchall()
+        with self._lock:
+            rows = self._db.execute("SELECT * FROM events WHERE id>? ORDER BY id LIMIT ?",
+                                    (after, limit)).fetchall()
         return [{"id": r["id"], "task_id": r["task_id"], "ts": r["ts"], "kind": r["kind"],
                  "data": json.loads(r["data"])} for r in rows]
+
+    def kv_get(self, key: str) -> str | None:
+        with self._lock:
+            row = self._db.execute("SELECT value FROM kv WHERE key=?", (key,)).fetchone()
+        return row["value"] if row else None
+
+    def kv_set(self, key: str, value: str) -> None:
+        with self._lock:
+            self._db.execute("INSERT INTO kv VALUES (?,?) ON CONFLICT(key) DO UPDATE SET "
+                             "value=excluded.value", (key, value))
 
     # -- Tony's actions (R63), only through the approver --------------------
 
@@ -389,6 +406,9 @@ class Store:
         peer = args.get("peer")
         if not peer:
             raise QueueError("spawn needs a peer")
+        with self._lock:
+            row = self._task(self._db, task_id)
+        body = self._checked_body(row, args.get("body_sha256"))
         with self._tx() as db:
             row = self._task(db, task_id)
             if row["section"] != PROPOSED:
@@ -397,7 +417,23 @@ class Store:
             self._set_card(db, row["task_id"], WORKING, None, "spawn", peer=peer,
                            body_sha256=args.get("body_sha256"))
             return {"task_id": row["task_id"], "peer": peer, "title": row["title"],
-                    "body_ref": row["body_ref"]}
+                    "body_ref": row["body_ref"], "body": body}
+
+    def _checked_body(self, row: sqlite3.Row, body_sha256: str | None) -> str | None:
+        """The body of a Proposed note, read again from Trilium and matched to the hash Tony signed.
+
+        None when no Trilium is configured. The caller reads outside the store lock, so a
+        slow vault does not hold up other writes.
+        """
+        if self.body_reader is None or row["kind"] != "note":
+            return None
+        try:
+            body = self.body_reader(row["body_ref"]) if row["body_ref"] else ""
+        except Exception as exc:
+            raise QueueError(f"the note body cannot be read: {exc}") from None
+        if hashlib.sha256(body.encode()).hexdigest() != body_sha256:
+            raise QueueError("the note changed after the panel showed it: select the card again")
+        return body
 
     def _act_new_from(self, task_id, args) -> dict[str, Any]:
         """A new task from a Working or Done card (R63 item 3)."""

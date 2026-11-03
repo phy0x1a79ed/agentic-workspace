@@ -186,7 +186,7 @@ Run the `debrief` skill. Journal the lane's state. Send the coordinator one line
 
 1. Cloudflare DNS: make alcor's panel name (for example `approve.tony-xy-liu.com`) DNS only, not proxied, so deneb can forward its TLS unopened (gap F11). Add a CAA record `0 issue "letsencrypt.org; validationmethods=dns-01"` for that name. Only alcor holds the DNS token that can answer the challenge (R64).
 2. deneb's edge: add an SNI route that passes the panel name's TLS through, unterminated, down alcor's outbound tunnel. Send PROXY protocol v2, so alcor sees the client address for its risk signal.
-3. deneb's content security policy for the vault origin: add the panel origin to `frame-src`. Allow `publickey-credentials-get` and `publickey-credentials-create` for it in `Permissions-Policy` (gap Q11).
+3. deneb's content security policy for the vault origin: redux-fleet reports that nginx, awm and Trilium send no CSP on deneb today, so nothing blocks the frame. If a CSP is added later, it must list the panel origin in `frame-src`. Allow `publickey-credentials-get` and `publickey-credentials-create` for it in `Permissions-Policy` (gap Q11).
 4. The approver's own response headers: `frame-ancestors` names only the vault origin, so no other site can frame the panel.
 5. alcor: an outbound tunnel unit to deneb for the panel name, and the approver's own user and unix socket. The socket's group lets the admin path run `enrol-link`.
 6. lyra: an ssh key into alcor for recovery (R85, gap Q13), with alcor's firewall admitting it (gap F2).
@@ -195,9 +195,23 @@ Run the `debrief` skill. Journal the lane's state. Send the coordinator one line
 **Gaps left in the approver.**
 
 - PROXY protocol: uvicorn cannot read it. Until a front on alcor turns PROXY v2 into a header, the approver reads the client address from `AWM_APPROVER_FORWARDED_HEADER` on loopback connections only. Without that header the address is unknown, and a window opened from an unknown address has no network check. The panel says so beside the window.
-- A Proposed card's body hash: the panel signs the `body_sha256` the board sends, and the spawn order carries it. The store does not yet compare it with the body in Trilium. T11's ETAPI client adds that check.
+- A Proposed card's body hash, closed in T11: the store reads the note again through ETAPI when Tony spawns it and refuses the spawn when the sha256 differs from the one the panel signed. The spawn order carries the checked body, so a relay never reads Trilium. The check still trusts deneb at that moment. It catches an edit made after Tony looked, not a vault that lies twice.
 - `order_pull` serves any caller that names a node. The orders are signed and only the named node acts on them, so a wrong caller learns the payload and nothing more. The redux gateway's caller identity can close this later.
 - The browser test runs Chromium with libraries from conda-forge in the `awm-queue` env (`nss`, `atk`, `libgbm` and others), because the host lacks them and installing them would be a host change.
+
+**The board in Trilium (T11).**
+
+- The page files live in `awm/plugins/taskqueue/awm/taskqueue/board/`, not `awm/plugins/taskqueue/board/`, so an installed package carries them. `awm-taskqueue board-install` upserts them. Run it again after each change to them.
+- Each card note's id is `swc` plus the task id in hex, and its record child is `swr` plus the same. A re-run after a crash finds the same notes, and no lookup table is needed.
+- The search is `note.title *=*` or an exact task id, peer or status. A bare quoted phrase in Trilium is a full-text search, and it matched nearly every card.
+- Tested against TriliumNext 0.106.1 in the local container. deneb's version is not checked. The page uses only `api.searchForNotes`, `getLabelValue`, `getChildNotes` and `getBlob`, and render notes have run a child frontend script the same way for several releases.
+- The browser test opens Trilium with `?extraWindow=1`, which opens one tab and restores none. Otherwise Trilium reopens every tab of earlier runs, and the test times out.
+- The writer runs on alcor and needs `AWM_TRILIUM_URL` (deneb's vault as alcor reaches it) beside the `AWM_TRILIUM_ETAPI_TOKEN` secret. redux-fleet was asked to add it, and to add `peers` to the approver config.
+
+**Later from siblings.**
+
+- redux-sessions (feat/redux-sessions b3a75403): `start_other` takes `task_id` and `role`. The relay passes `task_id` and `role: "main"`.
+- redux-core (feat/redux-core 6d8cc642): the Rust gateway runs end to end, and contract v1.5 adds a service token on register from `AWM_HUB_TOKEN_FILE`. The approver and the task store have not run under it yet. Do that in the sweep, after the adapter on feat/redux-core is merged.
 
 **Proposed doc changes (for the coordinator).**
 

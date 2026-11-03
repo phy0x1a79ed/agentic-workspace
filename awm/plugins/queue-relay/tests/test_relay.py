@@ -117,6 +117,7 @@ async def test_spawn_orders_run_once_and_only_for_this_node(pair):
                      {"project": "awm", "scope": "intake"}, stop=stop)
     assert done == [("o1", True)]
     assert started[0]["name"] == "fix-the-vpn" and "ABEiM0RV" in started[0]["prompt"]
+    assert started[0]["task_id"] == "ABEiM0RV" and started[0]["role"] == "main"
     assert started[0]["remote_control"] is True
 
 

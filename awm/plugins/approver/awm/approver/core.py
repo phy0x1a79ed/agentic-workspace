@@ -528,6 +528,7 @@ class Approver:
             order = self.issue_order("spawn", peer, {
                 "task_id": res["task_id"], "title": res.get("title", ""),
                 "body_ref": res.get("body_ref"), "body_sha256": args.get("body_sha256"),
+                "body": res.get("body"),
                 "project": args.get("project") or self.config.spawn_project,
                 "scope": args.get("scope") or self.config.spawn_scope})
             return {**res, "order_id": order["order"]["order_id"]}

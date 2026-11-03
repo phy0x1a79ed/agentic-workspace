@@ -252,6 +252,8 @@ async def run_order(body: dict, start: Callable[[dict], Awaitable[Any]],
         "scope": p.get("scope") or defaults["scope"],
         "name": session_name(p.get("title", "")),
         "prompt": prompt,
+        "task_id": task_id,
+        "role": "main",
         "remote_control": True,
         "started_by": "Tony from the Swarm board",
     })
