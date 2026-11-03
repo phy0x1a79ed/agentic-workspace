@@ -40,6 +40,13 @@ Which node holds which role belongs in `fleet.md`. How a deploy moves through th
   2. An image holds no Claude Code, which is Anthropic's proprietary software. The cloud sandbox has its own, and a container on mizar uses the host's install (`fleet.md` R109).
   3. A pin names an image by digest, beside the commit pin of R116 item 2.
   4. quay.io is not on the cloud's default Trusted list. The cloud environment runs at the Custom network level with `quay.io` and `*.quay.io` added and the default list kept. The change rebuilds the cloud snapshot once. metasmith's cloud tests need the same list for its biocontainers.
+- **R132.** awm measures how much each plugin is used, and the measure fits the plugin. A page counts visits. A plugin used from the CLI, or straight from another project's code, counts those uses. Background work, such as a sweep or a sampling loop, counts its runs. A count of MCP calls alone does not show which plugins are needed. Tony: "Pages need a visit count instead of a call count" and "Need to update usage metrics" (2026-11-03).
+- **R133.** The plugin set keeps these plugins, whatever their call count. Tony (2026-11-03):
+  1. mic, which gets audio into remote boxes. Tony: "Mic is needed to get  audio into remote boxes."
+  2. vpn, which ssh to sockeye needs. Tony: "Vpn is required for sockeye ssh"
+  3. fileviewer, as a core plugin. Tony visits it, not agents. Tony: "Fileviewer also required and should be core. I visit, not agents."
+  4. dev and transcripts. Tony: "Keep both dev and transcripts."
+  5. rlm-factorio, on mizar. The fxdiff research in game-bot runs its labs through it (`fleet.md` R82 drops only the game server on deneb). Tony: "I ran factorio sessions recently. What did they use?"
 
 ## Gap from today
 
@@ -53,4 +60,5 @@ Surveyed read only on 2026-11-02, from the `feat/redux` source and the deployed 
 - **R115 partial.** The gateway discovers services from `awm/services/` and pages from a separate folder of built bundles (`AWM_PAGES_DIR`, `awm/gateway/awm/gateway/server.py` step 2b). Nothing installs either from a plugin's own repository, and one plugin cannot ship a service and its page together.
 - **R33 missing.** No plugin has its own refresh hook or version pin. `awm deploy` restarts the whole gateway. Every Python service shares the one `awm` env.
 - **No test environment exists.** awm has no Dockerfile, no CI, no cloud-agent setup and no fake peer. Rootless Docker works on mizar and in capella's WSL.
+- **R132 broken.** The gateway's usage tally (`.awm/gateway/usage.json`) counts only MCP calls by tool and verb. It misses page visits, CLI calls, direct imports such as game-bot's `fxlab`, and background work. On 2026-11-03 it showed 0 to 5 calls for compute, dev, transcripts, fileviewer and rlm-factorio, which run mostly outside it.
 - **mizar has two miniforge installs.** The services run from `~/miniforge3`. `.mcp.json` points at `~/lib/miniforge3`.
