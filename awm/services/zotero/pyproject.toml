@@ -24,6 +24,10 @@ dependencies = [
 test = [
     "pytest",
 ]
+# Sync now from alcor's approver panel (fleet.md R83): checks alcor's signed orders.
+orders = [
+    "awm-grantlib",
+]
 
 # PEP 420 namespace package: no top-level awm/__init__.py; the namespace dir is awm/zotero/.
 [tool.setuptools.packages.find]
