@@ -1,10 +1,9 @@
-"""Slack connector — wraps ``slack_sdk`` for one account, in two auth modes.
+"""Slack connector for Tony's own account, read only (R127), in two auth modes.
 
-**API mode** (a bot ``xoxb-`` or user ``xoxp-`` OAuth token): send + channel
-listing go through :class:`~slack_sdk.web.async_client.AsyncWebClient`; receive
+**API mode** (a user ``xoxp-`` OAuth token): channel listing goes through :class:`~slack_sdk.web.async_client.AsyncWebClient`; receive
 goes through Socket Mode (:class:`~slack_sdk.socket_mode.aiohttp.SocketModeClient`),
 which REQUIRES a separate app-level ``app_token`` (``xapp-``). With no ``app_token``
-the connector still sends but never receives.
+the connector never receives.
 
 **Session mode** (a web-session ``xoxc-`` token + the ``d`` cookie — the same pair
 the Slack web/desktop client uses): this acts as the *user* without an app. The
@@ -26,9 +25,8 @@ import time
 
 from awm.social.connectors.base import (
     Account, Attachment, Channel, Connector, Identity, InboundMessage,
-    OnMessage, file_bytes, slack_reaction,
+    OnMessage,
 )
-from awm.social.emoji import to_name
 
 log = logging.getLogger("awm.social.connectors.slack")
 
@@ -81,9 +79,11 @@ def _attachments_of(m: dict) -> list[Attachment]:
 
 
 class SlackConnector(Connector):
+    """Tony's own Slack account, read only. It has no send and no react:
+    awm never writes to Slack as Tony (R127). Agents write as Opal through
+    :class:`~awm.social.connectors.slack_bot_conn.SlackBotConnector`."""
+
     platform = "slack"
-    sends_files = True
-    max_file_bytes = 100 * 1024 * 1024
 
     def __init__(self, account: Account, on_message: OnMessage,
                  on_command=None) -> None:
@@ -356,48 +356,6 @@ class SlackConnector(Connector):
                 await self.close()
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, 30.0)
-
-    async def send(
-        self, channel: str, text: str, *, thread: str | None = None,
-        files: list[dict] | None = None,
-    ) -> dict:
-        if files:
-            uploads = [{"content": file_bytes(f), "filename": f["filename"],
-                        "title": f["filename"]} for f in files]
-            resp = await self._auth_retry(
-                lambda: self._web_client().files_upload_v2(
-                    file_uploads=uploads, channel=channel, initial_comment=text or None,
-                    thread_ts=thread, request_file_info=False))
-            return {"message_id": "", "channel_id": channel, "ts": "",
-                    "files": [{"id": f.get("id", ""), "title": f.get("title", ""),
-                               "permalink": f.get("permalink", "")}
-                              for f in resp.get("files") or []]}
-        kwargs = {"channel": channel, "text": text}
-        if thread:
-            kwargs["thread_ts"] = thread
-        resp = await self._auth_retry(
-            lambda: self._web_client().chat_postMessage(**kwargs))
-        return {
-            "message_id": resp.get("ts", ""),
-            "channel_id": resp.get("channel", channel),
-            "ts": resp.get("ts", ""),
-        }
-
-    async def react(
-        self, channel: str, message_id: str, emoji: str, *, remove: bool = False,
-    ) -> dict:
-        from slack_sdk.errors import SlackApiError
-
-        name = to_name(emoji)
-        call = "reactions_remove" if remove else "reactions_add"
-        error = ""
-        try:
-            await self._auth_retry(lambda: getattr(self._web_client(), call)(
-                channel=channel, timestamp=message_id, name=name))
-        except SlackApiError as exc:
-            error = (exc.response or {}).get("error", "") or str(exc)
-        return slack_reaction(self, channel, message_id, name,
-                              remove=remove, error=error)
 
     async def list_channels(self, *, include_dms: bool = False) -> list[Channel]:
         if include_dms:

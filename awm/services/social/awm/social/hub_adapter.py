@@ -146,7 +146,8 @@ async def _on_message(inbound: connectors.InboundMessage) -> None:
     held = _dao.holder(inbound.account, inbound.channel_id) if inbound.to_holder else None
     if held and not _dao.is_quiet(inbound.account, inbound.channel_id,
                                   inbound.thread_id or inbound.message_id):
-        _pusher.push(held["node"], held["job"], seats.push_line(inbound))
+        level = seats.seat_trust(_accounts.get(inbound.account), inbound.channel_id)
+        _pusher.push(held["node"], held["job"], seats.push_line(inbound, level))
 
 
 async def _on_command(cmd: connectors.Command) -> None:
@@ -297,23 +298,41 @@ async def _h_react(args: dict) -> dict:
     return {"ok": True, **done}
 
 
-async def _h_history(args: dict) -> dict:
+async def _h_history(args: dict, as_: str | None = None) -> dict:
     """A bot account's synced history: the newest ``limit`` messages, or with
     ``since`` (a message ts) the ``limit`` right after it, oldest first. The
-    catch-up read for a listener that missed pushes."""
+    catch-up read for a listener that missed pushes. A seat holder reads only
+    the chats it holds (:func:`seats.readable_chats`)."""
     conn = _conn(args["account"])
     if not conn.keeps_history:
         raise RuntimeError(
             f"account {args['account']!r} keeps no history; use fetch")
-    msgs = _dao.history(
-        args["account"],
-        channel_id=args.get("channel") or None,
-        since=args.get("since") or None,
-        limit=int(args.get("limit", 100)),
-        include_deleted=bool(args.get("include_deleted")),
-    )
-    return {"messages": msgs, "count": len(msgs),
-            "chats": _dao.synced_channels(args["account"])}
+    try:
+        holder = seats.caller(args, as_)
+    except seats.SeatError:
+        holder = None
+    allowed = seats.readable_chats(_dao, _accounts.get(args["account"]), holder)
+    channel = args.get("channel") or None
+    if allowed is not None and channel is not None and channel not in allowed:
+        raise PermissionError(f"chat {channel!r} is not a seat this session holds")
+    chats = [channel] if channel else (sorted(allowed) if allowed is not None else [None])
+    msgs: list[dict] = []
+    for chat in chats:
+        msgs.extend(_dao.history(
+            args["account"],
+            channel_id=chat,
+            since=args.get("since") or None,
+            limit=int(args.get("limit", 100)),
+            include_deleted=bool(args.get("include_deleted")),
+        ))
+    if len(chats) > 1:
+        msgs.sort(key=lambda m: float(m["ts"] or 0))
+        limit = int(args.get("limit", 100))
+        msgs = msgs[:limit] if args.get("since") else msgs[-limit:]
+    synced = _dao.synced_channels(args["account"])
+    if allowed is not None:
+        synced = [c for c in synced if c["channel_id"] in allowed]
+    return {"messages": msgs, "count": len(msgs), "chats": synced}
 
 
 async def _h_channels(args: dict) -> dict:
@@ -1481,7 +1500,7 @@ HANDLERS = {
     "open_dm": _forwarding("open_dm", _h_open_dm),
     "accounts": _h_accounts,
     "fetch": _forwarding("fetch", _h_fetch),
-    "history": _forwarding("history", _h_history),
+    "history": _seat_forwarding("history", _h_history),
     "search": _forwarding("search", _h_search),
     "download_attachments": _forwarding(
         "download_attachments", _h_download_attachments),
@@ -1621,7 +1640,7 @@ def _start_keeper() -> None:
         return
     _keeper = keeper_mod.Keeper(_dao, kept, _describe_account, _chat,
                                 push=_pusher.push, list_chats=_list_chats,
-                                alert=_alert_operator)
+                                alert=_alert_operator, account=_accounts.get)
     spawn_supervised("social.keeper", _keeper.run)
     log.info("keeping %d seat(s): %s", len(kept), ", ".join(s.name for s in kept))
 

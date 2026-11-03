@@ -54,6 +54,10 @@ BACKFILL_MAX = 1000
 THREAD_WINDOW_S = 7 * 86400
 
 
+class FirstContactRefused(PermissionError):
+    """Opal never messages a person first (users.md R126 item 1)."""
+
+
 class SlackApiError(RuntimeError):
     """Slack answered ``ok: false``; ``error`` is Slack's error code."""
 
@@ -112,6 +116,7 @@ class SlackBotConnector(Connector):
         self._resync = asyncio.Event()
         self._sync_lock = asyncio.Lock()
         self._sync_task: asyncio.Task | None = None
+        self._spoken_to: set[str] = set()  # DMs where someone other than Opal wrote
 
     # -- Web API -------------------------------------------------------------
 
@@ -351,9 +356,9 @@ class SlackBotConnector(Connector):
         self, channel: str, text: str, *, thread: str | None = None,
         files: list[dict] | None = None,
     ) -> dict:
+        channel = await self._writable(channel)
         if files:
             return await self._upload(channel, text, thread, files)
-        # A user id as channel posts into the bot's DM with that user.
         r = await self._call("chat.postMessage", channel=channel, text=text,
                              thread_ts=thread)
         if self.history is not None and r.get("message"):
@@ -361,11 +366,40 @@ class SlackBotConnector(Connector):
         return {"message_id": r.get("ts", ""),
                 "channel_id": r.get("channel", channel), "ts": r.get("ts", "")}
 
+    async def _writable(self, channel: str) -> str:
+        """The chat id to write to, or :class:`FirstContactRefused`.
+
+        A user id resolves to the DM with that user. A DM or group DM is
+        writable only once someone other than Opal has written in it. A channel
+        is always writable: posting there reaches no one first.
+        """
+        if _looks_like_user_id(channel):
+            channel = (await self._call("conversations.open", users=channel))["channel"]["id"]
+        if channel in self._spoken_to:
+            return channel
+        info = (await self._call("conversations.info", channel=channel))["channel"]
+        if not (info.get("is_im") or info.get("is_mpim")):
+            return channel
+        if not await self._someone_wrote(channel):
+            raise FirstContactRefused(
+                f"slack {channel}: nobody has written to Opal here yet, and Opal "
+                "never messages a person first")
+        self._spoken_to.add(channel)
+        return channel
+
+    async def _someone_wrote(self, channel: str) -> bool:
+        if self.history is not None and self.history.has_inbound(channel):
+            return True
+        for m in await self._paged("conversations.history", "messages", cap=1000,
+                                   channel=channel):
+            if m.get("subtype", "") in _POSTED_SUBTYPES and not self._is_own(m) \
+                    and m.get("user"):
+                return True
+        return False
+
     async def _upload(self, channel: str, text: str, thread: str | None,
                       files: list[dict]) -> dict:
         try:
-            if _looks_like_user_id(channel):
-                channel = (await self.open_dm(channel)).id
             shared = []
             for f in files:
                 data = file_bytes(f)

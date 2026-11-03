@@ -518,7 +518,7 @@ def test_a_bot_sender_is_tagged_in_the_pushed_line():
     from awm.social.seats import push_line
     m = InboundMessage(account="bot", platform="discord", channel_id="C1",
                        text="hello", sender_name="john-shaula-agent", sender_bot=True)
-    assert push_line(m) == "discord from john-shaula-agent [bot]: hello"
+    assert push_line(m) == "discord [untrusted] from john-shaula-agent [bot]: hello"
     assert "[bot]" not in push_line(InboundMessage(
         account="bot", platform="discord", channel_id="C1", text="hi", sender_name="john"))
 

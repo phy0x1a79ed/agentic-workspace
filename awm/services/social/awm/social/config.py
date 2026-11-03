@@ -37,6 +37,13 @@ token(s). Shape::
     platform = "teams"
     source = "mira"
 
+``trust`` sets the level of every seat on an account, and ``trusted_chats`` lists
+Tony's own DMs on it, which are trusted (``channels.md`` R70)::
+
+    [account.slack-bot]
+    trust = "cooperative"
+    trusted_chats = ["D0TONYDM"]
+
 ``singleton = true`` marks an identity that is ONE session for the whole fleet —
 a Discord bot token, a mailbox — where a second login is not a second client but
 a collision (Discord hands interactions to one session, so the other answers with
@@ -82,6 +89,7 @@ def _config_file() -> Path:
 # connecting. Keep in sync with ``connectors.REGISTRY`` (``teams`` has no native
 # connector — it is only reachable via ``source = "mira"``).
 KNOWN_PLATFORMS = ("discord", "slack", "gmail", "teams")
+TRUST_LEVELS = ("untrusted", "cooperative", "trusted")
 
 # Platforms that can ONLY be driven through the mira API daemon (no native
 # connector exists), so an account on one of these must set ``source = "mira"``.
@@ -113,6 +121,11 @@ class AccountConfig:
     # selector treats the account as remote and forwards calls naming it. See
     # `_is_borrowed` in hub_adapter.py.
     singleton: bool = False
+    # Trust level of a seat on this account (channels.md R70). ``trust`` is the
+    # level of every chat on the account. ``trusted_chats`` names Tony's own DMs,
+    # which are trusted. Default: Discord bot chats untrusted, others cooperative.
+    trust: str = "cooperative"
+    trusted_chats: tuple[str, ...] = ()
     # mira-routed accounts: the connector is a thin client of the mira API
     # daemon. These are stamped from the service-level [mira] block at load time.
     source: str | None = None       # "mira" routes via MiraConnector
@@ -391,6 +404,15 @@ def load(path: Path | None = None) -> list[AccountConfig]:
             raise SocialConfigError(
                 f"{path}: [account.{name}].singleton must be a boolean"
             )
+        trust = section.get("trust", "untrusted" if platform == "discord" else "cooperative")
+        if trust not in TRUST_LEVELS:
+            raise SocialConfigError(
+                f"{path}: [account.{name}].trust must be one of {TRUST_LEVELS}")
+        trusted_chats = section.get("trusted_chats", [])
+        if not (isinstance(trusted_chats, list)
+                and all(isinstance(c, str) for c in trusted_chats)):
+            raise SocialConfigError(
+                f"{path}: [account.{name}].trusted_chats must be a list of chat ids")
         accounts.append(AccountConfig(
             name=str(name).strip(),
             platform=platform,
@@ -402,6 +424,8 @@ def load(path: Path | None = None) -> list[AccountConfig]:
             address=address.strip() if address else None,
             enabled=enabled,
             singleton=singleton,
+            trust=trust,
+            trusted_chats=tuple(trusted_chats),
             source=source,
             mira_url=(mira or {}).get("url") if source == "mira" else None,
             mira_token=(mira or {}).get("token") if source == "mira" else None,
