@@ -81,3 +81,47 @@ def write_routine(repo: Path, name: str, body: str) -> Path:
     git(repo, "add", "-A")
     git(repo, "commit", "-q", "-m", f"routine {name}")
     return p
+
+
+class Workspace:
+    """A temp workspace with projects/proj/.bare, dev and release, scope worktrees
+    and a live release checkout, standing in for a node."""
+
+    def __init__(self, root: Path) -> None:
+        self.root = root
+        self.proj = root / "projects" / "proj"
+        self.bare = self.proj / ".bare"
+        seed = root / "seed"
+        seed.mkdir(parents=True)
+        git(seed, "init", "-q", "-b", "dev")
+        (seed / "app.txt").write_text("base\n")
+        git(seed, "add", "-A")
+        git(seed, "commit", "-q", "-m", "base")
+        git(seed, "branch", "release")
+        self.proj.mkdir(parents=True)
+        subprocess.run(["git", "clone", "-q", "--bare", str(seed), str(self.bare)],
+                       check=True, capture_output=True)
+        git(self.bare, "worktree", "add", "-q", str(self.proj / "release"), "release")
+
+    def scope(self, name: str, files: dict[str, str], base: str = "dev") -> Path:
+        wt = self.proj / name
+        if not wt.exists():
+            git(self.bare, "worktree", "add", "-q", "-b", f"feat/{name}", str(wt), base)
+            (wt / ".awm").mkdir()
+        for rel, text in files.items():
+            (wt / rel).parent.mkdir(parents=True, exist_ok=True)
+            (wt / rel).write_text(text)
+        git(wt, "add", "-A", "--", *files)
+        git(wt, "commit", "-q", "-m", f"{name}: change")
+        return wt
+
+    def rev(self, ref: str) -> str:
+        return git(self.bare, "rev-parse", ref)
+
+    def show(self, ref: str, path: str) -> str:
+        return git(self.bare, "show", f"{ref}:{path}")
+
+
+@pytest.fixture()
+def ws(tmp_path: Path) -> Workspace:
+    return Workspace(tmp_path / "ws")

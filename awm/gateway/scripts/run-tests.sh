@@ -16,6 +16,12 @@
 #   awm/gateway/scripts/run-tests.sh                 # run all dists
 #   awm/gateway/scripts/run-tests.sh scopes gateway  # run only the named dists
 #   PYTEST_ARGS="-x -q" awm/gateway/scripts/run-tests.sh   # pass extra args to pytest
+#   awm/gateway/scripts/run-tests.sh --changed <base>  # only dists touched since <base>
+#   awm/gateway/scripts/run-tests.sh --smoke           # only tests marked smoke
+#   awm/gateway/scripts/run-tests.sh --summary <file>  # also write "<dist> <result>" lines
+#
+# The deploy check runs `--smoke --changed $AWM_DEPLOY_BASE` (deploy.toml). A
+# change to a shared component selects every dist, since each one imports it.
 #
 # Reports pass/fail per dist and exits non-zero if any dist failed.
 set -uo pipefail
@@ -85,12 +91,63 @@ declare -A DISTS=(
 # Stable run order.
 ORDER=(gateway gatewayclient config persistence telemetry claudedaemon kept scopes journal search writing events precedence social 2fa ssh auth httpsfront rlm-browser rlm-factorio graphify stt tts fileviewer drawio notes virtmic mic vpn compute reflection dvc claude-science dsh engcyc hermes trilium zotero penpot penpot-view penpot-plugins cx keep dev tether kb board reporting reporting-hooks transcripts routine)
 
+CHANGED_BASE=""
+SMOKE=0
+SUMMARY_FILE=""
+NAMED=()
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --changed) CHANGED_BASE="${2:?--changed needs a base commit}"; shift 2 ;;
+    --smoke) SMOKE=1; shift ;;
+    --summary) SUMMARY_FILE="${2:?--summary needs a file}"; shift 2 ;;
+    *) NAMED+=("$1"); shift ;;
+  esac
+done
+
 # Allow selecting a subset on the command line.
-if [ "$#" -gt 0 ]; then
-  ORDER=("$@")
+if [ "${#NAMED[@]}" -gt 0 ]; then
+  ORDER=("${NAMED[@]}")
+fi
+
+# owns <dist> <path>: the path lies under one of the dist's source or test dirs.
+owns() {
+  local spec="${DISTS[$1]}" dir
+  local dirs="${spec%%::*}:${spec##*::}"
+  IFS=: read -ra parts <<< "$dirs"
+  for dir in "${parts[@]}"; do
+    case "$WS/$2" in "$dir"/*) return 0 ;; esac
+  done
+  return 1
+}
+
+if [ -n "$CHANGED_BASE" ]; then
+  mapfile -t CHANGED < <(git diff --name-only "$CHANGED_BASE" HEAD)
+  SELECTED=()
+  shared=0
+  for path in "${CHANGED[@]}"; do
+    IFS=: read -ra comp <<< "$COMP"
+    for dir in "${comp[@]}"; do
+      case "$WS/$path" in "$dir"/*) shared=1 ;; esac
+    done
+  done
+  for name in "${ORDER[@]}"; do
+    if [ "$shared" -eq 1 ]; then SELECTED+=("$name"); continue; fi
+    for path in "${CHANGED[@]}"; do
+      if owns "$name" "$path"; then SELECTED+=("$name"); break; fi
+    done
+  done
+  if [ "${#SELECTED[@]}" -eq 0 ]; then
+    echo ">>> no dist changed since $CHANGED_BASE"
+    [ -n "$SUMMARY_FILE" ] && : > "$SUMMARY_FILE"
+    exit 0
+  fi
+  ORDER=("${SELECTED[@]}")
 fi
 
 PYTEST_ARGS="${PYTEST_ARGS:-}"
+if [ "$SMOKE" -eq 1 ]; then
+  PYTEST_ARGS="-m smoke ${PYTEST_ARGS}"
+fi
 
 # Ask mamba where the env's interpreter is, once, and run pytest with it
 # directly. `mamba run --no-capture-output <cmd>` writes `exec -- <cmd>` into a
@@ -144,5 +201,10 @@ echo "============================================================"
 for name in "${ORDER[@]}"; do
   printf '  %-12s %s\n' "$name" "${RESULT[$name]:-?}"
 done
+if [ -n "$SUMMARY_FILE" ]; then
+  for name in "${ORDER[@]}"; do
+    printf '%s %s\n' "$name" "${RESULT[$name]:-?}"
+  done > "$SUMMARY_FILE"
+fi
 
 exit "$overall"

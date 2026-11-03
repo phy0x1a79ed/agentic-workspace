@@ -73,6 +73,7 @@ CREATE TABLE IF NOT EXISTS batches (
     release_before TEXT NOT NULL DEFAULT '',
     release_after  TEXT NOT NULL DEFAULT '',
     nodes          TEXT NOT NULL DEFAULT '[]',
+    steps          TEXT NOT NULL DEFAULT '[]',
     fixer          TEXT NOT NULL DEFAULT '',
     started_at     TEXT NOT NULL,
     ended_at       TEXT NOT NULL DEFAULT ''
@@ -82,6 +83,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS one_live_batch
 """
 
 _JSON_COLS = {"steps", "dispatched", "nodes"}
+
+# A batch whose refresh failed still landed: release holds its commits.
+LANDED = ("landed", "refresh-failed")
 
 
 def now() -> str:
@@ -339,6 +343,13 @@ class Store:
         with self._tx() as c:
             c.execute(f"UPDATE batches SET {cols} WHERE id=?", (*vals, bid))
 
+    def record_batch_step(self, bid: str, outcome: dict[str, Any]) -> None:
+        with self._tx() as c:
+            row = c.execute("SELECT steps FROM batches WHERE id=?", (bid,)).fetchone()
+            steps = json.loads(row["steps"]) if row else []
+            steps.append(outcome)
+            c.execute("UPDATE batches SET steps=? WHERE id=?", (json.dumps(steps), bid))
+
     def finish_batch(self, bid: str, state: str, *, mark: str, failed_step: str = "",
                      error: str = "", fixer: str = "") -> None:
         ts = now()
@@ -347,4 +358,4 @@ class Store:
                       " ended_at=? WHERE id=?",
                       (state, failed_step, error[-4000:], fixer, ts, bid))
             c.execute("UPDATE tickets SET state=?, mark=?, ended_at=? WHERE batch_id=?",
-                      ("landed" if state == "landed" else "failed", mark, ts, bid))
+                      ("landed" if state in LANDED else "failed", mark, ts, bid))

@@ -1,6 +1,7 @@
 """Gateway entry point of the routine plugin: `python -m awm.routine.hub_adapter`.
 
-Serves one tool, `routine` (routines.md R37, R39), over today's control
+Serves one tool, `routine` (routines.md R37, R39), with the deploy verbs of
+R26 and R31 beside the routine verbs, over today's control
 WebSocket protocol, which the Rust gateway keeps (plugin-contract.md § Service
 wire protocol).
 """
@@ -13,8 +14,10 @@ import os
 from pathlib import Path
 from typing import Any
 
-from awm.routine import timers
+from awm.routine import deployconf, timers
+from awm.routine.deploy import Deployer
 from awm.routine.outbound import GatewayOutbound, Outbound
+from awm.routine.refresh import Refresher, default_checkout_root
 from awm.routine.runner import Runner
 from awm.routine.store import Store
 
@@ -179,24 +182,103 @@ async def main() -> None:
     orphans = svc.store.orphan_live()
     if orphans:
         log.warning("closed %d runs or batches left live by a previous process", orphans)
-    manifest = {"functions": ROUTINE_FUNCTIONS + _deploy_functions(), "emitters": [],
+    deployer = build_deployer(svc.store, svc.out)
+    manifest = {"functions": ROUTINE_FUNCTIONS + DEPLOY_FUNCTIONS, "emitters": [],
                 "sessions": []}
-    handlers = {**svc.handlers(), **_deploy_handlers(svc)}
+    handlers = {**svc.handlers(), **DeployVerbs(deployer).handlers()}
     adapter = ServiceAdapter(os.environ.get("AWM_SERVICE_NAME") or "routine",
                              manifest, handlers)
-    await asyncio.gather(adapter.run(), _deploy_worker(svc))
+    await asyncio.gather(adapter.run(), deployer.run_forever())
 
 
-def _deploy_functions() -> list[dict[str, Any]]:
-    return []
+DEPLOY_FUNCTIONS: list[dict[str, Any]] = [
+    {"name": "deploy", "tool": "routine_deploy", "effect": "write",
+     "description": ("Land the calling scope's branch: pin its head, return a ticket at "
+                     "once, then merge, check, promote to release and refresh the nodes "
+                     "in a batch. The verdict goes to the scope's journal. A failed "
+                     "batch starts one fixing session with every branch in it."),
+     "params": [_p("project", "string", False, "The project. Default: the caller's."),
+                _p("scope", "string", False, "The scope. Default: the caller's."),
+                _p("branch", "string", False, "The branch. Default: the scope's."),
+                _p("sha", "string", False, ("A commit to pin instead of the branch "
+                                            "head, for a call from a peer."))]},
+    {"name": "deploys", "tool": "routine_deploys", "effect": "read",
+     "description": "Recent deploy batches with their tickets, or one batch or ticket by id.",
+     "params": [_p("project", "string", False, "Only this project."),
+                _p("id", "string", False, "One batch or ticket."),
+                _p("limit", "integer", False, "How many batches. Default 10.")]},
+    {"name": "refresh", "tool": "routine_refresh", "effect": "write",
+     "description": ("Refresh this node's checkout of a project after a deploy, from "
+                     "its own deploy.toml. The deploy calls it on each node in turn."),
+     "params": [_PROJECT, _p("from", "string", True, "The old release commit."),
+                _p("to", "string", True, "The new release commit.")]},
+]
 
 
-def _deploy_handlers(svc: RoutineService) -> dict[str, Any]:
-    return {}
+class DeployVerbs:
+    def __init__(self, deployer: Deployer) -> None:
+        self.deployer = deployer
+
+    def handlers(self) -> dict[str, Any]:
+        return {"deploy": self.deploy, "deploys": self.deploys, "refresh": self.refresh}
+
+    def canonical(self, project: str) -> str:
+        """The node that lands ``project`` (R31), from this node's checkout."""
+        try:
+            root = self.deployer.refresher.checkout_root(project)
+            p = root / deployconf.FILE
+            return deployconf.parse(p.read_text()).canonical if p.is_file() else ""
+        except (FileNotFoundError, deployconf.ConfigError):
+            return ""
+
+    async def deploy(self, args: dict[str, Any], as_: str | None = None) -> dict[str, Any]:
+        cwd = ""
+        if pid := args.get("_caller_pid"):
+            try:
+                cwd = os.readlink(f"/proc/{int(pid)}/cwd")
+            except (OSError, ValueError):
+                cwd = ""
+        sub = self.deployer.resolve(project=args.get("project") or "",
+                                    scope=args.get("scope") or "",
+                                    branch=args.get("branch") or "",
+                                    sha=args.get("sha") or "", cwd=cwd)
+        caller = caller_label(args, as_)
+        home = self.canonical(sub.project)
+        if home and home != self.deployer.refresher.node:
+            # The canonical node pins the same commit, which the caller must have pushed.
+            return await self.deployer.out.invoke(
+                "routine", "deploy", {"project": sub.project, "scope": sub.scope,
+                                      "branch": sub.branch, "sha": sub.sha}, peer=home)
+        t = self.deployer.submit(sub, caller=caller)
+        return {"ticket": t["id"], "project": t["project"], "scope": t["scope"],
+                "branch": t["branch"], "sha": t["sha"],
+                "note": "The verdict goes to this scope's journal."}
+
+    def deploys(self, args: dict[str, Any]) -> dict[str, Any]:
+        store = self.deployer.store
+        if bid := args.get("id"):
+            if batch := store.get_batch(bid):
+                return {**batch, "tickets": store.batch_tickets(bid)}
+            if ticket := store.get_ticket(bid):
+                return ticket
+            raise KeyError(f"no batch or ticket {bid}")
+        project = args.get("project")
+        batches = store.list_batches(project, int(args.get("limit") or 10))
+        return {"waiting": store.list_tickets(project, "queued"),
+                "batches": [{**b, "tickets": store.batch_tickets(b["id"])}
+                            for b in batches]}
+
+    async def refresh(self, args: dict[str, Any]) -> dict[str, Any]:
+        r = await self.deployer.refresher.local(args["project"], args["from"], args["to"])
+        return r.to_dict()
 
 
-async def _deploy_worker(svc: RoutineService) -> None:
-    return None
+def build_deployer(store: Store, out: Outbound) -> Deployer:
+    from awm.config import canonical_workspace, node_name
+    ws = canonical_workspace()
+    return Deployer(store, out, workspace=ws,
+                    refresher=Refresher(out, node=node_name(),
+                                        checkout_root=default_checkout_root(ws)))
 
 
 if __name__ == "__main__":
