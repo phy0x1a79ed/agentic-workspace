@@ -22,6 +22,13 @@ Which node holds which role belongs in `fleet.md`. How a deploy moves through th
   3. Each plugin's pages get their own origin, so a page reaches only its own plugin's services.
   4. Tony's own plugins run on the host. A third-party plugin runs in a container at untrusted, as an isolated session does (`fleet.md` R109).
   5. A namespace records which plugin owns a name. It never appears in a call: a tool keeps its flat name, such as `journal`. The manifest claims the tool names the plugin serves, and the gateway keeps one table from each name to its owner. An install that claims a taken name is refused, and Tony settles the clash by renaming one in the install config. Names that gate trust, such as `2fa` and the approver, belong only to core plugins. Page origins, secret grants and the audit log use the owner's name. Tony: "we dont want namespace = tools and we dont want to have to do \"awm namespace/tool\"" and "this works" (2026-11-02).
+- **R117.** A plugin depends on tools of other plugins, never on their code. Tony: "ok, but the install contract needs to name where these tools come from. the tool name is changeable in the contract so is not a good source of truth" (2026-11-02).
+  1. A plugin calls another plugin only through the gateway, as an agent does. No plugin imports another plugin's code.
+  2. A plugin's identity is its source: the git repository, or the folder in the awm repository for a core plugin. The manifest names each tool it calls by that source, the tool's name in the provider's own manifest, and the major version it needs. A rename in the install config (R116 item 5) changes only the public name, so a dependency still resolves.
+  3. At install the gateway checks that each needed tool is served, on this node or on a peer. A missing tool refuses the install and names the source it needs.
+  4. A breaking change to a tool raises its major version. The provider and the plugins that call it update in one batch-approved change (R116 item 2).
+  5. Shared code is a library that each plugin pins in its own env, not a plugin.
+  6. Plugins start together, in no order. A call to a tool that is not up yet waits briefly, then fails with a clear error.
 
 ## Gap from today
 
