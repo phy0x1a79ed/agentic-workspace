@@ -38,7 +38,8 @@ All routes keep `ControlMaster auto` with `ControlPersist`, except an admin logi
 |---|---|---|
 | any home box | mizar, alcor, mira, capella | LAN, at an address the router reserves |
 | any home box | capella | LAN, port 22 forwarded from capella's LAN address to `127.0.0.1:22` in WSL |
-| any node outside Arbutus | altair, Arbutus nodes | internet, `ProxyJump bastion-01` |
+| any node | altair, shogun | Tailscale |
+| any node outside Arbutus | other Arbutus nodes | internet, `ProxyJump bastion-01` |
 | altair | Arbutus nodes | the Arbutus private network, direct |
 | any node | deneb | internet, deneb's public address |
 | any node | sockeye, fir | internet, as today |
@@ -55,5 +56,8 @@ Group this work into one sitting in the implementation pass. Tony: "For the impl
 - Run an elevated shell on lyra for the port 22 forward to `127.0.0.1` and its firewall rule.
 - Approve each new key: alcor into mizar, lyra into its edges, and mizar into lyra.
 - Rename lyra's Windows host from `XPS-LAPTOP`.
-- Take Tailscale off altair.
+- Join shogun to Tailscale.
+- Turn on Tailnet Lock, and sign each node in.
+- Write the tailnet's access rules to mirror R87 and open the singleton doors.
+- Install Tailscale on the Windows side of capella, in place of the one inside WSL.
 - Register cross-architecture emulation (qemu binfmt) once on each build node, for Rust builds. Tony: "cross architecture emulation is needed for rust builds. but a once only set up is fine." (2026-11-02).
