@@ -99,7 +99,7 @@ async def test_each_source_is_reported_apart_with_its_own_limit(loaded):
         assert all(len(ids) == 1 for ids in section.values())
         assert set(section) <= {"journals", "precedence", "kb"}
     assert set(sections["exact"]) == {"journals", "precedence", "kb"}
-    assert all(h["source"] == src for s in ("exact", "related", "graph") for src, hits in result[s].items()
+    assert all(h["source"] == src for s in ("exact", "related") for src, hits in result[s].items()
                for h in hits)
     wide = await loaded.query(parse({"query": "kitchen", "limit": 10, "sources": "journals,kb"}))
     assert len(wide["exact"]["journals"]) == 2 and len(wide["exact"]["kb"]) == 1
@@ -427,63 +427,26 @@ async def test_get_with_a_node_reads_that_peers_archive(peers):
     assert peers.calls == [("shaula", "search_get", {"source": "journals", "id": "r3"})]
 
 
-# -- PageRank ----------------------------------------------------------------
+# -- no reorder ----------------------------------------------------------------
 
 
-async def test_kb_ranks_each_section_for_the_context_and_never_changes_its_hits(loaded, gateway):
-    plain = await loaded.query(parse({"query": "kitchen", "sources": LOADED}))
+async def test_no_source_is_reordered_by_kb(loaded, gateway):
+    await loaded.query(parse({"query": "kitchen", "sources": LOADED}))
+    assert not any(fn == "rank" for _, fn, _ in gateway.calls)
+
+
+# -- the author filter --------------------------------------------
+
+
+async def test_a_live_paper_source_and_a_peer_are_asked_with_the_author(loaded, gateway):
     asked = []
-
-    def rank(args):
-        asked.append(args)
-        return {"profile": "scope:awm/dev + project:awm", "scores": [float(i) for i in range(len(args["hits"]))]}
-
-    gateway.handlers[("kb", "rank")] = rank
-    ranked = await loaded.query(parse({"query": "kitchen", "sources": LOADED, "context": "awm/dev"}))
-    assert asked[-1]["context"] == "awm/dev"
-    assert set(asked[-1]["hits"][0]) == {"source", "id", "project", "scope"}
-    assert ranked["rank"] == {"profile": "scope:awm/dev + project:awm"}
-    for section in ("exact", "related", "graph"):
-        assert {s: sorted(h["id"] for h in hits) for s, hits in ranked[section].items()} == \
-            {s: sorted(h["id"] for h in hits) for s, hits in plain[section].items()}
-
-
-async def test_a_failed_rank_leaves_the_answer_in_its_section_order(loaded, gateway):
-    gateway.handlers[("kb", "rank")] = lambda args: RuntimeError("no graph")
-    result = await loaded.query(parse({"query": "kitchen", "sources": LOADED}))
-    assert "no graph" in result["rank"]["error"] and ids(result)
-
-
-async def test_no_kb_asks_for_no_rank(archive, gateway):
-    gateway.plug("journals", {"j1": doc("Kitchen", "kitchen sink", kind="journal")})
-    await synced(archive, gateway)
-    result = await archive.query(parse({"query": "kitchen", "sources": ["journals"]}))
-    assert "rank" not in result and not any(fn == "rank" for _, fn, _ in gateway.calls)
-
-
-# -- hop steps and the author filter --------------------------------------------
-
-
-def test_then_reads_a_list_a_json_string_or_one_step():
-    assert parse({"query": "x", "then": [{"hop": "authors", "after": "2020-01-01", "limit": 5}]}).then == \
-        [{"hop": "authors", "after": "2020-01-01", "limit": 5}]
-    assert parse({"query": "x", "then": '[{"hop": "cites"}, {"hop": "cited_by"}]'}).then == \
-        [{"hop": "cites"}, {"hop": "cited_by"}]
-    assert parse({"query": "x", "then": {"hop": "authors"}}).then == [{"hop": "authors"}]
-    for bad in ([{"hop": "wrote"}], "not json", 3):
-        with pytest.raises(ValueError, match="then"):
-            parse({"query": "x", "then": bad})
-
-
-async def test_a_live_paper_source_and_a_peer_are_asked_with_the_steps_and_the_author(loaded, gateway):
-    asked = []
-    gateway.plug_live("papers", lambda args: asked.append(args) or {"exact": [], "related": [], "graph": []},
+    gateway.plug_live("papers", lambda args: asked.append(args) or {"exact": [], "related": []},
                       service="papers")
     await loaded.refresh()
-    q = parse({"query": "kitchen", "then": [{"hop": "authors"}], "author": "Huttenhauer", "sources": ["papers"]})
+    q = parse({"query": "kitchen", "author": "Huttenhauer", "sources": ["papers"]})
     await loaded.query(q)
-    assert asked[-1]["then"] == [{"hop": "authors"}] and asked[-1]["author"] == "Huttenhauer"
-    assert q.forwarded()["then"] == [{"hop": "authors"}] and q.forwarded()["author"] == "Huttenhauer"
+    assert asked[-1]["author"] == "Huttenhauer" and "then" not in asked[-1]
+    assert q.forwarded()["author"] == "Huttenhauer"
 
 
 async def test_an_author_filter_leaves_the_archived_sources_empty(loaded):
@@ -492,21 +455,9 @@ async def test_an_author_filter_leaves_the_archived_sources_empty(loaded):
     assert result["sources"]["journals"] == {"status": "ok", "hits": 0}
 
 
-async def test_pagerank_never_reorders_paper_hits(loaded, gateway):
-    asked = []
-
-    def rank(args):
-        asked.append(args)
-        return {"profile": "global", "scores": [1.0] * len(args["hits"])}
-
-    gateway.handlers[("kb", "rank")] = rank
-    await loaded.query(parse({"query": "kitchen tap", "sources": LOADED}))
-    assert asked and all(h["source"] not in ("kb", "library") for h in asked[-1]["hits"])
-
-
 async def test_the_library_is_a_live_source_of_its_own(loaded, gateway):
     gateway.plug_live("library", lambda args: {"exact": [], "related": [
-        {"id": "doi:10.1/mine", "title": "My paper", "ts": "2021-01-01T00:00:00Z"}], "graph": []}, service="kb")
+        {"id": "doi:10.1/mine", "title": "My paper", "ts": "2021-01-01T00:00:00Z"}]}, service="kb")
     await loaded.refresh()
     both = await loaded.query(parse({"query": "kitchen tap", "sources": [*LOADED, "library"]}))
     assert [h["id"] for h in both["related"]["library"]] == ["doi:10.1/mine"]

@@ -35,10 +35,6 @@ SETTLE_S = 5.0
 TICK_S = 15.0
 REGISTRY_TTL_S = 10.0
 LIVE_TIMEOUT_S = 15.0
-RANK_TIMEOUT_S = 3.0
-#: The sources whose hits are papers. Their order is kb's own, by words and meaning: the POC found a prior
-#: boost on paper hits gained nothing, so PageRank reorders only the other sources.
-PAPER_SOURCES = frozenset({"kb", "library"})
 HOMES_TTL_S = 300.0
 EXPORT_TIMEOUT_S = 120.0
 PAGE = 200
@@ -369,8 +365,6 @@ class Archive:
 
     async def _live(self, source: Source, q: Query) -> tuple[Source, dict[str, list[dict[str, Any]]], dict[str, Any]]:
         args = {"query": q.text, "limit": q.limit, "passages": q.passages, **q.raw}
-        if q.then:
-            args["then"] = q.then
         try:
             raw = await asyncio.wait_for(
                 self.gateway.call(source.service, source.query, args, LIVE_TIMEOUT_S),
@@ -393,8 +387,8 @@ class Archive:
         return status
 
     async def query(self, q: Query) -> dict[str, Any]:
-        """The ``exact``, ``related`` and ``graph`` sections over the picked sources and peers, plus a
-        status for every source and peer asked."""
+        """The ``exact`` and ``related`` sections over the picked sources and peers, plus a status for every
+        source and peer asked. Each source keeps its own keyword-and-meaning order."""
         await self._refresh_if_stale()
         rows = {r["name"]: r for r in await self._rows(q.grants, q.hidden)}
         statuses: dict[str, Any] = {}
@@ -481,38 +475,7 @@ class Archive:
                     peer_status[result.name] = result.status
 
         fused = merge.fuse_sections(lists, q.limit)
-        rank = await self._rank(fused, q.context)
         out: dict[str, Any] = {"query": q.text, **fused, "sources": statuses, "peers": peer_status}
-        if rank:
-            out["rank"] = rank
         if degraded:
             out["degraded"] = degraded
         return out
-
-    async def _rank(self, fused: dict[str, dict[str, list[dict[str, Any]]]], context: str) -> dict[str, Any] | None:
-        """Reorder each source's list in each section in place by kb's PageRank, for ``context`` when one is given."""
-        if not any(s.service == "kb" for s in self.sources.values()):
-            return None
-        slots = [(section, source) for section in hitshape.SECTIONS for source in fused[section]
-                 if source not in PAPER_SOURCES]
-        every = [h for section, source in slots for h in fused[section][source]]
-        if not every:
-            return None
-        args = {"hits": [{k: h.get(k, "") for k in ("source", "id", "project", "scope")} for h in every],
-                "context": context}
-        try:
-            raw = await asyncio.wait_for(self.gateway.call("kb", "rank", args, RANK_TIMEOUT_S),
-                                         timeout=RANK_TIMEOUT_S + 1.0)
-            scores = raw["scores"]
-            if not isinstance(scores, list) or len(scores) != len(every):
-                raise ValueError("kb rank answered a different number of scores")
-        except Exception as exc:  # noqa: BLE001 — unranked sections are still the answer
-            return {"error": _describe(exc)}
-        if raw.get("profile") is None:
-            return None
-        at = 0
-        for section, source in slots:
-            hits = fused[section][source]
-            fused[section][source] = merge.by_rank(hits, scores[at:at + len(hits)])
-            at += len(hits)
-        return {"profile": raw["profile"]}

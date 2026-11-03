@@ -167,13 +167,13 @@ async def test_a_live_source_answering_in_sections_keeps_its_passages(loaded, ga
         "exact": [{"id": "doi:1", "title": "A paper", "passages": [
             {"text": "a quoted line", "start": 10, "end": 23, "section": "Methods", "marks": [[10, 23]],
              "injected": True}]}],
-        "graph": [{"id": "doi:2", "title": "Linked paper"}]})
+        "graph": [{"id": "doi:2", "title": "Linked paper"}]})  # a retired section, dropped
     await loaded.refresh()
     result = await loaded.query(parse({"query": "quoted line", "sources": ["kb"]}))
     assert [h["id"] for h in flat(result["exact"])] == ["doi:1"]
     assert flat(result["exact"])[0]["passages"] == [{"text": "a quoted line", "start": 10, "end": 23,
                                                "section": "Methods", "marks": [[10, 23]]}]
-    assert [h["id"] for h in flat(result["graph"])] == ["doi:2"]
+    assert "graph" not in result and "doi:2" not in {h["id"] for h in every(result)}
 
 
 async def test_a_peer_on_an_older_release_answers_in_related(loaded, peers):

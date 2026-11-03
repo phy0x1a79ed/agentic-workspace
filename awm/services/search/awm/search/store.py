@@ -102,7 +102,7 @@ END;
 """
 
 VERDICTS = ("relevant", "irrelevant")
-SECTIONS = ("exact", "related", "graph")
+SECTIONS = ("exact", "related")
 
 _JUDGEMENTS = """
 CREATE TABLE IF NOT EXISTS judgements (

@@ -69,7 +69,7 @@ class Exporter:
 
 def every(result: dict[str, Any]) -> list[dict[str, Any]]:
     """Every hit of a query answer: section by section in reading order, each section source by source."""
-    return [h for section in ("exact", "related", "graph") for hits in result[section].values() for h in hits]
+    return [h for section in ("exact", "related") for hits in result[section].values() for h in hits]
 
 
 def flat(section: dict[str, list[dict[str, Any]]]) -> list[dict[str, Any]]:

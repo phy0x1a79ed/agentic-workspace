@@ -42,22 +42,18 @@ API_MANIFEST: dict[str, Any] = {
                 "One search over the sources you name in `sources`: journals, precedents, papers "
                 "or any other source `search sources` lists. No source is searched unless named. "
                 "It searches this node only, unless "
-                "`peers` names other nodes. The answer has three ranked sections, read in "
-                "order: `exact` (the query as a literal substring, case-insensitive, then "
-                "keyword matches), `related` (nearest in meaning) and `graph` (linked through "
-                "the knowledge graph). Each section reports each source on its own: a map from "
-                "source name to that source's ranked hits, up to `limit` each, so papers (source "
-                "`kb`), journals, precedents and notes are never ranked against one another; a "
-                "source with no hits is absent. A document appears in the first section that holds it. "
-                "Each hit carries source, id, title, ts, score, match, origin (node and swarm) "
-                "and its passages: quotes with their section and their start and end offsets in "
-                "the document's field. Read the answer's `sources` and `peers` for the status "
-                "of each source and peer asked. Fetch a whole hit with `get`. The `graph` section holds papers that cite, are "
-                "cited by or share an author with the top paper hits. For a join, such as all papers by the "
-                "authors of the paper that said X, or what cites it, pass `then`: hop steps from the paper "
-                "hits, ranked by personalized PageRank from the top five and never by meaning, whose last "
-                "step fills `graph`. Example: then: [{hop: \"authors\", after: \"2020-01-01\", limit: 20}]. "
-                "Chain further from any hits' ids with `kb hop`. `author` narrows papers to an author."
+                "`peers` names other nodes. The answer has two ranked sections, read in order: "
+                "`exact` (the query as a literal substring, case-insensitive, then keyword "
+                "matches) and `related` (nearest in meaning). Each section reports each source "
+                "on its own: a map from source name to that source's ranked hits, up to `limit` "
+                "each, so papers (source `kb`), journals, precedents and notes are never ranked "
+                "against one another; a source with no hits is absent. A document appears in the "
+                "first section that holds it. Each hit carries source, id, title, ts, score, match, "
+                "origin (node and swarm) and its passages: quotes with their section and their "
+                "start and end offsets in the document's field. Read the answer's `sources` and "
+                "`peers` for the status of each source and peer asked. Fetch a whole hit with `get`. "
+                "For papers that cite, are cited by or share an author with paper hits, pass their "
+                "ids to `kb hop`. `author` narrows papers to an author."
             ),
             "params": [
                 {"name": "query", "type": "string", "required": True,
@@ -84,15 +80,11 @@ API_MANIFEST: dict[str, Any] = {
                                 "this node. `fleet` among the names adds every domestic node to "
                                 "them, as in `fleet,shaula`."},
                 {"name": "context", "type": "string",
-                 "description": "The scope to rank for, as project/scope or a project. It reorders each "
-                                "section of the sources other than papers by that scope's PageRank and "
-                                "never changes which hits appear. Default: the calling session's scope."},
+                 "description": "The scope the search is made from, as project/scope. Default: the "
+                                "calling session's scope. No order depends on it."},
                 {"name": "author", "type": "string",
                  "description": "Only papers with an author of this surname, matched loosely, so "
                                 "'Huttenhauer' finds Huttenhower. Other sources answer nothing."},
-                {"name": "then", "type": "array",
-                 "description": "Hop steps from the paper hits, in order, the last filling `graph`: each "
-                                "{hop: authors | cites | cited_by, after?, before?, limit?}."},
             ],
         },
         {
@@ -166,7 +158,7 @@ API_MANIFEST: dict[str, Any] = {
                 {"name": "verdict", "type": "string", "required": True,
                  "description": "relevant, irrelevant, or clear."},
                 {"name": "section", "type": "string",
-                 "description": "For a relevant hit, the section it must answer in: exact, related or graph. "
+                 "description": "For a relevant hit, the section it must answer in: exact or related. "
                                 "Default: any."},
                 {"name": "set", "type": "string",
                  "description": "The set the judgement belongs to, such as gold or t5. Default: none, a mark by hand."},
@@ -230,7 +222,7 @@ def _judge(args: dict, as_: str | None) -> dict:
     if verdict not in (*store.VERDICTS, "clear"):
         raise ValueError(f"verdict: {verdict!r} is not relevant, irrelevant or clear")
     if section and section not in store.SECTIONS:
-        raise ValueError(f"section: {section!r} is not exact, related or graph")
+        raise ValueError(f"section: {section!r} is not exact or related")
     conn = store.connect()
     try:
         if verdict == "clear":

@@ -42,23 +42,6 @@ def test_no_lists_is_no_hits():
     assert merge.fuse([[], []], 10) == []
 
 
-def test_pagerank_lifts_a_hit_it_ranks_far_higher_and_keeps_every_hit():
-    hits = [hit("j", str(i)) for i in range(10)]
-    reordered = merge.by_rank(hits, [0.0] * 9 + [1.0])
-    assert [h["id"] for h in reordered][:7] == ["0", "1", "2", "3", "4", "5", "9"]
-    assert sorted(h["id"] for h in reordered) == sorted(h["id"] for h in hits)
-
-
-def test_pagerank_never_overturns_a_close_section_order():
-    hits = [hit("j", "a"), hit("j", "b")]
-    assert [h["id"] for h in merge.by_rank(hits, [0.0, 1.0])] == ["a", "b"]
-
-
-def test_no_ranks_leave_the_section_as_it_was():
-    hits = [hit("j", "a"), hit("j", "b")]
-    assert merge.by_rank(hits, [None, None]) == hits and merge.by_rank([], []) == []
-
-
 def test_fusion_orders_the_anchors_head_and_adds_below_it():
     a, b, c, d, e = (hit("journals", x) for x in "abcde")
     kept = merge.within([e, a, b, c, d], [d, c, b, a], 2)

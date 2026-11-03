@@ -356,7 +356,7 @@ def ranked(query: str, *, project: str | None, scope: str | None, kind: str | No
         raise RuntimeError(f"search source {SEARCH_SOURCE}: {status.get('status') or 'missing'}"
                            f" {status.get('error') or ''}".strip())
     hits, seen = [], set()
-    for section in ("exact", "related", "graph"):
+    for section in ("exact", "related"):
         for h in (res.get(section) or {}).get(SEARCH_SOURCE) or []:
             if h.get("id") and h["id"] not in seen:
                 seen.add(h["id"])

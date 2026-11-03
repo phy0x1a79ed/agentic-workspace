@@ -1,4 +1,4 @@
-"""The shape of a hit and of the three sections, and the cleaning of hits that come from elsewhere.
+"""The shape of a hit and of the two sections, and the cleaning of hits that come from elsewhere.
 
 A hit is one document with up to a few passages, each a quote with its span in
 the document. A live source or a peer answers in sections, or, on an older
@@ -11,8 +11,10 @@ from __future__ import annotations
 
 from typing import Any
 
-#: The answer's sections, in the order they are read: literal and keyword, meaning, graph.
-SECTIONS = ("exact", "related", "graph")
+#: The answer's sections, in the order they are read: literal and keyword, then meaning.
+SECTIONS = ("exact", "related")
+#: A section a peer on an older release may still send. It is dropped, never read.
+RETIRED_SECTIONS = ("graph",)
 _TEXT_KEYS = ("source", "id", "title", "ts", "project", "scope", "kind", "url", "match")
 _QUOTE_CHARS = 2000
 MAX_PASSAGES = 10
@@ -66,13 +68,14 @@ def _flat(section: Any) -> list[Any]:
 def sections(raw: Any, origin: dict[str, str], limit: int,
              source: str | None = None) -> dict[str, list[dict[str, Any]]]:
     """Each section of an answer, cleaned and capped at ``limit`` hits per source; a bare ``hits`` list is
-    ``related``. A section arrives as one flat list or as one list per source, and leaves as one flat list."""
+    ``related``. A section arrives as one flat list or as one list per source, and leaves as one flat list.
+    A retired section is dropped."""
     if not isinstance(raw, dict):
         raise ValueError("the answer is not an object")
-    if any(isinstance(raw.get(s), (list, dict)) for s in SECTIONS):
+    if any(isinstance(raw.get(s), (list, dict)) for s in (*SECTIONS, *RETIRED_SECTIONS)):
         lists = {s: _flat(raw.get(s)) for s in SECTIONS}
     elif isinstance(raw.get("hits"), list):
-        lists = {"exact": [], "related": raw["hits"], "graph": []}
+        lists = {"exact": [], "related": raw["hits"]}
     else:
         raise ValueError("the answer has no sections and no hits")
     return {s: _cap([h for h in (clean(x, origin, source) for x in items) if h], limit)
