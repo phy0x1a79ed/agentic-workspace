@@ -21,16 +21,10 @@ Procedure, from dfs-interview § Work the stack:
 
 ## Current topic
 
-**search**. Its result: `search/README.md`.
+**scopes-awm**. Its result: `scopes-awm/README.md`.
 
 ## Stack
 
-- **search** (2026-11-03): can we just drop prior? it seems to not be worth it. can hops just be plain queries? what is the graph section? lets review the search architecture as one of the major systems
-  - [x] Drop the paper prior, and what orders the graph section without it? (answered 2026-11-03)
-  - [x] Keep then on search query, or make hops a separate kb hop call? (answered 2026-11-03)
-  - [x] Keep the graph section? (answered 2026-11-03)
-  - [ ] Drop the second PageRank that reorders journals, precedents and notes?
-  - [ ] Cognee still serves graph and answer modes in kb, against R136 item 3: retire it now?
 - **scopes-awm** (2026-11-03): I dont get this, why are ignored files blocking delete? what is checking them? dvc is versioend with git via pins and should work lke any other file. we should talk about this. we should also review the .awm folder
   - [ ] Survey done: see /home/tony/.claude/jobs/8162a704/tmp/scopes-survey.md; copy into scopes-awm/README.md when current
 - **plugin-core** (2026-11-03): lets go over each of the major systems architecturally to make sure we are still aligned
@@ -43,3 +37,5 @@ Procedure, from dfs-interview § Work the stack:
 ## Parked
 
 ## Closed
+
+- **search** (closed 2026-11-03): `search/README.md`

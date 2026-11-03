@@ -32,3 +32,5 @@ Surveyed read only on 2026-11-03. The paths are on altair: awm `feat/svc-kb` at 
 ## Decisions
 
 - 2026-11-03: Drop the prior and the graph section. Search returns exact and related. A hop is its own `kb hop` call on paper ids, and `then` goes (`fleet.md` R136 item 5). Tony: "accept drop both".
+- 2026-11-03: A hit returns its title only, and a `get` on it is the usage feedback for the scope-tuned rank. The rank switches on when the journal replay shows a gain (`fleet.md` R136 item 6). Tony: "maybe this can be natural? search returns titles only and agent expanding full entry is the feedback?", "title ok" and "I dont need search updated immediately".
+- 2026-11-03: Cognee retirement re-lands, because R136 item 3 already keeps Cognee out. It was held only by the ranking freeze.
