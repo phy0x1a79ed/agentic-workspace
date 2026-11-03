@@ -241,3 +241,87 @@ async def test_a_poll_takes_every_page_and_stores_the_cursor_last(layer, monkeyp
     monkeypatch.setattr(hub_adapter, "_zotero_page", page)
     assert await hub_adapter.zotero_poll() == {"mapped": 0, "held": 2}
     assert [a["offset"] for a in asked] == [0, 1] and layer.cursor() == {"users/0": 9}
+
+
+CHAMPION_DDL = """
+CREATE TABLE term_df(term TEXT PRIMARY KEY, doc INTEGER NOT NULL) WITHOUT ROWID;
+CREATE TABLE champion(term TEXT NOT NULL, score REAL NOT NULL, passage INTEGER NOT NULL,
+                      PRIMARY KEY (term, score, passage)) WITHOUT ROWID;
+"""
+
+
+def _champion(path, depth):
+    """Give a base kb's schema-4 champion lists, as kb.fastlayer builds them for stems porter keeps."""
+    db = sqlite3.connect(path)
+    db.executescript(CHAMPION_DDL)
+    db.execute("INSERT INTO term_df SELECT term, doc FROM passage_vocab")
+    for (term,) in db.execute("SELECT term FROM term_df").fetchall():
+        db.executemany("INSERT INTO champion VALUES (?, ?, ?)", [(term, r, i) for i, r in db.execute(
+            "SELECT rowid, rank FROM passage_bm25 WHERE passage_bm25 MATCH ? ORDER BY rank LIMIT ?",
+            (f'"{term}"', depth))])
+    db.execute("INSERT INTO meta VALUES ('champion_depth', ?)", (str(depth),))
+    db.commit()
+    db.close()
+
+
+PAPERS = {
+    "doi:10.1/at": ("10.1/at", "Assembly theory explains and quantifies selection and evolution", 2023,
+                    "We introduce assembly theory.", BODY),
+    "doi:10.1/cas": ("10.1/cas", "A programmable dual-RNA-guided DNA endonuclease", 2012,
+                     "Cas9 cleaves DNA guided by RNA.", "The PAM is required on double-stranded DNA."),
+    "doi:10.1/old": ("10.1/old", "An ASSEMBLY INDEX survey from long ago", 1999, "", ""),
+    "doi:10.1/mol": ("10.1/mol", "Molecule selection in prebiotic chemistry", 2020,
+                     "Selection acts on each molecule before life.", "Index of joining steps in chemistry."),
+}
+QUERIES = ["assembly index of a molecule and its DNA", "double-stranded DNA", "RNA guided cutting of DNA",
+           "selection of a molecule", "joining steps chemistry", "assembly index"]
+
+
+def _answers(layer, per_hit=1):
+    return [{k: [(h["id"], h["match"]) for h in v] for k, v in layer.search(q, fastlayer.Filters(), 10, per_hit).items()}
+            for q in QUERIES]
+
+
+def test_complete_champion_lists_answer_as_fts5s_own_ranking_does(tmp_path):
+    _base(tmp_path / "ranked.db", PAPERS)
+    _base(tmp_path / "champion.db", PAPERS)
+    _champion(tmp_path / "champion.db", depth=1000)
+    ranked = fastlayer.FastLayer(tmp_path / "ranked.db", tmp_path / "d1.db")
+    champion = fastlayer.FastLayer(tmp_path / "champion.db", tmp_path / "d2.db")
+    assert fastlayer._champions(tmp_path / "champion.db") and not fastlayer._champions(tmp_path / "ranked.db")
+    for per_hit in (1, 3):
+        assert _answers(champion, per_hit) == _answers(ranked, per_hit)
+
+
+def test_an_or_passage_in_every_list_scores_its_exact_bm25(tmp_path):
+    _base(tmp_path / "papers.db", PAPERS)
+    _champion(tmp_path / "papers.db", depth=1000)
+    conn = fastlayer._open_ro(tmp_path / "papers.db")
+    every, either, _ = fastlayer.keyword_words(fastlayer.document_frequency(conn, ["selection", "molecule"]))
+    _, related = fastlayer._champion_legs(conn, every, either)
+    fts = dict(conn.execute("SELECT rowid, rank FROM passage_bm25 WHERE passage_bm25 MATCH ?",
+                            ('"selection" OR "molecule"',)).fetchall())
+    both = {r[0] for r in conn.execute("SELECT rowid FROM passage_bm25 WHERE passage_bm25 MATCH ?",
+                                       ('"selection" AND "molecule"',))}
+    assert both and all(abs(dict(related)[p] - fts[p]) < 1e-9 for p in both)
+
+
+def test_cut_lists_still_judge_coverage_on_the_passage_text(tmp_path):
+    """Lists cut at three passages still find the paper, its passage read and judged on its text."""
+    _base(tmp_path / "papers.db", PAPERS)
+    _champion(tmp_path / "papers.db", depth=3)
+    layer = fastlayer.FastLayer(tmp_path / "papers.db", tmp_path / "delta.db")
+    query = "assembly index of a molecule and its DNA"
+    found = layer.search(query, fastlayer.Filters(), 10, 1)
+    assert [h["id"] for h in found["related"]] == ["doi:10.1/at"] and found["related"][0]["passages"]
+
+
+def test_the_delta_is_ranked_exactly_beside_a_champion_base(tmp_path):
+    _base(tmp_path / "papers.db", PAPERS)
+    _champion(tmp_path / "papers.db", depth=1000)
+    layer = fastlayer.FastLayer(tmp_path / "papers.db", tmp_path / "delta.db")
+    layer.take_items([{"key": "Z9", "library": "users/0", "version": 1, "year": "2024",
+                       "title": "Hydrothermal vent molecule selection", "abstract": "Vent chemistry selects."}])
+    got = layer.search("vent molecule selection", fastlayer.Filters(), 10, 1)
+    ids = [h["id"] for h in got["exact"] + got["related"]]
+    assert "zotero:users/0/Z9" in ids and "doi:10.1/mol" in ids
