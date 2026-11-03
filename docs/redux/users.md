@@ -21,8 +21,10 @@ How a channel works belongs in `channels.md`. The owner's queue belongs in `queu
   2. A seat never uses what a person told Tony in his own DM (`channels.md` R71 item 2).
   3. A person's replies go to their own seat from the first message. A change to one seat never restarts another.
   4. An instruction in Tony's DM does not spread to the lab seats as a new permission. It reaches a seat only when Tony names that seat.
+  5. The main Slack seat handles the edge cases, such as an @Opal mention in a channel or a sender from outside the lab. It uses judgement and may ask Tony. Tony: "slack main handles those edges cases and uses judgement. can also ask me" (2026-11-02).
 
   Items 1 to 4 come from the Beth case of 2026-10-29: Opal sent Beth a cold plan after an instruction in Tony's DM fanned out to every lab seat. Tony kept these four of six proposed tweaks: "drop 2 / drop 6" (2026-11-02).
+- **R128.** The seat SOP lives on altair, the node that holds the Slack seats. It stays out of the awm repo, because it applies only there. Tony: "the seat SOP, lets save that soemwhere on altiar since it only applies there. This prolly shouldnt go in the awm repo." (2026-11-02).
 
 ## Gap from today
 
