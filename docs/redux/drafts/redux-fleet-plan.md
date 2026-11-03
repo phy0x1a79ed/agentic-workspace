@@ -1,0 +1,185 @@
+# redux-fleet plan
+
+## Context
+
+The redux build runs one lane per area overnight. This lane builds the machine side of the fleet: a plugin that wakes the home boxes and hands Tony to a standby agent while mizar or alcor restarts, and the Ansible tree that the one-pass fleet config run (fleet.md R108) applies later. Everything lands as code and config on `feat/redux-fleet`. No host changes tonight.
+
+## What you said
+
+> Your lane: three fleet features, as code and config in the tree, applied to no host.
+
+> a wake plugin. mizar and alcor wake each other with Wake-on-LAN, and either wakes capella. alcor is mizar's standby: design and build how alcor takes over answering requests through an agent while mizar restarts, and how pinned jobs come back after a reboot.
+
+> Write alcor's firewall change (port 22 admits mizar, capella and lyra) as config for the fleet's config pass (fleet.md R108), but do not apply it.
+
+> These run on plugins under the contract redux-core (job redux-build/core) is building; agree the interface with it, and keep them runnable under today's Python gateway until it exists.
+
+Coordinator, on the lane change:
+
+> You keep R139 wake and standby, R98 item 1, and gain deneb hardening config (fleet.md R79 to R84) and the config pass (R108); redux-build/trust (job 563d3f5a) writes its ssh, firewall, users and sudo config into your pass.
+
+## Issues
+
+- I1. No awm code wakes a machine. Tony or an agent runs `wakeonlan` by hand from mizar (`~/handoff/wol-run.sh`).
+- I2. Nothing answers Tony through an agent while mizar restarts. On 2026-10-29 Tony watched the reboot from a hand-started session on alcor.
+- I3. Pinned jobs do not come back after a reboot (`adopted=0 respawned=0 dead=2`).
+- I4. alcor's firewall admits port 22 from all of `100.64.0.0/10`, `172.16.0.0/24` and `10.0.0.0/24`. Only the authorized keys limit logins to mizar.
+- I5. No Ansible tree for the swarm exists. The 2026-11-02 proof of concept left only an inventory and one read-only check in a job tmp folder.
+- I6. deneb runs agent sessions, holds an ssh key into altair, runs Penpot and the game server, syncs Zotero on a timer, and posts the day's login password into the Ops note.
+
+## High-level goals
+
+- G1. Any home box that sleeps or powers off can be started from its partner without a human at the switch.
+- G2. Tony always has an agent to talk to while mizar or alcor restarts.
+- G3. The sessions Tony pinned come back on their own after a reboot.
+- G4. The new pieces fit the redux plugin contract and still run under today's gateway.
+- G5. The fleet has one Ansible tree that the config pass can apply in one run, with sibling lanes adding their roles to it.
+- G6. deneb's hardening decisions exist as config, ready for that run.
+
+## Acceptance criteria
+
+- `awm/plugins/wake/` holds `awm-plugin.toml` (contract draft v1, commit 581717e9 on `feat/redux-core`) and a `run.sh` that the Python gateway loads as today's services.
+- The `wake` tool's `wake` verb sends a magic packet only along the R139 matrix: mizar to alcor, alcor to mizar, and either to capella. Any other pair is refused with the reason.
+- `wake` waits for the target's ssh port and returns the seconds it took, or a timeout result.
+- A handover verb on the restarting node asks its partner to take the standby, and the partner starts a briefed standby session through `reflection start_other`.
+- The partner's watchdog sends Wake-on-LAN when the restarting node stays down past its deadline.
+- A boot runner resumes every pinned job that is not live, through `reflection resume_other` over the gateway, and then releases the partner's standby.
+- No code in the plugin imports `awm.claudedaemon` or another plugin.
+- Unit tests for the plugin pass under `mamba run -n awm pytest`.
+- `fleet/` holds `ansible.cfg`, `inventory/hosts.yml`, `site.yml`, `requirements.yml` and the roles `wake_node`, `alcor_ssh_door` and `deneb_station`.
+- `ansible-playbook --syntax-check fleet/site.yml` passes, and each of my roles converges in check mode and then for real against a throwaway Ubuntu container.
+- A test fails when the inventory's hosts and the managed nodes of `fleet/edges.yml` disagree.
+- No secret, password or token is in the tree.
+
+## Tasks
+
+- T1. Commit this plan (G4).
+- T2. Build the Wake-on-LAN core of the wake plugin (G1, G4).
+- T3. Build the pinned-job resume after boot (G3, G4).
+- T4. Build the standby handover between mizar and alcor (G2, G4).
+- T5. Write the plugin manifest and the legacy run path (G4).
+- T6. Commit a checkpoint and journal the phase (G1, G2, G3).
+- T7. Compact.
+- T8. Lay out the fleet Ansible tree (G5).
+- T9. Write the wake_node role (G1, G3, G5).
+- T10. Write the alcor_ssh_door role with the ufw defaults (G5).
+- T11. Write the deneb_station role (G6).
+- T12. Test the tree in throwaway containers (G5, G6).
+- T13. Commit a checkpoint and journal the phase (G5, G6).
+- T14. Compact.
+- T15. Merge the trust lane's roles when they land and rerun the tree tests (G5).
+- T16. Report to the coordinator (G5).
+- T17. Debrief.
+
+## Approach by task
+
+### T1. Commit this plan
+
+Commit this file alone on `feat/redux-fleet`.
+
+Gotchas: the area docs under `docs/redux/` stay untouched. Proposed doc changes go in Callouts below.
+
+### T2. Build the Wake-on-LAN core of the wake plugin
+
+A new Python service under `awm/plugins/wake/`, in the shape of today's services (`ServiceAdapter`, `API_MANIFEST`, handlers). The node table comes from a config file on the node (`$AWM_DIR/wake.toml`), which the wake_node role renders from the inventory. It names each target's MAC, broadcast address and ssh probe address, and which nodes may wake it. The plugin itself carries no fleet detail (install.md R119 item 1). The packet goes out on a plain UDP broadcast socket to port 9, with no root. The verbs are `wake` (send, then probe the target's port 22 until it answers or the budget runs out), `status` (probe only) and `nodes` (the table as this node sees it).
+
+Gotchas: send to both the subnet broadcast and `255.255.255.255`, as the hand script does. capella needs about 82 s to WSL ssh, so the default budget is 180 s. A target that answers before the packet goes out reports `already_up` instead of a wake time. Tests use a fake socket and a fake probe, never the LAN.
+
+### T3. Build the pinned-job resume after boot
+
+A `boot` verb and a one-shot entry point (`python -m awm.wake.boot`). It waits for the gateway, reads the pinned set from `reflection list_other`, and calls `reflection resume_other` for each pinned job that is not live. It runs as a systemd user unit after the gateway and the Claude daemon. It reports `resumed`, `already_live` and `failed`, each with its reason. After the run it releases the partner's standby (T4). Calls go through `POST /invoke` with the tool names read from `AWM_RESOLVED_TOOLS`, falling back to the legacy names when the Python gateway sets no such file.
+
+Gotchas: the harness lane (job b7312951) owns reflection and cch. The open question to it is whether `list_other` still lists a pinned job whose process died in the reboot. If not, the boot runner needs a new reflection verb, and this task waits on that answer. `resume_other` refuses a job with no start_other lineage. The daemon takes a while to answer after boot, so the runner retries `daemon_ensure` with a deadline.
+
+### T4. Build the standby handover between mizar and alcor
+
+The restarting node runs `handover` with a reason and an expected downtime. It calls its partner's `standby_take` over the gateway with `peer`. The partner records the handover, starts a standby session with `reflection start_other` (Remote Control on, a brief that says which node is down, what Tony may need and how to hand back), and arms a watchdog. The restarting node then runs its reboot command when asked to, or returns the plan when not. The boot runner of T3 calls `standby_release` on the partner with its resume report. The partner messages the standby session, which tells Tony and stops. The watchdog sends Wake-on-LAN once the deadline passes with the node still down, and again at a back-off, and tells the standby session each time. The pairing is symmetric, so mizar is alcor's standby by the same code.
+
+Gotchas: the reboot command needs a polkit rule for the normal account (fleet.md R101 removes sudo), which T9 writes. No reboot runs tonight: tests swap in a fake reboot command. alcor reaches only mizar (R87), so the partner call from alcor goes over alcor's edge to mizar, and the call from mizar to alcor uses mizar's edge. A standby session started across a node keeps the starter's trust level (R104 item 3).
+
+### T5. Write the plugin manifest and the legacy run path
+
+Write `awm-plugin.toml` with `[plugin]`, `[placement] nodes = ["mizar", "alcor"]`, one `[[service]]`, one `[[tool]]` `wake` with a new uuid4, `[needs] network = ["udp:9 broadcast"]` and `[[needs.tool]]` for reflection at `uuid5(NAMESPACE_URL, "awm:tool:reflection")`. Add `run.sh`, `install.sh`, `pyproject.toml` and `service.toml` so the Python gateway loads it today.
+
+Gotchas: today's gateway discovers services only under `awm/services/*`. If it cannot load a folder under `awm/plugins/`, add a symlink `awm/services/wake -> ../plugins/wake` and say so in the commit.
+
+### T6. Commit a checkpoint and journal the phase
+
+Commit T2 to T5 with the tests green. Post a journal entry with the verbs, the open harness question and the test count.
+
+Gotchas: commit only this lane's files.
+
+### T7. Compact
+
+Handoff: the plugin lives at `awm/plugins/wake/`, its tests pass, and the plan file names the next task. Re-read `build-rules.md` and `lanes.md` in `/home/tony/.claude/jobs/8162a704/tmp/` after the compaction. Agreed with trust (job 563d3f5a): `fleet/roles/<role>`, `fleet/site.yml`, `fleet/inventory/hosts.yml` mine, `fleet/edges.yml` theirs, ufw defaults and alcor port 22 mine. Run `reflection(verb="compact", args={followup:"continue with T8 of docs/redux/drafts/redux-fleet-plan.md"})`.
+
+### T8. Lay out the fleet Ansible tree
+
+Lift the POC's `ansible.cfg` conventions (BatchMode, ControlPersist) into `fleet/ansible.cfg`. The inventory names mizar (local), alcor, mira, capella, lyra, deneb and shogun, with mizar's ssh aliases and `ansible_python_interpreter=/usr/bin/python3` pinned everywhere (the POC found alcor's discovery picks the awm env). Groups: `swarm`, `home_lan`, `stations`, `wsl`. `requirements.yml` pins `ansible.posix` 2.2.2 and `community.general` 13.2.0, as arbutus-infra does. `site.yml` holds one play per role, with host limits. mira is in the inventory for facts only, and no play targets it before the trial week ends (R89 item 1). A Python test checks the inventory against `fleet/edges.yml`.
+
+Gotchas: shogun manages altair (R91), so altair is not in this inventory. The test skips with a clear reason until trust commits `fleet/edges.yml`.
+
+### T9. Write the wake_node role
+
+On mizar and alcor: render `wake.toml` from host_vars, install the boot-resume user unit, add the polkit rule that lets the normal account reboot, and make Wake-on-LAN survive a reboot with a systemd `.link` file that sets `WakeOnLan=magic` on the wired NIC. On capella the role does nothing in WSL, because the Windows NIC setting decides its wake.
+
+Gotchas: both NICs read `Wake-on: g` today, and the BIOS setting on mizar was never read, so a check task reports it and does not fail. MACs sit in host_vars, never in plugin code.
+
+### T10. Write the alcor_ssh_door role with the ufw defaults
+
+On alcor: set ufw defaults (deny incoming, allow outgoing), admit 22/tcp only from the LAN and Tailscale addresses of the nodes that hold an edge into alcor in `fleet/edges.yml` (mizar, capella, lyra), and delete the three blanket 22/tcp rules. Keep the gateway port rules as they are, because the trust lane decides them.
+
+Gotchas: lyra is not on the tailnet yet and capella's LAN address comes from DHCP, so the role asserts that each source address is set and refuses to run otherwise. Add the new rules before deleting the old ones, so a run cut in the middle never locks mizar out. **WARNING** for the later live run: the rule set must admit the controller's own address.
+
+### T11. Write the deneb_station role
+
+Write it from the cloud project's `VMs/tencent/deneb` tree, read only, with no login to deneb.
+
+1. R79: drop `cx`, `reflection` and `keep` from deneb's service set, stop the awm account's Claude daemon unit, remove the `awm-client.conf` key route into altair, and add an nftables rule that drops new outbound tcp/22. All of it is behind `deneb_agents_moved`, false by default, because the Discord seats move to mizar first (users.md R129).
+2. R80: keep `trilium` in the service set.
+3. R81: turn off the login-password push into the Ops note, and render the Ops note body as static portal links from the inventory.
+4. R82: drop `penpot-view`, `penpot-plugins` and `rlm-factorio`, and stop the Penpot compose project.
+5. R83: set `ZOTERO_SYNC_ENABLED=0` and `ZOTERO_STREAM_ENABLED=0`, and check that `awm zotero status` reports a key that cannot write.
+6. R84: nothing yet. It needs the passkey of queue.md R64.
+
+Gotchas: deneb's live service list may differ from the cloud tree, so the role states the wanted set and the play diffs it in check mode. Removing the altair key route touches F6, which the trust lane may also claim, so check with it before T13.
+
+### T12. Test the tree in throwaway containers
+
+Run `ansible-playbook --syntax-check`, then run each of my roles against a throwaway `ubuntu:24.04` container through the `community.docker` connection: check mode first, then a real run inside the container, then a second run that must report no changes. ufw and nftables need `NET_ADMIN` in the container. Systemd units are rendered and checked, not started.
+
+Gotchas: the containers run under the local Docker daemon and touch no host config. Remove every container at the end of the run.
+
+### T13. Commit a checkpoint and journal the phase
+
+Commit T8 to T12. Journal the tree layout and the test results.
+
+### T14. Compact
+
+Handoff: the tree under `fleet/` passes its tests, and the next step is merging trust's roles. Run `reflection(verb="compact", args={followup:"continue with T15 of docs/redux/drafts/redux-fleet-plan.md"})`.
+
+### T15. Merge the trust lane's roles when they land and rerun the tree tests
+
+Merge `feat/redux-trust` into `feat/redux-fleet` locally once trust says its roles are ready. Rerun the syntax check and the inventory test. A merge is local only, by build rule 1.
+
+Gotchas: if trust is not ready by the end of the run, skip this task and name it in the report.
+
+### T16. Report to the coordinator
+
+Send one line to job 8162a704 with `reflection(verb="message")`: what landed, the commit, and the open questions.
+
+### T17. Debrief
+
+Run the `debrief` skill. Then stop the session.
+
+## Still unsure about
+
+- Whether the boot resume of pinned jobs belongs in the wake plugin or in cch. Asked the harness lane. The wake plugin builds it until the answer moves it.
+- R83's Sync now button: Tony's button on the bibliography note is an action, and queue.md R64 says alcor authorizes every action. Does the button wait for the R65 panel, or ship as a plain button now? Sent to the coordinator. T11 writes the timer change only.
+- Whether deneb's config moves from the cloud project's `VMs/tencent/deneb` scripts into `fleet/`, so that those scripts retire when the pass lands. T11 writes the role in `fleet/` and leaves the cloud tree alone.
+
+## Callouts
+
+- alcor's live ufw admits port 22 from the whole LAN and tailnet. The gap entry "firewall admits port 22 from mizar only" in fleet.md § Gap describes the authorized keys, not the firewall. Proposed doc change: "alcor's firewall admits port 22 from the whole LAN and tailnet. Only its authorized keys hold logins to mizar."
+- lyra is not on the tailnet, so the alcor_ssh_door role cannot run until lyra has a fixed source address.
+- R120 is parked by the lanes file. This plan does nothing for it.
