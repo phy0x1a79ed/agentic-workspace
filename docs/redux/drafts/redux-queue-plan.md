@@ -220,3 +220,24 @@ Run the `debrief` skill. Journal the lane's state. Send the coordinator one line
 - `fleet.md` R97: spawn on another peer works by a signed spawn order that the target's relay pulls, so alcor never acts on another node.
 
 **Left for cutover, not tonight.** The `reporting` service, its Kanban sweep, the Ledger and Older notes, and the `operations` verbs go once the new plugins run (gaps Q1 to Q6). The federation board (Q2) belongs to the channels lane's rooms.
+
+## After the review (2026-11-03)
+
+The queue-approver review (`docs/redux-review/queue-approver/README.md`) replaced the three-plugin shape. Its Follow-ups won wherever they contradicted the tasks above.
+
+**Shape now.** One core plugin, `awm/plugins/operations`, serves one tool, `operations`, at major 2. The relay serves the session verbs on every node. On alcor (`AWM_OPERATIONS_HOME`) the same service also runs the store, the approver with its panel origin, the board writer and the door socket. The store and the approver share one process, so the action MAC and `AWM_QUEUE_ACTION_SECRET` are gone. The plugin moves to `awm/services/operations` at the cutover, when `reporting` and `board` go.
+
+**Undone from the overnight run.** The three plugins and their tool names (`queue-store`, `queue`, `approver`). The writer's ETAPI client and token, and host change 7. The panel's New note row and the board's Older button. `pending` in the resume path, now in-flight.
+
+**Open for Tony.**
+
+- The trilium tool's `note_create` takes no `note_id`, so the writer cannot create card notes under the `swc`/`swr` ids. The writer asks for them, and the call fails until the tool takes one.
+- The trilium tool's note verbs are operator only. They refuse a call that crosses an edge, so alcor's writer is refused on deneb today.
+- The approver reads the client address from `AWM_APPROVER_FORWARDED_HEADER` while PROXY protocol is missing.
+- `order_pull` serves any caller that names a node.
+- The Chromium libraries for the browser tests come from conda-forge into `awm-queue`.
+
+**Host changes for the sweep (none applied).** Items 1 to 6 above stand. Item 7 goes. Add these:
+
+- alcor: an sshd on the singleton door port (`fleet.md` R98 item 2) with one `restrict,command="awm-operations door --node <n>"` key per node, and a door user in the group of the door socket.
+- Each node: `AWM_OPERATIONS_DOOR=<user>@alcor:<port>` and `AWM_OPERATIONS_DOOR_KEY`.
