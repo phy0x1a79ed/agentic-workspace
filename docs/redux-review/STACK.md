@@ -45,6 +45,7 @@ Procedure, from dfs-interview § Work the stack:
   - [ ] Which repo is canonical for awm: GitHub (install.md R114, R118) or mizar (routines.md R31)? Today origin is altair.
   - [ ] fleet.md R109: the harness lane proposes item 7, an access-token login and a caller-token door for isolated sessions. Accept it?
 - **trust-users** (2026-11-03): lets go over each of the major systems architecturally to make sure we are still aligned
+  - [ ] A failed session lookup reads as trusted with no scope, in both gateways (redux-harness e93907a0, redux-core 4ef3593b), as a missing record did before. R103 says an agent cannot raise its own level. Fail closed to untrusted instead? Also the Rust gateway has no mode gate yet; it should read mode from the same session_of answer
 - **cleanup-pass** (2026-11-03): when done, we need to schedule a pass to remove code to make source code cohesive and not have vestigial elements, and combining modules/funcitons that are duplicated
 
 ## Parked
