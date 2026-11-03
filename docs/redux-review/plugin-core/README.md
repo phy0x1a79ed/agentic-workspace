@@ -41,9 +41,12 @@ Surveyed read only on mizar, 2026-11-03.
 - 2026-11-03: The standard install contract is the point. Every plugin loads only through its manifest, from a folder or a git repo. Moving the optional plugins out comes second (`install.md` R115 item 4). Tony: "It's more so that we have a standardized install contract so that we can have services be installable from a folder or Git repo."
 - 2026-11-03: kb is a core plugin. It serves papers into the new search as one source and keeps `kb hop` as its one direct call. Only Cognee goes (`install.md` R134, `fleet.md` R136 item 3). Tony: "I accept your recommendations, but let's keep KB as a core service."
 - 2026-11-03: A plugin change runs hot, with no gateway restart (`install.md` R144). Tony: "Now, plugin changes should run hot without gateway restarts."
+- 2026-11-03: A tool name is unique across the fleet and is the tool's permanent id. The plugin's manifest declares it, so a fork renames by editing its manifest. The tool UUIDs and the install config rename go. The gateway looks a name up at each call in one live table (`install.md` R116 item 5, R117 items 2 to 4). Tony: "You know, I'm thinking that names should just be unique" and "We can make the name declared in a file so that forks can rename".
 
 ## Follow-ups for the build
 
 - Give the legacy folders a manifest: auth, board, reporting and search. cch replaces cx and keep, and the harness lane gives reflection its manifest. Then drop the legacy `run.sh` path and its shared-name exception.
 - Make the Python gateway enforce the manifest rules at load, not only in `test_plugin_contract.py`, until the Rust core takes over.
 - Build the install from a git repo (R115, R116 item 2).
+- Replace the tool UUIDs with unique names: drop `uuid` from the manifests, `resolved-tools.json`, `AWM_RESOLVED_TOOLS` and `/hub/uuids`. Name contracts, such as `harness@1`. Drop `rename` from the install config (R117).
+- Load, update and remove a plugin without a gateway restart (R144).
