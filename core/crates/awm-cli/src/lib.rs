@@ -35,6 +35,8 @@ pub enum Command {
     Status,
     /// What the loader loaded, refused and skipped.
     Plugins,
+    /// Load the plugins again and apply the change, with no gateway restart (R144).
+    Reload,
     /// Run a verb of a tool: awm <tool> <verb> [--key value]... [--json '{..}'] [--peer <node>]
     #[command(external_subcommand)]
     Tool(Vec<String>),
@@ -83,8 +85,18 @@ pub async fn run(cli: Cli) -> anyhow::Result<i32> {
         Command::Usage { days } => get_and_print(&format!("/usage?days={days}")).await,
         Command::Status => get_and_print("/status").await,
         Command::Plugins => get_and_print("/hub/plugins").await,
+        Command::Reload => post_and_print("/hub/reload").await,
         Command::Tool(words) => run_tool(&words).await,
     }
+}
+
+async fn post_and_print(path: &str) -> anyhow::Result<i32> {
+    let url = format!("{}{path}", gateway_url());
+    let resp = reqwest::Client::new().post(&url).send().await.map_err(|e| anyhow::anyhow!("awm gateway unreachable at {url}: {e}"))?;
+    let ok = resp.status().is_success();
+    let body: Value = resp.json().await?;
+    println!("{}", serde_json::to_string_pretty(&body)?);
+    Ok(if ok { 0 } else { 1 })
 }
 
 async fn get_and_print(path: &str) -> anyhow::Result<i32> {

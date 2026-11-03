@@ -2,14 +2,14 @@
 
 use std::path::{Path, PathBuf};
 use std::collections::{HashMap, VecDeque};
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use serde_json::json;
 use tokio::task::JoinHandle;
 
-use crate::gateway::{resolved_path, Gateway};
+use crate::gateway::Gateway;
 use crate::loader::ServiceSpec;
 
 const CRASH_WINDOW: Duration = Duration::from_secs(60);
@@ -20,7 +20,8 @@ const GRACE: Duration = Duration::from_secs(8);
 pub struct Supervisor {
     /// Live process group ids, by service name.
     groups: Mutex<HashMap<String, i32>>,
-    tasks: Mutex<Vec<JoinHandle<()>>>,
+    /// Each running service's loop, with the flag that retires it on a plugin change.
+    tasks: Mutex<HashMap<String, (Arc<AtomicBool>, JoinHandle<()>)>>,
     /// Services that crash-looped and stay down.
     failed: Mutex<Vec<String>>,
 }
@@ -33,36 +34,79 @@ impl Supervisor {
     pub fn failed(&self) -> Vec<String> {
         self.failed.lock().unwrap_or_else(|p| p.into_inner()).clone()
     }
-}
 
-pub fn start_all(gw: &Arc<Gateway>) {
-    let specs: Vec<ServiceSpec> = gw
-        .load
-        .read()
-        .unwrap_or_else(|p| p.into_inner())
-        .plugins
-        .iter()
-        .flat_map(|p| p.services.iter().filter(|s| s.enabled).cloned())
-        .filter(|s| {
-            let external = gw.cfg.external(&s.name).is_some();
-            if external {
-                tracing::info!("service {}: external, waiting for it to register", s.name);
-            }
-            !external
-        })
-        .collect();
-    let mut tasks = gw.supervisor.tasks.lock().unwrap_or_else(|p| p.into_inner());
-    for spec in specs {
-        let gw = gw.clone();
-        tasks.push(tokio::spawn(async move { run_service(gw, spec).await }));
+    fn tasks(&self) -> std::sync::MutexGuard<'_, HashMap<String, (Arc<AtomicBool>, JoinHandle<()>)>> {
+        self.tasks.lock().unwrap_or_else(|p| p.into_inner())
     }
 }
 
-async fn run_service(gw: Arc<Gateway>, spec: ServiceSpec) {
+pub fn start_all(gw: &Arc<Gateway>) {
+    let specs: Vec<ServiceSpec> = gw.read_load().plugins.iter().flat_map(|p| p.services.iter().cloned()).collect();
+    for spec in specs {
+        start(gw, spec);
+    }
+}
+
+/// Start one service's loop, unless it is disabled, external or already running.
+pub fn start(gw: &Arc<Gateway>, spec: ServiceSpec) {
+    if !spec.enabled {
+        return;
+    }
+    if gw.cfg.external(&spec.name).is_some() {
+        tracing::info!("service {}: external, waiting for it to register", spec.name);
+        return;
+    }
+    let mut tasks = gw.supervisor.tasks();
+    if tasks.get(&spec.name).is_some_and(|(_, h)| !h.is_finished()) {
+        return;
+    }
+    gw.supervisor.failed.lock().unwrap_or_else(|p| p.into_inner()).retain(|n| n != &spec.name);
+    let retired = Arc::new(AtomicBool::new(false));
+    let name = spec.name.clone();
+    let (gw2, flag) = (gw.clone(), retired.clone());
+    tasks.insert(name, (retired, tokio::spawn(async move { run_service(gw2, spec, flag).await })));
+}
+
+/// Stand some services down for a plugin change: `shutdown`, a grace period, then signals.
+pub async fn stop(gw: &Arc<Gateway>, names: &[String]) {
+    let mut handles = Vec::new();
+    {
+        let mut tasks = gw.supervisor.tasks();
+        for name in names {
+            if let Some((flag, handle)) = tasks.remove(name) {
+                flag.store(true, Ordering::SeqCst);
+                handles.push(handle);
+            }
+            gw.hub.send(name, &json!({"kind": "shutdown"}));
+        }
+    }
+    let live = |gw: &Gateway| names.iter().any(|n| gw.supervisor.groups().contains_key(n));
+    let deadline = Instant::now() + GRACE;
+    while live(gw) && Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    for signal in [libc::SIGTERM, libc::SIGKILL] {
+        for name in names {
+            if let Some(pgid) = gw.supervisor.groups().get(name) {
+                kill_group(*pgid, signal);
+            }
+        }
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while live(gw) && Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+    for h in handles {
+        let _ = tokio::time::timeout(Duration::from_secs(2), h).await;
+    }
+}
+
+async fn run_service(gw: Arc<Gateway>, spec: ServiceSpec, retired: Arc<AtomicBool>) {
     let mut exits: VecDeque<Instant> = VecDeque::new();
     let mut backoff = Duration::from_secs(1);
     let window = Duration::from_secs_f64(gw.cfg.reconnect_window_s);
-    while !gw.stopping() {
+    let done = || gw.stopping() || retired.load(Ordering::SeqCst);
+    while !done() {
         let mut child = match spawn(&gw, &spec) {
             Ok(c) => c,
             Err(e) => {
@@ -83,7 +127,7 @@ async fn run_service(gw: Arc<Gateway>, spec: ServiceSpec) {
                 status = child.wait() => break status,
                 _ = tokio::time::sleep(Duration::from_secs(1)) => {
                     let silent = gw.hub.down_for(&spec.name).is_some_and(|d| d > window);
-                    if !gw.stopping() && !signalled && silent && spawned.elapsed() > window {
+                    if !done() && !signalled && silent && spawned.elapsed() > window {
                         tracing::warn!("service {} off its control connection past {:?}; restarting", spec.name, window);
                         if let Some(pid) = pid { kill_group(pid, libc::SIGTERM); }
                         signalled = true;
@@ -93,7 +137,7 @@ async fn run_service(gw: Arc<Gateway>, spec: ServiceSpec) {
         };
         gw.supervisor.groups().remove(&spec.name);
         tracing::info!("service {} exited: {:?}", spec.name, status);
-        if gw.stopping() {
+        if done() {
             break;
         }
         let now = Instant::now();
@@ -126,7 +170,6 @@ fn spawn(gw: &Gateway, spec: &ServiceSpec) -> std::io::Result<tokio::process::Ch
         .env("AWM_HUB_URL", gw.hub_url())
         .env("AWM_SERVICE_NAME", &spec.name)
         .env("AWM_PLUGIN", &spec.plugin)
-        .env("AWM_RESOLVED_TOOLS", resolved_path(&gw.state, &spec.plugin))
         .env("AWM_NODE_NAME", &gw.node)
         .env("AWM_DIR", &gw.state)
         .env("AWM_HUB_TOKEN_FILE", token)
@@ -187,7 +230,7 @@ pub async fn stop_all(gw: &Arc<Gateway>) {
     for pgid in gw.supervisor.groups().values() {
         kill_group(*pgid, libc::SIGKILL);
     }
-    let tasks: Vec<_> = gw.supervisor.tasks.lock().unwrap_or_else(|p| p.into_inner()).drain(..).collect();
+    let tasks: Vec<_> = gw.supervisor.tasks().drain().map(|(_, (_, h))| h).collect();
     for t in tasks {
         let _ = tokio::time::timeout(Duration::from_secs(2), t).await;
     }

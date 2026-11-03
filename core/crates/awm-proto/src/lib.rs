@@ -8,11 +8,6 @@ pub use manifest::{LegacyServiceToml, Manifest, Tier, Trust, MANIFEST_FILE};
 pub use usage::{Surface, UsageEvent};
 pub use wire::{CallContext, Caller, Lane};
 
-/// The UUID a tool gets before its plugin commits one: `uuid5(NAMESPACE_URL, "awm:tool:<name>")`.
-pub fn legacy_tool_uuid(tool: &str) -> uuid::Uuid {
-    uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_URL, format!("awm:tool:{tool}").as_bytes())
-}
-
 /// A tool name is letters, digits and hyphens, starting with a letter or digit.
 pub fn valid_tool_name(name: &str) -> bool {
     let mut chars = name.chars();
@@ -23,15 +18,6 @@ pub fn valid_tool_name(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn legacy_uuid_matches_the_plugins_lane() {
-        // redux-plugins committed this value for virtmic.
-        assert_eq!(
-            legacy_tool_uuid("virtmic").to_string(),
-            "947d5088-6717-5c6e-b445-dde00eb50c04"
-        );
-    }
 
     #[test]
     fn tool_names() {

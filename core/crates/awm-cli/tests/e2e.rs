@@ -9,8 +9,6 @@ use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 
-const FAKE_UUID: &str = "6f1f0a52-6c1e-4b8e-9d0e-0b1d2c3e4f50";
-const CALLER_UUID: &str = "1a2b3c4d-5e6f-4a1b-8c2d-3e4f5a6b7c8d";
 
 fn awm_bin() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_awm"))
@@ -41,6 +39,7 @@ fn write(path: &Path, text: &str) {
 struct Node {
     _tmp: tempfile::TempDir,
     state: PathBuf,
+    third: PathBuf,
     journal: bool,
 }
 
@@ -53,8 +52,7 @@ fn lay_out() -> Node {
 
     write(
         &core.join("fake/awm-plugin.toml"),
-        &format!(
-            r#"[plugin]
+        r#"[plugin]
 name = "fake"
 
 [[service]]
@@ -62,22 +60,19 @@ name = "fake"
 
 [[tool]]
 name = "fake"
-uuid = "{FAKE_UUID}"
 service = "fake"
 
 [[page]]
 name = "ui"
 dir = "ui"
-"#
-        ),
+"#,
     );
     write(&core.join("fake/run.sh"), &format!("exec '{}'\n", fake.display()));
     write(&core.join("fake/ui/index.html"), "<html><body>fake-ui-marker</body></html>\n");
 
     write(
         &third.join("caller/awm-plugin.toml"),
-        &format!(
-            r#"[plugin]
+        r#"[plugin]
 name = "caller"
 trust = "third-party"
 
@@ -86,14 +81,12 @@ name = "caller"
 
 [[tool]]
 name = "caller"
-uuid = "{CALLER_UUID}"
 service = "caller"
 
 [[needs.tool]]
-uuid = "{FAKE_UUID}"
+name = "fake"
 major = 1
-"#
-        ),
+"#,
     );
     write(&third.join("caller/run.sh"), &format!("exec '{}'\n", fake.display()));
 
@@ -128,7 +121,7 @@ major = 1
             state.join("ext.token").display()
         ),
     );
-    Node { _tmp: tmp, state, journal: python.is_some() }
+    Node { _tmp: tmp, state, third, journal: python.is_some() }
 }
 
 struct Gateway {
@@ -334,12 +327,10 @@ fn gateway_end_to_end() {
     let who: Value = serde_json::from_str(reply["result"].as_str().unwrap()).unwrap();
     assert_eq!(who["trust"], "trusted", "a session with no entry is trusted: {who}");
 
-    // A plugin calls the tool it needs by the name the gateway resolved for its UUID.
-    let resolved: Value = serde_json::from_str(
-        &std::fs::read_to_string(node.state.join("plugins/caller/resolved-tools.json")).expect("caller's resolved-tools.json"),
-    )
-    .unwrap();
-    assert_eq!(resolved["tools"][FAKE_UUID]["name"], "fake");
+    // A plugin calls the tool it needs by its name, looked up at call time.
+    let owner: Value = http().get(format!("{url}/hub/tool/fake")).send().unwrap().json().unwrap();
+    assert_eq!((owner["plugin"].as_str(), owner["peer"].as_str()), (Some("fake"), None), "{owner}");
+    assert_eq!(http().get(format!("{url}/hub/tool/nobody")).send().unwrap().status().as_u16(), 404);
     let (code, out, errout) = cli(&url, &["caller", "call_needed", "--verb", "echo", "--args", r#"{"text":"via caller"}"#]);
     assert!(code == 0 && out.contains("via caller"), "{out} {errout}");
 
@@ -377,9 +368,42 @@ fn gateway_end_to_end() {
     let _ = ext.kill();
     let _ = ext.wait();
     assert!(code == 0 && out.contains("from outside"), "{}", fail(&format!("external echo: {out} {errout}")));
-    let resolved: Value = http().get(format!("{url}/hub/plugins/caller/resolved")).send().unwrap().json().unwrap();
-    assert_eq!(resolved["tools"][FAKE_UUID]["name"], "fake");
-    assert_eq!(http().get(format!("{url}/hub/plugins/..%2Fx/resolved")).send().unwrap().status().as_u16(), 404);
+
+    // A plugin change runs hot (R144): install, rename, remove, with no gateway restart.
+    // The plugins the change does not touch keep their processes.
+    let fake_pid = |url: &str| -> i64 {
+        let (_, out, _) = cli(url, &["awm", "services"]);
+        let list: Value = serde_json::from_str(&out).unwrap();
+        list.as_array().unwrap().iter().find(|s| s["name"] == "fake").and_then(|s| s["pid"].as_i64()).unwrap()
+    };
+    let before = fake_pid(&url);
+    let reload = || -> Value {
+        let (code, out, errout) = cli(&url, &["reload"]);
+        assert_eq!(code, 0, "awm reload: {out} {errout}");
+        serde_json::from_str(&out).unwrap()
+    };
+    let hot = node.third.join("hot");
+    write(&hot.join("awm-plugin.toml"), "[plugin]\nname = \"hot\"\n\n[[service]]\nname = \"hot\"\n\n[[tool]]\nname = \"hot\"\n");
+    write(&hot.join("run.sh"), &format!("export FAKE_TOOL=hot\nexec '{}'\n", fake_bin().display()));
+    let r = reload();
+    assert_eq!(r["added"], json!(["hot"]), "{r}");
+    let (code, out, errout) = cli(&url, &["hot", "echo", "--text", "installed hot"]);
+    assert!(code == 0 && out.contains("installed hot"), "{}", fail(&format!("hot echo: {out} {errout}")));
+    write(&hot.join("awm-plugin.toml"), "[plugin]\nname = \"hot\"\n\n[[service]]\nname = \"hot\"\n\n[[tool]]\nname = \"hot-two\"\n");
+    write(&hot.join("run.sh"), &format!("export FAKE_TOOL=hot-two\nexec '{}'\n", fake_bin().display()));
+    let r = reload();
+    assert_eq!(r["updated"], json!(["hot"]), "{r}");
+    let (code, out, _) = cli(&url, &["hot-two", "echo", "--text", "renamed hot"]);
+    assert!(code == 0 && out.contains("renamed hot"), "{out}");
+    let (code, _, _) = cli(&url, &["hot", "echo", "--text", "x"]);
+    assert_ne!(code, 0, "the old name must go with the rename");
+    std::fs::remove_dir_all(&hot).unwrap();
+    let r = reload();
+    assert_eq!(r["removed"], json!(["hot"]), "{r}");
+    assert_eq!(http().get(format!("{url}/hub/tool/hot-two")).send().unwrap().status().as_u16(), 404);
+    let r = reload();
+    assert_eq!((r["added"].as_array().map(Vec::len), r["updated"].as_array().map(Vec::len)), (Some(0), Some(0)), "{r}");
+    assert_eq!(fake_pid(&url), before, "a reload restarted a plugin it did not change");
 
     // Usage per plugin and surface, not MCP calls alone (R132).
     let (code, out, _) = cli(&url, &["usage", "--days", "1"]);
@@ -438,10 +462,10 @@ fn lay_out_isolated() -> Node {
     let (core, state, ws) = (base.join("core"), base.join("state"), base.join("ws"));
     std::fs::create_dir_all(&ws).unwrap();
     let fake = fake_bin();
-    for (name, tool, uuid) in [("fake", "fake", FAKE_UUID), ("cch", "harness-cc", CALLER_UUID)] {
+    for (name, tool) in [("fake", "fake"), ("cch", "harness-cc")] {
         write(
             &core.join(format!("{name}/awm-plugin.toml")),
-            &format!("[plugin]\nname = \"{name}\"\n\n[[service]]\nname = \"{name}\"\n\n[[tool]]\nname = \"{tool}\"\nuuid = \"{uuid}\"\nservice = \"{name}\"\n"),
+            &format!("[plugin]\nname = \"{name}\"\n\n[[service]]\nname = \"{name}\"\n\n[[tool]]\nname = \"{tool}\"\nservice = \"{name}\"\n{}", if name == "cch" { "implements = [\"harness@1\"]\n" } else { "" }),
         );
     }
     write(&core.join("fake/run.sh"), &format!("exec '{}'\n", fake.display()));
@@ -456,7 +480,7 @@ fn lay_out_isolated() -> Node {
             core.display()
         ),
     );
-    Node { _tmp: tmp, state, journal: false }
+    Node { _tmp: tmp, third: base.join("third"), state, journal: false }
 }
 
 /// One JSON-RPC message to `<base>/mcp`: (status, body).

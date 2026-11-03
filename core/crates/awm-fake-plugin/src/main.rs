@@ -3,7 +3,7 @@
 //! It publishes, under the tool `FAKE_TOOL` (default: the service name):
 //! `echo(text)`, `add(a, b)`, `whoami()` (returns the `caller` frame the gateway stamped),
 //! `run_job(job)` (reports a background run), and `call_needed(verb, args)` (calls the first
-//! tool in `AWM_RESOLVED_TOOLS` through `/invoke`). As a fake harness plugin it also answers
+//! `[[needs.tool]]` of its own `awm-plugin.toml` by name through `/invoke`). As a fake harness plugin it also answers
 //! `caller_of_token(token)` from the JSON map in `FAKE_TOKENS`, and `scoped(project?, scope?,
 //! to_scope?)` returns the args it got.
 
@@ -95,13 +95,15 @@ async fn main() -> anyhow::Result<()> {
 }
 
 async fn call_needed(http: &reqwest::Client, hub: &str, plugin: &str, args: &Value) -> Result<Value, String> {
-    let path = std::env::var("AWM_RESOLVED_TOOLS").map_err(|e| e.to_string())?;
-    let resolved: Value = serde_json::from_str(&std::fs::read_to_string(&path).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
-    let tool = resolved["tools"]
-        .as_object()
-        .and_then(|m| m.values().next())
-        .and_then(|t| t["name"].as_str())
-        .ok_or("no needed tool resolved")?
+    let text = std::fs::read_to_string("awm-plugin.toml").map_err(|e| format!("awm-plugin.toml: {e}"))?;
+    let manifest: toml::Value = toml::from_str(&text).map_err(|e| e.to_string())?;
+    let tool = manifest
+        .get("needs")
+        .and_then(|n| n.get("tool"))
+        .and_then(|t| t.get(0))
+        .and_then(|t| t.get("name"))
+        .and_then(|n| n.as_str())
+        .ok_or("the manifest needs no tool")?
         .to_string();
     let body = json!({"name": tool, "args": {"verb": args["verb"], "args": args.get("args").cloned().unwrap_or(json!({}))}});
     let resp = http

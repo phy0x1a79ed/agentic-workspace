@@ -3,27 +3,29 @@
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, OnceLock, RwLock};
+use std::sync::{Arc, OnceLock, RwLock, Weak};
 use std::time::{Duration, Instant};
 
-use awm_proto::{CallContext, Surface, Tier, UsageEvent};
+use awm_proto::{CallContext, Lane, Surface, Tier, UsageEvent};
 use serde_json::{json, Value};
 
 use crate::config::Config;
-use crate::hub::{CallError, Hub, ToolBinding, Verb};
+use crate::hub::{CallError, Hub, Verb};
 use crate::isolated::{Holder, TokenCache};
-use crate::loader::{self, LoadResult, RemoteTool};
+use crate::loader::{self, LoadResult, Owner, RemoteTool};
 use crate::peer::{HttpPeers, PeerError, PeerTransport};
 use crate::supervisor::Supervisor;
 use crate::usage::UsageStore;
 
 pub const DESCRIBE: &str = "describe";
 pub const NATIVE_TOOL: &str = "awm";
-const NATIVE_VERBS: [(&str, &str); 4] = [
+const NATIVE_VERBS: [(&str, &str); 6] = [
     ("status", "The gateway's status: node, uptime, plugins and services."),
     ("plugins", "Every plugin the loader read: loaded, refused with the reason, and skipped."),
     ("services", "Every service the hub knows, with its status."),
     ("usage", "Usage per plugin and surface over the last `days` days (default 60)."),
+    ("table", "The live name table: each tool's owner plugin and node, and each contract's providers."),
+    ("reload", "Read the plugin roots and the install config again. Starts added plugins, restarts changed ones and stops removed ones, with no gateway restart."),
 ];
 const DEFAULT_CALL_TIMEOUT_S: f64 = 120.0;
 
@@ -40,6 +42,10 @@ pub struct Gateway {
     pub started: Instant,
     pub supervisor: Supervisor,
     pub tokens: TokenCache,
+    /// The tools each peer serves, refreshed when a peer says its table changed.
+    pub peer_tools: RwLock<BTreeMap<String, Vec<RemoteTool>>>,
+    reloading: tokio::sync::Mutex<()>,
+    me: Weak<Gateway>,
 }
 
 /// An error with the HTTP status `/invoke` answers it with.
@@ -96,7 +102,7 @@ pub struct ToolEntry {
 }
 
 impl Gateway {
-    /// Read the install config, load the plugins and write each plugin's resolved tools.
+    /// Read the install config and load the plugins.
     pub async fn open(state: &Path) -> anyhow::Result<Arc<Self>> {
         let cfg = Config::load(state)?;
         let urls = cfg.peer.iter().map(|p| (p.name.clone(), p.url.clone())).collect();
@@ -115,8 +121,7 @@ impl Gateway {
         for w in &load.warnings {
             tracing::warn!("{w}");
         }
-        write_resolved(&state, &load)?;
-        Ok(Arc::new(Self {
+        Ok(Arc::new_cyclic(|me| Self {
             usage: UsageStore::new(state.join("usage")),
             state,
             cfg,
@@ -129,6 +134,9 @@ impl Gateway {
             started: Instant::now(),
             supervisor: Supervisor::default(),
             tokens: TokenCache::default(),
+            peer_tools: RwLock::new(peer_tools),
+            reloading: tokio::sync::Mutex::new(()),
+            me: me.clone(),
         }))
     }
 
@@ -154,17 +162,18 @@ impl Gateway {
             .unwrap_or_else(|| service.to_string())
     }
 
-    pub fn bindings(&self, service: &str) -> Vec<ToolBinding> {
+    /// The tools a service may publish verbs under.
+    pub fn bindings(&self, service: &str) -> Vec<String> {
         let load = self.read_load();
-        let mut out: Vec<ToolBinding> = load
+        let mut out: Vec<String> = load
             .plugins
             .iter()
             .flat_map(|p| p.tools.iter())
             .filter(|t| t.services.iter().any(|s| s == service))
-            .map(|t| ToolBinding { declared: t.declared.clone(), public: t.name.clone() })
+            .map(|t| t.name.clone())
             .collect();
         if out.is_empty() {
-            out.push(ToolBinding { declared: service.to_string(), public: service.to_string() });
+            out.push(service.to_string());
         }
         out
     }
@@ -184,26 +193,136 @@ impl Gateway {
         serde_json::to_value(&*self.read_load()).unwrap_or(Value::Null)
     }
 
-    /// The tools this node serves, for a peer's UUID resolution.
-    pub fn local_uuids(&self) -> Vec<RemoteTool> {
+    /// The tools this node's plugins serve, as `/hub/table` gives them to a peer.
+    pub fn local_table(&self) -> Vec<RemoteTool> {
         self.read_load()
             .plugins
             .iter()
             .flat_map(|p| p.tools.iter())
             .map(|t| RemoteTool {
-                uuid: t.uuid,
                 name: t.name.clone(),
                 major: t.major,
                 plugin: t.plugin.clone(),
-                implements: t.implements.iter().map(|(u, m)| format!("{u}@{m}")).collect(),
+                implements: t.implements.iter().map(|(c, m)| format!("{c}@{m}")).collect(),
             })
             .collect()
     }
 
-    pub fn resolve_uuid(&self, uuid: &uuid::Uuid) -> Option<Value> {
-        let load = self.read_load();
-        let t = load.plugins.iter().flat_map(|p| p.tools.iter()).find(|t| &t.uuid == uuid)?;
-        Some(json!({"name": t.name, "major": t.major, "plugin": t.plugin, "peer": null}))
+    fn name_table(&self) -> Vec<loader::Provider> {
+        let peers = self.peer_tools.read().unwrap_or_else(|p| p.into_inner());
+        loader::table(&self.read_load().plugins, &peers)
+    }
+
+    /// Who owns a tool name right now (R117 item 3).
+    pub fn owner(&self, name: &str) -> Option<Owner> {
+        loader::owner(&self.name_table(), name).cloned()
+    }
+
+    /// Every provider of a contract at a major right now (R117 item 4).
+    pub fn providers(&self, contract: &str, major: u32) -> Vec<Owner> {
+        loader::providers(&self.name_table(), contract, major)
+    }
+
+    /// The live table as `awm table` shows it.
+    pub fn table_view(&self) -> Value {
+        let index = self.name_table();
+        let mut contracts: BTreeMap<String, Vec<Value>> = BTreeMap::new();
+        for p in &index {
+            for (c, m) in &p.implements {
+                contracts.entry(format!("{c}@{m}")).or_default().push(json!(p.owner));
+            }
+        }
+        json!({"tools": index.iter().map(|p| json!(p.owner)).collect::<Vec<_>>(), "contracts": contracts})
+    }
+
+    /// Ask one peer for its table again, after it said the table changed.
+    pub async fn refresh_peer(&self, peer: &str) -> bool {
+        if !self.peers.peers().iter().any(|p| p == peer) {
+            return false;
+        }
+        match self.peers.tools(peer).await.map(serde_json::from_value::<Vec<RemoteTool>>) {
+            Ok(Ok(tools)) => {
+                self.peer_tools.write().unwrap_or_else(|p| p.into_inner()).insert(peer.to_string(), tools);
+                let cache = self.peer_tools.read().unwrap_or_else(|p| p.into_inner()).clone();
+                if let Ok(text) = serde_json::to_string_pretty(&cache) {
+                    let _ = std::fs::write(self.state.join("peer-tools.json"), text);
+                }
+                true
+            }
+            Ok(Err(e)) => {
+                tracing::warn!("peer {peer}: bad tool list: {e}");
+                false
+            }
+            Err(e) => {
+                tracing::warn!("peer {peer}: tool list: {e}");
+                false
+            }
+        }
+    }
+
+    /// Load the plugins again and apply the difference, with no gateway restart (R144).
+    /// Only a plugin that was added, removed or changed has its services started or stopped.
+    pub async fn reload(&self) -> Result<Value, ApiError> {
+        let Some(gw) = self.me.upgrade() else { return Err(ApiError::new(503, "the gateway is stopping")) };
+        if self.stopping() {
+            return Err(ApiError::new(503, "the gateway is stopping"));
+        }
+        let _one_at_a_time = self.reloading.lock().await;
+        let cfg = Config::load(&self.state).map_err(|e| ApiError::new(400, e.to_string()))?;
+        let peers = self.peer_tools.read().unwrap_or_else(|p| p.into_inner()).clone();
+        let new = load_plugins(&self.state, &cfg, &peers);
+        let old: BTreeMap<String, loader::Plugin> =
+            self.read_load().plugins.iter().map(|p| (p.name.clone(), p.clone())).collect();
+        let fresh: BTreeMap<String, &loader::Plugin> = new.plugins.iter().map(|p| (p.name.clone(), p)).collect();
+
+        let (mut added, mut updated, mut removed) = (Vec::new(), Vec::new(), Vec::new());
+        for (name, p) in &fresh {
+            match old.get(name) {
+                None => added.push(name.clone()),
+                Some(o) if o.stamp != p.stamp || o.services != p.services || o.dir != p.dir => updated.push(name.clone()),
+                Some(_) => {}
+            }
+        }
+        removed.extend(old.keys().filter(|n| !fresh.contains_key(*n)).cloned());
+
+        let going: Vec<String> = removed
+            .iter()
+            .chain(updated.iter())
+            .flat_map(|n| old[n].services.iter().map(|s| s.name.clone()))
+            .collect();
+        crate::supervisor::stop(&gw, &going).await;
+        for s in &going {
+            if self.cfg.external(s).is_none() {
+                self.hub.forget(s);
+            }
+        }
+        let starting: Vec<loader::ServiceSpec> = added
+            .iter()
+            .chain(updated.iter())
+            .flat_map(|n| fresh[n].services.iter().cloned())
+            .collect();
+        for r in &new.refused {
+            tracing::error!("plugin {} refused: {}", r.plugin, r.reason);
+        }
+        let refused: Vec<Value> = new.refused.iter().map(|r| json!({"plugin": r.plugin, "reason": r.reason})).collect();
+        *self.load.write().unwrap_or_else(|p| p.into_inner()) = new;
+        self.hub.changed.notify_waiters();
+        for spec in starting {
+            crate::supervisor::start(&gw, spec);
+        }
+        if !(added.is_empty() && updated.is_empty() && removed.is_empty()) {
+            tracing::info!("reload: added {added:?}, updated {updated:?}, removed {removed:?}");
+            let peers = self.peers.clone();
+            let node = self.node.clone();
+            tokio::spawn(async move {
+                for peer in peers.peers() {
+                    if let Err(e) = peers.table_changed(&peer, &node).await {
+                        tracing::warn!("peer {peer}: table change not delivered: {e}");
+                    }
+                }
+            });
+        }
+        Ok(json!({"added": added, "updated": updated, "removed": removed, "refused": refused}))
     }
 
     /// Every public tool: declared by a loaded plugin, or published by a service the loader
@@ -367,8 +486,15 @@ impl Gateway {
                "how": "Call <tool>(verb=\"describe\") for a tool's params; add peer=<node> to run a verb on another node."})
     }
 
-    fn native(&self, verb: &str, args: &Value) -> Result<Value, ApiError> {
+    async fn native(&self, verb: &str, args: &Value, ctx: &CallContext) -> Result<Value, ApiError> {
         match verb {
+            "table" => Ok(self.table_view()),
+            "reload" => {
+                if ctx.caller.lane != Lane::Local || ctx.caller.trust.as_deref().is_some_and(|t| t != crate::caller::DEFAULT_TRUST) {
+                    return Err(ApiError::new(403, "reload takes a trusted caller on this node"));
+                }
+                self.reload().await
+            }
             "status" => Ok(self.status()),
             "plugins" => Ok(self.load_snapshot()),
             "services" => Ok(json!(self.hub.services())),
@@ -572,7 +698,7 @@ impl Gateway {
             return Ok(render(&answer));
         }
         if tool == NATIVE_TOOL && NATIVE_VERBS.iter().any(|(v, _)| *v == verb) {
-            return self.native(verb, &inner).map(|v| render(&v));
+            return self.native(verb, &inner, ctx).await.map(|v| render(&v));
         }
         let (service, found) = self.wait_for_verb(tool, verb).await?;
         check_arguments(tool, verb, &found.spec, &inner)?;
@@ -718,7 +844,6 @@ fn load_plugins(state: &Path, cfg: &Config, peer_tools: &BTreeMap<String, Vec<Re
     let wants = |p: &str| cfg.wants(p);
     loader::load(&loader::LoadInput {
         wants: &wants,
-        rename: &cfg.rename,
         core_roots: &cfg.core_roots,
         plugin_roots: &cfg.plugin_roots,
         page_roots: &cfg.page_roots,
@@ -727,17 +852,4 @@ fn load_plugins(state: &Path, cfg: &Config, peer_tools: &BTreeMap<String, Vec<Re
         enabled: &enabled,
         peer_tools,
     })
-}
-
-pub fn resolved_path(state: &Path, plugin: &str) -> PathBuf {
-    state.join("plugins").join(plugin).join("resolved-tools.json")
-}
-
-fn write_resolved(state: &Path, load: &LoadResult) -> anyhow::Result<()> {
-    for p in &load.plugins {
-        let path = resolved_path(state, &p.name);
-        std::fs::create_dir_all(path.parent().expect("has a parent"))?;
-        std::fs::write(&path, serde_json::to_string_pretty(&p.resolved)?)?;
-    }
-    Ok(())
 }

@@ -34,8 +34,14 @@ pub trait PeerTransport: Send + Sync {
         ctx: &'a CallContext,
     ) -> BoxFuture<'a, Result<String, PeerError>>;
 
-    /// The tools `peer` serves, for UUID resolution at load time.
+    /// The tools `peer` serves: its `/hub/table`, for this node's name table.
     fn tools<'a>(&'a self, peer: &'a str) -> BoxFuture<'a, Result<Value, PeerError>>;
+
+    /// Tell `peer` that this node's table changed, so it reads `tools` again (R117 item 3).
+    /// A transport that cannot deliver it leaves the peer on its cached table until it restarts.
+    fn table_changed<'a>(&'a self, _peer: &'a str, _node: &'a str) -> BoxFuture<'a, Result<(), PeerError>> {
+        Box::pin(async { Ok(()) })
+    }
 }
 
 pub struct HttpPeers {
@@ -97,7 +103,7 @@ impl PeerTransport for HttpPeers {
 
     fn tools<'a>(&'a self, peer: &'a str) -> BoxFuture<'a, Result<Value, PeerError>> {
         Box::pin(async move {
-            let url = format!("{}/hub/uuids", self.url(peer)?);
+            let url = format!("{}/hub/table", self.url(peer)?);
             let resp = self
                 .client
                 .get(&url)
@@ -108,6 +114,25 @@ impl PeerTransport for HttpPeers {
             resp.json()
                 .await
                 .map_err(|e| PeerError::Unreachable { peer: peer.into(), reason: e.to_string() })
+        })
+    }
+
+    fn table_changed<'a>(&'a self, peer: &'a str, node: &'a str) -> BoxFuture<'a, Result<(), PeerError>> {
+        Box::pin(async move {
+            let url = format!("{}/hub/table/changed", self.url(peer)?);
+            let resp = self
+                .client
+                .post(&url)
+                .timeout(std::time::Duration::from_secs(5))
+                .json(&serde_json::json!({"node": node}))
+                .send()
+                .await
+                .map_err(|e| PeerError::Unreachable { peer: peer.into(), reason: e.to_string() })?;
+            let status = resp.status().as_u16();
+            if !(200..300).contains(&status) {
+                return Err(PeerError::Refused { peer: peer.into(), status, body: resp.text().await.unwrap_or_default() });
+            }
+            Ok(())
         })
     }
 }

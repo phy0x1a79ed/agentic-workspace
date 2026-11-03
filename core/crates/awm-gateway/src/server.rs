@@ -36,10 +36,12 @@ pub fn router(gw: Arc<Gateway>) -> Router {
         .route("/usage", get(usage_get).post(usage_post))
         .route("/hub/service/register", post(register))
         .route("/hub/service/control/{id}", get(control))
-        .route("/hub/uuids", get(uuids))
-        .route("/hub/resolve/{uuid}", get(resolve))
+        .route("/hub/table", get(table))
+        .route("/hub/table/changed", post(table_changed))
+        .route("/hub/tool/{name}", get(tool_owner))
+        .route("/hub/contract/{contract}", get(contract_providers))
         .route("/hub/plugins", get(plugins))
-        .route("/hub/plugins/{plugin}/resolved", get(resolved_tools))
+        .route("/hub/reload", post(reload))
         .route("/svc/{service}/fn/{function}", post(svc_fn))
         .route("/p/{plugin}/{page}", get(page_root))
         .route("/p/{plugin}/{page}/", get(page_root))
@@ -295,27 +297,46 @@ async fn control_socket(gw: Arc<Gateway>, id: String, socket: WebSocket) {
     tracing::info!("control WS closed for {name}");
 }
 
-async fn uuids(State(gw): Gw) -> Json<Value> {
-    Json(json!(gw.local_uuids()))
+/// This node's tools, for a peer's name table.
+async fn table(State(gw): Gw) -> Json<Value> {
+    Json(json!(gw.local_table()))
 }
 
-async fn resolve(State(gw): Gw, Path(uuid): Path<String>) -> Result<Json<Value>, ApiError> {
-    let uuid: uuid::Uuid = uuid.parse().map_err(|_| ApiError::new(400, "not a uuid"))?;
-    gw.resolve_uuid(&uuid).map(Json).ok_or_else(|| ApiError::new(404, format!("no plugin serves tool {uuid}")))
+#[derive(Deserialize)]
+struct TableChanged {
+    node: String,
+}
+
+/// A peer says its table changed: read it again, then reload, since a need may now resolve.
+async fn table_changed(State(gw): Gw, h: HeaderMap, Json(body): Json<TableChanged>) -> Result<Json<Value>, ApiError> {
+    refuse_token(&h)?;
+    if !gw.refresh_peer(&body.node).await {
+        return Err(ApiError::new(404, format!("{:?} is not a peer of this node", body.node)));
+    }
+    gw.reload().await.map(Json)
+}
+
+/// The owner of a tool name, looked up now.
+async fn tool_owner(State(gw): Gw, Path(name): Path<String>) -> Result<Json<Value>, ApiError> {
+    gw.owner(&name).map(|o| Json(json!(o))).ok_or_else(|| ApiError::new(404, format!("no plugin serves tool {name:?}")))
+}
+
+/// Every provider of `<contract>@<major>`, looked up now. A bare name means major 1.
+async fn contract_providers(State(gw): Gw, Path(contract): Path<String>) -> Result<Json<Value>, ApiError> {
+    let (name, major) = match contract.split_once('@') {
+        Some((n, m)) => (n.to_string(), m.parse().map_err(|_| ApiError::new(400, format!("bad major in {contract:?}")))?),
+        None => (contract.clone(), 1),
+    };
+    Ok(Json(json!(gw.providers(&name, major))))
 }
 
 async fn plugins(State(gw): Gw) -> Json<Value> {
     Json(gw.load_snapshot())
 }
 
-/// A plugin's resolved tools, for a service that cannot read `AWM_RESOLVED_TOOLS` in the gateway's state.
-async fn resolved_tools(State(gw): Gw, Path(plugin): Path<String>) -> Result<Json<Value>, ApiError> {
-    if !gw.read_load().plugins.iter().any(|p| p.name == plugin) {
-        return Err(ApiError::new(404, format!("no plugin {plugin:?} loaded")));
-    }
-    let text = std::fs::read_to_string(crate::gateway::resolved_path(&gw.state, &plugin))
-        .map_err(|_| ApiError::new(404, format!("no plugin {plugin:?} loaded")))?;
-    Ok(Json(serde_json::from_str(&text).map_err(|e| ApiError::new(500, e.to_string()))?))
+async fn reload(State(gw): Gw, h: HeaderMap) -> Result<Json<Value>, ApiError> {
+    refuse_token(&h)?;
+    gw.reload().await.map(Json)
 }
 
 async fn svc_fn(

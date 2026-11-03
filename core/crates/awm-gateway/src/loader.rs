@@ -7,9 +7,8 @@ use awm_proto::manifest::{
     parse_implements, LegacyServiceToml, Manifest, NeedTool, Needs, PluginMeta, ServiceDecl, ToolDecl,
     LEGACY_RUN, LEGACY_SERVICE_TOML,
 };
-use awm_proto::{legacy_tool_uuid, valid_tool_name, Tier, Trust, MANIFEST_FILE};
+use awm_proto::{valid_tool_name, Tier, Trust, MANIFEST_FILE};
 use serde::Serialize;
-use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Plugin {
@@ -24,10 +23,12 @@ pub struct Plugin {
     pub tools: Vec<ToolSpec>,
     pub pages: Vec<PageSpec>,
     pub needs: Needs,
-    pub resolved: Resolved,
+    /// A digest of the folder's files, names, sizes and mtimes. A reload restarts a plugin
+    /// whose stamp moved (R144).
+    pub stamp: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct ServiceSpec {
     pub name: String,
     pub plugin: String,
@@ -39,15 +40,12 @@ pub struct ServiceSpec {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ToolSpec {
-    /// The public name, after any rename in the install config.
+    /// Unique across the fleet. Its services publish functions as `<name>_<verb>`.
     pub name: String,
-    /// The name the plugin declares. Its service publishes functions as `<declared>_<verb>`.
-    pub declared: String,
-    pub uuid: Uuid,
     pub major: u32,
     pub services: Vec<String>,
     pub tier: Tier,
-    pub implements: Vec<(Uuid, u32)>,
+    pub implements: Vec<(String, u32)>,
     pub plugin: String,
 }
 
@@ -58,25 +56,18 @@ pub struct PageSpec {
     pub entry: String,
 }
 
+/// One row of the name table: the plugin that owns a tool, and the node it runs on.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct ResolvedTool {
+pub struct Owner {
     pub name: String,
     pub major: u32,
     pub plugin: String,
     pub peer: Option<String>,
 }
 
-/// What `AWM_RESOLVED_TOOLS` holds for one plugin.
-#[derive(Debug, Clone, Default, Serialize)]
-pub struct Resolved {
-    pub tools: BTreeMap<Uuid, ResolvedTool>,
-    pub contracts: BTreeMap<Uuid, Vec<ResolvedTool>>,
-}
-
-/// A tool another node serves, as its `/hub/uuids` reports it.
+/// A tool another node serves, as its `/hub/table` reports it.
 #[derive(Debug, Clone, Serialize, serde::Deserialize)]
 pub struct RemoteTool {
-    pub uuid: Uuid,
     pub name: String,
     pub major: u32,
     pub plugin: String,
@@ -105,8 +96,6 @@ pub struct LoadResult {
 pub struct LoadInput<'a> {
     /// Whether the install config loads a plugin of this name.
     pub wants: &'a dyn Fn(&str) -> bool,
-    /// Tool renames from the install config: declared name to public name.
-    pub rename: &'a BTreeMap<String, String>,
     pub core_roots: &'a [PathBuf],
     pub plugin_roots: &'a [PathBuf],
     pub page_roots: &'a [PathBuf],
@@ -161,9 +150,8 @@ pub fn load(input: &LoadInput) -> LoadResult {
     }
 
     let reserved: BTreeSet<&str> = input.reserved.iter().map(String::as_str).collect();
-    // tool name or uuid → (owner plugin, owner is legacy)
+    // tool name → (owner plugin, owner is legacy)
     let mut tool_names: HashMap<String, (String, bool)> = HashMap::new();
-    let mut tool_uuids: HashMap<Uuid, (String, bool)> = HashMap::new();
     let mut service_names: HashMap<String, String> = HashMap::new();
     let mut plugins = Vec::new();
 
@@ -183,13 +171,12 @@ pub fn load(input: &LoadInput) -> LoadResult {
                 continue;
             }
         };
-        if let Err(reason) = claim(&plugin, &reserved, &tool_names, &tool_uuids, &service_names) {
+        if let Err(reason) = claim(&plugin, &reserved, &tool_names, &service_names) {
             out.refused.push(Refusal { plugin: name, dir: cand.dir, reason });
             continue;
         }
         for t in &plugin.tools {
             tool_names.entry(t.name.clone()).or_insert((name.clone(), plugin.legacy));
-            tool_uuids.entry(t.uuid).or_insert((name.clone(), plugin.legacy));
         }
         for s in &plugin.services {
             service_names.insert(s.name.clone(), name.clone());
@@ -199,12 +186,11 @@ pub fn load(input: &LoadInput) -> LoadResult {
 
     // A refused provider can strand its dependents, so resolve to a fixed point.
     loop {
-        let index = tool_index(&plugins, input.peer_tools);
+        let index = table(&plugins, input.peer_tools);
         let mut refused_now = Vec::new();
-        for (i, p) in plugins.iter_mut().enumerate() {
-            match resolve(&p.needs, &index) {
-                Ok(resolved) => p.resolved = resolved,
-                Err(reason) => refused_now.push((i, reason)),
+        for (i, p) in plugins.iter().enumerate() {
+            if let Err(reason) = check_needs(&p.needs, &index) {
+                refused_now.push((i, reason));
             }
         }
         if refused_now.is_empty() {
@@ -264,7 +250,6 @@ fn read_folder(dir: &Path) -> Option<Result<(Manifest, bool), String>> {
             archive: legacy.archive.clone(),
         }],
         tool: vec![ToolDecl {
-            uuid: legacy_tool_uuid(&tool),
             name: tool,
             major: 1,
             service: Some(name),
@@ -341,12 +326,12 @@ fn build_plugin(cand: &Candidate, input: &LoadInput, warnings: &mut Vec<String>)
         }
         let mut implements = Vec::new();
         for raw in &t.implements {
-            implements.push(parse_implements(raw).ok_or_else(|| format!("tool {:?}: bad implements {raw:?}", t.name))?);
+            implements.push(parse_implements(raw).ok_or_else(|| {
+                format!("tool {:?}: implements {raw:?} is not <contract>@<major>", t.name)
+            })?);
         }
         tools.push(ToolSpec {
-            name: input.rename.get(&t.name).cloned().unwrap_or_else(|| t.name.clone()),
-            declared: t.name.clone(),
-            uuid: t.uuid,
+            name: t.name.clone(),
             major: t.major,
             services: served_by,
             tier: t.tier,
@@ -379,8 +364,40 @@ fn build_plugin(cand: &Candidate, input: &LoadInput, warnings: &mut Vec<String>)
         tools,
         pages,
         needs: m.needs.clone(),
-        resolved: Resolved::default(),
+        stamp: stamp(&cand.dir),
     })
+}
+
+/// Folders a stamp skips: build output, caches and VCS state, which change without the
+/// plugin changing.
+const UNSTAMPED: [&str; 6] = [".git", "node_modules", "target", "__pycache__", ".venv", ".pytest_cache"];
+
+fn stamp(dir: &Path) -> String {
+    use std::hash::{Hash, Hasher};
+    fn walk(dir: &Path, h: &mut std::collections::hash_map::DefaultHasher) {
+        let Ok(entries) = std::fs::read_dir(dir) else { return };
+        let mut entries: Vec<_> = entries.filter_map(|e| e.ok()).collect();
+        entries.sort_by_key(|e| e.file_name());
+        for e in entries {
+            let name = e.file_name();
+            let Ok(meta) = e.metadata() else { continue };
+            if meta.is_dir() {
+                if !UNSTAMPED.iter().any(|u| name == *u) {
+                    name.hash(h);
+                    walk(&e.path(), h);
+                }
+                continue;
+            }
+            name.hash(h);
+            meta.len().hash(h);
+            if let Ok(t) = meta.modified() {
+                t.hash(h);
+            }
+        }
+    }
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    walk(dir, &mut h);
+    format!("{:016x}", h.finish())
 }
 
 fn find_page(roots: &[PathBuf], name: &str) -> Option<PathBuf> {
@@ -394,7 +411,6 @@ fn claim(
     p: &Plugin,
     reserved: &BTreeSet<&str>,
     tool_names: &HashMap<String, (String, bool)>,
-    tool_uuids: &HashMap<Uuid, (String, bool)>,
     service_names: &HashMap<String, String>,
 ) -> Result<(), String> {
     let mut own = BTreeSet::new();
@@ -412,11 +428,6 @@ fn claim(
                 return Err(format!("tool {:?} is already served by plugin {owner:?}", t.name));
             }
         }
-        if let Some((owner, legacy)) = tool_uuids.get(&t.uuid) {
-            if !(p.legacy && *legacy) {
-                return Err(format!("tool uuid {} is already served by plugin {owner:?}", t.uuid));
-            }
-        }
     }
     for s in &p.services {
         if let Some(owner) = service_names.get(&s.name) {
@@ -426,32 +437,31 @@ fn claim(
     Ok(())
 }
 
-struct Provider {
-    uuid: Uuid,
-    tool: ResolvedTool,
-    implements: Vec<(Uuid, u32)>,
+/// A row of the name table, with the contracts the tool implements.
+pub struct Provider {
+    pub owner: Owner,
+    pub implements: Vec<(String, u32)>,
 }
 
-fn tool_index(plugins: &[Plugin], peers: &BTreeMap<String, Vec<RemoteTool>>) -> Vec<Provider> {
+/// The name table: every tool this node's plugins serve, then each peer's. A local owner wins.
+pub fn table(plugins: &[Plugin], peers: &BTreeMap<String, Vec<RemoteTool>>) -> Vec<Provider> {
     let mut index: Vec<Provider> = Vec::new();
     for t in plugins.iter().flat_map(|p| p.tools.iter()) {
-        if index.iter().any(|p| p.uuid == t.uuid) {
-            continue; // a shared legacy tool resolves to its first plugin
+        if index.iter().any(|p| p.owner.name == t.name) {
+            continue; // a shared legacy tool belongs to its first plugin
         }
         index.push(Provider {
-            uuid: t.uuid,
-            tool: ResolvedTool { name: t.name.clone(), major: t.major, plugin: t.plugin.clone(), peer: None },
+            owner: Owner { name: t.name.clone(), major: t.major, plugin: t.plugin.clone(), peer: None },
             implements: t.implements.clone(),
         });
     }
     for (peer, tools) in peers {
         for t in tools {
-            if index.iter().any(|p| p.uuid == t.uuid) {
-                continue; // a local provider wins
+            if index.iter().any(|p| p.owner.name == t.name && p.owner.peer.is_none()) {
+                continue;
             }
             index.push(Provider {
-                uuid: t.uuid,
-                tool: ResolvedTool { name: t.name.clone(), major: t.major, plugin: t.plugin.clone(), peer: Some(peer.clone()) },
+                owner: Owner { name: t.name.clone(), major: t.major, plugin: t.plugin.clone(), peer: Some(peer.clone()) },
                 implements: t.implements.iter().filter_map(|r| parse_implements(r)).collect(),
             });
         }
@@ -459,26 +469,36 @@ fn tool_index(plugins: &[Plugin], peers: &BTreeMap<String, Vec<RemoteTool>>) -> 
     index
 }
 
-fn resolve(needs: &Needs, index: &[Provider]) -> Result<Resolved, String> {
-    let mut out = Resolved::default();
-    for NeedTool { uuid, major } in &needs.tool {
-        let Some(p) = index.iter().find(|p| p.uuid == *uuid) else {
-            return Err(format!("needs tool {uuid}, which no plugin serves"));
+/// The owner of a tool name: this node's plugin, else the first peer that serves it.
+pub fn owner<'a>(index: &'a [Provider], name: &str) -> Option<&'a Owner> {
+    index.iter().find(|p| p.owner.name == name).map(|p| &p.owner)
+}
+
+/// Every provider of a contract at a major, on this node and its peers.
+pub fn providers(index: &[Provider], contract: &str, major: u32) -> Vec<Owner> {
+    index
+        .iter()
+        .filter(|p| p.implements.iter().any(|(c, m)| c == contract && *m == major))
+        .map(|p| p.owner.clone())
+        .collect()
+}
+
+/// A needed tool must exist at its major (R117 item 3). A contract may have no provider.
+fn check_needs(needs: &Needs, index: &[Provider]) -> Result<(), String> {
+    for NeedTool { name, major } in &needs.tool {
+        let Some(o) = owner(index, name) else {
+            return Err(format!("needs tool {name:?}, which no plugin serves"));
         };
-        if p.tool.major != *major {
-            return Err(format!("needs tool {uuid} ({}) at major {major}, served at {}", p.tool.name, p.tool.major));
+        if o.major != *major {
+            return Err(format!("needs tool {name:?} at major {major}, plugin {:?} serves major {}", o.plugin, o.major));
         }
-        out.tools.insert(*uuid, p.tool.clone());
     }
-    for NeedTool { uuid, major } in &needs.contract {
-        let providers = index
-            .iter()
-            .filter(|p| p.implements.contains(&(*uuid, *major)))
-            .map(|p| p.tool.clone())
-            .collect();
-        out.contracts.insert(*uuid, providers);
+    for NeedTool { name, .. } in &needs.contract {
+        if !valid_tool_name(name) {
+            return Err(format!("needs contract {name:?}, which is not a valid name"));
+        }
     }
-    Ok(out)
+    Ok(())
 }
 
 #[cfg(test)]
@@ -503,28 +523,24 @@ mod tests {
     }
 
     fn run(core: &Path, other: &Path, node: &str) -> LoadResult {
+        run_with_peers(core, other, node, &BTreeMap::new())
+    }
+
+    fn run_with_peers(core: &Path, other: &Path, node: &str, peers: &BTreeMap<String, Vec<RemoteTool>>) -> LoadResult {
         let reserved = vec!["2fa".to_string()];
-        let rename = BTreeMap::from([("clash".to_string(), "clash-two".to_string())]);
         let wants = move |p: &str| p != "elsewhere" || node == "altair";
         let enabled = HashMap::from([("off-svc".to_string(), false)]);
-        let peers = BTreeMap::new();
         load(&LoadInput {
             wants: &wants,
-            rename: &rename,
             core_roots: &[core.to_path_buf()],
             plugin_roots: &[other.to_path_buf()],
             page_roots: &[],
             profiles: &["gamebot".to_string()],
             reserved: &reserved,
             enabled: &enabled,
-            peer_tools: &peers,
+            peer_tools: peers,
         })
     }
-
-    const U1: &str = "11111111-1111-4111-8111-111111111111";
-    const U2: &str = "22222222-2222-4222-8222-222222222222";
-    const U3: &str = "33333333-0000-4000-8000-000000000003";
-    const C1: &str = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 
     #[test]
     fn rules() {
@@ -537,43 +553,40 @@ mod tests {
         legacy(&core, "off-svc", None);
         legacy(&core, "_hidden", None);
         fs::create_dir_all(core.join("not-a-plugin")).unwrap();
-        plugin(&core, "provider", &format!(
-            "[plugin]\nname='provider'\n[[service]]\nname='provider'\n[[tool]]\nname='prov'\nuuid='{U1}'\nmajor=2\nimplements=['{C1}@1']\n"));
-        plugin(&core, "dependent", &format!(
-            "[plugin]\nname='dependent'\n[[service]]\nname='dependent'\n[[needs.tool]]\nuuid='{U1}'\nmajor=2\n[[needs.contract]]\nuuid='{C1}'\nmajor=1\n"));
+        plugin(&core, "provider",
+            "[plugin]\nname='provider'\n[[service]]\nname='provider'\n[[tool]]\nname='prov'\nmajor=2\nimplements=['harness@1']\n");
+        plugin(&core, "dependent",
+            "[plugin]\nname='dependent'\n[[service]]\nname='dependent'\n[[needs.tool]]\nname='prov'\nmajor=2\n[[needs.contract]]\nname='harness'\nmajor=1\n");
         plugin(&other, "journal", "[plugin]\nname='journal'\n");
-        plugin(&other, "dup-name", &format!("[plugin]\nname='dup-name'\n[[service]]\nname='dup-name'\n[[tool]]\nname='prov'\nuuid='{U2}'\n"));
-        plugin(&other, "dup-uuid", &format!("[plugin]\nname='dup-uuid'\n[[service]]\nname='dup-uuid'\n[[tool]]\nname='other'\nuuid='{U1}'\n"));
-        plugin(&other, "takes-2fa", &format!("[plugin]\nname='takes-2fa'\n[[service]]\nname='takes-2fa'\n[[tool]]\nname='2fa'\nuuid='{U2}'\n"));
-        plugin(&other, "missing", "[plugin]\nname='missing'\n[[needs.tool]]\nuuid='33333333-3333-4333-8333-333333333333'\n");
-        plugin(&other, "wrong-major", &format!("[plugin]\nname='wrong-major'\n[[needs.tool]]\nuuid='{U1}'\nmajor=1\n"));
+        plugin(&other, "dup-name", "[plugin]\nname='dup-name'\n[[service]]\nname='dup-name'\n[[tool]]\nname='prov'\n");
+        plugin(&other, "takes-2fa", "[plugin]\nname='takes-2fa'\n[[service]]\nname='takes-2fa'\n[[tool]]\nname='2fa'\n");
+        plugin(&other, "missing", "[plugin]\nname='missing'\n[[needs.tool]]\nname='nobody-serves'\n");
+        plugin(&other, "wrong-major", "[plugin]\nname='wrong-major'\n[[needs.tool]]\nname='prov'\nmajor=1\n");
         plugin(&other, "escape", "[plugin]\nname='escape'\n[[service]]\nname='escape'\npath='..'\n");
         plugin(&other, "elsewhere", "[plugin]\nname='elsewhere'\n[placement]\nnodes=['showtime']\n");
-        plugin(&core, "clash1", &format!("[plugin]\nname='clash1'\n[[service]]\nname='clash1'\n[[tool]]\nname='clash'\nuuid='{U3}'\n"));
+        plugin(&other, "bad-implements", "[plugin]\nname='bad-implements'\n[[service]]\nname='bad-implements'\n[[tool]]\nname='bi'\nimplements=['harness']\n");
         let two = core.join("ops");
         fs::create_dir_all(two.join("board")).unwrap();
         fs::create_dir_all(two.join("reporting")).unwrap();
         fs::write(two.join("board/run.sh"), "").unwrap();
         fs::write(two.join("reporting/run.sh"), "").unwrap();
-        fs::write(two.join(MANIFEST_FILE), "[plugin]\nname='ops'\n[[service]]\nname='board'\npath='board'\n[[service]]\nname='reporting'\npath='reporting'\n[[tool]]\nname='operations'\nuuid='44444444-4444-4444-8444-444444444444'\nservices=['board','reporting']\n").unwrap();
-        plugin(&other, "steals-reflection", "[plugin]\nname='steals-reflection'\n[[service]]\nname='steals-reflection'\n[[tool]]\nname='reflection'\nuuid='55555555-5555-4555-8555-555555555555'\n");
+        fs::write(two.join(MANIFEST_FILE), "[plugin]\nname='ops'\n[[service]]\nname='board'\npath='board'\n[[service]]\nname='reporting'\npath='reporting'\n[[tool]]\nname='operations'\nservices=['board','reporting']\n").unwrap();
+        plugin(&other, "steals-reflection", "[plugin]\nname='steals-reflection'\n[[service]]\nname='steals-reflection'\n[[tool]]\nname='reflection'\n");
         plugin(&other, "windows-only", "[plugin]\nname='windows-only'\n[needs]\nplatform=['windows']\n");
         plugin(&other, "bad-toml", "[plugin]\nname='bad-toml'\nbogus=1\n");
 
         let r = run(&core, &other, "mizar");
         let names: Vec<_> = r.plugins.iter().map(|p| p.name.as_str()).collect();
-        assert_eq!(names, ["clash1", "cx", "dependent", "game", "journal", "keep", "off-svc", "ops", "provider"]);
+        assert_eq!(names, ["cx", "dependent", "game", "journal", "keep", "off-svc", "ops", "provider"]);
         let ops = r.plugins.iter().find(|p| p.name == "ops").unwrap();
         assert!(ops.services.iter().all(|s| s.tools == ["operations"]));
-        let clash = &r.plugins[0].tools[0];
-        assert_eq!((clash.name.as_str(), clash.declared.as_str()), ("clash-two", "clash"));
         let refused: BTreeMap<_, _> = r.refused.iter().map(|x| (x.plugin.as_str(), x.reason.as_str())).collect();
         assert!(refused["dup-name"].contains("already served by plugin \"provider\""));
-        assert!(refused["dup-uuid"].contains("uuid"));
         assert!(refused["takes-2fa"].contains("reserved"));
-        assert!(refused["missing"].contains("33333333-3333-4333-8333-333333333333"));
+        assert!(refused["missing"].contains("\"nobody-serves\""));
         assert!(refused["wrong-major"].contains("major 1"));
         assert!(refused["escape"].contains("leaves the plugin folder"));
+        assert!(refused["bad-implements"].contains("<contract>@<major>"));
         assert!(refused.contains_key("bad-toml"));
         assert!(refused["windows-only"].contains("platform"));
         assert!(refused["steals-reflection"].contains("already served"));
@@ -582,13 +595,14 @@ mod tests {
 
         let by = |n: &str| r.plugins.iter().find(|p| p.name == n).unwrap();
         assert_eq!(by("cx").tools[0].name, "reflection");
-        assert_eq!(by("cx").tools[0].uuid, legacy_tool_uuid("reflection"));
         assert!(!by("game").services[0].enabled);
         assert!(!by("off-svc").services[0].enabled);
         assert!(by("journal").services[0].enabled);
-        let dep = &by("dependent").resolved;
-        assert_eq!(dep.tools[&U1.parse().unwrap()].name, "prov");
-        assert_eq!(dep.contracts[&C1.parse().unwrap()][0].name, "prov");
+        let index = table(&r.plugins, &BTreeMap::new());
+        assert_eq!(owner(&index, "prov").unwrap().plugin, "provider");
+        assert_eq!(owner(&index, "reflection").unwrap().plugin, "cx");
+        assert_eq!(providers(&index, "harness", 1)[0].name, "prov");
+        assert!(providers(&index, "harness", 2).is_empty());
 
         let r = run(&core, &other, "altair");
         assert!(r.plugins.iter().any(|p| p.name == "elsewhere"));
@@ -596,12 +610,29 @@ mod tests {
     }
 
     #[test]
+    fn a_need_resolves_on_a_peer() {
+        let t = tempfile::tempdir().unwrap();
+        let (core, other) = (t.path().join("core"), t.path().join("other"));
+        fs::create_dir_all(&core).unwrap();
+        plugin(&other, "b", "[plugin]\nname='b'\n[[needs.tool]]\nname='far'\n");
+        let peers = BTreeMap::from([(
+            "altair".to_string(),
+            vec![RemoteTool { name: "far".into(), major: 1, plugin: "farp".into(), implements: vec!["harness@1".into()] }],
+        )]);
+        let r = run_with_peers(&core, &other, "mizar", &peers);
+        assert_eq!(r.plugins.len(), 1, "{:?}", r.refused);
+        let index = table(&r.plugins, &peers);
+        assert_eq!(owner(&index, "far").unwrap().peer.as_deref(), Some("altair"));
+        assert_eq!(providers(&index, "harness", 1).len(), 1);
+    }
+
+    #[test]
     fn refused_provider_cascades() {
         let t = tempfile::tempdir().unwrap();
         let (core, other) = (t.path().join("core"), t.path().join("other"));
         fs::create_dir_all(&core).unwrap();
-        plugin(&other, "a", &format!("[plugin]\nname='a'\n[[service]]\nname='a'\n[[tool]]\nname='a'\nuuid='{U1}'\n[[needs.tool]]\nuuid='{U2}'\n"));
-        plugin(&other, "b", &format!("[plugin]\nname='b'\n[[needs.tool]]\nuuid='{U1}'\n"));
+        plugin(&other, "a", "[plugin]\nname='a'\n[[service]]\nname='a'\n[[tool]]\nname='a'\n[[needs.tool]]\nname='gone'\n");
+        plugin(&other, "b", "[plugin]\nname='b'\n[[needs.tool]]\nname='a'\n");
         let r = run(&core, &other, "mizar");
         assert!(r.plugins.is_empty());
         assert_eq!(r.refused.len(), 2);
