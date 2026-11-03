@@ -53,7 +53,7 @@ async def test_a_live_room_moves_to_encryption_and_carries_on(channels, pushed):
         await eventually(lambda: any(t.endswith("from visitor: sealed hello")
                                      for t in pushed.texts()))
 
-        [row] = channels.status(HOLDER)["channels"]
+        [row] = (await channels.status(HOLDER))["channels"]
         assert row["open"] and row["encrypted"]
         transcript = channels.transcripts.path(opened["name"]).read_text()
         assert "the secret plan" in transcript and "sealed hello" in transcript

@@ -27,8 +27,7 @@ SESSIONS_DIR = os.path.expanduser("~/.claude/sessions")
 # strips `CLAIM_KEY` from any call that did not come through an edge.
 SESSION_CLAIM_VERBS = {
     "social": frozenset({"mount", "unmount"}),
-    "tether": frozenset({"invite", "status", "run", "shell", "keys", "resize",
-                         "close", "tasks", "send", "cut", "drain"}),
+    "channel": frozenset({"open", "write", "drain", "status", "close", "encrypt"}),
 }
 CLAIM_KEY = "_caller_session"
 MAX_ANCESTRY_HOPS = 8

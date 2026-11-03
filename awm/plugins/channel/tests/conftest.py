@@ -19,8 +19,12 @@ from awm.channel import holders, hub_adapter
 from awm.channel.relay import Rooms
 
 BEARER = "a-test-bearer-nothing-guards"
-HOLDER = {"node": "testnode", "job": "job-aaaa", "name": "tester"}
-OTHER = {"node": "testnode", "job": "job-bbbb", "name": "someone-else"}
+HOLDER = {"node": "testnode", "session": "cc" + "a" * 32, "job": "job-aaaa",
+          "name": "tester"}
+OTHER = {"node": "testnode", "session": "cc" + "b" * 32, "job": "job-bbbb",
+         "name": "someone-else"}
+#: A holder on another node, known by its job.
+FAR = {"node": "farnode", "session": "job:job-cccc", "job": "job-cccc", "name": "far"}
 
 
 def _relay_bin() -> Path | None:
@@ -93,18 +97,46 @@ def pushed() -> Captured:
 
 @pytest.fixture
 def live() -> dict[str, set[str] | None]:
-    """The live jobs each node reports. Edit it to end a holder's job."""
-    return {"testnode": {HOLDER["job"], OTHER["job"]}}
+    """The live jobs each other node reports. Edit it to end a far holder's job."""
+    return {"farnode": {FAR["job"]}}
+
+
+class Sessions:
+    """The sessions running on this node. Set ``ids`` to None for "cannot tell"."""
+
+    def __init__(self) -> None:
+        self.ids: set[str] | None = {HOLDER["session"], OTHER["session"]}
+
+    def __call__(self) -> set[str] | None:
+        return None if self.ids is None else set(self.ids)
 
 
 @pytest.fixture
-async def channels(tmp_path, relay, pushed, live):
+def sessions() -> Sessions:
+    return Sessions()
+
+
+@pytest.fixture
+def machines(tmp_path):
+    """The machine kind, on a stream and mark of its own, with no daemon."""
+    from awm.channel.machines import Machines
+    from awm.channel.tether import stream
+
+    mark = stream.Mark(tmp_path / "stream.json")
+    return Machines(journal=stream.Journal(), mark=mark,
+                    logs=stream.SessionLogs(tmp_path / "sessions", mark))
+
+
+@pytest.fixture
+async def channels(tmp_path, relay, pushed, live, sessions, machines, monkeypatch):
     async def list_jobs(node):
         return live.get(node)
 
+    monkeypatch.setattr(holders.config, "node_name", lambda: "testnode")
     built = hub_adapter.build(tmp_path / "state", rooms=Rooms(relay, BEARER),
                               pusher=holders.Pusher(send=pushed.send),
-                              list_jobs=list_jobs)
+                              list_jobs=list_jobs, list_sessions=sessions,
+                              machines=machines)
     yield built
     import asyncio
     # Bounded, so a follow loop that ignores its cancel fails the test.

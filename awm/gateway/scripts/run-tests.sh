@@ -73,7 +73,7 @@ declare -A DISTS=(
   [penpot-plugins]="$WS/awm/services/penpot-plugins::$WS/awm/services/penpot-plugins/tests"
   [cx]="$WS/awm/services/cx::$WS/awm/services/cx/tests"
   [dev]="$WS/awm/services/dev::$WS/awm/services/dev/tests"
-  [tether]="$WS/awm/services/tether::$WS/awm/services/tether/tests"
+  [channel]="$WS/awm/plugins/channel::$WS/awm/plugins/channel/tests"
   [kb]="$WS/awm/services/kb::$WS/awm/services/kb/tests"
   [board]="$WS/awm/services/board::$WS/awm/services/board/tests"
   [transcripts]="$WS/awm/services/transcripts::$WS/awm/services/transcripts/tests"
@@ -82,7 +82,7 @@ declare -A DISTS=(
 )
 
 # Stable run order.
-ORDER=(gateway gatewayclient config persistence telemetry claudedaemon kept scopes journal search writing events precedence social 2fa ssh auth httpsfront rlm-browser rlm-factorio graphify stt tts fileviewer drawio notes virtmic mic vpn compute reflection dvc claude-science dsh engcyc hermes trilium zotero penpot penpot-view penpot-plugins cx keep dev tether kb board reporting reporting-hooks transcripts)
+ORDER=(gateway gatewayclient config persistence telemetry claudedaemon kept scopes journal search writing events precedence social 2fa ssh auth httpsfront rlm-browser rlm-factorio graphify stt tts fileviewer drawio notes virtmic mic vpn compute reflection dvc claude-science dsh engcyc hermes trilium zotero penpot penpot-view penpot-plugins cx keep dev channel kb board reporting reporting-hooks transcripts)
 
 # Allow selecting a subset on the command line.
 if [ "$#" -gt 0 ]; then

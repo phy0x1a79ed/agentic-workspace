@@ -74,8 +74,8 @@ def test_social_send_is_not_stamped():
     assert args["args"] == {"_caller_session": CLAIM}
 
 
-def test_a_tether_verb_on_a_peer_carries_the_session_that_minted_it(sessions):
-    out = mcp_caller.forwarded_args("tether", {"verb": "drain", "args": {},
+def test_a_channel_verb_on_a_peer_carries_the_session_that_holds_it(sessions):
+    out = mcp_caller.forwarded_args("channel", {"verb": "drain", "args": {},
                                                "peer": "capella"},
                                     "4242", sessions_dir=sessions)
     assert out["args"]["_caller_session"] == CLAIM

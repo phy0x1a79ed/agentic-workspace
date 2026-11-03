@@ -176,3 +176,12 @@ Run the `debrief` skill. Send one line to the coordinator, job 8162a704.
   - R110: "met. One `channel` tool opens a room or a machine, pushes each message as a capped line, and closes when the holder's job ends."
   - R111: "partial. The holder comes from the gateway's caller stamp. A container session still needs R109's token."
   - R77: unchanged until the board door and intake go.
+- **The review's Follow-ups replace parts of this plan.** They are newer, so they win:
+  - Rooms are at `/room/<name>` on the edge and the relay, not `/tether/r/<name>` and `/r/<name>`. The operator opens one at `POST /room`.
+  - A room has two kinds. A task room keeps three words and the idle and 24-hour limits. A persistent room has six words and no limit.
+  - A channel closes when its holding session ends, keyed by the R9 session id, not by the job.
+  - The `tether` tool is gone. Its daemon supervision and stream moved into the plugin as `awm.channel.tether`. `write` with `target: shell` and `drain` replace `run`, `shell`, `keys` and `drain`, and `close` with `task` replaces the tether's `close`. T8's client-of-tether shape and its `adopt` calls are gone.
+- **No agent verb restarts the tether daemon.** R110 lists the verbs, and `restart`, `logs` and `resize` are not among them. `INSTALL.md` names the unit to stop, after which the plugin starts a fresh daemon.
+- **A persistent room does not survive a relay restart.** The relay keeps rooms in memory, so a deploy on deneb ends every persistent room. The holder gets an end line. Keeping them would need the relay to persist rooms, which no requirement settles.
+- **An isolated session cannot hold a channel yet.** It has an R9 id but no job to type a line into (R111).
+

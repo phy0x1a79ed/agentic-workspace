@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from awm.tether import daemon, hub_adapter, paths, stream
+from awm.channel.tether import daemon, paths
 
 
 @pytest.fixture(autouse=True)
@@ -20,7 +20,4 @@ def private_state(tmp_path, monkeypatch):
     monkeypatch.setattr(paths, "STREAM_STATE", state / "stream.json")
     monkeypatch.setattr(paths, "OPERATOR_UNIT", "awm-tether-operator-test")
     monkeypatch.setattr(daemon, "_user_manager_env", lambda: None)
-    mark = stream.Mark(state / "stream.json")
-    monkeypatch.setattr(hub_adapter, "MARK", mark)
-    monkeypatch.setattr(hub_adapter, "SESSION_LOGS", stream.SessionLogs(state / "sessions", mark))
     return state

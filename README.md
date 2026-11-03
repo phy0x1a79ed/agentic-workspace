@@ -486,7 +486,7 @@ imported source.
    ┌────▼─────┐     ┌──────▼──────┐    ┌──────▼──────┐
    │ scopes   │     │ cx          │    │ dev /       │   …each an out-of-proc
    │ service  │     │ service     │    │ notes /     │    feature service with
-   │ (+own DB)│     │ (+own DB)   │    │ tether      │    its own DB + run.sh
+   │ (+own DB)│     │ (+own DB)   │    │ channel     │    its own DB + run.sh
    └──────────┘     └─────────────┘    └─────────────┘
 ```
 
@@ -504,7 +504,7 @@ awm/                          # nested tree of pip dists (PEP 420 namespace layo
   service_components/         # shared Python imported source (no install.sh)
     config/  persistence/  gatewayclient/  claudedaemon/
   services/                   # one folder per feature service (discovered)
-    scopes/  cx/  dev/  tether/
+    scopes/  cx/  dev/
       run.sh                  # the only entry the gateway runs (bash run.sh)
       INSTALL.md  install.sh
   ui_components/<name>/       # shared Svelte libraries, imported as @awm/<name>

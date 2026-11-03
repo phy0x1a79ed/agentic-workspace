@@ -46,9 +46,9 @@ import time
 from pathlib import Path
 from typing import Any
 
-from awm.tether import paths
+from awm.channel.tether import paths
 
-log = logging.getLogger("awm.tether.daemon")
+log = logging.getLogger("awm.channel.tether.daemon")
 
 #: How often the supervised loop asks whether the daemon is still there.
 TICK_S = 5.0

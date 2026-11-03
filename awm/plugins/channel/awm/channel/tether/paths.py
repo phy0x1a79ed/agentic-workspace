@@ -1,6 +1,6 @@
 """Where tether's pieces live on a host, and which role this host plays.
 
-One service folder runs on two kinds of box and they share no code path at
+The channel plugin runs on two kinds of box and they share no code path at
 runtime: the operator's node supervises the operator daemon, the public host
 supervises the relay. ``AWM_TETHER_ROLE`` decides, and defaults to operator
 because that is what a workstation is.
@@ -14,10 +14,13 @@ from pathlib import Path
 
 from awm.config import AWM_DIR
 
-#: This service's folder — the one holding run.sh, install.sh and RELEASE.
-SERVICE_DIR = Path(__file__).resolve().parents[2]
+#: The plugin's folder — the one holding run.sh, install.sh and RELEASE.
+SERVICE_DIR = Path(__file__).resolve().parents[3]
 
 #: Per-host state: the fetched binaries, the daemon's control socket, its log.
+#: Still named for the tether service the channel plugin replaced, because a
+#: running operator daemon and its unit name are keyed on this path, and a
+#: deploy that moved it would orphan every live session.
 STATE_DIR = AWM_DIR / "services" / "tether"
 
 #: Where this host's binaries live. fetch-release.sh pulls the pinned release

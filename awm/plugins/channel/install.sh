@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# Install the channel plugin into the target env (AWM_ENV, default awm).
+# Install the channel plugin into the target env (AWM_ENV, default awm), with
+# its dependencies (spake2 for room encryption among them), then fetch the
+# tether binaries RELEASE pins.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 WS="$(git -C "$HERE" rev-parse --show-toplevel)"
@@ -8,9 +10,13 @@ run() { echo "+ pip install -e $*"; mamba run -n "$ENV" pip install -e "$@"; }
 
 run "$WS/awm/service_components/gatewayclient" --no-deps
 run "$HERE"
+mamba run -n "$ENV" python -c 'import spake2' \
+    || { echo "spake2 did not install into env '$ENV'" >&2; exit 1; }
 
 PYBIN="$(mamba run -n "$ENV" python -c 'import sys; print(sys.executable)')"
 printf 'AWM_PYTHON=%s\nAWM_ENV_BIN=%s\n' "$PYBIN" "$(dirname "$PYBIN")" \
     > "$HERE/.runtime-env"
+
+bash "$HERE/fetch-release.sh" || echo "fetch-release.sh failed; see .awm/services/tether/fetch.log" >&2
 
 echo "Installed awm-channel into env '$ENV'."

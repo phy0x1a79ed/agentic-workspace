@@ -9,7 +9,7 @@ from awm.channel import hub_adapter, lines
 from awm.channel.holders import ChannelError, Pusher
 from awm.channel.relay import Rooms
 
-from .conftest import BEARER, HOLDER, OTHER, eventually, needs_relay
+from .conftest import BEARER, FAR, HOLDER, OTHER, eventually, needs_relay
 from .guest import Guest
 
 pytestmark = [pytest.mark.integration, needs_relay]
@@ -70,7 +70,7 @@ async def test_the_guest_leaving_closes_the_channel_and_tells_the_holder(channel
         lines_ = await eventually(lambda: pushed.texts())
         assert lines_ == [f"room {opened['name']}: ended, the guest left. "
                           "It is closed on our side."]
-        [row] = channels.status(HOLDER)["channels"]
+        [row] = (await channels.status(HOLDER))["channels"]
         assert not row["open"] and row["ended"] == "the guest left"
     finally:
         await guest.aclose()
@@ -89,21 +89,76 @@ async def test_closing_ends_the_room_for_the_guest(channels):
         await guest.aclose()
 
 
-async def test_a_channel_closes_once_its_holders_job_is_gone(channels, live):
+async def test_a_channel_closes_once_its_holding_session_ends(channels, sessions):
     opened = await channels.open(HOLDER, "room")
+    kept = await channels.open(OTHER, "room")
     guest = Guest(opened["link"])
     try:
-        live["testnode"] = {OTHER["job"]}
+        sessions.ids = {OTHER["session"]}
         assert await channels.prune() == [opened["name"]]
         assert (await guest.hear())["ended"] == "the host closed the room"
+        assert [r["open"] for r in (await channels.status(OTHER))["channels"]] == [True]
+        assert kept["name"] != opened["name"]
     finally:
         await guest.aclose()
 
 
-async def test_a_node_that_cannot_list_its_jobs_keeps_its_channels(channels, live):
+async def test_a_session_that_cannot_be_checked_keeps_its_channels(channels, sessions):
     await channels.open(HOLDER, "room")
-    live["testnode"] = None
+    sessions.ids = None
     assert await channels.prune() == []
+
+
+async def test_a_holder_on_another_node_is_checked_by_its_job(channels, live):
+    opened = await channels.open(FAR, "room")
+    assert await channels.prune() == []
+    live["farnode"] = set()
+    assert await channels.prune() == [opened["name"]]
+
+
+async def test_a_node_that_cannot_list_its_jobs_keeps_its_channels(channels, live):
+    await channels.open(FAR, "room")
+    live["farnode"] = None
+    assert await channels.prune() == []
+
+
+async def test_one_session_holds_a_task_room_and_a_persistent_room(channels):
+    task = await channels.open(HOLDER, "room")
+    kept = await channels.open(HOLDER, "room", persistent=True)
+    assert task["lasts"] == "task" and len(task["name"].split("-")) == 3
+    assert kept["lasts"] == "persistent" and len(kept["name"].split("-")) == 6
+    assert kept["link"].endswith(f"/room/{kept['name']}")
+    guest = Guest(kept["link"])
+    try:
+        assert "ROOM/recv" in await guest.how_to()
+        # Closing one early leaves the other open.
+        assert await channels.close(HOLDER, task["name"]) == {"closed": task["name"]}
+        rows = {r["name"]: r for r in (await channels.status(HOLDER))["channels"]}
+        assert not rows[task["name"]]["open"] and rows[kept["name"]]["open"]
+        assert rows[kept["name"]]["lasts"] == "persistent"
+        await channels.write(HOLDER, "still here", kept["name"])
+        assert (await guest.hear())["messages"][0]["text"] == "still here"
+    finally:
+        await guest.aclose()
+
+
+async def test_a_machine_channel_is_never_persistent(channels):
+    with pytest.raises(ChannelError, match="only a room can be persistent"):
+        await channels.open(HOLDER, "machine", "unix", persistent=True)
+
+
+async def test_a_shell_write_and_a_drain_on_a_room_do_nothing(channels, pushed):
+    opened = await channels.open(HOLDER, "room")
+    guest = Guest(opened["link"])
+    try:
+        out = await channels.write(HOLDER, "rm -rf /", target="shell")
+        assert out["sent"] is False and "does nothing" in out["note"]
+        assert (await channels.drain(HOLDER))["events"] == []
+        await channels.write(HOLDER, "only this")
+        heard = await guest.hear()
+        assert [m.get("text") for m in heard["messages"]] == ["only this"]
+    finally:
+        await guest.aclose()
 
 
 async def test_a_push_the_holder_refuses_as_gone_closes_its_channels(channels, pushed):
@@ -123,7 +178,7 @@ async def test_a_channel_is_only_its_holders(channels):
         await channels.write(OTHER, "not mine", opened["name"])
     with pytest.raises(ChannelError, match="no open channel"):
         await channels.close(OTHER, opened["name"])
-    assert channels.status(OTHER) == {"channels": []}
+    assert (await channels.status(OTHER)) == {"channels": []}
 
 
 async def test_a_holder_of_two_channels_names_one(channels):

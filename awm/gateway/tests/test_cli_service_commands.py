@@ -220,16 +220,16 @@ def test_dispatch_error_exits_nonzero():
     assert ei.value.exit_code == 1
 
 
-_TETHER = [{
-    "name": "tether_run",
-    "description": "Run a command",
+_CHANNEL = [{
+    "name": "channel_write",
+    "description": "Write into a channel",
     "inputSchema": {"type": "object", "properties": {
-        "command": {"type": "string"}, "code": {"type": "string"}}},
+        "text": {"type": "string"}, "target": {"type": "string"}}},
 }]
 
 
-def _run_tether_cli(monkeypatch, tmp_path, recorded_pid: int | None) -> list:
-    """Run `awm tether run` in this process, with a session record at ``recorded_pid``."""
+def _run_channel_cli(monkeypatch, tmp_path, recorded_pid: int | None) -> list:
+    """Run `awm channel write` in this process, with a session record at ``recorded_pid``."""
     import json
     import os
 
@@ -246,25 +246,25 @@ def _run_tether_cli(monkeypatch, tmp_path, recorded_pid: int | None) -> list:
         return _StubResponse(200, {"result": '{"ok": true}'})
 
     app = typer.Typer()
-    groups = register_service_cli_commands(app, _TETHER, api_func=api, exclude_names=set())
-    run = next(c for c in groups["tether"].registered_commands if c.name == "run")
-    run.callback(command="echo hi", code="1")
+    groups = register_service_cli_commands(app, _CHANNEL, api_func=api, exclude_names=set())
+    write = next(c for c in groups["channel"].registered_commands if c.name == "write")
+    write.callback(text="echo hi", target="shell")
     return calls
 
 
-def test_a_tether_cli_call_names_the_agent_session_it_runs_under(monkeypatch, tmp_path):
-    """An agent sends long scripts through `awm tether run` from its Bash tool.
-    That call must reach tether as the same session its MCP calls come from, or
-    the session it minted refuses it as somebody else's."""
+def test_a_channel_cli_call_names_the_agent_session_it_runs_under(monkeypatch, tmp_path):
+    """An agent sends long scripts through `awm channel write` from its Bash tool.
+    That call must reach channel as the same session its MCP calls come from, or
+    the channel it holds refuses it as somebody else's."""
     import os
 
-    calls = _run_tether_cli(monkeypatch, tmp_path, recorded_pid=os.getppid())
+    calls = _run_channel_cli(monkeypatch, tmp_path, recorded_pid=os.getppid())
 
     assert calls[0]["headers"] == {"X-Awm-Caller-Pid": str(os.getppid())}
 
 
-def test_a_tether_cli_call_from_a_plain_terminal_names_nobody(monkeypatch, tmp_path):
-    calls = _run_tether_cli(monkeypatch, tmp_path, recorded_pid=None)
+def test_a_channel_cli_call_from_a_plain_terminal_names_nobody(monkeypatch, tmp_path):
+    calls = _run_channel_cli(monkeypatch, tmp_path, recorded_pid=None)
 
     assert "headers" not in calls[0]
 
