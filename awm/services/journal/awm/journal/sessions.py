@@ -117,12 +117,7 @@ def reads(session: str, limit: int = 200) -> list[dict]:
         " WHERE r.session=? ORDER BY r.last_read DESC LIMIT ?", (session, int(limit)))
     out = []
     for r in rows:
-        try:
-            meta = json.loads(r["meta"] or "{}")
-        except ValueError:
-            meta = {}
-        if not isinstance(meta, dict):
-            meta = {}
+        meta = _meta(r["meta"])
         lines = (r["body"] or "").strip().splitlines()
         out.append({
             "journal": r["post_id"], "project": r["owner_project"], "scope": r["owner_scope"],
@@ -140,12 +135,22 @@ def cites_of(session: str) -> list[dict]:
         (session,))
     out, seen = [], set()
     for r in rows:
-        try:
-            meta = json.loads(r["meta"] or "{}")
-        except ValueError:
-            continue
-        for c in meta.get("cites") or []:
+        for c in _meta(r["meta"]).get("cites") or []:
             if isinstance(c, dict) and c.get("journal") not in seen:
                 seen.add(c.get("journal"))
                 out.append({**c, "from": r["id"]})
+    if out:
+        marks = ",".join("?" * len(out))
+        cited = {r["id"]: _meta(r["meta"]).get("session") for r in JournalDAO().query_all(
+            f"SELECT id, meta FROM scope_posts WHERE id IN ({marks})", [c["journal"] for c in out])}
+        for c in out:
+            c["session"] = cited.get(c["journal"])
     return out
+
+
+def _meta(raw: Any) -> dict:
+    try:
+        meta = json.loads(raw or "{}")
+    except ValueError:
+        return {}
+    return meta if isinstance(meta, dict) else {}

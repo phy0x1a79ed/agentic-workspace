@@ -528,6 +528,13 @@ class Tasks:
         no longer finds the old task's key among the jobs, moves it to Pending review.
         """
         task = await self.db.find(self.node, who.key)
+        new = str(args.get("new_session_id") or who.session_id or "")
+        if task is not None and self.work is not None and task["session_id"] and new:
+            # The cleared session's new id takes the old one as its parent (sessions.md R13).
+            try:
+                await asyncio.to_thread(self.work.set_parent, new, task["session_id"], "clear", self.node)
+            except ValueError as exc:
+                log.info("reporting: no parent link for the clear of %s: %s", task["session_id"], exc)
         if task is None or task["state"] not in OPEN:
             return {"ok": True, "tracked": False, "blocked": False}
         old = task["session_id"] or f"task{task['id']}"

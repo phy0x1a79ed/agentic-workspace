@@ -1070,3 +1070,15 @@ async def test_a_new_card_mints_a_task_id_for_its_session(env, tmp_path):
     assert task_id and env.tasks.work.task_get(task_id)["title"] == "Look into the printer"
     await env.call("track_task", pid=200, title="again")
     assert env.tasks.work.task_for_session(session) == task_id
+
+
+async def test_a_clear_gives_the_new_session_the_old_one_as_its_parent(env, tmp_path):
+    from awm.reporting.work import Work
+
+    env.tasks.work = Work(tmp_path / "reporting.db")
+    old = env.records[100]["sessionId"] = "22222222-3333-4444-5555-666666666666"
+    await env.call("hook_plan_approved", plan_text="# Before the clear\n\nx")
+    new = "33333333-4444-5555-6666-777777777777"
+    await env.call("hook_session_clear", new_session_id=new)
+    [edge] = env.tasks.work.ancestors(new)
+    assert (edge["parent"], edge["how"]) == ("cc" + old.replace("-", ""), "clear")

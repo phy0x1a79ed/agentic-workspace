@@ -157,9 +157,11 @@ API_MANIFEST: dict[str, Any] = {
                 "Hook verb, called by the SessionStart hook on `clear`, not by an "
                 "agent. The conversation was cleared: file the session's open task "
                 "under `<job>/<old session id>`, so the next plan in this job "
-                "opens a card of its own. The session is the caller."
+                "opens a card of its own. The session is the caller. Its new session "
+                "id takes the old one as its parent."
             ),
-            "params": [],
+            "params": [{"name": "new_session_id", "type": "string",
+                        "description": "The session id after the clear, from the hook's payload."}],
         },
         {
             "name": "claim_task",

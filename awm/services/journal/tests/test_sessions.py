@@ -106,7 +106,10 @@ def test_reads_lists_the_citations_a_session_already_made(posts):
     src = _post(posts, scope="other", pid=7)
     _post(posts, meta={"cites": [{"journal": src["id"], "reason": "the base"}]})
     out = posts._handle_reads({"session": ME_UUID})
-    assert [c["journal"] for c in out["cites"]] == [src["id"]]
+    assert [(c["journal"], c["session"]) for c in out["cites"]] == [(src["id"], None)]
+    named = _post(posts, scope="other", pid=7, meta={"session": OTHER})
+    _post(posts, meta={"cites": [{"journal": named["id"], "reason": "the claim"}]})
+    assert posts._handle_reads({"session": ME})["cites"][-1]["session"] == OTHER
 
 
 def test_an_old_database_gains_the_reads_table(tmp_path, monkeypatch):

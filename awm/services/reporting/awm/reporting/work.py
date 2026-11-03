@@ -18,6 +18,8 @@ from awm.reporting.work_schema import WORK_SCHEMA  # noqa: F401  re-exported for
 
 MAIN, WORKER, JOINED = "main", "worker", "joined"
 ROLES = (MAIN, WORKER, JOINED)
+#: How a session got its parent: started by it, or cleared from it.
+PARENT_KINDS = ("start", "clear")
 
 
 #: Longest fold chain followed before the lookup gives up: a cycle is a bug, not data.
@@ -148,6 +150,43 @@ class Work(Ledger):
         if target != task_id:
             row["asked_for"] = task_id
         return row
+
+    # -- lineage (R13, R16) ----------------------------------------------------
+
+    def set_parent(self, session_id: str, parent_id: str, how: str, node: str = "") -> bool:
+        """Record who started ``session_id``, or which session it was before a clear.
+
+        The first link wins: a session has one parent. False when nothing changed.
+        """
+        if how not in PARENT_KINDS:
+            raise ValueError(f"how is one of {PARENT_KINDS}, not {how!r}")
+        session, parent = session_key(session_id), session_key(parent_id)
+        if session == parent:
+            return False
+        with self._tx() as conn:
+            return conn.execute("INSERT OR IGNORE INTO session_parents (session, parent, how, node, at)"
+                                " VALUES (?,?,?,?,?)", (session, parent, how, node, time.time())).rowcount > 0
+
+    def ancestors(self, session_id: str, limit: int = _MAX_FOLDS) -> list[dict]:
+        """The parent links from ``session_id`` up, nearest first."""
+        out, seen = [], set()
+        session = session_key(session_id)
+        with self._tx() as conn:
+            while len(out) < limit and session not in seen:
+                seen.add(session)
+                row = conn.execute("SELECT * FROM session_parents WHERE session=?", (session,)).fetchone()
+                if row is None:
+                    break
+                out.append({"session_id": row["session"], "parent": row["parent"], "how": row["how"],
+                            "node": row["node"], "at": row["at"]})
+                session = row["parent"]
+        return out
+
+    def children(self, session_id: str) -> list[dict]:
+        with self._tx() as conn:
+            return [{"session_id": r["session"], "how": r["how"], "node": r["node"], "at": r["at"]}
+                    for r in conn.execute("SELECT * FROM session_parents WHERE parent=? ORDER BY at",
+                                          (session_key(session_id),))]
 
     def _ledger_live(self, session: str) -> bool:
         """False when the ledger holds this session's row and that row is closed or ended."""

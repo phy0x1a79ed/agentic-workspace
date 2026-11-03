@@ -275,6 +275,8 @@ async def _start(args: dict[str, Any], as_: str | None) -> dict[str, Any]:
             "started_epoch": time.time(), "pinned": spec["pin"],
             "brief": spec["brief"], "lobby": spec["lobby"],
         }
+        if caller_rec and _r9(caller_rec.get("sessionId")):
+            record["parent_session"] = _r9(caller_rec.get("sessionId"))
         if spec["lobby"]:
             record["project"] = record["scope"] = None
             if spec["scope"] or spec["project"]:
@@ -308,6 +310,9 @@ async def _start(args: dict[str, Any], as_: str | None) -> dict[str, Any]:
         _drop_pending(spec["name"])
     session_id = _r9(session.session_id)
     task_warning = await _attach_task(spec, session_id) if spec["task_id"] else None
+    parent_session = _r9((caller_rec or {}).get("sessionId"))
+    if session_id and parent_session:
+        await _record_parent(session_id, parent_session)
     pinned = spec["pin"] and await _pin(session.short)
     log.info("cx: started %s as %s in %s (mode %s%s)", spec["name"], session.short,
              cwd, spec["mode"], ", pinned" if pinned else "")
@@ -351,6 +356,15 @@ async def _attach_task(spec: dict[str, Any], session_id: str | None) -> str | No
     if isinstance(out, dict) and out.get("ok") is False:
         return f"the session started, but task {spec['task_id']} refused it: {out.get('reason') or out.get('error')}"
     return None
+
+
+async def _record_parent(session_id: str, parent: str) -> None:
+    """Give the task store the start's parent link (sessions.md R13). The lineage record keeps it too."""
+    try:
+        await gatewayclient.call("reporting", "session_parent",
+                                 {"session_id": session_id, "parent": parent, "how": "start"}, timeout=30)
+    except Exception as exc:  # noqa: BLE001 — the lineage record still holds the parent
+        log.info("cx: parent link %s -> %s not recorded: %s", parent, session_id, exc)
 
 
 #: The lobby's CLAUDE.md. It loads the workspace orientation, which a folder

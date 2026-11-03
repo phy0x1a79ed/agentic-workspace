@@ -159,3 +159,17 @@ def test_an_attach_failure_is_a_warning(lobby, with_session_id, home, monkeypatc
 def test_bad_task_arguments_are_refused(lobby, launched, home, args, why):
     out = start({**BASE, **args})
     assert out["ok"] is False and why in out["reason"]
+
+
+def test_a_start_from_a_session_records_its_parent_link(lobby, with_session_id, home, attached):
+    parent_session(home)
+    for pid_file in home.sessions.glob("*.json"):
+        rec = json.loads(pid_file.read_text())
+        rec["sessionId"] = "ffffffff-0000-1111-2222-333333333333"
+        pid_file.write_text(json.dumps(rec))
+    start({**BASE, "_caller_pid": os.getpid()})
+    parent = "ccffffffff000011112222333333333333"
+    assert ("reporting", "session_parent", {"session_id": R9, "parent": parent, "how": "start"}) in attached
+    from awm.cx import lifecycle
+
+    assert lifecycle.read_lineage(CHILD_JOB)["parent_session"] == parent
