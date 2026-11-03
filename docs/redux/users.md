@@ -28,6 +28,7 @@ How a channel works belongs in `channels.md`. The owner's queue belongs in `queu
   1. Its repository lives on Tony's GitHub, with a private fork on the Hallam lab GitHub. Tony: "We can place it on our github and hallam lab forks." and "as private" (2026-11-02).
   2. It holds docs, the SOP among them, DVC-tracked data and the seat folders, on the metasmith layout. Tony: "can we borrow structure of metasmith repo?" and "do seats, docs, dvc tracked data nothing else is needed right?" (2026-11-02).
   3. `seats/<person>/` is the only split by seat, and git ignores it. Only that person's seat writes there, and only the main seat writes outside `seats/`, so merges never collide. Tony: "Need to be careful so that merges dont collide.", "we want to avoid having seat splits down multiple folders, so seats/<person> is the only seat split. others apply to the whole setup" and "The users subfokders  for each seat is gitignored" (2026-11-02).
+  4. Each `seats/<person>/` is a local git repository, with DVC for its data. It has no remote. The nightly Globus backup covers it. Tony: "We can do local got repos and dvc for data. This gets backed up by the nightly globus" (2026-11-02).
 - **R129.** Slack seats run on altair. Discord seats move from deneb to mizar, because deneb runs no agents (`fleet.md` R79). `social` moves from mira to alcor with mira's other jobs (`fleet.md` R88 item 1). Tony: "Discord to mizar is fine." (2026-11-02).
 
 ## Gap from today
