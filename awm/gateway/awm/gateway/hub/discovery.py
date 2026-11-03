@@ -58,8 +58,15 @@ redux-core branch). Its ``[[service]]`` entry for the folder gives ``profiles``
 and ``[[service.archive]]``, and that service's first ``[[tool]]`` gives ``tool``
 and ``tier``. A key the manifest leaves out falls back to ``service.toml``, so a
 folder may keep its ``[[archive]]`` tables there while the search service still
-reads them from that file. A manifest that does not parse counts like a
-``service.toml`` that does not parse.
+reads them from that file.
+
+Contract rules: discovery refuses a folder whose manifest breaks the plugin
+contract, as the Rust loader does, so the supervisor never starts it.
+``plugin_refusals`` names each refused folder and why. A manifest that does not
+parse is refused. The rules are those of ``plugin-contract.md`` § Manifest:
+tool and plugin names, unique tool names, reserved names only in a core root
+with ``trust = "own"``, paths inside the folder, the platform, and each
+``[[needs.tool]]`` served at its major. Refusals cascade.
 """
 
 from __future__ import annotations
@@ -67,6 +74,8 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
+import sys
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -485,6 +494,188 @@ def set_enabled(name: str, enabled: bool) -> None:
 # Discovery
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Contract rules, checked at load
+# ---------------------------------------------------------------------------
+
+#: Tool names only a core plugin with ``trust = "own"`` may claim. The edge
+#: list's singleton tools join them (``peer_catalog.declared_homes``).
+RESERVED_TOOLS = frozenset({"awm", "2fa", "approver", "queue-store", "journal"})
+_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]*")
+_MANIFEST_KEYS = {
+    "": {"plugin", "service", "tool", "page", "needs"},
+    "plugin": {"name", "version", "trust", "refresh"},
+    "service": {"name", "path", "run", "install", "profiles", "archive"},
+    "tool": {"name", "major", "service", "services", "tier", "implements"},
+    "page": {"name", "dir", "entry"},
+    "needs": {"secrets", "network", "tool", "contract", "platform", "gpu"},
+    "need": {"name", "major"},
+}
+_OS = {"linux": "linux", "darwin": "macos", "win32": "windows"}
+
+
+def _core_roots() -> list[Path]:
+    plugins = plugins_root()
+    return [services_root(), *([plugins] if plugins else [])]
+
+
+def _inside(folder: Path, rel: object) -> bool:
+    if not isinstance(rel, str):
+        return False
+    try:
+        return (folder / rel).resolve().is_relative_to(folder.resolve())
+    except OSError:
+        return False
+
+
+def _unknown(table: object, kind: str) -> list[str]:
+    if not isinstance(table, dict):
+        return [f"[{kind}] is not a table"]
+    extra = sorted(set(table) - _MANIFEST_KEYS[kind])
+    return [f"unknown key {k!r} in {'[' + kind + ']' if kind else 'the manifest'}" for k in extra]
+
+
+def check_manifest(folder: Path, manifest: dict, *, core: bool) -> tuple[list[tuple[str, int]], list[str]]:
+    """The tools a manifest claims, as ``(name, major)``, and every rule it breaks.
+
+    The rules that need the whole tree, unique names and needs, are
+    ``plugin_refusals``'s."""
+    problems = _unknown(manifest, "")
+    plugin = manifest.get("plugin")
+    problems += _unknown(plugin, "plugin") if plugin is not None else ["no [plugin] table"]
+    plugin = plugin if isinstance(plugin, dict) else {}
+    name, trust = plugin.get("name"), plugin.get("trust", "own")
+    if not isinstance(name, str) or not _NAME.fullmatch(name):
+        problems.append(f"plugin name {name!r} must be letters, digits and hyphens")
+    if trust not in ("own", "third-party"):
+        problems.append(f"trust {trust!r} is not own or third-party")
+    services = manifest.get("service") or []
+    for svc in services:
+        problems += _unknown(svc, "service")
+        if isinstance(svc, dict) and not _inside(folder, svc.get("path", ".")):
+            problems.append(f"service {svc.get('name')!r}: path {svc.get('path')!r} leaves the plugin folder")
+    names = {svc.get("name") for svc in services if isinstance(svc, dict)}
+    tools: list[tuple[str, int]] = []
+    for tool in manifest.get("tool") or []:
+        problems += _unknown(tool, "tool")
+        if not isinstance(tool, dict):
+            continue
+        tname, major = tool.get("name"), tool.get("major", 1)
+        if not isinstance(tname, str) or not _NAME.fullmatch(tname):
+            problems.append(f"tool {tname!r} must be letters, digits and hyphens")
+            continue
+        if not isinstance(major, int):
+            problems.append(f"tool {tname!r}: major {major!r} is not an integer")
+        if any(t == tname for t, _ in tools):
+            problems.append(f"tool {tname!r} is declared twice")
+        if tname in reserved_tools() and not (core and trust == "own"):
+            problems.append(f"tool {tname!r} is reserved for core plugins")
+        named = tool.get("services") or ([tool["service"]] if "service" in tool else [])
+        if "service" in tool and "services" in tool:
+            problems.append(f"tool {tname!r} sets both service and services")
+        if not set(named) <= names:
+            problems.append(f"tool {tname!r} names a service the plugin does not declare")
+        if not named and len(names) != 1:
+            problems.append(f"tool {tname!r} names no service and the plugin has {len(names)}")
+        for raw in tool.get("implements") or []:
+            c, _, m = str(raw).partition("@")
+            if not _NAME.fullmatch(c) or not m.isdigit():
+                problems.append(f"tool {tname!r}: implements {raw!r} is not <contract>@<major>")
+        tools.append((tname, major if isinstance(major, int) else 1))
+    for page in manifest.get("page") or []:
+        problems += _unknown(page, "page")
+        if isinstance(page, dict) and "dir" in page and not _inside(folder, page["dir"]):
+            problems.append(f"page {page.get('name')!r}: dir {page['dir']!r} leaves the plugin folder")
+    needs = manifest.get("needs") or {}
+    problems += _unknown(needs, "needs")
+    if isinstance(needs, dict):
+        for dep in (needs.get("tool") or []) + (needs.get("contract") or []):
+            problems += _unknown(dep, "need")
+            if isinstance(dep, dict) and not (isinstance(dep.get("name"), str) and _NAME.fullmatch(dep["name"])):
+                problems.append(f"a need names {dep.get('name')!r}, not a tool or contract name")
+        platform = needs.get("platform") or []
+        if platform and _OS.get(sys.platform, sys.platform) not in platform:
+            problems.append(f"needs platform {platform}, this node is {_OS.get(sys.platform, sys.platform)}")
+    return tools, problems
+
+
+def reserved_tools() -> set[str]:
+    """The reserved names plus the edge list's singleton tools."""
+    from awm.gateway import peer_catalog
+
+    return set(RESERVED_TOOLS) | set(peer_catalog.declared_homes())
+
+
+def plugin_refusals() -> dict[str, str]:
+    """``{folder name: reason}`` for every folder the contract refuses.
+
+    Folders claim tool names in root order, core roots first, then by name, so
+    the second claim of a name is the one refused. Legacy folders (``run.sh``
+    and no manifest) may share a tool among themselves while they convert."""
+    core = {str(r) for r in _core_roots()}
+    seen: set[str] = set()
+    owners: dict[str, tuple[str, bool, int]] = {}
+    refused: dict[str, str] = {}
+    needs: dict[str, list[dict]] = {}
+    for root in service_roots():
+        if not root.is_dir():
+            continue
+        for entry in sorted(root.iterdir()):
+            if not entry.is_dir() or not _valid_name(entry.name) or entry.name in seen:
+                continue
+            seen.add(entry.name)
+            path = entry / PLUGIN_MANIFEST
+            if not path.is_file():
+                if (entry / RUN_SCRIPT).is_file():
+                    tool = read_tool(entry)
+                    owner = owners.get(tool)
+                    if owner and not owner[1]:
+                        refused[entry.name] = f"tool {tool!r} is already served by plugin {owner[0]!r}"
+                        continue
+                    owners.setdefault(tool, (entry.name, True, 1))
+                continue
+            try:
+                manifest = _load_toml(path)
+            except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
+                refused[entry.name] = f"{PLUGIN_MANIFEST}: {exc}"
+                continue
+            tools, problems = check_manifest(entry, manifest, core=str(root) in core)
+            for tname, _ in tools:
+                if tname in owners:
+                    problems.append(f"tool {tname!r} is already served by plugin {owners[tname][0]!r}")
+            if problems:
+                refused[entry.name] = "; ".join(problems)
+                continue
+            for tname, major in tools:
+                owners[tname] = (entry.name, False, major)
+            needs[entry.name] = [d for d in ((manifest.get("needs") or {}).get("tool") or []) if isinstance(d, dict)]
+    from awm.gateway import peer_catalog
+
+    elsewhere = set(peer_catalog.declared_homes())
+    changed = True
+    while changed:
+        changed = False
+        for plugin, deps in needs.items():
+            if plugin in refused:
+                continue
+            for dep in deps:
+                name, major = dep["name"], dep.get("major", 1)
+                owner = owners.get(name)
+                if owner is None or owner[0] in refused:
+                    if name in elsewhere:
+                        continue  # a singleton homed on a peer
+                    refused[plugin] = f"needs tool {name!r}, which no plugin serves"
+                elif owner[2] != major:
+                    refused[plugin] = f"needs tool {name!r} at major {major}, plugin {owner[0]!r} serves major {owner[2]}"
+                else:
+                    continue
+                changed = True
+                break
+    for name, reason in refused.items():
+        _log_once(f"plugin {name} refused: {reason}")
+    return refused
+
+
 def discover_services() -> list[ServiceSpec]:
     """Scan the service roots for subdirs containing an executable ``run.sh``.
 
@@ -495,10 +686,11 @@ def discover_services() -> list[ServiceSpec]:
     if not root.is_dir():
         log.warning("services root %s does not exist", root)
     enabled_map = load_enabled()
+    refused = plugin_refusals()
     specs: list[ServiceSpec] = []
     for entry in root_folders(service_roots()):
         run = entry / RUN_SCRIPT
-        if not run.is_file():
+        if not run.is_file() or entry.name in refused:
             continue
         specs.append(ServiceSpec(
             name=entry.name,

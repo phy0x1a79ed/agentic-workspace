@@ -18,7 +18,6 @@ name = "{name}"
 
 [[tool]]
 name = "{tool}"
-uuid = "00000000-0000-5000-8000-000000000001"
 major = 1
 tier = "{tier}"
 """

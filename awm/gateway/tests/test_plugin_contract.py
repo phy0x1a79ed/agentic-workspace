@@ -41,9 +41,7 @@ CROSS_IMPORTS = {
     ("scopes", "dvc"): "scopes runs dvc's data_dvc hooks in-process",
 }
 
-TOOL_NAME = re.compile(r"[A-Za-z0-9-]+")
 SECRET = re.compile(r"(KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|COOKIE)S?($|_)")
-PLATFORMS = {"linux", "windows", "macos"}
 #: A path into the awm tree's services root, as a script spells it. A state
 #: folder under ``.awm/services`` is not one.
 TREE_PATH = re.compile(r"(?:(?<![.\w])awm|\$\{?AWM\}?)/services/([A-Za-z0-9_-]+)")
@@ -149,52 +147,26 @@ def test_each_service_has_a_manifest_or_a_named_legacy_reason(folder):
         assert not (folder / "service.toml").exists(), "the manifest replaces service.toml"
 
 
+def test_the_loader_refuses_no_folder_of_the_tree(monkeypatch):
+    monkeypatch.delenv("AWM_SERVICE_ROOTS", raising=False)
+    assert discovery.plugin_refusals() == {}
+
+
 @pytest.mark.parametrize("folder", _plugins(), ids=lambda f: f.name)
-def test_each_manifest_fills_the_contract(folder):
+def test_each_manifest_names_its_folder_and_no_host(folder):
     m = _manifest(folder)
-    assert set(m) <= {"plugin", "service", "tool", "page", "needs"}, "no [placement]: the install config places plugins"
-    plugin = m["plugin"]
-    assert plugin["name"] == folder.name
-    assert isinstance(plugin["version"], str) and plugin["trust"] in ("own", "third-party")
-    services = {s["name"] for s in m["service"]}
-    assert services and folder.name in services
+    assert "placement" not in m, "the install config places plugins"
+    assert m["plugin"]["name"] == folder.name
+    assert isinstance(m["plugin"]["version"], str)
+    assert folder.name in {s["name"] for s in m["service"]}
     for s in m["service"]:
-        assert not Path(s.get("path", ".")).is_absolute() and ".." not in Path(s.get("path", ".")).parts
         for table in s.get("archive", []):
             assert table["mode"] in ("index", "live"), table
     for tool in m["tool"]:
-        assert TOOL_NAME.fullmatch(tool["name"]), tool["name"]
         assert tool["name"] != "awm", "the awm tool belongs to the core"
-        assert "uuid" not in tool, "a tool's unique name is its id (R117 item 2)"
-        assert isinstance(tool["major"], int) and tool["tier"] in ("on", "off")
-        assert not ("service" in tool and "services" in tool)
-        named = tool.get("services") or [tool["service"]] if ("service" in tool or "services" in tool) else []
-        assert set(named) <= services
-        assert named or len(services) == 1
-    for page in m.get("page", []):
-        assert page["name"]
-        assert ".." not in Path(page.get("dir", ".")).parts and not Path(page.get("dir", ".")).is_absolute()
+        assert tool["tier"] in ("on", "off")
     needs = m["needs"]
     assert all(isinstance(x, str) for x in needs["secrets"] + needs["network"])
-    assert set(needs.get("platform", [])) <= PLATFORMS
-    for dep in needs.get("tool", []) + needs.get("contract", []):
-        assert set(dep) <= {"name", "major"} and TOOL_NAME.fullmatch(dep["name"]), dep
-        assert isinstance(dep["major"], int)
-
-
-def test_tool_names_are_unique_and_every_dependency_resolves():
-    served: dict[str, tuple[str, int]] = {}
-    for folder in _plugins():
-        for tool in _manifest(folder)["tool"]:
-            assert tool["name"] not in served, (folder.name, served.get(tool["name"]))
-            served[tool["name"]] = (folder.name, tool["major"])
-    for folder in FOLDERS:
-        if folder.name in LEGACY:
-            served.setdefault(discovery.read_tool(folder), (folder.name, 1))
-    for folder in _plugins():
-        for dep in _manifest(folder)["needs"].get("tool", []):
-            assert dep["name"] in served, (folder.name, dep["name"])
-            assert dep["major"] == served[dep["name"]][1], (folder.name, served[dep["name"]])
 
 
 @pytest.mark.parametrize("folder", FOLDERS, ids=lambda f: f.name)
@@ -235,10 +207,20 @@ def test_each_plugin_loads_the_same_from_a_root_outside_the_tree(folder, tmp_pat
             shutil.copy2(folder / name, copy / name)
     empty = tmp_path / "no-services"
     empty.mkdir()
+    for dep in _manifest(folder)["needs"].get("tool", []):
+        stub = empty / f"stub-{dep['name']}"
+        stub.mkdir()
+        (stub / "run.sh").write_text("#!/bin/bash\n")
+        (stub / discovery.PLUGIN_MANIFEST).write_text(
+            f"[plugin]\nname = 'stub-{dep['name']}'\n[[service]]\nname = 'stub-{dep['name']}'\n"
+            f"[[tool]]\nname = '{dep['name']}'\nmajor = {dep['major']}\n")
     monkeypatch.setenv("AWM_SERVICES_DIR", str(empty))
     monkeypatch.setenv("AWM_SERVICE_ROOTS", str(outside))
     monkeypatch.setenv("AWM_PROFILES", ",".join(_manifest(folder)["service"][0].get("profiles", [])))
     spec = discovery.discover_service(folder.name)
+    if tool in discovery.RESERVED_TOOLS:
+        assert spec is None, "a reserved name loads only from a core root"
+        return
     assert spec is not None and spec.enabled
     assert spec.cwd == str(copy)
     assert discovery.service_tool(folder.name) == tool
