@@ -94,11 +94,13 @@ def test_citation_hops_follow_the_edges_direction(tmp_path):
 
 
 def test_an_author_filter_matches_a_misspelt_surname_on_surnames_only(tmp_path):
-    h = write_hops(tmp_path / "hops", ["a", "b", "c"],
-                   names={"a": ["Curtis Huttenhower"], "b": ["Küsel, Kirsten"], "c": ["Hutton, James"]})
+    h = write_hops(tmp_path / "hops", ["a", "b", "c", "d"],
+                   names={"a": ["Curtis Huttenhower"], "b": ["Küsel, Kirsten"], "c": ["Hutton, James"],
+                          "d": ["A. Kosel"]})
     assert h.surnames("Huttenhauer") == ["huttenhower"]
     assert h.by_author("Huttenhauer") == {"a"} and h.by_author("K. Kusel") == {"b"}
-    assert h.by_author("Curtis") == set()
+    assert h.by_author("Curtis") == set() and h.by_author("Curtis Huttenhower") == {"a"}
+    assert h.surnames("Küsel") == ["kusel"]  # an exact surname leaves out Kosel, one letter away
 
 
 @pytest.fixture

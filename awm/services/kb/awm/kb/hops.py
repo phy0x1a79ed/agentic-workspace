@@ -45,6 +45,15 @@ def _grams(word: str) -> list[str]:
     return sorted({padded[i:i + TRIGRAM] for i in range(len(padded) - TRIGRAM + 1)})
 
 
+def _surname(name: str) -> str:
+    """kb.hops.surname: the part before a comma, else the last word, folded."""
+    name = name.strip()
+    if "," in name:
+        return fold(name.split(",")[0])
+    parts = name.split()
+    return fold(parts[-1]) if parts else ""
+
+
 def _day(stamp: str) -> int:
     m = re.match(r"(\d{4})(?:-(\d{2}))?(?:-(\d{2}))?", stamp or "")
     return int(m[1]) * 10000 + int(m[2] or 1) * 100 + int(m[3] or 1) if m else 0
@@ -153,25 +162,26 @@ class Hops:
     # -- author filter ----------------------------------------------------
 
     def surnames(self, name: str) -> list[str]:
-        """The surnames ``name`` matches: each of its words of three letters or more, folded, against every
-        surname that shares a trigram with it, by difflib's ratio."""
+        """The surnames ``name`` matches: its surname ("Last, First" or "First Last") folded, itself when the
+        arrays hold it, else every surname sharing a trigram with it whose difflib ratio reaches
+        :data:`SURNAME_RATIO`."""
         a = self._arrays()
-        if a is None:
+        word = _surname(name)
+        if a is None or len(word) < 3:
             return []
-        out: list[str] = []
         tri, sn = a["trigram"], a["surname"]
-        for word in {fold(w) for w in re.split(r"[\s,.;]+", name) if len(fold(w)) >= 3}:
-            grams = np.array([g.encode() for g in _grams(word)], dtype=tri.dtype)
-            at = np.searchsorted(tri, grams)
-            cand: set[int] = set()
-            for i, g in zip(at, grams):
-                if i < len(tri) and tri[i] == g:
-                    cand.update(int(j) for j in a["ts_idx"][a["ts_ptr"][i]:a["ts_ptr"][i + 1]])
-            for j in cand:
-                s = sn[j].decode()
-                if difflib.SequenceMatcher(None, word, s).ratio() >= SURNAME_RATIO:
-                    out.append(s)
-        return sorted(set(out))
+        key = np.array([word.encode()], dtype=sn.dtype)
+        i = int(np.searchsorted(sn, key)[0])
+        if i < len(sn) and sn[i] == key[0]:
+            return [word]
+        grams = np.array([g.encode() for g in _grams(word)], dtype=tri.dtype)
+        at = np.searchsorted(tri, grams)
+        cand: set[int] = set()
+        for i, g in zip(at, grams):
+            if i < len(tri) and tri[i] == g:
+                cand.update(int(j) for j in a["ts_idx"][a["ts_ptr"][i]:a["ts_ptr"][i + 1]])
+        return sorted({s for s in (sn[j].decode() for j in cand)
+                       if difflib.SequenceMatcher(None, word, s).ratio() >= SURNAME_RATIO})
 
     def by_author(self, name: str) -> set[str] | None:
         """The papers whose author list holds a surname ``name`` matches; None when there are no arrays."""
