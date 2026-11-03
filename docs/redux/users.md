@@ -30,6 +30,7 @@ How a channel works belongs in `channels.md`. The owner's queue belongs in `queu
   3. `seats/<person>/` is the only split by seat, and git ignores it. Only that person's seat writes there, and only the main seat writes outside `seats/`, so merges never collide. Tony: "Need to be careful so that merges dont collide.", "we want to avoid having seat splits down multiple folders, so seats/<person> is the only seat split. others apply to the whole setup" and "The users subfokders  for each seat is gitignored" (2026-11-02).
   4. Each `seats/<person>/` is a local git repository, with DVC for its data. It has no remote. The nightly Globus backup covers a lab seat's folder. A seat outside the lab needs no backup, and the `agentic-commons` docs say so. Tony: "We can do local got repos and dvc for data. This gets backed up by the nightly globus" and "For non lab seats, no backups is fine. This can be described in the docs" (2026-11-02).
 - **R129.** Slack seats run on altair. Discord seats move from deneb to mizar, because deneb runs no agents (`fleet.md` R79). `social` moves from mira to alcor with mira's other jobs (`fleet.md` R88 item 1). Tony: "Discord to mizar is fine." (2026-11-02).
+- **R130.** awm has no static edge users. An agent or node reaches another node through an ssh edge (`fleet.md` R87) or a singleton's service door (`fleet.md` R98). Tony reaches a gateway portal with his passkey (`fleet.md` R84). No login holds a fixed password. Tony: "This is replaced by the ssh or service edge no? I dont see how this fits with decided infrastructure" (2026-11-03).
 
 ## Gap from today
 
@@ -44,7 +45,7 @@ Surveyed read only on 2026-10-30. Each user found, against the boundaries of R12
 - **R122 missing.** shaula, of the `collins` swarm, is a foreign peer in altair's book with standing read grants on journals, kb, notes, precedence and writing (`fleet.md` § Gap from today).
 - Ryan approves admin windows by Slack reply.
 - Bots come in through Discord kept seats, the boundary for humans, not through rooms.
-- altair's HTTPS edge has 2 static users, not yet identified (thread 3a).
+- **R130 broken.** altair's HTTPS edge holds 2 static per-user passwords from `awm auth user-add`, owners not identified.
 - People who accept a tether reach an agent from their own computers (R121 item 4).
 - deneb's public edge has five doors with no session, among them the tether relay and the federation board (`fleet.md` § Gap from today). R124 governs what these doors may reach.
 
