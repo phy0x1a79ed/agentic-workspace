@@ -39,7 +39,7 @@ Which node holds which role belongs in `fleet.md`. How a deploy moves through th
   1. An image holds no secret and no fleet detail, such as a token, a node name, an address or peer config. The node supplies these at runtime.
   2. An image holds no Claude Code, which is Anthropic's proprietary software. The cloud sandbox has its own, and a container on mizar uses the host's install (`fleet.md` R109).
   3. A pin names an image by digest, beside the commit pin of R116 item 2.
-  4. quay.io is not on the cloud's default Trusted list. The cloud environment runs at the Custom network level with quay.io and its CDN hosts added.
+  4. quay.io is not on the cloud's default Trusted list. The cloud environment runs at the Custom network level with `quay.io` and `*.quay.io` added and the default list kept. The change rebuilds the cloud snapshot once. metasmith's cloud tests need the same list for its biocontainers.
 
 ## Gap from today
 
