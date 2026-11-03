@@ -3,7 +3,9 @@
 //! It publishes, under the tool `FAKE_TOOL` (default: the service name):
 //! `echo(text)`, `add(a, b)`, `whoami()` (returns the `caller` frame the gateway stamped),
 //! `run_job(job)` (reports a background run), and `call_needed(verb, args)` (calls the first
-//! tool in `AWM_RESOLVED_TOOLS` through `/invoke`).
+//! tool in `AWM_RESOLVED_TOOLS` through `/invoke`). As a fake harness plugin it also answers
+//! `caller_of_token(token)` from the JSON map in `FAKE_TOKENS`, and `scoped(project?, scope?,
+//! to_scope?)` returns the args it got.
 
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
@@ -42,7 +44,10 @@ async fn main() -> anyhow::Result<()> {
         f("whoami", "The caller the gateway stamped.", json!([])),
         f("run_job", "Report one background run.", json!([{"name": "job", "type": "string", "required": true}])),
         f("call_needed", "Call the first needed tool.", json!([{"name": "verb", "required": true}, {"name": "args", "type": "object"}])),
+        f("caller_of_token", "The isolated session that holds a caller token.", json!([{"name": "token", "required": true}])),
+        f("scoped", "Return the args as received.", json!([{"name": "project"}, {"name": "scope"}, {"name": "to_scope"}])),
     ]});
+    let tokens: Value = std::env::var("FAKE_TOKENS").ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or(json!({}));
     sink.send(Message::Text(json!({"kind": "ready", "api": manifest}).to_string().into())).await?;
 
     while let Some(msg) = stream.next().await {
@@ -61,7 +66,17 @@ async fn main() -> anyhow::Result<()> {
                 _ => Err("add needs numbers a and b".into()),
             },
             "whoami" => Ok(json!({"caller": frame["caller"], "as": frame["as"],
-                "trust": args["_caller_trust"], "scope": args["_caller_scope"]})),
+                "trust": args["_caller_trust"], "scope": args["_caller_scope"], "session_id": args["_caller_session_id"]})),
+            "caller_of_token" => Ok(match args["token"].as_str().and_then(|t| tokens.get(t)).and_then(Value::as_object) {
+                Some(rec) => {
+                    let mut answer = rec.clone();
+                    answer.insert("ok".into(), json!(true));
+                    answer.insert("known".into(), json!(true));
+                    Value::Object(answer)
+                }
+                None => json!({"ok": true, "known": false}),
+            }),
+            "scoped" => Ok(args.clone()),
             "run_job" => {
                 let usage = json!({"kind": "usage", "surface": "background", "name": args["job"], "ok": true, "ms": 5});
                 sink.send(Message::Text(usage.to_string().into())).await?;

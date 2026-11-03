@@ -428,3 +428,130 @@ fn bootstrap_writes_a_config_the_gateway_accepts() {
     let (ok, _) = run(&["--config", bad.to_str().unwrap(), "--force"]);
     assert!(!ok, "bootstrap must refuse a config the gateway would refuse");
 }
+
+const SESSION: &str = "cc0123456789abcdef0123456789abcdef";
+
+/// A node whose `harness-cc` is the fake, holding one caller token, with the isolated door on.
+fn lay_out_isolated() -> Node {
+    let tmp = tempfile::tempdir().unwrap();
+    let base = tmp.path().to_path_buf();
+    let (core, state, ws) = (base.join("core"), base.join("state"), base.join("ws"));
+    std::fs::create_dir_all(&ws).unwrap();
+    let fake = fake_bin();
+    for (name, tool, uuid) in [("fake", "fake", FAKE_UUID), ("cch", "harness-cc", CALLER_UUID)] {
+        write(
+            &core.join(format!("{name}/awm-plugin.toml")),
+            &format!("[plugin]\nname = \"{name}\"\n\n[[service]]\nname = \"{name}\"\n\n[[tool]]\nname = \"{tool}\"\nuuid = \"{uuid}\"\nservice = \"{name}\"\n"),
+        );
+    }
+    write(&core.join("fake/run.sh"), &format!("exec '{}'\n", fake.display()));
+    let tokens = json!({"good": {"session_id": SESSION, "claude_session_id": "x", "name": "iso", "project": "awm", "scope": "iso",
+        "trust": "untrusted", "tools": {"fake": ["echo", "whoami", "scoped"], "harness-cc": ["caller_of_token"]}}});
+    write(&core.join("cch/run.sh"), &format!("export FAKE_TOOL=harness-cc FAKE_TOKENS='{tokens}'\nexec '{}'\n", fake.display()));
+    write(
+        &state.join("config.toml"),
+        &format!(
+            "node = \"e2e\"\nlisten = \"127.0.0.1:0\"\nisolated_listen = \"127.0.0.1:0\"\nworkspace = \"{}\"\ncore_roots = [\"{}\"]\ntool_wait_s = 30\n",
+            ws.display(),
+            core.display()
+        ),
+    );
+    Node { _tmp: tmp, state, journal: false }
+}
+
+/// One JSON-RPC message to `<base>/mcp`: (status, body).
+fn rpc(base: &str, token: Option<&str>, method: &str, params: Value) -> (u16, Value) {
+    let mut req = http().post(format!("{base}/mcp")).header("Accept", "application/json, text/event-stream");
+    if let Some(t) = token {
+        req = req.header("X-Awm-Caller-Token", t);
+    }
+    let body = if method.starts_with("notifications/") {
+        json!({"jsonrpc": "2.0", "method": method})
+    } else {
+        json!({"jsonrpc": "2.0", "id": 7, "method": method, "params": params})
+    };
+    let resp = req.json(&body).send().unwrap();
+    let status = resp.status().as_u16();
+    (status, resp.json().unwrap_or(Value::Null))
+}
+
+fn door_call(base: &str, tool: &str, arguments: Value) -> (String, bool) {
+    let (status, r) = rpc(base, Some("good"), "tools/call", json!({"name": tool, "arguments": arguments}));
+    assert_eq!(status, 200, "{r}");
+    (r["result"]["content"][0]["text"].as_str().unwrap_or_default().to_string(), r["result"]["isError"] == true)
+}
+
+#[test]
+fn isolated_door_end_to_end() {
+    let node = lay_out_isolated();
+    let gw = Gateway::start(&node.state);
+    let info: Value = serde_json::from_str(&std::fs::read_to_string(node.state.join("gateway.json")).unwrap()).unwrap();
+    let door = info["isolated_url"].as_str().expect("no isolated_url in gateway.json").to_string();
+    let state = node.state.clone();
+    let fail = |what: &str| -> String { format!("{what}\n--- gateway log ---\n{}", log(&state)) };
+
+    // No token, or one the harness plugin does not know: 401 before any MCP.
+    assert_eq!(rpc(&door, None, "initialize", json!({})).0, 401);
+    assert_eq!(rpc(&door, Some("guess"), "initialize", json!({})).0, 401, "{}", fail("unknown token"));
+
+    let (status, init) = rpc(&door, Some("good"), "initialize", json!({"protocolVersion": "2025-06-18", "capabilities": {}}));
+    assert_eq!((status, &init["result"]["serverInfo"]["name"]), (200, &json!("awm")), "{}", fail("initialize"));
+    assert_eq!(rpc(&door, Some("good"), "notifications/initialized", json!({})).0, 202);
+
+    // tools/list shows only the whitelist under the ceiling: no harness-cc, no awm, no peers.
+    let (_, list) = rpc(&door, Some("good"), "tools/list", json!({}));
+    let tools = list["result"]["tools"].as_array().cloned().unwrap_or_default();
+    let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
+    assert_eq!(names, vec!["fake"], "{list}");
+    let verbs = &tools[0]["inputSchema"]["properties"]["verb"]["enum"];
+    assert_eq!(verbs, &json!(["echo", "scoped", "whoami", "describe"]));
+    assert_eq!(tools[0]["inputSchema"]["properties"]["peer"]["enum"], json!(["local"]));
+
+    let (text, err) = door_call(&door, "fake", json!({"verb": "echo", "args": {"text": "from the box"}}));
+    assert_eq!((text.as_str(), err), ("from the box", false), "{}", fail("door echo"));
+    let (text, err) = door_call(&door, "fake", json!({"verb": "describe"}));
+    assert!(!err && text.contains("echo") && !text.contains("\"add\""), "describe leaks verbs: {text}");
+
+    // The caller is the session the token names, untrusted, in its own scope.
+    let (text, _) = door_call(&door, "fake", json!({"verb": "whoami"}));
+    let who: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(who["caller"]["session"], SESSION, "{who}");
+    assert_eq!((&who["trust"], &who["scope"], &who["session_id"]), (&json!("untrusted"), &json!("awm/iso"), &json!(SESSION)));
+
+    // Scope pinning: filled when absent, refused when it names another scope.
+    let (text, err) = door_call(&door, "fake", json!({"verb": "scoped", "args": {"_caller_trust": "trusted"}}));
+    let got: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
+    assert!(!err && got["project"] == "awm" && got["scope"] == "iso" && got["_caller_trust"] == "untrusted", "{text}");
+    for bad in [json!({"scope": "other"}), json!({"project": "cloud"}), json!({"to_scope": "awm/other"})] {
+        let (text, err) = door_call(&door, "fake", json!({"verb": "scoped", "args": bad}));
+        assert!(err && text.contains("own scope awm/iso"), "{bad}: {text}");
+    }
+
+    // Off the whitelist, under the ceiling, or on a peer: refused.
+    for (tool, args, why) in [
+        ("fake", json!({"verb": "add", "args": {"a": 1, "b": 2}}), "whitelist"),
+        ("harness-cc", json!({"verb": "caller_of_token", "args": {"token": "good"}}), "whitelist"),
+        ("awm", json!({"verb": "status"}), "whitelist"),
+        ("fake", json!({"verb": "echo", "args": {"text": "x"}, "peer": "elsewhere"}), "this node only"),
+    ] {
+        let (text, err) = door_call(&door, tool, args.clone());
+        assert!(err && text.contains("403") && text.contains(why), "{tool} {args}: {text}");
+    }
+
+    // The door listener serves /mcp only. The loopback /invoke refuses a token.
+    let invoke = http().post(format!("{door}/invoke")).json(&json!({"name": "fake", "args": {"verb": "echo", "args": {"text": "x"}}})).send().unwrap();
+    assert_eq!(invoke.status().as_u16(), 404);
+    let invoke = http()
+        .post(format!("{}/invoke", gw.url))
+        .header("X-Awm-Caller-Token", "good")
+        .json(&json!({"name": "fake", "args": {"verb": "echo", "args": {"text": "x"}}}))
+        .send()
+        .unwrap();
+    assert_eq!(invoke.status().as_u16(), 403);
+    assert_eq!(http().get(format!("{door}/mcp")).header("X-Awm-Caller-Token", "good").send().unwrap().status().as_u16(), 405);
+
+    // The loopback listener answers the same door.
+    let (text, err) = door_call(&gw.url, "fake", json!({"verb": "echo", "args": {"text": "loopback"}}));
+    assert_eq!((text.as_str(), err), ("loopback", false));
+    assert!(gw.stop().success());
+}

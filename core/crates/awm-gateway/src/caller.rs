@@ -11,6 +11,8 @@ use serde_json::Value;
 
 pub const TRUST_KEY: &str = "_caller_trust";
 pub const SCOPE_KEY: &str = "_caller_scope";
+/// The R9 id of an isolated session, which has no pid. Only the isolated door writes it.
+pub const SESSION_KEY: &str = "_caller_session_id";
 pub const DEFAULT_TRUST: &str = "trusted";
 
 /// Where Claude Code keeps one record per live session, as `awm.claudedaemon.sessionmode` reads it.
@@ -74,6 +76,7 @@ pub fn stamp(args: &mut Value, caller: &Caller) {
     let Some(map) = args.as_object_mut() else { return };
     map.remove(TRUST_KEY);
     map.remove(SCOPE_KEY);
+    map.remove(SESSION_KEY);
     if let Some(trust) = &caller.trust {
         map.insert(TRUST_KEY.into(), Value::String(trust.clone()));
     }

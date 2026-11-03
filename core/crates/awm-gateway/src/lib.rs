@@ -4,6 +4,7 @@ pub mod caller;
 pub mod config;
 pub mod gateway;
 pub mod hub;
+pub mod isolated;
 pub mod loader;
 pub mod peer;
 pub mod server;

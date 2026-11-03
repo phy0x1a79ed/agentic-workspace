@@ -32,6 +32,7 @@ pub fn router(gw: Arc<Gateway>) -> Router {
         .route("/status", get(status))
         .route("/tools", get(tools))
         .route("/invoke", post(invoke))
+        .route("/mcp", post(mcp).get(mcp_no_stream).delete(mcp_no_stream))
         .route("/usage", get(usage_get).post(usage_post))
         .route("/hub/service/register", post(register))
         .route("/hub/service/control/{id}", get(control))
@@ -46,6 +47,12 @@ pub fn router(gw: Arc<Gateway>) -> Router {
         .with_state(gw)
 }
 
+/// The isolated door's own listener: `/mcp` and nothing else, so a container that reaches it
+/// cannot reach `/invoke` or the hub.
+pub fn door_router(gw: Arc<Gateway>) -> Router {
+    Router::new().route("/mcp", post(mcp).get(mcp_no_stream).delete(mcp_no_stream)).with_state(gw)
+}
+
 /// Bind, start the services, serve until SIGINT or SIGTERM, then stand everything down.
 pub async fn serve(gw: Arc<Gateway>) -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(&gw.cfg.listen).await?;
@@ -54,9 +61,27 @@ pub async fn serve(gw: Arc<Gateway>) -> anyhow::Result<()> {
     let _ = gw.url.set(url.clone());
     let token = uuid::Uuid::new_v4().simple().to_string();
     write_private(&gw.state.join("edge.token"), &token)?;
+    let mut door_url = Value::Null;
+    if let Some(addr) = &gw.cfg.isolated_listen {
+        let door = tokio::net::TcpListener::bind(addr).await?;
+        door_url = json!(format!("http://{}", door.local_addr()?));
+        tracing::info!("isolated door on {door_url}");
+        let app = door_router(gw.clone());
+        let stop = gw.clone();
+        tokio::spawn(async move {
+            let until = async move {
+                while !stop.stopping() {
+                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                }
+            };
+            if let Err(e) = axum::serve(door, app).with_graceful_shutdown(until).await {
+                tracing::error!("isolated door stopped: {e}");
+            }
+        });
+    }
     std::fs::write(
         gw.state.join("gateway.json"),
-        serde_json::to_string_pretty(&json!({"url": url, "pid": std::process::id(), "node": gw.node}))?,
+        serde_json::to_string_pretty(&json!({"url": url, "isolated_url": door_url, "pid": std::process::id(), "node": gw.node}))?,
     )?;
     tracing::info!("gateway on {url}, node {}", gw.node);
     supervisor::start_all(&gw);
@@ -132,7 +157,16 @@ async fn tools(State(gw): Gw, Query(q): Query<ToolsQuery>) -> Json<Value> {
     Json(json!({"tools": tools}))
 }
 
+/// A caller token belongs on `/mcp`. Anywhere else it would pass as a trusted local caller.
+fn refuse_token(h: &HeaderMap) -> Result<(), ApiError> {
+    match header(h, crate::isolated::TOKEN_HEADER) {
+        Some(_) => Err(ApiError::new(403, "an isolated session calls awm only through /mcp")),
+        None => Ok(()),
+    }
+}
+
 async fn invoke(State(gw): Gw, h: HeaderMap, body: Option<Json<Value>>) -> Result<Json<Value>, ApiError> {
+    refuse_token(&h)?;
     let Some(Json(body)) = body else { return Err(ApiError::new(422, "body must be a JSON object")) };
     let Some(name) = body.get("name").and_then(Value::as_str) else {
         return Err(ApiError::new(400, "missing 'name' in payload"));
@@ -290,6 +324,7 @@ async fn svc_fn(
     h: HeaderMap,
     body: Option<Json<Value>>,
 ) -> Result<Json<Value>, ApiError> {
+    refuse_token(&h)?;
     let args = body.map(|Json(v)| v).unwrap_or_else(|| json!({}));
     let ctx = context(&gw, &h, Surface::Plugin);
     gw.call_function(&service, &function, args, &ctx).await.map(Json)
@@ -328,4 +363,73 @@ fn serve_page(gw: &Gateway, plugin: &str, page: &str, path: &str) -> Response {
         gw.usage.record(ev);
     }
     ([(header::CONTENT_TYPE, mime.to_string())], Body::from(bytes)).into_response()
+}
+
+async fn mcp_no_stream() -> Response {
+    (StatusCode::METHOD_NOT_ALLOWED, "this MCP door answers POST only").into_response()
+}
+
+/// `POST /mcp`: MCP over streamable HTTP with JSON replies, for an isolated session.
+async fn mcp(State(gw): Gw, h: HeaderMap, body: axum::body::Bytes) -> Response {
+    use crate::isolated::rpc_error;
+    let Some(token) = header(&h, crate::isolated::TOKEN_HEADER) else {
+        return (StatusCode::UNAUTHORIZED, Json(json!({"detail": "X-Awm-Caller-Token is required"}))).into_response();
+    };
+    let holder = match gw.holder_of(token).await {
+        Ok(Some(holder)) => holder,
+        Ok(None) => return (StatusCode::UNAUTHORIZED, Json(json!({"detail": "unknown caller token"}))).into_response(),
+        Err(e) => {
+            tracing::warn!("isolated door: token lookup failed: {}", e.detail);
+            return (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"detail": format!("cannot check the caller token: {}", e.detail)})))
+                .into_response();
+        }
+    };
+    let msg: Value = match serde_json::from_slice(&body) {
+        Ok(v) => v,
+        Err(e) => return (StatusCode::BAD_REQUEST, Json(rpc_error(&Value::Null, -32700, e.to_string()))).into_response(),
+    };
+    let batch = msg.is_array();
+    let mut replies = Vec::new();
+    for m in msg.as_array().cloned().unwrap_or_else(|| vec![msg]) {
+        if let Some(r) = mcp_message(&gw, &holder, &m).await {
+            replies.push(r);
+        }
+    }
+    match (batch, replies.len()) {
+        (_, 0) => StatusCode::ACCEPTED.into_response(),
+        (false, _) => Json(replies.remove(0)).into_response(),
+        (true, _) => Json(Value::Array(replies)).into_response(),
+    }
+}
+
+async fn mcp_message(gw: &Gateway, holder: &crate::isolated::Holder, msg: &Value) -> Option<Value> {
+    let id = msg.get("id").cloned()?;
+    let method = msg.get("method").and_then(Value::as_str)?;
+    let result = match method {
+        "initialize" => json!({
+            "protocolVersion": msg.pointer("/params/protocolVersion").and_then(Value::as_str).unwrap_or("2025-06-18"),
+            "capabilities": {"tools": {"listChanged": false}},
+            "serverInfo": {"name": "awm", "version": env!("CARGO_PKG_VERSION")},
+        }),
+        "ping" => json!({}),
+        "tools/list" => json!({"tools": gw.domain_tools_for(Some(holder))}),
+        "tools/call" => {
+            let params = msg.get("params").cloned().unwrap_or(Value::Null);
+            let tool = params.get("name").and_then(Value::as_str).unwrap_or("");
+            let envelope = params.get("arguments").cloned().unwrap_or_else(|| json!({}));
+            let (text, is_error) = match gw.invoke_isolated(holder, tool, &envelope).await {
+                Ok(text) => (text, false),
+                Err(e) => {
+                    let detail = match e.detail {
+                        Value::String(s) => s,
+                        other => other.to_string(),
+                    };
+                    (format!("Error {}: {detail}", e.status), true)
+                }
+            };
+            json!({"content": [{"type": "text", "text": text}], "isError": is_error})
+        }
+        other => return Some(crate::isolated::rpc_error(&id, -32601, format!("method {other:?} not found"))),
+    };
+    Some(json!({"jsonrpc": "2.0", "id": id, "result": result}))
 }

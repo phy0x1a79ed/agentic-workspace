@@ -11,6 +11,7 @@ use serde_json::{json, Value};
 
 use crate::config::Config;
 use crate::hub::{CallError, Hub, ToolBinding, Verb};
+use crate::isolated::{Holder, TokenCache};
 use crate::loader::{self, LoadResult, RemoteTool};
 use crate::peer::{HttpPeers, PeerError, PeerTransport};
 use crate::supervisor::Supervisor;
@@ -38,6 +39,7 @@ pub struct Gateway {
     pub stopping: AtomicBool,
     pub started: Instant,
     pub supervisor: Supervisor,
+    pub tokens: TokenCache,
 }
 
 /// An error with the HTTP status `/invoke` answers it with.
@@ -126,6 +128,7 @@ impl Gateway {
             stopping: AtomicBool::new(false),
             started: Instant::now(),
             supervisor: Supervisor::default(),
+            tokens: TokenCache::default(),
         }))
     }
 
@@ -257,12 +260,20 @@ impl Gateway {
 
     /// `GET /tools?view=domains`: one `{verb, args, peer}` tool per public tool on the MCP surface.
     pub fn domain_tools(&self) -> Vec<Value> {
-        let peers = self.peer_names();
+        self.domain_tools_for(None)
+    }
+
+    /// The domain tools, cut to a holder's whitelist when one is given. A holder sees no peers.
+    pub fn domain_tools_for(&self, holder: Option<&Holder>) -> Vec<Value> {
+        let peers = if holder.is_some() { vec!["local".to_string()] } else { self.peer_names() };
         self.tools()
             .values()
-            .filter(|e| e.tier == Tier::On)
+            .filter(|e| e.tier == Tier::On && holder.is_none_or(|h| h.may_use(&e.name)))
             .map(|e| {
-                let verbs = self.verb_names(e);
+                let mut verbs = self.verb_names(e);
+                if let Some(h) = holder {
+                    verbs.retain(|(v, _, _)| h.may(&e.name, v));
+                }
                 let mut lines: Vec<String> = verbs
                     .iter()
                     .map(|(v, s, req)| format!("- {v}({}): {}", req.join(", "), one_line(s)))
@@ -275,8 +286,10 @@ impl Gateway {
                 json!({
                     "name": e.name,
                     "description": format!(
-                        "The '{}' tool. Call with {{verb, args}}; verb='describe' (optionally args={{verbs:[<name>, ...]}}) returns full parameter schemas. Verbs, with required arguments:\n{}\nRuns on this node by default; also on {} via peer=<name>.",
-                        e.name, lines.join("\n"), peers[1..].join(", ")),
+                        "The '{}' tool. Call with {{verb, args}}; verb='describe' (optionally args={{verbs:[<name>, ...]}}) returns full parameter schemas. Verbs, with required arguments:\n{}\n{}",
+                        e.name, lines.join("\n"),
+                        if peers.len() > 1 { format!("Runs on this node by default; also on {} via peer=<name>.", peers[1..].join(", ")) }
+                        else { "Runs on this node only.".to_string() }),
                     "inputSchema": {
                         "type": "object",
                         "properties": {
@@ -452,17 +465,85 @@ impl Gateway {
         }
 
         let started = Instant::now();
-        let plugin = tools.get(&tool).map(|e| e.plugin.clone());
         let result = self.invoke_local(&tool, &verb, inner, ctx, &tools).await;
-        if let Some(plugin) = plugin.filter(|_| verb != DESCRIBE) {
-            let mut ev = UsageEvent::new(plugin, ctx.surface);
-            ev.tool = Some(tool);
-            ev.verb = Some(verb);
-            ev.name = ctx.plugin.clone();
-            ev.ok = Some(result.is_ok());
-            ev.ms = Some(started.elapsed().as_millis() as u64);
-            self.usage.record(ev);
+        self.record_call(&tools, &tool, &verb, ctx, result.is_ok(), started);
+        result
+    }
+
+    fn record_call(&self, tools: &BTreeMap<String, ToolEntry>, tool: &str, verb: &str, ctx: &CallContext, ok: bool, started: Instant) {
+        let Some(plugin) = tools.get(tool).map(|e| e.plugin.clone()).filter(|_| verb != DESCRIBE) else { return };
+        let mut ev = UsageEvent::new(plugin, ctx.surface);
+        ev.tool = Some(tool.to_string());
+        ev.verb = Some(verb.to_string());
+        ev.name = ctx.plugin.clone();
+        ev.ok = Some(ok);
+        ev.ms = Some(started.elapsed().as_millis() as u64);
+        self.usage.record(ev);
+    }
+
+    /// The isolated session that holds `token`, from the harness plugin, or None for a token
+    /// it does not know.
+    pub async fn holder_of(&self, token: &str) -> Result<Option<Holder>, ApiError> {
+        if let Some(h) = self.tokens.get(token) {
+            return Ok(Some(h));
         }
+        let ctx = CallContext { plugin: Some(NATIVE_TOOL.into()), ..CallContext::local(self.node.clone(), Surface::Plugin) };
+        let envelope = json!({"verb": crate::isolated::PROVIDER_VERB, "args": {"token": token}});
+        let text = self.invoke(crate::isolated::PROVIDER_TOOL, envelope, &ctx).await?;
+        let answer: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
+        let holder = Holder::from_answer(&answer);
+        if let Some(h) = &holder {
+            self.tokens.put(token, h.clone());
+        }
+        Ok(holder)
+    }
+
+    /// A call from an isolated session: its whitelist, this node only, its own scope.
+    pub async fn invoke_isolated(&self, holder: &Holder, tool: &str, envelope: &Value) -> Result<String, ApiError> {
+        let refuse = |why: String| ApiError::new(403, why);
+        let Some(verb) = envelope.get("verb").and_then(Value::as_str) else {
+            return Err(ApiError::new(400, format!("{tool}: missing 'verb'")));
+        };
+        match envelope.get("peer") {
+            None | Some(Value::Null) => {}
+            Some(Value::String(p)) if p == "local" || *p == self.node => {}
+            Some(p) => return Err(refuse(format!("an isolated session runs verbs on this node only, not on peer {p}"))),
+        }
+        if !holder.may_use(tool) {
+            return Err(refuse(format!("tool {tool:?} is not on this isolated session's whitelist")));
+        }
+        let mut inner = envelope.get("args").cloned().filter(|a| !a.is_null()).unwrap_or_else(|| json!({}));
+        let tools = self.tools();
+        let ctx = CallContext {
+            caller: holder.caller(&self.node),
+            as_: None,
+            surface: Surface::Mcp,
+            plugin: None,
+        };
+        if verb == DESCRIBE {
+            let allowed: Vec<String> = holder.tools.get(tool).into_iter().flatten().filter(|v| holder.may(tool, v)).cloned().collect();
+            let wanted: Vec<String> = match inner.get("verbs").and_then(Value::as_array) {
+                Some(w) => w.iter().filter_map(Value::as_str).filter(|v| allowed.iter().any(|a| a == v)).map(str::to_string).collect(),
+                None => allowed,
+            };
+            return self.invoke_local(tool, DESCRIBE, json!({"verbs": wanted}), &ctx, &tools).await;
+        }
+        if !holder.may(tool, verb) {
+            return Err(refuse(format!("{tool}.{verb} is not on this isolated session's whitelist")));
+        }
+        let started = Instant::now();
+        let result = async {
+            let (service, found) = self.wait_for_verb(tool, verb).await?;
+            crate::isolated::pin(holder, &found.spec, &mut inner).map_err(refuse)?;
+            let declared = strip_stamps(&inner);
+            check_arguments(tool, verb, &found.spec, &declared)?;
+            let timeout = found.spec.get("timeout").and_then(Value::as_f64).unwrap_or(DEFAULT_CALL_TIMEOUT_S);
+            let value =
+                self.hub.call(&service, &found.function, inner, None, &ctx.caller, Duration::from_secs_f64(timeout)).await?;
+            Ok::<_, ApiError>(render(&value))
+        }
+        .await;
+        self.record_call(&tools, tool, verb, &ctx, result.is_ok(), started);
         result
     }
 
@@ -578,6 +659,15 @@ fn input_schema(spec: &Value) -> Value {
         }
     }
     json!({"type": "object", "properties": props, "required": req})
+}
+
+/// The args without the `_caller_*` keys the gateway stamps, which no verb declares.
+fn strip_stamps(args: &Value) -> Value {
+    let mut out = args.clone();
+    if let Some(m) = out.as_object_mut() {
+        m.retain(|k, _| !k.starts_with("_caller"));
+    }
+    out
 }
 
 /// Refuse an argument the verb does not declare, with the verb's schema (as today's gateway).

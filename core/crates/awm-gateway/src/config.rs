@@ -18,6 +18,10 @@ pub struct Config {
     pub node: Option<String>,
     #[serde(default = "default_listen")]
     pub listen: String,
+    /// A second address that serves only the isolated-session door, `/mcp`, for containers
+    /// that cannot reach loopback. `8765` is the port cch's container config names.
+    #[serde(default)]
+    pub isolated_listen: Option<String>,
     /// The workspace services see as `AWM_WORKSPACE`.
     #[serde(default)]
     pub workspace: Option<PathBuf>,
