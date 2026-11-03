@@ -3,7 +3,7 @@
 A scope IS the channel. Each entry's ``name`` is the service-internal handle
 (``/svc/journal/fn/<name>``) and its ``tool`` is the published ``journal_<verb>``:
   - ``post``        — append a post (message / journal / system).
-  - ``fetch``       — fetch/search a scope's posts (``query`` → hybrid search,
+  - ``fetch``       — fetch/search a scope's posts (``query`` → the search service,
                       ``kind`` filter).
   - ``subscribe``   — enroll a guest (scope or user) as a subscriber.
   - ``unsubscribe`` — remove a subscriber.
@@ -55,10 +55,10 @@ POST_MANIFEST_FUNCTIONS = [
         "description": (
             "Fetch or search a scope's posts — messages and journal entries. "
             "Pass scope for one channel; add query to rank posts by relevance "
-            "(meaning and keywords over each post's full text, best first, each "
-            "hit with match.snippet — a limit of ~10 is plenty; the reply's "
-            "`semantic` says which index ranked them: local, or none for a "
-            "substring match); omit scope to "
+            "(the search service's meaning and keyword match over each post's full "
+            "text, best first, each hit with match.snippet — a limit of ~10 is "
+            "plenty; the reply's `semantic` says what ranked them: search, or none "
+            "for a substring match); omit scope to "
             "search across scopes; kind filters (e.g. "
             "kind='journal' for session logs / debrief entries); post_id fetches "
             "one. Without a query, kind='journal' reads newest-first "

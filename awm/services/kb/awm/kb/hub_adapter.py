@@ -1,9 +1,8 @@
 """Hub adapter for the kb service: opt-in Cognee recall over the Zotero library, and the papers feed for `search`.
 
 The recall itself runs in the kb server, a process from the `kb` project in its
-own env (see `server`). This adapter supervises it, relays its routes as
-`kb_<verb>` tools, and pages the library's papers to the search service as
-`kb_export` (see `papers`).
+own env (see `server`). This adapter supervises it and relays its routes as
+`kb_<verb>` tools.
 
 **Who may call what.** Lifecycle and write verbs are operator-only, enforced by
 `_operator_only` the way the trilium service does: the edge always stamps
@@ -27,7 +26,7 @@ from awm import config
 from awm import gatewayclient
 from awm.gatewayclient import ServiceAdapter, spawn_supervised
 
-from awm.kb import client, fastlayer, graphrank, hops, instances, papers, semantic, server
+from awm.kb import client, fastlayer, graphrank, hops, instances, semantic, server
 
 log = logging.getLogger("awm.kb.hub_adapter")
 
@@ -111,21 +110,11 @@ API_MANIFEST: dict[str, Any] = {
             "params": [{"name": "tail", "type": "integer", "description": "Lines from the end. Default 200."}],
         },
         {
-            "name": "sync",
-            "effect": "write",
-            "tool": "kb_sync",
-            "description": (
-                "Re-read the Zotero library: through the API when ZOTERO_API_KEY is set, "
-                "else from the vault's library.json. Runs in the background. Operator only."
-            ),
-            "params": [],
-        },
-        {
             "name": "snapshot",
             "effect": "write",
             "tool": "kb_snapshot",
             "description": (
-                "Pause ingest, stop the server, copy its store to data/store in the kb "
+                "Stop the server, copy its store to data/store in the kb "
                 "checkout, `dvc add` it, and start again. Committing the pin is left to "
                 "the caller. Operator only."
             ),
@@ -204,43 +193,6 @@ API_MANIFEST: dict[str, Any] = {
             "timeout": 30,
         },
         {
-            "name": "graph",
-            "effect": "read",
-            "category": "kb",
-            "tool": "kb_graph",
-            "description": (
-                "Run a read-only Cypher query on the knowledge graph (papers, authors, citations, posts, and "
-                "the entities and relations extracted from papers). `near` binds meaning matches to "
-                "parameters: {\"p\": {\"index\": \"entries\", \"text\": \"...\", \"k\": 3}} makes $near_p the "
-                "keys of the 3 nearest entries' documents (index entries) or the node ids of the nearest "
-                "entity groups (index nouns). Read `kb schema` first for the labels, the relation vocabulary "
-                "and worked examples. Rows are not ranked by meaning: ORDER BY a rank property. Write "
-                "clauses are refused. Domestic callers only."
-            ),
-            "params": [
-                {"name": "cypher", "type": "string", "required": True, "description": "One read-only statement."},
-                {"name": "near", "type": "object",
-                 "description": "Variable name to {index: entries|nouns, text, k}; each binds $near_<name>."},
-                {"name": "params", "type": "object", "description": "Other query parameters."},
-                {"name": "limit", "type": "integer", "description": "Maximum rows, 1-5000. Default 200."},
-                {"name": "timeout_s", "type": "number", "description": "Seconds before the query is cancelled, "
-                                                                          "up to 60. Default 10."},
-            ],
-            "timeout": 90,
-        },
-        {
-            "name": "schema",
-            "effect": "read",
-            "category": "kb",
-            "tool": "kb_schema",
-            "description": (
-                "The graph's node labels with their properties, its relation tables, the relation-verb "
-                "vocabulary of the extracted edges, how `near` binds, and worked Cypher examples."
-            ),
-            "params": [],
-            "timeout": 15,
-        },
-        {
             "name": "related",
             "effect": "read",
             "category": "kb",
@@ -277,24 +229,6 @@ API_MANIFEST: dict[str, Any] = {
                  "description": "The calling scope as project/scope, or a project. Default: the global rank."},
             ],
             "timeout": 10,
-        },
-        {
-            "name": "export",
-            "effect": "read",
-            "category": "kb",
-            "tool": "kb_export",
-            "surfaces": ["cli", "http"],
-            "description": (
-                "Page the Zotero library as search documents (id, title, text, ts, kind, url) for "
-                "the archive's `kb` source. The last page also returns `ids`, every paper id. "
-                "Local callers only."
-            ),
-            "params": [
-                {"name": "cursor", "type": "string",
-                 "description": "The previous page's next_cursor. Omit to start a pass."},
-                {"name": "limit", "type": "integer",
-                 "description": f"Documents per page, 1-{papers.PAGE_MAX}. Default {papers.PAGE_DEFAULT}."},
-            ],
         },
     ],
     "emitters": [],
@@ -344,13 +278,6 @@ async def _h_recall(args: dict, as_: str | None = None) -> dict:
     if _foreign(as_) and (body.get("mode", "hybrid") not in _PLAIN_MODES or "search_type" in body):
         raise PermissionError("a foreign peer may use only the hybrid, vector and lexical modes")
     return await client.recall(body)
-
-
-async def _h_export(args: dict, as_: str | None = None) -> dict:
-    if _foreign(as_):
-        raise PermissionError("export is for the local search service")
-    return await asyncio.to_thread(papers.export_page, instances.ZOTERO_LIBRARY,
-                                   args.get("cursor"), args.get("limit"))
 
 
 def steps(value: Any) -> list[dict[str, Any]]:
@@ -506,22 +433,6 @@ async def _entries(text: str) -> tuple[dict[str, Any] | None, str]:
         return None, semantic.reason(exc)
 
 
-async def _h_graph(args: dict, as_: str | None = None) -> dict:
-    if _foreign(as_):
-        raise PermissionError("graph is for domestic callers: a query can read this node's posts")
-    body: dict[str, Any] = {"cypher": str(args.get("cypher") or "")}
-    for key in ("near", "params", "limit", "timeout_s"):
-        if args.get(key) is not None:
-            body[key] = args[key]
-    if not body["cypher"].strip():
-        raise ValueError("graph needs a cypher query")
-    return await client.graph(body, timeout=float(body.get("timeout_s") or 10) + 30)
-
-
-async def _h_schema(args: dict, as_: str | None = None) -> dict:
-    return await client.schema()
-
-
 async def _h_related(args: dict, as_: str | None = None) -> dict:
     if _foreign(as_):
         raise PermissionError("related is for the local search service")
@@ -560,11 +471,6 @@ async def _h_logs(args: dict, as_: str | None = None) -> dict:
     return {"tail": tail, "log": await asyncio.to_thread(CHILD.logs, tail)}
 
 
-async def _h_sync(args: dict, as_: str | None = None) -> dict:
-    _operator_only(as_, "sync")
-    return await client.zotero_sync()
-
-
 def _copy_store() -> dict[str, Any]:
     """Replace `data/store` with a copy of `live/`, then `dvc add` it."""
     dst = instances.SNAPSHOT_DIR
@@ -590,20 +496,12 @@ def _copy_store() -> dict[str, Any]:
 async def _h_snapshot(args: dict, as_: str | None = None) -> dict:
     _operator_only(as_, "snapshot")
     t = time.monotonic()
-    quiesced = None
-    if await asyncio.to_thread(instances.listening):
-        quiesced = (await client.quiesce(900)).get("quiesced")
     await asyncio.to_thread(CHILD.stop, hold=True)
     try:
         copied = await asyncio.to_thread(_copy_store)
     finally:
         started = await asyncio.to_thread(CHILD.start)
-        try:
-            await client.resume()
-        except Exception:  # noqa: BLE001 — a fresh server reads `paused` from its store
-            log.warning("kb: resume after snapshot failed", exc_info=True)
-    return {"quiesced": quiesced, **copied, "server": started.get("action"),
-            "seconds": round(time.monotonic() - t, 1)}
+    return {**copied, "server": started.get("action"), "seconds": round(time.monotonic() - t, 1)}
 
 
 HANDLERS = {
@@ -612,16 +510,12 @@ HANDLERS = {
     "query": _h_query,
     "library": _h_library,
     "hop": _h_hop,
-    "graph": _h_graph,
-    "schema": _h_schema,
     "related": _h_related,
     "rank": _h_rank,
-    "export": _h_export,
     "start": _h_start,
     "stop": _h_stop,
     "restart": _h_restart,
     "logs": _h_logs,
-    "sync": _h_sync,
     "snapshot": _h_snapshot,
 }
 
