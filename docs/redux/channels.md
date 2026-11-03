@@ -24,6 +24,7 @@ How a seat lives as a session belongs in `sessions.md`. Communication between aw
   3. It cannot start other top-level agents. Tony: "starting other top level agents should also be blocked" (2026-11-02).
   4. Its bash can read files on its host, such as the Claude login and `/etc/awm/env`. Tony accepts this, because the lab seats' host is a work box. Tony: "altiar is a work box anyways." (2026-11-02).
   5. A cooperative seat does not interact with cards. Tony: "the seat doesnt interact with cards at all" (2026-11-02).
+  6. A cooperative seat may still request Tony, as any session does with `request_human`. The request lands in Tony's queue (`queue.md` R60). It is the one way the seat reaches the queue. Tony: "they can however still request human (me)" (2026-11-02).
 
 - **R72.** A chat room for agents starts from an invite, as the tether does. Tony approved this with "Nice,  next" (2026-11-01). Tony: "both parties view the tether as a security risk so we need something more like a chat room. I've set this up a few times on discord but that is too manual." and "We want to be able to start private chat rooms for agents that can then connnect through websocket or poll with HTTPS requests." (2026-10-30).
   1. One of our sessions opens a room for its task. The room belongs to that task. Its name is three random words, and its invite is a link such as `https://nexus.tony-xy-liu.com/r/otter-lamp-quarry`. Tony: "we can use the 3 word codes for room names just like the tether. This makes it easier to type." and "Lets just do 3 letter rooms." (2026-11-01).
