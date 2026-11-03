@@ -146,6 +146,11 @@ def _task_of(session_id: str) -> Optional[str]:
     return out.get("task_id") if isinstance(out, dict) else None
 
 
+def _session_of(args: dict) -> dict:
+    p, who = harness.for_caller(_int(args.get("pid")))
+    return {**who, "ok": True, "harness": p.tool, "platform": p.code}
+
+
 def _whoami(args: dict) -> dict:
     p, who = harness.for_caller(_caller_pid(args))
     sid = who.get("session_id") or ""
@@ -422,6 +427,7 @@ HANDLERS = {verb: _guarded(verb, fn) for verb, fn in {
     "message": _message,
     "pending": _pending,
     "whoami": _whoami,
+    "session_of": _session_of,
     "start_other": _start_other,
     "list_other": _list_other,
     "stop_other": _stop_other,

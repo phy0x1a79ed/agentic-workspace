@@ -91,6 +91,20 @@ def _session_name(pid: Any) -> str | None:
     return agent.session_name(pid)
 
 
+def _caller_record(pid: int) -> dict | None:
+    """The calling session from reflection, in the record shape the ledger keys on."""
+    from awm.gatewayclient.sessions import session_of
+
+    rec = session_of(pid)
+    if not rec:
+        return None
+    return {"pid": rec.get("pid") or pid,
+            "kind": "bg" if rec.get("hosting") == "background" else "interactive",
+            "jobId": rec.get("job"), "procStart": rec.get("proc_start"),
+            "sessionId": rec.get("claude_session_id") or rec.get("session_id"),
+            "cwd": rec.get("cwd")}
+
+
 def blocked_marker(session_id: str):
     """The file the prompt hook checks to send the next prompt; the hook deletes it on unblock."""
     return roster.claude_home() / "awm-reporting" / f"{session_id}.blocked"
@@ -174,7 +188,7 @@ FED_STATES = {PLANNED: "planned", ACTIVE: "active", BLOCKED: "blocked", REVIEW: 
 
 class Tasks:
     def __init__(self, ledger: Ledger, board: SwarmBoard, *, node: str | None = None,
-                 resolve: Callable[[int], dict | None] = roster.session_by_pid,
+                 resolve: Callable[[int], dict | None] = _caller_record,
                  job_state: Callable[[str], dict] = _job_state,
                  job_exists: Callable[[str], bool] = _job_exists,
                  dm: Callable[[str], Awaitable[None]] = send_dm,

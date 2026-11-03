@@ -50,6 +50,17 @@ def test_resolve_gives_the_r9_id_and_the_raw_one(monkeypatch):
                                                         "/w/projects/awm/x")
 
 
+def test_resolve_names_a_job_by_its_state_file_not_its_seed_name(monkeypatch, tmp_path):
+    (tmp_path / "abcd1234").mkdir()
+    (tmp_path / "abcd1234" / "state.json").write_text('{"name": "msm fed shaula"}')
+    monkeypatch.setattr(hub_adapter.roster, "default_jobs_dir", lambda: tmp_path)
+    monkeypatch.setattr(inject, "describe_caller", lambda pid: {
+        "session": "stale seed name", "session_id": SID, "pid": pid, "hosting": "daemon"})
+    monkeypatch.setattr(hub_adapter.transcript, "session_and_cwd_for", lambda pid: (SID, None))
+    monkeypatch.setattr(hub_adapter.roster, "job_of_pid", lambda pid, **kw: "abcd1234")
+    assert run("resolve", {"pid": 4242})["name"] == "msm fed shaula"
+
+
 def test_an_r9_id_reaches_control_as_the_session_uuid(monkeypatch):
     seen = []
     monkeypatch.setattr(control, "interrupt",

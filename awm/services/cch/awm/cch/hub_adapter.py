@@ -255,6 +255,14 @@ def _platform(args: dict) -> dict:
             "contract": CONTRACT, "capabilities": list(OPTIONAL_VERBS)}
 
 
+def _job_name(job: Optional[str]) -> Optional[str]:
+    """A job's own name. The session record keeps the name it was seeded with."""
+    if not job:
+        return None
+    state = roster.read_json(roster.default_jobs_dir() / job / "state.json")
+    return str(state.get("name") or "") or None
+
+
 def _resolve(args: dict) -> dict:
     pid = _pid(args)
     try:
@@ -262,13 +270,14 @@ def _resolve(args: dict) -> dict:
     except session_target.ResolveError as exc:
         return {"ok": True, "mine": False, "error": str(exc)}
     cwd = transcript.session_and_cwd_for(who["pid"])[1]
-    return _with_ids({"ok": True, "mine": True, "name": who.get("session"),
+    job = roster.job_of_pid(who["pid"], sessions_dir=session_target.SESSIONS_DIR)
+    return _with_ids({"ok": True, "mine": True, "name": _job_name(job) or who.get("session"),
                       "session_id": who.get("session_id"), "pid": who["pid"],
                       "lane": who.get("hosting"),
                       "hosting": _HOSTING.get(who.get("hosting"), who.get("hosting")),
                       "pane": who.get("pane"),
-                      "job": roster.job_of_pid(
-                          who["pid"], sessions_dir=session_target.SESSIONS_DIR),
+                      "job": job,
+                      "proc_start": roster.proc_start(who["pid"]),
                       "cwd": cwd})
 
 

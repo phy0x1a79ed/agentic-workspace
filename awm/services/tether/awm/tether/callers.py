@@ -40,11 +40,9 @@ TERMINAL = Caller(None, "a terminal on this host")
 
 
 def _record(pid: int) -> dict | None:
-    try:
-        from awm.claudedaemon import roster
-    except ImportError:
-        return None
-    return roster.session_by_pid(pid)
+    from awm.gatewayclient.sessions import session_of
+
+    return session_of(pid)
 
 
 def _node_of(as_: str) -> str:
@@ -61,10 +59,10 @@ def of(args: dict, as_: str | None) -> Caller:
     if isinstance(pid, int) and not isinstance(pid, bool) and pid > 0:
         rec = _record(pid) or {}
         name = str(rec.get("name") or "")
-        if rec.get("kind") == "bg" and rec.get("jobId"):
-            job = str(rec["jobId"])
+        if rec.get("hosting") == "background" and rec.get("job"):
+            job = str(rec["job"])
             return Caller(f"job:{job}", f"{name} (job {job})" if name else f"job {job}")
-        started = str(rec.get("procStart") or "")
+        started = str(rec.get("proc_start") or "")
         return Caller(f"pid:{pid}:{started}", f"{name} (pid {pid})" if name else f"pid {pid}")
     claim = args.get(CLAIM_KEY)
     if as_:

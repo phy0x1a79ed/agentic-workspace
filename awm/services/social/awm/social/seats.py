@@ -40,13 +40,13 @@ class SeatError(ValueError):
 
 def session_claim(pid: int) -> dict | None:
     """The job and name of the local session ``pid``, or None when it has none."""
-    from awm.claudedaemon import roster
+    from awm.gatewayclient.sessions import session_of
 
-    rec = roster.session_by_pid(pid)
+    rec = session_of(pid)
     if not rec:
         return None
-    return {"kind": rec.get("kind") or "", "job": str(rec.get("jobId") or ""),
-            "name": str(rec.get("name") or "")}
+    return {"kind": "bg" if rec.get("hosting") == "background" else "interactive",
+            "job": str(rec.get("job") or ""), "name": str(rec.get("name") or "")}
 
 
 def caller(args: dict, as_: str | None) -> dict:

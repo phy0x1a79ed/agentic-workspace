@@ -231,6 +231,15 @@ def test_whoami_adds_trust_task_and_harness(fakes):
         MY_ID, "harness-cc", "task-9", "trusted")
 
 
+def test_session_of_names_the_session_behind_a_pid_a_service_holds(fakes):
+    out = run("session_of", {"pid": ME})
+    assert (out["ok"], out["session_id"], out["harness"]) == (True, MY_ID, "harness-cc")
+
+
+def test_session_of_a_pid_no_harness_claims_fails(fakes):
+    assert run("session_of", {"pid": 31337})["ok"] is False
+
+
 def test_cd_claims_the_new_scope_and_releases_the_old(fakes, monkeypatch):
     calls = []
     monkeypatch.setattr(hub_adapter, "_scopes_call",

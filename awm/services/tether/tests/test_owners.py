@@ -220,10 +220,10 @@ async def test_the_daemon_never_sees_who_called(daemon):
 
 def test_a_local_session_is_known_by_its_job_and_a_terminal_by_nothing(monkeypatch):
     monkeypatch.setattr(callers, "_record", lambda pid: {
-        "kind": "bg", "jobId": "9f862480", "name": "oct22 presentation"})
+        "hosting": "background", "job": "9f862480", "name": "oct22 presentation"})
     assert callers.of({"_caller_pid": 550415}, None).id == "job:9f862480"
     monkeypatch.setattr(callers, "_record", lambda pid: {
-        "kind": "interactive", "procStart": "77"})
+        "hosting": "terminal", "proc_start": "77"})
     assert callers.of({"_caller_pid": 12}, None).id == "pid:12:77"
     assert callers.of({}, None) is callers.TERMINAL
 

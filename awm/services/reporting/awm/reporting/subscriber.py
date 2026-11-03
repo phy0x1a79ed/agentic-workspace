@@ -69,9 +69,9 @@ _FINISHED = {"done": DONE, "rejected": REJECTED}
 
 
 def _send_line(job: str, text: str) -> None:
-    from awm.claudedaemon.job import send_line
+    from awm.gatewayclient.sessions import tell
 
-    send_line(job, text)
+    tell(job, text)
 
 
 class Subscriber:

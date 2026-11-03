@@ -198,6 +198,14 @@ Run the `debrief` skill. Send one line to job 8162a704.
 - OpenCode support left reflection and cch. Two traces stay outside this lane: the gateway's caller lookup still recognises an `opencode` process (`gateway/mcp_caller.py`, redux-build/core), and scopes still write `mcp-opencode.json` (redux-build/sessions).
 - The gateway's `FLEET_SERVICES` still names `cx` (`gateway/peers.py`). It should name `cch`, whose starts a station refuses anyway. For redux-build/core.
 
+- T12 left four users of `awm.claudedaemon` outside cch, each for a stated reason:
+  - The gateway's caller lookup (`gateway/mcp_caller.py`) and mode gate (`gateway/server.py`) read `sessionmode`. They belong to redux-build/core, which is retired. The Rust gateway should ask each harness plugin's `resolve {pid}` for the caller, and its `mode` for the gate, instead of reading Claude Code's files. Run `resume_other a92d02bf` to hand it over.
+  - reporting `tasks.py` still reads a job's `state.json` (name, `respawnFlags`, `state`), checks the jobs folder, compares `proc_start`, and writes the prompt hook's `.blocked` marker under `~/.claude`. Its caller lookup now goes through reflection. The rest needs a cch `status` that carries those job fields, and the marker moves with the reporting hook into cch.
+  - transcripts `live.py` reads the live session ids from `~/.claude` for its archive sweep. The sweep archives Claude Code transcripts only, so it belongs in cch. Fold it in when transcripts becomes a plugin.
+- Services now learn a caller's session through `awm.gatewayclient.sessions.session_of`, which calls the hidden `reflection session_of {pid}`. That is two gateway hops per call where the old read was local. journal pays it on each post. A post whose lookup fails carries no `meta.session`.
+- journal's `meta.session` keeps the raw Claude UUID (`claude_session_id`), so readers that match on it still match. A ds session posts its R9 id there.
+- reporting now types its board and approval lines through `reflection message`. That path refuses a session with a modal open, where the old PTY paste typed into it. reporting logs the miss, as it did for a closed session.
+
 ## Proposed doc changes
 
 For the interview session, which owns the area docs. Each item names the doc and the change.

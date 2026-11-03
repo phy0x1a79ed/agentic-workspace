@@ -12,7 +12,7 @@ A scope IS the channel. Each entry's ``name`` is the service-internal handle
 import logging
 from typing import Any
 
-from awm.claudedaemon import roster
+from awm.gatewayclient import sessions
 from awm.journal import channel, owners, private, render
 
 log = logging.getLogger("awm.journal.posts")
@@ -108,8 +108,8 @@ POST_MANIFEST_FUNCTIONS = [
 def _with_session(meta: Any, caller_pid: Any) -> Any:
     """``meta`` with ``session`` set to the posting session's id, from the pid the
     gateway stamped. A ``session`` the caller supplied is dropped either way."""
-    rec = roster.session_by_pid(caller_pid) if isinstance(caller_pid, int) else None
-    session = rec.get("sessionId") if rec else None
+    rec = sessions.session_of(caller_pid)
+    session = (rec.get("claude_session_id") or rec.get("session_id")) if rec else None
     if not isinstance(meta, dict):
         return {"session": session} if session else meta
     meta = {k: v for k, v in meta.items() if k != "session"}
