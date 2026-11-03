@@ -35,7 +35,7 @@ Surveyed read only on 2026-11-03. The paths are on altair: awm `feat/svc-kb` at 
 - 2026-11-03: A hit returns its title only, and a `get` on it is the usage feedback for the scope-tuned rank. The rank switches on when the journal replay shows a gain (`fleet.md` R136 item 6). Tony: "maybe this can be natural? search returns titles only and agent expanding full entry is the feedback?", "title ok" and "I dont need search updated immediately".
 - 2026-11-03: Cognee retirement re-lands, because R136 item 3 already keeps Cognee out. It was held only by the ranking freeze.
 - 2026-11-03: The cut line for Cognee in kb stands as the search-finish job proposed. `kb_recall`, the `/recall` route, `recall.py`, `engine.py`, the Cognee and Ladybug builders and the cognee pin go. `query`, `library`, `get`, `hop`, `related`, `/encode`, `/related`, the fast layer, the hop arrays and `graph.db` stay. The plain hybrid and lexical modes go too (`fleet.md` R136 item 3). Tony: "agree with drop lexical modes".
-- 2026-11-03: The usage rank is tuned per project, not per scope (`fleet.md` R136 item 6). Tony: "lets make page rank by project rather than scope".
+- 2026-11-03: One usage rank serves the whole node and updates itself on each `get`, with no rebuild step. The `kb rank` code stays as its engine (`fleet.md` R136 item 6). Tony: "lets make page rank by project rather than scope" and then "lets actually just make kb rank automatic across a whole node. then no rebuild".
 
 ## Build result
 
