@@ -4,7 +4,7 @@ A Python feature service in the `awm.journal` namespace. It owns the scope post
 channels: messages, journal (debrief) entries, system notices and goals. It also
 renders each scope's `.awm/history.md`. It needs the `awm` conda env to contain its
 package plus the shared component libraries it imports (`config`, `persistence`,
-`gatewayclient`). Semantic search reuses the workspace embedding stack
+`gatewayclient`). Its post embedding index uses the workspace embedding stack
 (`sentence-transformers`, already in the `awm` env).
 
 ## Install

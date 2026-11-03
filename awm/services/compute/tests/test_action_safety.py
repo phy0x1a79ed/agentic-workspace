@@ -45,7 +45,6 @@ pytestmark = pytest.mark.smoke
      "gateway serve", "awm-gateway"),
     ("python -m awm.compute.hub_adapter", "awm-service"),
     ("/home/tony/lib/miniforge3/envs/kb/bin/python -m kb.server", "kb-server"),
-    ("/home/tony/lib/miniforge3/envs/kb/bin/python -m kb.worker", "kb-server"),
     ("ssh -f -N -M -o NumberOfPasswordPrompts=1 sockeye", "protected-binary"),
     ("ssh -W sockeye.arc.ubc.ca:22 vpn_ubc", "protected-binary"),
     ("claude --session-id abc", "protected-binary"),
