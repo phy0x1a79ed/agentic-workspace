@@ -60,3 +60,4 @@ Surveyed read only on mizar, 2026-11-03. "release" is `origin/release` at 266f4b
 
 - 2026-11-03: A retire deletes the job. A wait keeps it, and the wake resumes it. A resume of a retired session starts a new job from its transcript, with the same session id (`sessions.md` R10, R51). Tony: "Yes".
 - 2026-11-03: A listed session counts as finished only when it retires, so a nested wait holds. A terminal session may wait (`sessions.md` R51). Tony: "Agree on both".
+- 2026-11-03: The retire triggers the wake from `reflection stop`. The sweep goes (`sessions.md` R51). Tony: "we dont want sweep, we want active triggers from reflection stop".

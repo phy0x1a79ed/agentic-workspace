@@ -66,6 +66,7 @@ This doc holds a session's id, the id of its task, its lifecycle from start to r
   - The wake resumes the session's kept job (R10).
   - A listed session counts as finished only when it retires. A session that itself waits is not finished, so a wait holds through every level of nesting.
   - A terminal session may wait. Tony: "Agree on both" (2026-11-03).
+  - The retire triggers the wake. When a session retires, `reflection stop` reads the waits that list it and wakes each waiter whose listed sessions have all retired. No loop polls the waits. Tony: "we dont want sweep, we want active triggers from reflection stop" (2026-11-03).
   - The session compacts before it calls `reflection wait`. This is a soft instruction, not a check. Tony: "would be good as soft instructions to compact before retiring with "until" set" (2026-11-01).
 - **R52.** Three standard paths cover work that spans sessions. R51 serves the second and the third. Tony: "we should also try to keep things simple and not add new features until necessary." (2026-11-01).
   1. **A simple task.** The agent calls `deploy` and retires. Tony: "an agent does a simple task that requires deploy, calls deploy and retires."
