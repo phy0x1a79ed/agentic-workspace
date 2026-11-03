@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import sqlite3
+
 import pytest
 
 from awm.config import privacy
@@ -216,8 +218,20 @@ async def test_a_get_is_logged_with_the_callers_scope_and_query_and_a_peers_rela
     await HANDLERS["get"]({"source": "journals", "id": "j1"}, PEER)
     conn = store.connect()
     try:
-        rows = [dict(r) for r in conn.execute("SELECT scope, query, source, doc_id, node FROM usage")]
+        rows = [dict(r) for r in conn.execute("SELECT project, scope, query, source, doc_id, node FROM usage")]
     finally:
         conn.close()
-    assert rows == [{"scope": "awm/dev", "query": "kitchen sink", "source": "journals", "doc_id": "j1",
+    assert rows == [{"project": "awm", "scope": "dev", "query": "kitchen sink", "source": "journals", "doc_id": "j1",
                      "node": "local"}]
+
+
+def test_a_v5_usage_log_gains_its_project_column(tmp_path, monkeypatch):
+    conn = sqlite3.connect(":memory:")
+    conn.executescript(store._USAGE_V5)
+    assert "project" not in {r[1] for r in conn.execute("PRAGMA table_info(usage)")}
+    conn.executescript(store.MIGRATIONS[(5, 6)])
+    assert "project" in {r[1] for r in conn.execute("PRAGMA table_info(usage)")}
+    fresh = sqlite3.connect(":memory:")
+    fresh.executescript(store._USAGE)
+    assert [r[1] for r in fresh.execute("PRAGMA table_info(usage)")] == \
+        [r[1] for r in conn.execute("PRAGMA table_info(usage)")]

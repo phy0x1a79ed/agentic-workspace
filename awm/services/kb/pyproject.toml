@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "awm-kb"
 version = "0.1.0"
 requires-python = ">=3.11"
-description = "AWM kb service: supervise the kb server (in its own env), relay its recall, and answer the search archive's paper sources."
+description = "AWM kb service: supervise the kb server (in its own env), and answer the search archive's paper sources."
 dependencies = [
     "awm-config",
     "awm-gatewayclient",

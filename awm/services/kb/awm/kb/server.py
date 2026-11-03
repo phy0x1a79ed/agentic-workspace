@@ -10,7 +10,6 @@ process. The store is on disk, so a restart costs a warm-up and no data.
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 import signal
@@ -36,21 +35,11 @@ def _preexec() -> None:  # pragma: no cover — runs in the forked child
         os._exit(1)
 
 
-def openrouter_key() -> str | None:
-    """The OpenRouter key from opencode's auth store. Never logged, only handed to the child."""
-    try:
-        entry = json.loads(instances.AUTH_JSON.read_text()).get("openrouter") or {}
-    except (OSError, ValueError):
-        return None
-    return (entry.get("key") or "").strip() or None
-
-
 def child_env() -> dict[str, str]:
     """The child's environment.
 
     `PYTHONPATH` is replaced, not extended: the awm source a dev sandbox puts
-    there must never reach the kb interpreter. The LLM key serves only the
-    `answer` and `graph` recall modes. Ingest defaults to chunk-only and needs none.
+    there must never reach the kb interpreter.
 
     The env's `lib/` leads `LD_LIBRARY_PATH`. PyMuPDF's wheel looks for
     `libstdc++` beside itself, then in the system cache. On Ubuntu 22.04 that
@@ -69,10 +58,6 @@ def child_env() -> dict[str, str]:
     if py:
         lib = os.path.join(os.path.dirname(os.path.dirname(py)), "lib")
         env["LD_LIBRARY_PATH"] = os.pathsep.join(filter(None, [lib, env.get("LD_LIBRARY_PATH")]))
-    if not env.get("LLM_API_KEY"):
-        key = openrouter_key()
-        if key:
-            env["LLM_API_KEY"] = key
     return env
 
 

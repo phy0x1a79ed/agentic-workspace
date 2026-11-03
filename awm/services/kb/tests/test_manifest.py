@@ -5,7 +5,7 @@ import pytest
 
 from awm.kb import hub_adapter
 
-OPERATOR = ("start", "stop", "restart", "logs", "snapshot")
+OPERATOR = ("start", "stop", "restart", "logs")
 
 
 def test_every_function_is_a_kb_tool_with_a_handler():
@@ -22,24 +22,10 @@ async def test_operator_verbs_refuse_an_edge_caller(verb):
         await hub_adapter.HANDLERS[verb]({}, as_="user:someone")
 
 
-async def test_recall_passes_only_set_fields(monkeypatch):
-    seen = {}
-
-    async def fake_recall(body, **kw):
-        seen.update(body)
-        return {"hits": []}
-
-    monkeypatch.setattr(hub_adapter.client, "recall", fake_recall)
-    await hub_adapter.HANDLERS["recall"]({"query": "q", "sources": ["posts"], "mode": None, "verb": "recall"},
-                                         as_="user:someone")
-    assert seen == {"query": "q", "sources": ["papers"]}
-
-
 def test_the_retired_verbs_are_gone():
     by_name = {f["name"]: f for f in hub_adapter.API_MANIFEST["functions"]}
-    assert not {"sweep", "export", "graph", "schema", "sync"} & set(by_name)
-    assert not any(p["name"] in ("project", "scope", "kind", "require_complete", "sources")
-                   for p in by_name["recall"]["params"])
+    assert not {"sweep", "export", "graph", "schema", "sync", "recall", "snapshot"} & set(by_name)
+    assert not {"recall", "snapshot"} & set(hub_adapter.HANDLERS)
 
 
 def test_service_toml_declares_the_kb_archive_source():

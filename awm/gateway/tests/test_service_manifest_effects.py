@@ -112,7 +112,7 @@ def test_every_verb_declares_an_effect():
 
 def test_kb_reads_carry_the_kb_category():
     kb = {e["name"]: e for e in MANIFESTS["kb"]}
-    assert kb["recall"]["category"] == "kb" and kb["recall"]["effect"] == "read"
+    assert kb["query"]["category"] == "kb" and kb["query"]["effect"] == "read"
     assert kb["status"]["category"] == "kb"
     assert kb["start"]["category"] is None
 

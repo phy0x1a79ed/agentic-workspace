@@ -199,9 +199,10 @@ async def _h_query(args: dict, as_: str | None = None) -> dict:
 
 
 def _log_get(args: dict, node: str) -> None:
+    project, _, scope = str(args.get("context") or "").strip().partition("/")
     conn = store.connect()
     try:
-        store.log_use(conn, {"scope": str(args.get("context") or "").strip(),
+        store.log_use(conn, {"project": project, "scope": scope,
                              "query": str(args.get("query") or "").strip(), "source": str(args["source"]),
                              "doc_id": str(args["id"]), "node": node})
     finally:

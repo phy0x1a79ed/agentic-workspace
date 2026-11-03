@@ -33,10 +33,6 @@ async def status() -> dict:
     return await _req("GET", "/status", timeout=10)
 
 
-async def recall(body: dict, *, timeout: float = 600) -> dict:
-    return await _req("POST", "/recall", json=body, timeout=timeout)
-
-
 async def related(body: dict, *, timeout: float = 10) -> dict:
     """Entry-index hits per zone, and with `nouns` the nearest entities."""
     return await _req("POST", "/related", json=body, timeout=timeout)

@@ -7,20 +7,14 @@ import pytest
 from awm.kb import server
 
 
-def test_child_env_replaces_pythonpath_and_adds_keys(kb_paths, monkeypatch):
+def test_child_env_replaces_pythonpath_and_names_the_server(kb_paths, monkeypatch):
     monkeypatch.setenv("PYTHONPATH", "/awm/worktree")
     monkeypatch.setenv("DEV_PYTHONPATH", "/awm/worktree")
     env = server.child_env()
     assert env["PYTHONPATH"] == str(kb_paths.CHECKOUT / "src")
     assert "DEV_PYTHONPATH" not in env
-    assert env["LLM_API_KEY"] == "sk-or-test"
+    assert "LLM_API_KEY" not in env
     assert env["KB_PORT"] == str(kb_paths.PORT) and env["KB_HOST"] == "127.0.0.1"
-
-
-def test_child_env_keeps_an_explicit_key(kb_paths, monkeypatch):
-    monkeypatch.setenv("LLM_API_KEY", "sk-explicit")
-    env = server.child_env()
-    assert env["LLM_API_KEY"] == "sk-explicit"
 
 
 def test_child_env_points_the_server_at_the_shipped_indexes_that_exist(kb_paths, monkeypatch):

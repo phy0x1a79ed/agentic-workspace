@@ -1,8 +1,7 @@
-"""Hub adapter for the kb service: opt-in Cognee recall over the Zotero library, and the papers feed for `search`.
+"""Hub adapter for the kb service: the papers feed for `search`, kb's hop and rank, and the kb server.
 
-The recall itself runs in the kb server, a process from the `kb` project in its
-own env (see `server`). This adapter supervises it and relays its routes as
-`kb_<verb>` tools.
+The kb server, a process from the `kb` project in its own env (see `server`), encodes text and serves the
+entry and noun indexes. This adapter supervises it and answers the paper verbs from papers.db itself.
 
 **Who may call what.** Lifecycle and write verbs are operator-only, enforced by
 `_operator_only` the way the trilium service does: the edge always stamps
@@ -17,8 +16,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import shutil
-import subprocess
 import time
 from typing import Any
 
@@ -39,9 +36,8 @@ _tasks: set[asyncio.Task] = set()
 
 API_MANIFEST: dict[str, Any] = {
     "description": (
-        "Opt-in Cognee recall over the Zotero library (papers, with PDF full text where a PDF "
-        "is stored). `search query` covers papers by default; use `kb recall` for mode=graph "
-        "or mode=answer, which write one LLM answer from the top chunks."
+        "Papers: the kb and library sources `search query` reads, a paper whole (`kb get`), the papers "
+        "near given ones (`kb hop`), and the kb server that encodes queries."
     ),
     "functions": [
         {
@@ -50,31 +46,9 @@ API_MANIFEST: dict[str, Any] = {
             "category": "kb",
             "tool": "kb_status",
             "description": (
-                "Whether the kb server is up, how many papers it holds, and its ingest queue "
-                "and last Zotero sync."
+                "Whether the kb server is up, and the state of its encoder and served indexes."
             ),
             "params": [],
-        },
-        {
-            "name": "recall",
-            "effect": "read",
-            "category": "kb",
-            "tool": "kb_recall",
-            "description": (
-                "Ranked paper hits for a query, each with its Zotero key, title, year and DOI. "
-                "mode=hybrid (default) combines meaning and keywords and makes no LLM call. mode=answer writes "
-                "one answer from the top chunks and costs about $0.001."
-            ),
-            "params": [
-                {"name": "query", "type": "string", "required": True, "description": "What to find."},
-                {"name": "mode", "type": "string",
-                 "description": "hybrid (default), vector, lexical, graph or answer."},
-                {"name": "limit", "type": "integer", "description": "Maximum hits, 1-100. Default 10."},
-                {"name": "search_type", "type": "string",
-                 "description": "For graph or answer mode: a Cognee search type. Default "
-                                "RAG_COMPLETION for answer, GRAPH_COMPLETION for graph."},
-            ],
-            "timeout": 600,
         },
         {
             "name": "start",
@@ -108,18 +82,6 @@ API_MANIFEST: dict[str, Any] = {
             "tool": "kb_logs",
             "description": "The tail of the kb server's log. Operator only.",
             "params": [{"name": "tail", "type": "integer", "description": "Lines from the end. Default 200."}],
-        },
-        {
-            "name": "snapshot",
-            "effect": "write",
-            "tool": "kb_snapshot",
-            "description": (
-                "Stop the server, copy its store to data/store in the kb "
-                "checkout, `dvc add` it, and start again. Committing the pin is left to "
-                "the caller. Operator only."
-            ),
-            "params": [],
-            "timeout": 1800,
         },
         {
             "name": "query",
@@ -256,7 +218,8 @@ def _operator_only(as_: str | None, verb: str) -> None:
 async def _h_status(args: dict, as_: str | None = None) -> dict:
     if _foreign(as_):
         try:
-            return {"kb": {"counts": (await client.status()).get("counts")}}
+            await client.status()
+            return {"kb": {"up": True}}
         except Exception:  # noqa: BLE001 — a foreign caller gets no detail
             return {"kb": {"error": "unavailable"}}
     out: dict[str, Any] = {"server": await asyncio.to_thread(CHILD.snapshot)}
@@ -268,23 +231,10 @@ async def _h_status(args: dict, as_: str | None = None) -> dict:
     return out
 
 
-#: The modes that rank rows from kb's own store and so honour `sources`. graph and answer run
-#: cognee with access control off, where `datasets` does not scope, and answer spends LLM budget.
-_PLAIN_MODES = ("hybrid", "vector", "lexical")
-
-
 def _foreign(as_: str | None) -> bool:
     """A peer node outside this swarm. An unknown peer counts as foreign; a non-peer caller does not."""
     node = config.caller_peer(as_)
     return node is not None and config.peer_relation(node) != "domestic"
-
-
-async def _h_recall(args: dict, as_: str | None = None) -> dict:
-    body = {k: args[k] for k in ("query", "mode", "limit", "search_type") if args.get(k) is not None}
-    body["sources"] = ["papers"]
-    if _foreign(as_) and (body.get("mode", "hybrid") not in _PLAIN_MODES or "search_type" in body):
-        raise PermissionError("a foreign peer may use only the hybrid, vector and lexical modes")
-    return await client.recall(body)
 
 
 #: kb_query and kb_library share one computation for this long: search asks both for one question at once.
@@ -429,42 +379,8 @@ async def _h_logs(args: dict, as_: str | None = None) -> dict:
     return {"tail": tail, "log": await asyncio.to_thread(CHILD.logs, tail)}
 
 
-def _copy_store() -> dict[str, Any]:
-    """Replace `data/store` with a copy of `live/`, then `dvc add` it."""
-    dst = instances.SNAPSHOT_DIR
-    tmp = dst.with_name(dst.name + ".tmp")
-    shutil.rmtree(tmp, ignore_errors=True)
-    shutil.copytree(instances.LIVE, tmp, ignore=shutil.ignore_patterns("*.sock", "fastembed", "logs"))
-    if dst.exists():
-        for d in [dst, *(p for p in dst.rglob("*") if p.is_dir())]:
-            d.chmod(d.stat().st_mode | 0o200)
-        shutil.rmtree(dst)
-    tmp.rename(dst)
-    size = sum(p.stat().st_size for p in dst.rglob("*") if p.is_file())
-    out: dict[str, Any] = {"path": str(dst), "bytes": size}
-    if (instances.CHECKOUT / ".dvc").is_dir():
-        r = subprocess.run(["dvc", "add", str(dst.relative_to(instances.CHECKOUT))],
-                           cwd=instances.CHECKOUT, capture_output=True, text=True, timeout=1200)
-        out["dvc"] = {"rc": r.returncode, "output": (r.stdout + r.stderr)[-1000:]}
-    else:
-        out["dvc"] = {"rc": None, "output": "no .dvc in the checkout; copied without a pin"}
-    return out
-
-
-async def _h_snapshot(args: dict, as_: str | None = None) -> dict:
-    _operator_only(as_, "snapshot")
-    t = time.monotonic()
-    await asyncio.to_thread(CHILD.stop, hold=True)
-    try:
-        copied = await asyncio.to_thread(_copy_store)
-    finally:
-        started = await asyncio.to_thread(CHILD.start)
-    return {**copied, "server": started.get("action"), "seconds": round(time.monotonic() - t, 1)}
-
-
 HANDLERS = {
     "status": _h_status,
-    "recall": _h_recall,
     "query": _h_query,
     "library": _h_library,
     "get": _h_get,
@@ -475,7 +391,6 @@ HANDLERS = {
     "stop": _h_stop,
     "restart": _h_restart,
     "logs": _h_logs,
-    "snapshot": _h_snapshot,
 }
 
 

@@ -1,12 +1,8 @@
 """Where the kb server's code, store and interpreter are.
 
 The server is code in the `kb` project, run in that project's own `kb` env:
-Cognee's dependencies never enter the awm env, whose torch pin is load-bearing.
+its dependencies never enter the awm env, whose torch pin is load-bearing.
 This service only supervises it, so everything here is a path or a number.
-
-**The store lives in the checkout it was built by**, under `live/`, beside the
-code that wrote it. A snapshot copies it to `data/store/` for DVC, because a
-pinned file is a read-only hardlink into the cache.
 """
 
 from __future__ import annotations
@@ -21,7 +17,6 @@ SERVICE_DIR = Path(__file__).resolve().parents[2]
 
 CHECKOUT = Path(os.environ.get("KB_CHECKOUT") or (WORKSPACE_ROOT / "projects" / "kb" / "release"))
 LIVE = Path(os.environ.get("KB_LIVE") or (CHECKOUT / "live"))
-SNAPSHOT_DIR = CHECKOUT / "data" / "store"
 
 STATE_DIR = Path(os.environ.get("KB_STATE_DIR") or (AWM_DIR / "services" / "kb"))
 LOG_FILE = STATE_DIR / "logs" / "kb-server.log"
@@ -47,10 +42,6 @@ VECTORS = Path(os.environ.get("KB_VECTORS") or (STATE_DIR / "w2" / "vectors"))
 ZOTERO_POLL_S = float(os.environ.get("KB_ZOTERO_POLL_S", "300"))
 #: The node whose zotero service holds the library mirror; `local` for this one.
 ZOTERO_PEER = os.environ.get("KB_ZOTERO_PEER", "mira")
-
-#: opencode's credential store, where the OpenRouter key lives on every node.
-AUTH_JSON = Path(os.environ.get("KB_AUTH_JSON")
-                 or (Path.home() / ".local" / "share" / "opencode" / "auth.json"))
 
 HEALTH_INTERVAL_S = float(os.environ.get("KB_HEALTH_INTERVAL_S", "20"))
 START_TIMEOUT_S = float(os.environ.get("KB_START_TIMEOUT_S", "300"))

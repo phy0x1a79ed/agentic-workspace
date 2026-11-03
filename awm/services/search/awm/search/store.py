@@ -28,7 +28,7 @@ from awm.persistence.databases import get_connection, init_service_db
 from awm.search import passages as cutter
 
 SERVICE = "search"
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 CORPUS = "doc"
 
 _SOURCES = """\
@@ -125,19 +125,27 @@ CREATE INDEX IF NOT EXISTS idx_judgements_collection ON judgements(collection);
 _USAGE = """
 CREATE TABLE IF NOT EXISTS usage (
     ts      REAL NOT NULL,
-    scope   TEXT NOT NULL DEFAULT '',  -- the caller's project/scope
+    scope   TEXT NOT NULL DEFAULT '',  -- the caller's scope, within its project
     query   TEXT NOT NULL DEFAULT '',
     source  TEXT NOT NULL,
     doc_id  TEXT NOT NULL,
-    node    TEXT NOT NULL DEFAULT ''   -- the node holding the document; 'local' for this one
+    node    TEXT NOT NULL DEFAULT '',  -- the node holding the document; 'local' for this one
+    project TEXT NOT NULL DEFAULT ''   -- the caller's project
 );
+CREATE INDEX IF NOT EXISTS idx_usage_scope ON usage(scope, ts);
+"""
+#: The usage log as v5 made it, before ``project``: a migration replays its own version's schema.
+_USAGE_V5 = """
+CREATE TABLE IF NOT EXISTS usage (ts REAL NOT NULL, scope TEXT NOT NULL DEFAULT '', query TEXT NOT NULL DEFAULT '',
+                                  source TEXT NOT NULL, doc_id TEXT NOT NULL, node TEXT NOT NULL DEFAULT '');
 CREATE INDEX IF NOT EXISTS idx_usage_scope ON usage(scope, ts);
 """
 
 SCHEMA_SQL = _SOURCES + "\n".join(_DOCUMENTS) + _TEXT_INDEXES + _JUDGEMENTS + _USAGE + engine.EMBEDDINGS_DDL
 
 #: v2 adds ``tags``; clearing ``synced_at`` makes every index source due at once, so the tags fill in. v3 gives
-#: documents an integer key for the text indexes and builds them. v4 adds the judgements, v5 the usage log.
+#: documents an integer key for the text indexes and builds them. v4 adds the judgements, v5 the usage log, and
+#: v6 its project.
 MIGRATIONS = {
     (1, 2): "ALTER TABLE documents ADD COLUMN tags TEXT NOT NULL DEFAULT '';\n"
             "UPDATE sources SET synced_at = NULL;",
@@ -152,7 +160,8 @@ MIGRATIONS = {
         *_DOCUMENTS[1:],
     ]) + _TEXT_INDEXES + "INSERT INTO documents_exact(documents_exact) VALUES ('rebuild');\n",
     (3, 4): _JUDGEMENTS,
-    (4, 5): _USAGE,
+    (4, 5): _USAGE_V5,
+    (5, 6): "ALTER TABLE usage ADD COLUMN project TEXT NOT NULL DEFAULT '';",
 }
 
 _initialized = False
@@ -373,9 +382,9 @@ def get_document(conn: sqlite3.Connection, source: str, doc_id: str) -> dict[str
 
 def log_use(conn: sqlite3.Connection, row: dict[str, Any]) -> None:
     """Append one get to the usage log."""
-    conn.execute("INSERT INTO usage (ts, scope, query, source, doc_id, node)"
-                 " VALUES (:ts, :scope, :query, :source, :doc_id, :node)",
-                 {"ts": time.time(), "scope": "", "query": "", "node": "", **row})
+    conn.execute("INSERT INTO usage (ts, project, scope, query, source, doc_id, node)"
+                 " VALUES (:ts, :project, :scope, :query, :source, :doc_id, :node)",
+                 {"ts": time.time(), "project": "", "scope": "", "query": "", "node": "", **row})
     conn.commit()
 
 

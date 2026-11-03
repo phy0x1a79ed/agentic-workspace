@@ -294,6 +294,7 @@ class Archive:
 
     async def get(self, source: str, doc_id: str, grants: frozenset[str] | None = None,
                   hidden: Sequence[dict] | None = ()) -> dict[str, Any]:
+        await self._refresh_if_stale()
         rows = {r["name"]: r for r in await self._rows(grants, hidden)}
         row = rows.get(source)
         if row is None:

@@ -479,6 +479,13 @@ async def test_a_live_source_with_a_get_verb_reads_a_document_whole(loaded, gate
     assert gateway.calls[-1] == ("papers", "get", {"id": "doi:1"})
 
 
+async def test_a_get_first_after_a_start_still_finds_a_live_source(loaded, gateway):
+    gateway.plug_live("papers", lambda args: {"exact": [], "related": []}, service="papers", get="papers_get")
+    gateway.handlers[("papers", "get")] = lambda args: {"document": {"title": "A paper", "text": "Whole."}}
+    loaded.sources, loaded.registry_at = {}, None
+    assert (await loaded.get("papers", "doi:1"))["document"]["text"] == "Whole."
+
+
 async def test_a_live_source_without_a_get_verb_reads_nothing_whole(loaded, gateway):
     gateway.plug_live("web", transcripts)
     await loaded.refresh()
