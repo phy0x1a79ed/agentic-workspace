@@ -17,17 +17,13 @@ This doc is the stack of open threads for the redux interview. The interview run
 
 ## Current thread
 
-**4b. The new search.** See the stack entry below. Parent thread 4 waits on it.
+**5. Done.** See the stack entry below.
 
 Parent thread 1 (end state) waits for Tony to confirm `goal.md`. Its children 1a to 1t are closed.
 
 ## Stack
 
 Top of the stack comes first.
-
-4b. **The new search.** This session adopts the svc-kb search work (`fleet.md` R136). Read its plan and the open questions on card HaY7mBwx912w, settle what the redux needs, and apply it with everything else at the end. Tony: "lets adopt search into this session. we can talk about we need to and apply it with everything in the end" (2026-11-03). Tony then moved the build forward: session `search-finish` (job 6a450f72 on altair, scope svc-kb) finishes the approved plan now. Tony: "Have the altair agent or start new altair agent to finish the search implementation." (2026-11-03).
-
-4. **What made it foundational.** Which problem made Tony think "rebuild" rather than "patch"?
 
 5. **Done.** What makes the redux finished?
 
@@ -55,6 +51,8 @@ Raised before the redux started. Each enters the stack when a thread reaches it.
 
 ## Closed
 
+- 4b. The new search (2026-11-03). Result: `fleet.md` R131 and R136, `install.md` R134. The redux finishes the search plan Tony approved on 2026-10-28, on disk, with Cognee dropped. Session `search-finish` (job 6a450f72 on altair) builds it now and brings Tony the open ranking questions. Tony: "Lets move on".
+- 4. What made it foundational (2026-11-03). Result: `goal.md` § Why a rebuild, `install.md` R132 to R135, `fleet.md` R139, `queue.md` R137, `channels.md` R138. Issues stacked up across nearly every part of awm. The rebuild also makes awm easier to install and cuts its RAM use, through a plugin set trimmed by real use and one harness plugin for each coding agent. Tony: "Multiple stacking issues that covered basically everything plus the need to make it more install friendly which also matched performance optimization to save ram"
 - 4c. Remote start and an always-on answerer (2026-11-03). Result: `fleet.md` R139, R98 item 1 and R88 item 1. alcor is mizar's standby, and each wakes the other with Wake-on-LAN. capella and lyra ssh to alcor directly. Nobody touches or tests mira until the trial week ends, and Tony is present for the test. Tony: "Alcor should be standby."
 - 4a. Recut reflection, cch and dsh (2026-11-03). Result: `install.md` R135. One `reflection` tool calls the harness plugin of the session, which does the injection. cch holds Claude Code, dsh the DeepSeek harness, and no OpenCode. Other services, social seats among them, call the harness plugin through the gateway. Tony: "the cut makes sense to me."
 - 3a. The Slack seat system (2026-11-03). Result: `channels.md` R125 and R127, `users.md` R126 and R128 to R130, `fleet.md` R86 and R88 item 1. R125 defines the cooperative level: a lab seat runs on the host with any tool its edges and trust level allow, minus `social`, new top-level agents and cards, and may still request Tony. No agent writes to Slack as Tony. The main seat keeps the first-contact flow, and Opal never messages first. Seats get their own workspace, `agentic-commons`, with local git repos per seat. Foreign peers and static edge users go. Tony: "I think seats need their own workspace."
