@@ -9,7 +9,9 @@
 pub mod client;
 pub mod frame;
 pub mod server;
+pub mod transport;
 
 pub use client::{EdgeClient, EdgeError, SshCommand};
 pub use frame::{Request, Response};
 pub use server::{caller_node, serve};
+pub use transport::{EdgePeers, TOOLS_FRAME};

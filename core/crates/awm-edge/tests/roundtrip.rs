@@ -81,3 +81,23 @@ fn the_key_names_the_calling_node() {
     assert_eq!(caller_node("publickey ssh-ed25519 AAAAx\n", keys), None);
     assert_eq!(caller_node("publickey ssh-ed25519 AAAAzzz\n", keys), None);
 }
+
+#[tokio::test]
+async fn edge_peers_follow_the_edge_list() {
+    use awm_edge::EdgePeers;
+    use awm_gateway::peer::{PeerError, PeerTransport};
+    use awm_proto::{CallContext, Surface};
+    let edges = awm_trust::edges::EdgeList::parse(
+        "nodes:\n  home: {role: desktop, managed: true}\n  work: {role: work, managed: false}\n\
+         edges:\n  home: {work: lan}\n",
+    )
+    .unwrap();
+    let peers = EdgePeers::new("home", edges, duplex_client(Arc::new(AtomicUsize::new(0)), None));
+    assert_eq!(peers.peers(), vec!["work".to_string()]);
+    let mut ctx = CallContext::local("home", Surface::Cli);
+    ctx.caller.trust = Some("trusted".into());
+    let out = peers.invoke("work", "journal", json!({"verb": "fetch"}), &ctx).await.unwrap();
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(v["trust"], "trusted");
+    assert!(matches!(peers.invoke("relay", "journal", json!({}), &ctx).await, Err(PeerError::Unknown(_))));
+}

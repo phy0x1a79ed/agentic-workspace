@@ -6,6 +6,7 @@ use clap::{Parser, Subcommand};
 use serde_json::{json, Map, Value};
 
 pub mod bootstrap;
+pub mod edge;
 
 #[derive(Parser, Debug)]
 #[command(name = "awm", version, about = "awm: the agentic workspace core", disable_help_subcommand = true)]
@@ -35,6 +36,14 @@ pub enum Command {
     Status,
     /// What the loader loaded, refused and skipped.
     Plugins,
+    /// Serve calls from another node over ssh: the forced command of an edge's user key.
+    EdgeServe,
+    /// One call through the service door: the forced command of a service key.
+    Port {
+        /// The key's name, `awm:<holder>:service`.
+        #[arg(long)]
+        key: String,
+    },
     /// Run a verb of a tool: awm <tool> <verb> [--key value]... [--json '{..}'] [--peer <node>]
     #[command(external_subcommand)]
     Tool(Vec<String>),
@@ -71,7 +80,7 @@ fn read_gateway_json(dir: &Path) -> Option<String> {
 pub async fn run(cli: Cli) -> anyhow::Result<i32> {
     match cli.command {
         Command::Gateway { action: GatewayAction::Serve { state } } => {
-            let gw = awm_gateway::Gateway::open(&state).await?;
+            let gw = edge::open_gateway(&state).await?;
             awm_gateway::server::serve(gw).await?;
             Ok(0)
         }
@@ -83,6 +92,8 @@ pub async fn run(cli: Cli) -> anyhow::Result<i32> {
         Command::Usage { days } => get_and_print(&format!("/usage?days={days}")).await,
         Command::Status => get_and_print("/status").await,
         Command::Plugins => get_and_print("/hub/plugins").await,
+        Command::EdgeServe => edge::edge_serve().await,
+        Command::Port { key } => edge::port(&key).await,
         Command::Tool(words) => run_tool(&words).await,
     }
 }
