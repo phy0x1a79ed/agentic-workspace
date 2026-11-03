@@ -2,7 +2,7 @@
 
 ## Purpose & Contents
 
-This doc holds why awm exists, why it is rebuilt rather than patched, and the end state Tony wants from awm, in his words, the tiers his work falls into, and the core loop that ties them together. Every other area doc serves this loop.
+This doc holds why awm exists, why it is rebuilt rather than patched, the end state Tony wants from awm, in his words, what makes the redux done, the tiers his work falls into, and the core loop that ties them together. Every other area doc serves this loop.
 
 Status: draft from thread 1. It waits for Tony's confirmation.
 
@@ -23,6 +23,12 @@ Tony: "Multiple stacking issues that covered basically everything plus the need 
 ## End state
 
 Tony: "the fundamental goal here is using awm to leverage what I can do" (2026-10-30).
+
+## Done
+
+The redux is done when awm runs on every node with every feature the interview settled. That means the end state above, plus each requirement in the area docs.
+
+Tony: "Awm up and operating as discussed with all features discussed across all nodes. Essentially end state as described in 1 is achieved along with everything else we talked about." (2026-11-03).
 
 ## Work tiers
 

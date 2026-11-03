@@ -17,7 +17,7 @@ This doc is the stack of open threads for the redux interview. The interview run
 
 ## Current thread
 
-**5. Done.** See the stack entry below.
+**7. Compaction fails.** See the stack entry below.
 
 Parent thread 1 (end state) waits for Tony to confirm `goal.md`. Its children 1a to 1t are closed.
 
@@ -25,7 +25,7 @@ Parent thread 1 (end state) waits for Tony to confirm `goal.md`. Its children 1a
 
 Top of the stack comes first.
 
-5. **Done.** What makes the redux finished?
+7. **Compaction fails.** A self-compaction sometimes fails. The search session on altair failed to compact, so its approved plan was never delivered. Tony: "it looks like compaction fails sometimes. Altair compaction failed for the search session, which isbwhy it was never delivered. We gotta investigate and fix this." (2026-11-03).
 
 6. **Review the protocol docs.** Add the deploy to the core awm docs, then review every protocol doc. It runs after the other threads settle. Tony: "we should also add the deploy to the core awm docs -> I guess we need to review all protocol docs once we settle everything this session." (2026-11-01).
 
@@ -51,6 +51,7 @@ Raised before the redux started. Each enters the stack when a thread reaches it.
 
 ## Closed
 
+- 5. Done (2026-11-03). Result: `goal.md` § Done. The redux is done when awm runs on every node with every feature the interview settled. Tony: "Awm up and operating as discussed with all features discussed across all nodes."
 - 4b. The new search (2026-11-03). Result: `fleet.md` R131 and R136, `install.md` R134. The redux finishes the search plan Tony approved on 2026-10-28, on disk, with Cognee dropped. Session `search-finish` (job 6a450f72 on altair) builds it now and brings Tony the open ranking questions. Tony: "Lets move on".
 - 4. What made it foundational (2026-11-03). Result: `goal.md` § Why a rebuild, `install.md` R132 to R135, `fleet.md` R139, `queue.md` R137, `channels.md` R138. Issues stacked up across nearly every part of awm. The rebuild also makes awm easier to install and cuts its RAM use, through a plugin set trimmed by real use and one harness plugin for each coding agent. Tony: "Multiple stacking issues that covered basically everything plus the need to make it more install friendly which also matched performance optimization to save ram"
 - 4c. Remote start and an always-on answerer (2026-11-03). Result: `fleet.md` R139, R98 item 1 and R88 item 1. alcor is mizar's standby, and each wakes the other with Wake-on-LAN. capella and lyra ssh to alcor directly. Nobody touches or tests mira until the trial week ends, and Tony is present for the test. Tony: "Alcor should be standby."
