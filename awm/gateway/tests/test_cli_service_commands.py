@@ -238,7 +238,6 @@ def _run_tether_cli(monkeypatch, tmp_path, recorded_pid: int | None) -> list:
     if recorded_pid is not None:
         (tmp_path / f"{recorded_pid}.json").write_text(json.dumps({"kind": "bg"}))
     monkeypatch.setattr(mcp_caller, "_default_sessions_dir", lambda: str(tmp_path))
-    monkeypatch.setattr(mcp_caller, "_is_opencode", lambda pid: False)
     calls = []
 
     def api(method, path, **kwargs):

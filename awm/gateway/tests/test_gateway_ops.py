@@ -109,7 +109,7 @@ _VISIBLE = {
     "operations_peer_list", "operations_peer_resolve",
 }
 _HIDDEN = {
-    "awm_restart", "awm_mcp_sync", "awm_registry_deregister", "awm_services_reap",
+    "awm_restart", "awm_registry_deregister", "awm_services_reap",
     "awm_services_enable", "awm_services_disable", "awm_providers", "awm_config_set",
     "operations_peer_join", "operations_peer_add", "operations_peer_set",
     "operations_peer_grant", "operations_peer_revoke", "operations_peer_forget",
@@ -162,7 +162,7 @@ def test_cli_groups_and_commands_generated():
     cf = {c.name for c in groups["config"].registered_commands}
     # Generated CLI commands only (list/start stay hand-authored → not here;
     # restart was hand-authored in cli.py, removed from generation):
-    assert {"status", "mcp-sync", "list", "deregister"} <= gw
+    assert {"status", "list", "deregister"} <= gw
     assert {"stop", "restart", "enable", "disable"} <= sv
     # config_contracts is CLI-visible; config_set is mcp+http only (its values
     # dict doesn't round-trip cleanly through a CLI option).
@@ -217,11 +217,6 @@ def test_deregister_unknown_is_404(client):
 def test_services_start_unknown_is_404(client):
     r = client.post("/hub/services/does-not-exist/start")
     assert r.status_code == 404
-
-
-def test_mcp_sync_route_generated(client):
-    r = client.post("/mcp-sync")
-    assert r.status_code == 200
 
 
 # ---------------------------------------------------------------------------

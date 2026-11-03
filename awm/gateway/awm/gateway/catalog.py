@@ -120,7 +120,7 @@ def _serialize(obj: Any) -> str:
 
 # ---------------------------------------------------------------------------
 # Gateway control ops — generated from the declarative GATEWAY_OPERATIONS
-# registry (the gateway's own control plane: status / restart / mcp-sync /
+# registry (the gateway's own control plane: status / restart /
 # hub list+deregister / services lifecycle). Their MCP tools + HTTP routes +
 # CLI commands all come from one Operation each — see gateway_ops.py.
 # ---------------------------------------------------------------------------

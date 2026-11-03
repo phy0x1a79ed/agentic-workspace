@@ -170,14 +170,6 @@ def _op_restart() -> Any:
     return restart_core()
 
 
-def _op_mcp_sync() -> Any:
-    """Read workspace ``.mcp.json`` and regenerate the backend-specific MCP
-    configs under ``.awm/``."""
-    from awm.gateway.exports import sync_mcp_configs
-
-    return sync_mcp_configs()
-
-
 async def _op_gateway_list() -> dict[str, Any]:
     """List every hub registration (all kinds) + lease state."""
     from awm.gateway.hub.lease import get_lease_manager
@@ -1000,16 +992,6 @@ GATEWAY_OPERATIONS: list[Operation] = [
         # op from being an unlabelled CLI entry.
         cli_group="gateway", cli_command="restart",
         output=JsonOutput(), surfaces=_HTTP,
-        effect="write",
-    ),
-    Operation(
-        name="awm_mcp_sync",
-        tool="awm", verb="mcp_sync",
-        description="Read workspace .mcp.json and regenerate backend-specific MCP configs under .awm/.",
-        service_func=_op_mcp_sync,
-        http_method="POST", http_path="/mcp-sync",
-        cli_group="gateway", cli_command="mcp-sync",
-        output=JsonOutput(), surfaces=_CLI_HTTP,
         effect="write",
     ),
     Operation(

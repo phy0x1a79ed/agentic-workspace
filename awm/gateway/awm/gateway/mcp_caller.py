@@ -58,21 +58,6 @@ def _ppid_of(pid: int) -> int | None:
         return None
 
 
-def _is_opencode(pid: int) -> bool:
-    """Is this process an opencode REPL, judged by its own exe?
-
-    OpenCode writes no per-pid record file to key the walk on, so the executable
-    is the stop signal. The proxy is a direct stdio child of the opencode REPL,
-    so hop zero usually hits; a wrapper spelling the command the way Claude's
-    ``mamba run`` wrapper does is walked past the same way.
-    """
-    try:
-        exe = os.readlink(f"/proc/{pid}/exe")
-    except OSError:
-        return False
-    return os.path.basename(exe) == "opencode"
-
-
 def _default_sessions_dir() -> str:
     """Where the gateway's mode gate reads session records, so both agree.
 
@@ -86,7 +71,7 @@ def _default_sessions_dir() -> str:
 
 
 def resolve_caller_pid(start_pid: int, *, sessions_dir: str | None = None,
-                       ppid_of=_ppid_of, is_opencode=_is_opencode,
+                       ppid_of=_ppid_of,
                        max_hops: int = MAX_ANCESTRY_HOPS) -> int:
     """The nearest ancestor that is an agent session — usually our parent.
 
@@ -102,9 +87,8 @@ def resolve_caller_pid(start_pid: int, *, sessions_dir: str | None = None,
     Walking up fixes that without widening what a model can reach. The chain comes
     from ``/proc`` and never from an argument, and the walk stops at the *first*
     session it meets, so an agent nested inside another resolves to its own REPL
-    and never to its parent's. An agent session is either a Claude Code REPL (a
-    record file exists under ``sessions_dir``) or an opencode REPL (the process's
-    own exe is ``opencode``). A chain containing neither returns ``start_pid``
+    and never to its parent's. An agent session is a Claude Code REPL: a record
+    file exists under ``sessions_dir``. A chain with none returns ``start_pid``
     unchanged, so a genuine non-agent caller refuses exactly as it did before.
     """
     sessions_dir = sessions_dir or _default_sessions_dir()
@@ -112,8 +96,7 @@ def resolve_caller_pid(start_pid: int, *, sessions_dir: str | None = None,
     for _ in range(max_hops):
         if pid is None or pid <= 1:
             break
-        if os.path.exists(os.path.join(sessions_dir, f"{pid}.json")) or \
-                is_opencode(pid):
+        if os.path.exists(os.path.join(sessions_dir, f"{pid}.json")):
             return pid
         pid = ppid_of(pid)
     return start_pid

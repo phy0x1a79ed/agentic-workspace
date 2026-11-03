@@ -375,18 +375,6 @@ async def lifespan(app: FastAPI):
     except Exception as exc:  # noqa: BLE001
         print(f"[awm] service bring-up skipped: {exc}")
 
-    # Fan canonical .mcp.json out to backend-specific configs.
-    try:
-        from awm.gateway.exports.mcp import sync_mcp_configs
-        for entry in sync_mcp_configs():
-            name = entry.get("name", "?")
-            if entry.get("ok"):
-                print(f"[awm] mcp-sync {name} → {entry.get('path')}")
-            else:
-                print(f"[awm] mcp-sync {name} FAILED: {entry.get('error')}")
-    except Exception as exc:  # noqa: BLE001
-        print(f"[awm] mcp-sync skipped: {exc}")
-
     door, door_task = None, None
     door_addr = isolated.listen_address()
     if door_addr:
@@ -462,9 +450,9 @@ async def _refuse_permission(request, exc):
 # ---------------------------------------------------------------------------
 # Generated control-plane routes
 # ---------------------------------------------------------------------------
-# The gateway's own control ops (status / restart / mcp-sync / hub list +
+# The gateway's own control ops (status / restart / hub list +
 # deregister / services lifecycle) are declared once in GATEWAY_OPERATIONS and
-# their HTTP routes generated here — GET /status, POST /restart, POST /mcp-sync,
+# their HTTP routes generated here — GET /status, POST /restart,
 # GET /hub/services, DELETE /hub/services/{name}, POST /hub/services/{name}/*.
 # No hand-rolled duplicates: the same Operation also drives the MCP tool
 # (catalog) and the CLI command (cli.py). Add a new control op as an Operation,

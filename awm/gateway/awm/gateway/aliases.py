@@ -99,7 +99,6 @@ def _rows() -> list[Alias]:
 
     for verb in ("status", "restart"):
         add("gateway", verb, "awm", verb, old_flat=f"awm_{verb}")
-    add("gateway", "mcp-sync", "awm", "mcp_sync", old_flat="awm_mcp_sync")
     add("gateway", "list", "awm", "registry_list")
     add("gateway", "deregister", "awm", "registry_deregister")
     for verb in ("list", "start", "stop", "restart", "enable", "disable", "reap"):

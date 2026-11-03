@@ -141,7 +141,7 @@ def _load_tool_catalog() -> list[dict]:
 # ---------------------------------------------------------------------------
 # Generated control-plane commands
 # ---------------------------------------------------------------------------
-# The gateway control plane (status / restart / mcp-sync / hub list+deregister /
+# The gateway control plane (status / restart / hub list+deregister /
 # services lifecycle) generates its CLI from GATEWAY_OPERATIONS — one Operation
 # per op, the SAME source that drives the MCP tool + HTTP route. The generator
 # owns the `gateway` / `services` group instances; the hand-authored commands
