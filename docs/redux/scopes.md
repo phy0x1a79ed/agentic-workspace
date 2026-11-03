@@ -16,7 +16,7 @@ This doc holds how a session finds its project and scope, enters it, shares it w
   - A terminal session holds its scope like any live session. awm starts no agent into that scope.
   - Tony opening a scope that an agent holds gets a warning. He is not blocked or queued.
   - A terminal opened inside a scope folder skips routing, because Tony chose the scope. One opened in the lobby, or outside every scope, gets the brief and routes itself (R1, R40).
-- **R3.** A scope is one git worktree and holds at most one live session. A session is live while it works, while it is blocked on a question, and while it waits for review.
+- **R3.** A scope is one git worktree and holds at most one live session. A session is live while it works, while it is blocked on a question, while it waits for review, and while it waits on other sessions (`sessions.md` R51). A waiting session keeps its claim on the scope. Tony: "Waiting sessions  hold scope" (2026-11-03).
 - **R42.** An active agent session holds the claim on a scope. No card or other record holds it. The claim ends when the session ends. Tony: "if you are asking about what actually holds a scope as claimed, it is an active agent session. the claim dies with teh session" (2026-10-31).
   - A card's info panel shows each of its sessions as active or inactive (`queue.md` R62).
 - **R4.** An agent may create a project, which is a git repo. Example: "try out this new tool `<github link>`" clones the tool as a project and enters a branch as a scope.
