@@ -19,6 +19,7 @@ How a channel works belongs in `channels.md`. The owner's queue belongs in `queu
 - **R125.** A lab member's seat runs at the cooperative level (`channels.md` R70). It may use any tool that its node's edges and its trust level allow. It runs on the host like any other session, not in a container. The edges gate its ssh and journal access, and the trust level gates the browser (`fleet.md` R102 item 6). Tony: "anything that they can, I think. the awm edges already gate ssh and journal access. access level gates browser access." and, of a container for each seat, "that's too much." (2026-11-02).
   1. It may use `2fa` for fir and sockeye access. Tony: "2fa is allowed for fir and sockeye access" (2026-11-02).
   2. It cannot use `social`. Tony: "socials should be blocked." (2026-11-02).
+  3. It cannot start other top-level agents. Tony: "starting other top level agents should also be blocked" (2026-11-02).
 
 ## Gap from today
 
