@@ -1,4 +1,4 @@
-"""`kb query`'s meaning and graph legs, and the graph, schema and related verbs, with the kb server mocked."""
+"""`kb query`'s meaning and graph legs, and the related verb, with the kb server mocked."""
 
 import sqlite3
 
@@ -35,16 +35,13 @@ def layer(tmp_path, monkeypatch):
 
 
 class Server:
-    """Stands in for the kb server's /related and /graph."""
+    """Stands in for the kb server's /related."""
 
     def __init__(self):
         self.entries = []
         self.nouns = []
         self.related_error = None
-        self.graph_rows = {}
-        self.graph_error = None
         self.related_bodies = []
-        self.graph_bodies = []
 
     async def related(self, body, **kw):
         self.related_bodies.append(body)
@@ -52,21 +49,11 @@ class Server:
             raise self.related_error
         return {"hits": self.entries, "nouns": self.nouns, "generation": "gen-0001"}
 
-    async def graph(self, body, **kw):
-        self.graph_bodies.append(body)
-        if self.graph_error:
-            raise self.graph_error
-        for label, rows in self.graph_rows.items():
-            if label in body["cypher"]:
-                return {"columns": [], "rows": rows, "truncated": False, "bound": {}}
-        return {"columns": [], "rows": [], "truncated": False, "bound": {}}
-
 
 @pytest.fixture
 def server(monkeypatch):
     s = Server()
     monkeypatch.setattr(client, "related", s.related)
-    monkeypatch.setattr(client, "graph", s.graph)
     return s
 
 
@@ -160,7 +147,6 @@ async def test_without_the_server_encoder_or_index_it_answers_keywords_and_says_
     assert "keyword only" in got["degraded"]["semantic"]
     if isinstance(error, client.KbError):
         assert error.detail in got["degraded"]["semantic"]
-    assert server.graph_bodies == []
 
 
 async def test_a_neighbour_with_no_abstract_quotes_its_title(layer, server, tmp_path, monkeypatch):
@@ -192,7 +178,6 @@ async def test_graph_neighbours_are_ordered_by_the_prior_and_skip_what_is_shown(
     assert [h["id"] for h in graph] == ["doi:10.1/cas", "doi:10.1/old"]
     assert [h["match"] for h in graph] == ["shares an author", "cited-by or cites"]
     assert graph[0]["score"] > graph[1]["score"] and graph[0]["passages"][0]["field"] == "abstract"
-    assert server.graph_bodies == []
 
 
 async def test_without_hop_arrays_the_graph_is_empty_and_the_rest_answers(layer, server, tmp_path, monkeypatch):
@@ -224,56 +209,25 @@ def test_merge_sums_reciprocal_ranks():
 def relayed(monkeypatch):
     seen = []
 
-    async def graph(body, **kw):
-        seen.append(("graph", body, kw))
-        return {"columns": ["n"], "rows": [[1]], "truncated": False, "bound": {}}
-
-    async def schema():
-        seen.append(("schema",))
-        return {"graph": {"nodes": {"Paper": {}}}}
-
     async def related(body, **kw):
         seen.append(("related", body))
         return {"hits": []}
 
-    monkeypatch.setattr(client, "graph", graph)
-    monkeypatch.setattr(client, "schema", schema)
     monkeypatch.setattr(client, "related", related)
     monkeypatch.setattr(hub_adapter.config, "peer_relation", lambda n: "foreign" if n == "stranger" else "domestic")
     monkeypatch.setattr(hub_adapter.config, "caller_peer", lambda as_: (as_ or "").removeprefix("peer:") or None)
     return seen
 
 
-async def test_graph_relays_the_query_near_and_limits(relayed):
-    args = {"cypher": "MATCH (p:Paper) RETURN p LIMIT 1", "near": {"p": {"index": "entries", "text": "x"}},
-            "params": {"y": 1}, "limit": 5, "timeout_s": 3}
-    got = await hub_adapter.HANDLERS["graph"](args)
-    assert got["rows"] == [[1]]
-    assert relayed[0][1] == args
-    assert relayed[0][2]["timeout"] > 3
-
-
-async def test_graph_needs_a_query_and_a_domestic_caller(relayed):
-    with pytest.raises(ValueError):
-        await hub_adapter.HANDLERS["graph"]({"cypher": "  "})
-    with pytest.raises(PermissionError):
-        await hub_adapter.HANDLERS["graph"]({"cypher": "MATCH (n) RETURN n"}, as_="peer:stranger")
-    assert relayed == []
-    await hub_adapter.HANDLERS["graph"]({"cypher": "MATCH (n) RETURN n"}, as_="peer:mira")
-    assert len(relayed) == 1
-
-
-async def test_schema_is_relayed_and_related_is_domestic(relayed):
-    assert (await hub_adapter.HANDLERS["schema"]({}, as_="peer:stranger"))["graph"]["nodes"] == {"Paper": {}}
+async def test_related_is_domestic(relayed):
     with pytest.raises(PermissionError):
         await hub_adapter.HANDLERS["related"]({"text": "x"}, as_="peer:stranger")
     await hub_adapter.HANDLERS["related"]({"text": "x", "zones": ["journal"], "junk": 1})
     assert relayed[-1] == ("related", {"text": "x", "zones": ["journal"]})
 
 
-def test_the_manifest_declares_the_new_verbs_under_the_kb_grant():
+def test_the_manifest_declares_related_under_the_kb_grant():
     verbs = {f["name"]: f for f in hub_adapter.API_MANIFEST["functions"]}
-    for name in ("graph", "schema", "related"):
-        assert verbs[name]["category"] == "kb" and verbs[name]["effect"] == "read"
-    assert "surfaces" not in verbs["graph"] and verbs["related"]["surfaces"] == ["cli", "http"]
+    assert verbs["related"]["category"] == "kb" and verbs["related"]["effect"] == "read"
+    assert verbs["related"]["surfaces"] == ["cli", "http"]
     assert set(hub_adapter.HANDLERS) >= set(verbs)

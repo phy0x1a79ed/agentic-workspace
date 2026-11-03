@@ -5,7 +5,7 @@ import pytest
 
 from awm.kb import hub_adapter
 
-OPERATOR = ("start", "stop", "restart", "logs", "sync", "snapshot")
+OPERATOR = ("start", "stop", "restart", "logs", "snapshot")
 
 
 def test_every_function_is_a_kb_tool_with_a_handler():
@@ -35,10 +35,9 @@ async def test_recall_passes_only_set_fields(monkeypatch):
     assert seen == {"query": "q", "sources": ["papers"]}
 
 
-def test_export_is_hidden_and_the_posts_feed_is_gone():
+def test_the_retired_verbs_are_gone():
     by_name = {f["name"]: f for f in hub_adapter.API_MANIFEST["functions"]}
-    assert by_name["export"]["surfaces"] == ["cli", "http"]
-    assert "sweep" not in by_name
+    assert not {"sweep", "export", "graph", "schema", "sync"} & set(by_name)
     assert not any(p["name"] in ("project", "scope", "kind", "require_complete", "sources")
                    for p in by_name["recall"]["params"])
 

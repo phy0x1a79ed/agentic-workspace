@@ -37,13 +37,11 @@ def kb_paths(tmp_path, monkeypatch):
         "CHECKOUT": checkout, "LIVE": checkout / "live", "SNAPSHOT_DIR": checkout / "data" / "store",
         "LOG_FILE": tmp_path / "state" / "logs" / "kb-server.log", "PORT": port,
         "URL": f"http://127.0.0.1:{port}", "AUTH_JSON": auth,
-        "ZOTERO_LIBRARY": tmp_path / "library.json", "START_TIMEOUT_S": 20.0,
-        "VECTORS": tmp_path / "state" / "w2" / "vectors", "LADYBUG": tmp_path / "state" / "w2" / "graph" / "g.ladybug",
+        "START_TIMEOUT_S": 20.0, "VECTORS": tmp_path / "state" / "w2" / "vectors",
     }.items():
         monkeypatch.setattr(instances, name, value)
     monkeypatch.setenv("KB_PYTHON", sys.executable)
     monkeypatch.delenv("LLM_API_KEY", raising=False)
-    monkeypatch.delenv("KB_ZOTERO_LIBRARY", raising=False)
     return instances
 
 
