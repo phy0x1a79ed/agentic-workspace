@@ -39,6 +39,7 @@ How a session closes and raises follow-up issues belongs in `sessions.md`. What 
   4. After a drop, alcor's hash must equal the device's acked hash or its pending one. alcor refuses a pending action past a short expiry, and the device drops it. Any other mismatch locks the device until the passkey.
   - Each device keeps its own chain with alcor.
   - The browser's same-origin rule keeps deneb's page code out of the panel's storage and buttons. deneb cannot sign an entry, so it cannot inject a command.
+- **R137.** 2fa approvals reach the queue page, which holds 2fa buttons at all times, so Tony can use them whenever he needs to. The Discord channel for 2fa stays as well. A button press goes through the action panel (R65), as every other action does. Tony: "also 2fa approvals go through discord -> that should go to the issues queue page with contant buttons in case I need to use them. I think I want the discord channel as well" (2026-11-03).
 - **R85.** Tony recovers from the loss of every trusted device over ssh to alcor from capella or lyra. One command on alcor prints a one-time enrol link. The same path enrols the first device. Tony: "Losing everything, i should be able to ssh into mizar from capella and lyra" (2026-11-01).
 
 ## Decisions
@@ -60,5 +61,6 @@ Surveyed read only on 2026-11-01, from the `feat/redux` source.
 - **deneb is the public host.** deneb is a Tencent VM that serves `nexus.tony-xy-liu.com` (cloud `README.md`). It runs the federation board host (`board/INSTALL.md`) and Discord seat agents (`users.md`), and holds a copy of the vault (`auth/INSTALL.md`, `reporting/INSTALL.md`). `trilium/INSTALL.md` names sirius as the public host and the sync hub. The docs disagree.
 - **The vault trusts every account.** An awm account reaches the whole vault. A writable slice lets anyone with its link create notes inside one subtree. Trilium runs each note's frontend scripts on the awm origin, as the person who reads it (`trilium/INSTALL.md` § What a shared origin costs).
 - **The edge may refuse the embedded panel.** R65 embeds an alcor page in a Trilium page. The awm edge's content security policy must allow alcor's address as a frame source.
+- **R137 missing.** 2fa approvals reach Tony only on Discord: Approve and Deny buttons, and `/approve` to arm a burst (`awm/services/2fa/awm/twofa/config.py`, `notify.py`). The board has no 2fa buttons.
 - **R85 partial.** alcor admits mizar's and capella's keys. lyra has no key into alcor. No enrol command exists.
 - Each card tracks one session. `sessions.md` § Gap, R57 and R58, holds that gap.

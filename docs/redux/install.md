@@ -54,7 +54,8 @@ Which node holds which role belongs in `fleet.md`. How a deploy moves through th
   2. reflection keeps what holds for every harness: who is calling, trust and mode, the R9 session id, the ledger of owed resumes, and `wait` (`sessions.md` R51).
   3. A harness plugin fills one contract: its platform code, which session is calling, a session's status, send and interrupt, start, stop, resume and list, set the model, effort, name or folder, compact with a signal when done, and which optional verbs it has, such as `mode` and `remote_control`.
   4. cch holds everything specific to Claude Code: the session roster, the tmux and daemon lanes, the daemon unit, the warm session, the hooks and the settings guard.
-  5. Other services that act on a session, social seats among them, call the harness plugin through the gateway (R117 item 1). No service imports a harness's code.
+  5. awm supports no OpenCode harness. reflection loses its OpenCode lane. Tony: "no open code"
+  6. Other services that act on a session, social seats among them, call the harness plugin through the gateway (R117 item 1). No service imports a harness's code.
   Tony: "the cut makes sense to me. Basically, it's just the MCP provides a unified reflection tool that then calls out to either the correct harness to actually do the message injection. This also needs to work for things like social seats. I think maybe a lot of services may end up having to use the harness service at some point." (2026-11-03).
 
 ## Gap from today
