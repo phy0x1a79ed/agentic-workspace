@@ -4,7 +4,7 @@
 
 This file is the contract between a plugin and the Rust gateway of the redux (`install.md` R112, R115 to R117, R132). It holds the manifest format, the wire protocol a service speaks, the call interface a plugin uses to reach another plugin, and the usage event. The redux-core lane (job a92d02bf) owns it. Other lanes build against it. Send a change request to `redux-build/core` with `SendMessage`.
 
-Status: draft v1.6. Build against it.
+Status: draft v1.7. Build against it.
 
 ## Plugin folder
 
@@ -116,6 +116,7 @@ The keys that place plugins:
 3. `rename` maps a declared tool name to its public name, to settle a clash (R116 item 5).
 4. `plugin_roots` adds roots after the core roots. `profiles` and `env` pass through to services.
 5. `[[external]]` names a service the gateway serves but does not spawn, as `{service, token_file?}`. Another user's systemd unit runs it (R99, R107). See § External services.
+6. `isolated_listen` is a second address that serves only the isolated door. See § Isolated sessions.
 
 The `[fleet]` table holds the rollout order: `home`, `nodes` (starting with `home`), and an optional `[fleet.project.<name>]` with `canonical` and `nodes`. The routine plugin reads it. The gateway ignores it. The routine plugin also honours `AWM_INSTALL_CONFIG` as an override of the path, for tests and dry runs. The gateway reads only `<AWM_DIR>/config.toml`.
 
@@ -143,6 +144,7 @@ Both gateways also write the caller's trust and scope into the args of every cal
 - `_caller_trust` is the calling session's level. The gateway reads it from reflection's ledger, `<AWM_DIR>/services/reflection/trust.json`, keyed by the R9 session id. A session with no entry is `trusted`.
 - `_caller_scope` is `<project>/<scope>` of the session record's `cwd`, as `awm.config.scope_of` reads it. It is absent outside a project.
 - `_caller_session` keeps its meaning: the `{kind, job, name}` claim of a session on another node.
+- `_caller_session_id` is the R9 id of an isolated session. Only the isolated door writes it (§ Isolated sessions). Both gateways drop it from every other call.
 
 The gateway finds the session from `X-Awm-Session-Pid`, the pid `awm mcp` sends. It drops the two keys a caller sends. A call that names no session carries neither key. The journal reads that as `trusted`, the browser as `cooperative`.
 
@@ -156,6 +158,24 @@ A service in the install config's `[[external]]` list runs under its own system 
 2. Set `AWM_HUB_TOKEN_FILE` to a file that holds the service's token.
 3. Point the entry's `token_file` at a file with the same token, readable by the gateway's user.
 4. Read resolved tools from `GET /hub/plugins/<plugin>/resolved`. The service cannot read `AWM_RESOLVED_TOOLS` in the gateway's state.
+
+## Isolated sessions
+
+An isolated session runs in a container and has no host pid (`fleet.md` R109). cch writes its MCP config to call `<door>/mcp` with the header `X-Awm-Caller-Token`. Both gateways serve that door.
+
+1. The door is `POST /mcp`, MCP over streamable HTTP with JSON replies. `GET` gets 405, because the door sends no server events.
+2. The gateway asks `harness-cc caller_of_token {token}` who holds the token. A positive answer is kept 10 s, so a revoked token stops working within 10 s. No token, or an unknown one, gets 401. A failed lookup gets 503.
+3. `tools/list` and `describe` show only the verbs on the answer's `tools`. A call to any other verb gets an `isError` result that names the whitelist.
+4. The gateway also holds a ceiling that no token lifts: no `ssh`, no `harness-*` tool, and no `reflection` verb but `whoami`, `compact`, `message_self`, `pending` and `mode`.
+5. A call runs on this node only. A `peer` other than `local` or this node is refused.
+6. `project`, `scope` and `to_scope` must name the session's own scope when sent. A verb that declares `project` or `scope` gets the session's value when the caller sends none.
+7. The call carries the caller `{lane: local, session: <R9 id>, trust, scope}` and the args `_caller_trust`, `_caller_scope` and `_caller_session_id`. Trust is `untrusted`, or `cooperative` when the answer says so. A token never makes a session trusted.
+
+The loopback listener serves `/mcp` too. `isolated_listen` in the install config (`AWM_ISOLATED_LISTEN` for the Python gateway) binds a second listener that serves `/mcp` and nothing else. Bind it where the containers reach the host. cch's default URL is `http://host.docker.internal:8765`, so use port 8765 or set `AWM_ISOLATED_HUB_URL` in cch. `gateway.json` names the door as `isolated_url`.
+
+**WARNING** A request on loopback `/invoke` passes as a trusted local caller. Keep the loopback listener out of the containers' reach. Both gateways refuse a request that carries `X-Awm-Caller-Token` on `/invoke` and `/svc`.
+
+**CAUTION** reflection and operations find the caller's own session from `_caller_pid`. They must read `_caller_session_id` when it is present, or their own-session verbs fail for an isolated session.
 
 ## Calling another plugin
 
