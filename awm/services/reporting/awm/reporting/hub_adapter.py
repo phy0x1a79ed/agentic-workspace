@@ -35,7 +35,9 @@ from awm.reporting.sessions import Cx
 from awm.reporting.store import Offloaded, Queue
 from awm.reporting.subscriber import Subscriber
 from awm.reporting.swarmboard import BoardError, NotACard, SwarmBoard
+from awm.reporting.task_verbs import MANIFEST as TASK_ID_MANIFEST, VERBS as TASK_ID_VERBS, TaskVerbs
 from awm.reporting.tasks import NOTE_URL, Tasks
+from awm.reporting.work import Work
 
 log = logging.getLogger("awm.reporting.hub_adapter")
 
@@ -413,6 +415,7 @@ API_MANIFEST: dict[str, Any] = {
             "params": [_param("dry_run", "boolean", "Default true: list what would change and write nothing. Pass false to write.")],
             "timeout": 300,
         },
+        *TASK_ID_MANIFEST,
     ],
     "emitters": [],
     "sessions": [],
@@ -430,6 +433,9 @@ class Runtime:
         self.cx = Cx()
         self.tasks = Tasks(Ledger(config.db_path()), self.board, queue=self.queue, fed=self.fed,
                            cx=self.cx)
+        self.work = Work(config.db_path())
+        self.tasks.work = self.work
+        self.task_ids = TaskVerbs(self.work, self.tasks.node, self.tasks._resolve)
         self.loop = Loop(self.cx, on_rows=self._on_rows)
         self.subscriber: Subscriber | None = None
         self.commands = Commands(self.fed, self.cx)
@@ -542,6 +548,17 @@ def _task_verb(name: str) -> Any:
         if RUNTIME is None:
             return {"ok": False, "error": "reporting is not running on this node"}
         return await RUNTIME.tasks.call(name, args)
+
+    return verb
+
+
+def _task_id_verb(name: str) -> Any:
+    async def verb(args: dict, as_: str | None = None) -> dict:
+        if RUNTIME is None:
+            return {"ok": False, "error": "reporting is not running on this node"}
+        if as_ is not None and name not in ("task_for_session", "task_sessions", "task_get"):
+            return {"ok": False, "error": f"{name} is for this node's sessions and services"}
+        return await RUNTIME.task_ids.call(name, args)
 
     return verb
 
@@ -722,6 +739,7 @@ HANDLERS: dict[str, Any] = {
     "swarm_files": _swarm_verb(_swarm_files),
     "swarm_file_fetch": _swarm_verb(_swarm_file_fetch),
     **{name: _task_verb(name) for name in TASK_VERBS},
+    **{name: _task_id_verb(name) for name in TASK_ID_VERBS},
     "status": status,
     "board_ensure": board_ensure,
     "ops_post": ops_post,

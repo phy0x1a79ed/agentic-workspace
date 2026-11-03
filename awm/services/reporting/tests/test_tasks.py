@@ -1049,3 +1049,15 @@ async def test_a_sweep_that_misses_the_row_once_keeps_the_agent_line(env):
     await env.tasks.sweep([live()])
     await env.tasks.sweep([])
     assert "Agent:" in env.body() and env.task()["agent"] == "fix the thing"
+
+
+async def test_a_new_card_mints_a_task_id_for_its_session(env, tmp_path):
+    from awm.reporting.work import Work
+
+    env.tasks.work = Work(tmp_path / "reporting.db")
+    session = env.records[200]["sessionId"] = "22222222-3333-4444-5555-666666666666"
+    await env.call("track_task", pid=200, title="Look into the printer")
+    task_id = env.tasks.work.task_for_session(session)
+    assert task_id and env.tasks.work.task_get(task_id)["title"] == "Look into the printer"
+    await env.call("track_task", pid=200, title="again")
+    assert env.tasks.work.task_for_session(session) == task_id

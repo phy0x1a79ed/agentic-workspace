@@ -205,6 +205,8 @@ class Tasks:
         self.subscription: gatewayclient.SupervisedSubscription | None = None
         self._missing: dict[int, int] = {}
         self.lock = asyncio.Lock()
+        #: The task records of `awm.reporting.work`; None keeps the ledger alone, as in older tests.
+        self.work: Any = None
         self.approvals: Any = None
 
     # -- entry ---------------------------------------------------------------
@@ -299,7 +301,20 @@ class Tasks:
         if who.session_id:
             await self.db.alias(task["id"], who.session_id)
         await self.db.event(task["id"], "created", title)
+        await self._ensure_task_id(who, title)
         return await self.db.get(task["id"])
+
+    async def _ensure_task_id(self, who: Who, title: str) -> None:
+        """Mint the task id of new work (sessions.md R57 step 1), unless the session already has one."""
+        if self.work is None or not who.session_id:
+            return
+        try:
+            task_id, made = await asyncio.to_thread(self.work.task_ensure, title, who.session_id, self.node)
+        except ValueError as exc:
+            log.warning("reporting: no task id for %s: %s", who.key, exc)
+            return
+        if made:
+            log.info("reporting: task %s opened for session %s", task_id, who.session_id)
 
     async def _file_away(self, task: dict, why: str) -> None:
         """Move ``task`` off its session's key, so the session's next work opens a card of its own."""
