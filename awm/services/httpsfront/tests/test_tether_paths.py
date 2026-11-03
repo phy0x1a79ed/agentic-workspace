@@ -9,7 +9,8 @@ before anything is proxied and before any session is opened.
 
 The grammars must agree exactly with what the relay parses, in
 ``tether-proto``'s ``Slot::parse`` (one to three digits, no leading zero, 1 to
-999) and ``tether-relay``'s ``Token::parse`` (thirty-two lowercase hex). The
+999), ``tether-relay``'s ``Token::parse`` (thirty-two lowercase hex) and its
+``room::parse_name`` (three lowercase list words joined by hyphens). The
 boundaries below are those two definitions written out, so a change on either
 side has to change this file too.
 """
@@ -44,6 +45,12 @@ TICKET = "0123456789abcdef0123456789abcdef"
     f"/tether/seat/{TICKET}/close",
     "/tether/issue",                            # the operator's, gated at the relay
     "/tether/status",
+    "/tether/room",                             # opening a room, gated at the relay
+    "/tether/r/acre-anchor-kettle",             # a room's how-to, for its guest
+    "/tether/r/acre-anchor-kettle/send",        # and its four requests
+    "/tether/r/acre-anchor-kettle/recv",
+    "/tether/r/acre-anchor-kettle/ws",
+    "/tether/r/acre-anchor-kettle/leave",
 ])
 def test_the_mount_claims_the_relays_whole_public_surface(path):
     assert tether.owns(path)
@@ -81,6 +88,15 @@ def test_the_mount_claims_the_relays_whole_public_surface(path):
     ("/tether/win/", "a trailing slash is not a route the relay has"),
     ("/tether/windows", "the Windows launcher is at /win and only there"),
     ("/tether/invoke", "nothing else on the relay is a route at all"),
+    ("/tether/r/acre-anchor", "a room name is three words"),
+    ("/tether/r/acre-anchor-kettle-acre", "a room name is three words"),
+    ("/tether/r/Acre-anchor-kettle", "the relay mints lowercase names"),
+    ("/tether/r/acre_anchor_kettle", "the words are joined by hyphens"),
+    ("/tether/r/ab-anchor-kettle", "every list word is three to eight letters"),
+    ("/tether/r/acre-anchor-kettle/", "a trailing slash is not a route the relay has"),
+    ("/tether/r/acre-anchor-kettle/close", "a guest leaves, and leaving is the only close"),
+    ("/tether/r", "a room is named"),
+    ("/tether/rooms", "opening a room is /room and only that"),
 ])
 def test_a_near_miss_inside_the_mount_is_refused_rather_than_forwarded(path, why):
     assert not tether.owns(path), why
@@ -112,6 +128,7 @@ def test_a_name_that_merely_starts_the_same_is_not_this_mounts(path):
     ("/tether/issue", "/issue"),
     ("/tether/bin/tether", "/bin/tether"),
     ("/tether/win", "/win"),
+    ("/tether/r/acre-anchor-kettle/recv", "/r/acre-anchor-kettle/recv"),
 ])
 def test_the_mount_comes_off_the_same_way_in_text_and_in_bytes(path, inner):
     assert tether.upstream_path(path) == inner
