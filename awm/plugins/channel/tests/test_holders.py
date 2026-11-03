@@ -65,3 +65,18 @@ def test_the_plugin_does_not_reach_into_social():
     src = Path(holders.__file__).parent
     for py in src.rglob("*.py"):
         assert "awm.social" not in py.read_text(), py
+
+
+def test_a_record_from_reflection_session_of_names_the_holder(monkeypatch):
+    """The shape redux-harness's ``gatewayclient.sessions.session_of`` returns."""
+    import sys
+    import types
+
+    fake = types.ModuleType("awm.gatewayclient.sessions")
+    fake.session_of = lambda pid: {"session_id": SID, "job": "abcd1234",
+                                   "hosting": "background", "name": "worker"}
+    monkeypatch.setitem(sys.modules, "awm.gatewayclient.sessions", fake)
+    import awm.gatewayclient as gc
+    monkeypatch.setattr(gc, "sessions", fake, raising=False)
+    assert holders._record(42) == {"background": True, "job": "abcd1234",
+                                   "session": SID, "name": "worker"}

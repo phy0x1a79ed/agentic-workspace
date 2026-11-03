@@ -4,11 +4,11 @@
 # tether binaries RELEASE pins.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
-WS="$(git -C "$HERE" rev-parse --show-toplevel)"
+AWM="${AWM_ROOT:-$(git -C "$HERE" rev-parse --show-toplevel)/awm}"
 ENV="${AWM_ENV:-awm}"
 run() { echo "+ pip install -e $*"; mamba run -n "$ENV" pip install -e "$@"; }
 
-run "$WS/awm/service_components/gatewayclient" --no-deps
+run "$AWM/service_components/gatewayclient" --no-deps
 run "$HERE"
 mamba run -n "$ENV" python -c 'import spake2' \
     || { echo "spake2 did not install into env '$ENV'" >&2; exit 1; }

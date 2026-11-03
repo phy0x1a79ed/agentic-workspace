@@ -52,6 +52,7 @@ API_MANIFEST: dict[str, Any] = {
     "functions": [
         {
             "name": "open",
+            "effect": "secret",
             "tool": "channel_open",
             "description": (
                 "Open a channel. Kind `room` opens a private room at the relay and "
@@ -77,6 +78,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "write",
+            "effect": "write",
             "tool": "channel_write",
             "description": (
                 "Send into a channel you hold. `target: say` (the default) sends a "
@@ -112,6 +114,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "drain",
+            "effect": "write",
             "tool": "channel_drain",
             "description": (
                 "Read a machine's tool log since your last drain: each command, its "
@@ -134,6 +137,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "status",
+            "effect": "read",
             "tool": "channel_status",
             "description": "The channels you hold or held: kind, how long each lasts, "
                            "link, whether open, why one ended, and its transcript. "
@@ -143,6 +147,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "encrypt",
+            "effect": "secret",
             "tool": "channel_encrypt",
             "description": (
                 "Move a live room to end-to-end encryption, when the task calls for it "
@@ -154,6 +159,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "close",
+            "effect": "write",
             "tool": "channel_close",
             "description": "Close a channel you hold. The other side sees it end. On a "
                            "machine, `task` stops that one task instead, and the "
