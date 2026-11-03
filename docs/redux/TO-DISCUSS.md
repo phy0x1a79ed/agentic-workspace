@@ -30,7 +30,6 @@ Top of the stack comes first.
    - The canonical copy of the SOP.
    - Who the 2 static edge users are.
    - Whether seat scopes are private to foreign peers.
-   - An allowlist for who can reach Opal, or anyone in the workspace.
 
 4. **What made it foundational.** Which problem made Tony think "rebuild" rather than "patch"?
 

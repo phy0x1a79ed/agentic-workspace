@@ -17,7 +17,12 @@ How a channel works belongs in `channels.md`. The owner's queue belongs in `queu
 - **R123.** A seat user may hold approval rights over a system that is theirs. Ryan requests and approves Arbutus changes through Slack. The Arbutus admin access is awm's own admin system, extended to Arbutus (`fleet.md` R91 item 5, R100). Ryan's approvals and Tony's passkey approvals (`queue.md` R64) cover sets that do not overlap. Tony: "Ryan approval is for shogun stuff. there is overlap, but not the same. subset? maybe really just non-overlapping set. the admin access on arbutus is the same system as ours, we are just extending it. Ryan can request and approve arbutus changes through the slack, it is his right to do so." (2026-11-02).
 - **R124.** The public never calls into awm directly. Tony: "public shouldnt be able to call into awm directly. that is a major overwhelm risk" (2026-11-02).
 - **R126.** The Slack seat system keeps its first-contact flow. A main Slack seat watches for new DMs to Opal. On the first DM from someone other than Tony, it notifies Tony and starts a seat for that person, at the cooperative level (`channels.md` R125). Tony: "the current system works. a main slack seat monitors for new DMs. it notifies me and spawns a seat on first DM by someone else." (2026-11-02).
-  1. Opal never messages a person first. Tony: "lets also enforce some small tweaks to make that go smoother. like no reaching out first" (2026-11-02).
+  1. Opal never messages a person first. The Slack send refuses a DM where the person has never written, in code. Tony: "lets also enforce some small tweaks to make that go smoother. like no reaching out first" (2026-11-02).
+  2. A seat never uses what a person told Tony in his own DM (`channels.md` R71 item 2).
+  3. A person's replies go to their own seat from the first message. A change to one seat never restarts another.
+  4. An instruction in Tony's DM does not spread to the lab seats as a new permission. It reaches a seat only when Tony names that seat.
+
+  Items 1 to 4 come from the Beth case of 2026-10-29: Opal sent Beth a cold plan after an instruction in Tony's DM fanned out to every lab seat. Tony kept these four of six proposed tweaks: "drop 2 / drop 6" (2026-11-02).
 
 ## Gap from today
 
@@ -26,6 +31,7 @@ Tony: "me and also lab members through slack seats on altair, under my supervisi
 Surveyed read only on 2026-10-30. Each user found, against the boundaries of R121:
 
 - Lab members reach awm through Slack seats on altair (R121 item 1).
+- **R126 broken.** Nothing in `social` stops a first message: `awm/services/social/awm/social/connectors/slack_bot_conn.py` and `hub_adapter.py` send to any DM. A seat brief lives in mira's `social.toml`, and editing one replaces other seats' agents. slack-main relays Tony's instructions to every lab seat.
 - **R122 missing.** shaula, of the `collins` swarm, is a foreign peer in altair's book with standing read grants on journals, kb, notes, precedence and writing (`fleet.md` § Gap from today).
 - Ryan approves admin windows by Slack reply.
 - Bots come in through Discord kept seats, the boundary for humans, not through rooms.
