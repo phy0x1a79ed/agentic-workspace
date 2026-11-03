@@ -64,6 +64,7 @@ Coordinator, on the lane change:
 - T9. Write the wake_node role (G1, G3, G5).
 - T10. Write the alcor_ssh_door role with the ufw defaults (G5).
 - T11. Write the deneb_station role (G6).
+- T11b. Build the Zotero Sync now order puller against the approval panel (G6).
 - T12. Test the tree in throwaway containers (G5, G6).
 - T13. Commit a checkpoint and journal the phase (G5, G6).
 - T14. Compact.
@@ -111,7 +112,7 @@ Gotchas: commit only this lane's files.
 
 ### T7. Compact
 
-Handoff: the plugin lives at `awm/plugins/wake/`, its tests pass, and the plan file names the next task. Re-read `build-rules.md` and `lanes.md` in `/home/tony/.claude/jobs/8162a704/tmp/` after the compaction. Agreed with trust (job 563d3f5a): `fleet/roles/<role>`, `fleet/site.yml`, `fleet/inventory/hosts.yml` mine, `fleet/edges.yml` theirs, ufw defaults and alcor port 22 mine. Run `reflection(verb="compact", args={followup:"continue with T8 of docs/redux/drafts/redux-fleet-plan.md"})`.
+Handoff: the plugin lives at `awm/plugins/wake/` (13ea967a), its 26 tests pass with `PYTHONPATH=<plugin>:<ws>/awm/service_components/gatewayclient mamba run -n awm python -m pytest awm/plugins/wake/tests`, and today's gateway finds it with `AWM_SERVICE_ROOTS=<ws>/awm/plugins`, which wake_node must set in the node's `.awm/env`. Comms with siblings go through SendMessage by session name (build-rules rule 0), never reflection message. The harness lane will message when `revive_pinned` lands on `feat/redux-harness`. and the plan file names the next task. Re-read `build-rules.md` and `lanes.md` in `/home/tony/.claude/jobs/8162a704/tmp/` after the compaction. Agreed with trust (job 563d3f5a): `fleet/roles/<role>`, `fleet/site.yml`, `fleet/inventory/hosts.yml` mine, `fleet/edges.yml` theirs, ufw defaults and alcor port 22 mine. Run `reflection(verb="compact", args={followup:"continue with T8 of docs/redux/drafts/redux-fleet-plan.md"})`.
 
 ### T8. Lay out the fleet Ansible tree
 
@@ -144,6 +145,12 @@ Write it from the cloud project's `VMs/tencent/deneb` tree, read only, with no l
 
 Gotchas: deneb's live service list may differ from the cloud tree, so the role states the wanted set and the play diffs it in check mode. Removing the altair key route touches F6, which the trust lane may also claim, so check with it before T13.
 
+### T11b. Build the Zotero Sync now order puller against the approval panel
+
+The coordinator chose the R65 panel for R83 (2026-11-03). The queue lane's panel interface v1: the bibliography note embeds `https://<approver-origin>/panel/button?kind=zotero_sync&node=deneb&label=Sync%20now`. A press becomes an order envelope `{"order": {order_id, kind, node, payload, not_after}, "sig", "key_id"}` signed by alcor's grant key. The Zotero service on deneb long-polls `approver order_pull(node:"deneb", kinds:["zotero_sync"], wait_s<=55)`, checks each envelope with `verify_order` from `awm/plugins/approver/grantlib/` and alcor's public key, checks `not_after`, keeps a seen set of `order_id`, runs the sync, and calls `order_done`. The deneb_station role adds the approver origin to the vault's CSP `frame-src` and installs alcor's grant public key.
+
+Gotchas: the puller is off until its config names the approver and the key, so today's deneb keeps working. Tests use a fake approver and a locally made Ed25519 key. If `grantlib` is not committed yet, import it lazily and test against a stub that holds the same signature.
+
 ### T12. Test the tree in throwaway containers
 
 Run `ansible-playbook --syntax-check`, then run each of my roles against a throwaway `ubuntu:24.04` container through the `community.docker` connection: check mode first, then a real run inside the container, then a second run that must report no changes. ufw and nftables need `NET_ADMIN` in the container. Systemd units are rendered and checked, not started.
@@ -174,7 +181,6 @@ Run the `debrief` skill. Then stop the session.
 
 ## Still unsure about
 
-- R83's Sync now button: Tony's button on the bibliography note is an action, and queue.md R64 says alcor authorizes every action. Does the button wait for the R65 panel, or ship as a plain button now? Sent to the coordinator. T11 writes the timer change only.
 - Whether deneb's config moves from the cloud project's `VMs/tencent/deneb` scripts into `fleet/`, so that those scripts retire when the pass lands. T11 writes the role in `fleet/` and leaves the cloud tree alone.
 
 ## Callouts
