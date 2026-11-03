@@ -39,6 +39,7 @@ How a seat lives as a session belongs in `sessions.md`. Communication between aw
 - **R76.** All words of a tether or room code are random. Tony: "Also, the tether codes seem to always start with abbey, but should be randomized" (2026-11-01).
 
 - **R77.** awm has no inbound door for agents. deneb holds no public door that is always on. A room exists only while one of our tasks holds it open (R72). A foreign agent that wants to start a conversation rings a seat, which serves as its doorbell, and the seat passes the request to Tony. The seat's own trust level applies, so a Discord bot channel stays untrusted (R70). Tony: "No inbound. I have a  few seats that can serve as doorbells for bots. No public facing always on constant door on deneb" (2026-11-01).
+  - The reporting service's front door goes. No node takes work from the federation board. A room that a seat opens does that job. Tony: "I think we want to drop the front door entirely. the rooms https seat abstracts that job and functionality" (2026-11-02).
 
 ## Gap from today
 
