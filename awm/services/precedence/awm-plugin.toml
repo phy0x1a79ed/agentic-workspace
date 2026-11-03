@@ -1,0 +1,23 @@
+[plugin]
+name = "precedence"
+version = "0.1.0"
+trust = "own"
+
+[[service]]
+name = "precedence"
+
+[[service.archive]]
+name = "precedence"
+mode = "index"
+export = "precedence_export"
+
+[[tool]]
+name = "precedence"
+uuid = "b919d0c9-e740-5761-80c7-722f0c58362f"
+major = 1
+tier = "on"
+
+[needs]
+secrets = []
+network = []
+platform = ["linux"]

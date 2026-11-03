@@ -13,6 +13,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 ENV="${AWM_ENV:-awm}"
 KB_ENV="${KB_ENV:-kb}"
 REPO="$(git -C "$HERE" rev-parse --show-toplevel)"
+AWM="${AWM_ROOT:-$REPO/awm}"
 workspace_root() {
     [ -n "${AWM_WORKSPACE:-}" ] && { printf '%s\n' "$AWM_WORKSPACE"; return; }
     local d="$1"
@@ -31,9 +32,9 @@ ENV_FILE="$CHECKOUT/envs/kb/base.yml"
 
 run() { echo "+ pip install -e $*"; mamba run -n "$ENV" pip install -e "$@"; }
 
-run "$REPO/awm/service_components/config" --no-deps
-run "$REPO/awm/service_components/gatewayclient" --no-deps
-run "$REPO/awm/services/kb"
+run "$AWM/service_components/config" --no-deps
+run "$AWM/service_components/gatewayclient" --no-deps
+run "$HERE"
 
 PYBIN="$(mamba run -n "$ENV" python -c 'import sys; print(sys.executable)')"
 printf 'AWM_PYTHON=%s\nAWM_ENV_BIN=%s\n' "$PYBIN" "$(dirname "$PYBIN")" > "$HERE/.runtime-env"

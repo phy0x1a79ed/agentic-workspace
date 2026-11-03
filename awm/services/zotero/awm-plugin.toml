@@ -1,0 +1,22 @@
+[plugin]
+name = "zotero"
+version = "0.1.0"
+trust = "own"
+
+[[service]]
+name = "zotero"
+
+[[tool]]
+name = "zotero"
+uuid = "642d0afc-f7d5-54a5-994d-430edb99f182"
+major = 1
+tier = "off"
+
+[needs]
+secrets = ["ZOTERO_API_KEY"]
+network = []
+platform = ["linux"]
+
+[[needs.tool]]
+uuid = "7dd4203f-d8a2-5e25-95bf-f5277813e8d5"  # trilium
+major = 1

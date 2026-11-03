@@ -11,12 +11,12 @@
 # Override the target env with AWM_ENV=<name>.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
-WS="$(git -C "$HERE" rev-parse --show-toplevel)"
+AWM="${AWM_ROOT:-$(git -C "$HERE" rev-parse --show-toplevel)/awm}"
 ENV="${AWM_ENV:-awm}"
 run() { echo "+ pip install -e $*"; mamba run -n "$ENV" pip install -e "$@"; }
 
-run "$WS/awm/service_components/gatewayclient" --no-deps
-run "$WS/awm/services/tether"
+run "$AWM/service_components/gatewayclient" --no-deps
+run "$HERE"
 
 # Bake the target env's absolute interpreter into a gitignored `.runtime-env`
 # sidecar so the hub supervisor can respawn this service under systemd's

@@ -1,0 +1,22 @@
+[plugin]
+name = "claude-science"
+version = "0.1.0"
+trust = "own"
+
+[[service]]
+name = "claude-science"
+profiles = ["claude-science"]
+
+[[tool]]
+name = "science"
+uuid = "eb2a13d7-f078-589d-8289-1d3f884c5464"
+major = 1
+tier = "on"
+
+[[page]]
+name = "claude-science"
+
+[needs]
+secrets = []
+network = []
+platform = ["linux"]

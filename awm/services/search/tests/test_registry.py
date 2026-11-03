@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
+from unittest import mock
 
 import pytest
 
@@ -70,6 +72,17 @@ def test_a_registry_without_archive_keys_falls_back_to_the_manifest(tmp_path, mo
     assert sources["writing"].export == "export"
 
 
+def test_the_fallback_reads_the_plugin_manifest_first(tmp_path, monkeypatch):
+    folder = tmp_path / "journal"
+    folder.mkdir()
+    (folder / "service.toml").write_text('[[archive]]\nname = "stale"\nmode = "index"\nexport = "x"\n')
+    (folder / "awm-plugin.toml").write_text(
+        '[plugin]\nname = "journal"\n\n[[service]]\nname = "journal"\n\n'
+        '[[service.archive]]\nname = "journals"\nmode = "index"\nexport = "journal_export"\n')
+    monkeypatch.setenv("AWM_SERVICES_DIR", str(tmp_path))
+    assert [t["name"] for t in registry.manifest_tables("journal")] == ["journals"]
+
+
 def test_a_spec_survives_storage():
     src = registry.parse([entry("journal", [index_table("journals", "journal", topic="posts")])])[0]["journals"]
     assert registry.Source.from_spec(src.spec()) == src
@@ -79,10 +92,10 @@ SERVICES = Path(__file__).resolve().parents[2]
 
 
 def _tables():
-    import tomllib
-    for toml in sorted(SERVICES.glob("*/service.toml")):
-        for table in tomllib.loads(toml.read_text()).get("archive") or []:
-            yield toml.parent.name, table
+    for folder in sorted(p.parent for p in SERVICES.glob("*/run.sh")):
+        with mock.patch.dict(os.environ, {"AWM_SERVICES_DIR": str(SERVICES)}):
+            for table in registry.manifest_tables(folder.name):
+                yield folder.name, table
 
 
 def test_every_table_in_the_tree_names_a_verb_its_service_publishes():

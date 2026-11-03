@@ -433,7 +433,7 @@ def test_the_archive_table_names_the_export_verb():
     import tomllib
     from pathlib import Path
     import awm.precedence
-    toml = Path(awm.precedence.__path__[0]).parents[1] / "service.toml"
+    toml = Path(awm.precedence.__path__[0]).parents[1] / "awm-plugin.toml"
     data = tomllib.loads(toml.read_text())
-    assert data["tool"] == "precedence"
-    assert data["archive"] == [{"name": "precedence", "mode": "index", "export": "precedence_export"}]
+    assert [t["name"] for t in data["tool"]] == ["precedence"]
+    assert data["service"][0]["archive"] == [{"name": "precedence", "mode": "index", "export": "precedence_export"}]

@@ -1,0 +1,19 @@
+[plugin]
+name = "rlm-factorio"
+version = "0.1.0"
+trust = "own"
+
+[[service]]
+name = "rlm-factorio"
+profiles = ["gamebot"]
+
+[[tool]]
+name = "factorio"
+uuid = "dc60865f-94ba-5f8e-bac8-0c6734e49bd8"
+major = 1
+tier = "off"
+
+[needs]
+secrets = ["RLM_FACTORIO_ADMIN_TOKEN_FILE"]
+network = []
+platform = ["linux"]

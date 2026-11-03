@@ -1,0 +1,18 @@
+[plugin]
+name = "fileviewer"
+version = "0.1.0"
+trust = "own"
+
+[[service]]
+name = "fileviewer"
+
+[[tool]]
+name = "fileviewer"
+uuid = "076abbd7-babb-5a0b-80f2-1d6d3394ffa3"
+major = 1
+tier = "off"
+
+[needs]
+secrets = []
+network = []
+platform = ["linux"]

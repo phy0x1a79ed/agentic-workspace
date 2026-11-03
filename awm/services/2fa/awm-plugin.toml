@@ -1,0 +1,22 @@
+[plugin]
+name = "2fa"
+version = "0.1.0"
+trust = "own"
+
+[[service]]
+name = "2fa"
+
+[[tool]]
+name = "2fa"
+uuid = "892549fc-e262-5e5e-b420-c69134c77945"
+major = 1
+tier = "off"
+
+[needs]
+secrets = ["AWM_2FA_KEY_PATH"]
+network = []
+platform = ["linux"]
+
+[[needs.tool]]
+uuid = "2bfe60e2-3d54-5c59-9224-50b42b51b8f5"  # social
+major = 1

@@ -1,0 +1,18 @@
+[plugin]
+name = "engcyc"
+version = "0.1.0"
+trust = "own"
+
+[[service]]
+name = "engcyc"
+
+[[tool]]
+name = "engcyc"
+uuid = "86bd8c7d-f96d-5f50-9bc7-28ac6ee62ef0"
+major = 1
+tier = "off"
+
+[needs]
+secrets = []
+network = []
+platform = ["linux"]

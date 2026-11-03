@@ -1,0 +1,22 @@
+[plugin]
+name = "vpn"
+version = "0.1.0"
+trust = "own"
+
+[[service]]
+name = "vpn"
+
+[[tool]]
+name = "vpn"
+uuid = "6f44bf94-92a9-5a38-a42c-42f892660641"
+major = 1
+tier = "off"
+
+[needs]
+secrets = []
+network = []
+platform = ["linux"]
+
+[[needs.tool]]
+uuid = "892549fc-e262-5e5e-b420-c69134c77945"  # 2fa
+major = 1

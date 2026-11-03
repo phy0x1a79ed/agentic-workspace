@@ -1,0 +1,22 @@
+[plugin]
+name = "scopes"
+version = "0.1.0"
+trust = "own"
+
+[[service]]
+name = "scopes"
+
+[[tool]]
+name = "scope"
+uuid = "b138a5f6-d866-52cb-8ad8-1243a84aaf5e"
+major = 1
+tier = "on"
+
+[needs]
+secrets = []
+network = []
+platform = ["linux"]
+
+[[needs.tool]]
+uuid = "17fe8c12-3c76-5412-a796-9e88a3a5e1ce"  # journal
+major = 1

@@ -1,0 +1,18 @@
+[plugin]
+name = "httpsfront"
+version = "0.1.0"
+trust = "own"
+
+[[service]]
+name = "httpsfront"
+
+[[tool]]
+name = "httpsfront"
+uuid = "f14ddef4-e6e2-5449-a4b3-f5e1425f5bb9"
+major = 1
+tier = "off"
+
+[needs]
+secrets = []
+network = []
+platform = ["linux"]

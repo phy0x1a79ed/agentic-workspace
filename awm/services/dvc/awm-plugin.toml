@@ -1,0 +1,18 @@
+[plugin]
+name = "dvc"
+version = "0.1.0"
+trust = "own"
+
+[[service]]
+name = "dvc"
+
+[[tool]]
+name = "dvc"
+uuid = "2bb46600-c799-5286-9397-4c1d7245ff80"
+major = 1
+tier = "on"
+
+[needs]
+secrets = []
+network = []
+platform = ["linux"]

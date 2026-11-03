@@ -43,7 +43,7 @@ From the coordinator's brief: "Keep kb's papers index, vectors, hop arrays and e
 - `git ls-files awm/services awm/pages` lists none of the dropped services or their pages.
 - `git grep -i -w` for each dropped name outside `docs/redux/` returns only intentional history, such as a migration note or a changelog line.
 - `awm/services/kb` has no Cognee code path. `kb_export`, `papers.py` and the `[[archive]]` kb source are unchanged.
-- Every kept service folder holds `awm-plugin.toml` in the format agreed with redux-core and no `service.toml`.
+- Every kept service folder holds `awm-plugin.toml` in the format agreed with redux-core and no `service.toml`. The exceptions are auth, board, reporting, cx, keep and reflection, which share a tool, and search, which search-finish owns. The guard test names each exception and its reason.
 - No manifest names a host. redux-build/fleet holds the placement: rlm-factorio on mizar, engcyc on showtime with altair for development.
 - The Python gateway reads `awm-plugin.toml` for tool, tier, profiles and archive, and still reads a legacy `service.toml`.
 - A guard test fails on a kept plugin that imports another plugin's package, reads an undeclared secret, or does not load from a root outside `awm/services`.
@@ -113,15 +113,17 @@ Gotchas: a manifest that does not parse must not switch a tool off. Fall back to
 
 ### T8. Write the manifests
 
-Write `awm-plugin.toml` for every kept service from a one-off script that reads each `service.toml` and each `API_MANIFEST` tool name. Give each tool `uuid5(NAMESPACE_URL, "awm:tool:<name>")`, written once and then permanent. Declare secrets, network and the tools each plugin calls. Name no host. Declare a platform or a GPU need where a plugin has one. Delete each `service.toml`. Keep the manifests of the harness services (reflection, cx, keep, dsh) minimal and tell redux-harness they own them. Leave `awm/services/search` to search-finish.
+Write `awm-plugin.toml` for every kept service from a one-off script that reads each `service.toml` and the code. Give each tool `uuid5(NAMESPACE_URL, "awm:tool:<name>")`, written once and then permanent. Declare the secret-shaped environment names the code reads, and the tools it calls through `gatewayclient`. Name no host. Move each `[[archive]]` table into `[[service.archive]]`, teach search's `registry.manifest_tables` fallback to read it there (search-finish agreed), and delete each `service.toml`. Make each `install.sh` install its own folder from where it runs, and find the component libraries through `AWM_ROOT`, which the gateway's install exports.
 
-Gotchas: a tool's MCP name can differ from its folder, as `scopes` serves `scope`. Read `tool` from `service.toml`, not the folder name.
+Leave auth, board, reporting, cx, keep and reflection on `service.toml`. A manifest plugin may not share a tool (contract v1.4 rule 2): auth publishes into the core's `awm` tool, board and reporting share `operations`, and cx, keep and reflection share `reflection`. The operations merge and the harness recut (R135) convert them. Leave `awm/services/search` to search-finish.
+
+Gotchas: a tool's MCP name can differ from its folder, as `scopes` serves `scope`. Read `tool` from `service.toml`, not the folder name. A call names a service, not a tool, so map `cx` to `reflection`. A call to the core's `awm` tool is no dependency.
 
 ### T9. Add the guard tests
 
-Add one test module that walks every service folder and checks four things. The manifest parses and fills the contract. No package imports another plugin's package, shared libraries in `awm/service_components` excepted. Each secret-shaped environment name the code reads appears in `needs.secrets`. A copy of the folder under a temporary `AWM_SERVICE_ROOTS` root discovers with the same tool, tier and placement.
+Add `awm/gateway/tests/test_plugin_contract.py`, which walks every service folder. Each folder has a manifest or a named legacy reason. Each manifest parses, fills the contract and holds no `[placement]`. Tool names and UUIDs are unique, and every `needs.tool` UUID resolves to a served tool at its major. No folder imports another plugin's package or installs another plugin's folder, outside a named allowlist of four pairs. A plugin's scripts never name their own `awm/services/<name>` path. Each secret-shaped environment name the code reads appears in `needs.secrets`. A copy of the folder under an outside root discovers with the same tool, tier and archive.
 
-Gotchas: services that import `awm.claudedaemon` are R135 debt that redux-harness removes. Allow that one import by name, with the reason.
+Gotchas: claudedaemon lives in `awm/service_components`, so the library rule allows it. It is R135 debt that redux-harness removes. The guard found trilium's `install.sh` still installing httpsfront, which its code no longer imports. That line goes.
 
 ### T10. Commit a checkpoint
 

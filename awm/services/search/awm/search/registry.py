@@ -1,6 +1,7 @@
 """The plug-in registry: which archive sources the running services declare.
 
-A service joins the archive with one ``[[archive]]`` table per source in its
+A service joins the archive with one ``[[service.archive]]`` table per source
+in its ``awm-plugin.toml``, or one ``[[archive]]`` table in a legacy
 ``service.toml``. The gateway lists those tables under ``archive`` in each
 ``awm registry_list`` entry, and this module reads them there, so a service
 that appears needs no change here.
@@ -80,12 +81,23 @@ def services_dir() -> Path:
 
 
 def manifest_tables(service: str) -> list[dict[str, Any]]:
-    """The ``[[archive]]`` tables in the service folder's ``service.toml``.
+    """The archive tables in the service folder's ``awm-plugin.toml``, else its ``service.toml``.
 
     The fallback for a gateway whose registry entries carry no ``archive`` key.
     """
+    folder = services_dir() / service
     try:
-        data = tomllib.loads((services_dir() / service / "service.toml").read_text())
+        plugin = tomllib.loads((folder / "awm-plugin.toml").read_text())
+    except OSError:
+        plugin = None
+    except ValueError:
+        return []
+    if plugin is not None:
+        entries = [s for s in plugin.get("service") or [] if isinstance(s, dict)]
+        entry = next((s for s in entries if s.get("name") == service), entries[0] if len(entries) == 1 else {})
+        return [t for t in entry.get("archive") or [] if isinstance(t, dict)]
+    try:
+        data = tomllib.loads((folder / "service.toml").read_text())
     except (OSError, ValueError):
         return []
     return [t for t in data.get("archive") or [] if isinstance(t, dict)]

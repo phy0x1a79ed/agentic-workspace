@@ -51,10 +51,10 @@ def test_project_and_limit_narrow_it(archive):
 
 def test_the_source_is_live_opt_in_and_the_service_is_off():
     import awm.transcripts
-    toml = Path(awm.transcripts.__path__[0]).parents[1] / "service.toml"
+    toml = Path(awm.transcripts.__path__[0]).parents[1] / "awm-plugin.toml"
     data = tomllib.loads(toml.read_text())
-    assert data["tier"] == "off"
-    assert data["archive"] == [{"name": "transcripts", "mode": "live", "query": "transcripts_query",
+    assert [t["tier"] for t in data["tool"]] == ["off"]
+    assert data["service"][0]["archive"] == [{"name": "transcripts", "mode": "live", "query": "transcripts_query",
                                 "optin": True}]
 
 

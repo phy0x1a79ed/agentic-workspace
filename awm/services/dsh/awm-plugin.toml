@@ -1,0 +1,21 @@
+[plugin]
+name = "dsh"
+version = "0.1.0"
+trust = "own"
+
+[[service]]
+name = "dsh"
+
+[[tool]]
+name = "dsh"
+uuid = "0b7c6ad4-3725-5f9f-8df9-082ed2dd5349"
+major = 1
+tier = "off"
+
+[[page]]
+name = "dsh"
+
+[needs]
+secrets = []
+network = []
+platform = ["linux"]

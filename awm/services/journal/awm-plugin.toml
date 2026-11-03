@@ -1,0 +1,28 @@
+[plugin]
+name = "journal"
+version = "0.1.0"
+trust = "own"
+
+[[service]]
+name = "journal"
+
+[[service.archive]]
+name = "journals"
+mode = "index"
+export = "journal_export"
+topic = "posts"
+
+[[tool]]
+name = "journal"
+uuid = "17fe8c12-3c76-5412-a796-9e88a3a5e1ce"
+major = 1
+tier = "on"
+
+[needs]
+secrets = []
+network = []
+platform = ["linux"]
+
+[[needs.tool]]
+uuid = "b138a5f6-d866-52cb-8ad8-1243a84aaf5e"  # scope
+major = 1
