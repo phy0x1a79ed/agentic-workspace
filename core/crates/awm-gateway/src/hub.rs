@@ -96,17 +96,20 @@ pub enum Claim {
     Claimed { name: String, rx: mpsc::UnboundedReceiver<String> },
 }
 
+#[derive(Debug)]
+pub struct NameHeld;
+
 impl Hub {
     fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, Svc>> {
         self.services.lock().unwrap_or_else(|p| p.into_inner())
     }
 
-    /// `POST /hub/service/register`. `Err(())` means a live instance holds the name.
-    pub fn register(&self, name: &str, plugin: &str, pid: Option<i64>) -> Result<String, ()> {
+    /// `POST /hub/service/register`: a fresh service id, unless a live instance holds the name.
+    pub fn register(&self, name: &str, plugin: &str, pid: Option<i64>) -> Result<String, NameHeld> {
         let mut map = self.lock();
         if let Some(old) = map.get(name) {
             if old.tx.is_some() {
-                return Err(());
+                return Err(NameHeld);
             }
         }
         let id = uuid::Uuid::new_v4().simple().to_string();
