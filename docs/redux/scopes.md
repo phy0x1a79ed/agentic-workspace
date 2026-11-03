@@ -26,7 +26,7 @@ This doc holds how a session finds its project and scope, enters it, shares it w
   1. A live session holds the claim (R42). `force` never overrides this.
   2. The worktree has uncommitted or untracked files. `force` overrides this.
   3. The worktree has ignored files outside `.awm/`. `force` overrides this.
-  4. The branch has commits that no other branch or remote holds. `force` overrides this.
+  4. The branch has commits that no other branch or remote holds. This blocks even when the delete keeps the branch. `force` overrides this. Tony: "always, for unmerged commits or dirty files" (2026-11-03).
   - A forced delete lists everything it discarded.
 - **R6.** A hygiene check finds scopes not in use and cleans them up. It triggers infrequently, for example every 10 new scopes, and acts only when action is needed. It is not an agent that churns on each new scope. Tony does not have to remember to run it.
 - **R45.** The hygiene check (R6) runs after every 10 new scopes. Tony: "lets keep scope heal manual. otherwise the 10 scopes hygiene stays as proposed" (2026-10-31).

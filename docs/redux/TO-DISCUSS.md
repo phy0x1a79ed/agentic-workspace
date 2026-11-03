@@ -17,7 +17,7 @@ This doc is the stack of open threads for the redux interview. The interview run
 
 ## Current thread
 
-**7. Compaction fails.** See the stack entry below.
+**8. Review each major system's architecture.** See the stack entry below.
 
 Parent thread 1 (end state) waits for Tony to confirm `goal.md`. Its children 1a to 1t are closed.
 
@@ -25,8 +25,9 @@ Parent thread 1 (end state) waits for Tony to confirm `goal.md`. Its children 1a
 
 Top of the stack comes first.
 
-7. **Compaction fails.** A self-compaction sometimes fails. The search session on altair failed to compact, so its approved plan was never delivered. Tony: "it looks like compaction fails sometimes. Altair compaction failed for the search session, which isbwhy it was never delivered. We gotta investigate and fix this." (2026-11-03).
-   - Survey (2026-11-03): the Claude Code daemon swaps an outdated background worker in place during `/compact`, which loses the compaction and the queued follow-up. awm hides the loss. It deletes the owed-resume record before typing it, counts a follow-up as delivered once enqueued, and tracks sessions by pid. 13 of 545 compactions since 2026-09-01 were lost, all on outdated workers. Session `redux-build/harness` builds the fix.
+8. **Review each major system's architecture.** After the first build night, go over each major system to confirm the build and the design still agree. Tony: "lets go over each of the major systems architecturally to make sure we are still aligned" (2026-11-03). Queued:
+   - Search. Tony: "can we just drop prior? it seems to not be worth it. can hops just be plain queries? what is the graph section? lets review the search architecture as one of the major systems".
+   - Scopes and the `.awm/` folder, with `scopes.md` R44 item 3. Tony: "I dont get this, why are ignored files blocking delete? what is checking them? dvc is versioend with git via pins and should work lke any other file. we should talk about this. we should also review the .awm folder".
 
 6. **Review the protocol docs.** Add the deploy to the core awm docs, then review every protocol doc. It runs after the other threads settle. Tony: "we should also add the deploy to the core awm docs -> I guess we need to review all protocol docs once we settle everything this session." (2026-11-01).
 
@@ -52,6 +53,7 @@ Raised before the redux started. Each enters the stack when a thread reaches it.
 
 ## Closed
 
+- 7. Compaction fails (2026-11-03). Result: `sessions.md` R141. The daemon swapped outdated workers during `/compact`, and awm dropped the follow-up silently. The fix is on `feat/redux-harness` 38a8c1b1, and session `compact-fix/deploy` (job e982d673) deploys it ahead of the sweep. Tony: "Deploy it now".
 - 5. Done (2026-11-03). Result: `goal.md` § Done. The redux is done when awm runs on every node with every feature the interview settled. Tony: "Awm up and operating as discussed with all features discussed across all nodes."
 - 4b. The new search (2026-11-03). Result: `fleet.md` R131 and R136, `install.md` R134. The redux finishes the search plan Tony approved on 2026-10-28, on disk, with Cognee dropped. Session `search-finish` (job 6a450f72 on altair) builds it now and brings Tony the open ranking questions. Tony: "Lets move on".
 - 4. What made it foundational (2026-11-03). Result: `goal.md` § Why a rebuild, `install.md` R132 to R135, `fleet.md` R139, `queue.md` R137, `channels.md` R138. Issues stacked up across nearly every part of awm. The rebuild also makes awm easier to install and cuts its RAM use, through a plugin set trimmed by real use and one harness plugin for each coding agent. Tony: "Multiple stacking issues that covered basically everything plus the need to make it more install friendly which also matched performance optimization to save ram"
