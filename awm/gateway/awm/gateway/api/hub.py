@@ -143,6 +143,32 @@ class RegisterResponse(BaseModel):
     lease_ws_path: str
 
 
+@router.get("/table")
+async def name_table() -> list[dict]:
+    """This node's tools, by name (plugin-contract.md § The name table)."""
+    return discovery.name_table()
+
+
+@router.get("/tool/{name}")
+async def tool_owner(name: str) -> dict:
+    """The plugin that owns a tool name, looked up now."""
+    for row in discovery.name_table():
+        if row["name"] == name:
+            return {k: row[k] for k in ("name", "major", "plugin", "peer")}
+    raise HTTPException(status_code=404, detail=f"no plugin serves tool {name!r}")
+
+
+@router.get("/contract/{contract}")
+async def contract_providers(contract: str) -> list[dict]:
+    """Every provider of ``<name>@<major>`` (a bare name means major 1), looked up now."""
+    name, _, major = contract.partition("@")
+    if major and not major.isdigit():
+        raise HTTPException(status_code=400, detail=f"bad major in {contract!r}")
+    want = f"{name}@{major or 1}"
+    return [{k: row[k] for k in ("name", "major", "plugin", "peer")}
+            for row in discovery.name_table() if want in row["implements"]]
+
+
 @router.post("/register", response_model=RegisterResponse)
 async def register(req: RegisterRequest) -> RegisterResponse:
     registry = get_registry()

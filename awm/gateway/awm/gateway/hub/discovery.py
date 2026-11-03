@@ -676,6 +676,27 @@ def plugin_refusals() -> dict[str, str]:
     return refused
 
 
+def name_table() -> list[dict]:
+    """This node's tools: ``{name, major, plugin, implements, peer}`` for each tool of a
+    folder the contract does not refuse, as the Rust gateway's ``/hub/table`` lists them.
+    ``peer`` is always ``None``: this gateway keeps no peer table."""
+    refused = plugin_refusals()
+    rows: list[dict] = []
+    for entry in root_folders(service_roots()):
+        if entry.name in refused or not (entry / RUN_SCRIPT).is_file():
+            continue
+        path = entry / PLUGIN_MANIFEST
+        if not path.is_file():
+            tool = read_tool(entry)
+            if not any(r["name"] == tool for r in rows):
+                rows.append({"name": tool, "major": 1, "plugin": entry.name, "implements": [], "peer": None})
+            continue
+        for tool in _load_toml(path).get("tool") or []:
+            rows.append({"name": tool["name"], "major": tool.get("major", 1), "plugin": entry.name,
+                         "implements": list(tool.get("implements") or []), "peer": None})
+    return rows
+
+
 def discover_services() -> list[ServiceSpec]:
     """Scan the service roots for subdirs containing an executable ``run.sh``.
 

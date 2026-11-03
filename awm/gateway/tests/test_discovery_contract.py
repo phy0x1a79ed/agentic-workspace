@@ -94,3 +94,25 @@ def test_a_need_on_a_singleton_homed_on_a_peer_resolves(roots, monkeypatch):
     monkeypatch.setattr("awm.gateway.peer_catalog.declared_homes", lambda: {"2fa": "alcor"})
     _plugin(core, "vpn", _simple("vpn", extra="[[needs.tool]]\nname = '2fa'\n"))
     assert discovery.plugin_refusals() == {}
+
+
+def test_the_hub_answers_tool_owners_and_contract_providers_by_name(roots):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from awm.gateway.api.hub import router
+
+    core, _ = roots
+    _plugin(core, "cch", _simple("cch", "harness-cc", "implements = ['harness@1']\n"))
+    _plugin(core, "dsh", _simple("dsh", "harness-ds", "implements = ['harness@1']\n"))
+    _legacy(core, "keep", "reflection")
+    app = FastAPI()
+    app.include_router(router)
+    client = TestClient(app)
+    assert client.get("/hub/tool/harness-cc").json() == {"name": "harness-cc", "major": 1, "plugin": "cch", "peer": None}
+    assert client.get("/hub/tool/reflection").json()["plugin"] == "keep"
+    assert client.get("/hub/tool/nobody").status_code == 404
+    providers = client.get("/hub/contract/harness@1").json()
+    assert sorted(p["name"] for p in providers) == ["harness-cc", "harness-ds"]
+    assert client.get("/hub/contract/harness@2").json() == []
+    assert {r["name"] for r in client.get("/hub/table").json()} == {"harness-cc", "harness-ds", "reflection"}
