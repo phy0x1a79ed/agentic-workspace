@@ -20,14 +20,12 @@ Then a background loop mints every cadence. Each mint:
 * rewrites the ``$AWM_PEER_CRED`` file with the current peer credential,
 * prunes fully-expired generations.
 
-User accounts
--------------
-Beside the shared rotating password there are static per-user passwords
-(``store.awm_users``), scrypt-hashed, set only through the admin CLI verbs
-(``user_add`` / ``user_passwd`` generate the password server-side so it never
-travels as a shell argument). ``verify`` with a ``username`` takes that path and
-mints ``sub=<username>``. Failed logins count per username and per client IP;
-reaching the threshold locks the key for a while.
+Logins
+------
+The shared rotating password is the only login, and it mints ``sub=operator``.
+No account holds a static password; a ``verify`` that names a ``username`` is
+refused. Failed logins count per client IP; reaching the threshold locks that
+IP for a while.
 
 Penpot credentials
 ------------------
@@ -41,18 +39,18 @@ failure means) is here.
 
 Device tokens
 -------------
-An unattended device or app that must act as a user without storing a password
-holds a device token (:mod:`awm.config.usertoken`) instead. This service mints
-it, keeps only the SHA-256 of its secret, and hands the edge the digests of the
-live tokens of enabled users in ``edge_material``; the edge verifies offline, so
-a revocation lands with the edge's next material refresh. The edge reports the
-tokens it saw on that same refresh, which makes ``last_used_at`` as coarse as
-the refresh interval. The operator (a call with no edge identity) manages
-anyone's tokens; a signed-in user manages only their own.
+An unattended device or app that must not store a password holds a device token
+(:mod:`awm.config.usertoken`) instead. This service mints it, keeps only the
+SHA-256 of its secret, and hands the edge the digests of the live tokens in
+``edge_material``; the edge verifies offline, so a revocation lands with the
+edge's next material refresh. The edge reports the tokens it saw on that same
+refresh, which makes ``last_used_at`` as coarse as the refresh interval. Every
+token belongs to ``operator``, and only the operator (a call with no edge
+identity) may mint, list or revoke one.
 
 ``AWM_AUTH_PROFILE=public`` (the internet-facing host) turns the shared path
-off entirely: no minting, no Discord push, ``verify`` without a username fails,
-and the edge receives no peer credentials. It does **not** turn off the Penpot
+off entirely: no minting, no Discord push, every ``verify`` fails, and the edge
+receives no peer credentials. It does **not** turn off the Penpot
 rotation — that guards per-user foreign credentials, which the public host is
 precisely the one that has.
 """
@@ -60,7 +58,6 @@ precisely the one that has.
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import hmac
 import logging
 import os
@@ -74,7 +71,6 @@ from typing import Any
 
 from awm import config
 from awm.config import SERVICES_DIR, peertoken, tokens, usertoken
-from awm.config.userroot import user_of
 
 from awm.auth import penpot, store
 from awm.auth.config import CONTRACT
@@ -97,14 +93,12 @@ LEGACY_BEARER_ENV = "AWM_PEER_LEGACY_BEARER"
 
 NODE_KEY_NAME = "node_ed25519.key"
 
-# Same shape ``awm.config.userroot`` accepts: the username doubles as a
-# directory name under projects/userdata/.
+# The Penpot credential's key. Same shape ``awm.config.userroot`` accepts: the
+# username doubles as a directory name under projects/userdata/.
 USERNAME_RE = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
 
-# scrypt cost. Tuned for a 2-vCPU host: ~50 ms per hash, 16 MiB memory.
-_SCRYPT_N, _SCRYPT_R, _SCRYPT_P = 2 ** 14, 8, 1
-_PW_PARAMS = f"scrypt:n={_SCRYPT_N},r={_SCRYPT_R},p={_SCRYPT_P}"
-_DUMMY_SALT = secrets.token_hex(16)
+#: The owner of every login session and every device token.
+OPERATOR = "operator"
 
 # Singleton re-homing selector (federation). auth runs on every node (each mints
 # its own creds), but social is a singleton: a node without a local social
@@ -233,15 +227,8 @@ def _edge_peers() -> list[dict[str, Any]]:
 
 
 # ---------------------------------------------------------------------------
-# Per-user passwords
+# Logins
 # ---------------------------------------------------------------------------
-
-
-def _hash_password(password: str, salt_hex: str) -> str:
-    return hashlib.scrypt(
-        password.encode("utf-8"), salt=bytes.fromhex(salt_hex),
-        n=_SCRYPT_N, r=_SCRYPT_R, p=_SCRYPT_P, dklen=32,
-    ).hex()
 
 
 def _check_username(username: Any) -> str:
@@ -252,34 +239,8 @@ def _check_username(username: Any) -> str:
     return name
 
 
-def set_password(username: str, password: str | None = None) -> str:
-    """Create ``username`` or replace its password. Returns the password."""
-    name = _check_username(username)
-    password = password or secrets.token_urlsafe(12)
-    salt = secrets.token_hex(16)
-    store.user_upsert(name, pw_hash=_hash_password(password, salt),
-                      pw_salt=salt, pw_params=_PW_PARAMS)
-    return password
-
-
-def check_password(username: str, password: str) -> bool:
-    """Constant work whether or not the user exists or is disabled."""
-    user = store.user_get(username)
-    if user is None:
-        _hash_password(password, _DUMMY_SALT)
-        return False
-    computed = _hash_password(password, user["pw_salt"])
-    ok = hmac.compare_digest(computed, user["pw_hash"])
-    return ok and not user["disabled"]
-
-
-def _lock_keys(username: str | None, client_ip: str | None) -> list[str]:
-    keys = []
-    if username:
-        keys.append(f"u:{username}")
-    if client_ip:
-        keys.append(f"ip:{client_ip}")
-    return keys
+def _lock_keys(client_ip: str | None) -> list[str]:
+    return [f"ip:{client_ip}"] if client_ip else []
 
 
 def _locked_for(keys: list[str], now: float) -> float:
@@ -487,8 +448,8 @@ async def on_start() -> None:
     from awm.gatewayclient import spawn_supervised
     spawn_supervised("auth:penpot-rotation", _penpot_rotation_loop)
     if not shared_password_enabled():
-        log.warning("auth: profile %r — shared password disabled, per-user "
-                    "accounts only (%d on file)", profile(), len(store.user_list()))
+        log.warning("auth: profile %r — shared password disabled; no login "
+                    "is accepted here", profile())
         return
     await _mint_if_stale()
     asyncio.create_task(_rotation_loop())
@@ -659,11 +620,11 @@ def h_peer_credential(args: dict) -> dict:
 def h_verify(args: dict) -> dict:
     """Validate a login and mint a signed session token for the edge.
 
-    With ``username``: the static per-user password, ``sub=<username>``.
-    Without: the shared rotating password (every valid generation is scanned
-    with ``compare_digest``), ``sub="operator"`` — only while the shared path
-    is enabled. Failures count per username and per ``client_ip``; a locked
-    key answers ``{ok: false, retry_after}`` without checking the password.
+    The only login is the shared rotating password (every valid generation is
+    scanned with ``compare_digest``), ``sub="operator"``, and only while the
+    shared path is enabled. A call that names a ``username`` is refused: no
+    account holds a static password. Failures count per ``client_ip``; a locked
+    IP answers ``{ok: false, retry_after}`` without checking the password.
     """
     args = args or {}
     submitted = str(args.get("password") or "")
@@ -672,23 +633,17 @@ def h_verify(args: dict) -> dict:
     s = _settings()
     now = time.time()
 
-    keys = _lock_keys(username, client_ip)
+    keys = _lock_keys(client_ip)
     remaining = _locked_for(keys, now)
     if remaining > 0:
         return {"ok": False, "locked": True, "retry_after": int(remaining) + 1}
 
-    if username is not None:
-        ok = USERNAME_RE.match(username) is not None and check_password(username, submitted)
-        sub = username
-    elif shared_password_enabled():
-        ok = False
+    ok = False
+    if username is None and shared_password_enabled():
         for gen in store.valid_generations(now):
             if hmac.compare_digest(gen["login_password"], submitted):
                 ok = True
-        sub = "operator"
-    else:
-        ok = False
-        sub = ""
+    sub = OPERATOR
 
     if not ok:
         lock_seconds = s.lockout_minutes * 60.0
@@ -813,7 +768,6 @@ def h_status(args: dict) -> dict:
         "peer_cred_path": str(PEER_CRED_FILE),
         "profile": profile() or "default",
         "shared_password_enabled": shared_password_enabled(),
-        "users": len(store.user_list()),
         "penpot_credentials": len(store.penpot_list()),
         "penpot_rotation_enabled": s.penpot_rotation_enabled,
         "penpot_rotation_hour": s.penpot_rotation_hour,
@@ -824,45 +778,6 @@ def h_status(args: dict) -> dict:
         "penpot_last_rotation_ok": _penpot_status["last_rotation_ok"],
         "penpot_failures": dict(_penpot_status["failures"]),
     }
-
-
-def _public_user(u: dict) -> dict:
-    return {"username": u["username"], "created_at": u["created_at"],
-            "disabled": u["disabled"]}
-
-
-def h_user_add(args: dict) -> dict:
-    """Create a user with a server-generated password, returned once."""
-    name = _check_username((args or {}).get("username"))
-    if store.user_get(name) is not None:
-        raise ValueError(f"user {name!r} exists; use user_passwd to reset")
-    password = set_password(name)
-    return {"username": name, "password": password}
-
-
-def h_user_passwd(args: dict) -> dict:
-    """Replace a user's password with a fresh server-generated one."""
-    name = _check_username((args or {}).get("username"))
-    if store.user_get(name) is None:
-        raise ValueError(f"no such user {name!r}")
-    password = set_password(name)
-    store.fail_clear(f"u:{name}")
-    return {"username": name, "password": password}
-
-
-def h_user_disable(args: dict) -> dict:
-    args = args or {}
-    name = _check_username(args.get("username"))
-    disabled = args.get("disabled", True)
-    if not isinstance(disabled, bool):
-        disabled = str(disabled).lower() not in ("0", "false", "no")
-    if not store.user_set_disabled(name, disabled):
-        raise ValueError(f"no such user {name!r}")
-    return _public_user(store.user_get(name))  # type: ignore[arg-type]
-
-
-def h_user_list(args: dict) -> dict:
-    return {"users": [_public_user(u) for u in store.user_list()]}
 
 
 # --- Penpot credential verbs -------------------------------------------------
@@ -932,39 +847,10 @@ def h_penpot_list(args: dict) -> dict:
 
 # --- device tokens -----------------------------------------------------------
 #
-# CLI/HTTP only. A call with no edge identity is the operator and may name any
-# user; a ``user:<name>`` caller may name only itself. Every other identity — a
-# peer, the shared-password session — is refused.
+# CLI/HTTP only, and operator-only: every token belongs to ``operator``, and a
+# call that crossed an edge is refused.
 
-#: Identities the edge treats as machines; a device token never carries one.
-_MACHINE_NAMES = frozenset({"operator", "peer"})
 _LABEL_MAX = 64
-
-
-def _device_caller(as_: str | None) -> str | None:
-    """``None`` for the operator, else the user the caller is. Raises otherwise."""
-    if as_ is None:
-        return None
-    user = user_of(as_)
-    if user is None or user in _MACHINE_NAMES:
-        raise PermissionError("device tokens are managed by the operator or by "
-                              "the signed-in user they belong to")
-    return user
-
-
-def _device_target(args: dict, as_: str | None, *, required: bool) -> str | None:
-    """The username a device verb acts on, after the caller check."""
-    caller = _device_caller(as_)
-    given = str(args.get("username") or "").strip()
-    if caller is None:
-        if not given:
-            if required:
-                raise ValueError("username is required")
-            return None
-        return _check_username(given)
-    if given and given != caller:
-        raise PermissionError(f"{caller} may manage only their own device tokens")
-    return caller
 
 
 def _public_device(t: dict) -> dict:
@@ -974,51 +860,43 @@ def _public_device(t: dict) -> dict:
 
 
 def h_device_mint(args: dict, as_: str | None = None) -> dict:
-    """Mint a device token for a user. The token is returned once, here."""
+    """Mint a device token. The token is returned once, here.
+
+    A device token speaks for one device, as ``device:<id>``, never for the
+    operator, and it carries a scope that bounds what the device reaches.
+    """
+    _operator_only(as_, "device_mint")
     args = args or {}
-    name = _device_target(args, as_, required=True)
     label = str(args.get("label") or "").strip()
     if not label:
         raise ValueError("label is required")
     if len(label) > _LABEL_MAX:
         raise ValueError(f"label is longer than {_LABEL_MAX} characters")
-    if name in _MACHINE_NAMES:
-        raise ValueError(f"{name!r} is a machine identity, not a user")
-    user = store.user_get(name)
-    if user is None:
-        raise ValueError(f"no such user {name!r}")
-    if user["disabled"]:
-        raise ValueError(f"user {name!r} is disabled")
-    scope = str(args.get("scope") or "").strip() or None
-    if scope is not None and scope not in usertoken.SCOPES:
-        raise ValueError(f"unknown scope {scope!r}; known: "
+    scope = str(args.get("scope") or "").strip()
+    if scope not in usertoken.SCOPES:
+        raise ValueError(f"a device token needs a scope; known: "
                          f"{', '.join(sorted(usertoken.SCOPES))}")
     token_id, secret, token = usertoken.mint()
-    row = store.device_insert(token_id, username=name, label=label,
+    row = store.device_insert(token_id, username=f"device:{token_id}", label=label,
                               secret_sha256=usertoken.digest(secret), scope=scope)
-    log.warning("auth: minted device token %s for %s (%s, scope %s)",
-                token_id, name, label, scope or "none")
+    log.warning("auth: minted device token %s (%s, scope %s)", token_id, label, scope)
     return {**_public_device(row), "token": token}
 
 
 def h_device_list(args: dict, as_: str | None = None) -> dict:
-    """Device tokens: everyone's for the operator unless filtered, else the
-    caller's own. Never the digest."""
-    name = _device_target(args or {}, as_, required=False)
-    return {"tokens": [_public_device(t) for t in store.device_list(name)]}
+    """Every device token, revoked ones included. Never the digest."""
+    _operator_only(as_, "device_list")
+    return {"tokens": [_public_device(t) for t in store.device_list()]}
 
 
 def h_device_revoke(args: dict, as_: str | None = None) -> dict:
     """Revoke a device token by id. The edge drops it on its next refresh."""
+    _operator_only(as_, "device_revoke")
     args = args or {}
-    caller = _device_caller(as_)
     token_id = str(args.get("id") or "").strip()
     if not token_id:
         raise ValueError("id is required")
-    row = store.device_get(token_id)
-    # A user asking after someone else's id gets the same answer as for an id
-    # that does not exist, so ids cannot be probed across accounts.
-    if row is None or (caller is not None and row["username"] != caller):
+    if store.device_get(token_id) is None:
         raise ValueError(f"no such device token {token_id!r}")
     store.device_revoke(token_id)
     row = store.device_get(token_id)

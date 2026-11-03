@@ -111,9 +111,8 @@ def _rows() -> list[Alias]:
     add("config", "set", "awm", "config_set")
 
     for verb in ("password", "peer_credential", "verify", "edge_material", "node_key",
-                 "sign_peer_token", "rotate", "user_add", "user_passwd", "user_disable",
-                 "user_list", "penpot_record", "penpot_session", "penpot_rotate",
-                 "penpot_list"):
+                 "sign_peer_token", "rotate", "penpot_record", "penpot_session",
+                 "penpot_rotate", "penpot_list"):
         add("auth", verb, "awm", verb)
     add("auth", "status", "awm", "auth_status")
 

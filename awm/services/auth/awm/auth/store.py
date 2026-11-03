@@ -12,10 +12,8 @@ Owns two things in the service's own SQLite DB:
   which is exactly what lets a client keep working across a rotation without
   re-authenticating.
 
-* **User accounts** — ``awm_users`` holds one scrypt-hashed static password
-  per username (set by the admin CLI, never rotated), and ``awm_login_fail``
-  the failed-attempt counters that back the lockout, keyed ``u:<name>`` and
-  ``ip:<addr>``.
+* **Login failures** — ``awm_login_fail`` holds the failed-attempt counters
+  that back the lockout, keyed ``ip:<addr>``.
 
 * **Penpot credentials** — ``awm_penpot`` holds, per awm username, the Penpot
   profile awm signs in as on that person's behalf. Stored in the clear, not
@@ -24,13 +22,13 @@ Owns two things in the service's own SQLite DB:
   password, so this table and Penpot's own profile row are two halves of one
   fact — see :mod:`awm.auth.penpot` for what to do when they disagree.
 
-* **Device tokens** — ``awm_device_tokens`` holds, per minted token, its owner,
-  a label, an optional scope and the SHA-256 of its secret. The secret itself is never stored. A
+* **Device tokens** — ``awm_device_tokens`` holds, per minted token, its owner
+  (``operator`` for every token minted since v6), a label, an optional scope and the SHA-256 of its secret. The secret itself is never stored. A
   revoked row stays, with ``revoked_at`` set, so a listing can still name it.
 
 This module is pure storage — the rotation *policy* (when to mint, the Discord
-push, the ``$AWM_PEER_CRED`` file), password hashing and the lockout policy live
-in :mod:`awm.auth.service`.
+push, the ``$AWM_PEER_CRED`` file) and the lockout policy live in
+:mod:`awm.auth.service`.
 """
 
 from __future__ import annotations
@@ -42,7 +40,7 @@ from typing import Any
 from awm.persistence.databases import get_connection, init_service_db
 
 SERVICE = "auth"
-_SCHEMA_VERSION = 5
+_SCHEMA_VERSION = 6
 
 _SCHEMA = """
 CREATE TABLE awm_secret (
@@ -55,14 +53,6 @@ CREATE TABLE awm_credentials (
     peer_credential TEXT NOT NULL,
     minted_at      REAL NOT NULL,
     expires_at     REAL NOT NULL
-);
-CREATE TABLE awm_users (
-    username   TEXT PRIMARY KEY,
-    pw_hash    TEXT NOT NULL,
-    pw_salt    TEXT NOT NULL,
-    pw_params  TEXT NOT NULL,
-    created_at REAL NOT NULL,
-    disabled   INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE awm_login_fail (
     key          TEXT PRIMARY KEY,
@@ -131,6 +121,17 @@ CREATE TABLE IF NOT EXISTS awm_login_fail (
     (2, 3): _PENPOT_TABLE,
     (3, 4): _DEVICE_TOKENS_TABLE,
     (4, 5): "ALTER TABLE awm_device_tokens ADD COLUMN scope TEXT;",
+    # Static per-user accounts are gone. A token was live only while its owner
+    # existed and was enabled, so revoke the rest before the owners vanish:
+    # dropping the table must not bring a disabled user's token back.
+    (5, 6): """\
+UPDATE awm_device_tokens
+   SET revoked_at = (julianday('now') - 2440587.5) * 86400.0
+ WHERE revoked_at IS NULL
+   AND (scope IS NULL
+        OR username NOT IN (SELECT username FROM awm_users WHERE disabled = 0));
+DROP TABLE IF EXISTS awm_users;
+""",
 }
 
 
@@ -240,71 +241,6 @@ def prune_expired(now: float | None = None) -> int:
         cur = conn.execute("DELETE FROM awm_credentials WHERE expires_at <= ?", (now,))
         conn.commit()
         return cur.rowcount
-    finally:
-        conn.close()
-
-
-# --- user accounts ---------------------------------------------------------
-
-
-def _user_row(row: Any) -> dict[str, Any]:
-    return {
-        "username": row["username"],
-        "pw_hash": row["pw_hash"],
-        "pw_salt": row["pw_salt"],
-        "pw_params": row["pw_params"],
-        "created_at": row["created_at"],
-        "disabled": bool(row["disabled"]),
-    }
-
-
-def user_get(username: str) -> dict[str, Any] | None:
-    conn = get_connection(SERVICE)
-    try:
-        row = conn.execute(
-            "SELECT * FROM awm_users WHERE username = ?", (username,)).fetchone()
-        return _user_row(row) if row is not None else None
-    finally:
-        conn.close()
-
-
-def user_list() -> list[dict[str, Any]]:
-    conn = get_connection(SERVICE)
-    try:
-        rows = conn.execute("SELECT * FROM awm_users ORDER BY username").fetchall()
-        return [_user_row(r) for r in rows]
-    finally:
-        conn.close()
-
-
-def user_upsert(username: str, *, pw_hash: str, pw_salt: str, pw_params: str,
-                now: float | None = None) -> dict[str, Any]:
-    """Create ``username`` or replace its password material. Keeps ``disabled``
-    and ``created_at`` on an existing row."""
-    now = time.time() if now is None else now
-    conn = get_connection(SERVICE)
-    try:
-        conn.execute(
-            "INSERT INTO awm_users (username, pw_hash, pw_salt, pw_params, created_at) "
-            "VALUES (?, ?, ?, ?, ?) "
-            "ON CONFLICT(username) DO UPDATE SET pw_hash = excluded.pw_hash, "
-            "pw_salt = excluded.pw_salt, pw_params = excluded.pw_params",
-            (username, pw_hash, pw_salt, pw_params, now),
-        )
-        conn.commit()
-    finally:
-        conn.close()
-    return user_get(username)  # type: ignore[return-value]
-
-
-def user_set_disabled(username: str, disabled: bool) -> bool:
-    conn = get_connection(SERVICE)
-    try:
-        cur = conn.execute(
-            "UPDATE awm_users SET disabled = ? WHERE username = ?",
-            (1 if disabled else 0, username))
-        conn.commit()
-        return cur.rowcount > 0
     finally:
         conn.close()
 
@@ -482,31 +418,24 @@ def device_get(token_id: str) -> dict[str, Any] | None:
         conn.close()
 
 
-def device_list(username: str | None = None) -> list[dict[str, Any]]:
-    """Every token, or one user's, oldest first. Revoked ones included."""
+def device_list() -> list[dict[str, Any]]:
+    """Every token, oldest first. Revoked ones included."""
     conn = get_connection(SERVICE)
     try:
-        if username is None:
-            rows = conn.execute(
-                "SELECT * FROM awm_device_tokens ORDER BY created_at, id").fetchall()
-        else:
-            rows = conn.execute(
-                "SELECT * FROM awm_device_tokens WHERE username = ? "
-                "ORDER BY created_at, id", (username,)).fetchall()
+        rows = conn.execute(
+            "SELECT * FROM awm_device_tokens ORDER BY created_at, id").fetchall()
         return [_device_row(r) for r in rows]
     finally:
         conn.close()
 
 
 def device_live() -> list[dict[str, Any]]:
-    """Unrevoked tokens whose owner exists and is enabled."""
+    """Every unrevoked token, oldest first."""
     conn = get_connection(SERVICE)
     try:
         rows = conn.execute(
-            "SELECT t.* FROM awm_device_tokens t "
-            "JOIN awm_users u ON u.username = t.username "
-            "WHERE t.revoked_at IS NULL AND u.disabled = 0 "
-            "ORDER BY t.created_at, t.id").fetchall()
+            "SELECT * FROM awm_device_tokens WHERE revoked_at IS NULL "
+            "ORDER BY created_at, id").fetchall()
         return [_device_row(r) for r in rows]
     finally:
         conn.close()

@@ -63,12 +63,12 @@ class AuthSettings(BaseModel):
     )
     lockout_threshold: int = Field(
         default=6,
-        description="Consecutive failed logins (per username and per client "
-                    "IP) before further attempts are refused for a while.",
+        description="Consecutive failed logins from one client IP before "
+                    "further attempts from it are refused for a while.",
     )
     lockout_minutes: float = Field(
         default=15.0,
-        description="How long a username or client IP stays locked after "
+        description="How long a client IP stays locked after "
                     "reaching lockout_threshold.",
     )
     penpot_rotation_hour: int = Field(
