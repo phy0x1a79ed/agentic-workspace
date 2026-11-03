@@ -325,3 +325,15 @@ def test_the_delta_is_ranked_exactly_beside_a_champion_base(tmp_path):
     got = layer.search("vent molecule selection", fastlayer.Filters(), 10, 1)
     ids = [h["id"] for h in got["exact"] + got["related"]]
     assert "zotero:users/0/Z9" in ids and "doi:10.1/mol" in ids
+
+
+def test_a_named_paper_ranked_past_the_candidate_cut_is_still_found(tmp_path, monkeypatch):
+    papers = _crowd(tmp_path / "papers.db")
+    monkeypatch.setattr(fastlayer, "CANDIDATES", 8)
+    layer = fastlayer.FastLayer(tmp_path / "papers.db", tmp_path / "delta.db")
+    named = fastlayer.Filters(papers={"p099", "p042"})
+    got = layer.search("marker ends", named, 10, 1)
+    assert {h["id"] for h in got["exact"]} == {"p099", "p042"}
+    assert all(h["match"] == "keyword" for h in got["exact"])
+    assert layer.search("qq099x", named, 10, 1)["exact"][0]["id"] == "p099"
+    assert layer.search("marker", fastlayer.Filters(papers={"nobody"}), 10, 1) == {"exact": [], "related": []}

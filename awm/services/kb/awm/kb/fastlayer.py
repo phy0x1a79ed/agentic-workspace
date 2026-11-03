@@ -65,6 +65,10 @@ OR_CANDIDATES = 300
 READ_DEPTH = 32
 #: Paper lookups up to this many run on the caller's connection; more are spread over READ_DEPTH.
 PAPERS_SERIAL = 4
+#: A filter that names at most this many papers, as the author filter does, is answered from those papers'
+#: own passages, read and scored here; a larger one filters the index's candidates.
+FILTERED_PAPERS = 300
+BM25_K1, BM25_B = 1.2, 0.75
 _ZONE_RANK = {"title": 0, "abstract": 1}
 _STOPWORDS = frozenset(
     "a an the and or of to in on for with by from at as is are was were be been it its this "
@@ -401,6 +405,8 @@ class FastLayer:
         if not paths:
             return {"exact": [], "related": []}
         needle, words = literal(query), terms(query)
+        if filters.papers is not None and len(filters.papers) <= FILTERED_PAPERS:
+            return _filtered(paths, needle, words, filters, limit, per_hit)
         looked = _Lookups(paths, needle, words)
         stores = [_open_ro(p) for p in paths]
         try:
@@ -415,6 +421,90 @@ class FastLayer:
         finally:
             for conn in stores:
                 conn.close()
+
+
+def _filtered(paths: list[Path], needle: str, words: list[str], filters: Filters, limit: int,
+              per_hit: int) -> dict[str, list[dict[str, Any]]]:
+    """The answer among the few papers ``filters`` names, from all their passages: literal papers first, then
+    papers whose best passage holds every word, by BM25; ``related`` holds the rest that pass
+    :data:`MIN_COVERAGE`. The index's candidates would drop a named paper ranked below their cut."""
+    wanted = sorted(filters.papers or ())
+    stores = [_open_ro(p) for p in paths]
+    try:
+        found = []
+        for path, conn in zip(paths, stores):
+            papers = {k: r for k, r in _papers(conn, wanted).items() if filters.admits(r)}
+            found.append((conn, papers, _passages_of(path, sorted(papers)), _weigh(conn, words)))
+        exact = _literal_hits([c for c, *_ in found], needle, filters, limit, per_hit,
+                              [rows for _, _, rows, _ in found])
+        seen = {h["id"] for h in exact}
+        every, related = [], []
+        for _, papers, rows, (df, total) in found:
+            for score, paper, best, holds_all in _bm25_papers(papers, rows, df, total, seen):
+                if holds_all:
+                    every.append((score, paper, best))
+                elif coverage(df, total, best[0]["text"]) >= MIN_COVERAGE:
+                    related.append((score, paper, best))
+        def ranked(scored):
+            hits = []
+            for score, paper, best in sorted(scored, key=lambda s: -s[0]):
+                if len(hits) < limit and paper["paper_id"] not in seen:
+                    seen.add(paper["paper_id"])
+                    hits.append(_hit(paper, "keyword", score, [_quote(p) for p in best[:per_hit]]))
+            return hits
+        return {"exact": (exact + ranked(every))[:limit], "related": ranked(related)}
+    finally:
+        for conn in stores:
+            conn.close()
+
+
+def _passages_of(path: Path, paper_ids: list[str]) -> list[sqlite3.Row]:
+    """Every passage of the papers ``paper_ids``, read :data:`READ_DEPTH` papers' worth at a time."""
+    if not paper_ids:
+        return []
+    step = -(-len(paper_ids) // READ_DEPTH)
+    parts = [_reads.submit(_on, path, _passages_by_paper, paper_ids[i:i + step])
+             for i in range(0, len(paper_ids), step)]
+    return [r for f in parts for r in f.result()]
+
+
+def _passages_by_paper(conn: sqlite3.Connection, paper_ids: list[str]) -> list[sqlite3.Row]:
+    return conn.execute(f"SELECT * FROM passage WHERE paper_id IN ({','.join('?' * len(paper_ids))})"
+                        " ORDER BY id", paper_ids).fetchall()
+
+
+def _bm25_papers(papers: dict[str, sqlite3.Row], rows: list[sqlite3.Row], df: dict[str, int], total: int,
+                 skip: set[str]) -> list[tuple[float, sqlite3.Row, list[sqlite3.Row], bool]]:
+    """Each paper outside ``skip`` with a passage holding a query word: its best BM25, its passages best first,
+    and whether its best passage holds every word some passage holds. BM25 takes the word counts ``df`` of the
+    whole store and the passage lengths of these papers."""
+    stem_of = stems([w for w, n in df.items() if n])
+    if not stem_of or not rows:
+        return []
+    idf = {s: math.log(1 + (total - df[w] + 0.5) / (df[w] + 0.5)) for w, s in stem_of.items()}
+    tokens = [re.findall(r"\w+", p["text"].lower()) for p in rows]
+    to_stem = stems(list({t for ts in tokens for t in ts}))
+    lengths = [len(ts) for ts in tokens]
+    mean = sum(lengths) / len(lengths) or 1.0
+    scored: dict[str, list[tuple[float, sqlite3.Row, bool]]] = {}
+    for p, ts, n in zip(rows, tokens, lengths):
+        if p["paper_id"] in skip or p["paper_id"] not in papers:
+            continue
+        tf: dict[str, int] = {}
+        for t in ts:
+            s = to_stem.get(t)
+            if s in idf:
+                tf[s] = tf.get(s, 0) + 1
+        if not tf:
+            continue
+        norm = BM25_K1 * (1 - BM25_B + BM25_B * n / mean)
+        score = sum(idf[s] * f * (BM25_K1 + 1) / (f + norm) for s, f in tf.items())
+        scored.setdefault(p["paper_id"], []).append((score, p, len(tf) == len(idf)))
+    out = []
+    for pid, held in scored.items():
+        held.sort(key=lambda h: -h[0])
+        out.append((held[0][0], papers[pid], [p for _, p, _ in held], held[0][2]))
+    return out
 
 
 def _norm_title(title: str) -> str:
