@@ -330,7 +330,7 @@ def _cleanup_worktree(bare_dir: Path, worktree_dir: Path,
         pending = [ln for ln in (st.stdout or "").splitlines() if ln.strip()]
         if pending:
             guard = {"result": "dirty", "path": str(worktree_dir),
-                     "pending": len(pending), "sample": pending[:5]}
+                     "pending": len(pending), "sample": pending[:5], "paths": pending}
             if not force:
                 raise RuntimeError(
                     f"Refusing to remove {worktree_dir}: {len(pending)} uncommitted "
@@ -353,6 +353,75 @@ def _cleanup_worktree(bare_dir: Path, worktree_dir: Path,
     run_git(["git", "-C", str(bare_dir), "worktree", "prune"])
     _prune_empty_parents(bare_dir.parent, worktree_dir.parent)
     return guard
+
+
+#: Ignored paths a tool regenerates, so they never block a delete (R44 item 3).
+DISPOSABLE_PARTS = frozenset({"__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", "node_modules"})
+DISPOSABLE_PREFIXES = (".awm/", ".dvc/tmp/", ".dvc/cache/")
+
+
+def _ignored_files(worktree_dir: Path) -> list[str]:
+    """Ignored paths outside ``.awm/`` that a delete would lose (scopes.md R44 item 3).
+
+    A DVC output is not lost: its bytes live in the shared cache and its pin is
+    a tracked ``.dvc`` file. Regenerable caches are not counted either.
+    """
+    r = run_git(["git", "-C", str(worktree_dir), "ls-files", "--others", "--ignored",
+                 "--exclude-standard", "--directory", "-z"])
+    if r.returncode != 0:
+        return []
+    pins = run_git(["git", "-C", str(worktree_dir), "ls-files", "-z", "--", "*.dvc"])
+    outs = {p[:-len(".dvc")] for p in (pins.stdout or "").split("\0") if p.endswith(".dvc")}
+    found = []
+    for path in (r.stdout or "").split("\0"):
+        if not path:
+            continue
+        bare = path.rstrip("/")
+        if path.startswith(DISPOSABLE_PREFIXES) or DISPOSABLE_PARTS & set(bare.split("/")):
+            continue
+        if path.endswith(".pyc") or any(bare == o or bare.startswith(o + "/") for o in outs):
+            continue
+        found.append(path)
+    return found
+
+
+def _unique_commits(bare_dir: Path, branch: str) -> list[str]:
+    """Commits on ``branch`` that no other branch or remote ref holds (R44 item 4)."""
+    if _ref_sha(bare_dir, f"refs/heads/{branch}") is None:
+        return []
+    refs = run_git(["git", "-C", str(bare_dir), "for-each-ref", "--format=%(refname)", "refs/heads", "refs/remotes"])
+    others = [ref for ref in (refs.stdout or "").split() if ref != f"refs/heads/{branch}"]
+    r = run_git(["git", "-C", str(bare_dir), "rev-list", "--oneline", f"refs/heads/{branch}", "--not", *others])
+    return [ln for ln in (r.stdout or "").splitlines() if ln.strip()] if r.returncode == 0 else []
+
+
+def _removal_guard(bare_dir: Path, worktree_dir: Path, project: str, scope: str, branch: str,
+                   force: bool, *, branch_goes: bool) -> dict:
+    """The R44 checks that run before a scope's worktree goes.
+
+    A live session's claim blocks the removal always. Ignored files block it
+    unless ``force`` is set. Commits no other ref holds block it only when the
+    branch goes too, because a kept branch keeps them. A forced removal lists
+    each one. Uncommitted files are checked by :func:`_cleanup_worktree`.
+    """
+    from awm.scopes import claims
+
+    holder = claims.live_holder(project, scope)
+    if holder is not None:
+        raise RuntimeError(f"Refusing to remove {project}/{scope}: live session {holder['session_id']} "
+                           f"holds it. force does not override a live session (scopes.md R44).")
+    ignored = _ignored_files(worktree_dir) if worktree_dir.is_dir() else []
+    commits = _unique_commits(bare_dir, branch) if branch_goes else []
+    blockers = []
+    if ignored:
+        blockers.append(f"{len(ignored)} ignored file(s) outside .awm/ ({', '.join(ignored[:3])})")
+    if commits:
+        blockers.append(f"{len(commits)} commit(s) on {branch} that no other branch or remote holds "
+                        f"({', '.join(c.split()[0] for c in commits[:3])})")
+    if blockers and not force:
+        raise RuntimeError(f"Refusing to remove {worktree_dir}: " + "; ".join(blockers)
+                           + ". Save them, or pass force=true to discard them.")
+    return {"ignored": ignored, "commits": commits}
 
 
 def _inbox_step(project: str, scope: str) -> str:
@@ -1128,6 +1197,12 @@ def create_scope(req: ScopeCreateRequest) -> ScopeActionResponse:
     if tags:
         _tags.set_tags(req.project, req.scope, tags)
 
+    try:
+        from awm.scopes import hygiene
+        hygiene.after_create()
+    except Exception as exc:  # noqa: BLE001 — counting must never fail a create
+        log.warning("scope %s/%s: hygiene count failed: %s", req.project, req.scope, exc)
+
     return ScopeActionResponse(
         project=req.project,
         scope=req.scope,
@@ -1244,6 +1319,8 @@ def update_scope(project: str, scope: str, req: ScopeUpdateRequest) -> ScopeActi
 
     cleanup_msg = ""
     if req.cleanup:
+        _removal_guard(bare_dir, repo_dir, project, scope, feature_branch, req.force,
+                       branch_goes=req.delete_branch)
         _cleanup_worktree(bare_dir, repo_dir,
                           project=project, scope=scope, force=req.force)
         cleanup_msg = (f", worktree removed, "
@@ -1525,7 +1602,9 @@ def delete_scope(project: str, scope: str, force: bool = False,
     if aid_row is None:
         raise FileNotFoundError(f"No scope '{scope}' found in project '{project}'")
 
-    _cleanup_worktree(bare_dir, repo_dir, project=project, scope=scope, force=force)
+    discarded = _removal_guard(bare_dir, repo_dir, project, scope, feature_branch, force,
+                               branch_goes=delete_branch)
+    guard = _cleanup_worktree(bare_dir, repo_dir, project=project, scope=scope, force=force)
     branch_msg = _settle_branch(bare_dir, feature_branch, delete_branch)
 
     with dao.transaction() as conn:
@@ -1540,7 +1619,15 @@ def delete_scope(project: str, scope: str, force: bool = False,
     return ScopeActionResponse(
         project=project, scope=scope, status="deleted",
         message=f"Scope deleted, worktree removed, {branch_msg}",
+        discarded=_discard_list(guard, discarded) if force else None,
     )
+
+
+def _discard_list(guard: dict, removal: dict) -> dict | None:
+    """What a forced removal threw away, in full (scopes.md R44)."""
+    out = {"uncommitted": [p.strip() for p in guard.get("paths", [])], "ignored": removal["ignored"],
+           "commits": removal["commits"]}
+    return out if any(out.values()) else None
 
 
 def _v37_render_scope(r, session: int = 1) -> ScopeInfo:

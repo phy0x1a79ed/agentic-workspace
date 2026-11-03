@@ -176,4 +176,4 @@ def test_v1_database_gains_the_cursor_table(tmp_path, monkeypatch):
     conn = sqlite3.connect(path)
     tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert "scope_cursors" in tables
-    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == 2
+    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == dao.SCHEMA_VERSION

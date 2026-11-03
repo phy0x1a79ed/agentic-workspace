@@ -22,7 +22,7 @@ def test_every_scopes_verb_declares_an_effect():
     assert missing == []
 
 
-READS = {"scope_search", "resolveScope", "resolveRef"}
+READS = {"scope_search", "resolveScope", "resolveRef", "scope_claims"}
 
 
 def test_only_the_known_reads_are_reads():

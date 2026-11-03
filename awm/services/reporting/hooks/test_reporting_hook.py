@@ -82,7 +82,7 @@ def test_a_clear_files_the_task_away_and_other_session_starts_are_ignored(home, 
         run(home, gw.url, start(source))
     assert gw.calls == []
     run(home, gw.url, start("clear"))
-    assert [c[2] for c in gw.calls] == [{"name": "operations_hook_session_clear", "args": {}}]
+    assert [c[2] for c in gw.calls] == [{"name": "operations_hook_session_clear", "args": {"new_session_id": "s2"}}]
     assert gw.calls[0][1].isdigit()
 
 

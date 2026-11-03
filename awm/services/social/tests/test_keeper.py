@@ -980,3 +980,129 @@ def test_a_bad_keeper_table_is_refused(tmp_path, bad):
     path.write_text(SEAT_TOML + f"\n[keeper]\n{bad}\n")
     with pytest.raises(SocialConfigError):
         load_witnesses(path)
+
+
+# -- the box's own connection (sessions.md R78) ----------------------------------
+
+@pytest.fixture()
+def offline(kept):
+    k, cx, dao, clock = kept
+    k.online_now = True
+
+    async def online():
+        return k.online_now
+
+    k._online = online
+    return k, cx, dao, clock
+
+
+async def test_a_box_without_internet_raises_no_seat_alarm(offline):
+    k, cx, dao, clock = offline
+    await k.tick()
+    clock.t += 60
+    await k.tick()
+    k.online_now = False
+    cx.down = True
+    for _ in range(10):
+        clock.t += 60
+        await k.tick()
+    status = k.status(k.seats[0])
+    assert not k.alerts and status["down_since"] is None
+    assert "no internet connection" in status["reason"]
+    assert status["contact_lost_since"] is not None
+    assert not cx.probed and not cx.resumed and len(cx.started) == 1
+    _say(dao, "C1", clock.t - 100)
+    k.online_now, cx.down = True, False
+    clock.t += 60
+    await k.tick()
+    ((_, job, line),) = k.pushed
+    assert job == "job00001" and "This session was not down" in line
+    assert not k.alerts and k.status(k.seats[0])["last_outage"] is None
+
+
+async def test_an_offline_box_restarts_nothing_even_for_its_own_seats(offline):
+    k, cx, _, clock = offline
+    await k.tick()
+    k.online_now = False
+    cx.die("job00001")
+    for _ in range(5):
+        clock.t += 60
+        await k.tick()
+    assert not cx.resumed and len(cx.started) == 1 and not k.alerts
+    k.online_now = True
+    clock.t += 60
+    await k.tick()
+    assert cx.resumed == ["job00001"]
+
+
+async def test_a_held_alert_goes_out_on_return(offline):
+    k, cx, _, clock = offline
+    k.seats[0] = __import__("dataclasses").replace(k.seats[0], alert_after=60.0)
+    await k.tick()
+    cx.die("job00001")
+    cx.daemon = {"state": "down", "pid": None, "since": None, "cause": "killed"}
+    clock.t += 60
+    await k.tick()
+    k.online_now = False
+    for _ in range(3):
+        clock.t += 60
+        await k.tick()
+    assert not k.alerts
+    k.online_now = True
+    clock.t += 60
+    await k.tick()
+    (alert,) = k.alerts
+    assert "lab on altair is down since" in alert
+
+
+def test_local_only_keeps_only_this_nodes_seats(kept, monkeypatch, tmp_path):
+    from awm.social.keeper import Keeper
+    k, cx, dao, clock = kept
+    monkeypatch.setenv("AWM_NODE_NAME", "altair")
+    seats = [_seat(), _seat(name="far", channel="C2", node="deneb")]
+    assert [s.name for s in Keeper(dao, seats, k._describe, k._chat, cx=cx,
+                                   lock_path=tmp_path / "k.lock").seats] == ["lab", "far"]
+    assert [s.name for s in Keeper(dao, seats, k._describe, k._chat, cx=cx,
+                                   lock_path=tmp_path / "k.lock", local_only=True).seats] == ["lab"]
+
+
+def test_the_keeper_table_sets_local_only_and_the_online_targets(tmp_path):
+    from awm.social.config import ONLINE_TARGETS, load_keeper
+    path = tmp_path / "social.toml"
+    path.write_text(SEAT_TOML)
+    kc = load_keeper(path)
+    assert (kc.witness, kc.local_only, kc.online) == ((), False, ONLINE_TARGETS)
+    path.write_text(SEAT_TOML + '\n[keeper]\nlocal_only = true\nonline = ["10.0.0.1:53"]\n')
+    kc = load_keeper(path)
+    assert (kc.local_only, kc.online) == (True, ("10.0.0.1:53",))
+    path.write_text(SEAT_TOML + '\n[keeper]\nonline = []\n')
+    assert load_keeper(path).online == ()
+
+
+@pytest.mark.parametrize("bad", ['local_only = "yes"', 'online = ["nohost"]', 'online = [":53"]',
+                                 'online = 5'])
+def test_a_bad_online_or_local_only_is_refused(tmp_path, bad):
+    from awm.social.config import SocialConfigError, load_keeper
+    path = tmp_path / "social.toml"
+    path.write_text(SEAT_TOML + f"\n[keeper]\n{bad}\n")
+    with pytest.raises(SocialConfigError):
+        load_keeper(path)
+
+
+async def test_the_online_check_needs_one_target_to_accept():
+    import asyncio
+    from awm.social.keeper import box_online
+
+    server = await asyncio.start_server(lambda r, w: w.close(), "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    probe = await asyncio.start_server(lambda r, w: None, "127.0.0.1", 0)
+    closed = probe.sockets[0].getsockname()[1]
+    probe.close()
+    await probe.wait_closed()
+    try:
+        assert await box_online([f"127.0.0.1:{closed}", f"127.0.0.1:{port}"], timeout=1)
+        assert not await box_online([f"127.0.0.1:{closed}"], timeout=1)
+        assert await box_online([])
+    finally:
+        server.close()
+        await server.wait_closed()

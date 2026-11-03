@@ -23,12 +23,13 @@ from awm.persistence.databases import init_service_db
 from awm.persistence.embeddings import EMBEDDINGS_DDL
 
 SERVICE = "scopes"
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 # Tables owned by the scopes service. v2 collapsed the old rooms/messages/
 # session_logs trio into one ``scope_posts`` channel + ``scope_subscribers``;
 # v3 drops the vestigial ``agents.parent_id`` (rooms-era agent containment —
-# agents form no tree, a scope IS the channel); v4 adds ``tags``.
+# agents form no tree, a scope IS the channel); v4 adds ``tags``; v5 adds
+# the scope claims, their queues, last use and counters (`awm.scopes.claims`).
 SCHEMA_SQL = """\
 -- Identity (kept relational — all in the scopes DB) -------------------
 CREATE TABLE IF NOT EXISTS projects (
@@ -126,6 +127,43 @@ MIGRATIONS: dict[tuple[int, int], str] = {
     ),
 }
 
+# Scope claims (scopes.md R3, R42, R46) and the hygiene check's inputs (R45).
+CLAIMS_SQL = """\
+CREATE TABLE IF NOT EXISTS scope_claims (
+    project     TEXT NOT NULL,
+    scope       TEXT NOT NULL,
+    session     TEXT NOT NULL,
+    pid         INTEGER,
+    proc_start  TEXT,
+    job         TEXT,
+    claimed_at  INTEGER NOT NULL,
+    PRIMARY KEY (project, scope)
+);
+CREATE TABLE IF NOT EXISTS scope_waiters (
+    project     TEXT NOT NULL,
+    scope       TEXT NOT NULL,
+    session     TEXT NOT NULL,
+    pid         INTEGER,
+    proc_start  TEXT,
+    job         TEXT,
+    asked_at    INTEGER NOT NULL,
+    notified_at INTEGER,
+    PRIMARY KEY (project, scope, session)
+);
+CREATE TABLE IF NOT EXISTS scope_use (
+    project     TEXT NOT NULL,
+    scope       TEXT NOT NULL,
+    last_used   INTEGER NOT NULL,
+    PRIMARY KEY (project, scope)
+);
+CREATE TABLE IF NOT EXISTS scope_counters (
+    name   TEXT PRIMARY KEY,
+    value  INTEGER NOT NULL
+);
+"""
+
+MIGRATIONS[(4, 5)] = CLAIMS_SQL
+
 _initialized = False
 
 
@@ -135,7 +173,7 @@ def init() -> None:
     if not _initialized:
         init_service_db(
             SERVICE,
-            SCHEMA_SQL + EMBEDDINGS_DDL,
+            SCHEMA_SQL + CLAIMS_SQL + EMBEDDINGS_DDL,
             schema_version=SCHEMA_VERSION,
             migrations=MIGRATIONS,
         )

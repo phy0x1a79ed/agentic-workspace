@@ -14,7 +14,10 @@ that node down by itself: the keeper's own node may be the one cut off. It asks
 each ``[keeper] witness`` in turn to probe the node. The node is down only when
 a witness answers and cannot reach it either. When a witness reaches it, or no
 witness answers, the keeper has lost contact: no outage, no alert, and on
-return one catch-up line if messages arrived meanwhile. A seat whose
+return one catch-up line if messages arrived meanwhile. A tick first checks the
+keeper's own box can reach the internet. A box that cannot holds every seat in
+lost contact and sends no alert (sessions.md R78). With ``[keeper] local_only``
+the keeper keeps only its own node's seats. A seat whose
 agent is alive needs nothing, except that an outdated launch spec is replaced
 once the session sits between turns. For any other seat `awm.kept.decide`
 chooses:
@@ -92,7 +95,9 @@ BLIP_S = 2 * TICK_S
 
 GONE, STOPPED = "gone", "stopped"
 #: What a witness says about a node this keeper cannot reach.
-NODE_DOWN, NODE_UP, CUT_OFF = "down", "up", "cut_off"
+NODE_DOWN, NODE_UP, CUT_OFF, OFFLINE = "down", "up", "cut_off", "offline"
+#: How long one online target may take to accept a connection.
+ONLINE_TIMEOUT_S = 3.0
 BLOCKED, FAILED, NEEDS_INPUT = "blocked", "failed", "needs_input"
 WAITING, RESUMING, BROKEN = "waiting", "resuming", "broken"
 ACTIVE, WORKING = "active", "working"
@@ -339,6 +344,31 @@ class SeatState:
                    gap=data.get("gap"))
 
 
+async def box_online(targets: tuple[str, ...] | list[str],
+                     timeout: float = ONLINE_TIMEOUT_S) -> bool:
+    """Whether this box reaches the internet: any target accepts a TCP connection."""
+    async def reaches(target: str) -> bool:
+        host, _, port = target.rpartition(":")
+        try:
+            _, writer = await asyncio.wait_for(asyncio.open_connection(host, int(port)), timeout)
+        except (OSError, asyncio.TimeoutError, ValueError):
+            return False
+        writer.close()
+        return True
+
+    if not targets:
+        return True
+    tasks = [asyncio.ensure_future(reaches(t)) for t in targets]
+    try:
+        for done in asyncio.as_completed(tasks):
+            if await done:
+                return True
+        return False
+    finally:
+        for task in tasks:
+            task.cancel()
+
+
 # -- cx on the seat's node ----------------------------------------------------
 
 class CxUnavailable(RuntimeError):
@@ -418,10 +448,13 @@ class Keeper:
                  interval_s: float = TICK_S, lock_path: Path | None = None,
                  clock: Callable[[], float] = time.time,
                  push: Push | None = None, list_chats: ListChats | None = None,
-                 alert: Alert | None = None, witnesses: list[str] = ()) -> None:
+                 alert: Alert | None = None, witnesses: list[str] = (),
+                 online: Callable[[], Awaitable[bool]] | None = None,
+                 local_only: bool = False) -> None:
         self.dao = dao
         self.witnesses = list(witnesses)
-        self.seats = list(seats)
+        self.seats = [s for s in seats if not local_only or s.node == config.node_name()]
+        self._online = online
         self._describe = describe
         self._chat = chat
         self._list_chats = list_chats
@@ -588,8 +621,14 @@ class Keeper:
             self._booted_at = now
         listings: dict[str, tuple[list[dict], dict | None] | None] = {}
         verdicts: dict[str, tuple[str, str]] = {}
+        offline = self._online is not None and not await self._online()
+        if offline:
+            self._note("online", f"{config.node_name()} has no internet connection; "
+                                 "holding every seat and every alert")
         for seat in self.seats:
-            if seat.node not in listings:
+            if offline:
+                listings[seat.node], verdicts[seat.node] = None, (OFFLINE, "")
+            elif seat.node not in listings:
                 try:
                     listings[seat.node] = await self.cx.list(seat.node)
                 except CxUnavailable as exc:
@@ -608,7 +647,8 @@ class Keeper:
             else:
                 await self._keep(seat, *listing)
             self._save(seat)
-        await self._send_alerts()
+        if not offline:
+            await self._send_alerts()
         self._last_tick = now
 
     async def _witness(self, node: str) -> tuple[str, str]:
@@ -649,10 +689,12 @@ class Keeper:
         if st.outage is None and st.gap is None:
             seen = _seen_epoch(rec)
             st.gap = min(seen, self._now()) if seen is not None else self._now()
-            log.info("keeper: %s: %s lost contact with %s (%s)", seat.name, here,
-                     seat.node, f"{witness} reaches it" if witness else "no witness answers")
-        why = (f"{here} cannot reach its node, but {witness} can" if verdict == NODE_UP
-               else f"{here} reaches neither its node nor a witness, so it cannot tell")
+            log.info("keeper: %s: %s lost contact with %s (%s)", seat.name, here, seat.node,
+                     f"{witness} reaches it" if witness else
+                     "it is offline" if verdict == OFFLINE else "no witness answers")
+        why = {NODE_UP: f"{here} cannot reach its node, but {witness} can",
+               OFFLINE: f"{here} has no internet connection, so it cannot tell"}.get(
+            verdict, f"{here} reaches neither its node nor a witness, so it cannot tell")
         self._report(seat, Health(WAITING, why, rec["job"]))
 
     async def _keep(self, seat: SeatConfig, rows: list[dict], daemon: dict | None) -> None:

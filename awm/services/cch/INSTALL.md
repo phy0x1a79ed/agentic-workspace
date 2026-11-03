@@ -133,6 +133,17 @@ The arguments `allowed_tools`, `tools`, `restricted` and `strict_mcp` map to
 `--autocompact`. Use `system_prompt` for anything the session must keep, because
 a compaction summary rewrites the conversation and never the system prompt.
 
+#### A start without a scope begins in the lobby
+
+A `start` with no `scope`, or with `suggest: true`, runs in the lobby
+(`AWM_CX_LOBBY`, default `~/.local/state/awm/lobby`). The lobby sits outside
+every git checkout, so the session creates no worktree before it picks its
+scope and moves there with `reflection cd`. cx writes the lobby's `CLAUDE.md`
+to import the workspace `AGENTS.md`, trusts the folder, and passes the awm MCP
+server with `--mcp-config`, because the workspace `.mcp.json` does not reach
+it. A `task_id` makes the new session join that task's card, as `main` when no
+session started it and as `worker` otherwise.
+
 #### A worker gets a lifecycle brief
 
 cx appends the lifecycle brief (`lifecycle.BRIEF`) after any `system_prompt`.

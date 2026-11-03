@@ -52,3 +52,8 @@ def grant(path: str | Path) -> list[str]:
 
     return _shared.grant_awm_worktree(path, config.projects_dir(),
                                       trust_file=trust_file())
+
+
+def grant_lobby(path: str | Path) -> list[str]:
+    """Trust the lobby, which sits outside every repository; the entries added."""
+    return _shared.grant_plain_dir(path, trust_file=trust_file())

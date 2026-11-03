@@ -1620,16 +1620,19 @@ def _start_keeper() -> None:
     if not kept:
         return
     try:
-        witnesses = social_config.load_witnesses()
+        kc = social_config.load_keeper()
     except social_config.SocialConfigError as exc:
-        log.error("social.toml [keeper] invalid; the keeper asks no witness: %s", exc)
-        witnesses = []
+        log.error("social.toml [keeper] invalid; the keeper uses its defaults: %s", exc)
+        kc = social_config.KeeperConfig()
+    online = (lambda: keeper_mod.box_online(kc.online)) if kc.online else None
     _keeper = keeper_mod.Keeper(_dao, kept, _describe_account, _chat,
                                 push=_pusher.push, list_chats=_list_chats,
-                                alert=_alert_operator, witnesses=witnesses)
+                                alert=_alert_operator, witnesses=list(kc.witness),
+                                online=online, local_only=kc.local_only)
     spawn_supervised("social.keeper", _keeper.run)
-    log.info("keeping %d seat(s): %s; witnesses: %s", len(kept),
-             ", ".join(s.name for s in kept), ", ".join(witnesses) or "none")
+    log.info("keeping %d seat(s): %s; witnesses: %s; online check: %s%s", len(_keeper.seats),
+             ", ".join(s.name for s in _keeper.seats), ", ".join(kc.witness) or "none",
+             ", ".join(kc.online) or "off", "; local seats only" if kc.local_only else "")
 
 
 async def main() -> None:

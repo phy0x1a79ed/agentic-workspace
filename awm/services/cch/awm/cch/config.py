@@ -214,3 +214,17 @@ def awm_mcp_server() -> dict | None:
 
 def mcp_config_path() -> Path:
     return state_dir() / "mcp-awm.json"
+
+
+#: Where a session starts when no scope is named (scopes.md R40): one fixed
+#: folder per node, outside every git repository, so a session there can commit
+#: nothing. The workspace root is itself a checkout, so the lobby is not under it.
+def lobby_dir() -> Path:
+    env = os.environ.get("AWM_CX_LOBBY")
+    return Path(env) if env else Path.home() / ".local" / "state" / "awm" / "lobby"
+
+
+def workspace_dir() -> Path:
+    from awm import config as awm_config
+
+    return awm_config.canonical_workspace()

@@ -60,16 +60,14 @@ def test_the_senders_claimed_author_is_kept_in_meta(journal_workspace):
 
 def test_a_post_records_the_session_behind_the_stamped_pid(journal_workspace, monkeypatch):
     from awm.journal.operations import posts
-    monkeypatch.setattr(posts.sessions, "session_of",
-                        lambda pid: {"session_id": "cc9", "claude_session_id": "sess-9"}
-                        if pid == 42 else None)
+    r9 = "cc123456789abcdef0123456789abcdef0"
+    monkeypatch.setattr(posts.caller, "session_of",
+                        lambda pid: {"session_id": r9} if pid == 42 else None)
     args = {"project": "awm", "scope": "dev", "author": "agent:awm/dev", "body": "x",
-            "kind": "journal", "meta": {"title": "t", "session": "forged"}}
-    assert posts._handle_post({**args, "_caller_pid": 42})["post"]["meta"] == {
-        "title": "t", "session": "sess-9"}
+            "kind": "journal", "meta": {"title": "t"}}
+    assert posts._handle_post({**args, "_caller_pid": 42})["post"]["meta"] == {"title": "t", "session": r9}
     assert posts._handle_post({**args, "_caller_pid": 7})["post"]["meta"] == {"title": "t"}
-    assert posts._handle_post({**args, "meta": None, "_caller_pid": 42})["post"]["meta"] == {
-        "session": "sess-9"}
+    assert posts._handle_post({**args, "meta": None, "_caller_pid": 42})["post"]["meta"] == {"session": r9}
 
 
 def test_claimed_author_does_not_mutate_the_callers_meta(journal_workspace):
@@ -198,7 +196,7 @@ def test_every_journal_verb_declares_an_effect():
     assert missing == []
 
 
-READS = {"fetch", "inbox", "goal_read", "goal_history", "export"}
+READS = {"fetch", "inbox", "reads", "goal_read", "goal_history", "export"}
 
 
 def test_only_the_known_reads_are_reads():

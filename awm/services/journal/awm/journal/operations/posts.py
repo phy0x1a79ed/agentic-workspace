@@ -7,6 +7,7 @@ A scope IS the channel. Each entry's ``name`` is the service-internal handle
                       ``kind`` filter).
   - ``subscribe``   — enroll a guest (scope or user) as a subscriber.
   - ``unsubscribe`` — remove a subscriber.
+  - ``reads``       — the journals a session read, its citation candidates.
   - ``inbox``       — a bounded one-line-per-post digest of what a scope has not read.
   - ``ack``         — move a scope's read cursor.
 """
@@ -14,8 +15,8 @@ A scope IS the channel. Each entry's ``name`` is the service-internal handle
 import logging
 from typing import Any
 
-from awm.gatewayclient import sessions
-from awm.journal import channel, inbox, owners, private, render
+from awm.gatewayclient import sessions as caller
+from awm.journal import channel, inbox, owners, private, render, sessions
 
 log = logging.getLogger("awm.journal.posts")
 
@@ -41,7 +42,11 @@ POST_MANIFEST_FUNCTIONS = [
             {"name": "scope", "type": "string", "required": True},
             {"name": "author", "type": "string", "required": True},
             {"name": "kind", "type": "string", "required": False},
-            {"name": "meta", "type": "object", "required": False},
+            {"name": "meta", "type": "object", "required": False,
+             "description": "Structured fields. meta.session names the session a journal covers; "
+                            "omit it for your own session. meta.cites lists the journals that "
+                            "shaped the work: [{journal: <post id>, reason: <one line>}]. "
+                            "Pick them from journal reads at debrief."},
             {"name": "to_scope", "type": "string", "required": False},
             {"name": "body", "type": "string", "required": True,
              "description": "Free-text post content. Pass this argument LAST — "
@@ -80,6 +85,20 @@ POST_MANIFEST_FUNCTIONS = [
             {"name": "before_ts", "type": "string", "required": False},
             {"name": "order", "type": "string", "required": False,
              "description": "'asc' (oldest-first) or 'desc' (newest-first). Default: 'desc' for kind='journal', else 'asc' within one scope."},
+        ],
+    },
+    {
+        "name": "reads",
+        "tool": "journal_reads",
+        "effect": "read",
+        "description": (
+            "The journals a session read through fetch, newest first: the candidates "
+            "to cite at debrief. Also lists the citations its own journals already make. "
+            "session defaults to yours."
+        ),
+        "params": [
+            {"name": "session", "type": "string", "required": False},
+            {"name": "limit", "type": "integer", "required": False},
         ],
     },
     {
@@ -149,15 +168,15 @@ POST_MANIFEST_FUNCTIONS = [
 ]
 
 
-def _with_session(meta: Any, caller_pid: Any) -> Any:
-    """``meta`` with ``session`` set to the posting session's id, from the pid the
-    gateway stamped. A ``session`` the caller supplied is dropped either way."""
-    rec = sessions.session_of(caller_pid)
-    session = (rec.get("claude_session_id") or rec.get("session_id")) if rec else None
-    if not isinstance(meta, dict):
-        return {"session": session} if session else meta
-    meta = {k: v for k, v in meta.items() if k != "session"}
-    return {**meta, "session": session} if session else meta
+def _caller_session(caller_pid: Any) -> str | None:
+    """The R9 id of the session behind the pid the gateway stamped."""
+    rec = caller.session_of(caller_pid)
+    return sessions.r9(rec.get("session_id")) if rec else None
+
+
+def _with_session(meta: Any, caller_pid: Any, kind: str = "message") -> Any:
+    """``meta`` with ``session`` stamped in R9 form and ``cites`` checked (R14, R17)."""
+    return sessions.check_cites(sessions.stamp(meta, _caller_session(caller_pid)), kind)
 
 
 def _handle_post(args: dict, as_: str | None = None) -> dict:
@@ -167,7 +186,7 @@ def _handle_post(args: dict, as_: str | None = None) -> dict:
         args["project"], args["scope"],
         author=args["author"], body=args["body"],
         kind=args.get("kind", "message"),
-        meta=_with_session(args.get("meta"), args.get("_caller_pid")),
+        meta=_with_session(args.get("meta"), args.get("_caller_pid"), args.get("kind", "message")),
         to_scope=args.get("to_scope"),
         origin=channel.edge_origin(as_),
     )
@@ -226,6 +245,8 @@ def _handle_fetch(args: dict, as_: str | None = None) -> dict:
             p = None  # answer as for a post that does not exist, so ids cannot be probed
         if p is not None and private.hides(as_, p.project, p.scope):
             p = None
+        if p is not None and not foreign:
+            _note_reads(args, [p])
         return {"posts": [p.to_dict()] if p else [], "total": 1 if p else 0}
     common = dict(
         project=_channel_project(args.get("project"), args.get("scope")),
@@ -244,12 +265,34 @@ def _handle_fetch(args: dict, as_: str | None = None) -> dict:
         posts, degraded, semantic = channel.search(query=args["query"], **common)
     else:
         posts = channel.fetch(**common)
+    if not foreign:
+        _note_reads(args, posts)
     out = {"posts": [p.to_dict() for p in posts], "total": len(posts)}
     if semantic:
         out["semantic"] = semantic
     if degraded:
         out["degraded"] = degraded
     return out
+
+
+def _note_reads(args: dict, posts: list) -> None:
+    """Record the journals this fetch handed the calling session (R15). Never fails the fetch."""
+    try:
+        sessions.record_reads(_caller_session(args.get("_caller_pid")), posts)
+    except Exception as exc:  # noqa: BLE001
+        log.info("journal reads not recorded: %s", exc)
+
+
+def _handle_reads(args: dict, as_: str | None = None) -> dict:
+    if channel.is_foreign(as_):
+        raise PermissionError("a session's reads stay on its own node")
+    named = args.get("session")
+    session = sessions.r9(named) if named else _caller_session(args.get("_caller_pid"))
+    if session is None:
+        raise ValueError(f"{named!r} is not a session id" if named else
+                         "no calling session; pass session")
+    rows = sessions.reads(session, int(args.get("limit", 200)))
+    return {"session": session, "reads": rows, "total": len(rows), "cites": sessions.cites_of(session)}
 
 
 def _handle_subscribe(args: dict, as_: str | None = None) -> dict:
@@ -290,6 +333,7 @@ def _handle_ack(args: dict, as_: str | None = None) -> dict:
 POST_HANDLERS = {
     "post": _handle_post,
     "fetch": _handle_fetch,
+    "reads": _handle_reads,
     "subscribe": _handle_subscribe,
     "unsubscribe": _handle_unsubscribe,
     "inbox": _handle_inbox,

@@ -189,8 +189,8 @@ def test_start_returns_the_contract_and_writes_lineage(home, launched):
     parent_session(home)
     out = start({**BASE, "prompt": "do it", "mode": "rep", "_caller_pid": os.getpid()})
     assert out == {
-        "ok": True, "job": CHILD_JOB, "name": "demo", "node": "testnode",
-        "project": "awm", "scope": "demo", "cwd": str(home.projects / "awm" / "demo"),
+        "ok": True, "job": CHILD_JOB, "session_id": None, "name": "demo", "node": "testnode",
+        "project": "awm", "scope": "demo", "lobby": False, "cwd": str(home.projects / "awm" / "demo"),
         "attach": f"claude attach {CHILD_JOB}", "parent": PARENT_JOB, "mode": "rep",
         "pinned": False, "link": None,
     }
@@ -1227,7 +1227,7 @@ def test_a_start_appends_the_brief_after_the_callers_system_prompt(home, launche
     start({**BASE, "system_prompt": "be terse"})
     text = system_prompt(launched[0])
     assert text.startswith("be terse\n\nYou are a worker session, started by an awm service.")
-    assert "You started in awm/demo." in text
+    assert "You started in awm/demo, the scope your starter chose." in text
     assert 'reflection(verb="cd", args={path:<its worktree>})' in text
     assert 'reflection(verb="stop", args={job:<your job>, confirm:true})' in text
     from awm.cch import lifecycle

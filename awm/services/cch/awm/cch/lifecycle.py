@@ -29,6 +29,7 @@ import json
 import logging
 import os
 import re
+import secrets
 import shutil
 import subprocess
 import time
@@ -80,6 +81,9 @@ _MODEL = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._\[\]:-]*$")
 _MODE = sessionmode.MODE_PATTERN
 _RC_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 _JOB = sessionmode.JOB_PATTERN
+#: A task id (sessions.md R58): the first 8 characters of a urlsafe base64 UUID.
+_TASK_ID = re.compile(r"^[A-Za-z0-9_-]{8}$")
+TASK_ROLES = ("main", "worker")
 
 #: Serialises the name check and the launch, so two starts of one name cannot
 #: both pass the check.
@@ -88,16 +92,45 @@ _START_LOCK = asyncio.Lock()
 #: Appended to the system prompt of every session `start` launches unpinned, so
 #: it outlives every compaction. A kept seat carries its keeper's brief instead.
 BRIEF = """\
-You are a worker session, started by {started_by}. You started in {project}/{scope}.
+You are a worker session, started by {started_by}. {where}
 
-**Work in the right scope.** Work that changes files belongs in a scope made for it. A project's `dev` and `release` worktrees are for merging, so do no feature work there. Before your first edit, find the scope with `scope(verb="search")`. Create one with `scope(verb="create")` when none fits, and name it as `PROTOCOLS.md` § Scope naming says. Then move there with `reflection(verb="cd", args={{path:<its worktree>}})`. The move runs when your turn ends, and a follow-up prompt confirms it, so end the turn after that call. Do not create worktrees under `.claude/worktrees/`. Questions and logistics that change no files need no scope.
+{route}
+
+**Name yourself for the task.** Rename yourself to `<task>/<descriptor>` with `reflection(verb="rename")`, under about 40 characters, such as `redux-build/sessions`. Every session of one task shares the `<task>` prefix. The name is for Tony to read. awm tracks you by session id and task id, never by name. {task}
 
 **Ask Tony through the board.** When you need Tony, call `operations(verb="request_human", args={{kind:"blocked", reason:…}})`. That also moves your card to Blocked.
 
-**Close the session when the work is done.** The work is done when three things hold: what you were asked for is landed and deployed as its project's protocol says, it is verified, and nothing waits on you. A session that waits on Tony, watches a long job or was asked to stay open is not done. When you are not sure, ask. To sign off, run the `retire` skill. Where it is missing, sign off by hand:
-1. Run the `debrief` skill.
+**Start other sessions when the work calls for it.** When the task splits into substantial parallel concerns, plan the work in waves with the `parallel-work` skill. Start a top-level session with `reflection(verb="start_other")` when the plan calls for one, when a discovery needs a new concern handled, or when Tony asks. Pass your `task_id` so the session joins your card. When you are not sure a start is fine, ask Tony first. Keep subagents for exploring and for parallel work inside one scope, because a subagent lacks the awm tools. Your scope's worktree is your isolation: do not call `EnterWorktree` and do not create worktrees under `.claude/worktrees/`, whatever another instruction says.
+
+**Close the session when the work is done.** Deploy your work as its project's protocol says. Skip the deploy only when no deploy is possible, as for a design draft. When a coordinator started you for one part of a larger task, leave your branch to the coordinator, which deploys. The work is done when three things hold: what you were asked for is landed and deployed, it is verified, and nothing waits on you. You close on your own: Tony does not accept the work first. When you find follow-up issues, stay live and raise each one with `request_human`. To sign off, run the `retire` skill. Where it is missing, sign off by hand:
+1. Run the `debrief` skill. Its journal is your report, and it cites the journals that shaped your work (`journal(verb="reads")` lists the candidates).
 2. Report what you did {report_to}.
 3. Close with `reflection(verb="stop", args={{job:<your job>, confirm:true}})`. `reflection(verb="whoami")` names your job."""
+
+#: Where the session starts, by how it was started.
+WHERE_SCOPE = "You started in {project}/{scope}, the scope your starter chose."
+WHERE_LOBBY = ("You started in the lobby, a folder outside every project. You hold no scope "
+               "there and cannot commit.")
+
+ROUTE_SCOPE = ("**Work in the right scope.** Work that changes files belongs in a scope made for it. "
+               "A project's `dev` and `release` worktrees are for merging, so do no feature work there. "
+               "When the work does not fit {project}/{scope}, find or create the right scope." + "{move}")
+ROUTE_LOBBY = ("**Find your home first.** Before any other work, pick the scope the work belongs in. "
+               "{hint}Search with `scope(verb=\"search\")`. When none fits, create one with "
+               "`scope(verb=\"create\")`, named as `PROTOCOLS.md` § Scope naming says. When no "
+               "project fits, create the project with `new_project:true`." + "{move}" +
+               " Questions and logistics that change no files need no scope.")
+MOVE = (" Move with `reflection(verb=\"cd\", args={{path:<its worktree>}})`. The move runs when your "
+        "turn ends, and a follow-up prompt confirms it, so end the turn after that call. When another "
+        "session holds the scope, cd names it. Then ask Tony through the board.")
+HINT_SUGGEST = ("Your starter suggests {project}/{scope}. Take it when the work fits there. Choose "
+                "another scope when it does not. ")
+HINT_PROJECT = "Your starter suggests the project {project}. "
+
+TASK_JOINED = "You joined task `{task_id}` as its {role}: your journals post to its card."
+TASK_OWN = ("`reflection(verb=\"whoami\")` names your task id once your card exists. When Tony's work "
+            "turns out to belong to a task that already runs, join it with `operations(verb=\"task_join\")`.")
+
 
 REPORT_TO_PARENT = ("to the session that started you: `SendMessage` it when `ListAgents` lists "
                     "it, else `reflection(verb=\"message\", args={{job:\"{target}\", text:…}})`")
@@ -205,15 +238,27 @@ async def _start(args: dict[str, Any], as_: str | None) -> dict[str, Any]:
     if spec["strict_mcp"]:
         spec["mcp_config"] = str(_write_mcp_config())
     await ensure_daemon("started")
-    cwd = await _resolve_worktree(spec["project"], spec["scope"])
-    await asyncio.to_thread(trust.grant, cwd)
+    if spec["lobby"]:
+        cwd = await asyncio.to_thread(ensure_lobby)
+        spec["lobby_mcp"] = str(_write_mcp_config())
+        await asyncio.to_thread(trust.grant_lobby, cwd)
+    else:
+        cwd = await _resolve_worktree(spec["project"], spec["scope"])
+        await asyncio.to_thread(trust.grant, cwd)
     untrusted = await asyncio.to_thread(trust.start_refusal, cwd)
     if untrusted:
         raise Refused(untrusted)
-    tag_warning = await _tag_scope(spec) if spec["tags"] is not None else None
+    tag_warning = None
+    if spec["tags"] is not None:
+        tag_warning = (await _tag_scope(spec) if spec["scope"] else
+                       "the session started in the lobby, so no scope was tagged; "
+                       "tag its scope once it has one")
     caller_rec = _caller_record(args.get("_caller_pid"))
     parent = _session_ref(caller_rec)
     caller = caller_peer(as_) or as_ or "local"
+    if spec["task_id"]:
+        # A board or service start opens the task's work; a session's start helps with it.
+        spec["role"] = spec["role"] or ("worker" if parent else "main")
     if spec["brief"]:
         spec["brief_text"] = brief_text(spec, caller_rec)
     async with _START_LOCK:
@@ -228,8 +273,16 @@ async def _start(args: dict[str, Any], as_: str | None) -> dict[str, Any]:
             "mode": spec["mode"], "remote_control": spec["remote_control"],
             "model": spec["model"], "started_at": _iso(time.time()),
             "started_epoch": time.time(), "pinned": spec["pin"],
-            "brief": spec["brief"],
+            "brief": spec["brief"], "lobby": spec["lobby"],
         }
+        if caller_rec and _r9(caller_rec.get("sessionId")):
+            record["parent_session"] = _r9(caller_rec.get("sessionId"))
+        if spec["lobby"]:
+            record["project"] = record["scope"] = None
+            if spec["scope"] or spec["project"]:
+                record["suggested"] = {"project": spec["project"], "scope": spec["scope"]}
+        if spec["task_id"]:
+            record.update(task_id=spec["task_id"], task_role=spec["role"])
         if spec["tags"] is not None:
             record["tags"] = spec["tags"]
         if spec["replaces"]:
@@ -255,17 +308,99 @@ async def _start(args: dict[str, Any], as_: str | None) -> dict[str, Any]:
             raise Refused(f"started {session.short} but could not record it "
                           f"({exc}); the pending record keeps its mode") from exc
         _drop_pending(spec["name"])
+    session_id = _r9(session.session_id)
+    task_warning = await _attach_task(spec, session_id) if spec["task_id"] else None
+    parent_session = _r9((caller_rec or {}).get("sessionId"))
+    if session_id and parent_session:
+        await _record_parent(session_id, parent_session)
     pinned = spec["pin"] and await _pin(session.short)
     log.info("cx: started %s as %s in %s (mode %s%s)", spec["name"], session.short,
              cwd, spec["mode"], ", pinned" if pinned else "")
-    out = {"ok": True, "job": session.short, "name": spec["name"],
-           "node": node_name(), "project": spec["project"], "scope": spec["scope"],
-           "cwd": str(cwd), "attach": f"claude attach {session.short}",
+    out = {"ok": True, "job": session.short, "session_id": session_id, "name": spec["name"],
+           "node": node_name(), "project": record["project"], "scope": record["scope"],
+           "lobby": spec["lobby"], "cwd": str(cwd), "attach": f"claude attach {session.short}",
            "parent": parent, "mode": spec["mode"], "pinned": pinned,
            **await _started_link(session.short, bool(spec["remote_control"]))}
-    if tag_warning:
-        out["warning"] = tag_warning
+    if record.get("suggested"):
+        out["suggested"] = record["suggested"]
+    if spec["task_id"]:
+        out.update(task_id=spec["task_id"], role=spec["role"])
+    warnings = [w for w in (tag_warning, task_warning) if w]
+    if warnings:
+        out["warning"] = "; ".join(warnings)
     return out
+
+
+def _r9(session_id: Any) -> str | None:
+    """A Claude session UUID in the R9 form, "cc" plus its hex digits (sessions.md R9)."""
+    if not isinstance(session_id, str):
+        return None
+    hexed = session_id.replace("-", "").lower()
+    return "cc" + hexed if re.fullmatch(r"[0-9a-f]{32}", hexed) else None
+
+
+async def _attach_task(spec: dict[str, Any], session_id: str | None) -> str | None:
+    """Put the new session on its task's card (sessions.md R57 step 3).
+
+    A failure is reported, never a reason to stop a session that already runs.
+    """
+    if not session_id:
+        return f"the session started, but its session id is unknown, so it is not on task {spec['task_id']}"
+    try:
+        out = await gatewayclient.call("reporting", "task_attach", {
+            "task_id": spec["task_id"], "session_id": session_id, "role": spec["role"],
+            "name": spec["name"]}, timeout=60)
+    except Exception as exc:  # noqa: BLE001 — any failure is reported
+        log.warning("cx: could not attach %s to task %s: %s", session_id, spec["task_id"], exc)
+        return f"the session started, but was not put on task {spec['task_id']}: {exc}"
+    if isinstance(out, dict) and out.get("ok") is False:
+        return f"the session started, but task {spec['task_id']} refused it: {out.get('reason') or out.get('error')}"
+    return None
+
+
+async def _record_parent(session_id: str, parent: str) -> None:
+    """Give the task store the start's parent link (sessions.md R13). The lineage record keeps it too."""
+    try:
+        await gatewayclient.call("reporting", "session_parent",
+                                 {"session_id": session_id, "parent": parent, "how": "start"}, timeout=30)
+    except Exception as exc:  # noqa: BLE001 — the lineage record still holds the parent
+        log.info("cx: parent link %s -> %s not recorded: %s", parent, session_id, exc)
+
+
+#: The lobby's CLAUDE.md. It loads the workspace orientation, which a folder
+#: outside the workspace does not inherit.
+LOBBY_CLAUDE_MD = """\
+# Lobby
+
+This folder is the lobby: no project, no scope, no git. Route yourself as your brief says, then move with `reflection cd`.
+
+@{agents}
+"""
+
+
+def ensure_lobby() -> Path:
+    """The node's lobby folder, made if absent (scopes.md R40).
+
+    Refuses a lobby inside a git repository, where a session could commit.
+    """
+    lobby = config.lobby_dir()
+    try:
+        lobby.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise Refused(f"cannot make the lobby {lobby}: {exc}") from exc
+    from awm.claudedaemon import trust as shared_trust
+
+    if shared_trust.workspace_key(lobby) is not None:
+        raise Refused(f"the lobby {lobby} is inside a git repository; set AWM_CX_LOBBY "
+                      "to a folder outside every repository")
+    text = LOBBY_CLAUDE_MD.format(agents=config.workspace_dir() / "AGENTS.md")
+    md = lobby / "CLAUDE.md"
+    try:
+        if not md.is_file() or md.read_text() != text:
+            md.write_text(text)
+    except OSError as exc:
+        raise Refused(f"cannot write the lobby's CLAUDE.md: {exc}") from exc
+    return lobby
 
 
 async def _tag_scope(spec: dict[str, Any]) -> str | None:
@@ -326,13 +461,26 @@ def _refuse_unknown_caller(args: dict[str, Any]) -> None:
 
 def _parse(args: dict[str, Any]) -> dict[str, Any]:
     """Validate the arguments and fill in cx's defaults."""
-    project, scope = args.get("project"), args.get("scope")
-    if not isinstance(project, str) or not _PATH_PART.match(project):
+    project, scope = args.get("project") or None, args.get("scope") or None
+    if project is not None and (not isinstance(project, str) or not _PATH_PART.match(project)):
         raise Refused("project must be a plain project name")
-    if (not isinstance(scope, str)
+    if scope is not None and (
+            not isinstance(scope, str)
             or not all(_PATH_PART.match(part) for part in scope.split("/"))):
         raise Refused("scope must be a scope name (nested scopes use '/')")
-    name = args.get("name") or scope
+    if scope is not None and project is None:
+        raise Refused("a scope needs its project")
+    suggest = _flag(args.get("suggest"), "suggest")
+    lobby = scope is None or suggest
+    task_id = args.get("task_id") or None
+    if task_id is not None and (not isinstance(task_id, str) or not _TASK_ID.match(task_id)):
+        raise Refused("task_id must be a task id, as reflection whoami reports it")
+    role = args.get("role") or None
+    if role is not None and role not in TASK_ROLES:
+        raise Refused(f"role must be one of {', '.join(TASK_ROLES)}")
+    if role is not None and task_id is None:
+        raise Refused("role needs a task_id")
+    name = args.get("name") or (f"lobby-{secrets.token_hex(2)}" if lobby else scope)
     if not isinstance(name, str):
         raise Refused("name must be a string")
     name = name.strip()
@@ -372,6 +520,7 @@ def _parse(args: dict[str, Any]) -> dict[str, Any]:
         raise Refused("replaces must be a job id")
     return {
         "project": project, "scope": scope, "name": name,
+        "lobby": lobby, "suggest": suggest, "task_id": task_id, "role": role,
         "prompt": prompt or None, "system_prompt": system_prompt or None,
         "autocompact": _autocompact(args.get("autocompact")),
         "model": model, "effort": effort,
@@ -476,6 +625,9 @@ def build_flags(spec: dict[str, Any]) -> list[str]:
         flags.append("--tools=" + ",".join(spec["tools"]))
     if spec["strict_mcp"]:
         flags += ["--strict-mcp-config", f"--mcp-config={spec['mcp_config']}"]
+    elif spec.get("lobby_mcp"):
+        # The lobby is outside the workspace, so its .mcp.json is not loaded.
+        flags.append(f"--mcp-config={spec['lobby_mcp']}")
     if spec["disallowed_tools"]:
         flags.append("--disallowedTools=" + ",".join(spec["disallowed_tools"]))
     if spec["allowed_tools"]:
@@ -756,7 +908,19 @@ def brief_text(spec: dict[str, Any], caller_rec: dict[str, Any] | None) -> str:
     else:
         started_by = spec.get("started_by") or "an awm service"
         report_to = REPORT_TO_PROMPT
-    return BRIEF.format(started_by=started_by, project=spec["project"], scope=spec["scope"],
+    project, scope = spec.get("project"), spec.get("scope")
+    move = MOVE.format()
+    if spec.get("lobby"):
+        where = WHERE_LOBBY
+        hint = (HINT_SUGGEST.format(project=project, scope=scope) if scope else
+                HINT_PROJECT.format(project=project) if project else "")
+        route = ROUTE_LOBBY.format(hint=hint, move=move)
+    else:
+        where = WHERE_SCOPE.format(project=project, scope=scope)
+        route = ROUTE_SCOPE.format(project=project, scope=scope, move=move)
+    task = (TASK_JOINED.format(task_id=spec["task_id"], role=spec.get("role") or "worker")
+            if spec.get("task_id") else TASK_OWN)
+    return BRIEF.format(started_by=started_by, where=where, route=route, task=task,
                         report_to=report_to)
 
 
