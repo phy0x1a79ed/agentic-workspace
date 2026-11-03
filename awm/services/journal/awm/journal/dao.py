@@ -15,7 +15,23 @@ from awm.persistence.databases import init_service_db
 from awm.persistence.embeddings import EMBEDDINGS_DDL
 
 SERVICE = "journal"
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
+
+# Where a scope has read its own channel up to. One row per channel: seats churn,
+# the scope persists. See awm.journal.inbox.
+_CURSORS_SQL = """\
+CREATE TABLE IF NOT EXISTS scope_cursors (
+    owner_project  TEXT NOT NULL,
+    owner_scope    TEXT NOT NULL,
+    through_ts     INTEGER NOT NULL,
+    through_id     TEXT NOT NULL,
+    acked_at       INTEGER NOT NULL,
+    acked_by       TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (owner_project, owner_scope)
+);
+"""
+
+MIGRATIONS = {(1, 2): _CURSORS_SQL}
 
 SCHEMA_SQL = """\
 -- One append-only post log per channel. The owner is addressed by natural key
@@ -49,7 +65,7 @@ CREATE TABLE IF NOT EXISTS scope_subscribers (
     PRIMARY KEY (owner_project, owner_scope, guest_kind, guest_ref)
 );
 CREATE INDEX IF NOT EXISTS idx_scope_subscribers_ref ON scope_subscribers(guest_kind, guest_ref);
-"""
+""" + _CURSORS_SQL
 
 READS_SQL = """\
 -- The journals each session read through fetch: its citation candidates
@@ -64,7 +80,7 @@ CREATE TABLE IF NOT EXISTS session_reads (
 );
 """
 
-MIGRATIONS = {(1, 2): READS_SQL}
+MIGRATIONS[(2, 3)] = READS_SQL
 
 _initialized = False
 

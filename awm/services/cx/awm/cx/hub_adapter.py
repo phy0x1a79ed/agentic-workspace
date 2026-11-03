@@ -31,7 +31,7 @@ from awm.claudedaemon import daemonlog
 from awm.config import privacy
 from awm.gatewayclient import ServiceAdapter, spawn_supervised
 
-from awm.cx import claim, config, lifecycle, pool, reconcile, remove, seed
+from awm.cx import claim, config, lifecycle, pool, probe, reconcile, remove, seed
 
 log = logging.getLogger("awm.cx.hub_adapter")
 
@@ -230,6 +230,23 @@ API_MANIFEST: dict[str, Any] = {
             "effect": "write",
         },
         {
+            "name": "probe",
+            "tool": "reflection_probe_other",
+            "surfaces": ["cli", "http"],
+            "description": (
+                "Whether cx on `node` answers `list` from this node, and its "
+                "daemon state. Returns no sessions. A keeper on another node "
+                "asks this to tell its own lost contact from the node being "
+                "down."
+            ),
+            "params": [
+                {"name": "node", "type": "string", "required": True,
+                 "description": "The node to look at."},
+            ],
+            "timeout": 30,
+            "effect": "read",
+        },
+        {
             "name": "claim",
             "tool": "reflection_claim_other",
             "surfaces": ["cli", "http"],
@@ -377,12 +394,23 @@ async def _adopt(args: dict[str, Any], as_: str | None = None) -> dict[str, Any]
     return await lifecycle.adopt(args, as_)
 
 
+async def _probe(args: dict[str, Any], as_: str | None = None) -> dict[str, Any]:
+    reason = lifecycle.caller_refusal(as_)
+    if reason:
+        return {"ok": False, "reason": reason}
+    node = str(args.get("node") or "").strip()
+    if not node:
+        return {"ok": False, "reason": "probe needs a node"}
+    return await probe.probe(node)
+
+
 HANDLERS: dict[str, Any] = {
     "start": _start,
     "list": _list,
     "stop": _stop,
     "resume": _resume,
     "adopt": _adopt,
+    "probe": _probe,
     "claim": _claim,
     "seed": _seed,
     "remove": _remove,

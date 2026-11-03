@@ -142,9 +142,9 @@ def test_authenticates_before_sending_any_input():
     paste_and_submit("/compact", target(), enter=True, opener=opener_for(sock))
     frames = sock.frames()
     kinds = [k for k, _ in frames]
-    assert kinds[0] == 0x01, "first frame must be the auth control frame"
-    assert json.loads(frames[0][1])["t"] == "auth"
-    assert 0x00 not in kinds[:1]
+    assert kinds[:2] == [0x01, 0x01], "the opener and auth precede any input"
+    assert json.loads(frames[0][1]) == {"t": "pong"}
+    assert json.loads(frames[1][1])["t"] == "auth"
 
 
 def test_text_is_delivered_as_a_bracketed_paste():
@@ -250,3 +250,43 @@ def test_input_the_host_discarded_is_not_reported_as_sent():
         paste_and_submit("hi", target(), enter=False, opener=opener_for(sock))
 
 
+
+
+# ---------------------------------------------------------------------------
+# A host that greets only a client that has spoken (Claude Code 2.1.316+)
+# ---------------------------------------------------------------------------
+
+class SpeakFirstSock(FakeSock):
+    """A host that says nothing until the client has sent a frame.
+
+    Modelled on the 2.1.316 ``bg-pty-host``: with an input token configured it
+    holds its greeting back from a silent peer and hangs up on it after five
+    seconds, which is how every background session became unreachable while the
+    roster still named its socket correctly.
+    """
+
+    def __init__(self, inbound: bytes = b""):
+        super().__init__(b"")
+        self._held = bytearray(inbound)
+
+    def sendall(self, data):
+        super().sendall(data)
+        self._inbound += self._held
+        self._held.clear()
+
+
+def test_a_host_that_waits_for_the_client_to_speak_is_reached():
+    sock = SpeakFirstSock(HELLO)
+    paste_and_submit("/compact", target(), enter=True, opener=opener_for(sock))
+    payloads = [p for k, p in sock.frames() if k == 0x00]
+    assert payloads == [b"\x1b[200~/compact\x1b[201~", b"\r"]
+
+
+def test_the_opening_frame_carries_no_token():
+    # The opener goes out before the host has said whose it is, so it must not
+    # be the auth frame: a recycled spare socket would be handed the token.
+    sock = SpeakFirstSock(ctl({"t": "hello", "replPid": 999}) + ctl({"t": "live"}))
+    with pytest.raises(daemon_inject.DaemonError, match="hosting REPL 999"):
+        paste_and_submit("hi", target(), enter=False, opener=opener_for(sock))
+    sent = [json.loads(p) for k, p in sock.frames() if k == 0x01]
+    assert sent == [{"t": "pong"}]

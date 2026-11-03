@@ -126,5 +126,5 @@ def test_an_old_database_gains_the_reads_table(tmp_path, monkeypatch):
     monkeypatch.setattr(dao, "_initialized", False)
     dao.init()
     conn = sqlite3.connect(path)
-    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == 2
+    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == 3
     conn.execute("SELECT * FROM session_reads").fetchall()
