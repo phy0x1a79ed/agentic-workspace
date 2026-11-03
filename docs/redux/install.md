@@ -8,9 +8,13 @@ Which node holds which role belongs in `fleet.md`. How a deploy moves through th
 
 ## Requirements
 
-- **R112.** The core of awm is rewritten in Rust. Tony: "rust for core awm, yes" (2026-11-02).
+- **R112.** The core of awm is rewritten in Rust. The core is the bootstrap binary, the CLI, the MCP proxy and the gateway with its plugin loader. Every service is a plugin (R115). Tony: "rust for core awm, yes" and "this is correct." (2026-11-02).
 - **R113.** mizar holds the Rust build container. Rust builds and checks run in that container, never in a toolchain on the host. The container keeps a cargo cache in a volume, so a rebuild stays fast. Tony: "the container can use a cargo cache too" and "mizar is home base. it has the build contianer" (2026-11-02).
 - **R114.** awm's remote is https://github.com/phy0x1a79ed/agentic-workspace. Tony: "this is awm's remote https://github.com/phy0x1a79ed/agentic-workspace" (2026-11-02).
+- **R115.** A plugin is a project of its own, and awm installs it straight from its git repository. Installing one needs no code in awm, such as a line that registers a service or a page. The plugin carries everything awm needs to load it. Tony: "by true plugins, I meant that the current system is not rigorous.", "each plugin should be its own project" and "plugins should be installable from a git repo directly and not require any additional code in awm itself, like registering services or pages." (2026-11-02).
+  1. A page is a plugin too. Tony: "pages id argue are also plugins."
+  2. One plugin may hold several services and pages. Tony: "a plugin can have a combination and multiple services and pages".
+  3. A plugin has a version pin and its own refresh hook (`routines.md` R33). It runs on the host with its own env or in a container.
 
 ## Gap from today
 
@@ -21,6 +25,7 @@ Surveyed read only on 2026-11-02, from the `feat/redux` source and the deployed 
 - **A fresh node starts every service** unless an explicit `enabled.json` limits it.
 - **Install still needs sudo** for the `/usr/local/bin` links, apt packages and linger. This breaks `fleet.md` R101.
 - **The plugin contract is already blind to language and place.** A plugin is a folder with a `run.sh` that connects to the gateway. `AWM_SERVICE_ROOTS` (commit 041102fa) loads services from outside the repo, but no node sets it. All 44 services sit in `awm/services/`. tether is the nearest to an outside plugin: a pinned release with Rust binaries from GitHub.
+- **R115 missing.** Services and pages are registered in awm's own tree. A page needs awm code to be served.
 - **R33 missing.** No plugin has its own refresh hook or version pin. `awm deploy` restarts the whole gateway. Every Python service shares the one `awm` env.
 - **No test environment exists.** awm has no Dockerfile, no CI, no cloud-agent setup and no fake peer. Rootless Docker works on mizar and in capella's WSL.
 - **mizar has two miniforge installs.** The services run from `~/miniforge3`. `.mcp.json` points at `~/lib/miniforge3`.
