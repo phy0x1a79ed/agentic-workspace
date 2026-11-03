@@ -38,6 +38,7 @@ Procedure, from dfs-interview § Work the stack:
   - [ ] Which repo is canonical for awm: GitHub (install.md R114, R118) or mizar (routines.md R31)? Today origin is altair.
   - [ ] fleet.md R109: the harness lane proposes item 7, an access-token login and a caller-token door for isolated sessions. Accept it?
 - **trust-users** (2026-11-03): lets go over each of the major systems architecturally to make sure we are still aligned
+- **cleanup-pass** (2026-11-03): when done, we need to schedule a pass to remove code to make source code cohesive and not have vestigial elements, and combining modules/funcitons that are duplicated
 
 ## Parked
 
