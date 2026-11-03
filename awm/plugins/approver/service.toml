@@ -1,3 +1,0 @@
-# Today's Python gateway reads this. The redux loader reads awm-plugin.toml instead.
-tool = "approver"
-tier = "off"
