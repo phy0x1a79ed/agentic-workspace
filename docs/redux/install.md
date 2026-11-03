@@ -29,6 +29,8 @@ Which node holds which role belongs in `fleet.md`. How a deploy moves through th
   4. A breaking change to a tool raises its major version. The provider and the plugins that call it update in one batch-approved change (R116 item 2).
   5. Shared code is a library that each plugin pins in its own env, not a plugin.
   6. Plugins start together, in no order. A call to a tool that is not up yet waits briefly, then fails with a clear error.
+- **R118.** One test takes a bare container through a fresh install, then adds it to a fake fleet as a new node. The fake fleet is containers too: a throwaway certificate authority, a fake peer, and stubs for `2fa` and `social`. It touches no real login and no real node. The test runs locally on mizar under rootless Docker, and the same script runs in a Claude cloud agent from the GitHub remote (R114). Its Claude login is the access-token-only copy of `fleet.md` R109. Tony: "we should also consider settup up a system that can spawn throway temp environments that act the same" (2026-10-30).
+  1. The test runs only when someone asks for it. It is never part of the fast smoke test in continuous integration. Tony: "only when asked. this cant be part of the fast smoke under continuous integration" (2026-11-02).
 
 ## Gap from today
 
