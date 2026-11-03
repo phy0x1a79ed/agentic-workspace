@@ -47,3 +47,7 @@ Reported by search-finish on altair, 2026-11-03. Feature branches only. dev and 
 - **Criterion 5 passes.** Reported by altair job 6a450f72 on 2026-11-03. Over 300 more-by-these-authors cases, a query followed by `kb hop` scores recall@20 0.878 on 20 results. The old `then` path returned at most 10 papers and scored 0.634. The new path's top 10 scores 0.646: 268 cases are the same, 30 better and 2 worse. p50 is 5.7 s and p95 is 8.8 s.
 - **The sharpening step stays in `kb hop`.** Without it the score fell to 0.592 (awm d4cfc124).
 - **Not run.** The full replay and grep parity stopped, because the journal gate numbers already stand.
+- **Cognee is out of kb (N3).** Reported by job 6a450f72 on 2026-11-03, both branches pushed.
+  - kb `feat/shards` e997f9b: the kb server answers `/encode`, `/related` and `/status` only. `graph.py` keeps `graph.db` and its PageRank for `kb rank`. The nightly entry refresh and OpenAlex steps still run.
+  - awm `feat/svc-kb` 4857c0f0: `kb recall` and `kb snapshot` go. The get log records project and scope in their own columns (schema v6). No rank reads it yet.
+  - Tests pass: kb repo 75, awm search 163, kb 72, journal 157.
