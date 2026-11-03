@@ -67,7 +67,7 @@ Top of the stack comes first.
    - Settled by `fleet.md` R104: how `reflection` behaves across peers, once the network architecture settles (Tony, 2026-10-31).
    - Settled (`fleet.md` R105): deneb is the vault's sync hub, and a sync link carries no authentication. Trilium now runs only on deneb, walled, with a nightly copy on mizar behind a tripwire.
    - Settled by `fleet.md` R106 and `channels.md` R77: whether deneb keeps the reporting service. The task queue moves to alcor, and the front door goes.
-   - Queued from 1f: pinned keys for peers that Tony verifies, which remove the relayed room password (`channels.md` R73, also thread 1j).
+   - Settled by `channels.md` R73 item 5: pinned keys for peers that Tony verifies, which remove the relayed room password (`channels.md` R73, also thread 1j).
    - Settled by `fleet.md` R106: which node writes a task's card when its sessions span nodes. One task queue service on alcor writes every card.
 
 1s. **Isolated sessions with awm tools.** Tony: "I've started an expedition session out of curiosity. Stuff like that should prolly get some form of isolation as well, but have access to awm tools in its environment -> something to talk about" (2026-11-02).

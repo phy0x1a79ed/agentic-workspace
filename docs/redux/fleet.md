@@ -104,6 +104,7 @@ This doc holds the nodes of the fleet, the role of each, and how each node is ha
      - A trusted session reads and writes the journals of its own node and of every node its node has an edge to (R87).
      - A cooperative session reads the journals of its own node.
      - An untrusted session reads only its own scope.
+     - A cooperative or an untrusted session writes only under its own scope. Tony: "yes" (2026-11-02).
   4. An edge needs no grant. Across an edge, an agent reads and writes the other node's journals as it does its own, because the edge already lets it start agents there. Tony: "not if the node has ssh permissions already -> mizar should be able to read/write journals of altair, no questions asked sicne it has ssh access and can spawn agetns there directly" (2026-11-02).
 - **R98.** alcor has two ssh doors. The singleton door does not depend on mizar. The singleton door opens only for the services named for it, and refuses everything else, reflection included. Tony: "can we also force ssh through mizar, like how arbutus has bastion?", "The ssh access is not the same as the singleton service access right? machines that need 2fa dont have to have an edge into alcor. So the services should still work with mizar down, we just cant ssh into alcor with mizar down." and "2 ssh doors and singleton ports match what we discussed." (2026-11-02).
   1. Port 22 takes the user and admin logins (R92). alcor's firewall admits it from mizar only. capella and lyra jump through mizar.
