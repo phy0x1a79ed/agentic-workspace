@@ -11,8 +11,9 @@ pub const LEGACY_SERVICE_TOML: &str = "service.toml";
 #[serde(deny_unknown_fields)]
 pub struct Manifest {
     pub plugin: PluginMeta,
-    #[serde(default)]
-    pub placement: Placement,
+    /// Retired by fleet.md R140: the install config places plugins. Read only to warn.
+    #[serde(default, skip_serializing)]
+    pub placement: Option<toml::Value>,
     #[serde(default)]
     pub service: Vec<ServiceDecl>,
     #[serde(default)]
@@ -45,31 +46,6 @@ pub enum Trust {
     #[default]
     Own,
     ThirdParty,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct Placement {
-    #[serde(default = "every_node")]
-    pub nodes: Vec<String>,
-    #[serde(default)]
-    pub dev_nodes: Vec<String>,
-}
-
-fn every_node() -> Vec<String> {
-    vec!["*".into()]
-}
-
-impl Default for Placement {
-    fn default() -> Self {
-        Self { nodes: every_node(), dev_nodes: vec![] }
-    }
-}
-
-impl Placement {
-    pub fn admits(&self, node: &str) -> bool {
-        self.nodes.iter().chain(&self.dev_nodes).any(|n| n == "*" || n == node)
-    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -158,6 +134,13 @@ pub struct Needs {
     pub tool: Vec<NeedTool>,
     #[serde(default)]
     pub contract: Vec<NeedTool>,
+    /// Operating systems the plugin runs on, as Rust names them (`linux`, `windows`, `macos`).
+    /// Empty means any.
+    #[serde(default)]
+    pub platform: Vec<String>,
+    /// Whether the plugin needs a GPU. Recorded, not enforced yet.
+    #[serde(default)]
+    pub gpu: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -236,13 +219,11 @@ major = 1
         assert_eq!(m.tool[0].tier, Tier::Off);
         assert!(m.page[0].dir.is_none());
         assert_eq!(m.needs.tool.len(), 1);
-        assert!(m.placement.admits("mizar"));
+        assert!(m.placement.is_some());
     }
 
     #[test]
-    fn placement_and_implements() {
-        let p = Placement { nodes: vec!["showtime".into()], dev_nodes: vec!["altair".into()] };
-        assert!(p.admits("altair") && p.admits("showtime") && !p.admits("mizar"));
+    fn implements() {
         let (u, m) = parse_implements("6f1c2c1e-0d4b-4f3e-9a51-3b8f2d7a9c10@1").unwrap();
         assert_eq!((u.to_string().len(), m), (36, 1));
         assert!(parse_implements("nope").is_none());

@@ -4,7 +4,7 @@
 
 This file is the contract between a plugin and the Rust gateway of the redux (`install.md` R112, R115 to R117, R132). It holds the manifest format, the wire protocol a service speaks, the call interface a plugin uses to reach another plugin, and the usage event. The redux-core lane (job a92d02bf) owns it. Other lanes build against it. Send a change request to job a92d02bf with `reflection(verb="message")`.
 
-Status: draft v1.2. Build against it.
+Status: draft v1.3. Build against it.
 
 ## Plugin folder
 
@@ -14,7 +14,7 @@ A folder with a `run.sh` and no `awm-plugin.toml` loads as a legacy plugin. The 
 
 Plugin roots are an ordered list in the gateway config. The built-in core roots are `awm/services` then `awm/plugins`. Put a new core plugin at `awm/plugins/<name>/`. The first root that holds a plugin name wins. The gateway logs and ignores a shadowed folder. Today's Python gateway also scans `awm/plugins` as a built-in root, so a plugin there runs before the cutover.
 
-A tool name on the reserved list of the gateway config belongs only to a plugin from a core root with `trust = "own"`. Any other claim refuses the plugin. The default list is `2fa`, `approver`, `queue-store` and `journal`, plus the singleton door tools that `fleet/edges.yml` names under `singletons`.
+A tool name on the reserved list of the gateway config belongs only to a plugin from a core root with `trust = "own"`. Any other claim refuses the plugin. The default list is `2fa`, `approver`, `queue-store` and `journal`, plus the singleton tools of the edge list (§ Install config).
 
 ## Manifest
 
@@ -26,10 +26,6 @@ Example, for a plugin that serves one MCP tool, one hidden tool and one page:
 > version = "1.4.0"
 > trust = "own"            # own | third-party (R116 item 4)
 > refresh = "./refresh.sh" # optional R33 hook, run in the plugin folder
->
-> [placement]
-> nodes = ["*"]            # default. "*" is every node
-> dev_nodes = []           # optional. Nodes that keep it for development
 >
 > [[service]]
 > name = "journal"
@@ -65,6 +61,8 @@ Example, for a plugin that serves one MCP tool, one hidden tool and one page:
 > [needs]
 > secrets = ["JOURNAL_DB_KEY"]
 > network = ["github.com"]
+> platform = ["linux"]     # optional. Empty is any
+> gpu = false              # optional. Recorded, not enforced yet
 >
 > [[needs.tool]]
 > uuid = "0b7e9a44-3d2c-4c55-b1f0-8e6a2d9c3f21"   # the tool this plugin calls
@@ -80,7 +78,7 @@ Rules the loader enforces:
 5. A `needs.tool` major that differs from the provider's major refuses the plugin.
 6. `tier = "off"` keeps a tool off the MCP surface. Plugins and the CLI still call it through the gateway.
 7. Each `[[tool]]` names one `[[service]]` of the same plugin. A service publishes each function of its `ready` manifest as `<tool>_<verb>`, as today. A service with one tool may omit `service` on the tool.
-8. A plugin whose `placement.nodes` and `placement.dev_nodes` both exclude this node is skipped. The node name is `AWM_NODE_NAME`, else the hostname.
+8. A plugin whose `needs.platform` excludes this node's operating system is refused.
 9. A `page.dir` or `service.path` that leaves the plugin folder refuses the plugin. A page with no `dir` resolves by name in the gateway's page roots, because the core pages still build to `awm/pages/<name>/dist`.
 10. `needs.secrets` and `needs.network` are recorded now. The gateway enforces them in a later change (R116 item 1).
 
@@ -106,6 +104,21 @@ The deploy runs a plugin's `refresh` command when the files of the plugin folder
 2. It sets `AWM_REFRESH_FROM` to the old release commit, `AWM_REFRESH_TO` to the new one, and `AWM_NODE_NAME`.
 3. Exit 0 means refreshed. A nonzero exit is a failed refresh, and the deploy dispatches a fixer.
 4. A changed plugin with no `refresh` key falls back to the project hook, `deploy.toml` `[refresh]`.
+
+## Install config
+
+awm names no host (`fleet.md` R140). A manifest says what a plugin needs, never where it runs. The node's installer writes the install config, `<AWM_DIR>/config.toml`, and hands it to the gateway. The cloud project produces it per node.
+
+The keys that place plugins:
+
+1. `plugins` lists the plugin names this node loads. `["*"]`, the default, loads every plugin in the roots.
+2. `exclude` lists the plugin names this node never loads.
+3. `rename` maps a declared tool name to its public name, to settle a clash (R116 item 5).
+4. `plugin_roots` adds roots after the core roots. `profiles` and `env` pass through to services.
+
+The edge list is node config too. The gateway reads `AWM_EDGES_FILE`, else `<AWM_DIR>/edges.yml`. It adds `[s.tool for s in singletons]` to the reserved list. A missing file is an empty fleet.
+
+The loader warns on a `[placement]` table and ignores it.
 
 ## Service wire protocol
 
