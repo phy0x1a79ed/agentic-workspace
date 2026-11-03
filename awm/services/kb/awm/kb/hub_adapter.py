@@ -327,7 +327,6 @@ def _library_filters(filters: fastlayer.Filters) -> fastlayer.Filters:
 
 async def _answer(args: dict) -> dict[str, Any]:
     limit = max(1, min(int(args.get("limit") or 10), 100))
-    per_hit = 0
     filters = fastlayer.Filters.from_args(args)
     author = str(args.get("author") or "").strip()
     if author and not filters.blocked:
@@ -338,10 +337,10 @@ async def _answer(args: dict) -> dict[str, Any]:
     mine = await asyncio.to_thread(_library_filters, filters)
     text = str(args.get("query") or "")
     meaning = None if filters.blocked or not text.strip() else asyncio.ensure_future(_entries(text))
-    found, theirs = await asyncio.gather(asyncio.to_thread(PAPERS.search, text, filters, limit, per_hit),
-                                         asyncio.to_thread(PAPERS.search_library, text, mine, limit, per_hit))
+    found, theirs = await asyncio.gather(asyncio.to_thread(PAPERS.search, text, filters, limit),
+                                         asyncio.to_thread(PAPERS.search_library, text, mine, limit))
     if meaning is None:
-        return {"kb": _titles(found), "library": _titles(theirs)}
+        return {"kb": found, "library": theirs}
     served, why = await meaning
     degraded: dict[str, str] = {}
     related, own = found["related"], theirs["related"]
@@ -350,24 +349,15 @@ async def _answer(args: dict) -> dict[str, Any]:
     else:
         exact_ids = {h["id"] for h in found["exact"]}
         related = await asyncio.to_thread(semantic.paper_hits, PAPERS, served["hits"], found["related"],
-                                          exact_ids, filters, limit, per_hit)
+                                          exact_ids, filters, limit)
         own = await asyncio.to_thread(semantic.paper_hits, PAPERS, served["hits"], theirs["related"],
-                                      {h["id"] for h in theirs["exact"]}, mine, limit, per_hit)
+                                      {h["id"] for h in theirs["exact"]}, mine, limit)
     status = {"status": "ok" if served else "unavailable", "generation": (served or {}).get("generation")}
     out = {"exact": found["exact"], "related": related, "semantic": status}
     lib = {"exact": theirs["exact"], "related": own, "semantic": status}
     if degraded:
         out["degraded"] = lib["degraded"] = degraded
-    return {"kb": _titles(out), "library": _titles(lib)}
-
-
-def _bare(hit: dict[str, Any]) -> dict[str, Any]:
-    return {k: v for k, v in hit.items() if k != "passages"}
-
-
-def _titles(answer: dict[str, Any]) -> dict[str, Any]:
-    """An answer whose hits carry their title and no passages: a caller reads a paper with `get`."""
-    return {k: [_bare(h) for h in v] if k in ("exact", "related") else v for k, v in answer.items()}
+    return {"kb": out, "library": lib}
 
 
 async def _h_get(args: dict, as_: str | None = None) -> dict:
@@ -389,8 +379,8 @@ async def _h_hop(args: dict, as_: str | None = None) -> dict:
     got = await asyncio.to_thread(HOPS.hop, [str(i) for i in ids], along, str(args.get("after") or ""),
                                   str(args.get("before") or ""), limit)
     hits = await asyncio.to_thread(semantic.describe, PAPERS, {p: (along, s, "") for p, s in got},
-                                   fastlayer.Filters(), limit, 0)
-    return {"hits": [_bare(h) for h in hits], "along": along}
+                                   fastlayer.Filters(), limit)
+    return {"hits": hits, "along": along}
 
 
 async def _entries(text: str) -> tuple[dict[str, Any] | None, str]:

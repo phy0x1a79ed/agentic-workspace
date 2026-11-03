@@ -2,12 +2,11 @@
 
 ``exact`` lists the documents that hold the query literally, then those with a
 passage holding all its words. ``related`` ranks the rest by meaning and words.
-Every hit quotes its passages with their spans in the document.
+A hit names its document; it quotes none of it.
 """
 
 from __future__ import annotations
 
-import bisect
 import re
 import sqlite3
 from dataclasses import dataclass, field
@@ -151,50 +150,14 @@ def literal(query: str) -> str:
     return text
 
 
-def _hit(row: sqlite3.Row, match: str, score: float, passages: list[dict[str, Any]]) -> dict[str, Any]:
+def _hit(row: sqlite3.Row, match: str, score: float) -> dict[str, Any]:
     hit = {"source": row["source"], "id": row["doc_id"], "title": row["title"], "ts": row["ts"],
-           "score": round(score, 4), "match": match, "passages": passages}
+           "score": round(score, 4), "match": match}
     hit.update({k: row[k] for k in ("project", "scope", "kind", "url") if row[k]})
     return hit
 
 
-def _passages_of(conn: sqlite3.Connection, key: str) -> list[sqlite3.Row]:
-    return conn.execute("SELECT * FROM passages WHERE key=? AND field='text' ORDER BY start", (key,)).fetchall()
-
-
-def _quote(field_name: str, start: int, end: int, section: str, text: str,
-           marks: list[list[int]] | None = None) -> dict[str, Any]:
-    out: dict[str, Any] = {"field": field_name, "start": start, "end": end, "text": text[start:end]}
-    if section:
-        out["section"] = section
-    if marks:
-        out["marks"] = marks
-    return out
-
-
-def _literal_quotes(conn: sqlite3.Connection, row: sqlite3.Row, spans: list[tuple[int, int]],
-                    in_title: list[tuple[int, int]], per_hit: int) -> list[dict[str, Any]]:
-    """The passages that hold the matches, each widened to cover a match that runs past its end."""
-    quotes = []
-    if in_title:
-        quotes.append(_quote("title", 0, len(row["title"]), "", row["title"], [list(s) for s in in_title]))
-    cut = _passages_of(conn, row["key"])
-    starts = [p["start"] for p in cut]
-    picked: dict[int, list[tuple[int, int]]] = {}
-    for s, e in spans:
-        i = max(0, bisect.bisect_right(starts, s) - 1)
-        if i in picked or len(picked) < per_hit:
-            picked.setdefault(i, []).append((s, e))
-    for i, marks in sorted(picked.items()):
-        p = cut[i] if cut else None
-        a = min(p["start"], marks[0][0]) if p else marks[0][0]
-        b = max(p["stop"], marks[-1][1]) if p else marks[-1][1]
-        quotes.append(_quote("text", a, b, p["section"] if p else "", row["text"], [list(m) for m in marks]))
-    return quotes[:per_hit]
-
-
-def exact_literal(conn: sqlite3.Connection, query: str, filters: Filters, limit: int,
-                  per_hit: int) -> list[dict[str, Any]]:
+def exact_literal(conn: sqlite3.Connection, query: str, filters: Filters, limit: int) -> list[dict[str, Any]]:
     """Documents holding ``query`` as a substring, case-insensitively, as grep would find them.
 
     A case-sensitive match ranks above a case-folded one, a match in the title
@@ -217,19 +180,18 @@ def exact_literal(conn: sqlite3.Connection, query: str, filters: Filters, limit:
     pattern = re.compile(re.escape(needle), re.IGNORECASE)
     ranked = []
     for row in rows:
-        body = [m.span() for m in pattern.finditer(row["text"])]
-        head = [m.span() for m in pattern.finditer(row["title"])]
+        body = len(pattern.findall(row["text"]))
+        head = len(pattern.findall(row["title"]))
         if not (body or head):
             continue
         cased = needle in row["text"] or needle in row["title"]
-        ranked.append(((cased, bool(head), len(body) + len(head), row["ts"]), row, body, head))
+        ranked.append(((cased, bool(head), body + head, row["ts"]), row))
     ranked.sort(key=lambda r: r[0], reverse=True)
-    return [_hit(row, "literal", float(rank[2]), _literal_quotes(conn, row, body, head, per_hit))
-            for rank, row, body, head in ranked[:limit]]
+    return [_hit(row, "literal", float(rank[2])) for rank, row in ranked[:limit]]
 
 
 def exact_keyword(conn: sqlite3.Connection, query: str, filters: Filters, limit: int,
-                  per_hit: int, skip: set[str] = frozenset(), every: bool = True) -> list[dict[str, Any]]:
+                  skip: set[str] = frozenset(), every: bool = True) -> list[dict[str, Any]]:
     """Documents with a passage holding every word of the query, best BM25 passage first; ``skip`` names keys to
     leave out. A document holding only some of the words is left to ``related``, which ranks it by meaning too.
     ``every=False`` asks for any of the words instead."""
@@ -240,46 +202,25 @@ def exact_keyword(conn: sqlite3.Connection, query: str, filters: Filters, limit:
         return []
     allowed, params = filters.allowed()
     found = conn.execute(
-        "SELECT p.key, p.field, p.start, p.stop, p.section, bm25(passages_words) AS rank"
+        "SELECT p.key, bm25(passages_words) AS rank"
         " FROM passages_words JOIN passages p ON p.id = passages_words.rowid"
         f" WHERE passages_words MATCH ? AND p.key IN ({allowed}) ORDER BY rank LIMIT ?",
         [expr, *params, CANDIDATES * 4]).fetchall()
-    by_key: dict[str, list[sqlite3.Row]] = {}
+    by_key: dict[str, float] = {}
     for p in found:
-        if p["key"] not in skip and (p["key"] in by_key or len(by_key) < limit):
-            by_key.setdefault(p["key"], []).append(p)
+        if p["key"] not in skip and p["key"] not in by_key and len(by_key) < limit:
+            by_key[p["key"]] = p["rank"]
     if not by_key:
         return []
     keys = list(by_key)
     rows = {r["key"]: r for r in conn.execute(
         f"SELECT * FROM documents WHERE key IN ({','.join('?' * len(keys))})", keys)}
-    hits = []
-    for key in keys:
-        row = rows.get(key)
-        if row is None:
-            continue
-        quotes = [_quote(p["field"], p["start"], p["stop"], p["section"],
-                         row["title"] if p["field"] == "title" else row["text"]) for p in by_key[key][:per_hit]]
-        hits.append(_hit(row, "keyword", -by_key[key][0]["rank"], quotes))
-    return hits
-
-
-def _related_quote(conn: sqlite3.Connection, row: sqlite3.Row, chunk_text: str) -> list[dict[str, Any]]:
-    """The passage where the engine's best chunk begins; the title when the chunk is not in the body."""
-    lead = chunk_text.split("\n", 1)[0].strip()[:120]
-    at = row["text"].find(lead) if lead else -1
-    if at < 0:
-        return [_quote("title", 0, len(row["title"]), "", row["title"])] if row["title"] else []
-    cut = _passages_of(conn, row["key"])
-    i = max(0, bisect.bisect_right([p["start"] for p in cut], at) - 1)
-    if not cut:
-        return []
-    return [_quote("text", cut[i]["start"], cut[i]["stop"], cut[i]["section"], row["text"])]
+    return [_hit(rows[key], "keyword", -rank) for key, rank in by_key.items() if key in rows]
 
 
 def related(conn: sqlite3.Connection, query: str, filters: Filters,
             limit: int) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
-    """Documents nearest the query in meaning and words together, each with the passage that matched best.
+    """Documents nearest the query in meaning and words together.
 
     The engine fuses cosine with BM25 over any of the query's words. Without a
     model it ranks by the words alone and says so in the ``degraded`` block.
@@ -292,45 +233,44 @@ def related(conn: sqlite3.Connection, query: str, filters: Filters,
     keys = [h["source_id"] for h in result.hits]
     rows = {r["key"]: r for r in conn.execute(
         f"SELECT * FROM documents WHERE key IN ({','.join('?' * len(keys))})", keys)} if keys else {}
-    return [_hit(rows[h["source_id"]], match, h["score"], _related_quote(conn, rows[h["source_id"]], h["snippet"]))
-            for h in result.hits if h["source_id"] in rows], result.degraded
+    return [_hit(rows[h["source_id"]], match, h["score"]) for h in result.hits if h["source_id"] in rows], \
+        result.degraded
 
 
-def exact(conn: sqlite3.Connection, query: str, filters: Filters, limit: int, per_hit: int) -> list[dict[str, Any]]:
+def exact(conn: sqlite3.Connection, query: str, filters: Filters, limit: int) -> list[dict[str, Any]]:
     """The ``exact`` section: literal matches, then documents with a passage holding every word."""
-    literal_hits = exact_literal(conn, query, filters, limit, per_hit)
+    literal_hits = exact_literal(conn, query, filters, limit)
     seen = {store.key_of(h["source"], h["id"]) for h in literal_hits}
-    return literal_hits + exact_keyword(conn, query, filters, limit - len(literal_hits), per_hit, seen)
+    return literal_hits + exact_keyword(conn, query, filters, limit - len(literal_hits), seen)
 
 
-def words(conn: sqlite3.Connection, query: str, filters: Filters, limit: int, per_hit: int) -> list[dict[str, Any]]:
+def words(conn: sqlite3.Connection, query: str, filters: Filters, limit: int) -> list[dict[str, Any]]:
     """Documents with a passage holding any word of the query, best BM25 passage first: the word half of
     ``related`` for the sources whose meaning half comes from kb."""
-    return exact_keyword(conn, query, filters, limit, per_hit, every=False)
+    return exact_keyword(conn, query, filters, limit, every=False)
 
 
-def search(conn: sqlite3.Connection, query: str, filters: Filters, limit: int,
-           per_hit: int) -> tuple[dict[str, list[dict[str, Any]]], dict[str, Any] | None]:
+def search(conn: sqlite3.Connection, query: str, filters: Filters,
+           limit: int) -> tuple[dict[str, list[dict[str, Any]]], dict[str, Any] | None]:
     """The ``exact`` and ``related`` sections over the selected sources, plus the engine's ``degraded`` block.
 
     ``related`` runs twice as deep as ``limit``, because the merge drops from it
     every document ``exact`` already holds.
     """
     near, degraded = related(conn, query, filters, limit * 2)
-    return {"exact": exact(conn, query, filters, limit, per_hit), "related": near}, degraded
+    return {"exact": exact(conn, query, filters, limit), "related": near}, degraded
 
 
-def resolve(conn: sqlite3.Connection, entries: list[dict[str, Any]], filters: Filters, limit: int,
-            per_hit: int) -> list[dict[str, Any]]:
-    """Documents for the kb entry index's matches, best first, each quoting the spans its entries cover; at most
-    ``limit`` per source.
+def resolve(conn: sqlite3.Connection, entries: list[dict[str, Any]], filters: Filters,
+            limit: int) -> list[dict[str, Any]]:
+    """Documents for the kb entry index's matches, best first; at most ``limit`` per source.
 
     An entry names a document and a span of its title or text. A document that is gone, or that the filters
     exclude, is dropped: the index is rebuilt nightly, so it can name what the archive has since forgotten.
     """
-    best: dict[str, list[dict[str, Any]]] = {}
+    best: dict[str, float] = {}
     for e in sorted(entries, key=lambda e: -e["score"]):
-        best.setdefault(store.key_of(e["source"], e["doc"]), []).append(e)
+        best.setdefault(store.key_of(e["source"], e["doc"]), e["score"])
     if not best or not filters.sources:
         return []
     allowed, params = filters.allowed()
@@ -343,19 +283,6 @@ def resolve(conn: sqlite3.Connection, entries: list[dict[str, Any]], filters: Fi
         row = rows.get(key)
         if row is None or taken.get(row["source"], 0) >= limit:
             continue
-        quotes = []
-        for e in best[key]:
-            if len(quotes) >= per_hit:
-                break
-            body = row["title"] if e["part"] == "title" else row["text"]
-            if e["part"] not in ("title", "text") or e["start"] >= len(body):
-                continue
-            cut = conn.execute("SELECT section FROM passages WHERE key = ? AND field = ? AND start <= ? AND stop > ?"
-                               " ORDER BY start DESC LIMIT 1", (key, e["part"], e["start"], e["start"])).fetchone()
-            quote = _quote(e["part"], e["start"], min(e["end"], len(body)), cut["section"] if cut else "", body)
-            if all((quote["field"], quote["start"]) != (q["field"], q["start"]) for q in quotes):
-                quotes.append(quote)
-        if taken.get(row["source"], 0) < limit:
-            taken[row["source"]] = taken.get(row["source"], 0) + 1
-            hits.append(_hit(row, "meaning", best[key][0]["score"], quotes))
+        taken[row["source"]] = taken.get(row["source"], 0) + 1
+        hits.append(_hit(row, "meaning", best[key]))
     return hits

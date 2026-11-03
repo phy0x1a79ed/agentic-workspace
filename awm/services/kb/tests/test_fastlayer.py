@@ -46,48 +46,44 @@ def exact(layer, *args):
 
 
 def test_papers_holding_only_some_words_are_related_not_exact(layer):
-    found = layer.search("assembly index of a molecule and its DNA", fastlayer.Filters(), 10, 1)
+    found = layer.search("assembly index of a molecule and its DNA", fastlayer.Filters(), 10)
     assert found["exact"] == []
     assert [(h["id"], h["match"]) for h in found["related"]] == [("doi:10.1/at", "keyword")]
-    both = layer.search("double-stranded DNA", fastlayer.Filters(), 10, 1)
+    both = layer.search("double-stranded DNA", fastlayer.Filters(), 10)
     assert [h["id"] for h in both["exact"]] == ["doi:10.1/cas"] and both["related"] == []
 
 
-def test_a_literal_in_a_body_quotes_its_passage_with_offsets(layer):
-    hits = exact(layer, "shortest construction path", fastlayer.Filters(), 10, 1)
+def test_a_literal_in_a_body_finds_its_paper_and_quotes_none_of_it(layer):
+    hits = exact(layer, "shortest construction path", fastlayer.Filters(), 10)
     assert [(h["id"], h["match"]) for h in hits] == [("doi:10.1/at", "literal")]
-    quote = hits[0]["passages"][0]
-    assert (quote["field"], quote["section"], quote["start"]) == ("body", "Results", 1000)
-    start, end = quote["marks"][0]
-    assert BODY[start - 1000:end - 1000] == "shortest construction path"
+    assert "passages" not in hits[0]
     assert hits[0]["url"] == "https://doi.org/10.1/at" and hits[0]["kind"] == "paper"
 
 
 def test_a_sentence_long_literal_is_probed_by_its_rarest_trigrams(layer):
     sentence = "The assembly index of a molecule counts the joining steps on its shortest"
-    hits = exact(layer, sentence, fastlayer.Filters(), 10, 1)
+    hits = exact(layer, sentence, fastlayer.Filters(), 10)
     assert [(h["id"], h["match"]) for h in hits if h["match"] == "literal"] == [("doi:10.1/at", "literal")]
-    assert exact(layer, sentence + " zzqx", fastlayer.Filters(), 10, 1) == [] or \
-        all(h["match"] == "keyword" for h in exact(layer, sentence + " zzqx", fastlayer.Filters(), 10, 1))
+    assert exact(layer, sentence + " zzqx", fastlayer.Filters(), 10) == [] or \
+        all(h["match"] == "keyword" for h in exact(layer, sentence + " zzqx", fastlayer.Filters(), 10))
 
 
 def test_case_then_zone_rank_literal_papers(layer):
-    hits = exact(layer, "assembly index", fastlayer.Filters(), 10, 1)
+    hits = exact(layer, "assembly index", fastlayer.Filters(), 10)
     assert [h["id"] for h in hits[:2]] == ["doi:10.1/at", "doi:10.1/old"]
-    assert hits[1]["passages"][0]["field"] == "title"
 
 
 def test_keywords_follow_literals(layer):
-    hits = exact(layer, "RNA guided cutting of DNA", fastlayer.Filters(), 10, 1)
+    hits = exact(layer, "RNA guided cutting of DNA", fastlayer.Filters(), 10)
     assert hits and all(h["match"] == "keyword" for h in hits)
     assert hits[0]["id"] == "doi:10.1/cas"
 
 
 def test_filters_papers_cannot_meet_answer_nothing(layer):
     for args in ({"kind": "journal"}, {"project": "awm"}, {"scope": "dev"}):
-        assert exact(layer, "assembly", fastlayer.Filters.from_args(args), 10, 1) == []
-    assert exact(layer, "assembly", fastlayer.Filters.from_args({"kind": "journal,paper"}), 10, 1)
-    recent = exact(layer, "assembly index", fastlayer.Filters.from_args({"after": "2000-01-01"}), 10, 1)
+        assert exact(layer, "assembly", fastlayer.Filters.from_args(args), 10) == []
+    assert exact(layer, "assembly", fastlayer.Filters.from_args({"kind": "journal,paper"}), 10)
+    recent = exact(layer, "assembly index", fastlayer.Filters.from_args({"after": "2000-01-01"}), 10)
     assert [h["id"] for h in recent] == ["doi:10.1/at"]
 
 
@@ -107,14 +103,14 @@ def test_a_literal_with_like_wildcards_matches_only_itself(tmp_path):
         "b": ("", "Clustering at 100 x identity with pXvalue cut", 2020, "", "")})
     layer = fastlayer.FastLayer(tmp_path / "papers.db", tmp_path / "delta.db")
     for needle in ("100% identity", "p_value"):
-        assert [h["id"] for h in exact(layer, needle, fastlayer.Filters(), 10, 1)
+        assert [h["id"] for h in exact(layer, needle, fastlayer.Filters(), 10)
                 if h["match"] == "literal"] == ["a"], needle
 
 
 def test_a_base_of_another_schema_is_not_read(tmp_path):
     _base(tmp_path / "papers.db", {"p": ("", "Assembly theory", 2023, "", "")}, schema=99)
     layer = fastlayer.FastLayer(tmp_path / "papers.db", tmp_path / "delta.db")
-    assert exact(layer, "Assembly", fastlayer.Filters(), 10, 1) == []
+    assert exact(layer, "Assembly", fastlayer.Filters(), 10) == []
 
 
 def test_zotero_items_map_onto_the_base_or_wait_in_the_delta(layer, tmp_path):
@@ -127,14 +123,14 @@ def test_zotero_items_map_onto_the_base_or_wait_in_the_delta(layer, tmp_path):
     ]
     assert layer.take_items(items, {"users/0": 7}) == {"mapped": 2, "held": 1}
     assert layer.cursor() == {"users/0": 7}
-    hits = exact(layer, "iron oxidisers", fastlayer.Filters(), 10, 1)
+    hits = exact(layer, "iron oxidisers", fastlayer.Filters(), 10)
     assert [h["id"] for h in hits] == ["zotero:users/0/CCC"]
     assert layer.status()["delta"]["library"] == 3
 
     _base(tmp_path / "papers.db", {"doi:10.1/vent": ("", "Microbial mats of the hydrothermal vent field", 2024,
                                                       "Vent mats host iron oxidisers.", "")})
     assert layer.remap() == {"remapped": 1}
-    assert [h["id"] for h in exact(layer, "iron oxidisers", fastlayer.Filters(), 10, 1)] == ["doi:10.1/vent"]
+    assert [h["id"] for h in exact(layer, "iron oxidisers", fastlayer.Filters(), 10)] == ["doi:10.1/vent"]
 
 
 def _crowd(path, n=120, seed=3):
@@ -170,7 +166,7 @@ def test_every_substring_of_a_passage_finds_its_paper(tmp_path):
             needle = body[start:start + length].strip()
             if len(needle) < 3:
                 continue
-            hits = layer.search(needle, fastlayer.Filters(), 1000, 1)["exact"]
+            hits = layer.search(needle, fastlayer.Filters(), 1000)["exact"]
             assert "p007" in [h["id"] for h in hits], (start, length, needle)
 
 
@@ -179,28 +175,24 @@ def test_a_common_phrase_still_finds_the_one_paper_past_the_candidate_cap(tmp_pa
     monkeypatch.setattr(fastlayer, "CANDIDATES", 8)
     layer = fastlayer.FastLayer(tmp_path / "papers.db", tmp_path / "delta.db")
     needle = " ends, with marker qq099x."
-    assert [h["id"] for h in layer.search(needle, fastlayer.Filters(), 100, 1)["exact"]] == ["p099"]
+    assert [h["id"] for h in layer.search(needle, fastlayer.Filters(), 100)["exact"]] == ["p099"]
 
 
 def test_ranges_of_the_index_rank_as_the_whole_does(tmp_path, monkeypatch):
     _crowd(tmp_path / "papers.db")
     layer = fastlayer.FastLayer(tmp_path / "papers.db", tmp_path / "delta.db")
     queries = ["alpron betmix", "thetal gamron deling epsmix", "zetron", "etatal delmix alpron"]
-    whole = [layer.search(q, fastlayer.Filters(), 15, 2) for q in queries]
+    whole = [layer.search(q, fastlayer.Filters(), 15) for q in queries]
     monkeypatch.setattr(fastlayer, "SHARD_PASSAGES", 1)
-    assert [layer.search(q, fastlayer.Filters(), 15, 2) for q in queries] == whole
+    assert [layer.search(q, fastlayer.Filters(), 15) for q in queries] == whole
 
 
-def test_stopping_early_answers_the_same_papers_as_reading_every_passage(tmp_path):
+def test_a_small_limit_answers_the_head_of_a_larger_one(tmp_path):
     _crowd(tmp_path / "papers.db")
     layer = fastlayer.FastLayer(tmp_path / "papers.db", tmp_path / "delta.db")
     for query in ("alpron betmix", "thetal gamron deling", "etatal"):
-        early = layer.search(query, fastlayer.Filters(), 6, 1)
-        full = layer.search(query, fastlayer.Filters(), 6, 3)
-        for section in ("exact", "related"):
-            assert [h["id"] for h in early[section]] == [h["id"] for h in full[section]]
-            assert [h["passages"][0] for h in early[section]] == [h["passages"][0] for h in full[section]]
-        many = layer.search(query, fastlayer.Filters(), 40, 1)
+        early = layer.search(query, fastlayer.Filters(), 6)
+        many = layer.search(query, fastlayer.Filters(), 40)
         assert early["exact"] == many["exact"][:len(early["exact"])]
 
 
@@ -208,9 +200,9 @@ def test_counts_cached_for_a_store_do_not_outlive_it(tmp_path, monkeypatch):
     monkeypatch.setattr(fastlayer, "DF_CACHED", 1)
     _base(tmp_path / "papers.db", {"a": ("", "Zymurgy of beer", 2020, "", "")})
     layer = fastlayer.FastLayer(tmp_path / "papers.db", tmp_path / "delta.db")
-    assert [h["id"] for h in layer.search("zymurgy beer", fastlayer.Filters(), 5, 1)["exact"]] == ["a"]
+    assert [h["id"] for h in layer.search("zymurgy beer", fastlayer.Filters(), 5)["exact"]] == ["a"]
     _base(tmp_path / "papers.db", {"b": ("", "Zymurgy of wine", 2021, "", ""), "c": ("", "Zymurgy of beer too", 2022, "", "")})
-    assert {h["id"] for h in layer.search("zymurgy", fastlayer.Filters(), 5, 1)["exact"]} == {"b", "c"}
+    assert {h["id"] for h in layer.search("zymurgy", fastlayer.Filters(), 5)["exact"]} == {"b", "c"}
 
 
 async def test_the_query_verb_answers_in_sections(layer, monkeypatch):
@@ -277,8 +269,8 @@ QUERIES = ["assembly index of a molecule and its DNA", "double-stranded DNA", "R
            "selection of a molecule", "joining steps chemistry", "assembly index"]
 
 
-def _answers(layer, per_hit=1):
-    return [{k: [(h["id"], h["match"]) for h in v] for k, v in layer.search(q, fastlayer.Filters(), 10, per_hit).items()}
+def _answers(layer):
+    return [{k: [(h["id"], h["match"]) for h in v] for k, v in layer.search(q, fastlayer.Filters(), 10).items()}
             for q in QUERIES]
 
 
@@ -289,8 +281,7 @@ def test_complete_champion_lists_answer_as_fts5s_own_ranking_does(tmp_path):
     ranked = fastlayer.FastLayer(tmp_path / "ranked.db", tmp_path / "d1.db")
     champion = fastlayer.FastLayer(tmp_path / "champion.db", tmp_path / "d2.db")
     assert fastlayer._champions(tmp_path / "champion.db") and not fastlayer._champions(tmp_path / "ranked.db")
-    for per_hit in (1, 3):
-        assert _answers(champion, per_hit) == _answers(ranked, per_hit)
+    assert _answers(champion) == _answers(ranked)
 
 
 def test_an_or_passage_in_every_list_scores_its_exact_bm25(tmp_path):
@@ -307,13 +298,13 @@ def test_an_or_passage_in_every_list_scores_its_exact_bm25(tmp_path):
 
 
 def test_cut_lists_still_judge_coverage_on_the_passage_text(tmp_path):
-    """Lists cut at three passages still find the paper, its passage read and judged on its text."""
+    """Lists cut at three passages still find the paper, its passage judged on its text."""
     _base(tmp_path / "papers.db", PAPERS)
     _champion(tmp_path / "papers.db", depth=3)
     layer = fastlayer.FastLayer(tmp_path / "papers.db", tmp_path / "delta.db")
     query = "assembly index of a molecule and its DNA"
-    found = layer.search(query, fastlayer.Filters(), 10, 1)
-    assert [h["id"] for h in found["related"]] == ["doi:10.1/at"] and found["related"][0]["passages"]
+    found = layer.search(query, fastlayer.Filters(), 10)
+    assert [h["id"] for h in found["related"]] == ["doi:10.1/at"]
 
 
 def test_the_delta_is_ranked_exactly_beside_a_champion_base(tmp_path):
@@ -322,7 +313,7 @@ def test_the_delta_is_ranked_exactly_beside_a_champion_base(tmp_path):
     layer = fastlayer.FastLayer(tmp_path / "papers.db", tmp_path / "delta.db")
     layer.take_items([{"key": "Z9", "library": "users/0", "version": 1, "year": "2024",
                        "title": "Hydrothermal vent molecule selection", "abstract": "Vent chemistry selects."}])
-    got = layer.search("vent molecule selection", fastlayer.Filters(), 10, 1)
+    got = layer.search("vent molecule selection", fastlayer.Filters(), 10)
     ids = [h["id"] for h in got["exact"] + got["related"]]
     assert "zotero:users/0/Z9" in ids and "doi:10.1/mol" in ids
 
@@ -332,22 +323,22 @@ def test_a_named_paper_ranked_past_the_candidate_cut_is_still_found(tmp_path, mo
     monkeypatch.setattr(fastlayer, "CANDIDATES", 8)
     layer = fastlayer.FastLayer(tmp_path / "papers.db", tmp_path / "delta.db")
     named = fastlayer.Filters(papers={"p099", "p042"})
-    got = layer.search("marker ends", named, 10, 1)
+    got = layer.search("marker ends", named, 10)
     assert {h["id"] for h in got["exact"]} == {"p099", "p042"}
     assert all(h["match"] == "keyword" for h in got["exact"])
-    assert layer.search("qq099x", named, 10, 1)["exact"][0]["id"] == "p099"
-    assert layer.search("marker", fastlayer.Filters(papers={"nobody"}), 10, 1) == {"exact": [], "related": []}
+    assert layer.search("qq099x", named, 10)["exact"][0]["id"] == "p099"
+    assert layer.search("marker", fastlayer.Filters(papers={"nobody"}), 10) == {"exact": [], "related": []}
 
 
 def test_a_library_search_reads_the_library_copy_and_follows_the_library(layer):
     layer.take_items([{"library": "u", "key": "K1", "version": 1, "doi": "10.1/at", "title": "Assembly theory"}])
     mine = hub_adapter.fastlayer.Filters(papers=layer.library())
-    got = layer.search_library("assembly", mine, 10, 1)
+    got = layer.search_library("assembly", mine, 10)
     assert [h["id"] for h in got["exact"]] == ["doi:10.1/at"]
     copy = sqlite3.connect(layer.library_path)
     assert copy.execute("SELECT count(*) FROM paper").fetchone()[0] == 1
     layer.take_items([{"library": "u", "key": "K2", "version": 2, "doi": "10.1/old", "title": "An ASSEMBLY INDEX survey"}])
-    got = layer.search_library("assembly", fastlayer.Filters(papers=layer.library()), 10, 1)
+    got = layer.search_library("assembly", fastlayer.Filters(papers=layer.library()), 10)
     assert {h["id"] for h in got["exact"]} == {"doi:10.1/at", "doi:10.1/old"}
 
 
@@ -361,5 +352,5 @@ def test_a_literal_whose_words_a_stopword_parts_is_found_and_far_apart_words_are
     conn = fastlayer._open_ro(tmp_path / "papers.db")
     assert {r["paper_id"] for r in fastlayer._literal_rows(conn, "potential for theranostic")} == {"doi:10.1/th"}
     layer = fastlayer.FastLayer(tmp_path / "papers.db", tmp_path / "d.db")
-    found = exact(layer, "potential for theranostic", fastlayer.Filters(), 10, 1)
+    found = exact(layer, "potential for theranostic", fastlayer.Filters(), 10)
     assert found[0]["id"] == "doi:10.1/th" and found[0]["match"] != found[-1]["match"]

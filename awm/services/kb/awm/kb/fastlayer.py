@@ -454,16 +454,15 @@ class FastLayer:
                 return got
         return None
 
-    def search_library(self, query: str, filters: Filters, limit: int,
-                       per_hit: int) -> dict[str, list[dict[str, Any]]]:
+    def search_library(self, query: str, filters: Filters, limit: int) -> dict[str, list[dict[str, Any]]]:
         """:meth:`search` over the library store and the delta, which hold every library paper."""
         stores = [p for p in (self.library_copy(), self.delta_path) if p is not None and p.exists()]
-        return self.search(query, filters, limit, per_hit, stores)
+        return self.search(query, filters, limit, stores)
 
-    def search(self, query: str, filters: Filters, limit: int, per_hit: int,
+    def search(self, query: str, filters: Filters, limit: int,
                stores: list[Path] | None = None) -> dict[str, list[dict[str, Any]]]:
         """``exact``: papers holding the query literally, then papers holding every one of its words.
-        ``related``: the other papers holding its rarest words. Each hit quotes its passages.
+        ``related``: the other papers holding its rarest words. A hit names its paper; it quotes none of it.
 
         The three index lookups (the literal's trigrams, the AND of the words, the OR of the rarest) run
         at once, each on its own connection; the answer is then assembled in order."""
@@ -474,25 +473,25 @@ class FastLayer:
             return {"exact": [], "related": []}
         needle, words = literal(query), terms(query)
         if filters.papers is not None and len(filters.papers) <= FILTERED_PAPERS:
-            return _filtered(paths, needle, words, filters, limit, per_hit)
+            return _filtered(paths, needle, words, filters, limit)
         looked = _Lookups(paths, needle, words)
         stores = [_open_ro(p) for p in paths]
         try:
-            exact = _literal_hits(stores, needle, filters, limit, per_hit, looked.literal())
+            exact = _literal_hits(stores, needle, filters, limit, looked.literal())
             seen = {h["id"] for h in exact}
             if len(exact) < limit:
-                exact += _keyword_hits(stores, looked.every(), filters, limit - len(exact), per_hit, seen, None,
-                                       looked.readers(), looked.early)
-            related = _keyword_hits(stores, looked.related(), filters, limit, per_hit, seen, looked.weighed,
-                                    looked.readers(rows=True), looked.early)
+                exact += _keyword_hits(stores, looked.every(), filters, limit - len(exact), seen, None,
+                                       looked.readers())
+            related = _keyword_hits(stores, looked.related(), filters, limit, seen, looked.weighed,
+                                    looked.readers(rows=True))
             return {"exact": exact, "related": related}
         finally:
             for conn in stores:
                 conn.close()
 
 
-def _filtered(paths: list[Path], needle: str, words: list[str], filters: Filters, limit: int,
-              per_hit: int) -> dict[str, list[dict[str, Any]]]:
+def _filtered(paths: list[Path], needle: str, words: list[str], filters: Filters,
+              limit: int) -> dict[str, list[dict[str, Any]]]:
     """The answer among the few papers ``filters`` names, from all their passages: literal papers first, then
     papers whose best passage holds every word, by BM25; ``related`` holds the rest that pass
     :data:`MIN_COVERAGE`. The index's candidates would drop a named paper ranked below their cut."""
@@ -503,8 +502,7 @@ def _filtered(paths: list[Path], needle: str, words: list[str], filters: Filters
         for path, conn in zip(paths, stores):
             papers = {k: r for k, r in _papers(conn, wanted).items() if filters.admits(r)}
             found.append((conn, papers, _passages_of(path, sorted(papers)), _weigh(conn, words)))
-        exact = _literal_hits([c for c, *_ in found], needle, filters, limit, per_hit,
-                              [rows for _, _, rows, _ in found])
+        exact = _literal_hits([c for c, *_ in found], needle, filters, limit, [rows for _, _, rows, _ in found])
         seen = {h["id"] for h in exact}
         every, related = [], []
         for _, papers, rows, (df, total) in found:
@@ -518,7 +516,7 @@ def _filtered(paths: list[Path], needle: str, words: list[str], filters: Filters
             for score, paper, best in sorted(scored, key=lambda s: -s[0]):
                 if len(hits) < limit and paper["paper_id"] not in seen:
                     seen.add(paper["paper_id"])
-                    hits.append(_hit(paper, "keyword", score, [_quote(p) for p in best[:per_hit]]))
+                    hits.append(_hit(paper, "keyword", score))
             return hits
         return {"exact": (exact + ranked(every))[:limit], "related": ranked(related)}
     finally:
@@ -637,26 +635,17 @@ def _paper_whole(conn: sqlite3.Connection, paper_id: str) -> dict[str, Any] | No
                          " ORDER BY zone, ord",
                          (paper_id,)).fetchall()
     parts = sorted(parts, key=lambda p: _ZONE_RANK.get(p["zone"], 2))
-    out = {k: v for k, v in _hit(paper, "", 0.0, []).items() if k in ("id", "title", "ts", "kind", "url")}
+    out = {k: v for k, v in _hit(paper, "", 0.0).items() if k in ("id", "title", "ts", "kind", "url")}
     return {**out, "authors": json.loads(paper["authors"] or "[]"), "journal": paper["journal"],
             "text": "\n\n".join(p["text"] for p in parts)}
 
 
-def _hit(paper: sqlite3.Row, match: str, score: float, passages: list[dict[str, Any]]) -> dict[str, Any]:
+def _hit(paper: sqlite3.Row, match: str, score: float) -> dict[str, Any]:
     hit: dict[str, Any] = {"id": paper["paper_id"], "title": paper["title"], "ts": paper["ts"],
-                           "kind": "paper", "match": match, "score": round(score, 4), "passages": passages}
+                           "kind": "paper", "match": match, "score": round(score, 4)}
     if paper["doi"]:
         hit["url"] = f"https://doi.org/{paper['doi']}"
     return hit
-
-
-def _quote(p: sqlite3.Row, marks: list[list[int]] | None = None) -> dict[str, Any]:
-    out: dict[str, Any] = {"field": p["zone"], "start": p["start"], "end": p["end"], "text": p["text"]}
-    if p["section"]:
-        out["section"] = p["section"]
-    if marks:
-        out["marks"] = marks
-    return out
 
 
 def _gram_counts(conn: sqlite3.Connection, grams: list[str]) -> dict[str, int]:
@@ -782,17 +771,17 @@ def _read_ids(conn: sqlite3.Connection, ids: list[int]) -> list[sqlite3.Row]:
 
 
 def _literal_hits(stores: list[sqlite3.Connection], needle: str, filters: Filters, limit: int,
-                  per_hit: int, found: list[list[sqlite3.Row]]) -> list[dict[str, Any]]:
+                  found: list[list[sqlite3.Row]]) -> list[dict[str, Any]]:
     """Papers holding ``needle``, from each store's candidate passages ``found`` (see :func:`_literal_rows`)."""
     if len(needle) < TRIGRAM:
         return []
     pattern = re.compile(re.escape(needle), re.IGNORECASE)
-    ranked: list[tuple[tuple, sqlite3.Row, list[dict[str, Any]]]] = []
+    ranked: list[tuple[tuple, sqlite3.Row]] = []
     seen: set[str] = set()
     for conn, rows in zip(stores, found):
-        by_paper: dict[str, list[tuple[sqlite3.Row, list[list[int]]]]] = {}
+        by_paper: dict[str, list[tuple[sqlite3.Row, int]]] = {}
         for p in rows:
-            marks = [[p["start"] + m.start(), p["start"] + m.end()] for m in pattern.finditer(p["text"])]
+            marks = len(pattern.findall(p["text"]))
             if marks:
                 by_paper.setdefault(p["paper_id"], []).append((p, marks))
         papers = _papers(conn, [k for k in by_paper if k not in seen])
@@ -801,13 +790,12 @@ def _literal_hits(stores: list[sqlite3.Connection], needle: str, filters: Filter
             if paper is None or not filters.admits(paper):
                 continue
             seen.add(pid)
-            hold.sort(key=lambda f: (_ZONE_RANK.get(f[0]["zone"], 2), f[0]["ord"]))
             cased = any(needle in p["text"] for p, _ in hold)
-            count = sum(len(m) for _, m in hold)
-            rank = (cased, -_ZONE_RANK.get(hold[0][0]["zone"], 2), count, paper["ts"])
-            ranked.append((rank, paper, [_quote(p, m) for p, m in hold[:per_hit]]))
+            count = sum(n for _, n in hold)
+            zone = min(_ZONE_RANK.get(p["zone"], 2) for p, _ in hold)
+            ranked.append(((cased, -zone, count, paper["ts"]), paper))
     ranked.sort(key=lambda r: r[0], reverse=True)
-    return [_hit(paper, "literal", float(rank[2]), quotes) for rank, paper, quotes in ranked[:limit]]
+    return [_hit(paper, "literal", float(rank[2])) for rank, paper in ranked[:limit]]
 
 
 #: The passages of a keyword match are read this many at a time, best first, until enough papers are found.
@@ -823,17 +811,16 @@ def _ranked(conn: sqlite3.Connection, expr: str, lo: int = 0, hi: int = 1 << 62)
         " ORDER BY rank LIMIT ?", (expr, lo, hi, CANDIDATES))]
 
 
-def _walk(conn: sqlite3.Connection, ranked: list[tuple[int, float]], filters: Filters, want: int | None,
+def _walk(conn: sqlite3.Connection, ranked: list[tuple[int, float]], filters: Filters, want: int,
           skip: set[str], weighed: tuple[dict[str, int], int] | None,
-          read: Any = None) -> list[tuple[float, sqlite3.Row, list[sqlite3.Row]]]:
-    """Each paper in the ranked passages that the filters keep and, when ``weighed`` (the query words' passage
-    counts and the passage total) is given, that holds :data:`MIN_COVERAGE` of the query, with its passages in
-    rank order. Passages are read in chunks, by ``read`` (passage ids to rows) when given, and the walk stops at
-    ``want`` papers when a caller needs no more; the chunk it stops in still adds passages to the papers taken."""
-    accepted: dict[str, tuple[float, sqlite3.Row, list[sqlite3.Row]]] = {}
+          read: Any = None) -> list[tuple[float, sqlite3.Row]]:
+    """The first ``want`` papers in the ranked passages that the filters keep and, when ``weighed`` (the query
+    words' passage counts and the passage total) is given, that hold :data:`MIN_COVERAGE` of the query, each at
+    its best passage's rank. Passages are read in chunks, by ``read`` (passage ids to rows) when given."""
+    accepted: dict[str, tuple[float, sqlite3.Row]] = {}
     refused: set[str] = set()
-    start, size = 0, FIRST_CHUNK if want is None else max(FIRST_CHUNK, want * 3)
-    while start < len(ranked) and (want is None or len(accepted) < want):
+    start, size = 0, max(FIRST_CHUNK, want * 3)
+    while start < len(ranked) and len(accepted) < want:
         chunk = ranked[start:start + size]
         start, size = start + size, size * 4
         rows = read([i for i, _ in chunk]) if read else {r["id"]: r for r in conn.execute(
@@ -844,45 +831,39 @@ def _walk(conn: sqlite3.Connection, ranked: list[tuple[int, float]], filters: Fi
         papers = _papers(conn, new)
         for i, rank in chunk:
             p = rows.get(i)
-            if p is None or p["paper_id"] in skip or p["paper_id"] in refused:
+            if p is None or len(accepted) >= want:
                 continue
             pid = p["paper_id"]
-            if pid in accepted:
-                accepted[pid][2].append(p)
-                continue
-            if want is not None and len(accepted) >= want:
+            if pid in skip or pid in refused or pid in accepted:
                 continue
             paper = papers.get(pid)
             if paper is None or not filters.admits(paper) or \
                     (weighed and coverage(weighed[0], weighed[1], p["text"]) < MIN_COVERAGE):
                 refused.add(pid)
                 continue
-            accepted[pid] = (-rank, paper, [p])
+            accepted[pid] = (-rank, paper)
     return list(accepted.values())
 
 
 def _keyword_hits(stores: list[sqlite3.Connection], ranked: list[list[tuple[int, float]]], filters: Filters,
-                  limit: int, per_hit: int, skip: set[str], weighed: tuple[dict[str, int], int] | None,
-                  readers: list[Any] | None = None, early: list[bool] | None = None) -> list[dict[str, Any]]:
+                  limit: int, skip: set[str], weighed: tuple[dict[str, int], int] | None,
+                  readers: list[Any] | None = None) -> list[dict[str, Any]]:
     """Papers whose passages are among the ``ranked`` ones, best BM25 first; ``weighed`` asks, besides, that
-    a paper hold at least :data:`MIN_COVERAGE` of the query's information. The papers returned join ``skip``.
-    A store marked ``early`` stops at ``limit`` papers even when a hit quotes more than one passage."""
+    a paper hold at least :data:`MIN_COVERAGE` of the query's information. The papers returned join ``skip``."""
     if limit <= 0:
         return []
-    scored: list[tuple[float, sqlite3.Row, list[sqlite3.Row]]] = []
-    readers = readers or [None] * len(stores)
-    early = early or [False] * len(stores)
-    for conn, ids, read, stop in zip(stores, ranked, readers, early):
-        scored += _walk(conn, ids, filters, limit if per_hit <= 1 or stop else None, skip, weighed, read)
+    scored: list[tuple[float, sqlite3.Row]] = []
+    for conn, ids, read in zip(stores, ranked, readers or [None] * len(stores)):
+        scored += _walk(conn, ids, filters, limit, skip, weighed, read)
     scored.sort(key=lambda s: -s[0])
     hits = []
-    for score, paper, found in scored:
+    for score, paper in scored:
         if len(hits) == limit:
             break
         if paper["paper_id"] in skip:
             continue
         skip.add(paper["paper_id"])
-        hits.append(_hit(paper, "keyword", score, [_quote(p) for p in found[:per_hit]]))
+        hits.append(_hit(paper, "keyword", score))
     return hits
 
 

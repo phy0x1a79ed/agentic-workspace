@@ -328,8 +328,7 @@ class Archive:
         """``fn(conn, text, filters, limit, ...)`` once for each source, so each has its own ``limit``."""
         conn = store.connect()
         try:
-            return [fn(conn, q.text, q.filters([name]), limit, *([0] if fn in (index.exact, index.words) else []))
-                    for name in names]
+            return [fn(conn, q.text, q.filters([name]), limit) for name in names]
         finally:
             conn.close()
 
@@ -350,7 +349,7 @@ class Archive:
                 try:
                     entries = await asked
                     meant = await asyncio.to_thread(_with_conn, index.resolve, entries, q.filters(kb_names),
-                                                    q.limit * 2, 0)
+                                                    q.limit * 2)
                     worded = await asyncio.to_thread(self._per_source, index.words, q, kb_names, q.limit * 2)
                     own = await asyncio.to_thread(self._per_source, index.related, q, kb_names, q.limit * 2)
                     # Three lists: kb's entry index, any-word BM25 and the archive's own embeddings. The third
