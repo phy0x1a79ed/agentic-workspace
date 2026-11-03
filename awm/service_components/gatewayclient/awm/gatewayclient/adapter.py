@@ -535,8 +535,13 @@ class ServiceAdapter:
             # one evicts (last connect wins). `awm dev shadow` sets it.
             "origin": os.environ.get("AWM_SERVICE_ORIGIN"),
         }
+        # A service the gateway does not spawn proves itself with a token file (R99).
+        headers = {}
+        if token_file := os.environ.get("AWM_HUB_TOKEN_FILE"):
+            with open(token_file) as f:
+                headers["X-Awm-Service-Token"] = f.read().strip()
         async with httpx.AsyncClient(verify=False, timeout=15) as cli:
-            r = await cli.post(f"{hub_url}/hub/service/register", json=payload)
+            r = await cli.post(f"{hub_url}/hub/service/register", json=payload, headers=headers)
             if r.status_code == 409:
                 # A live instance already holds this name's lease (T3). Stand
                 # down — the incumbent keeps running. Other non-2xx stay

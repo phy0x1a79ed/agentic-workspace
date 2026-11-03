@@ -31,6 +31,12 @@ SESSION_CLAIM_VERBS = {
                          "close", "tasks", "send", "cut", "drain"}),
 }
 CLAIM_KEY = "_caller_session"
+# The calling session's trust level and its own `<project>/<scope>`, on every
+# call. The gateway stamps them on a local call. The proxy carries them across a
+# peer redirect, and the peer's gateway keeps them only on an edge request.
+TRUST_KEY = "_caller_trust"
+SCOPE_KEY = "_caller_scope"
+DEFAULT_TRUST = "trusted"
 MAX_ANCESTRY_HOPS = 8
 
 
@@ -113,32 +119,86 @@ def resolve_caller_pid(start_pid: int, *, sessions_dir: str | None = None,
     return start_pid
 
 
-def session_claim(pid: int, *, sessions_dir: str | None = None) -> dict | None:
-    """``{kind, job, name}`` from the session record of ``pid``, or None."""
+def _record(pid: int, sessions_dir: str | None) -> dict | None:
     path = os.path.join(sessions_dir or _default_sessions_dir(), f"{pid}.json")
     try:
         with open(path, encoding="utf-8") as fp:
             rec = json.load(fp)
     except (OSError, ValueError):
         return None
-    if not isinstance(rec, dict):
+    return rec if isinstance(rec, dict) else None
+
+
+def session_claim(pid: int, *, sessions_dir: str | None = None) -> dict | None:
+    """``{kind, job, name}`` from the session record of ``pid``, or None."""
+    rec = _record(pid, sessions_dir)
+    if rec is None:
         return None
     return {"kind": str(rec.get("kind") or ""), "job": str(rec.get("jobId") or ""),
             "name": str(rec.get("name") or "")}
 
 
+def _r9(rec: dict) -> str | None:
+    """The R9 id of a Claude Code record: ``cc`` and its session UUID without dashes."""
+    digits = str(rec.get("sessionId") or "").strip().lower().replace("-", "")
+    if len(digits) != 32 or any(c not in "0123456789abcdef" for c in digits):
+        return None
+    return "cc" + digits
+
+
+def _default_ledger() -> str:
+    from awm.config import SERVICES_DIR
+    return str(SERVICES_DIR / "reflection" / "trust.json")
+
+
+def _default_projects() -> str:
+    from awm.config import PROJECTS_DIR
+    return str(PROJECTS_DIR)
+
+
+def _ledger_level(path: str, session_id: str | None) -> str:
+    if not session_id:
+        return DEFAULT_TRUST
+    try:
+        with open(path, encoding="utf-8") as fp:
+            data = json.load(fp)
+        entry = data.get(session_id) if isinstance(data, dict) else None
+    except (OSError, ValueError):
+        return DEFAULT_TRUST
+    level = entry.get("level") if isinstance(entry, dict) else None
+    return str(level) if level else DEFAULT_TRUST
+
+
+def caller_trust(pid: int, *, sessions_dir: str | None = None, ledger: str | None = None,
+                 projects: str | None = None) -> dict:
+    """``{TRUST_KEY, SCOPE_KEY?}`` for the session ``pid``.
+
+    The level is reflection's ledger entry for the session's R9 id; a session
+    with no entry, or no record, is trusted, as the ledger reads it. The scope is
+    ``<project>/<scope>`` of the record's ``cwd``, absent outside a project.
+    """
+    rec = _record(pid, sessions_dir) or {}
+    out = {TRUST_KEY: _ledger_level(ledger or _default_ledger(), _r9(rec))}
+    if rec.get("cwd"):
+        from awm.config import scope_of
+        project, scope = scope_of(rec["cwd"], projects or _default_projects())
+        if project and scope:
+            out[SCOPE_KEY] = f"{project}/{scope}"
+    return out
+
+
 def forwarded_args(name: str, arguments: dict, session_pid: str | int | None, *,
-                   sessions_dir: str | None = None) -> dict:
+                   sessions_dir: str | None = None, ledger: str | None = None,
+                   projects: str | None = None) -> dict:
     """The arguments a proxy sends to the peer a redirect named.
 
-    ``peer`` is dropped so the far side does not re-route. For a verb in
-    `SESSION_CLAIM_VERBS` the model's own `CLAIM_KEY` is replaced by the claim
-    read from the calling session's record.
+    ``peer`` is dropped so the far side does not re-route. The model's own
+    `TRUST_KEY` and `SCOPE_KEY` are replaced by the calling session's, and for a
+    verb in `SESSION_CLAIM_VERBS` its own `CLAIM_KEY` by the claim read from the
+    calling session's record.
     """
     forwarded = {k: v for k, v in arguments.items() if k != "peer"}
     domain, flat, verb = name.partition("_")
-    if domain not in SESSION_CLAIM_VERBS:
-        return forwarded
     if flat:
         bag = forwarded
     else:
@@ -146,9 +206,17 @@ def forwarded_args(name: str, arguments: dict, session_pid: str | int | None, *,
         inner = forwarded.get("args")
         bag = dict(inner) if isinstance(inner, dict) else {}
         forwarded["args"] = bag
+    for key in (TRUST_KEY, SCOPE_KEY):
+        bag.pop(key, None)
+    pid = int(session_pid) if str(session_pid or "").isdigit() else None
+    if pid is not None:
+        bag.update(caller_trust(pid, sessions_dir=sessions_dir, ledger=ledger,
+                                projects=projects))
+    if domain not in SESSION_CLAIM_VERBS:
+        return forwarded
     bag.pop(CLAIM_KEY, None)
-    if verb in SESSION_CLAIM_VERBS[domain] and str(session_pid or "").isdigit():
-        claim = session_claim(int(session_pid), sessions_dir=sessions_dir)
+    if verb in SESSION_CLAIM_VERBS[domain] and pid is not None:
+        claim = session_claim(pid, sessions_dir=sessions_dir)
         if claim:
             bag[CLAIM_KEY] = claim
     return forwarded

@@ -807,7 +807,8 @@ def test_missing_or_null_args_still_dispatch(client, dispatched, modes):
     assert client.post("/invoke", json={"name": "cx_list"}, headers=HEAD).status_code == 200
     assert client.post("/invoke", json={"name": "cx_list", "args": None},
                        headers=HEAD).status_code == 200
-    assert dispatched[0][1] == {} and dispatched[1][1] == {}
+    # Only the gateway's own keys, such as the caller's trust, are added.
+    assert all(not any(not k.startswith("_") for k in d[1]) for d in dispatched[:2])
 
 
 # --- small refusals ---------------------------------------------------------------

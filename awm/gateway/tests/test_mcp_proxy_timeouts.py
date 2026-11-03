@@ -24,7 +24,7 @@ import json
 import socket
 import threading
 import time
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 
 import pytest
 
@@ -96,7 +96,9 @@ def silent_core():
         def log_message(self, *a):
             pass
 
-    srv = HTTPServer(("127.0.0.1", 0), H)
+    # Each handler on its own daemon thread, so shutdown() returns without the 30 s sleep.
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), H)
+    srv.daemon_threads = True
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     yield f"http://127.0.0.1:{srv.server_address[1]}"
     srv.shutdown()

@@ -11,6 +11,7 @@ register into the catalog/hub. See `catalog.py` for the registration contract.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
 import shutil
@@ -38,7 +39,7 @@ from awm.config import (
     IDLE_SHUTDOWN_SECONDS,
 )
 from awm.config import modes as session_modes
-from awm.gateway import catalog, filehop, mcp_caller, peer_catalog, usage_log
+from awm.gateway import catalog, filehop, isolated, mcp_caller, peer_catalog, usage_log
 from awm.gateway.gateway_ops import GATEWAY_OPERATIONS, bound_caller
 from awm.gateway.operations import register_fastapi_routes
 
@@ -386,7 +387,19 @@ async def lifespan(app: FastAPI):
     except Exception as exc:  # noqa: BLE001
         print(f"[awm] mcp-sync skipped: {exc}")
 
+    door, door_task = None, None
+    door_addr = isolated.listen_address()
+    if door_addr:
+        door = isolated.door_server(*door_addr)
+        door_task = asyncio.create_task(door.serve())
+        log.info("isolated door on %s:%s", *door_addr)
+
     yield
+
+    if door is not None:
+        door.should_exit = True
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(door_task, 5)
 
     # ----- Graceful shutdown backstop ---------------------------------------
     # On Linux the signal override above has already drained services in-band
@@ -457,6 +470,7 @@ async def _refuse_permission(request, exc):
 # (catalog) and the CLI command (cli.py). Add a new control op as an Operation,
 # not a hand-written route here.
 register_fastapi_routes(app, GATEWAY_OPERATIONS)
+isolated.mount(app)
 
 
 # ---------------------------------------------------------------------------
@@ -626,6 +640,37 @@ def _stamp_caller(name: str, args: dict, pid_header: str | None,
         inner.pop("_caller_pid", None)
 
 
+def _stamp_trust(name: str, args: dict, pid_header: str | None,
+                 descendant_header: str | None = None, as_: str | None = None) -> None:
+    """Stamp the calling session's trust level and own scope onto every call.
+
+    Services bound a caller by them: the journal and the browser read every verb's
+    `mcp_caller.TRUST_KEY` and `mcp_caller.SCOPE_KEY`. The model's own values are
+    always dropped, and a call with no session pid carries neither. An edge request
+    keeps the pair the far proxy read from its own node's ledger, as it keeps
+    `mcp_caller.CLAIM_KEY`. Reads two small files, so call it off the event loop.
+    """
+    if "_" in name or "verb" not in args:
+        bag = args
+    else:
+        bag = args.get("args")
+        if not isinstance(bag, dict):
+            bag = {}
+            args["args"] = bag
+    bag.pop(isolated.SESSION_KEY, None)
+    if as_:
+        return
+    bag.pop(mcp_caller.TRUST_KEY, None)
+    bag.pop(mcp_caller.SCOPE_KEY, None)
+    if pid_header and pid_header.isdigit():
+        pid = int(pid_header)
+    elif descendant_header and descendant_header.isdigit():
+        pid = mcp_caller.resolve_caller_pid(int(descendant_header))
+    else:
+        return
+    bag.update(mcp_caller.caller_trust(pid))
+
+
 async def _receive_files(request: Request, spool: str) -> dict:
     """Spool a :mod:`filehop` tar body and unpack it → the call it carries."""
     body = os.path.join(spool, ".body.tar")
@@ -646,9 +691,12 @@ def _svc_stamp(svc: str, headers: Any, as_: str | None) -> Callable[[str, dict],
     never trusted, whichever door the call came through.
     """
     def stamp(fn: str, args: dict) -> None:
-        _stamp_caller(catalog.published_name_of(svc, fn), args,
-                      headers.get("X-Awm-Session-Pid"),
+        name = catalog.published_name_of(svc, fn)
+        _stamp_caller(name, args, headers.get("X-Awm-Session-Pid"),
                       headers.get("X-Awm-Caller-Pid"), as_)
+        # The door's args are the function's own, so stamp them flat.
+        _stamp_trust(f"{svc}_{fn}", args, headers.get("X-Awm-Session-Pid"),
+                     headers.get("X-Awm-Caller-Pid"), as_)
 
     return stamp
 
@@ -866,6 +914,8 @@ async def invoke_tool(request: Request):
 
 
 async def _invoke(payload: dict, request: Request):
+    if request.headers.get(isolated.TOKEN_HEADER):
+        raise HTTPException(403, "an isolated session calls awm only through /mcp")
     name = payload.get("name")
     args = payload.get("args")
     if not name:
@@ -885,6 +935,9 @@ async def _invoke(payload: dict, request: Request):
             raise HTTPException(403, reason)
         _stamp_caller(name, args, request.headers.get("X-Awm-Session-Pid"),
                       request.headers.get("X-Awm-Caller-Pid"), as_)
+        await asyncio.to_thread(_stamp_trust, name, args,
+                                request.headers.get("X-Awm-Session-Pid"),
+                                request.headers.get("X-Awm-Caller-Pid"), as_)
     elif not as_:
         raise HTTPException(400, "'args' must be an object")
     # An edge-stamped caller with a non-object `args` carries no session to gate
@@ -1042,6 +1095,14 @@ class HubRoutingMiddleware:
         as_ = headers.get("X-Awm-As")
 
         stamp = _svc_stamp(rec.name, headers, as_)
+
+        if headers.get(isolated.TOKEN_HEADER):
+            if scope["type"] == "http":
+                await JSONResponse({"error": "an isolated session calls awm only through /mcp"},
+                                   status_code=403)(scope, receive, send)
+            else:
+                await send({"type": "websocket.close", "code": 4403})
+            return
 
         if scope["type"] == "http":
             request = Request(scope, receive=receive)

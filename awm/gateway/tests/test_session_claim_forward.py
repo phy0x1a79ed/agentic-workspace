@@ -48,13 +48,16 @@ def test_no_record_means_no_claim_and_a_forged_one_is_dropped(sessions):
     assert "_caller_session" not in out["args"]
 
 
-def test_other_verbs_pass_through_untouched(sessions):
+def test_other_verbs_carry_no_claim(sessions, tmp_path):
+    ledger = str(tmp_path / "trust.json")
     args = {"verb": "send", "args": {"text": "hi"}, "peer": "mira"}
-    assert mcp_caller.forwarded_args("social", args, "4242", sessions_dir=sessions) == {
-        "verb": "send", "args": {"text": "hi"}}
+    assert mcp_caller.forwarded_args("social", args, "4242", sessions_dir=sessions,
+                                     ledger=ledger) == {
+        "verb": "send", "args": {"text": "hi", "_caller_trust": "trusted"}}
     other = {"verb": "list_other"}
-    assert mcp_caller.forwarded_args("reflection", other, "4242",
-                                     sessions_dir=sessions) == other
+    assert mcp_caller.forwarded_args("reflection", other, "4242", sessions_dir=sessions,
+                                     ledger=ledger) == {
+        "verb": "list_other", "args": {"_caller_trust": "trusted"}}
 
 
 def test_the_owner_keeps_a_claim_only_from_its_edge():
