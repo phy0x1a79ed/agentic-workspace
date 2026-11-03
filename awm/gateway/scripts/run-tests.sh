@@ -79,10 +79,11 @@ declare -A DISTS=(
   [transcripts]="$WS/awm/services/transcripts::$WS/awm/services/transcripts/tests"
   [reporting]="$WS/awm/services/reporting:$WS/awm/services/board::$WS/awm/services/reporting/tests"
   [reporting-hooks]="$WS/awm/services/reporting::$WS/awm/services/reporting/hooks"
+  [routine]="$WS/awm/plugins/routine::$WS/awm/plugins/routine/tests"
 )
 
 # Stable run order.
-ORDER=(gateway gatewayclient config persistence telemetry claudedaemon kept scopes journal search writing events precedence social 2fa ssh auth httpsfront rlm-browser rlm-factorio graphify stt tts fileviewer drawio notes virtmic mic vpn compute reflection dvc claude-science dsh engcyc hermes trilium zotero penpot penpot-view penpot-plugins cx keep dev tether kb board reporting reporting-hooks transcripts)
+ORDER=(gateway gatewayclient config persistence telemetry claudedaemon kept scopes journal search writing events precedence social 2fa ssh auth httpsfront rlm-browser rlm-factorio graphify stt tts fileviewer drawio notes virtmic mic vpn compute reflection dvc claude-science dsh engcyc hermes trilium zotero penpot penpot-view penpot-plugins cx keep dev tether kb board reporting reporting-hooks transcripts routine)
 
 # Allow selecting a subset on the command line.
 if [ "$#" -gt 0 ]; then
