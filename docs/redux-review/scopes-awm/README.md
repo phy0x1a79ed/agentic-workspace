@@ -43,3 +43,9 @@ Surveyed read only on mizar, 2026-11-03.
 - 2026-11-03: A delete fails only where work is lost. Ignored files never block it, and the ignored-file check goes. An uncommitted pin or `dvc status` drift blocks it, the same as uncommitted git work (`scopes.md` R44 item 3). Tony: "basic motivation is that scope delete should fail where work is lost. gitignored items are marked as loosable. secrets are out of the concern for scopes dvc handles data".
 - 2026-11-03: `.awm/` goes. The brief moves into the journal, hand-written notes into `docs/` or the journal, and the rest is dropped (`scopes.md` R142). Tony: "agree".
 - 2026-11-03: The brief orients an agent and points it at the right places. `debrief` keeps it current, it repeats nothing the journal holds, and its size is capped (`scopes.md` R143). Tony: "lets also improve the maintenance on context.md -> debrief skill keeps it up to date? this should not be redundant with journals the size should also be capped it shoul get the agent going and looking at the right places. it doesnt need to be comprehensive".
+- 2026-11-03: The journal holds the brief, with `brief_read`, `brief_set` and `brief_edit`. The verbs' description carries the instructions, and `debrief` carries none. A brief is at most two sentences and 400 characters, and it informs without instructing (`scopes.md` R143). Tony: "dont use debrief as in we put the instructions on the tool, not the debrief skill", "I think 2 sentences max is enough. 400 cap seems good", "Need to be more informational. Can use phrasing like for doing this", "These are good, next".
+
+## Follow-ups for the build
+
+- Remove `_ignored_files` and its block from `feat/redux-sessions` (`scopes.py:363-385`, `hygiene.py:128`). Add the `dvc status` check (R44 item 3).
+- Replace the `context.md` scaffold, its `AGENTS.md` import and `scope heal`'s context repair with the journal brief (R142, R143).

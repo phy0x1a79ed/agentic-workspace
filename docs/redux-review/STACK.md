@@ -21,15 +21,10 @@ Procedure, from dfs-interview § Work the stack:
 
 ## Current topic
 
-**scopes-awm**. Its result: `scopes-awm/README.md`.
+**plugin-core**. Its result: `plugin-core/README.md`.
 
 ## Stack
 
-- **scopes-awm** (2026-11-03): I dont get this, why are ignored files blocking delete? what is checking them? dvc is versioend with git via pins and should work lke any other file. we should talk about this. we should also review the .awm folder
-  - [x] Survey done: see /home/tony/.claude/jobs/8162a704/tmp/scopes-survey.md; copy into scopes-awm/README.md when current (answered 2026-11-03)
-  - [x] What blocks a delete: treat DVC like git (uncommitted pin or dvc status drift blocks), and ignored non-DVC files only get listed, not blocked? (answered 2026-11-03)
-  - [x] The .awm/ folder: where context.md lives so it is not lost, drop mcp-opencode.json and the data link, where hand-written notes like gap-inventory.md belong (answered 2026-11-03)
-  - [ ] Brief size cap: how large, and what enforces it?
 - **plugin-core** (2026-11-03): lets go over each of the major systems architecturally to make sure we are still aligned
 - **sessions-harness** (2026-11-03): lets go over each of the major systems architecturally to make sure we are still aligned
 - **queue-approver** (2026-11-03): lets go over each of the major systems architecturally to make sure we are still aligned
@@ -42,3 +37,4 @@ Procedure, from dfs-interview § Work the stack:
 ## Closed
 
 - **search** (closed 2026-11-03): `search/README.md`
+- **scopes-awm** (closed 2026-11-03): `scopes-awm/README.md`
