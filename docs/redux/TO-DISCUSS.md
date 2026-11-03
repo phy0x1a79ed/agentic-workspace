@@ -26,6 +26,7 @@ Parent thread 1 (end state) waits for Tony to confirm `goal.md`. Its children 1a
 Top of the stack comes first.
 
 7. **Compaction fails.** A self-compaction sometimes fails. The search session on altair failed to compact, so its approved plan was never delivered. Tony: "it looks like compaction fails sometimes. Altair compaction failed for the search session, which isbwhy it was never delivered. We gotta investigate and fix this." (2026-11-03).
+   - Survey (2026-11-03): the Claude Code daemon swaps an outdated background worker in place during `/compact`, which loses the compaction and the queued follow-up. awm hides the loss. It deletes the owed-resume record before typing it, counts a follow-up as delivered once enqueued, and tracks sessions by pid. 13 of 545 compactions since 2026-09-01 were lost, all on outdated workers. Session `redux-build/harness` builds the fix.
 
 6. **Review the protocol docs.** Add the deploy to the core awm docs, then review every protocol doc. It runs after the other threads settle. Tony: "we should also add the deploy to the core awm docs -> I guess we need to review all protocol docs once we settle everything this session." (2026-11-01).
 
