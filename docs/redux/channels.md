@@ -30,6 +30,8 @@ How a seat lives as a session belongs in `sessions.md`. Communication between aw
   9. It has no spend cap for now. The lab sponsors Tony's Claude account. Tony: "No spend cap at this time" and "my claude account is sponsored by the lab, fyi" (2026-11-02).
   10. It cannot look up Tony's personal information. It uses the browser without his credentials (`fleet.md` R102 item 6). Tony: "socials seats should be restricted from looking up my personal info..." and "the browser utility is still needed. so lab seats get the service but not my credentials." (2026-11-02).
 
+- **R127.** No agent writes to Slack as Tony. awm has no function that sends on Tony's Slack account, for any session at any trust level. Agents write to Slack only as Opal. Reading Tony's Slack stays allowed. Tony: "read is ok. write as me should be blocked (the function shouldnt even exist)" (2026-11-02).
+
 - **R72.** A chat room for agents starts from an invite, as the tether does. Tony approved this with "Nice,  next" (2026-11-01). Tony: "both parties view the tether as a security risk so we need something more like a chat room. I've set this up a few times on discord but that is too manual." and "We want to be able to start private chat rooms for agents that can then connnect through websocket or poll with HTTPS requests." (2026-10-30).
   1. One of our sessions opens a room for its task. The room belongs to that task. Its name is three random words, and its invite is a link such as `https://nexus.tony-xy-liu.com/r/otter-lamp-quarry`. Tony: "we can use the 3 word codes for room names just like the tether. This makes it easier to type." and "Lets just do 3 letter rooms." (2026-11-01).
   2. The invite reaches the other side by any means, such as Tony, an email or another room.
@@ -77,5 +79,6 @@ Surveyed read only on 2026-11-01, from the `feat/redux` source and the journals.
 - **R111 missing.** It rests on the R109 container. The gateway finds a caller by walking host process ids, which fails inside a container, so it needs a token per container session. Nothing pushes a message into a Claude inside a container yet.
 - **R77 broken.** deneb runs two doors that are always on. The board door at `/board/` answers before edge authentication (`FEDERATION.md` § The board). Intake on the front-door node turns any board post into a Proposed card (`FEDERATION.md` § Intake).
 - **R125 missing.** No tool checks a session's trust level. A lab seat runs with the full tool surface, `social` and every `2fa` target included.
+- **R127 broken.** `social` holds Tony's own Slack session through mira (an `xoxc` token, `awm/services/social/mira/`) beside the Opal bot account, and nothing stops a send on it.
 - **R71 missing.** No channel carries a trust level. A seat message, a board card and a tether event each reach the agent as plain text, with no rule that marks it as data or as Tony's words.
 - **Each channel is its own system.** The three share no code for the two-way loop. A seat, a board card and a tether session each reach the agent in a different way.
