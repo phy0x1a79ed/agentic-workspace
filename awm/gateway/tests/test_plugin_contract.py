@@ -23,14 +23,15 @@ FOLDERS = sorted(p.parent for p in SERVICES.glob("*/run.sh"))
 #: Folders that stay on ``service.toml`` until they stop sharing a tool. A
 #: manifest plugin may not share a tool across plugins (contract rule 2).
 LEGACY = {
-    "auth": "publishes into the core's `awm` tool until it moves to an `auth` tool",
     "board": "shares `operations` with reporting until the two folders merge",
     "reporting": "shares `operations` with board until the two folders merge",
     "cx": "shares `reflection` until the harness recut (R135)",
     "keep": "shares `reflection` until the harness recut (R135)",
     "reflection": "shares `reflection` with cx and keep until the harness recut (R135)",
-    "search": "search-finish rebuilds it (fleet.md R136)",
 }
+
+#: Core plugins that add verbs to the core's own `awm` tool.
+AWM_TOOL = {"auth": "until auth moves to a tool of its own"}
 
 #: Cross-plugin code reuse that predates R117 item 1. Each pair is debt with
 #: an owner. A new pair fails the test.
@@ -163,7 +164,7 @@ def test_each_manifest_names_its_folder_and_no_host(folder):
         for table in s.get("archive", []):
             assert table["mode"] in ("index", "live"), table
     for tool in m["tool"]:
-        assert tool["name"] != "awm", "the awm tool belongs to the core"
+        assert tool["name"] != "awm" or folder.name in AWM_TOOL, "the awm tool belongs to the core"
         assert tool["tier"] in ("on", "off")
     needs = m["needs"]
     assert all(isinstance(x, str) for x in needs["secrets"] + needs["network"])
