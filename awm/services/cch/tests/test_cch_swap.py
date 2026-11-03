@@ -16,7 +16,7 @@ from awm.cch import inject, pending, session_target, watcher
 
 from _cch_events import lost_events
 
-LANE = session_target.TmuxLane(pane="%7", session_id="sid-1", repl_pid=4242,
+LANE = session_target.TmuxLane(pane="%7", session_id="5d1d0001-0000-4000-8000-000000000001", repl_pid=4242,
                                name="test")
 OLD, NEW = 4242, 5151
 
@@ -114,7 +114,7 @@ def script(monkeypatch, tmp_path):
     monkeypatch.setattr(
         session_target, "successor",
         lambda sid, old=None, proc_start=None: next(
-            ((p, st) for p, st in s.alive.items() if p != old and sid == "sid-1"),
+            ((p, st) for p, st in s.alive.items() if p != old and sid == "5d1d0001-0000-4000-8000-000000000001"),
             None))
     monkeypatch.setattr(inject, "ROUND_BACKOFF_S", (0.0,))
     monkeypatch.setattr(inject, "SUCCESSOR_WAIT_S", 0.0)
@@ -123,7 +123,7 @@ def script(monkeypatch, tmp_path):
 
 
 def _promise(**over) -> pending.Pending:
-    base = dict(repl_pid=OLD, proc_start="999", session_id="sid-1",
+    base = dict(repl_pid=OLD, proc_start="999", session_id="5d1d0001-0000-4000-8000-000000000001",
                 text="/compact", followup="resume",
                 injected_at_ms=int(time.time() * 1000) - 1000, name="test",
                 hosting="tmux", ticket="t-1")
@@ -266,7 +266,7 @@ def test_load_all_announces_a_promise_with_no_session_left(script):
     script.alive = {}
     assert pending.load_all() == []
     [entry] = lost_events()
-    assert entry["session_id"] == "ccsid1"
+    assert entry["session_id"] == "cc5d1d0001000040008000000000000001"
 
 
 def test_a_lost_event_goes_to_reflection_with_the_sessions_folder(script, events_sent):

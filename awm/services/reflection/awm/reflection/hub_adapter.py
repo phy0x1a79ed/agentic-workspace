@@ -23,9 +23,8 @@ import threading
 import time
 from typing import Any, Optional
 
-from awm.gatewayclient import ServiceAdapter
-
-from awm.reflection import (alarm, elsewhere, harness, ids, ledger, policy, surface,
+from awm.gatewayclient import ServiceAdapter, ids
+from awm.reflection import (alarm, elsewhere, harness, ledger, policy, surface,
                              waits)
 
 log = logging.getLogger("awm.reflection.hub_adapter")

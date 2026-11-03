@@ -10,37 +10,26 @@ list the agent picks its citations from at debrief.
 from __future__ import annotations
 
 import json
-import re
-import uuid
 from typing import Any, Iterable
 
+from awm.gatewayclient import ids
 from awm.journal.dao import JournalDAO
 from awm.journal.refs import now_ms
 
-#: Platform prefixes of an R9 id. "cc" is Claude Code, "ds" is DeepSeek.
-PLATFORMS = ("cc", "ds")
-_R9 = re.compile(r"^([a-z]{2})([0-9a-f]{16,})$")
-_HEX32 = re.compile(r"^[0-9a-f]{32}$")
 MAX_REASON = 200
+
+#: The kind that marks a journal post. Kinds are to become tags (fleet.md R107),
+#: so every journal test in this module goes through ``is_journal``.
+JOURNAL_KIND = "journal"
+
+
+def is_journal(kind: Any) -> bool:
+    return kind == JOURNAL_KIND
 
 
 def r9(raw: Any) -> str | None:
-    """The R9 form of a session id, or None when ``raw`` is not one.
-
-    A Claude session UUID becomes "cc" plus its 32 hex digits. The output matches
-    harness's ``reflection.ids.r9`` for the Claude platform.
-    """
-    if not isinstance(raw, str) or not raw.strip():
-        return None
-    value = raw.strip().lower()
-    m = _R9.match(value)
-    if m and m.group(1) in PLATFORMS and (m.group(1) != "cc" or len(value) == 34):
-        return value
-    try:
-        return "cc" + uuid.UUID(value).hex
-    except ValueError:
-        pass
-    return "cc" + value if _HEX32.match(value) else None
+    """The R9 form of a session id, or None when ``raw`` is not one."""
+    return ids.to_r9(raw)
 
 
 def stamp(meta: Any, caller: str | None) -> Any:
@@ -71,7 +60,7 @@ def check_cites(meta: Any, kind: str) -> Any:
     cites = meta["cites"]
     if cites in (None, []):
         return {k: v for k, v in meta.items() if k != "cites"}
-    if kind != "journal":
+    if not is_journal(kind):
         raise ValueError("only a journal post may cite (sessions.md R14)")
     if not isinstance(cites, list):
         raise ValueError("meta.cites is a list of {journal, reason}")
@@ -84,7 +73,7 @@ def check_cites(meta: Any, kind: str) -> Any:
         if not isinstance(reason, str) or not reason.strip() or "\n" in reason.strip():
             raise ValueError(f"citation {c['journal']} needs a one-line reason")
         row = dao.query_one("SELECT kind FROM scope_posts WHERE id=?", (c["journal"],))
-        if row is None or row["kind"] != "journal":
+        if row is None or not is_journal(row["kind"]):
             raise ValueError(f"citation {c['journal']} is not a journal post. Journal for that "
                              f"session first, then cite the new journal (sessions.md R17)")
         if c["journal"] not in seen:
@@ -98,7 +87,7 @@ def record_reads(session: str | None, posts: Iterable[Any]) -> int:
     if not session:
         return 0
     ids = [p.id for p in posts
-           if getattr(p, "kind", None) == "journal" and (p.meta or {}).get("session") != session]
+           if is_journal(getattr(p, "kind", None)) and (p.meta or {}).get("session") != session]
     if not ids:
         return 0
     now = now_ms()
@@ -131,8 +120,8 @@ def reads(session: str, limit: int = 200) -> list[dict]:
 def cites_of(session: str) -> list[dict]:
     """The union of the citations of every journal ``session`` wrote (R14)."""
     rows = JournalDAO().query_all(
-        "SELECT id, meta FROM scope_posts WHERE kind='journal' AND json_extract(meta, '$.session')=?",
-        (session,))
+        "SELECT id, meta FROM scope_posts WHERE kind=? AND json_extract(meta, '$.session')=?",
+        (JOURNAL_KIND, session))
     out, seen = [], set()
     for r in rows:
         for c in _meta(r["meta"]).get("cites") or []:

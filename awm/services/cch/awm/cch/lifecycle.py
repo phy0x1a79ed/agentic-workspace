@@ -38,6 +38,7 @@ from pathlib import Path
 from typing import Any
 
 from awm import gatewayclient
+from awm.gatewayclient import ids
 from awm import kept
 from awm.claudedaemon import cli, launch, pins, roster, sessionmode
 from awm.config import caller_peer, node_name, node_role, peer_relation, scope_of
@@ -332,11 +333,8 @@ async def _start(args: dict[str, Any], as_: str | None) -> dict[str, Any]:
 
 
 def _r9(session_id: Any) -> str | None:
-    """A Claude session UUID in the R9 form, "cc" plus its hex digits (sessions.md R9)."""
-    if not isinstance(session_id, str):
-        return None
-    hexed = session_id.replace("-", "").lower()
-    return "cc" + hexed if re.fullmatch(r"[0-9a-f]{32}", hexed) else None
+    """A Claude session UUID in the R9 form (sessions.md R9)."""
+    return ids.to_r9(session_id)
 
 
 async def _attach_task(spec: dict[str, Any], session_id: str | None) -> str | None:

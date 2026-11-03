@@ -1,8 +1,9 @@
-"""The one session id of `sessions.md` R9: two hex characters naming the platform, then the platform's own id as hex.
+"""The one parser of the session id of `sessions.md` R9: a two-letter platform code, then the platform's own id as hex of any length.
 
 A Claude Code session is ``cc`` plus its session UUID with the dashes removed.
 A DeepSeek harness session is ``ds`` plus the hex of the UUID in its ``session-<uuid>`` id.
 A short form is only a prefix lookup on this id, never an id of its own.
+It lives in gatewayclient so that every service and plugin env parses ids the same way.
 """
 from __future__ import annotations
 
@@ -52,6 +53,25 @@ def normalise(ref: str) -> str:
         return r9(PLATFORM_CLAUDE, text)
     parse_r9(text)
     return text
+
+
+def to_r9(ref: object) -> str | None:
+    """``normalise`` that answers None instead of raising, for input that may not be an id."""
+    if not isinstance(ref, str):
+        return None
+    try:
+        return normalise(ref)
+    except BadSessionId:
+        return None
+
+
+def claude_uuid(session_id: str) -> str | None:
+    """The dashed Claude session UUID behind an R9 Claude id, else None."""
+    try:
+        platform, raw = parse_r9(session_id)
+    except BadSessionId:
+        return None
+    return raw if platform == PLATFORM_CLAUDE and "-" in raw else None
 
 
 def is_r9(ref: str) -> bool:

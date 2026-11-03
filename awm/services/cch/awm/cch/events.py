@@ -16,6 +16,7 @@ import time
 from typing import Any, Callable, Optional
 
 from awm.cch import pending
+from awm.gatewayclient import ids
 
 log = logging.getLogger("awm.cch.events")
 
@@ -28,7 +29,7 @@ _call: Optional[Callable[[str, str, dict], Any]] = None
 
 def r9(session_uuid: str) -> str:
     """The R9 id of a Claude Code session UUID (`sessions.md` R9)."""
-    return PLATFORM + (session_uuid or "").strip().lower().replace("-", "")
+    return ids.r9(PLATFORM, session_uuid)
 
 
 def _send(event: dict) -> Any:

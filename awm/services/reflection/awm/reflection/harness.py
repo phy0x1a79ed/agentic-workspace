@@ -15,7 +15,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
-from awm.reflection import ids
+from awm.gatewayclient import ids
 
 log = logging.getLogger("awm.reflection.harness")
 

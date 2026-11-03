@@ -26,7 +26,7 @@ pytestmark = [pytest.mark.smoke]
 from awm.cch import inject, pending, session_target, watcher
 
 
-LANE = session_target.TmuxLane(pane="%7", session_id="sid-1", repl_pid=4242,
+LANE = session_target.TmuxLane(pane="%7", session_id="5d1d0001-0000-4000-8000-000000000001", repl_pid=4242,
                                name="test")
 
 
@@ -107,7 +107,7 @@ def _promise(**over) -> pending.Pending:
     The stamp is what tells a watcher its promise is still the newest, so two
     calls must agree on it.
     """
-    base = dict(repl_pid=4242, proc_start="999", session_id="sid-1",
+    base = dict(repl_pid=4242, proc_start="999", session_id="5d1d0001-0000-4000-8000-000000000001",
                 text="/compact", followup="resume",
                 injected_at_ms=PROMISED_AT_MS, name="test",
                 hosting="tmux")
@@ -781,7 +781,7 @@ def test_a_session_that_moves_mid_wait_is_reconnected_and_resumed_once(
     records = tmp_path / "sessions"
     records.mkdir()
     record = records / "4242.json"
-    record.write_text(json.dumps({"sessionId": "sid-1", "cwd": "/home/tony/before"}))
+    record.write_text(json.dumps({"sessionId": "5d1d0001-0000-4000-8000-000000000001", "cwd": "/home/tony/before"}))
     monkeypatch.setattr(transcript, "PROJECTS_DIR", projects)
     monkeypatch.setattr(session_target, "SESSIONS_DIR", records)
     original = before / "sid-1.jsonl"
@@ -813,7 +813,7 @@ def test_a_session_that_moves_mid_wait_is_reconnected_and_resumed_once(
     def wait_then_move(*_a, tail, **_kw):
         tail.poll()  # the watcher has been reading the old file all along
         if original.exists():
-            record.write_text(json.dumps({"sessionId": "sid-1",
+            record.write_text(json.dumps({"sessionId": "5d1d0001-0000-4000-8000-000000000001",
                                           "cwd": "/home/tony/after"}))
             original.rename(after / original.name)
         return watcher.SETTLED_OUTCOME

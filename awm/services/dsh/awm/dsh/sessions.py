@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from awm.dsh import harness
+from awm.gatewayclient import ids
 
 log = logging.getLogger("awm.dsh.sessions")
 
@@ -59,10 +60,10 @@ def rpc(method: str, payload: dict) -> Any:
 
 
 def r9(fork_id: str) -> Optional[str]:
-    digits = (fork_id or "").removeprefix("session-").replace("-", "").lower()
-    if len(digits) != 32 or any(c not in "0123456789abcdef" for c in digits):
+    try:
+        return ids.r9(PLATFORM, (fork_id or "").removeprefix("session-"))
+    except ids.BadSessionId:
         return None
-    return PLATFORM + digits
 
 
 def _unsupported(what: str) -> dict:
