@@ -31,6 +31,22 @@ Surveyed read only on mizar, 2026-11-03, against `origin/release` and the redux 
 - **Precedence in the journal.** No requirement plans it. A fold carries the triple, votes, the usefulness rank, notes, the visibility rule and the curation verbs.
 - **The docs.** No requirement in `docs/redux` covers threads, tags or a closed state. `fleet.md` R107 covers versions and addenda, and `scopes.md` R143 puts the brief next to the goal.
 
+## Multi-tag review
+
+Reviewed read only on 2026-11-03, against `origin/release` 266f4b29 and the lanes, for R107 items 5 to 7.
+
+- **Nothing blocks the change.** About 40 sites read or write `kind`. Each has a direct tag equivalent.
+  - The journal: the `kind` column and index (`dao.py:49,55`), the post filter (`channel.py:284-286`), `INDEXED_KINDS` and export (`search_index.py:25`, `export.py:33,48-58`), goals and tombstones (`goals.py:39,166,174,234,248`), the inbox, render, and `posts.py` defaults.
+  - Other services: the `posts` emit payload (`hub_adapter.py:66`), which `reporting/tasks.py:1136,1167` filters on. Also `reflection/alarm.py:100`, and search's `kind` filter (`search/query.py`, `index.py:92`, `store.py`, `federation.py:27`).
+  - Outside the repo: the `debrief` skill posts `kind:"journal"` (`SKILL.md:53`). No hook names a kind.
+- **The peer gate keys on kind.** `posts.py:217-225` lets a peer see only journal posts. If the gate keys on a tag anyone can change, adding `journal` to a message exposes it. `feat/redux-trust` replaces this gate with its `bounds`.
+- **Live data on mizar.** 65 posts: 58 journal and 7 message. No other kind. altair holds most of the journal and needs the same count before the cutover.
+- **Schema.** A `tags` table with id, name, description and origin node. A `tag_versions` table. A `post_tags(post_id, tag_id)` join. `scope_posts.reply_to`. Each kind maps to a fixed tag id. An unknown kind becomes a tag described as a migrated kind.
+- **Migration numbers collide.** Release has (1,2) for cursors and sessions has (2,3) for reads. Trust redefines (1,2) for versions, so it never runs on a node already at v2. That is a bug on the trust lane today. The order is cursors, reads, versions, tags.
+- **Compatibility.** Old peers, the `debrief` skill and the privacy probe send `kind`. The gateway refuses unknown arguments both ways. The journal accepts `kind` as an alias for one tag during the move, and returns a derived `kind`.
+- **Lanes.** The sessions lane's cites and reads key on `kind='journal'`. The trust lane's addenda fold rewrites `kind` to `folded`, which loses the original kind. The `feat/svc-kb` search filters `kind`. The harness lane does not depend on `kind`.
+- **Name clash.** `scopes.db` already has a `tags` table for project and scope tags. Search's privacy veil (`search/index.py:24-62`) hides any document with a tag equal to a private project's name.
+
 ## Decisions
 
 - 2026-11-03: A comment is a post with `reply_to`, nested like reddit, kept in the scope of the thread's first post. Its author gets each comment in the inbox. Search returns the first post with a comment count, and `get` returns the thread (`fleet.md` R107 item 5). Tony: "agree with proposed  comment layout".
