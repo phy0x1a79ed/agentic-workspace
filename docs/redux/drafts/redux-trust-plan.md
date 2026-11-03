@@ -44,7 +44,7 @@ The redux build runs one session per lane. This lane covers how nodes talk to ea
 ## Acceptance criteria
 
 - No `relation`, `domestic`, `foreign`, `swarm` or `grants` field remains in the peer book reader, the gateway, `gatewayclient`, `httpsfront` or the surviving services. The board is excepted (redux-channels deletes it, C15). The touched tests pass.
-- `fleet/edges.yml` holds the R87 table exactly, each node's role (R88), one network per edge (R96) and each singleton host's services (R89, R98). A test checks the table against the R87 rows.
+- The cloud project's `homelab/edges.yml` holds the R87 table exactly, each node's role (R88), one network per edge (R96) and each singleton host's services (R89, R98). A test checks the table against the R87 rows.
 - `core/crates/awm-trust` and `core/crates/awm-edge` build and pass their tests in mizar's build container. `awm-edge` implements core's `PeerTransport` trait.
 - `awm port`, the forced command of a service key, refuses every verb outside its set and appends one log line per call: time, key comment, verb, result.
 - The trust library refuses a set above the starter's level, refuses a raise without a valid `trust_raise` grant, and refuses start or steer from an untrusted session. Tests cover each.
@@ -53,7 +53,7 @@ The redux build runs one session per lane. This lane covers how nodes talk to ea
 - `slack_bot_conn` refuses a DM to a person with no message in that DM. A test covers it.
 - A seat's `social history` returns only that seat's chats.
 - The browser seat code gives each seat its own window and confines its verbs to it. A non-trusted seat gets no profile of Tony's.
-- `fleet/roles/` holds `ssh_edges`, `users_sudo`, `singleton_door`, `singletons_sandbox`, `rt_user`, `journal_user`, `trilium_deneb` and `wsl_bridge`. `ansible-playbook --check --syntax-check` passes. No role targets mira.
+- The cloud project's `homelab/roles/` holds `ssh_edges`, `users_sudo`, `singleton_door`, `singletons_sandbox`, `rt_user`, `journal_user`, `trilium_deneb` and `wsl_bridge`. `ansible-playbook --check --syntax-check` passes. No role targets mira.
 - `awm auth user-add` and the static per-user password store are gone. A config task removes altair's two users.
 - Every commit sits on `feat/redux-trust` only.
 
@@ -193,6 +193,8 @@ Commit T14 to T17.
 Handoff: the plan file and the todo list. Next is T20.
 
 ### T20. Write the node config roles for the fleet pass
+
+fleet.md R140 (2026-11-03) puts node config in the cloud project. Work in scope `cloud/redux-trust` (branch `feat/redux-trust`), which redux-fleet merges. The edge list is `homelab/edges.yml` with its R87 test at `homelab/tests/test_edges.py` (commit 77e7830). Roles go under `homelab/roles/<role>/`. Send fleet the play lines for `homelab/site.yml` instead of editing it. Fleet's `awm_config` role installs the edge list at `<AWM_DIR>/edges.yml`. Fleet owns ufw defaults and alcor's port 22. sshd needs `ExposeAuthInfo yes` for `awm edge-serve`. Each node needs alcor's grant key at `<AWM_DIR>/grant-key.pub`.
 
 Write `ssh_edges`, `users_sudo`, `singleton_door`, `singletons_sandbox`, `rt_user`, `journal_user`, `trilium_deneb` and `wsl_bridge` under `fleet/roles/`, and their `import_role` lines in `fleet/site.yml`. Add shogun's Terraform and lyra's key setup to Tony's list. Run the syntax check and check mode against a local inventory only.
 
