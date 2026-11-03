@@ -46,6 +46,7 @@ Surveyed read only on mizar, 2026-11-03.
   - `queue.md` R145 removes the board only after the federation threads move onto persistent rooms, as R72 item 5 orders.
   - A cooperative seat may open rooms and machine channels. R125 allows every tool its edges and trust level allow, and its exceptions do not name channels.
   - R72's second item 5 is now item 6.
+- 2026-11-03: A persistent room has no time cap and ends with its session. Its name is six words, and a room for one task keeps three. One session may hold several rooms, timed and persistent together, and may close any early. R77 says a session holds a room, not a task (`channels.md` R72 item 5, R77). Tony: "agree on all 3 for persistent rooms" and "a session can dispose a room early right? and a session can hold multiple rooms? inlcuding some that are timed and somet aht are persistent?".
 
 ## Follow-ups for the build
 
@@ -56,4 +57,5 @@ Surveyed read only on mizar, 2026-11-03.
 - Make the edge forward the client address on a websocket upgrade, so each guesser spends its own miss budget.
 - Handle a reset of the tether's journal epoch in the drain cursor.
 - Add `spake2` to the plugin's install.
+- Add a persistent kind to the relay's rooms and to `channel open`: no 24-hour or idle expiry, a six-word name, and a close when the holding session ends.
 - Keep Caviar's listener and the muse link on the board until persistent rooms carry them.
