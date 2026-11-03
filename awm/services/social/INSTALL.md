@@ -327,6 +327,18 @@ Name two witnesses, so that the seats on each witness have the other. With no
 `[keeper]` table the keeper's own view decides. `social keepers` shows a seat's
 `contact_lost_since`.
 
+Each tick first checks that the keeper's own box reaches the internet: any of
+the `online` targets accepts a TCP connection. A box that reaches none holds
+every seat in lost contact, restarts nothing and sends no alert, so a dropped
+home link raises no seat alarm. Alerts it held go out once the box is back.
+
+    [keeper]
+    online = ["1.1.1.1:443", "8.8.8.8:443", "9.9.9.9:443"]   # the default; [] turns it off
+    local_only = true                                         # keep only this node's seats
+
+`local_only` is off by default. Turn it on once social runs on every seat's
+node, so that each box keeps its own seats.
+
 Each outage writes a restart record: the cause, when the seat went down and
 came back, and how many messages arrived meanwhile. A daemon cause comes from
 cx's `daemon` block. The agent's first line after it comes back is that
