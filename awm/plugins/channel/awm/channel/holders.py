@@ -72,8 +72,44 @@ def _record(pid: int) -> dict | None:
             "session": r9(rec.get("sessionId")), "name": str(rec.get("name") or "")}
 
 
+def _session_rows(include_stopped: bool = False) -> list[dict] | None:
+    """Every session on this node, from ``reflection list_other``, or None.
+
+    None when reflection cannot answer, when a harness plugin errored, or when
+    the rows carry no R9 ``session_id`` (a reflection older than its harness
+    plugins). The caller then falls back to Claude Code's own records.
+    """
+    args = {"include_stopped": True} if include_stopped else {}
+    try:
+        out = gatewayclient.call_sync("reflection", "list_other", args, timeout=30.0)
+    except Exception as exc:  # noqa: BLE001 — "could not tell" closes nothing
+        log.info("reflection list_other failed: %s", exc)
+        return None
+    if not isinstance(out, dict) or out.get("ok") is False or out.get("errors"):
+        return None
+    rows = [r for r in out.get("sessions") or [] if isinstance(r, dict)]
+    if not rows or not all(r.get("session_id") for r in rows):
+        return None
+    return rows
+
+
+def _row_live(row: dict) -> bool:
+    return (row.get("state") not in _DEAD_STATES and row.get("live") is not False
+            and row.get("alive") is not False)
+
+
 def _job_of_session(session: str) -> str | None:
-    """The background job on this node whose conversation is ``session``."""
+    """The background job on this node whose session is ``session``."""
+    rows = _session_rows(include_stopped=True)
+    if rows is not None:
+        for row in rows:
+            if str(row["session_id"]).lower() == session and row.get("job"):
+                return str(row["job"])
+        return None
+    return _job_of_session_on_disk(session)
+
+
+def _job_of_session_on_disk(session: str) -> str | None:
     import json
 
     try:
@@ -213,7 +249,13 @@ class Pusher:
 
 
 def live_sessions() -> set[str] | None:
-    """The R9 ids of the sessions running on this node, or None when it cannot tell."""
+    """The R9 ids of the sessions running on this node, or None when it cannot tell.
+
+    Blocking: call it off the event loop.
+    """
+    rows = _session_rows()
+    if rows is not None:
+        return {str(r["session_id"]).lower() for r in rows if _row_live(r)}
     try:
         from awm.claudedaemon import roster
         raw = roster.live_session_ids()

@@ -242,7 +242,7 @@ class Channels:
         rows = self.store.open_rows()
         closed: list[str] = []
         if any(r["node"] == here and r["session"].startswith("cc") for r in rows):
-            live = self._list_sessions()
+            live = await asyncio.to_thread(self._list_sessions)
             if live is not None:
                 for row in rows:
                     if row["node"] == here and row["session"].startswith("cc") \

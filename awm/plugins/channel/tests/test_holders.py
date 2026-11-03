@@ -80,3 +80,47 @@ def test_a_record_from_reflection_session_of_names_the_holder(monkeypatch):
     monkeypatch.setattr(gc, "sessions", fake, raising=False)
     assert holders._record(42) == {"background": True, "job": "abcd1234",
                                    "session": SID, "name": "worker"}
+
+
+ROWS = {"ok": True, "sessions": [
+    {"session_id": SID, "job": "abcd1234", "harness": "cch", "state": "working"},
+    {"session_id": "cc" + "f" * 32, "job": "dead0000", "harness": "cch", "state": "gone"},
+    {"session_id": "dsh" + "1" * 8, "job": "", "harness": "isolated", "live": False},
+]}
+
+
+def _list_other(monkeypatch, answer):
+    seen = []
+
+    def call_sync(service, verb, args, timeout):
+        seen.append((service, verb, args))
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+    monkeypatch.setattr(holders.gatewayclient, "call_sync", call_sync)
+    return seen
+
+
+def test_live_sessions_are_the_live_rows_of_list_other(monkeypatch):
+    seen = _list_other(monkeypatch, ROWS)
+    assert holders.live_sessions() == {SID}
+    assert seen == [("reflection", "list_other", {})]
+
+
+def test_the_job_of_a_session_is_its_list_other_row(monkeypatch):
+    seen = _list_other(monkeypatch, ROWS)
+    assert holders._job_of_session(SID) == "abcd1234"
+    assert holders._job_of_session("cc" + "e" * 32) is None
+    assert seen[0][2] == {"include_stopped": True}
+
+
+@pytest.mark.parametrize("answer", [
+    RuntimeError("reflection is down"),
+    {"ok": True, "sessions": [{"job": "abcd1234", "state": "working"}]},
+    {"ok": True, "sessions": ROWS["sessions"], "errors": [{"harness": "dsh"}]},
+])
+def test_a_list_other_that_cannot_tell_falls_back_to_the_records(monkeypatch, answer):
+    _list_other(monkeypatch, answer)
+    monkeypatch.setattr(holders, "_job_of_session_on_disk", lambda sid: "fromdisk")
+    assert holders._session_rows() is None
+    assert holders._job_of_session(SID) == "fromdisk"
