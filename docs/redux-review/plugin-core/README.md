@@ -37,8 +37,9 @@ Surveyed read only on mizar, 2026-11-03.
 
 ## Decisions
 
-- 2026-11-03: The core plugins stay in the awm repo. They are the plugins every node installs, the ones that gate trust, and rlm-browser, vpn, dev, transcripts, dsh, social, tether and mic. Every other plugin is a project of its own (`install.md` R115 item 4, `routines.md` R33). Tony: "Yes, good choices", "the browser VPN, dev, transcripts, DSH, and social, I'd argue, are also core plugins." and "Tether and mic should also be core."
+- 2026-11-03: The core plugins stay in the awm repo. They are the plugins every node installs, the ones that gate trust, and rlm-browser, vpn, dev, transcripts, dsh, social, tether, mic and kb. Every other plugin is a project of its own (`install.md` R115 item 4, `routines.md` R33). Tony: "Yes, good choices", "the browser VPN, dev, transcripts, DSH, and social, I'd argue, are also core plugins." and "Tether and mic should also be core."
 - 2026-11-03: The standard install contract is the point. Every plugin loads only through its manifest, from a folder or a git repo. Moving the optional plugins out comes second (`install.md` R115 item 4). Tony: "It's more so that we have a standardized install contract so that we can have services be installable from a folder or Git repo."
+- 2026-11-03: kb is a core plugin. It serves papers into the new search as one source and keeps `kb hop` as its one direct call. Only Cognee goes (`install.md` R134, `fleet.md` R136 item 3). Tony: "I accept your recommendations, but let's keep KB as a core service."
 
 ## Follow-ups for the build
 
