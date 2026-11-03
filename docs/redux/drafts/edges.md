@@ -52,7 +52,7 @@ All routes keep `ControlMaster auto` with `ControlPersist`, except an admin logi
 Group this work into one sitting in the implementation pass. Tony: "For the implemenation pass, it would be great if all of the work that requires me can be grouped together, like adding tailscale" (2026-11-02).
 
 - Reserve LAN addresses for mizar, alcor, mira and capella on the router.
-- Install Tailscale on lyra's Windows side, and log it in.
+- Install Tailscale on the Windows side of lyra and capella, and log each in. Remove the one inside capella's WSL.
 - Run an elevated shell on lyra for the port 22 forward to `127.0.0.1` and its firewall rule.
 - Approve each new key: alcor into mizar, lyra into its edges, and mizar into lyra.
 - Rename lyra's Windows host from `XPS-LAPTOP`.
