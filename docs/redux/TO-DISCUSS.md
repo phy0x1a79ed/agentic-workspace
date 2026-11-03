@@ -26,7 +26,6 @@ Parent thread 1 (end state) waits for Tony to confirm `goal.md`. Its children 1a
 Top of the stack comes first.
 
 3a. **The Slack seat system.** Review how seats work and discuss whether they keep their shape. Tony: "this is another system to review and discuss" (2026-10-30). The survey of today's seats is in `users.md`. Open for Tony:
-   - Permanent home of social and seat agents, given the planned mira migration.
    - Who the 2 static edge users are.
 
 4. **What made it foundational.** Which problem made Tony think "rebuild" rather than "patch"?
