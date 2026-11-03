@@ -364,6 +364,29 @@ directory that it breaks after five seconds. `awm/claudedaemon/pins.py` takes
 that lock the same way. A write that skips the lock races the CLI and loses
 pins.
 
+### An isolated session holds a login it cannot refresh
+
+`start` with `isolated=true` runs the session in a rootless Docker container on
+the host's own Claude binary (`awm/cch/isolated.py`). Its login copy keeps the
+access token and drops the refresh token. Two refreshers rotate each other's
+token away and sign each other out, which is the WSL and Windows fault on
+capella and lyra. `bin/isolated-login-sync` rewrites each copy after a host
+refresh. It deletes the copy when the host login is gone or expired, so a fault
+signs out the container and never the host.
+
+The session runs as the container's root. Rootless Docker maps that user to the
+host user, so the files it writes in the worktree stay the host user's. Claude
+Code refuses skip-permissions as root, and `IS_SANDBOX=1` lifts that refusal.
+On rootful Docker the same root is the host's root, so cch refuses any socket
+but the rootless one.
+
+The container has no host pid, so it calls awm with a caller token in an HTTP
+header. `caller_of_token` names the session behind a token and the verbs it may
+call. Only the token's digest is stored.
+
+To enable it on a node, build the image with `bin/isolated-image`. Then install
+`systemd/awm-isolated-login-sync.service` as a user unit.
+
 ### The claim rides the ordinary gateway
 
 The gateway is plain HTTP on loopback with no auth, and a round trip to a
