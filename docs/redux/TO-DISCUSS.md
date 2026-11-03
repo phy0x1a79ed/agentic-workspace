@@ -27,6 +27,8 @@ Top of the stack comes first.
 
 1s. **Isolated sessions with awm tools.** Tony: "I've started an expedition session out of curiosity. Stuff like that should prolly get some form of isolation as well, but have access to awm tools in its environment -> something to talk about" (2026-11-02).
 
+1t. **Rooms and the tether as one awm tool.** Tony: "rooms and tether should be the same tool in awm (talk abou tthis later)" (2026-11-02).
+
 1h. **Install and bootstrap.** A Rust conversion, true plugins, and Claude cloud agents that test fresh installs and adding nodes. This absorbs the parked gateway, plugin and bootstrap input (Tony, 2026-10-30).
    - Local throwaway environments that behave like cloud agents, to avoid their cost. Tony: "we should also consider settup up a system that can spawn throway temp environments that act the same" (2026-10-30).
    - Plugins as their own projects, each with its own refresh hook, migrated out of the awm repo (Tony, 2026-10-31, R33).
