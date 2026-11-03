@@ -94,6 +94,11 @@ This doc holds the nodes of the fleet, the role of each, and how each node is ha
   2. The invite carries a short reason: roughly what the holder will search for, and what it means to write. The reason informs Tony and limits nothing. One search may lead to the next, and the log records each one. Tony: "should include wat they will search for and what tehy intend to write, roughly. just a simple justification. doesnt need to be strict, perms opens up the whole archive and searches may lead down to new searches which is fine and these are logged anyways"
   3. Tony approves each invite on the queue page (R97). The request shows its permission, its reason and its length.
 - **R91.** A small admin node, shogun, manages the Arbutus cloud nodes, so that lab work stays apart from the rest. It brings altair, shaula, worker 1, worker 2, showtime, bastion and the other Arbutus nodes under its management. Tony: "Altair and shaula are part of arbutus cloud. I want a small machine to manage arbutus so that the lab work stuff is not mixed. This also goes for worker 1 and worker 2 and showtime, and bastion. I guess there are a lot of arbutus peers and stations that need to be mapped and brought under the management of the new admin node. Lets call it shogun." (2026-11-02).
+  1. shogun is a small Arbutus VM. The arbutus-infra Terraform creates it on the Arbutus private network, so its Ansible reaches the Arbutus nodes directly. Tony: "this looks good." (2026-11-02).
+  2. All of arbutus-infra moves to shogun: its repo, its Terraform and its state, its Ansible tree and its scripts. altair becomes a node that shogun manages. Tony: "also to clarify, we should move all of the arbutus-infra stuff to shogun" (2026-11-02).
+  3. shogun joins Tailscale (R96). The swarm's Ansible on mizar manages shogun. shogun manages the other Arbutus nodes, altair included.
+  4. shogun holds the admin keys for the Arbutus nodes. Each admin login still needs a grant from alcor (R100).
+  5. mizar holds a backup that bootstraps outside Arbutus when Arbutus is down. Tony: "I want to add that mizar should hold a backup somehow so that if arbutus goes down, we have a way to bootstrap outside of arbutus" (2026-11-02).
 
 ## Decisions
 
