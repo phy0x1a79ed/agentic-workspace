@@ -16,6 +16,7 @@ from typing import Any, Callable
 MIN_MINUTES = 15
 MAX_MINUTES = 24 * 60
 GRANT_KEY_FILE = "grant-key.pub"
+WAIT_STEP_S = 55  # the approver holds one approval_wait at most this long
 
 Call = Callable[[str, dict], Any]
 
@@ -75,13 +76,14 @@ def request(kind: str, *, node: str, reason: str, minutes: int = MIN_MINUTES,
     })
     rid = filed["request_id"]
     while True:
-        rec = call("approval_wait", {"request_id": rid, "timeout_s": min(wait_s, 600)})
-        state = rec.get("state")
+        step = min(wait_s, WAIT_STEP_S)
+        rec = call("approval_wait", {"request_id": rid, "wait_s": step})
+        state = rec.get("status") or rec.get("state")
         if state == "approved":
             return rec
         if state in ("denied", "expired", "cancelled"):
             raise GrantDenied(f"request {rid} for {kind} on {node} was {state}")
-        wait_s -= 600
+        wait_s -= step
         if wait_s <= 0:
             call("approval_cancel", {"request_id": rid})
             raise GrantDenied(f"request {rid} for {kind} on {node} had no answer in time")

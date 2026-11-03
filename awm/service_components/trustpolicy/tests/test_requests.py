@@ -22,7 +22,8 @@ class FakeApprover:
             return {"request_id": "r1", "task_id": "t1"}
         if verb == "approval_wait":
             state = self.states.pop(0)
-            rec = {"state": state}
+            assert args["wait_s"] <= 55
+            rec = {"status": state}
             if state == "approved":
                 rec["grant"] = {"grant": {"kind": "x"}, "ssh_cert": "ssh-ed25519-cert-v01@openssh.com AAAA cert"}
             return rec
@@ -43,7 +44,7 @@ def test_a_reason_is_required():
 def test_waits_through_pending_then_returns():
     fake = FakeApprover(["pending", "approved"])
     rec = rq.request("trust_raise", node="home", reason="r", call=fake)
-    assert rec["state"] == "approved"
+    assert rec["status"] == "approved"
     assert [v for v, _ in fake.calls] == ["approval_request", "approval_wait", "approval_wait"]
 
 
