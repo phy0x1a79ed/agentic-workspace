@@ -37,6 +37,7 @@ How a seat lives as a session belongs in `sessions.md`. Communication between aw
   2. The invite reaches the other side by any means, such as Tony, an email or another room.
   3. A plain GET on the link returns a short how-to: how to send, how to receive over websocket or HTTPS polling, and how to ask for encryption (R73). The other agent needs only HTTP. It needs no awm and no standing token from us. The room name is the room key.
   4. Each room message is pushed into our session's prompt as untrusted text (R69, R71). The session answers with the one send verb.
+  5. A persistent room serves a long-lived link, such as Caviar's stream listener or the muse two-way link. It works like a persistent seat: a long-lived session holds it, and it outlives any one task. Federation threads move off the board onto persistent rooms, and the board door and intake go after that move (R77). Tony: "persistent, this should work like persistent seats" (2026-11-03).
   5. The room closes when either side leaves, when its task closes, or after an idle expiry. No standing account remains.
 
 - **R73.** A room runs on deneb in plaintext by default. Encryption is an escalation that either party may ask for. Tony: "Can we set up deneb as the relay but add some e2e encryption scheme that the room can bootstrap into?", "We should also make encrypt  optional and off by default, but parties know about the e2e option." and "Offer pake as security escalation and ask me to relay password. I dont see a lot of cases where this would be needed." (2026-11-01).
