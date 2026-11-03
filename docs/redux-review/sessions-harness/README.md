@@ -95,7 +95,7 @@ Reported by the redux-harness lane on 2026-11-03. Local commits only, on `feat/r
 
 - **Built.**
   - One R9 parser at `awm.gatewayclient.ids` (2b3e0779).
-  - Retire deletes the job and wakes its waiters, and a wait keeps the job (6f17ffd2).
+  - The R51 wait rework (6f17ffd2). `reflection stop` wakes waiters across nodes with no sweep. A terminal session waits in place. A wait clears on wake, resume or retire. A failed wake or a lost session raises an alarm. A retire deletes the job, and only a wait keeps it. The cross-node wake is tested against a stubbed peer only. Verify it in the deploy sweep: wait on altair for a session on mira, retire that session, and check the waiter wakes.
   - R57 whoami and the join notice (970b4bf2). `harness@1` (29adcb67).
   - The gateway's mode gate, trust stamp and proxy walk go through `reflection session_of`. The cx and keep verbs leave reflection (e93907a0). Transcripts read live sessions from cch (7a1a2216).
   - dsh names its caller when one turn runs, and each node's keeper holds only its own seats (2e438c1e).
@@ -109,7 +109,6 @@ Reported by the redux-harness lane on 2026-11-03. Local commits only, on `feat/r
   - R10 item 3, resuming a retired session from its transcript.
   - The two-sentence brief rule. Only the 400 cap is in code.
   - `reflection cd` of another session does not give that session its brief.
-  - The lane's proposed R51 row still has a minute sweep and no terminal wait, against the Follow-ups. Asked the lane.
 - **Deploy sweep steps.**
   1. Per node, an agent writes each scope's brief from its `context.md` and moves the hand-written notes into `docs/` or a journal post. Then run `scope heal`, which deletes the stale `history.md` and `mcp-opencode.json`.
   2. Run `deploy-hooks.sh` for the brief start hook.
