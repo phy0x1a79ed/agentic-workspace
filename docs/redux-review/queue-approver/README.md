@@ -69,3 +69,30 @@ Surveyed read only on mizar, 2026-11-03.
 - Rebase the lane on `feat/redux`. It is 35 commits behind.
 - Fix the docs: R64's "every action takes the passkey" against its window bullet and R65's "nothing beyond the button", the mizar approver in TO-DISCUSS 1d and 1r and `sessions.md` R68, and `queue.md` § Gap from today, which predates R105, R106, R145 and the lane.
 - Make the board writer call the `trilium` tool, and drop its ETAPI token (R87 item 3, R105).
+
+## Build result
+
+Reported by the redux-queue lane on 2026-11-03. Local commits on `feat/redux-queue` only: 59d23c89, f41612a4, e987f9b7, f6edcba3. 103 tests pass and 1 is skipped, the Chromium panel and board tests included.
+
+- **Built.** One `operations` plugin and tool at major 2 (`awm/plugins/operations`). It holds the store, the approver, the trilium-tool writer and the door on alcor, and the relay on every node. Also built:
+  - `request_human` with the urgent DM and the Arbutus path, and `hook_prompt`'s move.
+  - Approvals through the outbox. `approval_cancel` takes only the calling session.
+  - Reports over the R98 door.
+  - In-flight in place of pending, cursor paging, and New note in Proposed.
+  - The `plugin_commits` request kind, and `ops_post` for auth.
+- **Open for Tony.**
+  - The `trilium` tool's `note_create` takes no `note_id`, so the fixed card ids fail.
+  - The `trilium` note verbs are operator only (`trilium/hub_adapter.py:573`) and refuse a call across an edge, so alcor's writer is refused on deneb.
+  - The approver reads the client address from `AWM_APPROVER_FORWARDED_HEADER` while PROXY protocol is missing.
+  - `order_pull` serves any caller that names a node.
+  - The Chromium libraries come from conda-forge into `awm-queue`.
+  - Fleet's `AWM_TRILIUM_URL` is stale.
+- **Cutover gaps.** `operations` does not serve these reporting verbs: `hook_plan`, `hook_plan_approved`, `hook_todos`, `hook_session_clear`, `claim_task`, `track_task`, `board_watch`, `board_unwatch`, `swarm_*`, `board_ensure`, `convert`, `peer_list` and `peer_resolve`. The urgent-block reminder (`reporting/tasks.py:813`) is not ported. The relay needs `reflection session_of` from the harness lane.
+- **The fork on altair.** `~/agentic_workspace/projects/trilium`, a bare repo with `dev` and `release` worktrees. origin is `github.com/phy0x1a79ed/Trilium`. The dev server is `pnpm server:start` on port 8080, with `TRILIUM_DATA_DIR=data` under `apps/server`. `release` holds the nightly vault snapshot commits.
+- **For the cleanup pass.**
+  - `reporting/approvals.py`, `reporting/config.py:160-198` and `reporting/intake.py:117` duplicate the new `operations/arbutus*.py`.
+  - Two one-line JSON unix socket servers: `operations/hub_adapter.py:77` and `operations/door.py:37`.
+  - Two tool call paths in one plugin: `operations/arbutus.py:108,122` against `operations/gateway.py`.
+  - The payload shapes are written twice: `approver/core.py:572` and `operations/api.py:69`.
+  - The test-only `operations/tests/etapi_tool.py`.
+  - The trust lane's grant vector copies.
