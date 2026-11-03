@@ -72,7 +72,7 @@ Gotchas: keep `awm-proto` free of async deps, so other lanes can depend on it ch
 
 ### T3. Build the plugin loader
 
-Scan each root in order. Read `awm-plugin.toml`, or synthesise a legacy plugin from `run.sh` and `service.toml`. Apply placement, the reserved list, the clash rules and UUID resolution. Write `resolved-tools.json` per plugin and pass its path as `AWM_RESOLVED_TOOLS`. Resolve `implements` and `needs.contract` (R117 item 4, Tony chose option a).
+Scan each root in order. Read `awm-plugin.toml`, or synthesise a legacy plugin from `run.sh` and `service.toml`. Apply the install config's `plugins`, `exclude` and `rename`, the reserved list, the clash rules and UUID resolution. Placement lives in the install config, not the manifest (`fleet.md` R140). Write `resolved-tools.json` per plugin and pass its path as `AWM_RESOLVED_TOOLS`. Resolve `implements` and `needs.contract` (R117 item 4, Tony chose option a).
 
 Gotchas: legacy UUID is `uuid5(NAMESPACE_URL, "awm:tool:<name>")`, the same as the plugins lane. A page with no `dir` resolves by name in the page roots.
 
@@ -120,3 +120,8 @@ Run the `debrief` skill, then `retire`.
 
 - Tony chose option a for an interface served by several plugins (R117 item 4, feat/redux 840daeae). The contract's § Contracts holds it.
 - Python discovery now scans `awm/plugins` as a built-in root, commit 38dc0f95, for the lanes that add core plugins there.
+- The plugin contract is at v1.5 in `docs/redux/drafts/plugin-contract.md`. Since v1 it gained the caller trust frame, the refresh hook, `platform` and `gpu`, shared tools for legacy folders, `[[external]]` services and the `[fleet]` table.
+- The Rust gateway needs `awm.gatewayclient` from this branch. Each spawned service gets a fresh token at `AWM_HUB_TOKEN_FILE` and sends it on register. An older adapter gets 403. The services themselves run unchanged.
+- A service under another user's systemd unit (R99, R107) dials the gateway as today. The install config lists it in `[[external]]` with a token file, and the supervisor never spawns it.
+- `feat/redux-trust` builds `EdgePeers` on this branch's `PeerTransport` and changes the `gateway serve` arm. It merges cleanly with this branch, and every test passes on the merge. The final sweep joins the two.
+- `[[peer]] url` in the install config is the HTTP test transport only. Real peers come from the edges file through `EdgePeers`.
