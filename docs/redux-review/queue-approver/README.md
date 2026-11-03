@@ -47,6 +47,7 @@ Surveyed read only on mizar, 2026-11-03.
 - 2026-11-03: An urgent request still sends Tony a Discord direct message (`queue.md` R61 item 2). Tony: "i still want urgent requests to ping me via discord dm".
 - 2026-11-03: A note change, such as the board page, goes live through the `trilium` tool with no build. A fork code change runs first on the fork's dev server on mizar against a vault snapshot copy. The fork moves to mizar (`install.md` R115 item 4). Tony: "is there a hot path for trying out changes to trillium without going through a full build?" and "agree. migrate trillium to mizar".
 - 2026-11-03: Tony's prompt to a session moves its card from Needs you to Working (`queue.md` R61 item 2). Tony: "agree".
+- 2026-11-03: A window lasts at most 12 hours. An in-flight action, a signed press with no ack, expires after 60 seconds. Spawn acts only on the signed Proposed body. The 2fa strip arms bursts of 1, 2 or 4. History outcomes are approved, denied, expired and cancelled, and only the requesting session cancels, through `operations` (`queue.md` R64, R65, R137, `fleet.md` R97 item 1). Tony: "-> inflight action" and "otherwise accept".
 
 ## Follow-ups for the build
 
@@ -57,4 +58,14 @@ Surveyed read only on mizar, 2026-11-03.
 - Keep the urgent Discord DM in `operations` `request_human` (R61 item 2).
 - Move the fork `projects/trilium` to mizar, as a bare repo with its worktrees, from wherever it lives now. Read altair only. Find the fork's dev server command, and check it against a snapshot copy (R115 item 4).
 - Port `hook_prompt`'s move back into `operations`, so Tony's prompt moves the card to Working (R61 item 2).
+- Forward approval request, get, wait and cancel through the `operations` relay, with the outbox. Make `approval_cancel` refuse any caller but the requesting session (R97 item 1, R106 item 6).
+- Rename `pending` to in-flight in the approver's resume path and panel (R65 item 4).
+- Make Done load older cards on scroll, and drop the 50-card cap elsewhere or page it (R61 item 4).
+- Put the new note button in the Proposed section (R63 item 1).
+- Route reports through the R98 singleton door (R106 item 1).
+- Add a request kind for a plugin install and a commit move (`install.md` R116 item 2).
+- Check that the panel's IndexedDB stays unpartitioned in the board frame on the real names, not localhost (R65).
+- Keep one copy of the grant vectors across the queue and trust lanes, and one task id minter across the queue and sessions lanes.
+- Rebase the lane on `feat/redux`. It is 35 commits behind.
+- Fix the docs: R64's "every action takes the passkey" against its window bullet and R65's "nothing beyond the button", the mizar approver in TO-DISCUSS 1d and 1r and `sessions.md` R68, and `queue.md` § Gap from today, which predates R105, R106, R145 and the lane.
 - Make the board writer call the `trilium` tool, and drop its ETAPI token (R87 item 3, R105).
