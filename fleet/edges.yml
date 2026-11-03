@@ -1,0 +1,79 @@
+# The fleet's edge list: fleet.md R87 (edges), R88 (roles), R89 and R98 (singletons),
+# R96 (one network per edge). The single source for Ansible, the Python reader
+# (awm.config.edges) and the Rust crates awm-trust and awm-edge. Plain YAML, no anchors.
+#
+# An edge `a -> b` gives a's user key a login on b and lets a's agents work with b's
+# agents (R87). Edges are directional. A singleton is reached through its host's
+# singleton door, not through an edge (R89, R98).
+
+version: 1
+
+nodes:
+  lyra:    {role: laptop,   managed: true,  os: windows-wsl, wsl_autostart: false, addresses: {lan: null, tailscale: null}}
+  capella: {role: desktop,  managed: true,  os: windows-wsl, wsl_autostart: true,  addresses: {lan: 172.16.0.21, tailscale: 100.70.76.82}}
+  mizar:   {role: homebase, managed: true,  os: linux, addresses: {lan: 172.16.0.25, tailscale: 100.125.95.5}}
+  alcor:   {role: standby,  managed: true,  os: linux, addresses: {lan: 172.16.0.23, tailscale: 100.114.13.36}}
+  # mira retires after the trial week (R89 item 1). It is in no R87 row. Its inbound
+  # edges below keep today's admin path until then.
+  mira:    {role: retiring, managed: true,  os: linux, addresses: {lan: 172.16.0.24, tailscale: 100.118.61.40}}
+  altair:  {role: work,     managed: false, managed_by: shogun, os: linux, addresses: {lan: null, tailscale: 100.104.93.90}}
+  deneb:   {role: station,  managed: true,  os: linux, addresses: {public: 43.162.91.185, tailscale: 100.74.11.93}}
+  sockeye: {role: station,  managed: false, os: linux, key_holder: alliance, addresses: {}}
+  fir:     {role: station,  managed: false, os: linux, key_holder: alliance, addresses: {}}
+  macpro:  {role: backup,   managed: false, os: macos, addresses: {zerotier: null}}
+  # shogun is the Arbutus admin node (R91). The swarm's Ansible manages it. R87 gives it no edge.
+  shogun:  {role: admin,    managed: true,  os: linux, addresses: {tailscale: null}}
+
+# from -> {to: network}. network is one of lan, tailscale, zerotier, internet (R96).
+edges:
+  lyra:
+    capella: tailscale
+    mizar: tailscale
+    alcor: tailscale
+    altair: tailscale
+    deneb: internet
+    sockeye: internet
+    fir: internet
+    mira: tailscale
+  capella:
+    lyra: tailscale
+    mizar: lan
+    alcor: lan
+    altair: tailscale
+    deneb: internet
+    sockeye: internet
+    fir: internet
+    mira: lan
+  mizar:
+    lyra: tailscale
+    capella: lan
+    alcor: lan
+    altair: tailscale
+    deneb: internet
+    sockeye: internet
+    fir: internet
+    mira: lan
+  alcor:
+    mizar: lan
+  altair:
+    sockeye: internet
+    fir: internet
+    macpro: zerotier
+  macpro:
+    altair: zerotier
+
+# Singleton services (R89). Each is reached through its host's singleton door (R98
+# item 2): service keys only, each locked to `awm port`, no shell, no forwarding.
+# The door carries no reflection (R104 item 4). The gateway reserves these tool names
+# for core plugins (install.md R116 item 5).
+singleton_doors:
+  alcor: {port: 2201, network: tailscale}
+  deneb: {port: 2201, network: internet}
+
+singletons:
+  - {tool: 2fa,      host: alcor}
+  - {tool: approver, host: alcor}
+  - {tool: queue,    host: alcor}
+  - {tool: browser,  host: alcor}
+  - {tool: social,   host: alcor, after: mira-trial-week}
+  - {tool: channel,  host: deneb}
