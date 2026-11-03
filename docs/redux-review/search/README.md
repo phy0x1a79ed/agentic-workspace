@@ -42,4 +42,6 @@ Reported by search-finish on altair, 2026-11-03. Feature branches only. dev and 
 - **Journal gate after R136 items 5 and 6.** recall@10 is 0.721 and recall@20 is 0.778 on the 54 judged queries. The released engine scores 0.689 and 0.776. No post is lost.
 - **Commits.** awm 5cf88c81 drops `then`, the graph section and the PageRank reorder. awm 19ffd55e and kb a4a2dab move the seed weighting into `kb hop` and remove the prior. awm 7fc61fe9 makes hits title only and logs each `get` to a `usage` table that no rank reads.
 - **Choices the lane made.** `kb_get` returns a whole paper, so `search get` can open a title-only paper hit. `context` and `passages` stay declared and do nothing, so open sessions and older nodes keep working.
-- **Still to run.** Criterion 5 on query plus `kb hop`, where the old `then` path scored recall@20 0.634. Then the full replay and grep parity.
+- **Criterion 5 passes.** Reported by altair job 6a450f72 on 2026-11-03. Over 300 more-by-these-authors cases, a query followed by `kb hop` scores recall@20 0.878 on 20 results. The old `then` path returned at most 10 papers and scored 0.634. The new path's top 10 scores 0.646: 268 cases are the same, 30 better and 2 worse. p50 is 5.7 s and p95 is 8.8 s.
+- **The sharpening step stays in `kb hop`.** Without it the score fell to 0.592 (awm d4cfc124).
+- **Not run.** The full replay and grep parity stopped, because the journal gate numbers already stand.
