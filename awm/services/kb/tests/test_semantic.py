@@ -5,9 +5,10 @@ import sqlite3
 import httpx
 import pytest
 
-from awm.kb import client, fastlayer, hub_adapter, semantic
+from awm.kb import client, fastlayer, hops, hub_adapter, semantic
 
 from .test_fastlayer import BODY, _base
+from .test_hops import write_hops
 
 PAPERS = {
     "doi:10.1/at": ("10.1/at", "Assembly theory explains and quantifies selection and evolution", 2023,
@@ -159,13 +160,14 @@ async def test_without_the_server_encoder_or_index_it_answers_keywords_and_says_
     assert server.graph_bodies == []
 
 
-async def test_a_neighbour_with_no_abstract_quotes_its_title(layer, server):
+async def test_a_neighbour_with_no_abstract_quotes_its_title(layer, server, tmp_path, monkeypatch):
     db = sqlite3.connect(layer.base_path)
     db.execute("DELETE FROM passage WHERE paper_id = 'doi:10.1/old' AND zone = 'abstract'")
     db.commit()
     db.close()
+    write_hops(tmp_path / "hops", list(PAPERS), cites=[("doi:10.1/at", "doi:10.1/old")])
+    monkeypatch.setattr(hub_adapter, "HOPS", hops.Hops(tmp_path / "hops"))
     server.entries = [entry("doi:10.1/at", "abstract", 0.9)]
-    server.graph_rows = {"CITES": [["doi:10.1/old", "An ASSEMBLY INDEX survey from long ago", 1999, 0.01]]}
     graph = (await query(limit=5))["graph"]
     title = "An ASSEMBLY INDEX survey from long ago"
     assert graph[0]["passages"] == [{"field": "title", "start": 0, "end": len(title), "text": title}]
@@ -176,34 +178,29 @@ async def test_a_project_filter_never_reaches_the_server(layer, server):
     assert got["exact"] == got["related"] == got["graph"] == [] and server.related_bodies == []
 
 
-async def test_graph_neighbours_are_ordered_by_pagerank_and_skip_what_is_shown(layer, server):
+async def test_graph_neighbours_are_ordered_by_the_prior_and_skip_what_is_shown(layer, server, tmp_path,
+                                                                                 monkeypatch):
+    write_hops(tmp_path / "hops", list(PAPERS), authored=[("doi:10.1/at", "A1"), ("doi:10.1/cas", "A1")],
+               cites=[("doi:10.1/at", "doi:10.1/old"), ("doi:10.1/lone", "doi:10.1/at")],
+               prior={"doi:10.1/cas": 0.05, "doi:10.1/old": 0.01, "doi:10.1/lone": 0.9})
+    monkeypatch.setattr(hub_adapter, "HOPS", hops.Hops(tmp_path / "hops"))
     server.entries = [entry("doi:10.1/at", "abstract", 0.9), entry("doi:10.1/lone", "abstract", 0.5)]
-    server.nouns = [{"score": 0.8, "gid": 1, "name": "assembly", "type": "Entity", "node_ids": ["e1", "e2"]},
-                    {"score": 0.7, "gid": 2, "name": "index", "type": "Entity", "node_ids": ["e2", "e3"]}]
-    server.graph_rows = {
-        "CITES": [["doi:10.1/old", "An ASSEMBLY INDEX survey from long ago", 1999, 0.01],
-                  ["doi:10.1/lone", "Constructive molecular lineages", 2020, 0.9]],
-        "AUTHORED": [["doi:10.1/cas", "A programmable dual-RNA-guided DNA endonuclease", 2012, 0.05],
-                     ["doi:10.1/old", "An ASSEMBLY INDEX survey from long ago", 1999, 0.01]],
-        "HAS_CHUNK": [["doi:10.1/ghost", "Not in papers.db", 2000, 0.99]]}
-    got = await query(limit=5)
-    graph = got["graph"]
+    graph = (await query(limit=5))["graph"]
     assert [h["id"] for h in graph] == ["doi:10.1/cas", "doi:10.1/old"]
     assert [h["match"] for h in graph] == ["shares an author", "cited-by or cites"]
     assert graph[0]["score"] > graph[1]["score"] and graph[0]["passages"][0]["field"] == "abstract"
-    by_label = {("CITES" if "CITES" in b["cypher"] else "AUTHORED" if "AUTHORED" in b["cypher"] else "HAS_CHUNK"): b
-                for b in server.graph_bodies}
-    assert by_label["CITES"]["params"]["seeds"][:2] == ["paper:doi:10.1/at", "paper:doi:10.1/lone"]
-    assert by_label["HAS_CHUNK"]["params"]["ents"] == ["e1", "e2", "e3"]
-    assert all(b["timeout_s"] <= 5 for b in server.graph_bodies)
+    assert server.graph_bodies == []
 
 
-async def test_a_failing_graph_leaves_the_other_sections_and_says_why(layer, server):
+async def test_without_hop_arrays_the_graph_is_empty_and_the_rest_answers(layer, server, tmp_path, monkeypatch):
+    monkeypatch.setattr(hub_adapter, "HOPS", hops.Hops(tmp_path / "nowhere"))
     server.entries = [entry("doi:10.1/at", "abstract", 0.9)]
-    server.graph_error = client.KbError(503, "no graph at /w2/graph/graph.ladybug")
     got = await query()
     assert [h["id"] for h in got["related"]] == ["doi:10.1/at"] and got["graph"] == []
-    assert "no graph" in got["degraded"]["graph"] and "semantic" not in got["degraded"]
+    with pytest.raises(RuntimeError, match="no hop arrays"):
+        await query(then=[{"hop": "authors"}])
+    with pytest.raises(ValueError, match="hop arrays"):
+        await query(author="Cronin")
 
 
 def test_zone_union_keeps_a_papers_best_entry_in_each_zone():

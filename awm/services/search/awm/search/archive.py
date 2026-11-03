@@ -36,6 +36,9 @@ TICK_S = 15.0
 REGISTRY_TTL_S = 10.0
 LIVE_TIMEOUT_S = 15.0
 RANK_TIMEOUT_S = 3.0
+#: The sources whose hits are papers. Their order is kb's own, by words and meaning: the POC found a prior
+#: boost on paper hits gained nothing, so PageRank reorders only the other sources.
+PAPER_SOURCES = frozenset({"kb", "library"})
 HOMES_TTL_S = 300.0
 EXPORT_TIMEOUT_S = 120.0
 PAGE = 200
@@ -357,6 +360,8 @@ class Archive:
 
     async def _live(self, source: Source, q: Query) -> tuple[Source, dict[str, list[dict[str, Any]]], dict[str, Any]]:
         args = {"query": q.text, "limit": q.limit, "passages": q.passages, **q.raw}
+        if q.then:
+            args["then"] = q.then
         try:
             raw = await asyncio.wait_for(
                 self.gateway.call(source.service, source.query, args, LIVE_TIMEOUT_S),
@@ -410,6 +415,9 @@ class Archive:
                     homed.setdefault(self.homed[name], []).append(name)
                     statuses.pop(name, None)
 
+        if q.raw.get("author"):  # only papers have authors: the filter is one no archived document can meet
+            statuses.update({n: {"status": "ok", "hits": 0} for n in index_names})
+            index_names = []
         jobs: list[Any] = [self._archive_hits(q, index_names)] if index_names else []
         jobs += [self._live(source, q) for source in live]
         jobs += [federation.ask_home(self.peers, home, names, q.forwarded(), q.limit)
@@ -471,7 +479,8 @@ class Archive:
         """Reorder each source's list in each section in place by kb's PageRank, for ``context`` when one is given."""
         if not any(s.service == "kb" for s in self.sources.values()):
             return None
-        slots = [(section, source) for section in hitshape.SECTIONS for source in fused[section]]
+        slots = [(section, source) for section in hitshape.SECTIONS for source in fused[section]
+                 if source not in PAPER_SOURCES]
         every = [h for section, source in slots for h in fused[section][source]]
         if not every:
             return None

@@ -118,6 +118,8 @@ class Filters:
     after: str = ""
     before: str = ""
     blocked: bool = False
+    #: Only these papers, as the author filter names them; None admits every paper.
+    papers: set[str] | None = None
 
     @classmethod
     def from_args(cls, args: dict[str, Any]) -> "Filters":
@@ -130,6 +132,9 @@ class Filters:
         if self.after and (not ts or ts < self.after):
             return False
         return not (self.before and (not ts or ts >= self.before))
+
+    def admits(self, paper: sqlite3.Row) -> bool:
+        return (self.papers is None or paper["paper_id"] in self.papers) and self.keeps(paper["ts"])
 
 
 def terms(text: str) -> list[str]:
@@ -556,7 +561,7 @@ def _literal_hits(stores: list[sqlite3.Connection], needle: str, filters: Filter
         papers = _papers(conn, [k for k in by_paper if k not in seen])
         for pid, hold in by_paper.items():
             paper = papers.get(pid)
-            if paper is None or not filters.keeps(paper["ts"]):
+            if paper is None or not filters.admits(paper):
                 continue
             seen.add(pid)
             hold.sort(key=lambda f: (_ZONE_RANK.get(f[0]["zone"], 2), f[0]["ord"]))
@@ -611,7 +616,7 @@ def _walk(conn: sqlite3.Connection, ranked: list[tuple[int, float]], filters: Fi
             if want is not None and len(accepted) >= want:
                 continue
             paper = papers.get(pid)
-            if paper is None or not filters.keeps(paper["ts"]) or \
+            if paper is None or not filters.admits(paper) or \
                     (weighed and coverage(weighed[0], weighed[1], p["text"]) < MIN_COVERAGE):
                 refused.add(pid)
                 continue

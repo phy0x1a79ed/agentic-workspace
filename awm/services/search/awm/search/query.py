@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from typing import Any, Sequence
 
@@ -43,6 +44,8 @@ class Query:
     context: str = ""
     hidden: Sequence[dict] | None = ()
     raw: dict[str, str] = field(default_factory=dict)
+    #: Hop steps for the paper sources, as {hop, after, before, limit}; they end in the ``graph`` section.
+    then: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def fan_out(self) -> bool:
@@ -58,6 +61,8 @@ class Query:
         """The arguments a peer is asked with: the same question, never a further fan-out."""
         args: dict[str, Any] = {"query": self.text, "limit": self.limit, "passages": self.passages,
                                 "peers": False, **self.raw}
+        if self.then:
+            args["then"] = self.then
         if self.sources is not None:
             args["sources"] = self.sources
         return args
@@ -109,6 +114,31 @@ def _peers(value: Any) -> tuple[bool, list[str] | str]:
     return len(remote) < len(chosen), remote
 
 
+HOPS = ("authors", "cites", "cited_by")
+
+
+def then_steps(value: Any) -> list[dict[str, Any]]:
+    """The ``then`` chain as hop steps; a JSON string or one step alone is read too."""
+    if not value:
+        return []
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except ValueError:
+            raise ValueError("then: not a JSON list of hop steps") from None
+    if isinstance(value, dict):
+        value = [value]
+    if not isinstance(value, list):
+        raise ValueError("then: a list of hop steps")
+    out = []
+    for step in value:
+        hop = str((step or {}).get("hop") or "") if isinstance(step, dict) else ""
+        if hop not in HOPS:
+            raise ValueError(f"then: hop must be one of {', '.join(HOPS)}")
+        out.append({"hop": hop, **{k: step[k] for k in ("after", "before", "limit") if step.get(k)}})
+    return out
+
+
 def parse(args: dict[str, Any], as_: str | None = None) -> Query:
     text = str(args.get("query") or "").strip()
     if not text:
@@ -118,7 +148,7 @@ def parse(args: dict[str, Any], as_: str | None = None) -> Query:
         local, peer_names = True, []  # a peer's call searches this node only, never fanning out again
     grants = args.get("_grants")
     kinds = names(args.get("kind")) or []
-    raw = {k: str(args[k]) for k in ("project", "scope", "after", "before") if args.get(k)}
+    raw = {k: str(args[k]) for k in ("project", "scope", "after", "before", "author") if args.get(k)}
     if kinds:
         raw["kind"] = ",".join(kinds)
     return Query(
@@ -129,4 +159,4 @@ def parse(args: dict[str, Any], as_: str | None = None) -> Query:
         passages=max(1, min(int(args.get("passages") or DEFAULT_PASSAGES), MAX_PASSAGES)),
         local=local, peer_names=peer_names, relayed=privacy.from_peer(as_),
         grants=None if grants is None else frozenset(str(g) for g in grants), hidden=hidden_for(as_),
-        context=str(args.get("context") or "").strip(), raw=raw)
+        context=str(args.get("context") or "").strip(), raw=raw, then=then_steps(args.get("then")))

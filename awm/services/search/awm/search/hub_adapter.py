@@ -51,15 +51,12 @@ API_MANIFEST: dict[str, Any] = {
                 "Each hit carries source, id, title, ts, score, match, origin (node and swarm) "
                 "and its passages: quotes with their section and their start and end offsets in "
                 "the document's field. Read the answer's `sources` and `peers` for the status "
-                "of each source and peer asked. Fetch a whole hit with `get`. The `graph` section is a "
-                "guess at one hop from the top hits. When the question states a join, such as who wrote "
-                "the paper about X, which papers share a concept with Y or what cites Z, write the join "
-                "yourself: read `kb schema`, then call `kb graph` with Cypher for the hops and `near` for "
-                "the meaning-matched nouns or papers. Example: kb graph {cypher: \"MATCH "
-                "(a:Author)-[:AUTHORED]->(p:Paper) WHERE p.key IN $near_p RETURN p.title, a.name, a.rank "
-                "ORDER BY a.rank DESC LIMIT 20\", near: {p: {index: \"entries\", text: \"<a paraphrase of "
-                "the paper's claim>\", k: 3}}}. `near` binds $near_p to the 3 nearest papers' keys. Hops "
-                "carry no meaning score, so ORDER BY a rank."
+                "of each source and peer asked. Fetch a whole hit with `get`. The `graph` section holds papers that cite, are "
+                "cited by or share an author with the top paper hits. For a join, such as all papers by the "
+                "authors of the paper that said X, or what cites it, pass `then`: hop steps from the paper "
+                "hits, ranked by personalized PageRank from the top five and never by meaning, whose last "
+                "step fills `graph`. Example: then: [{hop: \"authors\", after: \"2020-01-01\", limit: 20}]. "
+                "Chain further from any hits' ids with `kb hop`. `author` narrows papers to an author."
             ),
             "params": [
                 {"name": "query", "type": "string", "required": True,
@@ -87,8 +84,14 @@ API_MANIFEST: dict[str, Any] = {
                                 "them, as in `fleet,shaula`."},
                 {"name": "context", "type": "string",
                  "description": "The scope to rank for, as project/scope or a project. It reorders each "
-                                "section by that scope's PageRank and never changes which hits appear. "
-                                "Default: the calling session's scope."},
+                                "section of the sources other than papers by that scope's PageRank and "
+                                "never changes which hits appear. Default: the calling session's scope."},
+                {"name": "author", "type": "string",
+                 "description": "Only papers with an author of this surname, matched loosely, so "
+                                "'Huttenhauer' finds Huttenhower. Other sources answer nothing."},
+                {"name": "then", "type": "array",
+                 "description": "Hop steps from the paper hits, in order, the last filling `graph`: each "
+                                "{hop: authors | cites | cited_by, after?, before?, limit?}."},
             ],
         },
         {

@@ -438,3 +438,46 @@ async def test_no_kb_asks_for_no_rank(archive, gateway):
     await synced(archive, gateway)
     result = await archive.query(parse({"query": "kitchen"}))
     assert "rank" not in result and not any(fn == "rank" for _, fn, _ in gateway.calls)
+
+
+# -- hop steps and the author filter --------------------------------------------
+
+
+def test_then_reads_a_list_a_json_string_or_one_step():
+    assert parse({"query": "x", "then": [{"hop": "authors", "after": "2020-01-01", "limit": 5}]}).then == \
+        [{"hop": "authors", "after": "2020-01-01", "limit": 5}]
+    assert parse({"query": "x", "then": '[{"hop": "cites"}, {"hop": "cited_by"}]'}).then == \
+        [{"hop": "cites"}, {"hop": "cited_by"}]
+    assert parse({"query": "x", "then": {"hop": "authors"}}).then == [{"hop": "authors"}]
+    for bad in ([{"hop": "wrote"}], "not json", 3):
+        with pytest.raises(ValueError, match="then"):
+            parse({"query": "x", "then": bad})
+
+
+async def test_a_live_paper_source_and_a_peer_are_asked_with_the_steps_and_the_author(loaded, gateway):
+    asked = []
+    gateway.plug_live("papers", lambda args: asked.append(args) or {"exact": [], "related": [], "graph": []},
+                      service="papers")
+    await loaded.refresh()
+    q = parse({"query": "kitchen", "then": [{"hop": "authors"}], "author": "Huttenhauer", "sources": ["papers"]})
+    await loaded.query(q)
+    assert asked[-1]["then"] == [{"hop": "authors"}] and asked[-1]["author"] == "Huttenhauer"
+    assert q.forwarded()["then"] == [{"hop": "authors"}] and q.forwarded()["author"] == "Huttenhauer"
+
+
+async def test_an_author_filter_leaves_the_archived_sources_empty(loaded):
+    result = await loaded.query(parse({"query": "kitchen", "author": "Lee"}))
+    assert not every(result)
+    assert result["sources"]["journals"] == {"status": "ok", "hits": 0}
+
+
+async def test_pagerank_never_reorders_paper_hits(loaded, gateway):
+    asked = []
+
+    def rank(args):
+        asked.append(args)
+        return {"profile": "global", "scores": [1.0] * len(args["hits"])}
+
+    gateway.handlers[("kb", "rank")] = rank
+    await loaded.query(parse({"query": "kitchen tap"}))
+    assert asked and all(h["source"] not in ("kb", "library") for h in asked[-1]["hits"])

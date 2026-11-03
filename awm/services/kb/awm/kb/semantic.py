@@ -5,8 +5,7 @@ text in papers.db's passage rows. This module keeps each zone's best papers apar
 by reciprocal rank (so a paper strong in one zone is not lost to a fusion that cut every zone to 20 first), and
 quotes each paper from papers.db by the overlap of the entry's span with a passage's span.
 
-The graph leg walks one hop from the top papers and nearest entities on the Ladybug graph through the server's
-`/graph`, and orders what it finds by PageRank. Hop results are not ranked by meaning (precedence 5db3b97b404c877a).
+The graph section's hops come from ``awm.kb.hops``; this module only quotes what they find.
 """
 
 from __future__ import annotations
@@ -25,21 +24,7 @@ RRF_K = 60
 ENTRY_K = 60
 NOUNS = 3
 SEEDS = 5
-NEIGHBOUR_TIMEOUT_S = 3.0
 RELATED_TIMEOUT_S = 10.0
-MAX_ENTITY_IDS = 300
-
-#: label -> Cypher. Each takes $seeds (paper keys) or $ents (Cognee node ids) and returns paper_id, title, year, rank.
-_RETURN = "RETURN DISTINCT q.paper_id, q.title, q.year, q.rank ORDER BY q.rank DESC LIMIT {n}"
-NEIGHBOURS = {
-    "cited-by or cites": "MATCH (p:Paper)-[:CITES]-(q:Paper) WHERE p.key IN $seeds AND NOT q.key IN $seeds "
-                         "AND q.registered " + _RETURN,
-    "shares an author": "MATCH (p:Paper)<-[:AUTHORED]-(:Author)-[:AUTHORED]->(q:Paper) WHERE p.key IN $seeds "
-                        "AND NOT q.key IN $seeds AND q.registered " + _RETURN,
-    "shares an entity": "MATCH (e:Node) WHERE e.id IN $ents MATCH (q:Paper)-[:HAS_CHUNK]->(:Node)-[:EDGE]-(e) "
-                        "WHERE NOT q.key IN $seeds AND q.registered " + _RETURN,
-}
-
 
 def zone_lists(entries: list[dict[str, Any]], keep: int) -> dict[str, list[str]]:
     """Each zone's papers, best first, a paper once at its best entry."""
@@ -113,7 +98,7 @@ def paper_hits(layer: fastlayer.FastLayer, entries: list[dict[str, Any]], keywor
         out = []
         for paper, score in ranked:
             row = rows.get(paper)
-            if row is None or not filters.keeps(row["ts"]):
+            if row is None or not filters.admits(row):
                 continue
             quotes = _quotes(conns, paper, by_paper.get(paper, []), per_hit)
             kept = {(q["field"], q["start"]) for q in quotes}
@@ -141,7 +126,7 @@ def describe(layer: fastlayer.FastLayer, found: dict[str, tuple[str, float, str]
         out = []
         for paper, (via, rank, _) in sorted(found.items(), key=lambda kv: -kv[1][1]):
             row = rows.get(paper)
-            if row is None or not filters.keeps(row["ts"]):
+            if row is None or not filters.admits(row):
                 continue
             quote = next((fastlayer._quote(p) for c in conns for p in c.execute(
                 "SELECT * FROM passage WHERE paper_id = ? AND zone = 'abstract' ORDER BY ord LIMIT 1", (paper,))),
@@ -161,36 +146,6 @@ async def entries_for(text: str) -> dict[str, Any]:
     """The server's `/related` answer for ``text``: entries per zone and the nearest entities."""
     return await client.related({"text": text, "k": ENTRY_K, "zones": list(ZONES), "nouns": NOUNS},
                                 timeout=RELATED_TIMEOUT_S)
-
-
-async def neighbours(seeds: list[str], entities: list[str],
-                      limit: int) -> tuple[dict[str, tuple[str, float, str]], list[str]]:
-    """Papers one hop from the seed papers and the entities' chunks: paper id -> (relation, PageRank, title),
-    and why any hop failed.
-
-    The three hops run at once; a hop that fails or times out adds nothing.
-    """
-    n = max(limit * 3, 30)
-    jobs = {}
-    if seeds:
-        jobs["cited-by or cites"] = {"seeds": seeds}
-        jobs["shares an author"] = {"seeds": seeds}
-    if entities:
-        jobs["shares an entity"] = {"seeds": seeds, "ents": entities[:MAX_ENTITY_IDS]}
-    replies = await asyncio.gather(
-        *(client.graph({"cypher": NEIGHBOURS[via].format(n=n), "params": params, "limit": n,
-                        "timeout_s": NEIGHBOUR_TIMEOUT_S}, timeout=NEIGHBOUR_TIMEOUT_S + 5)
-          for via, params in jobs.items()), return_exceptions=True)
-    found: dict[str, tuple[str, float, str]] = {}
-    errors: list[str] = []
-    for via, reply in zip(jobs, replies):
-        if isinstance(reply, BaseException):
-            errors.append(f"{via}: {reason(reply)}")
-            continue
-        for paper_id, title, _year, rank in reply["rows"]:
-            if paper_id not in found or (rank or 0.0) > found[paper_id][1]:
-                found[paper_id] = (via, float(rank or 0.0), title or "")
-    return found, errors
 
 
 def reason(exc: BaseException) -> str:

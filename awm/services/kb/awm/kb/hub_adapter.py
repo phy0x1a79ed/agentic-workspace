@@ -16,6 +16,7 @@ Run via `run.sh`:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import shutil
 import subprocess
@@ -26,13 +27,14 @@ from awm import config
 from awm import gatewayclient
 from awm.gatewayclient import ServiceAdapter, spawn_supervised
 
-from awm.kb import client, fastlayer, graphrank, instances, papers, semantic, server
+from awm.kb import client, fastlayer, graphrank, hops, instances, papers, semantic, server
 
 log = logging.getLogger("awm.kb.hub_adapter")
 
 CHILD = server.CHILD
 PAPERS = fastlayer.FastLayer(instances.PAPERS_BASE, instances.PAPERS_DELTA)
 RANKS = graphrank.Ranks(instances.GRAPH)
+HOPS = hops.Hops(instances.HOPS)
 MAX_RANKED = 1000
 _tasks: set[asyncio.Task] = set()
 
@@ -141,7 +143,8 @@ API_MANIFEST: dict[str, Any] = {
                 "papers whose title, abstract or body holds the query literally, then papers "
                 "matching its words. `related` holds papers near the query in meaning (the entry "
                 "index's best papers per zone, merged with the keyword matches) and `graph` the "
-                "papers one hop from the top hits and nearest entities, ordered by PageRank. Each "
+                "papers that cite, are cited by or share an author with the top hits, ordered by the "
+                "prior, or, when `then` is given, the end of that chain of hops. Each "
                 "hit quotes its passages with their zone, section and offsets. The answer says in "
                 "`degraded` what it could not use, for example the encoder or the index. "
                 "`search query` calls it; call that instead."
@@ -156,6 +159,33 @@ API_MANIFEST: dict[str, Any] = {
                 {"name": "scope", "type": "string", "description": "Papers have none, so any value answers nothing."},
                 {"name": "after", "type": "string", "description": "Only papers from this ISO 8601 date on."},
                 {"name": "before", "type": "string", "description": "Only papers before this ISO 8601 date."},
+                {"name": "author", "type": "string",
+                 "description": "Only papers with an author of this surname, matched loosely, so "
+                                "'Huttenhauer' finds Huttenhower."},
+                {"name": "then", "type": "array",
+                 "description": "Hop steps applied in order to the paper hits, ending in `graph`: each "
+                                "{hop: authors | cites | cited_by, after?, before?, limit?}."},
+            ],
+            "timeout": 30,
+        },
+        {
+            "name": "hop",
+            "effect": "read",
+            "category": "kb",
+            "tool": "kb_hop",
+            "description": (
+                "Papers one hop from the given papers: their authors' other papers (`authors`), the "
+                "papers they cite (`cites`) or the papers citing them (`cited_by`), ranked by "
+                "personalized PageRank from them and never by meaning. Feed the ids of a search's "
+                "hits, or of an earlier hop, to chain hops."
+            ),
+            "params": [
+                {"name": "ids", "type": "array", "required": True, "description": "Paper ids, best first."},
+                {"name": "along", "type": "string", "description": "authors (default), cites or cited_by."},
+                {"name": "after", "type": "string", "description": "Only papers published from this date on."},
+                {"name": "before", "type": "string", "description": "Only papers published before this date."},
+                {"name": "limit", "type": "integer", "description": "Maximum papers, 1-100. Default 20."},
+                {"name": "passages", "type": "integer", "description": "Passages per hit, 0-10. Default 1."},
             ],
             "timeout": 30,
         },
@@ -305,10 +335,55 @@ async def _h_export(args: dict, as_: str | None = None) -> dict:
                                    args.get("cursor"), args.get("limit"))
 
 
+def steps(value: Any) -> list[dict[str, Any]]:
+    """A `then` chain as a list of hop steps; a JSON string or a single step is read too."""
+    if not value:
+        return []
+    if isinstance(value, str):
+        value = json.loads(value)
+    if isinstance(value, dict):
+        value = [value]
+    out = []
+    for step in value:
+        along = str(step.get("hop") or step.get("along") or "")
+        if along not in hops.ALONG:
+            raise ValueError(f"then: hop must be one of {', '.join(hops.ALONG)}, not {along!r}")
+        out.append({"hop": along, "after": str(step.get("after") or ""), "before": str(step.get("before") or ""),
+                    "limit": max(1, min(int(step.get("limit") or 20), 100))})
+    return out
+
+
+def seeds(exact: list[dict[str, Any]], related: list[dict[str, Any]]) -> list[tuple[str, float]]:
+    """The hits a hop starts from, with scores the seed weights sharpen. Without exact hits, related's own
+    scores carry how clear its first hit is. Exact and related scores share no scale, so with both the
+    reading order stands in: each hit scores 0.95 of the one before."""
+    if not exact:
+        return [(h["id"], float(h["score"])) for h in related]
+    return [(h["id"], 0.95 ** i) for i, h in enumerate([*exact, *related])]
+
+
+def chain(start: list[tuple[str, float]], plan: list[dict[str, Any]]) -> dict[str, tuple[str, float, str]]:
+    """The papers at the end of the hop steps ``plan`` from ``start``: paper id -> (hop, score, "")."""
+    got, along = start, ""
+    for step in plan:
+        along = step["hop"]
+        got = HOPS.hop(got, along, step["after"], step["before"], step["limit"])
+        if not got:
+            break
+    return {p: (along, score, "") for p, score in got} if plan else {}
+
+
 async def _h_query(args: dict, as_: str | None = None) -> dict:
     limit = max(1, min(int(args.get("limit") or 10), 100))
     per_hit = max(1, min(int(args.get("passages") or 1), 10))
     filters = fastlayer.Filters.from_args(args)
+    plan = steps(args.get("then"))
+    author = str(args.get("author") or "").strip()
+    if author and not filters.blocked:
+        filters.papers = await asyncio.to_thread(HOPS.by_author, author)
+        if filters.papers is None:
+            raise ValueError("the author filter needs kb's hop arrays, which this node does not have")
+        filters.blocked = not filters.papers
     text = str(args.get("query") or "")
     meaning = None if filters.blocked or not text.strip() else asyncio.ensure_future(_entries(text))
     found = await asyncio.to_thread(PAPERS.search, text, filters, limit, per_hit)
@@ -318,26 +393,47 @@ async def _h_query(args: dict, as_: str | None = None) -> dict:
     degraded: dict[str, str] = {}
     related, graph = found["related"], []
     if served is None:
-        degraded["semantic"] = f"meaning matches and graph unavailable, keyword only: {why}"
+        degraded["semantic"] = f"meaning matches unavailable, keyword only: {why}"
     else:
         exact_ids = {h["id"] for h in found["exact"]}
         related = await asyncio.to_thread(semantic.paper_hits, PAPERS, served["hits"], found["related"],
                                           exact_ids, filters, limit, per_hit)
-        shown = exact_ids | {h["id"] for h in related}
-        seeds = [h["id"] for h in [*found["exact"], *related]][:semantic.SEEDS]
-        entities = list(dict.fromkeys(i for n in served.get("nouns") or [] for i in n["node_ids"]))
-        if seeds or entities:
-            near, errors = await semantic.neighbours([f"paper:{s}" for s in seeds], entities, limit)
-            graph = await asyncio.to_thread(semantic.describe, PAPERS,
-                                            {p: v for p, v in near.items() if p not in shown}, filters, limit,
-                                            per_hit)
-            if errors and not graph:
-                degraded["graph"] = "; ".join(errors)
+    start = seeds(found["exact"], related)
+    try:
+        if plan:
+            near = await asyncio.to_thread(chain, start, plan)
+        else:
+            shown = {h["id"] for h in [*found["exact"], *related]}
+            near = {p: (via, rank, "") for p, (via, rank) in
+                    (await asyncio.to_thread(HOPS.neighbours, [p for p, _ in start[:semantic.SEEDS]], limit)).items()
+                    if p not in shown}
+        graph = await asyncio.to_thread(semantic.describe, PAPERS, near, filters, limit if not plan else 100,
+                                        per_hit)
+    except (OSError, RuntimeError, ValueError) as exc:
+        if plan:
+            raise
+        degraded["graph"] = str(exc)[:200]
     out = {"exact": found["exact"], "related": related, "graph": graph}
     out["semantic"] = {"status": "ok" if served else "unavailable", "generation": (served or {}).get("generation")}
     if degraded:
         out["degraded"] = degraded
     return out
+
+
+async def _h_hop(args: dict, as_: str | None = None) -> dict:
+    ids = args.get("ids") or []
+    if isinstance(ids, str):
+        ids = [i.strip() for i in ids.split(",") if i.strip()]
+    if not ids:
+        raise ValueError("hop needs paper ids")
+    along = str(args.get("along") or "authors")
+    limit = max(1, min(int(args.get("limit") or 20), 100))
+    per_hit = max(0, min(int(args.get("passages") if args.get("passages") is not None else 1), 10))
+    got = await asyncio.to_thread(HOPS.hop, [(str(i), 1.0) for i in ids], along, str(args.get("after") or ""),
+                                  str(args.get("before") or ""), limit)
+    hits = await asyncio.to_thread(semantic.describe, PAPERS, {p: (along, s, "") for p, s in got},
+                                   fastlayer.Filters(), limit, per_hit)
+    return {"hits": hits, "along": along}
 
 
 async def _entries(text: str) -> tuple[dict[str, Any] | None, str]:
@@ -452,6 +548,7 @@ HANDLERS = {
     "status": _h_status,
     "recall": _h_recall,
     "query": _h_query,
+    "hop": _h_hop,
     "graph": _h_graph,
     "schema": _h_schema,
     "related": _h_related,
