@@ -84,6 +84,40 @@ def _proc_start(pid: int) -> Optional[str]:
     return roster.proc_start(pid)
 
 
+def successor(session_id: str, old_pid: Optional[int] = None,
+              proc_start=None) -> Optional[tuple[int, str]]:
+    """``(pid, procStart)`` of the live process that now holds ``session_id``.
+
+    Claude Code's daemon swaps an outdated background worker for a new process
+    on the new binary in place: same job, same session id and transcript, new
+    pid. This finds that process. A record counts only while its pid is alive
+    and was not ``old_pid``.
+    """
+    if not session_id:
+        return None
+    proc_start = proc_start or _proc_start
+    try:
+        records = list(SESSIONS_DIR.glob("*.json"))
+    except OSError:
+        return None
+    for path in records:
+        if not path.stem.isdigit():
+            continue
+        pid = int(path.stem)
+        if pid == old_pid:
+            continue
+        try:
+            record = json.loads(path.read_text())
+        except (OSError, ValueError):
+            continue
+        if not isinstance(record, dict) or record.get("sessionId") != session_id:
+            continue
+        started = proc_start(pid)
+        if started is not None:
+            return pid, started
+    return None
+
+
 def read_session_record(repl_pid: int) -> dict:
     """Return Claude Code's session record for ``repl_pid``.
 

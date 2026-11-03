@@ -42,6 +42,7 @@ from awm.gatewayclient import ServiceAdapter
 
 from awm import claudedaemon
 from awm.reflection import (
+    alarm,
     control,
     elsewhere,
     inject,
@@ -351,7 +352,9 @@ API_MANIFEST: dict[str, Any] = {
                 "compacted and then went idle forever is the visible symptom of "
                 "one of these being lost; this is how you tell whether the "
                 "promise is still being watched or vanished with a restart. "
-                "Reports on the whole node, not just the caller."
+                "`lost` lists the newest resumes reflection gave up on, each "
+                "with its reason; each was also posted to the session's scope "
+                "journal. Reports on the whole node, not just the caller."
             ),
             "timeout": 30,
             "params": [],
@@ -488,9 +491,12 @@ def _handle_pending(args: dict) -> dict:
          # is progressing, and how many times the session has been asked to bring
          # its turn to a close so the command it is sitting on can run.
          "holds": p.holds, "nudges": p.nudges,
-         "last_outcome": p.last_outcome}
+         "last_outcome": p.last_outcome,
+         # awaiting_command until the resume is typed, then resume_sent until
+         # the session is seen to take it up.
+         "phase": p.phase, "reissues": p.reissues, "state": "pending"}
         for p in pending.load_all()
-    ]}
+    ], "lost": [{**entry, "state": "lost"} for entry in alarm.recent()]}
 
 
 def _job(args: dict) -> Any:
