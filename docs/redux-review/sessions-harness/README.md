@@ -88,3 +88,44 @@ Surveyed read only on mizar, 2026-11-03. "release" is `origin/release` at 266f4b
 - Reword R135 items 2 and 3: the harness names the calling session, and reflection applies trust and mode to it.
 - Rewrite the R18 and R51 gap rows in `sessions.md` for cch. Add a gap row for R141.
 - Drop the OpenCode line from `AGENTS.md` with the R143 rewrite (R135 item 5).
+
+## Build result
+
+Reported by the redux-harness lane on 2026-11-03. Local commits only, on `feat/redux-harness`. It carries `feat/redux-sessions` (51395e5c) and `feat/redux-plugins` (8a3d6a32).
+
+- **Built.**
+  - One R9 parser at `awm.gatewayclient.ids` (2b3e0779).
+  - Retire deletes the job and wakes its waiters, and a wait keeps the job (6f17ffd2).
+  - R57 whoami and the join notice (970b4bf2). `harness@1` (29adcb67).
+  - The gateway's mode gate, trust stamp and proxy walk go through `reflection session_of`. The cx and keep verbs leave reflection (e93907a0). Transcripts read live sessions from cch (7a1a2216).
+  - dsh names its caller when one turn runs, and each node's keeper holds only its own seats (2e438c1e).
+  - `_dvc_drift` replaces `_ignored_files` (2bc8d552).
+  - The brief verbs, the cch start hook, and the brief in the `reflection cd` follow-up (a0ba395c).
+  - A search `get` of a journal post counts as a read (492f9074).
+  - `journal render` writes no file. AGENTS.md's ritual is render, inbox, goal_read (9e729b01).
+- **Tests pass.** gateway 1311, journal 202, search 115, reflection 59, cch 745, scopes 293 plus 163 slow, dsh 40, social 359. The 9 known `slack_sdk` failures remain. `_dvc_drift` was tested against a stub, because dvc is not installed on mizar.
+- **Not built.**
+  - R142's data link and DVC hook state: every project must move to DVC first, and the hook rewrite belongs to a dvc change.
+  - R10 item 3, resuming a retired session from its transcript.
+  - The two-sentence brief rule. Only the 400 cap is in code.
+  - `reflection cd` of another session does not give that session its brief.
+  - The lane's proposed R51 row still has a minute sweep and no terminal wait, against the Follow-ups. Asked the lane.
+- **Deploy sweep steps.**
+  1. Per node, an agent writes each scope's brief from its `context.md` and moves the hand-written notes into `docs/` or a journal post. Then run `scope heal`, which deletes the stale `history.md` and `mcp-opencode.json`.
+  2. Run `deploy-hooks.sh` for the brief start hook.
+  3. `~/.claude/CLAUDE.md`, the `debrief` skill (`SKILL.md:16,57,61`) and the `scatter-gather` skill (`SKILL.md:31`) still name `context.md` and `history.md`.
+- **Journal migrations.** Cursors (1,2) and reads (2,3). (3,4) is left for trust and (4,5) for tags.
+- **Doc changes the lane proposes for `docs/redux`.** R135 items 2 and 3, the R135 gap, the R10, R18 and R51 gap rows, a new R141 row, and the R142, R143 and R44 gap rows in `scopes.md`.
+- **Open for Tony.**
+  - The `harness_event` done and lost callback.
+  - The hidden `reflection session_of`.
+  - The old state paths under `services/reflection/pending` and `services/keep`.
+  - R44 item 4, and `complete` dropping the discard list.
+  - `fleet.md` R109 item 7.
+  - Lineage staying in reporting.
+- **For the cleanup pass.**
+  - `reporting/task_ids.py` duplicates operations' minter.
+  - `reporting/federation.py:23,93,101` parses hex on its own.
+  - The claudedaemon fallbacks in channel `holders.py`.
+  - search's `JOURNAL_KIND` duplicates journal `kinds.JOURNAL`.
+  - Two copies of the brief cap and of the brief line format.
