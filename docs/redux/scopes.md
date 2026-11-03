@@ -25,9 +25,10 @@ This doc holds how a session finds its project and scope, enters it, shares it w
 - **R44.** These conditions block a scope delete. Tony: "ok" (2026-10-31).
   1. A live session holds the claim (R42). `force` never overrides this.
   2. The worktree has uncommitted or untracked files. `force` overrides this.
-  3. The worktree has ignored files outside `.awm/`. `force` overrides this.
+  3. A `.dvc` pin is uncommitted, or data under a committed pin differs from its pin (`dvc status`). `force` overrides this.
   4. The branch has commits that no other branch or remote holds. This blocks even when the delete keeps the branch. `force` overrides this. Tony: "always, for unmerged commits or dirty files" (2026-11-03).
   - A forced delete lists everything it discarded.
+  - A delete fails only where work is lost. A gitignored file is marked as losable, so it never blocks a delete. Secrets are not a scope concern. DVC holds the data. Tony: "basic motivation is that scope delete should fail where work is lost. gitignored items are marked as loosable. secrets are out of the concern for scopes dvc handles data" (2026-11-03).
 - **R6.** A hygiene check finds scopes not in use and cleans them up. It triggers infrequently, for example every 10 new scopes, and acts only when action is needed. It is not an agent that churns on each new scope. Tony does not have to remember to run it.
 - **R45.** The hygiene check (R6) runs after every 10 new scopes. Tony: "lets keep scope heal manual. otherwise the 10 scopes hygiene stays as proposed" (2026-10-31).
   - It removes a scope's worktree only when R44 needs no `force`, the branch is merged, and no session used the scope for an idle period such as 14 days. It keeps the branch so the scope can be restored.
@@ -58,7 +59,7 @@ Surveyed read only on 2026-10-30.
 - **R4 exists.** `scope create` takes `new_project` with `clone_url` or `fork_url`. `start_other` cannot create a new project.
 - **R43 exists.** A cloned scope gets a new `feat/<scope>` branch from the detected default branch (`scopes.py:939`). The clone also adds a worktree on the default branch as a scope of its own (`projects.py:150`).
 - **R5 exists.** Nothing deletes scopes automatically.
-- **R44 partial.** `scope delete` blocks on uncommitted and untracked files, and `force` discards them (`scopes.py:286`). It refuses a folder that holds nested scopes. It keeps the branch unless `delete_branch` is set, and reports the restore commit. It misses ignored files, unique branch commits and a live session. A forced delete reports only a count and a sample.
+- **R44 partial.** `scope delete` blocks on uncommitted and untracked files, and `force` discards them (`scopes.py:286`). It refuses a folder that holds nested scopes. It keeps the branch unless `delete_branch` is set, and reports the restore commit. It misses DVC drift, unique branch commits and a live session. A forced delete reports only a count and a sample.
 - **R6 missing.** No hygiene check exists. `scope heal` repairs scope files, such as the `AGENTS.md` import, context links and the data link, and reports missing worktrees. It never looks for unused scopes.
 - **R7 mostly missing.** `request_human` and card messages cover steps 1 and 4. No per-scope queue (R46) or release event exists.
 

@@ -39,3 +39,5 @@ Surveyed read only on mizar, 2026-11-03.
 - `AGENTS.md` says `.awm/data -> ../data`. Every link on mizar points to the shared folder.
 
 ## Decisions
+
+- 2026-11-03: A delete fails only where work is lost. Ignored files never block it, and the ignored-file check goes. An uncommitted pin or `dvc status` drift blocks it, the same as uncommitted git work (`scopes.md` R44 item 3). Tony: "basic motivation is that scope delete should fail where work is lost. gitignored items are marked as loosable. secrets are out of the concern for scopes dvc handles data".
