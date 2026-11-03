@@ -56,6 +56,13 @@ The redux rewrites the core of awm in Rust (`install.md` R112). This lane builds
 - T10. Commit, journal and report to the coordinator
 - T11. Debrief
 
+Follow-up for redux-build/trust (the first sweep bullet of its plan § Callouts):
+
+- T12. Stamp the caller's trust and scope in the Python gateway and its proxy (G3)
+- T13. Fill the caller's session, trust and scope in the Rust gateway (G2, G3)
+- T14. Document the two arguments in the contract, v1.6
+- T15. Commit, report to the coordinator and debrief
+
 ## Approach by task
 
 ### T1. Build the Rust build container and its cache volume
@@ -115,6 +122,22 @@ Commit on `feat/redux-core`. Post a journal entry. Send one line to job 8162a704
 ### T11. Debrief
 
 Run the `debrief` skill, then `retire`.
+
+### T12. Stamp the caller's trust and scope in the Python gateway and its proxy
+
+`/invoke` and the `/svc` door strip any `_caller_trust` and `_caller_scope` the model sent. A call from a session then gets the session's level from reflection's ledger, `<AWM_DIR>/services/reflection/trust.json`, keyed by the R9 session id, with no entry read as `trusted`. It gets the session's scope from the `cwd` of its record, through `awm.config.scope_of`. Every call is stamped, not only `_CALLER_STAMPED`: the journal bounds every verb and the browser every verb. An edge request keeps the two keys as the far proxy sent them, as it keeps `_caller_session`. The proxy fills them when it follows a peer redirect.
+
+Gotchas: a call with no session pid gets neither key, so the journal reads it as trusted and the browser as cooperative. That matches what feat/redux-trust 5ae958f1 expects.
+
+### T13. Fill the caller's session, trust and scope in the Rust gateway
+
+`context()` reads `X-Awm-Session-Pid` on a local request and fills `caller.session`, `caller.trust` and a new `caller.scope` from the same record and ledger. The call path writes `_caller_trust` and `_caller_scope` into the args for services that predate `caller`.
+
+Gotchas: `Caller` gains a field, so feat/redux-trust's struct literals in `awm-edge` and `awm-cli/src/edge.rs` need `scope` at the sweep.
+
+### T14. Document the two arguments in the contract, v1.6
+
+### T15. Commit, report to the coordinator and debrief
 
 ## Callouts
 
