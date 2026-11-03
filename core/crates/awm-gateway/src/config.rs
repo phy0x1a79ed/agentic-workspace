@@ -43,9 +43,6 @@ pub struct Config {
     /// Plugin names this node never loads.
     #[serde(default)]
     pub exclude: Vec<String>,
-    /// Tool renames that settle a name clash (R116 item 5): `{"<declared>" = "<public>"}`.
-    #[serde(default)]
-    pub rename: BTreeMap<String, String>,
     #[serde(default = "default_reserved")]
     pub reserved: Vec<String>,
     /// The node's edge list. Default: `AWM_EDGES_FILE`, else `<state>/edges.yml`.

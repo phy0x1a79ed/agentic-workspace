@@ -1,7 +1,6 @@
 //! `awm-plugin.toml`, and the legacy `service.toml` a folder with only a `run.sh` carries.
 
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 
 pub const MANIFEST_FILE: &str = "awm-plugin.toml";
 pub const LEGACY_RUN: &str = "run.sh";
@@ -92,8 +91,8 @@ impl Tier {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ToolDecl {
+    /// Unique across the fleet and the tool's permanent id (R117 item 2).
     pub name: String,
-    pub uuid: Uuid,
     #[serde(default = "one")]
     pub major: u32,
     #[serde(default)]
@@ -103,7 +102,7 @@ pub struct ToolDecl {
     pub services: Vec<String>,
     #[serde(default)]
     pub tier: Tier,
-    /// Contracts this tool serves, as `"<contract-uuid>@<major>"` (R117 item 4).
+    /// Contracts this tool serves, as `"<contract>@<major>"`, such as `"harness@1"` (R117 item 4).
     #[serde(default)]
     pub implements: Vec<String>,
 }
@@ -149,15 +148,17 @@ pub struct Needs {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct NeedTool {
-    pub uuid: Uuid,
+    /// The tool's name, or for `[[needs.contract]]` the contract's name.
+    pub name: String,
     #[serde(default = "one")]
     pub major: u32,
 }
 
-/// Parse `"<uuid>@<major>"`.
-pub fn parse_implements(raw: &str) -> Option<(Uuid, u32)> {
-    let (u, m) = raw.split_once('@')?;
-    Some((u.trim().parse().ok()?, m.trim().parse().ok()?))
+/// Parse `"<contract>@<major>"`.
+pub fn parse_implements(raw: &str) -> Option<(String, u32)> {
+    let (name, m) = raw.split_once('@')?;
+    let name = name.trim();
+    crate::valid_tool_name(name).then(|| Some((name.to_string(), m.trim().parse().ok()?)))?
 }
 
 /// The keys of today's `service.toml` that the loader reads.
@@ -200,7 +201,6 @@ name = "mic"
 
 [[tool]]
 name = "mic"
-uuid = "58208b27-34c3-524b-9fcb-f48709550e2d"
 major = 1
 tier = "off"
 
@@ -212,7 +212,7 @@ secrets = []
 network = []
 
 [[needs.tool]]
-uuid = "947d5088-6717-5c6e-b445-dde00eb50c04"
+name = "journal"
 major = 1
 "#,
         )
@@ -227,9 +227,15 @@ major = 1
 
     #[test]
     fn implements() {
-        let (u, m) = parse_implements("6f1c2c1e-0d4b-4f3e-9a51-3b8f2d7a9c10@1").unwrap();
-        assert_eq!((u.to_string().len(), m), (36, 1));
+        assert_eq!(parse_implements("harness@1"), Some(("harness".to_string(), 1)));
         assert!(parse_implements("nope").is_none());
+        assert!(parse_implements("a.b@1").is_none());
+        assert!(parse_implements("harness@x").is_none());
+    }
+
+    #[test]
+    fn a_uuid_is_an_unknown_key() {
+        assert!(Manifest::parse("[plugin]\nname='x'\n[[tool]]\nname='x'\nuuid='6f1c2c1e-0d4b-4f3e-9a51-3b8f2d7a9c10'\n").is_err());
     }
 
     #[test]

@@ -76,13 +76,6 @@ pub struct ServiceView {
     pub refusal: Option<String>,
 }
 
-/// How a service's declared tools map to the public names, from the loader.
-#[derive(Debug, Clone)]
-pub struct ToolBinding {
-    pub declared: String,
-    pub public: String,
-}
-
 #[derive(Default)]
 pub struct Hub {
     services: Mutex<HashMap<String, Svc>>,
@@ -144,24 +137,24 @@ impl Hub {
         Claim::Claimed { name: name.clone(), rx }
     }
 
-    /// The `ready` frame: bind each published function to a public tool and verb.
-    pub fn ready(&self, name: &str, api: &Value, bindings: &[ToolBinding]) {
+    /// The `ready` frame: bind each published function to one of the service's tools and a verb.
+    pub fn ready(&self, name: &str, api: &Value, tools: &[String]) {
         let functions = api.get("functions").and_then(Value::as_array).cloned().unwrap_or_default();
         let mut verbs = Vec::new();
         let mut problems = Vec::new();
         for f in &functions {
             let Some(fname) = f.get("name").and_then(Value::as_str) else { continue };
             let published = f.get("tool").and_then(Value::as_str).map(str::to_string).unwrap_or_else(|| format!("{name}_{fname}"));
-            let bound = bindings
+            let bound = tools
                 .iter()
-                .filter_map(|b| published.strip_prefix(&format!("{}_", b.declared)).map(|v| (b, v)))
-                .max_by_key(|(b, _)| b.declared.len());
+                .filter_map(|t| published.strip_prefix(&format!("{t}_")).map(|v| (t, v)))
+                .max_by_key(|(t, _)| t.len());
             match bound {
-                Some((b, verb)) if !verb.is_empty() => {
-                    if verbs.iter().any(|v: &Verb| v.tool == b.public && v.verb == verb) {
+                Some((tool, verb)) if !verb.is_empty() => {
+                    if verbs.iter().any(|v: &Verb| &v.tool == tool && v.verb == verb) {
                         problems.push(format!("{published:?} is registered twice"));
                     }
-                    verbs.push(Verb { tool: b.public.clone(), verb: verb.to_string(), function: fname.to_string(), spec: f.clone() })
+                    verbs.push(Verb { tool: tool.clone(), verb: verb.to_string(), function: fname.to_string(), spec: f.clone() })
                 }
                 _ => problems.push(format!("{published:?} (function {fname:?}) is not named '<tool>_<verb>' for a tool of {name:?}")),
             }
@@ -260,6 +253,17 @@ impl Hub {
             .collect()
     }
 
+    /// Send a frame to one connected service. False when it has no control connection.
+    pub fn send(&self, name: &str, frame: &Value) -> bool {
+        self.lock().get(name).and_then(|s| s.tx.as_ref()).is_some_and(|tx| tx.send(frame.to_string()).is_ok())
+    }
+
+    /// Drop a service the loader no longer runs, so its verbs leave the catalog.
+    pub fn forget(&self, name: &str) {
+        self.lock().remove(name);
+        self.changed.notify_waiters();
+    }
+
     /// Send a frame to every connected service.
     pub fn broadcast(&self, frame: &Value) {
         let text = frame.to_string();
@@ -343,7 +347,7 @@ mod tests {
         let Claim::Claimed { mut rx, .. } = hub.claim(&id) else { panic!() };
         assert!(matches!(hub.claim(&id), Claim::Held));
         assert!(hub.register("journal", "journal", None).is_err());
-        let bind = [ToolBinding { declared: "journal".into(), public: "journal".into() }];
+        let bind = ["journal".to_string()];
         hub.ready("journal", &json!({"functions": [{"name": "post"}, {"name": "x", "tool": "journal_fetch"}]}), &bind);
         assert_eq!(hub.status("journal"), Some(Status::Ready));
         let verbs: Vec<_> = hub.verbs().into_iter().map(|(_, v)| v.verb).collect();
@@ -369,5 +373,7 @@ mod tests {
         hub.disconnected("journal");
         assert!(hub.down_for("journal").is_some());
         assert!(hub.register("journal", "journal", None).is_ok());
+        hub.forget("journal");
+        assert_eq!(hub.status("journal"), None);
     }
 }
