@@ -34,7 +34,7 @@ From the coordinator's brief: "Keep kb's papers index, vectors, hop arrays and e
 ## High-level goals
 
 - G1. The tree holds only the plugins Tony keeps.
-- G2. Each kept plugin says where it runs, so a deploy puts it on the right nodes.
+- G2. Each kept plugin's placement reaches the fleet's install config, so a deploy puts it on the right nodes. The manifest names no host (`fleet.md` R140).
 - G3. Each kept plugin loads from any folder through its own manifest, inside the guards the plugin contract sets.
 - G4. Each plugin reports how it is used in the way that fits it.
 
@@ -44,8 +44,8 @@ From the coordinator's brief: "Keep kb's papers index, vectors, hop arrays and e
 - `git grep -i -w` for each dropped name outside `docs/redux/` returns only intentional history, such as a migration note or a changelog line.
 - `awm/services/kb` has no Cognee code path. `kb_export`, `papers.py` and the `[[archive]]` kb source are unchanged.
 - Every kept service folder holds `awm-plugin.toml` in the format agreed with redux-core and no `service.toml`.
-- rlm-factorio's manifest places it on mizar. engcyc's places it on showtime, with altair for development.
-- The Python gateway reads `awm-plugin.toml` for tool, tier, profiles, archive and placement, and still reads a legacy `service.toml`.
+- No manifest names a host. redux-build/fleet holds the placement: rlm-factorio on mizar, engcyc on showtime with altair for development.
+- The Python gateway reads `awm-plugin.toml` for tool, tier, profiles and archive, and still reads a legacy `service.toml`.
 - A guard test fails on a kept plugin that imports another plugin's package, reads an undeclared secret, or does not load from a root outside `awm/services`.
 - `awm.usage` sends a background-run event over the control WebSocket and a code-use event by `POST /usage`, in redux-core's v1 event format. The Python gateway writes both to the day's JSONL file.
 - The full Python test suite passes, or every remaining failure is listed with its cause and shown to predate this branch.
@@ -58,7 +58,7 @@ From the coordinator's brief: "Keep kb's papers index, vectors, hop arrays and e
 - T4. Remove every reference to the dropped plugins from docs, configs, gateway code and tests (G1)
 - T5. Run the full Python test suite, fix what the removals break, and commit (G1)
 - T6. Compact
-- T7. Teach the Python gateway's discovery to read `awm-plugin.toml`, placement included (G2, G3)
+- T7. Teach the Python gateway's discovery to read `awm-plugin.toml` (G3)
 - T8. Write `awm-plugin.toml` for each kept service and delete its `service.toml` (G2, G3)
 - T9. Add the guard tests (G3)
 - T10. Commit a checkpoint
@@ -107,13 +107,13 @@ Handoff: the plan on disk, the removal commit, the todo list, and the two open r
 
 ### T7. Teach discovery to read the manifest
 
-In `awm/gateway/awm/gateway/hub/discovery.py`, read `awm-plugin.toml` when a folder has one. Map its `[[service]]` entry for that folder onto the keys `service.toml` gives today: tool, tier, profiles and archive. Add a placement verdict that disables a plugin whose `[placement]` lists exclude this node, ranked just below the singleton rule. Keep `service.toml` as the fallback.
+In `awm/gateway/awm/gateway/hub/discovery.py`, read `awm-plugin.toml` when a folder has one. Map its `[[service]]` and `[[tool]]` entries onto the keys `service.toml` gives today: tool, tier, profiles and archive. Keep `service.toml` as the fallback. Placement is not the manifest's job (`fleet.md` R140). It went to redux-build/fleet for the cloud project's install config.
 
-Gotchas: a placement bug can switch services off on every node at the next deploy. Default to every node when `[placement]` is absent or does not parse, and test the fallback.
+Gotchas: a manifest that does not parse must not switch a tool off. Fall back to the defaults, as `service.toml` does today.
 
 ### T8. Write the manifests
 
-Write `awm-plugin.toml` for every kept service from a one-off script that reads each `service.toml` and each `API_MANIFEST` tool name. Give each tool `uuid5(NAMESPACE_URL, "awm:tool:<name>")`, written once and then permanent. Declare secrets, network and the tools each plugin calls. Place rlm-factorio on mizar and engcyc on showtime with altair as a dev node. Delete each `service.toml`. Keep the manifests of the harness services (reflection, cx, keep, dsh) minimal and tell redux-harness they own them. Leave `awm/services/search` to search-finish.
+Write `awm-plugin.toml` for every kept service from a one-off script that reads each `service.toml` and each `API_MANIFEST` tool name. Give each tool `uuid5(NAMESPACE_URL, "awm:tool:<name>")`, written once and then permanent. Declare secrets, network and the tools each plugin calls. Name no host. Declare a platform or a GPU need where a plugin has one. Delete each `service.toml`. Keep the manifests of the harness services (reflection, cx, keep, dsh) minimal and tell redux-harness they own them. Leave `awm/services/search` to search-finish.
 
 Gotchas: a tool's MCP name can differ from its folder, as `scopes` serves `scope`. Read `tool` from `service.toml`, not the folder name.
 
@@ -157,6 +157,8 @@ Run the `debrief` skill. Message job 8162a704 on mizar with one line.
 
 ## Callouts
 
-- The placement gate disables engcyc on every node but showtime and altair, and rlm-factorio on every node but mizar, at the first deploy of this branch. That is what R133 asks. It is not an uninstall: the folders and envs stay.
+- virtmic folds into mic (Tony, 2026-11-03), because mic's bridge streams into virtmic's PulseAudio sink. The fold is its own commit, so it reverts alone.
+- The compute Claude Code hook stays installed on mizar after the sweep. It fails open and does no network call. redux-build/fleet has the cleanup.
+- `awm/package.json` still lists the editor dependencies only the notes page used. The sweep prunes them with npm, which this host lacks.
 - The global `~/.claude/CLAUDE.md` and the deployed workspace `AGENTS.md` still send agents to `graphify`. Edit them in the sweep that deploys this branch, not before.
 - `install.md` § Gap from today, "R134 broken", becomes true once this branch lands. The interview session owns that doc.
