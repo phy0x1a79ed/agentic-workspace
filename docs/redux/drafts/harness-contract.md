@@ -43,6 +43,7 @@ The contract UUID never changes. A breaking change to a verb below raises the ma
 ## Addressing
 
 1. A session is named by its R9 id. Its first two characters are the platform code, and they pick the harness plugin. Each plugin answers `platform` with its code: `cc` for cch, `ds` for dsh.
+   The harness plugin mints the R9 ids of its sessions and maps them back to its harness's own ids. reflection reads only the platform code.
 2. A caller arrives at reflection as a pid that the gateway stamped. reflection asks each provider `resolve {pid}`. A provider that does not own the pid answers `{mine: false}`. Exactly one provider may answer `{mine: true}`.
 3. A job id, a name or a unique prefix of an R9 id is a lookup. reflection asks each provider `find {ref}`, and refuses a ref that two sessions match.
 
@@ -53,7 +54,7 @@ Every verb takes JSON and returns JSON with `ok`. A refusal is `{ok: false, erro
 | Verb | Arguments | Result |
 |---|---|---|
 | `platform` | none | `{code, name, capabilities: [verb]}`. `capabilities` lists the optional verbs it serves. |
-| `resolve` | `pid` | `{mine, session_id, name, hosting, job, cwd}`. `hosting` is `terminal`, `background` or `web`. |
+| `resolve` | `pid` | `{mine, session_id, name, hosting, job, cwd}`. `hosting` is `terminal`, `background` or `web`. A plugin that owns the pid but cannot tell which session called answers `session_id: null` with an `error`. |
 | `find` | `ref` | `{matches: [{session_id, name, job, live}]}` |
 | `status` | `session_id` | `{live, state, cwd, name, model, effort, mode}`. `state` is `idle`, `busy`, `waiting` (a dialog holds the session) or `stopped`. |
 | `list` | `project?`, `scope?`, `include_stopped?` | `{sessions: [status + {session_id, job, parent, pinned, started_by}]}` |
@@ -93,12 +94,30 @@ A harness plugin reports the end of a `compact` or of any command with a follow-
 
 | Verb | cch | dsh |
 |---|---|---|
-| `platform`, `resolve`, `find`, `status`, `list` | yes | see § dsh |
-| `send`, `interrupt` | yes | see § dsh |
-| `start`, `stop`, `resume` | yes | see § dsh |
-| `set` | yes | see § dsh |
-| `compact` | yes | see § dsh |
+| `platform`, `find`, `list` | yes | yes |
+| `resolve` | yes | partly: a CLI caller only (§ dsh, item 2) |
+| `status` | yes | yes. `waiting` comes from the event stream. |
+| `send`, `interrupt` | yes | yes |
+| `start`, `resume` | yes | yes. `pin` and `isolated` are unsupported. |
+| `stop` | yes | partly: cancels the turn only (§ dsh, item 5) |
+| `set` | yes | model, effort and name. `cwd` is unsupported. |
+| `compact` | yes | yes, for a preset that mounts compaction |
+| optional verbs | all in the table above | none |
 
 ## dsh
 
-To be filled from the read-only survey of the fork on altair and capella.
+dsh drives the deepseek-harness web fork. The fork serves one RPC API on `127.0.0.1:12311` (`DSH_UPSTREAM_PORT`). It has no authentication. A call passes when it comes from loopback, sends `Content-Type: application/json` and sends no cross-site `Origin`. The dsh plugin must therefore run on the node that runs the fork. Every unary call is `POST /api/<method>` with the body `{type: "client-request", rpcId, method, payload}`. The answer is HTTP 200 with `result: {ok, value | error}`.
+
+1. **Session id.** The fork mints `session-<uuid4>`. The R9 id is `ds` plus the 32 hex digits of that UUID. dsh maps an R9 id back to the fork's id by matching the hex in `session.list`. A fork id that holds no UUID gets no R9 id, and dsh leaves that session out of `list`. dsh creates its own sessions with a preallocated `session-<uuid4>` id, so `start` knows the R9 id before the fork answers.
+2. **Caller identity.** The fork runs one `awm-mcp` client per fork process, not one per session. That client's environment and its `tools/call` requests carry no session id. A gateway call from an MCP tool therefore arrives as the pid of the fork's node process. dsh answers `resolve` for that pid with `{mine: true, session_id: null, error}`, and reflection refuses every verb that acts on the caller's own session. A process started by the fork's bash tool carries `DSH_SESSION_ID` in its environment. dsh answers `resolve` for such a pid from `/proc/<pid>/environ`, walking up the parents to the fork's node process.
+3. **Status.** The fork knows only `idle` and `running`, read from `running` in `session.list`. dsh reports `running` as `busy`. A pending approval or question is not a fork state. dsh reads it from the `GET /api/events.mux` WebSocket, which replays pending approvals when it opens, and reports `waiting`. The fork keeps no loaded-or-unloaded state that `session.list` shows, so dsh reports `stopped` only while the fork itself is down.
+4. **Send and interrupt.** `send` calls `session.prompt` with `mode: "queue"`, which queues the text behind a busy turn and wakes an idle session. `confirmed` is `enqueued`. Text that starts with `/` goes to `POST /api/commands/execute {agentId, line}` instead, because `session.prompt` does not run commands. `interrupt` calls `session.cancel`, which keeps the queue.
+5. **Start, stop and resume.** `start` calls `session.create {cwd, sessionId, agentPreset}`, then `session.rename` for `name`, `session.selectModel` for `model` and `effort`, and `session.prompt` for `prompt`. The fork has no route that closes or unloads a session. dsh `stop` calls `session.cancel` and answers `{stopped: true, unloaded: false}`. A session on disk resumes on the next call that needs its agent. dsh `resume` therefore sends `prompt` when there is one, and answers `live: true`.
+6. **Set.** `model` and `effort` go to one `session.selectModel {provider, model, reasoningEffort}` call. `name` goes to `session.rename`. A session's folder is fixed when it is created, so `cwd` answers `unsupported`.
+7. **Compact.** dsh runs `/compact` through `commands/execute`. The fork writes the durable session events `compaction/start`, `compaction/summary` and `compaction/end {error?}`. dsh waits for `compaction/end` through `session.history` or the event stream, then queues `followup`. It sends `harness_event` `done` when the history shows the follow-up as a user turn after `compaction/end`. It sends `lost` when `compaction/end` carries an error or the deadline passes. Compaction is mounted per agent preset: `standard`, `code` and `cordis` have it, and `minimal` has none. dsh answers `compact` for a session with no compaction as `unsupported`.
+
+### Open
+
+- **Per-session identity for MCP calls.** A fork patch that adds the session id to `tools/call` `_meta` and an `awm-mcp` that forwards it as a header would close item 2. The patch and the header both need agreement with redux-build/core, which owns the gateway and `awm-mcp`.
+- **`commands/execute` payload.** The shape `{agentId, line}` comes from the fork's command descriptor. Nobody saw a call. Test it against the live fork before dsh relies on it for `send` and `compact`.
+- **No unload.** A long-lived fork holds every agent it ever resumed. A `stop` that frees memory needs a fork route.

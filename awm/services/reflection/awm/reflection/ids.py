@@ -1,6 +1,7 @@
 """The one session id of `sessions.md` R9: two hex characters naming the platform, then the platform's own id as hex.
 
 A Claude Code session is ``cc`` plus its session UUID with the dashes removed.
+A DeepSeek harness session is ``ds`` plus the hex of the UUID in its ``session-<uuid>`` id.
 A short form is only a prefix lookup on this id, never an id of its own.
 """
 from __future__ import annotations
