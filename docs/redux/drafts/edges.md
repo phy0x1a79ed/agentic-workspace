@@ -60,3 +60,5 @@ Group this work into one sitting in the implementation pass. Tony: "For the impl
 - Turn on Tailnet Lock, and sign each node in.
 - Write the tailnet's access rules to mirror R87 and open the singleton doors.
 - Register cross-architecture emulation (qemu binfmt) once on each build node, for Rust builds. Tony: "cross architecture emulation is needed for rust builds. but a once only set up is fine." (2026-11-02).
+- Set up quay.io for the plugin and test images (`install.md` R119). Make the account or organization, and give mizar's build container a robot account that may push. Tony: "need to add setup of quay to the manual batch at the end" (2026-11-02).
+- Set the Claude cloud environment to the Custom network level with `quay.io` and `*.quay.io`, and keep the default list (`install.md` R119 item 4).
