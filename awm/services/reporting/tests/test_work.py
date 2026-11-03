@@ -127,6 +127,20 @@ async def test_join_notifies_the_main_sessions_job(work):
     assert sent and sent[0][0] == "job00001" and running in sent[0][1]
 
 
+async def test_join_notifies_a_terminal_main_session_by_its_id(work):
+    sent = []
+
+    async def notify(job, text):
+        sent.append((job, text))
+        return True
+
+    running = work.task_open("running", A)
+    verbs = TaskVerbs(work, "mizar", resolve=lambda pid: {"sessionId": B}, notify=notify)
+    out = await verbs.call("task_join", {"task_id": running, "_caller_pid": 42})
+    assert out["main_notified"] is True
+    assert sent[0][0] == task_ids.session_key(A)
+
+
 async def test_a_verb_without_a_session_says_so(work):
     verbs = TaskVerbs(work, "mizar", resolve=lambda pid: None)
     out = await verbs.call("task_for_session", {})

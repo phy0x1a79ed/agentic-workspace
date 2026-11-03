@@ -81,7 +81,7 @@ async def journal_cites(session: str) -> list[dict]:
 
 
 async def notify_main(job: str, text: str) -> bool:
-    """Type ``text`` into the background session ``job``. False when it could not be sent."""
+    """Type ``text`` into session ``job``, a job id or an R9 session id. False when it could not be sent."""
     try:
         out = await gatewayclient.call("reflection", "message", {"job": job, "text": text}, timeout=60)
     except Exception as exc:  # noqa: BLE001 — a failed notice never fails the join
@@ -135,10 +135,10 @@ class TaskVerbs:
         main = out.get("main_session_id")
         notified = False
         if main and main != session:
-            job = await asyncio.to_thread(self._job_of, main)
-            if job:
-                notified = await self._notify(job, f"[awm] session {session} joined your task {out['task_id']}"
-                                                   f" (operations task_sessions shows it).")
+            # A terminal main session has no job: reflection reaches it by its session id.
+            job = await asyncio.to_thread(self._job_of, main) or main
+            notified = await self._notify(job, f"[awm] session {session} joined your task {out['task_id']}"
+                                               f" (operations task_sessions shows it).")
         return {"ok": True, **out, "main_notified": notified}
 
     async def task_for_session(self, args: dict) -> dict:

@@ -492,3 +492,13 @@ def test_the_start_check_counts_a_retire_it_missed(fakes, lonely):
     waits.check(state=lambda s: pytest.fail("asked"), retired_elsewhere=lambda s: [OTHER],
                 wake=lambda row: woke.append(row["session_id"]) or {"ok": True})
     assert woke == [MY_ID] and run("waits", {})["waits"] == []
+
+
+def test_whoami_asks_for_the_task_by_session_id(monkeypatch):
+    """reporting's task_for_session reads session_id (sessions.md R57 step 2)."""
+    asked = []
+    from awm import gatewayclient
+    monkeypatch.setattr(gatewayclient, "call_sync", lambda svc, fn, a, timeout: asked.append(
+        (svc, fn, a)) or {"task_id": "abcd1234"})
+    assert hub_adapter._task_of(MY_ID) == "abcd1234"
+    assert asked == [("reporting", "task_for_session", {"session_id": MY_ID})]

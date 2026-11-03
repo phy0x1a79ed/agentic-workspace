@@ -137,7 +137,7 @@ def _mode(args: dict) -> dict:
 def _task_of(session_id: str) -> Optional[str]:
     try:
         from awm.gatewayclient import call_sync
-        out = call_sync("reporting", "task_for_session", {"session": session_id},
+        out = call_sync("reporting", "task_for_session", {"session_id": session_id},
                         timeout=5.0)
     except Exception:  # noqa: BLE001 - a missing reporting service is no task
         return None
