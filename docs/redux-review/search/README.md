@@ -34,3 +34,12 @@ Surveyed read only on 2026-11-03. The paths are on altair: awm `feat/svc-kb` at 
 - 2026-11-03: Drop the prior and the graph section. Search returns exact and related. A hop is its own `kb hop` call on paper ids, and `then` goes (`fleet.md` R136 item 5). Tony: "accept drop both".
 - 2026-11-03: A hit returns its title only, and a `get` on it is the usage feedback for the scope-tuned rank. The rank switches on when the journal replay shows a gain (`fleet.md` R136 item 6). Tony: "maybe this can be natural? search returns titles only and agent expanding full entry is the feedback?", "title ok" and "I dont need search updated immediately".
 - 2026-11-03: Cognee retirement re-lands, because R136 item 3 already keeps Cognee out. It was held only by the ranking freeze.
+
+## Build result
+
+Reported by search-finish on altair, 2026-11-03. Feature branches only. dev and release are unchanged.
+
+- **Journal gate after R136 items 5 and 6.** recall@10 is 0.721 and recall@20 is 0.778 on the 54 judged queries. The released engine scores 0.689 and 0.776. No post is lost.
+- **Commits.** awm 5cf88c81 drops `then`, the graph section and the PageRank reorder. awm 19ffd55e and kb a4a2dab move the seed weighting into `kb hop` and remove the prior. awm 7fc61fe9 makes hits title only and logs each `get` to a `usage` table that no rank reads.
+- **Choices the lane made.** `kb_get` returns a whole paper, so `search get` can open a title-only paper hit. `context` and `passages` stay declared and do nothing, so open sessions and older nodes keep working.
+- **Still to run.** Criterion 5 on query plus `kb hop`, where the old `then` path scored recall@20 0.634. Then the full replay and grep parity.
