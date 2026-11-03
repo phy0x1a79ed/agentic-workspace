@@ -14,3 +14,9 @@ This doc holds the review of how an agent receives its scope brief (`scopes.md` 
 ## Decisions
 
 - 2026-11-03: The harness plugin gives the brief to a session each time it enters a scope: through the start hook for a session started in a scope, and in the followup message of `reflection cd` (`scopes.md` R143). Tony: "Good choices. Reflection cd has a followup message. Natural place to inject".
+- 2026-11-03: The startup ritual drops its brief step, and its `.awm/` steps are rewritten, in the same change that ships the injection (`scopes.md` R143). Tony: "Make all changes in 1 go at the end, which i think is your recommendation".
+
+## Follow-ups for the build
+
+- Inject the brief from cch's start hook and from the followup of `reflection cd`.
+- In the same change, rewrite steps 1 to 3 of the `AGENTS.md` startup ritual and its `.awm/` tree (R142, R143).
