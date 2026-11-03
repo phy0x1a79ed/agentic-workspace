@@ -65,10 +65,10 @@ Top of the stack comes first.
    - Queued for the singleton subject: access to awm's own `journal` as a service with its own rules, beside the knowledge port (R90). Tony: "journal is a servce with different access than the rest of awm for agents, so it gets treated like one." and "we align, proceed" (2026-11-02).
    - Queued for the singleton subject: Tony: "Can we move the current opera stuff to the same mechanism? How will captcha and my signins get through? Discuss when we reach this subject" (2026-11-02).
    - Then: how `reflection` behaves across peers, once the network architecture settles (Tony, 2026-10-31).
-   - Queued from 1r: deneb is the vault's sync hub, and a sync link carries no authentication, so deneb can rewrite every note on every copy (`fleet.md` § Gap).
+   - Settled (`fleet.md` R105): deneb is the vault's sync hub, and a sync link carries no authentication. Trilium now runs only on deneb, walled, with a nightly copy on mizar behind a tripwire.
    - Queued from 1r: whether deneb keeps the reporting service, which mirrors the ledger onto the board.
    - Queued from 1f: pinned keys for peers that Tony verifies, which remove the relayed room password (`channels.md` R73, also thread 1j).
-   - Queued from 1d: which node writes a task's card when its sessions span nodes, given that mizar holds no vault copy (`sessions.md` R58, `queue.md` R64).
+   - Settled by `fleet.md` R105: which node writes a task's card when its sessions span nodes. Every node writes through the `trilium` tool on deneb.
 
 1s. **Isolated sessions with awm tools.** Tony: "I've started an expedition session out of curiosity. Stuff like that should prolly get some form of isolation as well, but have access to awm tools in its environment -> something to talk about" (2026-11-02).
 

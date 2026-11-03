@@ -82,8 +82,14 @@ This doc holds the nodes of the fleet, the role of each, and how each node is ha
   Tony: "2 overlaps with your existing coms tools in the default anthropic harness. on first call to a local session, the tool response should point this out and ask to prefer use of the anthropic tool" "agree with 1 and 4" and "singleton doors stay closed to reflection. they stay closed to everything actually, except the set of services it is explicitly open for" (2026-11-02).
 - **R105.** Trilium runs only on deneb. The other nodes stop their vault copies and their sync links, and reach the vault through the `trilium` tool on deneb.
   1. deneb runs Trilium as its own user with systemd sandboxing, like the singletons of R99. A script in a note then reaches only the vault. Only that user reaches the vault port.
-  2. mizar keeps a copy of the vault as a backup, outside Trilium.
-  Tony: "can we mitigate 2? what are the risks with trusting deneb?", "sync to mizar is crucial", "item 4 prolly does the most lift here.", "Deneb hosts the trillium services and handles the updates. we cant get around this." and "trillium only needs to run on deneb. we can stop everywhere else." (2026-11-02).
+  2. mizar keeps a copy of the vault as a backup, outside Trilium. Each night deneb writes a consistent copy of the database (`VACUUM INTO` or Trilium's backup call, never a plain file copy). mizar pulls it over its edge, compresses it with zstd and keeps three: yesterday, last week and last month, about 50 MB in all.
+  3. mizar compares each night's copy with the last approved copy. It holds the copy on the approvals queue (R97), and rotates nothing, when any of these is true:
+     - More than max(25, 2 %) of the notes are gone.
+     - More than max(100, 5 %) of the notes have changed content.
+     - The night's `entity_changes` count is above max(5000, 3 × the p95 of the last 30 nights).
+     - A note was erased without a soft delete first, a new API token exists, or a script note is new or changed.
+  4. altair's nightly snapshot inside its trilium service moves to deneb with the vault.
+  Tony: "can we mitigate 2? what are the risks with trusting deneb?", "sync to mizar is crucial", "item 4 prolly does the most lift here.", "Deneb hosts the trillium services and handles the updates. we cant get around this." and "trillium only needs to run on deneb. we can stop everywhere else." and, on the thresholds and the nightly copy, "looks good, lets move on" (2026-11-02).
 - **R98.** alcor has two ssh doors. The singleton door does not depend on mizar. The singleton door opens only for the services named for it, and refuses everything else, reflection included. Tony: "can we also force ssh through mizar, like how arbutus has bastion?", "The ssh access is not the same as the singleton service access right? machines that need 2fa dont have to have an edge into alcor. So the services should still work with mizar down, we just cant ssh into alcor with mizar down." and "2 ssh doors and singleton ports match what we discussed." (2026-11-02).
   1. Port 22 takes the user and admin logins (R92). alcor's firewall admits it from mizar only. capella and lyra jump through mizar.
   2. A second port takes the singleton calls. It is open to every node. It accepts only service keys, each locked to its command, with no shell and no forwarding.
