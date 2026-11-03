@@ -200,10 +200,11 @@ impl Hub {
         }
     }
 
-    /// The control WebSocket closed. Pending calls fail at once.
-    pub fn disconnected(&self, name: &str) {
+    /// The control WebSocket of service `id` closed. Pending calls fail at once. A socket of an
+    /// older instance that closes after a restart under the same name touches nothing.
+    pub fn disconnected(&self, name: &str, id: &str) {
         let mut map = self.lock();
-        if let Some(svc) = map.get_mut(name) {
+        if let Some(svc) = map.get_mut(name).filter(|s| s.id == id) {
             svc.tx = None;
             svc.status = Status::Down;
             svc.down_since = Some(Instant::now());
@@ -370,7 +371,9 @@ mod tests {
 
         hub.ready("journal", &json!({"functions": [{"name": "post", "tool": "other_post"}]}), &bind);
         assert_eq!(hub.status("journal"), Some(Status::Refused));
-        hub.disconnected("journal");
+        hub.disconnected("journal", "not-its-id");
+        assert_eq!(hub.status("journal"), Some(Status::Refused), "a stale socket must not take a service down");
+        hub.disconnected("journal", &id);
         assert!(hub.down_for("journal").is_some());
         assert!(hub.register("journal", "journal", None).is_ok());
         hub.forget("journal");

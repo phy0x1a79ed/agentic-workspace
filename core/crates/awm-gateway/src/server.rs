@@ -294,7 +294,7 @@ async fn control_socket(gw: Arc<Gateway>, id: String, socket: WebSocket) {
             None => {}
         }
     }
-    gw.hub.disconnected(&name);
+    gw.hub.disconnected(&name, &id);
     writer.abort();
     tracing::info!("control WS closed for {name}");
 }
