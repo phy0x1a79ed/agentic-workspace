@@ -39,7 +39,7 @@ This doc holds the nodes of the fleet, the role of each, and how each node is ha
   2. **deneb** hosts the task board and the public relays. altair uses the task board with no edge to deneb. Tony: "it should still be able to access its singleton services (the task board)." (2026-11-02).
 - **R92.** Machines reach each other through ssh keys at three levels. People reach a node through its HTTPS lane with the passkey (`queue.md` R64). A node's HTTPS lane admits no other node. Tony: "How does this work for singletons? My intuition also says that the knowledge port should be the same mechanism as singletons, just offered by every peer. Ssh access should grant knowledge anytime, otherwise a timed invite is needed. We also need to consider the 3rd admin layer for config... shaula..." and "This is all good." (2026-11-02).
   1. **Admin.** A separate admin account with sudo, for config and installs. shogun holds it on shaula and the Arbutus nodes (R91).
-  2. **User.** Tony's account, with a shell and agent access. A user key is an edge (R87).
+  2. **User.** Tony's account, with a shell and agent access. A user key is an edge (R87). A user changes what the node manages through its tools, such as Terraform. An admin changes the node itself (R91 item 5).
   3. **Service.** A key that runs one forced command, which serves the node's singleton verbs (R89) and its knowledge verbs (R90). The command logs each call: when, which key, which verb and what it returned.
   - A user key also reads knowledge at any time. Anyone else reads it with a service key that carries an expiry. That key is the timed invite of R90.
   - A cross-node call is an ordinary awm request carried inside ssh to the other node's loopback gateway. The node book, node tokens and the private CA go.
@@ -97,8 +97,9 @@ This doc holds the nodes of the fleet, the role of each, and how each node is ha
   1. shogun is a small Arbutus VM. The arbutus-infra Terraform creates it on the Arbutus private network, so its Ansible reaches the Arbutus nodes directly. Tony: "this looks good." (2026-11-02).
   2. All of arbutus-infra moves to shogun: its repo, its Terraform and its state, its Ansible tree and its scripts. altair becomes a node that shogun manages. Tony: "also to clarify, we should move all of the arbutus-infra stuff to shogun" (2026-11-02).
   3. shogun joins Tailscale (R96). The swarm's Ansible on mizar manages shogun. shogun manages the other Arbutus nodes, altair included.
-  4. shogun holds the admin keys for the Arbutus nodes. Each admin login still needs a grant from alcor (R100).
-  5. mizar holds a backup that bootstraps outside Arbutus when Arbutus is down. Tony: "I want to add that mizar should hold a backup somehow so that if arbutus goes down, we have a way to bootstrap outside of arbutus" (2026-11-02).
+  4. shogun holds the admin keys for the Arbutus nodes. An admin login of ours still needs a grant from alcor (R100).
+  5. Ryan is an admin of shogun. He holds a user key and an admin key there. The user key changes the rest of Arbutus through Terraform. The admin key changes shogun itself. The grants of R100 bind our sessions only, not Ryan. Tony: "Ryan is an admin, he gets an admin + user key. user allows modifications through terraform for the rest of arbutus. admin allows mods to shogun itself (same pattern elsewhere). Ryan can do as he pleases. all of this discussion is for us only." (2026-11-02).
+  6. mizar holds a backup that bootstraps outside Arbutus when Arbutus is down. It mirrors the arbutus-infra repo, and keeps the Terraform state and the OpenStack credentials encrypted for mizar's admin account. It also copies altair's journals and projects. Tony: "I want to add that mizar should hold a backup somehow so that if arbutus goes down, we have a way to bootstrap outside of arbutus" and "we want journals + project to be backed up to mizar." (2026-11-02).
 
 ## Decisions
 
