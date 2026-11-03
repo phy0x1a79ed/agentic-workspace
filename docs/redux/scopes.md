@@ -29,6 +29,15 @@ This doc holds how a session finds its project and scope, enters it, shares it w
   4. The branch has commits that no other branch or remote holds. This blocks even when the delete keeps the branch. `force` overrides this. Tony: "always, for unmerged commits or dirty files" (2026-11-03).
   - A forced delete lists everything it discarded.
   - A delete fails only where work is lost. A gitignored file is marked as losable, so it never blocks a delete. Secrets are not a scope concern. DVC holds the data. Tony: "basic motivation is that scope delete should fail where work is lost. gitignored items are marked as loosable. secrets are out of the concern for scopes dvc handles data" (2026-11-03).
+- **R142.** A scope keeps nothing it cannot lose outside git and DVC. The `.awm/` folder goes. Tony: "agree" (2026-11-03).
+  - The scope brief moves into the journal, next to the scope's goal. It is not a file in the branch, because every scope's own copy would conflict at each merge.
+  - Notes an agent writes by hand go into the scope's committed `docs/` or into a journal post.
+  - `history.md`, `mcp-opencode.json` and the `data` link go. The startup ritual reads the journal directly. DVC holds the data.
+  - Local state for the DVC hooks sits in the worktree's git directory.
+- **R143.** The scope brief gets an agent going and points it at the right places. It is not comprehensive. Tony: "it shoul get the agent going and looking at the right places. it doesnt need to be comprehensive" (2026-11-03).
+  - The `debrief` skill keeps the brief up to date. Tony: "debrief skill keeps it up to date?"
+  - The brief holds nothing the journal already holds, such as session history or decisions. Tony: "this should not be redundant with journals"
+  - The brief has a size cap. Tony: "the size should also be capped"
 - **R6.** A hygiene check finds scopes not in use and cleans them up. It triggers infrequently, for example every 10 new scopes, and acts only when action is needed. It is not an agent that churns on each new scope. Tony does not have to remember to run it.
 - **R45.** The hygiene check (R6) runs after every 10 new scopes. Tony: "lets keep scope heal manual. otherwise the 10 scopes hygiene stays as proposed" (2026-10-31).
   - It removes a scope's worktree only when R44 needs no `force`, the branch is merged, and no session used the scope for an idle period such as 14 days. It keeps the branch so the scope can be restored.

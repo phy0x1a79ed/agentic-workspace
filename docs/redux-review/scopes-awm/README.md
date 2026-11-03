@@ -41,3 +41,5 @@ Surveyed read only on mizar, 2026-11-03.
 ## Decisions
 
 - 2026-11-03: A delete fails only where work is lost. Ignored files never block it, and the ignored-file check goes. An uncommitted pin or `dvc status` drift blocks it, the same as uncommitted git work (`scopes.md` R44 item 3). Tony: "basic motivation is that scope delete should fail where work is lost. gitignored items are marked as loosable. secrets are out of the concern for scopes dvc handles data".
+- 2026-11-03: `.awm/` goes. The brief moves into the journal, hand-written notes into `docs/` or the journal, and the rest is dropped (`scopes.md` R142). Tony: "agree".
+- 2026-11-03: The brief orients an agent and points it at the right places. `debrief` keeps it current, it repeats nothing the journal holds, and its size is capped (`scopes.md` R143). Tony: "lets also improve the maintenance on context.md -> debrief skill keeps it up to date? this should not be redundant with journals the size should also be capped it shoul get the agent going and looking at the right places. it doesnt need to be comprehensive".
