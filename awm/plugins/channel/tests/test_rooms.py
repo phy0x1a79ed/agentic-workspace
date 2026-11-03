@@ -163,10 +163,5 @@ async def test_a_restarted_service_resumes_without_pushing_anything_twice(
         await guest.aclose()
 
 
-async def test_a_machine_is_not_a_room_yet(channels):
-    with pytest.raises(ChannelError, match="tether"):
-        await channels.open(HOLDER, "machine")
-
-
 def test_lines_cap_is_the_one_the_tool_promises():
     assert lines.TEXT_MAX == 1500

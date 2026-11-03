@@ -23,7 +23,7 @@ def test_a_background_session_is_named_by_its_node_and_job(monkeypatch):
                         lambda pid: {"kind": "bg", "job": "abcd1234", "name": "worker"})
     monkeypatch.setattr(holders.config, "node_name", lambda: "mizar")
     assert holders.caller({"_caller_pid": 42}, None) == {
-        "node": "mizar", "job": "abcd1234", "name": "worker"}
+        "node": "mizar", "job": "abcd1234", "name": "worker", "pid": 42}
 
 
 def test_the_plugin_does_not_reach_into_social():

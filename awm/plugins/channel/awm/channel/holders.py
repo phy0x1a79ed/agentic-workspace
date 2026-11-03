@@ -42,7 +42,11 @@ def _session_claim(pid: int) -> dict | None:
 
 
 def caller(args: dict, as_: str | None) -> dict:
-    """The calling session as ``{node, job, name}``, or a :class:`ChannelError`."""
+    """The calling session as ``{node, job, name}``, or a :class:`ChannelError`.
+
+    ``pid`` joins them for a session on this node, so a call made for it can
+    carry its stamp on to the next tool.
+    """
     from awm.config import peerbook
 
     pid = args.get("_caller_pid")
@@ -56,7 +60,10 @@ def caller(args: dict, as_: str | None) -> dict:
     if claim.get("kind") != "bg" or not claim.get("job"):
         raise ChannelError("only a background session can hold a channel: each "
                            "message is typed into the holder's job")
-    return {"node": node, "job": str(claim["job"]), "name": str(claim.get("name") or "")}
+    holder = {"node": node, "job": str(claim["job"]), "name": str(claim.get("name") or "")}
+    if isinstance(pid, int) and not isinstance(pid, bool):
+        holder["pid"] = pid
+    return holder
 
 
 async def reflect(node: str, job: str, text: str) -> str:

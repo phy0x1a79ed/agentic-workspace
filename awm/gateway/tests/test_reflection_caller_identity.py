@@ -116,6 +116,15 @@ def test_a_journal_post_is_stamped_with_its_session():
     assert domain["args"]["_caller_pid"] == 2488
 
 
+
+def test_every_channel_verb_is_stamped_with_its_holder():
+    flat = {"_caller_pid": 5}
+    _stamp_caller("channel_write", flat, "2488")
+    assert flat["_caller_pid"] == 2488
+    domain = {"verb": "open", "args": {"kind": "room"}}
+    _stamp_caller("channel", domain, None)
+    assert "_caller_pid" not in domain["args"]
+
 # ---------------------------------------------------------------------------
 # `start_other` and `stop_other`: cx's verbs, published under reflection
 # ---------------------------------------------------------------------------
