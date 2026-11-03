@@ -2,9 +2,15 @@
 
 ## Purpose & Contents
 
-This doc holds the end state Tony wants from awm, in his words, the tiers his work falls into, and the core loop that ties them together. Every other area doc serves this loop.
+This doc holds why awm exists and the end state Tony wants from awm, in his words, the tiers his work falls into, and the core loop that ties them together. Every other area doc serves this loop.
 
 Status: draft from thread 1. It waits for Tony's confirmation.
+
+## Why awm exists
+
+awm is the infrastructure for how Tony works with agents across machines. Tony is the bottleneck. awm queues issues and tasks for him in one line, so he no longer tracks them himself. It holds his non-linear ideas until a session can pursue them. It turns his intent into concrete steps, runs them in parallel, keeps private work and lab work apart, and keeps what each run learns.
+
+Tony: "awm is the infrastructure for how I interact with agents with across machines. It is intended to streamline the main bottleneck (me and my inconsistent motivation and energy) by organizing issues and tasks linearly to the main user operator so that I dont have to go looking and track all the issues myself (which is getting impossible). Kindof like hyperthreading a CPU by some perspectives. It also lets me have non-linear ideas and off-load them to be pursued later. It then converts al of this to a traceable agent orchestration system that breaks down my intent into concrete actionable steps, distributes them for parallel work, handles private and work boundaries, and accumulates wisdom and experience so that agentic, deterministic, and human effort is not wasted" (2026-11-02).
 
 ## End state
 

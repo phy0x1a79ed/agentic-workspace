@@ -17,15 +17,13 @@ This doc is the stack of open threads for the redux interview. The interview run
 
 ## Current thread
 
-**2. Why awm exists.** See the stack entry below.
+**3. Who uses it.** See the stack entry below.
 
 Parent thread 1 (end state) waits for Tony to confirm `goal.md`. Its children 1a to 1t are closed.
 
 ## Stack
 
 Top of the stack comes first.
-
-2. **Why awm exists.** What would Tony lose if awm vanished tomorrow?
 
 3. **Who uses it.** Tony, lab members through seats, collaborators, the public. What can each do or reach, and what must each never touch?
    - Today: Tony, and lab members through Slack seats on altair, under his supervision (Tony, 2026-10-30).
@@ -68,6 +66,7 @@ Raised before the redux started. Each enters the stack when a thread reaches it.
 
 ## Closed
 
+- 2. Why awm exists (2026-11-02). Result: `goal.md` § Why awm exists. awm is the infrastructure for how Tony works with agents across machines. It queues work to him in one line, holds his ideas for later, turns intent into parallel steps, keeps private and lab work apart, and keeps what each run learns. Tony: "Kindof like hyperthreading a CPU by some perspectives."
 - 1j. IT services through the tether, and proof of ownership (2026-11-02). Result: `channels.md` R75. Tony dropped the thread. Consent is the owner's yes to the operator, whoever that is. The QR challenge goes, because tethers mostly run one way, outbound from the agent. Tony: "Lets just drop this and move on."
 - 1i. The Armando box (2026-11-02). Result: `fleet.md` R120. One or more machines of Armando's metabolomics facility at UBC join for a project as temporary Windows stations, native and not in WSL, on the tailnet, with a run-and-done tether that Tony opens at the keyboard. Install and removal repeat through cycles of investigation and blind builds. The details wait for Tony's meeting with Armando.
 - 1h. Install and bootstrap (2026-11-02). Result: `install.md` R112 to R119. A Rust core built in a container on mizar, plugins as projects with a manifest and guards, dependencies through tool UUIDs, an install test that runs on request in a Claude cloud agent first, and public images on quay.io.
