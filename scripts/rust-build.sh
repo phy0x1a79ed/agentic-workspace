@@ -11,14 +11,19 @@ workdir="$(cd "${AWM_RUST_WORKDIR:-$here/core}" && pwd)"
 if ! docker image inspect "$image" >/dev/null 2>&1; then
     docker build -t "$image" -f "$here/core/Dockerfile" "$here/core"
 fi
-docker volume inspect "$volume" >/dev/null 2>&1 || docker volume create "$volume" >/dev/null
+if ! docker volume inspect "$volume" >/dev/null 2>&1; then
+    docker volume create "$volume" >/dev/null
+fi
+# Any uid may write the shared cache: each lane runs cargo as its own host user.
+docker run --rm -v "$volume:/c" "$image" sh -c 'chmod -R a+rwX /c 2>/dev/null || true'
 
 mounts=(-v "$volume:/cargo/registry" -v "$workdir:$workdir")
 [ "$workdir" != "$here/core" ] || mounts+=(-v "$here:$here:ro")
+env_conda=()
 conda="${AWM_CONDA_ROOT:-$HOME/miniforge3}"
 [ -d "$conda" ] && mounts+=(-v "$conda:$conda:ro") && env_conda=(-e "AWM_CONDA_ROOT=$conda")
 
 tty=(); [ -t 0 ] && tty=(-it)
-exec docker run --rm "${tty[@]}" "${mounts[@]}" "${env_conda[@]}" \
+exec docker run --rm "${tty[@]}" --user "$(id -u):$(id -g)" "${mounts[@]}" "${env_conda[@]}" \
     -e CARGO_TARGET_DIR="$workdir/target" -e HOME=/tmp \
     -w "$workdir" "$image" cargo "$@"
