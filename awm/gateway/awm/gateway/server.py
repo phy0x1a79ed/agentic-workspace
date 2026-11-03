@@ -626,6 +626,36 @@ def _stamp_caller(name: str, args: dict, pid_header: str | None,
         inner.pop("_caller_pid", None)
 
 
+def _stamp_trust(name: str, args: dict, pid_header: str | None,
+                 descendant_header: str | None = None, as_: str | None = None) -> None:
+    """Stamp the calling session's trust level and own scope onto every call.
+
+    Services bound a caller by them: the journal and the browser read every verb's
+    `mcp_caller.TRUST_KEY` and `mcp_caller.SCOPE_KEY`. The model's own values are
+    always dropped, and a call with no session pid carries neither. An edge request
+    keeps the pair the far proxy read from its own node's ledger, as it keeps
+    `mcp_caller.CLAIM_KEY`. Reads two small files, so call it off the event loop.
+    """
+    if "_" in name or "verb" not in args:
+        bag = args
+    else:
+        bag = args.get("args")
+        if not isinstance(bag, dict):
+            bag = {}
+            args["args"] = bag
+    if as_:
+        return
+    bag.pop(mcp_caller.TRUST_KEY, None)
+    bag.pop(mcp_caller.SCOPE_KEY, None)
+    if pid_header and pid_header.isdigit():
+        pid = int(pid_header)
+    elif descendant_header and descendant_header.isdigit():
+        pid = mcp_caller.resolve_caller_pid(int(descendant_header))
+    else:
+        return
+    bag.update(mcp_caller.caller_trust(pid))
+
+
 async def _receive_files(request: Request, spool: str) -> dict:
     """Spool a :mod:`filehop` tar body and unpack it → the call it carries."""
     body = os.path.join(spool, ".body.tar")
@@ -646,9 +676,12 @@ def _svc_stamp(svc: str, headers: Any, as_: str | None) -> Callable[[str, dict],
     never trusted, whichever door the call came through.
     """
     def stamp(fn: str, args: dict) -> None:
-        _stamp_caller(catalog.published_name_of(svc, fn), args,
-                      headers.get("X-Awm-Session-Pid"),
+        name = catalog.published_name_of(svc, fn)
+        _stamp_caller(name, args, headers.get("X-Awm-Session-Pid"),
                       headers.get("X-Awm-Caller-Pid"), as_)
+        # The door's args are the function's own, so stamp them flat.
+        _stamp_trust(f"{svc}_{fn}", args, headers.get("X-Awm-Session-Pid"),
+                     headers.get("X-Awm-Caller-Pid"), as_)
 
     return stamp
 
@@ -869,6 +902,9 @@ async def _invoke(payload: dict, request: Request):
             raise HTTPException(403, reason)
         _stamp_caller(name, args, request.headers.get("X-Awm-Session-Pid"),
                       request.headers.get("X-Awm-Caller-Pid"), as_)
+        await asyncio.to_thread(_stamp_trust, name, args,
+                                request.headers.get("X-Awm-Session-Pid"),
+                                request.headers.get("X-Awm-Caller-Pid"), as_)
     elif not as_:
         raise HTTPException(400, "'args' must be an object")
     # An edge-stamped caller with a non-object `args` carries no session to gate
