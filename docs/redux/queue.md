@@ -12,6 +12,7 @@ How a session closes and raises follow-up issues belongs in `sessions.md`. What 
 - **R61.** The Swarm board is a new page built in Trilium, a command center. It replaces the Kanban. It holds four collapsible sections of card headers. Tony: "we are updating the kanban board to 4 collapsable sections of card headers (title and tags/chips, no content) with info panel on right for sleected card. The kanban is no more.", "i think actually having a new page (but still built in trillium please) is needed", "This is basically a command center" and "I really want this to be on trillium so that things are harmonized" (2026-11-01).
   1. **Proposed** holds Tony's notes for future tasks. Tony: "Need a fourth proposed section with button for new note cards that defaults to markdown for me to describe future tasks."
   2. **Needs you** holds every card that waits on Tony. A status tag on each card says why, such as planned or blocked. Tony: "3 collapseable sections. Needs you, working, done. With status tags like planned, blocked, etc."
+     - Tony's prompt to a session moves its card from Needs you to Working. Tony: "agree" (2026-11-03).
      - An urgent request also sends Tony a Discord direct message. Tony: "i still want urgent requests to ping me via discord dm" (2026-11-03).
   3. **Working** holds the active cards, with no status tags. Tony: "Working prolly doesnt need status tags."
   4. **Done** loads older cards as Tony scrolls. Tony: "Done should do the infinite scroll element that loads more previous cards as needed."

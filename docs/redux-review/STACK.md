@@ -32,7 +32,7 @@ Procedure, from dfs-interview § Work the stack:
   - [ ] Accept the lane's values: 12 h window cap, burst 1/2/4, 60 s pending expiry (R65 item 4), denied as a history outcome (R97 item 1), spawn body hash check?
   - [x] Tony: "what is the trillium tool?  what is the board tool? I sense some redundancies that we should clear up here". Clear the overlap of trilium, board, reporting/operations and the lane's queue, queue-store and approver tools. (answered 2026-11-03)
   - [x] The core operations plugin depends on trilium, which install.md R115 item 4 makes a separate project. Make trilium core? (answered 2026-11-03)
-  - [ ] Tony's prompt to a blocked session moves its card from Needs you to Working (R61 item 2)?
+  - [x] Tony's prompt to a blocked session moves its card from Needs you to Working (R61 item 2)? (answered 2026-11-03)
   - [x] Tony: "is there a hot path for trying out changes to trillium without going through a full build?" (answered 2026-11-03)
 - **channels** (2026-11-03): lets go over each of the major systems architecturally to make sure we are still aligned
 - **fleet-deploy** (2026-11-03): lets go over each of the major systems architecturally to make sure we are still aligned
