@@ -98,6 +98,9 @@ pub struct ToolDecl {
     pub major: u32,
     #[serde(default)]
     pub service: Option<String>,
+    /// Several services of the plugin that publish verbs under this one tool.
+    #[serde(default)]
+    pub services: Vec<String>,
     #[serde(default)]
     pub tier: Tier,
     /// Contracts this tool serves, as `"<contract-uuid>@<major>"` (R117 item 4).
