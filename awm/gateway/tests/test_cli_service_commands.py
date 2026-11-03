@@ -229,15 +229,13 @@ _TETHER = [{
 
 
 def _run_tether_cli(monkeypatch, tmp_path, recorded_pid: int | None) -> list:
-    """Run `awm tether run` in this process, with a session record at ``recorded_pid``."""
-    import json
+    """Run `awm tether run` in this process, with reflection knowing a session at ``recorded_pid``."""
     import os
 
     from awm.gateway import mcp_caller
 
-    if recorded_pid is not None:
-        (tmp_path / f"{recorded_pid}.json").write_text(json.dumps({"kind": "bg"}))
-    monkeypatch.setattr(mcp_caller, "_default_sessions_dir", lambda: str(tmp_path))
+    monkeypatch.setattr(mcp_caller, "_ask_reflection", lambda pid: {
+        "ok": True, "session_id": "cc1"} if pid == recorded_pid else {"ok": True, "known": False})
     calls = []
 
     def api(method, path, **kwargs):

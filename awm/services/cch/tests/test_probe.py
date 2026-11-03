@@ -20,7 +20,7 @@ def here(monkeypatch):
 
 def test_a_node_that_lists_answers_and_no_rows_travel(monkeypatch, here):
     async def call_peer(node, service, fn, args, timeout):
-        assert (node, service, fn) == ("altair", "cx", "list")
+        assert (node, service, fn) == ("altair", "cch", "list")
         assert timeout < 30
         return {"sessions": [{"job": "secret"}], "daemon": {"state": "up"}}
 

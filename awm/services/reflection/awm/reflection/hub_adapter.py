@@ -37,6 +37,8 @@ API_MANIFEST: dict[str, Any] = {
 }
 
 SWEEP_EVERY_S = 300
+#: The mode a gate restricts hardest (awm.config.modes).
+UNKNOWN_MODE = "unknown"
 
 
 def _bool(v: Any, default: bool = False) -> bool:
@@ -160,8 +162,25 @@ def _task_of(session_id: str) -> Optional[str]:
 
 
 def _session_of(args: dict) -> dict:
-    p, who = harness.for_caller(_int(args.get("pid")))
-    return {**who, "ok": True, "harness": p.tool, "platform": p.code}
+    """The session at ``pid``, with its mode and trust, for the gateway's gate and stamps.
+
+    A pid no harness plugin claims is ``known: false``. Its mode is what the
+    plugins say of it (None when it is positively not a started session), or
+    ``unknown`` when none could say.
+    """
+    pid = _int(args.get("pid"))
+    try:
+        p, who = harness.for_caller(pid)
+    except harness.Ambiguous:
+        raise
+    except harness.HarnessError as exc:
+        modes = [r["mode"] for _p, r in harness.everyone("resolve", {"pid": pid})
+                 if "mode" in r]
+        mode = next((m for m in modes if m is not None), None) if modes else UNKNOWN_MODE
+        return {"ok": True, "known": False, "mode": mode, "reason": str(exc)}
+    sid = who.get("session_id") or ""
+    return {**who, "ok": True, "known": True, "harness": p.tool, "platform": p.code,
+            "mode": who.get("mode", UNKNOWN_MODE), "trust": policy.level_of(sid)}
 
 
 def _whoami(args: dict) -> dict:
@@ -408,15 +427,6 @@ async def _adopt_other(args: dict, as_: str | None = None) -> dict:
     return await _on_job("adopt", "start_other", args, as_)
 
 
-def _claude(verb: str, fwd: Optional[list[str]] = None):
-    """A verb only cch serves, forwarded with the named arguments."""
-    def run(args: dict) -> dict:
-        p = harness.for_platform(ids.PLATFORM_CLAUDE)
-        return harness.call(p, verb, {k: args.get(k) for k in fwd or []})
-    run.__name__ = f"_{verb}"
-    return run
-
-
 def _wait(args: dict) -> dict:
     until = args.get("until")
     if isinstance(until, str):
@@ -556,19 +566,11 @@ HANDLERS = {verb: _guarded(verb, fn) for verb, fn in {
     "stop_other": _stop_other,
     "resume_other": _resume_other,
     "adopt_other": _adopt_other,
-    "claim_other": _claude("pool_claim", ["cwd"]),
-    "seed_other": _claude("pool_seed"),
-    "remove_other": _claude("pool_remove", ["apply"]),
-    "daemon_status": _claude("daemon_status"),
-    "daemon_ensure": _claude("daemon_ensure", ["timeout"]),
-    "daemon_hold": _claude("daemon_hold", ["reason", "seconds"]),
-    "daemon_release": _claude("daemon_release"),
     "wait": _wait,
     "waits": _waits,
     "retired": _retired,
     "retired_among": _retired_among,
     "harness_event": _harness_event,
-    "revive_pinned": _claude("revive_pinned"),
 }.items()}
 
 

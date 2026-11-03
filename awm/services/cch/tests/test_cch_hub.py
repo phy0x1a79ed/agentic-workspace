@@ -35,7 +35,8 @@ def test_resolve_answers_mine_false_for_a_pid_that_is_no_session(monkeypatch):
         raise session_target.ResolveError("no record")
 
     monkeypatch.setattr(inject, "describe_caller", refuse)
-    assert run("resolve", {"pid": 7}) == {"ok": True, "mine": False, "error": "no record"}
+    out = run("resolve", {"pid": 7})
+    assert (out["ok"], out["mine"], out["error"]) == (True, False, "no record") and "mode" in out
 
 
 def test_resolve_gives_the_r9_id_and_the_raw_one(monkeypatch):
@@ -168,3 +169,13 @@ def test_revive_pinned_resumes_only_the_dead_pins(monkeypatch):
 def test_compact_refuses_another_session():
     out = run("compact", {"ref": "abcd1234"})
     assert out["unsupported"] is True
+
+
+def test_resolve_reports_the_mode_for_the_gateways_gate(monkeypatch):
+    from awm.claudedaemon import sessionmode
+
+    monkeypatch.setattr(sessionmode, "mode_of", lambda pid: "reader" if pid == 77 else None)
+    monkeypatch.setattr(hub_adapter.inject, "describe_caller", lambda pid: (_ for _ in ()).throw(
+        hub_adapter.session_target.ResolveError("not a session")))
+    out = run("resolve", {"pid": 77})
+    assert out["mine"] is False and out["mode"] == "reader"

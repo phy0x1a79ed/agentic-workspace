@@ -372,7 +372,8 @@ async def proxy_service_http(
         return JSONResponse(_NOT_FOUND, status_code=404)
     if stamp is not None and (args is None or isinstance(args, dict)):
         stamped = {} if args is None else args
-        stamp(fn, stamped)
+        # The stamp may ask reflection about the caller through this gateway.
+        await asyncio.to_thread(stamp, fn, stamped)
         args = stamped if (stamped or args is not None) else None
     if spec.get("no_response"):
         ch.notify(fn, args, as_=as_)

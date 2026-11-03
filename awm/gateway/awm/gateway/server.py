@@ -215,15 +215,6 @@ async def lifespan(app: FastAPI):
     PID_FILE.parent.mkdir(parents=True, exist_ok=True)
     PID_FILE.write_text(str(os.getpid()))
 
-    # The session mode gate reads cx's lineage records. A missing directory is
-    # not an error for the reader, but creating it here keeps the question from
-    # arising before the first `start_other`.
-    try:
-        from awm.claudedaemon import sessionmode
-        sessionmode.starts_dir().mkdir(parents=True, exist_ok=True)
-    except Exception as exc:  # noqa: BLE001 — the gate fails closed on its own
-        log.warning("could not create cx's lineage directory: %s", exc)
-
     # Own SIGTERM / SIGINT at the event-loop level so we can DRAIN our services
     # in-band before uvicorn tears their control WSs down.
     #
@@ -705,9 +696,10 @@ def _svc_stamp(svc: str, headers: Any, as_: str | None) -> Callable[[str, dict],
 # no Bash or WebFetch, and its policy refuses every awm verb that could (the
 # `rlm` browser, which can fetch from the loopback gateway, is denied by name).
 #
-# The mode is read from disk by `awm.claudedaemon.sessionmode`, the same module
-# cx uses, so no IPC to the cx process is involved. Any failure to establish a
-# mode is `"unknown"`, which `awm.config.modes` restricts hardest.
+# The mode comes from `reflection session_of`, which asks the session's harness
+# plugin (`mcp_caller.lookup`). That call carries no pid header, so it is
+# neither gated nor stamped. Any failure to establish a mode, reflection not yet
+# up included, is `"unknown"`, which `awm.config.modes` restricts hardest.
 
 _MODE_CACHE_TTL_S: float = 5.0
 _MODE_CACHE_MAX: int = 256
@@ -721,11 +713,11 @@ def _mode_of_pid(pid: int) -> str | None:
     if hit is not None and now - hit[0] < _MODE_CACHE_TTL_S:
         return hit[1]
     try:
-        from awm.claudedaemon import sessionmode
-        mode = sessionmode.mode_of(pid)
+        rec = mcp_caller.lookup(pid)
+        mode = rec["mode"] if "mode" in rec else session_modes.UNKNOWN
     except Exception as exc:  # noqa: BLE001 — a failed lookup is a restriction
-        log.warning("mode gate: could not look up the mode of pid %s: %s", pid, exc)
-        mode = session_modes.UNKNOWN
+        log.warning("mode gate: session lookup unavailable for pid %s: %s", pid, exc)
+        return session_modes.UNKNOWN
     if len(_mode_cache) >= _MODE_CACHE_MAX:
         for stale in [p for p, (at, _) in _mode_cache.items()
                       if now - at >= _MODE_CACHE_TTL_S]:
@@ -921,8 +913,11 @@ async def _invoke(payload: dict, request: Request):
         if reason:
             log.info("mode gate: refused %s — %s", name, reason)
             raise HTTPException(403, reason)
-        _stamp_caller(name, args, request.headers.get("X-Awm-Session-Pid"),
-                      request.headers.get("X-Awm-Caller-Pid"), as_)
+        # Both stamps may ask reflection about the caller, through this gateway,
+        # so they run off the event loop.
+        await asyncio.to_thread(_stamp_caller, name, args,
+                                request.headers.get("X-Awm-Session-Pid"),
+                                request.headers.get("X-Awm-Caller-Pid"), as_)
         await asyncio.to_thread(_stamp_trust, name, args,
                                 request.headers.get("X-Awm-Session-Pid"),
                                 request.headers.get("X-Awm-Caller-Pid"), as_)

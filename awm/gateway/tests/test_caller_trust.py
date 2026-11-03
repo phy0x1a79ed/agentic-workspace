@@ -1,8 +1,9 @@
 """The caller's trust level and own scope reach every service call.
 
 The journal and the browser bound a session by `_caller_trust` and
-`_caller_scope`. The gateway reads the level from reflection's ledger, where a
-session with no entry is trusted, and the scope from the session record's cwd.
+`_caller_scope`. The gateway asks reflection's session_of for both: the level
+from reflection's ledger, where a session with no entry is trusted, and the
+scope from the session's cwd.
 """
 
 import json
@@ -21,21 +22,26 @@ R9 = "cc" + UUID.replace("-", "")
 
 @pytest.fixture
 def node(tmp_path, monkeypatch):
-    sessions, projects = tmp_path / "sessions", tmp_path / "projects"
+    """reflection's answers for two sessions, faked at the lookup."""
+    projects = tmp_path / "projects"
     worktree = projects / "awm" / "redux-x"
     (worktree / ".awm").mkdir(parents=True)
     (worktree / "core").mkdir()
-    sessions.mkdir()
-    rec = {"pid": 4242, "kind": "bg", "jobId": "j1", "name": "n",
-           "sessionId": UUID, "cwd": str(worktree / "core")}
-    (sessions / "4242.json").write_text(json.dumps(rec))
-    (sessions / "5151.json").write_text(json.dumps({"sessionId": "f" * 32, "cwd": "/tmp"}))
-    ledger = tmp_path / "trust.json"
-    ledger.write_text(json.dumps({R9: {"level": "cooperative", "origin": "seat:ana"}}))
-    monkeypatch.setattr(mcp_caller, "_default_sessions_dir", lambda: str(sessions))
-    monkeypatch.setattr(mcp_caller, "_default_ledger", lambda: str(ledger))
+    answers = {
+        4242: {"ok": True, "session_id": R9, "hosting": "background", "job": "j1",
+               "name": "n", "trust": "cooperative", "cwd": str(worktree / "core")},
+        5151: {"ok": True, "session_id": "cc" + "f" * 32, "cwd": "/tmp"},
+    }
+
+    def ask(pid):
+        if answers.get("down"):
+            raise mcp_caller.LookupUnavailable("reflection is down")
+        return answers.get(pid, {"ok": True, "known": False, "mode": None})
+
+    monkeypatch.setattr(mcp_caller, "_ask_reflection", ask)
+    monkeypatch.setattr(mcp_caller, "_cache", {})
     monkeypatch.setattr(mcp_caller, "_default_projects", lambda: str(projects))
-    return ledger
+    return answers
 
 
 def test_a_session_gets_its_ledger_level_and_its_scope(node):
@@ -47,10 +53,23 @@ def test_a_session_with_no_entry_is_trusted_and_outside_a_project_has_no_scope(n
     assert mcp_caller.caller_trust(5151) == {"_caller_trust": "trusted"}
 
 
-def test_no_record_or_no_ledger_reads_as_trusted(node):
+def test_no_session_or_no_reflection_reads_as_trusted(node):
     assert mcp_caller.caller_trust(77) == {"_caller_trust": "trusted"}
-    node.unlink()
-    assert mcp_caller.caller_trust(4242)["_caller_trust"] == "trusted"
+    node["down"] = True
+    mcp_caller._cache.clear()
+    assert mcp_caller.caller_trust(4242) == {"_caller_trust": "trusted"}
+
+
+def test_the_answer_is_remembered_for_a_while(node, monkeypatch):
+    asked = []
+    real = mcp_caller._ask_reflection
+    monkeypatch.setattr(mcp_caller, "_ask_reflection", lambda pid: asked.append(pid) or real(pid))
+    mcp_caller.caller_trust(4242)
+    mcp_caller.caller_trust(4242)
+    assert asked == [4242]
+    monkeypatch.setattr(mcp_caller, "LOOKUP_TTL_S", 0.0)
+    mcp_caller.caller_trust(4242)
+    assert asked == [4242, 4242]
 
 
 def test_every_domain_call_is_stamped_and_the_models_values_are_dropped(node):

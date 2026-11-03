@@ -97,8 +97,7 @@ def test_the_published_renames_are_in_the_table():
     expected = {
         ("reflection_send", "reflection_message_self"),
         ("cx_start", "reflection_start_other"), ("cx_list", "reflection_list_other"),
-        ("cx_stop", "reflection_stop_other"), ("cx_claim", "reflection_claim_other"),
-        ("cx_seed", "reflection_seed_other"), ("cx_remove", "reflection_remove_other"),
+        ("cx_stop", "reflection_stop_other"),
         ("board_post", "operations_board_post"), ("board_list", "operations_board_list"),
         ("board_party_add", "operations_party_add"),
         ("board_party_list", "operations_party_list"),

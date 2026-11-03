@@ -124,3 +124,16 @@ def _no_extra_roots(monkeypatch):
     """Keep a node's AWM_SERVICE_ROOTS / AWM_PAGE_ROOTS out of discovery tests."""
     monkeypatch.delenv("AWM_SERVICE_ROOTS", raising=False)
     monkeypatch.delenv("AWM_PAGE_ROOTS", raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _no_session_lookup(monkeypatch):
+    """Keep the caller lookup off the live gateway: reflection does not answer unless a
+    test says so."""
+    from awm.gateway import mcp_caller
+
+    def down(pid):
+        raise mcp_caller.LookupUnavailable("no reflection in tests")
+
+    monkeypatch.setattr(mcp_caller, "_ask_reflection", down)
+    monkeypatch.setattr(mcp_caller, "_cache", {})

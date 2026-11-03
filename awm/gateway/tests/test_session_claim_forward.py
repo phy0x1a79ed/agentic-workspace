@@ -6,8 +6,6 @@ the session from its own record, and the owner's gateway keeps that claim only o
 a call that came through its edge.
 """
 
-import json
-
 import pytest
 
 from awm.gateway import mcp_caller
@@ -18,45 +16,43 @@ pytestmark = [pytest.mark.smoke]
 CLAIM = {"kind": "bg", "job": "2eb61302", "name": "opal desk"}
 
 
-@pytest.fixture
-def sessions(tmp_path):
-    rec = {"pid": 4242, "kind": "bg", "jobId": "2eb61302", "name": "opal desk",
-           "sessionId": "s"}
-    (tmp_path / "4242.json").write_text(json.dumps(rec))
-    return str(tmp_path)
+@pytest.fixture(autouse=True)
+def sessions(monkeypatch):
+    """reflection knows one session, at pid 4242."""
+    rec = {"ok": True, "session_id": "cc" + "5" * 32, "hosting": "background",
+           "job": "2eb61302", "name": "opal desk"}
+    monkeypatch.setattr(mcp_caller, "_cache", {})
+    monkeypatch.setattr(mcp_caller, "_ask_reflection",
+                        lambda pid: rec if pid == 4242 else {"ok": True, "known": False})
 
 
 def test_a_seat_verb_carries_the_session_claim(sessions):
     args = {"verb": "mount", "args": {"account": "a", "channel": "D1",
                                       "_caller_session": {"job": "forged"}},
             "peer": "mira"}
-    out = mcp_caller.forwarded_args("social", args, "4242", sessions_dir=sessions)
+    out = mcp_caller.forwarded_args("social", args, "4242")
     assert "peer" not in out
     assert out["args"]["_caller_session"] == CLAIM
     assert args["args"]["_caller_session"] == {"job": "forged"}
 
 
 def test_the_flat_shape_carries_it_too(sessions):
-    out = mcp_caller.forwarded_args("social_unmount", {"account": "a"}, "4242",
-                                    sessions_dir=sessions)
+    out = mcp_caller.forwarded_args("social_unmount", {"account": "a"}, "4242")
     assert out["_caller_session"] == CLAIM
 
 
 def test_no_record_means_no_claim_and_a_forged_one_is_dropped(sessions):
     args = {"verb": "mount", "args": {"_caller_session": CLAIM}}
-    out = mcp_caller.forwarded_args("social", args, "77", sessions_dir=sessions)
+    out = mcp_caller.forwarded_args("social", args, "77")
     assert "_caller_session" not in out["args"]
 
 
-def test_other_verbs_carry_no_claim(sessions, tmp_path):
-    ledger = str(tmp_path / "trust.json")
+def test_other_verbs_carry_no_claim(sessions):
     args = {"verb": "send", "args": {"text": "hi"}, "peer": "mira"}
-    assert mcp_caller.forwarded_args("social", args, "4242", sessions_dir=sessions,
-                                     ledger=ledger) == {
+    assert mcp_caller.forwarded_args("social", args, "4242") == {
         "verb": "send", "args": {"text": "hi", "_caller_trust": "trusted"}}
     other = {"verb": "list_other"}
-    assert mcp_caller.forwarded_args("reflection", other, "4242", sessions_dir=sessions,
-                                     ledger=ledger) == {
+    assert mcp_caller.forwarded_args("reflection", other, "4242") == {
         "verb": "list_other", "args": {"_caller_trust": "trusted"}}
 
 
@@ -80,5 +76,5 @@ def test_social_send_is_not_stamped():
 def test_a_tether_verb_on_a_peer_carries_the_session_that_minted_it(sessions):
     out = mcp_caller.forwarded_args("tether", {"verb": "drain", "args": {},
                                                "peer": "capella"},
-                                    "4242", sessions_dir=sessions)
+                                    "4242")
     assert out["args"]["_caller_session"] == CLAIM

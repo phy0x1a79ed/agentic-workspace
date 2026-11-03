@@ -65,7 +65,7 @@ def _rows() -> list[Alias]:
                           old_flat, dict(rename or {})))
 
     add("reflection", "send", "reflection", "message_self")
-    for verb in ("start", "list", "stop", "claim", "seed", "remove"):
+    for verb in ("start", "list", "stop"):
         add("cx", verb, "reflection", f"{verb}_other")
 
     for verb in ("post", "claim", "complete", "fail", "get", "list"):

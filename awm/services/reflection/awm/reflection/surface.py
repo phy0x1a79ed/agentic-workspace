@@ -1,9 +1,8 @@
 """The reflection tool's verbs: what MCP, the CLI and HTTP show.
 
-The session-lifecycle verbs (``*_other``) and the daemon verbs were served by
-the cx and keep services. They keep their published names, so no caller sees
-the recut. Each verb's work happens in the harness plugin of the session it
-acts on (`install.md` R135).
+Every verb here holds for any harness. Each verb's work happens in the harness
+plugin of the session it acts on (`install.md` R135). A verb only one harness
+has, such as Claude Code's daemon and warm pool, is that plugin's own.
 """
 from __future__ import annotations
 
@@ -461,85 +460,6 @@ FUNCTIONS: list[dict[str, Any]] = [{'name': 'message_self',
               'description': 'The job id.'}],
   'timeout': 30,
   'effect': 'write'},
- {'name': 'claim_other',
-  'tool': 'reflection_claim_other',
-  'surfaces': ['cli', 'http'],
-  'description': 'Take the warm session, move it to `cwd`, and return its id for '
-                 '`claude attach`. An empty id means there was nothing warm, which the '
-                 'caller answers with an ordinary cold launch. This is what the `cx` '
-                 'command calls; a person has no reason to.',
-  'params': [{'name': 'cwd',
-              'type': 'string',
-              'required': True,
-              'description': 'The directory to move the session to.'}],
-  'timeout': 9,
-  'effect': 'write'},
- {'name': 'seed_other',
-  'tool': 'reflection_seed_other',
-  'surfaces': ['cli', 'http'],
-  'description': 'Start one warm session now and return its id. Refuses, with the '
-                 'reason, when no Claude Code daemon is already running: seeding then '
-                 "would put every background session on this node inside awm's control "
-                 'group, where the next deploy kills it. The reconcile loop calls this '
-                 'on its own; reach for it by hand only to see what a seed does or why '
-                 'one is refused.',
-  'params': [],
-  'timeout': 60,
-  'effect': 'write'},
- {'name': 'remove_other',
-  'tool': 'reflection_remove_other',
-  'surfaces': ['cli', 'http'],
-  'description': 'List the sessions this service may delete, with the reason each one '
-                 'qualifies. Deletes nothing unless `apply` is true. A session that '
-                 'has been renamed, prompted, or claimed and is still alive never '
-                 'appears here: once somebody has taken a session it is theirs, and '
-                 "the pool waits for the daemon's own retirement instead.",
-  'params': [{'name': 'apply',
-              'type': 'boolean',
-              'description': 'Carry out the plan (default false).'}],
-  'timeout': 120,
-  'effect': 'write'},
- {'name': 'daemon_status',
-  'tool': 'reflection_daemon_status',
-  'description': 'Show the Claude Code daemon on this node: pid, origin, unit, uptime, '
-                 "the unit's restart count and result, why the daemon last stopped, "
-                 'recent starts, whether it is held, and linger.',
-  'params': [],
-  'effect': 'read'},
- {'name': 'daemon_ensure',
-  'tool': 'reflection_daemon_ensure',
-  'description': 'Start the Claude Code daemon now if none runs, and wait until it '
-                 'answers. Returns ok=false with reason=daemon_down when it does not '
-                 'come up in time, is held, or cannot run here. Pass peer=<node> to '
-                 "bring another node's daemon back with no ssh. When this verb itself "
-                 "does not answer, the node's keep service is down: `awm "
-                 'services_restart name=keep` on that peer.',
-  'params': [{'name': 'timeout',
-              'type': 'number',
-              'description': 'Seconds to wait for the daemon. Default 30.'}],
-  'timeout': 60,
-  'effect': 'write'},
- {'name': 'daemon_hold',
-  'tool': 'reflection_daemon_hold',
-  'description': 'Stop the Claude Code daemon and keep it stopped until daemon_release '
-                 'or the hold expires. Its sessions keep running for 20 minutes '
-                 'without the daemon, then die, so a hold lasts at most that long. '
-                 'Nothing can start, resume or message a session while it is held.',
-  'params': [{'name': 'reason',
-              'type': 'string',
-              'required': True,
-              'description': 'Why, shown in daemon_status.'},
-             {'name': 'seconds',
-              'type': 'number',
-              'description': 'How long the hold lasts. Default 600, at most 1200.'}],
-  'timeout': 60,
-  'effect': 'write'},
- {'name': 'daemon_release',
-  'tool': 'reflection_daemon_release',
-  'description': 'End a daemon_hold and start the daemon again.',
-  'params': [],
-  'timeout': 60,
-  'effect': 'write'},
  {'name': 'harness_event',
   'tool': 'reflection_harness_event',
   'description': 'A harness plugin reports how a command with a follow-up ended: done '
@@ -571,13 +491,6 @@ FUNCTIONS: list[dict[str, Any]] = [{'name': 'message_self',
   'effect': 'read',
   'surfaces': ['cli', 'http'],
   'timeout': 30},
- {'name': 'revive_pinned',
-  'tool': 'reflection_revive_pinned',
-  'description': 'Resume each pinned session whose process is gone, after a reboot.',
-  'params': [],
-  'effect': 'write',
-  'surfaces': ['cli', 'http'],
-  'timeout': 600},
  {'name': 'wait',
   'tool': 'reflection_wait',
   'effect': 'write',

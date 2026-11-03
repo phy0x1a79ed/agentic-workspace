@@ -327,11 +327,17 @@ async def test_svc_door_with_no_body_still_calls_with_no_args(monkeypatch):
 from awm.gateway.mcp_caller import resolve_caller_pid as _resolve_caller_pid
 
 
-def _sessions(tmp_path, *pids):
-    """A Claude Code sessions dir holding a record for each of `pids`."""
-    for pid in pids:
-        (tmp_path / f"{pid}.json").write_text("{}")
-    return str(tmp_path)
+@pytest.fixture
+def sessions(monkeypatch):
+    """reflection's answer for a pid: a session when its pid is in the returned set."""
+    from awm.gateway import mcp_caller
+
+    known: set[int] = set()
+    monkeypatch.setattr(mcp_caller, "_cache", {})
+    monkeypatch.setattr(mcp_caller, "_ask_reflection",
+                        lambda pid: {"ok": True, "session_id": "cc1"} if pid in known
+                        else {"ok": True, "known": False})
+    return known
 
 
 def _chain(parent_of):
@@ -339,57 +345,70 @@ def _chain(parent_of):
     return lambda pid: parent_of.get(pid)
 
 
-def test_direct_child_resolves_to_the_parent(tmp_path):
+def test_direct_child_resolves_to_the_parent(sessions):
+    sessions.update({100})
     # The ordinary case: `.mcp.json` runs the interpreter directly, so the REPL
     # is our parent and the walk stops before it starts.
     got = _resolve_caller_pid(
-        100, sessions_dir=_sessions(tmp_path, 100), ppid_of=_chain({100: 1}))
+        100, ppid_of=_chain({100: 1}))
     assert got == 100
 
 
-def test_walks_past_a_wrapper_process(tmp_path):
+def test_walks_past_a_wrapper_process(sessions):
+    sessions.update({300})
     # The regression: `mamba run -n awm awm-mcp` puts pid 200 between the proxy
     # and the REPL at 300. Naming 200 is what made reflection refuse.
     got = _resolve_caller_pid(
-        200, sessions_dir=_sessions(tmp_path, 300), ppid_of=_chain({200: 300, 300: 1}))
+        200, ppid_of=_chain({200: 300, 300: 1}))
     assert got == 300
 
 
-def test_no_session_in_the_chain_returns_the_parent_unchanged(tmp_path):
+def test_no_session_in_the_chain_returns_the_parent_unchanged(sessions):
     # A genuine non-Claude caller must refuse exactly as it did before the walk
     # existed — the walk may not invent an identity.
     got = _resolve_caller_pid(
-        200, sessions_dir=_sessions(tmp_path), ppid_of=_chain({200: 300, 300: 1}))
+        200, ppid_of=_chain({200: 300, 300: 1}))
     assert got == 200
 
 
-def test_stops_at_the_nearest_session_not_an_outer_one(tmp_path):
+def test_stops_at_the_nearest_session_not_an_outer_one(sessions):
+    sessions.update({400, 500})
     # An agent nested inside another agent: 400 is our own REPL, 500 is the
     # session that spawned it. Resolving to 500 would type into a *different*
     # agent's prompt, so first-match is a safety property, not an optimisation.
     got = _resolve_caller_pid(
         200,
-        sessions_dir=_sessions(tmp_path, 400, 500),
         ppid_of=_chain({200: 400, 400: 500, 500: 1}),
     )
     assert got == 400
 
 
-def test_walk_is_bounded(tmp_path):
+def test_walk_is_bounded(sessions):
+    sessions.update({999})
     # A pathological or cyclic chain must not spin; it falls back to the parent.
     got = _resolve_caller_pid(
-        200, sessions_dir=_sessions(tmp_path, 999), ppid_of=lambda pid: pid + 1,
+        200, ppid_of=lambda pid: pid + 1,
         max_hops=4)
     assert got == 200
 
 
-def test_stops_at_init(tmp_path):
+def test_stops_at_init(sessions):
     # pid 1 is never a Claude session; walking into it (or past a vanished
     # process, where ppid_of returns None) ends the walk.
     assert _resolve_caller_pid(
-        200, sessions_dir=_sessions(tmp_path), ppid_of=_chain({200: 1})) == 200
+        200, ppid_of=_chain({200: 1})) == 200
     assert _resolve_caller_pid(
-        200, sessions_dir=_sessions(tmp_path), ppid_of=lambda pid: None) == 200
+        200, ppid_of=lambda pid: None) == 200
+
+
+def test_no_answer_from_reflection_names_the_parent_unchanged(sessions, monkeypatch):
+    from awm.gateway import mcp_caller
+
+    def down(pid):
+        raise mcp_caller.LookupUnavailable("reflection is not up")
+
+    monkeypatch.setattr(mcp_caller, "_ask_reflection", down)
+    assert _resolve_caller_pid(200, ppid_of=_chain({200: 300, 300: 1})) == 200
 
 
 # ---------------------------------------------------------------------------

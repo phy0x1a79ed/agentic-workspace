@@ -50,7 +50,7 @@ log = logging.getLogger("awm.cch.hub_adapter")
 TOOL = "harness-cc"
 CONTRACT = "harness@1"
 OPTIONAL_VERBS = ("mode", "remote_control", "link", "adopt", "revive_pinned",
-                  "pending", "live_session_ids", "caller_of_token", "pool_claim", "pool_seed", "pool_remove",
+                  "pending", "probe", "live_session_ids", "caller_of_token", "pool_claim", "pool_seed", "pool_remove",
                   "daemon_status", "daemon_ensure", "daemon_hold", "daemon_release")
 
 _HOSTING = {"tmux": "terminal", "daemon": "background"}
@@ -154,6 +154,10 @@ API_MANIFEST: dict[str, Any] = {
         _verb("revive_pinned", "Resume each pinned job whose process is gone.",
             [], timeout=600),
         _verb("pending", "The follow-ups cch still owes.", [], effect="read"),
+        _verb("probe", "Whether cch on `node` answers `list` from this node, and its "
+            "daemon state. Returns no sessions. A seat keeper on another node asks "
+            "this to tell its own lost contact from the node being down.",
+            [_p("node", required=True)], effect="read", timeout=30),
         _verb("live_session_ids", "The Claude session UUIDs a running Claude Code "
             "process holds. Refuses when a record cannot be read, so a caller never "
             "acts on a shorter list than the truth.", [], effect="read", timeout=30),
@@ -329,12 +333,25 @@ def _job_name(job: Optional[str]) -> Optional[str]:
     return str(state.get("name") or "") or None
 
 
+def _gate_mode(pid: Any) -> Optional[str]:
+    """The mode cx started the session at ``pid`` with, for the gateway's gate."""
+    from awm.claudedaemon import sessionmode
+
+    if not isinstance(pid, int):
+        return sessionmode.UNKNOWN
+    try:
+        return sessionmode.mode_of(pid)
+    except Exception as exc:  # noqa: BLE001 - a mode that cannot be read restricts hardest
+        log.warning("cch: could not read the mode of pid %s: %s", pid, exc)
+        return sessionmode.UNKNOWN
+
+
 def _resolve(args: dict) -> dict:
     pid = _pid(args)
     try:
         who = inject.describe_caller(pid)
     except session_target.ResolveError as exc:
-        return {"ok": True, "mine": False, "error": str(exc)}
+        return {"ok": True, "mine": False, "error": str(exc), "mode": _gate_mode(pid)}
     cwd = transcript.session_and_cwd_for(who["pid"])[1]
     job = roster.job_of_pid(who["pid"], sessions_dir=session_target.SESSIONS_DIR)
     return _with_ids({"ok": True, "mine": True, "name": _job_name(job) or who.get("session"),
@@ -344,7 +361,7 @@ def _resolve(args: dict) -> dict:
                       "pane": who.get("pane"),
                       "job": job,
                       "proc_start": roster.proc_start(who["pid"]),
-                      "cwd": cwd})
+                      "cwd": cwd, "mode": _gate_mode(pid)})
 
 
 def _row(t: control.Target) -> dict:
@@ -623,6 +640,7 @@ HANDLERS = {verb: _guarded(verb, fn) for verb, fn in {
     "adopt": _adopt,
     "revive_pinned": _revive_pinned,
     "pending": _pending,
+    "probe": cx_adapter._probe,
     "live_session_ids": _live_session_ids,
     "caller_of_token": _caller_of_token,
     "pool_claim": cx_adapter._claim,

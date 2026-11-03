@@ -1,4 +1,4 @@
-"""Whether cx on another node answers, as seen from this node.
+"""Whether cch on another node answers, as seen from this node.
 
 A keeper on a node whose own network drops cannot tell its own outage from
 the seat node's. It asks a node elsewhere to look for it.
@@ -17,12 +17,12 @@ PROBE_TIMEOUT_S = 20.0
 
 
 async def probe(node: str, *, timeout: float = PROBE_TIMEOUT_S) -> dict[str, Any]:
-    """``answers`` says whether `cx list` on ``node`` replied. No session rows travel."""
+    """``answers`` says whether `cch list` on ``node`` replied. No session rows travel."""
     try:
         if node == node_name():
-            reply = await gatewayclient.call("cx", "list", {}, timeout=timeout)
+            reply = await gatewayclient.call("cch", "list", {}, timeout=timeout)
         else:
-            reply = await gatewayclient.call_peer(node, "cx", "list", {}, timeout=timeout)
+            reply = await gatewayclient.call_peer(node, "cch", "list", {}, timeout=timeout)
     except Exception as exc:  # noqa: BLE001 — any failure is "did not answer"
         return {"ok": True, "node": node, "from": node_name(), "answers": False,
                 "reason": f"{type(exc).__name__}: {exc}"[:300]}

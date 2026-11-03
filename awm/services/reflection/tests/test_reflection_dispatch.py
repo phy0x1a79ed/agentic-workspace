@@ -95,8 +95,14 @@ def test_every_published_verb_has_a_handler_and_a_reflection_name():
 
 def test_the_internal_verbs_stay_off_mcp():
     hidden = {f["name"] for f in surface.FUNCTIONS if f.get("surfaces") == ["cli", "http"]}
-    assert {"harness_event", "revive_pinned", "claim_other", "seed_other",
-            "remove_other"} <= hidden
+    assert {"harness_event", "session_of", "retired", "retired_among"} <= hidden
+
+
+def test_no_harness_specific_verb_is_reflections():
+    """The daemon and warm-pool verbs are cch's own (install.md R135 item 4)."""
+    names = {f["name"] for f in surface.FUNCTIONS}
+    assert not names & {"claim_other", "seed_other", "remove_other", "revive_pinned",
+                        "daemon_status", "daemon_ensure", "daemon_hold", "daemon_release"}
 
 
 def test_message_self_goes_to_the_harness_that_owns_the_caller(fakes):
@@ -246,8 +252,9 @@ def test_session_of_names_the_session_behind_a_pid_a_service_holds(fakes):
     assert (out["ok"], out["session_id"], out["harness"]) == (True, MY_ID, "harness-cc")
 
 
-def test_session_of_a_pid_no_harness_claims_fails(fakes):
-    assert run("session_of", {"pid": 31337})["ok"] is False
+def test_session_of_a_pid_no_harness_claims_is_not_known(fakes):
+    out = run("session_of", {"pid": 31337})
+    assert out["ok"] and out["known"] is False and "session_id" not in out
 
 
 def test_cd_claims_the_new_scope_and_releases_the_old(fakes, monkeypatch):
@@ -538,3 +545,35 @@ def test_whoami_asks_for_the_task_by_session_id(monkeypatch):
         (svc, fn, a)) or {"task_id": "abcd1234"})
     assert hub_adapter._task_of(MY_ID) == "abcd1234"
     assert asked == [("reporting", "task_for_session", {"session_id": MY_ID})]
+
+
+def test_session_of_gives_the_gate_the_mode_and_the_trust(fakes):
+    fakes.cc.sessions["j1"] = {**fakes.cc.sessions["j1"], "mode": "worker"}
+    out = run("session_of", {"pid": ME})
+    assert out["known"] and out["session_id"] == MY_ID
+    assert (out["mode"], out["trust"]) == ("worker", "trusted")
+
+
+def test_session_of_a_pid_no_plugin_claims_carries_the_plugins_mode(fakes):
+    real = fakes.cc.__call__
+
+    def resolve(verb, args, as_):
+        if verb == "resolve":
+            return {"ok": True, "mine": False, "mode": None}
+        return real(verb, args, as_)
+
+    fakes.cc.answers.clear()
+    harness_call = harness._call
+    harness._call = lambda p, verb, args, as_: (resolve(verb, args, as_) if p.tool == CC.tool
+                                                else harness_call(p, verb, args, as_))
+    try:
+        out = run("session_of", {"pid": 77})
+    finally:
+        harness._call = harness_call
+    assert out["ok"] and out["known"] is False and out["mode"] is None
+
+
+def test_session_of_with_no_plugin_answering_is_unknown(fakes):
+    fakes.cc.down = fakes.ds.down = True
+    out = run("session_of", {"pid": 77})
+    assert out["known"] is False and out["mode"] == "unknown"
