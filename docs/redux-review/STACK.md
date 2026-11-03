@@ -25,6 +25,9 @@ Procedure, from dfs-interview § Work the stack:
 
 ## Stack
 
+- **plugin-guards** (2026-11-03): R116 items 3 and 4 mechanisms, raised by redux-plugins: a page origin per plugin, and the container for a third-party plugin
+  - [ ] Page origin per plugin (R116 item 3): (a) a host per plugin, <plugin>.localhost and <plugin>.<node host>, a wildcard cert per node; or (b) a port per plugin. The lane recommends (a)
+  - [ ] Third-party container (R116 item 4): (a) one unix socket per plugin bind-mounted, --network none unless needs.network, egress filtering later; or (b) a plugin listener on the docker bridge with a per-spawn token. The lane recommends (a)
 - **journals** (2026-11-03): for journals, I want to talk about making journals commentable (threads, like reddit posts). also want to talk about adding tags to journals with a set ontology (by the agents. 1 degree of separate helps with consistency since harder to just add rando tags). tags for existing uses, but then also would allow for complaint posts like bug reports. then journals need a way of also marking "closed", kind of like issues.  This would allow meta imrpovements to be more systematized in awm
   - [x] Tag descriptions. Tony: "each tag should also get a description when adding and is editable" (answered 2026-11-03)
   - [ ] Precedence folds into the journal. Tony: "and prescedent can then fold into the same journal system once updated?"
