@@ -22,7 +22,13 @@ tier = "on"
 secrets = []
 network = ["udp:9 broadcast", "tcp:22 lan"]
 
-# reflection: start_other, message, revive_pinned. uuid5(NAMESPACE_URL, "awm:tool:reflection").
+# reflection: start_other, message, and revive_pinned under today's gateway.
+# uuid5(NAMESPACE_URL, "awm:tool:reflection").
 [[needs.tool]]
 uuid = "550c10ed-c2cb-5175-acfa-b17e97b52d6c"
+major = 1
+
+# harness-cc: revive_pinned. uuid5(NAMESPACE_URL, "awm:tool:harness-cc").
+[[needs.tool]]
+uuid = "cc6d1ff4-9007-5f2f-b008-71249dc76346"
 major = 1

@@ -150,6 +150,16 @@ async def test_boot_revives_then_releases_partner(cfg):
     assert out["release"] == {"ok": True, "held": True}
 
 
+async def test_boot_uses_harness_cc_when_the_gateway_resolves_it(cfg, tmp_path, monkeypatch):
+    from awm.wake.gateway import HARNESS
+    resolved = tmp_path / "resolved.json"
+    resolved.write_text('{"%s": {"name": "harness-cc"}}' % HARNESS)
+    monkeypatch.setenv("AWM_RESOLVED_TOOLS", str(resolved))
+    gw = FakeGateway()
+    await boot.run(cfg, gw)
+    assert gw.calls[0][:2] == (HARNESS, "revive_pinned")
+
+
 async def test_boot_waits_for_gateway_and_releases_even_on_failure(cfg):
     gw = FakeGateway({(REFLECTION, "revive_pinned"): CallError("unknown verb")},
                      up=lambda n: True)

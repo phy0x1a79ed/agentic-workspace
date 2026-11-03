@@ -26,23 +26,33 @@ def legacy_uuid(name: str) -> str:
 
 #: The tools this plugin calls, by permanent UUID and legacy name.
 REFLECTION = legacy_uuid("reflection")
+HARNESS = legacy_uuid("harness-cc")
 WAKE = "7c1d4b8e-2f5a-4e93-a6b0-9d3e8f21c5a7"
-LEGACY_NAMES = {REFLECTION: "reflection", WAKE: "wake"}
+LEGACY_NAMES = {REFLECTION: "reflection", HARNESS: "harness-cc", WAKE: "wake"}
 
 
 class CallError(RuntimeError):
     pass
 
 
-def tool_name(tool_uuid: str) -> str:
+def _resolved() -> dict[str, Any]:
     path = os.environ.get("AWM_RESOLVED_TOOLS")
-    if path:
-        try:
-            resolved = json.loads(Path(path).read_text())
-            return resolved[tool_uuid]["name"]
-        except (OSError, ValueError, KeyError):
-            pass
-    return LEGACY_NAMES[tool_uuid]
+    if not path:
+        return {}
+    try:
+        return json.loads(Path(path).read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def resolves(tool_uuid: str) -> bool:
+    """Whether the redux gateway resolved this tool for the plugin."""
+    return tool_uuid in _resolved()
+
+
+def tool_name(tool_uuid: str) -> str:
+    entry = _resolved().get(tool_uuid)
+    return entry["name"] if entry else LEGACY_NAMES[tool_uuid]
 
 
 def _unwrap(body: Any) -> Any:
