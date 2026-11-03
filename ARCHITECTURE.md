@@ -78,11 +78,12 @@ A backend is a folder under `awm/services/<name>/` with a self-contained executa
 
 ### The plugin manifest
 
-Each service folder declares itself in `awm-plugin.toml`: its services, the tool it publishes with that tool's UUID and tier, its pages, and what it needs (secrets, network, platform, the tools it calls). The redux plugin contract defines the format (`docs/redux/drafts/plugin-contract.md`). A manifest names no host. The install config places plugins on nodes.
+Each service folder declares itself in `awm-plugin.toml`: its services, the tool it publishes by its unique name with its major and tier, its pages, and what it needs (secrets, network, platform, the tools and contracts it calls by name). The redux plugin contract defines the format (`docs/redux/drafts/plugin-contract.md`). A manifest names no host. The install config places plugins on nodes.
 
-- **Legacy folders.** A folder whose tool another folder also publishes keeps `service.toml`, because a manifest plugin may not share a tool. `LEGACY` in `gateway/tests/test_plugin_contract.py` names each such folder and why.
+- **Checked at load.** Discovery refuses a folder whose manifest breaks the contract, so the supervisor never starts it. `discovery.plugin_refusals()` names each refused folder and the reason. The rules match the Rust loader's.
+- **Legacy folders.** A folder whose tool another folder also publishes keeps `service.toml`, because a manifest plugin may not share a tool. `LEGACY` in `gateway/tests/test_plugin_contract.py` names each such folder and why. The legacy path and its shared tools go at the cutover, after the harness merge.
 - **One file.** Discovery reads the manifest first and falls back to `service.toml` key by key. A folder never carries both. Delete `service.toml` when you add a manifest.
-- **The guard.** `test_plugin_contract.py` walks the tree. It fails a folder with no manifest and no `LEGACY` reason, a tool UUID that is not the legacy `uuid5` of its name, a secret the code reads but `[needs]` does not declare, an import of another plugin's code, and a script that names its own `awm/services/<name>` path. `CROSS_IMPORTS` lists the old cross-plugin imports by name. Remove a pair when its debt is paid.
+- **The guard.** `test_plugin_contract.py` walks the tree. It fails a refused folder, a folder with no manifest and no `LEGACY` reason, a secret the code reads but `[needs]` does not declare, an import of another plugin's code, and a script that names its own `awm/services/<name>` path. `CROSS_IMPORTS` lists the old cross-plugin imports by name. Remove a pair when its debt is paid.
 
 **CAUTION** A plugin's `install.sh` and `run.sh` find their own folder from `$0`, and awm's tree from `$AWM_ROOT`. A path such as `$WS/awm/services/<name>` breaks the plugin the moment it loads from a root outside the tree.
 
