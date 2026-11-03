@@ -67,6 +67,7 @@ from typing import Any, Callable, NamedTuple, Optional
 from awm import claudedaemon
 from awm.claudedaemon import roster
 from awm.reflection import (
+    alarm,
     guards,
     observation,
     oc_inject,
@@ -150,6 +151,27 @@ RECONNECT_AFTER_MOVE = "/mcp reconnect awm"
 # unbidden in somebody's session, so it is rationed: three across the life of a
 # promise, at most one per fifteen-minute round.
 NUDGE_LIMIT = 3
+
+# Claude Code's daemon swaps an outdated background worker for a new process in
+# place, and a swap during `/compact` loses the compaction and everything queued
+# behind it (compaction-survey.md, 2026-11-03: 13 of 545, all on outdated
+# workers, the new process 3 to 51 s after the command began). A dead pid is
+# therefore not the end of a promise: the session id is looked up under a new
+# pid for this long, and the command or the resume typed again at most
+# MAX_REISSUES times.
+SUCCESSOR_WAIT_S = 120.0
+SUCCESSOR_POLL_S = 2.0
+MAX_REISSUES = 2
+
+# How long after the resume is typed the session gets to show it taken up, and
+# for `/compact` the `compact_boundary`. The longest compaction measured ran 94 s.
+FOLLOW_THROUGH_S = 1800.0
+FOLLOW_POLL_S = 2.0
+
+# What a follow-through ended in.
+_DONE = "done"
+_REARM = "rearm"
+_LOST = "lost"
 
 # Statuses that say outright that typing now would land in a queue or behind a
 # modal. `shell` is not among them — see :func:`watcher.is_settled`.
@@ -752,11 +774,158 @@ def _round_backoff(failures: int) -> float:
     return ROUND_BACKOFF_S[min(failures, len(ROUND_BACKOFF_S)) - 1]
 
 
+def _alive(item: pending.Pending) -> bool:
+    started = session_target._proc_start(item.repl_pid)
+    return started is not None and (not item.proc_start or started == item.proc_start)
+
+
+def _await_successor(item: pending.Pending, who: str, *,
+                     sleep: Callable[[float], None] = time.sleep,
+                     clock: Callable[[], float] = time.monotonic,
+                     **_kw) -> Optional[pending.Pending]:
+    """``item`` moved to the process that took over its session, or None."""
+    deadline = clock() + SUCCESSOR_WAIT_S
+    while True:
+        found = session_target.successor(item.session_id, item.repl_pid)
+        if found is not None:
+            pid, started = found
+            log.warning("reflection: session %s moved from pid %s to pid %s, a "
+                        "worker swap; following it", who, item.repl_pid, pid)
+            moved = replace(item, repl_pid=pid, proc_start=started)
+            pending.rekey(item.repl_pid, moved)
+            return moved
+        if clock() >= deadline:
+            return None
+        sleep(SUCCESSOR_POLL_S)
+
+
+def _command_survived(tail, item: pending.Pending) -> bool:
+    """Did the command finish before its worker was swapped out?
+
+    A start line is not enough here: a swap during `/compact` leaves the start
+    line and loses the compaction. Only the boundary says it finished.
+    """
+    tail.poll()
+    if watcher.is_compaction(item.text):
+        return tail.compacted(since_ms=item.injected_at_ms) is True
+    return tail.started(item.text, since_ms=item.injected_at_ms) is True
+
+
+def _reissue(item: pending.Pending, tail, who: str, *, read_status=None,
+             **kw) -> pending.Pending:
+    """Type the command again into the session's new worker. Raises DeliveryError."""
+    now = watcher.now_ms()
+    tail.rebind(item.repl_pid)
+    tail.watch(item.text)
+    log.warning("reflection: typing %s again into session %s, whose worker was "
+                "swapped before it finished (re-issue %s of %s)", item.text, who,
+                item.reissues + 1, MAX_REISSUES)
+    deliver(item.repl_pid, item.text, enter=True, tail=tail,
+            read_status=read_status,
+            what="the command again after a worker swap", **kw)
+    item = replace(item, injected_at_ms=now, phase=pending.AWAITING_COMMAND,
+                   reissues=item.reissues + 1,
+                   last_outcome="typed again after a worker swap")
+    pending.record(item)
+    return item
+
+
+def _lost(item: pending.Pending, reason: str, *, alive: bool, **kw) -> None:
+    """Forget the promise and say out loud that it was lost."""
+    pending.clear(item.repl_pid)
+    alarm.raise_alarm(
+        item, reason, alive_pid=item.repl_pid if alive else None,
+        deliver=lambda pid, text, **k: deliver(pid, text, **{**kw, **k}))
+
+
+def _follow_through(item: pending.Pending, tail, who: str, *, read_status=None,
+                    **kw) -> tuple[str, pending.Pending]:
+    """Hold the promise until the session has taken the resume up.
+
+    Typed is not delivered. The resume waits in the worker's memory until the
+    command ends, and a worker swap in that window loses both. So the promise
+    stays on disk until the transcript shows the resume taken out of the queue
+    and, for `/compact`, the `compact_boundary`. A swap in the window sends the
+    command or the resume again into the new worker.
+    """
+    sleep = kw.get("sleep", time.sleep)
+    clock = kw.get("clock", time.monotonic)
+    compaction = watcher.is_compaction(item.text)
+    tail.watch(item.text)
+    tail.watch(item.followup)
+    deadline = clock() + FOLLOW_THROUGH_S
+    while True:
+        tail.poll()
+        if _superseded(item):
+            return _DONE, item
+        took = tail.taken_up(item.followup, since_ms=item.injected_at_ms)
+        if took is None:
+            # No transcript to read, now or ever: nothing can confirm or refute
+            # it, and typing the resume twice is the worse mistake.
+            pending.clear(item.repl_pid)
+            return _DONE, item
+        finished = (tail.compacted(since_ms=item.injected_at_ms) is True
+                    if compaction else True)
+        if took and finished:
+            pending.clear(item.repl_pid)
+            log.info("reflection: session %s took up its resume%s", who,
+                     " after the compaction finished" if compaction else "")
+            return _DONE, item
+        if took:
+            _lost(item, "the session took up its resume, but no compact_boundary "
+                        "followed the /compact, so the compaction did not finish",
+                  alive=True, read_status=read_status, **kw)
+            return _LOST, item
+        if not _alive(item):
+            moved = _await_successor(item, who, **kw)
+            if moved is None:
+                _lost(item, "the session's process went away after its resume was "
+                            "typed and before it was taken up, and no new process "
+                            "took over the session", alive=False, **kw)
+                return _LOST, item
+            item = moved
+            tail.rebind(item.repl_pid)
+            if item.reissues >= MAX_REISSUES:
+                _lost(item, f"the session's worker was swapped again after "
+                            f"{MAX_REISSUES} re-issues", alive=True,
+                      read_status=read_status, **kw)
+                return _LOST, item
+            try:
+                if compaction and not _command_survived(tail, item):
+                    return _REARM, _reissue(item, tail, who,
+                                            read_status=read_status, **kw)
+                deliver(item.repl_pid, item.followup, enter=True, tail=tail,
+                        read_status=read_status,
+                        what="the resume again after a worker swap", **kw)
+            except DeliveryError as exc:
+                _lost(item, f"its worker was swapped and the new one would not "
+                            f"take the text: {exc}", alive=True,
+                      read_status=read_status, **kw)
+                return _LOST, item
+            item = replace(item, reissues=item.reissues + 1,
+                           last_outcome="resume typed again after a worker swap")
+            pending.record(item)
+            continue
+        if clock() >= deadline:
+            _lost(item, f"the session did not take up its resume"
+                        f"{' or finish the compaction' if compaction else ''} "
+                        f"within {int(FOLLOW_THROUGH_S // 60)} minutes",
+                  alive=True, read_status=read_status, **kw)
+            return _LOST, item
+        sleep(FOLLOW_POLL_S)
+
+
 def _await_and_resume_inner(item: pending.Pending, tail, who,
                             read_status=None, **kw) -> None:
     sleep = kw.get("sleep", time.sleep)
     failures = 0
     while failures < MAX_DELIVERY_ROUNDS:
+        if item.phase == pending.RESUME_SENT:
+            verdict, item = _follow_through(item, tail, who,
+                                            read_status=read_status, **kw)
+            if verdict == _REARM:
+                continue
+            return
         # Spacing between *delivery* rounds only. A round that ended in a hold —
         # the session had not reached its command yet — re-arms straight away, as
         # it always did: that is the wait working, and it is unbounded by design.
@@ -775,8 +944,29 @@ def _await_and_resume_inner(item: pending.Pending, tail, who,
                      who)
             return
         if outcome == watcher.VANISHED:
-            pending.clear(item.repl_pid)
-            return
+            moved = _await_successor(item, who, **kw)
+            if moved is None:
+                _lost(item, "the session's process went away before its command "
+                            "ran, and no new process took over the session",
+                      alive=False, **kw)
+                return
+            item = moved
+            tail.rebind(item.repl_pid)
+            if _command_survived(tail, item):
+                continue
+            if item.reissues >= MAX_REISSUES:
+                _lost(item, f"the session's worker was swapped again after "
+                            f"{MAX_REISSUES} re-issues", alive=True,
+                      read_status=read_status, **kw)
+                return
+            try:
+                item = _reissue(item, tail, who, read_status=read_status, **kw)
+            except DeliveryError as exc:
+                failures += 1
+                item = pending.held(item, f"could not type the command again "
+                                          f"after a worker swap: {exc}")
+                pending.record(item)
+            continue
         if outcome == watcher.TIMED_OUT:
             # Re-ask before nudging. A round can expire in the same second the
             # command starts — measured, first drill: the round ended 377ms
@@ -802,8 +992,6 @@ def _await_and_resume_inner(item: pending.Pending, tail, who,
             pending.record(item)
             continue
 
-        # Checked again here, with nothing awaited since the clear below: a
-        # clear that follows a newer promise's record would erase it.
         if _superseded(item):
             return
         # The resume is worded now, not when the command was queued: what a
@@ -815,21 +1003,19 @@ def _await_and_resume_inner(item: pending.Pending, tail, who,
         # it: a paste queued behind `/compact` shows only when compaction ends.
         tail.poll()
         if tail.landed(item.followup, since_ms=item.injected_at_ms) is True:
-            pending.mark_delivered(item.repl_pid, item.injected_at_ms)
-            pending.clear(item.repl_pid)
             log.info("reflection: the resume for session %s arrived from an "
                      "earlier round; not typing it again", who)
-            return
+            item = replace(item, phase=pending.RESUME_SENT)
+            pending.mark_delivered(item.repl_pid, item.injected_at_ms)
+            pending.record(item)
+            continue
 
-        # Forget the promise BEFORE delivering on it, not after. The two
-        # orderings trade opposite failure modes across a restart in the gap:
-        # clearing after would let a boot-time replay re-deliver a resume that
-        # already landed, injecting a stray prompt into a session that is busy
-        # working — whereas clearing first can only lose a resume if the process
-        # dies inside the delivery itself, which is the same hole every other
-        # step has.
+        # The promise moves to `resume_sent` before the resume is typed, so a
+        # restart in the gap replays a follow-through, which never types the
+        # resume again unless a worker swap lost it.
+        item = replace(item, phase=pending.RESUME_SENT)
         pending.mark_delivered(item.repl_pid, item.injected_at_ms)
-        pending.clear(item.repl_pid)
+        pending.record(item)
         if any(c.kind == "cd" for c in item.changes):
             _reconnect(item.repl_pid, who, tail=tail, read_status=read_status, **kw)
         try:
@@ -841,7 +1027,8 @@ def _await_and_resume_inner(item: pending.Pending, tail, who,
             # moment", and a fresh one would make the next wait sit out its full
             # cap waiting for a reaction that already happened.
             failures += 1
-            item = pending.held(item, f"could not be delivered: {exc}")
+            item = pending.held(replace(item, phase=pending.AWAITING_COMMAND),
+                                f"could not be delivered: {exc}")
             pending.record(item)
             log.error("reflection: could not deliver the deferred resume to "
                       "session %s; it is still pending: %s", who, exc)
@@ -849,22 +1036,24 @@ def _await_and_resume_inner(item: pending.Pending, tail, who,
 
         landed = _verify_landed(tail, item.followup,
                                 sleep=kw.get("sleep", time.sleep))
-        if landed is not False:
-            # True, or "no transcript to read" — which is not proof of anything
-            # and certainly not licence to type the same resume in twice.
+        if landed is None:
+            # No transcript to read: not proof of anything, and certainly not
+            # licence to type the same resume in twice.
+            pending.clear(item.repl_pid)
             return
+        if landed is True:
+            continue
         failures += 1
-        item = pending.held(item, "delivered, but the session's transcript never "
-                                  "showed it arriving")
+        item = pending.held(replace(item, phase=pending.AWAITING_COMMAND),
+                            "delivered, but the session's transcript never "
+                            "showed it arriving")
         pending.record(item)
         log.warning("reflection: the deferred resume for session %s was sent but "
                     "its transcript never showed it arriving; holding the promise "
                     "and waiting for the session again", who)
 
-    log.error("reflection: gave up delivering the deferred resume to session %s "
-              "after %s failed deliveries; the promise is left in `pending` and "
-              "that session will sit idle until something resumes it",
-              who, MAX_DELIVERY_ROUNDS)
+    _lost(item, f"its resume could not be delivered after {MAX_DELIVERY_ROUNDS} "
+                f"rounds", alive=_alive(item), read_status=read_status, **kw)
 
 
 def _reconnect(repl_pid: int, who: str, **kw) -> None:
