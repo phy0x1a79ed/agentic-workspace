@@ -1,4 +1,4 @@
-"""The fleet edge list matches fleet.md R87 row by row, and the reader answers from it."""
+"""The edge list reader answers from a node's edges.yml (fleet.md R87, R96, R98)."""
 
 from __future__ import annotations
 
@@ -10,32 +10,20 @@ from awm.config import edges
 
 pytestmark = [pytest.mark.unit, pytest.mark.smoke]
 
-REPO_EDGES = Path(__file__).resolve().parents[4] / "fleet" / "edges.yml"
-
-# fleet.md R87: each row is the node that connects out.
-R87 = {
-    "lyra":    {"capella", "mizar", "alcor", "altair", "deneb", "sockeye", "fir"},
-    "capella": {"lyra", "mizar", "alcor", "altair", "deneb", "sockeye", "fir"},
-    "mizar":   {"lyra", "capella", "alcor", "altair", "deneb", "sockeye", "fir"},
-    "alcor":   {"mizar"},
-    "altair":  {"sockeye", "fir", "macpro"},
-    "deneb":   set(),
-    "sockeye": set(),
-    "fir":     set(),
-    "macpro":  {"altair"},
-}
-# mira is in no R87 row. It keeps today's inbound path until the trial week ends.
-RETIRING = {"mira"}
+FIXTURE = Path(__file__).parent / "fixtures" / "edges.yml"
 
 
 @pytest.fixture(autouse=True)
-def repo_file(monkeypatch):
-    monkeypatch.setenv(edges.EDGES_FILE_ENV, str(REPO_EDGES))
+def fixture_file(monkeypatch):
+    monkeypatch.setenv(edges.EDGES_FILE_ENV, str(FIXTURE))
 
 
-def test_table_matches_r87():
-    for src, targets in R87.items():
-        assert set(edges.reachable_from(src)) - RETIRING == targets, src
+def test_edges_are_directional():
+    assert edges.reaches("home", "work")
+    assert not edges.reaches("work", "home")
+    assert edges.reaches("relay", "relay")
+    assert edges.reachable_from("spare") == ["home"]
+    assert edges.reached_by("spare") == ["home", "laptop"]
 
 
 def test_stations_reach_nothing():
@@ -44,27 +32,24 @@ def test_stations_reach_nothing():
             assert edges.reachable_from(name) == [], name
 
 
-def test_reach_queries():
-    assert edges.reaches("mizar", "altair")
-    assert not edges.reaches("altair", "mizar")
-    assert not edges.reaches("altair", "deneb")
-    assert edges.reaches("deneb", "deneb")
-    assert edges.reached_by("alcor") == ["capella", "lyra", "mizar"]
-    assert edges.network("mizar", "alcor") == "lan"
-    assert edges.network("lyra", "mizar") == "tailscale"
-    assert edges.network("altair", "macpro") == "zerotier"
-    assert edges.network("alcor", "altair") is None
+def test_one_network_per_edge():
+    assert edges.network("home", "spare") == "lan"
+    assert edges.network("laptop", "home") == "tailscale"
+    assert edges.network("work", "backup") == "zerotier"
+    assert edges.network("spare", "work") is None
 
 
 def test_singletons_have_doors():
-    assert "2fa" in edges.singleton_tools()
-    assert edges.singleton_door("alcor")["port"] == 2201
-    assert edges.singleton_door("mizar") is None
+    assert edges.singleton_tools() == ["2fa", "channel"]
+    assert edges.singleton_door("spare")["port"] == 2201
+    assert edges.singleton_door("home") is None
 
 
-def test_managed_set_is_r108():
-    managed = {n for n, v in edges.nodes().items() if v.get("managed")}
-    assert managed == {"mizar", "alcor", "mira", "capella", "lyra", "deneb", "shogun"}
+def test_default_path_is_node_config(monkeypatch, tmp_path):
+    import awm.config as config
+    monkeypatch.delenv(edges.EDGES_FILE_ENV)
+    monkeypatch.setattr(config, "AWM_DIR", tmp_path)
+    assert edges.edges_file() == tmp_path / "edges.yml"
 
 
 def test_rejects_unknown_network(tmp_path, monkeypatch):
@@ -77,5 +62,5 @@ def test_rejects_unknown_network(tmp_path, monkeypatch):
 
 def test_missing_file_is_empty_fleet(tmp_path, monkeypatch):
     monkeypatch.setenv(edges.EDGES_FILE_ENV, str(tmp_path / "none.yml"))
-    assert edges.reachable_from("mizar") == []
-    assert not edges.reaches("mizar", "alcor")
+    assert edges.reachable_from("home") == []
+    assert not edges.reaches("home", "spare")

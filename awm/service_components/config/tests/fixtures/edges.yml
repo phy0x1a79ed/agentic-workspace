@@ -1,0 +1,22 @@
+# A made-up fleet for the reader's tests. The real edge list is node config
+# that the fleet's own project writes (fleet.md R140).
+version: 1
+nodes:
+  laptop:  {role: laptop,   managed: true,  addresses: {tailscale: null}}
+  home:    {role: homebase, managed: true,  addresses: {lan: 10.0.0.2}}
+  spare:   {role: standby,  managed: true,  addresses: {lan: 10.0.0.3}}
+  work:    {role: work,     managed: false, addresses: {tailscale: 100.64.0.4}}
+  relay:   {role: station,  managed: true,  addresses: {public: 192.0.2.5}}
+  cluster: {role: station,  managed: false, addresses: {}}
+  backup:  {role: backup,   managed: false, addresses: {zerotier: null}}
+edges:
+  laptop: {home: tailscale, spare: tailscale, work: tailscale, relay: internet, cluster: internet}
+  home:   {laptop: tailscale, spare: lan, work: tailscale, relay: internet, cluster: internet}
+  spare:  {home: lan}
+  work:   {cluster: internet, backup: zerotier}
+  backup: {work: zerotier}
+singleton_doors:
+  spare: {port: 2201, network: tailscale}
+singletons:
+  - {tool: 2fa, host: spare}
+  - {tool: channel, host: spare}
