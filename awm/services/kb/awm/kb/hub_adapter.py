@@ -444,7 +444,7 @@ async def _answer(args: dict) -> dict[str, Any]:
     text = str(args.get("query") or "")
     meaning = None if filters.blocked or not text.strip() else asyncio.ensure_future(_entries(text))
     found, theirs = await asyncio.gather(asyncio.to_thread(PAPERS.search, text, filters, limit, per_hit),
-                                         asyncio.to_thread(PAPERS.search, text, mine, limit, per_hit))
+                                         asyncio.to_thread(PAPERS.search_library, text, mine, limit, per_hit))
     if meaning is None:
         return {"kb": {**found, "graph": []}, "library": {**theirs, "graph": []}}
     served, why = await meaning
@@ -675,6 +675,7 @@ async def _papers_loop() -> None:
             moved = await zotero_poll()
             if any(moved.values()):
                 log.info("kb: zotero items taken: %s", moved)
+            await asyncio.to_thread(PAPERS.library_copy)
         except Exception as exc:  # noqa: BLE001 — mira away is ordinary; retry next round
             log.warning("kb: papers delta round failed: %s", repr(exc)[:300])
         await asyncio.sleep(instances.ZOTERO_POLL_S)

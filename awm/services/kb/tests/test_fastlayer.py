@@ -337,3 +337,15 @@ def test_a_named_paper_ranked_past_the_candidate_cut_is_still_found(tmp_path, mo
     assert all(h["match"] == "keyword" for h in got["exact"])
     assert layer.search("qq099x", named, 10, 1)["exact"][0]["id"] == "p099"
     assert layer.search("marker", fastlayer.Filters(papers={"nobody"}), 10, 1) == {"exact": [], "related": []}
+
+
+def test_a_library_search_reads_the_library_copy_and_follows_the_library(layer):
+    layer.take_items([{"library": "u", "key": "K1", "version": 1, "doi": "10.1/at", "title": "Assembly theory"}])
+    mine = hub_adapter.fastlayer.Filters(papers=layer.library())
+    got = layer.search_library("assembly", mine, 10, 1)
+    assert [h["id"] for h in got["exact"]] == ["doi:10.1/at"]
+    copy = sqlite3.connect(layer.library_path)
+    assert copy.execute("SELECT count(*) FROM paper").fetchone()[0] == 1
+    layer.take_items([{"library": "u", "key": "K2", "version": 2, "doi": "10.1/old", "title": "An ASSEMBLY INDEX survey"}])
+    got = layer.search_library("assembly", fastlayer.Filters(papers=layer.library()), 10, 1)
+    assert {h["id"] for h in got["exact"]} == {"doi:10.1/at", "doi:10.1/old"}

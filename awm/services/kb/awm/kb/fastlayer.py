@@ -15,6 +15,7 @@ from a cold disk that costs minutes. The small delta is still ranked exactly.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import os
@@ -282,6 +283,9 @@ def _open_ro(path: Path) -> sqlite3.Connection | None:
 class FastLayer:
     def __init__(self, base: Path, delta: Path) -> None:
         self.base_path, self.delta_path = base, delta
+        #: The library's papers copied out of the base, so a library search reads a few megabytes, not the base.
+        self.library_path = delta.with_name(delta.stem + "_library.db")
+        self._library_lock = threading.Lock()
 
     # -- delta ------------------------------------------------------------
 
@@ -397,7 +401,59 @@ class FastLayer:
         finally:
             conn.close()
 
-    def search(self, query: str, filters: Filters, limit: int, per_hit: int) -> dict[str, list[dict[str, Any]]]:
+    def library_copy(self) -> Path | None:
+        """The library store: each library paper the base holds, its row and passages, with their own indexes.
+        It is rewritten when the library or the base changes, as its signature records."""
+        with self._library_lock:
+            mine = sorted(p for p in self.library() if not p.startswith("zotero:"))
+            try:
+                st = self.base_path.stat()
+            except OSError:
+                return None
+            sign = hashlib.sha1(f"{st.st_size}:{st.st_mtime_ns}:{','.join(mine)}".encode()).hexdigest()
+            have = _open_ro(self.library_path)
+            if have is not None:
+                try:
+                    row = have.execute("SELECT value FROM meta WHERE key='signature'").fetchone()
+                    if row and row[0] == sign:
+                        return self.library_path
+                except sqlite3.OperationalError:
+                    pass
+                finally:
+                    have.close()
+            tmp = self.library_path.with_name(self.library_path.name + ".building")
+            tmp.unlink(missing_ok=True)
+            db = sqlite3.connect(tmp)
+            try:
+                db.executescript("PRAGMA page_size=65536; PRAGMA journal_mode=OFF;" + DELTA_DDL)
+                db.execute("ATTACH ? AS b", (f"file:{self.base_path}?mode=ro",))
+                db.execute("CREATE TEMP TABLE want(paper_id TEXT PRIMARY KEY)")
+                db.executemany("INSERT INTO want VALUES (?)", [(p,) for p in mine])
+                cols = "paper_id, doi, title, authors, year, journal, domains, ts"
+                db.execute(f"INSERT INTO paper({cols}) SELECT {cols} FROM b.paper WHERE paper_id IN temp.want")
+                db.execute("INSERT INTO passage(id, paper_id, zone, ord, start, end, section, text)"
+                           " SELECT id, paper_id, zone, ord, start, end, section, text FROM b.passage"
+                           " WHERE paper_id IN temp.want ORDER BY id")
+                db.execute("INSERT INTO meta VALUES ('signature', ?)", (sign,))
+                db.commit()
+                db.execute("DETACH b")
+                db.execute("INSERT INTO passage_tri(passage_tri) VALUES ('optimize')")
+                db.execute("INSERT INTO passage_bm25(passage_bm25) VALUES ('optimize')")
+                db.commit()
+                db.execute("VACUUM")
+            finally:
+                db.close()
+            os.replace(tmp, self.library_path)
+            return self.library_path
+
+    def search_library(self, query: str, filters: Filters, limit: int,
+                       per_hit: int) -> dict[str, list[dict[str, Any]]]:
+        """:meth:`search` over the library store and the delta, which hold every library paper."""
+        stores = [p for p in (self.library_copy(), self.delta_path) if p is not None and p.exists()]
+        return self.search(query, filters, limit, per_hit, stores)
+
+    def search(self, query: str, filters: Filters, limit: int, per_hit: int,
+               stores: list[Path] | None = None) -> dict[str, list[dict[str, Any]]]:
         """``exact``: papers holding the query literally, then papers holding every one of its words.
         ``related``: the other papers holding its rarest words. Each hit quotes its passages.
 
@@ -405,7 +461,7 @@ class FastLayer:
         at once, each on its own connection; the answer is then assembled in order."""
         if filters.blocked or not query.strip():
             return {"exact": [], "related": []}
-        paths = self._stores()
+        paths = self._stores() if stores is None else stores
         if not paths:
             return {"exact": [], "related": []}
         needle, words = literal(query), terms(query)
