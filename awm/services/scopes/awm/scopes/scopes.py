@@ -11,6 +11,7 @@ session helper subscribes the user to the scope's channel.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import shutil
@@ -355,34 +356,25 @@ def _cleanup_worktree(bare_dir: Path, worktree_dir: Path,
     return guard
 
 
-#: Ignored paths a tool regenerates, so they never block a delete (R44 item 3).
-DISPOSABLE_PARTS = frozenset({"__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", "node_modules"})
-DISPOSABLE_PREFIXES = (".awm/", ".dvc/tmp/", ".dvc/cache/")
+def _dvc_drift(worktree_dir: Path) -> list[str]:
+    """Data pins whose files changed since their last ``dvc add`` (scopes.md R44 item 3).
 
-
-def _ignored_files(worktree_dir: Path) -> list[str]:
-    """Ignored paths outside ``.awm/`` that a delete would lose (scopes.md R44 item 3).
-
-    A DVC output is not lost: its bytes live in the shared cache and its pin is
-    a tracked ``.dvc`` file. Regenerable caches are not counted either.
+    Their bytes are in no cache yet, so a delete would lose them. An uncommitted
+    pin shows to git as untracked, and the uncommitted-change check catches it.
+    Ignored files lose nothing that matters and never block a delete.
     """
-    r = run_git(["git", "-C", str(worktree_dir), "ls-files", "--others", "--ignored",
-                 "--exclude-standard", "--directory", "-z"])
-    if r.returncode != 0:
+    if not data_dvc.is_dvc_repo(worktree_dir) or not data_dvc.chunk_pins(worktree_dir):
         return []
-    pins = run_git(["git", "-C", str(worktree_dir), "ls-files", "-z", "--", "*.dvc"])
-    outs = {p[:-len(".dvc")] for p in (pins.stdout or "").split("\0") if p.endswith(".dvc")}
-    found = []
-    for path in (r.stdout or "").split("\0"):
-        if not path:
-            continue
-        bare = path.rstrip("/")
-        if path.startswith(DISPOSABLE_PREFIXES) or DISPOSABLE_PARTS & set(bare.split("/")):
-            continue
-        if path.endswith(".pyc") or any(bare == o or bare.startswith(o + "/") for o in outs):
-            continue
-        found.append(path)
-    return found
+    if not data_dvc.dvc_available():
+        return ["dvc is not installed, so pinned data cannot be checked"]
+    r = data_dvc._dvc(worktree_dir, "status", "--json", timeout=None)
+    if r.returncode != 0:
+        return [f"dvc status failed: {data_dvc._out(r)[:200]}"]
+    try:
+        changed = json.loads(r.stdout or "{}")
+    except ValueError:
+        return [f"dvc status answered {r.stdout[:200]!r}"]
+    return sorted(changed) if isinstance(changed, dict) else []
 
 
 def _unique_commits(bare_dir: Path, branch: str) -> list[str]:
@@ -399,10 +391,11 @@ def _removal_guard(bare_dir: Path, worktree_dir: Path, project: str, scope: str,
                    force: bool, *, branch_goes: bool) -> dict:
     """The R44 checks that run before a scope's worktree goes.
 
-    A live session's claim blocks the removal always. Ignored files block it
-    unless ``force`` is set. Commits no other ref holds block it only when the
-    branch goes too, because a kept branch keeps them. A forced removal lists
-    each one. Uncommitted files are checked by :func:`_cleanup_worktree`.
+    A live session's claim blocks the removal always. Pinned data changed since
+    its last ``dvc add`` blocks it unless ``force`` is set. Commits no other ref
+    holds block it only when the branch goes too, because a kept branch keeps
+    them. A forced removal lists each one. Uncommitted files are checked by
+    :func:`_cleanup_worktree`.
     """
     from awm.scopes import claims
 
@@ -410,18 +403,19 @@ def _removal_guard(bare_dir: Path, worktree_dir: Path, project: str, scope: str,
     if holder is not None:
         raise RuntimeError(f"Refusing to remove {project}/{scope}: live session {holder['session_id']} "
                            f"holds it. force does not override a live session (scopes.md R44).")
-    ignored = _ignored_files(worktree_dir) if worktree_dir.is_dir() else []
+    drift = _dvc_drift(worktree_dir) if worktree_dir.is_dir() else []
     commits = _unique_commits(bare_dir, branch) if branch_goes else []
     blockers = []
-    if ignored:
-        blockers.append(f"{len(ignored)} ignored file(s) outside .awm/ ({', '.join(ignored[:3])})")
+    if drift:
+        blockers.append(f"{len(drift)} data pin(s) changed since their last `dvc add` "
+                        f"({', '.join(drift[:3])})")
     if commits:
         blockers.append(f"{len(commits)} commit(s) on {branch} that no other branch or remote holds "
                         f"({', '.join(c.split()[0] for c in commits[:3])})")
     if blockers and not force:
         raise RuntimeError(f"Refusing to remove {worktree_dir}: " + "; ".join(blockers)
                            + ". Save them, or pass force=true to discard them.")
-    return {"ignored": ignored, "commits": commits}
+    return {"dvc_drift": drift, "commits": commits}
 
 
 def _inbox_step(project: str, scope: str) -> str:
@@ -1625,7 +1619,7 @@ def delete_scope(project: str, scope: str, force: bool = False,
 
 def _discard_list(guard: dict, removal: dict) -> dict | None:
     """What a forced removal threw away, in full (scopes.md R44)."""
-    out = {"uncommitted": [p.strip() for p in guard.get("paths", [])], "ignored": removal["ignored"],
+    out = {"uncommitted": [p.strip() for p in guard.get("paths", [])], "dvc_drift": removal["dvc_drift"],
            "commits": removal["commits"]}
     return out if any(out.values()) else None
 

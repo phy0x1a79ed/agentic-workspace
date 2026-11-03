@@ -62,23 +62,25 @@ def test_a_live_claim_blocks_even_with_force(scope):
     assert scope.exists()
 
 
-def test_ignored_files_block_unless_forced(scope):
-    (scope / ".gitignore").write_text("secrets.env\n__pycache__/\n")
+def test_ignored_files_never_block(scope):
+    (scope / ".gitignore").write_text("secrets.env\n")
     _git(scope, "add", ".gitignore")
     _git(scope, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "ignore")
     _git(scope.parent / ".bare", "push", "-q", "origin", "feat/s")
     (scope / "secrets.env").write_text("x")
-    (scope / "__pycache__").mkdir()
-    (scope / "__pycache__" / "m.pyc").write_text("x")
-    with pytest.raises(RuntimeError, match="ignored file"):
+    assert mod.delete_scope(PROJECT, "s").status == "deleted"
+
+
+def test_changed_pinned_data_blocks_unless_forced(scope, monkeypatch):
+    monkeypatch.setattr(mod, "_dvc_drift", lambda wt: ["data/raw.dvc"])
+    with pytest.raises(RuntimeError, match="changed since their last `dvc add`"):
         mod.delete_scope(PROJECT, "s")
     out = mod.delete_scope(PROJECT, "s", force=True)
-    assert out.discarded["ignored"] == ["secrets.env"]
+    assert out.discarded["dvc_drift"] == ["data/raw.dvc"]
 
 
-def test_ignored_awm_metadata_never_blocks(scope):
-    assert (scope / ".awm").is_dir()
-    assert mod._ignored_files(scope) == []
+def test_a_scope_without_dvc_has_no_drift(scope):
+    assert mod._dvc_drift(scope) == []
 
 
 def test_unique_commits_block_a_branch_delete_unless_forced(scope):
