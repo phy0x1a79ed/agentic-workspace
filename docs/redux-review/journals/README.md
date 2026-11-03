@@ -30,3 +30,7 @@ Surveyed read only on mizar, 2026-11-03, against `origin/release` and the redux 
 - **Closed state.** Posts have no status. Precedence and goals each carry their own.
 - **Precedence in the journal.** No requirement plans it. A fold carries the triple, votes, the usefulness rank, notes, the visibility rule and the curation verbs.
 - **The docs.** No requirement in `docs/redux` covers threads, tags or a closed state. `fleet.md` R107 covers versions and addenda, and `scopes.md` R143 puts the brief next to the goal.
+
+## Decisions
+
+- 2026-11-03: A comment is a post with `reply_to`, nested like reddit, kept in the scope of the thread's first post. Its author gets each comment in the inbox. Search returns the first post with a comment count, and `get` returns the thread (`fleet.md` R107 item 5). Tony: "agree with proposed  comment layout".
