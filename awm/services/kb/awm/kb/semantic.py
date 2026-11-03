@@ -85,56 +85,73 @@ def paper_hits(layer: fastlayer.FastLayer, entries: list[dict[str, Any]], keywor
     keyword_by_id = {h["id"]: h for h in keyword}
     ranked = merge([*by_zone.values(), [h["id"] for h in keyword]])
     ranked = [(p, s) for p, s in ranked if p not in skip]
-    conns = [c for c in (fastlayer._open_ro(p) for p in layer._stores()) if c is not None]
-    try:
-        rows: dict[str, sqlite3.Row] = {}
-        for conn in conns:
-            rows.update(fastlayer._papers(conn, [p for p, _ in ranked if p not in rows]))
-        out = []
-        for paper, score in ranked:
-            row = rows.get(paper)
-            if row is None or not filters.admits(row):
-                continue
-            quotes = _quotes(conns, paper, by_paper.get(paper, []), per_hit)
-            kept = {(q["field"], q["start"]) for q in quotes}
-            quotes += [q for q in keyword_by_id.get(paper, {}).get("passages", [])
-                       if (q["field"], q["start"]) not in kept]
-            match = "meaning" if paper in by_paper else "keyword"
-            out.append(fastlayer._hit(row, match, score, quotes[:per_hit]))
-            if len(out) == limit:
-                break
-        return out
-    finally:
-        for conn in conns:
+    stores = layer._stores()
+    rows = _paper_rows(stores, [p for p, _ in ranked])
+    shown = [(p, s) for p, s in ranked if p in rows and filters.admits(rows[p])][:limit]
+    quotes = _spread(stores, lambda conns, part: {p: _quotes(conns, p, by_paper.get(p, []), per_hit) for p in part},
+                     [p for p, _ in shown])
+    out = []
+    for paper, score in shown:
+        kept = {(q["field"], q["start"]) for q in quotes[paper]}
+        extra = [q for q in keyword_by_id.get(paper, {}).get("passages", []) if (q["field"], q["start"]) not in kept]
+        match = "meaning" if paper in by_paper else "keyword"
+        out.append(fastlayer._hit(rows[paper], match, score, (quotes[paper] + extra)[:per_hit]))
+    return out
+
+
+def _paper_rows(stores: list, ids: list[str]) -> dict[str, sqlite3.Row]:
+    rows: dict[str, sqlite3.Row] = {}
+    for conn in [c for c in (fastlayer._open_ro(p) for p in stores) if c is not None]:
+        try:
+            rows.update(fastlayer._papers(conn, [p for p in ids if p not in rows]))
+        finally:
             conn.close()
+    return rows
+
+
+def _spread(stores: list, job, items: list[str]) -> dict[str, Any]:
+    """``job(conns, part)`` over ``items``, :data:`fastlayer.READ_DEPTH` parts at once, each part on connections
+    of its own to every store; each per-paper read is a cold index descent, so they run side by side."""
+    if not items:
+        return {}
+
+    def run(part):
+        conns = [c for c in (fastlayer._open_ro(p) for p in stores) if c is not None]
+        try:
+            return job(conns, part)
+        finally:
+            for conn in conns:
+                conn.close()
+
+    step = -(-len(items) // fastlayer.READ_DEPTH)
+    out: dict[str, Any] = {}
+    for f in [fastlayer._reads.submit(run, items[i:i + step]) for i in range(0, len(items), step)]:
+        out.update(f.result())
+    return out
+
+
+def _abstracts(conns: list[sqlite3.Connection], papers: list[str]) -> dict[str, dict[str, Any] | None]:
+    return {paper: next((fastlayer._quote(p) for c in conns for p in c.execute(
+        "SELECT * FROM passage WHERE paper_id = ? AND zone = 'abstract' ORDER BY ord LIMIT 1", (paper,))), None)
+        for paper in papers}
 
 
 def describe(layer: fastlayer.FastLayer, found: dict[str, tuple[str, float, str]], filters: fastlayer.Filters,
              limit: int, per_hit: int) -> list[dict[str, Any]]:
     """Graph neighbours as hits: ``found`` maps a paper id to (via, rank, title); the abstract is the quote, or
     the title for a paper known only from a citation."""
-    conns = [c for c in (fastlayer._open_ro(p) for p in layer._stores()) if c is not None]
-    try:
-        rows: dict[str, sqlite3.Row] = {}
-        for conn in conns:
-            rows.update(fastlayer._papers(conn, [p for p in found if p not in rows]))
-        out = []
-        for paper, (via, rank, _) in sorted(found.items(), key=lambda kv: -kv[1][1]):
-            row = rows.get(paper)
-            if row is None or not filters.admits(row):
-                continue
-            quote = next((fastlayer._quote(p) for c in conns for p in c.execute(
-                "SELECT * FROM passage WHERE paper_id = ? AND zone = 'abstract' ORDER BY ord LIMIT 1", (paper,))),
-                None)
-            if quote is None and row["title"]:
-                quote = {"field": "title", "start": 0, "end": len(row["title"]), "text": row["title"]}
-            out.append(fastlayer._hit(row, via, rank, [quote] if quote and per_hit else []))
-            if len(out) == limit:
-                break
-        return out
-    finally:
-        for conn in conns:
-            conn.close()
+    stores = layer._stores()
+    rows = _paper_rows(stores, list(found))
+    shown = [(p, v) for p, v in sorted(found.items(), key=lambda kv: -kv[1][1])
+             if p in rows and filters.admits(rows[p])][:limit]
+    quotes = _spread(stores, _abstracts, [p for p, _ in shown]) if per_hit else {}
+    out = []
+    for paper, (via, rank, _) in shown:
+        row, quote = rows[paper], quotes.get(paper)
+        if quote is None and row["title"]:
+            quote = {"field": "title", "start": 0, "end": len(row["title"]), "text": row["title"]}
+        out.append(fastlayer._hit(row, via, rank, [quote] if quote and per_hit else []))
+    return out
 
 
 async def entries_for(text: str) -> dict[str, Any]:
