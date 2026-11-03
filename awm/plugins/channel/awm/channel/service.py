@@ -16,7 +16,7 @@ from typing import Awaitable, Callable
 
 import httpx
 
-from awm.channel import holders, lines
+from awm.channel import crypto, holders, lines
 from awm.channel.holders import ChannelError
 from awm.channel.relay import RelayError, RoomGone, Rooms
 from awm.channel.store import Store
@@ -78,7 +78,14 @@ class Channels:
         if not text:
             raise ChannelError("text is empty: write sends one message")
         row = self._pick(holder, name)
-        message = {"from": holder.get("name") or "host", "text": text}
+        message: dict = {"from": holder.get("name") or "host"}
+        keys = row["crypto"] if row["crypto"] and row["crypto"].get("out") else None
+        if keys:
+            n = keys["n_out"]
+            self.store.set_crypto(row["name"], {**keys, "n_out": n + 1})
+            message.update(n=n, sealed=crypto.seal(keys["out"], n, row["name"], text))
+        else:
+            message["text"] = text
         try:
             seq = await self.rooms.send(row["name"], row["token"], message)
         except RoomGone:
@@ -88,7 +95,36 @@ class Channels:
             raise ChannelError(f"the relay is unreachable, nothing was sent: {exc}") from exc
         except RelayError as exc:
             raise ChannelError(str(exc)) from exc
-        return {"name": row["name"], "sent": seq}
+        return {"name": row["name"], "sent": seq, "sealed": bool(keys)}
+
+    async def encrypt(self, holder: dict, name: str | None = None) -> dict:
+        """Offer the guest encryption in the live room (R73)."""
+        row = self._pick(holder, name)
+        if row["kind"] != "room":
+            raise ChannelError("only a room escalates; a machine is encrypted from the start")
+        if row["crypto"] and row["crypto"].get("phase") == "sealed":
+            raise ChannelError(f"room {row['name']} is encrypted already")
+        password = crypto.new_password()
+        ours, state = crypto.offer(row["name"], password)
+        self.store.set_crypto(row["name"], {"phase": "offered", "state": state})
+        try:
+            await self.rooms.send(row["name"], row["token"],
+                                  {"from": holder.get("name") or "host", "spake2": ours})
+        except (RoomGone, RelayError, httpx.HTTPError) as exc:
+            self.store.set_crypto(row["name"], None)
+            raise ChannelError(f"the offer did not reach the room: {exc}") from exc
+        return {
+            "name": row["name"],
+            "password": password,
+            "next": (
+                "Ask Tony to give this password to the other side's person by a route "
+                "that is not this room, such as a call or a message. The room stays open "
+                "and in plaintext until the other side answers. You get one line when it "
+                "answers and one when its first sealed message opens; from then on your "
+                "writes are sealed and plaintext from it is refused. Do not write the "
+                "password into the room."
+            ),
+        }
 
     def status(self, holder: dict, name: str | None = None) -> dict:
         rows = self.store.of_holder(holder["node"], holder["job"], open_only=False)
@@ -201,19 +237,77 @@ class Channels:
 
     async def _take(self, row: dict, message: dict) -> None:
         """Record one message, and push it when the other side sent it."""
+        name = row["name"]
         seq = int(message.get("seq") or 0)
         by = str(message.get("by") or "guest")
         who = str(message.get("from") or "?")
+        state = (self.store.get(name) or {}).get("crypto") or {}
+        text, notice, says = self._read(name, by, message, state)
+        path = self.transcripts.append(name, seq=seq, by=by, who=who, text=text)
+        if notice:
+            self.pusher.push(row["node"], row["job"],
+                             lines.notice(kind=row["kind"], name=name, text=notice))
+        if by == "host" or not says:
+            return
+        self.pusher.push(row["node"], row["job"], lines.push_line(
+            kind=row["kind"], name=name, trust=row["trust"], who=who,
+            text=text, seq=seq, transcript=path))
+
+    def _read(self, name: str, by: str, message: dict,
+              state: dict) -> tuple[str, str | None, bool]:
+        """The text of one message for the transcript, a notice for the holder
+        when it moved the encryption along or was refused, and whether its text
+        is something the other side said."""
+        phase = state.get("phase")
+        if "spake2" in message:
+            if by == "host":
+                return "(our encryption offer)", None, False
+            if phase != "offered":
+                return ("(an encryption message with no offer open)",
+                        "the other side sent an encryption message, but no offer is "
+                        "open. Run `channel encrypt` to start one.", False)
+            try:
+                keys = crypto.finish(name, state["state"], str(message["spake2"]))
+            except crypto.CryptoError as exc:
+                return f"(a bad encryption message: {exc})", (
+                    "the other side's encryption message was malformed. Run "
+                    "`channel encrypt` to offer again."), False
+            self.store.set_crypto(name, {"phase": "keyed", **keys, "n_out": 0, "n_in": -1})
+            return ("(the other side's answer to our offer)",
+                    "the other side answered the encryption offer. Waiting for its "
+                    "first sealed message.", False)
+        if "sealed" in message:
+            n = message.get("n")
+            key = state.get("out" if by == "host" else "in")
+            if not key or not isinstance(n, int):
+                return "(a sealed message with no key to open it)", None, False
+            if by == "guest" and n <= state["n_in"]:
+                return f"(a replayed sealed message, n={n}, refused)", None, False
+            try:
+                text = crypto.open_(key, n, name, str(message["sealed"]))
+            except crypto.CryptoError:
+                if by == "host":
+                    return "(our sealed message)", None, False
+                return "(a sealed message that did not open)", (
+                    "a sealed message from the other side did not open, so the password "
+                    "it used differs from ours. Run `channel encrypt` to offer again."), False
+            if by == "host":
+                return text, None, False
+            self.store.set_crypto(name, {**state, "n_in": n,
+                                         "phase": "sealed"})
+            if phase == "keyed":
+                return text, ("is encrypted now. Plaintext from the other side is "
+                              "refused from here."), text != "ready"
+            return text, None, True
         text = message.get("text")
         if not isinstance(text, str):
             extra = sorted(k for k in message if k not in ("seq", "by", "from"))
-            text = f"(a message with no text; fields: {', '.join(extra) or 'none'})"
-        path = self.transcripts.append(row["name"], seq=seq, by=by, who=who, text=text)
-        if by == "host":
-            return
-        self.pusher.push(row["node"], row["job"], lines.push_line(
-            kind=row["kind"], name=row["name"], trust=row["trust"], who=who,
-            text=text, seq=seq, transcript=path))
+            return f"(a message with no text; fields: {', '.join(extra) or 'none'})", None, True
+        if by == "guest" and phase == "sealed":
+            return f"(refused plaintext) {text}", (
+                "refused a plaintext message from the other side, because the room is "
+                "encrypted. Its text is in the transcript, marked refused."), False
+        return text, None, True
 
     async def _ended(self, name: str, why: str, *, push: bool = True) -> None:
         row = self.store.get(name)

@@ -78,6 +78,17 @@ API_MANIFEST: dict[str, Any] = {
             "params": [NAME],
         },
         {
+            "name": "encrypt",
+            "tool": "channel_encrypt",
+            "description": (
+                "Move a live room to end-to-end encryption, when the task calls for it "
+                "or the other side asks. Returns a password for Tony to give the other "
+                "side's person by another route; never write it into the room. The room "
+                "stays open through the swap, then refuses plaintext from the other side."
+            ),
+            "params": [NAME],
+        },
+        {
             "name": "close",
             "tool": "channel_close",
             "description": "Close a channel you hold. The other side sees it end.",
@@ -112,7 +123,12 @@ async def close(args: dict, as_: str | None = None) -> dict:
     return await _channels().close(holders.caller(args, as_), args.get("name") or None)
 
 
-HANDLERS = {"open": open_, "write": write, "status": status, "close": close}
+async def encrypt(args: dict, as_: str | None = None) -> dict:
+    return await _channels().encrypt(holders.caller(args, as_), args.get("name") or None)
+
+
+HANDLERS = {"open": open_, "write": write, "status": status, "close": close,
+            "encrypt": encrypt}
 
 PRUNING: asyncio.Task | None = None
 
