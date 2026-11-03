@@ -42,6 +42,6 @@ Surveyed read only on mizar, 2026-11-03.
 
 ## Follow-ups for the build
 
-- Give the seven legacy folders (auth, board, reporting, cx, keep, reflection, search) a manifest, then drop the legacy `run.sh` path and its shared-name exception.
+- Give the legacy folders a manifest: auth, board, reporting and search. cch replaces cx and keep, and the harness lane gives reflection its manifest. Then drop the legacy `run.sh` path and its shared-name exception.
 - Make the Python gateway enforce the manifest rules at load, not only in `test_plugin_contract.py`, until the Rust core takes over.
 - Build the install from a git repo (R115, R116 item 2).
