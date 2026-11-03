@@ -63,6 +63,14 @@ Follow-up for redux-build/trust (the first sweep bullet of its plan § Callouts)
 - T14. Document the two arguments in the contract, v1.6
 - T15. Commit, report to the coordinator and debrief
 
+Follow-up for redux-build/harness, the gateway door for isolated sessions (`fleet.md` R109, `install.md` R135):
+
+- T16. Build the token door in the Rust gateway: resolve, whitelist, pin, serve MCP over HTTP (G2)
+- T17. Build the same door in the Python gateway, for the containers that start before the cutover (G3)
+- T18. Test both doors with a fake token provider (G5)
+- T19. Document the door in the contract, v1.7
+- T20. Commit, report to the coordinator and debrief
+
 ## Approach by task
 
 ### T1. Build the Rust build container and its cache volume
@@ -138,6 +146,37 @@ Gotchas: `Caller` gains a field, so feat/redux-trust's struct literals in `awm-e
 ### T14. Document the two arguments in the contract, v1.6
 
 ### T15. Commit, report to the coordinator and debrief
+
+### T16. Build the token door in the Rust gateway
+
+An isolated session runs in a container and has no host pid, so it names itself by the `X-Awm-Caller-Token` header that cch wrote into its MCP config. The gateway serves `POST /mcp`, MCP over streamable HTTP with JSON replies, on the loopback listener and on an optional second listener, `isolated_listen`, that serves `/mcp` and nothing else. The door asks `harness-cc caller_of_token {token}` who holds the token and keeps a positive answer for 10 s. It admits a call only when:
+
+1. The tool and verb are on the holder's `tools`, or the verb is `describe`. `tools/list` and `describe` show only those.
+2. The tool is not on the gateway's ceiling: no `ssh`, no `harness-*`, and no `reflection` verb but the session's own (`whoami`, `compact`, `message_self`, `pending`, `mode`). The ceiling holds whatever a token record says.
+3. `peer` is absent or names this node.
+4. `project`, `scope` and `to_scope` name the session's own, when the caller sends them. A verb that declares `project` or `scope` gets the session's value filled in.
+
+The call then runs with the caller `{lane: local, session: <R9 id>, trust, scope}`, and the args carry `_caller_trust`, `_caller_scope` and a new `_caller_session_id`. Trust is `untrusted` unless the record says `cooperative`. Any `_caller_*` key the model sent is dropped.
+
+Gotchas: the loopback `/invoke` must stay out of the container's reach, because a request there is a trusted local caller. The door listener therefore serves `/mcp` only. reflection and operations find "your own session" by `_caller_pid` today, so their self verbs fail for a token caller until they read `_caller_session_id`.
+
+### T17. Build the same door in the Python gateway
+
+Every node runs the Python gateway until the cutover, and the sweep lands isolated sessions before it, so the containers meet the Python gateway first. The same rules go into a module beside `server.py`. `/mcp` mounts on the main app. `AWM_ISOLATED_LISTEN` starts a second uvicorn server in the lifespan with a door-only app. Dispatch goes through `catalog.dispatch` with the stamps applied by the door, never by `_stamp_caller`.
+
+Gotchas: `_stamp_caller` and `_stamp_trust` read pid headers. The door must not run them, or a forged `X-Awm-Session-Pid` from the container would win.
+
+### T18. Test both doors with a fake token provider
+
+The fake plugin gains `caller_of_token` and a scoped echo, so it can serve as `harness-cc` with tokens from its environment. The Rust e2e test starts a second fake as `harness-cc` and drives `/mcp` on the door listener. The Python tests stub `catalog.dispatch` and the token lookup.
+
+Gotchas: the fake must answer the shape `_caller_of_token` in cch's `hub_adapter.py` returns: `known`, `session_id`, `project`, `scope`, `trust`, `tools`.
+
+### T19. Document the door in the contract, v1.7
+
+Add § Isolated sessions: the header, the provider verb, the rules, `_caller_session_id`, the listener and its port.
+
+### T20. Commit, report to the coordinator and debrief
 
 ## Callouts
 
