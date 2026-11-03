@@ -204,3 +204,10 @@ Run the `debrief` skill. Then stop the session.
 - alcor's live ufw admits port 22 from the whole LAN and tailnet. The gap entry "firewall admits port 22 from mizar only" in fleet.md § Gap describes the authorized keys, not the firewall. Proposed doc change: "alcor's firewall admits port 22 from the whole LAN and tailnet. Only its authorized keys hold logins to mizar."
 - lyra is not on the tailnet, so the alcor_ssh_door role cannot run until lyra has a fixed source address.
 - R120 is parked by the lanes file. This plan does nothing for it.
+- The sweep must fill in values this tree leaves empty: `approver_grant_pub` (from `awm approver keys`, which also gives `awm_ssh_user_ca`), `wsl_windows_user` for capella (capella was asleep, and the wsl_bridge role refuses to run without it), and lyra's addresses in `homelab/edges.yml`.
+- The approver origin `https://approve.tony-xy-liu.com` is the queue lane's proposal. Its DNS and TLS are a host change Tony has not confirmed.
+- The sweep must check that `https://nexus.tony-xy-liu.com/trilium/etapi/app-info` reaches Trilium, not nginx's auth wall. The queue's board writer on alcor calls that path. If it hits the wall, set `approver_trilium_url` to a tailnet URL.
+- deneb sends no Content-Security-Policy today, so the approver's iframe needs no `frame-src`. A CSP added later must list the approver origin.
+- showtime and sirius are not in `edges.yml`, so engcyc's home on showtime and the Penpot stack on sirius have no play.
+- The cloud branch `feat/redux-fleet` stays off `main` until each role has run against its box with no changes, per the cloud README. Proposed cloud README change: add `homelab/` to the Purpose & Contents table as "the fleet's Ansible tree: inventory, edge list and roles for every managed node".
+
