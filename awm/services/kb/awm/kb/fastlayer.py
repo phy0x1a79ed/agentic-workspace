@@ -63,6 +63,8 @@ OR_CANDIDATES = 300
 #: Passage reads in flight at once. altair's root disk reads 17-20 random pages a second at depth 1 and about
 #: 290 at depth 32.
 READ_DEPTH = 32
+#: Paper lookups up to this many run on the caller's connection; more are spread over READ_DEPTH.
+PAPERS_SERIAL = 4
 _ZONE_RANK = {"title": 0, "abstract": 1}
 _STOPWORDS = frozenset(
     "a an the and or of to in on for with by from at as is are was were be been it its this "
@@ -453,8 +455,18 @@ def _hold(conn: sqlite3.Connection, own: str, ref: str, item: dict[str, Any]) ->
 
 
 def _papers(conn: sqlite3.Connection, ids: list[str]) -> dict[str, sqlite3.Row]:
+    """The papers ``ids``; many are read :data:`READ_DEPTH` at a time, as each costs a cold index descent."""
     if not ids:
         return {}
+    if len(ids) <= PAPERS_SERIAL:
+        return _paper_rows(conn, ids)
+    path = Path(conn.execute("PRAGMA database_list").fetchone()[2])
+    step = -(-len(ids) // READ_DEPTH)
+    parts = [_reads.submit(_on, path, _paper_rows, ids[i:i + step]) for i in range(0, len(ids), step)]
+    return {k: r for f in parts for k, r in f.result().items()}
+
+
+def _paper_rows(conn: sqlite3.Connection, ids: list[str]) -> dict[str, sqlite3.Row]:
     return {r["paper_id"]: r for r in conn.execute(
         f"SELECT * FROM paper WHERE paper_id IN ({','.join('?' * len(ids))})", ids)}
 
