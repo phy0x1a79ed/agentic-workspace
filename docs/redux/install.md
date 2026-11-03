@@ -33,6 +33,13 @@ Which node holds which role belongs in `fleet.md`. How a deploy moves through th
   1. The test runs only when someone asks for it. It is never part of the fast smoke test in continuous integration. Tony: "only when asked. this cant be part of the fast smoke under continuous integration" (2026-11-02).
   2. The cloud agent is the first home of the test. mizar is the fallback when containers fail inside the cloud sandbox. A cloud session costs plan usage only, with no charge for the machine. Tony: "cloud first and same for metasmith." (2026-11-02).
   3. The bootstrap must be fast, so a test run spends its time on the test, not on installing. Tony: "we need to streamline the bootstrap so we dont spend all the time installing" (2026-11-02).
+     - A test run installs built artifacts and builds nothing. The core is one static binary from a release on the GitHub remote, built in mizar's container (R113). Each plugin and each part of the fake fleet is a pre-built image (R119). A heavy dependency, such as torch, lives only in the plugin that needs it.
+     - The cloud environment's setup script pins the exact version of each artifact and pulls it. The cloud keeps a filesystem snapshot after setup, pulled images included, and reuses it for about seven days. A release changes the pins, so the script changes and the snapshot rebuilds. Setup must finish in about five minutes, or the cloud keeps no snapshot.
+- **R119.** Plugin and test images are public on quay.io, as metasmith's are. Tony: "lets do quay.io,. it matches metasmith" (2026-11-02).
+  1. An image holds no secret and no fleet detail, such as a token, a node name, an address or peer config. The node supplies these at runtime.
+  2. An image holds no Claude Code, which is Anthropic's proprietary software. The cloud sandbox has its own, and a container on mizar uses the host's install (`fleet.md` R109).
+  3. A pin names an image by digest, beside the commit pin of R116 item 2.
+  4. quay.io is not on the cloud's default Trusted list. The cloud environment runs at the Custom network level with quay.io and its CDN hosts added.
 
 ## Gap from today
 
