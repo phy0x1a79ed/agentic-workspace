@@ -1,0 +1,32 @@
+[plugin]
+name = "dsh"
+version = "0.2.0"
+trust = "own"
+
+[[service]]
+name = "dsh"
+path = "."
+run = "run.sh"
+install = "install.sh"
+
+[[tool]]
+name = "dsh"
+uuid = "0b7c6ad4-3725-5f9f-8df9-082ed2dd5349"
+major = 1
+service = "dsh"
+tier = "off"
+
+[[tool]]
+name = "harness-ds"
+uuid = "917965c1-c253-5ca4-9fbe-7f7fadfecdb1"
+major = 1
+service = "dsh"
+tier = "off"
+implements = ["8ca45e2d-96cb-497f-8e00-e4cb25ba0fd3@1"]
+
+[needs]
+platform = ["linux"]
+
+[[needs.tool]]
+uuid = "550c10ed-c2cb-5175-acfa-b17e97b52d6c"   # reflection: dsh sends it harness_event
+major = 1

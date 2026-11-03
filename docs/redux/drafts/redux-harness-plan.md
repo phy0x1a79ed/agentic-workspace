@@ -190,3 +190,23 @@ Run the `debrief` skill. Send one line to job 8162a704.
 
 - The root cause is inside Claude Code: the daemon should not swap a worker during a local command. awm can only notice and redo it.
 - The `feat/fix-reflection-compact` commit `afb46fbb` (the PTY host greeting) is already on `release` and deployed on mizar and altair. It fixes a different failure, the 2026-10-31 greeting timeout, so this branch does not need to merge it. It arrives with the next merge from `release`.
+- The sweep must re-point two host links that name the old service folders. `~/.local/bin/cx` points at `awm/services/cx/bin/cx` and moves to `awm/services/cch/bin/cx`. The hook links that `awm/scripts/deploy-hooks.sh` makes now name `services/cch/hooks/`. Run `deploy-hooks.sh` once on each node after the deploy.
+- cch keeps the old state paths on purpose: promises stay in `<AWM_DIR>/services/reflection/pending/`, the daemon unit's state in `<AWM_DIR>/services/keep/`. A deploy therefore re-arms every promise the old reflection held.
+- The warm pool keeps cx's gate. cch runs on every node, but tends the pool only where `AWM_PROFILES` names `cx` or `enabled.json` enables `cx`. `AWM_CX_POOL=1` or `0` overrides both.
+- `harness-cc` is not caller-stamped by the gateway, so any local process can pass it a `pid`. That is no wider than tmux access on the node, but the gateway should accept `harness-*` calls only from plugins (`X-Awm-Plugin`). For redux-build/core.
+- Cross-node calls change name: social, reporting and the peer hint now call `cch` and `reflection list_other`, where they called `cx`. A node on the old code answers neither until the sweep reaches it.
+- OpenCode support left reflection and cch. Two traces stay outside this lane: the gateway's caller lookup still recognises an `opencode` process (`gateway/mcp_caller.py`, redux-build/core), and scopes still write `mcp-opencode.json` (redux-build/sessions).
+- The gateway's `FLEET_SERVICES` still names `cx` (`gateway/peers.py`). It should name `cch`, whose starts a station refuses anyway. For redux-build/core.
+
+## Proposed doc changes
+
+For the interview session, which owns the area docs. Each item names the doc and the change.
+
+- `install.md` § Gap from today, **R135 missing**: replace it with what remains. cch replaces cx and keep and serves `harness-cc` (`awm/services/cch`). reflection calls the harness plugins through the gateway (`reflection/harness.py`). dsh serves `harness-ds` on the fork's RPC API, except caller identity over MCP. The gateway's caller lookup and mode gate, and journal, board, reporting, tether, social and transcripts still import `awm.claudedaemon`.
+- `install.md` R135 item 3: add "a ticket for each command with a follow-up, and a `done` or `lost` event when it ends". The contract carries it, and the compaction fix depends on it.
+- `sessions.md` § Gap from today, **R10 conflicts**: replace it with "`reflection stop` keeps the job, so `resume_other` takes it. `remove: true` deletes the job."
+- `sessions.md` § Gap from today, **R51 missing**: replace it with "`reflection wait {until}` records the wait in reflection's ledger, then stops the caller and keeps its job. A sweep each minute resumes the waiter through its harness plugin once every listed session has stopped, then types the wake line. A terminal session cannot wait."
+- `fleet.md` § Gap from today: add "**R109 missing.** No isolated session exists. cch has no container start." Keep it until T16 lands.
+- `ARCHITECTURE.md`: replace the `keep` paragraph's service name with cch, and the `awm/services/cx` cgroup trap with `awm/services/cch`. The trap itself is unchanged.
+- `PROTOCOLS.md` and `AGENTS.md`: drop "OpenCode loads it through each scope's `mcp-opencode.json`" once scopes stops writing that file (redux-build/sessions).
+- The `retire` skill: the sessions lane's draft at `docs/redux/drafts/retire/SKILL.md` already matches. `stop` keeps the job, `wait` acts on the caller, and a retire never passes `remove`.

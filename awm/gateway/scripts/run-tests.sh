@@ -36,7 +36,6 @@ declare -A DISTS=(
   [telemetry]="$WS/awm/service_components/telemetry::$WS/awm/service_components/telemetry/tests"
   [claudedaemon]="$WS/awm/service_components/claudedaemon::$WS/awm/service_components/claudedaemon/tests"
   [kept]="$WS/awm/service_components/kept::$WS/awm/service_components/kept/tests"
-  [keep]="$WS/awm/services/keep::$WS/awm/services/keep/tests"
   [scopes]="$WS/awm/services/scopes:$WS/awm/services/dvc::$WS/awm/services/scopes/tests"
   [journal]="$WS/awm/services/journal::$WS/awm/services/journal/tests"
   [search]="$WS/awm/services/search::$WS/awm/services/search/tests"
@@ -71,7 +70,7 @@ declare -A DISTS=(
   [penpot]="$WS/awm/services/penpot::$WS/awm/services/penpot/tests"
   [penpot-view]="$WS/awm/services/penpot-view::$WS/awm/services/penpot-view/tests"
   [penpot-plugins]="$WS/awm/services/penpot-plugins::$WS/awm/services/penpot-plugins/tests"
-  [cx]="$WS/awm/services/cx::$WS/awm/services/cx/tests"
+  [cch]="$WS/awm/services/cch::$WS/awm/services/cch/tests"
   [dev]="$WS/awm/services/dev::$WS/awm/services/dev/tests"
   [tether]="$WS/awm/services/tether::$WS/awm/services/tether/tests"
   [kb]="$WS/awm/services/kb::$WS/awm/services/kb/tests"
@@ -82,7 +81,7 @@ declare -A DISTS=(
 )
 
 # Stable run order.
-ORDER=(gateway gatewayclient config persistence telemetry claudedaemon kept scopes journal search writing events precedence social 2fa ssh auth httpsfront rlm-browser rlm-factorio graphify stt tts fileviewer drawio notes virtmic mic vpn compute reflection dvc claude-science dsh engcyc hermes trilium zotero penpot penpot-view penpot-plugins cx keep dev tether kb board reporting reporting-hooks transcripts)
+ORDER=(gateway gatewayclient config persistence telemetry claudedaemon kept scopes journal search writing events precedence social 2fa ssh auth httpsfront rlm-browser rlm-factorio graphify stt tts fileviewer drawio notes virtmic mic vpn compute reflection dvc claude-science dsh engcyc hermes trilium zotero penpot penpot-view penpot-plugins cch dev tether kb board reporting reporting-hooks transcripts)
 
 # Allow selecting a subset on the command line.
 if [ "$#" -gt 0 ]; then

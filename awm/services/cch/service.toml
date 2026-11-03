@@ -1,0 +1,3 @@
+# The Claude Code harness plugin. Hidden: reflection is its agent-facing tool.
+tool = "harness-cc"
+tier = "off"

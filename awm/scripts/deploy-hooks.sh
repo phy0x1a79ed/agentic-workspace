@@ -22,9 +22,9 @@ CHECK=0
 
 # name | source under awm/ | file in ~/.claude/hooks | nodes | extra file (same dir as source)
 HOOKS=(
-  "cx-name|services/cx/hooks/name_on_prompt.py|awm-cx-name-hook.py|local miraz|"
+  "cx-name|services/cch/hooks/name_on_prompt.py|awm-cx-name-hook.py|local miraz|"
   "compute|services/compute/hooks/compute_hook.py|awm-compute-hook.py|local|"
-  "reflection|services/reflection/hooks/plan_mode_hook.py|awm-reflection-mode.py|local|"
+  "reflection|services/cch/hooks/plan_mode_hook.py|awm-reflection-mode.py|local|"
   "reporting|services/reporting/hooks/reporting_hook.py|awm-reporting-hook.py|local|awm-reporting-settings.json"
 )
 

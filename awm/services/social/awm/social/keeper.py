@@ -337,8 +337,8 @@ class Cx:
 
     async def _call(self, node: str, fn: str, args: dict, timeout: float) -> Any:
         if node == config.node_name():
-            return await gatewayclient.call("cx", fn, args, timeout=timeout)
-        return await gatewayclient.call_peer(node, "cx", fn, args, timeout=timeout)
+            return await gatewayclient.call("cch", fn, args, timeout=timeout)
+        return await gatewayclient.call_peer(node, "cch", fn, args, timeout=timeout)
 
     async def list(self, node: str) -> tuple[list[dict], dict | None]:
         """The node's session rows, and its daemon's state when cx reports one."""

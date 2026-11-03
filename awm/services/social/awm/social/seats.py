@@ -184,9 +184,9 @@ async def live_jobs(node: str) -> set[str] | None:
     """The running background jobs on ``node``, or None when it cannot tell."""
     try:
         if node == config.node_name():
-            reply = await gatewayclient.call("cx", "list", {}, timeout=30.0)
+            reply = await gatewayclient.call("cch", "list", {}, timeout=30.0)
         else:
-            reply = await gatewayclient.call_peer(node, "cx", "list", {}, timeout=30.0)
+            reply = await gatewayclient.call_peer(node, "cch", "list", {}, timeout=30.0)
     except Exception as exc:  # noqa: BLE001 — an unreachable node keeps its seats
         log.info("cannot list sessions on %s: %s", node, exc)
         return None
