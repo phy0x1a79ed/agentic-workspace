@@ -27,7 +27,7 @@ How a channel works belongs in `channels.md`. The owner's queue belongs in `queu
 - **R128.** The seat SOP lives on altair, the node that holds the Slack seats. It stays out of the awm repo, because it applies only there. Tony: "the seat SOP, lets save that soemwhere on altiar since it only applies there. This prolly shouldnt go in the awm repo." (2026-11-02).
   1. The seats get an awm project on altair. Its repo holds the SOP, so git tracks each change, and altair's skills folder links to that one copy. Tony: "Seats can get a project so that it gets tracked?" and "perfect" (2026-11-02).
   2. The seats project holds every seat's scope: the main seat and one `lab/<person>` scope per person, on the model of Steven Chen's `metasmith/lab/steven-chen`. Seat work leaves metasmith and the awm project. Merges between the seat scopes must not collide. Tony: "Need to be careful so that merges dont collide." and "lets migrate steven's model. I dont want this to be pat of metasmith iether" (2026-11-02).
-  3. The seats project's remote is on the Hallam lab GitHub. Tony: "we can add remote to hallam lab github" (2026-11-02).
+  3. The seats project's remote is a private repository on the Hallam lab GitHub. Tony: "we can add remote to hallam lab github" and "as private" (2026-11-02).
 
 ## Gap from today
 
