@@ -2,19 +2,34 @@
 
 ## Purpose & Contents
 
-This doc holds who uses awm, through which channel, and what each user can reach and must never touch. It also holds the Slack seat system. Thread 3 and thread 3a fill it. Nothing here is settled yet. The survey below is the current state, and it waits for Tony's own view.
+This doc holds awm's users as its interface boundaries: who comes in at each boundary, what each reaches, and what each must never touch. It also holds the Slack seat system. Thread 3 and thread 3a fill it.
 
-## Today
+How a channel works belongs in `channels.md`. The owner's queue belongs in `queue.md`. Nodes and their edges belong in `fleet.md`.
+
+## Requirements
+
+- **R121.** awm's users are its interface boundaries. There are four. Tony: "I suppose users here is really what are the interface boundaries of awm. There are human users which hold seats, the owner me which needs the task/issue queue, other agents and swarms which an use the https rooms, and machines which is bash, ssh, tether, etc" (2026-11-02).
+  1. **Seats.** Humans hold seats (`sessions.md` R67, `channels.md` R69).
+  2. **The queue.** The owner, Tony, works the task and issue queue (`queue.md` R60).
+  3. **Rooms.** Other agents and swarms use the HTTPS rooms (`channels.md` R110).
+  4. **Machines.** Machines connect through bash, ssh and the tether (`fleet.md` R92, `channels.md` R75).
+- **R122.** A foreign swarm, such as shaula, reaches awm through rooms. An agent of ours in the room may give it access to journals. Access goes through that agent, not through a standing read grant on a peer edge. Tony: "shaula can use rooms. through that an agent can give access to journals" (2026-11-02).
+- **R123.** A seat user may hold approval rights over a system that is theirs. Ryan requests and approves Arbutus changes through Slack. The Arbutus admin access is awm's own admin system, extended to Arbutus (`fleet.md` R91 item 5, R100). Ryan's approvals and Tony's passkey approvals (`queue.md` R64) cover sets that do not overlap. Tony: "Ryan approval is for shogun stuff. there is overlap, but not the same. subset? maybe really just non-overlapping set. the admin access on arbutus is the same system as ours, we are just extending it. Ryan can request and approve arbutus changes through the slack, it is his right to do so." (2026-11-02).
+- **R124.** The public never calls into awm directly. Tony: "public shouldnt be able to call into awm directly. that is a major overwhelm risk" (2026-11-02).
+
+## Gap from today
 
 Tony: "me and also lab members through slack seats on altair, under my supervision" (2026-10-30).
 
-Survey of current use, read only on 2026-10-30. Users beyond Tony and the lab:
+Surveyed read only on 2026-10-30. Each user found, against the boundaries of R121:
 
-- A second Arbutus admin approves admin windows by Slack reply.
-- A collaborator's swarm, peer `shaula`, holds read grants on journals, kb, notes, precedence and writing.
-- Bots arrive through Discord kept seats.
-- altair's HTTPS edge has 2 static users, not yet identified.
-- People who accept a tether session reach an agent from their own computers.
+- Lab members reach awm through Slack seats on altair (R121 item 1).
+- **R122 missing.** shaula, of the `collins` swarm, is a foreign peer in altair's book with standing read grants on journals, kb, notes, precedence and writing (`fleet.md` § Gap from today).
+- Ryan approves admin windows by Slack reply.
+- Bots come in through Discord kept seats, the boundary for humans, not through rooms.
+- altair's HTTPS edge has 2 static users, not yet identified (thread 3a).
+- People who accept a tether reach an agent from their own computers (R121 item 4).
+- deneb's public edge has five doors with no session, among them the tether relay and the federation board (`fleet.md` § Gap from today). R124 governs what these doors may reach.
 
 ## The Slack seat system today
 

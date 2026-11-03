@@ -17,7 +17,7 @@ This doc is the stack of open threads for the redux interview. The interview run
 
 ## Current thread
 
-**3. Who uses it.** See the stack entry below.
+**3a. The Slack seat system.** See the stack entry below.
 
 Parent thread 1 (end state) waits for Tony to confirm `goal.md`. Its children 1a to 1t are closed.
 
@@ -25,18 +25,14 @@ Parent thread 1 (end state) waits for Tony to confirm `goal.md`. Its children 1a
 
 Top of the stack comes first.
 
-3. **Who uses it.** Tony, lab members through seats, collaborators, the public. What can each do or reach, and what must each never touch?
-   - Today: Tony, and lab members through Slack seats on altair, under his supervision (Tony, 2026-10-30).
-   - To do: Tony gives his own view. Then reconcile it with the survey in `users.md`. Tony: "reconciliation of the 2 perspectives will give the best answer" (2026-10-30).
-   - The survey of today's users and seats is in `users.md`.
-   - 3a. **The Slack seat system.** Review how seats work and discuss whether they keep their shape. Tony: "this is another system to review and discuss" (2026-10-30). Open for Tony:
-     - Permanent home of social and seat agents, given the planned mira migration.
-     - A real restricted mode for lab seats.
-     - The canonical copy of the SOP.
-     - Who the 2 static edge users are.
-     - Whether seat scopes are private to foreign peers.
-     - An allowlist for who can reach Opal, or anyone in the workspace.
-     - Socials seats cannot look up Tony's personal information. They use the browser without his credentials (`fleet.md` R102). Tony: "socials seats should be instructed to not attach to browsers. socials seats should be restricted from looking up my personal info..." and then "the browser utility is still needed. so lab seats get the service but not my credentials." (2026-11-02).
+3a. **The Slack seat system.** Review how seats work and discuss whether they keep their shape. Tony: "this is another system to review and discuss" (2026-10-30). The survey of today's seats is in `users.md`. Open for Tony:
+   - Permanent home of social and seat agents, given the planned mira migration.
+   - A real restricted mode for lab seats.
+   - The canonical copy of the SOP.
+   - Who the 2 static edge users are.
+   - Whether seat scopes are private to foreign peers.
+   - An allowlist for who can reach Opal, or anyone in the workspace.
+   - Socials seats cannot look up Tony's personal information. They use the browser without his credentials (`fleet.md` R102). Tony: "socials seats should be instructed to not attach to browsers. socials seats should be restricted from looking up my personal info..." and then "the browser utility is still needed. so lab seats get the service but not my credentials." (2026-11-02).
 
 4. **What made it foundational.** Which problem made Tony think "rebuild" rather than "patch"?
 
@@ -66,6 +62,7 @@ Raised before the redux started. Each enters the stack when a thread reaches it.
 
 ## Closed
 
+- 3. Who uses it (2026-11-02). Result: `users.md` R121 to R124. awm's users are its four interface boundaries: seats for humans, the queue for the owner, rooms for agents and swarms, and bash, ssh and the tether for machines. A foreign swarm comes in through rooms. Ryan approves Arbutus changes through Slack, a set apart from Tony's. The public never calls in directly. Tony: "public shouldnt be able to call into awm directly. that is a major overwhelm risk"
 - 2. Why awm exists (2026-11-02). Result: `goal.md` § Why awm exists. awm is the infrastructure for how Tony works with agents across machines. It queues work to him in one line, holds his ideas for later, turns intent into parallel steps, keeps private and lab work apart, and keeps what each run learns. Tony: "Kindof like hyperthreading a CPU by some perspectives."
 - 1j. IT services through the tether, and proof of ownership (2026-11-02). Result: `channels.md` R75. Tony dropped the thread. Consent is the owner's yes to the operator, whoever that is. The QR challenge goes, because tethers mostly run one way, outbound from the agent. Tony: "Lets just drop this and move on."
 - 1i. The Armando box (2026-11-02). Result: `fleet.md` R120. One or more machines of Armando's metabolomics facility at UBC join for a project as temporary Windows stations, native and not in WSL, on the tailnet, with a run-and-done tether that Tony opens at the keyboard. Install and removal repeat through cycles of investigation and blind builds. The details wait for Tony's meeting with Armando.
