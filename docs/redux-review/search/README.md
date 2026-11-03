@@ -51,3 +51,4 @@ Reported by search-finish on altair, 2026-11-03. Feature branches only. dev and 
   - kb `feat/shards` e997f9b: the kb server answers `/encode`, `/related` and `/status` only. `graph.py` keeps `graph.db` and its PageRank for `kb rank`. The nightly entry refresh and OpenAlex steps still run.
   - awm `feat/svc-kb` 4857c0f0: `kb recall` and `kb snapshot` go. The get log records project and scope in their own columns (schema v6). No rank reads it yet.
   - Tests pass: kb repo 75, awm search 163, kb 72, journal 157.
+- **Docs follow (N2).** kb `feat/shards` 6a7e403 and awm `feat/svc-kb` b2a6d070 describe kb without Cognee, recall or ingest. The search INSTALL describes title-only hits, the `get` log and the rank kept off until the replay.
