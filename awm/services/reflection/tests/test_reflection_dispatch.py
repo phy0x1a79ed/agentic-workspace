@@ -195,6 +195,18 @@ def test_start_other_passes_the_spec_through_and_records_trust(fakes, monkeypatc
     assert json.loads(policy._path().read_text())["cc" + "1" * 32]["origin"] == "seat:ana"
 
 
+def test_an_isolated_start_is_untrusted_unless_trust_is_named(fakes, monkeypatch):
+    monkeypatch.setattr(policy, "_lib", lambda: type("L", (), {
+        "grant_key": staticmethod(lambda: b""),
+        "level_for_start": staticmethod(lambda s, r, **kw: r or s),
+        "may_steer": staticmethod(lambda a, v, target_level=None: (True, ""))}))
+    out = run("start_other", {"_caller_pid": ME, "project": "awm", "scope": "x",
+                              "isolated": True})
+    verb, args = fakes.cc.calls[-1]
+    assert verb == "start" and args["isolated"] is True
+    assert out["trust"] == "untrusted"
+
+
 def test_a_start_above_the_callers_trust_is_refused(fakes, monkeypatch):
     def deny(s, r, **kw):
         raise PermissionError(f"a raise from {s} to {r} takes a grant Tony approves")

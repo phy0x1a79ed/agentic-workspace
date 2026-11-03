@@ -400,7 +400,14 @@ FUNCTIONS: list[dict[str, Any]] = [{'name': 'message_self',
              {'name': 'suggest',
               'type': 'boolean',
               'description': 'Start in the lobby, outside every repository, and let '
-                             'the session route itself.'}],
+                             'the session route itself.'},
+             {'name': 'isolated',
+              'type': 'boolean',
+              'description': 'Run the session in a rootless container on this '
+                             "node's Claude install, with a login copy that cannot "
+                             'refresh, no ssh and only the awm verbs it needs inside '
+                             'its own scope. It starts untrusted unless trust says '
+                             'otherwise.'}],
   'timeout': 1800,
   'effect': 'write'},
  {'name': 'list_other',

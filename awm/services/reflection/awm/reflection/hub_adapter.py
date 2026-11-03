@@ -277,6 +277,10 @@ def _pending(args: dict) -> dict:
 # --- lifecycle ----------------------------------------------------------------
 
 
+#: The level an isolated session starts at when the caller names none (fleet.md R109).
+ISOLATED_TRUST = "untrusted"
+
+
 def _start_provider(args: dict) -> harness.Provider:
     return harness.for_platform(args.get("platform") or ids.PLATFORM_CLAUDE)
 
@@ -286,7 +290,7 @@ async def _start_other(args: dict, as_: str | None = None) -> dict:
     actor = await asyncio.to_thread(_actor_id, args)
     if actor:
         policy.check_steer(actor, "start_other")
-    requested = args.get("trust") or None
+    requested = args.get("trust") or (ISOLATED_TRUST if args.get("isolated") else None)
     level = policy.start_level(actor, requested)
     p = _start_provider(args)
     fwd = {k: v for k, v in args.items() if not k.startswith("_") and k != "platform"}

@@ -34,6 +34,7 @@ from awm.cch import (
     cx_adapter,
     events,
     inject,
+    isolated,
     keep_adapter,
     lifecycle,
     pending,
@@ -49,13 +50,13 @@ log = logging.getLogger("awm.cch.hub_adapter")
 TOOL = "harness-cc"
 CONTRACT = "8ca45e2d-96cb-497f-8e00-e4cb25ba0fd3@1"
 OPTIONAL_VERBS = ("mode", "remote_control", "link", "adopt", "revive_pinned",
-                  "pending", "pool_claim", "pool_seed", "pool_remove",
+                  "pending", "caller_of_token", "pool_claim", "pool_seed", "pool_remove",
                   "daemon_status", "daemon_ensure", "daemon_hold", "daemon_release")
 
 _HOSTING = {"tmux": "terminal", "daemon": "background"}
 
 _FAILURES = (session_target.ResolveError, tmux_inject.TmuxError,
-             claudedaemon.DaemonError, inject.DeliveryError)
+             claudedaemon.DaemonError, inject.DeliveryError, isolated.IsolationError)
 
 
 def _p(name: str, type_: str = "string", description: str = "",
@@ -128,7 +129,9 @@ API_MANIFEST: dict[str, Any] = {
             _cx_params("start") + [
                 _p("pid", "integer", "The starting session's pid."),
                 _p("trust"), _p("task_id"), _p("role"),
-                _p("suggest", "boolean"), _p("isolated", "boolean")],
+                _p("suggest", "boolean"),
+                _p("isolated", "boolean", "Run the session in a rootless container "
+                   "with a whitelist of awm verbs (fleet.md R109).")],
             timeout=1800),
         _verb("stop", "Stop a session. With keep (the default) it stays "
             "resumable; without, its job is removed.", _TARGET + [
@@ -151,6 +154,9 @@ API_MANIFEST: dict[str, Any] = {
         _verb("revive_pinned", "Resume each pinned job whose process is gone.",
             [], timeout=600),
         _verb("pending", "The follow-ups cch still owes.", [], effect="read"),
+        _verb("caller_of_token", "The isolated session that holds a caller token, "
+            "and the verbs it may call.", [_p("token", required=True)], effect="read",
+            timeout=10),
         _verb("pool_claim", "Claim the warm session for a folder.",
             _cx_params("claim"), timeout=9),
         _verb("pool_seed", "Seed one warm session.", [], timeout=60),
@@ -247,6 +253,63 @@ def _guarded(verb: str, fn):
     return run_async if inspect.iscoroutinefunction(fn) else run
 
 
+# --- isolated sessions -------------------------------------------------------
+
+
+def _isolated(args: dict) -> Optional[dict]:
+    """The isolated session that ``session_id`` or ``ref`` names, if any."""
+    ref = _ref(args)
+    return isolated.find(ref) if ref else None
+
+
+def _iso_live(rec: dict) -> bool:
+    try:
+        return isolated.running(rec)
+    except (isolated.IsolationError, OSError, ValueError):
+        return False
+
+
+def _iso_row(rec: dict, live: Optional[bool] = None) -> dict:
+    sid = rec["claude_session_id"]
+    return {"session_id": events.r9(sid), "claude_session_id": sid,
+            "name": rec.get("name"), "job": None, "pid": None,
+            "live": _iso_live(rec) if live is None else live, "kind": "isolated",
+            "container": rec.get("container"), "project": rec.get("project"),
+            "scope": rec.get("scope"), "cwd": rec.get("cwd")}
+
+
+async def _start_isolated(args: dict, as_: Optional[str]) -> dict:
+    """Start an isolated session (fleet.md R109). It runs in no daemon and has no job."""
+    try:
+        reason = lifecycle.station_refusal() or lifecycle.caller_refusal(as_)
+        if reason:
+            raise lifecycle.Refused(reason)
+        spec = lifecycle._parse(args)
+        cwd = await lifecycle._resolve_worktree(spec["project"], spec["scope"])
+        if any(r.get("name") == spec["name"] and _iso_live(r)
+               for r in await asyncio.to_thread(isolated.records)):
+            raise lifecycle.Refused(f"a live isolated session is already named "
+                                    f"{spec['name']!r}")
+        rec = await asyncio.to_thread(
+            isolated.start, project=spec["project"], scope=spec["scope"],
+            worktree=cwd, name=spec["name"], prompt=spec["prompt"] or "",
+            model=spec["model"], effort=spec["effort"], claude_bin=config.claude_bin())
+    except lifecycle.Refused as exc:
+        return lifecycle.refusal(exc)
+    except (isolated.IsolationError, OSError) as exc:
+        return {"ok": False, "reason": f"isolated start failed: {exc}"}
+    return {"ok": True, "isolated": True, "node": lifecycle.node_name(),
+            **_iso_row(rec, live=True)}
+
+
+def _caller_of_token(args: dict) -> dict:
+    rec = isolated.caller_of_token(args.get("token"))
+    if rec is None:
+        return {"ok": True, "known": False}
+    return {"ok": True, "known": True, **_iso_row(rec, live=True),
+            "trust": rec.get("trust"), "tools": rec.get("tools") or {}}
+
+
 # --- contract verbs ----------------------------------------------------------
 
 
@@ -287,6 +350,9 @@ def _row(t: control.Target) -> dict:
 
 
 def _find(args: dict) -> dict:
+    rec = _isolated(args)
+    if rec is not None:
+        return {"ok": True, "matches": [_iso_row(rec)]}
     ref = _ref(args)
     try:
         t = control.resolve(ref, None)
@@ -296,6 +362,10 @@ def _find(args: dict) -> dict:
 
 
 def _status(args: dict) -> dict:
+    rec = _isolated(args)
+    if rec is not None:
+        row = _iso_row(rec)
+        return {"ok": True, **row, "state": "running" if row["live"] else "stopped"}
     t = control.resolve(_ref(args), _pid(args))
     status = watcher.read_status(t.pid) if t.alive else None
     state = "stopped" if not t.alive else (status[0] if status else "unknown")
@@ -310,10 +380,22 @@ async def _list(args: dict, as_: str | None = None) -> dict:
         if isinstance(sid, str) and sid and not sid.startswith(events.PLATFORM):
             row["claude_session_id"] = sid
             row["session_id"] = events.r9(sid)
+    recs = await asyncio.to_thread(isolated.records)
+    if recs:
+        rows = await asyncio.to_thread(lambda: [_iso_row(r) for r in recs])
+        project, scope = args.get("project"), args.get("scope")
+        rows = [r for r in rows if (not project or r["project"] == project)
+                and (not scope or r["scope"] == scope)
+                and (r["live"] or _bool(args.get("include_stopped")))]
+        out.setdefault("sessions", []).extend(rows)
     return out
 
 
 def _send(args: dict) -> dict:
+    rec = _isolated(args)
+    if rec is not None:
+        return isolated.send(rec, str(args.get("text") or ""),
+                             submit=_bool(args.get("submit"), True))
     ref, pid = _ref(args), _pid(args)
     if ref:
         return control.message(ref, args.get("text"), caller_pid=pid,
@@ -326,6 +408,9 @@ def _send(args: dict) -> dict:
 
 
 def _interrupt(args: dict) -> dict:
+    rec = _isolated(args)
+    if rec is not None:
+        return isolated.interrupt(rec)
     return control.interrupt(job=_ref(args), caller_pid=_pid(args))
 
 
@@ -341,6 +426,8 @@ def _lifecycle_args(args: dict) -> dict:
 
 
 async def _start(args: dict, as_: str | None = None) -> dict:
+    if _bool(args.get("isolated")):
+        return await _start_isolated(args, as_)
     out = await lifecycle.start(_lifecycle_args(args), as_)
     return _with_ids(out) if isinstance(out, dict) else out
 
@@ -359,6 +446,10 @@ def _stop_keeping(job: str) -> dict:
 
 async def _stop(args: dict, as_: str | None = None) -> dict:
     """Stop a session. A job that `start` created goes through its lineage policy."""
+    rec = await asyncio.to_thread(_isolated, args)
+    if rec is not None:
+        return await asyncio.to_thread(isolated.stop, rec,
+                                       keep=_bool(args.get("keep"), True))
     ref, pid = _ref(args), _pid(args)
     confirm = _bool(args.get("confirm"))
     if not _bool(args.get("keep"), True):
@@ -386,6 +477,12 @@ def _ensure_lineage(job: str, origin: str, **extra: Any) -> Optional[str]:
 
 
 async def _resume(args: dict, as_: str | None = None) -> dict:
+    rec = await asyncio.to_thread(_isolated, args)
+    if rec is not None:
+        if await asyncio.to_thread(_iso_live, rec):
+            return {"ok": False, "reason": f"{rec['name']} is already running"}
+        await asyncio.to_thread(isolated.resume, rec, prompt=str(args.get("prompt") or ""))
+        return {"ok": True, "resumed": True, **_iso_row(rec, live=True)}
     fwd = _lifecycle_args(args)
     fwd.pop("adopt_lineage", None)
     if _bool(args.get("adopt_lineage")) and fwd.get("job"):
@@ -396,6 +493,10 @@ async def _resume(args: dict, as_: str | None = None) -> dict:
 
 
 def _set(args: dict) -> dict:
+    if _isolated(args) is not None:
+        return {"ok": False, "unsupported": True,
+                "error": "an isolated session keeps the model, effort, name and folder "
+                         "it started with"}
     ref, pid = _ref(args), _pid(args)
     actions = {
         "model": lambda v: control.model(v, job=ref, caller_pid=pid),
@@ -503,6 +604,7 @@ HANDLERS = {verb: _guarded(verb, fn) for verb, fn in {
     "adopt": _adopt,
     "revive_pinned": _revive_pinned,
     "pending": _pending,
+    "caller_of_token": _caller_of_token,
     "pool_claim": cx_adapter._claim,
     "pool_seed": cx_adapter._seed,
     "pool_remove": cx_adapter._remove,

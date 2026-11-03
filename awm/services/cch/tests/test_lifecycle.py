@@ -1782,3 +1782,46 @@ def test_adopt_records_lineage_for_a_hand_started_job(home, monkeypatch):
     assert out["ok"] is True and lifecycle.read_lineage("eeeeeeee")["adopted"] is True
     again = asyncio.run(lifecycle.adopt({"job": "eeeeeeee"}))
     assert again["ok"] is False and "already" in again["reason"]
+
+
+def test_a_started_session_that_retires_itself_can_be_resumed(home, launched, respawned,
+                                                              monkeypatch):
+    """start_other, retire, resume_other: the retire keeps the job, so its lineage
+    survives the prune and the resume finds it (live a92d02bf and c63d29b9)."""
+    import threading
+
+    from awm.cch import control, hub_adapter, lifecycle
+    from awm.claudedaemon import cli
+
+    out = start({**BASE, "prompt": "do it"})
+    assert out["ok"] and out["job"] == CHILD_JOB
+    stopped = threading.Event()
+
+    def claude_stop(job, **kw):
+        stopped.set()
+        return {"stopped": True, "removed": False, "kept": True, "detail": ""}
+
+    monkeypatch.setattr(cli, "stop_keeping", claude_stop)
+    monkeypatch.setattr(control, "_sleep", lambda s: None)
+    monkeypatch.setattr(hub_adapter.control, "resolve", lambda ref, pid: control.Target(
+        pid=os.getppid(), kind="bg", job=CHILD_JOB, name="demo", alive=True,
+        is_self=True))
+    retired = asyncio.run(hub_adapter.HANDLERS["stop"](
+        {"ref": CHILD_JOB, "pid": os.getppid(), "confirm": True}, None))
+    assert retired["ok"] and retired["stopping"]
+    assert stopped.wait(5)
+
+    # The daemon drops the stopped worker from its roster and keeps its state.
+    home.set_workers({})
+    state = home.jobs / CHILD_JOB / "state.json"
+    state.write_text(json.dumps({**json.loads(state.read_text()),
+                                 "sessionId": f"{CHILD_JOB}-sid", "state": "done"}))
+    transcripts = home.root / "transcripts"
+    monkeypatch.setenv("AWM_CX_TRANSCRIPTS", str(transcripts))
+    (transcripts / "-cwd").mkdir(parents=True)
+    (transcripts / "-cwd" / f"{CHILD_JOB}-sid.jsonl").write_text("{}\n")
+    assert lifecycle.prune_lineage(now=time.time() + 86_400) == []
+
+    back = asyncio.run(hub_adapter.HANDLERS["resume"]({"ref": CHILD_JOB}, None))
+    assert back["ok"] and back["job"] == CHILD_JOB
+    assert respawned[0][0] == CHILD_JOB
