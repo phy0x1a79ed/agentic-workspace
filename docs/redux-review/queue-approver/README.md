@@ -50,4 +50,5 @@ Surveyed read only on mizar, 2026-11-03.
 - Merge `taskqueue`, `queue-relay` and `approver` into one core plugin, `operations`, with one tool. Move `request_human` and the sessions lane's task verbs onto it. Drop the sessions lane's stand-in store in `reporting`, and keep one task id minter (R145).
 - Remove `reporting`, `board`, the Kanban, the Ledger and the Older notes at the cutover (R60, R145).
 - Make the fork's release publish a server tarball, and make `trilium/install.sh` install only the pinned tarball. Drop the build mode. Where the tarball is published waits on the fleet-deploy canonical repo question (R115 item 4).
+- Move the Arbutus approval path, `request_human kind:"approval"` on Slack for Ryan, from `reporting/approvals.py` into `operations`. It stays apart from the passkey approvals (`users.md` R123, R145).
 - Make the board writer call the `trilium` tool, and drop its ETAPI token (R87 item 3, R105).
