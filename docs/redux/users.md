@@ -25,6 +25,7 @@ How a channel works belongs in `channels.md`. The owner's queue belongs in `queu
 
   Items 1 to 4 come from the Beth case of 2026-10-29: Opal sent Beth a cold plan after an instruction in Tony's DM fanned out to every lab seat. Tony kept these four of six proposed tweaks: "drop 2 / drop 6" (2026-11-02).
 - **R128.** The seat SOP lives on altair, the node that holds the Slack seats. It stays out of the awm repo, because it applies only there. Tony: "the seat SOP, lets save that soemwhere on altiar since it only applies there. This prolly shouldnt go in the awm repo." (2026-11-02).
+  1. The seats get an awm project on altair. Its repo holds the SOP, so git tracks each change, and altair's skills folder links to that one copy. Tony: "Seats can get a project so that it gets tracked?" and "perfect" (2026-11-02).
 
 ## Gap from today
 
