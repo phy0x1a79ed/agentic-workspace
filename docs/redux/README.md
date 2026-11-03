@@ -18,6 +18,7 @@ Earlier drafts are inputs, not the frame. They are cloud/tencent `FLEET.md` (07d
 - `dispatch.md` — how awm starts work for an issue on its own, from Tony's recorded decisions.
 - `queue.md` — Tony's interface to the swarm: the Swarm board's stages, its cards, old cards, and one click from a card to its agent.
 - `channels.md` — the three channels onto the core loop: chat with humans, chat with agents of other systems, and the tether to machines.
+- `install.md` — how awm reaches a node and how it is built: the Rust core, the build container, plugins and test environments.
 - `parallel-work.md` — the parallel work skill: waves across top-level sessions, scope claims, gathering and deploying.
 - `drafts/` — drafts of skills and prompt text that the design produces, held until their area doc says to install them.
 
