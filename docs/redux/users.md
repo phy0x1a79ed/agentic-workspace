@@ -26,6 +26,7 @@ How a channel works belongs in `channels.md`. The owner's queue belongs in `queu
   Items 1 to 4 come from the Beth case of 2026-10-29: Opal sent Beth a cold plan after an instruction in Tony's DM fanned out to every lab seat. Tony kept these four of six proposed tweaks: "drop 2 / drop 6" (2026-11-02).
 - **R128.** The seat SOP lives on altair, the node that holds the Slack seats. It stays out of the awm repo, because it applies only there. Tony: "the seat SOP, lets save that soemwhere on altiar since it only applies there. This prolly shouldnt go in the awm repo." (2026-11-02).
   1. The seats get an awm project on altair. Its repo holds the SOP, so git tracks each change, and altair's skills folder links to that one copy. Tony: "Seats can get a project so that it gets tracked?" and "perfect" (2026-11-02).
+  2. The seats project holds every seat's scope: the main seat and one `lab/<person>` scope per person, on the model of Steven Chen's `metasmith/lab/steven-chen`. Seat work leaves metasmith and the awm project. Merges between the seat scopes must not collide. Tony: "Need to be careful so that merges dont collide." and "lets migrate steven's model. I dont want this to be pat of metasmith iether" (2026-11-02).
 
 ## Gap from today
 
@@ -35,6 +36,7 @@ Surveyed read only on 2026-10-30. Each user found, against the boundaries of R12
 
 - Lab members reach awm through Slack seats on altair (R121 item 1).
 - **R126 broken.** Nothing in `social` stops a first message: `awm/services/social/awm/social/connectors/slack_bot_conn.py` and `hub_adapter.py` send to any DM. A seat brief lives in mira's `social.toml`, and editing one replaces other seats' agents. slack-main relays Tony's instructions to every lab seat.
+- **R128 missing.** No seats project exists. Person scopes sit in metasmith (`lab/steven-chen`, `lab/beth-davenport`), seat sessions in awm (`seat-slack-main`, `seat-tony-dm` and others), and the SOP lives as loose skill copies on mizar and altair.
 - **R122 missing.** shaula, of the `collins` swarm, is a foreign peer in altair's book with standing read grants on journals, kb, notes, precedence and writing (`fleet.md` § Gap from today).
 - Ryan approves admin windows by Slack reply.
 - Bots come in through Discord kept seats, the boundary for humans, not through rooms.
