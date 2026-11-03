@@ -191,6 +191,7 @@ def test_manifest_matches_contract_v1():
 
     m = tomllib.loads((Path(__file__).parents[1] / "awm-plugin.toml").read_text())
     assert m["plugin"]["name"] == "wake"
+    assert "placement" not in m, "awm names no host (fleet.md R140)"
     assert m["tool"][0]["uuid"] == WAKE and m["tool"][0]["major"] == 1
     assert {"uuid": REFLECTION, "major": 1} in m["needs"]["tool"]
     assert REFLECTION == str(uuid.uuid5(uuid.NAMESPACE_URL, "awm:tool:reflection"))

@@ -22,10 +22,10 @@ API_MANIFEST: dict[str, Any] = {
         {"name": "wake", "effect": "write", "tool": "wake",
          "description": (
              "Start a home machine with Wake-on-LAN, then wait until it answers on ssh. "
-             "Only the fleet.md R139 pairs run: mizar and alcor wake each other, and either "
-             "wakes capella; any other pair is refused with the reason. Returns {target, "
+             "Only the pairs in this node's wake table run (fleet.md R139); any other "
+             "target is refused with the reason. Returns {target, "
              "status: already_up|sent|up|timeout, seconds?, sent_to?}."),
-         "params": [{"name": "target", **_P, "description": "Node to wake, such as alcor."},
+         "params": [{"name": "target", **_P, "description": "Node to wake, by its fleet name."},
                     {"name": "wait", "type": "boolean", "required": False,
                      "description": "Wait for ssh to answer. Default true."},
                     {"name": "budget_s", "type": "number", "required": False,

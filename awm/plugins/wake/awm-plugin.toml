@@ -1,11 +1,9 @@
-# Plugin contract draft v1 (docs/redux/drafts/plugin-contract.md on feat/redux-core).
+# Plugin contract v1.3 (docs/redux/drafts/plugin-contract.md on feat/redux-core).
+# The cloud project's install config places it on mizar and alcor (fleet.md R140).
 [plugin]
 name = "wake"
 version = "0.1.0"
 trust = "own"
-
-[placement]
-nodes = ["mizar", "alcor"]
 
 [[service]]
 name = "wake"
