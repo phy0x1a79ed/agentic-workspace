@@ -166,3 +166,8 @@ Run the `debrief` skill. Message job 8162a704 on mizar with one line.
 - `awm/package.json` still lists the editor dependencies only the notes page used. The sweep prunes them with npm, which this host lacks.
 - The global `~/.claude/CLAUDE.md` and the deployed workspace `AGENTS.md` still send agents to `graphify`. Edit them in the sweep that deploys this branch, not before.
 - `install.md` § Gap from today, "R134 broken", becomes true once this branch lands. The interview session owns that doc.
+- `ARCHITECTURE.md` and `README.md` point at `docs/redux/drafts/plugin-contract.md`, which lands with `feat/redux-core`. Merge both branches in one sweep, or the link dangles.
+- `install.md` § Gap from today: once this branch lands, R115 to R117 adoption is done for every kept folder except the seven named in `LEGACY` of `test_plugin_contract.py` (auth, board, reporting, cx, keep and reflection share a tool; search belongs to search-finish). The R132 plugin side is done for background and code use: `awm.usage`, the Python gateway sink and three emitters. The interview session owns that doc.
+- The global `~/.claude/CLAUDE.md` could name `awm.usage` for projects that call plugin code directly. `PROTOCOLS.md` § *Counting use of a plugin* already holds the procedure, so a pointer is enough.
+- The `"library"` archive table on search-finish's `feat/svc-kb` moves into kb's `awm-plugin.toml` as `[[service.archive]]` at merge. search-finish agreed to do it.
+- Each plugin that starts reporting usage must capture the events in its tests. An uncaptured event posts to the live gateway on the node that runs the tests.
