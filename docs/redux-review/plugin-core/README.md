@@ -34,3 +34,7 @@ Surveyed read only on mizar, 2026-11-03.
   - R115 makes each plugin a project of its own, and R115 item 4 keeps the core plugins in the awm repo.
   - R114 and R118 name GitHub as the canonical repo, and `routines.md` R31 names mizar.
   - `plugin-contract.md:192` cites R117 item 6 for the start order rule, which is item 7.
+
+## Decisions
+
+- 2026-11-03: A plugin that every node installs, or that gates trust, is core and stays in the awm repo. A plugin that only some nodes install is a project of its own (`install.md` R115 item 4, `routines.md` R33). Tony: "Yes, good choices".

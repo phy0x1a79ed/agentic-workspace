@@ -26,7 +26,7 @@ Procedure, from dfs-interview § Work the stack:
 ## Stack
 
 - **plugin-core** (2026-11-03): lets go over each of the major systems architecturally to make sure we are still aligned
-  - [ ] Which plugins are core and stay in the awm repo (R115 item 4), and which move into projects of their own (routines.md R33)?
+  - [x] Which plugins are core and stay in the awm repo (R115 item 4), and which move into projects of their own (routines.md R33)? (answered 2026-11-03)
   - [ ] Does resolving tool UUIDs at gateway start, with a restart on rename, meet R117 item 3, which compiles names in at install?
 - **sessions-harness** (2026-11-03): lets go over each of the major systems architecturally to make sure we are still aligned
 - **queue-approver** (2026-11-03): lets go over each of the major systems architecturally to make sure we are still aligned
