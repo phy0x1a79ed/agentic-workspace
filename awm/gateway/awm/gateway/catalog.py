@@ -461,9 +461,10 @@ def _peer_phrase(res: dict[str, Any] | None) -> tuple[str, list[str] | None, boo
 
 
 def _domain_envelope(verb_names: list[str], *,
-                     res: dict[str, Any] | None = None) -> dict[str, Any]:
+                     res: dict[str, Any] | None = None, with_peer: bool = True) -> dict[str, Any]:
     """The ``{verb, args, peer}`` envelope schema, with ``verb`` enumerated and,
-    given the tool's provider resolution ``res``, ``peer`` enumerated.
+    given the tool's provider resolution ``res``, ``peer`` enumerated. Without
+    ``with_peer`` it has no ``peer``: an isolated session calls this node only.
 
     Deep-copied — a shallow copy shares the nested ``properties`` dict, so
     stamping the enum would mutate the module constant for every later tool.
@@ -474,12 +475,15 @@ def _domain_envelope(verb_names: list[str], *,
     ``peer`` enum is as of the session's launch.
     """
     schema = copy.deepcopy(_DOMAIN_INPUT_SCHEMA)
-    text, enum, required = _peer_phrase(res)
-    schema["properties"]["peer"]["description"] = text
-    if enum:
-        schema["properties"]["peer"]["enum"] = enum
-    if required:
-        schema["required"] = ["verb", "peer"]
+    if not with_peer:
+        del schema["properties"]["peer"]
+    else:
+        text, enum, required = _peer_phrase(res)
+        schema["properties"]["peer"]["description"] = text
+        if enum:
+            schema["properties"]["peer"]["enum"] = enum
+        if required:
+            schema["required"] = ["verb", "peer"]
     if verb_names:
         schema["properties"]["verb"]["enum"] = [*verb_names, _DESCRIBE_VERB]
     return schema

@@ -5,23 +5,15 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-# The tony swarm's Arbutus admins answer approvals in Slack #arbutus.
+# The Arbutus admins answer approvals in Slack #arbutus.
 DEFAULT_APPROVAL_CHANNEL = "slack-bot:C0C9XNR77ML"
 DEFAULT_APPROVAL_ADMINS = "U01Q4CDSTFX=tony,UC7RUF67P=ryan"
 
 
-def _default_swarm() -> bool:
-    from awm.config import node_swarm
-    from awm.config.peerbook import DEFAULT_SWARM
-
-    return node_swarm() == DEFAULT_SWARM
-
-
 def approval_channel() -> tuple[str, str] | None:
-    """``AWM_APPROVAL_CHANNEL`` is ``account:channel``. Unset, the default swarm uses #arbutus."""
-    raw = (os.environ.get("AWM_APPROVAL_CHANNEL") or "").strip()
-    if not raw and _default_swarm():
-        raw = DEFAULT_APPROVAL_CHANNEL
+    """``AWM_APPROVAL_CHANNEL`` is ``account:channel``. Unset, #arbutus; set empty, none."""
+    raw = os.environ.get("AWM_APPROVAL_CHANNEL")
+    raw = DEFAULT_APPROVAL_CHANNEL if raw is None else raw.strip()
     account, _, channel = raw.partition(":")
     return (account, channel) if account and channel else None
 
@@ -30,7 +22,7 @@ def approval_admins() -> dict[str, str]:
     """Platform user id → admin name, from ``AWM_APPROVAL_ADMINS`` (``id=name,id=name``)."""
     raw = os.environ.get("AWM_APPROVAL_ADMINS")
     if raw is None:
-        raw = DEFAULT_APPROVAL_ADMINS if _default_swarm() else ""
+        raw = DEFAULT_APPROVAL_ADMINS
     pairs = (p.strip().partition("=") for p in raw.replace(",", " ").split())
     return {uid: name for uid, _, name in pairs if uid and name}
 

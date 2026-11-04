@@ -51,20 +51,37 @@ def test_a_bad_edit_is_refused(db, bad):
         POST_HANDLERS["edit"]({"post_id": p.id, **bad})
 
 
-def test_old_posts_migrate_as_version_1(tmp_path):
-    from awm.persistence.databases import init_db_at
-    path = tmp_path / "journal.db"
-    init_db_at(path, dao.SCHEMA_SQL.replace(",\n    version        INTEGER NOT NULL DEFAULT 1", ""),
-               schema_version=1)
+#: scope_posts as it stood at schema v3, before versions (3,4) and tags (4,5).
+_V3_POSTS = """\
+CREATE TABLE scope_posts (
+    id TEXT PRIMARY KEY, owner_project TEXT NOT NULL, owner_scope TEXT NOT NULL,
+    author TEXT NOT NULL, kind TEXT NOT NULL DEFAULT 'message', body TEXT NOT NULL DEFAULT '',
+    meta TEXT NOT NULL DEFAULT '{}', ts INTEGER NOT NULL
+);
+CREATE INDEX idx_scope_posts_kind ON scope_posts(owner_project, owner_scope, kind, ts);
+"""
+
+
+def test_a_v3_database_reaches_v5_with_every_post_at_version_1(tmp_path, monkeypatch):
+    import awm.persistence.databases as pdbs
+    services = tmp_path / "services"
+    (services / "journal").mkdir(parents=True)
+    monkeypatch.setattr(pdbs, "SERVICES_DIR", services)
+    monkeypatch.setattr(dao, "_initialized", False)
+    path = pdbs.service_db_path("journal")
+    pdbs.init_db_at(path, _V3_POSTS + dao._CURSORS_SQL + dao.READS_SQL, schema_version=3)
     con = sqlite3.connect(path)
-    con.execute("INSERT INTO scope_posts (id, owner_project, owner_scope, author, body, ts) "
-                "VALUES ('p1','awm','x','system','old',1)")
+    con.execute("INSERT INTO scope_posts (id, owner_project, owner_scope, author, kind, body, ts) "
+                "VALUES ('p1','awm','x','system','journal','old',1)")
     con.commit()
     con.close()
-    init_db_at(path, dao.SCHEMA_SQL + dao.VERSIONS_SQL, schema_version=2, migrations=dao.MIGRATIONS)
+    dao.init()
     con = sqlite3.connect(path)
+    assert con.execute("SELECT version FROM schema_version").fetchone() == (dao.SCHEMA_VERSION,)
     assert con.execute("SELECT version FROM scope_posts WHERE id='p1'").fetchone() == (1,)
     assert con.execute("SELECT count(*) FROM post_versions").fetchone() == (0,)
+    assert con.execute("SELECT tag_id FROM post_tags WHERE post_id='p1'").fetchall() == [("builtin:journal",)]
+    con.close()
 
 
 def test_untrusted_reads_and_writes_only_its_own_scope(db):
@@ -117,6 +134,9 @@ def test_the_sweep_folds_addenda_into_their_targets(db):
     ids = [p["id"] for p in POST_HANDLERS["fetch"]({"project": "awm", "scope": "x"})["posts"]]
     assert add.id not in ids and unrelated.id in ids
     assert channel.get_post(add.id).meta["folded_into"] == target.id
+    assert "folded" in channel.get_post(add.id).tags
+    named = POST_HANDLERS["fetch"]({"project": "awm", "scope": "x", "tags": "folded"})["posts"]
+    assert [p["id"] for p in named] == [add.id]
 
 
 def test_only_trusted_sweeps(db):

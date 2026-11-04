@@ -191,9 +191,11 @@ def test_parse_bundle_refuses_what_the_script_refuses(text):
         parse_bundle(text)
 
 
-def test_admins_default_to_tony_and_ryan_on_the_tony_swarm(monkeypatch):
+def test_admins_default_to_tony_and_ryan_and_an_empty_setting_means_none(monkeypatch):
     monkeypatch.delenv("AWM_APPROVAL_ADMINS")
-    assert config.approval_admins() == {"U01Q4CDSTFX": "tony", "UC7RUF67P": "ryan"}
-    monkeypatch.setenv("AWM_SWARM", "other")
     monkeypatch.delenv("AWM_APPROVAL_CHANNEL")
+    assert config.approval_admins() == {"U01Q4CDSTFX": "tony", "UC7RUF67P": "ryan"}
+    assert config.approval_channel() == ("slack-bot", "C0C9XNR77ML")
+    monkeypatch.setenv("AWM_APPROVAL_ADMINS", "")
+    monkeypatch.setenv("AWM_APPROVAL_CHANNEL", "")
     assert config.approval_admins() == {} and config.approval_channel() is None
