@@ -45,7 +45,7 @@ async def _body():
 
 def _app(*, profile="public", relay=RELAY):
     app = proxy.build_app(GATEWAY + "/", "/dev/null", profile=profile,
-                          tether_upstream=relay)
+                          relay_upstream=relay)
     app.state.gate = _Gate()
     return app
 

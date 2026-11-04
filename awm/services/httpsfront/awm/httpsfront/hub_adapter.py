@@ -60,13 +60,13 @@ TLS = os.environ.get("AWM_EDGE_TLS", "1").strip().lower() not in ("0", "false", 
 VAULT = os.environ.get("AWM_EDGE_VAULT", "1").strip().lower() not in ("0", "false", "no")
 VAULT_UPSTREAM = config.VAULT_URL if VAULT else None
 
-# The tether relay on this same listener. Off by default, and the most
+# The channel relay, which carries tethers and rooms, on this same listener. Off by default, and the most
 # deliberate of the three: its paths are the only ones on this edge reachable
 # with no session at all, because the person redeeming an invite is being
 # helped with their own machine and has no awm account. A host that is not
 # running a relay should not be advertising a door to one.
-TETHER = os.environ.get("AWM_EDGE_TETHER", "0").strip().lower() not in ("0", "false", "no")
-TETHER_UPSTREAM = config.TETHER_URL if TETHER else None
+RELAY = os.environ.get("AWM_EDGE_TETHER", "0").strip().lower() not in ("0", "false", "no")
+RELAY_UPSTREAM = config.RELAY_URL if RELAY else None
 
 # The federation board on this same listener. Off by default, and meant for the
 # one host that runs the board: its paths are reachable with no edge session,
@@ -111,13 +111,13 @@ _STATUS: dict[str, Any] = {
     # The extra upstreams on this listener, and the only place an operator can
     # see whether the edge thinks it is serving the vault at all.
     "vault_upstream": VAULT_UPSTREAM,
-    "tether_upstream": TETHER_UPSTREAM,
+    "relay_upstream": RELAY_UPSTREAM,
     "board_upstream": BOARD_UPSTREAM,
     # Where each mounted app answers.
     "vault_mount": vault.SHELL if VAULT else None,
     # The address the operator reads out. Worth surfacing because it is the one
     # string a person has to say correctly over a phone.
-    "tether_mount": tether.PREFIX if TETHER else None,
+    "relay_mounts": [tether.PREFIX, tether.ROOMS] if RELAY else None,
     "board_mount": board.PREFIX if BOARD else None,
     "serving": False,
     "profile": PROFILE or "default",
@@ -224,7 +224,7 @@ def _on_start() -> None:
         target=_serve_forever, args=(info,), daemon=True, name="httpsfront",
         kwargs=dict(port=PORT, profile=PROFILE, tls=TLS,
                     vault_upstream=VAULT_UPSTREAM,
-                    tether_upstream=TETHER_UPSTREAM,
+                    relay_upstream=RELAY_UPSTREAM,
                     board_upstream=BOARD_UPSTREAM),
     ).start()
     log.info("front thread launched on :%d → %s (tls %s, profile %s)",

@@ -201,12 +201,12 @@ BASE_URL = f"http://{HOST}:{PORT}"
 VAULT_PORT = int(os.environ.get("AWM_VAULT_PORT", "12511"))
 VAULT_URL = f"http://{HOST}:{VAULT_PORT}"
 
-# The tether relay's loopback port, on the public host. Named here for the same
+# The channel relay's loopback port, on the public host. Named here for the same
 # reason again: the relay binds it and the edge proxies to it, and neither owns
 # it. The relay reads the same variable itself, so this constant and that binary
 # agree by reading one name rather than by two defaults that happen to match.
-TETHER_PORT = int(os.environ.get("AWM_TETHER_PORT", "12520"))
-TETHER_URL = f"http://{HOST}:{TETHER_PORT}"
+RELAY_PORT = int(os.environ.get("AWM_TETHER_PORT", "12520"))
+RELAY_URL = f"http://{HOST}:{RELAY_PORT}"
 
 IDLE_SHUTDOWN_SECONDS = int(os.environ.get("AWM_IDLE_SHUTDOWN", "1800"))  # 30 min
 

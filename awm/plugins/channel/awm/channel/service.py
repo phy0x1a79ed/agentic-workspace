@@ -1,7 +1,7 @@
 """Channels: open, write, drain, status and close, and the loops that keep them.
 
-Every channel has one shape (``channels.md`` R69, R110). One background session
-holds it, and may hold several at once. Each message from the other side is
+Every channel has one shape (``channels.md`` R69, R110). One background or
+isolated session holds it (R111), and may hold several at once. Each message from the other side is
 pushed into that session's prompt as one capped line, and the session answers
 with ``write``. A channel closes when either side leaves, when its holder closes
 it, or when the holding session ends. A task room also ends at the relay's idle
@@ -24,9 +24,9 @@ from typing import Any, Awaitable, Callable
 import httpx
 
 from awm import config
-from awm.channel import crypto, holders, lines
-from awm.gatewayclient import push
-from awm.channel.holders import ChannelError
+from awm.channel import crypto, lines
+from awm.gatewayclient import holders, ids, push
+from awm.gatewayclient.holders import HolderError as ChannelError
 from awm.channel import machines as machine_kind
 from awm.channel.machines import MachineError, MachineGone, Machines
 from awm.channel.relay import LASTS, RelayError, RoomGone, Rooms
@@ -241,19 +241,18 @@ class Channels:
         """
         here = config.node_name()
         rows = self.store.open_rows()
+        by_id = [r for r in rows if r["node"] == here and ids.is_r9(r["session"])]
         closed: list[str] = []
-        if any(r["node"] == here and r["session"].startswith("cc") for r in rows):
+        if by_id:
             live = await asyncio.to_thread(self._list_sessions)
             if live is not None:
-                for row in rows:
-                    if row["node"] == here and row["session"].startswith("cc") \
-                            and row["session"] not in live:
+                for row in by_id:
+                    if row["session"] not in live:
                         await self._shut(row, "its holding session ended")
                         closed.append(row["name"])
         by_node: dict[str, set[str]] = {}
         for row in rows:
-            if row["name"] in closed or (row["node"] == here
-                                         and row["session"].startswith("cc")):
+            if row in by_id:
                 continue
             by_node.setdefault(row["node"], set()).add(row["job"])
         for node, jobs in by_node.items():

@@ -14,10 +14,10 @@ from typing import Any
 from awm.config import AWM_DIR
 from awm.gatewayclient import ServiceAdapter, spawn_supervised
 
-from awm.channel import holders, lines
+from awm.channel import lines
 from awm.channel.relay import Rooms
-from awm.gatewayclient import push
-from awm.channel.service import Channels
+from awm.gatewayclient import holders, push
+from awm.channel.service import ChannelError, Channels
 from awm.channel.store import Store
 
 log = logging.getLogger("awm.channel.hub_adapter")
@@ -190,7 +190,7 @@ def _number(args: dict, key: str) -> int | None:
     try:
         return int(value)
     except (TypeError, ValueError):
-        raise holders.ChannelError(f"`{key}` must be a whole number, not {value!r}") from None
+        raise ChannelError(f"`{key}` must be a whole number, not {value!r}") from None
 
 
 def _yes(args: dict, key: str) -> bool:

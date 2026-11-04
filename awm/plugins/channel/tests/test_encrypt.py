@@ -8,7 +8,7 @@ import re
 import pytest
 
 from awm.channel import crypto
-from awm.channel.holders import ChannelError
+from awm.channel.service import ChannelError
 
 from .conftest import HOLDER, eventually, needs_relay
 from .guest import Guest

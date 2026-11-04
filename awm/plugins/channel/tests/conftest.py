@@ -15,7 +15,8 @@ from pathlib import Path
 import httpx
 import pytest
 
-from awm.channel import holders, hub_adapter
+from awm.channel import hub_adapter
+from awm.gatewayclient import holders
 from awm.channel.relay import Rooms
 from awm.gatewayclient.push import Pusher
 

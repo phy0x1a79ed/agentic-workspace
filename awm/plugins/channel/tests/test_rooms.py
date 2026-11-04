@@ -6,7 +6,7 @@ from __future__ import annotations
 import pytest
 
 from awm.channel import hub_adapter, lines
-from awm.channel.holders import ChannelError
+from awm.channel.service import ChannelError
 from awm.gatewayclient.push import Pusher
 from awm.channel.relay import Rooms
 
@@ -100,6 +100,24 @@ async def test_a_channel_closes_once_its_holding_session_ends(channels, sessions
         assert (await guest.hear())["ended"] == "the host closed the room"
         assert [r["open"] for r in (await channels.status(OTHER))["channels"]] == [True]
         assert kept["name"] != opened["name"]
+    finally:
+        await guest.aclose()
+
+
+async def test_an_isolated_session_holds_a_room_by_its_session_id(channels, pushed, sessions):
+    """It has no job: the push and the prune both go by its R9 id (R111)."""
+    iso = "cc" + "abcdef0123456789" * 2
+    holder = {"node": "testnode", "session": iso, "job": iso, "name": "boxed"}
+    sessions.ids = {iso}
+    opened = await channels.open(holder, "room")
+    guest = Guest(opened["link"])
+    try:
+        await guest.say("to the container")
+        [line] = await eventually(lambda: pushed.texts(iso))
+        assert line.endswith(": to the container")
+        assert await channels.prune() == []
+        sessions.ids = set()
+        assert await channels.prune() == [opened["name"]]
     finally:
         await guest.aclose()
 
@@ -221,3 +239,13 @@ async def test_a_restarted_service_resumes_without_pushing_anything_twice(
 
 def test_lines_cap_is_the_one_the_tool_promises():
     assert lines.TEXT_MAX == 1500
+
+
+def test_the_plugin_does_not_reach_into_social():
+    """Seats and channels share code only through gatewayclient (install.md R117 item 1)."""
+    from pathlib import Path
+
+    from awm.channel import service
+
+    for py in Path(service.__file__).parent.rglob("*.py"):
+        assert "awm.social" not in py.read_text(), py

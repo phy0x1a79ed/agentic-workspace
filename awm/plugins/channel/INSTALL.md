@@ -35,6 +35,7 @@ A failed fetch is not fatal. The binaries in place keep running, and `channel st
 | `TETHER_RELAY` | operator daemon | the relay's tether mount |
 | `AWM_TETHER_PORT` | relay | the loopback port it binds (default 12520) |
 | `AWM_TETHER_ASSETS` | relay, fetch | the directory the relay serves the launchers and clients from |
+| `AWM_TETHER_ROOM_STATE` | relay | where persistent rooms keep their files across a restart (default `.awm/services/tether/rooms`) |
 | `AWM_TETHER_CLIENT_IP_HEADER` | relay | the header that carries the caller's address (default `cf-connecting-ip`) |
 | `AWM_EDGE_TETHER` | httpsfront | `1` mounts `/tether` and `/room` on the public edge |
 | `AWM_TETHER_BIN` | plugin, fetch | a local build, for development only |

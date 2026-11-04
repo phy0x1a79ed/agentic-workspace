@@ -100,8 +100,6 @@ def test_the_mount_claims_the_relays_whole_public_surface(path):
     ("/room/acre-anchor-kettle/", "a trailing slash is not a route the relay has"),
     ("/room/acre-anchor-kettle/close", "a guest leaves, and leaving is the only close"),
     ("/room/", "a room is named"),
-    ("/tether/room", "rooms moved to their own mount at /room"),
-    ("/tether/r/acre-anchor-kettle", "rooms moved to their own mount at /room"),
 ])
 def test_a_near_miss_inside_the_mount_is_refused_rather_than_forwarded(path, why):
     assert not tether.owns(path), why
