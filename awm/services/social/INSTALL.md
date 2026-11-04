@@ -154,16 +154,10 @@ target the operator this way, so they need no stored DM
 channel id. The bot reaches a user only while they share a guild.
 
 **The retrieval contract, when the call is borrowed.** `path` and `dir` are
-absolute on the node that ran the download — which for a borrowed `social` is not
-the caller's. That is what `url` is for: the same bytes' address on the serving
-node's `fileviewer` mount, which the MCP proxy uses to pull them down and rewrite
-`path` to a local copy (FEDERATION.md § *Cross-peer bytes*). Two consequences
-worth knowing. A file the mount's denylist hides — `*.pem`, `*.key`, `*.token`,
-`credentials`, anything under `secrets/` — cannot cross, and comes back as
-`path: null` with a named `error` rather than a path that does not exist. And a
-caller reaching the service by any other route (CLI, raw `/invoke`, a service
-calling `social` directly) gets the serving node's paths verbatim and must use
-`url` itself.
+absolute on the node that ran the download, which for a borrowed `social` is not
+the caller's. awm carries no file bytes across an edge, so a caller on another
+node gets the serving node's paths verbatim. Read the file there, with a session
+on that node.
 
 Slack and Teams run through the mira daemon; conversation enumeration, `open_dm`,
 `search`, and attachment `download` for those platforms live in `mira/mira_api/`

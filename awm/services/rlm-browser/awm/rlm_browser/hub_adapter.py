@@ -46,7 +46,7 @@ log = logging.getLogger("awm.rlm_browser.hub_adapter")
 # that borrows it (no real Chrome of its own to attach to) sets this to the
 # owning peer's name; the owning node leaves it unset so its own calls stay
 # local. Mirrors AWM_TWOFA_PEER / AWM_SOCIAL_PEER / AWM_SSH_SLOT_PEER
-# (see FEDERATION.md § Singletons vs per-node services).
+# (see FEDERATION.md § Singletons).
 _ATTACH_PEER_ENV = "AWM_RLM_BROWSER_ATTACH_PEER"
 
 

@@ -6,9 +6,9 @@ This file holds the result of the review topic on how a caller filters `search`:
 
 ## As built
 
-- `search query` takes `query` (required words), `sources` (a whitelist of names), `project`, `scope`, one `kind`, `after`, `before`, `limit` and `peers` (this node by default, `fleet` or node names). altair served this on 2026-11-04.
-- The sources on altair are journals, kb, notes, precedence, writing and the opt-in transcripts.
-- A walk over citation and author links is only `kb hop`, on paper ids (`fleet.md` R136 item 5). No search argument follows links.
+- `search query` takes `sources` (required: `name` for this node, `name@node` for another), `tags` (the journal tag grammar, with `and` and `!`), `hop` (a JSON object or text: `via`, `from`, `limit`), `project`, `scope`, `after`, `before` and `limit`. `query` is optional when `hop` has `from` (search 538ae158, 06e0597c).
+- No `peers` argument, no `kind`, and no precedence source. Precedent posts are journal posts tagged `precedent`.
+- `hop` walks `citations`, `cited_by` and `authors` in kb, and `reply_to` in the index sources. kb publishes no MCP tool.
 
 ## Decisions
 

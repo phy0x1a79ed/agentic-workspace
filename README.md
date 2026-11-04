@@ -2,7 +2,7 @@
 
 *Human setup + usage guide for awm. Agents operating in this workspace load [`AGENTS.md`](AGENTS.md) at session start via the harness's native mechanism (see § Harness Integration) — not this file. **Do not merge this README into AGENTS.md, PROTOCOLS.md or ARCHITECTURE.md** — their audience is agents; this one's audience is humans installing, networking, and operating the system.*
 
-A lightweight Python service + CLI for coordinating multiple AI agents working in parallel on shared resources. Provides project/scope management, the journal (per-scope posts, briefs, precedents and history), one ranked search over what the swarm knows, background Claude Code sessions (`reflection start_other`), cross-node federation, and an MCP server for direct tool use by Claude Code / OpenCode / other MCP clients.
+A lightweight Python service + CLI for coordinating multiple AI agents working in parallel on shared resources. Provides project/scope management, the journal (per-scope posts, briefs, precedents and history), one ranked search over what the swarm knows, background Claude Code sessions (`reflection start_other`), calls between nodes over ssh edges, and an MCP server for direct tool use by Claude Code and other MCP clients.
 
 For agent orientation (paths, MCP tools, startup), see [`AGENTS.md`](AGENTS.md). For workspace procedures (scope lifecycle, naming, hubs, data, backups), see [`PROTOCOLS.md`](PROTOCOLS.md). For **awm-internal architecture** — modifying the hub, registry, supervisor, RPC layer, manifest generator — see [`ARCHITECTURE.md`](ARCHITECTURE.md). This README covers install and the *usage* side of the package model (authoring components / services / pages); ARCHITECTURE.md covers the *implementation* side.
 
@@ -21,10 +21,9 @@ checkout the service account can read, and make the checkout's `.awm/`
 (gitignored) a symlink into a state dir the service account owns. Install
 with `AWM_SERVICES` set to the services the host needs. `setup.sh` refuses
 to run when `AWM_WORKSPACE` names a different checkout, so a second install
-cannot land in a home directory by accident. sirius, the public host behind
-`nexus.tony-xy-liu.com`, is the worked example. Its provisioning lives in its
-own repository, `phy0x1a79ed/cloud`, under `VMs/digital_ocean/sirius/`, because
-none of it is portable and awm installs on many machines.
+cannot land in a home directory by accident. The cloud project's Ansible
+installs awm on Tony's nodes this way. It holds every host-specific step, because
+awm names no host.
 
 ## Manual Install
 
@@ -46,21 +45,19 @@ env with `AWM_ENV`.
 
 ## Harness Integration
 
-AWM drives Claude Code. It supports no OpenCode harness (`docs/redux/install.md` R135 item 5). A session loads three context tiers: the workspace `AGENTS.md`, the repo `AGENTS.md` at the scope worktree root, and the scope brief. Claude Code loads both `AGENTS.md` tiers by its native walk-up from the cwd. The brief lives in the journal (`journal brief_read`). cch's SessionStart hook adds it to a session that starts in a scope, and `reflection cd` carries it in the move's follow-up (`docs/redux/scopes.md` R143).
+AWM drives Claude Code. A session loads three context tiers: the workspace `AGENTS.md`, the repo `AGENTS.md` at the scope worktree root, and the scope brief. Claude Code loads both `AGENTS.md` tiers by its native walk-up from the cwd. The brief lives in the journal (`journal brief_read`). cch's SessionStart hook adds it to a session that starts in a scope, and `reflection cd` carries it in the move's follow-up (`docs/redux/scopes.md` R143).
 
 `<workspace>/.mcp.json` is the MCP registry. Every registered server is advertised even when its upstream is down.
 
 ### Set up Claude Code
 
 1. Put the `claude` CLI on `PATH`.
-2. Remove any `hooks.SessionStart` context hook from `~/.claude/settings.json`. Context loading uses no hook.
-
-**CAUTION** Claude Code truncates SessionStart hook output at about 10K characters and drops the middle without a warning. A context hook loses orientation text for any scope with a long brief.
+2. Run `awm/scripts/deploy-hooks.sh`. It writes awm's hooks into `~/.claude/settings.json`, the brief hook among them.
 
 ### Verify the setup
 
 ```bash
-jq '.hooks.SessionStart // "absent"' ~/.claude/settings.json   # expect "absent"
+jq '.hooks.SessionStart' ~/.claude/settings.json   # expect awm-brief-hook.py
 cd <scope> && claude -p "List the AGENTS.md files loaded into your context, by absolute path."
 ```
 
@@ -398,14 +395,14 @@ Operational notes:
   object every other scope and every historical commit reads through. Write a new
   file, or `dvc unprotect <path>` first. Never `chmod +w` one.
 - **Never run a bare `dvc gc`.** It collects against one worktree's view of a
-  cache the whole workspace shares. `awm scope data-gc` makes you name every
+  cache the whole workspace shares. `awm dvc gc` makes you name every
   project to keep, defaults to dry-run, and refuses `all-branches`.
-- **Unconverted projects are untouched** and keep the legacy shared symlink at
-  `.awm/data`. Nothing migrates them; a project is wired the first time a scope
-  is created or healed after its checkout carries a tracked `.dvc/config`.
+- **A project without a tracked `.dvc/config` gets no data wiring.** Its scopes
+  report mode `none`. A project is wired the first time a scope is created or
+  healed after its checkout carries a tracked `.dvc/config`.
 - **dvc is optional.** It is resolved from `AWM_DVC_BIN`, then PATH, then the
-  known mamba envs; absent, every path degrades to the shared symlink rather than
-  failing. `AWM_DATA_DVC=0` forces that globally.
+  known mamba envs. Absent, every scope reports mode `none` with the reason,
+  rather than failing. `AWM_DATA_DVC=0` provisions no project's data.
 
 ## Off-site backup
 
@@ -454,8 +451,8 @@ imported source.
         ┌─────────────────┼──────────────────┐
         │                 │                  │
    ┌────▼─────┐     ┌──────▼──────┐    ┌──────▼──────┐
-   │ scopes   │     │ cx          │    │ dev /       │   …each an out-of-proc
-   │ service  │     │ service     │    │ notes /     │    feature service with
+   │ scopes   │     │ cch         │    │ dev /       │   …each an out-of-proc
+   │ service  │     │ service     │    │ journal /   │    feature service with
    │ (+own DB)│     │ (+own DB)   │    │ channel     │    its own DB + run.sh
    └──────────┘     └─────────────┘    └─────────────┘
 ```
@@ -474,7 +471,7 @@ awm/                          # nested tree of pip dists (PEP 420 namespace layo
   service_components/         # shared Python imported source (no install.sh)
     config/  persistence/  gatewayclient/  claudedaemon/
   services/                   # one folder per feature service (discovered)
-    scopes/  cx/  dev/
+    scopes/  cch/  dev/
       run.sh                  # the only entry the gateway runs (bash run.sh)
       INSTALL.md  install.sh
   ui_components/<name>/       # shared Svelte libraries, imported as @awm/<name>
