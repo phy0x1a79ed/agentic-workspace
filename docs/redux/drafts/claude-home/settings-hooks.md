@@ -6,7 +6,12 @@ This file holds the hook changes to `~/.claude/settings.json` that go live at T2
 
 ## Make the change
 
-Run `awm/scripts/deploy-hooks.sh` on each node after the T27 deploy. Its `operations` row installs `~/.claude/hooks/awm-operations-hook.py`, and its retired list removes every settings entry and the file of `awm-reporting-hook.py`. That swap needs no hand edit.
+On each node after the T27 deploy:
+
+1. Run `awm/scripts/deploy-hooks.sh --check` to preview.
+2. Run `awm/scripts/deploy-hooks.sh`.
+
+Its `operations` row installs `~/.claude/hooks/awm-operations-hook.py`, and its retired list removes every settings entry and the file of `awm-reporting-hook.py`. Its `subagent-cap` row installs `~/.claude/hooks/awm-subagent-cap.py` on mizar and altair. No hand edit is needed.
 
 ## What changes
 
@@ -22,10 +27,7 @@ The source is `awm/plugins/operations/hooks/operations_hook.py`, and its setting
 
 ## The subagent cap
 
-The cap on a cooperative session's subagents (`channels.md` R125 item 7) is a cch hook, from redux-build/coop. Install it on every node that runs seats, altair today.
-
-1. Run `ln -sf <awm release tree>/awm/services/cch/hooks/subagent_cap.py ~/.claude/hooks/awm-subagent-cap.py`.
-2. Add these three entries beside the entries already there. Replace none.
+The cap on a cooperative session's subagents (`channels.md` R125 item 7) is a cch hook, from redux-build/coop. The script copies it to `~/.claude/hooks/awm-subagent-cap.py` on every node that runs seats, and adds three entries beside the entries already there.
 
 | Event | Matcher | Timeout | Command |
 |---|---|---|---|
