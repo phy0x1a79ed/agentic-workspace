@@ -74,7 +74,6 @@ DEFAULT_ALLOWLIST: dict[str, tuple[str, ...]] = {
     "journal": ("fetch",),
     "search": ("query", "get"),
     "dvc": ("coverage", "scope_status"),
-    "precedence": ("search",),
 }
 
 

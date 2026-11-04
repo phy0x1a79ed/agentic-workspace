@@ -36,7 +36,6 @@ _LIVE = {
     "post": ("journal_fetch", lambda q, f, k: {"query": q, "limit": k, **f}, "posts"),
     "scope": ("scope_search", lambda q, f, k: {"query": q, "limit": k, **f}, "scopes"),
     "project": ("scope_search", lambda q, f, k: {"query": q, "limit": k, **f}, "projects"),
-    "precedence": ("precedence_search", lambda q, f, k: {"context": q, "k": k, **f}, "results"),
 }
 
 

@@ -81,7 +81,6 @@ def test_the_default_allowlist_is_the_post_plan_read_surface():
         "journal": ("fetch",),
         "search": ("query", "get"),
         "dvc": ("coverage", "scope_status"),
-        "precedence": ("search",),
     }
 
 

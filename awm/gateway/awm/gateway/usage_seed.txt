@@ -20,9 +20,6 @@
       1 fileviewer status
       2 httpsfront status
       5 peer list
-     17 precedence add
-     10 precedence search
-      7 precedence describe
       3 project create
       3 project describe
       3 project search

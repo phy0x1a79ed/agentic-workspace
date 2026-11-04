@@ -40,7 +40,7 @@ FREE_TEXT = {"title", "snippet", "text", "body", "content", "rendered", "descrip
              "modified_sample", "untracked_sample", "claimed_author", "context",
              "question", "decision", "fallback", "stop_line", "noise", "cmdline"}
 # Search sources whose documents carry no project field, so no mark can hide them.
-OUT_OF_SCOPE_SOURCES = {"precedence", "kb", "trilium"}
+OUT_OF_SCOPE_SOURCES = {"kb", "trilium"}
 SVC_NOT_FOUND = {"error": "not found"}
 TIMEOUT = httpx.Timeout(120.0, connect=10.0)
 
@@ -588,14 +588,19 @@ class Probe:
         else:
             self.check(f"{label} {path}", lambda: self.static_file(path), control="files")
 
-    def precedence(self) -> tuple[bool, Any, str]:
+    def precedents(self) -> tuple[bool, Any, str]:
         found: dict[str, dict] = {}
-        for args in ({"keyword": f'"{self.project}"', "k": 50}, {"tag": [self.project], "k": 50}):
-            for row in self.peer_call("precedence", "search", args).get("results", []):
+        for args in ({"tags": "precedent", "query": self.project, "limit": 50},
+                     {"tags": "precedent", "limit": 50}):
+            try:
+                rows = self.peer_call("journal", "fetch", args).get("posts", [])
+            except Refused:
+                rows = []
+            for row in rows:
                 found[row["id"]] = row
         rows = list(found.values())
         tagged = [r for r in rows if self.project.lower() in (t.lower() for t in r.get("tags") or [])]
-        return bool(tagged), rows, f"{len(tagged)} of {len(rows)} decisions tagged {self.project}"
+        return bool(tagged), rows, f"{len(tagged)} of {len(rows)} precedents tagged {self.project}"
 
     def cx_list(self) -> tuple[bool, Any, str]:
         return self.own_rows(self.peer_call("reflection", "list_other", {}).get("sessions", []),
@@ -714,7 +719,7 @@ class Probe:
             self.skip("7 journal/posts subscription", "pass --post to post on the peer")
         self.outside_file("8.1 /files journal db", "journal_db")
         self.outside_file("8.2 /files transcript", "transcript_file")
-        self.check(f"9 precedence search {self.project}", self.precedence, may_be_vacuous=True)
+        self.check(f"9 precedent posts tagged {self.project}", self.precedents, may_be_vacuous=True)
         self.check("10 reflection list_other", self.cx_list, may_be_vacuous=True)
         self.check(f"11 transcripts search {self.project}", self.transcripts_direct,
                    may_be_vacuous=True)

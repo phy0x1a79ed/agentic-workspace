@@ -173,7 +173,7 @@ A node can mark a project or one scope of it private. Run `scope private project
 
 Run `awm/scripts/privacy-probe.sh <peer> <project> --expect visible|hidden` from another node to prove a mark. Run it once with `visible` before marking, because the hidden run compares counts against that baseline.
 
-**CAUTION** A mark is visibility hygiene, not a security boundary. Text that mentions the project from another project's records stays visible, and so do untagged precedence decisions, kb papers and Trilium notes. A domestic peer can still start a session here, or drive the browser at this node's own `/files`, and that session reads with a local stamp. A closed node (§ Authentication) refuses that session too.
+**CAUTION** A mark is visibility hygiene, not a security boundary. Text that mentions the project from another project's records stays visible, and so do precedent posts with no tag naming the project, kb papers and Trilium notes. A domestic peer can still start a session here, or drive the browser at this node's own `/files`, and that session reads with a local stamp. A closed node (§ Authentication) refuses that session too.
 
 ## Federated search
 
@@ -710,7 +710,9 @@ unit symlink reports enabled-but-bad and cannot be started.
 
 ## Not done
 
-**Cross-node data sync.** Each node owns its own `precedence` and `scopes`
+**Cross-node data sync.** Each node owns its own journal and `scopes`
 databases and nothing reconciles them. Replication is deliberately out of scope
 (see the top of this file). Reach across explicitly with the `peer` argument when
-you need to.
+you need to. The journal's tag vocabulary is the one exception: each add or edit
+goes to every domestic peer, and a name clash between two nodes blocks journal
+reads between them until the newer tag is renamed (`awm/journal/tagsync.py`).

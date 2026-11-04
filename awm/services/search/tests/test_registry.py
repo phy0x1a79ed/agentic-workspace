@@ -100,7 +100,7 @@ def _tables():
 
 def test_every_table_in_the_tree_names_a_verb_its_service_publishes():
     tables = list(_tables())
-    assert {t["name"] for _, t in tables} >= {"journals", "precedence", "transcripts"}
+    assert {t["name"] for _, t in tables} >= {"journals", "transcripts"}
     for service, table in tables:
         verb = table["export"] if table["mode"] == "index" else table["query"]
         sources = "".join(p.read_text() for p in (SERVICES / service / "awm").rglob("*.py"))

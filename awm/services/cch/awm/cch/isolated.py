@@ -47,7 +47,6 @@ LOGIN_KEYS = ("accessToken", "expiresAt", "scopes", "subscriptionType", "rateLim
 WHITELIST: dict[str, tuple[str, ...]] = {
     "journal": ("render", "inbox", "fetch", "ack", "goal_read", "post"),
     "search": ("query", "get"),
-    "precedence": ("search",),
     "reflection": ("whoami", "compact", "message_self", "pending", "mode"),
     "operations": ("track", "status", "request_human", "done"),
 }
