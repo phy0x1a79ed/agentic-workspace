@@ -70,6 +70,7 @@ from typing import Any, Awaitable, Callable
 from awm import config, gatewayclient
 from awm.kept import Action, Breaker, Outage, Situation, decide
 from awm.kept.decide import MAX_RESUMES
+from awm.trustpolicy import rank
 from awm.social.config import SeatConfig
 from awm.social.seats import session_name
 
@@ -148,9 +149,8 @@ def seat_level(seat: SeatConfig, account: Any) -> str:  # noqa: ANN401
     from awm.social.seats import seat_trust
     if seat.every_chat or account is None:
         return getattr(account, "trust", None) or "untrusted"
-    order = ("untrusted", "cooperative", "trusted")
     chats = seat.channels or (seat.channel,)
-    return min((seat_trust(account, c) for c in chats), key=order.index)
+    return min((seat_trust(account, c) for c in chats), key=rank)
 
 
 def launch_spec(seat: SeatConfig, platform: str, keeps_history: bool, name: str,

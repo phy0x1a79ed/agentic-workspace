@@ -2,7 +2,7 @@
 # Canonical install for the awm-social service (editable, into the `awm` env).
 #
 # Installs the component libraries it imports (config, persistence,
-# gatewayclient) first, then the service itself (which pulls in discord.py and
+# gatewayclient, kept, trustpolicy) first, then the service itself (which pulls in discord.py and
 # slack_sdk). Components have no install.sh of their own — they are pulled in
 # here as plain editable dependencies. Override the target env with AWM_ENV=<name>.
 set -euo pipefail
@@ -15,6 +15,8 @@ run "$AWM/service_components/config" --no-deps
 run "$AWM/service_components/persistence" --no-deps
 run "$AWM/service_components/gatewayclient" --no-deps
 run "$AWM/service_components/kept" --no-deps
+run "$AWM/plugins/operations/grantlib" --no-deps
+run "$AWM/service_components/trustpolicy" --no-deps
 run "$HERE"
 mamba run -n "$ENV" python -c 'import slack_sdk' \
     || { echo "slack_sdk did not install into env '$ENV'" >&2; exit 1; }

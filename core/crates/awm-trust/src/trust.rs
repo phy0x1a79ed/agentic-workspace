@@ -118,9 +118,9 @@ pub struct Call<'a> {
 
 /// Verbs that bring up a top-level session (channels.md R125 item 3).
 pub const START_VERBS: [&str; 3] = ["start_other", "resume_other", "adopt_other"];
-/// The `social` verbs a seat answers its own chats with (R69). social keeps them to the
-/// chats the session holds.
-pub const SEAT_CHAT_VERBS: [&str; 5] = ["send", "react", "fetch", "history", "download_attachments"];
+/// The `social` verbs a seat holds and answers its own chats with (R69). social keeps them
+/// to the chats the session holds, and a mount to chats below trusted that no sibling holds.
+pub const SEAT_CHAT_VERBS: [&str; 7] = ["send", "react", "fetch", "history", "download_attachments", "mount", "unmount"];
 /// The `2fa` verbs that only read. ssh arms the approver itself for fir and sockeye.
 pub const TWOFA_READS: [&str; 5] = ["devices", "ping", "reachability", "status", "pending"];
 const DESCRIBE: &str = "describe";
@@ -238,12 +238,12 @@ mod tests {
     #[test]
     fn cooperative_keeps_its_chats_ssh_and_request_human() {
         let c = Level::Cooperative;
-        for (tool, verb) in [("social", "send"), ("social", "history"), ("social", "describe"), ("operations", "request_human"),
+        for (tool, verb) in [("social", "send"), ("social", "history"), ("social", "mount"), ("social", "describe"), ("operations", "request_human"),
                              ("2fa", "status"), ("ssh", "connect"), ("reflection", "compact"), ("reflection", "message"),
                              ("journal", "post"), ("channel", "open"), ("browser", "tab_open")] {
             assert_eq!(call_refusal(c, &call(tool, verb)), None, "{tool}.{verb}");
         }
-        for (tool, verb) in [("social", "search"), ("social", "lookup"), ("social", "open_dm"), ("social", "bucket_get"),
+        for (tool, verb) in [("social", "search"), ("social", "lookup"), ("social", "open_dm"), ("social", "bucket_get"), ("social", "keepers"),
                              ("operations", "task_report"), ("operations", "approval_request"), ("trilium", "note_get"),
                              ("trilium", "describe"), ("2fa", "burst"), ("reflection", "start_other"), ("reflection", "resume_other")] {
             assert!(call_refusal(c, &call(tool, verb)).is_some(), "{tool}.{verb}");
