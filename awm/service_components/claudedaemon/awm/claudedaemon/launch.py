@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Callable
 
 from awm.claudedaemon import roster
+from awm.gatewayclient.proc import user_manager_env
 
 log = logging.getLogger("awm.claudedaemon.launch")
 
@@ -78,19 +79,6 @@ def default_claude_bin() -> str:
     if found:
         return found
     return str(Path.home() / ".local" / "bin" / "claude")
-
-
-def user_manager_env() -> dict[str, str] | None:
-    """Env for reaching this user's systemd manager, or None if there is none."""
-    if not shutil.which("systemd-run"):
-        return None
-    runtime = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
-    if not Path(runtime, "bus").is_socket():
-        return None
-    return {
-        "XDG_RUNTIME_DIR": runtime,
-        "DBUS_SESSION_BUS_ADDRESS": f"unix:path={runtime}/bus",
-    }
 
 
 def build_argv(*, claude: str, name: str, flags: list[str] | tuple[str, ...],
