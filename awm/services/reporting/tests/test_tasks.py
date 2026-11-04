@@ -1075,11 +1075,3 @@ async def test_a_new_card_opens_its_task_in_operations_once(env):
     assert opened == [{"title": "Look into the printer", "session_id": "cc22222222333344445555666666666666"}]
     await env.call("track_task", pid=200, title="again")
     assert len([1 for fn, _ in env.ops if fn == "task_open"]) == 1
-
-
-async def test_a_clear_gives_the_new_session_the_old_one_as_its_parent(env, tmp_path):
-    old = env.records[100]["sessionId"] = "22222222-3333-4444-5555-666666666666"
-    await env.call("hook_plan_approved", plan_text="# Before the clear\n\nx")
-    new = "33333333-4444-5555-6666-777777777777"
-    await env.call("hook_session_clear", new_session_id=new)
-    assert {"session_id": new, "parent": old, "how": "clear", "node": env.tasks.node} in env.fetches

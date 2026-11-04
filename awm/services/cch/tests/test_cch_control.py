@@ -1058,6 +1058,13 @@ def test_cd_types_the_resolved_path_and_sees_the_session_arrive(world, moves):
                            (OTHER_JOB, inject.RECONNECT_AFTER_MOVE, inject.ATTEMPTS)]
 
 
+def test_cd_of_another_session_sends_it_the_brief_after_the_reconnect(world, moves):
+    out = control.cd(str(moves), job="other one", caller_pid=ME, brief="The brief of p/s: For x.")
+    assert out["brief_sent"] is True
+    assert [text for _, text, _ in world.typed] == [
+        f"/cd {moves}", inject.RECONNECT_AFTER_MOVE, "The brief of p/s: For x."]
+
+
 def test_cd_follows_a_symlink_to_the_directory_it_names(world, moves, tmp_path):
     link = tmp_path / "shortcut"
     link.symlink_to(moves)

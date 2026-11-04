@@ -161,7 +161,7 @@ def test_bad_task_arguments_are_refused(lobby, launched, home, args, why):
     assert out["ok"] is False and why in out["reason"]
 
 
-def test_a_start_from_a_session_records_its_parent_link(lobby, with_session_id, home, attached):
+def test_a_start_from_a_session_keeps_its_parent_in_the_lineage_record(lobby, with_session_id, home, attached):
     parent_session(home)
     for pid_file in home.sessions.glob("*.json"):
         rec = json.loads(pid_file.read_text())
@@ -169,7 +169,8 @@ def test_a_start_from_a_session_records_its_parent_link(lobby, with_session_id, 
         pid_file.write_text(json.dumps(rec))
     start({**BASE, "_caller_pid": os.getpid()})
     parent = "ccffffffff000011112222333333333333"
-    assert ("journal", "session_parent", {"session_id": R9, "parent": parent, "how": "start"}) in attached
+    # reflection records the journal's parent link; cch records none of its own.
+    assert not [c for c in attached if c[1] == "session_parent"]
     from awm.cch import lifecycle
 
     assert lifecycle.read_lineage(CHILD_JOB)["parent_session"] == parent

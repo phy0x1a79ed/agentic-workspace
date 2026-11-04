@@ -384,7 +384,22 @@ async def _start_other(args: dict, as_: str | None = None) -> dict:
             f"session:{actor}" if actor else (as_ or "service"))
         policy.record(sid, level, origin)
         out = {**out, "trust": level}
+    if out.get("ok") and sid and actor:
+        await asyncio.to_thread(_record_parent, sid, actor, "start")
     return out
+
+
+def _record_parent(session_id: str, parent: str, how: str) -> bool:
+    """Give the journal a parent link (sessions.md R13, R16). A lost link never fails the call."""
+    try:
+        from awm.gatewayclient import call_sync
+        out = call_sync("journal", "session_parent",
+                        {"session_id": session_id, "parent": parent, "how": how}, timeout=30.0)
+    except Exception as exc:  # noqa: BLE001
+        log.info("reflection: parent link %s -> %s (%s) not recorded: %s",
+                 parent, session_id, how, exc)
+        return False
+    return bool(isinstance(out, dict) and out.get("ok", True))
 
 
 async def _list_other(args: dict, as_: str | None = None) -> dict:
@@ -556,7 +571,17 @@ def _wake(row: dict) -> dict:
 
 def _harness_event(args: dict) -> dict:
     event = {k: v for k, v in args.items() if not k.startswith("_")}
+    if event.get("kind") == "clear":
+        return _cleared(event)
     return ledger.record(event)
+
+
+def _cleared(event: dict) -> dict:
+    """A session cleared itself: its new id takes the old one as its parent (sessions.md R13)."""
+    new, old = ids.to_r9(event.get("session_id")), ids.to_r9(event.get("parent"))
+    if not new or not old:
+        return {"ok": False, "error": "a clear needs session_id and parent as session ids"}
+    return {"ok": True, "recorded": _record_parent(new, old, "clear")}
 
 
 HANDLERS = {verb: _guarded(verb, fn) for verb, fn in {

@@ -141,8 +141,9 @@ API_MANIFEST: dict[str, Any] = {
                        "Resume a job that start did not create.")], timeout=90),
         _verb("set", "Set a session's model, effort, name or folder.", _TARGET + [
             _p("model"), _p("effort"), _p("name"), _p("cwd"),
-            _p("brief", description="With cwd: the line the caller's own follow-up "
-               "carries once the move applied, such as the new scope's brief.")],
+            _p("brief", description="With cwd: the line the session gets once the move "
+               "applied, such as the new scope's brief: the caller's own in its "
+               "follow-up, another session as a message.")],
             timeout=120),
         _verb("compact", "Compact the caller's own session, then type followup.",
             _TARGET + [_p("followup"), _p("delay_ms", "integer")], timeout=60),

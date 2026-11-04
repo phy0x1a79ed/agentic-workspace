@@ -200,6 +200,30 @@ def test_start_other_passes_the_spec_through_and_records_trust(fakes, monkeypatc
     assert json.loads(policy._path().read_text())["cc" + "1" * 32]["origin"] == "seat:ana"
 
 
+def test_start_other_records_the_caller_as_the_parent(fakes, monkeypatch):
+    links = []
+    monkeypatch.setattr(hub_adapter, "_record_parent", lambda *a: links.append(a) or True)
+    run("start_other", {"_caller_pid": ME, "project": "awm", "scope": "x"})
+    assert links == [("cc" + "1" * 32, MY_ID, "start")]
+
+
+def test_a_start_with_no_calling_session_records_no_parent(fakes, monkeypatch):
+    links = []
+    monkeypatch.setattr(hub_adapter, "_record_parent", lambda *a: links.append(a) or True)
+    run("start_other", {"project": "awm", "scope": "x"})
+    assert links == []
+
+
+def test_a_clear_event_records_the_old_session_as_the_parent(fakes, monkeypatch):
+    links = []
+    monkeypatch.setattr(hub_adapter, "_record_parent", lambda *a: links.append(a) or True)
+    old = "0e380e38-0e38-0e38-0e38-0e380e380e38"
+    out = run("harness_event", {"session_id": "cc" + "2" * 32, "kind": "clear", "parent": old})
+    assert out == {"ok": True, "recorded": True}
+    assert links == [("cc" + "2" * 32, MY_ID, "clear")]
+    assert run("harness_event", {"session_id": "cc" + "2" * 32, "kind": "clear"})["ok"] is False
+
+
 def test_an_isolated_start_is_untrusted_unless_trust_is_named(fakes, monkeypatch):
     monkeypatch.setattr(policy, "_lib", lambda: type("L", (), {
         "grant_key": staticmethod(lambda: b""),

@@ -1,4 +1,4 @@
-"""The scope brief: one in force per scope, every write kept, a 400-character cap (scopes.md R143)."""
+"""The scope brief: one in force per scope, every write kept, two sentences and 400 characters at most (scopes.md R143)."""
 from __future__ import annotations
 
 import pytest
@@ -35,6 +35,14 @@ def test_a_brief_over_400_characters_is_refused(journal_workspace):
     with pytest.raises(BriefError, match="limit is 400"):
         _run("brief_set", {"project": "awm", "scope": "s", "text": "x" * 401})
     _run("brief_set", {"project": "awm", "scope": "s", "text": "x" * 400})
+
+
+def test_a_brief_over_two_sentences_is_refused(journal_workspace):
+    from awm.journal.briefs import BriefError
+    with pytest.raises(BriefError, match="3 sentences"):
+        _run("brief_set", {"project": "awm", "scope": "s", "text": "For x. It does y. Then z."})
+    _run("brief_set", {"project": "awm", "scope": "s",
+                       "text": "For the v1.6 contract, in awm/journal.py. It serves the gateway."})
 
 
 def test_edit_replaces_one_passage(journal_workspace):

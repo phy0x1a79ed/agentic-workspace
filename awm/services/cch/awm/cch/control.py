@@ -418,7 +418,8 @@ def cd(path: str, *, job: Optional[str], caller_pid: Any, brief: str = "",
     trusted first instead, since awm made it. The move drops the session's MCP
     servers (see :data:`inject.RECONNECT_AFTER_MOVE`); the caller's own session
     gets the reconnect from its resume, any other once its record shows the move.
-    ``brief`` rides the caller's own follow-up once the move applied (scopes.md R143).
+    ``brief`` reaches the session once the move applied (scopes.md R143): the
+    caller's own session in its follow-up, any other as a message after the reconnect.
     """
     path = path.strip() if isinstance(path, str) else ""
     if not path or not path.isprintable() or not os.path.isabs(path):
@@ -447,12 +448,14 @@ def cd(path: str, *, job: Optional[str], caller_pid: Any, brief: str = "",
     if t.is_self or not out.get("ok") or not out.get("submitted"):
         return {**out, "cwd": want}
     if not _between_turns(t):
-        spawn(lambda: _reconnect_once_moved(t, want, SELF_MODAL_WAIT_S, SELF_POLL_S))
+        spawn(lambda: _reconnect_once_moved(t, want, SELF_MODAL_WAIT_S, SELF_POLL_S, brief))
         return {**out, "cwd": want, "moved": False,
                 "detail": f"{t.label} is mid-turn, so the move runs when that turn "
                           f"ends; its awm server is reconnected after it"}
     moved = _await_cwd(t, want, MOVE_WAIT_S, POLL_S)
     out = {**out, "cwd": want, "moved": moved, "mcp_reconnected": moved and _reconnect(t)}
+    if moved and brief:
+        out["brief_sent"] = _send_brief(t, brief)
     if not moved:
         out["detail"] = (f"the session record does not show {want} after "
                          f"{MOVE_WAIT_S:g}s; `list_other` shows where it is")
@@ -492,10 +495,22 @@ def _reconnect(t: Target) -> bool:
     return True
 
 
-def _reconnect_once_moved(t: Target, want: str, wait_s: float, poll_s: float) -> None:
+def _send_brief(t: Target, brief: str) -> bool:
+    try:
+        _deliver(t, brief, what="the brief after a move")
+    except inject.DeliveryError as exc:
+        log.warning("reflection: could not give %s its brief after its move: %s", t.label, exc)
+        return False
+    return True
+
+
+def _reconnect_once_moved(t: Target, want: str, wait_s: float, poll_s: float,
+                          brief: str = "") -> None:
     try:
         if _await_cwd(t, want, wait_s, poll_s):
             _reconnect(t)
+            if brief:
+                _send_brief(t, brief)
         else:
             log.warning("reflection: %s never reached %s; awm was not reconnected",
                         t.label, want)

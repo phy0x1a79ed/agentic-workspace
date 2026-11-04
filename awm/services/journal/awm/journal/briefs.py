@@ -8,12 +8,18 @@ brief in force is the newest one not superseded.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 from awm.journal import channel, kinds
 from awm.journal.dao import JournalDAO
 
 MAX_CHARS = 400
+MAX_SENTENCES = 2
+
+# A sentence ends at a stop followed by space and a capital, so a path such as
+# ``awm/journal.py`` or a version such as ``v1.6`` never splits one.
+_SENTENCE_END = re.compile(r"(?<=[.!?])\s+(?=[A-Z\"'`(\[])")
 
 
 class BriefError(ValueError):
@@ -73,6 +79,10 @@ def _checked(text: str) -> str:
     if len(text) > MAX_CHARS:
         raise BriefError(f"the brief is {len(text)} characters; the limit is {MAX_CHARS}. "
                          "Say only what the scope is for, in at most two sentences.")
+    sentences = len(_SENTENCE_END.split(text))
+    if sentences > MAX_SENTENCES:
+        raise BriefError(f"the brief has {sentences} sentences; the limit is {MAX_SENTENCES}. "
+                         "Say only what the scope is for.")
     return text
 
 
