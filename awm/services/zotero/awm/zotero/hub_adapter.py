@@ -102,7 +102,7 @@ API_MANIFEST: dict[str, Any] = {
                 "creators, year, DOI, URL, publication, abstract, tags and stored "
                 "file names. Pass `since` to get only the items that moved after "
                 "a cursor. Read the reply's `versions` as the next cursor. Open "
-                "to the operator and to domestic peers."
+                "to the operator and to peers with an edge to this node."
             ),
             "params": [
                 {"name": "since", "type": "object",
@@ -236,9 +236,9 @@ async def _h_status(args: dict, as_: str | None = None) -> dict:
 
 
 def _peer_or_operator(as_: str | None, verb: str) -> None:
-    """Refuse a person who came in through the edge. The gateway already keeps a foreign peer off this verb."""
+    """Refuse a person who came in through the edge. The gateway already keeps a peer with no edge here off this verb."""
     if as_ is not None and not (as_ == "peer" or as_.startswith("peer:")):
-        raise PermissionError(f"{verb} is open to the operator and to domestic peers only")
+        raise PermissionError(f"{verb} is open to the operator and to peers only")
 
 
 def items_page(library: dict[str, Any], since: dict[str, int], offset: int, limit: int) -> dict[str, Any]:

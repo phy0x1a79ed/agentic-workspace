@@ -217,13 +217,13 @@ def test_signed_out_the_vault_asks_for_a_login():
     assert r.status_code == 200 and "username" in r.text
 
 
-#: The legacy bearer, a domestic node's token, and a foreign node's.
+#: The legacy bearer, a token from a node with an edge, and one from a node without.
 PEERS = ["peer", "peer:mira", "peer:shaula"]
 
 
 @pytest.fixture(autouse=True)
 def _book(peer_book):
-    peer_book({"mira": {"relation": "domestic"}, "shaula": {"relation": "foreign"}})
+    peer_book({"mira": {}, "shaula": {}})
 
 
 @pytest.mark.parametrize("sub", PEERS)

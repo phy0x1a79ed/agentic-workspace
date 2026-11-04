@@ -97,7 +97,8 @@ CREATE TABLE IF NOT EXISTS scope_posts (
     meta           TEXT NOT NULL DEFAULT '{}',
     ts             INTEGER NOT NULL,
     reply_to       TEXT,
-    thread_id      TEXT
+    thread_id      TEXT,
+    version        INTEGER NOT NULL DEFAULT 1
 );
 CREATE INDEX IF NOT EXISTS idx_scope_posts_owner_ts ON scope_posts(owner_project, owner_scope, ts);
 CREATE INDEX IF NOT EXISTS idx_scope_posts_thread ON scope_posts(thread_id, ts);
@@ -149,10 +150,22 @@ CREATE TABLE IF NOT EXISTS session_parents (
 );
 """
 
-# (3, 4) belongs to the trust lane's post_versions (fleet.md R107 item 1). It is
-# empty here so a branch without that lane still reaches v5; the trust merge
-# replaces it.
-MIGRATIONS[(3, 4)] = "SELECT 1;"
+# Every version of an edited post (fleet.md R107 item 1). scope_posts.body holds
+# the latest; a post with no rows here was never edited and is version 1.
+VERSIONS_SQL = """\
+CREATE TABLE IF NOT EXISTS post_versions (
+    post_id   TEXT NOT NULL,
+    version   INTEGER NOT NULL,
+    body      TEXT NOT NULL,
+    diff      TEXT NOT NULL DEFAULT '',
+    editor    TEXT NOT NULL,
+    reason    TEXT NOT NULL DEFAULT '',
+    ts        INTEGER NOT NULL,
+    PRIMARY KEY (post_id, version)
+);
+"""
+
+MIGRATIONS[(3, 4)] = "ALTER TABLE scope_posts ADD COLUMN version INTEGER NOT NULL DEFAULT 1;\n" + VERSIONS_SQL
 
 # Kinds become tags (fleet.md R107 item 6); a kind with no fixed tag becomes a
 # migrated tag. The goal log went (item 10): a real goal becomes a journal post in
@@ -212,6 +225,7 @@ CREATE INDEX IF NOT EXISTS idx_scope_posts_thread ON scope_posts(thread_id, ts);
 CREATE INDEX IF NOT EXISTS idx_scope_posts_reply ON scope_posts(reply_to);
 """
 
+
 _initialized = False
 
 
@@ -219,7 +233,7 @@ def init() -> None:
     """Idempotently create the journal DB, its tables and the embeddings store."""
     global _initialized
     if not _initialized:
-        init_service_db(SERVICE, SCHEMA_SQL + READS_SQL + LINKS_SQL + EMBEDDINGS_DDL,
+        init_service_db(SERVICE, SCHEMA_SQL + READS_SQL + LINKS_SQL + VERSIONS_SQL + EMBEDDINGS_DDL,
                         schema_version=SCHEMA_VERSION, migrations=MIGRATIONS)
         conn = get_connection(SERVICE)
         try:

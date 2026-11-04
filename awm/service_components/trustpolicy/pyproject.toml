@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "awm-trustpolicy"
+version = "0.1.0"
+requires-python = ">=3.11"
+description = "AWM trust levels per session: who may start, steer and read what (fleet.md R103, R104, R107)."
+dependencies = [
+    "cryptography",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest",
+]
+
+[tool.setuptools.packages.find]
+include = ["awm.trustpolicy*"]
+namespaces = true
+
+[tool.pytest.ini_options]
+markers = [
+    "smoke: fast unit tests",
+    "unit: pure unit tests",
+]

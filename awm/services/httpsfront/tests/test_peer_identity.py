@@ -2,12 +2,11 @@
 
 What these pin: a node token verifies against the book's key for its issuer and
 only for this node's name, and yields ``peer:<node>``; the legacy bearer still
-yields bare ``peer`` until ``AWM_PEER_LEGACY_BEARER=0`` retires it; a domestic
-node is a peer in every way the legacy bearer was (the gateway, never the vault
-or a person's files); a foreign node, or one the book does not list,
-reaches ``/invoke`` and ``/tools`` (the gateway's effect gate limits what it may
-call there) and gets a 404 for everything else the mesh edge serves, WebSockets
-included.
+yields bare ``peer`` until ``AWM_PEER_LEGACY_BEARER=0`` retires it, but a bare
+``peer`` names no node and so has no edge here; a node with an edge to this one
+reaches the gateway, never the vault or a person's files; a node with no
+edge here, listed or not, and the legacy bearer get a 404 for everything the
+mesh edge serves, WebSockets included (fleet.md R86).
 """
 
 from __future__ import annotations
@@ -26,7 +25,6 @@ from awm.httpsfront import policy, proxy
 from awm.httpsfront.auth import (
     COOKIE_NAME,
     AuthGate,
-    is_foreign_peer,
     is_machine_sub,
     is_peer_sub,
 )
@@ -42,7 +40,7 @@ SESSION = "signed.session"
 @pytest.fixture(autouse=True)
 def node(monkeypatch, peer_book):
     monkeypatch.setenv("AWM_NODE_NAME", ME)
-    peer_book({"mira": {"relation": "domestic"}, "shaula": {"relation": "foreign"}})
+    peer_book({"mira": {}, "shaula": {}})
 
 
 @pytest.fixture()
@@ -69,8 +67,8 @@ def _auth(gate, bearer=None, cookie=None):
     return asyncio.run(gate.authenticate(cookie=cookie, bearer=bearer))
 
 
-def _peer(name, public, relation="domestic"):
-    return {"name": name, "public_key": public, "relation": relation}
+def _peer(name, public):
+    return {"name": name, "public_key": public}
 
 
 # -- the gate -----------------------------------------------------------------
@@ -92,10 +90,11 @@ def test_the_public_listener_honours_no_node_token(keys):
     assert proxy.build_app(GATEWAY + "/", "/dev/null", profile=None).state.gate._peers is True
 
 
-def test_a_foreign_nodes_token_authenticates_too(keys):
+def test_a_token_from_a_node_without_an_edge_still_authenticates(keys):
+    """The gate proves who called; whether the edge list admits it is the proxy's."""
     private, public = keys
     token = peertoken.sign(private, iss="shaula", aud=ME)
-    gate = _gate(peers=[_peer("shaula", public, "foreign")])
+    gate = _gate(peers=[_peer("shaula", public)])
     assert _auth(gate, token)[2] == "peer:shaula"
 
 
@@ -149,11 +148,10 @@ def test_retiring_the_bearer_leaves_node_tokens_and_sessions_alone(monkeypatch, 
     assert _auth(gate, cookie=cookie)[2] == "tony"
 
 
-@pytest.mark.parametrize("relation", ["domestic", "foreign"])
-def test_a_closed_edge_refuses_every_node_token(monkeypatch, keys, relation):
+def test_a_closed_edge_refuses_every_node_token(monkeypatch, keys):
     monkeypatch.setenv("AWM_EDGE_PEERS", "0")
     private, public = keys
-    gate = _gate(peers=[_peer("mira", public, relation)])
+    gate = _gate(peers=[_peer("mira", public)])
     assert _auth(gate, peertoken.sign(private, iss="mira", aud=ME)) == (False, None, None)
 
 
@@ -186,43 +184,11 @@ def test_every_peer_identity_is_a_machine():
         assert not is_machine_sub(sub), sub
 
 
-RELATIONS = {"mira": "domestic", "shaula": "foreign"}.get
-
-
-def test_only_unlisted_and_foreign_nodes_are_foreign():
-    assert not is_foreign_peer("peer", RELATIONS)
-    assert not is_foreign_peer("peer:mira", RELATIONS)
-    assert is_foreign_peer("peer:shaula", RELATIONS)
-    assert is_foreign_peer("peer:nobody", RELATIONS)
-    assert not is_foreign_peer("tony", RELATIONS)
-    assert not is_foreign_peer(None, RELATIONS)
-
-
-def test_a_node_with_no_relation_source_is_foreign():
-    assert is_foreign_peer("peer:mira")
-    assert not is_foreign_peer("peer")
-
-
-def test_the_relation_comes_from_the_material_snapshot_not_the_book(peer_book, keys):
-    """The book on disk says mira is foreign now; the snapshot that held her key
-    said domestic, and that is what this request is judged by."""
-    peer_book({"mira": {"relation": "foreign"}})
-    _, public = keys
-    gate = _gate(peers=[_peer("mira", public, "domestic")])
-    assert not is_foreign_peer("peer:mira", gate.peer_relation)
-    gate = _gate(peers=[_peer("mira", public, "foreign")])
-    assert is_foreign_peer("peer:mira", gate.peer_relation)
-    assert gate.peer_relation("rigel") is None
-
-
-def test_the_foreign_door_is_tools_and_invoke_exactly():
-    assert policy.FOREIGN_PATHS == frozenset({"/tools", "/invoke"})
-    assert policy.foreign_allows("/tools")
-    assert policy.foreign_allows("/invoke")
-    for path in ("/", "/invoke/", "/peers", "/tools/invoke", "/invoke/x", "/tools/x", "/hub/services",
-                 "/svc/notes/fn/list", "/trilium/", "/files/x",
-                 "/__auth/whoami"):
-        assert not policy.foreign_allows(path), path
+@pytest.mark.parametrize("sub,refused", [
+    ("peer", True), (" Peer ", True), ("peer:mira", False), ("tony", False), (None, False),
+    ("peer:shaula", True), ("peer:nobody", True), ("peer:", True)])
+def test_only_a_node_without_an_edge_here_is_refused(sub, refused):
+    assert proxy._edgeless(sub) is refused
 
 
 def test_an_fqdn_hostname_and_a_bare_book_name_agree(monkeypatch, keys):
@@ -267,9 +233,6 @@ class _Gate:
             return True, None, "tony"
         return False, None, None
 
-    def peer_relation(self, node):
-        return RELATIONS(node)
-
     async def session_ttl_seconds(self):
         return 3600.0
 
@@ -312,8 +275,8 @@ GATEWAY_PATHS = ["/svc/notes/fn/list", "/hub/services", "/files/projects/x",
 VAULT_PATHS = ["/trilium/", "/trilium/api/tree"]
 
 
-@pytest.mark.parametrize("bearer", ["b-legacy", "b-mira"])
-def test_a_domestic_node_reaches_the_gateway_as_the_legacy_bearer_did(bearer):
+@pytest.mark.parametrize("bearer", ["b-mira", "awmpt1.mira-token"])
+def test_a_node_with_an_edge_reaches_the_gateway(bearer):
     with _edge(bearer) as (c, seen):
         for path in ("/invoke", "/tools", "/svc/notes/fn/list", "/hub/services",
                      "/files/projects/x"):
@@ -330,72 +293,25 @@ def test_no_peer_reaches_the_vault(bearer, path):
     assert seen == []
 
 
-@pytest.mark.parametrize("bearer", ["b-shaula", "b-nobody"])
-def test_a_foreign_node_reaches_tools_only(bearer):
-    with _edge(bearer) as (c, seen):
-        assert c.get("/tools").status_code == 200
-        assert c.get("/tools", params={"view": "domains"}).status_code == 200
-    assert [s[1] for s in seen] == [BEARERS[bearer]] * 2
-
-
-@pytest.mark.parametrize("bearer", ["b-shaula", "b-nobody"])
-def test_a_foreign_node_reaches_invoke_and_the_gateway_decides(bearer):
-    """The edge forwards `/invoke` stamped with the caller's identity; the
-    gateway's effect gate, not the edge, refuses what its grants do not cover."""
-    with _edge(bearer) as (c, seen):
-        assert c.post("/invoke", json={"name": "kb_search", "args": {}}).status_code == 200
-    assert [s[1] for s in seen] == [BEARERS[bearer]]
-    assert seen[0][0].startswith(GATEWAY + "/invoke")
-
-
-@pytest.mark.parametrize("bearer", ["b-shaula", "b-nobody"])
-@pytest.mark.parametrize("path", ["/svc/notes/fn/list", "/svc/auth/fn/edge_material",
-                                  "/peers", "/tools/peers", "/invoke/", "/invoke/x",
-                                  "/hub/services", "/hub/register", "/files/x"])
-@pytest.mark.parametrize("method", ["get", "post", "put", "delete"])
-def test_a_foreign_node_still_reaches_nothing_beyond_tools_and_invoke(
-        bearer, path, method):
-    with _edge(bearer) as (c, seen):
-        assert getattr(c, method)(path).status_code == 404
-    assert seen == []
-
-
-@pytest.mark.parametrize("bearer", ["b-shaula", "b-nobody"])
-@pytest.mark.parametrize("query", ["peers=1", "peers", "view=domains&peers=0"])
-@pytest.mark.parametrize("path", ["/tools", "/invoke"])
-def test_a_foreign_node_cannot_widen_either_door_to_the_fleet(bearer, path, query):
-    with _edge(bearer) as (c, seen):
-        assert c.get(f"{path}?{query}").status_code == 404
-    assert seen == []
-
-
-@pytest.mark.parametrize("bearer", ["b-shaula", "b-nobody"])
-@pytest.mark.parametrize("query", ["peers=1", "peers=0", "view=domains&peers=1",
-                                   "%70eers=1", "peers"])
-def test_a_foreign_node_cannot_ask_for_the_fleet_view(bearer, query):
-    with _edge(bearer) as (c, seen):
-        assert c.get(f"/tools?{query}").status_code == 404
-    assert seen == []
-
-
-@pytest.mark.parametrize("bearer", ["b-legacy", "b-mira"])
-def test_a_domestic_node_keeps_the_fleet_view_and_invoke(bearer):
+@pytest.mark.parametrize("bearer", ["b-mira", "awmpt1.mira-token"])
+def test_a_node_with_an_edge_keeps_the_fleet_view_and_invoke(bearer):
     with _edge(bearer) as (c, seen):
         assert c.get("/tools?peers=1&view=domains").status_code == 200
         assert c.post("/invoke", json={"name": "x", "args": {}}).status_code == 200
     assert len(seen) == 2
 
 
-@pytest.mark.parametrize("bearer", ["b-shaula", "b-nobody"])
-@pytest.mark.parametrize("path", GATEWAY_PATHS + ["/__auth/whoami", "/signin",
-                                                  "/invoke/", "/tools/x"])
-def test_a_foreign_node_gets_404_for_everything_else(bearer, path):
+@pytest.mark.parametrize("bearer", ["b-shaula", "b-nobody", "awmpt1.shaula-token", "b-legacy"])
+@pytest.mark.parametrize("path", GATEWAY_PATHS + ["/__auth/whoami", "/signin", "/tools",
+                                                  "/tools?peers=1", "/invoke"])
+@pytest.mark.parametrize("method", ["get", "post"])
+def test_a_node_without_an_edge_gets_404_for_everything(bearer, path, method):
     with _edge(bearer) as (c, seen):
-        assert c.get(path).status_code == 404
+        assert getattr(c, method)(path).status_code == 404
     assert seen == []
 
 
-def test_a_person_is_unaffected_by_the_foreign_door():
+def test_a_person_is_unaffected_by_the_edge_list():
     with _edge() as (c, seen):
         c.cookies.set(COOKIE_NAME, SESSION, domain="mesh.example")
         assert c.get("/svc/notes/fn/list").status_code == 200
@@ -404,7 +320,7 @@ def test_a_person_is_unaffected_by_the_foreign_door():
     assert seen[0][1] == "user:tony"
 
 
-def test_a_domestic_node_still_sees_whoami_and_extra_routes():
+def test_a_node_with_an_edge_still_sees_whoami_and_extra_routes():
     with _edge("b-mira") as (c, _):
         assert c.get("/__auth/whoami").json() == {"user": "peer:mira"}
         assert c.get("/signin").status_code == 200
@@ -412,7 +328,7 @@ def test_a_domestic_node_still_sees_whoami_and_extra_routes():
 
 @pytest.mark.parametrize("bearer,path,reaches", [
     ("b-mira", "/svc/journal/emit/t", True),
-    ("b-legacy", "/svc/journal/emit/t", True),
+    ("b-legacy", "/svc/journal/emit/t", False),
     ("b-shaula", "/svc/journal/emit/t", False),
     ("b-nobody", "/svc/journal/emit/t", False),
     ("b-mira", "/trilium/", False),
@@ -439,7 +355,7 @@ def test_websockets_by_peer_kind(monkeypatch, bearer, path, reaches):
 
 # -- headers that name a local session ----------------------------------------
 
-@pytest.mark.parametrize("bearer", [None, "b-legacy", "b-mira", "awmpt1.mira-token"])
+@pytest.mark.parametrize("bearer", [None, "b-mira", "awmpt1.mira-token"])
 def test_caller_pid_headers_never_cross_the_edge(bearer):
     """Reflection and `cx start` act on the session a pid names. A remote caller
     that could set one would act on any local session."""
@@ -452,16 +368,8 @@ def test_caller_pid_headers_never_cross_the_edge(bearer):
     assert not [k for k in sent if k.startswith("x-awm-") and k != "x-awm-as"]
 
 
-def test_caller_pid_headers_are_stripped_on_a_foreign_nodes_tools_call_too():
-    with _edge("b-shaula") as (c, _):
-        assert c.get("/tools", headers=CALLER_HEADERS).status_code == 200
-    (sent,) = c.sent
-    assert not [k for k in sent if k.startswith("x-awm-") and k != "x-awm-as"]
-    assert sent["x-awm-as"] == "peer:shaula"
-
-
-@pytest.mark.parametrize("bearer", ["b-shaula", "b-nobody"])
-def test_a_foreign_nodes_invoke_reaches_the_gateway_with_only_the_edges_stamp(bearer):
+@pytest.mark.parametrize("bearer", ["b-mira", "awmpt1.mira-token"])
+def test_a_peers_invoke_reaches_the_gateway_with_only_the_edges_stamp(bearer):
     forged = {"X-Awm-Peer-Redirect": "1", "X-Awm-Session-Pid": "4242",
               "X-Awm-Caller-Pid": "4243", "X-Awm-As": "user:tony"}
     with _edge(bearer) as (c, seen):
@@ -481,7 +389,7 @@ def test_duplicate_caller_headers_are_all_dropped():
     assert "x-awm-session-pid" not in sent and sent["x-awm-as"] == "peer:mira"
 
 
-@pytest.mark.parametrize("bearer", [None, "b-legacy", "b-mira"])
+@pytest.mark.parametrize("bearer", [None, "b-mira"])
 def test_caller_pid_headers_do_not_ride_a_websocket(monkeypatch, bearer):
     dialled: list = []
 
@@ -523,11 +431,19 @@ def test_a_node_token_is_not_forwarded_when_a_cookie_carried_the_request():
     assert c.sent[0]["x-awm-as"] == "user:tony"
 
 
-@pytest.mark.parametrize("bearer", ["b-legacy"])
-def test_the_legacy_bearer_is_forwarded_exactly_as_before(bearer):
-    with _edge(bearer) as (c, _):
+def test_the_legacy_bearer_names_no_node_and_is_not_forwarded():
+    with _edge("b-legacy") as (c, seen):
+        assert c.get("/svc/notes/fn/list").status_code == 404
+    assert seen == [] and c.sent == []
+
+
+def test_a_bearer_that_is_not_a_node_token_is_forwarded_with_a_session():
+    """Only a node token is consumed at the edge; any other bearer rides along
+    to the upstream app as it always did."""
+    with _edge("b-other") as (c, _):
+        c.cookies.set(COOKIE_NAME, SESSION, domain="mesh.example")
         assert c.get("/svc/notes/fn/list").status_code == 200
-    assert c.sent[0]["authorization"] == f"Bearer {bearer}"
+    assert c.sent[0]["authorization"] == "Bearer b-other"
 
 
 def test_a_session_users_own_authorization_is_forwarded_as_before():
@@ -538,7 +454,7 @@ def test_a_session_users_own_authorization_is_forwarded_as_before():
 
 
 @pytest.mark.parametrize("bearer,forwarded", [
-    ("awmpt1.mira-token", False), ("b-legacy", True)])
+    ("awmpt1.mira-token", False), ("b-mira", False)])
 def test_a_node_token_is_not_forwarded_over_a_websocket(monkeypatch, bearer, forwarded):
     dialled: list = []
 

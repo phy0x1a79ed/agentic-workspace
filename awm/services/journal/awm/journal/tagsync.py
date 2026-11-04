@@ -42,11 +42,12 @@ def provisional_name(name: str, tag_id: str) -> str:
 # ---------------------------------------------------------------------------
 
 def peers() -> list[str]:
-    """The nodes this node keeps the vocabulary in step with: its domestic peers with an edge."""
+    """The nodes this node keeps the vocabulary in step with: the book peers it holds an edge to."""
     try:
-        from awm.config import peerbook
+        from awm.config import edges, peerbook
+        me = edges.here()
         return [r["name"] for r in peerbook.list_records()
-                if r.get("relation") == "domestic" and r.get("edge_url")]
+                if r["name"] != me and edges.reaches(me, r["name"])]
     except Exception as exc:  # noqa: BLE001 — no peer book means a node alone
         log.info("no peers to sync tags with: %s", exc)
         return []

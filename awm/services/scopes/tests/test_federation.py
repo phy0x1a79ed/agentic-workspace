@@ -1,4 +1,4 @@
-"""Federation surface of scopes: every verb declares an effect, and no read carries a federation category."""
+"""Federation surface of scopes: every verb declares an effect, and none carries a category."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ pytestmark = [pytest.mark.scopes]
 
 
 # ---------------------------------------------------------------------------
-# Every verb declares an effect; no scopes verb is open to a foreign caller
+# Every verb declares an effect, and none carries a category
 # ---------------------------------------------------------------------------
 
 def _functions():
@@ -30,5 +30,5 @@ def test_only_the_known_reads_are_reads():
     assert reads == READS
 
 
-def test_no_scopes_verb_is_open_to_a_foreign_caller():
-    assert {n for n, f in _functions().items() if f.get("category")} == set()
+def test_no_scopes_verb_carries_a_category():
+    assert {n for n, f in _functions().items() if "category" in f} == set()

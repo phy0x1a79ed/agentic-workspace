@@ -41,7 +41,7 @@ Seven answers per path:
   rather than a prefix, so a slot the relay never issued is turned away here
   before it costs a socket. See :mod:`awm.httpsfront.tether`.
 * ``BOARD`` — the federation board, the **third** verdict allowed with no edge
-  session. Callers are parties of the board, foreign swarms among them, and the
+  session. Callers are parties of the board, other swarms among them, and the
   board authenticates their own bearer, which the edge passes through unread.
   Like ``TETHER`` it is an allow-list of exact shapes (see
   :mod:`awm.httpsfront.board`), and a path inside the mount that no shape
@@ -58,23 +58,6 @@ from enum import Enum
 
 from awm.httpsfront import board, slices, tether, vault
 from awm.httpsfront.auth import is_machine_sub
-
-# The only paths a foreign node reaches on a mesh edge. "/invoke" is here
-# because the gateway's effect gate (catalog.dispatch) limits a foreign caller
-# to the read verbs its grants name; the edge does not repeat that check, so
-# this set must never grow past the paths that gate covers. The catalog's own
-# `peers` view is withheld from a foreign caller by the proxy, not by this set.
-FOREIGN_PATHS = frozenset({"/tools", "/invoke"})
-
-
-def foreign_allows(path: str) -> bool:
-    """Whether a foreign node may reach ``path``: ``FOREIGN_PATHS``, nothing else.
-
-    Everything else on a mesh edge — WebSockets, emit topics, files, the hub,
-    the vault, the landing page — answers 404 to a foreign node.
-    """
-    return path in FOREIGN_PATHS
-
 
 class Verdict(str, Enum):
     DENY = "deny"

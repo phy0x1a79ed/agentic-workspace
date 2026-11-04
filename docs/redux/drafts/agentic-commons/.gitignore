@@ -1,0 +1,3 @@
+# Each seats/<person>/ is that seat's own local git repository (users.md R128 item 3).
+/seats/*
+!/seats/.gitkeep

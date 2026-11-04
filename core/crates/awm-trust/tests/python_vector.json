@@ -1,0 +1,24 @@
+{
+ "public_key_b64": "A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=",
+ "payload": {
+  "session_id": "sé1",
+  "from": "cooperative",
+  "to": "trusted",
+  "note": "tab\tquote\" ünï"
+ },
+ "envelope": {
+  "grant": {
+   "grant_id": "g1",
+   "request_id": "r1",
+   "kind": "trust_raise",
+   "node": "home",
+   "subject": "sé1",
+   "payload_sha256": "447325acbd1b8d53204c347106d9a36ae4a158796d34f97e78e69c2297f7c77f",
+   "not_before": 100,
+   "not_after": 200,
+   "approved_by_device": "d"
+  },
+  "sig": "jITeoKsvQTRWggAUgWrsqBZAlE1mXnjDbUUgzluS0SHv0jSvTOfkyeTU9jEcel9V-Ig86gbjxFfXSo8k2UW3Dw",
+  "key_id": "56475aa75463474c"
+ }
+}

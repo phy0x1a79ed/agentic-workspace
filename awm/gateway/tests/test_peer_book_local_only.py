@@ -1,7 +1,7 @@
 """Only this node changes its own peer book.
 
 Every ``peer`` write verb refuses a caller that carries a peer identity (the
-legacy bare ``peer`` or ``peer:<node>``), domestic or foreign, on each door a
+legacy bare ``peer`` or ``peer:<node>``), with an edge here or not, on each door a
 caller can reach it through: the handler, ``catalog.dispatch`` and the HTTP
 route. The local CLI (no stamp) and local agents (their own stamps) keep working.
 """
@@ -16,7 +16,6 @@ import awm.config as cfg
 from awm.gateway import catalog, gateway_ops
 from awm.gateway.gateway_ops import (
     GATEWAY_OPERATIONS,
-    PeerGrantRequest,
     PeerJoinRequest,
     PeerSetRequest,
     bound_caller,
@@ -30,17 +29,14 @@ LOCAL_STAMPS = [None, "", "user:operator", "agent:awm/dev", "placed-1"]
 
 @pytest.fixture(autouse=True)
 def book(tmp_path, monkeypatch):
-    """A book with a domestic ``mira`` and a foreign ``envoy``; ``capella`` is absent."""
+    """A book with ``mira`` (an edge both ways, see ``fleet_edges``) and ``envoy``
+    (no edge); ``capella`` has an edge but is absent from the book."""
     monkeypatch.setattr(cfg, "AWM_DIR", tmp_path)
-    for var in ("AWM_NODE_ROLE", "AWM_SWARM"):
-        monkeypatch.delenv(var, raising=False)
     path = tmp_path / "state" / "peers.json"
     path.parent.mkdir(parents=True)
     path.write_text(json.dumps({
-        "mira": {"name": "mira", "edge_url": "https://mira:1", "ssh_alias": "mira",
-                 "relation": "domestic"},
-        "envoy": {"name": "envoy", "edge_url": "https://envoy:1", "ssh_alias": "envoy",
-                  "relation": "foreign", "swarm": "blue", "grants": []},
+        "mira": {"name": "mira", "edge_url": "https://mira:1", "ssh_alias": "mira"},
+        "envoy": {"name": "envoy", "edge_url": "https://envoy:1", "ssh_alias": "envoy"},
     }))
     return path
 
@@ -56,11 +52,7 @@ WRITES = {
     "add": (gateway_ops._op_peer_add,
             lambda: PeerJoinRequest(name="vega", edge_url="vega:1")),
     "set": (gateway_ops._op_peer_set,
-            lambda: PeerSetRequest(name="mira", role="station")),
-    "grant": (gateway_ops._op_peer_grant,
-              lambda: PeerGrantRequest(name="envoy", category="kb")),
-    "revoke": (gateway_ops._op_peer_revoke,
-               lambda: PeerGrantRequest(name="envoy", category="kb")),
+            lambda: PeerSetRequest(name="mira", public_key="")),
     "forget": (gateway_ops._op_peer_forget, lambda: "mira"),
 }
 
@@ -116,8 +108,8 @@ def test_the_peer_reads_stay_open_to_a_peer_identity():
 # The doors: catalog.dispatch (the /invoke path) and the generated HTTP routes
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize("stamp", ["peer", "peer:mira"])
-async def test_dispatch_refuses_a_domestic_or_legacy_peer(stamp, book):
+@pytest.mark.parametrize("stamp", ["peer:mira"])
+async def test_dispatch_refuses_an_edge_peer(stamp, book):
     before = book.read_text()
     with pytest.raises(PermissionError):
         await catalog.dispatch("peer_add", {"name": "vega", "edge_url": "vega:1"}, as_=stamp)
@@ -126,11 +118,12 @@ async def test_dispatch_refuses_a_domestic_or_legacy_peer(stamp, book):
     assert book.read_text() == before
 
 
-async def test_dispatch_refuses_a_foreign_peer_as_an_unknown_tool(book):
+@pytest.mark.parametrize("stamp", ["peer:envoy", "peer"])
+async def test_dispatch_refuses_a_peer_without_an_edge_as_an_unknown_tool(stamp, book):
     before = book.read_text()
     with pytest.raises(ValueError, match="Unknown tool"):
         await catalog.dispatch("peer_add", {"name": "vega", "edge_url": "vega:1"},
-                               as_="peer:envoy")
+                               as_=stamp)
     assert book.read_text() == before
 
 
@@ -150,8 +143,7 @@ def client(awm_workspace):
     book_path = awm_workspace["awm_dir"] / "state" / "peers.json"
     book_path.parent.mkdir(parents=True, exist_ok=True)
     book_path.write_text(json.dumps({
-        "mira": {"name": "mira", "edge_url": "https://mira:1", "ssh_alias": "mira",
-                 "relation": "domestic"}}))
+        "mira": {"name": "mira", "edge_url": "https://mira:1", "ssh_alias": "mira"}}))
     with TestClient(app, raise_server_exceptions=False) as c:
         yield c
 
@@ -162,11 +154,8 @@ def test_http_routes_refuse_a_peer_identity_with_403(client, stamp):
     body = {"name": "vega", "edge_url": "vega:1"}
     assert client.post("/peers", json=body, headers=headers).status_code == 403
     assert client.post("/peers/add", json=body, headers=headers).status_code == 403
-    assert client.post("/peers/set", json={"name": "mira", "role": "station"},
+    assert client.post("/peers/set", json={"name": "mira", "public_key": ""},
                        headers=headers).status_code == 403
-    grant = {"name": "mira", "category": "kb"}
-    assert client.post("/peers/grant", json=grant, headers=headers).status_code == 403
-    assert client.post("/peers/revoke", json=grant, headers=headers).status_code == 403
     assert client.delete("/peers/mira", headers=headers).status_code == 403
     assert client.get("/peers/mira", headers=headers).status_code == 200
 
@@ -185,9 +174,3 @@ def test_invoke_answers_403_for_a_peer_identity(client):
     ok = client.post("/invoke", json={"name": "peer_add",
                                       "args": {"name": "vega", "edge_url": "vega:1"}})
     assert ok.status_code == 200
-
-
-def test_a_read_verb_without_a_category_is_closed_to_every_grant():
-    """The goal reads declare no category, so no grant opens them to a foreign peer."""
-    assert catalog._allowed("read", None, frozenset({"journals", "kb"})) is False
-    assert catalog._allowed("read", "journals", frozenset({"journals"})) is True

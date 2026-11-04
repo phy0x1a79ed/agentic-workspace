@@ -32,8 +32,10 @@ INDEXED_TAGS = (kinds.JOURNAL, kinds.MESSAGE, kinds.PRECEDENT,
 _MARKS = ",".join("?" * len(INDEXED_TAGS))
 #: A WHERE fragment over ``scope_posts`` keeping the thread first posts the index holds.
 INDEXED_SQL = (f" AND thread_id IS NULL AND EXISTS (SELECT 1 FROM post_tags it WHERE"
-               f" it.post_id = scope_posts.id AND it.tag_id IN ({_MARKS}))")
-INDEXED_PARAMS = list(INDEXED_TAGS)
+               f" it.post_id = scope_posts.id AND it.tag_id IN ({_MARKS}))"
+               f" AND NOT EXISTS (SELECT 1 FROM post_tags ft WHERE"
+               f" ft.post_id = scope_posts.id AND ft.tag_id = ?)")
+INDEXED_PARAMS = [*INDEXED_TAGS, kinds.FOLDED]
 BACKFILL_EVERY_S = 6 * 3600
 
 _worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix="journal-index")

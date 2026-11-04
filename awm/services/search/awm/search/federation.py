@@ -1,8 +1,6 @@
-"""Asking other nodes: the named peers, or every domestic node, the same question, each answer apart.
+"""Asking other nodes: the named peers, or every node this one has an edge to, the same question, each answer apart.
 
-Every peer answers through its own gateway gate, which keeps only the sources
-that peer granted this node, so what a peer returns is already narrowed to its
-grants. A station runs no search and is never asked. A peer that fails, refuses
+A station runs no search and is never asked. A peer that fails, refuses
 or runs an older release shows as a per-peer status and never fails the search.
 """
 
@@ -14,6 +12,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from awm import config
+from awm.config import edges
 from awm.config.peertoken import node_label
 from awm.search.query import FLEET
 
@@ -70,10 +69,7 @@ def _reply(raw: Any) -> dict[str, Any]:
 
 
 def _origin(record: dict[str, Any]) -> dict[str, str]:
-    swarm = record.get("swarm")
-    if record.get("relation") != "domestic" and swarm == config.node_swarm():
-        swarm = "?"  # the book fills a missing swarm with ours; a foreign peer never shares it
-    return {"node": record["name"], "swarm": swarm}
+    return {"node": record["name"]}
 
 
 def _hit(raw: Any, origin: dict[str, str]) -> dict[str, Any] | None:
@@ -86,7 +82,7 @@ def _hit(raw: Any, origin: dict[str, str]) -> dict[str, Any] | None:
 
 async def _ask_one(peers: Peers, record: dict[str, Any], args: dict[str, Any], limit: int) -> PeerResult:
     name = record["name"]
-    if record.get("role") == "station":
+    if edges.is_station(name):
         return PeerResult(name, [], {"status": "station"})
     try:
         raw = await asyncio.wait_for(peers.invoke(name, PEER_TOOL, args, PEER_TIMEOUT_S),
@@ -95,11 +91,8 @@ async def _ask_one(peers: Peers, record: dict[str, Any], args: dict[str, Any], l
     except (asyncio.TimeoutError, TimeoutError):
         return PeerResult(name, [], {"status": "error", "error": f"timeout after {PEER_TIMEOUT_S:g}s"})
     except Exception as exc:  # noqa: BLE001 — a peer's failure is reported, never raised
-        if _no_tool(exc) and record.get("relation") == "domestic":
-            return PeerResult(name, [], {"status": "no-search", "detail": "its release has no search tool"})
         if _no_tool(exc):
-            return PeerResult(name, [], {"status": "unsupported",
-                                         "detail": "no search tool there, or no source granted to this node"})
+            return PeerResult(name, [], {"status": "no-search", "detail": "its release has no search tool"})
         return PeerResult(name, [], {"status": "error", "error": _describe(exc)})
     origin = _origin(record)
     hits = [h for h in (_hit(x, origin) for x in reply["hits"]) if h][:limit]
@@ -107,7 +100,7 @@ async def _ask_one(peers: Peers, record: dict[str, Any], args: dict[str, Any], l
 
 
 def _served(sources: Any) -> list[str]:
-    """The sources a peer searched. A named source it does not serve, or did not grant, comes back absent."""
+    """The sources a peer searched. A named source it does not serve comes back absent."""
     if not isinstance(sources, dict):
         return []
     return sorted(n for n, v in sources.items() if not (isinstance(v, dict) and v.get("status") == "absent"))
@@ -116,17 +109,21 @@ def _served(sources: Any) -> list[str]:
 async def ask(peers: Peers, wanted: list[str] | str, args: dict[str, Any],
               limit: int) -> list[PeerResult]:
     """One result per peer asked. ``wanted`` names the peers; ``"fleet"``, alone or among the names, stands for
-    every domestic one."""
+    every book peer this node has an edge to."""
     book = {r["name"]: r for r in peers.records()}
     named = [wanted] if isinstance(wanted, str) else wanted
     names: list[str] = []
     for name in named:
-        expanded = (sorted(n for n, r in book.items() if r.get("relation", "domestic") == "domestic")
+        expanded = (sorted(n for n in book if edges.reaches(edges.here(), n))
                     if name == FLEET else [name])
         names += [n for n in expanded if n not in names]
+    here = edges.here()
     unknown = [PeerResult(n, [], {"status": "error", "error": "not in the peer book"})
                for n in names if n not in book]
-    asked = await asyncio.gather(*(_ask_one(peers, book[n], args, limit) for n in names if n in book))
+    unknown += [PeerResult(n, [], {"status": "error", "error": f"no edge from {here} to {n}"})
+                for n in names if n in book and not edges.reaches(here, n)]
+    asked = await asyncio.gather(*(_ask_one(peers, book[n], args, limit)
+                                   for n in names if n in book and edges.reaches(here, n)))
     return [*asked, *unknown]
 
 

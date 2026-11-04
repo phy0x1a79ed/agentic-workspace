@@ -1,4 +1,4 @@
-"""Read side of the peer book (``<AWM_DIR>/state/peers.json``) and node role/swarm.
+"""Read side of the peer book (``<AWM_DIR>/state/peers.json``).
 
 The gateway's ``peers`` module owns writes. This module is the only reader: it
 loads the JSON and normalises each entry to the full record shape, so older
@@ -17,54 +17,29 @@ from typing import Any
 
 import awm.config as _config
 
-RELATIONS = ("domestic", "foreign")
-ROLES = ("fleet", "station")
-#: Grants the book already holds for peers on the previous release. They name
-#: archive sources, and stay grantable whether or not a service declares them.
-LEGACY_GRANTS = ("journals", "kb")
-
-NODE_ROLE_ENV = "AWM_NODE_ROLE"
-NODE_SWARM_ENV = "AWM_SWARM"
-DEFAULT_SWARM = "tony"
-
 OPERATOR_DM_ACCOUNT_ENV = "AWM_OPERATOR_DM_ACCOUNT"
 OPERATOR_DM_CHANNEL_ENV = "AWM_OPERATOR_DM_CHANNEL"
 #: The name ``reporting`` read before the operator DM was one node setting.
 LEGACY_OPERATOR_DM_CHANNEL_ENV = "AWM_REPORTING_DM_CHANNEL"
 DEFAULT_OPERATOR_DM_ACCOUNT = "discord-bot"
-#: Tony's DM with the bot. Only a node of the default swarm falls back to it:
-#: a foreign swarm runs this same code, and its alerts must not reach Tony.
+#: Tony's DM with the bot, the channel when no setting names one.
 DEFAULT_SWARM_OPERATOR_DM = "dm:188743359983124480"
 
-
-def node_role() -> str:
-    """This node's role, ``fleet`` or ``station`` (``AWM_NODE_ROLE``; default ``fleet``)."""
-    role = (os.environ.get(NODE_ROLE_ENV) or "").strip() or "fleet"
-    if role not in ROLES:
-        raise ValueError(f"{NODE_ROLE_ENV}={role!r}: expected one of {ROLES}")
-    return role
+#: Trust fields the book held before the edge list (fleet.md R86). A record
+#: read back drops them, so the next write leaves them out of the file.
+_RETIRED_FIELDS = ("relation", "swarm", "principal", "role", "grants")
 
 
-def node_swarm() -> str:
-    """This node's swarm name (``AWM_SWARM``; default ``tony``)."""
-    return (os.environ.get(NODE_SWARM_ENV) or "").strip() or DEFAULT_SWARM
-
-
-def operator_dm() -> tuple[str, str] | None:
-    """The social account and channel that reach this node's operator, or None.
+def operator_dm() -> tuple[str, str]:
+    """The social account and channel that reach this node's operator.
 
     ``AWM_OPERATOR_DM_CHANNEL`` (else ``AWM_REPORTING_DM_CHANNEL``) names the
-    channel. Unset, a node of the default swarm uses Tony's DM and any other
-    swarm has no operator DM.
+    channel; unset, it is Tony's DM.
     """
     account = (os.environ.get(OPERATOR_DM_ACCOUNT_ENV) or "").strip() or DEFAULT_OPERATOR_DM_ACCOUNT
     channel = ((os.environ.get(OPERATOR_DM_CHANNEL_ENV) or "").strip()
                or (os.environ.get(LEGACY_OPERATOR_DM_CHANNEL_ENV) or "").strip())
-    if channel:
-        return account, channel
-    if node_swarm() == DEFAULT_SWARM:
-        return account, DEFAULT_SWARM_OPERATOR_DM
-    return None
+    return account, channel or DEFAULT_SWARM_OPERATOR_DM
 
 
 def peers_file() -> Path:
@@ -95,19 +70,13 @@ def load_book(*, strict: bool = False) -> dict[str, Any]:
 
 
 def _normalise(name: str, entry: dict[str, Any]) -> dict[str, Any]:
-    grants = entry.get("grants")
-    record = dict(entry)
+    record = {k: v for k, v in entry.items() if k not in _RETIRED_FIELDS}
     record.update(
         name=name,
         edge_url=entry.get("edge_url"),
         ssh_alias=entry.get("ssh_alias") or name,
-        relation=entry.get("relation") or "domestic",
-        swarm=entry.get("swarm") or node_swarm(),
-        principal=entry.get("principal"),
-        role=entry.get("role") or "fleet",
         public_key=entry.get("public_key"),
         key_fingerprint=entry.get("key_fingerprint"),
-        grants=list(grants) if isinstance(grants, (list, tuple)) else [],
     )
     return record
 
@@ -146,12 +115,6 @@ def _fingerprint(public_key_b64: str) -> str:
         digest = hashlib.sha256(raw).digest()
         return "SHA256:" + base64.b64encode(digest).decode().rstrip("=")
     return fingerprint(key)
-
-
-def peer_relation(name: str) -> str | None:
-    """``domestic`` or ``foreign`` for a known peer, ``None`` for an unknown one."""
-    record = peer_record(name)
-    return record["relation"] if record else None
 
 
 def caller_peer(as_: str | None) -> str | None:

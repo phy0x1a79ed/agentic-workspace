@@ -16,13 +16,54 @@ import logging
 from typing import Any
 
 from awm.gatewayclient import sessions as caller
-from awm.journal import channel, inbox, kinds, owners, private, sessions, tagsync
+from awm.journal import bounds, channel, inbox, kinds, owners, private, sessions, tagsync, versions
 from awm.journal import tags as tagmod
 
 log = logging.getLogger("awm.journal.posts")
 
 
 POST_MANIFEST_FUNCTIONS = [
+    {
+        "name": "edit",
+        "tool": "journal_edit",
+        "effect": "write",
+        "description": (
+            "Correct a post in place. Give old and new to replace one passage, or body for the "
+            "whole text. The journal keeps every earlier version with its diff; reads show "
+            "the latest. Use this instead of posting an addendum."
+        ),
+        "params": [
+            {"name": "post_id", "type": "string", "required": True},
+            {"name": "reason", "type": "string", "required": False},
+            {"name": "old", "type": "string", "required": False,
+             "description": "A passage that occurs exactly once in the post."},
+            {"name": "new", "type": "string", "required": False},
+            {"name": "body", "type": "string", "required": False,
+             "description": "The whole new text. Pass this argument LAST."},
+        ],
+    },
+    {
+        "name": "history",
+        "tool": "journal_history",
+        "effect": "read",
+        "description": "Every version of a post, oldest first, each with its diff from the one before.",
+        "params": [{"name": "post_id", "type": "string", "required": True}],
+    },
+    {
+        "name": "addenda",
+        "tool": "journal_addenda",
+        "effect": "write",
+        "description": (
+            "List the posts that open as an addendum or correction to an earlier post of the "
+            "same scope, with the post each corrects. With apply, fold each into its target as "
+            "a new version and retire the addendum from reads."
+        ),
+        "params": [
+            {"name": "project", "type": "string", "required": False},
+            {"name": "scope", "type": "string", "required": False},
+            {"name": "apply", "type": "boolean", "required": False},
+        ],
+    },
     {
         "name": "post",
         "tool": "journal_post",
@@ -73,7 +114,6 @@ POST_MANIFEST_FUNCTIONS = [
         "tool": "journal_fetch",
         "effect": "read",
         "timeout": 60,
-        "category": "journals",
         "description": (
             "Fetch or search a scope's posts — messages and journal entries. "
             "Pass project and scope for one channel (a literal scope needs its "
@@ -221,18 +261,10 @@ def refuse_clashed(as_: str | None) -> None:
                               "between them wait until an agent renames the newer tag")
 
 
-def peer_gate(as_: str | None) -> str | None:
-    """The tag a caller's every read must carry, or None for no such limit.
-
-    Today's rule: a foreign peer reads journal posts only. fleet.md R107 item 3
-    replaces it with the trust lane's bounds, and then no tag decides read access.
-    """
-    return kinds.JOURNAL if channel.is_foreign(as_) else None
-
-
-def _visible(as_: str | None):
-    gate = peer_gate(as_)
-    return lambda p: (gate is None or p.has(gate)) and not private.hides_post(as_, p)
+def _visible(args: dict, as_: str | None):
+    """Whether this caller may see a post: its trust bound reaches the channel, and the channel is not private to it."""
+    bound, here = bounds.of(args, as_), bounds.edges.here()
+    return lambda p: bound.may_read(here, p.project, p.scope) and not private.hides_post(as_, p)
 
 
 def _handle_post(args: dict, as_: str | None = None) -> dict:
@@ -242,9 +274,10 @@ def _handle_post(args: dict, as_: str | None = None) -> dict:
                                       tag_ids)
     targets = channel.reply_targets(args.get("reply_to"))
     targets += [c for c in cited if c not in targets]
+    visible = _visible(args, as_)
     for t in targets:
         target = channel.get_post(t)
-        if target is None or not _visible(as_)(target):
+        if target is None or not visible(target):
             raise ValueError(f"no post {t} to reply to")
     if targets and kinds.JOURNAL not in tag_ids:
         parent = channel.get_post(targets[0])
@@ -252,6 +285,7 @@ def _handle_post(args: dict, as_: str | None = None) -> dict:
         project, scope = root.project, root.scope
     if not project or not scope:
         raise ValueError("a post needs project and scope, or a reply_to to comment on")
+    bounds.write(bounds.of(args, as_), project, scope)
     if private.hides(as_, project, scope):
         raise ValueError(f"no scope {project}/{scope}")
     post = channel.post(
@@ -297,34 +331,30 @@ def _channel_project(project: Any, scope: Any) -> Any:
 
 def _handle_fetch(args: dict, as_: str | None = None) -> dict:
     refuse_clashed(as_)
-    gate = peer_gate(as_)
-    foreign = gate is not None
+    bound = bounds.of(args, as_)
+    remote = channel.edge_origin(as_) is not None
     expr = tagmod.kind_filter(args.get("kind"), args.get("tags"))
-    if gate is not None:
-        terms = tagmod.parse_filter(expr)
-        for neg, name in terms:
-            tag = tagmod.by_name(name)
-            if not neg and tag is not None and tag.id in tagmod.TYPE_TAGS and tag.id != gate:
-                raise PermissionError("peers may read journal posts only")
-        expr = [*(("!" if neg else "") + n for neg, n in terms), tagmod.get(gate).name]
-    visible = _visible(as_)
+    visible = _visible(args, as_)
     post_id = args.get("post_id")
+    bound = bounds.of(args, as_)
     if post_id:
         p = channel.get_post(post_id)
         if p is not None and not visible(p):
             p = None  # answer as for a post that does not exist, so ids cannot be probed
         if p is None:
             return {"posts": [], "total": 0}
-        if not foreign:
+        if not remote:
             _note_reads(args, [p])
         thread = channel.nest(p, channel.thread_posts(p.root), visible)
         p.comments = _count(thread)
         out = {"posts": [p.to_dict()], "total": 1, "thread": thread}
         return out
     journal_first = tagmod.parse_filter(expr) == [(False, tagmod.get(kinds.JOURNAL).name)]
+    project, scope = bounds.narrow(
+        bound, _channel_project(args.get("project"), args.get("scope")), args.get("scope"))
     common = dict(
-        project=_channel_project(args.get("project"), args.get("scope")),
-        scope=args.get("scope"),
+        project=project,
+        scope=scope,
         tags=expr,
         author=args.get("author"),
         limit=int(args.get("limit", 50)),
@@ -336,12 +366,12 @@ def _handle_fetch(args: dict, as_: str | None = None) -> dict:
     degraded = semantic = None
     if args.get("query"):
         posts, degraded, semantic = channel.search(query=args["query"], **common)
-        if foreign:
+        if remote:
             for p in posts:
                 p.comments = _count(channel.nest(p, channel.thread_posts(p.id), visible))
     else:
         posts = channel.fetch(**common)
-    if not foreign:
+    if not remote:
         _note_reads(args, posts)
     out = {"posts": [p.to_dict() for p in posts], "total": len(posts)}
     if semantic:
@@ -357,7 +387,7 @@ def _count(tree: list[dict]) -> int:
 
 def _handle_note_read(args: dict, as_: str | None = None) -> dict:
     post = channel.get_post(str(args["post_id"]))
-    if post is None or not _visible(as_)(post):
+    if post is None or not _visible(args, as_)(post):
         return {"ok": True, "recorded": 0}
     return {"ok": True, "recorded": sessions.record_reads(
         _caller_session(args.get("_caller_pid")), [post])}
@@ -372,7 +402,7 @@ def _note_reads(args: dict, posts: list) -> None:
 
 
 def _handle_reads(args: dict, as_: str | None = None) -> dict:
-    if channel.is_foreign(as_):
+    if channel.edge_origin(as_):
         raise PermissionError("a session's reads stay on its own node")
     named = args.get("session")
     session = sessions.r9(named) if named else _caller_session(args.get("_caller_pid"))
@@ -384,6 +414,7 @@ def _handle_reads(args: dict, as_: str | None = None) -> dict:
 
 
 def _handle_subscribe(args: dict, as_: str | None = None) -> dict:
+    bounds.write(bounds.of(args, as_), args["project"], args["scope"])
     if private.hides(as_, args["project"], args["scope"]):
         raise ValueError(f"no scope {args['project']}/{args['scope']}")
     sub = channel.subscribe(
@@ -393,14 +424,16 @@ def _handle_subscribe(args: dict, as_: str | None = None) -> dict:
     return {"subscriber": sub.to_dict()}
 
 
-def _handle_unsubscribe(args: dict) -> dict:
+def _handle_unsubscribe(args: dict, as_: str | None = None) -> dict:
+    bounds.write(bounds.of(args, as_), args["project"], args["scope"])
     removed = channel.unsubscribe(args["project"], args["scope"], args["guest"])
     return {"removed": removed}
 
 
 def _handle_inbox(args: dict, as_: str | None = None) -> dict:
     project, scope = args["project"], args["scope"]
-    if channel.is_foreign(as_) or private.hides(as_, project, scope):
+    bounds.read(bounds.of(args, as_), project, scope)
+    if channel.edge_origin(as_) or private.hides(as_, project, scope):
         raise ValueError(f"no scope {project}/{scope}")
     owners.require_scope(project, scope)
     return inbox.digest(project, scope, tags=args.get("tags"), kind=args.get("kind"),
@@ -411,14 +444,52 @@ def _handle_inbox(args: dict, as_: str | None = None) -> dict:
 
 def _handle_ack(args: dict, as_: str | None = None) -> dict:
     project, scope = args["project"], args["scope"]
-    if channel.is_foreign(as_) or private.hides(as_, project, scope):
+    bounds.write(bounds.of(args, as_), project, scope)
+    if channel.edge_origin(as_) or private.hides(as_, project, scope):
         raise ValueError(f"no scope {project}/{scope}")
     owners.require_scope(project, scope)
     by = _with_session({}, args.get("_caller_pid")).get("session") or as_
     return inbox.ack(project, scope, through=args.get("through"), by=by)
 
 
+def _post_for_write(args: dict, as_: str | None):
+    p = channel.get_post(args["post_id"])
+    if p is None or private.hides(as_, p.project, p.scope):
+        raise ValueError(f"no post {args['post_id']}")
+    bounds.write(bounds.of(args, as_), p.project, p.scope)
+    return p
+
+
+def _editor(args: dict, as_: str | None) -> str:
+    return channel.edge_origin(as_) or str(args.get("editor") or args.get("_caller_scope") or "system")
+
+
+def _handle_edit(args: dict, as_: str | None = None) -> dict:
+    _post_for_write(args, as_)
+    return versions.edit(args["post_id"], editor=_editor(args, as_), body=args.get("body"),
+                         old=args.get("old"), new=args.get("new"), reason=str(args.get("reason") or ""))
+
+
+def _handle_history(args: dict, as_: str | None = None) -> dict:
+    p = channel.get_post(args["post_id"])
+    if p is None or private.hides(as_, p.project, p.scope):
+        raise ValueError(f"no post {args['post_id']}")
+    bounds.read(bounds.of(args, as_), p.project, p.scope)
+    return versions.history(args["post_id"])
+
+
+def _handle_addenda(args: dict, as_: str | None = None) -> dict:
+    bound = bounds.of(args, as_)
+    if bound.write_scope is not None or as_:
+        raise bounds.Refused("only a trusted session on this node sweeps the addenda")
+    return versions.sweep(args.get("project"), args.get("scope"), apply=bool(args.get("apply")),
+                          editor=_editor(args, as_))
+
+
 POST_HANDLERS = {
+    "edit": _handle_edit,
+    "history": _handle_history,
+    "addenda": _handle_addenda,
     "post": _handle_post,
     "fetch": _handle_fetch,
     "reads": _handle_reads,

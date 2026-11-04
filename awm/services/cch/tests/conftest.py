@@ -106,3 +106,23 @@ def keep_calls(monkeypatch):
     monkeypatch.setattr(lifecycle.gatewayclient, "call", fake)
     return type("KeepCalls", (), {"calls": calls, "answer": answer})
 
+
+@pytest.fixture(autouse=True)
+def fleet(tmp_path, monkeypatch):
+    """Point the edge list at a temporary file: absent, an empty fleet, until written.
+
+    Call it with ``nodes`` ({name: role}) and ``edges`` ({src: [dst, ...]}).
+    """
+    import yaml
+
+    path = tmp_path / "edges.yml"
+    monkeypatch.setenv("AWM_EDGES_FILE", str(path))
+
+    def write(nodes: dict[str, str], edges: dict[str, list[str]] | None = None) -> Path:
+        path.write_text(yaml.safe_dump({
+            "nodes": {n: {"role": r} for n, r in nodes.items()},
+            "edges": {s: {d: "lan" for d in ds} for s, ds in (edges or {}).items()},
+        }))
+        return path
+
+    return write

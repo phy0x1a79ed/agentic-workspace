@@ -195,10 +195,11 @@ def test_seeding_is_refused_when_no_daemon_is_running(box, monkeypatch, tmp_path
     assert "no claude code daemon" in (seed.precondition() or "")
 
 
-def test_seeding_is_refused_on_a_station(box, monkeypatch):
+def test_seeding_is_refused_on_a_station(box, monkeypatch, fleet):
     from awm.cch import seed
 
-    monkeypatch.setenv("AWM_NODE_ROLE", "station")
+    monkeypatch.setenv("AWM_NODE_NAME", "testnode")
+    fleet({"testnode": "station"})
     assert "station" in (seed.precondition() or "")
 
 

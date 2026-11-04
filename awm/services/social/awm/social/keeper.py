@@ -141,7 +141,20 @@ def _chats_text(seat: SeatConfig) -> str:
     return f"the chats {', '.join(seat.channels)} of account {seat.account}"
 
 
-def launch_spec(seat: SeatConfig, platform: str, keeps_history: bool, name: str) -> dict:
+def seat_level(seat: SeatConfig, account: Any) -> str:  # noqa: ANN401
+    """The trust level a kept seat's agent starts at: the lowest level of the
+    chats it holds (``channels.md`` R70, ``fleet.md`` R103). A seat of every
+    chat holds untrusted or cooperative chats beside any trusted one."""
+    from awm.social.seats import seat_trust
+    if seat.every_chat or account is None:
+        return getattr(account, "trust", None) or "untrusted"
+    order = ("untrusted", "cooperative", "trusted")
+    chats = seat.channels or (seat.channel,)
+    return min((seat_trust(account, c) for c in chats), key=order.index)
+
+
+def launch_spec(seat: SeatConfig, platform: str, keeps_history: bool, name: str,
+                level: str = "untrusted") -> dict:
     """The `cx start` arguments of a seat's agent.
 
     Everything the seat must keep sits in the system prompt, which a compaction
@@ -166,7 +179,8 @@ def launch_spec(seat: SeatConfig, platform: str, keeps_history: bool, name: str)
         "session ends, and starts a new one only when this brief changes.",
         seat.brief,
         f"Each new message in the chat is typed into your prompt as one line: "
-        f"'{platform} from <sender> [channel=<id> message_id=<id>]: <text>'. A "
+        f"'{platform} [{level}] from <sender> [channel=<id> message_id=<id>]: "
+        "<text>'. The bracket is the chat's trust level. A "
         "thread reply carries ' ↳<thread>' after the sender, and a bot sender "
         "carries ' [bot]'. Nothing else delivers them, so do not run a Monitor "
         "or poll.",
@@ -186,7 +200,7 @@ def launch_spec(seat: SeatConfig, platform: str, keeps_history: bool, name: str)
         "project": seat.project, "scope": seat.scope, "name": name,
         "system_prompt": system_prompt, "prompt": prompt,
         "autocompact": seat.compact_at + AUTOCOMPACT_RESERVE,
-        "remote_control": True, "pin": True,
+        "remote_control": True, "pin": True, "trust": level,
     }
     if seat.model:
         spec["model"] = seat.model
@@ -376,7 +390,7 @@ class CxUnavailable(RuntimeError):
 
 
 class Cx:
-    """`cx list`, `start`, `resume` and `adopt` on a node, local or a domestic peer."""
+    """`cx list`, `start`, `resume` and `adopt` on a node, local or a node this node has an edge to."""
 
     async def _call(self, node: str, fn: str, args: dict, timeout: float) -> Any:
         if node == config.node_name():
@@ -449,8 +463,10 @@ class Keeper:
                  clock: Callable[[], float] = time.time,
                  push: Push | None = None, list_chats: ListChats | None = None,
                  alert: Alert | None = None, witnesses: list[str] = (),
-                 online: Callable[[], Awaitable[bool]] | None = None) -> None:
+                 online: Callable[[], Awaitable[bool]] | None = None,
+                 account: Callable[[str], Any] = lambda _name: None) -> None:
         self.dao = dao
+        self._account = account
         self.witnesses = list(witnesses)
         self.seats = [s for s in seats if s.node == config.node_name()]
         self._online = online
@@ -589,7 +605,8 @@ class Keeper:
         reply = await self.cx.adopt(seat.node, job)
         if not reply.get("ok") and "already has a lineage record" not in str(reply.get("reason")):
             return {"ok": False, "reason": reply.get("reason") or repr(reply)}
-        spec = launch_spec(seat, *described, await self._name(seat, described[0]))
+        spec = launch_spec(seat, *described, await self._name(seat, described[0]),
+                           level=seat_level(seat, self._account(seat.account)))
         self.dao.set_keeper(seat.name, seat.node, job, spec_hash({**spec, "node": seat.node}))
         self.dao.keeper_seen(seat.name, self._now())
         self._states[seat.name] = SeatState()
@@ -704,7 +721,8 @@ class Keeper:
             return
         platform, keeps_history = described
         chats = await self._chats(seat)
-        spec = launch_spec(seat, platform, keeps_history, await self._name(seat, platform))
+        spec = launch_spec(seat, platform, keeps_history, await self._name(seat, platform),
+                           level=seat_level(seat, self._account(seat.account)))
         want = spec_hash({**spec, "node": seat.node})
         rec = self.dao.keeper(seat.name)
         if rec and rec["node"] != seat.node:

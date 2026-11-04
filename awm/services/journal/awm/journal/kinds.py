@@ -12,6 +12,7 @@ BRIEF = "builtin:brief"
 CLOSED = "builtin:closed"
 SUPERSEDED = "builtin:superseded"
 PRECEDENT = "builtin:precedent"
+FOLDED = "builtin:folded"
 
 BUILTINS: dict[str, tuple[str, str]] = {
     MESSAGE: ("message", "A post by a user or by another scope or agent."),
@@ -21,6 +22,8 @@ BUILTINS: dict[str, tuple[str, str]] = {
     SUPERSEDED: ("superseded", "A later post that replies to this one replaces it."),
     PRECEDENT: ("precedent", "A decision Tony made or overrode that holds beyond the session; "
                              "its body holds the context, the question and the decision."),
+    FOLDED: ("folded", "An addendum folded into the post it corrects, as a new version of that post. "
+                       "Reads skip it unless the tag filter names it."),
 }
 
 #: The tags that stand for what ``kind`` said.

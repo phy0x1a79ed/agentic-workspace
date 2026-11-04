@@ -119,9 +119,9 @@ def test_request_human_takes_a_kind_and_old_arguments_still_pick_one():
 
 
 
-async def test_status_when_off_says_why_and_touches_nothing(monkeypatch):
+async def test_status_when_off_says_why_and_touches_nothing(monkeypatch, fleet):
     monkeypatch.setattr(hub_adapter, "RUNTIME", None)
-    monkeypatch.setenv("AWM_NODE_ROLE", "station")
+    fleet({"testnode": "station"})
     out = await hub_adapter.status({})
     assert out["enabled"] is False
     assert "station" in out["reason"]
@@ -135,12 +135,13 @@ async def test_status_when_off_says_why_and_touches_nothing(monkeypatch):
 
 
 
-async def test_status_reports_the_cursor_counts_and_board_connection(runtime, queue):
+async def test_status_reports_the_cursor_counts_and_board_connection(runtime, queue, fleet):
+    fleet({"testnode": "homebase"})
     queue.enqueue(make_card())
     queue.set_cursor(12)
     out = await hub_adapter.status({})
     assert out["enabled"] is True
-    assert (out["role"], out["swarm"], out["cursor"]) == ("fleet", "tony", 12)
+    assert (out["role"], out["swarm"], out["cursor"]) == ("homebase", "tony", 12)
     assert out["counts"]["proposed"] == 1 and out["board"] == "connected"
     assert out["reconcile"]["running"] is False
     assert not {"sessions", "representative_alive", "secretary_alive"} & set(out)
@@ -208,7 +209,7 @@ async def test_ops_post_keeps_one_managed_note_per_kind_and_node_under_a_private
     assert tri.notes[ops]["title"] == "Ops" and tri.parents(ops) == [awm] and tri.notes[ops]["labels"] == {"swarmOps": ""}
 
 
-async def test_ops_post_refuses_bad_arguments_and_foreign_or_edge_callers(monkeypatch):
+async def test_ops_post_refuses_bad_arguments_and_callers_with_no_edge_here(monkeypatch, fleet):
     from awm.reporting.swarmboard import SwarmBoard
     from stubs import FakeTrilium
 
@@ -220,10 +221,10 @@ async def test_ops_post_refuses_bad_arguments_and_foreign_or_edge_callers(monkey
     assert (await hub_adapter.ops_post({**good, "body": " "}))["ok"] is False
     assert (await hub_adapter.ops_post({**good, "kind": "two\nlines"}))["ok"] is False
     assert (await hub_adapter.ops_post(good, as_="user:tony"))["ok"] is False
-    monkeypatch.setattr(hub_adapter, "caller_peer", lambda as_: "mira")
-    monkeypatch.setattr(hub_adapter, "peer_relation", lambda node: "foreign")
+    assert (await hub_adapter.ops_post(good, as_="peer"))["ok"] is False
+    fleet({"testnode": "homebase", "mira": "laptop"})
     assert (await hub_adapter.ops_post(good, as_="peer:mira"))["ok"] is False
-    monkeypatch.setattr(hub_adapter, "peer_relation", lambda node: "domestic")
+    fleet({"testnode": "homebase", "mira": "laptop"}, {"mira": ["testnode"]})
     assert (await hub_adapter.ops_post(good, as_="peer:mira"))["ok"] is True
 
 

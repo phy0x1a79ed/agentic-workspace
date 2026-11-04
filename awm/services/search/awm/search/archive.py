@@ -96,7 +96,7 @@ class Archive:
         self._topics: dict[tuple[str, str], tuple[SupervisedSubscription, asyncio.Task]] = {}
 
     def origin(self) -> dict[str, str]:
-        return {"node": config.node_name(), "swarm": config.node_swarm()}
+        return {"node": config.node_name()}
 
     async def _index(self, fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
         """Run an index write on the worker, so embedding never queues behind itself or a query."""
@@ -246,17 +246,13 @@ class Archive:
 
     # -- reading ----------------------------------------------------------
 
-    def _visible(self, rows: list[dict[str, Any]], grants: frozenset[str] | None) -> list[dict[str, Any]]:
-        return [r for r in rows if grants is None or r["name"] in grants]
+    async def _rows(self, hidden: Sequence[dict] | None) -> list[dict[str, Any]]:
+        """The stored sources, counting only the documents this caller may see."""
+        return await asyncio.to_thread(_with_conn, store.source_rows, index.veil(hidden))
 
-    async def _rows(self, grants: frozenset[str] | None, hidden: Sequence[dict] | None) -> list[dict[str, Any]]:
-        """The stored sources this caller may see, counting only the documents it may see."""
-        return self._visible(await asyncio.to_thread(_with_conn, store.source_rows, index.veil(hidden)), grants)
-
-    async def sources_view(self, grants: frozenset[str] | None = None,
-                           hidden: Sequence[dict] | None = ()) -> dict[str, Any]:
+    async def sources_view(self, hidden: Sequence[dict] | None = ()) -> dict[str, Any]:
         await self._refresh_if_stale()
-        rows = await self._rows(grants, hidden)
+        rows = await self._rows(hidden)
         out = []
         for r in rows:
             spec = r["spec"]
@@ -268,23 +264,18 @@ class Archive:
             out.append(entry)
         return {"sources": out}
 
-    async def status_view(self, grants: frozenset[str] | None = None,
-                          hidden: Sequence[dict] | None = ()) -> dict[str, Any]:
+    async def status_view(self, hidden: Sequence[dict] | None = ()) -> dict[str, Any]:
         await self._refresh_if_stale()
-        rows = await self._rows(grants, hidden)
+        rows = await self._rows(hidden)
         counts = {r["name"]: r["count"] for r in rows if r["mode"] == "index"}
-        out: dict[str, Any] = {"documents": sum(counts.values()), "sources": counts}
-        if grants is None:
-            out.update({
+        return {"documents": sum(counts.values()), "sources": counts,
                 "semantic": engine.probe(),
                 "registry": {"refreshed": store.iso(self.registry_at), "error": self.registry_error},
                 "sweeping": sorted(self._sweeping),
-                "subscriptions": [sub.health() for sub, _ in self._topics.values()]})
-        return out
+                "subscriptions": [sub.health() for sub, _ in self._topics.values()]}
 
-    async def get(self, source: str, doc_id: str, grants: frozenset[str] | None = None,
-                  hidden: Sequence[dict] | None = ()) -> dict[str, Any]:
-        rows = {r["name"]: r for r in await self._rows(grants, hidden)}
+    async def get(self, source: str, doc_id: str, hidden: Sequence[dict] | None = ()) -> dict[str, Any]:
+        rows = {r["name"]: r for r in await self._rows(hidden)}
         row = rows.get(source)
         if row is None:
             raise ValueError(f"no source {source!r}")
@@ -327,7 +318,7 @@ class Archive:
     async def query(self, q: Query) -> dict[str, Any]:
         """One ranked list over the picked sources and peers, plus a status for every source and peer asked."""
         await self._refresh_if_stale()
-        rows = {r["name"]: r for r in await self._rows(q.grants, q.hidden)}
+        rows = {r["name"]: r for r in await self._rows(q.hidden)}
         statuses: dict[str, Any] = {}
         if not q.local:
             rows = {}

@@ -38,6 +38,7 @@ from awm.config import (
     WORKSPACE_ROOT,
     IDLE_SHUTDOWN_SECONDS,
 )
+from awm.config import edges
 from awm.config import modes as session_modes
 from awm.gateway import catalog, filehop, isolated, mcp_caller, peer_catalog, usage_log
 from awm.gateway.gateway_ops import GATEWAY_OPERATIONS, bound_caller
@@ -331,8 +332,6 @@ async def lifespan(app: FastAPI):
             reconcile_journaled_services,
             self_heal_loop,
         )
-        from awm.gateway.peers import warn_station_fleet_services
-        warn_station_fleet_services()
         await reconcile_journaled_services()
         await bootstrap_discovered_services()
         # 2b. Register discovered page bundles (/ui/<name>). Pages hold no
@@ -478,16 +477,15 @@ def list_tools_endpoint(request: Request, view: str | None = None, peers: int = 
     consumer of the plain view changes shape. Still sync: the peer data comes from
     a background snapshot, so this route never waits on a peer even cold.
 
-    A foreign caller (the edge stamps ``X-Awm-As: peer:<node>``) sees only the
-    domains and verbs it may call, whichever view it asks for; ``peers`` is
-    ignored for it.
+    A peer node with no edge to this node (``X-Awm-As: peer:<node>``, see
+    :func:`awm.config.edges.admits`) gets a 404.
     """
-    grants = catalog.foreign_grants(request.headers.get("X-Awm-As"))
+    if not edges.admits(request.headers.get("X-Awm-As")):
+        raise HTTPException(404, "not found")
     if view == "domains":
-        tools = catalog.list_domain_tools(
-            peers=bool(peers), grants=grants)
+        tools = catalog.list_domain_tools(peers=bool(peers))
     else:
-        tools = catalog.list_tools(grants=grants)
+        tools = catalog.list_tools()
     return {"tools": [t.model_dump(by_alias=True) for t in tools]}
 
 
@@ -693,7 +691,7 @@ def _svc_stamp(svc: str, headers: Any, as_: str | None) -> Callable[[str, dict],
 # `X-Awm-Session-Pid` / `X-Awm-Caller-Pid` header names, resolved as
 # `_stamp_caller` resolves it. A request that carries `X-Awm-As` came through an
 # edge, where the pid header is not trusted, and is not
-# gated here: the edge gates it by relation and effect. WebSocket, emit and
+# gated here: the edge list gates it (`awm.config.edges.admits`). WebSocket, emit and
 # hub-proxied paths carry no pid header and are ungated. That is safe only while
 # a restricted session cannot make a raw HTTP request: its launch tool list holds
 # no Bash or WebFetch, and its policy refuses every awm verb that could (the
@@ -818,7 +816,7 @@ def _door_refusal(mode: str | None, rec: Any, rel: str) -> str | None:
     tool, effect = f"{rec.name}_{fn}", None
     for spec in (getattr(rec, "api", None) or {}).get("functions", []) or []:
         if isinstance(spec, dict) and spec.get("name") == fn:
-            tool, effect = catalog._tool_name(rec, spec), catalog._fn_policy(spec)[0]
+            tool, effect = catalog._tool_name(rec, spec), catalog._fn_effect(spec)
             break
     domain, sep, verb = tool.partition("_")
     return session_modes.refusal(mode, domain if sep else None, verb if sep else None,
@@ -927,7 +925,7 @@ async def _invoke(payload: dict, request: Request):
     elif not as_:
         raise HTTPException(400, "'args' must be an object")
     # An edge-stamped caller with a non-object `args` carries no session to gate
-    # or stamp, and the catalog's own gate answers it (404 for a foreign node).
+    # or stamp, and the catalog's own gate answers it (404 for a node with no edge).
     try:
         result = await _dispatch_while_connected(
             request, catalog.dispatch(name, args, as_=as_))
@@ -1141,7 +1139,7 @@ def run_server(foreground: bool = True):
     load_env_file()
     # Pre-bind probe: if something is already on (HOST, PORT), figure out
     # whether it's a healthy awm against the same workspace (→ exit 0) or
-    # a foreign holder (→ exit 1 with a diagnostic). Eliminates the silent
+    # another holder (→ exit 1 with a diagnostic). Eliminates the silent
     # EADDRINUSE restart-loop pattern (inbox #232).
     from awm.gateway._process_utils import exit_if_healthy_peer
     exit_if_healthy_peer(HOST, PORT, str(WORKSPACE_ROOT))

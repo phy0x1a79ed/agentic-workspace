@@ -19,7 +19,7 @@ import pytest
 from awm.gateway import catalog, peer_catalog
 from awm.gateway.hub.registry import ServiceRecord
 
-pytestmark = pytest.mark.usefixtures("domestic_peers")
+pytestmark = pytest.mark.usefixtures("edge_peers")
 
 
 # ---------------------------------------------------------------------------
@@ -321,7 +321,7 @@ async def test_sweep_carries_each_peers_tool_descriptions(monkeypatch):
     monkeypatch.setattr(
         "awm.gateway.peers.list_all",
         lambda: [{"name": "mira", "edge_url": "https://mira:12100",
-                  "ssh_alias": "miraz", "relation": "domestic"}])
+                  "ssh_alias": "miraz"}])
 
     async def _ok(entry):
         domains = peer_catalog._Domains({"orch": ["run"]})
@@ -570,7 +570,7 @@ async def test_sweep_keeps_last_known_domains_for_a_failed_peer(monkeypatch):
     monkeypatch.setattr(
         "awm.gateway.peers.list_all",
         lambda: [{"name": "mira", "edge_url": "https://mira:12100",
-                  "ssh_alias": "miraz", "relation": "domestic"}])
+                  "ssh_alias": "miraz"}])
 
     async def _ok(entry):
         return {"scope": ["search"]}

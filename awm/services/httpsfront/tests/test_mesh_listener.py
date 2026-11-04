@@ -27,9 +27,6 @@ class _Gate:
             return True, None, "peer:capella"
         return False, None, None
 
-    def peer_relation(self, node):
-        return {"capella": "domestic"}.get(node)
-
     async def session_ttl_seconds(self):
         return 3600.0
 

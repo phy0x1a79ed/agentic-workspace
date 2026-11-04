@@ -206,15 +206,16 @@ class Connector(ABC):
         permanent, unrecoverable failure (e.g. missing dependency / bad token).
         """
 
-    @abstractmethod
     async def send(
         self, channel: str, text: str, *, thread: str | None = None
     ) -> dict:
         """Send ``text`` to ``channel`` (optionally in ``thread``).
 
         Returns a small dict describing the sent message (at least
-        ``message_id`` when the platform supplies one).
+        ``message_id`` when the platform supplies one). Non-abstract: a read
+        only connector, such as Tony's own Slack (R127), leaves this default.
         """
+        raise NotImplementedError(f"{self.platform} account {self.account.name!r} is read only")
 
     async def edit_ack(self, ref: str, text: str, *,
                        files: list[dict] | None = None) -> dict | None:

@@ -62,6 +62,7 @@ class ScopePost:
     cites: list[str] = field(default_factory=list)  # a debrief journal's citations
     match: dict | None = None  # search hits only: {score, snippet}
     comments: int | None = None  # search hits and thread reads only
+    version: int = 1
 
     @property
     def kind(self) -> str:
@@ -92,6 +93,8 @@ class ScopePost:
             d["reply_to"] = list(self.cites)
         if self.comments is not None:
             d["comments"] = self.comments
+        if self.version > 1:
+            d["version"] = self.version
         if self.match is not None:
             d["match"] = self.match
         return d
@@ -143,21 +146,6 @@ def edge_origin(as_: str | None) -> str | None:
     if as_ == "peer" or (as_ or "").startswith("peer:"):
         return as_
     return None
-
-
-def is_foreign(as_: str | None) -> bool:
-    """Whether the edge stamped ``as_`` as a foreign node, by the gateway gate's rule.
-
-    A ``peer:<node>`` stamp is foreign unless the peer book calls ``<node>``
-    domestic; a node the book does not know, or a stamp naming no node, is
-    foreign. The bare legacy ``peer`` and an absent identity are not.
-    """
-    if not isinstance(as_, str) or not as_.startswith("peer:"):
-        return False
-    from awm import config
-    node = config.caller_peer(as_)
-    record = config.peer_record(node) if node else None
-    return record is None or record["relation"] != "domestic"
 
 
 def _author_to_display(author_ref: str) -> str:
@@ -232,6 +220,7 @@ def _row_to_post(row, tag_ids: list[str] | None = None,
         reply_to=row["reply_to"] if "reply_to" in keys else None,
         thread_id=row["thread_id"] if "thread_id" in keys else None,
         cites=cites,
+        version=int(row["version"]) if "version" in keys and row["version"] else 1,
     )
 
 
@@ -300,7 +289,7 @@ def post(project: str, scope: str, *, author: str, body: str,
     ``origin`` is an edge-stamped peer identity (see :func:`edge_origin`). It is
     stored verbatim as the author and ``author`` is ignored: a peer's claim about
     who it is never outranks the edge's. The claim is kept in
-    ``meta["claimed_author"]`` so a domestic reader can see which agent sent it.
+    ``meta["claimed_author"]`` so a reader can see which agent sent it.
     A caller with no stamp may not send an author of the ``peer:`` shape.
 
     ``reply_to`` on a journal lists the journals it cites, each of which must
@@ -459,9 +448,15 @@ def _post_filter(project, scope, kind, author, before_ts,
     if scope is not None:
         sql += " AND owner_scope = ?"
         params.append(scope)
-    tag_sql, tag_params = tagmod.filter_sql(tagmod.kind_filter(kind, tags))
+    tag_filter = tagmod.kind_filter(kind, tags)
+    tag_sql, tag_params = tagmod.filter_sql(tag_filter)
     sql += tag_sql
     params += tag_params
+    if not any(name.lower() == "folded" for _, name in tagmod.parse_filter(tag_filter)):
+        # An addendum folded into its target (versions.fold) stays out of the reads.
+        sql += (" AND NOT EXISTS (SELECT 1 FROM post_tags fp"
+                " WHERE fp.post_id = scope_posts.id AND fp.tag_id = ?)")
+        params.append(kinds.FOLDED)
     if author:
         sql += " AND author = ?"
         params.append(author if edge_origin(author) else _author_to_stored(author))

@@ -78,11 +78,42 @@ def holder_label(row: dict) -> str:
     return f"{row['job']}@{row['node']}{name}"
 
 
+# -- trust -------------------------------------------------------------------
+
+def seat_trust(account_cfg, channel_id: str) -> str:  # noqa: ANN001
+    """The trust level of the seat on ``channel_id`` (``channels.md`` R70)."""
+    if account_cfg is None:
+        return "untrusted"
+    if channel_id in account_cfg.trusted_chats:
+        return "trusted"
+    return account_cfg.trust
+
+
+def readable_chats(dao, account_cfg, holder: dict | None) -> set[str] | None:  # noqa: ANN001
+    """The chats of ``account_cfg`` whose history ``holder`` may read, or
+    ``None`` for no bound.
+
+    A session that holds no seat on the account is not bounded here. A seat
+    holder reads only the chats it holds, so a lab seat never reads Tony's DM
+    (users.md R126 item 2). A holder of a trusted seat reads every chat.
+    """
+    if holder is None or account_cfg is None:
+        return None
+    held = {r["channel_id"] for r in dao.mounts(account_cfg.name)
+            if r["node"] == holder["node"] and r["job"] == holder["job"]}
+    if not held:
+        return None
+    if any(seat_trust(account_cfg, c) == "trusted" for c in held):
+        return None
+    return held
+
+
 # -- the pushed line ---------------------------------------------------------
 
-def push_line(m: InboundMessage) -> str:
-    """``<platform> from <sender>[ [bot]][ ↳<thread>] [channel=<id> message_id=<id>]: <text>``
-    on one line. The ids are what the holder passes to ``social react``."""
+def push_line(m: InboundMessage, level: str = "untrusted") -> str:
+    """``<platform> [<level>] from <sender>[ [bot]][ ↳<thread>] [channel=<id> message_id=<id>]: <text>``
+    on one line. The level is the seat's (R70). The ids are what the holder
+    passes to ``social react``."""
     who = m.sender_name or m.sender_id or "?"
     if m.sender_bot:
         who += " [bot]"
@@ -96,7 +127,7 @@ def push_line(m: InboundMessage) -> str:
         text = f"{text} [+{n} file{'s' if n > 1 else ''}]".lstrip()
     ids = (f" [channel={m.channel_id} message_id={m.message_id}]"
            if m.message_id else "")
-    return f"{m.platform} from {who}{thread}{ids}: {text}"
+    return f"{m.platform} [{level}] from {who}{thread}{ids}: {text}"
 
 
 # -- delivery ----------------------------------------------------------------

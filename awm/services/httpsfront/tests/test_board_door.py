@@ -68,9 +68,6 @@ class _Gate:
             return True, None, "tony"
         return False, None, None
 
-    def peer_relation(self, node):
-        return None
-
     async def session_ttl_seconds(self):
         return 3600.0
 

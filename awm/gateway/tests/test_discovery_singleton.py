@@ -18,7 +18,7 @@ from awm.gateway.hub import discovery
 @pytest.fixture()
 def services_tree(tmp_path, monkeypatch, awm_workspace):
     """A tmp services root with ``2fa``, a ``chat`` folder publishing tool
-    ``social``, and a plain ``plain-svc``. The peer book holds domestic ``mira``."""
+    ``social``, and a plain ``plain-svc``. This node holds an edge to ``mira``."""
     root = tmp_path / "services"
     for name, marker in (("2fa", None), ("chat", 'tool = "social"\n'), ("plain-svc", None)):
         d = root / name
@@ -31,7 +31,7 @@ def services_tree(tmp_path, monkeypatch, awm_workspace):
     monkeypatch.delenv("AWM_TWOFA_PEER", raising=False)
     for key in [k for k in os.environ if k.startswith("AWM_DOMAIN_HOME_")]:
         monkeypatch.delenv(key)
-    monkeypatch.setattr(peer_catalog, "_domestic_peers", lambda: frozenset({"mira"}))
+    monkeypatch.setattr(peer_catalog, "_edge_peers", lambda: frozenset({"mira"}))
     return root
 
 
@@ -60,7 +60,7 @@ def test_no_home_leaves_resolution_unchanged(services_tree):
 
 def test_home_on_this_node_runs_here(services_tree, monkeypatch):
     # The peer book never lists the node itself, so a home naming this node
-    # is not a domestic peer and gates nothing.
+    # is not an edge peer and gates nothing.
     monkeypatch.setenv("AWM_TWOFA_PEER", "capella")
     assert discovery.is_enabled("2fa") is True
     assert discovery.singleton_owner("2fa") is None

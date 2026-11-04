@@ -68,7 +68,7 @@ from starlette.responses import (
 from starlette.routing import Route, WebSocketRoute
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
-from awm.config import peertoken, usertoken
+from awm.config import edges, peertoken, usertoken
 from awm.httpsfront import board, pages, policy, slices, store, tether, vault
 from awm.httpsfront.auth import (
     AS_COOKIE_NAME,
@@ -79,7 +79,6 @@ from awm.httpsfront.auth import (
     Shape,
     bearer_of,
     edge_admits_peers,
-    is_foreign_peer,
     is_machine_sub,
 )
 
@@ -291,10 +290,9 @@ async def _authenticate_sub(request: Request, shape: Shape | None = None,
     ))
 
 
-def _foreign(app, sub: str | None) -> bool:
-    """Whether ``sub`` is a foreign node, by the relation in the gate's own
-    material snapshot (see :func:`awm.httpsfront.auth.is_foreign_peer`)."""
-    return is_foreign_peer(sub, getattr(app.state.gate, "peer_relation", None))
+def _edgeless(sub: str | None) -> bool:
+    """Whether ``sub`` is a ``peer:<node>`` with no edge to this node (fleet.md R86)."""
+    return not edges.admits(sub)
 
 
 def _is_public(app) -> bool:
@@ -464,7 +462,7 @@ async def _logout(request: Request) -> Response:
 
 async def _whoami(request: Request) -> Response:
     ok, _, sub = await _authenticate_sub(request)
-    if ok and _foreign(request.app, sub):
+    if ok and _edgeless(sub):
         return _not_found()
     if ok:
         return JSONResponse({"user": sub})
@@ -485,7 +483,7 @@ async def _root(request: Request) -> Response:
     ok, refreshed, sub = await _authenticate_sub(request)
     if not ok:
         return _deny(request)
-    if _foreign(request.app, sub):
+    if _edgeless(sub):
         return _not_found()
     app = request.app
     services: list = []
@@ -726,14 +724,10 @@ async def _http_proxy(request: Request) -> Response:
         return _deny(request)
     if public and not policy.allows(path, sub):
         return _not_found()
-    # A foreign node gets the gateway's calling surface and nothing else. The
-    # vault is among the "nothing else", so this comes before the branch below
-    # ever picks it as an upstream.
-    if _foreign(app, sub):
-        # `peers` widens the catalog to the fleet view, which is ours to show
-        # our own swarm and nobody else.
-        if not policy.foreign_allows(path) or "peers" in request.query_params:
-            return _not_found()
+    # A node with no edge to this one reaches nothing, the vault included, so
+    # this comes before the branch below picks an upstream.
+    if _edgeless(sub):
+        return _not_found()
     # The vault is the upstream on this listener that is not the gateway.
     # Which upstream is decided here and nowhere else, from a path the caller
     # cannot use to name anything but the vault.
@@ -1261,9 +1255,9 @@ async def _ws_proxy(ws: WebSocket) -> None:
         if not ok or (public and not policy.allows(ws.url.path, sub)):
             await ws.close(code=1008)  # policy violation
             return
-        # A foreign node has no WebSocket at all; a domestic peer has the
+        # A node with no edge has no WebSocket at all; a node with one has the
         # gateway's, but never the vault's.
-        if _foreign(app, sub) or (is_vault and is_machine_sub(sub)):
+        if _edgeless(sub) or (is_vault and is_machine_sub(sub)):
             await ws.close(code=1008)
             return
 
@@ -1393,7 +1387,7 @@ def _gated(
         ok, refreshed, sub = await _authenticate_sub(request)
         if not ok:
             return _deny(request)
-        if _foreign(request.app, sub):
+        if _edgeless(sub):
             return _not_found()
         resp = await handler(request)
         if refreshed:

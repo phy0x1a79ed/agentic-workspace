@@ -152,7 +152,7 @@ class _Upload:
         return False
 
 
-def _bot(monkeypatch, error=None):
+def _bot(monkeypatch, error=None, silent=False):
     from awm.social.connectors.slack_bot_conn import SlackApiError
     conn = _build(name="opal", platform="slack", token="xoxb-1", app_token="xapp-1")
     calls, posted = [], []
@@ -165,6 +165,10 @@ def _bot(monkeypatch, error=None):
             return {"upload_url": "https://files.slack.com/up/1", "file_id": "F1"}
         if method == "conversations.open":
             return {"channel": {"id": "D9"}}
+        if method == "conversations.info":
+            return {"channel": {"id": params["channel"], "is_im": True}}
+        if method == "conversations.history":
+            return {"messages": [] if silent else [{"ts": "1.0", "user": "U0TONY", "text": "hi"}]}
         if method == "users.info":
             return {"user": {"name": "tony"}}
         return {"files": [{"id": "F1", "title": "plan.md", "permalink": "https://p"}]}
@@ -178,6 +182,7 @@ async def test_slack_bot_uploads_in_three_steps(monkeypatch, plan):
     conn, calls, posted = _bot(monkeypatch)
     r = await conn.send("D1", "the plan", thread="1.0",
                         files=[{"filename": "plan.md", "path": plan}])
+    calls = [c for c in calls if c[0].startswith("files.")]
     assert [m for m, _ in calls] == ["files.getUploadURLExternal",
                                      "files.completeUploadExternal"]
     assert calls[0][1] == {"filename": "plan.md", "length": "7"}
@@ -203,38 +208,34 @@ async def test_slack_bot_without_files_write_refuses(monkeypatch, plan):
     assert posted == []
 
 
-async def test_slack_user_uploads_through_the_sdk(monkeypatch, plan):
-    conn = _build(name="tony", platform="slack", token="xoxp-1", app_token="xapp-1")
-    seen = {}
-
-    class _Web:
-        async def files_upload_v2(self, **kw):
-            seen.update(kw)
-            return {"files": [{"id": "F2", "title": "plan.md"}]}
-
-    monkeypatch.setattr(conn, "_web_client", lambda: _Web())
-    r = await conn.send("D1", "the plan", files=[{"filename": "plan.md", "path": plan}])
-    assert seen["file_uploads"] == [{"content": b"# Plan\n", "filename": "plan.md",
-                                     "title": "plan.md"}]
-    assert seen["channel"] == "D1" and seen["initial_comment"] == "the plan"
-    assert r["files"][0]["id"] == "F2"
+async def test_slack_bot_never_writes_first(monkeypatch):
+    # users.md R126 item 1: a DM where nobody has written to Opal is refused,
+    # and nothing is posted.
+    from awm.social.connectors.slack_bot_conn import FirstContactRefused
+    conn, calls, posted = _bot(monkeypatch, silent=True)
+    with pytest.raises(FirstContactRefused):
+        await conn.send("U0BETH", "a plan for you")
+    assert not any(m == "chat.postMessage" for m, _ in calls) and posted == []
 
 
-async def test_mira_posts_the_file_as_base64(monkeypatch, plan):
+async def test_slack_bot_writes_once_the_person_wrote(monkeypatch):
+    conn, calls, _ = _bot(monkeypatch)
+    await conn.send("D1", "hello back")
+    assert calls[-1] == ("chat.postMessage", {"channel": "D1", "text": "hello back",
+                                              "thread_ts": None})
+
+
+async def test_mira_slack_send_is_read_only(monkeypatch, plan):
     conn = _build(name="mira", platform="slack", token="", source="mira",
                   mira_url="https://h:7822", mira_token="tok")
     posts = []
 
     async def post(path, body, timeout=30):
         posts.append((path, body))
-        return {"ok": True, "channel_id": "D1", "files": [{"id": "F3"}]}
+        return {"ok": True}
 
     monkeypatch.setattr(conn, "_post", post)
-    assert conn.sends_files and conn.max_file_bytes == 8 * 1024 * 1024
-    r = await conn.send("D1", "the plan", thread="1.0",
-                        files=[{"filename": "plan.md", "path": plan}])
-    assert posts == [("/v1/slack/upload", {
-        "channel": "D1", "text": "the plan", "thread": "1.0",
-        "files": [{"filename": "plan.md",
-                   "b64": base64.b64encode(b"# Plan\n").decode()}]})]
-    assert r["files"] == [{"id": "F3"}]
+    assert not conn.sends_files
+    with pytest.raises(NotImplementedError, match="read only"):
+        await conn.send("D1", "the plan", files=[{"filename": "plan.md", "path": plan}])
+    assert posts == []

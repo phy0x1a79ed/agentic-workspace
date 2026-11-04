@@ -34,7 +34,7 @@ GATEWAY = "http://127.0.0.1:7819"
 @pytest.fixture(autouse=True)
 def node(monkeypatch, peer_book):
     monkeypatch.setenv("AWM_NODE_NAME", ME)
-    peer_book({"mira": {"relation": "domestic"}})
+    peer_book({"mira": {}})
 
 
 def _device(sub="tony"):
@@ -133,8 +133,7 @@ def test_a_token_naming_a_machine_is_refused(sub):
 def test_peer_tokens_are_unchanged_and_never_become_a_user(keys):
     private, public = keys
     _, entry = _device()
-    gate = _gate([entry], peers=[{"name": "mira", "public_key": public,
-                                  "relation": "domestic"}])
+    gate = _gate([entry], peers=[{"name": "mira", "public_key": public}])
     node = peertoken.sign(private, iss="mira", aud=ME)
     assert _auth(gate, node) == (True, None, "peer:mira")
     assert _auth(gate, LEGACY) == (True, None, "peer")
@@ -142,8 +141,7 @@ def test_peer_tokens_are_unchanged_and_never_become_a_user(keys):
 
 def test_material_from_an_older_auth_without_the_key_still_works(keys):
     private, public = keys
-    gate = _gate(with_key=False, peers=[{"name": "mira", "public_key": public,
-                                         "relation": "domestic"}])
+    gate = _gate(with_key=False, peers=[{"name": "mira", "public_key": public}])
     token, _ = _device()
     assert _auth(gate, token) == (False, None, None)
     assert _auth(gate, LEGACY)[2] == "peer"

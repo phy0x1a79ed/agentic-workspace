@@ -5,7 +5,7 @@ names a file on another machine. So the assertions are mostly about honesty:
 
 * a fetched file's ``path`` is local and its remote one is preserved elsewhere;
 * a file that could NOT be fetched has ``path: None`` and a named ``error`` —
-  never a foreign path left in place;
+  never a remote path left in place;
 * one file's failure does not cost the others;
 * a reply with nothing to rewrite comes back byte-for-byte unchanged, since this
   runs over every peer-routed reply regardless of verb.

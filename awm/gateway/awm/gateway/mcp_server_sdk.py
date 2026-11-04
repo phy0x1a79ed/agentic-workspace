@@ -259,11 +259,11 @@ async def _peer_invoke(peer_name: str, base_name: str, arguments: dict,
                        as_: str | None,
                        entry: dict[str, Any] | None = None) -> dict[str, Any]:
     """Invoke ``base_name`` on ``peer_name``'s edge directly with a signed node
-    token. A domestic peer that refuses it gets the legacy ssh-fetched bearer
-    (re-fetched once on a 401); a foreign peer never does — see
+    token. A peer this node holds an edge to that refuses it gets the legacy
+    ssh-fetched bearer (re-fetched once on a 401); any other peer never does — see
     ``gatewayclient.peer_send``.
 
-    ``entry`` is the peer's already-resolved ``{edge_url, ssh_alias, relation}`` —
+    ``entry`` is the peer's already-resolved ``{edge_url, ssh_alias}`` —
     a redirect carries it, so following one costs no second lookup. Absent, it is
     resolved from the local gateway's book.
     """

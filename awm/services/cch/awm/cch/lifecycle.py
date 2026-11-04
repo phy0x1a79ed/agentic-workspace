@@ -41,7 +41,7 @@ from awm import gatewayclient
 from awm.gatewayclient import ids
 from awm import kept
 from awm.claudedaemon import cli, launch, pins, roster, sessionmode
-from awm.config import caller_peer, node_name, node_role, peer_relation, scope_of
+from awm.config import caller_peer, edges, node_name, scope_of
 
 from awm.cch import config, sessions, trust
 
@@ -189,27 +189,27 @@ def refusal(exc: Refused) -> dict[str, Any]:
 def caller_refusal(as_: str | None) -> str | None:
     """Why this caller may not start or stop sessions, or None if it may.
 
-    A peer caller must be a verified node whose relation is domestic. The bare
-    legacy `peer` carries no node name, so it cannot be verified and is refused.
+    A peer caller must be a verified node that holds an edge to this node. The
+    bare legacy `peer` carries no node name, so it cannot be verified and is
+    refused.
     """
     if as_ is None or not (as_ == "peer" or as_.startswith("peer:")):
         return None
     node = caller_peer(as_)
     if node is None:
         return "an unverified peer call cannot start or stop sessions"
-    relation = peer_relation(node)
-    if relation != "domestic":
-        return (f"peer {node!r} is {relation or 'not in the peer book'}; only a "
-                "domestic peer may start or stop sessions")
+    if not edges.admits(as_):
+        return (f"peer {node!r} holds no edge to this node; only a peer "
+                "that reaches this node may start or stop sessions")
     return None
 
 
 def station_refusal() -> str | None:
     try:
-        role = node_role()
+        station = edges.is_station(edges.here())
     except ValueError as exc:
-        return f"the node role is invalid: {exc}"
-    if role == "station":
+        return f"the fleet edge list is invalid: {exc}"
+    if station:
         return "this node is a station and does not run sessions for others"
     return None
 

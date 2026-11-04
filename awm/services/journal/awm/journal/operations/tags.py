@@ -7,9 +7,9 @@ tags (:mod:`awm.journal.tagsync`).
 
 from __future__ import annotations
 
-from awm.journal import channel, private, tags, tagsync
+from awm.journal import bounds, channel, private, tags, tagsync
 
-_FOREIGN = "the tag vocabulary is kept by this node and its own peers only"
+_UNTRUSTED = "only a trusted session edits the tag vocabulary"
 
 TAG_MANIFEST_FUNCTIONS = [
     {
@@ -81,19 +81,19 @@ TAG_MANIFEST_FUNCTIONS = [
 ]
 
 
-def _local_only(as_: str | None) -> None:
-    if channel.is_foreign(as_):
-        raise PermissionError(_FOREIGN)
+def _trusted_only(args: dict, as_: str | None) -> None:
+    if bounds.of(args, as_).write_scope is not None:
+        raise PermissionError(_UNTRUSTED)
 
 
 def _handle_tag_add(args: dict, as_: str | None = None) -> dict:
-    _local_only(as_)
+    _trusted_only(args, as_)
     return {"tag": tags.add(args["name"], args.get("description") or "",
                             by=as_ or "").to_dict()}
 
 
 def _handle_tag_edit(args: dict, as_: str | None = None) -> dict:
-    _local_only(as_)
+    _trusted_only(args, as_)
     return {"tag": tags.edit(args["tag"], name=args.get("name"),
                              description=args.get("description"), by=as_ or "").to_dict()}
 
@@ -106,7 +106,7 @@ def _handle_tag_list(args: dict, as_: str | None = None) -> dict:
 
 
 def _handle_retag(args: dict, as_: str | None = None) -> dict:
-    _local_only(as_)
+    _trusted_only(args, as_)
     post = channel.get_post(args["post_id"])
     if post is None or private.hides_post(as_, post):
         raise ValueError(f"no post {args['post_id']}")

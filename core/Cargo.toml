@@ -33,6 +33,8 @@ awm-proto = { path = "crates/awm-proto" }
 awm-gateway = { path = "crates/awm-gateway" }
 awm-mcp = { path = "crates/awm-mcp" }
 awm-cli = { path = "crates/awm-cli" }
+awm-trust = { path = "crates/awm-trust" }
+awm-edge = { path = "crates/awm-edge" }
 
 [profile.release]
 opt-level = 3

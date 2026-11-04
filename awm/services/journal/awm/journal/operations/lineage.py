@@ -50,7 +50,7 @@ LINEAGE_MANIFEST_FUNCTIONS = [
 
 
 def _local(as_: str | None) -> None:
-    if channel.is_foreign(as_):
+    if channel.edge_origin(as_):
         raise PermissionError("lineage stays on its own node")
 
 

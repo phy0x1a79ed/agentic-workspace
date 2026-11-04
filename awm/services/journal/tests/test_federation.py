@@ -1,4 +1,4 @@
-"""Federation surface of the journal: edge-stamped origins, foreign reads, verb effects."""
+"""Federation surface of the journal: edge-stamped origins, peer reads, verb effects."""
 
 from __future__ import annotations
 
@@ -79,41 +79,20 @@ def test_claimed_author_does_not_mutate_the_callers_meta(journal_workspace):
 
 
 # ---------------------------------------------------------------------------
-# A foreign caller reads journals only
+# A peer the gateway admits reads what a local caller reads
 # ---------------------------------------------------------------------------
-
-@pytest.fixture()
-def peer_book(monkeypatch):
-    import awm.config as cfg
-    records = {
-        "capella": {"name": "capella", "relation": "foreign", "grants": ["journals"]},
-        "orion": {"name": "orion", "relation": "domestic", "grants": []},
-    }
-    monkeypatch.setattr(cfg, "peer_record", lambda n: dict(records[n]) if n in records else None)
-    return records
-
 
 def _fetch(as_, **args):
     from awm.journal.operations.posts import _handle_fetch
     return _handle_fetch({"project": "awm", "scope": "dev", **args}, as_)
 
 
-@pytest.mark.parametrize("as_,foreign", [
-    ("peer:capella", True), ("peer:stranger", True), ("peer:", True), ("peer: ", True),
-    ("peer:orion", False), ("peer", False), (None, False), ("tony", False),
-])
-def test_is_foreign_matches_the_gateway_gate(peer_book, as_, foreign):
-    from awm.journal import channel
-    assert channel.is_foreign(as_) is foreign
-
-
-def test_a_foreign_fetch_returns_journals_only(journal_workspace, peer_book):
-    _post(None, author="agent:awm/dev", body="private chatter", kind="message")
+def test_a_peer_fetch_sees_every_kind(journal_workspace):
+    msg = _post(None, author="agent:awm/dev", body="chatter", kind="message")
     _post(None, author="agent:awm/dev", body="the debrief", kind="journal")
-    assert [p["kind"] for p in _fetch("peer:capella")["posts"]] == ["journal"]
-    assert [p["kind"] for p in _fetch("peer:capella", kind="journal")["posts"]] == ["journal"]
-    assert len(_fetch("peer:orion")["posts"]) == 2
-    assert len(_fetch(None)["posts"]) == 2
+    assert len(_fetch("peer:capella")["posts"]) == len(_fetch(None)["posts"]) == 2
+    assert _fetch("peer:capella", kind="message")["posts"][0]["id"] == msg["id"]
+    assert _fetch("peer:capella", post_id=msg["id"])["total"] == 1
 
 
 def test_a_journal_fetch_reads_newest_first_and_messages_oldest_first(journal_workspace):
@@ -128,35 +107,10 @@ def test_a_journal_fetch_reads_newest_first_and_messages_oldest_first(journal_wo
     assert bodies(kind="message") == ["first", "second"]
 
 
-@pytest.mark.parametrize("kind", ["message", "brief"])
-def test_a_foreign_fetch_of_another_kind_is_refused(journal_workspace, peer_book, kind):
-    with pytest.raises(PermissionError):
-        _fetch("peer:capella", kind=kind)
-    assert _fetch("peer:orion", kind=kind) is not None
-
-
-def test_a_foreign_fetch_by_post_id_needs_a_journal(journal_workspace, peer_book):
-    msg = _post(None, author="agent:awm/dev", body="chatter", kind="message")
-    jr = _post(None, author="agent:awm/dev", body="debrief", kind="journal")
-    missing = _fetch("peer:capella", post_id="nope")
-    assert _fetch("peer:capella", post_id=msg["id"]) == missing == {"posts": [], "total": 0}
-    assert _fetch("peer:stranger", post_id=msg["id"]) == missing
-    assert _fetch("peer:capella", post_id=jr["id"])["total"] == 1
-    assert _fetch("peer:orion", post_id=msg["id"])["total"] == 1
-    assert _fetch("peer:capella", post_id="nope")["total"] == 0
-
-
-def test_a_foreign_search_sees_journals_only(journal_workspace, peer_book):
-    from awm.journal import search_index
-    _post(None, author="agent:awm/dev", body="mooring mast chatter", kind="message")
-    _post(None, author="agent:awm/dev", body="mooring mast debrief", kind="journal")
-    search_index.flush()
-    posts = _fetch("peer:capella", query="mooring mast")["posts"]
-    assert [p["kind"] for p in posts] == ["journal"]
 
 
 # ---------------------------------------------------------------------------
-# Every verb declares an effect; journal-bearing reads declare the category
+# Every verb declares an effect, and none carries a category
 # ---------------------------------------------------------------------------
 
 def _functions():
@@ -170,7 +124,7 @@ def test_every_journal_verb_declares_an_effect():
     assert missing == []
 
 
-READS = {"fetch", "inbox", "reads", "render", "brief_read",
+READS = {"fetch", "history", "inbox", "reads", "render", "brief_read",
          "brief_history", "tag_list", "lineage", "export"}
 
 
@@ -179,9 +133,8 @@ def test_only_the_known_reads_are_reads():
     assert reads == READS
 
 
-def test_the_fetch_verb_carries_the_journals_category_and_nothing_else_does():
-    categorised = {n: f["category"] for n, f in _functions().items() if f.get("category")}
-    assert categorised == {"fetch": "journals"}
+def test_no_journal_verb_carries_a_category():
+    assert [n for n, f in _functions().items() if "category" in f] == []
 
 
 def test_every_published_tool_is_journal_prefixed_and_hidden_verbs_leave_mcp():

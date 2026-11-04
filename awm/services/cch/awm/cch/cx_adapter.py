@@ -58,7 +58,7 @@ API_MANIFEST: dict[str, Any] = {
                 "one, or with suggest=true, it starts in the node's lobby and "
                 "routes itself (scopes.md R1, R40). Pass task_id to put the "
                 "session on a running task's card. Refuses on a "
-                "station, for a caller that is not a domestic peer, when no "
+                "station, for a peer caller that holds no edge to this node, when no "
                 "Claude Code daemon runs, when the worktree is untrusted, or "
                 "when a live session already holds the name. A worktree of "
                 "an awm project is trusted first, not refused. The session "

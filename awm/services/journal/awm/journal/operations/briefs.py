@@ -1,6 +1,6 @@
 """The scope brief verbs, ``journal(verb="brief_<verb>")`` (scopes.md R143)."""
 
-from awm.journal import briefs, channel, private
+from awm.journal import bounds, briefs, channel, private
 
 #: scopes.md R143 fixes this text. Change it there first.
 WRITE_GUIDE = (
@@ -62,9 +62,10 @@ BRIEF_MANIFEST_FUNCTIONS = [
 ]
 
 
-def _where(args: dict, as_: str | None) -> tuple[str, str]:
+def _where(args: dict, as_: str | None, *, write: bool = False) -> tuple[str, str]:
     project, scope = args["project"], args["scope"]
-    if channel.is_foreign(as_) or private.hides(as_, project, scope):
+    (bounds.write if write else bounds.read)(bounds.of(args, as_), project, scope)
+    if private.hides(as_, project, scope):
         raise ValueError(f"no scope {project}/{scope}")
     return project, scope
 
@@ -84,14 +85,14 @@ def _handle_brief_history(args: dict, as_: str | None = None) -> dict:
 
 
 def _handle_brief_set(args: dict, as_: str | None = None) -> dict:
-    project, scope = _where(args, as_)
+    project, scope = _where(args, as_, write=True)
     brief = briefs.set_brief(project, scope, args["text"], author=_author(args, project, scope),
                              origin=channel.edge_origin(as_))
     return {"brief": brief.to_dict()}
 
 
 def _handle_brief_edit(args: dict, as_: str | None = None) -> dict:
-    project, scope = _where(args, as_)
+    project, scope = _where(args, as_, write=True)
     brief = briefs.edit_brief(project, scope, args["old"], args["new"],
                               author=_author(args, project, scope),
                               origin=channel.edge_origin(as_))
