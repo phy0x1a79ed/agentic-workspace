@@ -59,7 +59,7 @@ This doc holds awm's registered routines: what a routine is, what triggers it, a
   6. **Report.** Show each submitter one mark. A tick means the batch landed. A cross names the failed step (merge, check failure, check timeout, refresh) and links to the card of the dispatched session. Tony: "maybe as small as a check box."
 - **R29.** Only `deploy` writes `dev` and `release`. Agents never merge or push into either. Instructions carry the rule, with no hook to enforce it. A `reference-transaction` hook in each bare repo is the next step if agents break the rule. Tony: "lets just pick a and escalate if there are issues."
 - **R31.** The fleet route. Tony: "this all looks good to me" (2026-10-31).
-  - One `deploy` service per project runs on the node that holds the project's canonical repo. awm's canonical repo moves to mizar, the homebase.
+  - One `deploy` service per project runs on the node that holds the project's canonical repo. awm's canonical repo moves to mizar, the homebase. GitHub keeps a backup, which each deploy updates (`install.md` R114). Tony: "Mizar is the canonical home of AWM. But we should also try to keep the remote on GitHub up to date as a backup." (2026-11-04).
   - A session on another node pushes its feature branch to the canonical repo before it calls `deploy`.
   - Each other node refreshes itself through the project's refresh hook (R25). The hook fetches `release`, then restarts or queues a coordinated restart.
   - Nodes refresh one at a time, homebase first. A failed node dispatches a session (R27) and stops the rollout before the remaining nodes.
