@@ -64,7 +64,7 @@ CALLS: dict[str, set[tuple[str, str]]] = {
                *{("harness-cc", v) for v in ("list", "probe", "resume", "adopt")}},  # push, sessions, Cx._call
     "trilium": {("operations", "approval_request")},  # trustpolicy.requests
     "zotero": {("trilium", v) for v in ("note_search", "note_get", "note_upsert", "note_create", "note_update", "attr_set",
-                                        "note_place", "attachment_put", "note_delete")}  # vault.call_sync(SERVICE, fn)
+                                        "note_place", "note_delete")}  # vault.call_sync(SERVICE, fn)
               | {("operations", "order_pull"), ("operations", "order_done")},  # orders.py operations_call
 }
 

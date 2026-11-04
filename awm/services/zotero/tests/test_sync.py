@@ -9,7 +9,6 @@ pass where nothing changed, and must not delete a note it did not create.
 from __future__ import annotations
 
 import json
-import subprocess
 
 import pytest
 

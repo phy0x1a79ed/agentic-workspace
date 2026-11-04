@@ -362,12 +362,6 @@ def _build() -> tuple[ServiceAdapter, BrowserManager]:
     return adapter, mgr
 
 
-# Exposed for tests / introspection (the live instances are built in main()).
-HANDLERS_DOC = (
-    "acquire release reset status tab_open tab_close tab_list tab_activate "
-    "observe screenshot cdp commands")
-
-
 async def main() -> None:
     logging.basicConfig(
         level=logging.INFO,

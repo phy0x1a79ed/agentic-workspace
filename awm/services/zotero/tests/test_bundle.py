@@ -122,41 +122,6 @@ def test_a_nested_collection_names_its_parent_the_same_way():
     assert out["collections"][0]["parent"] == "groups/1/TOP"
 
 
-# -- the file on disk --------------------------------------------------------
-
-
-def test_a_stored_file_is_filed_under_its_libraries_key(tmp_path):
-    """Zotero files everything under one flat `storage/<key>/` and relies on
-    keys not colliding, which holds inside a library and not between them."""
-    b = bundle.Bundle(tmp_path)
-    assert b.file_for("groups/1/AAA", "p.pdf") == \
-        tmp_path / bundle.CHUNK / "files" / "groups/1/AAA" / "p.pdf"
-
-
-def test_pruning_walks_to_whatever_depth_a_library_id_has(tmp_path):
-    """A library id is itself two segments. Assuming one directory level per
-    library made `users/0` look like an unwanted key and deleted every file
-    under it -- right after they were fetched."""
-    b = bundle.Bundle(tmp_path)
-    keep = b.file_for("users/0/KEEP", "p.pdf")
-    drop = b.file_for("users/0/DROP", "q.pdf")
-    for path in (keep, drop):
-        path.parent.mkdir(parents=True)
-        path.write_bytes(b"%PDF-")
-
-    assert b.prune_files({"users/0/KEEP"}) == 1
-    assert keep.is_file() and not drop.exists()
-
-
-def test_pruning_removes_a_library_that_has_gone_entirely(tmp_path):
-    b = bundle.Bundle(tmp_path)
-    gone = b.file_for("groups/9/OLD", "p.pdf")
-    gone.parent.mkdir(parents=True)
-    gone.write_bytes(b"%PDF-")
-    assert b.prune_files(set()) == 1
-    assert not (b.files / "groups").exists()
-
-
 # -- reading it back ---------------------------------------------------------
 
 

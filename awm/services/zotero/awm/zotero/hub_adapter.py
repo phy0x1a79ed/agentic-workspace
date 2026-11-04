@@ -31,7 +31,6 @@ from typing import Any
 
 from awm.gatewayclient import ServiceAdapter, spawn_supervised
 
-from awm.zotero import bundle as bundle_mod
 from awm.zotero import orders, source, stream as stream_mod, sync, vault
 
 log = logging.getLogger("awm.zotero.hub_adapter")

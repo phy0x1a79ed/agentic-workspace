@@ -493,9 +493,3 @@ class Supervisor:
             "exit_code": proc.returncode,
         }
 
-
-def which_binary() -> str | None:
-    """Where a `claude-science` on PATH lives, for diagnosing a mismatch with
-    the configured one."""
-    found = shutil.which("claude-science")
-    return found or None

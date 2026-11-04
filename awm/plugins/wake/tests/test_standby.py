@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from awm.wake import boot, config, standby
-from tests.conftest import REFLECTION, TOML, WAKE, CallError, FakeGateway
+from tests.conftest import TOML, WAKE, CallError, FakeGateway
 
 pytestmark = [pytest.mark.unit, pytest.mark.smoke]
 
