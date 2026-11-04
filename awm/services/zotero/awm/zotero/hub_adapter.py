@@ -79,7 +79,6 @@ API_MANIFEST: dict[str, Any] = {
     "functions": [
         {
             "name": "status",
-            "effect": "read",
             "tool": "zotero_status",
             "description": (
                 "What the mirror holds and where the library is: the bundle's "
@@ -94,7 +93,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "items",
-            "effect": "read",
             "tool": "zotero_items",
             "description": (
                 "The mirrored references, a page at a time: key, library, title, "
@@ -115,7 +113,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "pull",
-            "effect": "write",
             "tool": "zotero_pull",
             "description": (
                 "Read the Zotero library into the bundle in the vault scope "
@@ -132,7 +129,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "apply",
-            "effect": "write",
             "tool": "zotero_apply",
             "description": (
                 "Write the bundle into the vault: collections as a note tree, "
@@ -156,7 +152,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "sync",
-            "effect": "write",
             "tool": "zotero_sync",
             "description": (
                 "Read whatever moved in the library and write it into the "
