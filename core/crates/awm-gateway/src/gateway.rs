@@ -859,7 +859,7 @@ impl Gateway {
     /// with that verb. A plugin with no manifest, or one this node does not load, is not held.
     pub fn undeclared(&self, plugin: &str, tool: &str, verb: &str) -> Option<String> {
         let load = self.read_load();
-        let p = load.plugins.iter().find(|p| p.name == plugin && !p.legacy)?;
+        let p = load.plugins.iter().find(|p| p.name == plugin)?;
         if p.tools.iter().any(|t| t.name == tool) {
             return None;
         }

@@ -34,7 +34,7 @@ pub struct Config {
     /// Where a page with no `dir` is found by name, as `<root>/<name>/dist`.
     #[serde(default)]
     pub page_roots: Vec<PathBuf>,
-    /// Gateway profiles that legacy `service.toml` `profiles` match against.
+    /// Gateway profiles that a service's `profiles` match against.
     #[serde(default)]
     pub profiles: Vec<String>,
     /// Plugin names this node loads. `"*"` loads every plugin in the roots.

@@ -3,10 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
-use awm_proto::manifest::{
-    parse_implements, LegacyServiceToml, Manifest, NeedTool, Needs, PluginMeta, ServiceDecl, ToolDecl,
-    LEGACY_RUN, LEGACY_SERVICE_TOML,
-};
+use awm_proto::manifest::{parse_implements, Manifest, NeedTool, Needs};
 use awm_proto::{valid_tool_name, Tier, MANIFEST_FILE};
 use serde::Serialize;
 
@@ -16,7 +13,6 @@ pub struct Plugin {
     pub version: String,
     pub dir: PathBuf,
     pub core: bool,
-    pub legacy: bool,
     pub refresh: Option<String>,
     pub services: Vec<ServiceSpec>,
     pub tools: Vec<ToolSpec>,
@@ -37,9 +33,6 @@ pub struct ServiceSpec {
     pub tools: Vec<String>,
     /// The plugin's `needs.secrets`: the only secrets its processes get (R116 item 1).
     pub secrets: Vec<String>,
-    /// Whether the egress proxy holds the service to its plugin's `needs.network`. A legacy
-    /// folder declares nothing, so it is not held.
-    pub egress_guarded: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -114,7 +107,6 @@ pub struct LoadInput<'a> {
 struct Candidate {
     dir: PathBuf,
     core: bool,
-    legacy: bool,
     manifest: Manifest,
 }
 
@@ -144,18 +136,18 @@ pub fn load(input: &LoadInput) -> LoadResult {
                 }
                 Some(Ok(parsed)) => parsed,
             };
-            let (manifest, legacy) = parsed;
+            let manifest = parsed;
             if !seen.insert(manifest.plugin.name.clone()) {
                 out.shadowed.push(dir);
                 continue;
             }
-            candidates.push(Candidate { dir, core, legacy, manifest });
+            candidates.push(Candidate { dir, core, manifest });
         }
     }
 
     let reserved: BTreeSet<&str> = input.reserved.iter().map(String::as_str).collect();
-    // tool name → (owner plugin, owner is legacy)
-    let mut tool_names: HashMap<String, (String, bool)> = HashMap::new();
+    // tool name → owner plugin
+    let mut tool_names: HashMap<String, String> = HashMap::new();
     let mut service_names: HashMap<String, String> = HashMap::new();
     let mut plugins = Vec::new();
 
@@ -180,7 +172,7 @@ pub fn load(input: &LoadInput) -> LoadResult {
             continue;
         }
         for t in &plugin.tools {
-            tool_names.entry(t.name.clone()).or_insert((name.clone(), plugin.legacy));
+            tool_names.insert(t.name.clone(), name.clone());
         }
         for s in &plugin.services {
             service_names.insert(s.name.clone(), name.clone());
@@ -219,52 +211,18 @@ fn folder_name(dir: &Path) -> String {
     dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
 }
 
-/// `None` when the folder is not a plugin. A legacy folder becomes a one-service manifest.
-fn read_folder(dir: &Path) -> Option<Result<(Manifest, bool), String>> {
+/// `None` when the folder holds no manifest, so it is not a plugin.
+fn read_folder(dir: &Path) -> Option<Result<Manifest, String>> {
     let manifest_path = dir.join(MANIFEST_FILE);
-    if manifest_path.is_file() {
-        let text = match std::fs::read_to_string(&manifest_path) {
-            Ok(t) => t,
-            Err(e) => return Some(Err(format!("{MANIFEST_FILE}: {e}"))),
-        };
-        return Some(Manifest::parse(&text).map(|m| (m, false)).map_err(|e| format!("{MANIFEST_FILE}: {e}")));
-    }
-    if !dir.join(LEGACY_RUN).is_file() {
+    if !manifest_path.is_file() {
         return None;
     }
-    let name = folder_name(dir);
-    let legacy: LegacyServiceToml = match std::fs::read_to_string(dir.join(LEGACY_SERVICE_TOML)) {
-        Ok(text) => match toml::from_str(&text) {
-            Ok(l) => l,
-            // Today's gateway reads a corrupt marker as marked-but-unmatched, never fail-open.
-            Err(e) => return Some(Err(format!("{LEGACY_SERVICE_TOML}: {e}"))),
-        },
-        Err(_) => LegacyServiceToml::default(),
-    };
-    let tool = legacy.tool.clone().unwrap_or_else(|| name.clone());
-    let manifest = Manifest {
-        plugin: PluginMeta { name: name.clone(), version: "0.0.0".into(), refresh: None },
-        placement: Default::default(),
-        service: vec![ServiceDecl {
-            name: name.clone(),
-            path: ".".into(),
-            run: LEGACY_RUN.into(),
-            install: "install.sh".into(),
-            profiles: legacy.profiles.clone(),
-            archive: legacy.archive.clone(),
-        }],
-        tool: vec![ToolDecl {
-            name: tool,
-            major: 1,
-            service: Some(name),
-            services: vec![],
-            tier: Tier::from_legacy(legacy.tier.as_deref()),
-            implements: vec![],
-        }],
-        page: vec![],
-        needs: Needs::default(),
-    };
-    Some(Ok((manifest, true)))
+    Some(
+        std::fs::read_to_string(&manifest_path)
+            .map_err(|e| e.to_string())
+            .and_then(|text| Manifest::parse(&text).map_err(|e| e.to_string()))
+            .map_err(|e| format!("{MANIFEST_FILE}: {e}")),
+    )
 }
 
 /// Join `rel` onto `base` and refuse a result outside `base`.
@@ -312,7 +270,6 @@ fn build_plugin(cand: &Candidate, input: &LoadInput, warnings: &mut Vec<String>)
             enabled,
             tools: vec![],
             secrets: m.needs.secrets.clone(),
-            egress_guarded: !cand.legacy,
         });
     }
 
@@ -367,7 +324,6 @@ fn build_plugin(cand: &Candidate, input: &LoadInput, warnings: &mut Vec<String>)
         version: m.plugin.version.clone(),
         dir: cand.dir.clone(),
         core: cand.core,
-        legacy: cand.legacy,
         refresh: m.plugin.refresh.clone(),
         services,
         tools,
@@ -419,7 +375,7 @@ fn find_page(roots: &[PathBuf], name: &str) -> Option<PathBuf> {
 fn claim(
     p: &Plugin,
     reserved: &BTreeSet<&str>,
-    tool_names: &HashMap<String, (String, bool)>,
+    tool_names: &HashMap<String, String>,
     service_names: &HashMap<String, String>,
 ) -> Result<(), String> {
     let mut own = BTreeSet::new();
@@ -430,12 +386,8 @@ fn claim(
         if reserved.contains(t.name.as_str()) && !p.core {
             return Err(format!("tool {:?} is reserved for core plugins", t.name));
         }
-        // Legacy folders share a tool as today (cx, keep and reflection all publish
-        // `reflection`). The hub refuses a verb two services both publish.
-        if let Some((owner, legacy)) = tool_names.get(&t.name) {
-            if !(p.legacy && *legacy) {
-                return Err(format!("tool {:?} is already served by plugin {owner:?}", t.name));
-            }
+        if let Some(owner) = tool_names.get(&t.name) {
+            return Err(format!("tool {:?} is already served by plugin {owner:?}", t.name));
         }
     }
     for s in &p.services {
@@ -456,9 +408,6 @@ pub struct Provider {
 pub fn table(plugins: &[Plugin], peers: &BTreeMap<String, Vec<RemoteTool>>) -> Vec<Provider> {
     let mut index: Vec<Provider> = Vec::new();
     for t in plugins.iter().flat_map(|p| p.tools.iter()) {
-        if index.iter().any(|p| p.owner.name == t.name) {
-            continue; // a shared legacy tool belongs to its first plugin
-        }
         index.push(Provider {
             owner: Owner { name: t.name.clone(), major: t.major, plugin: t.plugin.clone(), peer: None },
             implements: t.implements.clone(),
@@ -535,13 +484,9 @@ mod tests {
         fs::write(dir.join(MANIFEST_FILE), manifest).unwrap();
     }
 
-    fn legacy(root: &Path, name: &str, service_toml: Option<&str>) {
-        let dir = root.join(name);
-        fs::create_dir_all(&dir).unwrap();
-        fs::write(dir.join("run.sh"), "#!/bin/sh\n").unwrap();
-        if let Some(t) = service_toml {
-            fs::write(dir.join("service.toml"), t).unwrap();
-        }
+    /// A one-service plugin whose tool is `tool`, with extra `[[service]]` keys.
+    fn single(root: &Path, name: &str, tool: &str, service_keys: &str) {
+        plugin(root, name, &format!("[plugin]\nname='{name}'\n[[service]]\nname='{name}'\n{service_keys}[[tool]]\nname='{tool}'\n"));
     }
 
     fn run(core: &Path, other: &Path, node: &str) -> LoadResult {
@@ -568,13 +513,14 @@ mod tests {
     fn rules() {
         let t = tempfile::tempdir().unwrap();
         let (core, other) = (t.path().join("core"), t.path().join("other"));
-        legacy(&core, "journal", Some("tool = \"journal\"\ntier = \"on\"\n"));
-        legacy(&core, "cx", Some("tool = \"reflection\"\n"));
-        legacy(&core, "keep", Some("tool = \"reflection\"\n"));
-        legacy(&core, "game", Some("profiles = [\"nope\"]\n"));
-        legacy(&core, "off-svc", None);
-        legacy(&core, "_hidden", None);
+        single(&core, "journal", "journal", "");
+        single(&core, "cx", "reflection", "");
+        single(&core, "game", "game", "profiles=['nope']\n");
+        single(&core, "off-svc", "off-svc", "");
+        single(&core, "_hidden", "hidden", "");
         fs::create_dir_all(core.join("not-a-plugin")).unwrap();
+        fs::write(core.join("not-a-plugin/run.sh"), "").unwrap();
+        fs::write(core.join("not-a-plugin/service.toml"), "tool = 'x'\n").unwrap();
         plugin(&core, "provider",
             "[plugin]\nname='provider'\n[[service]]\nname='provider'\n[[tool]]\nname='prov'\nmajor=2\nimplements=['harness@1']\n");
         plugin(&core, "dependent",
@@ -602,7 +548,7 @@ mod tests {
 
         let r = run(&core, &other, "mizar");
         let names: Vec<_> = r.plugins.iter().map(|p| p.name.as_str()).collect();
-        assert_eq!(names, ["cx", "dependent", "game", "journal", "keep", "off-svc", "ops", "provider"]);
+        assert_eq!(names, ["cx", "dependent", "game", "journal", "off-svc", "ops", "provider"]);
         let ops = r.plugins.iter().find(|p| p.name == "ops").unwrap();
         assert!(ops.services.iter().all(|s| s.tools == ["operations"]));
         let refused: BTreeMap<_, _> = r.refused.iter().map(|x| (x.plugin.as_str(), x.reason.as_str())).collect();

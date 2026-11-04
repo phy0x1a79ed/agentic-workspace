@@ -467,7 +467,7 @@ fn gateway_end_to_end() {
     let posted = http().post(format!("{url}/usage")).json(&json!({"plugin": "fake", "surface": "code", "name": "lib"})).send().unwrap();
     assert!(posted.status().is_success());
 
-    // The Python journal service, loaded unchanged from its run.sh folder.
+    // The Python journal service, loaded from its plugin folder.
     if node.journal {
         let (code, _, errout) =
             cli(&url, &["journal", "post", "--project", "e2e", "--scope", "t", "--author", "e2e", "--body", "hello from the rust gateway"]);
