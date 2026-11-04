@@ -24,16 +24,15 @@ from __future__ import annotations
 
 import logging
 import os
-import signal
 import subprocess
 import threading
 import time
 from pathlib import Path
 from typing import Any
 
-from awm.trilium import instances, procs, sync
+from awm.trilium import instances, sync
 from awm.trilium.instances import Vault
-from awm.gatewayclient.proc import child_preexec
+from awm.gatewayclient.proc import GroupChild, child_preexec
 
 log = logging.getLogger("awm.trilium.server")
 
@@ -129,7 +128,7 @@ def child_env(vault: Vault) -> dict[str, str]:
     return env
 
 
-class Child(procs.GroupChild):
+class Child(GroupChild):
     """The vault's node process. Every method is safe to call at any time."""
 
     STOP_TIMEOUT_S = 20.0

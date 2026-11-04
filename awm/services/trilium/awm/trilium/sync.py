@@ -28,14 +28,13 @@ from __future__ import annotations
 import logging
 import os
 import shutil
-import signal
 import subprocess
 import threading
 import time
 from typing import Any
 
-from awm.gatewayclient.proc import child_preexec
-from awm.trilium import instances, procs
+from awm.gatewayclient.proc import GroupChild, child_preexec
+from awm.trilium import instances
 
 log = logging.getLogger("awm.trilium.sync")
 
@@ -133,7 +132,7 @@ def tunnel_cmd() -> list[str]:
     ]
 
 
-class Tunnel(procs.GroupChild):
+class Tunnel(GroupChild):
     """The ssh forward to the hub. Every method is safe to call at any time.
 
     Inert on a hub: every method returns a state saying so and spawns nothing.
