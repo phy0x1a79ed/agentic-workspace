@@ -18,7 +18,15 @@ Copy each file to the path on its right, on every node that runs Claude Code.
 | `skills/opal-seat-holder/SKILL.md` | `~/.claude/skills/opal-seat-holder/SKILL.md` | One unpinned session per task (`sessions.md` R67), channel verbs for machines |
 | `skills/scatter-gather/SKILL.md` | `~/.claude/skills/scatter-gather/SKILL.md` | Peripherals come from `PROTOCOLS.md` only |
 | `skills/dfs-interview/SKILL.md`, `stack.py` | `~/.claude/skills/dfs-interview/` | Decisions go to precedent posts. `quote.py` is unchanged |
-| `settings-hooks.md` | `~/.claude/settings.json` `hooks` | The hook lines from T18 |
+
+## Hooks
+
+`awm/scripts/deploy-hooks.sh` is the one installer of awm's hooks in `~/.claude/settings.json`. It holds no draft here. On each node after the T27 deploy:
+
+1. Run `awm/scripts/deploy-hooks.sh --check`. Expect exit 0.
+2. Run `awm/scripts/deploy-hooks.sh`.
+
+It swaps `awm-reporting-hook.py` for `awm-operations-hook.py` and installs the subagent cap on the seat nodes.
 
 ## Confirm with Tony at T27
 
@@ -34,4 +42,5 @@ The workspace `.mcp.json` is tracked in the awm repo. Change it in the T27 deplo
 ## Verify after the copy
 
 1. Run `grep -rln "precedence\|graphify\|goal_set\|goal_read\|context.md\|history.md" ~/.claude/CLAUDE.md ~/.claude/skills --exclude-dir=synced`. Expect no hit.
-2. Start one session. Confirm that it loads the `parallel-work` skill in its skill list.
+2. Run `grep -c awm-reporting-hook ~/.claude/settings.json`. Expect 0.
+3. Start one session. Confirm that it loads the `parallel-work` skill in its skill list.
