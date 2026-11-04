@@ -71,6 +71,11 @@ class ServiceIndex:
         return self.worker.submit(self.reindex, force=force, dry_run=dry_run,
                                   db=service_db_path(self.service)).result()
 
+    def handle_reindex(self, args: dict) -> dict[str, Any]:
+        """The ``reindex`` verb: :meth:`run_reindex` with the caller's ``force`` and ``dry_run``."""
+        return self.run_reindex(force=bool(args.get("force", False)),
+                                dry_run=bool(args.get("dry_run", False)))
+
     async def backfill_loop(self) -> None:
         """Reindex now and every :data:`BACKFILL_EVERY_S`; runs under ``spawn_supervised``."""
         loop = asyncio.get_running_loop()

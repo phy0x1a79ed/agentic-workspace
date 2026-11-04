@@ -79,11 +79,6 @@ def _handle_export(args: dict, as_: str | None = None) -> dict:
                               private.exclusion(as_))
 
 
-def _handle_reindex(args: dict) -> dict:
-    return search_index.run_reindex(force=bool(args.get("force", False)),
-                                    dry_run=bool(args.get("dry_run", False)))
-
-
 def _handle_precedent_import(args: dict) -> dict:
     path = Path(args["path"]) if args.get("path") else service_db_path("precedence")
     return precedents.import_db(path, dry_run=bool(args.get("dry_run", False)))
@@ -93,5 +88,5 @@ RENDER_HANDLERS = {
     "precedent_import": _handle_precedent_import,
     "render": _handle_render,
     "export": _handle_export,
-    "reindex": _handle_reindex,
+    "reindex": search_index.INDEX.handle_reindex,
 }
