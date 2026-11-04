@@ -39,6 +39,7 @@ This doc holds a session's id, the id of its task, its lifecycle from start to r
   - A wait (R51) keeps the job, because the session comes back. The wake resumes that job.
   - A resume of a retired session starts a new job from its transcript, with the same session id.
   - Tony: "Yes" (2026-11-03), to keeping the job only for a wait.
+- **R146.** A session that `start_other` starts has Remote Control on unless the caller turns it off. Its Remote Control name is the session's name, with each `/` written as `-`. Tony: "reflection start_other defaults to remote control on" (2026-11-04).
 - **R11.** Each session deploys its work. It skips the deploy only when no deploy is possible, as for a design draft. Tony: "always deploy. if impossible (like design drafts), dont deploy." A session that a coordinator started for a complex task leaves its branch to the coordinator, which deploys (R52 path 2). The deploy follows the project's instructions. An agent asks Tony when it is unsure.
 - **R12.** A session closes on its own. Tony does not accept it first.
   1. When its task is done, the agent debriefs. The debrief writes the journal, which posts to the card. Tony reviews the journal without a live agent.
@@ -97,6 +98,7 @@ This doc holds a session's id, the id of its task, its lifecycle from start to r
 
 Surveyed read only on 2026-10-30, 2026-10-31 and 2026-11-01.
 
+- **R146 missing.** `start_other` leaves Remote Control off unless the caller passes `remote_control: true`. A Remote Control name refuses a `/`, so a name such as `redux-build/gateway` needs a plain label.
 - **R8 partial.** The `retire` skill debriefs, reports to the starter, then runs `reflection stop`, which deletes the job. A close takes 2 to 4 writes: a journal post, a `request_human` review summary, and a message to the parent or a `social send`. Journal posts already copy onto the session's card.
 - **R9 partial.** Four ids exist: the 8-hex job id, the Claude session UUID, the card's Trilium id, and the journal post UUID. A Claude Code job id is the first 8 hex digits of the session id it started with. The reporting ledger mints integer task ids, keyed by node plus job, and keeps session ids as aliases (`reporting/ledger.py:1-8`). No button starts a task from a report. Discord `/new-agent` starts a fresh session in `awm/dev` from a free-text prompt, and it takes no report reference (`reporting/commands.py:136`). Board cards carry no action buttons. Moving a card between columns is the only action on the board.
 - **R10 conflicts.** Retire removes the job, so `resume_other` refuses it. `start_other replaces` seeds the new session from the last 8 transcript turns, and reads the old job's state, which retire deletes.
