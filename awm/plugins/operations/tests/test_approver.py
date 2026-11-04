@@ -474,15 +474,27 @@ async def test_revoked_device_stops(env, clock):
 def test_portal_login_grant(env, clock, keys):
     ap, _, _ = env
     dev, pk = enrol(ap)
-    b = ap.login_begin("vault", "deneb", "https://vault.test/after")
+    b = ap.login_begin("https://vault.test/trilium/")
+    assert (b["site"], b["node"]) == ("vault.test", "deneb")
     from awm.operations.approver.core import Approver
-    ch = Approver._login_challenge(b["nonce"], "vault", "deneb", "https://vault.test/after")
+    ch = Approver._login_challenge(b["nonce"], "vault.test", "deneb", "/trilium/")
     out = ap.login_finish(b["nonce"], pk.get(ch))
     body = verify_grant(out["grant"], load_public_key(keys.grant_pub_b64u()),
-                        kind="portal_login", node="deneb", now=clock())
+                        kind="portal_login", node="deneb", now=clock(),
+                        payload={"site": "vault.test", "return": "/trilium/"})
     assert body["approved_by_device"] == dev.id
+    assert out["redirect"].startswith("https://vault.test/__auth/portal?grant=")
+    assert out["redirect"].endswith("&next=%2Ftrilium%2F")
     with pytest.raises(ApproverError):
         ap.login_finish(b["nonce"], pk.get(ch))
+
+
+@pytest.mark.parametrize("next_url", [
+    "https://evil.test/trilium/", "http://vault.test/trilium/", "https://vault.test:8443/",
+    "javascript:alert(1)", "", "/trilium/"])
+def test_portal_login_takes_only_a_known_portal(env, next_url):
+    with pytest.raises(ApproverError, match="known portal"):
+        env[0].login_begin(next_url)
 
 
 async def test_plugin_commits_grant_names_every_commit(env, clock):

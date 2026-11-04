@@ -1,8 +1,7 @@
-"""awm.auth — the credential authority service.
+"""awm.auth — the session secret and the device tokens.
 
-Mints login-password generations on a 12h cadence with 24h validity
-(overlapping windows), signs sliding session tokens, and pushes the day's login
-password to Discord. The ``httpsfront`` edge
-enforces auth using material this service hands it; this service is the sole
-authority for credential state.
+Holds the secret the edge signs sliding session tokens with, and the operator's
+device tokens. The ``httpsfront`` edge enforces auth using material this service
+hands it; this service is the sole authority for that state. No login lives
+here: a person signs in with the passkey at alcor's approver (fleet.md R84).
 """

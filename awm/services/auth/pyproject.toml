@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "awm-auth"
 version = "0.1.0"
 requires-python = ">=3.11"
-description = "AWM auth service: the credential authority. Mints login-password generations on a 12h cadence with 24h overlapping validity, signs sliding session tokens, and pushes the day's login password to Discord. The httpsfront edge enforces auth using material this service hands it."
+description = "AWM auth service: holds the session-signing secret and the operator's device tokens. The httpsfront edge enforces auth using material this service hands it."
 dependencies = [
     "awm-config",
     "awm-persistence",

@@ -232,14 +232,14 @@ async function enrolPage() {
 // -- portal login (fleet.md R84) -------------------------------------------------------------
 
 async function loginPage() {
-  const q = new URLSearchParams(location.search);
-  const site = q.get("site") || "", node = q.get("node") || "", ret = q.get("return") || "";
-  $("#what").textContent = `Sign in to ${site} on ${node}`;
+  const next = new URLSearchParams(location.search).get("next") || "";
+  $("#what").textContent = `Sign in to ${new URL(next, location.href).hostname}`;
   $("#login").addEventListener("click", () => run("Sign in", async () => {
-    const begin = await post("/api/login/begin", { site, node, return: ret });
+    const begin = await post("/api/login/begin", { next });
+    $("#what").textContent = `Sign in to ${begin.site} on ${begin.node}`;
     const a = await assertion(begin.options);
     const out = await post("/api/login/finish", { nonce: begin.nonce, assertion: a });
-    location.assign(`${out.return}#awm_grant=${encodeURIComponent(JSON.stringify(out.grant))}`);
+    location.assign(out.redirect);
   }));
 }
 

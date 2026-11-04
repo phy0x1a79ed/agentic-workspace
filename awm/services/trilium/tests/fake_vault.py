@@ -110,7 +110,9 @@ class FakeVault:
     # -- notes ---------------------------------------------------------------
 
     def _create_note(self, body: dict, req) -> httpx.Response:
-        nid = self.new_id("note")
+        nid = body.get("noteId") or self.new_id("note")
+        if nid in self.notes:
+            return httpx.Response(400, request=req, json={"message": f"{nid} exists"})
         self.notes[nid] = {"title": body["title"], "content": body["content"],
                            "type": body.get("type", "text"),
                            "mime": body.get("mime", "text/html"),
@@ -122,6 +124,8 @@ class FakeVault:
 
     def _notes(self, method: str, tail: str, kw: dict, req) -> httpx.Response:
         note_id, _, sub = tail.partition("/")
+        if note_id not in self.notes:
+            return httpx.Response(404, request=req, json={"message": "not found"})
         if method == "DELETE" and not sub:
             for gone in self.descendants(note_id) | {note_id}:
                 self.notes.pop(gone, None)

@@ -68,7 +68,8 @@ def env(tmp_path: Path, clock: Clock, keys: Keys):
     tools = FakeTools()
     ap = Approver(tmp_path / "approver.db", keys,
                   Config(origin=ORIGIN, allowed_orders={"spawn": ["*"], "new_from": ["*"],
-                                                        "zotero_sync": ["deneb"]}, rate_max=5),
+                                                        "zotero_sync": ["deneb"]}, rate_max=5,
+                         portals={"vault.test": "deneb"}),
                   store, tools, clock=clock)
     return ap, store, tools
 

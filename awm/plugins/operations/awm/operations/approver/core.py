@@ -22,10 +22,11 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Protocol
-from urllib.parse import urlparse
+from urllib.parse import urlencode, urlparse
 
 from verify_grant import b64u, canon, unb64u
 
+from awm.operations.api import PAYLOADS as API_PAYLOADS
 from awm.operations.approver import passkeys
 from awm.operations.approver.chain import (MESSAGE_FIELDS, fresh_head, next_head, passkey_challenge,
                                 unlock_challenge)
@@ -42,11 +43,14 @@ IN_FLIGHT_EXPIRY_S = 60
 READ_MAX_AGE_S = 60
 LOGIN_TTL_S = 5 * 60
 LOGIN_GRANT_S = 60
+#: Where a portal's edge takes the grant back (httpsfront ``portal.CALLBACK``).
+PORTAL_CALLBACK = "/__auth/portal"
 WINDOW_MAX_MIN = 12 * 60
 MINUTES_MIN, MINUTES_MAX = 15, 1440
 
-REQUEST_KINDS = ("admin_ssh", "trust_raise", "invite", "browser_signin", "vault_hold",
-                 "device_enrol", "plugin_commits")
+#: What a relay may ask for, and device_enrol, which only enrol_ask opens.
+PAYLOADS = {**API_PAYLOADS, "device_enrol": ("name",)}
+REQUEST_KINDS = tuple(PAYLOADS)
 NODE_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 REQUEST_ID_RE = re.compile(r"^q[A-Za-z0-9_-]{12}$")
 COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
@@ -74,6 +78,8 @@ class Config:
     origin: str
     allowed_orders: dict[str, list[str]] = field(default_factory=dict)
     rate_max: int = 30
+    #: The pages that may ask for a sign-in: host -> the node whose edge it is.
+    portals: dict[str, str] = field(default_factory=dict)
     spawn_project: str = "awm"
     spawn_scope: str = "intake"
 
@@ -570,11 +576,7 @@ class Approver:
     # -- approval requests (fleet.md R97) ---------------------------------------------------
 
     def _check_payload(self, kind: str, node: str | None, payload: dict) -> None:
-        need = {"admin_ssh": ("pubkey", "nodes"), "trust_raise": ("session_id", "from", "to"),
-                "invite": ("perm", "reason", "holder_pubkey"), "browser_signin": ("seat", "site"),
-                "vault_hold": (), "device_enrol": ("name",),
-                "plugin_commits": ("change", "plugins")}[kind]
-        missing = [k for k in need if k not in payload]
+        missing = [k for k in PAYLOADS[kind] if k not in payload]
         if missing:
             raise ApproverError("bad_request", f"{kind} payload lacks {missing}")
         if kind == "admin_ssh":
@@ -789,16 +791,25 @@ class Approver:
         self._close_windows(device_id, "revoked")
         return {"device_id": device_id, "revoked": n == 1}
 
-    # -- portal login (fleet.md R84) --------------------------------------------------------------
+    # -- portal login (fleet.md R84, users.md R130) --------------------------------------------
 
-    def login_begin(self, site: str, node: str, return_url: str) -> dict[str, Any]:
-        if not NODE_RE.match(node or ""):
-            raise ApproverError("bad_request", "node is a node name")
+    def _portal(self, next_url: str) -> tuple[str, str, str]:
+        """``(host, node, path)`` for a page that may ask for a sign-in, from the portals map."""
+        u = urlparse(next_url or "")
+        node = self.config.portals.get(u.hostname or "")
+        path = u.path or "/"
+        if u.scheme != "https" or u.port not in (None, 443) or node is None or \
+                not path.startswith("/") or path.startswith("//"):
+            raise ApproverError("bad_request", "next is an https page on a known portal")
+        return u.hostname, node, path
+
+    def login_begin(self, next_url: str) -> dict[str, Any]:
+        host, node, path = self._portal(next_url)
         nonce = secrets.token_hex(16)
-        self._x("INSERT INTO logins VALUES (?,?,?,?,?,NULL)", nonce, site, node, return_url,
+        self._x("INSERT INTO logins VALUES (?,?,?,?,?,NULL)", nonce, host, node, path,
                 self.clock())
-        return {"nonce": nonce, "options": self.passkey_options(self._login_challenge(
-            nonce, site, node, return_url))}
+        return {"nonce": nonce, "site": host, "node": node,
+                "options": self.passkey_options(self._login_challenge(nonce, host, node, path))}
 
     @staticmethod
     def _login_challenge(nonce: str, site: str, node: str, return_url: str) -> bytes:
@@ -806,6 +817,7 @@ class Approver:
                                                   "return": return_url})).digest()
 
     def login_finish(self, nonce: str, assertion: dict) -> dict[str, Any]:
+        """A grant for one page on one portal, and the edge callback that spends it."""
         row = self._one("SELECT * FROM logins WHERE nonce=?", nonce)
         if row is None or row["used_at"] is not None or row["created"] < self.clock() - LOGIN_TTL_S:
             raise ApproverError("bad_login", "the login is unknown, used or stale")
@@ -822,7 +834,10 @@ class Approver:
                                                         "return": row["return_url"]})).hexdigest(),
                 "not_before": now, "not_after": now + LOGIN_GRANT_S,
                 "approved_by_device": device}
-        return {"grant": self.keys.envelope("grant", body), "return": row["return_url"]}
+        grant = self.keys.envelope("grant", body)
+        query = urlencode({"grant": b64u(json.dumps(grant, separators=(",", ":")).encode()),
+                           "next": row["return_url"]})
+        return {"grant": grant, "redirect": f"https://{row['site']}{PORTAL_CALLBACK}?{query}"}
 
     # -- the 2fa strip (R137) ------------------------------------------------------------------
 

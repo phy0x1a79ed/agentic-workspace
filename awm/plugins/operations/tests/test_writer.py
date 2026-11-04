@@ -1,7 +1,7 @@
 """The board writer, board-install and ops_post through the trilium tool (fleet.md R105).
 
-``FakeTrilium`` answers the tool's verbs in memory. ``note_create`` here takes the
-``note_id`` the writer asks for; the real tool does not yet (see the plan's Callouts).
+``FakeTrilium`` answers the tool's verbs in memory, ``note_create`` with its optional
+``note_id`` included.
 """
 
 from __future__ import annotations

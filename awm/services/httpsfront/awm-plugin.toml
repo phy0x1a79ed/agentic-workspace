@@ -11,14 +11,14 @@ major = 1
 tier = "off"
 
 [needs]
-secrets = []
+secrets = ["AWM_APPROVER_GRANT_PUBKEY"]  # alcor's grant key, for the passkey sign-in (fleet.md R84)
 network = []
 platform = ["linux"]
 
 [[needs.tool]]
 name = "auth"
 major = 1
-verbs = ["edge_material", "verify"]
+verbs = ["edge_material"]
 
 [[needs.tool]]
 name = "trilium"

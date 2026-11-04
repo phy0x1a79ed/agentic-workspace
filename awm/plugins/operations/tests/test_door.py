@@ -63,3 +63,29 @@ def test_door_argv(monkeypatch):
     argv = door.door_argv()
     assert argv[:4] == ["ssh", "-T", "-p", "2201"] and argv[-2:] == ["ops@alcor", "door"]
     assert "/k" in argv
+
+
+async def test_an_operator_command_needs_the_services_own_user(served, monkeypatch):
+    store, path = served
+
+    def ask(cmd: str) -> dict:
+        import json
+        import socket
+        with socket.socket(socket.AF_UNIX) as s:
+            s.connect(str(path))
+            s.sendall(json.dumps({"cmd": cmd}).encode() + b"\n")
+            return json.loads(s.makefile().readline())
+
+    import asyncio
+    assert isinstance(await asyncio.to_thread(ask, "devices"), list)
+    monkeypatch.setattr(door.os, "getuid", lambda: -1)
+    assert "own user" in (await asyncio.to_thread(ask, "devices"))["error"]
+
+
+async def test_a_node_pulls_only_its_own_orders(served, env):
+    ap = env[0]
+    ap.issue_order("spawn", "mizar", {"title": "x"})
+    with pytest.raises(Refused, match="only its own orders"):
+        await locked(served[1], node="deneb").call("order_pull", {"node": "mizar"})
+    assert await locked(served[1], node="deneb").call("order_pull", {}) == []
+    assert len(await locked(served[1], node="mizar").call("order_pull", {})) == 1

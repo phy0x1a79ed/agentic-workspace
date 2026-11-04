@@ -149,8 +149,8 @@ down stays out of history.
   Discord takes a user id only.
 
 On Discord, `channel` also accepts `dm:<user_id>`: `send` and `fetch` open that
-user's DM with the bot on first use. Fleet notifications (ssh lock alerts, the
-auth password push) target the operator this way, so they need no stored DM
+user's DM with the bot on first use. Fleet notifications (ssh lock alerts)
+target the operator this way, so they need no stored DM
 channel id. The bot reaches a user only while they share a guild.
 
 **The retrieval contract, when the call is borrowed.** `path` and `dir` are

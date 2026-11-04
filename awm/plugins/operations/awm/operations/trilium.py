@@ -33,15 +33,12 @@ class TriliumTool:
     def content(self, note_id: str) -> str:
         return str(self._call("note_get", note_id=note_id).get("content") or "")
 
-    def create_note(self, parent: str, note_id: str, title: str, type_: str, content: str = "",
-                    mime: str | None = None, labels: dict[str, str] | None = None) -> None:
-        """Create a note under a fixed id, so a re-run finds it again.
-
-        The trilium tool's ``note_create`` takes no ``note_id`` today. The call fails until
-        it does: that is a question for Tony, not something the writer works around.
-        """
-        self._call("note_create", parent=parent, note_id=note_id, title=title, type=type_,
-                   content=content, mime=mime, labels=labels or None)
+    def create_note(self, parent: str, title: str, type_: str = "code", content: str = "", *,
+                    note_id: str | None = None, mime: str | None = None,
+                    labels: dict[str, str] | None = None) -> str:
+        """Create a note and return its id. A fixed ``note_id`` lets a re-run find it again."""
+        return self._call("note_create", parent=parent, note_id=note_id, title=title, type=type_,
+                          content=content, mime=mime, labels=labels or None)["note_id"]
 
     def update(self, note_id: str, *, title: str | None = None, content: str | None = None,
                mime: str | None = None, labels: dict[str, str] | None = None) -> None:
@@ -59,12 +56,6 @@ class TriliumTool:
 
     def children(self, note_id: str) -> list[dict[str, Any]]:
         return list((self._call("note_children", note_id=note_id) or {}).get("children") or [])
-
-    def create(self, parent: str, title: str, content: str, *, type_: str = "code",
-               mime: str | None = None, labels: dict[str, str] | None = None) -> str:
-        """A new note under a parent, its id chosen by Trilium."""
-        return self._call("note_create", parent=parent, title=title, content=content, type=type_,
-                          mime=mime, labels=labels or None)["note_id"]
 
     def delete_note(self, note_id: str) -> None:
         try:

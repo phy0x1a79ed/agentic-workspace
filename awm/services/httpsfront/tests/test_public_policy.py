@@ -2,8 +2,8 @@
 paths exist.
 
 What these pin: the browser's ``X-Awm-As`` is overwritten (HTTP and WS) with
-the session's verified subject; ``/__auth/login`` takes a username, sets both
-cookies, and relays a lockout as 429; ``/__auth/whoami`` answers the real
+the session's verified subject; a browser with no session goes to alcor's
+passkey login; ``/__auth/whoami`` answers the real
 subject; on the public profile every unlisted path is 404 signed in or not,
 and user-scoped paths admit only their own user; with the profile unset the
 front is the transparent proxy it always was (every older test in this dir).
@@ -16,7 +16,7 @@ import pytest
 from starlette.testclient import TestClient
 
 from awm.httpsfront import policy, proxy
-from awm.httpsfront.auth import AS_COOKIE_NAME, COOKIE_NAME
+from awm.httpsfront.auth import COOKIE_NAME
 
 pytestmark = [pytest.mark.unit, pytest.mark.smoke]
 
@@ -25,19 +25,12 @@ SUBS = {TONY: "tony", STEVEN: "steven"}
 
 
 class _Gate:
-    """Two sessions, one known login, one locked login."""
+    """Two sessions."""
 
     async def authenticate(self, *, cookie=None, bearer=None, shape=None):
         if cookie in SUBS:
             return True, None, SUBS[cookie]
         return False, None, None
-
-    async def verify_login(self, *, username, password, client_ip):
-        if username == "locked":
-            return {"ok": False, "locked": True, "retry_after": 321}
-        if username == "tony" and password == "pw":
-            return {"ok": True, "token": TONY, "sub": "tony"}
-        return {"ok": False}
 
     async def session_ttl_seconds(self):
         return 3600.0
@@ -131,31 +124,6 @@ def test_whoami_answers_the_real_subject():
         assert c.get("/__auth/whoami").status_code == 401
 
 
-def test_login_with_username_sets_both_cookies():
-    with _client(_app(), token=None) as c:
-        r = c.post("/__auth/login", json={"username": "tony", "password": "pw"})
-    assert r.status_code == 200 and r.json()["user"] == "tony"
-    assert r.cookies[COOKIE_NAME] == TONY
-    assert r.cookies[AS_COOKIE_NAME] == "tony"
-    setc = "\n".join(r.headers.get_list("set-cookie")).lower()
-    assert "awm_session=" in setc and "httponly" in setc
-    assert "samesite=lax" in setc
-
-
-def test_login_relays_a_lockout_as_429():
-    with _client(_app(), token=None) as c:
-        r = c.post("/__auth/login", json={"username": "locked", "password": "x"})
-    assert r.status_code == 429
-    assert r.headers["retry-after"] == "321"
-    assert COOKIE_NAME not in r.cookies
-
-
-def test_bad_login_is_401_and_sets_nothing():
-    with _client(_app(), token=None) as c:
-        r = c.post("/__auth/login", json={"username": "tony", "password": "no"})
-    assert r.status_code == 401 and not r.cookies
-
-
 def test_logout_clears_both_cookies():
     with _client(_app()) as c:
         r = c.post("/__auth/logout")
@@ -168,7 +136,7 @@ def test_logout_clears_both_cookies():
 DENIED = [
     "/hub/services", "/invoke", "/tools", "/svc/scopes/fn/scope_search",
     "/svc/auth/fn/password", "/svc/auth/fn/verify",
-    "/__auth/link", "/ca.crt", "/ca.pem",
+    "/__auth/link", "/__auth/login", "/ca.crt", "/ca.pem",
     "/ui/agents/", "/files/", "/files/projects/awm/dev/x",
     "/__landing/tags",
     # notes and drawio left the public host, then awm (install.md R134). These
@@ -216,8 +184,8 @@ def test_allowed_paths_proxy_when_signed_in(path):
 def test_allowed_paths_want_a_login_when_signed_out():
     with _client(_app("public"), token=None) as c:
         r = c.get("/ui/trilium/", headers={"Accept": "text/html"})
-        assert r.status_code == 200 and "username" in r.text
-        assert "ca.crt" not in r.text
+        assert r.status_code == 302 and r.headers["location"].endswith(
+            "/portal_login?next=https%3A%2F%2Ffront.example%2Fui%2Ftrilium%2F")
         assert c.get("/svc/trilium/fn/status").status_code == 401
 
 
@@ -240,14 +208,7 @@ def test_root_redirects_to_the_vault_or_asks_for_login():
         assert r.status_code == 302 and r.headers["location"] == "/trilium/"
     with _client(_app("public"), token=None) as c:
         r = c.get("/", headers={"Accept": "text/html"})
-        assert r.status_code == 200 and "username" in r.text
-
-
-def test_public_cookies_are_samesite_strict():
-    with _client(_app("public"), token=None) as c:
-        r = c.post("/__auth/login", json={"username": "tony", "password": "pw"})
-    setc = "\n".join(r.headers.get_list("set-cookie")).lower()
-    assert setc.count("samesite=strict") == 2
+        assert r.status_code == 302 and "/portal_login?next=" in r.headers["location"]
 
 
 def test_serve_without_tls_binds_loopback(monkeypatch):

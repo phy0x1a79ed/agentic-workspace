@@ -76,7 +76,7 @@ class Verdict(str, Enum):
 #: which is the one thing this module exists to prevent.
 OPEN_PREFIXES = ("/ui/trilium/",)
 OPEN_EXACT = frozenset({"/", "/ui/trilium",
-                        "/__auth/login", "/__auth/logout", "/__auth/whoami"})
+                        "/__auth/portal", "/__auth/logout", "/__auth/whoami"})
 
 # The vault's own verbs. An allow-list, opposite to the deny-lists above,
 # because this surface is small and closed and most of it is destructive: the

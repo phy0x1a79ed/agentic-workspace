@@ -120,10 +120,13 @@ class Etapi:
         self._request("DELETE", f"/etapi/branches/{branch_id}")
 
     def create_note(self, *, parent_note_id: str, title: str, type: str,
-                    content: str, mime: str | None = None) -> dict:
+                    content: str, mime: str | None = None,
+                    note_id: str | None = None) -> dict:
+        """Create a note. Trilium picks the id unless ``note_id`` names one."""
         return self._request("POST", "/etapi/create-note", json={
             "parentNoteId": parent_note_id, "title": title, "type": type,
             "content": content, **({"mime": mime} if mime else {}),
+            **({"noteId": note_id} if note_id else {}),
         }).json()
 
     def note(self, note_id: str) -> dict:

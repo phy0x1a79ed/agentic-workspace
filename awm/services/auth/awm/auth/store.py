@@ -5,23 +5,13 @@ Owns two things in the service's own SQLite DB:
 * **The signing secret** — one long-lived HMAC key (``awm_secret``) the edge uses
   to verify+slide session cookies offline. Minted once, never rotated (rotating
   it would invalidate every live session; the credentials rotate instead).
-* **The credential generations** — each row is one minted *pair*
-  (``login_password``, ``peer_credential``) with a ``minted_at`` / ``expires_at``
-  window (``awm_credentials``). Rotation inserts a new generation every cadence;
-  with a 12h cadence and 24h validity, up to two generations are valid at once,
-  which is exactly what lets a client keep working across a rotation without
-  re-authenticating.
-
-* **Login failures** — ``awm_login_fail`` holds the failed-attempt counters
-  that back the lockout, keyed ``ip:<addr>``.
 
 * **Device tokens** — ``awm_device_tokens`` holds, per minted token, its owner
   (``operator`` for every token minted since v6), a label, an optional scope and the SHA-256 of its secret. The secret itself is never stored. A
   revoked row stays, with ``revoked_at`` set, so a listing can still name it.
 
-This module is pure storage — the rotation *policy* (when to mint, the Discord
-push, the ``$AWM_PEER_CRED`` file) and the lockout policy live in
-:mod:`awm.auth.service`.
+This module is pure storage. No login password or peer credential lives here:
+a person signs in with the passkey (fleet.md R84), and a node with its ssh edge.
 """
 
 from __future__ import annotations
@@ -33,25 +23,12 @@ from typing import Any
 from awm.persistence.databases import get_connection, init_service_db
 
 SERVICE = "auth"
-_SCHEMA_VERSION = 6
+_SCHEMA_VERSION = 7
 
 _SCHEMA = """
 CREATE TABLE awm_secret (
     id     INTEGER PRIMARY KEY CHECK (id = 1),
     secret TEXT NOT NULL
-);
-CREATE TABLE awm_credentials (
-    generation     INTEGER PRIMARY KEY AUTOINCREMENT,
-    login_password TEXT NOT NULL,
-    peer_credential TEXT NOT NULL,
-    minted_at      REAL NOT NULL,
-    expires_at     REAL NOT NULL
-);
-CREATE TABLE awm_login_fail (
-    key          TEXT PRIMARY KEY,
-    fails        INTEGER NOT NULL DEFAULT 0,
-    locked_until REAL NOT NULL DEFAULT 0,
-    last_at      REAL NOT NULL DEFAULT 0
 );
 CREATE TABLE awm_device_tokens (
     id            TEXT PRIMARY KEY,
@@ -112,6 +89,12 @@ UPDATE awm_device_tokens
 DROP TABLE IF EXISTS awm_users;
 DROP TABLE IF EXISTS awm_penpot;
 """,
+    # The passkey grant replaced the shared login password and its lockout
+    # (fleet.md R84, users.md R130), and the edge list the peer credential.
+    (6, 7): """\
+DROP TABLE IF EXISTS awm_credentials;
+DROP TABLE IF EXISTS awm_login_fail;
+""",
 }
 
 
@@ -135,141 +118,6 @@ def ensure_secret() -> str:
         conn.execute("INSERT INTO awm_secret (id, secret) VALUES (1, ?)", (secret,))
         conn.commit()
         return secret
-    finally:
-        conn.close()
-
-
-# --- credential generations ------------------------------------------------
-
-
-def _row_to_dict(row: Any) -> dict[str, Any]:
-    return {
-        "generation": row["generation"],
-        "login_password": row["login_password"],
-        "peer_credential": row["peer_credential"],
-        "minted_at": row["minted_at"],
-        "expires_at": row["expires_at"],
-    }
-
-
-def latest() -> dict[str, Any] | None:
-    """The newest credential generation, or ``None`` if none minted yet."""
-    conn = get_connection(SERVICE)
-    try:
-        row = conn.execute(
-            "SELECT * FROM awm_credentials ORDER BY generation DESC LIMIT 1"
-        ).fetchone()
-        return _row_to_dict(row) if row is not None else None
-    finally:
-        conn.close()
-
-
-def valid_generations(now: float | None = None) -> list[dict[str, Any]]:
-    """Every generation still inside its validity window, newest first."""
-    now = time.time() if now is None else now
-    conn = get_connection(SERVICE)
-    try:
-        rows = conn.execute(
-            "SELECT * FROM awm_credentials WHERE expires_at > ? "
-            "ORDER BY generation DESC",
-            (now,),
-        ).fetchall()
-        return [_row_to_dict(r) for r in rows]
-    finally:
-        conn.close()
-
-
-def mint_generation(*, validity_seconds: float, now: float | None = None,
-                    login_password: str | None = None,
-                    peer_credential: str | None = None) -> dict[str, Any]:
-    """Insert a fresh credential pair and return it.
-
-    ``login_password`` is human-typed once a day, so it is kept short-ish
-    (url-safe, ~16 chars); ``peer_credential`` is machine-only and long.
-    """
-    now = time.time() if now is None else now
-    login_password = login_password or secrets.token_urlsafe(12)
-    peer_credential = peer_credential or secrets.token_urlsafe(32)
-    expires_at = now + validity_seconds
-    conn = get_connection(SERVICE)
-    try:
-        cur = conn.execute(
-            "INSERT INTO awm_credentials "
-            "(login_password, peer_credential, minted_at, expires_at) "
-            "VALUES (?, ?, ?, ?)",
-            (login_password, peer_credential, now, expires_at),
-        )
-        conn.commit()
-        gen = cur.lastrowid
-    finally:
-        conn.close()
-    return {
-        "generation": gen,
-        "login_password": login_password,
-        "peer_credential": peer_credential,
-        "minted_at": now,
-        "expires_at": expires_at,
-    }
-
-
-def prune_expired(now: float | None = None) -> int:
-    """Delete generations whose validity window has fully elapsed. Returns the
-    number removed. Keeps every still-valid generation (the overlapping pair)."""
-    now = time.time() if now is None else now
-    conn = get_connection(SERVICE)
-    try:
-        cur = conn.execute("DELETE FROM awm_credentials WHERE expires_at <= ?", (now,))
-        conn.commit()
-        return cur.rowcount
-    finally:
-        conn.close()
-
-
-# --- login-failure counters --------------------------------------------------
-
-
-def fail_get(key: str) -> dict[str, Any]:
-    conn = get_connection(SERVICE)
-    try:
-        row = conn.execute(
-            "SELECT * FROM awm_login_fail WHERE key = ?", (key,)).fetchone()
-        if row is None:
-            return {"key": key, "fails": 0, "locked_until": 0.0, "last_at": 0.0}
-        return {"key": key, "fails": row["fails"],
-                "locked_until": row["locked_until"], "last_at": row["last_at"]}
-    finally:
-        conn.close()
-
-
-def fail_record(key: str, *, threshold: int, lock_seconds: float,
-                now: float | None = None) -> dict[str, Any]:
-    """Count one failed attempt on ``key``. Reaching ``threshold`` locks the key
-    for ``lock_seconds`` and resets the counter for the next window."""
-    now = time.time() if now is None else now
-    cur = fail_get(key)
-    fails = cur["fails"] + 1
-    locked_until = cur["locked_until"]
-    if fails >= threshold:
-        locked_until = now + lock_seconds
-        fails = 0
-    conn = get_connection(SERVICE)
-    try:
-        conn.execute(
-            "INSERT INTO awm_login_fail (key, fails, locked_until, last_at) "
-            "VALUES (?, ?, ?, ?) ON CONFLICT(key) DO UPDATE SET fails = excluded.fails, "
-            "locked_until = excluded.locked_until, last_at = excluded.last_at",
-            (key, fails, locked_until, now))
-        conn.commit()
-    finally:
-        conn.close()
-    return {"key": key, "fails": fails, "locked_until": locked_until, "last_at": now}
-
-
-def fail_clear(key: str) -> None:
-    conn = get_connection(SERVICE)
-    try:
-        conn.execute("DELETE FROM awm_login_fail WHERE key = ?", (key,))
-        conn.commit()
     finally:
         conn.close()
 

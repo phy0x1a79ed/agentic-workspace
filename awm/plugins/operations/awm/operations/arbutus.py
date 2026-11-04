@@ -29,6 +29,7 @@ from typing import Any, Awaitable, Callable
 from awm import gatewayclient
 
 from awm.operations import arbutus_config as config
+from awm.operations.gateway import GatewayTool
 
 log = logging.getLogger("awm.operations.arbutus")
 
@@ -112,16 +113,15 @@ async def send_social(account: str, channel: str, text: str, *, thread: str = ""
         args["quiet"] = True
     if thread:
         args["thread"] = thread
-    result = await gatewayclient.call("social", "send", args, peer=gatewayclient.peer_env("AWM_SOCIAL_PEER"))
+    result = await GatewayTool("social", peer=gatewayclient.peer_env("AWM_SOCIAL_PEER"),
+                               timeout=30).call("send", args)
     if isinstance(result, dict) and result.get("ok") is False:
         raise RuntimeError(f"social send refused: {result.get('error') or result}")
     return result if isinstance(result, dict) else {}
 
 
 def _send_line(job: str, text: str) -> None:
-    from awm.gatewayclient import call_sync
-
-    out = call_sync("reflection", "message", {"job": job, "text": text}, timeout=30)
+    out = GatewayTool("reflection", timeout=30).call_sync("message", {"job": job, "text": text})
     if isinstance(out, dict) and out.get("ok") is False:
         raise RuntimeError(f"could not type into {job}: {out.get('error') or out.get('reason')}")
 

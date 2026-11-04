@@ -1,16 +1,12 @@
 """Hub adapter for the ``auth`` service — the credential authority.
 
 Boots on the shared ``awm.gatewayclient.ServiceAdapter`` loop (register → ready
-→ serve → reconnect). Publishes the credential + session verbs; the rotation
-loop runs in ``on_start``.
+→ serve → reconnect). Publishes the session and device-token verbs.
 
 Verbs:
-  - ``password``        current login password + window (loopback/CLI).
-  - ``verify``          shared login password → signed operator session token.
   - ``edge_material``   signing secret + device token digests for the edge.
-  - ``rotate``          force a mint now (ops/testing).
-  - ``status``          rotation state summary, incl. last push outcome (the
-                        gateway's ``awm status`` embeds it).
+  - ``status``          session lifetime and live device tokens (the gateway's
+                        ``awm status`` embeds it).
   - ``device_mint`` / ``device_list`` / ``device_revoke``
                         revocable operator device tokens (CLI/HTTP,
                         operator only).
@@ -37,29 +33,6 @@ _CLI_HTTP = ["cli", "http"]
 API_MANIFEST: dict[str, Any] = {
     "functions": [
         {
-            "name": "password",
-            "tool": "auth_password",
-            "effect": "secret",
-            "surfaces": _CLI_HTTP,
-            "description": "Get the current day's awm login password and its "
-                           "validity window (loopback/CLI only).",
-            "params": [],
-        },
-        {
-            "name": "verify",
-            "tool": "auth_verify",
-            "effect": "secret",
-            "surfaces": _CLI_HTTP,
-            "description": "Validate the shared login password; on success "
-                           "return a signed operator session token for the "
-                           "edge to set as a cookie. A locked client IP "
-                           "answers {ok:false, retry_after}.",
-            "params": [
-                {"name": "password", "type": "string", "required": True},
-                {"name": "client_ip", "type": "string"},
-            ],
-        },
-        {
             "name": "edge_material",
             "tool": "auth_edge_material",
             "effect": "secret",
@@ -75,21 +48,12 @@ API_MANIFEST: dict[str, Any] = {
                        {"name": "token_scopes", "type": "array"}],
         },
         {
-            "name": "rotate",
-            "tool": "auth_rotate",
-            "effect": "secret",
-            "surfaces": _CLI_HTTP,
-            "description": "Force minting a fresh credential pair now.",
-            "params": [],
-        },
-        {
             "name": "status",
             "tool": "auth_status",
             "effect": "read",
             "surfaces": _CLI_HTTP,
-            "description": "Report rotation state: valid generations, latest "
-                           "window, cadence, the last Discord push attempt's "
-                           "outcome, and the peer-cred file path.",
+            "description": "Report the session lifetime and the number of live "
+                           "device tokens.",
             "params": [],
         },
         {
@@ -130,16 +94,13 @@ API_MANIFEST: dict[str, Any] = {
     ],
     "emitters": [],
     "sessions": [],
-    # Opt into the settings page (rotation cadence, validity, Discord push).
+    # Opt into the settings page (session lifetime).
     "config": CONTRACT.manifest_fragment(),
 }
 
 
 HANDLERS: dict[str, Any] = {
-    "password": service.h_password,
-    "verify": service.h_verify,
     "edge_material": service.h_edge_material,
-    "rotate": service.h_rotate,
     "status": service.h_status,
     "device_mint": service.h_device_mint,
     "device_list": service.h_device_list,

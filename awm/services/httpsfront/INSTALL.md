@@ -93,6 +93,8 @@ explicitly and merged in:
 | `AWM_EDGE_TETHER` | `0` | `1`: mount the tether relay at `/tether`, reachable with **no session** |
 | `AWM_EDGE_BOARD` | `0` | `1`: mount the federation board at `/board/`, reachable with **no session** |
 | `AWM_BOARD_PORT` | `12521` | the board's loopback port, which the board mount forwards to |
+| `AWM_APPROVER_GRANT_PUBKEY` | — | alcor's grant key, b64url raw. Unset: no browser can sign in |
+| `AWM_APPROVER_ORIGIN` | `https://auth.tony-xy-liu.com` | where a browser with no session signs in |
 | `AWM_EDGE_CERT_DIR` | `.certs/` beside the service | where the leaf lives |
 
 `AWM_EDGE_TETHER` is the one flag here that widens the door rather than
@@ -103,7 +105,11 @@ exact path shapes, both described in `awm/httpsfront/tether.py`.
 
 `AWM_EDGE_BOARD` widens the door like the tether flag does, so it is off unless a host means it. The board authenticates its own parties with a bearer the board issued, so the mount answers before edge authentication. It forwards only the exact method-and-path shapes in `awm/httpsfront/board.py`. The mount **strips every `X-Awm-*` header**, `Cookie` and `X-Forwarded-*` from the request. It also removes a node token, a device token or the legacy bearer, so the board never holds a credential that is live elsewhere. The edge claims the whole `/board` mount on every node, wired or not, and a path under it never reaches the gateway.
 
-On every profile the edge overwrites `X-Awm-As` with the session's verified subject (`user:<name>` for a session or a device token, `peer:<node>` for a node token, or the bare `peer` for the legacy bearer), so a downstream service may trust that header — except on the tether and board mounts, which have no verified subject and where the header is stripped rather than defaulted. A node that the peer book does not call domestic reaches only `/tools` and `/invoke` (`FEDERATION.md` § *The foreign gate*). `/__auth/login` takes `{username, password}`; a blank username is the shared password. The readable `awm_as` cookie is the username for the pages' user chip and carries no authority.
+On every profile the edge overwrites `X-Awm-As` with the session's verified subject (`user:<name>` for a session or a device token, `peer:<node>` for a node token, or the bare `peer` for the legacy bearer), so a downstream service may trust that header — except on the tether and board mounts, which have no verified subject and where the header is stripped rather than defaulted. A node that the peer book does not call domestic reaches only `/tools` and `/invoke` (`FEDERATION.md` § *The foreign gate*). The readable `awm_as` cookie is the username for the pages' user chip and carries no authority.
+
+A browser with no session goes to alcor's approver, `AWM_APPROVER_ORIGIN/portal_login?next=<this page>`. After the passkey, the approver sends it to `/__auth/portal` with a `portal_login` grant. The edge checks the grant offline against `AWM_APPROVER_GRANT_PUBKEY`, for this node, this host and this path. It spends the grant once and mints the session cookie (`awm/httpsfront/portal.py`, fleet.md R84). No password login remains. The approver issues a grant only for a host its config's `portals` map lists.
+
+**CAUTION** `/__auth/portal` carries a live grant in its query string. Keep access logging off on every proxy in front of it.
 
 `AWM_HTTPS_PORT` is a clean one-line port knob: set it in the workspace's
 gitignored `$AWM_WORKSPACE/.awm/env` (merged into the gateway env at startup,
@@ -120,7 +126,7 @@ there is no plain-HTTP relay. A future port change is one line in `.awm/env`.
 
 Fronting the gateway wholesale means the **entire awm surface** — every page and
 every service, including the mic's audio session — is reachable from the
-LAN/ZeroTier on `:8443` behind this one password. The gateway remains
+LAN/ZeroTier on `:8443` behind this one sign-in. The gateway remains
 loopback-only for plain HTTP; this is the single TLS door in, and there is no
 longer any other.
 

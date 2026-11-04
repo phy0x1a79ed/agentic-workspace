@@ -48,7 +48,7 @@ class Writer:
     # -- the Ops book ----------------------------------------------------------------
 
     def post_ops(self, kind: str, node: str, title: str, body: str) -> str:
-        """Rewrite the one managed note for this kind and node in the Ops book, such as a login password."""
+        """Rewrite the one managed note for this kind and node in the Ops book."""
         hits = self.api.search(f"#{OPS_LABEL}")
         if len(hits) != 1:
             raise ValueError(f"{len(hits)} notes carry #{OPS_LABEL}: the Ops book needs exactly one")
@@ -59,8 +59,8 @@ class Writer:
             if kid.get("title") == name and "agentManaged" in (kid.get("labels") or []):
                 self.api.update(kid["note_id"], content=content, labels={"changed": stamp})
                 return kid["note_id"]
-        return self.api.create(ops, name, content, mime=MARKDOWN,
-                               labels={**MANAGED, "changed": stamp})
+        return self.api.create_note(ops, name, "code", content, mime=MARKDOWN,
+                                    labels={**MANAGED, "changed": stamp})
 
     # -- one card ----------------------------------------------------------------------
 
@@ -79,10 +79,10 @@ class Writer:
         note = self.api.note(nid)
         if note is None:
             if card["kind"] == "note":
-                self.api.create_note(ROOT_ID, nid, card["title"], "code", "",
+                self.api.create_note(ROOT_ID, card["title"], "code", note_id=nid,
                                      mime="text/x-markdown", labels=labels)
             else:
-                self.api.create_note(ROOT_ID, nid, card["title"], "text", "", labels=labels)
+                self.api.create_note(ROOT_ID, card["title"], "text", note_id=nid, labels=labels)
         else:
             self.api.update(nid, title=card["title"] if note.get("title") != card["title"] else None,
                             labels=labels)
@@ -95,7 +95,8 @@ class Writer:
                              "reason": card["meta"].get("reason")}, sort_keys=True)
         rid = record_note_id(tid)
         if self.api.note(rid) is None:
-            self.api.create_note(nid, rid, "record", "code", record, mime="application/json")
+            self.api.create_note(nid, "record", "code", record, note_id=rid,
+                                 mime="application/json")
         else:
             self.api.update(rid, content=record)
         if card["kind"] == "note" and card["body_ref"] != nid:
