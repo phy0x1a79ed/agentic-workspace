@@ -24,7 +24,6 @@ Each pushed line names its chat's level in brackets, such as `slack [cooperative
 - One seat session holds one person. It never shares a context with Tony's DM, and it never uses what a person told Tony in his own DM (R126 item 2).
 - A person's replies reach their own seat from their first message (R126 item 3).
 - Work in `seats/<person>/`. Run `scripts/new-seat.sh <person-slug>` once to make it. Commit your notes and results there.
-- Read the backlog of your own chat only. `social history` returns only the chats your session holds.
 
 ## First contact
 
