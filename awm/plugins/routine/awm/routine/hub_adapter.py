@@ -194,14 +194,18 @@ async def main() -> None:
 DEPLOY_FUNCTIONS: list[dict[str, Any]] = [
     {"name": "deploy", "tool": "routine_deploy", "effect": "write",
      "description": ("Land the calling scope's branch: pin its head, return a ticket at "
-                     "once, then merge, check, promote to release and refresh the nodes "
-                     "in a batch. The verdict goes to the scope's journal. A failed "
-                     "batch starts one fixing session with every branch in it."),
+                     "once, then merge, check, promote to release, back it up and "
+                     "refresh the nodes in a batch. The verdict goes to the scope's "
+                     "journal and the calling session's card. A failed batch starts one "
+                     "fixing session with every branch in it."),
      "params": [_p("project", "string", False, "The project. Default: the caller's."),
                 _p("scope", "string", False, "The scope. Default: the caller's."),
                 _p("branch", "string", False, "The branch. Default: the scope's."),
                 _p("sha", "string", False, ("A commit to pin instead of the branch "
-                                            "head, for a call from a peer."))]},
+                                            "head, for a call from a peer.")),
+                _p("card", "string", False, ("The Swarm-board task that takes the "
+                                             "verdict, for a call from a peer. Default: "
+                                             "the calling session's."))]},
     {"name": "deploys", "tool": "routine_deploys", "effect": "read",
      "description": "Recent deploy batches with their tickets, or one batch or ticket by id.",
      "params": [_p("project", "string", False, "Only this project."),
@@ -228,26 +232,40 @@ class DeployVerbs:
 
     async def deploy(self, args: dict[str, Any], as_: str | None = None) -> dict[str, Any]:
         cwd = ""
+        card = str(args.get("card") or "")
         if pid := args.get("_caller_pid"):
             try:
                 cwd = os.readlink(f"/proc/{int(pid)}/cwd")
             except (OSError, ValueError):
                 cwd = ""
+            if not card:
+                card = await self._card_of(pid)
         sub = self.deployer.resolve(project=args.get("project") or "",
                                     scope=args.get("scope") or "",
                                     branch=args.get("branch") or "",
                                     sha=args.get("sha") or "", cwd=cwd)
+        sub.card = card
         caller = caller_label(args, as_)
         home = self.canonical(sub.project)
         if home and home != self.deployer.refresher.node:
             # The canonical node pins the same commit, which the caller must have pushed.
             return await self.deployer.out.invoke(
                 "routine", "deploy", {"project": sub.project, "scope": sub.scope,
-                                      "branch": sub.branch, "sha": sub.sha}, peer=home)
+                                      "branch": sub.branch, "sha": sub.sha, "card": card},
+                peer=home)
         t = self.deployer.submit(sub, caller=caller)
         return {"ticket": t["id"], "project": t["project"], "scope": t["scope"],
                 "branch": t["branch"], "sha": t["sha"],
-                "note": "The verdict goes to this scope's journal."}
+                "note": "The verdict goes to this scope's journal and your card."}
+
+    async def _card_of(self, pid: Any) -> str:
+        """The caller's card, or "" when the board cannot say. A failed lookup
+        never fails the deploy."""
+        try:
+            return await self.deployer.out.card_of(int(pid))
+        except Exception as e:  # noqa: BLE001
+            log.warning("no card for caller pid %s: %s", pid, e)
+            return ""
 
     def deploys(self, args: dict[str, Any]) -> dict[str, Any]:
         store = self.deployer.store

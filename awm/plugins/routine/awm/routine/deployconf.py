@@ -33,6 +33,9 @@ class Refresh:
 class DeployConfig:
     check: str = ""
     check_timeout: float = CHECK_BUDGET
+    # A remote of the canonical bare repo that takes `release` after each promote,
+    # fast-forward only (install.md R114).
+    backup: str = ""
     refresh: Refresh = field(default_factory=Refresh)
     fixer_peer: str = "local"
     fixer_prompt: str = ""
@@ -40,6 +43,7 @@ class DeployConfig:
 
 _SECTIONS = {
     "deploy": {"check", "check_timeout"},
+    "promote": {"backup"},
     "refresh": {"kind", "command", "sync", "prompt", "timeout"},
     "fixer": {"peer", "prompt"},
 }
@@ -69,6 +73,7 @@ def parse(text: str) -> DeployConfig:
     return DeployConfig(
         check=d.get("check", ""),
         check_timeout=float(d.get("check_timeout", CHECK_BUDGET)),
+        backup=raw.get("promote", {}).get("backup", ""),
         refresh=Refresh(kind=kind, command=r.get("command", ""), sync=r.get("sync", ""),
                         prompt=r.get("prompt", ""),
                         timeout=float(r.get("timeout", 600.0))),

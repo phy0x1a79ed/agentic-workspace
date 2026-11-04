@@ -1,5 +1,7 @@
 [plugin]
 name = "rlm-factorio"
+# Restarts this plugin alone after a deploy (routines.md R33).
+refresh = "awm services restart rlm-factorio"
 version = "0.1.0"
 trust = "own"
 

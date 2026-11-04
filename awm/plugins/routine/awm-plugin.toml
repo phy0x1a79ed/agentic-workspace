@@ -33,6 +33,10 @@ major = 1
 name = "journal"      # post, for each deploy mark
 major = 1
 
+[[needs.tool]]
+name = "operations"   # task_for_session and swarm_message_post, for the card verdict
+major = 1
+
 [needs]
 secrets = []
 network = []

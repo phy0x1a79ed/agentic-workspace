@@ -1,5 +1,7 @@
 [plugin]
 name = "engcyc"
+# Restarts this plugin alone after a deploy (routines.md R33).
+refresh = "awm services restart engcyc"
 version = "0.1.0"
 trust = "own"
 

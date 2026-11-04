@@ -791,15 +791,14 @@ the tree the editable install resolves `awm` to, it runs this service's
 re-runs a service's install script only when the *set* of installed dists
 changes — a rebuilt bundle never lands after the first deploy.
 
-`scripts/promote.sh` closes the same gap for a fleet promotion, and closes it
-*unconditionally* rather than on a pathspec: the fork lives in a separate
-repository, so no diff over the awm tree can see it move. The install is stamped
-and costs seconds when nothing did.
+awm's deploy refresh closes the same gap for a fleet promotion: its supervising
+session re-runs this `install.sh` after `awm deploy` (`deploy.toml` at the repo
+root). It runs *unconditionally* rather than on a pathspec: the fork lives in a
+separate repository, so no diff over the awm tree can see it move. The install
+is stamped and costs seconds when nothing did.
 
-`deploy.sh` makes the change live on this node and stops there. Pushing to
-GitHub, to altair's bare and to mira is fleet promotion, it is node-shape-
-specific, and a script that guesses at it ships something other than what was
-promoted.
+`deploy.sh` makes the change live on this node and stops there. Fleet promotion
+is the `routine deploy` route, which pushes to GitHub and to each node itself.
 
 CAUTION: the merge commit is made in a throwaway worktree of the local bare,
 never in the release checkout. That checkout is a deploy target that gets

@@ -54,6 +54,7 @@ CREATE TABLE IF NOT EXISTS tickets (
     branch     TEXT NOT NULL,
     sha        TEXT NOT NULL,
     caller     TEXT NOT NULL DEFAULT '',
+    card       TEXT NOT NULL DEFAULT '',
     state      TEXT NOT NULL,
     batch_id   TEXT NOT NULL DEFAULT '',
     mark       TEXT NOT NULL DEFAULT '',
@@ -84,8 +85,11 @@ CREATE UNIQUE INDEX IF NOT EXISTS one_live_batch
 
 _JSON_COLS = {"steps", "dispatched", "nodes"}
 
-# A batch whose refresh failed still landed: release holds its commits.
-LANDED = ("landed", "refresh-failed")
+# Columns added after a table first shipped, for a database made before them.
+_ADDED = {("tickets", "card"): "TEXT NOT NULL DEFAULT ''"}
+
+# A batch whose backup or refresh failed still landed: release holds its commits.
+LANDED = ("landed", "backup-failed", "refresh-failed")
 
 
 def now() -> str:
@@ -114,6 +118,10 @@ class Store:
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.executescript(SCHEMA)
+        for (table, col), decl in _ADDED.items():
+            have = {r[1] for r in self._conn.execute(f"PRAGMA table_info({table})")}
+            if col not in have:
+                self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
         self._lock = threading.RLock()
 
     def close(self) -> None:
@@ -267,13 +275,13 @@ class Store:
     # -- deploy tickets and batches --------------------------------------
 
     def add_ticket(self, *, project: str, scope: str, branch: str, sha: str,
-                   caller: str = "") -> dict[str, Any]:
+                   caller: str = "", card: str = "") -> dict[str, Any]:
         tid = new_id()
         with self._tx() as c:
             c.execute(
-                "INSERT INTO tickets(id, project, scope, branch, sha, caller, state,"
-                " created_at) VALUES (?,?,?,?,?,?, 'queued', ?)",
-                (tid, project, scope, branch, sha, caller, now()))
+                "INSERT INTO tickets(id, project, scope, branch, sha, caller, card, state,"
+                " created_at) VALUES (?,?,?,?,?,?,?, 'queued', ?)",
+                (tid, project, scope, branch, sha, caller, card, now()))
         return self.get_ticket(tid)  # type: ignore[return-value]
 
     def get_ticket(self, tid: str) -> dict[str, Any] | None:

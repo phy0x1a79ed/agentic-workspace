@@ -667,47 +667,6 @@ that touches the CA, and a test in its suite fails if a second copy reappears.
 Land on `dev` and promote `feat → dev → release`. Nodes track `release`, so a fix
 hand-patched onto a running node is a fix that gets reverted by the next update.
 
-### Updating a node
-
-A node's `~/agentic_workspace` is a git checkout of `release`, with an `awm` remote
-pointing at altair's bare repo over ssh. altair's own `awm` remote is its local
-`projects/awm/.bare`. To update it:
-
-    git fetch --no-tags awm release && git reset --hard awm/release
-    git clean -fd            # NOT -fdx — .awm/ is ignored and must survive
-    awm deploy
-
-Three things about that sequence are load-bearing. **Fetch to the tracking ref,
-not the branch**: `fetch awm release:release` is refused once `release` is
-checked out, and `reset --hard` is what moves a checked-out branch anyway.
-**`clean` without `-x`**: the reset writes every path the commit contains but
-removes nothing it omits, so files release deleted linger — including `.py`
-leftovers inside editable-installed packages, which stay importable. `-x` would
-take `.awm/` with them, and that holds the Duo credentials, `social.toml` and
-every service DB. **`awm deploy`, not a bare unit restart**: it reinstalls dists
-if the set changed, rebuilds changed pages, restarts, reaps orphans, and then
-verifies every enabled service and built page came back — a restart alone silently
-skips all of that, and a service whose dist never got installed comes back as a
-crash loop rather than an error. It probes which `awm.service` supervises the
-gateway rather than assuming; the fleet is mixed (capella a system unit behind
-sudo, mira and altair per-user), and `sudo systemctl` on a per-user host addresses
-a different systemd instance, reports the unit missing, and leaves the old gateway
-running.
-
-`awm deploy` needs `mamba` and the env's `node` on `PATH` and a populated
-`awm/node_modules`. Neither is implied by a fresh clone: `environment.yml` carries
-no nodejs, so a node that has never built pages needs `mamba install -n awm nodejs`
-and one `npm install` in `awm/` before its first deploy.
-
-`enabled.json` must stay explicit for the same reason: a service absent from it is
-*enabled*, so anything added to the tree since the last sync starts on the next
-boot, on the node least able to absorb a crash loop.
-
-mira is supervised by a per-user systemd unit; capella's prod is
-started from its PID file and orphaned to init. `awm gateway restart` probes which,
-via `systemctl --user is-active` — deliberately not `is-enabled`, since a dangling
-unit symlink reports enabled-but-bad and cannot be started.
-
 ## Not done
 
 **Cross-node data sync.** Each node owns its own journal and `scopes`

@@ -65,6 +65,7 @@ def build(root: Path) -> tuple[Path, Path]:
     (seed / "app.txt").write_text("base\n")
     (seed / "deploy.toml").write_text(
         '[deploy]\ncheck = "test -f app.txt && ! grep -q BROKEN *.txt"\n'
+        '[promote]\nbackup = "github"\n'
         f'[refresh]\nkind = "restart"\ncommand = "echo $AWM_NODE_NAME >> {log}"\n')
     git(seed, "add", "-A")
     git(seed, "commit", "-q", "-m", "base")
@@ -75,6 +76,8 @@ def build(root: Path) -> tuple[Path, Path]:
     proj.mkdir(parents=True)
     git(root, "clone", "-q", "--bare", str(seed), str(proj / ".bare"))
     git(proj / ".bare", "worktree", "add", "-q", str(proj / "release"), "release")
+    git(root, "init", "-q", "--bare", str(root / "github.git"))
+    git(proj / ".bare", "remote", "add", "github", str(root / "github.git"))
     return proj, log
 
 
@@ -125,6 +128,8 @@ async def run(root: Path) -> list[str]:
     expect(sorted(p[1] for p in out.posts) == ["alpha", "beta"]
            and all(p[2].startswith("✓") for p in out.posts), "each scope got a ✓")
     expect(rel0 != git(bare, "rev-parse", "release"), "release moved")
+    expect(git(root / "github.git", "rev-parse", "release")
+           == git(bare, "rev-parse", "release"), "the backup remote took release")
 
     print("case 2: a conflict fails the whole batch")
     log.write_text("")
@@ -139,6 +144,8 @@ async def run(root: Path) -> list[str]:
     expect(all(t["state"] == "failed" for t in failed), "both tickets failed")
     expect(batch["failed_step"] == "merge", "the batch failed at merge")
     expect(git(bare, "rev-parse", "release") == rel1, "release did not move")
+    expect(git(root / "github.git", "rev-parse", "release") == rel1,
+           "the backup remote did not move")
     expect(len(out.starts) == 1, "one fixing session started")
     expect(bool(out.starts) and "feat/gamma" in out.starts[0]["prompt"]
            and "feat/delta" in out.starts[0]["prompt"], "the session got both branches")
