@@ -24,7 +24,8 @@ pub enum EdgeError {
 }
 
 /// How to open the channel to a peer. The default is ssh with a shared master
-/// connection (`ControlMaster`, `ControlPersist`) and a keep-alive.
+/// connection (`ControlMaster`, `ControlPersist`) and a keep-alive. `AWM_EDGE_SSH`
+/// names another program to run in its place, with the same arguments.
 #[derive(Debug, Clone)]
 pub struct SshCommand {
     pub program: String,
@@ -39,7 +40,8 @@ impl SshCommand {
         ];
         let mut args: Vec<String> = opts.iter().map(|s| s.to_string()).collect();
         args.extend([peer.to_string(), "awm".into(), "edge-serve".into()]);
-        Self { program: "ssh".into(), args }
+        let program = std::env::var("AWM_EDGE_SSH").ok().filter(|p| !p.trim().is_empty()).unwrap_or_else(|| "ssh".into());
+        Self { program, args }
     }
 }
 

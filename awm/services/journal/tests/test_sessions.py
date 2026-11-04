@@ -91,9 +91,6 @@ def test_a_read_another_service_notes_is_a_read(posts):
 
 
 def test_a_fetch_without_a_session_or_from_a_peer_records_nothing(posts, monkeypatch):
-    import awm.config as cfg
-    monkeypatch.setattr(cfg, "peer_record",
-                        lambda n: {"name": n, "relation": "foreign", "grants": ["journals"]})
     _post(posts, scope="other", pid=7)
     posts._handle_fetch({"project": "awm", "scope": "other", "_caller_pid": 7})
     posts._handle_fetch({"project": "awm", "scope": "other", "_caller_pid": 42}, "peer:capella")

@@ -268,10 +268,5 @@ from awm.config.effects import (  # noqa: E402,F401
     EFFECTS,
     verb_effect,
 )
-from awm.config.peerbook import (  # noqa: E402,F401
-    caller_peer,
-    list_records,
-    load_book,
-    operator_dm,
-    peer_record,
-)
+from awm.config.edges import caller_peer  # noqa: E402,F401
+from awm.config.operator import operator_dm  # noqa: E402,F401

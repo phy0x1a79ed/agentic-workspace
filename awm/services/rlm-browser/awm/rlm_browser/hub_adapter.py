@@ -259,7 +259,7 @@ def _build() -> tuple[ServiceAdapter, BrowserManager]:
     # a lambda would not register as a coroutine fn and would needlessly hop a
     # worker thread just to build the coroutine.
     async def _forward(peer: str, fn: str, a: dict) -> Any:
-        return await gatewayclient.call_maybe_peer(peer, "rlm-browser", fn, a)
+        return await gatewayclient.call("rlm-browser", fn, a, peer=peer)
 
     async def acquire(a):
         mode = _norm_mode(_mode_from_args(a))

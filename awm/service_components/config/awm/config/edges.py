@@ -81,8 +81,7 @@ def nodes() -> dict[str, dict[str, Any]]:
 def label(name: str | None) -> str:
     """A node name as the edge list writes it: the first DNS label, lowercased.
 
-    ``node_name()`` and a peer-book key may be an FQDN on one node and a bare
-    name on another; ``awm.config.peertoken.node_label`` is the same rule.
+    ``node_name()`` may be an FQDN on one node and a bare name on another.
     """
     return (name or "").strip().split(".")[0].lower()
 
@@ -155,3 +154,10 @@ def admits(as_: str | None) -> bool:
         return True
     node = label(stamp[len("peer:"):])
     return bool(node) and reaches(node, here())
+
+
+def caller_peer(as_: str | None) -> str | None:
+    """The node name in an edge ``X-Awm-As`` value ``peer:<node>``, else ``None``."""
+    if not as_ or not as_.startswith("peer:"):
+        return None
+    return as_[len("peer:"):].strip() or None

@@ -9,7 +9,6 @@ requires-python = ">=3.11"
 description = "AWM system-wide configuration constants (paths, gateway host/port, idle policy, .awm/env loader)."
 dependencies = [
     "pyyaml",
-    "cryptography",
 ]
 
 [project.optional-dependencies]

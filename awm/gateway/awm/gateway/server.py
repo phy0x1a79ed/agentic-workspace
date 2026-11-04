@@ -11,12 +11,8 @@ register into the catalog/hub. See `catalog.py` for the registration contract.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
 import os
-import shutil
-import tarfile
-import tempfile
 import time
 from collections.abc import Callable
 from contextlib import asynccontextmanager
@@ -25,10 +21,8 @@ from typing import Any
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
-from starlette.background import BackgroundTask
 from starlette.concurrency import run_in_threadpool
 from starlette.datastructures import Headers
-from starlette.responses import StreamingResponse
 
 from awm.config import (
     HOST,
@@ -40,7 +34,7 @@ from awm.config import (
 )
 from awm.config import edges
 from awm.config import modes as session_modes
-from awm.gateway import catalog, filehop, isolated, mcp_caller, peer_catalog, usage_log
+from awm.gateway import catalog, mcp_caller, peer_catalog, usage_log
 from awm.gateway.gateway_ops import GATEWAY_OPERATIONS, bound_caller
 from awm.gateway.operations import register_fastapi_routes
 
@@ -365,19 +359,7 @@ async def lifespan(app: FastAPI):
     except Exception as exc:  # noqa: BLE001
         print(f"[awm] service bring-up skipped: {exc}")
 
-    door, door_task = None, None
-    door_addr = isolated.listen_address()
-    if door_addr:
-        door = isolated.door_server(*door_addr)
-        door_task = asyncio.create_task(door.serve())
-        log.info("isolated door on %s:%s", *door_addr)
-
     yield
-
-    if door is not None:
-        door.should_exit = True
-        with contextlib.suppress(Exception):
-            await asyncio.wait_for(door_task, 5)
 
     # ----- Graceful shutdown backstop ---------------------------------------
     # On Linux the signal override above has already drained services in-band
@@ -448,7 +430,12 @@ async def _refuse_permission(request, exc):
 # (catalog) and the CLI command (cli.py). Add a new control op as an Operation,
 # not a hand-written route here.
 register_fastapi_routes(app, GATEWAY_OPERATIONS)
-isolated.mount(app)
+
+#: An isolated session's caller token. Only the Rust gateway serves its door
+#: (`core/crates/awm-gateway/src/isolated.rs`), so here it is refused everywhere.
+TOKEN_HEADER = "X-Awm-Caller-Token"
+#: The R9 id the isolated door writes. No call through this gateway may carry it.
+SESSION_KEY = "_caller_session_id"
 
 
 # ---------------------------------------------------------------------------
@@ -626,9 +613,10 @@ def _stamp_trust(name: str, args: dict, pid_header: str | None,
 
     Services bound a caller by them: the journal and the browser read every verb's
     `mcp_caller.TRUST_KEY` and `mcp_caller.SCOPE_KEY`. The model's own values are
-    always dropped, and a call with no session pid carries neither. An edge request
-    keeps the pair the far proxy read from its own node's ledger, as it keeps
-    `mcp_caller.CLAIM_KEY`. Reads two small files, so call it off the event loop.
+    always dropped. A pid header is walked to its session (`mcp_caller.resolve`). A
+    call with no pid is trusted, and a failed lookup untrusted. An edge request keeps
+    the pair the far proxy read from its own node's ledger, as it keeps
+    `mcp_caller.CLAIM_KEY`. Asks reflection, so call it off the event loop.
     """
     if "_" in name or "verb" not in args:
         bag = args
@@ -637,30 +625,23 @@ def _stamp_trust(name: str, args: dict, pid_header: str | None,
         if not isinstance(bag, dict):
             bag = {}
             args["args"] = bag
-    bag.pop(isolated.SESSION_KEY, None)
+    bag.pop(SESSION_KEY, None)
     if as_:
+        # The far node vouched for the pair. A peer's service sends none: it is trusted,
+        # as a local service is.
+        bag.setdefault(mcp_caller.TRUST_KEY, mcp_caller.NO_SESSION_TRUST)
         return
     bag.pop(mcp_caller.TRUST_KEY, None)
     bag.pop(mcp_caller.SCOPE_KEY, None)
-    if pid_header and pid_header.isdigit():
-        pid = int(pid_header)
-    elif descendant_header and descendant_header.isdigit():
-        pid = mcp_caller.resolve_caller_pid(int(descendant_header))
-    else:
+    raw = pid_header or descendant_header
+    if not raw:
+        # No pid: a user's tool or a service on this node (the loopback WARNING).
+        bag[mcp_caller.TRUST_KEY] = mcp_caller.NO_SESSION_TRUST
         return
-    bag.update(mcp_caller.caller_trust(pid))
-
-
-async def _receive_files(request: Request, spool: str) -> dict:
-    """Spool a :mod:`filehop` tar body and unpack it → the call it carries."""
-    body = os.path.join(spool, ".body.tar")
-    with open(body, "wb") as fh:
-        async for chunk in request.stream():
-            fh.write(chunk)
-    try:
-        return await run_in_threadpool(filehop.unpack_call, body, spool)
-    finally:
-        os.remove(body)
+    if not raw.isdigit():
+        bag[mcp_caller.TRUST_KEY] = mcp_caller.FAILED_LOOKUP_TRUST
+        return
+    bag.update(mcp_caller.caller_trust(int(raw)))
 
 
 def _svc_stamp(svc: str, headers: Any, as_: str | None) -> Callable[[str, dict], None]:
@@ -869,33 +850,42 @@ async def invoke_tool(request: Request):
     service ops can be awaited over their control WS on the server loop (no
     second event loop — see catalog.py concurrency note). The MCP proxy
     forwards here over HTTP so the core can restart without tearing down the
-    stdio pipe Claude Code has open.
-
-    The body is JSON, or a :mod:`awm.gateway.filehop` tar carrying the call
-    plus the caller's file arguments, which are spooled to a temp dir for the
-    duration of the call."""
-    ctype = request.headers.get("content-type", "").split(";")[0].strip()
-    if ctype != filehop.CONTENT_TYPE:
-        try:
-            payload = await request.json()
-        except ValueError:
-            raise HTTPException(422, "body must be a JSON object")
-        if not isinstance(payload, dict):
-            raise HTTPException(422, "body must be a JSON object")
-        return await _invoke(payload, request)
-    spool = tempfile.mkdtemp(prefix="awm-hop-")
+    stdio pipe Claude Code has open."""
     try:
-        try:
-            payload = await _receive_files(request, spool)
-        except (OSError, ValueError, KeyError, tarfile.TarError) as e:
-            raise HTTPException(400, f"bad file-hop body: {e}")
-        return await _invoke(payload, request)
-    finally:
-        await run_in_threadpool(shutil.rmtree, spool, True)
+        payload = await request.json()
+    except ValueError:
+        raise HTTPException(422, "body must be a JSON object")
+    if not isinstance(payload, dict):
+        raise HTTPException(422, "body must be a JSON object")
+    return await _invoke(payload, request)
+
+
+SERVICE_TOKEN_HEADER = "X-Awm-Service-Token"
+
+
+def _call_target(name: str, args: dict) -> tuple[str, str]:
+    """The ``(tool, verb)`` a call runs: a tool with a ``verb`` envelope, else a
+    flat ``<tool>_<verb>``. Tool names hold no underscore."""
+    if "verb" in args and "_" not in name:
+        return name, str(args.get("verb") or "")
+    tool, _, verb = name.partition("_")
+    return tool, verb
+
+
+def _needs_refusal(token: str, name: str, args: dict) -> str | None:
+    """Why the service that holds ``token`` may not make this call (R116 item 3).
+    A token no spawn was given is refused outright."""
+    from awm.gateway.hub import discovery, supervisor
+
+    service = supervisor.service_of_token(token)
+    if service is None:
+        raise HTTPException(401, "unknown service token")
+    tool, verb = _call_target(name, args)
+    return discovery.needs_refusal(service, tool, verb)
 
 
 async def _invoke(payload: dict, request: Request):
-    if request.headers.get(isolated.TOKEN_HEADER):
+    if request.headers.get(TOKEN_HEADER):
         raise HTTPException(403, "an isolated session calls awm only through /mcp")
     name = payload.get("name")
     args = payload.get("args")
@@ -908,6 +898,11 @@ async def _invoke(payload: dict, request: Request):
     as_ = request.headers.get("X-Awm-As")
     mode = None
     name, args = catalog.resolve_alias(name, args)
+    if isinstance(args, dict) and (token := request.headers.get(SERVICE_TOKEN_HEADER)):
+        reason = await asyncio.to_thread(_needs_refusal, token, name, args)
+        if reason:
+            log.info("needs guard: refused %s — %s", name, reason)
+            raise HTTPException(403, reason)
     if isinstance(args, dict):
         mode = await asyncio.to_thread(_caller_mode, request.headers, as_)
         reason = _call_refusal(mode, name, args)
@@ -940,16 +935,11 @@ async def _invoke(payload: dict, request: Request):
             log.info("refused %s.%s on peer %s: it acts on the caller's own session",
                      e.tool, e.verb, e.peer)
             raise HTTPException(400, refusal)
-        # The call belongs to a peer. The gateway resolves, never relays — so a
-        # caller that told us it can dial a peer edge (only `awm-mcp` does, via
-        # this header) gets the address back and makes the call itself, keeping
-        # the invariant that no peer bytes traverse a gateway. Anyone else gets
-        # 421 Misdirected Request, which is literally this condition, rather than
-        # a silent local run — that would be the half-route failure the whole
+        # The call belongs to a peer. Only the Rust gateway carries it, over the
+        # ssh edge; running it here instead would be the half-route the
         # default-provider model exists to prevent.
-        if request.headers.get("X-Awm-Peer-Redirect"):
-            return {"peer_redirect": e.payload()}
-        raise HTTPException(421, str(e))
+        raise HTTPException(421, f"{e}: {e.tool} on peer {e.peer!r} needs the Rust gateway (T19), "
+                                 "which carries a call over the ssh edge")
     except catalog.ArgumentError as e:
         raise HTTPException(400, e.payload)
     except ValueError as e:
@@ -978,13 +968,6 @@ async def _invoke(payload: dict, request: Request):
             status_code=500,
             detail={"error_class": type(e).__name__, "error": str(e), "tool": name},
         )
-    if request.headers.get(filehop.RETURN_FILES_HEADER) and isinstance(result, str):
-        if catalog.call_spec(name, args)["returns_files"]:
-            sent = filehop.result_paths(result)
-            return StreamingResponse(
-                filehop.iter_result(result, sent),
-                media_type=filehop.CONTENT_TYPE,
-                background=BackgroundTask(filehop.remove_sent, [p for _, p in sent]))
     return {"result": result}
 
 
@@ -1080,7 +1063,7 @@ class HubRoutingMiddleware:
 
         stamp = _svc_stamp(rec.name, headers, as_)
 
-        if headers.get(isolated.TOKEN_HEADER):
+        if headers.get(TOKEN_HEADER):
             if scope["type"] == "http":
                 await JSONResponse({"error": "an isolated session calls awm only through /mcp"},
                                    status_code=403)(scope, receive, send)

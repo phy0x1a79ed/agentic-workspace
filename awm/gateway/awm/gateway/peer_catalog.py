@@ -1,10 +1,11 @@
 """Which peer provides which MCP domain — the fleet-wide provider directory.
 
-``peers.py`` is the address book (name → edge URL + ssh alias). This module is
-the *capability* half: for each peer, which collapsed MCP domains it exposes and
-what verbs each carries. Together they answer the only question the agent-facing
-surface actually needs — "if I call ``2fa``, where does it land, and where else
-could it?"
+For each node this one holds an edge to (``awm.config.edges``), which collapsed
+MCP domains it exposes and what verbs each carries. It answers the only question
+the agent-facing surface actually needs — "if I call ``2fa``, where does it land,
+and where else could it?" This Python gateway reads no peer's catalog: only the
+Rust gateway reaches a peer, over the ssh edge, so every peer here stays
+unreachable until T19 moves the node onto it.
 
 Why this exists at all
 ----------------------
@@ -42,7 +43,7 @@ one. Two nodes both treating themselves as a valid provider for a singular
 external resource is the concrete failure FEDERATION.md documents: two listeners
 spending one Duo attempt budget, two logins on one Discord token. Refusing the
 off-target ``peer`` at the surface is the same "never half-route" rule the
-``call_maybe_peer`` selectors enforce for service→service calls.
+``peer_env`` selectors enforce for service→service calls.
 
 Which domains are singletons is **declared, never inferred from env-var shape.**
 Of the three ``AWM_*_PEER`` selectors this node sets, only one means "the whole
@@ -73,7 +74,6 @@ import os
 import time
 from typing import Any, Mapping
 
-import httpx
 
 log = logging.getLogger("awm.gateway.peer_catalog")
 
@@ -94,20 +94,9 @@ _SWEEP_INTERVAL_S = 120.0
 _SWEEP_RETRY_S = 10.0
 _SWEEP_RETRY_FOR_S = 300.0
 
-#: Per-peer ceiling for one catalog fetch. Bounded so a single blackholed peer
-#: cannot stall the sweep for the others — they run concurrently, but a sweep
-#: that never finishes never updates anything.
-_PEER_FETCH_TIMEOUT_S = 8.0
-
-#: Reserved provider name meaning "this node". Never a legal peer name (peers.add
-#: rejects nothing of the sort, but a node named "local" would be ambiguous here,
-#: so the name is claimed explicitly).
+#: Reserved provider name meaning "this node". A node named "local" would be
+#: ambiguous here, so the name is claimed explicitly.
 LOCAL = "local"
-
-#: Top-level tools a peer on the previous release still lists. They are not
-#: tools of this release and must never become routable ones when read back off
-#: such a peer's catalog.
-_PREVIOUS_RELEASE_TOOLS = frozenset({"providersOf", "more"})
 
 #: Seeded declared homes: domain → the env var naming its owning node. See the
 #: module docstring for why this table has exactly one entry and must not be
@@ -127,32 +116,15 @@ _HOME_ENV_PREFIX = "AWM_DOMAIN_HOME_"
 #:              "error": str | None, "at": float}
 _snapshot: dict[str, dict[str, Any]] = {}
 _swept_at: float = 0.0
-_sweep_lock: asyncio.Lock | None = None
-
-
-_book_cache: tuple[tuple[Any, ...], frozenset[str]] | None = None
+#: Why no peer's catalog is read here.
+NEEDS_RUST_GATEWAY = "reaching a peer needs the Rust gateway (T19), which carries calls over the ssh edge"
 
 
 def _edge_peers() -> frozenset[str]:
-    """Book peers this node holds an edge to — the only peers that may provide.
+    """The nodes this node holds an edge to, read from the edge list on every call."""
+    from awm.config import edges
 
-    An allowlist: a peer the book does not list, or that this node has no edge
-    to, is out, and a book that cannot be read leaves nobody in. The book is
-    re-read when its file changes (the key is path, inode, mtime and size); the
-    edge list is read on every call, so a removed edge bites on the next read."""
-    global _book_cache
-    from awm.config import edges, peerbook
-
-    path = peerbook.peers_file()
-    try:
-        st = path.stat()
-        key = (str(path), st.st_ino, st.st_mtime_ns, st.st_size)
-    except OSError:
-        key = (str(path),)
-    if _book_cache is None or _book_cache[0] != key:
-        _book_cache = (key, frozenset(r["name"] for r in peerbook.list_records()))
-    here = edges.here()
-    return frozenset(n for n in _book_cache[1] if n != here and edges.reaches(here, n))
+    return frozenset(edges.reachable_from(edges.here()))
 
 
 def _edge_only(snap: Mapping[str, dict[str, Any]]) -> Mapping[str, dict[str, Any]]:
@@ -197,127 +169,19 @@ def declared_homes() -> dict[str, str]:
     return {d: o for d, o in homes.items() if o in reachable}
 
 
-# ---------------------------------------------------------------------------
-# Fetching one peer's collapsed catalog
-# ---------------------------------------------------------------------------
-
-
-def _verbs_from_tool(tool: Mapping[str, Any]) -> list[str]:
-    """Verb names for one collapsed domain tool from a peer's ``/tools`` payload.
-
-    The reserved ``describe`` verb is dropped: every tool has it, and this node
-    adds it once itself. Prefers the structured ``inputSchema.properties.verb.enum``. Falls back to
-    parsing the ``Verbs: a, b, c.`` clause out of the description, because a peer
-    tracking an older ``release`` predates the enum — the fleet is updated node by
-    node, so the mixed-version window is real and a peer must not read as
-    verbless (which would make its domains look uncallable) during it.
-    """
-    schema = tool.get("inputSchema") or {}
-    enum = ((schema.get("properties") or {}).get("verb") or {}).get("enum")
-    if isinstance(enum, list) and enum:
-        return [str(v) for v in enum if v != "describe"]
-    desc = tool.get("description") or ""
-    marker = "Verbs:"
-    if marker not in desc:
-        return []
-    tail = desc.split(marker, 1)[1]
-    tail = tail.split(".", 1)[0]
-    return [v.strip() for v in tail.split(",") if v.strip() and v.strip() != "describe"]
-
-
-class _Domains(dict):
-    """``{domain: [verbs]}`` that also carries each domain's ``descriptions``."""
-
-    descriptions: dict[str, str]
-
-
-async def _fetch_peer(entry: Mapping[str, Any]) -> dict[str, Any]:
-    """One peer's ``{domain: [verbs]}`` map, read from its own edge, with the
-    peer's own tool descriptions on its ``descriptions`` attribute.
-
-    CA-verified TLS with a signed node token, or the ssh-fetched legacy bearer
-    when a peer refuses it — the same path ``gatewayclient.call_peer``
-    uses, and never ``verify=False``: a credential on an unverified connection
-    could be captured. Raises on any failure; the sweep records that as
-    ``reachable: False`` rather than dropping the peer, so "asleep" stays
-    distinguishable from "doesn't have it".
-    """
-    from awm import gatewayclient
-
-    name = entry["name"]
-    edge = str(entry["edge_url"]).rstrip("/")
-    ca = gatewayclient._peer_ca()
-
-    async def send(bearer: str) -> httpx.Response:
-        async with httpx.AsyncClient(timeout=_PEER_FETCH_TIMEOUT_S, verify=ca) as cli:
-            return await cli.get(f"{edge}/tools", params={"view": "domains"},
-                                 headers={"Authorization": f"Bearer {bearer}"})
-
-    resp = await gatewayclient.peer_send(name, entry, send)
-    resp.raise_for_status()
-    payload = resp.json() or {}
-    domains = _Domains()
-    domains.descriptions = {}
-    for tool in payload.get("tools") or []:
-        if not isinstance(tool, dict):
-            continue
-        tname = tool.get("name")
-        if not tname or not isinstance(tname, str) or tname in _PREVIOUS_RELEASE_TOOLS:
-            continue
-        domains[tname] = _verbs_from_tool(tool)
-        if isinstance(tool.get("description"), str):
-            domains.descriptions[tname] = tool["description"]
-    return domains
-
-
 async def sweep() -> dict[str, dict[str, Any]]:
-    """Refresh the snapshot from every peer in the address book, concurrently.
+    """Mark every node this one holds an edge to as unreachable from here.
 
-    Best-effort per peer and serialised against itself by a lock, so the
-    background loop and an on-demand ``refresh`` can never interleave into a
-    half-written snapshot. Returns the new snapshot.
+    Only the Rust gateway reads a peer's catalog, over the ssh edge. Keeping the
+    peers listed, with the reason, lets ``awm providers`` say why none serves.
     """
-    global _snapshot, _swept_at, _sweep_lock
-
-    if _sweep_lock is None:
-        _sweep_lock = asyncio.Lock()
-    async with _sweep_lock:
-        from awm.gateway import peers
-
-        # A peer this node has no edge to is never read: its domains must not
-        # reach our tool descriptions or any default provider.
-        reachable = _edge_peers()
-        book = [e for e in peers.list_all() if e["name"] in reachable]
-        if not book:
-            _snapshot, _swept_at = {}, time.time()
-            return _snapshot
-        # Bounded per peer: the lock is held for the whole sweep, so one peer that
-        # never answers must not hold every reader of a fresh snapshot behind it.
-        results = await asyncio.gather(
-            *(asyncio.wait_for(_fetch_peer(entry), _PEER_FETCH_TIMEOUT_S)
-              for entry in book), return_exceptions=True)
-        built: dict[str, dict[str, Any]] = {}
-        now = time.time()
-        for entry, result in zip(book, results):
-            name = entry["name"]
-            if isinstance(result, BaseException):
-                # Keep the previous domain map so one failed sweep does not make
-                # a peer's tools vanish and reappear; mark it unreachable.
-                last = _snapshot.get(name) or {}
-                previous = last.get("domains") or {}
-                built[name] = {"domains": previous,
-                               "descriptions": last.get("descriptions") or {},
-                               "reachable": False,
-                               "error": f"{type(result).__name__}: {result}",
-                               "at": now}
-                log.warning("peer %r catalog unavailable: %s", name, result)
-            else:
-                built[name] = {"domains": dict(result),
-                               "descriptions": dict(getattr(result, "descriptions", {})),
-                               "reachable": True,
-                               "error": None, "at": now}
-        _snapshot, _swept_at = built, now
-        return _snapshot
+    global _snapshot, _swept_at
+    now = time.time()
+    _snapshot = {name: {"domains": {}, "descriptions": {}, "reachable": False,
+                        "error": NEEDS_RUST_GATEWAY, "at": now}
+                 for name in sorted(_edge_peers())}
+    _swept_at = now
+    return _snapshot
 
 
 async def refresh_loop() -> None:
@@ -406,15 +270,10 @@ REASON_UNKNOWN = "unknown"
 
 
 class PeerRedirect(Exception):
-    """A call resolved to a peer: here is its address, dial it yourself.
+    """A call resolved to a peer, which this gateway cannot reach.
 
-    Raised out of dispatch instead of the gateway forwarding the call. The
-    gateway is a *directory*, never a router — handing back an address is the
-    same job ``peer_resolve`` already does, and it is what keeps the invariant
-    that no peer bytes traverse a gateway. The MCP proxy declares it can follow
-    one of these (it is the client-side federation point and already talks to
-    peer edges); any other caller gets a plain error telling it to dial the edge,
-    so nothing silently changes shape for the CLI or the web UI.
+    Raised out of dispatch instead of running the call here. Only the Rust
+    gateway carries a call to a peer, over the ssh edge (fleet.md R92, R93).
     """
 
     def __init__(self, peer: str, tool: str, verb: str | None = None) -> None:
@@ -424,19 +283,6 @@ class PeerRedirect(Exception):
         super().__init__(
             f"{tool!r}{f'.{verb}' if verb else ''} is served by peer {peer!r}, "
             f"not this node")
-
-    def payload(self) -> dict[str, Any]:
-        """The address the caller needs, resolved from the local address book."""
-        from awm.gateway import peers
-
-        entry = peers.resolve(self.peer) or {}
-        return {
-            "peer": self.peer,
-            "tool": self.tool,
-            "verb": self.verb,
-            "edge_url": entry.get("edge_url"),
-            "ssh_alias": entry.get("ssh_alias") or self.peer,
-        }
 
 
 def _provider(name: str, verbs: list[str], reachable: bool,

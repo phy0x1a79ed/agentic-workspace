@@ -199,7 +199,7 @@ def test_manifest_names_its_tool_and_needs():
     assert "placement" not in m, "awm names no host (fleet.md R140)"
     assert m["tool"][0]["name"] == "wake" and m["tool"][0]["major"] == 1
     assert "uuid" not in m["tool"][0]
-    assert {"name": "reflection", "major": 1} in m["needs"]["tool"]
-    assert {"name": "harness", "major": 1} in m["needs"]["contract"]
+    assert {"name": "reflection", "major": 1, "verbs": ["start_other", "message"]} in m["needs"]["tool"]
+    assert {"name": "harness", "major": 1, "verbs": ["revive_pinned"]} in m["needs"]["contract"]
     from awm.wake.hub_adapter import API_MANIFEST
     assert all(f["tool"] == "wake_" + f["name"] for f in API_MANIFEST["functions"])

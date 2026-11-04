@@ -19,8 +19,8 @@ class Gateway:
         reply.raise_for_status()
         return (reply.json() or {}).get("services") or []
 
-    async def call(self, service: str, fn: str, args: dict[str, Any], timeout: float) -> Any:
-        return await gatewayclient.call(service, fn, args, timeout=timeout)
+    async def call(self, tool: str, verb: str, args: dict[str, Any], timeout: float) -> Any:
+        return await gatewayclient.call(tool, verb, args, timeout=timeout)
 
     def events(self, service: str, topic: str) -> AsyncIterator[Any]:
         return gatewayclient.subscribe(service, topic)

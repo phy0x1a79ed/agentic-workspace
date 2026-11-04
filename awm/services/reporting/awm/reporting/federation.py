@@ -43,7 +43,7 @@ class AmbiguousRef(ValueError):
 class Federation:
     async def _call(self, fn: str, args: dict, caller_pid: int | None = None) -> dict:
         try:
-            reply = await gatewayclient.call("board", fn, args, caller_pid=caller_pid, timeout=60.0)
+            reply = await gatewayclient.call("operations", f"board_{fn}", args, caller_pid=caller_pid, timeout=60.0)
         except Exception as exc:  # noqa: BLE001 — every transport failure is the same to a caller
             raise FedError(0, f"the board could not be reached: {exc}") from exc
         if not isinstance(reply, dict) or reply.get("ok") is not True:

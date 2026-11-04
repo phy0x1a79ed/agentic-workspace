@@ -14,6 +14,7 @@ import asyncio
 import json as _json
 import logging
 import os
+import secrets
 import signal
 import subprocess
 import time as _time
@@ -234,14 +235,50 @@ def remove_service_journal_entry(name: str) -> None:
         write_service_journal(state)
 
 
+def _tokens_dir() -> Path:
+    return config.AWM_DIR / "tokens"
+
+
+def mint_token(name: str) -> Path:
+    """Write a fresh token for one spawn of ``name`` and return its file. The
+    service sends it on each ``/invoke``, which names the calling plugin."""
+    folder = _tokens_dir()
+    folder.mkdir(mode=0o700, parents=True, exist_ok=True)
+    path = folder / f"{name}.token"
+    tmp = path.with_suffix(".tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(secrets.token_urlsafe(32))
+    tmp.replace(path)
+    _known_tokens.clear()
+    return path
+
+
+_known_tokens: dict[str, str] = {}
+
+
+def service_of_token(token: str) -> str | None:
+    """The service whose minted token is ``token``, or None."""
+    token = token.strip()
+    if not token:
+        return None
+    if token not in _known_tokens:
+        _known_tokens.clear()
+        for path in _tokens_dir().glob("*.token"):
+            with suppress(OSError):
+                if text := path.read_text().strip():
+                    _known_tokens[text] = path.stem
+    return _known_tokens.get(token)
+
+
 def spawn_service(name: str, start_cmd: list[str], cwd: str,
                   env_extra: dict[str, str]) -> int:
     """Launch ``start_cmd`` for a service. Returns the spawned PID.
 
     The hub injects ``AWM_HUB_URL``, ``AWM_SERVICE_NAME`` (and ``AWM_SERVICE_ID``
-    on respawn) in env (caller is expected to set them in ``env_extra``). No
-    auth — the registration handshake carries no token. stdout + stderr land in
-    ``<AWM_DIR>/logs/services/<name>.log``.
+    on respawn) in env (caller is expected to set them in ``env_extra``), and
+    ``AWM_HUB_TOKEN_FILE``, a token minted for this spawn. stdout + stderr land
+    in ``<AWM_DIR>/logs/services/<name>.log``.
     """
     log_dir = config.AWM_DIR / "logs" / "services"
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -249,6 +286,7 @@ def spawn_service(name: str, start_cmd: list[str], cwd: str,
     handle = open(log_path, "ab", buffering=0)
     env = os.environ.copy()
     env.update(env_extra)
+    env["AWM_HUB_TOKEN_FILE"] = str(mint_token(name))
     try:
         proc = subprocess.Popen(
             start_cmd,
@@ -346,8 +384,8 @@ def spawn_and_journal(name: str, start_cmd: list[str], cwd: str,
 
     The single spawn path shared by first-boot bootstrap and the
     ``POST /hub/services/{name}/start`` endpoint — both leave a journal entry a
-    later reconcile can resume, and both inject exactly the three contract env
-    vars (``AWM_HUB_URL`` / ``AWM_SERVICE_NAME`` / ``AWM_SERVICE_ID``). No auth.
+    later reconcile can resume, and both inject the three contract env vars
+    (``AWM_HUB_URL`` / ``AWM_SERVICE_NAME`` / ``AWM_SERVICE_ID``) plus the token file.
     The fresh service self-registers and is assigned a ``service_id`` (filled
     into the journal by the register endpoint), so ``AWM_SERVICE_ID`` is empty.
     """

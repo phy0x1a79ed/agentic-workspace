@@ -1,7 +1,6 @@
 [plugin]
 name = "channel"
 version = "0.2.0"
-trust = "own"
 
 [[service]]
 name = "channel"
@@ -17,11 +16,14 @@ tier = "on"
 
 [needs]
 secrets = ["AWM_TETHER_ISSUE_TOKEN"]
-network = ["nexus.tony-xy-liu.com", "github.com"]
+network = ["nexus.tony-xy-liu.com", "github.com", "*.githubusercontent.com"]
 platform = ["linux"]
 
-# reflection: `message` pushes each line into the holder's prompt, and its cx
-# service's `list` tells which holders on another node are gone.
+# reflection, through awm.gatewayclient.holders and push: `session_of` and
+# `list_other` name the holder and tell when it is gone, and `message` pushes
+# each line into its prompt.
 [[needs.tool]]
 name = "reflection"
 major = 1
+verbs = ["list_other", "session_of", "message"]
+

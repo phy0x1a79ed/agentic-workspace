@@ -15,8 +15,7 @@ per-path allowlist to keep in sync.
 
 Two things the edge asserts on every proxied request: the caller is
 authenticated, and ``X-Awm-As`` names the identity the session was minted
-for (``user:<sub>``, ``peer:<node>`` for a verified node token, or bare ``peer``
-for the legacy bearer). The browser's own value of
+for (``user:<sub>``). The browser's own value of
 that header is discarded — downstream services trust it, so only the edge may
 write it.
 
@@ -42,7 +41,6 @@ and the listener dies with it (one supervised lifetime, exactly like ``mic``).
 from __future__ import annotations
 
 import asyncio
-import hmac
 import json
 import logging
 import socket
@@ -68,17 +66,14 @@ from starlette.responses import (
 from starlette.routing import Route, WebSocketRoute
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
-from awm.config import edges, peertoken, usertoken
+from awm.config import usertoken
 from awm.httpsfront import board, pages, policy, slices, store, tether, vault
 from awm.httpsfront.auth import (
     AS_COOKIE_NAME,
     COOKIE_NAME,
-    PEER_PREFIX,
-    PEER_SUB,
     AuthGate,
     Shape,
     bearer_of,
-    edge_admits_peers,
     is_machine_sub,
 )
 
@@ -165,10 +160,7 @@ PUBLIC_HOME = vault.SHELL
 
 
 def _as_header(sub: str | None) -> str:
-    """The identity stamped on a forwarded request: ``peer`` for the legacy
-    bearer, ``peer:<node>`` for a verified node, else ``user:<sub>``."""
-    if sub == PEER_SUB or (sub and sub.startswith(PEER_PREFIX)):
-        return sub
+    """The identity stamped on a forwarded request: ``user:<sub>``."""
     return f"user:{sub or 'operator'}"
 
 
@@ -192,22 +184,20 @@ _CALLER_HEADERS = frozenset({
     "x-awm-as", "x-awm-caller-pid", "x-awm-session-pid", "x-awm-peer-redirect"})
 
 
-def _consumed_edge_token(authorization: str | None, sub: str | None) -> bool:
-    """Whether this ``Authorization`` is a node or device token the edge has read.
+def _consumed_edge_token(authorization: str | None) -> bool:
+    """Whether this ``Authorization`` is a device token the edge has read.
 
-    Any ``awmpt1.`` or ``awmut1.`` bearer counts, verified or not: one that
-    failed here may still be live where it was meant for, and an upstream app
-    that saw it could replay it there.
+    Any ``awmut1.`` bearer counts, verified or not: one that failed here may
+    still be live where it was meant for, and an upstream app that saw it could
+    replay it there.
     """
-    bearer = bearer_of(authorization)
-    return ((bool(sub) and sub.startswith(PEER_PREFIX))
-            or peertoken.looks_like_token(bearer) or usertoken.looks_like_token(bearer))
+    return usertoken.looks_like_token(bearer_of(authorization))
 
 
 def _req_headers(request: Request, sub: str | None = None) -> dict[str, str]:
     hdrs = {k: v for k, v in request.headers.items()
             if k.lower() not in _HOP and k.lower() not in _CALLER_HEADERS}
-    if _consumed_edge_token(request.headers.get("authorization"), sub):
+    if _consumed_edge_token(request.headers.get("authorization")):
         hdrs.pop("authorization", None)
     hdrs["X-Forwarded-Proto"] = "https"
     # Overwrite, never default: the browser's value is unverified.
@@ -290,11 +280,6 @@ async def _authenticate_sub(request: Request, shape: Shape | None = None,
     ))
 
 
-def _edgeless(sub: str | None) -> bool:
-    """Whether ``sub`` is a ``peer:<node>`` with no edge to this node (fleet.md R86)."""
-    return not edges.admits(sub)
-
-
 def _is_public(app) -> bool:
     return getattr(app.state, "profile", None) == PUBLIC_PROFILE
 
@@ -338,21 +323,12 @@ def _site_name(request: Request) -> str:
 
 
 def _deny(request: Request) -> Response:
-    """Sign-in screen for a browser GET, 403 for a node token at an edge closed
-    to peers, else 401 (API / peer).
-
-    A caller falls back to another credential on a 401 and never on a 403, so a
-    closed edge says it is closed rather than looking like a bad token.
-    """
+    """Sign-in screen for a browser GET, else 401."""
     if request.method == "GET" and _wants_html(request):
         return HTMLResponse(
             pages.login_page(public=_is_public(request.app),
                              name=_site_name(request)),
             status_code=200)
-    bearer = bearer_of(request.headers.get("authorization"))
-    if (bearer and peertoken.looks_like_token(bearer)
-            and not edge_admits_peers() and not _is_public(request.app)):
-        return JSONResponse({"error": "peers not admitted"}, status_code=403)
     return JSONResponse({"error": "unauthenticated"}, status_code=401)
 
 
@@ -462,8 +438,6 @@ async def _logout(request: Request) -> Response:
 
 async def _whoami(request: Request) -> Response:
     ok, _, sub = await _authenticate_sub(request)
-    if ok and _edgeless(sub):
-        return _not_found()
     if ok:
         return JSONResponse({"user": sub})
     return JSONResponse({"error": "unauthenticated"}, status_code=401)
@@ -483,8 +457,6 @@ async def _root(request: Request) -> Response:
     ok, refreshed, sub = await _authenticate_sub(request)
     if not ok:
         return _deny(request)
-    if _edgeless(sub):
-        return _not_found()
     app = request.app
     services: list = []
     try:
@@ -724,10 +696,6 @@ async def _http_proxy(request: Request) -> Response:
         return _deny(request)
     if public and not policy.allows(path, sub):
         return _not_found()
-    # A node with no edge to this one reaches nothing, the vault included, so
-    # this comes before the branch below picks an upstream.
-    if _edgeless(sub):
-        return _not_found()
     # The vault is the upstream on this listener that is not the gateway.
     # Which upstream is decided here and nowhere else, from a path the caller
     # cannot use to name anything but the vault.
@@ -827,9 +795,8 @@ def _board_headers(request: Request, *, drop_auth: bool = False) -> dict[str, st
     """The request headers the board is sent: the caller's, minus every claim of identity.
 
     ``Authorization`` is the board's own party bearer and rides untouched, unless
-    ``drop_auth`` says it is a mesh credential (a node token or the legacy
-    node-wide bearer), which is removed so the board never holds a credential
-    that is live elsewhere. Every ``X-Awm-*`` header goes, not only the four the
+    ``drop_auth`` says it is a device token, which is removed so the board never
+    holds a credential that is live elsewhere. Every ``X-Awm-*`` header goes, not only the four the
     gateway reads, and so does the edge's session cookie. ``Content-Length`` is
     dropped because the body is re-read under a cap and httpx restates it.
     ``Last-Event-ID`` and everything else is forwarded as sent.
@@ -887,24 +854,6 @@ async def _relay(resp: httpx.Response):
         await resp.aclose()
 
 
-async def _is_mesh_credential(gate, bearer: str | None) -> bool | None:
-    """Whether ``bearer`` is a credential the edge itself honours between nodes.
-
-    A node token, a device token, or the legacy node-wide bearer (whether or
-    not it is still accepted: a retired one is still one the board must not
-    see). ``None`` says the edge cannot tell because it holds no auth material
-    yet.
-    """
-    if not bearer:
-        return False
-    if peertoken.looks_like_token(bearer) or usertoken.looks_like_token(bearer):
-        return True
-    known = await gate.peer_credentials()
-    if known is None:
-        return None
-    return any(hmac.compare_digest(bearer.encode(), c.encode()) for c in known)
-
-
 #: The board leg's own connection pool. Every open ``/board/stream`` holds a
 #: connection for as long as its party stays, and the shared client's pool is
 #: also what every other leg of the edge waits on, so board streams must not be
@@ -935,7 +884,7 @@ async def _board_proxy(request: Request, raw: bytes, up: str) -> Response:
     request that cannot get a slot is answered 503 at once.
 
     ``Authorization`` is checked as a set: more than one header is refused,
-    because the node-token test and the forwarded value would otherwise be able
+    because the device-token test and the forwarded value would otherwise be able
     to read different ones.
     """
     inner = board.upstream_raw_path(raw)
@@ -944,12 +893,7 @@ async def _board_proxy(request: Request, raw: bytes, up: str) -> Response:
     auths = request.headers.getlist("authorization")
     if len(auths) > 1:
         return _not_found()
-    drop_auth = False
-    if auths:
-        drop_auth = await _is_mesh_credential(
-            request.app.state.gate, bearer_of(auths[0]))
-        if drop_auth is None:
-            return _not_found()
+    drop_auth = bool(auths) and _consumed_edge_token(auths[0])
     body = await _capped_body(request, board.body_cap(request.method, request.url.path))
     if body is None:
         return Response("request body too large", status_code=413)
@@ -1255,9 +1199,8 @@ async def _ws_proxy(ws: WebSocket) -> None:
         if not ok or (public and not policy.allows(ws.url.path, sub)):
             await ws.close(code=1008)  # policy violation
             return
-        # A node with no edge has no WebSocket at all; a node with one has the
-        # gateway's, but never the vault's.
-        if _edgeless(sub) or (is_vault and is_machine_sub(sub)):
+        # The operator session has the gateway's WebSocket, never the vault's.
+        if is_vault and is_machine_sub(sub):
             await ws.close(code=1008)
             return
 
@@ -1273,9 +1216,8 @@ async def _ws_proxy(ws: WebSocket) -> None:
         if v:
             fwd[k] = v
     # Only these three are copied, so none of `_CALLER_HEADERS` can ride along;
-    # a node or device token is dropped for the reason given at
-    # `_consumed_edge_token`.
-    if _consumed_edge_token(fwd.get("authorization"), sub):
+    # a device token is dropped for the reason given at `_consumed_edge_token`.
+    if _consumed_edge_token(fwd.get("authorization")):
         fwd.pop("authorization", None)
     if slice_info is not None:
         visitor = _slice_visitor(ws, slice_info, slice_token)
@@ -1387,8 +1329,6 @@ def _gated(
         ok, refreshed, sub = await _authenticate_sub(request)
         if not ok:
             return _deny(request)
-        if _edgeless(sub):
-            return _not_found()
         resp = await handler(request)
         if refreshed:
             _set_session_cookie(
@@ -1528,7 +1468,7 @@ def build_app(upstream: str, ca_path: str, *, landing: bool = True,
     app.state.origin_override = (
         _origin_of(http_up) if rewrite_origin else None
     )
-    app.state.gate = AuthGate(peers=profile != PUBLIC_PROFILE)
+    app.state.gate = AuthGate()
     app.state.profile = profile
     #: token -> (expires_at, resolved | None). Per app, so a test builds its own.
     app.state.slice_cache = {}
@@ -1556,13 +1496,11 @@ def serve(*, port: int, cert: str, key: str, ca: str, upstream: str,
           rewrite_origin: bool = False,
           profile: str | None = None,
           tls: bool = True,
-          host: str | None = None,
           vault_upstream: str | None = None,
           relay_upstream: str | None = None,
           board_upstream: str | None = None) -> None:
     """Bind ``0.0.0.0:port`` with TLS and reverse-proxy to ``upstream`` forever
     (blocks). Designed to run in a daemon thread from the hub adapter.
-    ``host`` narrows the bind to one address.
 
     ``tls=False`` binds plain HTTP on ``127.0.0.1:port`` instead, trusting
     ``X-Forwarded-*`` from loopback only — the shape for a TLS-terminating
@@ -1580,9 +1518,9 @@ def serve(*, port: int, cert: str, key: str, ca: str, upstream: str,
                     relay_upstream=relay_upstream,
                     board_upstream=board_upstream)
     bind: dict = (
-        {"host": host or "0.0.0.0", "ssl_certfile": cert, "ssl_keyfile": key}
+        {"host": "0.0.0.0", "ssl_certfile": cert, "ssl_keyfile": key}
         if tls else
-        {"host": host or "127.0.0.1", "proxy_headers": True,
+        {"host": "127.0.0.1", "proxy_headers": True,
          "forwarded_allow_ips": "127.0.0.1"}
     )
     config = uvicorn.Config(

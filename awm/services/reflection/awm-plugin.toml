@@ -1,7 +1,6 @@
 [plugin]
 name = "reflection"
 version = "0.2.0"
-trust = "own"
 
 [[service]]
 name = "reflection"
@@ -23,3 +22,20 @@ network = []
 [[needs.contract]]
 name = "harness"
 major = 1
+verbs = ["platform", "status", "resolve", "find", "list", "start", "stop", "resume", "adopt", "send", "compact", "mode", "set", "interrupt", "remote_control", "link", "pending"]
+
+[[needs.tool]]
+name = "operations"
+major = 1
+verbs = ["task_for_session"]
+
+[[needs.tool]]
+name = "scope"
+major = 1
+verbs = ["claim", "release"]
+
+[[needs.tool]]
+name = "journal"
+major = 1
+verbs = ["brief_read", "post"]
+

@@ -540,14 +540,14 @@ def _who(args: dict) -> dict:
 
 
 def _domestic(recipient: str) -> bool:
-    """Whether ``recipient`` names this board party, this node or a peer in this node's book."""
+    """Whether ``recipient`` names this board party, this node or a node of the edge list."""
     import os
 
-    from awm.config import list_records, node_name
+    from awm.config import edges, node_name
 
     party = (os.environ.get("AWM_SWARM") or "").strip() or "tony"
     names = {party, node_name().split(".")[0].lower()}
-    names.update(r["name"].lower() for r in list_records())
+    names.update(n.lower() for n in edges.nodes())
     return recipient.strip().lower() in names
 
 

@@ -103,7 +103,7 @@ def caller(args: dict, as_: str | None, *, what: str = "a channel") -> dict:
     known, else ``job:<job>``. ``pid`` joins them for a session on this node.
     ``what`` names the held thing in the refusal.
     """
-    from awm.config import peerbook
+    from awm.config import edges
     from awm.gatewayclient import sessions
 
     pid = args.get(PID_KEY)
@@ -121,7 +121,7 @@ def caller(args: dict, as_: str | None, *, what: str = "a channel") -> dict:
         found = {"background": bool(target), "job": target or "", "session": sid, "name": ""}
         node = config.node_name()
     else:
-        found, node = _from_claim(args.get(CLAIM_KEY)), peerbook.caller_peer(as_)
+        found, node = _from_claim(args.get(CLAIM_KEY)), edges.caller_peer(as_)
     if not node or found is None:
         raise HolderError(f"no calling session reached {what}: it is held by a "
                           "running agent session, so call this from one")

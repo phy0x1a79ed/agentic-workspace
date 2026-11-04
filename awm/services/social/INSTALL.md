@@ -187,10 +187,9 @@ are skipped rather than erroring the whole call.
 
 ## Files
 
-`social_send` attaches a file with `file`, a path on the calling node, and
-inline text files with `files`, each `{filename, text}`. The gateway's file hop
-carries `file` to the node that runs social. A `send` that a borrower forwards to
-the owner carries the file inline as base64.
+`social_send` attaches a file with `file`, a path on the node that runs social, and
+inline text files with `files`, each `{filename, text}`. A `send` that a borrower
+forwards to the owner carries the file inline as base64.
 
 - **Discord.** The bot attaches up to 10 MB per message.
 - **Slack.** Every Slack account uploads through Slack's external upload, as a
@@ -400,12 +399,11 @@ SharePoint's own permissions are the only boundary, and a refusal comes back as
 a permission error. Entries under the root come back relative, entries
 elsewhere absolute. `bucket_sites` finds the absolute paths.
 
-File arguments and results are paths **on the calling node**, whichever node
-runs social. `bucket_put` reads a local file or folder as `src`, and
-`bucket_get` and `download_attachments` return local paths. The gateway
-carries the bytes across the peer hop inside the one call (see `FEDERATION.md`
-§ *Cross-peer calls*). Bytes never inline into the RPC, and downloads land in a
-system temp dir outside the workspace.
+File arguments and results are paths **on the node that runs social**.
+`bucket_put` reads a file or folder there as `src`, and `bucket_get` and
+`download_attachments` return paths there. No call carries file bytes across
+nodes until the Rust gateway's edge does (T19). Bytes never inline into the
+RPC, and downloads land in a system temp dir outside the workspace.
 
 **CAUTION** `bucket_share` is outward-facing. Its description tells an agent to
 get Tony's confirmation of the item, the audience and the role first.

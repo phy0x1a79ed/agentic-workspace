@@ -106,13 +106,10 @@ def test_delete_with_optional_query_param():
 _VISIBLE = {
     "awm_status", "awm_registry_list", "awm_services_list", "awm_services_start",
     "awm_services_stop", "awm_services_restart", "awm_config_contracts",
-    "operations_peer_list", "operations_peer_resolve",
 }
 _HIDDEN = {
     "awm_restart", "awm_registry_deregister", "awm_services_reap",
     "awm_services_enable", "awm_services_disable", "awm_providers", "awm_config_set",
-    "operations_peer_join", "operations_peer_add", "operations_peer_set",
-    "operations_peer_forget",
 }
 
 
@@ -121,17 +118,14 @@ def test_the_native_verbs_published_to_mcp_are_exactly_the_visible_ones():
     assert names == _VISIBLE
 
 
-def test_every_native_op_is_a_verb_of_awm_or_operations():
+def test_every_native_op_is_a_verb_of_awm():
     by_name = {op.name: op for op in GATEWAY_OPERATIONS}
     assert set(by_name) == _VISIBLE | _HIDDEN
     for name, op in by_name.items():
-        assert op.mcp_tool in {"awm", "operations"}
+        assert op.mcp_tool == "awm"
         assert name == f"{op.mcp_tool}_{op.mcp_verb}"
         assert ("mcp" in op.surfaces) == (name in _VISIBLE)
         assert {"http"} <= op.surfaces, "a hidden verb still answers over HTTP"
-    assert {op.name for op in GATEWAY_OPERATIONS if op.mcp_tool == "operations"} == {
-        f"operations_peer_{v}" for v in
-        ("join", "add", "set", "list", "resolve", "forget")}
 
 
 def test_services_op_schema_requires_name():

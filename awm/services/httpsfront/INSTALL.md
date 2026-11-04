@@ -93,24 +93,7 @@ explicitly and merged in:
 | `AWM_EDGE_TETHER` | `0` | `1`: mount the tether relay at `/tether`, reachable with **no session** |
 | `AWM_EDGE_BOARD` | `0` | `1`: mount the federation board at `/board/`, reachable with **no session** |
 | `AWM_BOARD_PORT` | `12521` | the board's loopback port, which the board mount forwards to |
-| `AWM_PEER_LEGACY_BEARER` | on | `0`: refuse the legacy shared bearer, so only a node token authenticates a peer |
-| `AWM_EDGE_PEERS` | on | `0`: refuse every peer. A node token gets 403 `peers not admitted`, the legacy bearer 401. A person's login still works |
-| `AWM_EDGE_MESH_HOST` | — | an address for a second, mesh-only listener (see below). Unset: no second listener |
-| `AWM_EDGE_MESH_PORT` | `12100` | the mesh listener's port |
 | `AWM_EDGE_CERT_DIR` | `.certs/` beside the service | where the leaf lives |
-
-A public node reaches its peers through a second listener. The public profile
-admits no peer: its listener honours no node token, and the public auth profile
-issues no legacy bearer. `AWM_EDGE_MESH_HOST` adds a listener bound to that one
-address, with TLS and the default profile, fronting the gateway and no app. Peer
-calls work there and stay 404 on the public listener beside it.
-
-- Bind the mesh listener to the overlay address only, never `0.0.0.0`.
-- Cut the leaf on the CA holder, with the mesh address in its SAN, and copy it
-  into the cert dir. A missing or bad leaf keeps the mesh listener off and the
-  public listener up.
-- Renew that leaf by hand before it expires. Nothing on a trust consumer renews
-  it, and the log warns 30 days ahead.
 
 `AWM_EDGE_TETHER` is the one flag here that widens the door rather than
 narrowing it, so it is off unless a host means it. The person redeeming a

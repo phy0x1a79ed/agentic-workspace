@@ -1,9 +1,8 @@
 """A verb that acts on the caller's own session is refused with `peer`, not forwarded.
 
-The gateway stamps `_caller_pid` on its own copy of the call and hands a peer
-redirect back to the proxy, which dials the peer without it. A session-bound verb
-would then fail on the peer with "no calling session", so `/invoke` refuses it at
-the redirect. Stamped verbs that use the pid only as a label stay routable.
+A session-bound verb would fail on the peer with "no calling session", so
+`/invoke` refuses it outright. A stamped verb that uses the pid only as a label
+is refused only because this gateway reaches no peer (T19).
 """
 
 from __future__ import annotations
@@ -17,7 +16,7 @@ pytestmark = [pytest.mark.hub, pytest.mark.smoke]
 
 from awm.gateway import peer_catalog, server
 
-HEAD = {"X-Awm-Session-Pid": str(os.getpid()), "X-Awm-Peer-Redirect": "1"}
+HEAD = {"X-Awm-Session-Pid": str(os.getpid())}
 
 
 @pytest.fixture
@@ -81,10 +80,9 @@ def test_a_session_bound_verb_without_peer_runs_with_the_stamp(client, dispatche
 @pytest.mark.parametrize("tool,verb", [
     ("reflection", "list_other"), ("reflection", "start_other"),
     ("reflection", "stop_other"), ("operations", "board_list")])
-def test_a_label_only_stamped_verb_is_still_redirected_to_a_peer(client, dispatched, tool, verb):
+def test_a_label_only_stamped_verb_waits_for_the_rust_gateway(client, dispatched, tool, verb):
     resp = call(client, tool, verb, peer="capella")
-    assert resp.status_code == 200
-    assert resp.json()["peer_redirect"]["peer"] == "capella"
+    assert resp.status_code == 421 and "needs the Rust gateway" in resp.json()["detail"]
 
 
 def test_every_session_bound_verb_is_a_stamped_one():

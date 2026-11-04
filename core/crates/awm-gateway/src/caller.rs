@@ -1,8 +1,10 @@
-//! Who a local call comes from: the calling session's R9 id, trust level and own scope.
+//! Who a local call comes from: the calling session's R9 id, trust level, mode and own scope.
 //!
-//! `awm mcp` names its session by pid (`X-Awm-Session-Pid`). The gateway asks reflection
-//! `session_of {pid}`, which asks the harness plugins (install.md R135 item 6). The gateway
-//! itself reads no harness's files. No answer, or no session, reads as trusted with no scope.
+//! A caller names a pid: `awm mcp` its session's (`X-Awm-Session-Pid`), the CLI its own
+//! (`X-Awm-Caller-Pid`). The gateway walks that pid's ancestors and asks reflection
+//! `session_of` for each, which asks the harness plugins (install.md R135 item 6). The first
+//! session found is the caller. A chain no harness claims is a user's shell, which passes as
+//! trusted. A lookup that fails is untrusted with mode `unknown` (fleet.md R103 item 2).
 
 use std::path::Path;
 
@@ -13,10 +15,34 @@ pub const TRUST_KEY: &str = "_caller_trust";
 pub const SCOPE_KEY: &str = "_caller_scope";
 /// The R9 id of an isolated session, which has no pid. Only the isolated door writes it.
 pub const SESSION_KEY: &str = "_caller_session_id";
-pub const DEFAULT_TRUST: &str = "trusted";
-/// The service and function the gateway asks who owns a pid.
-pub const LOOKUP_SERVICE: &str = "reflection";
-pub const LOOKUP_FN: &str = "session_of";
+pub const FAILED_LOOKUP_TRUST: &str = "untrusted";
+/// A caller that is no session: a user's shell on this node, or a plugin's service.
+pub const NO_SESSION_TRUST: &str = "trusted";
+pub const TRUSTED: &str = "trusted";
+/// The tool and verb the gateway asks who owns a pid.
+pub const LOOKUP_TOOL: &str = "reflection";
+pub const LOOKUP_VERB: &str = "session_of";
+/// How many ancestors the walk asks about, as `mcp_caller.MAX_ANCESTRY_HOPS`.
+pub const MAX_HOPS: usize = 8;
+
+/// What the walk from a caller's pid found.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Lookup {
+    /// reflection's `session_of` answer for the nearest session in the chain.
+    Session(Value),
+    /// reflection answered for every pid and no harness claims any: a user's shell. `mode` is
+    /// what the harnesses said of the first pid.
+    NoOwner { mode: Option<String> },
+    /// reflection did not answer, or answered nonsense.
+    Failed,
+}
+
+/// The parent of `pid`, from `/proc/<pid>/stat` field 4. The comm field may hold spaces
+/// and parens, so the fields are counted from the last `)`.
+pub fn ppid_of(pid: u32) -> Option<u32> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    stat[stat.rfind(')')? + 2..].split_whitespace().nth(1)?.parse().ok()
+}
 
 /// `<project>/<scope>` of a directory under `projects`, as `awm.config.scope_of` reads it:
 /// the deepest enclosing directory that holds a `.awm/`, else the path below the project.
@@ -32,19 +58,35 @@ pub fn scope_of(cwd: &Path, projects: &Path) -> Option<String> {
     Some(format!("{}/{}", parts[0], parts[1..depth].join("/")))
 }
 
-/// Fill `session`, `trust` and `scope` of a local caller from reflection's `session_of`
-/// answer. `None` is a failed lookup.
-pub fn fill(caller: &mut Caller, answer: Option<&Value>, projects: &Path) {
-    let known = answer.filter(|a| a.get("known").and_then(Value::as_bool) == Some(true));
-    caller.session = known.and_then(|a| a.get("session_id")?.as_str()).filter(|s| !s.is_empty()).map(str::to_string);
-    caller.trust = Some(
-        known
-            .and_then(|a| a.get("trust")?.as_str())
-            .filter(|t| !t.is_empty())
-            .unwrap_or(DEFAULT_TRUST)
-            .to_string(),
-    );
-    caller.scope = known.and_then(|a| a.get("cwd")?.as_str()).and_then(|cwd| scope_of(Path::new(cwd), projects));
+/// Fill `session`, `trust` and `scope` of a local caller from what the walk found, and
+/// return the mode the session runs in, when a mode may gate it.
+pub fn fill(caller: &mut Caller, lookup: &Lookup, projects: &Path) -> Option<String> {
+    let text = |a: &Value, k: &str| a.get(k).and_then(Value::as_str).filter(|s| !s.is_empty()).map(str::to_string);
+    match lookup {
+        Lookup::Session(a) => {
+            caller.session = text(a, "session_id");
+            caller.trust = Some(text(a, "trust").unwrap_or_else(|| FAILED_LOOKUP_TRUST.to_string()));
+            caller.scope = text(a, "cwd").and_then(|cwd| scope_of(Path::new(&cwd), projects));
+            // reflection says `null` for a session no restricted mode started, and leaves the
+            // key out only when it could not tell.
+            match a.get("mode") {
+                None => Some(crate::modes::UNKNOWN.to_string()),
+                Some(m) => m.as_str().map(str::to_string),
+            }
+        }
+        Lookup::NoOwner { mode } => {
+            caller.session = None;
+            caller.trust = Some(NO_SESSION_TRUST.to_string());
+            caller.scope = None;
+            mode.clone()
+        }
+        Lookup::Failed => {
+            caller.session = None;
+            caller.trust = Some(FAILED_LOOKUP_TRUST.to_string());
+            caller.scope = None;
+            Some(crate::modes::UNKNOWN.to_string())
+        }
+    }
 }
 
 /// Write the caller's trust and scope into a call's arguments, for services that predate the
@@ -77,25 +119,45 @@ mod tests {
     }
 
     #[test]
-    fn a_session_gets_its_level_and_its_scope() {
+    fn a_session_gets_its_level_mode_and_scope() {
         let (_tmp, projects) = projects();
         let cwd = projects.join("awm/redux-x/core/src");
-        let answer = json!({"ok": true, "known": true, "session_id": "cc0f1e", "trust": "cooperative", "cwd": cwd});
+        let answer = json!({"ok": true, "known": true, "session_id": "cc0f1e", "trust": "cooperative", "mode": null, "cwd": cwd});
+        let unread = json!({"known": true, "session_id": "cc0f1e", "trust": "cooperative", "cwd": cwd});
         let mut c = Caller::default();
-        fill(&mut c, Some(&answer), &projects);
+        let mode = fill(&mut c, &Lookup::Session(answer), &projects);
         assert_eq!((c.session.as_deref(), c.trust.as_deref(), c.scope.as_deref()), (Some("cc0f1e"), Some("cooperative"), Some("awm/redux-x")));
+        assert_eq!(mode, None, "a session no restricted mode started is ungated");
+        assert_eq!(fill(&mut c, &Lookup::Session(unread), &projects).as_deref(), Some(crate::modes::UNKNOWN), "an unreadable mode is gated hardest");
     }
 
     #[test]
-    fn no_answer_or_no_session_reads_as_trusted() {
+    fn a_shell_no_harness_claims_is_trusted_and_ungated() {
         let (_tmp, projects) = projects();
         let mut c = Caller::default();
-        fill(&mut c, Some(&json!({"ok": true, "known": false, "mode": null})), &projects);
+        assert_eq!(fill(&mut c, &Lookup::NoOwner { mode: None }, &projects), None);
         assert_eq!((c.session.as_deref(), c.trust.as_deref(), c.scope.as_deref()), (None, Some("trusted"), None));
-        fill(&mut c, None, &projects);
-        assert_eq!((c.session.as_deref(), c.trust.as_deref()), (None, Some("trusted")));
-        fill(&mut c, Some(&json!({"known": true, "session_id": "cc1", "cwd": "/"})), &projects);
-        assert_eq!((c.trust.as_deref(), c.scope.as_deref()), (Some("trusted"), None));
+    }
+
+    #[test]
+    fn a_failed_lookup_is_untrusted_with_mode_unknown() {
+        let (_tmp, projects) = projects();
+        let mut c = Caller { trust: Some("trusted".into()), ..Caller::default() };
+        assert_eq!(fill(&mut c, &Lookup::Failed, &projects).as_deref(), Some("unknown"));
+        assert_eq!((c.session.as_deref(), c.trust.as_deref()), (None, Some("untrusted")));
+    }
+
+    #[test]
+    fn a_known_session_without_a_level_is_untrusted() {
+        let (_tmp, projects) = projects();
+        let mut c = Caller::default();
+        fill(&mut c, &Lookup::Session(json!({"known": true, "session_id": "cc1", "cwd": "/", "mode": "worker"})), &projects);
+        assert_eq!((c.trust.as_deref(), c.scope.as_deref()), (Some("untrusted"), None));
+    }
+
+    #[test]
+    fn ppid_reads_this_process_parent() {
+        assert_eq!(ppid_of(std::process::id()), Some(std::os::unix::process::parent_id()));
     }
 
     #[test]

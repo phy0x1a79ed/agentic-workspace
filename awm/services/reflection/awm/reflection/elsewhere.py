@@ -16,18 +16,15 @@ _PEER_TIMEOUT_S = 5.0
 
 
 def _reached_peers() -> list[str]:
-    from awm.config import edges, peerbook
+    from awm.config import edges
 
-    me = edges.here()
-    return [r["name"] for r in peerbook.list_records()
-            if r["name"] != me and edges.reaches(me, r["name"])]
+    return edges.reachable_from(edges.here())
 
 
 def _list_sessions(peer: str) -> list[dict[str, Any]]:
     from awm import gatewayclient
 
-    reply = gatewayclient.call_peer_sync(peer, "reflection", "list_other", {},
-                                         timeout=_PEER_TIMEOUT_S)
+    reply = gatewayclient.call_sync("reflection", "list_other", {}, peer=peer, timeout=_PEER_TIMEOUT_S)
     rows = reply.get("sessions") if isinstance(reply, dict) else None
     return [r for r in rows or [] if isinstance(r, dict)]
 

@@ -1,10 +1,8 @@
-"""Auth service orchestration — rotation policy, the verb handlers, and the
-``$AWM_PEER_CRED`` file the SSH peer-auth channel reads.
+"""Auth service orchestration — rotation policy and the verb handlers.
 
 The service owns one authoritative credential state (via :mod:`awm.auth.store`)
 and is the *authority*; the ``httpsfront`` edge only *enforces*, using material
-this service hands it (the signing secret + the currently-valid peer credentials)
-over loopback.
+this service hands it (the signing secret and the device token digests) over loopback.
 
 Rotation contract
 -----------------
@@ -17,7 +15,6 @@ Then a background loop mints every cadence. Each mint:
   (never the peer credential, and never blocking the mint on social being up
   — it runs detached, and retries a transient failure with backoff before
   giving up; see ``h_status``'s ``push_last_*`` fields),
-* rewrites the ``$AWM_PEER_CRED`` file with the current peer credential,
 * prunes fully-expired generations.
 
 Logins
@@ -39,8 +36,7 @@ token belongs to ``operator``, and only the operator (a call with no edge
 identity) may mint, list or revoke one.
 
 ``AWM_AUTH_PROFILE=public`` (the internet-facing host) turns the shared path
-off entirely: no minting, no Discord push, every ``verify`` fails, and the edge
-receives no peer credentials.
+off entirely: no minting, no Discord push, and every ``verify`` fails.
 """
 
 from __future__ import annotations
@@ -49,36 +45,23 @@ import asyncio
 import hmac
 import logging
 import os
-import secrets
-import stat
 import time
 import urllib.parse
-from pathlib import Path
 from typing import Any
 
 from awm import config
-from awm.config import SERVICES_DIR, peertoken, tokens, usertoken
+from awm.config import tokens, usertoken
 
 from awm.auth import store
 from awm.auth.config import CONTRACT
 
 log = logging.getLogger("awm.auth.service")
 
-# The current peer credential is mirrored to this file so a peer can fetch it
-# with `ssh <host> 'cat "$AWM_PEER_CRED"'` (see the T2 SSH peer-auth channel).
-# $AWM_PEER_CRED in the operator's shell rc points here.
-PEER_CRED_FILE = SERVICES_DIR / "auth" / "peer_cred.current"
-
 _HOUR = 3600.0
 _DAY = 86400.0
 
 _PROFILE_ENV = "AWM_AUTH_PROFILE"
 
-# While this is unset or anything but "0", the edge still accepts the shared
-# peer bearer next to node tokens. Setting it to "0" retires the bearer.
-LEGACY_BEARER_ENV = "AWM_PEER_LEGACY_BEARER"
-
-NODE_KEY_NAME = "node_ed25519.key"
 
 #: The owner of every login session and every device token.
 OPERATOR = "operator"
@@ -116,80 +99,6 @@ def shared_password_enabled() -> bool:
     return profile() != "public"
 
 
-def legacy_bearer_enabled() -> bool:
-    return (os.environ.get(LEGACY_BEARER_ENV) or "").strip() != "0"
-
-
-# ---------------------------------------------------------------------------
-# Node identity
-# ---------------------------------------------------------------------------
-
-
-def node_key_file() -> Path:
-    """Where the node's private key lives, beside the service database."""
-    return Path(config.SERVICES_DIR) / store.SERVICE / NODE_KEY_NAME
-
-
-class NodeKeyError(RuntimeError):
-    """The node key file is not something auth may sign with."""
-
-
-def _write_new_key_file(path: Path, private: str) -> None:
-    """Put ``private`` at ``path`` atomically, unless something is already there.
-
-    The key is written complete and flushed to disk under a private temporary
-    name, then linked into place. ``link`` fails if ``path`` exists, so a reader
-    never sees a partial key and two starts racing each other cannot mint two.
-    """
-    tmp = path.with_name(f".{path.name}.{os.getpid()}.{secrets.token_hex(4)}.tmp")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    try:
-        os.fchmod(fd, 0o600)
-        with os.fdopen(fd, "w") as fh:
-            fh.write(private + "\n")
-            fh.flush()
-            os.fsync(fh.fileno())
-        try:
-            os.link(tmp, path)
-        except FileExistsError:
-            return
-        dir_fd = os.open(path.parent, os.O_RDONLY)
-        try:
-            os.fsync(dir_fd)
-        finally:
-            os.close(dir_fd)
-        log.info("auth: minted this node's ed25519 key (%s)",
-                 peertoken.fingerprint(peertoken.public_key_of(private)))
-    finally:
-        tmp.unlink(missing_ok=True)
-
-
-def _read_node_key(path: Path) -> str:
-    """The key in ``path``, after checking it is a private 32-byte seed."""
-    st = path.lstat()
-    if not stat.S_ISREG(st.st_mode):
-        raise NodeKeyError(f"{path} is not a regular file")
-    if stat.S_IMODE(st.st_mode) != 0o600:
-        raise NodeKeyError(
-            f"{path} has mode {stat.S_IMODE(st.st_mode):04o}; expected 0600. "
-            "Run chmod 600 on it, or move it aside to mint a new identity")
-    private = path.read_text().strip()
-    try:
-        peertoken.public_key_of(private)
-    except (peertoken.TokenError, ValueError) as exc:
-        raise NodeKeyError(f"{path} does not hold a 32-byte ed25519 key: {exc}") from exc
-    return private
-
-
-def ensure_node_key() -> str:
-    """The node's private key, minted once and kept in a 0600 file."""
-    path = node_key_file()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if not os.path.lexists(path):
-        _write_new_key_file(path, peertoken.generate_private_key())
-    return _read_node_key(path)
-
-
 def _operator_only(as_: str | None, verb: str) -> None:
     """Refuse a verb that arrived through an edge listener.
 
@@ -200,13 +109,6 @@ def _operator_only(as_: str | None, verb: str) -> None:
     if as_ is not None:
         raise PermissionError(
             f"{verb} is an operator verb: run it on the host, not through an edge")
-
-
-def _edge_peers() -> list[dict[str, Any]]:
-    """Each book peer's name and public key, for the edge to verify node
-    tokens against. Never carries a secret."""
-    return [{"name": r["name"], "public_key": r.get("public_key")}
-            for r in config.list_records()]
 
 
 # ---------------------------------------------------------------------------
@@ -264,12 +166,10 @@ async def _push_password_to_discord_attempt(login_password: str) -> None:
     )
     from awm import gatewayclient
     if not s.push_discord:
-        result = await gatewayclient.call_maybe_peer(
-            gatewayclient.peer_env(_REPORTING_PEER_ENV),
-            "reporting", "ops_post", {
+        result = await gatewayclient.call("operations", "ops_post", {
                 "kind": "password", "node": node,
                 "title": f"{node} login password", "body": text,
-            })
+            }, peer=gatewayclient.peer_env(_REPORTING_PEER_ENV))
         if not (isinstance(result, dict) and result.get("ok")):
             raise RuntimeError(f"reporting ops_post refused the password: {result!r}")
         log.info("auth: posted %s's login password to the Ops note", node)
@@ -280,13 +180,11 @@ async def _push_password_to_discord_attempt(login_password: str) -> None:
     if not (account and channel):
         raise RuntimeError("no Discord target for the password push: set "
                            "discord_channel or AWM_OPERATOR_DM_CHANNEL")
-    await gatewayclient.call_maybe_peer(
-        gatewayclient.peer_env(_SOCIAL_PEER_ENV),
-        "social", "send", {
+    await gatewayclient.call("social", "send", {
             "account": account,
             "channel": channel,
             "text": text,
-        })
+        }, peer=gatewayclient.peer_env(_SOCIAL_PEER_ENV))
     log.info("auth: pushed %s's login password to Discord %s#%s",
              node, account, channel)
 
@@ -345,18 +243,8 @@ def _spawn_push(login_password: str, expires_at: float) -> None:
         _push_password_to_discord(login_password, expires_at))
 
 
-def _write_peer_cred_file(peer_credential: str) -> None:
-    """Mirror the current peer credential to $AWM_PEER_CRED's target file."""
-    try:
-        PEER_CRED_FILE.parent.mkdir(parents=True, exist_ok=True)
-        PEER_CRED_FILE.write_text(peer_credential + "\n")
-        PEER_CRED_FILE.chmod(0o600)
-    except OSError as exc:
-        log.error("auth: could not write peer-cred file %s: %s", PEER_CRED_FILE, exc)
-
-
 async def mint_now(*, reason: str = "rotation") -> dict[str, Any]:
-    """Mint a fresh credential pair, announce it, refresh the peer file, prune."""
+    """Mint a fresh credential generation, announce it, prune."""
     s = _settings()
     gen = store.mint_generation(validity_seconds=s.validity_hours * _HOUR)
     # LOUD — an operator or agent tailing logs must notice a new password.
@@ -364,7 +252,6 @@ async def mint_now(*, reason: str = "rotation") -> dict[str, Any]:
         "=== auth: minted credential generation %d (%s); login password valid ~%.0fh ===",
         gen["generation"], reason, s.validity_hours,
     )
-    _write_peer_cred_file(gen["peer_credential"])
     removed = store.prune_expired()
     if removed:
         log.info("auth: pruned %d expired generation(s)", removed)
@@ -384,8 +271,6 @@ async def _mint_if_stale() -> None:
     if age >= s.mint_cadence_hours * _HOUR:
         await mint_now(reason=f"startup (newest was {age / _HOUR:.1f}h old)")
     else:
-        # Still fresh — just make sure the peer-cred file matches the live value.
-        _write_peer_cred_file(latest["peer_credential"])
         log.info("auth: newest generation %d is %.1fh old (< %.0fh cadence); no mint",
                  latest["generation"], age / _HOUR, s.mint_cadence_hours)
 
@@ -413,14 +298,13 @@ async def on_start() -> None:
     """Adapter ``on_start``: init DB, ensure secret, mint-if-stale, spawn loops."""
     store.init()
     store.ensure_secret()
-    ensure_node_key()
     if not shared_password_enabled():
         log.warning("auth: profile %r — shared password disabled; no login "
                     "is accepted here", profile())
         return
     await _mint_if_stale()
     asyncio.create_task(_rotation_loop())
-    log.info("auth: rotation loop started (peer-cred file: %s)", PEER_CRED_FILE)
+    log.info("auth: rotation loop started")
 
 
 # ---------------------------------------------------------------------------
@@ -439,15 +323,6 @@ def h_password(args: dict) -> dict:
         "generation": latest["generation"],
         "minted_at": latest["minted_at"],
         "expires_at": latest["expires_at"],
-    }
-
-
-def h_peer_credential(args: dict) -> dict:
-    """Return the current peer credential + the file path it is mirrored to."""
-    latest = store.latest()
-    return {
-        "peer_credential": latest["peer_credential"] if latest else None,
-        "path": str(PEER_CRED_FILE),
     }
 
 
@@ -520,56 +395,23 @@ def h_edge_material(args: dict, as_: str | None = None) -> dict:
     """Material the httpsfront edge caches to enforce auth offline.
 
     Returns the signing secret (to verify+slide cookies without an RPC per
-    request), the currently-valid peer credentials (to check peer bearers), the
-    book's peers with their public keys (to verify node tokens), the digests of
-    the live device tokens (to check user bearers), and the session-lifetime
-    knobs. ``device_used`` is the edge's report of the device tokens it has
-    accepted since its last fetch. ``token_scopes`` names the scopes the edge
-    enforces. A scoped token goes out only to an edge that names its scope,
-    because an edge that cannot read the scope would honour it everywhere. Operator-only: the edge itself fetches it with no
-    ``as_``, and a call that crossed an edge carries one and is refused.
-
-    The legacy bearers are withheld once ``AWM_PEER_LEGACY_BEARER=0``, and
-    always on the public profile. The keys are not secret and go out on every
-    profile: whether a listener honours a node token is the edge's call, because
-    a public node can also run a mesh listener that peers must reach.
+    request), the digests of the live device tokens (to check user bearers), and
+    the session-lifetime knobs. ``device_used`` is the edge's report of the device
+    tokens it has accepted since its last fetch. ``token_scopes`` names the scopes
+    the edge enforces. A scoped token goes out only to an edge that names its
+    scope, because an edge that cannot read the scope would honour it everywhere.
+    Operator-only: the edge itself fetches it with no ``as_``, and a call that
+    crossed an edge carries one and is refused.
     """
     _operator_only(as_, "edge_material")
     _record_device_use((args or {}).get("device_used"))
     s = _settings()
-    shared = shared_password_enabled()
-    legacy = ([g["peer_credential"] for g in store.valid_generations()]
-              if shared and legacy_bearer_enabled() else [])
     return {
         "secret": store.ensure_secret(),
-        "peer_credentials": legacy,
-        "peers": _edge_peers(),
         "device_tokens": _edge_devices((args or {}).get("token_scopes")),
-        "legacy_bearer": legacy_bearer_enabled(),
         "session_ttl_seconds": s.session_ttl_hours * _HOUR,
         "max_session_seconds": s.max_session_days * _DAY,
     }
-
-
-def h_node_key(args: dict) -> dict:
-    """This node's public key and its fingerprint, for pairing with a peer."""
-    public = peertoken.public_key_of(ensure_node_key())
-    return {"public_key": public, "fingerprint": peertoken.fingerprint(public)}
-
-
-def h_sign_peer_token(args: dict, as_: str | None = None) -> dict:
-    """A short-lived token naming this node, for the node called ``aud``.
-
-    Operator-only: whoever can ask for this speaks as this node to every other.
-    """
-    _operator_only(as_, "sign_peer_token")
-    aud = peertoken.node_label((args or {}).get("aud"))
-    if not aud:
-        raise ValueError("aud is required")
-    iss = peertoken.node_label(config.node_name())
-    token = peertoken.sign(ensure_node_key(), iss=iss, aud=aud)
-    return {"token": token, "iss": iss, "aud": aud,
-            "expires_in": peertoken.TOKEN_TTL_SECONDS}
 
 
 async def h_rotate(args: dict) -> dict:
@@ -599,7 +441,6 @@ def h_status(args: dict) -> dict:
         "push_last_ok": _push_status["ok"],
         "push_last_attempt_at": _push_status["at"],
         "push_last_error": _push_status["error"],
-        "peer_cred_path": str(PEER_CRED_FILE),
         "profile": profile() or "default",
         "shared_password_enabled": shared_password_enabled(),
     }

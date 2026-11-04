@@ -17,8 +17,8 @@ from typing import Any, AsyncIterator, Callable, Iterable
 RECONNECTED = {"type": "listen.reconnected"}
 MAX_BACKOFF_S = 15.0
 
-#: Opens one connection: ``gatewayclient.subscribe`` or ``subscribe_peer`` with
-#: the service and topic bound, taking only ``on_connect``.
+#: Opens one connection: ``gatewayclient.subscribe`` with the service, topic and
+#: peer bound, taking only ``on_connect``.
 Stream = Callable[..., AsyncIterator[Any]]
 
 

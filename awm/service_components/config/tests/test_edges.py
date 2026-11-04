@@ -91,3 +91,22 @@ def test_names_compare_by_first_label(monkeypatch):
     assert edges.here() == "work"
     assert edges.reaches("HOME.lan", "work")
     assert edges.admits("peer:home.example.org")
+
+
+def test_caller_peer_names_the_node_of_a_peer_stamp():
+    from awm.config import caller_peer
+    assert caller_peer("peer:mira") == "mira"
+    for value in (None, "", "peer", "peer:", "tony", "user:mira", "mira"):
+        assert caller_peer(value) is None
+
+
+def test_operator_dm_falls_back_to_tonys_dm(monkeypatch):
+    import awm.config as config
+    for var in ("AWM_OPERATOR_DM_ACCOUNT", "AWM_OPERATOR_DM_CHANNEL", "AWM_REPORTING_DM_CHANNEL"):
+        monkeypatch.delenv(var, raising=False)
+    assert config.operator_dm() == ("discord-bot", "dm:188743359983124480")
+    monkeypatch.setenv("AWM_REPORTING_DM_CHANNEL", "dm:2")
+    assert config.operator_dm() == ("discord-bot", "dm:2")
+    monkeypatch.setenv("AWM_OPERATOR_DM_CHANNEL", " dm:1 ")
+    monkeypatch.setenv("AWM_OPERATOR_DM_ACCOUNT", "other-bot")
+    assert config.operator_dm() == ("other-bot", "dm:1")

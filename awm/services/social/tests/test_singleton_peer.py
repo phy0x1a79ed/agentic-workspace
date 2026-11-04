@@ -71,7 +71,7 @@ class TestForwarding:
 
         import awm.gatewayclient as gc
         monkeypatch.setattr(gc, "peer_env", lambda var: peer)
-        monkeypatch.setattr(gc, "call_peer", _fake_call_peer)
+        monkeypatch.setattr(gc, "call", lambda tool, verb, args=None, *, peer=None, **kw: (_fake_call_peer)(peer, tool, verb, args, **kw))
         monkeypatch.setattr(ha, "_connectors", connectors)
         return calls
 
@@ -135,7 +135,7 @@ class TestForwarding:
             raise AssertionError("must not run")
 
         self._patch(monkeypatch, ha, peer="mira", connectors={},
-                    peer_exc=gc.PeerError("no ca"))
+                    peer_exc=gc.GatewayCallError(502, "no ca"))
         wrapped = ha._forwarding("send", _local)
         with pytest.raises(RuntimeError, match="owned by peer 'mira'"):
             asyncio.run(wrapped({"account": "discord-bot", "channel": "c",
@@ -188,7 +188,7 @@ class TestAccountsListing:
                 {"name": "gmail", "platform": "gmail", "live": True},
             ]}
 
-        monkeypatch.setattr(gc, "call_peer", _fake_call_peer)
+        monkeypatch.setattr(gc, "call", lambda tool, verb, args=None, *, peer=None, **kw: (_fake_call_peer)(peer, tool, verb, args, **kw))
         out = asyncio.run(ha._h_accounts({}))
 
         by_name = {a["name"]: a for a in out["accounts"]}
@@ -217,7 +217,7 @@ class TestAccountsListing:
             return {"accounts": [{"name": "discord-bot", "platform": "discord",
                                   "live": True}]}
 
-        monkeypatch.setattr(gc, "call_peer", _peer_says_live)
+        monkeypatch.setattr(gc, "call", lambda tool, verb, args=None, *, peer=None, **kw: (_peer_says_live)(peer, tool, verb, args, **kw))
         acc = asyncio.run(ha._h_accounts({}))["accounts"][0]
 
         assert acc["owner"] == "mira"
@@ -235,9 +235,9 @@ class TestAccountsListing:
         monkeypatch.setattr(gc, "peer_env", lambda var: "mira")
 
         async def _boom(p, service, fn, args=None, **kw):
-            raise gc.PeerError("ssh refused")
+            raise gc.GatewayCallError(502, "ssh refused")
 
-        monkeypatch.setattr(gc, "call_peer", _boom)
+        monkeypatch.setattr(gc, "call", lambda tool, verb, args=None, *, peer=None, **kw: (_boom)(peer, tool, verb, args, **kw))
         out = asyncio.run(ha._h_accounts({}))
 
         assert [a["name"] for a in out["accounts"]] == ["gmail"]
