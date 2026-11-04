@@ -10,7 +10,6 @@ import pytest
 from awm.board.states import STATES, TERMINAL
 from awm.board.vault import Vault
 
-from test_migrate import WRITES, legacy, snapshot
 
 BOARD_LABEL = "federationBoard"
 ID = "a" * 32
@@ -170,52 +169,3 @@ def test_archiving_twice_does_not_move_the_card_again(trilium, vault):
 # -- the migration ------------------------------------------------------------------
 
 
-@pytest.fixture
-def old_archive(board, trilium, board_note, tony):
-    """Archived cards in the old places: under the board with a status, and directly in a column."""
-    legacy(trilium, board_note, "b" * 32, "Done", archived="")
-    legacy(trilium, board_note, "c" * 32, "Failed", archived="")
-    legacy(trilium, board_note, "d" * 32, "Posted", archived="")
-    legacy(trilium, board_note, "e" * 32, "Posted")                    # live, not archived
-    flat = request(board, tony)
-    trilium.set_attr(trilium.card_note(flat["id"]), "archived", "")
-    return {"flat": flat["id"]}
-
-
-def test_the_archive_dry_run_reports_the_plan_and_changes_nothing(board, trilium, old_archive):
-    trilium_calls = len(trilium.calls)
-    before = snapshot(trilium)
-    report = board.migrate_archive(dry_run=True)
-    assert report["dry_run"] is True and report["cards_to_move"] == 4 and report["already_filed"] == 0
-    assert report["by_state"] == {"proposed": 2, "done": 1, "rejected": 1}
-    assert report["folders_to_create"] == [] and report["labels_to_drop"] == 2
-    assert snapshot(trilium) == before
-    assert not [fn for fn, _ in trilium.calls[trilium_calls:] if fn in WRITES]
-
-
-def test_the_archive_migration_makes_the_folders_a_board_without_them_lacks(board, trilium, board_note):
-    legacy(trilium, board_note, "b" * 32, "Done", archived="")
-    assert board.migrate_archive(dry_run=True)["folders_to_create"] == list(STATES)
-    assert trilium.columns() == []
-    board.migrate_archive(dry_run=False)
-    assert trilium.columns() == list(STATES)
-    assert trilium.state_of("b" * 32) == "done" and trilium.is_filed_archived("b" * 32)
-
-
-def test_the_archive_apply_files_each_card_by_its_column_and_a_second_apply_changes_nothing(
-        board, trilium, old_archive, tony):
-    report = board.migrate_archive(dry_run=False)
-    assert report["moved"] == 4
-    assert [trilium.state_of(c * 32) for c in "bcd"] == ["done", "rejected", "proposed"]
-    assert trilium.state_of(old_archive["flat"]) == "proposed"
-    assert all(trilium.is_filed_archived(c) for c in [*(c * 32 for c in "bcd"), old_archive["flat"]])
-    assert trilium.label(trilium.card_note("b" * 32), "status") is None
-    assert not trilium.is_filed_archived("e" * 32)                      # a live card stays put
-    assert board.get(tony, "b" * 32)["state"] == "done"
-    assert report["unlabelled"] == 2
-    assert [trilium.label(trilium.card_note(c * 32), "archived") for c in "bcd"] == [None, None, ""]
-    assert [c["id"] for c in board.list(tony)] == ["e" * 32]
-    before = snapshot(trilium)
-    again = board.migrate_archive(dry_run=False)
-    assert again["cards_to_move"] == 0 and again["labels_to_drop"] == 0 and again["already_filed"] == 2
-    assert snapshot(trilium) == before

@@ -1,4 +1,3 @@
 # Today's Python gateway reads this. The redux loader reads awm-plugin.toml instead.
-# reporting and board serve the same tool name until the cutover removes them.
 tool = "operations"
 tier = "on"

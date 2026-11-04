@@ -249,13 +249,9 @@ had just written. This is the least obvious consequence of sharing the document
 and the easiest to trip over, because installing the mirror on a second node
 looks like the obvious next step.
 
-`reporting` runs on every fleet node and is the one exception, because each copy
-writes only notes no other copy writes: its own cards, its own Ledger note and
-its own Ops notes. The shared notes, the board and its books, come from one
-`board_ensure` run. A node that made a shared note on its own would race another
-node into a duplicate, as two Ops books once showed. The saved searches under
-"By tag" are the one shared note a sweep makes, because a tag can appear at any
-time. Every node keeps the lowest note id of a duplicate title and deletes the rest.
+The Swarm board has one writer too: operations on alcor, its home node. It
+writes each card under a fixed note id, so a retried write finds the note it
+made instead of a duplicate.
 
 WARNING: **a replica follows a deletion.** Within a minute of a note being
 deleted anywhere it is gone everywhere. Replication is not backup, which is why
@@ -299,8 +295,7 @@ absorbed here so that every caller does not meet them separately:
 - **A note's parent is a branch, not a field.** `note_place` sets the whole
   parent set in one call, and always adds before it removes: a note's last
   branch takes the note with it, so unplacing first deletes what you are moving.
-  With `remove` it drops only the branches named there. That is how `reporting`
-  moves a card between columns and leaves a clone of it on Tony's board alone.
+  With `remove` it drops only the branches named there, and leaves the others.
   `note_move` drops every other parent.
 - **An attachment's bytes do not travel in its JSON.** The create body's
   `content` is validated as a string. The row is made empty and the bytes are
@@ -331,7 +326,7 @@ host's shell passes. Reads are never gated.
 |---|---|
 | none | Tony only |
 | `#agentWritable` | agents and Tony |
-| `#agentManaged` | the `reporting` service only. It also sets `#readOnly`, so the GUI shows the note read-only |
+| `#agentManaged` | the operations board writer only. It also sets `#readOnly`, so the GUI shows the note read-only |
 
 Labels count when inherited, so label a subtree once with an inheritable
 `#agentWritable`. `#agentManaged` refuses a session even under a writable

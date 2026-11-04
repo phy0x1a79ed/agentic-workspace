@@ -215,3 +215,26 @@ async def test_an_urgent_block_reminds_tony_once(h, monkeypatch):
     now[0] += 61
     assert await h.front.remind_due() == 0
     assert h.store.task_get(out["task_id"])["section"] == "working"
+
+
+async def test_a_board_post_becomes_one_proposed_card_and_its_thread_reaches_the_session(h):
+    post = {"board_card": "c0ffee", "sender": "caviar/agent", "title": "help with x", "body": "details"}
+    assert (await h.call("intake_post", 11, **post))["ok"] is False, "sessions cannot post intake"
+    out = await h.call("intake_post", None, **post)
+    assert out["opened"] is True and f"claim task {out['task_id']}" in h.dms[-1]
+    card = h.store.task_get(out["task_id"])
+    assert (card["section"], card["tags"], card["title"]) == ("proposed", ["board"],
+                                                              "caviar/agent: help with x")
+    assert [m["body"] for m in h.store.task_messages(out["task_id"])] == ["details"]
+    again = await h.call("intake_post", None, **post)
+    assert again == {"ok": True, "task_id": out["task_id"], "opened": False} and len(h.dms) == 1
+    await h.call("claim_task", 11, task_id=out["task_id"])
+    said = await h.call("intake_message", None, board_card="c0ffee", sender="caviar/agent",
+                        body="any news?")
+    assert said["told"] is True and h.told[-1][1] == "fix-tunnel"
+    reply = await h.call("intake_post", None, board_card="c0ffee2", sender="caviar/agent",
+                         title="re: help", body="more", reply_to="c0ffee")
+    assert reply["task_id"] == out["task_id"]
+    assert [m["body"] for m in h.store.task_messages(out["task_id"])][-1] == "more"
+    assert (await h.call("intake_message", None, board_card="nope", sender="x",
+                         body="y"))["task_id"] is None

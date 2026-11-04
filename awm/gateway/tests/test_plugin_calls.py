@@ -28,6 +28,9 @@ CALL_FNS = {"call": 0, "call_sync": 0}
 CALLS: dict[str, set[tuple[str, str]]] = {
     # trustpolicy.requests.file_request calls operations approval_request.
     "browser": {("operations", "approval_request")},
+    "board": {("operations", "intake_post"), ("operations", "intake_message"),  # hub_adapter._operations
+              *{("trilium", v) for v in ("note_get", "note_search", "note_create", "note_update", "note_place",
+                                         "attr_set", "attr_delete")}},  # vault.gateway_transport
     "channel": {("reflection", "session_of"), ("reflection", "message"), ("reflection", "list_other")},
     # gatewayclient sessions and push
     "operations": {  # GatewayTool("<tool>").call(verb)

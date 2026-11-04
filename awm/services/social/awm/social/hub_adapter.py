@@ -156,7 +156,7 @@ async def _on_command(cmd: connectors.Command) -> None:
 
     Unlike messages these aren't persisted — a command is an ephemeral trigger,
     not a record. Consumers subscribe to ``/svc/social/emit/command`` and react
-    to the commands they own (``approve``, ``reject``, ``new_agent``). The
+    to the commands they own (``approve``). The
     connector has already checked the sender against the operators table.
     """
     if _adapter is None:

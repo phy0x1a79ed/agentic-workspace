@@ -160,16 +160,14 @@ without `retire`. It rides in the system prompt so that no compaction paraphrase
 - `brief: false` leaves the brief out.
 
 **CAUTION** The lineage record and the `list_other` row carry `brief`.
-Reporting opens a board card for each live job with `brief` set, so a session
-started without the brief stays off the board until it plans, claims or asks.
 A job runs its first prompt before `start` writes its lineage record, so until
 then `list_other` reads the job's fields from its pending record.
 
 **CAUTION** `--restricted` refuses bypass, so a restricted start runs in its
 named mode with no way to reach bypass. A restricted session also ignores user
-settings, so cx passes it `--settings` with the reporting hook fragment from
+settings, so cx passes it `--settings` with the operations hook fragment from
 `AWM_CX_RESTRICTED_SETTINGS` (default
-`~/.claude/hooks/awm-reporting-settings.json`). cx omits the flag when the file
+`~/.claude/hooks/awm-operations-settings.json`). cx omits the flag when the file
 is absent on the node.
 
 #### Where a mode lives
