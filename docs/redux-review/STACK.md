@@ -26,6 +26,15 @@ Procedure, from dfs-interview § Work the stack:
 ## Stack
 
 - **lane-open-items** (2026-11-03): The open-for-Tony items each lane reported, in the Build result sections of channels, queue-approver, plugin-core and sessions-harness READMEs
+  - [ ] Trilium tool lane: note_create without note_id, note verbs refuse calls across an edge (queue)
+  - [ ] Tether lane push and pin bump (channels)
+  - [ ] Persistent rooms end on a relay restart, against channels.md R72 item 5 (channels)
+  - [ ] Relay limits, spake2 suite, tether verbs, isolated sessions without a channel (channels)
+  - [ ] auth verbs on the awm tool or an auth tool; quay org for test images (plugins)
+  - [ ] Python discovery root, isolated door port 8765 and ceiling list (plugins)
+  - [ ] Queue rest: approver forwarded header, order_pull callers, Chromium libs, AWM_TRILIUM_URL, cutover gaps (queue)
+  - [ ] Harness rest: harness_event callback, hidden session_of, old state paths, R44 item 4, R109 item 7 (harness)
+  - [ ] ~/.claude edits from the journal lane: debrief, goal-alignment, goal 50708f67, CLAUDE.md precedence lines (journal)
 - **search-filters** (2026-11-03): can we make parameterized search possible? then we can do search with empty terms and only sql (if that's what hop takes) with source as kb for hop. Then we can also make searching journals possible to filter to only reports etc
   - [ ] kb tool surface: does hop become a search filter so the kb tool goes (Tony: kb becomes a b2b service only for search)
 - **fleet-deploy** (2026-11-03): lets go over each of the major systems architecturally to make sure we are still aligned
