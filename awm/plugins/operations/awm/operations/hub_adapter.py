@@ -111,7 +111,7 @@ def handlers(front: Front, home: Any | None) -> dict[str, Any]:
         return h
 
     async def ops_post(args: dict, as_: str | None = None) -> dict:
-        """A service's notice in the Ops book, such as auth's login password. Not for sessions."""
+        """A service's notice in the Ops book. Not for sessions."""
         if as_ is not None or args.get("_caller_pid") or args.get("_caller_session_id"):
             return {"ok": False, "error": "ops_post takes this node's own services only"}
         fields = {k: args.get(k) for k in ("kind", "node", "title", "body")}

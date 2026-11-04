@@ -95,8 +95,8 @@ VERBS: list[dict[str, Any]] = [
     {"name": "status", "effect": "read",
      "description": "This node's outbox and how long alcor has been unreachable.", "params": []},
     {"name": "ops_post", "effect": "write", "surfaces": HIDDEN,
-     "description": "A service's notice in the Ops book, one note per kind and node, such as "
-     "auth's login password. For this node's services, not for sessions.",
+     "description": "A service's notice in the Ops book, one note per kind and node. For this "
+     "node's services, not for sessions.",
      "params": [_p("kind", required=True), _p("node", required=True), _p("title", required=True),
                 _p("body", required=True)]},
     {"name": "devices", "effect": "read", "surfaces": HIDDEN,

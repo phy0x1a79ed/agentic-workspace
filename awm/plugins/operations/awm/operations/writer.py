@@ -48,7 +48,7 @@ class Writer:
     # -- the Ops book ----------------------------------------------------------------
 
     def post_ops(self, kind: str, node: str, title: str, body: str) -> str:
-        """Rewrite the one managed note for this kind and node in the Ops book, such as a login password."""
+        """Rewrite the one managed note for this kind and node in the Ops book."""
         hits = self.api.search(f"#{OPS_LABEL}")
         if len(hits) != 1:
             raise ValueError(f"{len(hits)} notes carry #{OPS_LABEL}: the Ops book needs exactly one")

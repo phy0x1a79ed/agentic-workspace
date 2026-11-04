@@ -79,20 +79,20 @@ demand; there is no single identity brain (per-node state, cross-reads on demand
 
 ## Authentication
 
-**Paired, co-rotated, distinct values.** Every ~12 h the `auth` service mints a
-fresh pair — a `login-password` (human, typed once a day) and a `peer-credential`
-(machine, distinct value, never pushed to Discord) — each valid ~24 h. With a 12 h
-cadence and 24 h validity, **two generations are valid at once**, so a client
-never has to re-authenticate across a rotation. On startup it mints if none is
-valid or the newest is older than the cadence (no dependency on `events`).
+**Overlapping peer credentials.** Every ~12 h the `auth` service mints a fresh
+`peer-credential`, each valid ~24 h. With a 12 h cadence and 24 h validity,
+**two generations are valid at once**, so a client never has to re-authenticate
+across a rotation. On startup it mints if none is valid or the newest is older
+than the cadence (no dependency on `events`). Each mint rewrites the
+`$AWM_PEER_CRED` file.
 
-Each mint: a **loud** log line, a best-effort push of the *login password* to
-the operator's Discord DM, and a rewrite of the `$AWM_PEER_CRED` file.
-
-- **Human login:** `POST /__auth/login` at the edge → `auth.verify` → a
-  signed session cookie. The cookie is **slid** (re-issued) on each authenticated
-  request within its window, capped by a hard maximum session age. Get the day's
-  password on the daemon host with `awm auth password` (it is also in Discord).
+- **Human login:** the passkey at alcor's approver (fleet.md R84). A browser
+  with no session goes to `<AWM_APPROVER_ORIGIN>/portal_login`, and comes back
+  to the edge's `/__auth/portal` with a grant for this node, host and path. The
+  edge checks it offline against `AWM_APPROVER_GRANT_PUBKEY` and sets a signed
+  session cookie. The cookie is **slid** (re-issued) on each authenticated
+  request within its window, capped by a hard maximum session age. No password
+  login exists.
 - **Peer auth:** a peer sends `Authorization: Bearer <node token>` (§ *Node
   identity and tokens*). Until the legacy bearer retires, a peer may send
   `Authorization: Bearer <peer-credential>` instead, and the edge checks it
@@ -493,13 +493,13 @@ interface — capella's edge is reached at the *Windows* host's ZeroTier address
 invisible from inside WSL, the same asymmetry `AWM_TLS_EXTRA_SANS` exists for.
 Undeclared and unenumerable yields `None`, and callers omit the link.
 
-**The autologin link.** The password push carries `<edge>/__auth/link?p=<password>`
-so a phone taps instead of transcribing. A live credential in a URL is acceptable
-only because that route is never a page: it validates, 302s to a clean local path
-with the cookie set, and sends `no-store` + `no-referrer`. Two things keep it that
-way and must not be undone — the redirect-before-render shape, and uvicorn's
-`log_level="warning"` in `proxy.serve`, which is what actually keeps query strings
-out of the logs (`gateway/access_log.py` is dormant and protects nothing).
+**The grant in the callback URL.** `/__auth/portal?grant=…` carries a live,
+single-use grant. That is acceptable only because the route is never a page: it
+validates, 302s to a clean local path with the cookie set, and sends `no-store` +
+`no-referrer`. Two things keep it that way and must not be undone — the
+redirect-before-render shape, and uvicorn's `log_level="warning"` in
+`proxy.serve`, which is what actually keeps query strings out of the logs
+(`gateway/access_log.py` is dormant and protects nothing).
 
 **Who a failure is attributed to.** The lockout alert names the *requester*, and on
 the arbiter path that is not the node writing the message — `AWM_SSH_SLOT_PEER=mira`
