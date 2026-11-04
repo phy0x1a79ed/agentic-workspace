@@ -1,6 +1,6 @@
 //! Check a grant that alcor's approver signed (fleet.md R97 item 3).
 //!
-//! Twin of `awm.trustpolicy.grants`. The signature is Ed25519 over the grant's
+//! Twin of operations' `grantlib/verify_grant.py`. The signature is Ed25519 over the grant's
 //! canonical JSON: keys sorted at every level, separators `,` and `:`, UTF-8,
 //! integer times.
 

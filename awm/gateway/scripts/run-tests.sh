@@ -31,7 +31,7 @@ set -uo pipefail
 WS="$(git -C "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" rev-parse --show-toplevel)"
 cd "$WS"
 
-COMP="$WS/awm/service_components/config:$WS/awm/service_components/persistence:$WS/awm/service_components/gatewayclient:$WS/awm/service_components/claudedaemon:$WS/awm/service_components/kept:$WS/awm/service_components/usage"
+COMP="$WS/awm/plugins/operations/grantlib:$WS/awm/service_components/config:$WS/awm/service_components/persistence:$WS/awm/service_components/gatewayclient:$WS/awm/service_components/claudedaemon:$WS/awm/service_components/kept:$WS/awm/service_components/usage"
 
 # dist name -> "<source-root-dir>::<test-dir>"
 declare -A DISTS=(

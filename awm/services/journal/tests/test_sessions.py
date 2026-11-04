@@ -25,16 +25,6 @@ def _post(posts, kind="journal", meta=None, pid=42, body="debrief", scope="dev",
     return posts._handle_post(args)["post"]
 
 
-@pytest.mark.parametrize("raw,want", [
-    (ME_UUID, ME), (ME_UUID.replace("-", ""), ME), (ME, ME), (ME.upper(), ME),
-    ("ds" + "a" * 20, "ds" + "a" * 20),
-    ("job00001", None), ("cc1234", "cc1234"), ("xx" + "a" * 32, None), ("", None), (None, None),
-])
-def test_r9_matches_the_harness_form(raw, want):
-    from awm.journal.sessions import r9
-    assert r9(raw) == want
-
-
 def test_a_journal_names_another_session_to_cover_it(posts):
     meta = _post(posts, meta={"session": OTHER})["meta"]
     assert meta == {"session": OTHER, "posted_by": ME}

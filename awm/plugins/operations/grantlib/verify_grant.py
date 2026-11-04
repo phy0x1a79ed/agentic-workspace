@@ -35,6 +35,11 @@ def unb64u(text: str) -> bytes:
     return base64.urlsafe_b64decode(text + "=" * (-len(text) % 4))
 
 
+def payload_digest(payload: dict) -> str:
+    """What a grant's ``payload_sha256`` holds for the request it covers."""
+    return hashlib.sha256(canon(payload)).hexdigest()
+
+
 def key_id(pub: Ed25519PublicKey) -> str:
     raw = pub.public_bytes(Encoding.Raw, PublicFormat.Raw)
     return hashlib.sha256(raw).hexdigest()[:16]
@@ -66,13 +71,19 @@ def _verify(envelope: dict, field: str, pub: Ed25519PublicKey, now: float | None
 
 
 def verify_grant(envelope: dict, pub: Ed25519PublicKey, *, kind: str | None = None,
-                 node: str | None = None, now: float | None = None) -> dict:
-    """The grant body, once its signature, window and (optionally) kind and node check out."""
+                 node: str | None = None, subject: str | None = None, payload: dict | None = None,
+                 now: float | None = None) -> dict:
+    """The grant body, once its signature, window and (optionally) kind, node, subject and
+    request payload check out."""
     body = _verify(envelope, "grant", pub, now)
     if kind is not None and body.get("kind") != kind:
         raise GrantInvalid(f"the grant is for {body.get('kind')!r}, not {kind!r}")
     if node is not None and body.get("node") != node and node not in body.get("nodes", []):
         raise GrantInvalid(f"the grant does not cover node {node!r}")
+    if subject is not None and body.get("subject") != subject:
+        raise GrantInvalid(f"the grant is for {body.get('subject')!r}, not {subject!r}")
+    if payload is not None and body.get("payload_sha256") != payload_digest(payload):
+        raise GrantInvalid("the grant does not cover this request")
     return body
 
 

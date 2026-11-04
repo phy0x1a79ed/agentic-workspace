@@ -15,7 +15,7 @@ A scope IS the channel. Each entry's ``name`` is the service-internal handle
 import logging
 from typing import Any
 
-from awm.gatewayclient import sessions as caller
+from awm.gatewayclient import ids, sessions as caller
 from awm.journal import bounds, channel, inbox, kinds, owners, private, sessions, tagsync, versions
 from awm.journal import tags as tagmod
 
@@ -244,7 +244,7 @@ POST_MANIFEST_FUNCTIONS = [
 def _caller_session(caller_pid: Any) -> str | None:
     """The R9 id of the session behind the pid the gateway stamped."""
     rec = caller.session_of(caller_pid)
-    return sessions.r9(rec.get("session_id")) if rec else None
+    return ids.to_r9(rec.get("session_id")) if rec else None
 
 
 def _with_session(meta: Any, caller_pid: Any) -> Any:
@@ -405,7 +405,7 @@ def _handle_reads(args: dict, as_: str | None = None) -> dict:
     if channel.edge_origin(as_):
         raise PermissionError("a session's reads stay on its own node")
     named = args.get("session")
-    session = sessions.r9(named) if named else _caller_session(args.get("_caller_pid"))
+    session = ids.to_r9(named) if named else _caller_session(args.get("_caller_pid"))
     if session is None:
         raise ValueError(f"{named!r} is not a session id" if named else
                          "no calling session; pass session")

@@ -6,7 +6,6 @@ from awm.channel.holders import ChannelError
 pytestmark = [pytest.mark.unit, pytest.mark.smoke]
 
 SID = "cc" + "0123456789abcdef" * 2
-UUID = "01234567-89ab-cdef-0123-456789abcdef"
 
 
 def test_a_call_with_no_session_behind_it_cannot_hold_a_channel():
@@ -52,11 +51,6 @@ def test_a_holder_on_another_node_with_no_session_id_is_known_by_its_job(monkeyp
                                                  "name": "far"}}, "peer:alcor")
     assert holder == {"node": "alcor", "session": "job:feed1234", "job": "feed1234",
                       "name": "far"}
-
-
-def test_r9_is_cc_and_the_uuid_without_dashes():
-    assert holders.r9(UUID) == SID
-    assert holders.r9("not-a-uuid") is None
 
 
 def test_the_plugin_does_not_reach_into_social():
@@ -119,8 +113,8 @@ def test_the_job_of_a_session_is_its_list_other_row(monkeypatch):
     {"ok": True, "sessions": [{"job": "abcd1234", "state": "working"}]},
     {"ok": True, "sessions": ROWS["sessions"], "errors": [{"harness": "dsh"}]},
 ])
-def test_a_list_other_that_cannot_tell_falls_back_to_the_records(monkeypatch, answer):
+def test_a_list_other_that_cannot_tell_names_no_job_and_closes_nothing(monkeypatch, answer):
     _list_other(monkeypatch, answer)
-    monkeypatch.setattr(holders, "_job_of_session_on_disk", lambda sid: "fromdisk")
     assert holders._session_rows() is None
-    assert holders._job_of_session(SID) == "fromdisk"
+    assert holders._job_of_session(SID) is None
+    assert holders.live_sessions() is None

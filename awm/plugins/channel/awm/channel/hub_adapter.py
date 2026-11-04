@@ -16,6 +16,7 @@ from awm.gatewayclient import ServiceAdapter, spawn_supervised
 
 from awm.channel import holders, lines
 from awm.channel.relay import Rooms
+from awm.gatewayclient import push
 from awm.channel.service import Channels
 from awm.channel.store import Store
 
@@ -244,7 +245,7 @@ LOOPS: list[asyncio.Task] = []
 
 def build(state_dir: Path = STATE_DIR, **kw: Any) -> Channels:
     return Channels(Store(state_dir / "channels.db"), kw.pop("rooms", None) or Rooms(),
-                    kw.pop("pusher", None) or holders.Pusher(),
+                    kw.pop("pusher", None) or push.Pusher(),
                     lines.Transcripts(state_dir / "transcripts"), **kw)
 
 

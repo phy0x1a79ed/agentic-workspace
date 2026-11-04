@@ -1,4 +1,4 @@
-"""The tables of `awm.reporting.work`, apart so the store can create them without importing the ledger."""
+"""The tables of the task store reporting kept before operations took the task ids (sessions.md R58). The store's 9->10 step still creates them."""
 
 WORK_SCHEMA = """
 CREATE TABLE IF NOT EXISTS work (

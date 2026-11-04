@@ -1,4 +1,4 @@
-//! queue's grant vectors (approver/grantlib/test_vectors.json) pass the same way here.
+//! The grant vectors operations signs (awm/plugins/operations/grantlib/test_vectors.json) pass here too.
 
 use awm_trust::grant::{key_id, verify_grant, Expect};
 use base64::Engine;
@@ -6,7 +6,7 @@ use serde_json::Value;
 
 #[test]
 fn queue_vectors() {
-    let vec: Value = serde_json::from_str(include_str!("queue_vectors.json")).unwrap();
+    let vec: Value = serde_json::from_str(include_str!("../../../../awm/plugins/operations/grantlib/test_vectors.json")).unwrap();
     let pk: [u8; 32] = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .decode(vec["public_key_b64u"].as_str().unwrap())
         .unwrap()

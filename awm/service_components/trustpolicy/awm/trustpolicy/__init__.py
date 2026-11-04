@@ -14,7 +14,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable
 
-from awm.trustpolicy.grants import GrantError, canonical, payload_digest, verify
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+from verify_grant import GrantInvalid as GrantError, canon as canonical, payload_digest, verify_grant
 
 LEVELS = ("untrusted", "cooperative", "trusted")
 
@@ -74,8 +75,8 @@ def raise_grant(session_id: str | None, current: str, to: str, *, grant: dict | 
         raise TrustError(f"a raise from {current} to {to} takes a grant Tony approves")
     payload = {"session_id": session_id, "from": current, "to": to}
     try:
-        return verify(grant, grant_key, kind="trust_raise", node=node,
-                      subject=session_id, payload=payload, now=now)
+        return verify_grant(grant, Ed25519PublicKey.from_public_bytes(grant_key), kind="trust_raise",
+                            node=node, subject=session_id, payload=payload, now=now)
     except GrantError as exc:
         raise TrustError(f"raise to {to} refused: {exc}") from exc
 
@@ -160,5 +161,5 @@ def journal_bound(level: str, *, node: str, project: str | None, scope: str | No
 __all__ = [
     "LEVELS", "STEER_VERBS", "FIRST_LOCAL_MESSAGE_HINT", "TrustError", "GrantError",
     "JournalBound", "rank", "lower", "level_for_start", "raise_grant", "may_steer",
-    "cross_edge", "journal_bound", "verify", "canonical", "payload_digest",
+    "cross_edge", "journal_bound", "verify_grant", "canonical", "payload_digest",
 ]

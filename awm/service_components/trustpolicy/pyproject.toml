@@ -9,6 +9,7 @@ requires-python = ">=3.11"
 description = "AWM trust levels per session: who may start, steer and read what (fleet.md R103, R104, R107)."
 dependencies = [
     "cryptography",
+    "awm-grantlib",
 ]
 
 [project.optional-dependencies]

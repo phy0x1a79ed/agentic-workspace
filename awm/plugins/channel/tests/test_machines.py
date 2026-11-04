@@ -15,7 +15,8 @@ from pathlib import Path
 import pytest
 
 from awm.channel import hub_adapter
-from awm.channel.holders import ChannelError, Pusher
+from awm.channel.holders import ChannelError
+from awm.gatewayclient.push import Pusher
 from awm.channel.machines import Machines
 from awm.channel.relay import Rooms
 from awm.channel.tether import paths, stream

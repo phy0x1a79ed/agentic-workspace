@@ -26,11 +26,6 @@ def is_journal(tag_ids: Any) -> bool:
     return kinds.JOURNAL in (tag_ids or ())
 
 
-def r9(raw: Any) -> str | None:
-    """The R9 form of a session id, or None when ``raw`` is not one."""
-    return ids.to_r9(raw)
-
-
 def stamp(meta: Any, caller: str | None) -> Any:
     """``meta`` with ``session`` in R9 form, defaulting to the posting session.
 
@@ -43,7 +38,7 @@ def stamp(meta: Any, caller: str | None) -> Any:
     named = meta.pop("session", None)
     if named in (None, ""):
         return {**meta, "session": caller} if caller else meta
-    session = r9(named)
+    session = ids.to_r9(named)
     if session is None:
         raise ValueError(f"meta.session {named!r} is not a session id")
     meta["session"] = session

@@ -13,7 +13,8 @@ import sqlite3
 import time
 from pathlib import Path
 
-from awm.journal import kinds, sessions
+from awm.gatewayclient import ids
+from awm.journal import kinds
 from awm.journal.dao import JournalDAO
 
 PARENT_KINDS = ("start", "clear")
@@ -28,7 +29,7 @@ def set_parent(session_id: str, parent_id: str, how: str = "start", node: str = 
     """
     if how not in PARENT_KINDS:
         raise ValueError(f"how is one of {PARENT_KINDS}, not {how!r}")
-    session, parent = sessions.r9(session_id), sessions.r9(parent_id)
+    session, parent = ids.to_r9(session_id), ids.to_r9(parent_id)
     if session is None or parent is None:
         raise ValueError("session_id and parent are session ids")
     if session == parent:
@@ -57,7 +58,7 @@ def cited_by_session(session: str) -> list[dict]:
 
 def walk(session_id: str, *, limit: int = MAX_EDGES) -> dict:
     """Every edge reachable forward from ``session_id``: parents, then what each debrief cites."""
-    start = sessions.r9(session_id)
+    start = ids.to_r9(session_id)
     if start is None:
         raise ValueError(f"{session_id!r} is not a session id")
     edges, seen, queue = [], {start}, [start]

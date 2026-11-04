@@ -14,6 +14,7 @@ run() { echo "+ pip install -e $*"; mamba run -n "$ENV" pip install -e "$@"; }
 run "$AWM/service_components/config" --no-deps
 run "$AWM/service_components/persistence" --no-deps
 run "$AWM/service_components/gatewayclient" --no-deps
+run "$AWM/plugins/operations/grantlib" --no-deps
 run "$AWM/service_components/trustpolicy" --no-deps
 # This service embeds + queries vectors, so it also needs persistence's
 # `search` extra (sentence-transformers, on the CPU torch wheel).

@@ -4,7 +4,7 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 WS="$(git -C "$HERE" rev-parse --show-toplevel)"
 ENV="${AWM_ENV:-awm}"
-for pkg in awm/service_components/config awm/service_components/gatewayclient awm/service_components/trustpolicy; do
+for pkg in awm/service_components/config awm/service_components/gatewayclient awm/plugins/operations/grantlib awm/service_components/trustpolicy; do
     mamba run -n "$ENV" pip install -e "$WS/$pkg"
 done
 mamba run -n "$ENV" pip install -e "$HERE"

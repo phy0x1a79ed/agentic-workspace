@@ -29,6 +29,7 @@ from typing import Any
 
 from awm import config
 from awm.gatewayclient import ServiceAdapter
+from awm.gatewayclient.push import Pusher
 from awm.social import buckets as buckets_mod
 from awm.social import config as social_config
 from awm.social import connectors
@@ -446,7 +447,7 @@ def _release_gone(node: str, job: str) -> None:
                  row["account"], row["channel_id"], seats.holder_label(row))
 
 
-_pusher = seats.Pusher(on_gone=_release_gone)
+_pusher = Pusher(on_gone=_release_gone)
 
 
 def _holder_dict(row: dict | None) -> dict | None:

@@ -24,6 +24,7 @@ from datetime import datetime
 from typing import Any, Awaitable, Callable
 
 from awm import gatewayclient
+from awm.gatewayclient import ids
 from awm.claudedaemon import roster
 from awm.config import node_name
 
@@ -36,17 +37,13 @@ from awm.reporting.record import TITLE_CHARS, cut_at_word, plan_title, render_le
 from awm.reporting.sessions import GONE, STOPPED, CxUnavailable, Cx
 from awm.reporting.store import Offloaded, Queue
 from awm.reporting.swarmboard import TAGS_LABEL, BoardError, SwarmBoard
-from awm.reporting.task_ids import session_key
 
 log = logging.getLogger("awm.reporting.tasks")
 
 
 def _same_session(value: Any) -> str:
     """A session id in one form, so a journal's R9 stamp matches a card's Claude UUID."""
-    try:
-        return session_key(value)
-    except ValueError:
-        return str(value or "")
+    return ids.to_r9(value) or str(value or "")
 
 #: A Trilium note URL: the note is the last segment of the fragment.
 NOTE_URL = re.compile(r"https?://[^\s#]+#(?:[\w-]+/)*([\w-]{4,})")
@@ -55,6 +52,7 @@ CLAIM_WORDS = re.compile(r"\b(claim|attach)\b", re.I)
 CLAIM_TASK = re.compile(r"\bclaim\s+task\s+(\S+)", re.I)
 _CARD_REF = re.compile(r"[0-9a-fA-F]{6,32}")
 JOURNAL_SERVICE = "journal"
+OPERATIONS_SERVICE = "operations"
 JOURNAL_FETCH = "fetch"
 JOURNAL_TOPIC = "posts"
 SCOPES_SERVICE = "scopes"
@@ -228,8 +226,6 @@ class Tasks:
         self.subscription: gatewayclient.SupervisedSubscription | None = None
         self._missing: dict[int, int] = {}
         self.lock = asyncio.Lock()
-        #: The task records of `awm.reporting.work`; None keeps the ledger alone, as in older tests.
-        self.work: Any = None
         self.approvals: Any = None
 
     # -- entry ---------------------------------------------------------------
@@ -328,16 +324,20 @@ class Tasks:
         return await self.db.get(task["id"])
 
     async def _ensure_task_id(self, who: Who, title: str) -> None:
-        """Mint the task id of new work (sessions.md R57 step 1), unless the session already has one."""
-        if self.work is None or not who.session_id:
+        """Open the task of new work in operations (sessions.md R57 step 1), unless the session has one."""
+        if not who.session_id:
             return
         try:
-            task_id, made = await asyncio.to_thread(self.work.task_ensure, title, who.session_id, self.node)
-        except ValueError as exc:
+            have = await self._fetch(OPERATIONS_SERVICE, "task_for_session",
+                                     {"session_id": who.session_id}, timeout=30.0)
+            if isinstance(have, dict) and have.get("task_id"):
+                return
+            made = await self._fetch(OPERATIONS_SERVICE, "task_open",
+                                     {"title": title, "session_id": who.session_id}, timeout=30.0)
+        except Exception as exc:  # noqa: BLE001 — a card without a task id still tracks the work
             log.warning("reporting: no task id for %s: %s", who.key, exc)
             return
-        if made:
-            log.info("reporting: task %s opened for session %s", task_id, who.session_id)
+        log.info("reporting: task %s opened for session %s", (made or {}).get("task_id"), who.session_id)
 
     async def _file_away(self, task: dict, why: str) -> None:
         """Move ``task`` off its session's key, so the session's next work opens a card of its own."""

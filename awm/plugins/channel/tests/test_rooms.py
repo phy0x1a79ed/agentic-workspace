@@ -6,7 +6,8 @@ from __future__ import annotations
 import pytest
 
 from awm.channel import hub_adapter, lines
-from awm.channel.holders import ChannelError, Pusher
+from awm.channel.holders import ChannelError
+from awm.gatewayclient.push import Pusher
 from awm.channel.relay import Rooms
 
 from .conftest import BEARER, FAR, HOLDER, OTHER, eventually, needs_relay

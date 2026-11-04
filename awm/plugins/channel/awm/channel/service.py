@@ -25,6 +25,7 @@ import httpx
 
 from awm import config
 from awm.channel import crypto, holders, lines
+from awm.gatewayclient import push
 from awm.channel.holders import ChannelError
 from awm.channel import machines as machine_kind
 from awm.channel.machines import MachineError, MachineGone, Machines
@@ -46,9 +47,9 @@ ListSessions = Callable[[], "set[str] | None"]
 
 
 class Channels:
-    def __init__(self, store: Store, rooms: Rooms, pusher: holders.Pusher,
+    def __init__(self, store: Store, rooms: Rooms, pusher: push.Pusher,
                  transcripts: lines.Transcripts,
-                 list_jobs: ListJobs = holders.live_jobs,
+                 list_jobs: ListJobs = push.live_jobs,
                  list_sessions: ListSessions = holders.live_sessions,
                  machines: Machines | None = None) -> None:
         self.store = store

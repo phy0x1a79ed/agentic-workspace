@@ -196,49 +196,6 @@ def test_push_line_marks_thread_replies_and_cuts_long_text():
     assert seats.push_line(_msg(message_id="")) == "slack [untrusted] from tony: hi"
 
 
-async def test_pusher_delivers_in_order_and_retries_a_refusal():
-    from awm.social import seats
-    sent, outcomes = [], iter(["retry", "ok", "ok", "ok"])
-    slept = []
-
-    async def send(node, job, line):
-        sent.append(line)
-        return next(outcomes)
-
-    async def sleep(s):
-        slept.append(s)
-
-    p = seats.Pusher(send=send, sleep=sleep)
-    for line in ("a", "b", "c"):
-        p.push("altair", "j1", line)
-    await p.idle()
-    assert sent == ["a", "a", "b", "c"] and slept == [2.0]
-
-
-async def test_pusher_drops_after_the_retry_window_and_releases_a_gone_holder():
-    from awm.social import seats
-    gone = []
-
-    async def refuse(node, job, line):
-        return "retry"
-
-    p = seats.Pusher(send=refuse, retry_s=0.05, sleep=lambda s: asyncio.sleep(0))
-    p.push("altair", "j1", "a")
-    await p.idle()
-
-    sent = []
-
-    async def vanish(node, job, line):
-        sent.append(line)
-        return "gone"
-
-    p = seats.Pusher(send=vanish, on_gone=lambda n, j: gone.append((n, j)))
-    p.push("altair", "j1", "a")
-    p.push("altair", "j1", "b")
-    await p.idle()
-    assert sent == ["a"] and gone == [("altair", "j1")]
-
-
 async def test_prune_releases_dead_holders_and_keeps_unreachable_nodes(wired):
     from awm.social import seats
     for job, channel, node in (("j1", "C1", "altair"), ("j2", "D1", "capella")):
@@ -275,18 +232,6 @@ async def test_a_borrower_forwards_its_session_not_its_pid(wired, monkeypatch):
                                    "_caller_pid": 7, "_caller_session": OTHER}, None)
     assert calls == [("mira", "mount", {"account": "slack-bot", "channel": "D1",
                                         "_caller_session": ME})]
-
-
-async def test_a_session_still_writing_its_record_is_retried_not_released(monkeypatch):
-    """A just-resumed REPL refuses pushes for a few seconds after a reboot."""
-    from awm.social import seats
-
-    async def refuse(*a, **kw):
-        return {"ok": False, "error": "no Claude Code session record for pid 6595"}
-
-    monkeypatch.setattr(seats.config, "node_name", lambda: "deneb")
-    monkeypatch.setattr(seats.gatewayclient, "call", refuse)
-    assert await seats.reflect("deneb", "f97d97d7", "hello") == "retry"
 
 
 # -- trust (channels.md R70, users.md R126 item 2) ------------------------------

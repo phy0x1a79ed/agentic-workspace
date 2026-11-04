@@ -124,7 +124,7 @@ def test_the_brief_covers_naming_top_level_starts_and_subagents(lobby, launched,
 def test_a_task_id_from_a_service_attaches_the_session_as_main(lobby, with_session_id, home, attached):
     out = start({**BASE, "task_id": "ABEiM0RV"})
     assert out["session_id"] == R9 and (out["task_id"], out["role"]) == ("ABEiM0RV", "main")
-    assert ("reporting", "task_attach",
+    assert ("operations", "task_attach",
             {"task_id": "ABEiM0RV", "session_id": R9, "role": "main", "name": "demo"}) in attached
     assert "You joined task `ABEiM0RV` as its main" in system_prompt(with_session_id[0])
     from awm.cch import lifecycle

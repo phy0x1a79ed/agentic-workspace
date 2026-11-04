@@ -43,6 +43,8 @@ class Env:
         self.fed.names = self.names
         self.posts: list[dict] = []
         self.fetches: list[dict] = []
+        self.ops: list[tuple[str, dict]] = []
+        self.op_tasks: dict[str, str] = {}
         self.scope_tags: dict[tuple[str, str], list[str]] = {}
         self.tag_lookups: list[tuple[str, str]] = []
         self.tags_error: Exception | None = None
@@ -54,6 +56,12 @@ class Env:
             if self.tags_error:
                 raise self.tags_error
             return {"effective": self.scope_tags.get((args["project"], args["scope"]), [])}
+        if service == "operations":
+            self.ops.append((fn, args))
+            if fn == "task_for_session":
+                return {"ok": True, "task_id": self.op_tasks.get(args["session_id"])}
+            self.op_tasks[args["session_id"]] = f"t{len(self.op_tasks):07d}"
+            return {"ok": True, "task_id": self.op_tasks[args["session_id"]]}
         self.fetches.append(args)
         return {"posts": list(self.posts)}
 
@@ -1060,22 +1068,16 @@ async def test_a_sweep_that_misses_the_row_once_keeps_the_agent_line(env):
     assert "Agent:" in env.body() and env.task()["agent"] == "fix the thing"
 
 
-async def test_a_new_card_mints_a_task_id_for_its_session(env, tmp_path):
-    from awm.reporting.work import Work
-
-    env.tasks.work = Work(tmp_path / "reporting.db")
+async def test_a_new_card_opens_its_task_in_operations_once(env):
     session = env.records[200]["sessionId"] = "22222222-3333-4444-5555-666666666666"
     await env.call("track_task", pid=200, title="Look into the printer")
-    task_id = env.tasks.work.task_for_session(session)
-    assert task_id and env.tasks.work.task_get(task_id)["title"] == "Look into the printer"
+    opened = [a for fn, a in env.ops if fn == "task_open"]
+    assert opened == [{"title": "Look into the printer", "session_id": "cc22222222333344445555666666666666"}]
     await env.call("track_task", pid=200, title="again")
-    assert env.tasks.work.task_for_session(session) == task_id
+    assert len([1 for fn, _ in env.ops if fn == "task_open"]) == 1
 
 
 async def test_a_clear_gives_the_new_session_the_old_one_as_its_parent(env, tmp_path):
-    from awm.reporting.work import Work
-
-    env.tasks.work = Work(tmp_path / "reporting.db")
     old = env.records[100]["sessionId"] = "22222222-3333-4444-5555-666666666666"
     await env.call("hook_plan_approved", plan_text="# Before the clear\n\nx")
     new = "33333333-4444-5555-6666-777777777777"

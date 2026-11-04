@@ -17,6 +17,7 @@ import pytest
 
 from awm.channel import holders, hub_adapter
 from awm.channel.relay import Rooms
+from awm.gatewayclient.push import Pusher
 
 BEARER = "a-test-bearer-nothing-guards"
 HOLDER = {"node": "testnode", "session": "cc" + "a" * 32, "job": "job-aaaa",
@@ -134,7 +135,7 @@ async def channels(tmp_path, relay, pushed, live, sessions, machines, monkeypatc
 
     monkeypatch.setattr(holders.config, "node_name", lambda: "testnode")
     built = hub_adapter.build(tmp_path / "state", rooms=Rooms(relay, BEARER),
-                              pusher=holders.Pusher(send=pushed.send),
+                              pusher=Pusher(send=pushed.send),
                               list_jobs=list_jobs, list_sessions=sessions,
                               machines=machines)
     yield built

@@ -276,8 +276,8 @@ async def _start(args: dict[str, Any], as_: str | None) -> dict[str, Any]:
             "started_epoch": time.time(), "pinned": spec["pin"],
             "brief": spec["brief"], "lobby": spec["lobby"],
         }
-        if caller_rec and _r9(caller_rec.get("sessionId")):
-            record["parent_session"] = _r9(caller_rec.get("sessionId"))
+        if caller_rec and ids.to_r9(caller_rec.get("sessionId")):
+            record["parent_session"] = ids.to_r9(caller_rec.get("sessionId"))
         if spec["lobby"]:
             record["project"] = record["scope"] = None
             if spec["scope"] or spec["project"]:
@@ -309,9 +309,9 @@ async def _start(args: dict[str, Any], as_: str | None) -> dict[str, Any]:
             raise Refused(f"started {session.short} but could not record it "
                           f"({exc}); the pending record keeps its mode") from exc
         _drop_pending(spec["name"])
-    session_id = _r9(session.session_id)
+    session_id = ids.to_r9(session.session_id)
     task_warning = await _attach_task(spec, session_id) if spec["task_id"] else None
-    parent_session = _r9((caller_rec or {}).get("sessionId"))
+    parent_session = ids.to_r9((caller_rec or {}).get("sessionId"))
     if session_id and parent_session:
         await _record_parent(session_id, parent_session)
     pinned = spec["pin"] and await _pin(session.short)
@@ -332,11 +332,6 @@ async def _start(args: dict[str, Any], as_: str | None) -> dict[str, Any]:
     return out
 
 
-def _r9(session_id: Any) -> str | None:
-    """A Claude session UUID in the R9 form (sessions.md R9)."""
-    return ids.to_r9(session_id)
-
-
 async def _attach_task(spec: dict[str, Any], session_id: str | None) -> str | None:
     """Put the new session on its task's card (sessions.md R57 step 3).
 
@@ -345,7 +340,7 @@ async def _attach_task(spec: dict[str, Any], session_id: str | None) -> str | No
     if not session_id:
         return f"the session started, but its session id is unknown, so it is not on task {spec['task_id']}"
     try:
-        out = await gatewayclient.call("reporting", "task_attach", {
+        out = await gatewayclient.call("operations", "task_attach", {
             "task_id": spec["task_id"], "session_id": session_id, "role": spec["role"],
             "name": spec["name"]}, timeout=60)
     except Exception as exc:  # noqa: BLE001 — any failure is reported
