@@ -36,7 +36,7 @@ Procedure, from dfs-interview § Work the stack:
   - [x] Usage decays with no sweep. Tony: "can we make usage decay so that it doesnt count up forever? can we make this decay not require periodic sweeps?" (answered 2026-11-03)
   - [ ] Where lineage lives (R13 parent links, R16 graph) once reporting goes: operations, journal or reflection. Raised by redux-harness; follows from queue.md R145 removing reporting, where the sessions lane serves lineage and session_parent
   - [ ] Protected tags: which tags the code names (message, journal, goal, brief, closed, superseded, folded, precedent) and whether they can be deleted, renamed or added after posting. From the multi-tag review Tony asked for
-  - [ ] Peer visibility once kind is a tag: keyed on a tag, or on trust bounds (R107 item 3). From the multi-tag review
+  - [x] Peer visibility once kind is a tag: keyed on a tag, or on trust bounds (R107 item 3). From the multi-tag review (answered 2026-11-03)
   - [ ] Sync conflict: two nodes add the same tag name. From the multi-tag review
   - [ ] Old kinds system, debrief, note: tags or dropped. From the multi-tag review
 - **search-filters** (2026-11-03): can we make parameterized search possible? then we can do search with empty terms and only sql (if that's what hop takes) with source as kb for hop. Then we can also make searching journals possible to filter to only reports etc
