@@ -33,3 +33,10 @@ def ms_to_iso(ms: int | None) -> str | None:
     except (ValueError, TypeError, OSError):
         return None
     return dt.isoformat()
+
+
+def ms_to_date(ms: int | None) -> str:
+    """Unix-ms to its UTC date, ``YYYY-MM-DD``; empty for none."""
+    if not ms:
+        return ""
+    return datetime.fromtimestamp(ms / 1000, timezone.utc).date().isoformat()
