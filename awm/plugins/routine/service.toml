@@ -1,0 +1,4 @@
+# Read by today's Python gateway. awm-plugin.toml carries the same facts for the
+# plugin loader.
+tool = "routine"
+tier = "on"
