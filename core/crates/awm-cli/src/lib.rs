@@ -184,6 +184,8 @@ async fn run_tool(words: &[String]) -> anyhow::Result<i32> {
     let resp = reqwest::Client::new()
         .post(&url)
         .header("X-Awm-Surface", "cli")
+        // The gateway walks this pid's ancestors to the session, if any, that runs the CLI.
+        .header("X-Awm-Caller-Pid", std::process::id().to_string())
         .json(&body)
         .send()
         .await

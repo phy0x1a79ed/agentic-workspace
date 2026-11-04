@@ -175,10 +175,10 @@ def test_the_main_app_also_serves_the_door(door):
 def test_a_model_cannot_send_the_session_id_on_the_normal_path():
     args = {"verb": "fetch", "args": {"_caller_session_id": SESSION}}
     _stamp_trust("journal", args, None)
-    assert args["args"] == {}
+    assert args["args"] == {"_caller_trust": "trusted"}
     args = {"verb": "fetch", "args": {"_caller_session_id": SESSION}}
     _stamp_trust("journal", args, None, as_="peer:altair")
-    assert args["args"] == {}
+    assert args["args"] == {"_caller_trust": "trusted"}
 
 
 def test_a_token_is_never_trusted_and_needs_a_scope():

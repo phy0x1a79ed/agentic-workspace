@@ -119,8 +119,8 @@ fn header<'a>(h: &'a HeaderMap, name: &str) -> Option<&'a str> {
 
 /// The caller context of an inbound request. `X-Awm-Trust` and `X-Awm-Lane` are never read.
 /// `X-Awm-Caller` counts only with the edge token, which only `awm edge-serve` can read.
-/// A local request that names its session by `X-Awm-Session-Pid` gets that session's id,
-/// trust level and scope.
+/// A local request gets the id, trust level, mode and scope of the session its pid header
+/// leads to (`caller.rs`).
 async fn context(gw: &Gateway, h: &HeaderMap, default: Surface) -> CallContext {
     let plugin = header(h, "x-awm-plugin").map(str::to_string);
     let surface = if plugin.is_some() {
@@ -141,11 +141,24 @@ async fn context(gw: &Gateway, h: &HeaderMap, default: Surface) -> CallContext {
             tracing::warn!("X-Awm-Caller with a wrong edge token; ignored");
         }
     }
-    if let Some(pid) = header(h, "x-awm-session-pid").and_then(|p| p.parse::<u32>().ok()).filter(|_| !edge) {
-        let answer = gw.session_of(pid).await;
-        crate::caller::fill(&mut caller, answer.as_ref(), &gw.projects_dir());
+    let mut mode = None;
+    if !edge {
+        // A local request with no pid comes from no session: a user's tool on this node.
+        let pid = header(h, "x-awm-session-pid").or_else(|| header(h, "x-awm-caller-pid"));
+        let lookup = match pid.map(str::parse::<u32>) {
+            Some(Ok(pid)) => gw.resolve_caller(pid).await,
+            Some(Err(_)) => crate::caller::Lookup::Failed,
+            None => crate::caller::Lookup::NoOwner { mode: None },
+        };
+        mode = crate::caller::fill(&mut caller, &lookup, &gw.projects_dir());
     }
-    CallContext { caller, as_: header(h, "x-awm-as").map(str::to_string), surface, plugin }
+    let mut as_ = header(h, "x-awm-as").map(str::to_string);
+    // A singleton door call (`awm port`) comes from another node's service: name that node
+    // as the stamp a service reads, since a Python handler sees `as_` and not `caller`.
+    if edge && as_.is_none() && caller.lane == Lane::Service && caller.node != gw.node {
+        as_ = Some(format!("peer:{}", caller.node));
+    }
+    CallContext { caller, as_, surface, plugin, mode }
 }
 
 async fn status(State(gw): Gw) -> Json<Value> {

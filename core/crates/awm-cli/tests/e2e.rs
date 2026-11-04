@@ -322,7 +322,7 @@ fn gateway_end_to_end() {
     std::fs::create_dir_all(worktree.join("core")).unwrap();
     let uuid = "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0";
     let r9 = format!("cc{}", uuid.replace('-', ""));
-    let session = |trust: &str| json!({"4242": {"ok": true, "known": true, "session_id": r9, "trust": trust, "cwd": worktree.join("core")}}).to_string();
+    let session = |trust: &str| json!({"4242": {"ok": true, "known": true, "session_id": r9, "trust": trust, "mode": null, "cwd": worktree.join("core")}}).to_string();
     write(&node.state.join("sessions.json"), &session("cooperative"));
     let as_session = |args: Value| -> Value {
         http().post(format!("{url}/invoke")).header("X-Awm-Session-Pid", "4242").json(&json!({"name": "fake", "args": args})).send().unwrap().json().unwrap()
@@ -342,6 +342,36 @@ fn gateway_end_to_end() {
     let reply = as_session(json!({"verb": "whoami"}));
     let who: Value = serde_json::from_str(reply["result"].as_str().unwrap()).unwrap();
     assert_eq!((who["caller"]["session"].clone(), who["trust"].as_str()), (Value::Null, Some("trusted")), "a pid no harness claims: {who}");
+
+    // The CLI names its own pid, and the gateway walks up to the session that runs it. A child
+    // of a cooperative session is cooperative. A shell no harness claims is a user's, trusted.
+    // This test is the session, and a child process of it stands in for the CLI.
+    let mut cli_proc = std::process::Command::new("sleep").arg("60").spawn().unwrap();
+    let (me, parent) = (cli_proc.id(), std::process::id());
+    let as_cli = |args: Value| -> Value {
+        http().post(format!("{url}/invoke")).header("X-Awm-Caller-Pid", me.to_string()).json(&json!({"name": "fake", "args": args})).send().unwrap().json().unwrap()
+    };
+    let at = |pid: u32, rec: Value| json!({pid.to_string(): rec}).to_string();
+    write(&node.state.join("sessions.json"), &at(parent, json!({"ok": true, "known": true, "session_id": r9, "trust": "cooperative", "mode": null, "cwd": worktree.join("core")})));
+    let who: Value = serde_json::from_str(as_cli(json!({"verb": "whoami"}))["result"].as_str().unwrap()).unwrap();
+    assert_eq!((who["trust"].as_str(), who["caller"]["session"].as_str()), (Some("cooperative"), Some(r9.as_str())), "a CLI under a cooperative session: {who}");
+    write(&node.state.join("sessions.json"), "{}");
+    let who: Value = serde_json::from_str(as_cli(json!({"verb": "whoami"}))["result"].as_str().unwrap()).unwrap();
+    assert_eq!(who["trust"], "trusted", "a shell with no harness ancestor: {who}");
+    let _ = cli_proc.kill();
+
+    // A lookup that fails runs untrusted with mode `unknown`, which may only compact and ask
+    // reflection who it is (fleet.md R103 item 2).
+    write(&node.state.join("sessions.json"), &at(4242, json!("not an answer")));
+    let reply = as_session(json!({"verb": "whoami"}));
+    assert!(reply["result"].is_null() && reply.to_string().contains("may not call fake.whoami"), "a failed lookup must be gated: {reply}");
+    let reply: Value = http().post(format!("{url}/invoke")).header("X-Awm-Session-Pid", "4242")
+        .json(&json!({"name": "awm", "args": {"verb": "reload"}})).send().unwrap().json().unwrap();
+    assert!(reply["result"].is_null(), "an untrusted caller reloaded the gateway: {reply}");
+    write(&node.state.join("sessions.json"), &at(4242, json!({"ok": true, "known": true, "session_id": r9, "trust": "trusted", "cwd": "/"})));
+    let reply = as_session(json!({"verb": "whoami"}));
+    assert!(reply.to_string().contains("may not call fake.whoami"), "a session whose mode is unread is gated: {reply}");
+    write(&node.state.join("sessions.json"), "{}");
 
     // A plugin gets the secrets its manifest lists, and nothing else of the node's (R116 item 1).
     let env_of = |tool: &str, name: &str| -> String {

@@ -34,6 +34,8 @@ pub struct CallContext {
     pub surface: Surface,
     /// The calling plugin, from `X-Awm-Plugin`.
     pub plugin: Option<String>,
+    /// The calling session's mode, when a restricted mode may gate it (`config/modes.py`).
+    pub mode: Option<String>,
 }
 
 impl CallContext {
@@ -43,6 +45,7 @@ impl CallContext {
             as_: None,
             surface,
             plugin: None,
+            mode: None,
         }
     }
 }

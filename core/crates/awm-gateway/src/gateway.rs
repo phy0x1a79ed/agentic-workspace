@@ -281,11 +281,10 @@ impl Gateway {
             }
         }
         let caller = awm_proto::Caller { node: self.node.clone(), lane: Lane::Service, ..Default::default() };
-        let answer = self
-            .hub
-            .call(crate::caller::LOOKUP_SERVICE, crate::caller::LOOKUP_FN, json!({"pid": pid}), None, &caller, Duration::from_secs(5))
-            .await
-            .ok()?;
+        // reflection may still be starting: wait for it as a call to its tool would.
+        let (service, verb) = self.wait_for_verb(crate::caller::LOOKUP_TOOL, crate::caller::LOOKUP_VERB).await.ok()?;
+        let answer =
+            self.hub.call(&service, &verb.function, json!({"pid": pid}), None, &caller, Duration::from_secs(5)).await.ok()?;
         let answer = match answer {
             Value::String(s) => serde_json::from_str(&s).unwrap_or(Value::String(s)),
             v => v,
@@ -294,6 +293,25 @@ impl Gateway {
             self.sessions.lock().unwrap_or_else(|p| p.into_inner()).insert(pid, (Instant::now(), answer.clone()));
         }
         Some(answer)
+    }
+
+    /// Walk from `pid` up its ancestors to the nearest session a harness claims (`caller.rs`).
+    pub async fn resolve_caller(&self, pid: u32) -> crate::caller::Lookup {
+        use crate::caller::Lookup;
+        let mut first_mode = None;
+        let mut at = Some(pid);
+        for hop in 0..crate::caller::MAX_HOPS {
+            let Some(p) = at.filter(|p| *p > 1) else { break };
+            let Some(answer) = self.session_of(p).await.filter(Value::is_object) else { return Lookup::Failed };
+            if answer.get("known").and_then(Value::as_bool) == Some(true) {
+                return Lookup::Session(answer);
+            }
+            if hop == 0 {
+                first_mode = answer.get("mode").and_then(Value::as_str).map(str::to_string);
+            }
+            at = crate::caller::ppid_of(p);
+        }
+        Lookup::NoOwner { mode: first_mode }
     }
 
     /// Fetch each source, pass the change through the approver, and load it as one change.
@@ -624,7 +642,7 @@ impl Gateway {
         match verb {
             "table" => Ok(self.table_view()),
             "reload" | "install" | "uninstall" => {
-                if ctx.caller.lane != Lane::Local || ctx.caller.trust.as_deref().is_some_and(|t| t != crate::caller::DEFAULT_TRUST) {
+                if ctx.caller.lane != Lane::Local || ctx.caller.trust.as_deref() != Some(crate::caller::TRUSTED) {
                     return Err(ApiError::new(403, format!("{verb} takes a trusted caller on this node")));
                 }
                 match verb {
@@ -740,6 +758,12 @@ impl Gateway {
         }
         // A tool no local plugin serves runs where the name table says it lives (R117 item 3).
         let peer = peer.or_else(|| if tools.contains_key(&tool) { None } else { self.owner(&tool).and_then(|o| o.peer) });
+        // A restricted session may not run a verb on another node, named or by the table.
+        let remote = peer.as_deref().filter(|p| *p != "local" && *p != self.node);
+        if let Some(why) = crate::modes::refusal(ctx.mode.as_deref(), &tool, &verb, remote) {
+            tracing::info!("mode gate: refused {tool}.{verb}: {why}");
+            return Err(ApiError::new(403, why));
+        }
         if let Some(peer) = peer.filter(|p| p != "local" && *p != self.node) {
             let envelope = json!({"verb": verb, "args": inner});
             return Ok(self.peers.invoke(&peer, &tool, envelope, ctx).await?);
@@ -800,6 +824,7 @@ impl Gateway {
             as_: None,
             surface: Surface::Mcp,
             plugin: None,
+            mode: None,
         };
         if verb == DESCRIBE {
             let allowed: Vec<String> = holder.tools.get(tool).into_iter().flatten().filter(|v| holder.may(tool, v)).cloned().collect();

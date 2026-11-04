@@ -324,9 +324,9 @@ async def test_svc_door_leaves_other_services_alone(monkeypatch):
     assert args["_caller_pid"] == 5
 
 
-async def test_svc_door_with_no_body_still_calls_with_no_args(monkeypatch):
+async def test_svc_door_with_no_body_carries_only_the_trust_stamp(monkeypatch):
     args = await _post_svc(monkeypatch, "cx", "list", None)
-    assert args is None
+    assert args == {"_caller_trust": "trusted"}
 
 
 # ---------------------------------------------------------------------------

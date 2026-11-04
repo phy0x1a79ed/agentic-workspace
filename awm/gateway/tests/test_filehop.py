@@ -209,7 +209,7 @@ class TestInvoke:
         async with _asgi(app) as c:
             r = await c.post("/invoke", json=_domain_call(path="p"))
         assert r.status_code == 200 and json.loads(r.json()["result"])["count"] == 0
-        assert seen[-1]["args"]["args"] == {"path": "p"}
+        assert seen[-1]["args"]["args"] == {"path": "p", "_caller_trust": "trusted"}
 
     async def test_non_object_body_is_422(self, gateway):
         app, *_ = gateway

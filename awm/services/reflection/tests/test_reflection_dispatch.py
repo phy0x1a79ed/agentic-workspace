@@ -573,6 +573,15 @@ def test_session_of_gives_the_gate_the_mode_and_the_trust(fakes):
     assert (out["mode"], out["trust"]) == ("worker", "trusted")
 
 
+def test_a_hand_started_session_reads_as_trusted_and_a_recorded_one_keeps_its_level(fakes):
+    """Tony's own terminal sessions have no ledger entry: the gateway must not lock
+    them out now that a failed lookup is untrusted (fleet.md R103 item 2)."""
+    from awm.reflection import policy
+    assert run("session_of", {"pid": ME})["trust"] == "trusted"
+    policy.record(MY_ID, "cooperative", "test")
+    assert run("session_of", {"pid": ME})["trust"] == "cooperative"
+
+
 def test_session_of_a_pid_no_plugin_claims_carries_the_plugins_mode(fakes):
     real = fakes.cc.__call__
 

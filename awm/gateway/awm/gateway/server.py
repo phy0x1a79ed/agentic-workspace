@@ -626,9 +626,10 @@ def _stamp_trust(name: str, args: dict, pid_header: str | None,
 
     Services bound a caller by them: the journal and the browser read every verb's
     `mcp_caller.TRUST_KEY` and `mcp_caller.SCOPE_KEY`. The model's own values are
-    always dropped, and a call with no session pid carries neither. An edge request
-    keeps the pair the far proxy read from its own node's ledger, as it keeps
-    `mcp_caller.CLAIM_KEY`. Reads two small files, so call it off the event loop.
+    always dropped. A pid header is walked to its session (`mcp_caller.resolve`). A
+    call with no pid is trusted, and a failed lookup untrusted. An edge request keeps
+    the pair the far proxy read from its own node's ledger, as it keeps
+    `mcp_caller.CLAIM_KEY`. Asks reflection, so call it off the event loop.
     """
     if "_" in name or "verb" not in args:
         bag = args
@@ -639,16 +640,21 @@ def _stamp_trust(name: str, args: dict, pid_header: str | None,
             args["args"] = bag
     bag.pop(isolated.SESSION_KEY, None)
     if as_:
+        # The far node vouched for the pair. A peer's service sends none: it is trusted,
+        # as a local service is.
+        bag.setdefault(mcp_caller.TRUST_KEY, mcp_caller.NO_SESSION_TRUST)
         return
     bag.pop(mcp_caller.TRUST_KEY, None)
     bag.pop(mcp_caller.SCOPE_KEY, None)
-    if pid_header and pid_header.isdigit():
-        pid = int(pid_header)
-    elif descendant_header and descendant_header.isdigit():
-        pid = mcp_caller.resolve_caller_pid(int(descendant_header))
-    else:
+    raw = pid_header or descendant_header
+    if not raw:
+        # No pid: a user's tool or a service on this node (the loopback WARNING).
+        bag[mcp_caller.TRUST_KEY] = mcp_caller.NO_SESSION_TRUST
         return
-    bag.update(mcp_caller.caller_trust(pid))
+    if not raw.isdigit():
+        bag[mcp_caller.TRUST_KEY] = mcp_caller.FAILED_LOOKUP_TRUST
+        return
+    bag.update(mcp_caller.caller_trust(int(raw)))
 
 
 async def _receive_files(request: Request, spool: str) -> dict:
