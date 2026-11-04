@@ -28,7 +28,7 @@ GATEWAY_ENV = {"AWM_HUB_TOKEN_FILE"}
 SECRET = re.compile(r"(KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|COOKIE)S?($|_)")
 #: A path into the awm tree's services root, as a script spells it. A state
 #: folder under ``.awm/services`` is not one.
-TREE_PATH = re.compile(r"(?:(?<![.\w])awm|\$\{?AWM\}?)/((?:services|plugins)/[A-Za-z0-9_-]+)(?:/([A-Za-z0-9_-]+))?")
+TREE_PATH = re.compile(r"(?:(?<![.\w])awm|\$\{?AWM\}?)/((?:services|plugins)/[A-Za-z0-9_-]+)")
 
 
 def _manifest(folder: Path) -> dict:
@@ -115,10 +115,8 @@ def _script_paths(folder: Path) -> set[str]:
         for line in path.read_text().splitlines():
             if line.lstrip().startswith("#"):
                 continue
-            for folder_path, sub in TREE_PATH.findall(line):
-                # A sub-folder that is its own dist is a library, such as operations/grantlib.
-                if not (sub and (AWM / folder_path / sub / "pyproject.toml").is_file()):
-                    found.add(folder_path.split("/", 1)[1])
+            for folder_path in TREE_PATH.findall(line):
+                found.add(folder_path.split("/", 1)[1])
     return found
 
 

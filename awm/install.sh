@@ -22,7 +22,7 @@ fi
 for lib in config persistence gatewayclient claudedaemon kept trustpolicy tlsfront dvcdata; do
     [ -d "$WS/awm/service_components/$lib" ] && run "$WS/awm/service_components/$lib" --no-deps
 done
-run "$WS/awm/plugins/operations/grantlib" --no-deps
+run "$WS/awm/service_components/grantlib" --no-deps
 
 export AWM_ROOT="$WS/awm"
 declare -A seen=()

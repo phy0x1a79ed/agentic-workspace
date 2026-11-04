@@ -124,7 +124,7 @@ verbs = ["echo", "whoami"]
     let mut env = String::new();
     if let Some(py) = &python {
         let repo = repo();
-        let mut path = vec![repo.join("awm/services/journal"), repo.join("awm/plugins/operations/grantlib")];
+        let mut path = vec![repo.join("awm/services/journal"), repo.join("awm/service_components/grantlib")];
         for comp in std::fs::read_dir(repo.join("awm/service_components")).unwrap().flatten() {
             path.push(comp.path());
         }

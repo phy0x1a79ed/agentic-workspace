@@ -38,6 +38,12 @@ def main() -> None:
               "not_before": T0, "not_after": T0 + 900, "approved_by_device": "dTESTDEV1"}
     order = {"order_id": "oTESTORD01", "kind": "zotero_sync", "node": "deneb", "payload": {},
              "not_after": T0 + 600}
+    # Non-ASCII and escaped text in the signed body and the payload: every canon writer
+    # must emit the same bytes for them.
+    raise_payload = {"session_id": "sé1", "from": "cooperative", "to": "trusted",
+                     "note": "tab\tquote\" ünï"}
+    raise_text = dict(raise_, grant_id="gTESTTRU02", subject="sé1",
+                      payload_sha256=hashlib.sha256(canon(raise_payload)).hexdigest())
     tampered = copy.deepcopy(env("grant", raise_))
     tampered["grant"]["subject"] = "cc-9999"
     floaty = dict(raise_, not_after=T0 + 900.5)
@@ -48,6 +54,9 @@ def main() -> None:
          "now": T0 + 60, "envelope": env("grant", ssh), "expect": "does not cover"},
         {"name": "trust_raise grant", "check": "grant", "kind": "trust_raise", "node": "mizar",
          "now": T0 + 60, "envelope": env("grant", raise_), "expect": "ok"},
+        {"name": "trust_raise grant, non-ASCII subject and payload", "check": "grant",
+         "kind": "trust_raise", "node": "mizar", "subject": "sé1", "payload": raise_payload,
+         "now": T0 + 60, "envelope": env("grant", raise_text), "expect": "ok"},
         {"name": "wrong kind", "check": "grant", "kind": "admin_ssh", "now": T0 + 60,
          "envelope": env("grant", raise_), "expect": "not 'admin_ssh'"},
         {"name": "one byte changed", "check": "grant", "now": T0 + 60, "envelope": tampered,

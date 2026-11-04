@@ -15,7 +15,7 @@ run() { echo "+ pip install -e $*"; mamba run -n "$ENV" pip install -e "$@"; }
 
 run "$AWM/service_components/config" --no-deps
 run "$AWM/service_components/gatewayclient" --no-deps
-run "$AWM/plugins/operations/grantlib" --no-deps
+run "$AWM/service_components/grantlib" --no-deps
 run "$AWM/service_components/tlsfront" --no-deps
 run "$HERE"
 

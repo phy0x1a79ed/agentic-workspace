@@ -15,7 +15,7 @@ run "$AWM/service_components/config" --no-deps
 run "$AWM/service_components/persistence" --no-deps
 run "$AWM/service_components/gatewayclient" --no-deps
 run "$AWM/service_components/kept" --no-deps
-run "$AWM/plugins/operations/grantlib" --no-deps
+run "$AWM/service_components/grantlib" --no-deps
 run "$AWM/service_components/trustpolicy" --no-deps
 run "$HERE"
 mamba run -n "$ENV" python -c 'import slack_sdk' \
