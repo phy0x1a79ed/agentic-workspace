@@ -399,10 +399,9 @@ async def _tag_scope(spec: dict[str, Any]) -> str | None:
 async def _started_link(job: str, remote_control: bool) -> dict[str, Any]:
     """The `link` fields of a start result.
 
-    Remote Control is off unless the caller asked for it, so most starts answer
-    `link: None` at once. One that asked waits a bounded time for the bridge id
-    and says why when it has not appeared, because the connection can finish
-    after the start has returned.
+    A start with Remote Control on waits a bounded time for the bridge id and
+    says why when it has not appeared, because the connection can finish after
+    the start has returned. One with it off answers `link: None` at once.
     """
     if not remote_control:
         return {"link": None}
@@ -562,19 +561,22 @@ def _autocompact(value: Any) -> int | None:
 
 
 def _remote_control(value: Any, name: str) -> str | None:
-    """The Remote Control name to use, or None when it is off.
+    """The Remote Control name to use, or None when it is off (sessions.md R146).
 
-    The flag takes an optional value, and the CLI reads a value that starts with
-    `-` as a new flag, so a name is held to a plain label. `true` derives one
-    from the session name.
+    Remote Control is on unless the caller passes false. The flag takes an
+    optional value, and the CLI reads a value that starts with `-` as a new
+    flag, so a name is held to a plain label. The default and `true` derive one
+    from the session name, each `/` and other unsafe run written as `-`.
     """
-    if value is None or value is False:
+    if value is False:
         return None
-    if value is True:
+    if value is None or value is True:
         derived = re.sub(r"[^A-Za-z0-9._-]+", "-", name).strip("-._")[:64]
-        if not _RC_NAME.match(derived):
-            raise Refused("remote_control needs a name; pass one explicitly")
-        return derived
+        if _RC_NAME.match(derived):
+            return derived
+        if value is None:
+            return None
+        raise Refused("remote_control needs a name; pass one explicitly")
     if isinstance(value, str) and _RC_NAME.match(value.strip()):
         return value.strip()
     raise Refused("remote_control must be true, false or a plain label")

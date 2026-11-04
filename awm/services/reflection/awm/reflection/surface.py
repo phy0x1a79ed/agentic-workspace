@@ -351,10 +351,11 @@ FUNCTIONS: list[dict[str, Any]] = [{'name': 'message_self',
                              'config.'},
              {'name': 'remote_control',
               'type': 'boolean',
-              'description': 'Enable Remote Control, named for the session. Off unless '
-                             "true. The result's `link` is the claude.ai link, null "
-                             'with a `link_reason` if it has not connected within a '
-                             'few seconds.'},
+              'description': 'Remote Control, on unless false (sessions.md R146), '
+                             'named for the session with each `/` as `-`. The '
+                             "result's `link` is the claude.ai link, null with a "
+                             '`link_reason` if it has not connected within a few '
+                             'seconds.'},
              {'name': 'pin',
               'type': 'boolean',
               'description': "Pin the job, so the daemon's idle retirement passes it "

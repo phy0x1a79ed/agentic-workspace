@@ -127,10 +127,11 @@ API_MANIFEST: dict[str, Any] = {
                  "description": "Load only the awm MCP server, from the "
                                 "workspace config."},
                 {"name": "remote_control", "type": "boolean",
-                 "description": "Enable Remote Control, named for the session. "
-                                "Off unless true. The result's `link` is the "
-                                "claude.ai link, null with a `link_reason` if "
-                                "it has not connected within a few seconds."},
+                 "description": "Remote Control, on unless false, named for "
+                                "the session with each `/` as `-`; a plain "
+                                "label names it instead. The result's `link` is "
+                                "the claude.ai link, null with a `link_reason` "
+                                "if it has not connected within a few seconds."},
                 {"name": "pin", "type": "boolean",
                  "description": "Pin the job, so the daemon's idle retirement "
                                 "passes it over. A pinned job is a kept "

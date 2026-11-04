@@ -190,13 +190,14 @@ def test_start_returns_the_contract_and_writes_lineage(home, launched):
         "project": "awm", "scope": "demo", "lobby": False, "cwd": str(home.projects / "awm" / "demo"),
         "attach": f"claude attach {CHILD_JOB}", "parent": PARENT_JOB, "mode": "rep",
         "pinned": False, "link": None,
+        "link_reason": out["link_reason"],
     }
     from awm.cch import lifecycle
 
     rec = lifecycle.read_lineage(CHILD_JOB)
     assert rec["parent"] == PARENT_JOB and rec["caller"] == "local"
     assert rec["mode"] == "rep" and rec["project"] == "awm" and rec["scope"] == "demo"
-    assert rec["remote_control"] is None and rec["started_at"]
+    assert rec["remote_control"] == "demo" and rec["started_at"]
     assert launched[0]["prompt"] == "do it"
 
 
@@ -230,8 +231,8 @@ def test_defaults_are_skip_permissions_opus_and_high(home, launched):
     start(BASE)
     flags = launched[0]["flags"]
     assert "--dangerously-skip-permissions" in flags
-    assert flags[-2:] == ["--effort=high", "--model=opus"]
-    assert not any(f.startswith(("--permission-mode", "--remote-control")) for f in flags)
+    assert "--effort=high" in flags and "--model=opus" in flags
+    assert not any(f.startswith("--permission-mode") for f in flags)
 
 
 def test_arguments_override_the_defaults_in_equals_form(home, launched):
@@ -519,8 +520,13 @@ def test_remote_control_cannot_inject_flags(home, launched, rc):
     assert out["ok"] is False and launched == []
 
 
-def test_a_start_leaves_remote_control_off_and_has_no_link(home, launched):
-    out = start(BASE)
+def test_a_start_turns_remote_control_on_named_from_the_session_name(home, launched):
+    start({**BASE, "name": "redux-build/gateway"})
+    assert "--remote-control=redux-build-gateway" in launched[0]["flags"]
+
+
+def test_remote_control_false_leaves_it_off_with_no_link(home, launched):
+    out = start({**BASE, "remote_control": False})
     assert out["link"] is None and "link_reason" not in out
     assert not any(f.startswith("--remote-control") for f in launched[0]["flags"])
 
@@ -824,8 +830,8 @@ def test_every_caller_gets_the_same_plain_worker(home, launched):
         assert ok["ok"] and ok["mode"] == "worker" and ok["parent"] == PARENT_JOB, mode
         flags = launched[0]["flags"]
         assert "--dangerously-skip-permissions" in flags and "--allow-dangerously-skip-permissions" in flags
-        assert not any(f.startswith(("--restricted", "--strict-mcp", "--tools", "--settings",
-                                     "--remote-control")) for f in flags)
+        assert not any(f.startswith(("--restricted", "--strict-mcp", "--tools", "--settings"))
+                       for f in flags)
         assert "--model=opus" in flags and "--effort=high" in flags
         for f in os.listdir(config.starts_dir()):
             os.unlink(config.starts_dir() / f)
