@@ -63,3 +63,11 @@ Reviewed read only on 2026-11-03, against `origin/release` 266f4b29 and the lane
 - 2026-11-03: `reply_to` takes a list. A debrief journal's `reply_to` list holds its citations, and only debrief journals cite. Links point one way, with no reverse index. The journal holds lineage, and `reflection` records the parent links (`fleet.md` R107 item 5, `sessions.md` R14, R16). Tony: "ok, reply to should accept a list of previous journals used", "citations only needed for debrief journals, but we are using the reply_to field so that's fine for comments, etc." and "I do not want links both directions. search uncovers what the agent needed that session.".
 - 2026-11-03: A citation is a bare id in the `reply_to` list, with no reason (`sessions.md` R15). Old reasons stay on the citing post's meta. Tony: "No reason".
 - 2026-11-03: The goal log goes. Its 7 real goals become ordinary posts, and the goal verbs and the startup goal step go (`fleet.md` R107 item 10). This makes the goal-level question moot. Tony: "Goals are not used... check" and "Drop goals".
+
+## Recall after compaction
+
+Tested on 2026-11-03. A fork of each stopped session was asked, with tools off, which journal posts it had read before compacting. The forks ran with `claude -p --resume <id> --fork-session --no-session-persistence`, so the originals were untouched.
+
+- **Compaction loses journal reads.** Only one session strictly qualified: 016a8908 in cloud/homelab, with 2 reads. Its fork recalled 0 of 2, by id or by topic, although the session had visibly used one of them. A relaxed case, 2ec1b21d with 1 read, recalled 0 of 1. Two control sessions with no reads made no false recalls.
+- **The summary keeps what a session wrote, not what it read.** Each fork named only its own posts and the reads made after its last compaction.
+- **The reads log closes the id gap at debrief** (`sessions.md` R15), because it does not depend on the context. It cannot show which reads mattered. The sample is small: two live sessions with more reads were excluded.
