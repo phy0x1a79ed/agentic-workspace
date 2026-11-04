@@ -13,7 +13,7 @@ import os
 import shutil
 from pathlib import Path
 
-from awm.dvc import data_dvc
+from awm.dvcdata import data_dvc
 
 log = logging.getLogger("awm.scopes.awm_sweep")
 

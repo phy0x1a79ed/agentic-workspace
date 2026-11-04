@@ -24,8 +24,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from awm.dvc import data_dvc as dd
-from awm.dvc import scopedata
+from awm.dvcdata import data_dvc as dd
 
 needs_dvc = pytest.mark.skipif(not dd.dvc_available(), reason="dvc not installed")
 
@@ -443,29 +442,6 @@ class TestNoRemote:
         (dvc_project["bare"].parent / "CACHEDIR.TAG").write_text("not a tag\n")
         assert not dd.no_remote(wt)
 
-    @needs_dvc
-    @pytest.mark.parametrize("verb", ["push", "pull"])
-    def test_push_and_pull_refuse_a_tagged_project(self, dvc_project, monkeypatch, verb):
-        from awm.dvc import cache as cachemod
-        from awm.dvc import config as dvc_config
-        from awm.dvc import transfer
-
-        wt = dvc_project["worktree"]
-        (dvc_project["bare"].parent / "CACHEDIR.TAG").write_text(TAG)
-        dd.ensure_cache_config(wt)
-        monkeypatch.setattr(dvc_config, "WORKSPACE_ROOT", dvc_project["workspace"])
-        monkeypatch.setattr(dvc_config, "load", lambda: None)
-        with pytest.raises(cachemod.DvcScopeError, match="keeps no remote"):
-            getattr(transfer, verb)(str(wt), dry_run=True)
-
-    @needs_dvc
-    def test_a_tagged_project_is_not_wired_to_the_shared_cache(self, dvc_project):
-        wt = dvc_project["worktree"]
-        dd.ensure_repo_wiring(wt)
-        assert "p" in scopedata._dvc_wired_projects()
-        (dvc_project["bare"].parent / "CACHEDIR.TAG").write_text(TAG)
-        assert "p" not in scopedata._dvc_wired_projects()
-
 
 def _scope(dvc_project, name: str, branch: str | None = None) -> Path:
     wt = dvc_project["workspace"] / "projects" / "p" / name
@@ -852,9 +828,3 @@ class TestGcSweep:
         (gc_layout["cache"] / "runs").mkdir()
         rep = self._gc(gc_layout, dry_run=False, grace_days=0)
         assert rep["result"] == "refused" and "runs" in rep["detail"]
-
-    def test_data_gc_finds_the_wired_project(self, gc_layout):
-        assert scopedata.gc([])["result"] == "refused"
-        rep = scopedata.gc(["p"])
-        assert rep["result"] == "ok", rep
-        assert rep["projects"]["p"]["worktrees"] == 2

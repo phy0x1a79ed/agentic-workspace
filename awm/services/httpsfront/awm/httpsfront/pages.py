@@ -5,7 +5,7 @@ while it starts. Sign-in itself is alcor's passkey page (:mod:`.portal`).
 Both are inline + dependency-free on purpose: the security edge must not
 depend on the frontend build being present or on any external asset (a strict
 rule for the one authenticated door into AWM). The landing page is *dynamic* —
-it lists the live ``/ui/*`` pages the gateway currently has registered.
+it lists the pages the gateway's loaded plugins serve at ``/p/<plugin>/<page>/``.
 
 They share one palette, taken from Trilium rather than invented — see
 :data:`_TOKENS`. On the public host the vault *is* the product, so a door drawn
@@ -18,6 +18,7 @@ from __future__ import annotations
 import html
 import json
 from typing import Any
+from urllib.parse import quote
 
 # Trilium's own theme, lifted from the build we serve — `theme-next-light.css`,
 # `theme-next-dark.css`, `theme-next/forms.css` and `setup.css`. The edge and
@@ -221,15 +222,33 @@ _STYLE = _TOKENS + """
 """
 
 
+def page_entries(snapshot: Any) -> list[dict[str, str]]:
+    """``{name, href}`` for every page in the gateway's ``/hub/plugins`` snapshot.
+
+    ``name`` is the page's own name, the key its tags and display name are kept
+    under, so a page keeps them when its plugin is renamed.
+    """
+    plugins = snapshot.get("plugins") if isinstance(snapshot, dict) else None
+    out = []
+    for plugin in plugins or []:
+        pname = str((plugin or {}).get("name") or "")
+        for page in (plugin or {}).get("pages") or []:
+            name = str((page or {}).get("name") or "")
+            if pname and name:
+                out.append({"name": name,
+                            "href": f"/p/{quote(pname, safe='')}/{quote(name, safe='')}/"})
+    return out
+
+
 def landing_page(
-    services: list[dict[str, Any]],
+    entries: list[dict[str, str]],
     tags_by_page: dict[str, list[str]] | None = None,
     tag_counts: dict[str, int] | None = None,
     selected_tags: list[str] | None = None,
     peer_name: str = "awm",
     display_names: dict[str, str] | None = None,
 ) -> str:
-    """Dynamic index of the registered ``/ui/*`` pages, taggable and
+    """Index of ``entries`` (from :func:`page_entries`), taggable and
     filterable by tag. ``tags_by_page``/``tag_counts``/``selected_tags``/
     ``display_names`` come from ``store.LandingDAO`` and are persisted
     server-side. ``display_names`` is a purely cosmetic label override keyed
@@ -240,23 +259,17 @@ def landing_page(
     selected_tags = selected_tags or []
     display_names = display_names or {}
 
-    pages = [
-        s for s in services
-        if s.get("kind") in ("page", "static", "url")
-        and str(s.get("prefix", "")).startswith("/ui/")
-    ]
-    def _label(s: dict[str, Any]) -> str:
-        name = str(s.get("name", s.get("prefix", "")))
-        return display_names.get(name) or name
+    def _label(s: dict[str, str]) -> str:
+        return display_names.get(s["name"]) or s["name"]
 
-    pages.sort(key=_label)
+    pages = sorted(entries, key=_label)
 
     if pages:
         cards = []
         for s in pages:
-            name = str(s.get("name", s.get("prefix", "")))
+            name = s["name"]
             label = display_names.get(name) or name
-            href = html.escape(str(s["prefix"]).rstrip("/") + "/")
+            href = html.escape(s["href"])
             page_tags = tags_by_page.get(name, [])
             data_tags = html.escape(",".join(page_tags))
             tag_chips = "\n".join(

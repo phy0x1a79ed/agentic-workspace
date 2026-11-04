@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from starlette.requests import Request
 
-from awm.httpsfront.proxy import _body
+from awm.tlsfront.proxy import body as _body
 
 
 def _req(headers: dict[str, str], body: bytes = b"") -> Request:

@@ -1,8 +1,8 @@
-"""Edge authentication for the HTTPS front.
+"""Edge authentication for every awm TLS front.
 
-``httpsfront`` is the single network door into AWM; the loopback gateway it
-fronts stays open and auth-unaware. This module is where the door checks
-credentials — it *enforces* what the ``auth`` service *mints*.
+The loopback upstream a front serves stays open and auth-unaware. This module
+is where the front checks credentials — it *enforces* what the ``auth`` service
+*mints*.
 
 It never validates a password itself and never stores credential state. It fetches
 **material** from the ``auth`` service over loopback (the signing secret, the
@@ -18,7 +18,7 @@ seconds, and then:
   match the request's shape (:func:`awm.config.usertoken.scope_admits`), and a
   caller that passes no shape never admits one.
 
-A login is alcor's passkey grant (:mod:`awm.httpsfront.portal`). Once the edge
+A login is alcor's passkey grant (:mod:`awm.tlsfront.portal`). Once the edge
 has checked it, :meth:`AuthGate.mint_session` signs the session cookie with the
 same secret. The token's ``sub`` is the identity the proxy stamps on every
 upstream request as ``X-Awm-As: user:<sub>``.
@@ -40,7 +40,7 @@ from typing import Any, NamedTuple
 from awm import config
 from awm.config import tokens, usertoken
 
-log = logging.getLogger("awm.httpsfront.auth")
+log = logging.getLogger("awm.tlsfront.auth")
 
 COOKIE_NAME = "awm_session"
 # Readable twin of the session cookie: the signed-in username, for the pages'

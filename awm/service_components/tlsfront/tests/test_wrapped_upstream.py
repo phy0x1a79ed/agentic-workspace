@@ -14,8 +14,8 @@ import pytest
 from starlette.responses import JSONResponse
 from starlette.testclient import TestClient
 
-from awm.httpsfront import proxy
-from awm.httpsfront.auth import COOKIE_NAME
+from awm.tlsfront import proxy
+from awm.tlsfront.auth import COOKIE_NAME
 
 pytestmark = [pytest.mark.unit, pytest.mark.smoke]
 
@@ -71,8 +71,7 @@ def test_upstream_sees_the_host_the_browser_used():
         seen.update({k.lower(): v for k, v in request.headers.items()})
         return httpx.Response(200, content=_body())
 
-    app = proxy.build_app("http://127.0.0.1:12203/", "/nonexistent/ca.pem",
-                          landing=False)
+    app = proxy.build_app("http://127.0.0.1:12203/", "/nonexistent/ca.pem")
     app.state.gate = _StubGate()
     with _client(app) as c:
         c.app.state.client = _mock_upstream(handler)
@@ -97,8 +96,7 @@ def test_two_set_cookie_headers_both_survive():
             ("set-cookie", "app_csrf=b; Path=/"),
         ], content=_body())
 
-    app = proxy.build_app("http://127.0.0.1:12203/", "/nonexistent/ca.pem",
-                          landing=False)
+    app = proxy.build_app("http://127.0.0.1:12203/", "/nonexistent/ca.pem")
     app.state.gate = _StubGate()
     with _client(app) as c:
         c.app.state.client = _mock_upstream(handler)
@@ -120,7 +118,7 @@ async def _secret(request):
 
 def _app_with_extra():
     app = proxy.build_app(
-        "http://127.0.0.1:12203/", "/nonexistent/ca.pem", landing=False,
+        "http://127.0.0.1:12203/", "/nonexistent/ca.pem",
         extra_routes=[("/_signin", ["GET"], _secret)],
     )
     app.state.gate = _StubGate()
@@ -154,7 +152,7 @@ def test_anonymous_browser_goes_to_the_passkey_login_not_the_route():
 def test_extra_route_cannot_shadow_the_edge_auth_surface():
     """Registered after /__auth/*, so a caller cannot replace login."""
     app = proxy.build_app(
-        "http://127.0.0.1:12203/", "/nonexistent/ca.pem", landing=False,
+        "http://127.0.0.1:12203/", "/nonexistent/ca.pem",
         extra_routes=[("/__auth/portal", ["GET", "POST"], _secret)],
     )
     app.state.gate = _StubGate()
@@ -163,3 +161,23 @@ def test_extra_route_cannot_shadow_the_edge_auth_surface():
     # The edge's own handler answered (403 for a bad grant), not ours.
     assert r.status_code == 403
     assert "granted" not in r.text
+
+
+def test_no_gateway_credential_header_rides_through():
+    """The gateway knows a service, an isolated session and a peer node by
+    these; a browser that presents one must not reach it carrying it."""
+    seen: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.update({k.lower(): v for k, v in request.headers.items()})
+        return httpx.Response(200, content=_body())
+
+    app = proxy.build_app("http://127.0.0.1:12203/", "/nonexistent/ca.pem")
+    app.state.gate = _StubGate()
+    sent = {name: "forged" for name in proxy.CALLER_HEADERS}
+    with _client(app) as c:
+        c.app.state.client = _mock_upstream(handler)
+        assert c.get("/anything", headers=sent).status_code == 200
+    # The edge writes its own X-Awm-As; every other one is simply gone.
+    assert seen["x-awm-as"] == "user:operator"
+    assert not (set(sent) - {"x-awm-as"}) & set(seen)

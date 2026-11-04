@@ -20,7 +20,8 @@ from starlette.testclient import TestClient
 
 from awm.config import tokens, usertoken
 from awm.httpsfront import proxy
-from awm.httpsfront.auth import COOKIE_NAME, AuthGate, Shape
+from awm.tlsfront import proxy as tlsproxy
+from awm.tlsfront.auth import COOKIE_NAME, AuthGate, Shape
 
 pytestmark = [pytest.mark.unit, pytest.mark.smoke]
 
@@ -203,7 +204,7 @@ def _ws(monkeypatch, gate, path):
         dialled.append((url, {k.lower(): v for k, v in (additional_headers or {}).items()}))
         raise RuntimeError("upstream refused")
 
-    monkeypatch.setattr(proxy.websockets, "connect", connect)
+    monkeypatch.setattr(tlsproxy.websockets, "connect", connect)
     token, entry = _device()
     gate._material["device_tokens"] = [entry]
     c, _ = _edge(gate)

@@ -27,8 +27,9 @@ from pathlib import Path
 from typing import Any
 
 from awm.config import privacy
+from awm.dvcdata import data_dvc
+
 from awm.dvc import cache as cachemod
-from awm.dvc import data_dvc
 from awm.dvc.config import SHARED_CACHE, WORKSPACE_ROOT
 
 log = logging.getLogger("awm.dvc.coverage")

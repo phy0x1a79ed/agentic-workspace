@@ -42,7 +42,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-log = logging.getLogger("awm.httpsfront.certs")
+log = logging.getLogger("awm.tlsfront.certs")
 
 
 def _enumerate_ipv4() -> list[str]:
@@ -360,7 +360,7 @@ def ensure_certs(cert_dir, *, ca_dir=None, sans: list[str] | None = None) -> dic
     return {"cert": str(cert), "key": str(key), "ca": str(ca_pub), "san": san}
 
 
-if __name__ == "__main__":  # quick manual mint: python -m awm.httpsfront.certs <dir>
+if __name__ == "__main__":  # quick manual mint: python -m awm.tlsfront.certs <dir>
     logging.basicConfig(level=logging.INFO)
     d = sys.argv[1] if len(sys.argv) > 1 else ".certs"
     print(ensure_certs(d))

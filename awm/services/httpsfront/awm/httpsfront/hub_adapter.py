@@ -35,8 +35,9 @@ from typing import Any
 
 from awm import config
 from awm.gatewayclient import ServiceAdapter
+from awm.tlsfront import certs
 
-from awm.httpsfront import board, certs, proxy, store, tether, vault
+from awm.httpsfront import board, proxy, store, tether, vault
 
 log = logging.getLogger("awm.httpsfront.hub_adapter")
 

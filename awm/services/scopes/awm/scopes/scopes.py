@@ -30,7 +30,7 @@ from awm.config import (
 )
 from awm.config import privacy
 from awm.scopes.git_utils import run_git, detect_default_branch
-from awm.dvc import data_dvc
+from awm.dvcdata import data_dvc
 from awm.gatewayclient import cancel
 from awm.scopes import search_index, tags as _tags
 from awm.scopes.dao import ScopesDAO

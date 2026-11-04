@@ -14,8 +14,8 @@ import httpx
 import pytest
 from starlette.testclient import TestClient
 
-from awm.httpsfront import proxy
-from awm.httpsfront.auth import COOKIE_NAME
+from awm.tlsfront import proxy
+from awm.tlsfront.auth import COOKIE_NAME
 
 pytestmark = [pytest.mark.unit, pytest.mark.smoke]
 
@@ -34,7 +34,7 @@ class _StubGate:
 
 
 def _app(*, rewrite_origin: bool):
-    app = proxy.build_app(UPSTREAM, "/nonexistent/ca.pem", landing=False,
+    app = proxy.build_app(UPSTREAM, "/nonexistent/ca.pem",
                           rewrite_origin=rewrite_origin)
     app.state.gate = _StubGate()
     return app

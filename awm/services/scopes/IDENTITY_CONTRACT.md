@@ -52,7 +52,7 @@ legitimately own scope creation; the hot read path is validate-only
 ## Functions
 
 All four go in `functions[]` of the `scopes` `ready.api` manifest. Args is the
-JSON object POSTed as the body of `POST /svc/scopes/fn/<fn>`; the return shape
+JSON object passed as `args` of `POST /invoke {"name": "scope_<verb>", "args": …}`; the return shape
 is the JSON the gateway returns to the caller. `as_` (the `X-Awm-As` principal)
 is threaded by the gateway and available to the implementation for
 authorization; it is not part of the args object.

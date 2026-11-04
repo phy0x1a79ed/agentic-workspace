@@ -22,6 +22,7 @@ run() { echo "+ pip install -e $*"; mamba run -n "$ENV" pip install -e "$@"; }
 run "$AWM/service_components/config" --no-deps
 run "$AWM/service_components/persistence" --no-deps
 run "$AWM/service_components/gatewayclient" --no-deps
+run "$AWM/service_components/dvcdata" --no-deps
 run "$HERE"
 
 GBIN="$(mamba run -n "$GENV" python -c 'import shutil; print(shutil.which("globus") or "")' 2>/dev/null || true)"
