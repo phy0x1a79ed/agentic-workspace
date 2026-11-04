@@ -40,10 +40,6 @@ def test_the_three_verbs_are_declared_and_handled():
         assert "surfaces" not in FUNCS[verb]
 
 
-def test_scope_status_reads_and_the_others_write():
-    assert FUNCS["scope_status"]["effect"] == "read"
-    assert FUNCS["mount"]["effect"] == "write"
-    assert FUNCS["gc"]["effect"] == "write"
 
 
 def test_gc_still_requires_the_caller_to_name_its_projects():

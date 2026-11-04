@@ -56,7 +56,6 @@ API_MANIFEST: dict[str, Any] = {
     "functions": [
         {
             "name": "status",
-            "effect": "read",
             "description": (
                 "Report the active stream count, last PCM timestamp, and the "
                 "audio path's health: PulseAudio reachability, whether the "
@@ -67,7 +66,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "ensure_sink",
-            "effect": "write",
             "description": (
                 "Run one reconcile pass now: ensure the PulseAudio config, "
                 "daemon, virtmic null-sink and default capture source are all "

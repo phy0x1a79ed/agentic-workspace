@@ -33,7 +33,6 @@ API_MANIFEST: dict[str, Any] = {
     "functions": [
         {
             "name": "schedule",
-            "effect": "write",
             "tool": "events_schedule",
             "description": (
                 "Schedule recurring schedule.tick emissions for a game. "
@@ -47,7 +46,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "unschedule",
-            "effect": "write",
             "tool": "events_unschedule",
             "description": "Remove a game's schedule (stops its ticks).",
             "params": [
@@ -56,7 +54,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "list",
-            "effect": "read",
             "tool": "events_list",
             "description": "List all active game schedules.",
         },

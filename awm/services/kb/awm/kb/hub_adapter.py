@@ -43,7 +43,6 @@ API_MANIFEST: dict[str, Any] = {
     "functions": [
         {
             "name": "status",
-            "effect": "read",
             "tool": "kb_status",
             "surfaces": ["cli", "http"],
             "description": (
@@ -53,7 +52,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "start",
-            "effect": "write",
             "tool": "kb_start",
             "surfaces": ["cli", "http"],
             "description": "Start the kb server if it is not running. Operator only.",
@@ -62,7 +60,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "stop",
-            "effect": "write",
             "tool": "kb_stop",
             "surfaces": ["cli", "http"],
             "description": (
@@ -73,7 +70,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "restart",
-            "effect": "write",
             "tool": "kb_restart",
             "surfaces": ["cli", "http"],
             "description": "Stop then start the kb server. Operator only.",
@@ -82,7 +78,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "logs",
-            "effect": "read",
             "tool": "kb_logs",
             "surfaces": ["cli", "http"],
             "description": "The tail of the kb server's log. Operator only.",
@@ -90,7 +85,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "query",
-            "effect": "read",
             "tool": "kb_query",
             "surfaces": ["cli", "http"],
             "description": (
@@ -117,7 +111,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "library",
-            "effect": "read",
             "tool": "kb_library",
             "surfaces": ["cli", "http"],
             "description": (
@@ -130,7 +123,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "get",
-            "effect": "read",
             "tool": "kb_get",
             "surfaces": ["cli", "http"],
             "description": (
@@ -142,7 +134,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "hop",
-            "effect": "read",
             "tool": "kb_hop",
             "surfaces": ["cli", "http"],
             "description": (
@@ -162,7 +153,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "related",
-            "effect": "read",
             "tool": "kb_related",
             "surfaces": ["cli", "http"],
             "description": (

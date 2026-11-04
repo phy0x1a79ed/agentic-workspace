@@ -21,6 +21,7 @@ def test_set_supersedes_and_read_returns_the_newest(journal_workspace):
     assert second["brief"]["supersedes"] == first["brief"]["id"]
     out = _run("brief_read", {"project": "awm", "scope": "s"})["brief"]
     assert out["text"] == "For the journal." and out["author"] == "agent:awm/s"
+    assert out["line"] == "The brief of awm/s: For the journal."
     assert _run("brief_read", {"project": "awm", "scope": "other"})["brief"] is None
 
 

@@ -20,7 +20,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
-SLOTS = ("daily", "weekly", "monthly")
 WEEK_S = 7 * 86400
 MONTH_S = 30 * 86400
 HISTORY_NIGHTS = 30

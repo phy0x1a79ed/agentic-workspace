@@ -35,7 +35,6 @@ API_MANIFEST: dict[str, Any] = {
         {
             "name": "edge_material",
             "tool": "auth_edge_material",
-            "effect": "secret",
             "surfaces": _CLI_HTTP,
             "description": "Signing secret + live device-token digests + session-lifetime "
                            "knobs, for the httpsfront edge to enforce auth "
@@ -50,7 +49,6 @@ API_MANIFEST: dict[str, Any] = {
         {
             "name": "status",
             "tool": "auth_status",
-            "effect": "read",
             "surfaces": _CLI_HTTP,
             "description": "Report the session lifetime and the number of live "
                            "device tokens.",
@@ -59,7 +57,6 @@ API_MANIFEST: dict[str, Any] = {
         {
             "name": "device_mint",
             "tool": "auth_device_mint",
-            "effect": "secret",
             "surfaces": _CLI_HTTP,
             "description": "Mint a revocable operator device token, for an "
                            "unattended device or app that must not store a "
@@ -76,7 +73,6 @@ API_MANIFEST: dict[str, Any] = {
         {
             "name": "device_list",
             "tool": "auth_device_list",
-            "effect": "read",
             "surfaces": _CLI_HTTP,
             "description": "List device tokens (no secrets). Operator only.",
             "params": [],
@@ -84,7 +80,6 @@ API_MANIFEST: dict[str, Any] = {
         {
             "name": "device_revoke",
             "tool": "auth_device_revoke",
-            "effect": "write",
             "surfaces": _CLI_HTTP,
             "description": "Revoke a device token by id. The edge stops "
                            "honouring it within its ~30 s material refresh. "

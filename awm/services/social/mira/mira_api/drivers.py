@@ -34,12 +34,10 @@ from mira_api.cdp import CDPPage
 
 log = logging.getLogger("mira_api.drivers")
 
-def _call(helper: str, *args: Any) -> str:
+def js_call(helper: str, *args: Any) -> str:
     """Build a JS expression invoking a window.__awmMira helper with JSON args."""
     arglist = ", ".join(json.dumps(a) for a in args)
     return f"(async()=>{{ return JSON.stringify(await {helper}({arglist})); }})()"
-
-UPLOAD_TIMEOUT_S = 150.0
 
 class Driver(ABC):
     platform: str = "base"
@@ -53,7 +51,7 @@ class Driver(ABC):
 
     async def _run(self, helper: str, *args: Any, **eval_kw: Any) -> Any:
         """Assert the prelude, then call ``helper(*args)`` and parse its JSON."""
-        expr = self.PRELUDE + "\n" + _call(helper, *args)
+        expr = self.PRELUDE + "\n" + js_call(helper, *args)
         return await self.page.evaluate_json(expr, **eval_kw)
 
     @abstractmethod

@@ -50,8 +50,9 @@ def builtins_sql() -> str:
 
 
 #: Kinds that fold into another kind's tag: the goal log went (fleet.md R107 item 10),
-#: and each real goal is an ordinary journal post now.
-FOLDED_KINDS = {"goal": JOURNAL}
+#: and each real goal is an ordinary journal post now. ``debrief`` and ``note`` are
+#: the old names of a journal and a message.
+FOLDED_KINDS = {"goal": JOURNAL, "debrief": JOURNAL, "note": MESSAGE}
 
 
 def known_kinds_sql() -> str:

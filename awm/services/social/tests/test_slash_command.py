@@ -1,5 +1,5 @@
-"""Tests for the Discord slash commands (``/approve``, ``/reject``,
-``/new-agent``), the operator gate, and the adapter emit.
+"""Tests for the Discord slash command (``/approve``), the operator gate,
+and the adapter emit.
 
 The command surface is exercised offline: we build the connector's command tree
 (no live bot), fetch the registered ``approve`` command, and invoke its callback
@@ -213,74 +213,44 @@ class TestOperatorGate:
         assert captured[0].operator == "tony"
 
 
-# -- /reject and /new-agent -------------------------------------------------
+# -- send with files ------------------------------------------------------
 
-# -- send with an ack_ref ---------------------------------------------------
-
-class _AckConn:
+class _FileConn:
     platform = "discord"
     sends_files = True
     max_file_bytes = 1024
 
-    def __init__(self, edited):
-        self.edited = edited
-        self.sent = []
+    def __init__(self):
         self.files = []
 
-    async def edit_ack(self, ref, text, *, files=None):
-        self.files.append(files)
-        return self.edited
-
     async def send(self, channel, text, *, thread=None, files=None):
-        self.sent.append((channel, text))
         self.files.append(files)
         return {"message_id": "new"}
 
 
-class TestSendReplacesAck:
+class TestSendFiles:
     @pytest.mark.asyncio
-    async def test_an_editable_ack_is_replaced(self, monkeypatch):
+    async def test_files_reach_the_send(self, monkeypatch):
         from awm.social import hub_adapter
 
-        conn = _AckConn({"message_id": "777"})
-        monkeypatch.setattr(hub_adapter, "_connectors", {"bot": conn})
-        out = await hub_adapter._h_send(
-            {"account": "bot", "channel": "dm:1", "text": "hi", "ack_ref": "31337"})
-        assert out["edited"] is True and out["message_id"] == "777"
-        assert conn.sent == []
-
-    @pytest.mark.asyncio
-    async def test_a_gone_ack_sends_a_new_message(self, monkeypatch):
-        from awm.social import hub_adapter
-
-        conn = _AckConn(None)
-        monkeypatch.setattr(hub_adapter, "_connectors", {"bot": conn})
-        out = await hub_adapter._h_send(
-            {"account": "bot", "channel": "dm:1", "text": "hi", "ack_ref": "31337"})
-        assert out["message_id"] == "new" and conn.sent == [("dm:1", "hi")]
-
-    @pytest.mark.asyncio
-    async def test_files_reach_the_edit_and_the_fallback_send(self, monkeypatch):
-        from awm.social import hub_adapter
-
-        conn = _AckConn(None)
+        conn = _FileConn()
         monkeypatch.setattr(hub_adapter, "_connectors", {"bot": conn})
         files = [{"filename": "prompt.txt", "text": "do it"}]
         await hub_adapter._h_send({"account": "bot", "channel": "dm:1", "text": "hi",
-                                   "ack_ref": "31337", "files": files})
-        assert conn.files == [files, files]
+                                   "files": files})
+        assert conn.files == [files]
 
     @pytest.mark.asyncio
     async def test_an_account_that_cannot_attach_refuses_files(self, monkeypatch):
         from awm.social import hub_adapter
 
-        conn = _AckConn(None)
+        conn = _FileConn()
         conn.sends_files = False
         monkeypatch.setattr(hub_adapter, "_connectors", {"bot": conn})
         with pytest.raises(RuntimeError, match="does not take files"):
             await hub_adapter._h_send({"account": "bot", "channel": "dm:1", "text": "hi",
                                        "files": [{"filename": "a.txt", "text": "x"}]})
-        assert conn.sent == []
+        assert conn.files == []
 
 
 # -- adapter emit -----------------------------------------------------------

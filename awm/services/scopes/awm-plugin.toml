@@ -18,7 +18,7 @@ platform = ["linux"]
 [[needs.tool]]
 name = "journal"
 major = 1
-verbs = ["subscribe", "brief_set", "brief_read"]
+verbs = ["brief_set", "brief_read"]
 
 [[needs.tool]]
 name = "operations"

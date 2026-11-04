@@ -45,7 +45,7 @@ def child_env() -> dict[str, str]:
     `libstdc++` beside itself, then in the system cache. On Ubuntu 22.04 that
     copy is too old for the env's ICU, and once loaded it breaks `import sqlite3`.
     """
-    env = {k: v for k, v in os.environ.items() if k not in ("PYTHONPATH", "DEV_PYTHONPATH")}
+    env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
     env.update({
         "PYTHONPATH": str(instances.CHECKOUT / "src"),
         "KB_LIVE": str(instances.LIVE),

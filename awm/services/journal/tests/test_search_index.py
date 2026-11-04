@@ -28,7 +28,7 @@ def test_queued_write_keeps_the_database_it_was_queued_for(journal_workspace, mo
     import awm.persistence.databases as pdbs
     from awm.journal import channel, search_index
     blocker = search_index._worker.submit(time.sleep, 0.2)
-    p = channel.post("awm", "dev", author="user:a", kind="message", body="queued before the switch")
+    p = channel.post("awm", "dev", author="user:a", tags="message", body="queued before the switch")
     moved = tmp_path / "elsewhere"
     moved.mkdir()
     monkeypatch.setattr(pdbs, "SERVICES_DIR", moved)

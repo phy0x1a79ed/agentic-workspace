@@ -139,10 +139,10 @@ async def test_a_plugin_appearing_mid_run_joins_with_no_code_change(archive, gat
     gateway.plug("journals", dict(JOURNALS))
     await synced(archive, gateway)
     assert [s["name"] for s in (await archive.sources_view())["sources"]] == ["journals"]
-    gateway.plug("precedence", {"p1": doc("Tabs or spaces", "the user prefers tabs")})
+    gateway.plug("recipes", {"r1": doc("Bread", "flour, water, salt and time")})
     await synced(archive, gateway)
     names = {s["name"]: s["count"] for s in (await archive.sources_view())["sources"]}
-    assert names == {"journals": 5, "precedence": 1}
+    assert names == {"journals": 5, "recipes": 1}
 
 
 async def test_a_pushed_event_brings_the_sweep_forward(archive, gateway, clock):

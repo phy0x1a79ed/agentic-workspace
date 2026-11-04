@@ -23,7 +23,7 @@ import re
 import sqlite3
 import threading
 from concurrent.futures import Future, ThreadPoolExecutor
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -240,11 +240,6 @@ def keyword_plan(df: dict[str, int]) -> tuple[tuple[str, int], tuple[str, int]]:
         return ("", 0), ("", 0)
     return ((" AND ".join(f'"{w}"' for w in every), min(df[w] for w in every)),
             (" OR ".join(f'"{w}"' for w in kept), spent) if kept else ("", 0))
-
-
-def keyword_exprs(df: dict[str, int]) -> tuple[str, str]:
-    (every, _), (either, _) = keyword_plan(df)
-    return every, either
 
 
 def coverage(df: dict[str, int], passages: int, text: str) -> float:

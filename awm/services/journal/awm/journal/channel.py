@@ -3,9 +3,7 @@
 There is no separate rooms/messages/session_logs machinery. Every scope owns
 one post log (``scope_posts``); messages, journal (debrief) entries,
 briefs and precedents are all rows there, told apart by their tags
-(:mod:`awm.journal.tags`).
-Other scopes/users subscribe to a channel (``scope_subscribers``); the owner is
-implicit (the scope itself). Raw agent acts are NOT here; a session's own
+(:mod:`awm.journal.tags`). Raw agent acts are NOT here; a session's own
 transcript is read through the transcripts service.
 
 Addressing is the scope's natural key ``(project, scope)``. For legacy
@@ -30,7 +28,8 @@ import uuid as _uuid
 from dataclasses import dataclass, field
 from typing import Any, Iterable
 
-from awm.journal import kinds, owners, search_index, tags as tagmod
+from awm.config import privacy
+from awm.journal import builtin_tags, owners, search_index, tags as tagmod
 from awm.journal.dao import JournalDAO
 from awm.journal.refs import SYSTEM_REF, ms_to_iso, now_ms, iso_to_ms
 
@@ -100,23 +99,6 @@ class ScopePost:
         return d
 
 
-@dataclass
-class Subscriber:
-    project: str
-    scope: str
-    guest_kind: str      # 'agent' | 'user'
-    guest_ref: str       # 'project/scope' (agent) or 'user:<name>'
-    display_name: str
-    joined_at: str       # ISO TEXT
-
-    def to_dict(self) -> dict:
-        return {
-            "project": self.project, "scope": self.scope,
-            "guest_kind": self.guest_kind, "guest_ref": self.guest_ref,
-            "display_name": self.display_name, "joined_at": self.joined_at,
-        }
-
-
 # ---------------------------------------------------------------------------
 # Author normalization (caller display ⇄ stored natural-key ref)
 # ---------------------------------------------------------------------------
@@ -142,10 +124,8 @@ def _author_to_stored(display: str) -> str:
 
 
 def edge_origin(as_: str | None) -> str | None:
-    """``as_`` when the edge stamped it as a peer identity (``peer`` or ``peer:<node>``), else ``None``."""
-    if as_ == "peer" or (as_ or "").startswith("peer:"):
-        return as_
-    return None
+    """``as_`` when the edge stamped it as a peer identity, else ``None``."""
+    return as_ if privacy.from_peer(as_) else None
 
 
 def _author_to_display(author_ref: str) -> str:
@@ -232,15 +212,6 @@ def rows_to_posts(rows) -> list[ScopePost]:
     return [_row_to_post(r, by_post[r["id"]], cites[r["id"]]) for r in rows]
 
 
-def _row_to_subscriber(row) -> Subscriber:
-    return Subscriber(
-        project=row["owner_project"], scope=row["owner_scope"],
-        guest_kind=row["guest_kind"], guest_ref=row["guest_ref"],
-        display_name=row["display_name"] or "",
-        joined_at=ms_to_iso(row["joined_at"]) or "",
-    )
-
-
 # ---------------------------------------------------------------------------
 # Cross-service emitter (the `posts` pub/sub topic)
 # ---------------------------------------------------------------------------
@@ -263,25 +234,22 @@ def set_emitter(fn) -> None:
 # Post
 # ---------------------------------------------------------------------------
 
-def post_tag_ids(kind: str | None = None, tags: Any = None,
-                 extra: Iterable[str] = ()) -> list[str]:
-    """The tag ids a new post carries: its ``tags``, the tag for the old ``kind`` alias,
-    and the ``extra`` ids the journal's own code adds.
-
-    A post that names no type tag is a message, as the old ``kind`` default was.
+def post_tag_ids(tags: Any = None, extra: Iterable[str] = ()) -> list[str]:
+    """The tag ids a new post carries: its ``tags`` and the ``extra`` ids the
+    journal's own code adds. A post that names no type tag is a message.
     """
     ids = tagmod.resolve(tagmod.names_arg(tags))
-    for t in ([tagmod.kind_tag(kind)] if kind else []) + list(extra):
+    for t in extra:
         if t not in ids:
             ids.append(t)
-    if not any(t in tagmod.TYPE_TAGS or t.startswith(kinds.MIGRATED_PREFIX) for t in ids):
-        ids.append(kinds.MESSAGE)
+    if not any(t in tagmod.TYPE_TAGS for t in ids):
+        ids.append(builtin_tags.MESSAGE)
     return ids
 
 
 def post(project: str, scope: str, *, author: str, body: str,
-         kind: str | None = None, tags: Any = None, meta: dict | None = None,
-         reply_to: str | list[str] | None = None, to_scope: str | None = None,
+         tags: Any = None, meta: dict | None = None,
+         reply_to: str | list[str] | None = None,
          origin: str | None = None, extra_tags: list[str] = (),
          ts: int | None = None) -> ScopePost:
     """Append a post to a scope's channel and hand it to the cross-service emitter.
@@ -300,11 +268,11 @@ def post(project: str, scope: str, *, author: str, body: str,
     """
     if origin is None and (author or "").startswith("peer:"):
         raise ValueError("author 'peer:...' is reserved for edge-stamped peer identities")
-    tag_ids = post_tag_ids(kind, tags, extra_tags)
+    tag_ids = post_tag_ids(tags, extra_tags)
     targets = reply_targets(reply_to)
     cites: list[str] = []
     reply_to = None
-    if kinds.JOURNAL in tag_ids:
+    if builtin_tags.JOURNAL in tag_ids:
         cites = require_journals(targets)
     elif len(targets) > 1:
         raise ValueError("a comment answers one post; only a debrief journal lists several")
@@ -366,7 +334,7 @@ def require_journals(targets: list[str]) -> list[str]:
     """``targets`` when each is a journal post (sessions.md R17)."""
     found = tagmod.of_posts(targets)
     for t in targets:
-        if kinds.JOURNAL not in found.get(t, []):
+        if builtin_tags.JOURNAL not in found.get(t, []):
             raise ValueError(f"citation {t} is not a journal post. Journal for that session first, "
                              "then cite the new journal (sessions.md R17)")
     return targets
@@ -439,7 +407,7 @@ def get_post(post_id: str) -> ScopePost | None:
     return _row_to_post(row) if row else None
 
 
-def _post_filter(project, scope, kind, author, before_ts,
+def _post_filter(project, scope, author, before_ts,
                  exclude: tuple[str, list] = ("", []), tags: Any = None) -> tuple[str, list]:
     sql, params = exclude[0], list(exclude[1])
     if project is not None:
@@ -448,7 +416,7 @@ def _post_filter(project, scope, kind, author, before_ts,
     if scope is not None:
         sql += " AND owner_scope = ?"
         params.append(scope)
-    tag_filter = tagmod.kind_filter(kind, tags)
+    tag_filter = tags
     tag_sql, tag_params = tagmod.filter_sql(tag_filter)
     sql += tag_sql
     params += tag_params
@@ -456,10 +424,10 @@ def _post_filter(project, scope, kind, author, before_ts,
         # An addendum folded into its target (versions.fold) stays out of the reads.
         sql += (" AND NOT EXISTS (SELECT 1 FROM post_tags fp"
                 " WHERE fp.post_id = scope_posts.id AND fp.tag_id = ?)")
-        params.append(kinds.FOLDED)
+        params.append(builtin_tags.FOLDED)
     if author:
         sql += " AND author = ?"
-        params.append(author if edge_origin(author) else _author_to_stored(author))
+        params.append(author if privacy.from_peer(author) else _author_to_stored(author))
     if before_ts is not None:
         bms = iso_to_ms(before_ts)
         if bms is not None:
@@ -469,7 +437,7 @@ def _post_filter(project, scope, kind, author, before_ts,
 
 
 def fetch(*, project: str | None = None, scope: str | None = None,
-          kind: str | None = None, query: str | None = None,
+          query: str | None = None,
           author: str | None = None, limit: int = 50, offset: int = 0,
           before_ts: str | None = None, order: str | None = None,
           exclude: tuple[str, list] = ("", []), tags: Any = None) -> list[ScopePost]:
@@ -478,8 +446,7 @@ def fetch(*, project: str | None = None, scope: str | None = None,
     - ``scope`` given, no ``query`` → that channel's recent posts.
     - ``query`` given → :func:`search`, ranked by relevance (within the scope
       if given, else cross-scope).
-    - ``tags`` narrows by a tag filter such as ``'journal and !closed'``;
-      ``kind`` is the old alias for one tag.
+    - ``tags`` narrows by a tag filter such as ``'journal and !closed'``.
     - ``author`` narrows by stored/display author ref.
     - ``order`` ∈ ``'asc'`` | ``'desc'`` forces oldest- or newest-first. With no
       ``order`` the default is oldest→newest for a single channel and
@@ -489,10 +456,10 @@ def fetch(*, project: str | None = None, scope: str | None = None,
     - ``exclude`` is a WHERE fragment from :func:`awm.journal.private.exclusion`.
     """
     if query:
-        return search(project=project, scope=scope, kind=kind, query=query, author=author,
+        return search(project=project, scope=scope, query=query, author=author,
                       limit=limit, offset=offset, before_ts=before_ts, order=order,
                       exclude=exclude, tags=tags)[0]
-    where, params = _post_filter(project, scope, kind, author, before_ts, exclude, tags)
+    where, params = _post_filter(project, scope, author, before_ts, exclude, tags)
     if order in ("asc", "desc"):
         direction = order.upper()
     else:
@@ -550,7 +517,7 @@ def _snippet(body: str, query: str) -> str:
 
 
 def search(*, query: str, project: str | None = None, scope: str | None = None,
-           kind: str | None = None, author: str | None = None, limit: int = 50,
+           author: str | None = None, limit: int = 50,
            offset: int = 0, before_ts: str | None = None,
            order: str | None = None, exclude: tuple[str, list] = ("", []),
            tags: Any = None) -> tuple[list[ScopePost], dict | None, str]:
@@ -566,12 +533,12 @@ def search(*, query: str, project: str | None = None, scope: str | None = None,
     filter without an indexed tag, or a search that cannot answer, falls back to
     a substring match.
     """
-    where, params = _post_filter(project, scope, kind, author, before_ts, exclude, tags)
+    where, params = _post_filter(project, scope, author, before_ts, exclude, tags)
     where += " AND thread_id IS NULL"
     degraded = None
     semantic = "none"
     hits = None
-    expr = tagmod.kind_filter(kind, tags)
+    expr = tags
     if search_index.may_hold(expr):
         narrowed = bool(author or exclude[0] or project == "" or tagmod.parse_filter(expr))
         try:
@@ -603,84 +570,3 @@ def search(*, query: str, project: str | None = None, scope: str | None = None,
     if order in ("asc", "desc"):
         posts.sort(key=lambda p: p.ts, reverse=order == "desc")
     return posts, degraded, semantic
-
-
-# ---------------------------------------------------------------------------
-# Subscribers
-# ---------------------------------------------------------------------------
-
-def _normalize_guest(guest: str) -> tuple[str, str, str]:
-    """Map a guest ref to (guest_kind, guest_ref, display_name)."""
-    g = guest
-    if g.startswith(("agent:", "scope:")):
-        g = g.split(":", 1)[1]
-    if g.startswith("user:"):
-        name = g[len("user:"):]
-        return "user", f"user:{name}", name
-    if "/" in g:
-        return "agent", g, g
-    # bare username
-    return "user", f"user:{g}", g
-
-
-def subscribe(project: str, scope: str, guest: str,
-              display_name: str | None = None) -> Subscriber:
-    """Enroll a guest (another scope or a user) as a subscriber of a channel."""
-    guest_kind, guest_ref, default_name = _normalize_guest(guest)
-    now = now_ms()
-    dao = JournalDAO()
-    with dao.transaction() as conn:
-        JournalDAO(conn=conn).execute(
-            "INSERT OR IGNORE INTO scope_subscribers "
-            "(owner_project, owner_scope, guest_kind, guest_ref, display_name, joined_at) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (project, scope, guest_kind, guest_ref,
-             display_name or default_name, now),
-        )
-    row = JournalDAO().query_one(
-        "SELECT * FROM scope_subscribers WHERE owner_project=? AND owner_scope=? "
-        "AND guest_kind=? AND guest_ref=?",
-        (project, scope, guest_kind, guest_ref),
-    )
-    sub = _row_to_subscriber(row)
-    return sub
-
-
-def unsubscribe(project: str, scope: str, guest: str) -> bool:
-    """Remove a subscriber. Returns True if a row was deleted."""
-    guest_kind, guest_ref, _ = _normalize_guest(guest)
-    dao = JournalDAO()
-    existing = dao.query_one(
-        "SELECT 1 FROM scope_subscribers WHERE owner_project=? AND owner_scope=? "
-        "AND guest_kind=? AND guest_ref=?",
-        (project, scope, guest_kind, guest_ref),
-    )
-    if existing is None:
-        return False
-    with dao.transaction() as conn:
-        JournalDAO(conn=conn).execute(
-            "DELETE FROM scope_subscribers WHERE owner_project=? AND owner_scope=? "
-            "AND guest_kind=? AND guest_ref=?",
-            (project, scope, guest_kind, guest_ref),
-        )
-    return True
-
-
-def list_subscribers(project: str, scope: str) -> list[Subscriber]:
-    rows = JournalDAO().query_all(
-        "SELECT * FROM scope_subscribers WHERE owner_project=? AND owner_scope=? "
-        "ORDER BY joined_at",
-        (project, scope),
-    )
-    return [_row_to_subscriber(r) for r in rows]
-
-
-def channels_for_subscriber(guest: str) -> list[tuple[str, str]]:
-    """Return (project, scope) channels the given guest subscribes to."""
-    guest_kind, guest_ref, _ = _normalize_guest(guest)
-    rows = JournalDAO().query_all(
-        "SELECT owner_project, owner_scope FROM scope_subscribers "
-        "WHERE guest_kind=? AND guest_ref=?",
-        (guest_kind, guest_ref),
-    )
-    return [(r["owner_project"], r["owner_scope"]) for r in rows]

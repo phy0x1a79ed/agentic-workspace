@@ -15,8 +15,8 @@ from dataclasses import dataclass
 from typing import Any, Iterable
 
 from awm.journal.dao import JournalDAO
-from awm.journal.kinds import (BRIEF, JOURNAL, KIND_TAGS, KIND_TO_TAG, MESSAGE,
-                               MIGRATED_PREFIX, PRECEDENT)
+from awm.journal.builtin_tags import (BRIEF, JOURNAL, KIND_TAGS, KIND_TO_TAG, MESSAGE,
+                                      MIGRATED_PREFIX, PRECEDENT)
 from awm.journal.refs import ms_to_iso, now_ms
 
 _TAG_TO_KIND = {v: k for k, v in KIND_TO_TAG.items()}
@@ -103,18 +103,6 @@ def resolve(names: Iterable[str]) -> list[str]:
     if missing:
         raise _unknown(missing)
     return ids
-
-
-def kind_tag(kind: str) -> str:
-    """The tag id an old ``kind`` value stands for (the move's alias)."""
-    if kind in KIND_TO_TAG:
-        return KIND_TO_TAG[kind]
-    if get(MIGRATED_PREFIX + kind) is not None:
-        return MIGRATED_PREFIX + kind
-    tag = by_name(kind)
-    if tag is None:
-        raise _unknown([kind])
-    return tag.id
 
 
 def names_arg(raw: Any) -> list[str]:
@@ -336,12 +324,3 @@ def filter_sql(expr: Any, *, column: str = "scope_posts.id") -> tuple[str, list]
                 f" WHERE pt.post_id = {column} AND pt.tag_id = ?)")
         params.append(found[name].id)
     return sql, params
-
-
-def kind_filter(kind: str | None, expr: Any) -> Any:
-    """Fold the old ``kind`` argument into a tag filter, as one more conjunct."""
-    if not kind:
-        return expr
-    tag = get(kind_tag(kind))
-    terms = parse_filter(expr)
-    return [*(("!" if neg else "") + n for neg, n in terms), tag.name]

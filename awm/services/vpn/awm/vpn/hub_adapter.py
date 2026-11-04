@@ -35,7 +35,6 @@ API_MANIFEST: dict[str, Any] = {
     "functions": [
         {
             "name": "up",
-            "effect": "write",
             "tool": "vpn_up",
             "description": (
                 "Bring a VPN exit up (profile: 'ubc' or 'proton'). Idempotent "
@@ -60,7 +59,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "down",
-            "effect": "write",
             "tool": "vpn_down",
             "description": (
                 "Tear a VPN exit down: stop+remove its container and clear its "
@@ -72,7 +70,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "status",
-            "effect": "read",
             "tool": "vpn_status",
             "description": (
                 "Status of one exit (pass profile) or all exits (omit it), "

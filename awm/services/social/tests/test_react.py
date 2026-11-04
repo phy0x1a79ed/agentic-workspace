@@ -194,6 +194,5 @@ async def test_react_verb_passes_through_to_the_connector(monkeypatch):
     assert r == {"ok": True, "as": "reaction", "emoji": "👀"}
     assert calls == [("C1", "5", "👀", False)]
     fn = next(f for f in hub.API_MANIFEST["functions"] if f["name"] == "react")
-    assert fn["effect"] == "write"
     assert {p["name"] for p in fn["params"] if p["required"]} == {
         "account", "channel", "message_id", "emoji"}

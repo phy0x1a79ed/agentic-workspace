@@ -251,10 +251,6 @@ async def _h_send(args: dict) -> dict:
                 f"the files come to {size} bytes, over the "
                 f"{conn.max_file_bytes} that {args['account']!r} takes per message")
     extra = {"files": files} if files else {}
-    if args.get("ack_ref"):
-        edited = await conn.edit_ack(str(args["ack_ref"]), text, **extra)
-        if edited is not None:
-            return {"ok": True, "edited": True, **edited}
     cfg = _accounts.get(args["account"])
     personal = cfg is not None and cfg.kind == "user"
     if not personal:
@@ -928,12 +924,8 @@ API_MANIFEST: dict[str, Any] = {
     "functions": [
         {
             "name": "send",
-            "effect": "write",
             "tool": "social_send",
             "description": "Send a message as a configured account to a channel. "
-                           "`ack_ref`, from a slash command's event, replaces that "
-                           "command's acknowledgement while the platform still "
-                           "allows it, and sends a new message otherwise. "
                            "`file` uploads a file from the node social runs on, such as "
                            "a plan's .md, with `text` as its message; `text` is "
                            "optional with a file. `files` attaches inline text "
@@ -949,7 +941,6 @@ API_MANIFEST: dict[str, Any] = {
                 {"name": "channel", "type": "string", "required": True},
                 {"name": "text", "type": "string", "required": False},
                 {"name": "thread", "type": "string", "required": False},
-                {"name": "ack_ref", "type": "string", "required": False},
                 {"name": "file", "type": "string", "required": False},
                 {"name": "files", "type": "array", "required": False},
                 {"name": "quiet", "type": "boolean", "required": False},
@@ -957,7 +948,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "react",
-            "effect": "write",
             "tool": "social_react",
             "description": "Put an emoji reaction on a message, or take it off "
                            "with `remove`. `emoji` is a character, a name or "
@@ -973,7 +963,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "fetch",
-            "effect": "read",
             "tool": "social_fetch",
             "description": "Fetch a channel's existing messages live from the "
                            "platform (incl. ones from before the service started), "
@@ -988,7 +977,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "history",
-            "effect": "read",
             "tool": "social_history",
             "description": "Read a bot account's synced history of every chat "
                            "the bot is in (edits applied, deletes hidden unless "
@@ -1006,7 +994,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "seats",
-            "effect": "read",
             "tool": "social_seats",
             "description": "List the chats a bot account is in (its seats), each "
                            "with the session holding it or null. A session "
@@ -1020,7 +1007,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "mount",
-            "effect": "write",
             "tool": "social_mount",
             "description": "Hold a seat: every new message in that chat, from "
                            "anyone but the bot, is typed into your prompt as one "
@@ -1041,7 +1027,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "keepers",
-            "effect": "read",
             "tool": "social_keepers",
             "description": "List the kept seats ([seat.*] in social.toml): each "
                            "one's agent, health (running, waiting, resuming, "
@@ -1052,7 +1037,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "keep_reset",
-            "effect": "write",
             "tool": "social_keep_reset",
             "description": "Clear a kept seat's breaker. A seat whose restarts "
                            "kept failing is broken and is not tried again until "
@@ -1064,7 +1048,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "keep_adopt",
-            "effect": "write",
             "tool": "social_keep_adopt",
             "surfaces": _CLI_HTTP,
             "description": "Make a running background job the agent of a kept "
@@ -1077,7 +1060,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "unmount",
-            "effect": "write",
             "tool": "social_unmount",
             "description": "Release a seat you hold, or every seat you hold on "
                            "the account when `channel` is omitted.",
@@ -1088,7 +1070,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "search",
-            "effect": "read",
             "tool": "social_search",
             "description": "Search a platform's own message index live (Slack "
                            "search.messages, Gmail X-GM-RAW, Teams best-effort). "
@@ -1103,7 +1084,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "download_attachments",
-            "effect": "write",
             "tool": "social_download_attachments",
             "description": "Download a message's attachments to a system temp dir "
                            "(outside the awm workspace) on the node social runs on. "
@@ -1120,13 +1100,11 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "accounts",
-            "effect": "read",
             "tool": "social_accounts",
             "description": "List configured accounts with platform, kind, and live status.",
         },
         {
             "name": "channels",
-            "effect": "read",
             "tool": "social_channels",
             "description": "List channels visible to a configured account. "
                            "`include_dms=true` also enumerates direct/group DMs "
@@ -1138,7 +1116,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "open_dm",
-            "effect": "write",
             "tool": "social_open_dm",
             "description": "Resolve a platform user (by id, or by name where the "
                            "platform supports it) to a direct-message channel and "
@@ -1150,7 +1127,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "list_operators",
-            "effect": "read",
             "tool": "social_operators",
             "description": "List whitelisted operators, optionally by platform.",
             "params": [
@@ -1159,7 +1135,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "add_operator",
-            "effect": "write",
             "tool": "social_operator_add",
             "surfaces": _CLI_HTTP,
             "description": "Whitelist a platform user and map them to an awm_user.",
@@ -1171,7 +1146,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "remove_operator",
-            "effect": "write",
             "tool": "social_operator_remove",
             "surfaces": _CLI_HTTP,
             "description": "Remove a platform user from the whitelist.",
@@ -1182,7 +1156,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "lookup",
-            "effect": "read",
             "tool": "social_lookup",
             "description": "Resolve a (platform, user id) to its awm_user (or null).",
             "params": [
@@ -1192,7 +1165,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "buckets",
-            "effect": "read",
             "tool": "social_buckets",
             "description": "List configured cloud file-store buckets (Google "
                            "Drive, OneDrive/SharePoint) with kind and root. Each "
@@ -1203,7 +1175,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "bucket_ls",
-            "effect": "read",
             "tool": "social_bucket_ls",
             "description": "List the immediate children of a folder in a bucket. "
                            "`path` is relative to the bucket root (omit for root). "
@@ -1226,7 +1197,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "bucket_stat",
-            "effect": "read",
             "tool": "social_bucket_stat",
             "description": "Return the entry for one file or folder in a bucket, "
                            "or a not-found error. Paths as for bucket_ls.",
@@ -1237,7 +1207,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "bucket_mkdir",
-            "effect": "write",
             "tool": "social_bucket_mkdir",
             "description": "Create the folder at `path` in a bucket, with every "
                            "missing parent. Succeeds on an existing folder. "
@@ -1249,7 +1218,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "bucket_get",
-            "effect": "write",
             "tool": "social_bucket_get",
             "description": "Download a file from a bucket to a system temp dir "
                            "(outside the awm workspace) on the node social runs on and "
@@ -1271,7 +1239,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "bucket_put",
-            "effect": "write",
             "tool": "social_bucket_put",
             "description": "Upload a file (`src` = a path on the node social "
                            "runs on) to `path` in a "
@@ -1293,7 +1260,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "bucket_rm",
-            "effect": "write",
             "tool": "social_bucket_rm",
             "description": "Delete the file/folder at `path` in a bucket.",
             "params": [
@@ -1303,7 +1269,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "bucket_mv",
-            "effect": "write",
             "tool": "social_bucket_mv",
             "description": "Move or rename the file or folder `src` to `dst` "
                            "in a bucket. `dst` is the full new path, not a "
@@ -1326,7 +1291,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "bucket_cp",
-            "effect": "write",
             "tool": "social_bucket_cp",
             "description": "Copy the file or folder `src` to `dst` in a bucket. "
                            "Arguments and errors as for bucket_mv. Returns the "
@@ -1342,7 +1306,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "bucket_sites",
-            "effect": "read",
             "tool": "social_bucket_sites",
             "description": "Discover where a OneDrive bucket can reach. Without "
                            "`site`: the personal OneDrive, the SharePoint sites "
@@ -1359,7 +1322,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "bucket_versions",
-            "effect": "read",
             "tool": "social_bucket_versions",
             "description": "List the versions of a file in a OneDrive bucket, "
                            "newest first: label, size, modified, author, and "
@@ -1372,7 +1334,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "bucket_restore",
-            "effect": "write",
             "tool": "social_bucket_restore",
             "description": "Undo in a OneDrive bucket. With `version`: make that "
                            "version of the file at `path` current again (the "
@@ -1392,7 +1353,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "bucket_share",
-            "effect": "write",
             "tool": "social_bucket_share",
             "description": "Share a file or folder in a OneDrive bucket. "
                            "CAUTION: this is outward-facing. Get Tony's explicit "
@@ -1414,7 +1374,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "bucket_shares",
-            "effect": "read",
             "tool": "social_bucket_shares",
             "description": "List the share links on a file or folder in a "
                            "OneDrive bucket (url, scope, role) and the people "
@@ -1426,7 +1385,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "bucket_unshare",
-            "effect": "write",
             "tool": "social_bucket_unshare",
             "description": "Revoke one share link (`link` = its url or share "
                            "id, from bucket_shares) or one person's access "
@@ -1441,7 +1399,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "bucket_resolve",
-            "effect": "read",
             "tool": "social_bucket_resolve",
             "description": "Turn a SharePoint/OneDrive share link "
                            "(https://<tenant>.sharepoint.com/:f:/t/<site>/<token>) "
@@ -1455,7 +1412,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "bucket_search",
-            "effect": "read",
             "tool": "social_bucket_search",
             "description": "Search a bucket for files matching `query` (Google "
                            "Drive: name match across the drive; OneDrive: "
@@ -1470,7 +1426,6 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "emit_probe",
-            "effect": "queue",
             "tool": "social_emit_probe",
             "surfaces": _CLI_HTTP,
             "description": "Emit a synthetic, inert `command` event carrying "

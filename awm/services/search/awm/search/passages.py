@@ -96,13 +96,3 @@ def split(text: str) -> list[Passage]:
     if run:
         out.append(Passage(run[0], run[1], run_section))
     return out
-
-
-def section_at(passages: list[Passage], offset: int) -> Passage | None:
-    """The passage holding ``offset``, else the last one before it."""
-    best = None
-    for p in passages:
-        if p.start > offset:
-            break
-        best = p
-    return best

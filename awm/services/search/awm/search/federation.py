@@ -12,7 +12,6 @@ import json
 from dataclasses import dataclass, field
 from typing import Any
 
-from awm import config
 from awm.config import edges
 from awm.search import hits as hitshape
 
@@ -44,7 +43,8 @@ class PeerResult:
     found: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
 
 
-def _describe(exc: BaseException) -> str:
+def describe_error(exc: BaseException) -> str:
+    """An exception as one line of at most 300 characters, for a source's status."""
     return (f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__)[:300]
 
 
@@ -85,7 +85,7 @@ async def _ask_one(peers: Peers, record: dict[str, Any], args: dict[str, Any], l
     except Exception as exc:  # noqa: BLE001 — a peer's failure is reported, never raised
         if _no_tool(exc):
             return PeerResult(name, {"status": "no-search", "detail": "its release has no search tool"})
-        return PeerResult(name, {"status": "error", "error": _describe(exc)})
+        return PeerResult(name, {"status": "error", "error": describe_error(exc)})
     found = hitshape.sections(reply, _origin(record), limit)
     sources = reply.get("sources")
     return PeerResult(name, {"status": "ok", "hits": hitshape.count(found),

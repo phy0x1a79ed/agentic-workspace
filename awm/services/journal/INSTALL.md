@@ -26,30 +26,19 @@ The service owns its DB at `AWM_DIR/services/journal/journal.db`:
   `owner_project=''`.
 - **tags**, **tag_versions**, **post_tags** — the vocabulary every node shares, each
   tag's earlier names and descriptions, and the tags on each post. A post links a tag
-  by id. The tags the code names have fixed ids in `awm/journal/kinds.py`.
+  by id. The tags the code names have fixed ids in `awm/journal/builtin_tags.py`.
 - **tag_clashes** — two nodes that added one name before they synced. See
   `awm/journal/tagsync.py`.
 - **post_cites** — a debrief journal's citations, its `reply_to` list.
 - **session_parents** — the lineage's parent links, which reflection records.
-- **scope_subscribers** — guests enrolled on a channel.
 - the shared `embeddings` tables, holding the `post` index.
 
-A post to a literal scope is checked through the `resolveScope` RPC to the scopes
-service. An unreachable scopes service never blocks a post.
+A post to a literal scope is checked through the scopes service's `resolve` verb.
+An unreachable scopes service never blocks a post.
 
 A post from a Claude Code session records the session id in `meta.session`. The
 service resolves it from the pid the gateway stamps on the call and drops any
-`session` the caller sends. Reporting relies on it to put a journal post on the
-poster's card only.
-
-### First-start migration
-
-Before this service existed, `scope_posts` and `scope_subscribers` lived in
-`services/scopes/scopes.db`. On start, if the journal log is empty, the service
-copies both tables across with `INSERT OR IGNORE`, after a sqlite backup of its own
-DB (`journal.db.bak-premigrate-<stamp>`). It opens the scopes DB read-only and leaves
-its tables in place. A restart finds a non-empty log and does nothing. The search
-index rebuilds from the copied rows in the first backfill.
+`session` the caller sends.
 
 ## Surface
 
@@ -59,11 +48,11 @@ The verbs marked CLI and HTTP only serve other services and the one-shot imports
 
 The service publishes the `posts` topic, once per new post, with payload
 `{project, scope, post}`. The post carries its tags and a `kind` derived from them,
-for readers that still filter on `kind`.
+for readers of the old post shape.
 
 ## Search archive
 
-`service.toml` declares an `[[archive]]` table named `journals`, mode `index`, fed by
+`awm-plugin.toml` declares a `[[service.archive]]` table named `journals`, mode `index`, fed by
 `journal_export` and pushed on the `posts` topic. `export` takes `cursor` and `limit`
 and returns `{documents, next_cursor, done, ids}`. Pages run in ascending post-id
 order. `ids` is the full id set and appears only on the last page.

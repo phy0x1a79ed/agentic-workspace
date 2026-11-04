@@ -198,7 +198,6 @@ def test_the_verbs_stay_off_the_agent_surface():
     for verb in ("device_mint", "device_list", "device_revoke"):
         assert names[verb]["surfaces"] == ["cli", "http"], verb
         assert "username" not in {p["name"] for p in names[verb]["params"]}, verb
-    assert names["device_mint"]["effect"] == "secret"
 
 
 # --- migration ------------------------------------------------------------------

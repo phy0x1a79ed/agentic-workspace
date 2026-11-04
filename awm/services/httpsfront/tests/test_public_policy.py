@@ -74,7 +74,7 @@ def _capture(c):
 def test_http_overwrites_the_browsers_x_awm_as():
     with _client(_app()) as c:
         seen = _capture(c)
-        r = c.get("/svc/notes/fn/list", headers={"X-Awm-As": "user:steven"})
+        r = c.get("/tools", headers={"X-Awm-As": "user:steven"})
     assert r.status_code == 200
     assert seen["x-awm-as"] == "user:tony"
 
@@ -83,7 +83,7 @@ def test_a_forged_peer_header_never_reaches_the_gateway():
     """A browser (or another node) naming itself `peer:mira` gets overwritten."""
     with _client(_app()) as c:
         seen = _capture(c)
-        c.get("/svc/notes/fn/list", headers={"X-Awm-As": "peer:mira"})
+        c.get("/tools", headers={"X-Awm-As": "peer:mira"})
     assert seen["x-awm-as"] == "user:tony"
 
 
@@ -112,7 +112,7 @@ def test_ws_forwards_only_the_verified_identity(monkeypatch):
 
     monkeypatch.setattr(tlsproxy.websockets, "connect", connect)
     with _client(_app()) as c:
-        with c.websocket_connect("/svc/notes/emit/note:tony:1",
+        with c.websocket_connect("/hub/emit/journal/posts",
                                  headers={"X-Awm-As": "user:steven",
                                           "Cookie": f"{COOKIE_NAME}={TONY}"}):
             pass

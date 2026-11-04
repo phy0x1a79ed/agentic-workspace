@@ -35,6 +35,9 @@ def old_db(tmp_path, monkeypatch):
          {"cites": [{"journal": "j", "reason": "the base"}, {"journal": "gone"}]}, 13),
         ("b1", "awm", "dev", "agent:awm/dev", "brief", "for x", {}, 8),
         ("b2", "awm", "dev", "agent:awm/dev", "brief", "for y", {"supersedes": "b1"}, 9),
+        ("r", "awm", "dev", "user:tony", "request", "please", {}, 16),
+        ("lt", "task:avatar", "Avatar", "system", "journal", "legacy task", {}, 14),
+        ("lu", "", "user:proj:avatar", "system", "journal", "legacy user", {}, 15),
     ]
     conn.executemany("INSERT INTO scope_posts VALUES (?,?,?,?,?,?,?,?)",
                      [(*r[:6], json.dumps(r[6]), r[7]) for r in rows])
@@ -54,8 +57,9 @@ def test_every_kind_becomes_a_tag(old_db):
     assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == 5
     assert "kind" not in [r[1] for r in conn.execute("PRAGMA table_info(scope_posts)")]
     assert _tags(conn, "j") == {"builtin:journal"} and _tags(conn, "m") == {"builtin:message"}
-    assert _tags(conn, "d") == {"migrated:debrief"}
-    desc = conn.execute("SELECT description FROM tags WHERE id='migrated:debrief'").fetchone()[0]
+    assert _tags(conn, "d") == {"builtin:journal"}
+    assert _tags(conn, "r") == {"migrated:request"}
+    desc = conn.execute("SELECT description FROM tags WHERE id='migrated:request'").fetchone()[0]
     assert "migrated" in desc
 
 
@@ -88,3 +92,10 @@ def test_meta_cites_become_citations_and_the_reasons_stay(old_db):
     post = channel.get_post("c")
     assert post.to_dict()["reply_to"] == ["j"]
     assert post.meta == {"cite_reasons": {"j": "the base"}}
+
+
+def test_the_legacy_channel_spellings_become_the_current_ones(old_db):
+    conn = sqlite3.connect(old_db)
+    owner = "SELECT owner_project, owner_scope FROM scope_posts WHERE id=?"
+    assert conn.execute(owner, ("lt",)).fetchone() == ("avatar", "Avatar")
+    assert conn.execute(owner, ("lu",)).fetchone() == ("", "project:avatar")

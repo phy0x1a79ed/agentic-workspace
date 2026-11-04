@@ -16,7 +16,6 @@ SCOPE_MANIFEST_FUNCTIONS = [
     {
         "name": "scope_create",
         "tool": "scope_create",
-        "effect": "write",
         "description": (
             "Create a new scope (a worktree, its data view and its brief) for a project. "
             "The new branch defaults to feat/<scope>; pass branch_name to name "
@@ -76,7 +75,6 @@ SCOPE_MANIFEST_FUNCTIONS = [
     {
         "name": "scope_search",
         "tool": "scope_search",
-        "effect": "read",
         "description": (
             "Search scopes: name matches first, then scopes ranked by the "
             "meaning of their brief and context. Each project's main checkout "
@@ -103,7 +101,6 @@ SCOPE_MANIFEST_FUNCTIONS = [
     {
         "name": "scope_reindex",
         "tool": "scope_reindex",
-        "effect": "write",
         "description": (
             "Bring the scopes service's search index of scopes and projects in line "
             "with the tables: embeds what is missing, changed or made by another "
@@ -121,7 +118,6 @@ SCOPE_MANIFEST_FUNCTIONS = [
     {
         "name": "scope_complete",
         "tool": "scope_complete",
-        "effect": "write",
         "description": (
             "Complete (retire) a scope. Optionally merge, and remove the worktree "
             "with cleanup=true. The branch stays unless delete_branch=true, which "
@@ -143,7 +139,6 @@ SCOPE_MANIFEST_FUNCTIONS = [
     {
         "name": "scope_delete",
         "tool": "scope_delete",
-        "effect": "write",
         "description": (
             "Delete a scope and remove its worktree. The branch stays unless "
             "delete_branch=true. The reply then names the branch and its last "
@@ -167,7 +162,6 @@ SCOPE_MANIFEST_FUNCTIONS = [
     {
         "name": "scope_awm_sweep",
         "tool": "scope_awm_sweep",
-        "effect": "write",
         "surfaces": ["cli", "http"],
         "description": (
             "One-shot for the deploy (scopes.md R142): empty each worktree's .awm/ folder on "
@@ -182,7 +176,6 @@ SCOPE_MANIFEST_FUNCTIONS = [
     {
         "name": "scope_heal",
         "tool": "scope_heal",
-        "effect": "write",
         "description": (
             "Idempotent repair pass over active scopes: drop an untracked AGENTS.md / "
             "CLAUDE.md, and bring a DVC project's data view to whatever its checkout "
@@ -203,7 +196,6 @@ SCOPE_MANIFEST_FUNCTIONS = [
     {
         "name": "scope_private",
         "tool": "scope_private",
-        "effect": "write",
         "description": (
             "Mark a project, or one scope of it, private on this node, or clear "
             "the mark. A private project or scope, with every scope nested under "
@@ -224,7 +216,6 @@ SCOPE_MANIFEST_FUNCTIONS = [
     {
         "name": "scope_tag",
         "tool": "scope_tag",
-        "effect": "write",
         "description": (
             "Read or set the tags of a project, a scope, or a scope group such as "
             "'metasmith/lab' (a group needs no scope of its own yet). A scope's "
@@ -248,7 +239,6 @@ SCOPE_MANIFEST_FUNCTIONS = [
     {
         "name": "scope_repair",
         "tool": "scope_repair",
-        "effect": "write",
         "description": "Reconcile an on-disk worktree with a missing agents DB row.",
         "params": [
             {"name": "project", "type": "string", "required": True},
@@ -258,7 +248,6 @@ SCOPE_MANIFEST_FUNCTIONS = [
     {
         "name": "scope_sync",
         "tool": "scope_sync",
-        "effect": "write",
         "description": "Sync a scope's feature branch with a base branch via merge or rebase.",
         "params": [
             {"name": "project", "type": "string", "required": True},
@@ -270,7 +259,6 @@ SCOPE_MANIFEST_FUNCTIONS = [
     {
         "name": "scope_gather",
         "tool": "scope_git_gather",
-        "effect": "write",
         "description": (
             "Fan-in: merge each peripheral scope's branch into a hub scope's "
             "branch (runs in the hub worktree, which must be clean and on the "
@@ -291,7 +279,6 @@ SCOPE_MANIFEST_FUNCTIONS = [
     {
         "name": "scope_scatter",
         "tool": "scope_git_scatter",
-        "effect": "write",
         "description": (
             "Fan-out: merge a hub scope's branch into each peripheral scope's "
             "branch (each merge runs in that peripheral's worktree). A dirty or "
@@ -324,7 +311,6 @@ CLAIM_MANIFEST_FUNCTIONS = [
         "name": "scope_claim",
         "tool": "scope_claim",
         "surfaces": ["cli", "http"],
-        "effect": "write",
         "description": (
             "Claim a scope for a live session (scopes.md R3, R42). reflection cd calls this "
             "before it moves a session; agents use cd, not this verb. A scope holds at most one "
@@ -347,7 +333,6 @@ CLAIM_MANIFEST_FUNCTIONS = [
         "name": "scope_release",
         "tool": "scope_release",
         "surfaces": ["cli", "http"],
-        "effect": "write",
         "description": "End a session's claim on a scope and notify the first session in its queue.",
         "params": list(_CLAIM_KEY),
     },
@@ -355,14 +340,12 @@ CLAIM_MANIFEST_FUNCTIONS = [
         "name": "scope_withdraw",
         "tool": "scope_withdraw",
         "surfaces": ["cli", "http"],
-        "effect": "write",
         "description": "Take a session out of a scope's queue (scopes.md R46).",
         "params": list(_CLAIM_KEY),
     },
     {
         "name": "scope_claims",
         "tool": "scope_claims",
-        "effect": "read",
         "description": "The live session holding each scope, and each scope's queue.",
         "params": [
             {"name": "project", "type": "string", "required": False},

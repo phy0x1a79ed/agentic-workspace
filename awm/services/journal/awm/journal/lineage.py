@@ -14,7 +14,7 @@ import time
 from pathlib import Path
 
 from awm.gatewayclient import ids
-from awm.journal import kinds
+from awm.journal import builtin_tags
 from awm.journal.dao import JournalDAO
 
 PARENT_KINDS = ("start", "clear")
@@ -52,7 +52,7 @@ def cited_by_session(session: str) -> list[dict]:
         " JOIN scope_posts t ON t.id = c.cited_id"
         " WHERE json_extract(p.meta, '$.session') = ? AND EXISTS (SELECT 1 FROM post_tags pt"
         " WHERE pt.post_id = p.id AND pt.tag_id = ?) ORDER BY p.ts, c.ord",
-        (session, kinds.JOURNAL))
+        (session, builtin_tags.JOURNAL))
     return [{"journal": r["cited_id"], "session": r["session"], "from": r["post_id"]} for r in rows]
 
 

@@ -177,7 +177,7 @@ def test_a_device_request_is_stamped_as_the_user_with_no_cookie_and_no_token():
     token, entry = _device()
     c, sent = _edge(_gate([entry]))
     try:
-        r = c.get("/svc/notes/fn/list", headers={"Authorization": f"Bearer {token}"})
+        r = c.get("/tools", headers={"Authorization": f"Bearer {token}"})
         who = c.get("/__auth/whoami", headers={"Authorization": f"Bearer {token}"})
     finally:
         c.__exit__(None, None, None)
@@ -197,7 +197,7 @@ def test_a_bad_device_request_is_a_401_that_reaches_nothing(kind):
     try:
         c.cookies.set(COOKIE_NAME, tokens.mint(SECRET, sub="tony", ttl=3600),
                       domain="mesh.example")
-        r = c.get("/svc/notes/fn/list", headers={"Authorization": f"Bearer {bearer}"})
+        r = c.get("/tools", headers={"Authorization": f"Bearer {bearer}"})
     finally:
         c.__exit__(None, None, None)
     assert r.status_code == 401
@@ -208,7 +208,7 @@ def test_the_forwarded_identity_cannot_be_forged_alongside_a_token():
     token, entry = _device()
     c, sent = _edge(_gate([entry]))
     try:
-        c.get("/svc/notes/fn/list", headers={"Authorization": f"Bearer {token}",
+        c.get("/tools", headers={"Authorization": f"Bearer {token}",
                                              "X-Awm-As": "peer:mira"})
     finally:
         c.__exit__(None, None, None)
@@ -227,7 +227,7 @@ def test_a_device_token_is_not_forwarded_over_a_websocket(monkeypatch):
     c, _ = _edge(_gate([entry]))
     try:
         try:
-            with c.websocket_connect("/svc/journal/emit/t",
+            with c.websocket_connect("/hub/emit/journal/posts",
                                      headers={"Authorization": f"Bearer {token}"}):
                 pass
         except Exception:  # noqa: BLE001 — the refusal is the path under test

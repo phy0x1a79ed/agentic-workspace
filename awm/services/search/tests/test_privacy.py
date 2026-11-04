@@ -27,8 +27,6 @@ async def served(archive, gateway, monkeypatch, root):
     gateway.plug("journals", {
         "j1": doc("Open", "kitchen sink in the open project", project="awm", scope="dev"),
         "j2": doc("Avatar", "kitchen sink in the private project", project="avatar", scope="dev"),
-        "j3": doc("Task", "kitchen sink in a private task", project="task:avatar", scope="t1"),
-        "j4": doc("User", "kitchen sink posted about the private project", scope="user:proj:avatar"),
         "j5": doc("Sibling", "kitchen sink in the sibling project", project="avatar2", scope="dev"),
         "j6": doc("Marked scope", "kitchen sink in a marked scope", project="awm", scope="svc-a"),
         "j7": doc("Nested scope", "kitchen sink in a nested marked scope", project="awm", scope="svc-a/x"),
@@ -49,8 +47,8 @@ async def served(archive, gateway, monkeypatch, root):
     return archive
 
 
-HIDDEN = {"j2", "j3", "j4", "j6", "j7", "j9", "p2"}
-ALL = {"j1", "j2", "j3", "j4", "j5", "j6", "j7", "j8", "j9", "p1", "p2", "p3"}
+HIDDEN = {"j2", "j6", "j7", "j9", "p2"}
+ALL = {"j1", "j2", "j5", "j6", "j7", "j8", "j9", "p1", "p2", "p3"}
 
 
 async def found(args, as_):
@@ -106,8 +104,8 @@ async def test_sources_and_status_count_only_what_a_peer_may_see(served):
     status = await HANDLERS["status"]({}, PEER)
     assert status["sources"] == {"journals": 3, "wiki": 2} and status["documents"] == 5
     local = await HANDLERS["status"]({}, LOCAL)
-    assert local["sources"] == {"journals": 9, "wiki": 3} and local["documents"] == 12
-    assert (await HANDLERS["status"]({}, USER))["documents"] == 12
+    assert local["sources"] == {"journals": 7, "wiki": 3} and local["documents"] == 10
+    assert (await HANDLERS["status"]({}, USER))["documents"] == 10
 
 
 async def test_a_peer_never_sees_a_live_transcript_hit_from_a_marked_path(served, gateway, root):
@@ -200,9 +198,9 @@ async def test_unmarking_shows_a_tagged_document_again_without_a_resync(served):
 
 
 @pytest.mark.parametrize("project, scope", [
-    ("avatar", ""), ("avatar", "dev"), ("task:avatar", "t1"), ("", "user:proj:avatar"),
-    ("", "project:avatar"), ("", "project:avatar2"), ("avatar2", "dev"), ("", "user:proj:"),
-    ("task:", ""), ("awm", "svc-a"), ("awm", "svc-a/x"), ("awm", "svc-ab"), ("task:awm", "svc-a"),
+    ("avatar", ""), ("avatar", "dev"),
+    ("", "project:avatar"), ("", "project:avatar2"), ("avatar2", "dev"),
+    ("awm", "svc-a"), ("awm", "svc-a/x"), ("awm", "svc-ab"),
     ("", "project:awm"), ("", ""), ("project:avatar", ""),
 ])
 def test_the_sql_veil_and_the_python_check_agree(search_db, root, project, scope):
@@ -219,12 +217,9 @@ def test_the_sql_veil_and_the_python_check_agree(search_db, root, project, scope
     assert index.covered(marks, project, scope) == (not kept)
 
 
-def test_every_spelling_the_veil_lists_names_the_project_for_privacy():
+def test_the_project_channel_names_the_project_for_privacy():
     from awm.search import index
-    for spelling in index.PROJECT_SPELLINGS:
-        assert privacy.canonical(spelling.format("avatar"), None)[0] == "avatar"
-    for spelling in index.CHANNEL_SPELLINGS:
-        assert privacy.canonical("", spelling.format("avatar")) == ("avatar", None)
+    assert privacy.canonical("", index.PROJECT_CHANNEL.format("avatar")) == ("avatar", None)
 
 
 def test_a_version_1_index_gains_tags_and_links_and_resyncs_every_source(tmp_path, monkeypatch):

@@ -1,4 +1,4 @@
-"""Post-channel tests: live post/fetch/subscribe and the history render.
+"""Post-channel tests: live post/fetch and the history render.
 
 A scope IS the channel; these cover the surface that replaced the old
 rooms/messages/session_logs trio.
@@ -17,8 +17,8 @@ pytestmark = [pytest.mark.journal]
 class TestChannelOps:
     def test_post_and_fetch(self, journal_workspace):
         from awm.journal import channel
-        channel.post("awm", "dev", author="user:alice", body="hello", kind="message")
-        channel.post("awm", "dev", author="agent:awm/dev", body="hi back", kind="message")
+        channel.post("awm", "dev", author="user:alice", body="hello", tags="message")
+        channel.post("awm", "dev", author="agent:awm/dev", body="hi back", tags="message")
         posts = channel.fetch(project="awm", scope="dev")
         assert [p.body for p in posts] == ["hello", "hi back"]  # oldest→newest
         assert posts[0].author == "user:alice"
@@ -29,29 +29,29 @@ class TestChannelOps:
         from awm.journal import channel
         for i in range(5):
             channel.post("awm", "dev", author="agent:awm/dev",
-                         body=f"entry {i}", kind="journal")
+                         body=f"entry {i}", tags="journal")
         # default single-channel order is oldest→newest (unchanged)
-        asc = channel.fetch(project="awm", scope="dev", kind="journal")
+        asc = channel.fetch(project="awm", scope="dev", tags="journal")
         assert [p.body for p in asc] == [f"entry {i}" for i in range(5)]
         # order='desc' + limit → the last 2, newest-first
-        last2 = channel.fetch(project="awm", scope="dev", kind="journal",
+        last2 = channel.fetch(project="awm", scope="dev", tags="journal",
                               limit=2, order="desc")
         assert [p.body for p in last2] == ["entry 4", "entry 3"]
 
-    def test_journal_kind_filter(self, journal_workspace):
+    def test_journal_tag_filter(self, journal_workspace):
         from awm.journal import channel
-        channel.post("awm", "dev", author="agent:awm/dev", body="a message", kind="message")
-        channel.post("awm", "dev", author="agent:awm/dev", body="debrief", kind="journal",
+        channel.post("awm", "dev", author="agent:awm/dev", body="a message", tags="message")
+        channel.post("awm", "dev", author="agent:awm/dev", body="debrief", tags="journal",
                      meta={"title": "Did it", "outcome": "success"})
-        journals = channel.fetch(project="awm", scope="dev", kind="journal")
+        journals = channel.fetch(project="awm", scope="dev", tags="journal")
         assert len(journals) == 1
         assert journals[0].kind == "journal"
         assert journals[0].meta["outcome"] == "success"
 
     def test_search(self, journal_workspace):
         from awm.journal import channel, search_index
-        channel.post("awm", "dev", author="user:alice", body="the quick brown fox", kind="message")
-        channel.post("awm", "dev", author="user:alice", body="unrelated", kind="message")
+        channel.post("awm", "dev", author="user:alice", body="the quick brown fox", tags="message")
+        channel.post("awm", "dev", author="user:alice", body="unrelated", tags="message")
         search_index.flush()
         hits = channel.fetch(project="awm", scope="dev", query="brown")
         assert hits[0].body == "the quick brown fox"
@@ -59,26 +59,14 @@ class TestChannelOps:
 
     def test_get_post(self, journal_workspace):
         from awm.journal import channel
-        p = channel.post("awm", "dev", author="user:alice", body="findme", kind="message")
+        p = channel.post("awm", "dev", author="user:alice", body="findme", tags="message")
         got = channel.get_post(p.id)
         assert got is not None and got.body == "findme"
-
-    def test_subscribe_unsubscribe(self, journal_workspace):
-        from awm.journal import channel
-        channel.subscribe("awm", "dev", "awm/helper")
-        channel.subscribe("awm", "dev", "user:bob")
-        subs = {(s.guest_kind, s.guest_ref) for s in channel.list_subscribers("awm", "dev")}
-        assert ("agent", "awm/helper") in subs
-        assert ("user", "user:bob") in subs
-        assert channel.unsubscribe("awm", "dev", "awm/helper") is True
-        assert channel.unsubscribe("awm", "dev", "awm/helper") is False
-        subs2 = {(s.guest_kind, s.guest_ref) for s in channel.list_subscribers("awm", "dev")}
-        assert ("agent", "awm/helper") not in subs2
 
     def test_non_literal_channel(self, journal_workspace):
         """Posting to a user/project inbox uses owner_project='' (non-literal)."""
         from awm.journal import channel
-        channel.post("", "user:alice", author="agent:awm/dev", body="for alice", kind="message")
+        channel.post("", "user:alice", author="agent:awm/dev", body="for alice", tags="message")
         posts = channel.fetch(project="", scope="user:alice")
         assert [p.body for p in posts] == ["for alice"]
 
@@ -90,7 +78,7 @@ class TestChannelOps:
         channel.set_emitter(lambda payload: seen.append(payload))
         try:
             channel.post("awm", "dev", author="user:alice",
-                         body="ping", kind="message")
+                         body="ping", tags="message")
         finally:
             channel.set_emitter(None)
         assert len(seen) == 1
@@ -111,7 +99,7 @@ class TestChannelOps:
         channel.set_emitter(_boom)
         try:
             p = channel.post("awm", "dev", author="user:alice",
-                             body="still saved", kind="message")
+                             body="still saved", tags="message")
         finally:
             channel.set_emitter(None)
         assert channel.get_post(p.id) is not None
@@ -119,7 +107,7 @@ class TestChannelOps:
 
 # ---------------------------------------------------------------------------
 # journal_post input-shape: body must be the terminal parameter so a mangled
-# tool-call serialization can't swallow trailing kind/meta params, and the
+# tool-call serialization can't swallow trailing tags/meta params, and the
 # history render title fallback must neutralise a malformed/untitled body.
 # ---------------------------------------------------------------------------
 
@@ -136,7 +124,7 @@ class TestScopePostInputShape:
             f"bleed; got order {names}"
         )
         # structured params precede the free-text body
-        for p in ("kind", "meta", "to_scope"):
+        for p in ("tags", "meta"):
             assert names.index(p) < names.index("body")
 
     def test_projected_tool_schema_lists_body_last(self):
@@ -168,12 +156,12 @@ class TestHistoryTitleNeutralise:
         assert title.endswith("…") and len(title) == 81
 
     def test_untitled_journal_renders_clean_title(self, journal_workspace):
-        """A kind=journal post with no meta.title must not render its raw
+        """A journal post with no meta.title must not render its raw
         multi-line / tag-bearing body as the history.md title."""
         from awm.journal import channel
         from awm.journal.render import generate_history_md
         channel.post(
-            "awm", "dev", author="agent:awm/dev", kind="journal",
+            "awm", "dev", author="agent:awm/dev", tags="journal",
             meta={},  # no title — the swallowed-meta failure shape
             body="Did the thing\nacross lines\n</invoke>",
         )
@@ -194,7 +182,7 @@ class TestHistoryRender:
 
     def _journal(self, scope: str, title: str, ts=None):
         from awm.journal import channel
-        channel.post("awm", scope, author=f"agent:awm/{scope}", kind="journal",
+        channel.post("awm", scope, author=f"agent:awm/{scope}", tags="journal",
                      meta={"title": title}, body=title)
 
     def test_own_entries_survive_a_busy_project(self, journal_workspace):

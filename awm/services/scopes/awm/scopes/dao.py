@@ -20,11 +20,7 @@ from awm.persistence.embeddings import EMBEDDINGS_DDL
 SERVICE = "scopes"
 SCHEMA_VERSION = 5
 
-# Tables owned by the scopes service. v2 collapsed the old rooms/messages/
-# session_logs trio into one ``scope_posts`` channel + ``scope_subscribers``;
-# v3 drops the vestigial ``agents.parent_id`` (rooms-era agent containment —
-# agents form no tree, a scope IS the channel); v4 adds ``tags``; v5 adds
-# the scope claims, their queues, last use and counters (`awm.scopes.claims`).
+# Tables owned by the scopes service.
 SCHEMA_SQL = """\
 -- Identity (kept relational — all in the scopes DB) -------------------
 CREATE TABLE IF NOT EXISTS projects (

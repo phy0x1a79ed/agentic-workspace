@@ -21,10 +21,8 @@ from awm.search import store
 CANDIDATES = 1000
 #: The shortest literal the trigram index can find; a shorter one scans.
 TRIGRAM = 3
-#: The journal's spellings of a project ``<p>`` besides its bare name, in the ``project`` column ...
-PROJECT_SPELLINGS = ("task:{}",)
-#: ... and, with an empty ``project``, in the ``scope`` column. ``privacy.canonical`` reads all of them.
-CHANNEL_SPELLINGS = ("user:proj:{}", "project:{}")
+#: The journal's project-level channel of ``<p>``: an empty ``project`` and this ``scope``.
+PROJECT_CHANNEL = "project:{}"
 
 
 def _tag_needle(project: str) -> str:
@@ -34,7 +32,7 @@ def _tag_needle(project: str) -> str:
 def veil(hidden: Sequence[dict] | None) -> tuple[str, list[Any]]:
     """SQL that keeps only the documents no private mark in ``hidden`` covers, and its bound values.
 
-    A mark covers a document by its project and scope, in any spelling ``privacy.canonical`` reads,
+    A mark covers a document by its project and scope, or by its project's channel,
     and also by a tag equal to the marked project's name, ignoring case.
     ``None`` stands for an unreadable marks file: it keeps only documents that name no project,
     scope or tag.
@@ -45,15 +43,12 @@ def veil(hidden: Sequence[dict] | None) -> tuple[str, list[Any]]:
     params: list[Any] = []
     for mark in hidden:
         project, scope = mark["project"], mark["scope"]
-        named = [project] + [s.format(project) for s in PROJECT_SPELLINGS]
-        in_named = f"project IN ({','.join('?' * len(named))})"
         if scope is None:
-            channels = [s.format(project) for s in CHANNEL_SPELLINGS]
-            clauses.append(f"{in_named} OR (project = '' AND scope IN ({','.join('?' * len(channels))}))")
-            params += named + channels
+            clauses.append("project = ? OR (project = '' AND scope = ?)")
+            params += [project, PROJECT_CHANNEL.format(project)]
         else:
-            clauses.append(f"{in_named} AND (scope = ? OR substr(scope, 1, ?) = ?)")
-            params += named + [scope, len(scope) + 1, scope + "/"]
+            clauses.append("project = ? AND (scope = ? OR substr(scope, 1, ?) = ?)")
+            params += [project, scope, len(scope) + 1, scope + "/"]
     for project in sorted({m["project"] for m in hidden}):
         clauses.append("instr(tags, ?) > 0")
         params.append(_tag_needle(project))

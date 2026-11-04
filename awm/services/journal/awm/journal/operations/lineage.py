@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from awm.journal import channel, lineage
+from awm.config import privacy
+from awm.journal import lineage
 from awm.journal.operations.posts import _caller_session
 
 _HIDDEN = ["cli", "http"]
@@ -13,7 +14,6 @@ LINEAGE_MANIFEST_FUNCTIONS = [
     {
         "name": "lineage",
         "tool": "journal_lineage",
-        "effect": "read",
         "description": (
             "A session's lineage, walked forward only: the session that started it (or "
             "that it was before a clear), that session's parent and so on, and the "
@@ -25,7 +25,6 @@ LINEAGE_MANIFEST_FUNCTIONS = [
     {
         "name": "session_parent",
         "tool": "journal_session_parent",
-        "effect": "write",
         "surfaces": _HIDDEN,
         "description": ("Record who started a session, or which session it was before a "
                         "clear. For reflection and the harness, not agents. The first link wins."),
@@ -40,7 +39,6 @@ LINEAGE_MANIFEST_FUNCTIONS = [
     {
         "name": "lineage_import",
         "tool": "journal_lineage_import",
-        "effect": "write",
         "surfaces": _HIDDEN,
         "description": "Copy the parent links reporting kept (its session_parents table) once.",
         "params": [{"name": "path", "type": "string", "required": True,
@@ -50,7 +48,7 @@ LINEAGE_MANIFEST_FUNCTIONS = [
 
 
 def _local(as_: str | None) -> None:
-    if channel.edge_origin(as_):
+    if privacy.from_peer(as_):
         raise PermissionError("lineage stays on its own node")
 
 

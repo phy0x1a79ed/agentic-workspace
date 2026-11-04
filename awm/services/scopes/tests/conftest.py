@@ -116,7 +116,7 @@ def seeded_scopes(scopes_workspace, scopes_dao_conn):
     Mirrors the legacy ``seeded_scopes`` fixture shape so ported tests
     keep using the same field names without changes.
     """
-    from awm.scopes.identity import ensure_project, ensure_agent, now_ms
+    from awm.scopes.identity import ensure_project, ensure_agent
 
     workspace = scopes_workspace["workspace"]
     projects_dir = scopes_workspace["projects_dir"]

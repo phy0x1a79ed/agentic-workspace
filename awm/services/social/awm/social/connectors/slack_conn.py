@@ -24,8 +24,8 @@ import logging
 import time
 
 from awm.social.connectors.base import (
-    Account, Attachment, Channel, Connector, Identity, InboundMessage,
-    OnMessage,
+    Account, Channel, Connector, Identity, InboundMessage, OnMessage,
+    looks_like_slack_user_id, slack_attachments,
 )
 
 log = logging.getLogger("awm.social.connectors.slack")
@@ -47,35 +47,6 @@ def _slack_kind(ch: dict) -> str:
     if ch.get("is_private"):
         return "private"
     return "channel"
-
-
-def _looks_like_user_id(s: str) -> bool:
-    """Slack user ids are ``U…`` (and ``W…`` on enterprise grid), all-caps
-    alphanumerics. Anything else is treated as a name to resolve."""
-    return bool(s) and s[0] in ("U", "W") and s[1:].isalnum() and s.isupper()
-
-
-def _attachments_of(m: dict) -> list[Attachment]:
-    """Map a Slack message's ``files[]`` to normalised attachment metadata.
-
-    ``url`` carries ``url_private`` (a stable but auth-gated link);
-    :meth:`SlackConnector.download_attachments` GETs it with the session's own
-    credentials. Hidden/tombstoned files (no ``url_private``) are skipped.
-    """
-    out: list[Attachment] = []
-    for i, f in enumerate(m.get("files", []) or []):
-        url = f.get("url_private_download") or f.get("url_private") or ""
-        if not url and f.get("mode") in ("hidden", "tombstone"):
-            continue
-        out.append(Attachment(
-            idx=i,
-            filename=f.get("name") or f.get("title") or f"attachment-{i}",
-            mime=f.get("mimetype", "") or "",
-            size=int(f.get("size", 0) or 0),
-            url=url,
-            ref={"id": f.get("id", ""), "url": url},
-        ))
-    return out
 
 
 class SlackConnector(Connector):
@@ -193,7 +164,7 @@ class SlackConnector(Connector):
                 message_id=event.get("ts", ""),
                 ts=event.get("ts", ""),
                 text=event.get("text", "") or "",
-                attachments=_attachments_of(event),
+                attachments=slack_attachments(event),
             )
             await self.on_message(inbound)
         except Exception as exc:  # noqa: BLE001 — one bad event never kills the loop
@@ -221,7 +192,7 @@ class SlackConnector(Connector):
             message_id=m.get("ts", ""),
             ts=m.get("ts", ""),
             text=m.get("text", "") or "",
-            attachments=_attachments_of(m),
+            attachments=slack_attachments(m),
         )
 
     async def _emit_session_message(self, cid: str, m: dict) -> None:
@@ -386,7 +357,7 @@ class SlackConnector(Connector):
         ``who`` that already looks like a user id (``U…``/``W…``) is returned
         as-is. Otherwise ``users.list`` is paged and matched case-insensitively.
         """
-        if _looks_like_user_id(who):
+        if looks_like_slack_user_id(who):
             return who
         want = who.lstrip("@").lower()
         cursor = ""
@@ -487,7 +458,7 @@ class SlackConnector(Connector):
                 message_id=m.get("ts", ""),
                 ts=m.get("ts", ""),
                 text=m.get("text", "") or "",
-                attachments=_attachments_of(m),
+                attachments=slack_attachments(m),
                 raw={"permalink": m.get("permalink", "")},
             ))
         return out

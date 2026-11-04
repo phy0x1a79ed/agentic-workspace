@@ -17,7 +17,8 @@ from pathlib import Path
 
 import pytest
 
-from mira_api.storage_drivers import ONEDRIVE_PRELUDE, OneDriveDriver, _call, classify
+from mira_api.drivers import js_call
+from mira_api.storage_drivers import ONEDRIVE_PRELUDE, OneDriveDriver, classify
 
 sync_api = pytest.importorskip("playwright.sync_api")
 
@@ -46,7 +47,7 @@ class SP:
         self.page.evaluate(f"window.__fakeSP.reset({json.dumps(spec)})")
 
     def call(self, helper: str, *args):
-        expr = ONEDRIVE_PRELUDE + "\n" + _call(f"window.__awmMira.onedrive.{helper}", *args)
+        expr = ONEDRIVE_PRELUDE + "\n" + js_call(f"window.__awmMira.onedrive.{helper}", *args)
         try:
             return json.loads(self.page.evaluate(expr))
         except sync_api.Error as exc:

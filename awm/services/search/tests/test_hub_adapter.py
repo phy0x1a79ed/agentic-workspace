@@ -15,15 +15,13 @@ pytestmark = [pytest.mark.search]
 FNS = {f["name"]: f for f in API_MANIFEST["functions"]}
 
 
-def test_the_read_verbs_are_reads_on_every_surface():
+def test_the_read_verbs_are_on_every_surface():
     for name in ("query", "get", "sources", "status"):
-        assert FNS[name]["effect"] == "read", name
-        assert "surfaces" not in FNS[name]
+        assert "surfaces" not in FNS[name], name
 
 
-def test_reindex_is_a_hidden_write():
+def test_reindex_is_hidden():
     assert FNS["reindex"]["surfaces"] == ["cli", "http"]
-    assert FNS["reindex"]["effect"] == "write"
 
 
 def test_every_verb_is_published_under_the_search_tool_and_wired():

@@ -4,8 +4,7 @@ A "scope" is represented by a row in the ``agents`` table
 (status ∈ allocated|active|retired) within the scopes service's own DB.
 All SQL goes through ScopesDAO.
 
-A scope IS the channel, held by the journal service, and the vagrant session
-helper subscribes the user to the scope's channel.
+A scope IS the channel, held by the journal service.
 """
 
 from __future__ import annotations
@@ -16,13 +15,11 @@ import os
 import shutil
 import subprocess
 import tempfile
-import uuid as _uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
 from awm.config import (
-    WORKSPACE_ROOT,
     PROJECTS_DIR,
     DATA_DIR,
     GITHUB_USER,
@@ -39,8 +36,6 @@ from awm.scopes.identity import (
     agent_record_for_scope,
     ensure_agent,
     ensure_project,
-    project_id_for_name,
-    ms_to_iso,
     now_ms,
     retire_agent,
 )
@@ -418,18 +413,6 @@ def _ensure_project_row(project: str, *, conn=None) -> str:
     return ensure_project(project, repo_path=str(bare), conn=conn)
 
 
-def _row_to_info(row) -> ScopeInfo:
-    return ScopeInfo(
-        project=row["project_name"] if "project_name" in row.keys() else row["project"],
-        scope=row["scope"],
-        status=row["status"],
-        branch=row["branch"],
-        worktree=row["worktree"],
-        repo_path=row["worktree"],
-        session=row["session"] or 1,
-    )
-
-
 def ensure_vagrant_repo() -> Path:
     """Bootstrap the unified vagrant-scopes bare repo + matching data dirs."""
     from awm.persistence.config_service import get_vagrant_scopes_repo_url
@@ -486,45 +469,6 @@ def ensure_vagrant_repo() -> Path:
         _ensure_project_row(VAGRANT_PROJECT, conn=conn)
 
     return bare_dir
-
-
-def _vagrant_scope_name(user_as: str) -> str:
-    import re
-    bare = user_as.removeprefix("user:") if user_as.startswith("user:") else user_as
-    safe = re.sub(r"[^A-Za-z0-9_-]", "-", bare).strip("-")
-    return f"{safe}-handler" if safe else "anon-handler"
-
-
-def vagrant_scope_identifier(user_as: str) -> str:
-    return f"{VAGRANT_PROJECT}/{_vagrant_scope_name(user_as)}"
-
-
-def ensure_vagrant_session(user_as: str) -> tuple[str, str]:
-    """Ensure a vagrant scope exists for ``user_as`` and the requesting user is
-    subscribed to its channel. A scope IS the channel, so there is no separate
-    room. Returns ``(agent_id, scope_key)`` where ``scope_key`` is
-    ``'<project>/<scope>'``."""
-    scope_name = _vagrant_scope_name(user_as)
-    bare_dir = PROJECTS_DIR / VAGRANT_PROJECT / ".bare"
-    if not bare_dir.exists():
-        raise FileNotFoundError(
-            f"Vagrant-scopes repo not initialized at {bare_dir}. "
-            f"Run `awm vagrant-init` first."
-        )
-
-    agent_id = agent_id_for_scope(VAGRANT_PROJECT, scope_name)
-    if agent_id is None:
-        create_scope(ScopeCreateRequest(project=VAGRANT_PROJECT, scope=scope_name))
-        agent_id = agent_id_for_scope(VAGRANT_PROJECT, scope_name)
-
-    # Subscribe the requesting user to the scope's channel (idempotent).
-    try:
-        from awm.gatewayclient import call_sync
-        call_sync("journal", "subscribe",
-                  {"project": VAGRANT_PROJECT, "scope": scope_name, "guest": user_as})
-    except Exception:
-        pass
-    return agent_id, f"{VAGRANT_PROJECT}/{scope_name}"
 
 
 def _is_tracked(worktree_dir: Path, path: str) -> bool:
@@ -746,16 +690,6 @@ def _register_scope(
     search_index.index_scope(project, scope)
 
 
-#: journal briefs.MAX_CHARS; checked here too so a create refuses before it makes anything.
-BRIEF_MAX_CHARS = 400
-
-
-def _check_brief(text: str | None) -> None:
-    if text and len(text.strip()) > BRIEF_MAX_CHARS:
-        raise ValueError(f"the scope brief (context) is {len(text.strip())} characters; "
-                         f"the limit is {BRIEF_MAX_CHARS}. See journal brief_set for what it holds.")
-
-
 def _set_brief(project: str, scope: str, text: str | None) -> str | None:
     """Write ``text`` as the scope's journal brief. Returns a warning when it could not."""
     if not (text or "").strip():
@@ -897,7 +831,6 @@ def create_scope(req: ScopeCreateRequest) -> ScopeActionResponse:
             raise ValueError(
                 f"'{data_dvc.SHARED_STORE_DIRNAME}' is reserved at the top of a project "
                 f"for its shared data store; pick another scope name")
-    _check_brief(req.context)
     bare_dir = PROJECTS_DIR / req.project / ".bare"
     if not bare_dir.exists():
         if req.project == VAGRANT_PROJECT:

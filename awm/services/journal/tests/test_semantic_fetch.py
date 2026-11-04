@@ -10,15 +10,15 @@ pytestmark = [pytest.mark.journal]
 @pytest.fixture
 def posts(journal_workspace):
     from awm.journal import channel
-    a = channel.post("awm", "dev", author="agent:awm/dev", kind="journal", body="the telescope mirror cracked")
-    b = channel.post("awm", "dev", author="agent:awm/dev", kind="journal", body="unrelated lunch plans")
+    a = channel.post("awm", "dev", author="agent:awm/dev", tags="journal", body="the telescope mirror cracked")
+    b = channel.post("awm", "dev", author="agent:awm/dev", tags="journal", body="unrelated lunch plans")
     return a, b
 
 
 def test_search_ranks_the_journals_source(posts, fake_search):
     from awm.journal import channel
     a, _ = posts
-    got, degraded, semantic = channel.search(query="telescope mirror", project="awm", kind="journal",
+    got, degraded, semantic = channel.search(query="telescope mirror", project="awm", tags="journal",
                                              before_ts="2999-01-01T00:00:00Z", limit=5)
     assert semantic == "search" and degraded is None
     assert [p.id for p in got] == [a.id] and got[0].match["snippet"] == "the telescope mirror cracked"
@@ -29,7 +29,7 @@ def test_search_ranks_the_journals_source(posts, fake_search):
 
 def test_filters_search_lacks_still_hold(posts, fake_search):
     from awm.journal import channel
-    other = channel.post("awm", "dev", author="user:a", kind="message", body="telescope mirror again")
+    other = channel.post("awm", "dev", author="user:a", tags="message", body="telescope mirror again")
     got, _, _ = channel.search(query="telescope mirror", author="user:a")
     assert [p.id for p in got] == [other.id]
     assert "author" not in fake_search.calls[-1] and fake_search.calls[-1]["limit"] == 100
@@ -38,7 +38,7 @@ def test_filters_search_lacks_still_hold(posts, fake_search):
 def test_offset_pages_the_ranked_hits(posts):
     from awm.journal import channel
     for i in range(3):
-        channel.post("awm", "dev", author="user:a", kind="message", body=f"telescope {i}")
+        channel.post("awm", "dev", author="user:a", tags="message", body=f"telescope {i}")
     first, _, _ = channel.search(query="telescope", limit=2)
     second, _, _ = channel.search(query="telescope", limit=2, offset=2)
     assert len(first) == 2 and len(second) == 2 and not {p.id for p in first} & {p.id for p in second}
@@ -64,8 +64,8 @@ def test_search_down_falls_back_to_substring(posts, fake_search):
 
 def test_a_kind_search_lacks_falls_back_to_substring_without_asking(posts, fake_search):
     from awm.journal import channel
-    channel.post("awm", "dev", author="system", kind="brief", body="worktree healed")
-    got, _, semantic = channel.search(query="healed", kind="brief")
+    channel.post("awm", "dev", author="system", tags="brief", body="worktree healed")
+    got, _, semantic = channel.search(query="healed", tags="brief")
     assert semantic == "none" and [p.body for p in got] == ["worktree healed"]
     assert fake_search.calls == []
 

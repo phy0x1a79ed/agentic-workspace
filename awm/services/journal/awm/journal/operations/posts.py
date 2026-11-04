@@ -5,8 +5,6 @@ name and its ``tool`` is the published ``journal_<verb>``:
   - ``post``        — append a post with its tags, or a comment with ``reply_to``.
   - ``fetch``       — fetch/search a scope's posts (``query`` → the search service,
                       ``tags`` filter; a post_id read returns its thread).
-  - ``subscribe``   — enroll a guest (scope or user) as a subscriber.
-  - ``unsubscribe`` — remove a subscriber.
   - ``reads``       — the journals a session read, its citation candidates.
   - ``inbox``       — a bounded one-line-per-post digest of what a scope has not read.
   - ``ack``         — move a scope's read cursor.
@@ -15,8 +13,10 @@ name and its ``tool`` is the published ``journal_<verb>``:
 import logging
 from typing import Any
 
+from awm.config import privacy
 from awm.gatewayclient import ids, sessions as caller
-from awm.journal import bounds, channel, inbox, kinds, owners, private, sessions, tagsync, versions
+from awm.journal import (bounds, builtin_tags, channel, inbox, owners, private, sessions, tagsync,
+                         versions)
 from awm.journal import tags as tagmod
 
 log = logging.getLogger("awm.journal.posts")
@@ -26,7 +26,6 @@ POST_MANIFEST_FUNCTIONS = [
     {
         "name": "edit",
         "tool": "journal_edit",
-        "effect": "write",
         "description": (
             "Correct a post in place. Give old and new to replace one passage, or body for the "
             "whole text. The journal keeps every earlier version with its diff; reads show "
@@ -45,14 +44,12 @@ POST_MANIFEST_FUNCTIONS = [
     {
         "name": "history",
         "tool": "journal_history",
-        "effect": "read",
         "description": "Every version of a post, oldest first, each with its diff from the one before.",
         "params": [{"name": "post_id", "type": "string", "required": True}],
     },
     {
         "name": "addenda",
         "tool": "journal_addenda",
-        "effect": "write",
         "description": (
             "List the posts that open as an addendum or correction to an earlier post of the "
             "same scope, with the post each corrects. With apply, fold each into its target as "
@@ -67,7 +64,6 @@ POST_MANIFEST_FUNCTIONS = [
     {
         "name": "post",
         "tool": "journal_post",
-        "effect": "write",
         "description": (
             "Post to a scope's channel. tags come from the vocabulary (tag_list); a post "
             "with none is a message. tags=[journal] is the scope's own debrief; structured "
@@ -85,7 +81,7 @@ POST_MANIFEST_FUNCTIONS = [
         # ordered <parameter> blocks; a long multi-line value can bleed past its
         # closing tag and swallow any parameter emitted AFTER it. Keeping the one
         # long free-text field terminal means a bleed has no trailing param to
-        # corrupt (kind/meta survive). Do not move body up.
+        # corrupt (tags/meta survive). Do not move body up.
         "params": [
             {"name": "project", "type": "string", "required": False,
              "description": "Required unless reply_to is given."},
@@ -94,8 +90,6 @@ POST_MANIFEST_FUNCTIONS = [
             {"name": "author", "type": "string", "required": True},
             {"name": "tags", "type": "array", "required": False,
              "description": "Tag names from the vocabulary. An unknown tag is refused."},
-            {"name": "kind", "type": "string", "required": False,
-             "description": "Old alias for one tag, such as journal. Use tags."},
             {"name": "reply_to", "type": "array", "required": False,
              "description": "Post ids. A comment names the one post it answers. A debrief "
                             "journal names every earlier journal it built on: its citations, "
@@ -103,7 +97,6 @@ POST_MANIFEST_FUNCTIONS = [
             {"name": "meta", "type": "object", "required": False,
              "description": "Structured fields. meta.session names the session a journal covers; "
                             "omit it for your own session."},
-            {"name": "to_scope", "type": "string", "required": False},
             {"name": "body", "type": "string", "required": True,
              "description": "Free-text post content. Pass this argument LAST — "
                             "emit every other parameter before it."},
@@ -112,7 +105,6 @@ POST_MANIFEST_FUNCTIONS = [
     {
         "name": "fetch",
         "tool": "journal_fetch",
-        "effect": "read",
         "timeout": 60,
         "description": (
             "Fetch or search a scope's posts — messages and journal entries. "
@@ -134,8 +126,6 @@ POST_MANIFEST_FUNCTIONS = [
             {"name": "scope", "type": "string", "required": False},
             {"name": "tags", "type": "string", "required": False,
              "description": "A tag filter: names joined by 'and', '!' negates one."},
-            {"name": "kind", "type": "string", "required": False,
-             "description": "Old alias for one tag. Use tags."},
             {"name": "query", "type": "string", "required": False},
             {"name": "author", "type": "string", "required": False},
             {"name": "post_id", "type": "string", "required": False},
@@ -149,7 +139,6 @@ POST_MANIFEST_FUNCTIONS = [
     {
         "name": "reads",
         "tool": "journal_reads",
-        "effect": "read",
         "description": (
             "The journals a session read through fetch, newest first: the candidates "
             "to cite at debrief. Also lists the citations its own journals already make. "
@@ -163,7 +152,6 @@ POST_MANIFEST_FUNCTIONS = [
     {
         "name": "note_read",
         "tool": "journal_note_read",
-        "effect": "write",
         "description": (
             "Record that the calling session read one journal post through another "
             "service, such as search get (sessions.md R15). For services, not agents."
@@ -172,32 +160,8 @@ POST_MANIFEST_FUNCTIONS = [
         "surfaces": ["cli", "http"],
     },
     {
-        "name": "subscribe",
-        "tool": "journal_subscribe",
-        "effect": "write",
-        "description": "Subscribe a guest (another scope 'project/scope', or 'user:<name>') to a scope's channel.",
-        "params": [
-            {"name": "project", "type": "string", "required": True},
-            {"name": "scope", "type": "string", "required": True},
-            {"name": "guest", "type": "string", "required": True},
-            {"name": "display_name", "type": "string", "required": False},
-        ],
-    },
-    {
-        "name": "unsubscribe",
-        "tool": "journal_unsubscribe",
-        "effect": "write",
-        "description": "Remove a guest from a scope's channel.",
-        "params": [
-            {"name": "project", "type": "string", "required": True},
-            {"name": "scope", "type": "string", "required": True},
-            {"name": "guest", "type": "string", "required": True},
-        ],
-    },
-    {
         "name": "inbox",
         "tool": "journal_inbox",
-        "effect": "read",
         "description": (
             "What a scope has not read yet: one line per post, newest first, bounded. "
             "Each line has the post id, author, age, a gist (its title, leading "
@@ -213,8 +177,6 @@ POST_MANIFEST_FUNCTIONS = [
             {"name": "scope", "type": "string", "required": True},
             {"name": "tags", "type": "string", "required": False,
              "description": "A tag filter. Default 'message'."},
-            {"name": "kind", "type": "string", "required": False,
-             "description": "Old alias for one tag. Use tags."},
             {"name": "limit", "type": "integer", "required": False,
              "description": f"Posts to list. Default {inbox.DEFAULT_LIMIT}, at most {inbox.MAX_LIMIT}."},
             {"name": "all", "type": "boolean", "required": False,
@@ -224,7 +186,6 @@ POST_MANIFEST_FUNCTIONS = [
     {
         "name": "ack",
         "tool": "journal_ack",
-        "effect": "write",
         "description": (
             "Mark a scope's posts read through one post: it and every post before "
             "it. Pass the ack_through id that inbox returned, so a post that "
@@ -255,7 +216,7 @@ def _with_session(meta: Any, caller_pid: Any) -> Any:
 def refuse_clashed(as_: str | None) -> None:
     """Refuse a peer's read while a tag clash stands between it and this node (R107 item 6)."""
     from awm import config
-    peer = config.caller_peer(as_) if isinstance(as_, str) and as_.startswith("peer") else None
+    peer = config.caller_peer(as_) if privacy.from_peer(as_) else None
     if tagsync.blocked(peer):
         raise PermissionError(f"a tag clash stands between {peer} and this node; reads "
                               "between them wait until an agent renames the newer tag")
@@ -269,7 +230,7 @@ def _visible(args: dict, as_: str | None):
 
 def _handle_post(args: dict, as_: str | None = None) -> dict:
     project, scope = args.get("project"), args.get("scope")
-    tag_ids = channel.post_tag_ids(args.get("kind"), args.get("tags"))
+    tag_ids = channel.post_tag_ids(args.get("tags"))
     meta, cited = sessions.fold_cites(_with_session(args.get("meta"), args.get("_caller_pid")),
                                       tag_ids)
     targets = channel.reply_targets(args.get("reply_to"))
@@ -279,7 +240,7 @@ def _handle_post(args: dict, as_: str | None = None) -> dict:
         target = channel.get_post(t)
         if target is None or not visible(target):
             raise ValueError(f"no post {t} to reply to")
-    if targets and kinds.JOURNAL not in tag_ids:
+    if targets and builtin_tags.JOURNAL not in tag_ids:
         parent = channel.get_post(targets[0])
         root = channel.get_post(parent.root) or parent
         project, scope = root.project, root.scope
@@ -291,10 +252,9 @@ def _handle_post(args: dict, as_: str | None = None) -> dict:
     post = channel.post(
         project, scope,
         author=args["author"], body=args["body"],
-        kind=args.get("kind"), tags=args.get("tags"),
+        tags=args.get("tags"),
         meta=meta,
         reply_to=targets,
-        to_scope=args.get("to_scope"),
         origin=channel.edge_origin(as_),
     )
     return {"post": post.to_dict()}
@@ -331,9 +291,8 @@ def _channel_project(project: Any, scope: Any) -> Any:
 
 def _handle_fetch(args: dict, as_: str | None = None) -> dict:
     refuse_clashed(as_)
-    bound = bounds.of(args, as_)
-    remote = channel.edge_origin(as_) is not None
-    expr = tagmod.kind_filter(args.get("kind"), args.get("tags"))
+    remote = privacy.from_peer(as_)
+    expr = args.get("tags")
     visible = _visible(args, as_)
     post_id = args.get("post_id")
     bound = bounds.of(args, as_)
@@ -347,9 +306,8 @@ def _handle_fetch(args: dict, as_: str | None = None) -> dict:
             _note_reads(args, [p])
         thread = channel.nest(p, channel.thread_posts(p.root), visible)
         p.comments = _count(thread)
-        out = {"posts": [p.to_dict()], "total": 1, "thread": thread}
-        return out
-    journal_first = tagmod.parse_filter(expr) == [(False, tagmod.get(kinds.JOURNAL).name)]
+        return {"posts": [p.to_dict()], "total": 1, "thread": thread}
+    journal_first = tagmod.parse_filter(expr) == [(False, tagmod.get(builtin_tags.JOURNAL).name)]
     project, scope = bounds.narrow(
         bound, _channel_project(args.get("project"), args.get("scope")), args.get("scope"))
     common = dict(
@@ -402,7 +360,7 @@ def _note_reads(args: dict, posts: list) -> None:
 
 
 def _handle_reads(args: dict, as_: str | None = None) -> dict:
-    if channel.edge_origin(as_):
+    if privacy.from_peer(as_):
         raise PermissionError("a session's reads stay on its own node")
     named = args.get("session")
     session = ids.to_r9(named) if named else _caller_session(args.get("_caller_pid"))
@@ -413,30 +371,13 @@ def _handle_reads(args: dict, as_: str | None = None) -> dict:
     return {"session": session, "reads": rows, "total": len(rows), "cites": sessions.cites_of(session)}
 
 
-def _handle_subscribe(args: dict, as_: str | None = None) -> dict:
-    bounds.write(bounds.of(args, as_), args["project"], args["scope"])
-    if private.hides(as_, args["project"], args["scope"]):
-        raise ValueError(f"no scope {args['project']}/{args['scope']}")
-    sub = channel.subscribe(
-        args["project"], args["scope"], args["guest"],
-        display_name=args.get("display_name"),
-    )
-    return {"subscriber": sub.to_dict()}
-
-
-def _handle_unsubscribe(args: dict, as_: str | None = None) -> dict:
-    bounds.write(bounds.of(args, as_), args["project"], args["scope"])
-    removed = channel.unsubscribe(args["project"], args["scope"], args["guest"])
-    return {"removed": removed}
-
-
 def _handle_inbox(args: dict, as_: str | None = None) -> dict:
     project, scope = args["project"], args["scope"]
     bounds.read(bounds.of(args, as_), project, scope)
-    if channel.edge_origin(as_) or private.hides(as_, project, scope):
+    if privacy.from_peer(as_) or private.hides(as_, project, scope):
         raise ValueError(f"no scope {project}/{scope}")
     owners.require_scope(project, scope)
-    return inbox.digest(project, scope, tags=args.get("tags"), kind=args.get("kind"),
+    return inbox.digest(project, scope, tags=args.get("tags"),
                         limit=int(args.get("limit") or inbox.DEFAULT_LIMIT),
                         include_read=args.get("all") in (True, "true", "True", "1", 1),
                         exclude=private.exclusion(as_))
@@ -445,7 +386,7 @@ def _handle_inbox(args: dict, as_: str | None = None) -> dict:
 def _handle_ack(args: dict, as_: str | None = None) -> dict:
     project, scope = args["project"], args["scope"]
     bounds.write(bounds.of(args, as_), project, scope)
-    if channel.edge_origin(as_) or private.hides(as_, project, scope):
+    if privacy.from_peer(as_) or private.hides(as_, project, scope):
         raise ValueError(f"no scope {project}/{scope}")
     owners.require_scope(project, scope)
     by = _with_session({}, args.get("_caller_pid")).get("session") or as_
@@ -494,8 +435,6 @@ POST_HANDLERS = {
     "fetch": _handle_fetch,
     "reads": _handle_reads,
     "note_read": _handle_note_read,
-    "subscribe": _handle_subscribe,
-    "unsubscribe": _handle_unsubscribe,
     "inbox": _handle_inbox,
     "ack": _handle_ack,
 }

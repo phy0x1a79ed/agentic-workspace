@@ -15,7 +15,6 @@ TAG_MANIFEST_FUNCTIONS = [
     {
         "name": "tag_add",
         "tool": "journal_tag_add",
-        "effect": "write",
         "description": (
             "Add a tag to the vocabulary that every node shares. Check tag_list first: add "
             "only a concept no tag covers. The description is required and says what a "
@@ -30,7 +29,6 @@ TAG_MANIFEST_FUNCTIONS = [
     {
         "name": "tag_edit",
         "tool": "journal_tag_edit",
-        "effect": "write",
         "description": (
             "Change a tag's name or description. Posts link a tag by its id, so a rename "
             "shows on every post. The earlier versions stay; tag_list with tag shows them."
@@ -45,7 +43,6 @@ TAG_MANIFEST_FUNCTIONS = [
     {
         "name": "tag_list",
         "tool": "journal_tag_list",
-        "effect": "read",
         "description": (
             "The tag vocabulary: each tag with its id and description, and any open "
             "clash between two nodes that added one name. With tag, that tag's versions."
@@ -58,7 +55,6 @@ TAG_MANIFEST_FUNCTIONS = [
     {
         "name": "retag",
         "tool": "journal_retag",
-        "effect": "write",
         "description": (
             "Add and remove several tags on one post at once, such as add=[closed]. "
             "A type tag (message, journal, brief, precedent) is set only when the "
@@ -73,7 +69,6 @@ TAG_MANIFEST_FUNCTIONS = [
     {
         "name": "tag_receive",
         "tool": "journal_tag_receive",
-        "effect": "write",
         "surfaces": ["http"],
         "description": "A peer node's pushed tags, merged into this node's vocabulary.",
         "params": [{"name": "tags", "type": "array", "required": True}],

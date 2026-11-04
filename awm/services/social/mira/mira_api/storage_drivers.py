@@ -25,7 +25,6 @@ where ``path`` is the absolute server-relative url and ``id`` is the SharePoint
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import re
 import time
@@ -33,6 +32,7 @@ from abc import ABC, abstractmethod
 from typing import Any
 
 from mira_api.cdp import CDPPage
+from mira_api.drivers import js_call
 
 log = logging.getLogger("mira_api.storage_drivers")
 
@@ -40,12 +40,6 @@ log = logging.getLogger("mira_api.storage_drivers")
 TRANSFER_TIMEOUT_S = 180.0
 #: How long a cross-site copy job may run before mv/cp gives up waiting.
 COPY_JOB_TIMEOUT_S = 3000.0
-
-
-def _call(helper: str, *args: Any) -> str:
-    """Build a JS expression invoking a window.__awmMira helper with JSON args."""
-    arglist = ", ".join(json.dumps(a) for a in args)
-    return f"(async()=>{{ return JSON.stringify(await {helper}({arglist})); }})()"
 
 
 # The prelude throws ``Error("<CODE>: <message>")`` for the failures a caller can
@@ -112,7 +106,7 @@ class StorageDriver(ABC):
 
     async def _run(self, helper: str, *args: Any, path: str | None = None,
                    **eval_kw: Any) -> Any:
-        expr = self.PRELUDE + "\n" + _call(helper, *args)
+        expr = self.PRELUDE + "\n" + js_call(helper, *args)
         try:
             return await self._page_for(path).evaluate_json(expr, **eval_kw)
         except Exception as exc:  # noqa: BLE001

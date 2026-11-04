@@ -1,4 +1,4 @@
-"""Journal data access: the post log, the subscriber table and the search index.
+"""Journal data access: the post log, its tags, links and versions, and the search index.
 
 A scope IS the channel. Everything written to it (messages, journal entries,
 briefs, precedents) is a row in ``scope_posts``, told apart by its tags
@@ -14,7 +14,7 @@ from awm.persistence.dao import BaseDAO
 from awm.persistence.databases import get_connection, init_service_db
 from awm.persistence.embeddings import EMBEDDINGS_DDL
 
-from awm.journal import kinds
+from awm.journal import builtin_tags
 
 SERVICE = "journal"
 SCHEMA_VERSION = 5
@@ -77,7 +77,7 @@ CREATE TABLE IF NOT EXISTS tag_clashes (
     resolved_at    INTEGER,
     PRIMARY KEY (older_id, newer_id)
 );
-""" + kinds.builtins_sql()
+""" + builtin_tags.builtins_sql()
 
 SCHEMA_SQL = """\
 -- One append-only post log per channel. The owner is addressed by natural key
@@ -104,17 +104,6 @@ CREATE INDEX IF NOT EXISTS idx_scope_posts_owner_ts ON scope_posts(owner_project
 CREATE INDEX IF NOT EXISTS idx_scope_posts_thread ON scope_posts(thread_id, ts);
 CREATE INDEX IF NOT EXISTS idx_scope_posts_reply ON scope_posts(reply_to);
 CREATE INDEX IF NOT EXISTS idx_scope_posts_author ON scope_posts(author, ts);
-
-CREATE TABLE IF NOT EXISTS scope_subscribers (
-    owner_project  TEXT NOT NULL,
-    owner_scope    TEXT NOT NULL,
-    guest_kind     TEXT NOT NULL,       -- 'agent' | 'user'
-    guest_ref      TEXT NOT NULL,       -- 'project/scope' or 'user:<name>'
-    display_name   TEXT NOT NULL,
-    joined_at      INTEGER NOT NULL,
-    PRIMARY KEY (owner_project, owner_scope, guest_kind, guest_ref)
-);
-CREATE INDEX IF NOT EXISTS idx_scope_subscribers_ref ON scope_subscribers(guest_kind, guest_ref);
 """ + _CURSORS_SQL + TAGS_SQL
 
 READS_SQL = """\
@@ -172,7 +161,8 @@ MIGRATIONS[(3, 4)] = "ALTER TABLE scope_posts ADD COLUMN version INTEGER NOT NUL
 # its channel with its body and meta, and the goal test rows go. A brief's
 # meta.supersedes becomes a reply plus the superseded tag (item 8). A journal's
 # meta.cites becomes its citations, and each reason stays as meta.cite_reasons
-# (sessions.md R14, R15).
+# (sessions.md R14, R15). The subscriber table, which nothing read, goes. The legacy channel spellings ``task:<p>`` and
+# ``('', 'user:proj:<p>')`` become ``<p>`` and ``('', 'project:<p>')``.
 _SUPERSEDES = "json_extract(meta, '$.supersedes')"
 _GOAL_TEST = ("kind = 'goal' AND (owner_project = '_goaltest' OR owner_scope = 'project:_goaltest'"
               " OR body LIKE 'TEST-%' OR lower(body) LIKE 'test cleanup%')")
@@ -182,21 +172,21 @@ ALTER TABLE scope_posts ADD COLUMN reply_to TEXT;
 ALTER TABLE scope_posts ADD COLUMN thread_id TEXT;
 DELETE FROM scope_posts WHERE {_GOAL_TEST};
 INSERT OR IGNORE INTO tags (id, name, description, origin, version, created_at, updated_at)
-    SELECT DISTINCT '{kinds.MIGRATED_PREFIX}' || lower(trim(kind)), lower(trim(kind)),
-           '{kinds.MIGRATED_DESCRIPTION}', '', 1, 0, 0
-    FROM scope_posts WHERE trim(kind) != '' AND lower(trim(kind)) NOT IN ({kinds.known_kinds_sql()});
+    SELECT DISTINCT '{builtin_tags.MIGRATED_PREFIX}' || lower(trim(kind)), lower(trim(kind)),
+           '{builtin_tags.MIGRATED_DESCRIPTION}', '', 1, 0, 0
+    FROM scope_posts WHERE trim(kind) != '' AND lower(trim(kind)) NOT IN ({builtin_tags.known_kinds_sql()});
 INSERT OR IGNORE INTO post_tags (post_id, tag_id)
-    SELECT id, {kinds.kind_case_sql('lower(trim(kind))')} FROM scope_posts
-    WHERE lower(trim(kind)) IN ({kinds.known_kinds_sql()});
+    SELECT id, {builtin_tags.kind_case_sql('lower(trim(kind))')} FROM scope_posts
+    WHERE lower(trim(kind)) IN ({builtin_tags.known_kinds_sql()});
 INSERT OR IGNORE INTO post_tags (post_id, tag_id)
     SELECT p.id, t.id FROM scope_posts p JOIN tags t ON t.name = lower(trim(p.kind))
-    WHERE lower(trim(p.kind)) NOT IN ({kinds.known_kinds_sql()});
+    WHERE lower(trim(p.kind)) NOT IN ({builtin_tags.known_kinds_sql()});
 INSERT OR IGNORE INTO post_tags (post_id, tag_id)
-    SELECT id, '{kinds.MESSAGE}' FROM scope_posts WHERE trim(kind) = '';
+    SELECT id, '{builtin_tags.MESSAGE}' FROM scope_posts WHERE trim(kind) = '';
 UPDATE scope_posts SET reply_to = {_SUPERSEDES}
     WHERE kind = 'brief' AND {_SUPERSEDES} IN (SELECT id FROM scope_posts WHERE kind = 'brief');
 INSERT OR IGNORE INTO post_tags (post_id, tag_id)
-    SELECT reply_to, '{kinds.SUPERSEDED}' FROM scope_posts WHERE reply_to IS NOT NULL;
+    SELECT reply_to, '{builtin_tags.SUPERSEDED}' FROM scope_posts WHERE reply_to IS NOT NULL;
 UPDATE scope_posts SET meta = json_remove(meta, '$.supersedes')
     WHERE reply_to IS NOT NULL AND json_valid(meta);
 UPDATE scope_posts SET thread_id = (
@@ -223,6 +213,14 @@ DROP INDEX IF EXISTS idx_scope_posts_kind;
 ALTER TABLE scope_posts DROP COLUMN kind;
 CREATE INDEX IF NOT EXISTS idx_scope_posts_thread ON scope_posts(thread_id, ts);
 CREATE INDEX IF NOT EXISTS idx_scope_posts_reply ON scope_posts(reply_to);
+UPDATE OR IGNORE scope_posts SET owner_project = substr(owner_project, 6) WHERE owner_project LIKE 'task:%';
+UPDATE OR IGNORE scope_posts SET owner_scope = 'project:' || substr(owner_scope, 11)
+    WHERE owner_project = '' AND owner_scope LIKE 'user:proj:%';
+UPDATE OR IGNORE scope_cursors SET owner_project = substr(owner_project, 6) WHERE owner_project LIKE 'task:%';
+UPDATE OR IGNORE scope_cursors SET owner_scope = 'project:' || substr(owner_scope, 11)
+    WHERE owner_project = '' AND owner_scope LIKE 'user:proj:%';
+DELETE FROM scope_cursors WHERE owner_project LIKE 'task:%' OR owner_scope LIKE 'user:proj:%';
+DROP TABLE IF EXISTS scope_subscribers;
 """
 
 
@@ -237,7 +235,7 @@ def init() -> None:
                         schema_version=SCHEMA_VERSION, migrations=MIGRATIONS)
         conn = get_connection(SERVICE)
         try:
-            conn.executescript(kinds.builtins_sql())
+            conn.executescript(builtin_tags.builtins_sql())
         finally:
             conn.close()
         _initialized = True

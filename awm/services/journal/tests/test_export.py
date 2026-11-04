@@ -12,10 +12,10 @@ def posted(journal_workspace):
     from awm.journal import channel
     ids = []
     for i in range(5):
-        ids.append(channel.post("awm", "dev", author="agent:awm/dev", kind="journal",
+        ids.append(channel.post("awm", "dev", author="agent:awm/dev", tags="journal",
                                 body=f"entry {i}\nmore", meta={"title": f"Title {i}"}).id)
-    channel.post("awm", "dev", author="system", kind="brief", body="not indexed")
-    channel.post("awm", "dev", author="user:a", kind="message", body="")
+    channel.post("awm", "dev", author="system", tags="brief", body="not indexed")
+    channel.post("awm", "dev", author="user:a", tags="message", body="")
     return sorted(ids)
 
 
@@ -34,7 +34,7 @@ def test_one_page_carries_everything_and_the_id_set(posted):
 def test_a_journal_carries_the_journals_it_cites_as_reply_to(posted):
     from awm.journal import channel
     from awm.journal.export import export_page
-    cited = channel.post("awm", "dev", author="agent:awm/dev", kind="journal", body="builds on two",
+    cited = channel.post("awm", "dev", author="agent:awm/dev", tags="journal", body="builds on two",
                          reply_to=[posted[2], posted[0]]).id
     by_id = {d["id"]: d for d in export_page(None, 50)["documents"]}
     assert by_id[cited]["reply_to"] == [posted[2], posted[0]]
@@ -74,7 +74,7 @@ def test_limit_is_clamped(posted):
 def test_a_title_falls_back_to_the_first_line(journal_workspace):
     from awm.journal import channel
     from awm.journal.export import export_page
-    channel.post("awm", "dev", author="user:a", kind="message", body="\n\nfirst line\nsecond")
+    channel.post("awm", "dev", author="user:a", tags="message", body="\n\nfirst line\nsecond")
     assert export_page()["documents"][0]["title"] == "first line"
 
 
