@@ -354,3 +354,26 @@ def test_a_literal_whose_words_a_stopword_parts_is_found_and_far_apart_words_are
     layer = fastlayer.FastLayer(tmp_path / "papers.db", tmp_path / "d.db")
     found = exact(layer, "potential for theranostic", fastlayer.Filters(), 10)
     assert found[0]["id"] == "doi:10.1/th" and found[0]["match"] != found[-1]["match"]
+
+
+
+
+def test_the_trigram_budget_stops_the_rounds_and_a_rare_stretch_still_finds_its_paper(tmp_path, monkeypatch):
+    papers = _crowd(tmp_path / "papers.db")
+    _champion(tmp_path / "papers.db", depth=1000)
+    monkeypatch.setattr(fastlayer, "CANDIDATES", 8)
+    monkeypatch.setattr(fastlayer, "RARE_BUDGET", 0)
+    looked: list[int] = []
+    probe = fastlayer._trigram_ids
+    monkeypatch.setattr(fastlayer, "_trigram_ids", lambda conn, grams: looked.append(len(grams)) or probe(conn, grams))
+    layer = fastlayer.FastLayer(tmp_path / "papers.db", tmp_path / "delta.db")
+    body = papers["p042"][4]
+    common, rare = body[:60], body[-40:]
+    assert "p042" in [h["id"] for h in exact(layer, common, fastlayer.Filters(), 100)] and max(looked) > 2
+    monkeypatch.setattr(fastlayer, "TRIGRAM_BUDGET", 1)
+    looked.clear()
+    hits = exact(layer, common, fastlayer.Filters(), 100)
+    assert max(looked) == 2
+    assert all(any(common.lower() in papers[h["id"]][z].lower() for z in (1, 3, 4))
+               for h in hits if h["match"] == "literal")
+    assert "p042" in [h["id"] for h in exact(layer, rare, fastlayer.Filters(), 100) if h["match"] == "literal"]
