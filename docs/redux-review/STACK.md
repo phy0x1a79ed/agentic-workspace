@@ -21,7 +21,7 @@ Procedure, from dfs-interview § Work the stack:
 
 ## Current topic
 
-**lane-open-items**. Its result: `lane-open-items/README.md`.
+**search-filters**. Its result: `search-filters/README.md`.
 
 ## Stack
 
