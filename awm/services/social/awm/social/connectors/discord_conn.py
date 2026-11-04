@@ -58,13 +58,9 @@ def _attachments_of(message) -> list[Attachment]:  # noqa: ANN001
         ))
     return out
 
-# Slash commands exposed by the bot, all DM-only and operator-only. Other
-# services react to them via the adapter's ``command`` emit: ``approve`` is
-# consumed by the 2fa and ssh services to arm an approval burst; ``reject`` and
-# ``new_agent`` are consumed by the reporting service.
+# The bot's slash command, DM-only and operator-only. The 2fa and ssh services
+# consume it through the adapter's ``command`` emit to arm an approval burst.
 APPROVE_COMMAND = "approve"
-REJECT_COMMAND = "reject"
-NEW_AGENT_COMMAND = "new_agent"
 # Channel form naming a user's DM with the bot, e.g. ``dm:188743359983124480``.
 DM_PREFIX = "dm:"
 # Duo devices a user can target. Mirrors the 2fa service's device names; offered
@@ -239,9 +235,9 @@ class DiscordConnector(Connector):
         }
 
     def _register_commands(self, tree, app_commands) -> None:
-        """Register the bot's slash commands on the command tree.
+        """Register the bot's slash command on the command tree.
 
-        Each is usable only as a DM to the bot by an operator, and acks within
+        It is usable only as a DM to the bot by an operator, and acks within
         Discord's 3-second interaction deadline before the normalised
         :class:`Command` goes to the injected ``on_command`` callback (the
         adapter emits it for other services to consume). The command surface
@@ -263,30 +259,6 @@ class DiscordConnector(Connector):
             await self._admit(
                 interaction, APPROVE_COMMAND, {"device": dev},
                 f"⏳ Arming `{dev}` Duo approvals for 5 min…", ephemeral=False)
-
-        @tree.command(
-            name=REJECT_COMMAND,
-            description="Reject a pending request (DM the bot).",
-        )
-        @app_commands.describe(ref="Reference of the request to reject",
-                               reason="Why it is rejected")
-        async def reject(interaction, ref: str, reason: str | None = None):  # noqa: ANN001, ANN202
-            await self._admit(
-                interaction, REJECT_COMMAND,
-                {"ref": ref, "reason": reason or ""},
-                f"⏳ Rejecting `{ref}`…", ephemeral=True)
-
-        @tree.command(
-            name=NEW_AGENT_COMMAND.replace("_", "-"),
-            description="Start a new agent session (DM the bot).",
-        )
-        @app_commands.describe(prompt="What the agent should do")
-        async def new_agent(interaction, prompt: str | None = None):  # noqa: ANN001, ANN202
-            user_id = str(getattr(getattr(interaction, "user", None), "id", ""))
-            await self._admit(
-                interaction, NEW_AGENT_COMMAND,
-                {"prompt": prompt or "", "reply_to": f"{DM_PREFIX}{user_id}"},
-                "⏳ Starting an agent…", ephemeral=False, editable=True)
 
     async def start(self) -> None:
         try:

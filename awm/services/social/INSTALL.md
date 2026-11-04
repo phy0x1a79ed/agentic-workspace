@@ -231,7 +231,7 @@ line came from. Newlines become ` ⏎ `. Text past 1500 characters is cut, and a
   sits at a dialog) is retried with backoff for 2 minutes, then dropped.
   History still holds it.
 - **Quiet threads.** A bot send with `quiet=true` keeps the replies in that
-  message's thread from the holder, for good. `reporting` posts each admin
+  message's thread from the holder, for good. operations posts each Arbutus admin
   approval request this way, so the #arbutus holder never answers an
   `approve` meant for the approval handler.
 - **Discord DM.** A Discord DM carries the operator's notifications and slash
@@ -495,14 +495,10 @@ service at a real `social.toml` with **`AWM_SOCIAL_CONFIG=/abs/path/social.toml`
 
 ## Discord slash commands
 
-The Discord connector registers three application commands. Each works only as
-a **DM to the bot**, and only for a sender in the `social_operators` table.
-
-| Command | Consumer |
-|---|---|
-| `/approve [device]` | `2fa` and `ssh` arm a Duo approval burst (see their INSTALL) |
-| `/reject <ref> [reason]` | `reporting` rejects the federation card |
-| `/new-agent [prompt]` | `reporting` starts a session with Remote Control on and answers with its link |
+The Discord connector registers one application command, `/approve [device]`.
+The `2fa` and `ssh` services consume it to arm a Duo approval burst (see their
+INSTALL). It works only as a **DM to the bot**, and only for a sender in the
+`social_operators` table.
 
 The commands sync as *global* commands in `on_ready`, because global is the
 only kind that appears in a DM. The command tree allows the bot DM context only,

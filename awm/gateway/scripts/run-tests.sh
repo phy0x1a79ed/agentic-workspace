@@ -70,8 +70,6 @@ declare -A DISTS=(
   [kb]="$WS/awm/services/kb::$WS/awm/services/kb/tests"
   [board]="$WS/awm/services/board::$WS/awm/services/board/tests"
   [transcripts]="$WS/awm/services/transcripts::$WS/awm/services/transcripts/tests"
-  [reporting]="$WS/awm/services/reporting:$WS/awm/services/board::$WS/awm/services/reporting/tests"
-  [reporting-hooks]="$WS/awm/services/reporting::$WS/awm/services/reporting/hooks"
   [routine]="$WS/awm/plugins/routine::$WS/awm/plugins/routine/tests"
   [trustpolicy]="$WS/awm/service_components/trustpolicy::$WS/awm/service_components/trustpolicy/tests"
   [browser]="$WS/awm/plugins/browser::$WS/awm/plugins/browser/tests"
@@ -79,7 +77,7 @@ declare -A DISTS=(
 )
 
 # Stable run order.
-ORDER=(gateway gatewayclient config persistence telemetry usage claudedaemon kept scopes journal search events social 2fa ssh auth httpsfront rlm-browser rlm-factorio fileviewer mic vpn reflection dvc claude-science dsh engcyc trilium zotero cch dev channel kb board reporting reporting-hooks transcripts routine trustpolicy browser wake)
+ORDER=(gateway gatewayclient config persistence telemetry usage claudedaemon kept scopes journal search events social 2fa ssh auth httpsfront rlm-browser rlm-factorio fileviewer mic vpn reflection dvc claude-science dsh engcyc trilium zotero cch dev channel kb board transcripts routine trustpolicy browser wake)
 
 CHANGED_BASE=""
 SMOKE=0

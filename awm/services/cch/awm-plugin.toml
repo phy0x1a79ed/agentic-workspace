@@ -32,7 +32,7 @@ verbs = ["send"]
 
 [[needs.tool]]
 name = "operations"
-major = 1
+major = 2
 verbs = ["task_attach"]
 
 [[needs.tool]]

@@ -37,7 +37,7 @@ verbs = ["post"]
 
 [[needs.tool]]
 name = "operations"   # the card verdict
-major = 1
+major = 2
 verbs = ["task_for_session", "swarm_message_post"]
 
 [needs]

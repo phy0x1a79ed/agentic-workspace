@@ -51,9 +51,6 @@ class TriliumTool:
     def relation(self, note_id: str, name: str, target: str) -> None:
         self._call("attr_set", note_id=note_id, name=name, value=target, type="relation")
 
-    def search(self, query: str, limit: int = 5) -> list[dict[str, Any]]:
-        return list((self._call("note_search", query=query, limit=limit) or {}).get("results") or [])
-
     def children(self, note_id: str) -> list[dict[str, Any]]:
         return list((self._call("note_children", note_id=note_id) or {}).get("children") or [])
 

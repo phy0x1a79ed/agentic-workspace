@@ -72,7 +72,8 @@ def build_home(s: dict[str, Any]):
     ap = Approver(s["dir"] / "approver.db", Keys.load_or_create(s["dir"] / "keys"),
                   Config(origin=s["origin"], allowed_orders=s["allowed_orders"],
                          portals=s["portals"], rate_max=s["rate_max"]), store, TwoFa())
-    writer = Writer(store, TriliumTool(peer=s["board_peer"]), parent=s["board_parent"])
+    writer = Writer(store, TriliumTool(peer=s["board_peer"]), parent=s["board_parent"],
+                    portals=s["portals"])
     store.body_reader = writer.read_body
     return Home(store, ap, writer), writer
 
@@ -173,6 +174,10 @@ async def main() -> None:
     async def flusher() -> None:
         while not stop.is_set():
             await relay.flush()
+            try:
+                await front.remind_due()
+            except Exception:  # noqa: BLE001 - a missed reminder never stops the outbox
+                log.exception("urgent-block reminders failed")
             await asyncio.sleep(10)
 
     async def on_start() -> None:

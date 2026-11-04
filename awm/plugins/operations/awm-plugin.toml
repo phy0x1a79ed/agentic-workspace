@@ -41,5 +41,5 @@ verbs = ["burst", "approve_all", "approve", "deny", "devices", "pending"]
 [[needs.tool]]   # on deneb: the board's cards and the spawn body check (fleet.md R105)
 name = "trilium"
 major = 1
-verbs = ["note_get", "note_create", "note_update", "attr_delete", "attr_set", "note_search", "note_children", "note_delete"]
+verbs = ["note_get", "note_create", "note_update", "attr_delete", "attr_set", "note_children", "note_delete"]
 

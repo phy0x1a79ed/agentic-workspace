@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Claude Code hook: report a session's plan, todos and prompts to the local `reporting` service.
+"""Claude Code hook: report a session's plan, todos and prompts to the local `operations` service.
 
-A SessionStart on source ``clear`` tells the service to file the session's task away,
-so the next plan opens a new card. ``compact`` and ``resume`` also fire SessionStart
-and are ignored.
+A SessionStart on source ``clear`` tells the service the job has a new session id, so
+the next plan opens a new card. ``compact`` and ``resume`` also fire SessionStart and
+are ignored.
 
 Pure stdlib, runs under ``python3 -S`` and exits 0 on every path. It writes to stdout
 only when a card opened: the service's ``notice``, as context the agent reads. A
@@ -13,11 +13,9 @@ The call is synchronous ``POST /invoke`` with ``X-Awm-Caller-Pid``: the gateway 
 the hook's ancestry to find the session, which a detached hook would break. The
 ``session_id`` rides along only as a check.
 
-Each verb result carries ``blocked``. It is mirrored into a marker file so that
-UserPromptSubmit, which runs on every prompt, makes no network call unless the
-prompt holds a Trilium note URL or the session's task is Blocked. A background
-job's first prompt is the exception: it asks once whether the job is a briefed
-worker, whose card opens then, and a ``.seen`` marker records that it asked.
+A verb result may carry ``blocked``: whether the card waits in Needs you. It is mirrored
+into a marker file, so UserPromptSubmit, which runs on every prompt, calls the service
+only while the card waits for Tony.
 """
 
 from __future__ import annotations
@@ -25,7 +23,6 @@ from __future__ import annotations
 import glob
 import json
 import os
-import re
 import sys
 import time
 import urllib.error
@@ -33,11 +30,7 @@ import urllib.request
 
 HOME = os.path.expanduser("~")
 PLANS_DIR = os.path.join(HOME, ".claude", "plans")
-MARKER_DIR = os.path.join(HOME, ".claude", "awm-reporting")
-# The same note URL and claim words the service parses. The vault sits at /trilium/ on
-# a fleet edge and at the root on nexus, so the path names no product.
-NOTE_URL = re.compile(r"https?://[^\s#]+#(?:[\w-]+/)*[\w-]{4,}")
-CLAIM_WORDS = re.compile(r"\b(claim|attach)\b", re.I)
+MARKER_DIR = os.path.join(HOME, ".claude", "awm-operations")
 
 # Fits inside the settings entry's timeout, or Claude Code kills us mid-POST.
 DEADLINE_S = 8.0
@@ -66,8 +59,8 @@ def call(verb: str, **args) -> dict:
             time.sleep(RETRY_GAP_S)
 
 
-def marker(session_id: str, kind: str = "blocked") -> str:
-    return os.path.join(MARKER_DIR, session_id.replace("/", "_") + "." + kind)
+def marker(session_id: str) -> str:
+    return os.path.join(MARKER_DIR, session_id.replace("/", "_") + ".blocked")
 
 
 def report(session_id: str, verb: str, **args) -> dict:
@@ -136,16 +129,8 @@ def handle(p: dict) -> None:
         if p.get("source") == "clear":
             call("hook_session_clear", new_session_id=sid)
     elif p.get("hook_event_name") == "UserPromptSubmit":
-        prompt = p.get("prompt") or ""
-        claims = CLAIM_WORDS.search(prompt) and NOTE_URL.search(prompt)
-        first = bool(os.environ.get("CLAUDE_JOB_DIR")) and not os.path.exists(marker(sid, "seen"))
-        if first:
-            result = report(sid, "hook_prompt", prompt=prompt, first=True)
-            if result:
-                touch(marker(sid, "seen"))
-            tell(result, "UserPromptSubmit")
-        elif claims or os.path.exists(marker(sid)):
-            report(sid, "hook_prompt", prompt=prompt)
+        if os.path.exists(marker(sid)):
+            report(sid, "hook_prompt", prompt=p.get("prompt") or "")
     elif tool in ("Write", "Edit"):
         path = os.path.abspath(str(tool_input.get("file_path") or ""))
         if os.path.dirname(path) == PLANS_DIR and path.endswith(".md") and not p.get("agent_id"):

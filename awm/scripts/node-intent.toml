@@ -169,8 +169,6 @@
 "mamba-env:webdav" = "capella work env"
 
 [altair]
-"env:AWM_FRONT_DOOR" = "one front door per swarm, and it is altair"
-"env:AWM_REPORTING_QUIET_SWARMS" = "only the front door DMs Tony, so only the door reads it"
 "env:AWM_DOMAIN_HOME_social" = "altair routes social to mira; capella runs its own and must never get this"
 "env:AWM_RLM_BROWSER_ATTACH_PEER" = "altair's rlm-browser drives capella's browser"
 "env:AWM_IDLE_SHUTDOWN" = "capella sets it in its awm.service unit instead"

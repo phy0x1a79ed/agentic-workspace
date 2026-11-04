@@ -22,17 +22,13 @@ FOLDERS = sorted(p.parent for p in SERVICES.glob("*/run.sh"))
 
 #: Folders that stay on ``service.toml`` until they stop sharing a tool. A
 #: manifest plugin may not share a tool across plugins (contract rule 2).
-LEGACY = {
-    "board": "shares `operations` with reporting until both go at the cutover (queue.md R145)",
-    "reporting": "shares `operations` with board until both go at the cutover (queue.md R145)",
-}
+LEGACY: dict[str, str] = {}
 
 #: Cross-plugin code reuse that predates R117 item 1. Each pair is debt with
 #: an owner. A new pair fails the test.
 CROSS_IMPORTS = {
     ("claude-science", "httpsfront"): "fronts its page with httpsfront's certs and proxy",
     ("dsh", "httpsfront"): "fronts its page with httpsfront's certs and proxy",
-    ("reporting", "board"): "goes away when board and reporting merge",
     ("scopes", "dvc"): "scopes runs dvc's data_dvc hooks in-process",
 }
 
@@ -142,17 +138,9 @@ def test_each_service_has_a_manifest_or_a_named_legacy_reason(folder):
         assert not (folder / "service.toml").exists(), "the manifest replaces service.toml"
 
 
-#: Refused until the cutover: board and reporting serve ``operations`` until the
-#: federation threads move onto persistent rooms, then they go (queue.md R145).
-CUTOVER = {"operations": "already served by plugin 'board'", "browser": "plugin 'board' serves major 1"}
-
-
 def test_the_loader_refuses_no_folder_of_the_tree(monkeypatch):
     monkeypatch.delenv("AWM_SERVICE_ROOTS", raising=False)
-    refused = discovery.plugin_refusals()
-    assert {k: v for k, v in refused.items() if k not in CUTOVER} == {}
-    for folder, reason in CUTOVER.items():
-        assert reason in refused.get(folder, reason), refused[folder]
+    assert discovery.plugin_refusals() == {}
 
 
 @pytest.mark.parametrize("folder", _plugins(), ids=lambda f: f.name)
@@ -165,7 +153,7 @@ def test_each_manifest_names_its_folder_and_no_host(folder):
     for s in m["service"]:
         for table in s.get("archive", []):
             assert table["mode"] in ("index", "live"), table
-    for tool in m["tool"]:
+    for tool in m.get("tool", []):
         assert tool["name"] != "awm", "the awm tool belongs to the core"
         assert tool["tier"] in ("on", "off")
     needs = m["needs"]

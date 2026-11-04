@@ -71,6 +71,10 @@ FORK_ENTRY = FORK_DIR / "apps" / "server" / "dist" / "main.cjs"
 TARBALL_DIR = INSTALL_DIR / "server"
 TARBALL_ENTRY = TARBALL_DIR / "main.cjs"
 TARBALL_NODE = TARBALL_DIR / "node" / "bin" / "node"
+#: What `install.sh` unpacked into TARBALL_DIR. A line starting ``fork `` means the
+#: tarball came from a release of our fork (``server.pin``), so it carries the fork's
+#: code, the slice mask included (install.md R115 item 4).
+TARBALL_STAMP = INSTALL_DIR / "tarball-stamp"
 
 #: What `install.sh` last built, written where the worktree already ignores it.
 BUILD_STAMP = FORK_DIR / ".awm" / "trilium-build-stamp"
@@ -213,8 +217,15 @@ def entry_point() -> tuple[Path, str] | None:
     if FORK_ENTRY.is_file():
         return FORK_ENTRY, "fork"
     if TARBALL_ENTRY.is_file():
-        return TARBALL_ENTRY, "tarball"
+        return TARBALL_ENTRY, "fork" if _fork_tarball() else "tarball"
     return None
+
+
+def _fork_tarball() -> bool:
+    try:
+        return TARBALL_STAMP.read_text().startswith("fork ")
+    except OSError:
+        return False
 
 
 def node_exe() -> str:
@@ -227,7 +238,7 @@ def node_exe() -> str:
     could find it exists.
     """
     chosen = entry_point()
-    if chosen and chosen[1] == "tarball" and TARBALL_NODE.is_file():
+    if chosen and chosen[0] == TARBALL_ENTRY and TARBALL_NODE.is_file():
         return str(TARBALL_NODE)
     try:
         recorded = NODE_BIN_FILE.read_text().strip()

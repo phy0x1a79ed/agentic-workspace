@@ -34,8 +34,12 @@ from awm.operations.ids import mint_task_id
 log = logging.getLogger("awm.operations")
 
 WRITES = ("task_open", "task_attach", "task_join", "task_report", "task_session_end",
-          "approval_request", "approval_cancel", "order_done", "ops_post")
-READS = ("task_for_session", "task_sessions", "task_get", "task_list", "approval_get", "keys")
+          "task_claim", "task_detail", "task_message", "approval_request", "approval_cancel",
+          "order_done", "ops_post")
+READS = ("task_for_session", "task_sessions", "task_get", "task_list", "task_messages",
+         "approval_get", "keys")
+# The writes that put a session on a card, so the relay can answer task_for_session offline.
+SESSION_WRITES = ("task_open", "task_attach", "task_join", "task_claim")
 # Long polls go straight to alcor: a stale copy would answer them wrongly.
 POLLS = ("approval_wait", "order_pull")
 
@@ -123,7 +127,7 @@ class Relay:
         if verb == "task_open":
             args.setdefault("task_id", mint_task_id())
             args.setdefault("node", self.node)
-        if verb in ("task_attach", "task_join"):
+        if verb in ("task_attach", "task_join", "task_claim", "task_message"):
             args.setdefault("node", self.node)
         if verb == "approval_request":
             args.setdefault("request_id", "q" + secrets.token_urlsafe(9))
@@ -149,7 +153,7 @@ class Relay:
                 out[key] = args[key]
         if verb == "task_join":
             out["main_session_id"] = None
-        if verb in ("task_open", "task_attach", "task_join") and args.get("session_id"):
+        if verb in SESSION_WRITES and args.get("session_id"):
             self._remember_session(args["session_id"], args["task_id"])
         return out
 
@@ -188,7 +192,7 @@ class Relay:
                     self._db.execute("INSERT OR REPLACE INTO cache VALUES (?,?,?)",
                                      (f"op:{row['seq']}", json.dumps(result), self.clock()))
                 if isinstance(result, dict) and result.get("task_id") and args.get("session_id") \
-                        and row["verb"] in ("task_open", "task_attach", "task_join"):
+                        and row["verb"] in SESSION_WRITES:
                     self._remember_session(args["session_id"], result["task_id"])
                 sent += 1
 
@@ -242,6 +246,13 @@ class Relay:
                 self._db.execute("DELETE FROM meta WHERE k=?", (key,))
             return None
         return self._meta(key, value)
+
+    def marks(self, prefix: str) -> dict[str, str]:
+        """Every mark whose key starts with ``prefix``."""
+        with self._lock:
+            rows = self._db.execute("SELECT k, v FROM meta WHERE substr(k, 1, ?) = ?",
+                                    (len(prefix), prefix)).fetchall()
+        return {r["k"]: r["v"] for r in rows}
 
     def status(self) -> dict[str, Any]:
         dead = self._db.execute("SELECT COUNT(*) FROM dead").fetchone()[0]

@@ -9,7 +9,7 @@ import stat
 import httpx
 import pytest
 
-from awm.board import hub_adapter, transfer
+from awm.board import transfer
 from awm.board.files import FileStore, TooLarge, clean_name
 from awm.board.http import create_app
 from awm.board.parties import NotFound
@@ -192,78 +192,3 @@ def test_the_denylist_can_only_grow(home, monkeypatch):
     monkeypatch.setenv("AWM_BOARD_FILE_DENY", "**/private/**")
     assert transfer.check(str(write(home / "private" / "a.txt")))["allowed"] is False
     assert transfer.check(str(write(home / ".ssh" / "a.txt")))["allowed"] is False
-
-
-# -- the verbs: send with an allow, fetch into quarantine ---------------------
-
-
-@pytest.fixture
-def relay(filing, parties, events, home, tmp_path, monkeypatch):
-    """The adapter's verbs against a real board through the door, as tony on this node."""
-    _, token = parties.add("tony", "tony", "domestic")
-    app = create_app(filing, parties, events)
-    real = hub_adapter.BoardClient
-
-    def client(url, tok, **kw):
-        return real(url, tok, transport=httpx.ASGITransport(app=app), **kw)
-
-    monkeypatch.setattr(hub_adapter, "BoardClient", client)
-    monkeypatch.setenv("AWM_BOARD_URL", "http://board")
-    monkeypatch.setenv("AWM_BOARD_TOKEN", token)
-    monkeypatch.setenv("AWM_BOARD_QUARANTINE", str(tmp_path / "quarantine"))
-    monkeypatch.setattr(hub_adapter, "_who", lambda args: {"agent": "opal", "node": "capella"})
-    return filing
-
-
-async def test_send_needs_the_checked_hash_and_fetch_lands_read_only(relay, tony, home):
-    card = ask(relay, tony)
-    path = str(write(home / "work" / "recipe.md", b"step 1\n"))
-    checked = await hub_adapter.file_check({"path": path})
-    assert checked["allowed"] and "data" not in checked
-    refused = await hub_adapter.file_send({"card_id": card["id"], "path": path, "allow": "0" * 64})
-    assert refused["ok"] is False and "allow" in refused["error"]
-    sent = await hub_adapter.file_send({"card_id": card["id"], "path": path, "allow": checked["sha256"]})
-    assert sent["ok"], sent
-    file_id = sent["file"]["file_id"]
-    listed = await hub_adapter.files({"card_id": card["id"]})
-    assert [f["file_id"] for f in listed["files"]] == [file_id]
-    got = await hub_adapter.file_fetch({"card_id": card["id"], "file_id": file_id})
-    assert got["ok"], got
-    assert got["path"].endswith(f"{card['id']}/{file_id}/recipe.md")
-    with open(got["path"], "rb") as fh:
-        assert fh.read() == b"step 1\n"
-    mode = stat.S_IMODE(os.stat(got["path"]).st_mode)
-    assert mode == 0o444 and not mode & 0o111
-    assert stat.S_IMODE(os.stat(os.path.dirname(got["path"])).st_mode) == 0o700
-    assert "never execute" in got["notice"]
-    again = await hub_adapter.file_fetch({"card_id": card["id"], "file_id": file_id})
-    assert again["ok"] and again["path"] == got["path"]
-
-
-async def test_a_file_that_changed_after_the_check_is_refused(relay, tony, home):
-    card = ask(relay, tony)
-    path = write(home / "work" / "recipe.md", b"v1")
-    checked = await hub_adapter.file_check({"path": str(path)})
-    path.write_bytes(b"v2")
-    out = await hub_adapter.file_send({"card_id": card["id"], "path": str(path), "allow": checked["sha256"]})
-    assert out["ok"] is False
-
-
-async def test_a_denied_file_is_never_sent(relay, tony, home):
-    card = ask(relay, tony)
-    path = str(write(home / ".awm-secrets" / "t.json", b"{}"))
-    out = await hub_adapter.file_send({"card_id": card["id"], "path": path, "allow": sha(b"{}")})
-    assert out["ok"] is False and out["reasons"]
-    assert relay.card_files(tony, card["id"]) == []
-
-
-async def test_file_verbs_refuse_a_caller_from_another_node(relay, tony, home):
-    path = str(write(home / "work" / "a.txt"))
-    assert (await hub_adapter.file_check({"path": path}, as_="peer:altair"))["ok"] is False
-    out = await hub_adapter.file_fetch({"card_id": "a" * 32, "file_id": "b" * 32}, as_="peer")
-    assert out["ok"] is False
-
-
-async def test_fetch_takes_only_minted_ids(relay):
-    out = await hub_adapter.file_fetch({"card_id": "../../x", "file_id": "b" * 32})
-    assert out["ok"] is False

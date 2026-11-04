@@ -91,7 +91,7 @@ def test_every_command_is_registered_for_the_bot_dm_only():
     allows only the bot DM context (1) on a guild install (0)."""
     conn = _connector(None)
     payloads = [c.to_dict(conn._tree) for c in conn._tree.get_commands()]
-    assert {p["name"] for p in payloads} == {"approve", "reject", "new-agent"}
+    assert {p["name"] for p in payloads} == {"approve"}
     for p in payloads:
         assert p["contexts"] == [1] and p["integration_types"] == [0]
 
@@ -184,8 +184,6 @@ class TestOperatorGate:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("name,kwargs", [
         ("approve", {}),
-        ("reject", {"ref": "r1"}),
-        ("new-agent", {}),
     ])
     async def test_non_operator_dropped_and_refused(self, name, kwargs):
         captured = []
@@ -216,123 +214,6 @@ class TestOperatorGate:
 
 
 # -- /reject and /new-agent -------------------------------------------------
-
-class TestRejectCommand:
-    @pytest.mark.asyncio
-    async def test_fires_with_ref_and_reason_and_acks_ephemerally(self):
-        captured = []
-
-        async def cap(cmd):
-            captured.append(cmd)
-
-        conn = _connector(cap)
-        inter = _FakeInteraction(guild=None)
-        await conn._tree.get_command("reject").callback(
-            inter, ref="req-7", reason="too broad")
-
-        assert captured[0].name == "reject"
-        assert captured[0].options == {"ref": "req-7", "reason": "too broad"}
-        content, ephemeral = inter.response.messages[0]
-        assert ephemeral is True and "req-7" in content
-
-    @pytest.mark.asyncio
-    async def test_reason_is_optional(self):
-        captured = []
-
-        async def cap(cmd):
-            captured.append(cmd)
-
-        conn = _connector(cap)
-        await conn._tree.get_command("reject").callback(
-            _FakeInteraction(guild=None), ref="req-7")
-        assert captured[0].options == {"ref": "req-7", "reason": ""}
-
-    @pytest.mark.asyncio
-    async def test_guild_invocation_rejected(self):
-        captured = []
-
-        async def cap(cmd):
-            captured.append(cmd)
-
-        conn = _connector(cap)
-        inter = _FakeInteraction(guild=object())
-        await conn._tree.get_command("reject").callback(inter, ref="r")
-        assert captured == []
-        assert inter.response.messages[0][1] is True
-
-
-class TestNewAgentCommand:
-    @pytest.mark.asyncio
-    async def test_fires_with_options_and_dm_reply_target(self):
-        captured = []
-
-        async def cap(cmd):
-            captured.append(cmd)
-
-        conn = _connector(cap)
-        inter = _FakeInteraction(guild=None)
-        await conn._tree.get_command("new-agent").callback(inter, prompt="fix the tests")
-
-        assert captured[0].name == "new_agent"
-        assert captured[0].options == {"prompt": "fix the tests", "reply_to": "dm:4242",
-                                       "ack_ref": "31337"}
-        content, ephemeral = inter.response.messages[0]
-        assert ephemeral is False and "agent" in content
-
-    @pytest.mark.asyncio
-    async def test_the_prompt_is_optional(self):
-        captured = []
-
-        async def cap(cmd):
-            captured.append(cmd)
-
-        conn = _connector(cap)
-        await conn._tree.get_command("new-agent").callback(
-            _FakeInteraction(guild=None))
-        assert captured[0].options == {"prompt": "", "reply_to": "dm:4242",
-                                       "ack_ref": "31337"}
-
-    @pytest.mark.asyncio
-    async def test_the_answer_replaces_the_starting_ack(self):
-        conn = _connector(None)
-        inter = _FakeInteraction(guild=None)
-        await conn._tree.get_command("new-agent").callback(inter)
-
-        edited = await conn.edit_ack("31337", "agent-1234: https://claude.ai/x")
-        assert inter.edits == ["agent-1234: https://claude.ai/x"]
-        assert edited["message_id"] == "777"
-        # An ack is replaced once; a second answer has nothing left to edit.
-        assert await conn.edit_ack("31337", "again") is None
-
-    @pytest.mark.asyncio
-    async def test_the_answer_can_attach_text_files(self):
-        conn = _connector(None)
-        inter = _FakeInteraction(guild=None)
-        await conn._tree.get_command("new-agent").callback(inter)
-
-        await conn.edit_ack("31337", "agent-1234", files=[{"filename": "prompt.txt", "text": "do it"}])
-        assert inter.attached == [[("prompt.txt", b"do it")]]
-
-    @pytest.mark.asyncio
-    async def test_an_expired_ack_is_not_edited(self, monkeypatch):
-        from awm.social.connectors import discord_conn
-
-        monkeypatch.setattr(discord_conn, "ACK_TTL", -1)
-        conn = _connector(None)
-        inter = _FakeInteraction(guild=None)
-        await conn._tree.get_command("new-agent").callback(inter)
-        assert await conn.edit_ack("31337", "x") is None
-        assert inter.edits == []
-
-    @pytest.mark.asyncio
-    async def test_a_failed_or_unknown_ack_edit_returns_none(self):
-        conn = _connector(None)
-        inter = _FakeInteraction(guild=None)
-        inter.edit_error = RuntimeError("Unknown Webhook")
-        await conn._tree.get_command("new-agent").callback(inter)
-        assert await conn.edit_ack("31337", "x") is None
-        assert await conn.edit_ack("nope", "x") is None
-
 
 # -- send with an ack_ref ---------------------------------------------------
 
@@ -429,34 +310,6 @@ class TestOnCommandEmit:
         assert payload["device"] == "cwl"
         assert payload["is_dm"] is True
         assert payload["operator"] == "tony"
-
-    @pytest.mark.asyncio
-    async def test_reject_and_new_agent_payloads(self, monkeypatch):
-        from awm.social import hub_adapter
-        from awm.social.connectors import Command
-
-        emitted = []
-
-        class _FakeAdapter:
-            async def emit(self, topic, payload):
-                emitted.append((topic, payload))
-
-        monkeypatch.setattr(hub_adapter, "_adapter", _FakeAdapter())
-        await hub_adapter._on_command(Command(
-            account="bot", platform="discord", name="reject",
-            options={"ref": "r1", "reason": "no"}, user_id="1",
-            is_dm=True, operator="tony"))
-        await hub_adapter._on_command(Command(
-            account="bot", platform="discord", name="new_agent",
-            options={"prompt": "p", "reply_to": "dm:1"},
-            user_id="1", is_dm=True, operator="tony"))
-
-        reject, new_agent = (p for _, p in emitted)
-        assert (reject["command"], reject["ref"], reject["reason"],
-                reject["operator"]) == ("reject", "r1", "no", "tony")
-        assert (new_agent["command"], new_agent["prompt"], new_agent["reply_to"],
-                new_agent["operator"]) == ("new_agent", "p", "dm:1", "tony")
-        assert new_agent["account"] == "bot"
 
     @pytest.mark.asyncio
     async def test_no_adapter_is_noop(self, monkeypatch):

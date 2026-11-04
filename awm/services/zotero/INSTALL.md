@@ -361,8 +361,7 @@ Environment, read at start:
 | `ZOTERO_SYNC_ENABLED` | `1` | set `0` to stop the floor. |
 | `ZOTERO_BUSY_RETRY_S` | `5` | wait this long before retrying a push that found the lock held. |
 | `ZOTERO_RECONCILE_S` | `86400` | read a library whole when it has not been read whole for this long. This is the bound on how long a trashed paper can sit in the vault. |
-| `ZOTERO_ORDERS_APPROVER` | empty | the node whose approver signs Sync now orders. Empty, or `ZOTERO_ORDERS_PUBKEY` empty, leaves the puller off. Needs the `orders` extra. |
-| `ZOTERO_ORDERS_PUBKEY` | empty | that approver's grant public key, b64url raw, from `approver keys`. An order this key did not sign is dropped. |
+| `ZOTERO_ORDERS_PUBKEY` | empty | alcor's grant public key, b64url raw, from `operations keys`. Empty leaves the Sync now puller off. An order this key did not sign is dropped. Needs the `orders` extra. |
 
 ## Verify
 

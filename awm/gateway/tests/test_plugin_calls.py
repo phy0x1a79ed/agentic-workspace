@@ -26,15 +26,17 @@ CALL_FNS = {"call": 0, "call_sync": 0}
 #: Calls the scan cannot read, because a variable names the tool or the verb, or a shared
 #: library makes them for the plugin. ``harness@1`` names a contract.
 CALLS: dict[str, set[tuple[str, str]]] = {
-    # trustpolicy.requests.file_request names the approver, whose verbs operations serves
-    # now. browser already needs operations; trilium and zotero wait on T18 (UNSERVED).
+    # trustpolicy.requests.file_request calls operations approval_request.
     "browser": {("operations", "approval_request")},
+    "board": {("operations", "intake_post"), ("operations", "intake_message"),  # hub_adapter._operations
+              *{("trilium", v) for v in ("note_get", "note_search", "note_create", "note_update", "note_place",
+                                         "attr_set", "attr_delete")}},  # vault.gateway_transport
     "channel": {("reflection", "session_of"), ("reflection", "message"), ("reflection", "list_other")},
     # gatewayclient sessions and push
     "operations": {  # GatewayTool("<tool>").call(verb)
         ("reflection", "session_of"), ("reflection", "message"), ("reflection", "start_other"), ("social", "send"),
         *{("2fa", v) for v in ("burst", "approve_all", "approve", "deny", "devices", "pending")},
-        *{("trilium", v) for v in ("note_get", "note_create", "note_update", "attr_delete", "attr_set", "note_search",
+        *{("trilium", v) for v in ("note_get", "note_create", "note_update", "attr_delete", "attr_set",
                                    "note_children", "note_delete")},
     },
     "routine": {("reflection", "start_other"), ("reflection", "session_of"), ("social", "send"), ("journal", "post"),
@@ -56,18 +58,15 @@ CALLS: dict[str, set[tuple[str, str]]] = {
     # and federation. search's tests/test_needs.py replays these against the real manifests.
     "social": {("reflection", "session_of"), ("reflection", "message"), ("reflection", "list_other"),
                *{("harness-cc", v) for v in ("list", "probe", "resume", "adopt")}},  # push, sessions, Cx._call
-    "trilium": {("approver", "approval_request")},  # trustpolicy.requests
+    "trilium": {("operations", "approval_request")},  # trustpolicy.requests
     "zotero": {("trilium", v) for v in ("note_search", "note_get", "note_upsert", "note_create", "note_update", "attr_set",
                                         "note_place", "attachment_put", "note_delete")}  # vault.call_sync(SERVICE, fn)
-              | {("approver", "order_pull"), ("approver", "order_done")},  # orders.py approver_call
+              | {("operations", "order_pull"), ("operations", "order_done")},  # orders.py operations_call
 }
 
 #: Recorded calls no manifest can list yet, since no plugin serves them, each with why.
 UNSERVED: dict[tuple[str, str, str], str] = {
     ("wake", "reflection", "revive_pinned"): "boot.py's fallback; reflection serves no revive_pinned",
-    ("zotero", "approver", "order_pull"): "no plugin serves approver; the verbs moved to operations (queue.md R145)",
-    ("zotero", "approver", "order_done"): "no plugin serves approver; the verbs moved to operations (queue.md R145)",
-    ("trilium", "approver", "approval_request"): "no plugin serves approver; the verbs moved to operations (queue.md R145)",
 }
 
 
