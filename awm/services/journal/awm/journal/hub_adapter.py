@@ -17,7 +17,7 @@ import logging
 from typing import Any
 
 from awm.gatewayclient import ServiceAdapter, spawn_supervised
-from awm.journal import channel, dao, migrate, search_index, tagsync
+from awm.journal import channel, dao, search_index, tagsync
 from awm.journal.operations.briefs import BRIEF_HANDLERS, BRIEF_MANIFEST_FUNCTIONS
 from awm.journal.operations.lineage import LINEAGE_HANDLERS, LINEAGE_MANIFEST_FUNCTIONS
 from awm.journal.operations.posts import POST_HANDLERS, POST_MANIFEST_FUNCTIONS
@@ -50,8 +50,6 @@ HANDLERS: dict[str, Any] = {**POST_HANDLERS, **TAG_HANDLERS, **BRIEF_HANDLERS,
 
 async def _on_start() -> None:
     dao.init()
-    result = await asyncio.to_thread(migrate.migrate_from_scopes)
-    log.info("scopes migration: %s", result)
     await asyncio.to_thread(search_index.ensure_schema)
     spawn_supervised("journal:search-backfill", search_index.backfill_loop)
     spawn_supervised("journal:tag-pull", tagsync.pull_loop)
