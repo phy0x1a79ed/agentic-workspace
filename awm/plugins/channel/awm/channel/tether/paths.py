@@ -98,6 +98,11 @@ STREAM_STATE = STATE_DIR / "stream.json"
 #: opens one of these.
 SESSIONS_DIR = STATE_DIR / "sessions"
 
+#: Where the relay keeps one file per persistent room, so a restart does not end
+#: it. A file holds the room's name, its host token's digest and a sequence
+#: floor, never a message (``tether-relay/src/room.rs``). Relay role only.
+ROOM_STATE = STATE_DIR / "rooms"
+
 ROLE = os.environ.get("AWM_TETHER_ROLE", "operator").strip().lower()
 
 OPERATOR = "operator"

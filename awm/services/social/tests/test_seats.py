@@ -9,6 +9,9 @@ import pytest
 pytestmark = [pytest.mark.unit]
 
 ME = {"kind": "bg", "job": "aaaa1111", "name": "opal desk"}
+#: What reflection's session_of answers for ME.
+RECORD = {"hosting": "background", "job": "aaaa1111", "name": "opal desk",
+          "session_id": "cc" + "a" * 32}
 OTHER = {"kind": "bg", "job": "bbbb2222", "name": "other desk"}
 
 
@@ -122,8 +125,8 @@ async def test_mount_needs_a_background_session(wired):
 
 async def test_a_local_caller_is_read_from_its_pid(wired, monkeypatch):
     from awm import config
-    from awm.social import seats
-    monkeypatch.setattr(seats, "session_claim", lambda pid: ME if pid == 4242 else None)
+    from awm.gatewayclient import sessions
+    monkeypatch.setattr(sessions, "session_of", lambda pid: RECORD if pid == 4242 else None)
     monkeypatch.setattr(config, "node_name", lambda: "mira")
     r = await wired._h_mount({"account": "bot", "channel": "C1", "_caller_pid": 4242,
                               "_caller_session": OTHER}, "peer:capella")
@@ -217,7 +220,7 @@ async def test_mounts_survive_a_restart(wired):
 
 async def test_a_borrower_forwards_its_session_not_its_pid(wired, monkeypatch):
     from awm import gatewayclient as gc
-    from awm.social import seats
+    from awm.gatewayclient import holders
     calls = []
 
     async def call_peer(peer, service, fn, args=None, **kw):
@@ -227,7 +230,7 @@ async def test_a_borrower_forwards_its_session_not_its_pid(wired, monkeypatch):
     monkeypatch.setattr(gc, "peer_env", lambda var: "mira")
     monkeypatch.setattr(gc, "call", lambda tool, verb, args=None, *, peer=None, **kw: (call_peer)(peer, tool, verb, args, **kw))
     monkeypatch.setattr(wired, "_connectors", {})
-    monkeypatch.setattr(seats, "session_claim", lambda pid: ME)
+    monkeypatch.setattr(holders, "claim", lambda pid: ME)
     await wired.HANDLERS["mount"]({"account": "slack-bot", "channel": "D1",
                                    "_caller_pid": 7, "_caller_session": OTHER}, None)
     assert calls == [("mira", "mount", {"account": "slack-bot", "channel": "D1",

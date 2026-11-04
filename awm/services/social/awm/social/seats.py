@@ -6,10 +6,8 @@ message in a mounted seat is typed into the holder's prompt through
 holder (``awm.gatewayclient.push``, channels.md R69). A seat is released by its
 holder, taken by a forced mount, or freed by the prune once the holder's job is gone.
 
-The holder is never named by the model. On the owner node the gateway stamps
-``_caller_pid``. A call from another node arrives through that node's edge,
-which stamps the verified ``peer:<node>``, and carries ``_caller_session``: the
-job and name the caller's own node read from its session record.
+The holder is never named by the model: ``awm.gatewayclient.holders`` reads it
+from what the gateway stamps, as it does for a channel.
 """
 
 from __future__ import annotations
@@ -17,7 +15,7 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from awm import config
+from awm.gatewayclient.holders import HolderError as SeatError
 from awm.gatewayclient.push import live_jobs
 from awm.social.connectors.base import InboundMessage
 
@@ -25,41 +23,6 @@ log = logging.getLogger("awm.social.seats")
 
 PRUNE_S = 60.0
 TEXT_MAX = 1500
-
-
-class SeatError(ValueError):
-    """A seat verb refused; the message says why and what to do instead."""
-
-
-# -- the calling session -----------------------------------------------------
-
-def session_claim(pid: int) -> dict | None:
-    """The job and name of the local session ``pid``, or None when it has none."""
-    from awm.gatewayclient.sessions import session_of
-
-    rec = session_of(pid)
-    if not rec:
-        return None
-    return {"kind": "bg" if rec.get("hosting") == "background" else "interactive",
-            "job": str(rec.get("job") or ""), "name": str(rec.get("name") or "")}
-
-
-def caller(args: dict, as_: str | None) -> dict:
-    """The calling session as ``{node, job, name}``, or a :class:`SeatError`."""
-    from awm.config import edges
-
-    pid = args.get("_caller_pid")
-    if isinstance(pid, int) and not isinstance(pid, bool):
-        claim, node = session_claim(pid), config.node_name()
-    else:
-        claim, node = args.get("_caller_session"), edges.caller_peer(as_)
-    if not node or not isinstance(claim, dict):
-        raise SeatError("no calling session reached social: a seat is held by a "
-                        "running Claude Code session, so call this from one")
-    if claim.get("kind") != "bg" or not claim.get("job"):
-        raise SeatError("only a background session can hold a seat: the push "
-                        "types each message into the holder's job")
-    return {"node": node, "job": str(claim["job"]), "name": str(claim.get("name") or "")}
 
 
 def session_name(platform: str, chat) -> str:

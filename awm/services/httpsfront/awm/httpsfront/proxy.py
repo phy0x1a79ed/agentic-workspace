@@ -1279,7 +1279,7 @@ def build_app(upstream: str, ca_path: str, *, landing: bool = True,
               rewrite_origin: bool = False,
               profile: str | None = None,
               vault_upstream: str | None = None,
-              tether_upstream: str | None = None,
+              relay_upstream: str | None = None,
               board_upstream: str | None = None) -> Starlette:
     """Assemble the front. ``landing=False`` drops the awm index page at ``/``.
 
@@ -1311,8 +1311,8 @@ def build_app(upstream: str, ca_path: str, *, landing: bool = True,
     origin, one session and one login cover both awm and the vault. Off by
     default, so every existing caller is unchanged.
 
-    ``tether_upstream`` adds the remote-assistance relay, mounted at
-    :data:`tether.PREFIX` — and unlike the vault, its paths are reachable
+    ``relay_upstream`` adds the channel relay, mounted at
+    :data:`tether.PREFIX` and :data:`tether.ROOMS` — and unlike the vault, its paths are reachable
     with **no session**, because the person redeeming an invite is a friend
     being helped with their own machine and has no awm account. The relay does
     its own gating; see :mod:`awm.httpsfront.tether` for what that rests on.
@@ -1409,8 +1409,8 @@ def build_app(upstream: str, ca_path: str, *, landing: bool = True,
     else:
         app.state.vault_http_up = None
         app.state.vault_ws_up = None
-    if tether_upstream:
-        t = tether_upstream.rstrip("/")
+    if relay_upstream:
+        t = relay_upstream.rstrip("/")
         app.state.tether_http_up = t
         app.state.tether_ws_up = "ws" + t[len("http"):]
     else:
@@ -1427,7 +1427,7 @@ def serve(*, port: int, cert: str, key: str, ca: str, upstream: str,
           profile: str | None = None,
           tls: bool = True,
           vault_upstream: str | None = None,
-          tether_upstream: str | None = None,
+          relay_upstream: str | None = None,
           board_upstream: str | None = None) -> None:
     """Bind ``0.0.0.0:port`` with TLS and reverse-proxy to ``upstream`` forever
     (blocks). Designed to run in a daemon thread from the hub adapter.
@@ -1445,7 +1445,7 @@ def serve(*, port: int, cert: str, key: str, ca: str, upstream: str,
     app = build_app(upstream, ca, landing=landing, extra_routes=extra_routes,
                     rewrite_origin=rewrite_origin, profile=profile,
                     vault_upstream=vault_upstream,
-                    tether_upstream=tether_upstream,
+                    relay_upstream=relay_upstream,
                     board_upstream=board_upstream)
     bind: dict = (
         {"host": "0.0.0.0", "ssl_certfile": cert, "ssl_keyfile": key}

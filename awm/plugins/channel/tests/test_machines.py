@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 
 from awm.channel import hub_adapter
-from awm.channel.holders import ChannelError
+from awm.channel.service import ChannelError
 from awm.gatewayclient.push import Pusher
 from awm.channel.machines import Machines
 from awm.channel.relay import Rooms
@@ -108,7 +108,7 @@ def _build(tmp_path, machines, pushed, live, sessions):
 
 @pytest.fixture
 async def chans(tmp_path, machines, daemon, pushed, live, sessions, monkeypatch):
-    from awm.channel import holders
+    from awm.gatewayclient import holders
 
     monkeypatch.setattr(holders.config, "node_name", lambda: "testnode")
     built = _build(tmp_path, machines, pushed, live, sessions)

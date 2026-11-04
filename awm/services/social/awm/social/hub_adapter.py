@@ -28,7 +28,7 @@ import time
 from typing import Any
 
 from awm import config
-from awm.gatewayclient import ServiceAdapter
+from awm.gatewayclient import ServiceAdapter, holders
 from awm.gatewayclient.push import Pusher
 from awm.social import buckets as buckets_mod
 from awm.social import config as social_config
@@ -309,7 +309,7 @@ async def _h_history(args: dict, as_: str | None = None) -> dict:
         raise RuntimeError(
             f"account {args['account']!r} keeps no history; use fetch")
     try:
-        holder = seats.caller(args, as_)
+        holder = holders.caller(args, as_, what="a seat")
     except seats.SeatError:
         holder = None
     allowed = seats.readable_chats(_dao, _accounts.get(args["account"]), holder)
@@ -534,7 +534,7 @@ async def _h_mount(args: dict, as_: str | None = None) -> dict:
     account = args["account"]
     conn = _conn(account)
     try:
-        who = seats.caller(args, as_)
+        who = holders.caller(args, as_, what="a seat")
         seat = await _find_seat(conn, str(args["channel"]))
     except seats.SeatError as exc:
         return {"ok": False, "error": str(exc)}
@@ -588,7 +588,7 @@ async def _h_unmount(args: dict, as_: str | None = None) -> dict:
     account = args["account"]
     _conn(account)
     try:
-        who = seats.caller(args, as_)
+        who = holders.caller(args, as_, what="a seat")
     except seats.SeatError as exc:
         return {"ok": False, "error": str(exc)}
     rows = _dao.mounts(account)
@@ -1469,7 +1469,7 @@ def _seat_forwarding(fn: str, handler: Any) -> Any:
                    if k not in ("_caller_pid", "_caller_session")}
             pid = args.get("_caller_pid")
             if isinstance(pid, int):
-                fwd["_caller_session"] = seats.session_claim(pid)
+                fwd["_caller_session"] = holders.claim(pid)
             try:
                 return await gatewayclient.call("social", fn, fwd, peer=peer)
             except gatewayclient.GatewayCallError as exc:
