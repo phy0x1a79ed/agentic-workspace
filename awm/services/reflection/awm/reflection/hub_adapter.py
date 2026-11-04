@@ -405,11 +405,14 @@ async def _list_other(args: dict, as_: str | None = None) -> dict:
     fwd = {k: v for k, v in args.items() if not k.startswith("_")}
     answers = await asyncio.to_thread(harness.everyone, "list", fwd, as_=as_)
     out: dict[str, Any] = {"ok": True, "sessions": []}
+    levels = await asyncio.to_thread(policy.recorded_levels)
     for p, got in answers:
         if got.get("ok") is False:
             out.setdefault("errors", []).append({"harness": p.tool, **got})
             continue
-        out["sessions"] += [{**r, "harness": p.tool} for r in got.get("sessions") or []]
+        # `trust` is the recorded level, or None for a session with no record.
+        out["sessions"] += [{**r, "harness": p.tool, "trust": levels.get(r.get("session_id") or "") or r.get("trust")}
+                            for r in got.get("sessions") or []]
         for key in ("pool", "daemon"):
             if key in got:
                 out[key] = got[key]

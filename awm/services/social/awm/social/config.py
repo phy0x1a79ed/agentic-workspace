@@ -69,6 +69,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from awm import config
+from awm.trustpolicy import LEVELS
 
 
 # Default config path. ``AWM_SOCIAL_CONFIG`` overrides it wholesale — needed
@@ -89,7 +90,6 @@ def _config_file() -> Path:
 # connecting. Keep in sync with ``connectors.REGISTRY`` (``teams`` has no native
 # connector — it is only reachable via ``source = "mira"``).
 KNOWN_PLATFORMS = ("discord", "slack", "gmail", "teams")
-TRUST_LEVELS = ("untrusted", "cooperative", "trusted")
 
 # Platforms that can ONLY be driven through the mira API daemon (no native
 # connector exists), so an account on one of these must set ``source = "mira"``.
@@ -405,9 +405,9 @@ def load(path: Path | None = None) -> list[AccountConfig]:
                 f"{path}: [account.{name}].singleton must be a boolean"
             )
         trust = section.get("trust", "untrusted" if platform == "discord" else "cooperative")
-        if trust not in TRUST_LEVELS:
+        if trust not in LEVELS:
             raise SocialConfigError(
-                f"{path}: [account.{name}].trust must be one of {TRUST_LEVELS}")
+                f"{path}: [account.{name}].trust must be one of {LEVELS}")
         trusted_chats = section.get("trusted_chats", [])
         if not (isinstance(trusted_chats, list)
                 and all(isinstance(c, str) for c in trusted_chats)):

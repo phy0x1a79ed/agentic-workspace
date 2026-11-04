@@ -65,7 +65,8 @@ def wired(awm_workspace, monkeypatch):
 
 
 def _as(claim, node="altair"):
-    return {"_caller_session": claim}, f"peer:{node}"
+    """An edge call, which the Python gateway stamps trusted unless the claim lowers it."""
+    return {"_caller_session": claim, "_caller_trust": "trusted"}, f"peer:{node}"
 
 
 async def test_mount_holds_the_seat_and_lists_it(wired):
@@ -231,17 +232,17 @@ async def test_a_borrower_forwards_its_session_not_its_pid(wired, monkeypatch):
     monkeypatch.setattr(gc, "call", lambda tool, verb, args=None, *, peer=None, **kw: (call_peer)(peer, tool, verb, args, **kw))
     monkeypatch.setattr(wired, "_connectors", {})
     monkeypatch.setattr(holders, "claim", lambda pid: ME)
-    await wired.HANDLERS["mount"]({"account": "slack-bot", "channel": "D1",
+    await wired.HANDLERS["mount"]({"account": "slack-bot", "channel": "D1", "_caller_trust": "cooperative",
                                    "_caller_pid": 7, "_caller_session": OTHER}, None)
-    assert calls == [("mira", "mount", {"account": "slack-bot", "channel": "D1",
-                                        "_caller_session": ME})]
+    assert calls == [("mira", "mount", {"account": "slack-bot", "channel": "D1", "_caller_trust": "cooperative",
+                                        "_caller_session": {**ME, "trust": "cooperative"}})]
 
 
 # -- trust (channels.md R70, users.md R126 item 2) ------------------------------
 
 def _acct(**kw):
     from awm.social.config import AccountConfig
-    return AccountConfig(name="slack-bot", platform="slack", token="xoxb-1", **kw)
+    return AccountConfig(**{"name": "slack-bot", "platform": "slack", "token": "xoxb-1", **kw})
 
 
 def test_seat_trust_levels():
@@ -270,6 +271,91 @@ def test_a_lab_seat_reads_only_its_own_chats(awm_workspace):
     main = {"node": "altair", "job": "j-main", "name": "seat:slack/DM/tony"}
     store.mount("slack-bot", "DBETH", "beth", beth)
     store.mount("slack-bot", "DTONY", "tony", main)
-    assert seats.readable_chats(store, cfg, beth) == {"DBETH"}
-    assert seats.readable_chats(store, cfg, main) is None
-    assert seats.readable_chats(store, cfg, {"node": "mizar", "job": "x"}) is None
+    assert seats.chat_bound(store, cfg, beth, "trusted") == {"DBETH"}
+    assert seats.chat_bound(store, cfg, main, "trusted") is None
+    assert seats.chat_bound(store, cfg, {"node": "mizar", "job": "x"}, "trusted") is None
+    # Below trusted, a session reaches only what it holds, and nothing when it holds nothing.
+    assert seats.chat_bound(store, cfg, beth, "cooperative") == {"DBETH"}
+    assert seats.chat_bound(store, cfg, {"node": "mizar", "job": "x"}, "cooperative") == set()
+    assert seats.chat_bound(store, None, None, "untrusted") == set()
+
+
+# -- the cooperative level (channels.md R125 item 2, users.md R126 items 2 and 3) ----
+
+BETH = {"kind": "bg", "job": "beth0001", "name": "seat:slack/DM/beth"}
+MAIN = {"kind": "bg", "job": "main0001", "name": "seat:slack/slack-main"}
+STEVE = {"kind": "bg", "job": "stev0001", "name": "seat:slack/DM/steven"}
+
+
+@pytest.fixture()
+def lab(wired, monkeypatch):
+    """Tony's DM (trusted) and two lab DMs on one bot account, with altair's lineage."""
+    monkeypatch.setitem(wired._connectors, "bot", _FakeConn(
+        [("DTONY", "tony", "dm"), ("DBETH", "beth", "dm"), ("DSTEVE", "steven", "dm")]))
+    monkeypatch.setitem(wired._accounts, "bot", _acct(name="bot", trusted_chats=("DTONY",)))
+    parents = {"beth0001": "main0001", "stev0001": "main0001", "main0001": None}
+    monkeypatch.setattr(wired, "_parent_job", lambda node, job: parents[job])
+    return wired
+
+
+def _coop(claim, node="altair"):
+    return {"_caller_session": {**claim, "trust": "cooperative"}, "_caller_trust": "trusted"}, f"peer:{node}"
+
+
+async def test_a_lab_seat_never_mounts_tonys_dm(lab):
+    extra, as_ = _coop(BETH)
+    r = await lab._h_mount({"account": "bot", "channel": "DTONY", **extra}, as_)
+    assert not r["ok"] and "cannot hold a trusted chat" in r["error"]
+    main, as_main = _as(MAIN)
+    assert (await lab._h_mount({"account": "bot", "channel": "DTONY", **main}, as_main))["ok"]
+
+
+async def test_a_lab_seat_takes_its_dm_from_the_main_seat_that_started_it(lab):
+    main, as_ = _as(MAIN)
+    await lab._h_mount({"account": "bot", "channel": "DBETH", **main}, as_)
+    extra, as_ = _coop(BETH)
+    r = await lab._h_mount({"account": "bot", "channel": "DBETH", "force": True, **extra}, as_)
+    assert r["ok"] and r["evicted"]["job"] == MAIN["job"]
+
+
+async def test_a_lab_seat_cannot_force_a_siblings_dm(lab):
+    steve, as_ = _coop(STEVE)
+    await lab._h_mount({"account": "bot", "channel": "DSTEVE", **steve}, as_)
+    beth, as_ = _coop(BETH)
+    r = await lab._h_mount({"account": "bot", "channel": "DSTEVE", "force": True, **beth}, as_)
+    assert not r["ok"] and "only from the session that started it" in r["error"]
+
+
+async def test_an_unread_lineage_admits_no_take_over(lab, monkeypatch):
+    main, as_ = _as(MAIN)
+    await lab._h_mount({"account": "bot", "channel": "DBETH", **main}, as_)
+
+    def down(node, job):
+        raise RuntimeError("reflection is down")
+    monkeypatch.setattr(lab, "_parent_job", down)
+    extra, as_ = _coop(BETH)
+    r = await lab._h_mount({"account": "bot", "channel": "DBETH", "force": True, **extra}, as_)
+    assert not r["ok"] and "reflection is down" in r["error"]
+
+
+async def test_a_lab_seat_answers_only_the_chats_it_holds(lab, monkeypatch):
+    sent = []
+
+    class _Sender(_FakeConn):
+        async def send(self, channel, text, **kw):
+            sent.append(channel)
+            return {"ts": "1.0", "channel_id": channel}
+
+    conn = _Sender([("DBETH", "beth", "dm"), ("DSTEVE", "steven", "dm")])
+    monkeypatch.setitem(lab._connectors, "bot", conn)
+    extra, as_ = _coop(BETH)
+    await lab._h_mount({"account": "bot", "channel": "DBETH", **extra}, as_)
+    send = lab.HANDLERS["send"]
+    assert (await send({"account": "bot", "channel": "DBETH", "text": "hi", **extra}, as_))["ok"]
+    with pytest.raises(PermissionError, match="does not hold 'DSTEVE'"):
+        await send({"account": "bot", "channel": "DSTEVE", "text": "hi", **extra}, as_)
+    main, as_main = _as(MAIN)
+    assert (await send({"account": "bot", "channel": "DSTEVE", "text": "hi", **main}, as_main))["ok"]
+    assert sent == ["DBETH", "DSTEVE"]
+    with pytest.raises(PermissionError):
+        await send({"account": "bot", "channel": "DBETH", "text": "hi"}, None)

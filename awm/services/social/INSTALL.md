@@ -217,7 +217,12 @@ line came from. Newlines become ` ⏎ `. Text past 1500 characters is cut, and a
 
 - **One holder.** A mount on a held seat is refused and names the holder.
   `force=true` takes it, and the old holder gets one line saying it lost the
-  seat. The swarm is cooperative, so force is the recovery path.
+  seat. Force is the recovery path for a trusted caller.
+- **Below trusted.** A cooperative or untrusted caller sends, reacts, fetches,
+  reads history and downloads only in the chats it holds. It never mounts a
+  trusted chat. It forces a held seat only from the session that started it,
+  as the main seat hands a person's DM over. A borrowing node forwards its
+  caller's level in `_caller_session`, and the owner only ever lowers to it.
 - **Release.** `social_unmount` frees one seat, or every seat the caller holds.
   The owner prunes every 60 s and frees each seat whose job is gone or stopped.
   An idle background session retires after about an hour, which frees its seats

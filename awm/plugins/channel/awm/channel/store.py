@@ -3,7 +3,8 @@
 The file holds each room's host token, so it lives in a directory only this
 user can read. A holder is a session: ``node`` and ``session`` name it, and
 ``job`` is where its lines are typed. For a machine, ``token`` is the tether
-slot and ``ref`` the session id the stream gave its mint. ``cursor`` follows
+slot and ``ref`` the session id the stream gave its mint. ``trust`` is the
+other side's level, always untrusted, and ``holder_level`` the holder's own. ``cursor`` follows
 the conversation and ``log_cursor`` the tool log, each in the daemon epoch
 beside it.
 """
@@ -15,6 +16,8 @@ import sqlite3
 import time
 from pathlib import Path
 from typing import Any
+
+UNTRUSTED = "untrusted"
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS channels (
@@ -37,7 +40,8 @@ CREATE TABLE IF NOT EXISTS channels (
     ref       TEXT NOT NULL DEFAULT '',
     epoch     INTEGER,
     log_cursor INTEGER NOT NULL DEFAULT 0,
-    log_epoch INTEGER
+    log_epoch INTEGER,
+    holder_level TEXT NOT NULL DEFAULT 'untrusted'
 )
 """
 
@@ -49,6 +53,7 @@ ADDED = (
     ("epoch", "INTEGER"),
     ("log_cursor", "INTEGER NOT NULL DEFAULT 0"),
     ("log_epoch", "INTEGER"),
+    ("holder_level", "TEXT NOT NULL DEFAULT 'untrusted'"),
 )
 
 
@@ -69,10 +74,11 @@ class Store:
             epoch: int | None = None) -> dict:
         self._db.execute(
             "INSERT INTO channels (name, kind, trust, node, session, job, holder, link, token,"
-            " opened_at, lasts, ref, epoch, log_epoch)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " opened_at, lasts, ref, epoch, log_epoch, holder_level)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (name, kind, trust, holder["node"], holder["session"], holder["job"],
-             holder.get("name") or "", link, token, time.time(), lasts, ref, epoch, epoch))
+             holder.get("name") or "", link, token, time.time(), lasts, ref, epoch, epoch,
+             holder.get("level") or UNTRUSTED))
         return self.get(name)
 
     def get(self, name: str) -> dict | None:

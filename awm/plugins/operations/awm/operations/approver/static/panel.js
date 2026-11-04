@@ -87,7 +87,11 @@ async function renderCard() {
   }
   const id = card.task_id;
   const buttons = [];
-  if (card.section === "proposed") {
+  if (card.section === "proposed" && !selected.body_sha256) {
+    // Opened from a link, the panel has no body to sign: spawn from the board (R65 item 2).
+    buttons.push(h("p", { class: "muted" }, "Open this card on the board to spawn it."),
+      h("button", { onclick: () => run("Reject", () => act("reject", { task_id: id })) }, "Reject"));
+  } else if (card.section === "proposed") {
     const sel = peerSelect();
     buttons.push(h("label", {}, "Spawn on ", sel),
       h("button", { onclick: () => run("Spawn", () => act("spawn", { task_id: id, peer: sel.value,
@@ -165,6 +169,9 @@ async function panel() {
     renderCard();
   });
   if (window.parent !== window) for (const o of keys.board_origins) window.parent.postMessage({ type: "awm-panel-ready" }, o);
+  // A seat sends Tony /panel?task=<id> for one card (sessions.md R68).
+  const linked = new URLSearchParams(location.search).get("task");
+  if (linked && /^[A-Za-z0-9_-]{8}$/.test(linked)) selected = { task_id: linked, body_sha256: null, preview: "" };
   const tick = () => { renderTwofa(); renderWindows(); if (selected) renderCard(); };
   tick();
   setInterval(() => { renderTwofa(); renderWindows(); }, 5000);

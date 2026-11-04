@@ -50,6 +50,9 @@ async def test_blocked_opens_a_card_and_urgent_sends_a_dm(h):
     assert out["ok"] and out["section"] == "needs_you" and out["status"] == "blocked"
     assert out["notified"] is True and "needs the VPN key" in h.dms[0]
     assert "fix-tunnel" in h.dms[0] and "job-a" in h.dms[0]
+    assert out["panel_url"] == f"https://auth.tony-xy-liu.com/panel?task={out['task_id']}"
+    got = await h.call("task_get", task_id=out["task_id"])
+    assert got["panel_url"] == out["panel_url"] and got["task"]["task_id"] == out["task_id"]
     card = h.store.task_get(out["task_id"])
     assert card["meta"]["reason"] == "needs the VPN key"
     assert card["sessions"][0]["session_id"] == A

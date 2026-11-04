@@ -352,12 +352,19 @@ fn gateway_end_to_end() {
     assert_eq!(who["caller"]["session"], json!(r9), "{who}");
     assert_eq!((who["caller"]["trust"].as_str(), who["caller"]["scope"].as_str()), (Some("cooperative"), Some("awm/redux-x")), "{who}");
     assert_eq!((who["trust"].as_str(), who["scope"].as_str()), (Some("cooperative"), Some("awm/redux-x")), "{who}");
+    // The stamped level gates the call before the tool is looked up (channels.md R125).
+    let gated: Value = http().post(format!("{url}/invoke")).header("X-Awm-Session-Pid", "4242")
+        .json(&json!({"name": "trilium", "args": {"verb": "note_get"}})).send().unwrap().json().unwrap();
+    assert!(gated.to_string().contains("a cooperative session may not use the \\\"trilium\\\" tool"), "{gated}");
     let reply = as_session(json!({"verb": "whoami", "args": {"_caller_trust": "trusted"}}));
     assert!(reply["result"].is_null() && reply.to_string().contains("_caller_trust"), "{reply}");
     write(&node.state.join("sessions.json"), &session("trusted"));
     let reply = as_session(json!({"verb": "whoami"}));
     let who: Value = serde_json::from_str(reply["result"].as_str().unwrap()).unwrap();
     assert_eq!(who["trust"], "trusted", "{who}");
+    let ungated: Value = http().post(format!("{url}/invoke")).header("X-Awm-Session-Pid", "4242")
+        .json(&json!({"name": "trilium", "args": {"verb": "note_get"}})).send().unwrap().json().unwrap();
+    assert!(ungated.to_string().contains("Unknown tool"), "a trusted session passes the level gate: {ungated}");
     write(&node.state.join("sessions.json"), "{}");
     let reply = as_session(json!({"verb": "whoami"}));
     let who: Value = serde_json::from_str(reply["result"].as_str().unwrap()).unwrap();

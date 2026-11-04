@@ -189,7 +189,7 @@ async def test_react_verb_passes_through_to_the_connector(monkeypatch):
             return {"as": "reaction", "emoji": emoji}
 
     monkeypatch.setitem(hub._connectors, "bot", _Conn())
-    r = await hub.HANDLERS["react"]({"account": "bot", "channel": "C1",
+    r = await hub.HANDLERS["react"]({"account": "bot", "channel": "C1", "_caller_trust": "trusted",
                                      "message_id": 5, "emoji": "👀"})
     assert r == {"ok": True, "as": "reaction", "emoji": "👀"}
     assert calls == [("C1", "5", "👀", False)]

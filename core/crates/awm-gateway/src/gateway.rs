@@ -839,6 +839,10 @@ impl Gateway {
             tracing::info!("mode gate: refused {tool}.{verb}: {why}");
             return Err(ApiError::new(403, why));
         }
+        if let Some(why) = self.level_refusal(&tool, &verb, &inner, ctx) {
+            tracing::info!("level gate: refused {tool}.{verb}: {why}");
+            return Err(ApiError::new(403, why));
+        }
         if let Some(why) = ctx.plugin.as_deref().and_then(|p| self.undeclared(p, &tool, &verb)) {
             tracing::info!("needs guard: refused {tool}.{verb}: {why}");
             return Err(ApiError::new(403, why));
@@ -852,6 +856,15 @@ impl Gateway {
         let result = self.invoke_local(&tool, &verb, inner, ctx, &tools).await;
         self.record_call(&tools, &tool, &verb, ctx, result.is_ok(), started);
         result
+    }
+
+    /// Why the caller's stamped level may not make this call (channels.md R125).
+    fn level_refusal(&self, tool: &str, verb: &str, args: &Value, ctx: &CallContext) -> Option<String> {
+        let level = awm_trust::stamped_level(ctx.caller.trust.as_deref(), ctx.caller.lane != Lane::Edge);
+        let (contract, major) = crate::isolated::HARNESS_CONTRACT;
+        let harness = self.providers(contract, major).iter().any(|o| o.name == tool);
+        let names_other = args.get("job").and_then(Value::as_str).is_some_and(|j| !j.is_empty());
+        awm_trust::call_refusal(level, &awm_trust::Call { tool, verb, harness, names_other })
     }
 
     /// Why `plugin` may not call `tool`'s `verb`, or None when it may (R116 item 3). A plugin

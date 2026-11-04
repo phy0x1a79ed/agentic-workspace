@@ -1,4 +1,4 @@
-//! Trust per session (fleet.md R103, R104, R107 item 3). Twin of `awm.trustpolicy`.
+//! Trust per session (fleet.md R103, R104, R107 item 3) and the level gate (channels.md R125). Twin of `awm.trustpolicy`, but for the gate, which only the Rust gateway runs.
 
 use std::collections::BTreeSet;
 use std::str::FromStr;
@@ -96,6 +96,69 @@ pub fn may_steer(actor: Level, verb: &str, target: Option<Level>) -> Result<(), 
     }
 }
 
+/// The level a call runs at, from the trust the gateway stamped (R103 item 2). A level
+/// that is missing or unknown is untrusted, except on a call the gateway makes itself.
+pub fn stamped_level(trust: Option<&str>, gateway_own: bool) -> Level {
+    match trust {
+        Some(t) => t.parse().unwrap_or(Level::Untrusted),
+        None if gateway_own => Level::Trusted,
+        None => Level::Untrusted,
+    }
+}
+
+/// One call, as the level gate sees it.
+pub struct Call<'a> {
+    pub tool: &'a str,
+    pub verb: &'a str,
+    /// The tool serves the harness contract. Only reflection drives a harness.
+    pub harness: bool,
+    /// The call names another session by `job`.
+    pub names_other: bool,
+}
+
+/// Verbs that bring up a top-level session (channels.md R125 item 3).
+pub const START_VERBS: [&str; 3] = ["start_other", "resume_other", "adopt_other"];
+/// The `social` verbs a seat holds and answers its own chats with (R69). social keeps them
+/// to the chats the session holds, and a mount to chats below trusted that no sibling holds.
+pub const SEAT_CHAT_VERBS: [&str; 7] = ["send", "react", "fetch", "history", "download_attachments", "mount", "unmount"];
+/// The `2fa` verbs that only read. ssh arms the approver itself for fir and sockeye.
+pub const TWOFA_READS: [&str; 5] = ["devices", "ping", "reachability", "status", "pending"];
+const DESCRIBE: &str = "describe";
+
+/// Why a session at `level` may not make `call`, or `None` when it may (channels.md R125,
+/// R71 item 3). A trusted session is not gated. A tool refused whole refuses `describe` too.
+pub fn call_refusal(level: Level, call: &Call) -> Option<String> {
+    if level == Level::Trusted {
+        return None;
+    }
+    let untrusted = level == Level::Untrusted;
+    let (tool, verb) = (call.tool, call.verb);
+    let partial = |allowed: bool| -> Option<String> {
+        (!allowed && verb != DESCRIBE).then(|| format!("a {} session may not call {tool}.{verb}", level.as_str()))
+    };
+    let whole = || Some(format!("a {} session may not use the {tool:?} tool", level.as_str()));
+    if call.harness {
+        return whole();
+    }
+    match tool {
+        // A seat answers its own chats and nothing more: no search, lookup, DM or bucket.
+        "social" => partial(SEAT_CHAT_VERBS.contains(&verb)),
+        // No cards; request_human is the one way to Tony's queue (items 5 and 6).
+        "operations" => partial(verb == "request_human"),
+        // The vault holds the board's cards and Tony's own notes (items 5 and 10).
+        "trilium" => whole(),
+        "2fa" if untrusted => whole(),
+        "2fa" => partial(TWOFA_READS.contains(&verb)),
+        // ssh arms Duo for fir and sockeye, the grant of item 1 that untrusted lacks.
+        "ssh" if untrusted => whole(),
+        "reflection" if START_VERBS.contains(&verb) => partial(false),
+        "reflection" if untrusted && (verb == "message" || (call.names_other && STEER_VERBS.contains(&verb))) => {
+            Some("an untrusted session cannot start, steer or message other sessions".into())
+        }
+        _ => None,
+    }
+}
+
 /// Whether a session on `from` may act on `to`, and the level it starts there with (R104).
 pub fn cross_edge(edges: &EdgeList, from: &str, to: &str, starter: Level) -> Result<Level, TrustError> {
     if !edges.reaches(from, to) {
@@ -160,6 +223,53 @@ mod tests {
         assert!(may_steer(Level::Cooperative, "message", Some(Level::Trusted)).is_ok());
         assert!(may_steer(Level::Cooperative, "stop", Some(Level::Trusted)).is_err());
         assert!(may_steer(Level::Trusted, "interrupt", Some(Level::Trusted)).is_ok());
+    }
+
+    fn call<'a>(tool: &'a str, verb: &'a str) -> Call<'a> {
+        Call { tool, verb, harness: false, names_other: false }
+    }
+
+    #[test]
+    fn trusted_is_not_gated() {
+        assert_eq!(call_refusal(Level::Trusted, &call("social", "search")), None);
+        assert_eq!(call_refusal(Level::Trusted, &Call { harness: true, ..call("harness-cc", "start") }), None);
+    }
+
+    #[test]
+    fn cooperative_keeps_its_chats_ssh_and_request_human() {
+        let c = Level::Cooperative;
+        for (tool, verb) in [("social", "send"), ("social", "history"), ("social", "mount"), ("social", "describe"), ("operations", "request_human"),
+                             ("2fa", "status"), ("ssh", "connect"), ("reflection", "compact"), ("reflection", "message"),
+                             ("journal", "post"), ("channel", "open"), ("browser", "tab_open")] {
+            assert_eq!(call_refusal(c, &call(tool, verb)), None, "{tool}.{verb}");
+        }
+        for (tool, verb) in [("social", "search"), ("social", "lookup"), ("social", "open_dm"), ("social", "bucket_get"), ("social", "keepers"),
+                             ("operations", "task_report"), ("operations", "approval_request"), ("trilium", "note_get"),
+                             ("trilium", "describe"), ("2fa", "burst"), ("reflection", "start_other"), ("reflection", "resume_other")] {
+            assert!(call_refusal(c, &call(tool, verb)).is_some(), "{tool}.{verb}");
+        }
+        assert!(call_refusal(c, &Call { harness: true, ..call("harness-cc", "pool_claim") }).is_some());
+        assert_eq!(call_refusal(c, &Call { names_other: true, ..call("reflection", "interrupt") }), None, "reflection checks the target");
+    }
+
+    #[test]
+    fn untrusted_widens_nothing() {
+        let u = Level::Untrusted;
+        assert_eq!(call_refusal(u, &call("social", "send")), None);
+        assert_eq!(call_refusal(u, &call("operations", "request_human")), None);
+        assert_eq!(call_refusal(u, &call("reflection", "compact")), None, "its own session");
+        for (tool, verb) in [("2fa", "status"), ("ssh", "connect"), ("reflection", "message"), ("reflection", "start_other")] {
+            assert!(call_refusal(u, &call(tool, verb)).is_some(), "{tool}.{verb}");
+        }
+        assert!(call_refusal(u, &Call { names_other: true, ..call("reflection", "interrupt") }).is_some());
+    }
+
+    #[test]
+    fn a_missing_level_is_untrusted_unless_the_gateway_calls() {
+        assert_eq!(stamped_level(None, false), Level::Untrusted);
+        assert_eq!(stamped_level(None, true), Level::Trusted);
+        assert_eq!(stamped_level(Some("bogus"), true), Level::Untrusted);
+        assert_eq!(stamped_level(Some("cooperative"), false), Level::Cooperative);
     }
 
     #[test]

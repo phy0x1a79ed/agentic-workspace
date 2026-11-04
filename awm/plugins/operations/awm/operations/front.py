@@ -16,6 +16,7 @@ from typing import Any, Awaitable, Callable
 
 from awm.gatewayclient.ids import normalise
 
+from awm.operations import api
 from awm.operations.relay import Refused, Relay, Unreachable
 
 log = logging.getLogger("awm.operations.front")
@@ -154,7 +155,8 @@ class Front:
 
     async def task_get(self, args: dict) -> dict:
         return {"ok": True, "task": _unwrap(await self.relay.read(
-            "task_get", {"task_id": args.get("task_id")}))}
+            "task_get", {"task_id": args.get("task_id")})),
+            "panel_url": api.panel_url(str(args.get("task_id") or ""))}
 
     async def task_list(self, args: dict) -> dict:
         keep = {k: args[k] for k in ("section", "q", "before", "limit") if args.get(k) is not None}
@@ -187,6 +189,7 @@ class Front:
         task_id = await self._card_for(session, caller, text)
         out = await self.task_report({"task_id": task_id, "session_id": session, "state": kind,
                                       "reason": text})
+        out["panel_url"] = api.panel_url(task_id)
         if kind == "blocked" and args.get("urgent") is True:
             out["notified"] = await self.dm(
                 f"**{caller.name or task_id}** on **{self.node}** needs you.\n{text}\n"

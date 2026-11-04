@@ -38,6 +38,7 @@ from awm.social import seats
 from awm.social.attachments import file_url, sink_dir, write_attachments
 from awm.social.dao import SocialDAO, init as dao_init
 from awm.social.history import History
+from awm.trustpolicy import lower, rank
 
 log = logging.getLogger("awm.social.hub_adapter")
 
@@ -299,11 +300,46 @@ async def _h_react(args: dict) -> dict:
     return {"ok": True, **done}
 
 
+def _level(args: dict) -> str:
+    """The caller's trust level: the gateway's stamp, lowered by the level a
+    borrowing node read for its own caller (``_caller_session``). A missing or
+    unknown level is untrusted."""
+    level = str(args.get("_caller_trust") or "untrusted")
+    claim = args.get(holders.CLAIM_KEY)
+    claimed = claim.get("trust") if isinstance(claim, dict) else None
+    try:
+        rank(level)
+        return lower(level, str(claimed)) if claimed else level
+    except ValueError:
+        return "untrusted"
+
+
+def _held_only(handler: Any) -> Any:
+    """Keep a caller below trusted to the chats it holds (channels.md R125 item 2)."""
+    async def _checked(args: dict, as_: str | None = None) -> Any:
+        level = _level(args)
+        if level != "trusted":
+            try:
+                who = holders.caller(args, as_, what="a seat")
+            except seats.SeatError as exc:
+                raise PermissionError(f"a {level} session answers only the chats it holds: {exc}") from None
+            held = seats.chat_bound(_dao, _accounts.get(args["account"]), who, level) or set()
+            if str(args.get("channel") or "") not in held:
+                raise PermissionError(
+                    f"a {level} session answers only the chats it holds, and it does not "
+                    f"hold {args.get('channel')!r}")
+        return await handler(args)
+
+    _checked.__name__ = getattr(handler, "__name__", "_checked")
+    _checked.__doc__ = handler.__doc__
+    return _checked
+
+
 async def _h_history(args: dict, as_: str | None = None) -> dict:
     """A bot account's synced history: the newest ``limit`` messages, or with
     ``since`` (a message ts) the ``limit`` right after it, oldest first. The
     catch-up read for a listener that missed pushes. A seat holder reads only
-    the chats it holds (:func:`seats.readable_chats`)."""
+    the chats it holds (:func:`seats.chat_bound`)."""
     conn = _conn(args["account"])
     if not conn.keeps_history:
         raise RuntimeError(
@@ -312,7 +348,7 @@ async def _h_history(args: dict, as_: str | None = None) -> dict:
         holder = holders.caller(args, as_, what="a seat")
     except seats.SeatError:
         holder = None
-    allowed = seats.readable_chats(_dao, _accounts.get(args["account"]), holder)
+    allowed = seats.chat_bound(_dao, _accounts.get(args["account"]), holder, _level(args))
     channel = args.get("channel") or None
     if allowed is not None and channel is not None and channel not in allowed:
         raise PermissionError(f"chat {channel!r} is not a seat this session holds")
@@ -553,6 +589,9 @@ async def _h_mount(args: dict, as_: str | None = None) -> dict:
             f"{label} is held by {seats.holder_label(evicted)} since "
             f"{evicted['mounted_at']}. Pass force=true to take it."),
             "holder": _holder_dict(evicted)}
+    refused = await asyncio.to_thread(_mount_refusal, _level(args), account, seat.id, who, evicted)
+    if refused:
+        return {"ok": False, "error": f"{label}: {refused}"}
     row = _dao.mount(account, seat.id, seat.name, who)
     if evicted:
         _pusher.push(evicted["node"], evicted["job"],
@@ -582,6 +621,41 @@ async def _h_mount(args: dict, as_: str | None = None) -> dict:
         "lasts": "until unmount, a forced mount by another session, or this "
                  "session's job ending",
     }
+
+
+def _mount_refusal(level: str, account: str, channel_id: str, who: dict,
+                   evicted: dict | None) -> str | None:
+    """Why a caller below trusted may not mount this seat, or None.
+
+    It never mounts a trusted chat, so Tony's DM stays his (users.md R126 item 2).
+    It takes a held seat only from its own parent session, as the main seat
+    hands a person's DM to the seat it started; never from a sibling (item 3).
+    """
+    if level == "trusted":
+        return None
+    if seats.seat_trust(_accounts.get(account), channel_id) == "trusted":
+        return f"a {level} session cannot hold a trusted chat"
+    if evicted is None:
+        return None
+    try:
+        parent = _parent_job(who["node"], who["job"])
+    except Exception as exc:  # noqa: BLE001 - a lineage that cannot be read admits nothing
+        return f"cannot read this session's parent to take the seat over: {exc}"
+    if (evicted["node"], evicted["job"]) != (who["node"], parent):
+        return (f"a {level} session takes a held seat only from the session that "
+                f"started it, not from {seats.holder_label(evicted)}")
+    return None
+
+
+def _parent_job(node: str, job: str) -> str | None:
+    """The job that started ``job`` on ``node``, from reflection's lineage."""
+    from awm import gatewayclient
+    peer = None if node == config.node_name() else node
+    out = gatewayclient.call_sync("reflection", "list_other", {}, peer=peer, timeout=30.0)
+    for row in (out or {}).get("sessions") or []:
+        if isinstance(row, dict) and str(row.get("job") or "") == job:
+            return str(row.get("parent") or "") or None
+    raise LookupError(f"reflection on {node} does not list job {job}")
 
 
 async def _h_unmount(args: dict, as_: str | None = None) -> dict:
@@ -1452,12 +1526,13 @@ def _forwarding(fn: str, handler: Any, outbound: Any = None) -> Any:
     return _wrapped
 
 
-def _seat_forwarding(fn: str, handler: Any) -> Any:
+def _seat_forwarding(fn: str, handler: Any, outbound: Any = None) -> Any:
     """:func:`_forwarding` for a verb that acts for the calling session.
 
     The owner cannot see a borrower's pid, so the borrower reads its own session
-    record and forwards the job as ``_caller_session``. The owner takes the node
-    from the edge's ``peer:<node>`` stamp, never from the call.
+    record and forwards the job as ``_caller_session``, with the trust level
+    stamped here: the owner sees the borrowing service, which is trusted. The
+    owner takes the node from the edge's ``peer:<node>`` stamp, never from the call.
     """
     async def _wrapped(args: dict, as_: str | None = None) -> Any:
         from awm import gatewayclient
@@ -1468,10 +1543,12 @@ def _seat_forwarding(fn: str, handler: Any) -> Any:
             fwd = {k: v for k, v in args.items()
                    if k not in ("_caller_pid", "_caller_session")}
             pid = args.get("_caller_pid")
-            if isinstance(pid, int):
-                fwd["_caller_session"] = holders.claim(pid)
+            claim = holders.claim(pid) if isinstance(pid, int) else None
+            level = _level(args)
+            if claim or level != "trusted":
+                fwd["_caller_session"] = {**(claim or {}), "trust": level}
             try:
-                return await gatewayclient.call("social", fn, fwd, peer=peer)
+                return await gatewayclient.call("social", fn, outbound(fwd) if outbound else fwd, peer=peer)
             except gatewayclient.GatewayCallError as exc:
                 raise RuntimeError(
                     f"account {account!r} is a fleet singleton owned by peer "
@@ -1484,8 +1561,8 @@ def _seat_forwarding(fn: str, handler: Any) -> Any:
 
 
 HANDLERS = {
-    "send": _forwarding("send", _h_send, outbound=_inline_file),
-    "react": _forwarding("react", _h_react),
+    "send": _seat_forwarding("send", _held_only(_h_send), outbound=_inline_file),
+    "react": _seat_forwarding("react", _held_only(_h_react)),
     "seats": _forwarding("seats", _h_seats),
     "mount": _seat_forwarding("mount", _h_mount),
     "unmount": _seat_forwarding("unmount", _h_unmount),
@@ -1495,11 +1572,11 @@ HANDLERS = {
     "channels": _forwarding("channels", _h_channels),
     "open_dm": _forwarding("open_dm", _h_open_dm),
     "accounts": _h_accounts,
-    "fetch": _forwarding("fetch", _h_fetch),
+    "fetch": _seat_forwarding("fetch", _held_only(_h_fetch)),
     "history": _seat_forwarding("history", _h_history),
     "search": _forwarding("search", _h_search),
-    "download_attachments": _forwarding(
-        "download_attachments", _h_download_attachments),
+    "download_attachments": _seat_forwarding(
+        "download_attachments", _held_only(_h_download_attachments)),
     "list_operators": _h_list_operators,
     "add_operator": _h_add_operator,
     "remove_operator": _h_remove_operator,
