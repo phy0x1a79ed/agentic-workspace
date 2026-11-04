@@ -131,7 +131,6 @@ CREATE TABLE IF NOT EXISTS library(
 class Filters:
     """What narrows a paper query; a filter papers cannot meet makes the answer empty."""
 
-    kinds: list[str] = field(default_factory=list)
     after: str = ""
     before: str = ""
     blocked: bool = False
@@ -140,10 +139,8 @@ class Filters:
 
     @classmethod
     def from_args(cls, args: dict[str, Any]) -> "Filters":
-        kinds = args.get("kind") or []
-        kinds = [k.strip() for k in (kinds.split(",") if isinstance(kinds, str) else kinds) if str(k).strip()]
-        return cls(kinds, str(args.get("after") or ""), str(args.get("before") or ""),
-                   blocked=bool(args.get("project") or args.get("scope")) or (bool(kinds) and "paper" not in kinds))
+        return cls(str(args.get("after") or ""), str(args.get("before") or ""),
+                   blocked=bool(args.get("project") or args.get("scope")))
 
     def keeps(self, ts: str) -> bool:
         if self.after and (not ts or ts < self.after):

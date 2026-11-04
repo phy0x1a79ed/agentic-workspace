@@ -429,17 +429,18 @@ class Probe:
     # -- checks --------------------------------------------------------------
 
     def search_hits(self, query: str, terms: list[str]) -> tuple[bool, Any, str]:
-        """The local search fanned out to the peer."""
-        sources = [s["name"] for s in self.peer_call("search", "sources", {}).get("sources", [])]
-        args = {"query": query, "peers": self.peer, "limit": 100, "sources": sources}
+        """The local search asked for every source the peer holds, each named ``name@peer``."""
+        names = [f"{s['name']}@{self.peer}" for s in self.peer_call("search", "sources", {}).get("sources", [])]
+        args = {"query": query, "limit": 100, "sources": names}
         for _ in range(3):
             out = parse_result(self.local_invoke("search", {"verb": "query", "args": args})["result"])
-            answer = (out.get("peers") or {}).get(self.peer, {})
-            if answer.get("status") == "ok":
+            failed = {n: v for n, v in (out.get("sources") or {}).items() if v.get("status") not in ("ok", "frozen")}
+            if not failed:
                 break
         else:
-            raise Mismatch(f"peer {self.peer} answered the fan-out with {answer!r:.200}")
-        hits = [h for h in out.get("hits", []) if (h.get("origin") or {}).get("node") == self.peer]
+            raise Mismatch(f"peer {self.peer} answered the search with {failed!r:.200}")
+        hits = [h for section in ("exact", "related") for listed in (out.get(section) or {}).values()
+                for h in listed if (h.get("origin") or {}).get("node") == self.peer]
         return self.judge_hits(hits, terms)
 
     def transcript_hits(self, query: str, terms: list[str]) -> tuple[bool, Any, str]:

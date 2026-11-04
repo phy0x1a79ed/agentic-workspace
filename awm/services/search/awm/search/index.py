@@ -89,7 +89,8 @@ class Filters:
     sources: list[str] = field(default_factory=list)
     project: str = ""
     scope: str = ""
-    kinds: list[str] = field(default_factory=list)
+    #: ``[(negated, tag), ...]``, every term held against the ``tags`` column.
+    tags: list[tuple[bool, str]] = field(default_factory=list)
     after: str = ""
     before: str = ""
     hidden: Sequence[dict] | None = ()
@@ -102,9 +103,9 @@ class Filters:
             if value:
                 clauses.append(f"{column} = ?")
                 params.append(value)
-        if self.kinds:
-            clauses.append(f"kind IN ({','.join('?' * len(self.kinds))})")
-            params += self.kinds
+        for negated, tag in self.tags:
+            clauses.append(f"{'NOT ' if negated else ''}instr(tags, ?) > 0")
+            params.append(store.tag_field([tag]))
         if self.after:
             clauses.append("ts >= ?")
             params.append(self.after)
@@ -286,3 +287,41 @@ def resolve(conn: sqlite3.Connection, entries: list[dict[str, Any]], filters: Fi
         taken[row["source"]] = taken.get(row["source"], 0) + 1
         hits.append(_hit(row, "meaning", best[key]))
     return hits
+
+
+#: The i-th seed of a walk weighs DECAY**i, so the first hit counts most.
+DECAY = 0.9
+
+
+def walk(conn: sqlite3.Connection, source: str, seeds: list[str], filters: Filters,
+         limit: int) -> list[dict[str, Any]]:
+    """The documents of ``source`` one ``reply_to`` link from ``seeds``, either way: those a seed replies to
+    and those replying to a seed. A document scores the summed weight of the seeds it links, ties newest first.
+    """
+    if not seeds or not filters.sources:
+        return []
+    weight: dict[str, float] = {}
+    for i, seed in enumerate(dict.fromkeys(seeds)):
+        weight.setdefault(seed, DECAY ** i)
+    allowed, params = filters.allowed()
+    marks = ",".join("?" * len(weight))
+    held = conn.execute(f"SELECT doc_id, reply_to FROM documents WHERE source=? AND doc_id IN ({marks})",
+                        [source, *weight]).fetchall()
+    score: dict[str, float] = {}
+    for row in held:
+        for target in store.id_list(row["reply_to"]):
+            score[target] = score.get(target, 0.0) + weight[row["doc_id"]]
+    for seed, w in weight.items():
+        for row in conn.execute("SELECT doc_id FROM documents WHERE source=? AND instr(reply_to, ?) > 0",
+                                (source, store.id_field([seed]))):
+            score[row["doc_id"]] = score.get(row["doc_id"], 0.0) + w
+    for seed in weight:
+        score.pop(seed, None)
+    if not score:
+        return []
+    keys = [store.key_of(source, d) for d in score]
+    rows = conn.execute(f"SELECT * FROM documents WHERE key IN ({','.join('?' * len(keys))})"
+                        f" AND key IN ({allowed})", [*keys, *params]).fetchall()
+    rows.sort(key=lambda r: r["ts"], reverse=True)
+    rows.sort(key=lambda r: -score[r["doc_id"]])
+    return [_hit(r, "reply_to", score[r["doc_id"]]) for r in rows[:limit]]

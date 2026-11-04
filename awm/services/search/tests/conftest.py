@@ -121,7 +121,7 @@ class FakeGateway:
     def plug_live(self, name: str, hits: Callable[[dict], Any], *, service: str | None = None,
                   **table: Any) -> None:
         service = service or name
-        verbs = ("query", *(["get"] if table.get("get") else []))
+        verbs = ("query", *(["get"] if table.get("get") else []), *(["hop"] if table.get("hop") else []))
         self.entries.append(entry(service, [{"name": name, "mode": "live", "query": f"{service}_query",
                                              **table}], verbs=verbs))
         self.handlers[(service, "query")] = hits

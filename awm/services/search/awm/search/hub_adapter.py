@@ -1,4 +1,4 @@
-"""Hub adapter for the search service: one ranked search over everything the fleet knows.
+"""Hub adapter for the search service: one search over the sources a caller names, on any node.
 
 Boots the service as a gateway-registered process: stands up its database, then
 runs the shared :class:`awm.gatewayclient.ServiceAdapter` loop (register → ready
@@ -16,7 +16,6 @@ from typing import Any
 
 from awm import config
 from awm.config import privacy
-from awm.config.peertoken import node_label
 from awm.gatewayclient import ServiceAdapter, spawn_supervised
 from awm.persistence import embeddings
 
@@ -35,46 +34,43 @@ API_MANIFEST: dict[str, Any] = {
             "tool": "search_query",
             "timeout": 60,
             "description": (
-                "One search over the sources you name in `sources`: journals, precedents, papers "
-                "or any other source `search sources` lists. No source is searched unless named. "
-                "It searches this node only, unless "
-                "`peers` names other nodes. The answer has two ranked sections, read in order: "
-                "`exact` (the query as a literal substring, case-insensitive, then keyword "
-                "matches) and `related` (nearest in meaning). Each section reports each source "
-                "on its own: a map from source name to that source's ranked hits, up to `limit` "
-                "each, so papers (source `kb`), journals, precedents and notes are never ranked "
-                "against one another; a source with no hits is absent. A document appears in the "
-                "first section that holds it. Each hit carries source, id, title, ts (its date), "
-                "project and scope where it has them, score, match and origin (the node that holds "
-                "it), and no text: read a hit with `get`, passing the query it answered. Read the answer's "
-                "`sources` and `peers` for the status of each source and peer asked. "
-                "For papers that cite, are cited by or share an author with paper hits, pass their "
-                "ids to `kb hop`. `author` narrows papers to an author."
+                "One search over the sources you name in `sources`, such as journals, kb or "
+                "kb@altair: a bare name is this node's, and `name@node` is another node's. "
+                "No source is searched unless named. The answer has two ranked sections, read in "
+                "order: `exact` (the query as a literal substring, case-insensitive, then keyword "
+                "matches) and `related` (nearest in meaning). Each section reports each source on "
+                "its own: a map from source name (`name@node` for another node's) to that source's "
+                "ranked hits, up to `limit` each; a source with no hits is absent. A document "
+                "appears in the first section that holds it. Each hit carries source, id, title, ts "
+                "(its date), project and scope where it has them, score, match and origin (the "
+                "node that holds it), and no text: read a hit with `get`, passing the query it "
+                "answered. `hop` walks links from the hits into a third section, `hop`, in the "
+                "walk's order. Read the answer's `sources` for the status of each source asked."
             ),
             "params": [
-                {"name": "query", "type": "string", "required": True,
-                 "description": "What to find, in words."},
                 {"name": "sources", "type": "array", "required": True,
-                 "description": "The sources to search: names from `search sources`, such as "
-                                "journals, precedence or kb (papers)."},
+                 "description": "The sources to search: names from `search sources`, such as journals "
+                                "or kb, each optionally `@node`, such as kb@altair. A bare name is this "
+                                "node's. Decisions are journal posts tagged precedent."},
+                {"name": "query", "type": "string",
+                 "description": "What to find, in words. Optional when `hop` names `from`."},
+                {"name": "tags", "type": "string",
+                 "description": "The journal's tag filter: tags joined by `and`, `!` negating one, such "
+                                "as `precedent` or `journal and !closed`. A source whose documents carry "
+                                "no tags, such as kb, answers nothing to a tag it must hold."},
+                {"name": "hop", "type": "object",
+                 "description": "Walk links from the hits, as {\"via\": ..., \"from\": [ids], \"limit\": n}. "
+                                "`via` is citations, cited_by or authors for papers (kb, library), or "
+                                "reply_to for journals. Without `from`, the walk starts from each "
+                                "source's hits for the words. Omit it to walk nothing."},
                 {"name": "project", "type": "string", "description": "Only this project's documents."},
                 {"name": "scope", "type": "string", "description": "Only this scope's documents."},
-                {"name": "kind", "type": "array",
-                 "description": "Only these kinds, such as journal or paper."},
                 {"name": "after", "type": "string",
                  "description": "Only documents at or after this ISO 8601 date or time (UTC)."},
                 {"name": "before", "type": "string",
                  "description": "Only documents before this ISO 8601 date or time (UTC)."},
                 {"name": "limit", "type": "integer",
                  "description": "Maximum hits per source in each section, 1-100. Default 10."},
-                {"name": "passages", "type": "integer",
-                 "description": "Ignored: a hit quotes no text. Accepted from nodes on an older release."},
-                {"name": "peers", "type": "string",
-                 "description": "Where to search. Omit it for this node only. `fleet` adds every "
-                                "node this node has an edge to. Node names, comma-separated, "
-                                "search only those nodes. Add `local` to the names to include "
-                                "this node. `fleet` among the names adds every node this node "
-                                "has an edge to, as in `fleet,shaula`."},
                 {"name": "context", "type": "string",
                  "description": "The scope the search is made from, as project/scope. Default: the "
                                 "calling session's scope. No order depends on it."},
@@ -88,8 +84,8 @@ API_MANIFEST: dict[str, Any] = {
             "effect": "read",
             "tool": "search_get",
             "description": (
-                "One document in full: title, text, project, scope, kind, ts and url; a paper "
-                "adds its authors and journal. Take `source` and `id` from a hit. For a hit from "
+                "One document in full: title, text, project, scope, kind, tags, ts and url; a "
+                "paper adds its authors and journal. Take `source` and `id` from a hit. For a hit from "
                 "another node, set `node` to the hit's origin node. Pass the `query` the hit "
                 "answered: each get is logged with the caller's scope as feedback on search."
             ),
@@ -183,7 +179,12 @@ ARCHIVE = Archive()
 
 
 async def _h_query(args: dict, as_: str | None = None) -> dict:
-    return await ARCHIVE.query(request.parse(args, as_))
+    return await ARCHIVE.query(request.parse(args, as_), _relayer(as_))
+
+
+def _relayer(as_: str | None) -> str | None:
+    """The node that relayed a call, or ``None`` for a call made on this node."""
+    return (config.caller_peer(as_) or "peer") if privacy.from_peer(as_) else None
 
 
 def _log_get(args: dict, node: str) -> None:
@@ -200,23 +201,26 @@ def _log_get(args: dict, node: str) -> None:
 async def _h_get(args: dict, as_: str | None = None) -> dict:
     if not privacy.from_peer(as_):  # the asking node logs a relayed get; the node serving it does not
         try:
-            await asyncio.to_thread(_log_get, args, str(args.get("node") or "").strip() or request.LOCAL)
+            await asyncio.to_thread(_log_get, args, str(args.get("node") or "").strip() or THIS_NODE)
         except Exception as exc:  # noqa: BLE001 — feedback never fails the read
             log.warning("search: could not log a get: %s", exc)
     node = str(args.get("node") or "").strip()
-    if node and node != request.LOCAL and not privacy.from_peer(as_) \
-            and node_label(node) != node_label(config.node_name()):
+    await ARCHIVE.refuse_clashed(_relayer(as_))
+    if not request.is_here(node) and not privacy.from_peer(as_):
+        await ARCHIVE.refuse_clashed(node)
         return await federation.fetch(ARCHIVE.peers, node, str(args["source"]), str(args["id"]))
     out = await ARCHIVE.get(str(args["source"]), str(args["id"]), request.hidden_for(as_))
-    if out["document"].get("kind") == JOURNAL_KIND and args.get("_caller_pid"):
+    if JOURNAL_TAG in out["document"].get("tags", ()) and args.get("_caller_pid"):
         task = asyncio.create_task(_note_read(str(args["id"]), args["_caller_pid"]))
         _NOTING.add(task)
         task.add_done_callback(_NOTING.discard)
     return out
 
 
-#: The journal post kind whose get counts as a read for citations (sessions.md R15).
-JOURNAL_KIND = "journal"
+#: The usage log's name for this node.
+THIS_NODE = "local"
+#: The journal tag whose post's get counts as a read for citations (sessions.md R15).
+JOURNAL_TAG = "journal"
 _NOTING: set[asyncio.Task] = set()
 
 

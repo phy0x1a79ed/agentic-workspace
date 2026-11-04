@@ -35,7 +35,7 @@ async def served(archive, gateway, monkeypatch, root):
         "j8": doc("Near scope", "kitchen sink in a scope that only starts alike", project="awm", scope="svc-ab"),
         "j9": doc("Goal", "kitchen sink goal set for the private project", scope="project:avatar"),
     })
-    gateway.plug("precedence", {
+    gateway.plug("wiki", {
         "p1": doc("Sink", "kitchen sink precedent with no project"),
         "p2": doc("Tagged", "kitchen sink precedent tagged with the private project", tags=["UI", "Avatar"]),
         "p3": doc("Near tag", "kitchen sink precedent tagged with a sibling", tags=["avatar2"]),
@@ -54,7 +54,7 @@ ALL = {"j1", "j2", "j3", "j4", "j5", "j6", "j7", "j8", "j9", "p1", "p2", "p3"}
 
 
 async def found(args, as_):
-    args = {"query": "kitchen sink", "sources": ["journals", "precedence"], "limit": 50, **args}
+    args = {"query": "kitchen sink", "sources": ["journals", "wiki"], "limit": 50, **args}
     return {h["id"] for h in every(await HANDLERS["query"](args, as_))}
 
 
@@ -69,8 +69,9 @@ async def test_a_peer_never_sees_a_marked_project_or_scope(served, as_):
 
 
 async def test_a_peer_naming_a_marked_project_gets_what_an_unknown_one_gets(served):
-    named = await HANDLERS["query"]({"query": "kitchen sink", "project": "avatar"}, PEER)
-    unknown = await HANDLERS["query"]({"query": "kitchen sink", "project": "nonesuch"}, PEER)
+    named = await HANDLERS["query"]({"query": "kitchen sink", "sources": ["journals"], "project": "avatar"}, PEER)
+    unknown = await HANDLERS["query"]({"query": "kitchen sink", "sources": ["journals"], "project": "nonesuch"},
+                                      PEER)
     assert every(named) == every(unknown) == []
     assert named["sources"] == unknown["sources"]
     assert await found({"project": "awm", "scope": "svc-a"}, PEER) == set()
@@ -83,7 +84,7 @@ async def test_the_filter_runs_in_the_index_so_a_peer_page_stays_full(archive, g
     await synced(archive, gateway)
     monkeypatch.setattr(hub_adapter, "ARCHIVE", archive)
     privacy.write_marks([{"project": "avatar", "scope": None, "path": str(root / "avatar")}])
-    out = await HANDLERS["query"]({"query": "kitchen sink", "limit": 5}, PEER)
+    out = await HANDLERS["query"]({"query": "kitchen sink", "sources": ["journals"], "limit": 5}, PEER)
     assert len(flat(out["exact"])) == 5 and {h["project"] for h in every(out)} == {"awm"}
 
 
@@ -101,11 +102,11 @@ async def test_get_answers_a_peer_as_if_a_hidden_document_did_not_exist(served):
 
 async def test_sources_and_status_count_only_what_a_peer_may_see(served):
     counts = {s["name"]: s["count"] for s in (await HANDLERS["sources"]({}, PEER))["sources"]}
-    assert counts == {"journals": 3, "precedence": 2}
+    assert counts == {"journals": 3, "wiki": 2}
     status = await HANDLERS["status"]({}, PEER)
-    assert status["sources"] == {"journals": 3, "precedence": 2} and status["documents"] == 5
+    assert status["sources"] == {"journals": 3, "wiki": 2} and status["documents"] == 5
     local = await HANDLERS["status"]({}, LOCAL)
-    assert local["sources"] == {"journals": 9, "precedence": 3} and local["documents"] == 12
+    assert local["sources"] == {"journals": 9, "wiki": 3} and local["documents"] == 12
     assert (await HANDLERS["status"]({}, USER))["documents"] == 12
 
 
@@ -132,24 +133,63 @@ async def test_an_unreadable_marks_file_hides_every_project_from_a_peer(served, 
     assert await found({}, LOCAL) == ALL
     with pytest.raises(ValueError, match="no document journals:j1"):
         await HANDLERS["get"]({"source": "journals", "id": "j1"}, PEER)
-    assert (await HANDLERS["status"]({}, PEER))["sources"] == {"journals": 0, "precedence": 1}
+    assert (await HANDLERS["status"]({}, PEER))["sources"] == {"journals": 0, "wiki": 1}
     gateway.plug_live("transcripts", lambda args: {"hits": [
         {"id": "s1:1", "title": "t", "snippet": "kitchen sink", "project": "-home-open"}]}, optin=True)
     await served.refresh()
     assert every(await HANDLERS["query"]({"query": "kitchen sink", "sources": ["transcripts"]}, PEER)) == []
 
 
-async def test_a_peer_call_never_fans_out_further(served, peers):
+async def test_a_peer_call_never_asks_another_node(served, peers):
     peers.add("shaula", lambda args: {"hits": []})
-    out = await HANDLERS["query"]({"query": "kitchen sink", "peers": "fleet"}, PEER)
-    assert out["peers"] == {} and peers.calls == []
+    out = await HANDLERS["query"]({"query": "kitchen sink", "sources": ["journals", "journals@shaula"]}, PEER)
+    assert out["sources"]["journals@shaula"] == {"status": "absent"} and peers.calls == []
+    assert every(out)
+
+
+def clash(gateway, older, newer):
+    gateway.handlers[("journal", "tag_list")] = lambda args: {"tags": [], "clashes": [
+        {"name": "ui", "older_id": "a", "newer_id": "b", "older_node": older, "newer_node": newer}]}
+
+
+async def test_a_peer_an_open_tag_clash_stands_between_is_refused(served, gateway):
+    clash(gateway, "altair", "local")
+    with pytest.raises(PermissionError, match="tag clash"):
+        await HANDLERS["query"]({"query": "kitchen sink", "sources": ["journals"]}, PEER)
+    with pytest.raises(PermissionError, match="tag clash"):
+        await HANDLERS["get"]({"source": "journals", "id": "j1"}, PEER)
+    assert every(await HANDLERS["query"]({"query": "kitchen sink", "sources": ["journals"]}, "peer:shaula"))
+    assert every(await HANDLERS["query"]({"query": "kitchen sink", "sources": ["journals"]}, LOCAL))
+
+
+async def test_a_clash_between_two_other_nodes_refuses_nothing(served, gateway):
+    clash(gateway, "altair", "shaula")
+    assert every(await HANDLERS["query"]({"query": "kitchen sink", "sources": ["journals"]}, PEER))
+
+
+async def test_a_node_an_open_tag_clash_stands_between_is_not_asked(served, gateway, peers):
+    clash(gateway, "local", "altair")
+    peers.add("altair", lambda args: {"exact": [], "related": []})
+    peers.add("shaula", lambda args: {"exact": [], "related": [], "sources": {"journals": {"status": "ok"}}})
+    out = await HANDLERS["query"]({"query": "kitchen sink", "sources": ["journals@altair", "journals@shaula"]},
+                                  LOCAL)
+    assert out["sources"]["journals@altair"]["status"] == "refused"
+    assert out["sources"]["journals@shaula"] == {"status": "ok"}
+    assert [c[0] for c in peers.calls] == ["shaula"]
+    with pytest.raises(PermissionError, match="tag clash"):
+        await HANDLERS["get"]({"source": "journals", "id": "r1", "node": "altair"}, LOCAL)
+
+
+async def test_a_journal_that_cannot_list_its_clashes_refuses_nothing(served, gateway):
+    gateway.handlers[("journal", "tag_list")] = lambda args: RuntimeError("down")
+    assert every(await HANDLERS["query"]({"query": "kitchen sink", "sources": ["journals"]}, PEER))
 
 
 async def test_get_hides_a_document_tagged_with_a_marked_project_from_a_peer(served):
-    with pytest.raises(ValueError, match="^no document precedence:p2$"):
-        await HANDLERS["get"]({"source": "precedence", "id": "p2"}, PEER)
-    assert (await HANDLERS["get"]({"source": "precedence", "id": "p3"}, PEER))["document"]["title"] == "Near tag"
-    assert (await HANDLERS["get"]({"source": "precedence", "id": "p2"}, LOCAL))["document"]["title"] == "Tagged"
+    with pytest.raises(ValueError, match="^no document wiki:p2$"):
+        await HANDLERS["get"]({"source": "wiki", "id": "p2"}, PEER)
+    assert (await HANDLERS["get"]({"source": "wiki", "id": "p3"}, PEER))["document"]["title"] == "Near tag"
+    assert (await HANDLERS["get"]({"source": "wiki", "id": "p2"}, LOCAL))["document"]["title"] == "Tagged"
     with pytest.raises(ValueError, match="^no document journals:j9$"):
         await HANDLERS["get"]({"source": "journals", "id": "j9"}, PEER)
 
@@ -187,27 +227,28 @@ def test_every_spelling_the_veil_lists_names_the_project_for_privacy():
         assert privacy.canonical("", spelling.format("avatar")) == ("avatar", None)
 
 
-def test_a_version_1_index_gains_tags_and_resyncs_every_source(tmp_path, monkeypatch):
+def test_a_version_1_index_gains_tags_and_links_and_resyncs_every_source(tmp_path, monkeypatch):
     import awm.persistence.databases as pdbs
     from awm.persistence.databases import get_connection, init_service_db
     from awm.search import store
     services_dir = tmp_path / "services"
     services_dir.mkdir()
     monkeypatch.setattr(pdbs, "SERVICES_DIR", services_dir)
-    v1 = store.SCHEMA_SQL.replace(",\n    tags     TEXT NOT NULL DEFAULT ''", "")
-    assert "tags" not in v1.split("CREATE TABLE IF NOT EXISTS documents")[1].split(");")[0]
+    v1 = store.SCHEMA_SQL.replace(store._REPLY_TO_COLUMN, "").replace(",\n    tags     TEXT NOT NULL DEFAULT ''", "")
+    table = v1.split("CREATE TABLE IF NOT EXISTS documents")[1].split(");")[0]
+    assert "tags " not in table and "reply_to " not in table
     init_service_db(store.SERVICE, v1, schema_version=1)
     conn = get_connection(store.SERVICE)
     conn.execute("INSERT INTO sources (name, service, mode, spec, synced_at, first_seen, last_seen)"
-                 " VALUES ('precedence', 'precedence', 'index', '{}', 5, 1, 1)")
-    conn.execute("INSERT INTO documents (key, source, doc_id, title) VALUES ('precedence:p1', 'precedence', 'p1', 't')")
+                 " VALUES ('wiki', 'wiki', 'index', '{}', 5, 1, 1)")
+    conn.execute("INSERT INTO documents (key, source, doc_id, title) VALUES ('wiki:p1', 'wiki', 'p1', 't')")
     conn.commit()
     conn.close()
     monkeypatch.setattr(store, "_initialized", False)
     store.init()
     conn = store.connect()
     try:
-        assert conn.execute("SELECT tags FROM documents").fetchone()[0] == ""
+        assert tuple(conn.execute("SELECT tags, reply_to FROM documents").fetchone()) == ("", "")
         assert conn.execute("SELECT synced_at FROM sources").fetchone()[0] is None
     finally:
         conn.close()

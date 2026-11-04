@@ -168,7 +168,7 @@ def test_each_manifest_names_its_folder_and_no_host(folder):
     for s in m["service"]:
         for table in s.get("archive", []):
             assert table["mode"] in ("index", "live"), table
-    for tool in m["tool"]:
+    for tool in m.get("tool", []):  # kb publishes none: search is its only door
         assert tool["name"] != "awm" or folder.name in AWM_TOOL, "the awm tool belongs to the core"
         assert tool["tier"] in ("on", "off")
     needs = m["needs"]

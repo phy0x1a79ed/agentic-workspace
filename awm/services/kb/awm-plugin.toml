@@ -3,6 +3,7 @@ name = "kb"
 version = "0.1.0"
 trust = "own"
 
+# kb publishes no MCP tool: search reads it as two sources and walks them with its `hop`.
 [[service]]
 name = "kb"
 
@@ -11,17 +12,16 @@ name = "kb"
 mode = "live"
 query = "kb_query"
 get = "kb_get"
+hop = "kb_hop"
+links = ["citations", "cited_by", "authors"]
 
 [[service.archive]]
 name = "library"
 mode = "live"
 query = "kb_library"
 get = "kb_get"
-
-[[tool]]
-name = "kb"
-major = 1
-tier = "off"
+hop = "kb_hop"
+links = ["citations", "cited_by", "authors"]
 
 [needs]
 secrets = []

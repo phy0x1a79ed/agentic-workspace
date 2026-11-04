@@ -84,7 +84,7 @@ def searchable(hub: str) -> list[str]:
 
 
 def ask(hub: str, query: str, limit: int, sources: list[str]) -> dict[str, Any]:
-    return call(hub, "query", {"query": query, "limit": limit, "peers": False, "sources": sources})
+    return call(hub, "query", {"query": query, "limit": limit, "sources": sources})
 
 
 # -- seeding ---------------------------------------------------------------

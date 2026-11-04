@@ -1,4 +1,7 @@
-"""Hub adapter for the kb service: the papers feed for `search`, kb's hop, and the kb server.
+"""Hub adapter for the kb service: the papers `search` reads and walks, and the kb server.
+
+kb publishes no MCP tool. Every verb is internal: `search` calls query, library, get, hop and related, and
+an operator runs the lifecycle verbs with `awm kb <verb>` on the host.
 
 The kb server, a process from the `kb` project in its own env (see `server`), encodes text and serves the
 entry and noun indexes. This adapter supervises it and answers the paper verbs from papers.db itself.
@@ -34,14 +37,15 @@ _tasks: set[asyncio.Task] = set()
 
 API_MANIFEST: dict[str, Any] = {
     "description": (
-        "Papers: the kb and library sources `search query` reads, a paper whole (`kb get`), the papers "
-        "near given ones (`kb hop`), and the kb server that encodes queries."
+        "Papers: the kb and library sources `search query` reads and walks with its `hop`, and the kb "
+        "server that encodes queries. Call `search`; kb serves search only."
     ),
     "functions": [
         {
             "name": "status",
             "effect": "read",
             "tool": "kb_status",
+            "surfaces": ["cli", "http"],
             "description": (
                 "Whether the kb server is up, and the state of its encoder and served indexes."
             ),
@@ -51,6 +55,7 @@ API_MANIFEST: dict[str, Any] = {
             "name": "start",
             "effect": "write",
             "tool": "kb_start",
+            "surfaces": ["cli", "http"],
             "description": "Start the kb server if it is not running. Operator only.",
             "params": [],
             "timeout": 360,
@@ -59,6 +64,7 @@ API_MANIFEST: dict[str, Any] = {
             "name": "stop",
             "effect": "write",
             "tool": "kb_stop",
+            "surfaces": ["cli", "http"],
             "description": (
                 "Stop the kb server and keep it down until `kb start`. Operator only."
             ),
@@ -69,6 +75,7 @@ API_MANIFEST: dict[str, Any] = {
             "name": "restart",
             "effect": "write",
             "tool": "kb_restart",
+            "surfaces": ["cli", "http"],
             "description": "Stop then start the kb server. Operator only.",
             "params": [],
             "timeout": 420,
@@ -77,6 +84,7 @@ API_MANIFEST: dict[str, Any] = {
             "name": "logs",
             "effect": "read",
             "tool": "kb_logs",
+            "surfaces": ["cli", "http"],
             "description": "The tail of the kb server's log. Operator only.",
             "params": [{"name": "tail", "type": "integer", "description": "Lines from the end. Default 200."}],
         },
@@ -97,8 +105,6 @@ API_MANIFEST: dict[str, Any] = {
             "params": [
                 {"name": "query", "type": "string", "required": True, "description": "What to find."},
                 {"name": "limit", "type": "integer", "description": "Maximum hits per section. Default 10."},
-                {"name": "kind", "type": "string",
-                 "description": "Comma-separated kinds; papers answer only when it names paper."},
                 {"name": "project", "type": "string", "description": "Papers have none, so any value answers nothing."},
                 {"name": "scope", "type": "string", "description": "Papers have none, so any value answers nothing."},
                 {"name": "after", "type": "string", "description": "Only papers from this ISO 8601 date on."},
@@ -138,12 +144,12 @@ API_MANIFEST: dict[str, Any] = {
             "name": "hop",
             "effect": "read",
             "tool": "kb_hop",
+            "surfaces": ["cli", "http"],
             "description": (
-                "Papers one hop from the given papers: their authors' other papers (`authors`), the "
-                "papers they cite (`cites`) or the papers citing them (`cited_by`), ranked by "
-                "personalized PageRank from the first five, the first weighted most, and never by "
-                "meaning; ties go to the newest. Feed the ids of a search's paper hits, or "
-                "of an earlier hop, to chain hops."
+                "Papers one hop from the given papers, for `search query`'s `hop`: their authors' other "
+                "papers (`authors`), the papers they cite (`cites`) or the papers citing them "
+                "(`cited_by`), ranked by personalized PageRank from the first five, the first weighted "
+                "most, and never by meaning; ties go to the newest."
             ),
             "params": [
                 {"name": "ids", "type": "array", "required": True, "description": "Paper ids, best first."},
@@ -233,7 +239,7 @@ async def _h_library(args: dict, as_: str | None = None) -> dict:
 def _library_filters(filters: fastlayer.Filters) -> fastlayer.Filters:
     mine = PAPERS.library()
     papers_ = mine if filters.papers is None else mine & filters.papers
-    return fastlayer.Filters(filters.kinds, filters.after, filters.before, filters.blocked or not papers_, papers_)
+    return fastlayer.Filters(filters.after, filters.before, filters.blocked or not papers_, papers_)
 
 
 async def _answer(args: dict) -> dict[str, Any]:
