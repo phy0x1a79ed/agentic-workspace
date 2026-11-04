@@ -31,9 +31,8 @@ SOCKET = "/svc/avatar/session/Ab3_-9xYz0Q"
 
 
 @pytest.fixture(autouse=True)
-def node(monkeypatch, peer_book):
+def node(monkeypatch):
     monkeypatch.setenv("AWM_NODE_NAME", "capella")
-    peer_book({})
 
 
 def _device(scope=usertoken.AVATAR_STAGE, sub="tony"):

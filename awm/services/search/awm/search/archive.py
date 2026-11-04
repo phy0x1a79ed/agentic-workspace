@@ -16,8 +16,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable, Sequence
 
 from awm import config
-from awm.config import privacy
-from awm.config.peertoken import node_label
+from awm.config import edges, privacy
 from awm.gatewayclient import SupervisedSubscription
 from awm.persistence import embeddings as engine
 
@@ -171,7 +170,7 @@ class Archive:
         totals = {"documents": 0, "changed": 0, "skipped": 0, "indexed": 0}
         while True:
             args: dict[str, Any] = {"limit": PAGE, **({"cursor": cursor} if cursor else {})}
-            page = await self.gateway.call(source.service, source.export, args, EXPORT_TIMEOUT_S)
+            page = await self.gateway.call(source.tool, source.export, args, EXPORT_TIMEOUT_S)
             if not (isinstance(page, dict) and isinstance(page.get("documents"), list)
                     and isinstance(page.get("done"), bool)):
                 raise ValueError("export returned a page without documents and done")
@@ -295,7 +294,7 @@ class Archive:
         source = self.sources.get(name)
         if source is None or not source.get:
             raise ValueError(f"{name!r} is a live source that reads no document whole")
-        raw = await asyncio.wait_for(self.gateway.call(source.service, source.get, {"id": doc_id}, LIVE_TIMEOUT_S),
+        raw = await asyncio.wait_for(self.gateway.call(source.tool, source.get, {"id": doc_id}, LIVE_TIMEOUT_S),
                                      timeout=LIVE_TIMEOUT_S + 1.0)
         doc = raw.get("document") if isinstance(raw, dict) else None
         if not isinstance(doc, dict):
@@ -364,7 +363,7 @@ class Archive:
         args = {"query": q.text, "limit": q.limit, **q.raw}
         try:
             raw = await asyncio.wait_for(
-                self.gateway.call(source.service, source.query, args, LIVE_TIMEOUT_S),
+                self.gateway.call(source.tool, source.query, args, LIVE_TIMEOUT_S),
                 timeout=LIVE_TIMEOUT_S + 1.0)
             found = _live_sections(source.name, raw, self.origin(), q.limit, q.hidden)
         except (asyncio.TimeoutError, TimeoutError):
@@ -396,10 +395,10 @@ class Archive:
         except Exception as exc:  # noqa: BLE001 — the journal being down is not a clash
             log.warning("search: tag clashes unread: %s", _describe(exc))
             return self._clashes[1] if self._clashes else set()
-        here = node_label(config.node_name())
+        here = edges.label(config.node_name())
         nodes: set[str] = set()
         for c in (raw or {}).get("clashes") or []:
-            pair = {node_label(str(c.get("older_node") or "")), node_label(str(c.get("newer_node") or ""))}
+            pair = {edges.label(str(c.get("older_node") or "")), edges.label(str(c.get("newer_node") or ""))}
             if here in pair and len(pair) == 2:
                 nodes |= pair - {here}
         self._clashes = (self.now(), nodes)
@@ -407,7 +406,7 @@ class Archive:
 
     async def refuse_clashed(self, node: str | None) -> None:
         """Refuse a call to or from ``node`` while an open tag clash stands between it and this node."""
-        if node and node_label(node) in await self.clashed():
+        if node and edges.label(node) in await self.clashed():
             raise PermissionError(f"an open tag clash stands between {node} and this node; "
                                   "searches between them wait until an agent renames the tag")
 
@@ -420,10 +419,10 @@ class Archive:
         seed a walk only when nothing matched the words."""
         if q.hop and q.hop.start:
             return q.hop.start
-        here = node_label(config.node_name())
+        here = edges.label(config.node_name())
         for section in hitshape.READ_ONCE:
             found = [h["id"] for f in lists for h in f.get(section, [])
-                     if h["source"] == name and node_label(h["origin"]["node"]) == here]
+                     if h["source"] == name and edges.label(h["origin"]["node"]) == here]
             if found:
                 return list(dict.fromkeys(found))
         return []
@@ -435,7 +434,7 @@ class Archive:
             return await asyncio.to_thread(_with_conn, index.walk, name, seeds, q.filters([name]), hop.limit)
         args = {"ids": seeds, "along": ALONG[hop.via], "limit": hop.limit,
                 **{k: q.raw[k] for k in ("after", "before") if k in q.raw}}
-        raw = await asyncio.wait_for(self.gateway.call(live.service, live.hop, args, LIVE_TIMEOUT_S),
+        raw = await asyncio.wait_for(self.gateway.call(live.tool, live.hop, args, LIVE_TIMEOUT_S),
                                      timeout=LIVE_TIMEOUT_S + 1.0)
         hits = raw.get("hits") if isinstance(raw, dict) else None
         if not isinstance(hits, list):
@@ -517,7 +516,7 @@ class Archive:
         clashed = await self.clashed() if q.remote else set()
         jobs: list[Any] = [self._archive_hits(q, searched_index)] if searched_index else []
         jobs += [self._live(source, q) for source in searched_live]
-        jobs += [federation.ask_home(self.peers, node, q.forwarded(names), q.limit, node_label(node) in clashed)
+        jobs += [federation.ask_home(self.peers, node, q.forwarded(names), q.limit, edges.label(node) in clashed)
                  for node, names in q.remote.items()]
         results = await asyncio.gather(*jobs, return_exceptions=True)
 

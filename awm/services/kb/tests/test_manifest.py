@@ -32,7 +32,7 @@ def test_kb_publishes_no_mcp_tool():
     for f in hub_adapter.API_MANIFEST["functions"]:
         assert f.get("surfaces") == ["cli", "http"], f["name"]
     toml = tomllib.loads((Path(hub_adapter.__file__).parents[2] / "awm-plugin.toml").read_text())
-    assert "tool" not in toml
+    assert toml["tool"] == [{"name": "kb", "major": 1, "tier": "off"}]
 
 
 def test_the_query_takes_no_kind():

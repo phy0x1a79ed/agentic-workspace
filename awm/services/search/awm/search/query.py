@@ -8,8 +8,8 @@ from dataclasses import dataclass, field
 from typing import Any, Sequence
 
 from awm import config
+from awm.config import edges
 from awm.config import privacy
-from awm.config.peertoken import node_label
 
 from awm.search import store
 from awm.search.index import Filters
@@ -103,7 +103,7 @@ def hidden_for(as_: str | None) -> list[dict] | None:
 
 
 def is_here(node: str) -> bool:
-    return not node or node_label(node) == node_label(config.node_name())
+    return not node or edges.label(node) == edges.label(config.node_name())
 
 
 def split_sources(value: Any) -> tuple[list[str], dict[str, list[str]]]:

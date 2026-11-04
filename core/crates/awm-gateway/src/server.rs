@@ -18,6 +18,8 @@ use crate::gateway::{ApiError, Gateway};
 use crate::hub::Claim;
 use crate::supervisor;
 
+const SERVICE_TOKEN_HEADER: &str = "x-awm-service-token";
+
 type Gw = State<Arc<Gateway>>;
 
 impl IntoResponse for ApiError {
@@ -44,7 +46,6 @@ pub fn router(gw: Arc<Gateway>) -> Router {
         .route("/hub/reload", post(reload))
         .route("/hub/install", post(install))
         .route("/hub/uninstall", post(uninstall))
-        .route("/svc/{service}/fn/{function}", post(svc_fn))
         .route("/p/{plugin}/{page}", get(page_root))
         .route("/p/{plugin}/{page}/", get(page_root))
         .route("/p/{plugin}/{page}/{*path}", get(page_file))
@@ -119,11 +120,24 @@ fn header<'a>(h: &'a HeaderMap, name: &str) -> Option<&'a str> {
 
 /// The caller context of an inbound request. `X-Awm-Trust` and `X-Awm-Lane` are never read.
 /// `X-Awm-Caller` counts only with the edge token, which only `awm edge-serve` can read.
-/// A local request that names its session by `X-Awm-Session-Pid` gets that session's id,
-/// trust level and scope.
-async fn context(gw: &Gateway, h: &HeaderMap, default: Surface) -> CallContext {
-    let plugin = header(h, "x-awm-plugin").map(str::to_string);
-    let surface = if plugin.is_some() {
+/// A local request gets the id, trust level, mode and scope of the session its pid header
+/// leads to (`caller.rs`).
+async fn context(gw: &Gateway, h: &HeaderMap, default: Surface) -> Result<CallContext, ApiError> {
+    // A service names itself by the token its spawn was given. A wrong token is refused,
+    // since a caller that sends one means to be that service.
+    let service = match header(h, SERVICE_TOKEN_HEADER) {
+        Some(token) => match gw.service_of_token(token) {
+            Some(name) => Some(name),
+            None => return Err(ApiError::new(401, "unknown service token")),
+        },
+        None => None,
+    };
+    // A page names its plugin by the path it was served from.
+    let plugin = match &service {
+        Some(name) => Some(gw.plugin_of_service(name)),
+        None => header(h, "referer").and_then(page_plugin),
+    };
+    let surface = if service.is_some() {
         Surface::Plugin
     } else {
         header(h, "x-awm-surface").and_then(Surface::parse).unwrap_or(default)
@@ -141,11 +155,38 @@ async fn context(gw: &Gateway, h: &HeaderMap, default: Surface) -> CallContext {
             tracing::warn!("X-Awm-Caller with a wrong edge token; ignored");
         }
     }
-    if let Some(pid) = header(h, "x-awm-session-pid").and_then(|p| p.parse::<u32>().ok()).filter(|_| !edge) {
-        let answer = gw.session_of(pid).await;
-        crate::caller::fill(&mut caller, answer.as_ref(), &gw.projects_dir());
+    let mut mode = None;
+    let pid = header(h, "x-awm-session-pid").or_else(|| header(h, "x-awm-caller-pid"));
+    if !edge && service.is_some() && pid.is_none() {
+        // A service acting on its own account: trusted, on the service lane.
+        caller.lane = Lane::Service;
+        caller.trust = Some(crate::caller::TRUSTED.into());
+    } else if !edge {
+        // A local request with no pid comes from no session: a user's tool on this node.
+        // A service that forwards a session's pid acts for that session.
+        let lookup = match pid.map(str::parse::<u32>) {
+            Some(Ok(pid)) => gw.resolve_caller(pid).await,
+            Some(Err(_)) => crate::caller::Lookup::Failed,
+            None => crate::caller::Lookup::NoOwner { mode: None },
+        };
+        mode = crate::caller::fill(&mut caller, &lookup, &gw.projects_dir());
     }
-    CallContext { caller, as_: header(h, "x-awm-as").map(str::to_string), surface, plugin }
+    let mut as_ = header(h, "x-awm-as").map(str::to_string);
+    // A singleton door call (`awm port`) comes from another node's service: name that node
+    // as the stamp a service reads, since a Python handler sees `as_` and not `caller`.
+    if edge && as_.is_none() && caller.lane == Lane::Service && caller.node != gw.node {
+        as_ = Some(format!("peer:{}", caller.node));
+    }
+    Ok(CallContext { caller, as_, surface, plugin, mode })
+}
+
+/// The plugin whose page sent a request, from its Referer `<origin>/p/<plugin>/<page>/...`.
+fn page_plugin(referer: &str) -> Option<String> {
+    let path = referer.split_once("://").map_or(referer, |(_, rest)| rest.find('/').map_or("", |i| &rest[i..]));
+    let mut parts = path.strip_prefix("/p/")?.splitn(3, '/');
+    let plugin = parts.next().filter(|p| awm_proto::valid_tool_name(p))?;
+    parts.next().filter(|page| !page.is_empty())?;
+    Some(plugin.to_string())
 }
 
 async fn status(State(gw): Gw) -> Json<Value> {
@@ -177,7 +218,7 @@ async fn invoke(State(gw): Gw, h: HeaderMap, body: Option<Json<Value>>) -> Resul
         return Err(ApiError::new(400, "missing 'name' in payload"));
     };
     let args = body.get("args").cloned().filter(|a| !a.is_null()).unwrap_or_else(|| json!({}));
-    let ctx = context(&gw, &h, Surface::Http).await;
+    let ctx = context(&gw, &h, Surface::Http).await?;
     let result = gw.invoke(name, args, &ctx).await?;
     Ok(Json(json!({"result": result})))
 }
@@ -203,8 +244,6 @@ async fn usage_post(State(gw): Gw, Json(ev): Json<UsageEvent>) -> Result<Json<Va
 struct RegisterReq {
     name: String,
     #[serde(default)]
-    prefix: Option<String>,
-    #[serde(default)]
     pid: Option<i64>,
     #[serde(default)]
     overlay: bool,
@@ -214,13 +253,9 @@ async fn register(State(gw): Gw, h: HeaderMap, Json(req): Json<RegisterReq>) -> 
     if req.overlay {
         return Err(ApiError::new(409, "the Rust gateway does not run shadow overlays"));
     }
-    let token_file = match gw.cfg.external(&req.name) {
-        Some(external) => external.token_file.clone(),
-        None => Some(supervisor::service_token_path(&gw.state, &req.name)).filter(|p| p.exists()),
-    };
-    if let Some(path) = token_file {
+    if let Some(path) = gw.token_file_of(&req.name) {
         let expected = std::fs::read_to_string(&path).unwrap_or_default();
-        let sent = header(&h, "x-awm-service-token").unwrap_or_default();
+        let sent = header(&h, SERVICE_TOKEN_HEADER).unwrap_or_default();
         if expected.trim().is_empty() || expected.trim() != sent {
             tracing::warn!("service {}: register without its service token; refused", req.name);
             return Err(ApiError::new(403, format!("service {:?} needs its service token", req.name)));
@@ -235,7 +270,6 @@ async fn register(State(gw): Gw, h: HeaderMap, Json(req): Json<RegisterReq>) -> 
     Ok(Json(json!({
         "service_id": id,
         "name": req.name,
-        "prefix": req.prefix.unwrap_or_else(|| format!("/svc/{}", req.name)),
         "control_ws_path": format!("/hub/service/control/{id}"),
         "bridge_ws_base": format!("/hub/service/bridge/{id}"),
         "canonical_workspace": workspace,
@@ -345,11 +379,13 @@ async fn reload(State(gw): Gw, h: HeaderMap) -> Result<Json<Value>, ApiError> {
 #[derive(Deserialize)]
 struct InstallBody {
     sources: Vec<String>,
+    #[serde(default)]
+    approval: Option<String>,
 }
 
 async fn install(State(gw): Gw, h: HeaderMap, Json(body): Json<InstallBody>) -> Result<Json<Value>, ApiError> {
     refuse_token(&h)?;
-    gw.install(&body.sources).await.map(Json)
+    gw.install(&body.sources, body.approval.as_deref()).await.map(Json)
 }
 
 #[derive(Deserialize)]
@@ -360,18 +396,6 @@ struct UninstallBody {
 async fn uninstall(State(gw): Gw, h: HeaderMap, Json(body): Json<UninstallBody>) -> Result<Json<Value>, ApiError> {
     refuse_token(&h)?;
     gw.uninstall(&body.name).await.map(Json)
-}
-
-async fn svc_fn(
-    State(gw): Gw,
-    Path((service, function)): Path<(String, String)>,
-    h: HeaderMap,
-    body: Option<Json<Value>>,
-) -> Result<Json<Value>, ApiError> {
-    refuse_token(&h)?;
-    let args = body.map(|Json(v)| v).unwrap_or_else(|| json!({}));
-    let ctx = context(&gw, &h, Surface::Plugin).await;
-    gw.call_function(&service, &function, args, &ctx).await.map(Json)
 }
 
 async fn page_root(State(gw): Gw, Path((plugin, page)): Path<(String, String)>) -> Response {
@@ -476,4 +500,20 @@ async fn mcp_message(gw: &Gateway, holder: &crate::isolated::Holder, msg: &Value
         other => return Some(crate::isolated::rpc_error(&id, -32601, format!("method {other:?} not found"))),
     };
     Some(json!({"jsonrpc": "2.0", "id": id, "result": result}))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::page_plugin;
+
+    #[test]
+    fn a_page_is_known_by_its_path() {
+        assert_eq!(page_plugin("https://mizar.example:7819/p/dsh/dsh/").as_deref(), Some("dsh"));
+        assert_eq!(page_plugin("http://127.0.0.1:7819/p/ops/board/assets/x.js").as_deref(), Some("ops"));
+        assert_eq!(page_plugin("/p/mic/mic").as_deref(), Some("mic"));
+        assert_eq!(page_plugin("https://host/p/dsh"), None);
+        assert_eq!(page_plugin("https://host/p/dsh/"), None);
+        assert_eq!(page_plugin("https://host/dashboard/p/dsh/x"), None);
+        assert_eq!(page_plugin("https://host/p/a_b/x/"), None);
+    }
 }

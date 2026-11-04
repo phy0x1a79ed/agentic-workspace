@@ -71,12 +71,11 @@ def grant_verifier(pubkey: str, node: str) -> Verify:
 
 
 def approver_call(peer: str) -> Call:
-    """Reach the approver on its node through today's peer door."""
-    from awm.gatewayclient import invoke_peer
+    """Reach the approver on its node, over the edge."""
+    from awm import gatewayclient
 
     async def call(verb: str, args: dict) -> Any:
-        return await invoke_peer(peer, "approver", {"verb": verb, "args": args},
-                                 timeout=WAIT_S + 20)
+        return await gatewayclient.call("approver", verb, args, peer=peer, timeout=WAIT_S + 20)
 
     return call
 

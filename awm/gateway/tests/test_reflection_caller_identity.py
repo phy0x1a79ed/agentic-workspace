@@ -298,7 +298,7 @@ async def test_svc_door_stamps_from_the_header(monkeypatch):
     assert args["_caller_pid"] == 2488
 
 
-async def test_svc_door_ignores_the_header_on_an_edge_request(monkeypatch, edge_peers):
+async def test_svc_door_ignores_the_header_on_an_edge_request(monkeypatch):
     args = await _post_svc(monkeypatch, "cx", "start", {"_caller_pid": 999},
                            headers={"X-Awm-Session-Pid": "2488"}, as_="peer:capella")
     assert "_caller_pid" not in args
@@ -324,9 +324,9 @@ async def test_svc_door_leaves_other_services_alone(monkeypatch):
     assert args["_caller_pid"] == 5
 
 
-async def test_svc_door_with_no_body_still_calls_with_no_args(monkeypatch):
+async def test_svc_door_with_no_body_carries_only_the_trust_stamp(monkeypatch):
     args = await _post_svc(monkeypatch, "cx", "list", None)
-    assert args is None
+    assert args == {"_caller_trust": "trusted"}
 
 
 # ---------------------------------------------------------------------------

@@ -18,11 +18,6 @@ reason this is a *proxy* and not a cache: it holds no tool definitions. Every
 ``tools/list`` re-fetches from the core, so restarting only the core still
 picks up a changed tool surface.
 
-The heavy imports are not deleted, only deferred to the paths that need them:
-a cross-peer call still uses ``awm.gatewayclient`` (and thus httpx), imported
-on first use. Cross-peer calls are rare and already pay an ssh, so the import
-disappears into that cost instead of into every launch.
-
 **One deliberate behaviour change.** The SDK validated ``arguments`` against
 the tool's ``inputSchema`` before dispatching — that jsonschema dependency is a
 large slice of the import cost being removed here, and validating locally would
@@ -232,69 +227,6 @@ def _request_with_retry(
 
 
 # ---------------------------------------------------------------------------
-# Cross-peer federation (client-side, no relay)
-# ---------------------------------------------------------------------------
-
-def _peer_invoke(peer_name: str, base_name: str, arguments: dict,
-                 as_: str | None, entry: dict | None = None) -> dict:
-    """Invoke ``base_name`` on ``peer_name``'s edge directly.
-
-    ``gatewayclient`` (and the httpx + TLS machinery under it) is imported here
-    rather than at module scope: this is the one path that needs it, and it
-    already costs a token signing or an ssh, so the import is free by
-    comparison and stays off every launch.
-
-    The call carries a signed node token. A peer this node holds an edge to that
-    refuses it gets the legacy ssh-fetched bearer instead; any other peer never
-    does (see
-    ``gatewayclient.peer_send_sync``).
-    """
-    import httpx  # noqa: PLC0415 — deferred on purpose; see module docstring
-    from awm import gatewayclient  # noqa: PLC0415
-
-    if entry is None or not entry.get("edge_url"):
-        entry = gatewayclient.resolve_peer(peer_name)
-    edge = entry["edge_url"].rstrip("/")
-    ca = gatewayclient._peer_ca()
-    # Same ladder as the loopback path: a peer edge is a remote verb with
-    # the same server-side budget, so only the connect leg stays short.
-    tmo = httpx.Timeout(mcp_http.read_timeout(), connect=10.0)
-
-    def send(bearer: str):
-        headers = {"Authorization": f"Bearer {bearer}"}
-        if as_:
-            headers["X-Awm-As"] = as_
-        with httpx.Client(timeout=tmo, verify=ca) as cli:
-            return cli.post(f"{edge}/invoke",
-                            json={"name": base_name, "args": arguments},
-                            headers=headers)
-
-    resp = gatewayclient.peer_send_sync(peer_name, entry, send)
-    if resp.status_code >= 400:
-        raise _HTTPStatusError(resp.status_code, resp.text)
-    return resp.json()
-
-
-def _localize(result: Any, peer_name: str, as_: str | None,
-              entry: dict | None = None) -> Any:
-    """Pull down any file the peer's reply points at, so ``path`` is openable here.
-
-    Deferred import for the same reason as ``_peer_invoke``'s: this is the only
-    path that needs it, and it is already paying for an ssh. Never raises — a
-    reply with no files passes straight through.
-    """
-    from awm.gateway import peer_files  # noqa: PLC0415 — deferred on purpose
-
-    try:
-        return peer_files.materialize(result, peer_name, entry=entry, as_=as_)
-    except Exception as exc:  # noqa: BLE001 — a broken rewrite must not eat the reply
-        # stdout is the MCP framing; diagnostics go to stderr only.
-        print(f"awm-mcp: peer file materialization failed for {peer_name}: {exc}",
-              file=sys.stderr)
-        return result
-
-
-# ---------------------------------------------------------------------------
 # MCP method handlers
 # ---------------------------------------------------------------------------
 
@@ -384,35 +316,11 @@ def _handle_tools_call(params: dict) -> dict:
             headers["X-Awm-As"] = as_
         if session_pid:
             headers["X-Awm-Session-Pid"] = session_pid
-        # Declare that this caller can follow a peer redirect — only a caller
-        # that talks to peer edges may opt in, so the CLI and web UI keep
-        # seeing plain results.
-        headers["X-Awm-Peer-Redirect"] = "1"
         arguments = mcp_http.with_search_context(name, arguments)
         data = _request_with_retry(
             "POST", "/invoke", json_body={"name": name, "args": arguments},
             headers=headers,
         )
-        redirect = data.get("peer_redirect")
-        if redirect:
-            # Followed exactly once; ``peer`` is stripped so the far side does
-            # not re-route what we already routed.
-            forwarded = mcp_caller.forwarded_args(name, arguments, session_pid)
-            from awm.gateway import peer_files  # noqa: PLC0415 — peer path only
-            hop = peer_files.invoke_with_files(
-                redirect["peer"], redirect, {"name": name, "args": forwarded}, as_)
-            if hop is not None:
-                # Files went up with the call and came back to local paths.
-                if hop.status_code >= 400:
-                    raise _HTTPStatusError(hop.status_code, hop.text)
-                return {"content": [{"type": "text", "text": hop.json()["result"]}],
-                        "isError": False}
-            data = _peer_invoke(
-                redirect["peer"], name, forwarded, as_, entry=redirect)
-            # The call ran elsewhere, so any file it produced is on that node.
-            # Local calls skip this entirely — their paths are already ours.
-            text = _localize(data["result"], redirect["peer"], as_, entry=redirect)
-            return {"content": [{"type": "text", "text": text}], "isError": False}
         return {"content": [{"type": "text", "text": data["result"]}],
                 "isError": False}
     except _HTTPStatusError as e:

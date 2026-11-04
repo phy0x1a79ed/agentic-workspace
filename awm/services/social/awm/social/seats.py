@@ -46,13 +46,13 @@ def session_claim(pid: int) -> dict | None:
 
 def caller(args: dict, as_: str | None) -> dict:
     """The calling session as ``{node, job, name}``, or a :class:`SeatError`."""
-    from awm.config import peerbook
+    from awm.config import edges
 
     pid = args.get("_caller_pid")
     if isinstance(pid, int) and not isinstance(pid, bool):
         claim, node = session_claim(pid), config.node_name()
     else:
-        claim, node = args.get("_caller_session"), peerbook.caller_peer(as_)
+        claim, node = args.get("_caller_session"), edges.caller_peer(as_)
     if not node or not isinstance(claim, dict):
         raise SeatError("no calling session reached social: a seat is held by a "
                         "running Claude Code session, so call this from one")

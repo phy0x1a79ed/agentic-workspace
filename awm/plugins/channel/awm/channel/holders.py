@@ -85,7 +85,7 @@ def caller(args: dict, as_: str | None) -> dict:
     ``session`` is the R9 id when one is known, else ``job:<job>``. ``pid`` joins
     them for a session on this node.
     """
-    from awm.config import peerbook
+    from awm.config import edges
 
     pid = args.get(PID_KEY)
     has_pid = isinstance(pid, int) and not isinstance(pid, bool)
@@ -98,7 +98,7 @@ def caller(args: dict, as_: str | None) -> dict:
         claim = {"background": bool(job), "job": job or "", "session": sid, "name": ""}
         node = config.node_name()
     else:
-        raw, node = args.get(CLAIM_KEY), peerbook.caller_peer(as_)
+        raw, node = args.get(CLAIM_KEY), edges.caller_peer(as_)
         claim = None
         if isinstance(raw, dict):
             claim = {"background": raw.get("kind") == "bg" or raw.get("hosting") == "background",

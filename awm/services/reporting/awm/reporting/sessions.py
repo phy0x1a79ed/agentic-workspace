@@ -25,7 +25,7 @@ class Cx:
 
     async def list(self) -> list[dict]:
         try:
-            reply = await gatewayclient.call("cch", "list", {}, timeout=LIST_TIMEOUT_S)
+            reply = await gatewayclient.call("harness-cc", "list", {}, timeout=LIST_TIMEOUT_S)
         except Exception as exc:  # noqa: BLE001 — any failure means "cannot tell"
             raise CxUnavailable(f"cx list failed: {exc}") from exc
         if not isinstance(reply, dict) or reply.get("ok") is False or "sessions" not in reply:
@@ -36,7 +36,7 @@ class Cx:
     async def start(self, spec: dict[str, Any]) -> dict:
         args = {k: v for k, v in spec.items() if v is not None}
         try:
-            reply = await gatewayclient.call("cch", "start", args, timeout=START_TIMEOUT_S)
+            reply = await gatewayclient.call("harness-cc", "start", args, timeout=START_TIMEOUT_S)
         except Exception as exc:  # noqa: BLE001
             return {"ok": False, "reason": f"cx start failed: {exc}"}
         return reply if isinstance(reply, dict) else {"ok": False, "reason": repr(reply)}

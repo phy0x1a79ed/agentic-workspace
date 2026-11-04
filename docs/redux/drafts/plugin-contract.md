@@ -4,7 +4,7 @@
 
 This file is the contract between a plugin and the Rust gateway of the redux (`install.md` R112, R115 to R117, R132). It holds the manifest format, the wire protocol a service speaks, the call interface a plugin uses to reach another plugin, and the usage event. The redux-core lane (job a92d02bf) owns it. Other lanes build against it. Send a change request to `redux-build/core` with `SendMessage`.
 
-Status: draft v1.9. Build against it. v1.8 dropped the tool UUIDs (`install.md` R117 item 2) and added the live name table and the hot reload (R117 item 3, R144). v1.9 enforces `needs.secrets` and adds the install from a folder with its pin record (R116 items 1 and 2).
+Status: draft v1.10. Build against it. v1.9 enforced `needs.secrets` and added the install from a folder with its pin record (R116 items 1 and 2). v1.10 drops `trust` (R116 item 4), adds `verbs` to each need and enforces it (R116 item 3), enforces `needs.network`, adds the git install with its signed approval (R115, R116 items 1 and 2), replaces `X-Awm-Plugin` and the `/svc` door with the service token, makes a failed caller lookup untrusted (`fleet.md` R103 item 2) and sends every peer call through the local gateway (R86, R92).
 
 ## Plugin folder
 
@@ -14,7 +14,7 @@ A folder with a `run.sh` and no `awm-plugin.toml` loads as a legacy plugin. The 
 
 Plugin roots are an ordered list in the gateway config. The built-in core roots are `awm/services` then `awm/plugins`. Put a new core plugin at `awm/plugins/<name>/`. The first root that holds a plugin name wins. The gateway logs and ignores a shadowed folder. Today's Python gateway also scans `awm/plugins` as a built-in root, so a plugin there runs before the cutover.
 
-A tool name on the reserved list of the gateway config belongs only to a plugin from a core root with `trust = "own"`. Any other claim refuses the plugin. The `awm` tool belongs to the core: the gateway serves its verbs itself. A legacy core service that publishes into `awm` today, such as `auth`, adds its verbs to it until it moves to a tool of its own. The default list is `awm`, `2fa`, `approver`, `queue-store` and `journal`, plus the singleton tools of the edge list (§ Install config).
+A tool name on the reserved list of the gateway config belongs only to a plugin from a core root. Any other claim refuses the plugin. A plugin's trust is where it loads from, never a manifest key. The `awm` tool belongs to the core: the gateway serves its verbs itself. The default list is `awm`, `auth`, `2fa`, `approver`, `queue-store` and `journal`, plus the singleton tools of the edge list (§ Install config).
 
 ## Manifest
 
@@ -24,7 +24,6 @@ Example, for a plugin that serves one MCP tool, one hidden tool and one page:
 > [plugin]
 > name = "journal"
 > version = "1.4.0"
-> trust = "own"            # own | third-party (R116 item 4)
 > refresh = "./refresh.sh" # optional R33 hook, run in the plugin folder
 >
 > [[service]]
@@ -58,27 +57,54 @@ Example, for a plugin that serves one MCP tool, one hidden tool and one page:
 >
 > [needs]
 > secrets = ["JOURNAL_DB_KEY"]
-> network = ["github.com"]
+> network = ["github.com", "*.googleapis.com", "api.example.org:8443", "tcp:22"]
 > platform = ["linux"]     # optional. Empty is any
 > gpu = false              # optional. Recorded, not enforced yet
 >
 > [[needs.tool]]
 > name = "precedence"      # the tool this plugin calls
 > major = 2
+> verbs = ["search", "add"] # every verb it calls, describe excepted
 > ```
 
 Rules the loader enforces:
 
 1. A tool name is letters, digits and hyphens. It holds no dot and no underscore. Use `harness-cc`, never `harness.cc`.
 2. A tool name is unique across the fleet and is the tool's permanent id (R117 item 2). A name that two plugins claim refuses the second plugin and names the owner (R116 item 5). Legacy folders are the exception while they convert: several may share a tool, as `cx`, `keep` and `reflection` share `reflection` today. A fork settles a clash by renaming the tool in its own manifest. The install config renames nothing.
-3. A `needs.tool` name that no plugin serves, on this node or a peer, refuses the plugin. The refusal names the tool.
+3. A `needs.tool` name that no plugin serves, on this node or a peer, refuses the plugin. The refusal names the tool. A `needs.tool` or `needs.contract` with no `verbs`, or with a verb that breaks the tool name rule, refuses the plugin too.
 4. A `needs.tool` major that differs from the owner's major refuses the plugin.
 5. Refusals cascade: a plugin that needs a refused plugin's tool is refused too.
 6. `tier = "off"` keeps a tool off the MCP surface. Plugins and the CLI still call it through the gateway.
 7. Each `[[tool]]` names the services of the same plugin that serve it: `service = "<name>"`, or `services = ["board", "reporting"]` when several share it. A plugin with one service may omit both. A service publishes each function of its `ready` manifest as `<tool>_<verb>`, as today. Two services that publish one verb of a tool refuse the later one at `ready`.
 8. A plugin whose `needs.platform` excludes this node's operating system is refused.
 9. A `page.dir` or `service.path` that leaves the plugin folder refuses the plugin. A page with no `dir` resolves by name in the gateway's page roots, because the core pages still build to `awm/pages/<name>/dist`.
-10. A service gets only the secrets its plugin's `needs.secrets` lists (§ Service wire protocol, step 1). `needs.network` is recorded, not enforced.
+10. A service gets only the secrets its plugin's `needs.secrets` lists (§ Service wire protocol, step 1).
+11. Each `needs.network` entry must parse (§ Network). A bad entry refuses the plugin.
+
+### Verbs
+
+A plugin calls only the verbs its needs list (R116 item 3). Both gateways check each call at dispatch, after the mode gate.
+
+1. The gateway knows the calling plugin from the service token (§ Service wire protocol, step 2). The Rust gateway also knows it from the `Referer` of a page under `/p/<plugin>/<page>/`. A token that no spawn got gets 401.
+2. The plugin's own tools pass. `describe` passes on any tool it needs.
+3. A verb that no `[[needs.tool]]` or `[[needs.contract]]` lists gets 403. The refusal names the plugin, the tool and the verb, and says to add the verb to the manifest.
+4. A legacy folder is not checked. A call with no service token and no page `Referer`, such as a session's or the CLI's, is not checked.
+
+**CAUTION** A missing verb breaks a plugin only at the call. `awm/gateway/tests/test_plugin_calls.py` replays every plugin's recorded calls against its manifest. Add each new call to its table.
+
+### Network
+
+The Rust gateway enforces `needs.network` (R116 item 1). It runs one loopback egress proxy for each plugin that is not a legacy folder, and sets `HTTP_PROXY`, `HTTPS_PROXY` and `NO_PROXY` for the plugin's services. `NO_PROXY` holds loopback, the gateway's host and the nodes of the edge list.
+
+1. `host` allows that host on ports 80 and 443. `*.host` allows its subdomains. `:port` after either names the one port allowed.
+2. `*` allows every host and port. Use it for a plugin that browses wherever it is sent. The install review sees it.
+3. `tcp:<port>` and `udp:<port>` name traffic the proxy cannot see, such as ssh or a wake-on-LAN broadcast. The gateway records them and checks nothing.
+4. A refused request gets 403 with `add "<host>" to network in its [needs]`. The gateway logs `egress guard: refused plugin <plugin> <host>:<port>` at warn.
+
+Known limits:
+
+- The Python gateway sets no proxy, so a plugin under it reaches any host until the cutover (T19).
+- A client that ignores the proxy variables is not checked. Python's `http.client`, `imaplib` and `smtplib`, aiohttp by default, discord.py, ssh, openconnect, Node without `NODE_USE_ENV_PROXY` and Chrome in a container all ignore them.
 
 
 ## Contracts
@@ -100,9 +126,17 @@ Example: cch serves `harness-cc` and dsh serves `harness-ds`. Each implements th
 3. A plugin name that a core root or another plugin root already loads is refused.
 4. `<AWM_DIR>/installed.toml` pins each installed plugin: `name`, `source`, `commit` (the folder's git HEAD, when it has one), `image` and `installed_at`.
 5. `awm uninstall <name>` removes the folder and the pin, then reloads.
-6. A source that needs approval passes the gateway's approver first. One approval covers the whole change (R116 item 2). The approver refuses every such change until the passkey flow exists (`queue.md` R64). A local folder needs no approval. A git source waits on the fleet-deploy review topic.
+6. A source `git:<url>@<commit>` names a git repository at a full 40-hex commit (R115). The gateway fetches that commit, checks that `HEAD` is that commit, and copies the tree without `.git`.
+7. A change that holds a git source needs Tony's approval (R116 item 2). One approval covers the whole change. A local folder, a core or plugin root and the reload of a pinned plugin need none.
 
 Only a trusted caller on this node may install or uninstall.
+
+### Approval
+
+1. The gateway reads the approver's public key `AWM_APPROVER_GRANT_PUBKEY` (base64url Ed25519) from the secrets file, then its own environment, then the install config's `env`. With no key it refuses the change with 403 and names the key, before it files any request.
+2. The first install files `operations approval_request` with kind `plugin_commits`, this node, and the payload `{change, plugins: [{plugin, source, commit, from?}]}`. It loads nothing. It answers `{"installed": [], "approval": <request_id>, "commits", "next"}`.
+3. Tony approves on his passkey. Run the same install again with `approval=<request_id>` (`awm install --approval`, the HTTP body's `approval`).
+4. The gateway reads `operations approval_get` and checks the grant itself. The signature must verify under the key. The kind must be `plugin_commits`, the node this node, the payload digest this change's, the commits exactly this change's `name@commit` list, and now inside the grant's window. Any other grant loads nothing, and the refusal names the check that failed.
 
 ## Refresh hook
 
@@ -137,9 +171,9 @@ The loader warns on a `[placement]` table and ignores it.
 
 The protocol is today's Python gateway protocol plus one header, the service token in step 2. `awm.gatewayclient.ServiceAdapter` on `feat/redux-core` speaks it. An older adapter gets 403 from the Rust gateway.
 
-1. The gateway starts each enabled service with `bash <run>` in the service folder. It sets `AWM_HUB_URL`, `AWM_SERVICE_NAME`, `AWM_PLUGIN`, `AWM_NODE_NAME`, `AWM_DIR`, `AWM_WORKSPACE` and `AWM_HUB_TOKEN_FILE` in the environment, plus the install config's `env`. It never sets `AWM_SERVICE_ID`. The service inherits nothing else of the gateway's environment but `PATH`, `HOME`, the user, shell, locale and time zone, `TMPDIR`, `XDG_RUNTIME_DIR`, `TERM` and `AWM_CONDA_ROOT`. It also gets each secret its plugin's `needs.secrets` names. The value comes from the secrets file, `secrets_file` in the install config (default `<AWM_DIR>/secrets.env`, `NAME=value` lines), else from the gateway's own environment.
+1. The gateway starts each enabled service with `bash <run>` in the service folder. It sets `AWM_HUB_URL`, `AWM_SERVICE_NAME`, `AWM_PLUGIN`, `AWM_NODE_NAME`, `AWM_DIR`, `AWM_WORKSPACE` and `AWM_HUB_TOKEN_FILE` in the environment, plus the install config's `env` and the egress proxy (§ Network). It never sets `AWM_SERVICE_ID`. The service inherits nothing else of the gateway's environment but `PATH`, `HOME`, the user, shell, locale and time zone, `TMPDIR`, `XDG_RUNTIME_DIR`, `TERM` and `AWM_CONDA_ROOT`. It also gets each secret its plugin's `needs.secrets` names. The value comes from the secrets file, `secrets_file` in the install config (default `<AWM_DIR>/secrets.env`, `NAME=value` lines), else from the gateway's own environment.
    **CAUTION** Every service sees the install config's `env`. Put a secret in the secrets file, never in `env`.
-2. The service posts `POST /hub/service/register` with `{name, prefix?, pid, start, cwd}` and the header `X-Awm-Service-Token`, read from `AWM_HUB_TOKEN_FILE`. Each spawn gets a fresh token, so no other local user can take the service's name while it is down. A register with a wrong token gets 403. The reply carries `service_id`, `control_ws_path` and `canonical_workspace`.
+2. The service posts `POST /hub/service/register` with `{name, prefix?, pid, start, cwd}` and the header `X-Awm-Service-Token`, read from `AWM_HUB_TOKEN_FILE`. Each spawn gets a fresh token, so no other local user can take the service's name while it is down. A register with a wrong token gets 403. The same token names the service on each `/invoke` it makes (§ Calling another plugin). The Python gateway mints one per spawn too. The reply carries `service_id`, `control_ws_path` and `canonical_workspace`.
 3. The service opens the control WebSocket at `/hub/service/control/<service_id>`. It sends `{"kind":"ready","api":{"functions":[...]}}` first. Each function is `{name, description, params:[{name,type,required,description}], tool?}`.
 4. The gateway sends `{"kind":"call","id","fn","args","as"?,"caller"}`. `caller` is `{"node","lane","session","trust","scope"}`: `lane` is `local`, `edge` or `service`, `session` is the R9 session id or null, `trust` is `trusted`, `cooperative` or `untrusted`, and `scope` is the session's own `<project>/<scope>` or null. Only the gateway fills `caller` (R103). It drops any `X-Awm-Trust` or `X-Awm-Lane` header a caller sends. A service that predates `caller` ignores it, and reads the caller in its args instead (§ Caller arguments). The service answers `{"kind":"reply","id","ok":true,"result"}` or `{"kind":"reply","id","ok":false,"error","error_class"}`. The gateway may also send `notify`, `cancel` and `shutdown`.
 5. The service may send `{"kind":"emit","topic","payload"}` and `{"kind":"usage",...}` (see § Usage event).
@@ -156,15 +190,20 @@ Both gateways also write the caller's trust and scope into the args of every cal
 - `_caller_session` keeps its meaning: the `{kind, job, name}` claim of a session on another node.
 - `_caller_session_id` is the R9 id of an isolated session. Only the isolated door writes it (§ Isolated sessions). Both gateways drop it from every other call.
 
-The gateway finds the session from `X-Awm-Session-Pid`, the pid `awm mcp` sends. It asks `reflection session_of {pid}` on the `/svc` door, with no session pid, so the lookup is neither gated nor looked up itself. reflection asks the harness plugins (`install.md` R135 item 6). The gateway reads no harness's files.
+The gateway finds the session from a pid: `X-Awm-Session-Pid`, which `awm mcp` sends, or `X-Awm-Caller-Pid`, which the CLI sends for itself. It walks that pid's ancestors and asks `reflection session_of {pid}` for each, in-process through the hub, so the lookup is neither gated nor looked up itself. reflection asks the harness plugins (`install.md` R135 item 6). The gateway reads no harness's files.
 
-1. A known session answers `{ok, known: true, session_id, mode, trust, cwd, ...}`. A pid no harness claims answers `{ok, known: false, mode, reason}`.
-2. The gateway keeps a positive answer `session_cache_s` seconds (install config, default 5). It never keeps a failed lookup.
-3. No answer, or no session, reads as `trusted` with no scope.
+1. A known session answers `{ok, known: true, session_id, mode, trust, cwd, ...}`. The first session found is the caller, with its trust, mode and scope.
+2. A chain that no harness claims is a user's shell. It reads as `trusted` with no scope.
+3. A lookup that fails reads as `untrusted`, with mode `unknown` (`fleet.md` R103 item 2). cch records each session at its start, so a session Tony starts by hand is found.
+4. A call with no pid reads as `trusted`. Only a loopback caller can send one, and the gateway logs a warning.
+5. A call with a valid service token is lane `service` and `trusted`, unless it also names a pid.
+6. The gateway keeps a positive answer `session_cache_s` seconds (install config, default 5). It never keeps a failed lookup.
 
-The gateway drops the two keys a caller sends. A call that names no session carries neither key. The journal reads that as `trusted`, the browser as `cooperative`.
+The gateway drops the two keys a caller sends. A service that finds no `_caller_trust` reads the call as `untrusted`.
 
-Over an edge, the pair comes from the far node. The Rust gateway takes it from the edge's `caller` frame. The Python gateway keeps the pair only on a request that carries `X-Awm-As`, and its proxy fills the pair from its own node's ledger when it follows a peer redirect. The Rust gateway refuses a `_caller_trust` or `_caller_scope` that a model sends to `/invoke` as an unknown argument of a verb that declares its params.
+The Rust gateway gates each call by the session's mode, as `awm.config.modes` does. A mode it cannot read is `unknown`, which is restricted. A refused call gets 403.
+
+Over an edge, the pair comes from the far node. The Rust gateway takes it from the edge's `caller` frame. The Rust gateway refuses a `_caller_trust` or `_caller_scope` that a model sends to `/invoke` as an unknown argument of a verb that declares its params.
 
 ### External services
 
@@ -176,19 +215,19 @@ A service in the install config's `[[external]]` list runs under its own system 
 
 ## Isolated sessions
 
-An isolated session runs in a container and has no host pid (`fleet.md` R109). cch writes its MCP config to call `<door>/mcp` with the header `X-Awm-Caller-Token`. Both gateways serve that door.
+An isolated session runs in a container and has no host pid (`fleet.md` R109). cch writes its MCP config to call `<door>/mcp` with the header `X-Awm-Caller-Token`. Only the Rust gateway serves that door.
 
 1. The door is `POST /mcp`, MCP over streamable HTTP with JSON replies. `GET` gets 405, because the door sends no server events.
-2. The gateway asks `harness-cc caller_of_token {token}` who holds the token. A positive answer is kept 10 s, so a revoked token stops working within 10 s. No token, or an unknown one, gets 401. A failed lookup gets 503.
+2. The gateway asks each `harness@1` provider `caller_of_token {token}` who holds the token. A positive answer is kept 10 s, so a revoked token stops working within 10 s. No token, or an unknown one, gets 401. A failed lookup gets 503.
 3. `tools/list` and `describe` show only the verbs on the answer's `tools`. A call to any other verb gets an `isError` result that names the whitelist.
-4. The gateway also holds a ceiling that no token lifts: no `ssh`, no `harness-*` tool, and no `reflection` verb but `whoami`, `compact`, `message_self`, `pending` and `mode`.
+4. The gateway also holds a ceiling that no token lifts: no `ssh`, no tool that implements `harness@1`, and no `reflection` verb but `whoami`, `compact`, `message_self`, `pending` and `mode`.
 5. A call runs on this node only. A `peer` other than `local` or this node is refused.
 6. `project`, `scope` and `to_scope` must name the session's own scope when sent. A verb that declares `project` or `scope` gets the session's value when the caller sends none.
 7. The call carries the caller `{lane: local, session: <R9 id>, trust, scope}` and the args `_caller_trust`, `_caller_scope` and `_caller_session_id`. Trust is `untrusted`, or `cooperative` when the answer says so. A token never makes a session trusted.
 
-The loopback listener serves `/mcp` too. `isolated_listen` in the install config (`AWM_ISOLATED_LISTEN` for the Python gateway) binds a second listener that serves `/mcp` and nothing else. Bind it where the containers reach the host. cch's default URL is `http://host.docker.internal:8765`, so use port 8765 or set `AWM_ISOLATED_HUB_URL` in cch. `gateway.json` names the door as `isolated_url`.
+The loopback listener serves `/mcp` too. `isolated_listen` in the install config binds a second listener that serves `/mcp` and nothing else. Bind it where the containers reach the host. cch's default URL is `http://host.docker.internal:8765`, so use port 8765 or set `AWM_ISOLATED_HUB_URL` in cch. `gateway.json` names the door as `isolated_url`.
 
-**WARNING** A request on loopback `/invoke` passes as a trusted local caller. Keep the loopback listener out of the containers' reach. Both gateways refuse a request that carries `X-Awm-Caller-Token` on `/invoke` and `/svc`.
+**WARNING** A request on loopback `/invoke` passes as a trusted local caller. Keep the loopback listener out of the containers' reach. The gateway refuses a request that carries `X-Awm-Caller-Token` on `/invoke`.
 
 **CAUTION** reflection and operations find the caller's own session from `_caller_pid`. They must read `_caller_session_id` when it is present, or their own-session verbs fail for an isolated session.
 
@@ -196,13 +235,23 @@ The loopback listener serves `/mcp` too. `isolated_listen` in the install config
 
 A plugin calls another plugin only through the gateway (R117 item 1).
 
-1. Call each tool you need by the name your `[[needs.tool]]` gives it. For a contract, read its providers from `GET /hub/contract/<name>@<major>` at call time.
+1. Call each tool you need by the name your `[[needs.tool]]` gives it, with a verb its `verbs` lists (§ Verbs). For a contract, read its providers from `GET /hub/contract/<name>@<major>` at call time.
 2. Call `POST $AWM_HUB_URL/invoke` with `{"name":"<tool>","args":{"verb":"<verb>","args":{...},"peer":"<node>"?}}`.
-3. Send `X-Awm-Plugin: <your plugin name>`. The gateway counts the call as surface `plugin` for both plugins.
+3. Send `X-Awm-Service-Token` with the token from `AWM_HUB_TOKEN_FILE`. The gateway names your plugin from it and counts the call as surface `plugin`. A wrong token gets 401. `awm.gatewayclient.call` does steps 2 and 3.
 4. Send `X-Awm-As: <principal>` when you act for someone, as today.
 5. Read `{"result": <string>}` on success. The string is the verb's JSON result. An error is a non-2xx status with `{"detail": ...}`.
 
-`GET /hub/tool/<name>` answers the tool's owner, `{name, major, plugin, peer}`, or 404. The old door `POST /svc/<service>/fn/<fn>` stays for today's Python services and is removed once they move.
+`GET /hub/tool/<name>` answers the tool's owner, `{name, major, plugin, peer}`, or 404. The `/svc` door is gone.
+
+### Peer calls
+
+A call to another node goes to the local gateway with `peer` (`fleet.md` R86, R92). There is no peer book and no peer token.
+
+1. The Rust gateway carries the call over the edge: `ssh <peer> awm edge-serve`. The far node runs it as a call from this node.
+2. A `peer` with no edge from this node is refused.
+3. The edge carries `/invoke` calls only. `awm.gatewayclient` refuses `subscribe`, `acquire_lease` and `fetch_peer_file` with a `peer`, with "needs the Rust gateway (T19)".
+4. The Python gateway refuses an `/invoke` that resolves to a peer with 421 and the same reason.
+5. A file path in a peer call is a path on the far node. No call carries file bytes across nodes.
 
 A call to a tool that is not up yet waits up to 10 s, then fails with 503 and names the tool (R117 item 7).
 
@@ -238,7 +287,7 @@ Who records each surface:
 
 | Surface | Recorded by |
 |---|---|
-| `mcp`, `cli`, `http`, `plugin` | the gateway, on each `/invoke`, from `X-Awm-Surface` and `X-Awm-Plugin` |
+| `mcp`, `cli`, `http`, `plugin` | the gateway, on each `/invoke`, from `X-Awm-Surface` and the service token |
 | `page` | the gateway, on each HTML document GET under `/p/<plugin>/<page>/` |
 | `background` | the plugin, as a control-WS frame `{"kind":"usage","surface":"background","name":"<job>","ok":true,"ms":840}` |
 | `code` | the library, as `POST /usage` with the event body, for use straight from another project's code |

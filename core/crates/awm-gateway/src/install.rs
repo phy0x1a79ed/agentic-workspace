@@ -1,16 +1,18 @@
-//! Installing and removing plugins: a source fetches a plugin folder, an approver passes the
-//! change, and the pin record keeps what each installed plugin came from (install.md R116 item 2).
-//!
-//! A local folder is the only source today. A git source plugs in through [`Source`]; it
-//! returns the commit it fetched, and [`Approver`] decides whether that commit may load.
+//! Installing and removing plugins: a source fetches a plugin folder, Tony's passkey approves
+//! the commits of a change, and the pin record keeps what each installed plugin came from
+//! (install.md R115, R116 item 2).
 
 use std::path::{Path, PathBuf};
 
 use awm_proto::{Manifest, MANIFEST_FILE};
 use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 
 pub const INSTALLED_DIR: &str = "installed";
 pub const PINS_FILE: &str = "installed.toml";
+/// The tool that takes Tony's passkey approval, and the request kind for plugin commits.
+pub const APPROVER_TOOL: &str = "operations";
+pub const COMMITS_KIND: &str = "plugin_commits";
 
 /// What a source fetched into the staging folder.
 #[derive(Debug, Clone)]
@@ -30,29 +32,69 @@ pub trait Source: Send + Sync {
     fn needs_approval(&self) -> bool;
 }
 
-/// One plugin of a change, as the approver sees it.
+/// One plugin of a change, as the approval request names it.
 #[derive(Debug, Clone, Serialize)]
 pub struct Pending {
-    pub name: String,
+    pub plugin: String,
     pub source: String,
-    pub commit: Option<String>,
+    pub commit: String,
+    /// The commit the plugin moves from, for an update.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub from: Option<String>,
 }
 
-/// Passes or refuses one change. A change may hold several plugins, and one approval covers
-/// them all (R116 item 2).
-pub trait Approver: Send + Sync {
-    fn approve(&self, change: &[Pending]) -> Result<(), String>;
+/// The `name@commit` list a grant must name, sorted as the approver sorts it.
+pub fn commits_of(change: &[Pending]) -> Vec<String> {
+    let mut out: Vec<String> = change.iter().map(|p| format!("{}@{}", p.plugin, p.commit)).collect();
+    out.sort();
+    out
 }
 
-/// The approver until the passkey flow exists (queue.md R64): a change that needs approval is
-/// refused, so nothing but a local folder installs.
-pub struct NoPasskeyYet;
+/// The `plugin_commits` payload for one change. One request approves all of it.
+pub fn request_payload(change: &[Pending]) -> Value {
+    json!({"change": commits_of(change).join(","), "plugins": change})
+}
 
-impl Approver for NoPasskeyYet {
-    fn approve(&self, change: &[Pending]) -> Result<(), String> {
-        let names: Vec<&str> = change.iter().map(|p| p.name.as_str()).collect();
-        Err(format!("{names:?} need passkey approval, which this node cannot take yet"))
+/// The approver's grant key, base64url: a node secret or the gateway's own environment,
+/// else the config's `[env]`, where the fleet's awm_config role writes it.
+pub const GRANT_KEY: &str = "AWM_APPROVER_GRANT_PUBKEY";
+
+/// The key that signs approvals on this node. With none, no install that needs approval passes.
+pub fn grant_key(secrets_file: &Path, config_env: &std::collections::BTreeMap<String, String>) -> Result<[u8; 32], String> {
+    let from_secrets = crate::supervisor::granted_secrets(secrets_file, &[GRANT_KEY.to_string()]).into_iter().map(|(_, v)| v);
+    let value = from_secrets
+        .chain(config_env.get(GRANT_KEY).cloned())
+        .find(|v| !v.trim().is_empty())
+        .ok_or_else(|| format!("{GRANT_KEY} is not set on this node, so no approval can be checked; enrol the passkey and set the approver's grant_pub as {GRANT_KEY} in the node's secrets"))?;
+    awm_trust::grant::load_public_key(&value).map_err(|e| format!("{GRANT_KEY}: {e}"))
+}
+
+/// Whether an `approval_get` answer approves exactly this change on `node`, now. The
+/// gateway checks the signature itself, so the approver tool's word alone approves nothing.
+/// The grant must name every commit of the change and no other, so an approval of one
+/// change never passes another.
+pub fn check_grant(change: &[Pending], answer: &Value, key: &[u8; 32], node: &str, now: i64) -> Result<(), String> {
+    use awm_trust::grant::{verify_grant, Expect, GrantError};
+    let status = answer.get("status").and_then(Value::as_str).unwrap_or("unknown");
+    if status != "approved" {
+        return Err(format!("the approval request is {status}, not approved"));
     }
+    let envelope = answer.get("grant").ok_or("the approval carries no grant")?;
+    let payload = request_payload(change);
+    let expect = Expect { kind: Some(COMMITS_KIND), node: Some(node), payload: Some(&payload), ..Default::default() };
+    verify_grant(envelope, key, &expect, now).map_err(|e| match e {
+        GrantError::Expired => "the grant is outside its window; ask for a new approval".to_string(),
+        e => e.to_string(),
+    })?;
+    let named: Vec<String> = envelope
+        .pointer("/grant/commits")
+        .and_then(Value::as_array)
+        .map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect())
+        .unwrap_or_default();
+    if named != commits_of(change) {
+        return Err(format!("the grant approves {named:?}, not this change {:?}", commits_of(change)));
+    }
+    Ok(())
 }
 
 /// A plugin folder on this machine. The install copies it, so a later edit of the source
@@ -76,14 +118,86 @@ impl Source for LocalFolder {
     }
 }
 
-/// Parse a source argument. `git:` and URLs wait on the fleet-deploy review topic.
+/// A plugin's own git repository at one pinned commit (R115). The manifest sits at the top
+/// of the repository.
+pub struct GitRepo {
+    pub url: String,
+    pub commit: String,
+}
+
+impl Source for GitRepo {
+    fn spec(&self) -> String {
+        format!("git:{}", self.url)
+    }
+
+    fn fetch(&self, dest: &Path) -> Result<Fetched, String> {
+        let parent = dest.parent().ok_or("no staging folder")?;
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        let clone = tempfile_dir(parent, "clone")?;
+        let result = (|| {
+            git(&clone, &["init", "-q"])?;
+            git(&clone, &["remote", "add", "origin", &self.url])?;
+            // A server that refuses a fetch by commit still serves its branches.
+            if git(&clone, &["fetch", "-q", "--depth", "1", "origin", &self.commit]).is_err() {
+                git(&clone, &["fetch", "-q", "origin"])?;
+            }
+            git(&clone, &["-c", "advice.detachedHead=false", "checkout", "-q", &self.commit])?;
+            let head = git_head(&clone).unwrap_or_default();
+            if head != self.commit {
+                return Err(format!("{}: checked out {head}, not the pinned {}", self.url, self.commit));
+            }
+            let manifest = read_manifest(&clone)?;
+            copy_tree(&clone, dest).map_err(|e| format!("copy {}: {e}", self.url))?;
+            Ok(Fetched { name: manifest.plugin.name, commit: Some(head) })
+        })();
+        let _ = std::fs::remove_dir_all(&clone);
+        result
+    }
+
+    fn needs_approval(&self) -> bool {
+        true
+    }
+}
+
+/// Parse a source argument: `git:<url>@<commit>` for a repository, else a folder.
 pub fn source_of(raw: &str) -> Result<Box<dyn Source>, String> {
     let raw = raw.trim();
-    if raw.starts_with("git:") || raw.contains("://") || raw.ends_with(".git") {
-        return Err(format!("{raw:?}: a git source is not built yet; install from a folder"));
+    if let Some(rest) = raw.strip_prefix("git:") {
+        let pinned = rest.rsplit_once('@').filter(|(url, c)| !url.is_empty() && is_commit(c));
+        let Some((url, commit)) = pinned else {
+            return Err(format!("{raw:?}: a git source pins a full commit, as git:<url>@<40-hex commit>"));
+        };
+        return Ok(Box::new(GitRepo { url: url.into(), commit: commit.into() }));
+    }
+    if raw.contains("://") || raw.ends_with(".git") {
+        return Err(format!("{raw:?}: name a git source as git:<url>@<40-hex commit>"));
     }
     let path = raw.strip_prefix("folder:").unwrap_or(raw);
     Ok(Box::new(LocalFolder(PathBuf::from(path))))
+}
+
+fn is_commit(c: &str) -> bool {
+    c.len() == 40 && c.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+fn git(dir: &Path, args: &[&str]) -> Result<(), String> {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .output()
+        .map_err(|e| format!("git: {e}"))?;
+    if out.status.success() {
+        return Ok(());
+    }
+    Err(format!("git {}: {}", args.join(" "), String::from_utf8_lossy(&out.stderr).trim()))
+}
+
+fn tempfile_dir(parent: &Path, tag: &str) -> Result<PathBuf, String> {
+    let dir = parent.join(format!(".{tag}-{}", uuid::Uuid::new_v4().simple()));
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    Ok(dir)
 }
 
 /// One row of the pin record.
@@ -165,8 +279,12 @@ fn copy_tree(src: &Path, dest: &Path) -> std::io::Result<()> {
 mod tests {
     use super::*;
 
+    fn sh(dir: &Path, args: &[&str]) {
+        assert!(std::process::Command::new("git").arg("-C").arg(dir).args(args).status().unwrap().success());
+    }
+
     #[test]
-    fn a_folder_installs_by_copy_and_git_waits() {
+    fn a_folder_installs_by_copy() {
         let t = tempfile::tempdir().unwrap();
         let src = t.path().join("src");
         std::fs::create_dir_all(src.join(".git")).unwrap();
@@ -177,13 +295,92 @@ mod tests {
         let got = source_of(src.to_str().unwrap()).unwrap().fetch(&dest).unwrap();
         assert_eq!(got.name, "p");
         assert!(dest.join("run.sh").is_file() && !dest.join(".git").exists() && !dest.join("node_modules").exists());
-        assert!(source_of("git:https://example.org/p.git").is_err());
-        assert!(NoPasskeyYet.approve(&[Pending { name: "p".into(), source: "git:x".into(), commit: None }]).is_err());
 
         let mut pins = Pins::default();
         pins.set(Pin { name: "p".into(), source: "folder:/x".into(), commit: None, image: None, installed_at: "t".into() });
         pins.set(Pin { name: "p".into(), source: "folder:/y".into(), commit: None, image: None, installed_at: "t".into() });
         pins.save(t.path()).unwrap();
         assert_eq!(Pins::load(t.path()).plugin[0].source, "folder:/y");
+    }
+
+    #[test]
+    fn a_git_source_installs_the_pinned_commit() {
+        let t = tempfile::tempdir().unwrap();
+        let repo = t.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        sh(&repo, &["init", "-q"]);
+        let commit = |msg: &str| {
+            sh(&repo, &["add", "-A"]);
+            sh(&repo, &["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", msg]);
+            let out = std::process::Command::new("git").arg("-C").arg(&repo).args(["rev-parse", "HEAD"]).output().unwrap();
+            String::from_utf8(out.stdout).unwrap().trim().to_string()
+        };
+        std::fs::write(repo.join(MANIFEST_FILE), "[plugin]\nname = 'g'\n").unwrap();
+        std::fs::write(repo.join("run.sh"), "echo one\n").unwrap();
+        let first = commit("one");
+        std::fs::write(repo.join("run.sh"), "echo two\n").unwrap();
+        commit("two");
+
+        let source = source_of(&format!("git:{}@{first}", repo.display())).unwrap();
+        assert!(source.needs_approval());
+        assert_eq!(source.spec(), format!("git:{}", repo.display()));
+        let dest = t.path().join("stage/0");
+        let got = source.fetch(&dest).unwrap();
+        assert_eq!((got.name.as_str(), got.commit.as_deref()), ("g", Some(first.as_str())));
+        assert_eq!(std::fs::read_to_string(dest.join("run.sh")).unwrap(), "echo one\n");
+        assert!(!dest.join(".git").exists());
+        assert_eq!(std::fs::read_dir(t.path().join("stage")).unwrap().count(), 1, "the clone is cleaned up");
+
+        assert!(source_of(&format!("git:{}", repo.display())).is_err(), "a git source pins a commit");
+        assert!(source_of(&format!("git:{}@abc123", repo.display())).is_err(), "a short commit is no pin");
+        assert!(source_of("https://example.org/p.git").is_err());
+        let missing = source_of(&format!("git:{}@{}", repo.display(), "0".repeat(40))).unwrap();
+        assert!(missing.fetch(&t.path().join("stage/1")).is_err());
+    }
+
+    #[test]
+    fn a_grant_approves_exactly_its_change() {
+        use base64::Engine;
+        use ed25519_dalek::{Signer, SigningKey};
+        let (a, b) = ("a".repeat(40), "b".repeat(40));
+        let change = vec![
+            Pending { plugin: "zotero".into(), source: "git:x".into(), commit: b.clone(), from: Some(a.clone()) },
+            Pending { plugin: "engcyc".into(), source: "git:y".into(), commit: a.clone(), from: None },
+        ];
+        let payload = request_payload(&change);
+        assert_eq!(payload["plugins"][0], json!({"plugin": "zotero", "source": "git:x", "commit": b, "from": a}));
+        assert!(payload["plugins"][1].get("from").is_none());
+        let both = commits_of(&change);
+        assert_eq!(both, vec![format!("engcyc@{a}"), format!("zotero@{b}")]);
+        let sk = SigningKey::from_bytes(&[7; 32]);
+        let pk = sk.verifying_key().to_bytes();
+        let signed = |status: &str, commits: &[String], node: &str| {
+            let grant = json!({"grant_id": "g1", "request_id": "q1", "kind": "plugin_commits", "node": node, "subject": "tony",
+                "payload_sha256": awm_trust::grant::payload_digest(&payload), "not_before": 100, "not_after": 200,
+                "approved_by_device": "d", "commits": commits});
+            let sig = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(sk.sign(&awm_trust::grant::canonical(&grant)).to_bytes());
+            json!({"status": status, "grant": {"grant": grant, "sig": sig, "key_id": awm_trust::grant::key_id(&pk)}})
+        };
+        assert!(check_grant(&change, &signed("approved", &both, "home"), &pk, "home", 150).is_ok());
+        assert!(check_grant(&change, &signed("pending", &both, "home"), &pk, "home", 150).unwrap_err().contains("pending"));
+        assert!(check_grant(&change, &signed("approved", &both[..1], "home"), &pk, "home", 150).unwrap_err().contains("not this change"));
+        assert!(check_grant(&change, &signed("approved", &both, "home"), &pk, "home", 200).unwrap_err().contains("window"));
+        assert!(check_grant(&change, &signed("approved", &both, "work"), &pk, "home", 150).unwrap_err().contains("node"));
+        let mut forged = signed("approved", &both, "home");
+        forged["grant"]["grant"]["not_after"] = json!(900);
+        assert!(check_grant(&change, &forged, &pk, "home", 150).unwrap_err().contains("does not verify"));
+        let other = SigningKey::from_bytes(&[8; 32]).verifying_key().to_bytes();
+        assert!(check_grant(&change, &signed("approved", &both, "home"), &other, "home", 150).is_err());
+        let t = tempfile::tempdir().unwrap();
+        let secrets = t.path().join("secrets.env");
+        let none = std::collections::BTreeMap::new();
+        if std::env::var_os(GRANT_KEY).is_none() {
+            assert!(grant_key(&secrets, &none).unwrap_err().contains(GRANT_KEY));
+        }
+        let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(pk);
+        let in_config = std::collections::BTreeMap::from([(GRANT_KEY.to_string(), b64.clone())]);
+        assert_eq!(grant_key(&secrets, &in_config).unwrap(), pk);
+        std::fs::write(&secrets, format!("{GRANT_KEY}={b64}\n")).unwrap();
+        assert_eq!(grant_key(&secrets, &none).unwrap(), pk);
     }
 }

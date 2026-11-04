@@ -301,3 +301,16 @@ def test_leaf_matches_ca_accepts_a_real_pair(dirs):
     certs.ensure_certs(cert_dir, ca_dir=ca_dir, sans=["IP:127.0.0.1"])
     assert certs.leaf_matches_ca(cert_dir / "cert.pem", cert_dir / "key.pem",
                                  ca_dir / "ca.pem") is None
+
+
+def test_the_leaf_can_live_outside_the_checkout(monkeypatch, tmp_path):
+    import importlib
+
+    from awm.httpsfront import hub_adapter
+
+    monkeypatch.delenv("AWM_EDGE_CERT_DIR", raising=False)
+    assert importlib.reload(hub_adapter).CERT_DIR.name == ".certs"
+    monkeypatch.setenv("AWM_EDGE_CERT_DIR", str(tmp_path))
+    assert importlib.reload(hub_adapter).CERT_DIR == tmp_path
+    monkeypatch.delenv("AWM_EDGE_CERT_DIR")
+    importlib.reload(hub_adapter)

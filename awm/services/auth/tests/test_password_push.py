@@ -46,7 +46,7 @@ def pushed(monkeypatch):
         sent.append({"peer": peer, "service": svc, "fn": fn, "args": args})
         return {"ok": True}
 
-    monkeypatch.setattr(gc, "call_maybe_peer", _call)
+    monkeypatch.setattr(gc, "call", lambda tool, verb, args=None, *, peer=None, **kw: (_call)(peer, tool, verb, args, **kw))
     monkeypatch.setattr(gc, "peer_env", lambda var: None)
     return sent
 
@@ -130,7 +130,7 @@ async def test_the_default_push_goes_to_the_ops_note(pushed, monkeypatch):
     await service._push_password_to_discord(PASSWORD, 0.0)
     assert len(pushed) == 1
     sent = pushed[0]
-    assert (sent["service"], sent["fn"]) == ("reporting", "ops_post")
+    assert (sent["service"], sent["fn"]) == ("operations", "ops_post")
     assert sent["args"]["kind"] == "password"
     assert sent["args"]["node"] == "altair"
     assert "altair" in sent["args"]["title"]
@@ -168,7 +168,7 @@ async def test_a_social_outage_does_not_raise_into_the_mint(pushed, monkeypatch)
     async def _boom(*a, **k):
         raise RuntimeError("social is down")
 
-    monkeypatch.setattr(gc, "call_maybe_peer", _boom)
+    monkeypatch.setattr(gc, "call", lambda tool, verb, args=None, *, peer=None, **kw: (_boom)(peer, tool, verb, args, **kw))
     await service._push_password_to_discord(PASSWORD, 0.0)   # must not raise
 
 
@@ -233,7 +233,7 @@ async def test_a_transient_failure_is_retried_until_it_succeeds(monkeypatch):
         return {"ok": True}
 
     import awm.gatewayclient as gc
-    monkeypatch.setattr(gc, "call_maybe_peer", _flaky)
+    monkeypatch.setattr(gc, "call", lambda tool, verb, args=None, *, peer=None, **kw: (_flaky)(peer, tool, verb, args, **kw))
     monkeypatch.setattr(gc, "peer_env", lambda var: None)
 
     await service._push_password_to_discord(PASSWORD, 0.0)
@@ -257,7 +257,7 @@ async def test_a_persistent_failure_gives_up_after_max_attempts(monkeypatch):
         raise RuntimeError("social is down")
 
     import awm.gatewayclient as gc
-    monkeypatch.setattr(gc, "call_maybe_peer", _boom)
+    monkeypatch.setattr(gc, "call", lambda tool, verb, args=None, *, peer=None, **kw: (_boom)(peer, tool, verb, args, **kw))
     monkeypatch.setattr(gc, "peer_env", lambda var: None)
 
     await service._push_password_to_discord(PASSWORD, 0.0)   # must not raise

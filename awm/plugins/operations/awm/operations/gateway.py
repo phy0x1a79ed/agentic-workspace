@@ -14,6 +14,15 @@ def hub() -> str:
     return os.environ.get("AWM_HUB_URL", "http://127.0.0.1:8765")
 
 
+def _headers() -> dict[str, str]:
+    """The service token this spawn was given, which names operations to the gateway."""
+    try:
+        token = open(os.environ["AWM_HUB_TOKEN_FILE"]).read().strip()
+    except (KeyError, OSError):
+        return {}
+    return {"X-Awm-Service-Token": token} if token else {}
+
+
 class GatewayTool:
     """One tool reached by name. Transport failures and 5xx become Unreachable."""
 
@@ -41,7 +50,7 @@ class GatewayTool:
         try:
             async with httpx.AsyncClient(timeout=timeout or self.timeout) as c:
                 r = await c.post(f"{hub()}/invoke", json=self._body(verb, args, peer),
-                                 headers={"X-Awm-Plugin": "operations"})
+                                 headers=_headers())
         except httpx.HTTPError as exc:
             raise Unreachable(str(exc)) from exc
         return self._reply(r)
@@ -49,7 +58,7 @@ class GatewayTool:
     def call_sync(self, verb: str, args: dict[str, Any], *, timeout: float | None = None) -> Any:
         try:
             r = httpx.post(f"{hub()}/invoke", json=self._body(verb, args, None),
-                           headers={"X-Awm-Plugin": "operations"},
+                           headers=_headers(),
                            timeout=timeout or self.timeout)
         except httpx.HTTPError as exc:
             raise Unreachable(str(exc)) from exc

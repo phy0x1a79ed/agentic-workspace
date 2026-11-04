@@ -18,7 +18,7 @@ class Unknown(RuntimeError):
 def _ask() -> dict:
     from awm.gatewayclient import call_sync
 
-    return call_sync("cch", "live_session_ids", {}, timeout=30.0)
+    return call_sync("harness-cc", "live_session_ids", {}, timeout=30.0)
 
 
 def session_ids() -> set[str]:

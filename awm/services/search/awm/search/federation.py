@@ -14,7 +14,6 @@ from typing import Any
 
 from awm import config
 from awm.config import edges
-from awm.config.peertoken import node_label
 from awm.search import hits as hitshape
 
 #: Budget for one peer, connect to reply.
@@ -27,15 +26,15 @@ MAX_REPLY_BYTES = 2 * 1024 * 1024
 
 
 class Peers:
-    """The peer book and the call to a peer; tests stand in for both."""
+    """The nodes this node holds an edge to, and the call to one; tests stand in for both."""
 
     def records(self) -> list[dict[str, Any]]:
-        here = node_label(config.node_name())
-        return [r for r in config.list_records() if node_label(r["name"]) != here]
+        return [{"name": n} for n in edges.reachable_from(edges.here())]
 
     async def invoke(self, peer: str, name: str, args: dict[str, Any], timeout: float) -> Any:
-        from awm.gatewayclient import invoke_peer
-        return await invoke_peer(peer, name, args, timeout=timeout)
+        from awm import gatewayclient
+        tool, verb = name.split("_", 1)
+        return await gatewayclient.call(tool, verb, args, peer=peer, timeout=timeout)
 
 
 @dataclass
@@ -96,12 +95,9 @@ async def _ask_one(peers: Peers, record: dict[str, Any], args: dict[str, Any], l
 async def ask_home(peers: Peers, home: str, args: dict[str, Any], limit: int,
                    clashed: bool = False) -> PeerResult:
     """The sections of the sources ``args`` names, asked of the node that holds them."""
-    record = next((r for r in peers.records() if node_label(r["name"]) == node_label(home)), None)
+    record = next((r for r in peers.records() if edges.label(r["name"]) == edges.label(home)), None)
     if record is None:
-        return PeerResult(home, {"status": "error", "error": "not in the peer book"})
-    here = edges.here()
-    if not edges.reaches(here, record["name"]):
-        return PeerResult(home, {"status": "error", "error": f"no edge from {here} to {record['name']}"})
+        return PeerResult(home, {"status": "error", "error": f"no edge from {edges.here()} to {home}"})
     if clashed:
         return PeerResult(home, {"status": "refused", "error": CLASH_REFUSAL})
     return await _ask_one(peers, record, args, limit)
@@ -112,9 +108,9 @@ CLASH_REFUSAL = "an open tag clash stands between this node and it; searches wai
 
 async def fetch(peers: Peers, name: str, source: str, doc_id: str) -> dict[str, Any]:
     """One document from a peer's archive, stamped with the peer as its origin."""
-    record = next((r for r in peers.records() if node_label(r["name"]) == node_label(name)), None)
+    record = next((r for r in peers.records() if edges.label(r["name"]) == edges.label(name)), None)
     if record is None:
-        raise ValueError(f"{name!r} is not in the peer book")
+        raise ValueError(f"no edge from {edges.here()} to {name}")
     raw = await asyncio.wait_for(peers.invoke(name, GET_TOOL, {"source": source, "id": doc_id}, PEER_TIMEOUT_S),
                                  timeout=PEER_TIMEOUT_S + 1.0)
     if isinstance(raw, dict) and "document" not in raw and "result" in raw:

@@ -26,6 +26,8 @@ tracing-subscriber.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+ed25519-dalek = "2"
+base64 = "0.22"
 serde_json.workspace = true
 libc.workspace = true
 reqwest = { workspace = true, features = ["blocking"] }

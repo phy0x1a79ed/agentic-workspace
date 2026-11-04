@@ -28,6 +28,8 @@ pub enum GrantError {
     WrongNode(String),
     #[error("a signed time is a float, and signed times are integers")]
     FloatTime,
+    #[error("the public key is not 32 bytes of base64url")]
+    BadKey,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -96,6 +98,15 @@ fn write_canonical(v: &Value, out: &mut Vec<u8>) {
 
 pub fn payload_digest(payload: &Value) -> String {
     hex::encode(Sha256::digest(canonical(payload)))
+}
+
+/// The raw Ed25519 key in `b64u`, the approver's `grant_pub` form.
+pub fn load_public_key(b64u: &str) -> Result<[u8; 32], GrantError> {
+    base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(b64u.trim().trim_end_matches('='))
+        .ok()
+        .and_then(|b| b.try_into().ok())
+        .ok_or(GrantError::BadKey)
 }
 
 pub fn key_id(public_key: &[u8; 32]) -> String {

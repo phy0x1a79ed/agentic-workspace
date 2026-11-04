@@ -78,9 +78,8 @@ _PARAMS = [{"name": n, "type": "string"} for n in ("project", "scope", "path", "
 
 
 @pytest.fixture()
-def journal(awm_workspace, edge_peers, monkeypatch):
-    """A ``journal`` service with ``fetch`` (read); ``hub`` is in the book with no
-    edge, every other name in the book has an edge both ways."""
+def journal(awm_workspace, monkeypatch):
+    """A ``journal`` service with ``fetch`` (read)."""
     spec = {"name": "fetch", "description": "fetch.", "effect": "read",
             "params": _PARAMS}
     rec = ServiceRecord(name="journal", prefix="/svc/journal", kind="service",
@@ -89,9 +88,6 @@ def journal(awm_workspace, edge_peers, monkeypatch):
     ch = _FakeChannel()
     monkeypatch.setattr(catalog.rpc, "get_control", lambda sid: ch)
     monkeypatch.setattr(peer_catalog, "_snapshot", {})
-    book = json.loads(edge_peers.read_text())
-    book["hub"] = {"edge_url": "https://hub:12100"}
-    edge_peers.write_text(json.dumps(book))
     return ch
 
 
@@ -219,7 +215,7 @@ class _Registry:
 
 
 @pytest.fixture()
-def door(awm_workspace, edge_peers, monkeypatch):
+def door(awm_workspace, monkeypatch):
     """POST to the ``journal`` service door. A call past the gate reaches the
     service: ``fetch`` is a notification (202), and a ``live`` session open
     is turned down by the service (502)."""

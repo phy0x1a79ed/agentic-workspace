@@ -56,11 +56,11 @@ API_MANIFEST = {
 def caller(a: dict) -> tuple[str, str]:
     """The calling session and its trust level, as the gateway passed them.
 
-    A call that names no level is treated as cooperative: it gets a blank profile.
+    A call that names no level is untrusted: the gateway stamps every call it routes.
     """
     claim = a.get("_caller_session")
     session = str(claim.get("job") or claim.get("name") or "") if isinstance(claim, dict) else str(claim or "")
-    level = str(a.get("_caller_trust") or "cooperative")
+    level = str(a.get("_caller_trust") or "untrusted")
     return session, level
 
 

@@ -258,12 +258,12 @@ async def test_a_node_is_asked_once_for_every_source_named_on_it(loaded, peers):
     assert result["sources"]["kb@altair"] == {"status": "absent"}
 
 
-async def test_a_node_without_an_edge_or_out_of_the_book_is_an_error_and_is_not_asked(loaded, peers):
+async def test_a_node_without_an_edge_or_unknown_is_an_error_and_is_not_asked(loaded, peers):
     peers.add("shaula", peer_hits("r3"), edge=False)
     result = await loaded.query(parse({"query": "kitchen", "sources": ["journals", "journals@shaula",
                                                                         "journals@ghost"]}))
     assert result["sources"]["journals@shaula"] == {"status": "error", "error": f"no edge from {HERE} to shaula"}
-    assert result["sources"]["journals@ghost"] == {"status": "error", "error": "not in the peer book"}
+    assert result["sources"]["journals@ghost"] == {"status": "error", "error": f"no edge from {HERE} to ghost"}
     assert peers.calls == [] and every(result)
 
 

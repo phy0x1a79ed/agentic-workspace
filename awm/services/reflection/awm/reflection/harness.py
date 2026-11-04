@@ -15,12 +15,11 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
-from awm.gatewayclient import ids
+from awm.gatewayclient import ids, service_token
 
 log = logging.getLogger("awm.reflection.harness")
 
 CONTRACT = "harness@1"
-PLUGIN = "reflection"
 
 # A provider that fails a call is skipped for this long, so a node without dsh
 # does not pay a failed call on every reflection verb.
@@ -67,8 +66,7 @@ def _contract_rows() -> list[dict]:
     import httpx
 
     try:
-        resp = httpx.get(f"{_hub()}/hub/contract/{CONTRACT}",
-                         headers={"X-Awm-Plugin": PLUGIN}, timeout=10.0)
+        resp = httpx.get(f"{_hub()}/hub/contract/{CONTRACT}", timeout=10.0)
         resp.raise_for_status()
         got = resp.json()
     except Exception as exc:  # noqa: BLE001 - no table is no provider
@@ -126,7 +124,9 @@ def _invoke(p: Provider, verb: str, args: dict, as_: Optional[str]) -> dict:
     body: dict[str, Any] = {"verb": verb, "args": args}
     if p.peer:
         body["peer"] = p.peer
-    headers = {"Content-Type": "application/json", "X-Awm-Plugin": PLUGIN}
+    headers = {"Content-Type": "application/json"}
+    if token := service_token():
+        headers["X-Awm-Service-Token"] = token
     if as_:
         headers["X-Awm-As"] = as_
     resp = httpx.post(f"{_hub()}/invoke", json={"name": p.tool, "args": body},

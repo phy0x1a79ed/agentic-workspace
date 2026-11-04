@@ -1,9 +1,7 @@
 [plugin]
 name = "kb"
 version = "0.1.0"
-trust = "own"
 
-# kb publishes no MCP tool: search reads it as two sources and walks them with its `hop`.
 [[service]]
 name = "kb"
 
@@ -23,7 +21,20 @@ get = "kb_get"
 hop = "kb_hop"
 links = ["citations", "cited_by", "authors"]
 
+# The gateway resolves search's needs against this tool. Every verb is off MCP (surfaces cli, http):
+# search reads kb as two sources and walks them with its `hop`.
+[[tool]]
+name = "kb"
+major = 1
+tier = "off"
+
 [needs]
 secrets = []
-network = []
+network = ["huggingface.co", "*.huggingface.co", "*.hf.co"]
 platform = ["linux"]
+
+[[needs.tool]]
+name = "zotero"
+major = 1
+verbs = ["items"]
+

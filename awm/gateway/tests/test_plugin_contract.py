@@ -27,9 +27,6 @@ LEGACY = {
     "reporting": "shares `operations` with board until both go at the cutover (queue.md R145)",
 }
 
-#: Core plugins that add verbs to the core's own `awm` tool.
-AWM_TOOL = {"auth": "until auth moves to a tool of its own"}
-
 #: Cross-plugin code reuse that predates R117 item 1. Each pair is debt with
 #: an owner. A new pair fails the test.
 CROSS_IMPORTS = {
@@ -168,8 +165,8 @@ def test_each_manifest_names_its_folder_and_no_host(folder):
     for s in m["service"]:
         for table in s.get("archive", []):
             assert table["mode"] in ("index", "live"), table
-    for tool in m.get("tool", []):  # kb publishes none: search is its only door
-        assert tool["name"] != "awm" or folder.name in AWM_TOOL, "the awm tool belongs to the core"
+    for tool in m["tool"]:
+        assert tool["name"] != "awm", "the awm tool belongs to the core"
         assert tool["tier"] in ("on", "off")
     needs = m["needs"]
     assert all(isinstance(x, str) for x in needs["secrets"] + needs["network"])
