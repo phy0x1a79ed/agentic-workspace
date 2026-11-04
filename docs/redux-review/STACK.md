@@ -39,6 +39,7 @@ Procedure, from dfs-interview § Work the stack:
   - [x] Peer visibility once kind is a tag: keyed on a tag, or on trust bounds (R107 item 3). From the multi-tag review (answered 2026-11-03)
   - [ ] Sync conflict: two nodes add the same tag name. From the multi-tag review
   - [ ] Old kinds system, debrief, note: tags or dropped. From the multi-tag review
+  - [ ] Goal revision across levels: a superseding reply lives in the first post scope (R107 items 5, 8), but goal_set can move a goal to another level. (a) refuse a level change on supersede, retire and set anew; (b) exempt supersede replies from the placement rule. Raised by redux-journal; interim (b)
 - **search-filters** (2026-11-03): can we make parameterized search possible? then we can do search with empty terms and only sql (if that's what hop takes) with source as kb for hop. Then we can also make searching journals possible to filter to only reports etc
   - [ ] kb tool surface: does hop become a search filter so the kb tool goes (Tony: kb becomes a b2b service only for search)
 - **fleet-deploy** (2026-11-03): lets go over each of the major systems architecturally to make sure we are still aligned
