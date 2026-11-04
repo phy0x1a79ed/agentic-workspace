@@ -58,7 +58,7 @@ async def test_a_refusal_does_not_end_the_loop(box, monkeypatch):
 
 
 async def test_only_one_copy_holds_the_pool(box, monkeypatch):
-    """One mechanism for the overlay, the sandbox, and a stray manual run."""
+    """One mechanism for the sandbox and a stray manual run."""
     from awm.cch import reconcile, remove, seed
 
     monkeypatch.setenv("AWM_CX_ROTATE_AGE_S", "1")
@@ -78,22 +78,11 @@ async def test_only_one_copy_holds_the_pool(box, monkeypatch):
     assert len(seeded) == 1
 
 
-async def test_an_overlay_leaves_the_pool_to_the_base(box, monkeypatch):
-    from awm.cch import reconcile
-
-    monkeypatch.setenv("AWM_SERVICE_OVERLAY", "1")
-    loop = reconcile.Loop()
-    assert "overlay" in (loop.enabled() or "")
-    await loop.tick()
-    assert not loop.status()["holds_lock"]
-
-
 async def test_the_loop_can_be_switched_off(box, monkeypatch):
     from awm.cch import reconcile
 
     monkeypatch.setenv("AWM_CX_LOOP", "0")
     assert "switched off" in (reconcile.Loop().enabled() or "")
-    assert reconcile.Loop().held_back() is None
 
 
 async def test_a_late_start_is_adopted_with_the_pool_switched_off(box, monkeypatch):

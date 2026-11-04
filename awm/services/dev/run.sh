@@ -1,16 +1,9 @@
 #!/usr/bin/env bash
 # run.sh — self-contained entry point for the dev service.
 #
-# `dev` is a first-class service: the gateway discovers it by scanning
-# awm/services/* for run.sh and starts (and respawns) it with `bash run.sh`,
-# injecting AWM_HUB_URL / AWM_SERVICE_NAME / AWM_SERVICE_ID. The adapter reads
-# those, registers, and holds the control WS open. No auth.
-#
-# UNIQUE dev behaviour — self-shadow: when a *dev sandbox* gateway starts this
-# service it also sets AWM_SHADOW_HUB_URL (= prod http://127.0.0.1:7819/), which
-# the dev hub_adapter passes to ServiceAdapter.run() to ALSO register a
-# self-cleaning overlay of /svc/dev onto prod. Prod's own gateway never sets it,
-# so prod's dev is a plain base. See awm/services/dev/awm/dev/hub_adapter.py.
+# The gateway starts (and respawns) it with `bash run.sh`, injecting AWM_HUB_URL /
+# AWM_SERVICE_NAME / AWM_HUB_TOKEN_FILE. The adapter reads those, registers, and
+# holds the control WS open. The sandbox it drives lives in sandbox/.
 #
 # Two launch modes, branched on the dev signal DEV_PYTHONPATH (same as every
 # other service):

@@ -396,12 +396,11 @@ async def test_a_live_source_without_a_get_verb_reads_nothing_whole(loaded, gate
         await loaded.get("web", "x")
 
 
-async def test_a_get_naming_a_verb_the_service_lacks_is_an_error_source(loaded, gateway):
-    gateway.plug_live("papers", lambda args: {"exact": [], "related": []}, service="papers", get="papers_get")
-    gateway.entries[-1]["api"]["functions"] = [{"name": "query", "tool": "papers_query"}]
+async def test_a_get_naming_a_verb_of_another_tool_is_an_error_source(loaded, gateway):
+    gateway.plug_live("papers", lambda args: {"exact": [], "related": []}, service="papers", get="library_get")
     await loaded.refresh()
     result = await loaded.query(parse({"query": "kitchen", "sources": ["papers"]}))
-    assert "papers_get" in result["sources"]["papers"]["error"]
+    assert "library_get" in result["sources"]["papers"]["error"]
 
 
 # -- tags on live sources ------------------------------------------------------------

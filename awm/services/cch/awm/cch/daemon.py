@@ -90,8 +90,6 @@ def enabled() -> str | None:
     """Why this process must leave the daemon alone, or None if it may keep it."""
     if os.environ.get("AWM_KEEP", "1") == "0":
         return "switched off (AWM_KEEP=0)"
-    if os.environ.get("AWM_SERVICE_OVERLAY"):
-        return "running as an overlay; the base keeps the daemon"
     if not Path(claude_bin()).is_file():
         return f"no Claude Code binary at {claude_bin()}"
     return None

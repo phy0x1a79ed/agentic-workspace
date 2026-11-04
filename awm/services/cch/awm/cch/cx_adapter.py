@@ -11,7 +11,7 @@ keyed by directory and the first `cx` in a project is as fast as the hundredth.
 
 Every function publishes a ``tool`` named ``reflection_<verb>_other``, matching
 the service's ``tool = "reflection"``, while ``name`` stays the service-internal
-handle behind ``/svc/cx/fn/<name>``. So the surface is ``awm reflection list_other`` and
+function name. So the surface is ``awm reflection list_other`` and
 ``mcp__awm__reflection {verb:"list_other"}``. The pool verbs are hidden from
 MCP.
 
@@ -315,10 +315,6 @@ def _on_start() -> None:
         lifecycle.ensure_starts_dir()
     except lifecycle.Refused as exc:
         log.warning("cx: %s", exc)
-    why = LOOP.held_back()
-    if why:
-        log.info("cx: not reconciling — %s", why)
-        return
     why = LOOP.enabled()
     if why:
         log.info("cx: not tending the warm pool — %s", why)

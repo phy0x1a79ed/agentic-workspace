@@ -67,13 +67,8 @@ this folder (any folder with a `run.sh` under `awm/services/`), starts it with
 
 No auth — the control plane is loopback.
 
-To iterate against a running dev sandbox without installing:
-
-    awm dev shadow --port 7821 awm/services/2fa
-
-(Always pass `--port` to stay off prod `:7819`. If the sandbox has no `2fa` base
-yet, the shadow self-registers a journaled base — tear it down afterward with
-`AWM_PORT=7821 awm services stop 2fa`, which drops the journal entry first.)
+To iterate without installing, run the worktree's dev sandbox (`bash awm/services/dev/sandbox/run.sh start`); it runs this same `run.sh` from the worktree.
+The sandbox's `AWM_DIR` holds no device creds, so set `AWM_2FA_DIR` in its `[env]`.
 
 ## Verbs
 
@@ -117,7 +112,7 @@ evidence rather than as zero.
 ## Discord `/approve` (social-service subscription)
 
 At startup the service opens a best-effort, self-reconnecting subscription to
-the `social` service's `command` emit (`/svc/social/emit/command`). A Discord
+the `social` service's `command` emit (`/hub/emit/social/command`). A Discord
 `/approve [device]` slash command — sent as a **DM to the bot**, handled by the
 `social` service — arrives as `{command:"approve", device, account, channel_id}`
 and arms a burst on the named device (default `cwl`): a 5-minute window polling

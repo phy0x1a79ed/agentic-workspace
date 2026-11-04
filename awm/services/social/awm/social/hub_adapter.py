@@ -7,7 +7,7 @@ account, and runs the shared :class:`awm.gatewayclient.ServiceAdapter` loop
 the control WS and projected into the gateway catalog as ``social_*`` tools.
 
 Inbound messages flow: connector → ``_on_message`` → **emit** on
-``/svc/social/emit/message``. The external platforms are the source of truth,
+``/hub/emit/social/message``. The external platforms are the source of truth,
 and ``fetch`` / ``search`` / ``download_attachments`` query them live. The one
 exception is a bot account, whose connector keeps a synced history that
 ``history`` reads (see :mod:`awm.social.history`). A small bounded in-memory set dedupes redelivered events (replacing
@@ -155,7 +155,7 @@ async def _on_command(cmd: connectors.Command) -> None:
     """Emit a normalised slash-command invocation for live subscribers.
 
     Unlike messages these aren't persisted — a command is an ephemeral trigger,
-    not a record. Consumers subscribe to ``/svc/social/emit/command`` and react
+    not a record. Consumers subscribe to ``/hub/emit/social/command`` and react
     to the commands they own (``approve``, ``reject``, ``new_agent``). The
     connector has already checked the sender against the operators table.
     """

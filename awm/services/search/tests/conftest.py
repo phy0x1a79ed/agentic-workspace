@@ -87,10 +87,10 @@ def doc(title: str, text: str, ts: str = "2026-03-01T10:00:00Z", **extra: Any) -
 
 
 def entry(service: str, tables: list[dict[str, Any]] | None = None, *, status: str = "ready",
-          verbs: tuple[str, ...] = ("export",), archive: bool = True) -> dict[str, Any]:
-    """One ``awm registry_list`` entry. A verb is published as ``<service>_<verb>``."""
-    out = {"name": service, "kind": "service", "backend_status": status,
-           "api": {"functions": [{"name": v, "tool": f"{service}_{v}"} for v in verbs]}}
+          tools: tuple[str, ...] | None = None, archive: bool = True) -> dict[str, Any]:
+    """One ``awm services`` row. The service publishes the tool named after it unless ``tools`` says otherwise."""
+    out = {"name": service, "plugin": service, "id": f"id-{service}", "status": status, "pid": 1,
+           "verbs": 1, "refusal": None, "enabled": True, "tools": list(tools or (service,))}
     if archive:
         out["archive"] = tables or []
     return out
@@ -121,9 +121,8 @@ class FakeGateway:
     def plug_live(self, name: str, hits: Callable[[dict], Any], *, service: str | None = None,
                   **table: Any) -> None:
         service = service or name
-        verbs = ("query", *(["get"] if table.get("get") else []), *(["hop"] if table.get("hop") else []))
         self.entries.append(entry(service, [{"name": name, "mode": "live", "query": f"{service}_query",
-                                             **table}], verbs=verbs))
+                                             **table}]))
         self.handlers[(service, "query")] = hits
 
     def stop(self, service: str) -> None:

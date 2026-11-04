@@ -23,14 +23,14 @@ def test_a_ready_service_with_a_table_becomes_a_source():
 
 
 def test_a_source_is_called_by_its_published_tool_and_verb():
-    e = entry("journal", [index_table("journals", "journal")])
-    e["api"]["functions"] = [{"name": "dump", "tool": "journal_export"}]
+    e = entry("journal", [index_table("journals", "journal")], tools=("journal",))
     src = registry.parse([e])[0]["journals"]
     assert (src.tool, src.export) == ("journal", "export")
-    e["api"]["functions"] = [{"name": "export", "tool": "papers_export"}]
-    e["archive"] = [{"name": "journals", "mode": "index", "export": "export"}]
-    src = registry.parse([e])[0]["journals"]
-    assert (src.tool, src.export) == ("papers", "export"), "an internal name finds its published verb"
+    e = entry("papers", [{"name": "papers", "mode": "index", "export": "export"}])
+    src = registry.parse([e])[0]["papers"]
+    assert (src.tool, src.export) == ("papers", "export"), "a bare verb finds the service's one tool"
+    e = entry("cc", [{"name": "cc", "mode": "index", "export": "harness_cc_export"}], tools=("harness", "harness_cc"))
+    assert registry.parse([e])[0]["cc"].tool == "harness_cc", "the longest tool name wins"
 
 
 def test_a_service_that_is_not_ready_is_not_running():
@@ -38,14 +38,9 @@ def test_a_service_that_is_not_ready_is_not_running():
     assert sources == {} and running == set()
 
 
-def test_a_non_service_registration_is_ignored():
-    page = {"name": "landing", "kind": "page", "backend_status": "ready", "archive": []}
-    assert registry.parse([page]) == ({}, set())
-
-
 def test_a_live_source_names_its_query_verb():
     e = entry("transcripts", [{"name": "transcripts", "mode": "live", "query": "transcripts_query",
-                               "optin": True}], verbs=("query",))
+                               "optin": True}])
     src = registry.parse([e])[0]["transcripts"]
     assert (src.mode, src.query, src.optin) == ("live", "query", True)
 
@@ -54,8 +49,9 @@ def test_a_live_source_names_its_query_verb():
     ({"name": "Bad Name", "mode": "index", "export": "s_export"}, "must match"),
     ({"name": "x", "mode": "stream", "export": "s_export"}, "mode"),
     ({"name": "x", "mode": "index"}, "names none"),
-    ({"name": "x", "mode": "index", "export": "s_missing"}, "does not publish"),
-    ({"name": "x", "mode": "live", "query": "s_missing"}, "does not publish"),
+    ({"name": "x", "mode": "index", "export": "other_export"}, "does not publish"),
+    ({"name": "x", "mode": "live", "query": "other_query"}, "does not publish"),
+    ({"name": "x", "mode": "live", "query": "s_query", "get": "other_get"}, "`get` names"),
 ])
 def test_an_unusable_table_is_listed_with_its_error(table, fragment):
     sources, _ = registry.parse([entry("s", [table])])
@@ -68,24 +64,15 @@ def test_a_second_service_cannot_take_a_name_held():
     assert sources["same"].service == "a"
 
 
-def test_a_registry_without_archive_keys_falls_back_to_the_manifest(tmp_path, monkeypatch):
-    folder = tmp_path / "writing"
-    folder.mkdir()
-    (folder / "service.toml").write_text('[[archive]]\nname = "writing"\nmode = "index"\nexport = "writing_export"\n')
-    monkeypatch.setenv("AWM_SERVICES_DIR", str(tmp_path))
-    sources, _ = registry.parse([entry("writing", archive=False)])
-    assert sources["writing"].export == "export"
-
-
-def test_the_fallback_reads_the_plugin_manifest_first(tmp_path, monkeypatch):
+def test_a_row_without_archive_keys_falls_back_to_the_plugin_manifest(tmp_path, monkeypatch):
     folder = tmp_path / "journal"
     folder.mkdir()
-    (folder / "service.toml").write_text('[[archive]]\nname = "stale"\nmode = "index"\nexport = "x"\n')
     (folder / "awm-plugin.toml").write_text(
         '[plugin]\nname = "journal"\n\n[[service]]\nname = "journal"\n\n'
         '[[service.archive]]\nname = "journals"\nmode = "index"\nexport = "journal_export"\n')
     monkeypatch.setenv("AWM_SERVICES_DIR", str(tmp_path))
-    assert [t["name"] for t in registry.manifest_tables("journal")] == ["journals"]
+    sources, _ = registry.parse([entry("journal", archive=False)])
+    assert sources["journals"].export == "export"
 
 
 def test_a_spec_survives_storage():

@@ -1,7 +1,7 @@
 """Post-channel operation definitions for the gateway manifest.
 
-A scope IS the channel. Each entry's ``name`` is the service-internal handle
-(``/svc/journal/fn/<name>``) and its ``tool`` is the published ``journal_<verb>``:
+A scope IS the channel. Each entry's ``name`` is the service-internal function
+name and its ``tool`` is the published ``journal_<verb>``:
   - ``post``        — append a post with its tags, or a comment with ``reply_to``.
   - ``fetch``       — fetch/search a scope's posts (``query`` → the search service,
                       ``tags`` filter; a post_id read returns its thread).

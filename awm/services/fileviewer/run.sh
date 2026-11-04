@@ -4,13 +4,11 @@
 # The gateway discovers this service by scanning awm/services/* for run.sh, and
 # starts (and respawns) it by executing `bash run.sh`, injecting AWM_HUB_URL /
 # AWM_SERVICE_NAME / AWM_SERVICE_ID into the environment. The adapter reads
-# those, POSTs /hub/service/register, and holds the control WS open. No auth.
+# those, POSTs /hub/service/register, and holds the control WS open.
 #
-# The adapter's control WS buys supervision + the fileviewer_status verb. The
-# file bytes ride a separate kind=static mount at /files that the adapter
-# registers and holds (see awm.fileviewer.server.hold_mount): the gateway's
-# serve_static ships them and httpsfront fronts them, so links are
-# origin-relative (/files/<abs>) and reach any device, not just loopback.
+# The process serves files on a loopback listener and registers it as its
+# mount (see awm.fileviewer.server): the gateway serves it at /s/fileviewer/
+# and httpsfront fronts it, so links are origin-relative (/s/fileviewer/<abs>).
 #
 # Two launch modes, branched on the dev signal DEV_PYTHONPATH:
 #   - dev sandbox (DEV_PYTHONPATH set): run the uninstalled worktree code via

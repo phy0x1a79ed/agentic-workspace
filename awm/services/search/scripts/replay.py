@@ -42,9 +42,10 @@ DOI = re.compile(r"(?:doi\.org/|^doi:)(10\.\S+)", re.I)
 def call(hub: str, fn: str, args: dict[str, Any], timeout: float = 120.0, tries: int = 4) -> Any:
     """One search verb; a locked database, which a sync pass can hold for a moment, is retried."""
     for attempt in range(tries):
-        resp = httpx.post(f"{hub.rstrip('/')}/svc/search/fn/{fn}", json=args, timeout=timeout)
+        resp = httpx.post(f"{hub.rstrip('/')}/invoke", json={"name": f"search_{fn}", "args": args}, timeout=timeout)
         if resp.status_code < 300:
-            return resp.json()
+            result = resp.json().get("result")
+            return json.loads(result) if isinstance(result, str) else result
         if "database is locked" not in resp.text or attempt == tries - 1:
             raise RuntimeError(f"search {fn}: HTTP {resp.status_code}: {resp.text[:300]}")
         time.sleep(2 ** attempt)

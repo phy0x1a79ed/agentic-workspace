@@ -30,10 +30,8 @@ this folder (any folder with a `run.sh` under `awm/services/`), starts it with
 
 No auth — the registration handshake carries no token.
 
-To iterate against a running sandbox without installing, use
-`awm dev shadow awm/services/rlm-browser`; it execs this same `run.sh` as an overlay.
-A manifest change only takes effect on a **service restart** (the gateway caches
-the last `ready` frame) — there is no hot reload.
+To iterate without installing, run the worktree's dev sandbox (`bash awm/services/dev/sandbox/run.sh start`); it runs this same `run.sh` from the worktree.
+A manifest change takes effect on `awm reload` or a service restart.
 
 ## Configuration
 

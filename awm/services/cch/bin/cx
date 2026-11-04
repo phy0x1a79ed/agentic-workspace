@@ -41,12 +41,12 @@ claim() {
   local dir body line resp=""
   dir=${PWD//\\/\\\\}
   dir=${dir//\"/\\\"}
-  body="{\"cwd\":\"$dir\"}"
+  body="{\"name\":\"harness-cc_pool_claim\",\"args\":{\"cwd\":\"$dir\"}}"
   # Grouped so the redirection failure is reported into /dev/null. Bash
   # writes a bare `exec 3<>... : Connection refused` to the shell's own
   # stderr otherwise, and a refused gateway must be silent.
   { exec 3<>"/dev/tcp/127.0.0.1/$CX_PORT"; } 2>/dev/null || return 1
-  printf 'POST /svc/cch/fn/pool_claim HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s' \
+  printf 'POST /invoke HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s' \
     "${#body}" "$body" >&3 2>/dev/null || { exec 3<&-; return 1; }
   # The first read waits out the claim itself; the rest are already in flight.
   IFS= read -r -t "$CX_WAIT" -u 3 line || { exec 3<&-; return 1; }
@@ -56,7 +56,10 @@ claim() {
   # it reported failure. Dropping `line` here drops the whole answer.
   resp+=$line
   exec 3<&- 3>&-
-  [[ $resp =~ \"session\"[[:space:]]*:[[:space:]]*\"([A-Za-z0-9]+)\" ]] || return 1
+  # The gateway returns the verb's answer as a JSON string inside `result`, so
+  # its quotes arrive escaped.
+  local re='\\?"session\\?"[[:space:]]*:[[:space:]]*\\?"([A-Za-z0-9]+)'
+  [[ $resp =~ $re ]] || return 1
   printf '%s\n' "${BASH_REMATCH[1]}"
 }
 
